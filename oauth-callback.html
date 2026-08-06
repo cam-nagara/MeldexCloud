@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Meldex 認証</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: #1e1e1e; color: #ddd; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+  .box { text-align: center; padding: 24px; }
+  .spinner { width: 28px; height: 28px; border: 3px solid #444; border-top-color: #569cd6; border-radius: 50%; margin: 0 auto 16px; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  p { font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="spinner" id="spinner"></div>
+  <p id="msg">認証を確認しています…</p>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  // このページは外部リソースを一切読み込まない最小の受け皿。
+  // Google / Microsoft の認可コードフロー（PKCE）のリダイレクト先として使う。
+  // 受け取ったクエリ（code/state/error）を、開いた側（opener）へ
+  // postMessage と BroadcastChannel の両方で通知してから自分を閉じる。
+  // トークン交換はこのページでは行わない（opener側でstate検証してから行う）。
+
+  var CHANNEL_NAME = 'meldex-cal-oauth-callback-v1';
+  var MESSAGE_TYPE = 'meldex-cal-oauth-callback';
+
+  function readParams() {
+    var out = { code: '', state: '', error: '', errorDescription: '' };
+    try {
+      var search = new URLSearchParams(window.location.search || '');
+      out.code = search.get('code') || '';
+      out.state = search.get('state') || '';
+      out.error = search.get('error') || '';
+      out.errorDescription = search.get('error_description') || search.get('error_description'.toLowerCase()) || '';
+    } catch (e) {}
+    return out;
+  }
+
+  function setMessage(text) {
+    var el = document.getElementById('msg');
+    if (el) el.textContent = text;
+    var spinner = document.getElementById('spinner');
+    if (spinner) spinner.style.display = 'none';
+  }
+
+  function deliver(payload) {
+    var message = { type: MESSAGE_TYPE, payload: payload };
+    var delivered = false;
+    try {
+      if (window.opener && !window.opener.closed) {
+        window.opener.postMessage(message, window.location.origin);
+        delivered = true;
+      }
+    } catch (e) {}
+    try {
+      if (typeof BroadcastChannel === 'function') {
+        var channel = new BroadcastChannel(CHANNEL_NAME);
+        channel.postMessage(message);
+        channel.close();
+        delivered = true;
+      }
+    } catch (e) {}
+    return delivered;
+  }
+
+  var params = readParams();
+  if (!params.code && !params.error) {
+    setMessage('認証情報を受け取れませんでした。このウィンドウを閉じてください。');
+    return;
+  }
+  var ok = deliver(params);
+  if (!ok) {
+    setMessage('元のウィンドウへ通知できませんでした。このウィンドウを閉じて、Meldexの画面をご確認ください。');
+    return;
+  }
+  setMessage(params.error ? '認証に失敗しました。このウィンドウを閉じてください。' : '認証が完了しました。このウィンドウを閉じています…');
+  window.setTimeout(function () {
+    try { window.close(); } catch (e) {}
+  }, 400);
+})();
+</script>
+</body>
+</html>

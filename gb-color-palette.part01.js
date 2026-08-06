@@ -27,6 +27,18 @@
 .gb-palette-row-swatches { display: flex; flex-wrap: wrap; gap: 3px; width: calc(24px * 8 + 3px * 7); }
 .gb-palette-section-heading { font-size: 10px; color: var(--fg2); line-height: 1.4; padding: 4px 0 2px; border-top: 1px solid var(--border); margin-top: 2px; }
 .gb-palette-section-heading:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.gb-palette-custom-header-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.gb-palette-custom-header-row .gb-palette-section-heading-label { flex: 1; min-width: 0; }
+.gb-palette-custom-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.gb-palette-custom-action-btn {
+  width: 18px; height: 18px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--fg2); border: 1px solid transparent; border-radius: 3px; cursor: pointer;
+}
+.gb-palette-custom-action-btn:hover { color: var(--fg); border-color: var(--border); background: var(--bg4); }
+.gb-palette-custom-action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gb-palette-import-mode-dialog .btn-row button.danger {
+  color: var(--ui-danger, var(--red, #d16969)); border-color: var(--ui-danger, var(--red, #d16969));
+}
 .gb-swatch {
   width: 24px; height: 24px; border-radius: 3px; cursor: pointer;
   border: 2px solid transparent; box-sizing: border-box; flex-shrink: 0;
@@ -160,7 +172,8 @@
   .gb-palette-reset-btn,
   .gb-palette-picker-row .gb-btn-save,
   .gb-palette-picker-row .gb-btn-eyedropper,
-  .gb-palette-close-row .gb-btn-close {
+  .gb-palette-close-row .gb-btn-close,
+  .gb-palette-custom-action-btn {
     min-height: 44px;
     font-size: 14px;
   }
@@ -172,7 +185,8 @@
   .gb-palette-picker-row .gb-btn-save,
   .gb-palette-picker-row .gb-btn-eyedropper,
   .gb-palette-picker-row .gb-palette-os-accent-swatch,
-  .gb-palette-close-row .gb-btn-close {
+  .gb-palette-close-row .gb-btn-close,
+  .gb-palette-custom-action-btn {
     min-width: 44px;
   }
   .gb-palette-picker-row input[type="color"],
@@ -282,6 +296,12 @@ function _saveCustomColors(colors, options) {
       _refreshCustomColorsAfterHistory
     );
   }
+  // サーバー側の反映（_adoptPersonalColorsRecord経由の書き戻し等）による
+  // 呼び出しはskipServerSyncで無限ループを防ぐ。_queuePersonalColorsSync は実行直前に
+  // localStorageから最新値を読み直すため、ここでは変更が起きたことだけを伝える。
+  if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
+    _queuePersonalColorsSync();
+  }
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -297,6 +317,10 @@ function removeCustomColor(color) {
     { label: '設定: カスタムカラー削除', detail: target }
   );
 }
+
+// カスタムカラーのPC内共有ストア連携（初回移行・バックグラウンド保存・
+// 書き出し/読み込み）は gb-color-palette.part03.js に分離。
+// ビューワー安定化・共通UI計画書「4. 共通カスタムカラー」対応。
 
 function _clampPaletteAdjustValue(value, min, max, fallback) {
   const num = Number(value);
@@ -886,10 +910,40 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   }
 
   // --- カスタムカラーセット ---
-  const customSectionHeading = document.createElement('div');
-  customSectionHeading.className = 'gb-palette-section-heading';
+  const customSectionHeaderRow = document.createElement('div');
+  customSectionHeaderRow.className = 'gb-palette-section-heading gb-palette-custom-header-row';
+  palette.appendChild(customSectionHeaderRow);
+
+  const customSectionHeading = document.createElement('span');
+  customSectionHeading.className = 'gb-palette-section-heading-label';
   customSectionHeading.textContent = 'カスタムカラーセット';
-  palette.appendChild(customSectionHeading);
+  customSectionHeaderRow.appendChild(customSectionHeading);
+
+  const customActionsRow = document.createElement('span');
+  customActionsRow.className = 'gb-palette-custom-actions';
+  customSectionHeaderRow.appendChild(customActionsRow);
+
+  const exportCustomColorsBtn = document.createElement('button');
+  exportCustomColorsBtn.type = 'button';
+  exportCustomColorsBtn.className = 'gb-palette-custom-action-btn';
+  exportCustomColorsBtn.dataset.e2eId = 'color-palette-custom-export';
+  exportCustomColorsBtn.innerHTML = (typeof uiTransferIcon === 'function' && uiTransferIcon('export', 12))
+    || (typeof lucide === 'function' ? lucide('upload', 12) : '書出');
+  exportCustomColorsBtn.title = 'カスタムカラーをファイルへ書き出す（.meldex-colors.json）';
+  exportCustomColorsBtn.setAttribute('aria-label', 'カスタムカラーをファイルへ書き出す');
+  exportCustomColorsBtn.addEventListener('click', () => { _exportCustomColorsToFile(); });
+  customActionsRow.appendChild(exportCustomColorsBtn);
+
+  const importCustomColorsBtn = document.createElement('button');
+  importCustomColorsBtn.type = 'button';
+  importCustomColorsBtn.className = 'gb-palette-custom-action-btn';
+  importCustomColorsBtn.dataset.e2eId = 'color-palette-custom-import';
+  importCustomColorsBtn.innerHTML = (typeof uiTransferIcon === 'function' && uiTransferIcon('import', 12))
+    || (typeof lucide === 'function' ? lucide('download', 12) : '読込');
+  importCustomColorsBtn.title = 'ファイルからカスタムカラーを読み込む（.meldex-colors.json）';
+  importCustomColorsBtn.setAttribute('aria-label', 'ファイルからカスタムカラーを読み込む');
+  importCustomColorsBtn.addEventListener('click', () => { _promptImportCustomColorsFile(); });
+  customActionsRow.appendChild(importCustomColorsBtn);
 
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
@@ -899,6 +953,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   function renderCustomGrid() {
     customGrid.innerHTML = '';
     const customs = getCustomColors();
+    // 見出しテキストは色が無い間だけ隠す。書き出し/読み込みボタンは0色でも
+    // 常に使える（最初のカスタムカラーをファイルから読み込めるようにするため）。
     customSectionHeading.hidden = customs.length === 0;
     customs.forEach((c, i) => {
       const swatch = document.createElement('div');

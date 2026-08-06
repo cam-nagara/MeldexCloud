@@ -1570,14 +1570,20 @@
         this._render();
         return;
       }
-      this._pushUndo('イベントリサイズ');
+      // 制作管理UX改善計画（2026-08-04）§6-4: production-task イベントはタスクへの書き戻し
+      // （_calApplyEventTimePatch、gb-tool-calendar-views.part01.js）を経由する。
+      // シフト・勤怠など他の自動生成イベントは従来どおり409のまま（このヘルパー内で判定）。
+      // コミット前レビュー指摘 #5: 選択中の全件がproduction-task（undo対象外）の場合、
+      // 元に戻せない偽のUndo記録を積まない。1件でも通常イベントが含まれていれば、
+      // その分の復元のために従来どおり記録する。
+      if (items.some(item => this._eventIsUndoable(item.ev))) this._pushUndo('イベントリサイズ');
       const updates = items.map(item => {
         if (direction === 'bottom') {
           const nextEnd = new Date(item.end.getTime() + activeDeltaMs);
-          return apiPut('/cal/events/' + item.ev.id, { end: this._localDateTimeStr(nextEnd) });
+          return _calApplyEventTimePatch(this, item.ev, { end: this._localDateTimeStr(nextEnd) });
         }
         const nextStart = new Date(item.start.getTime() + activeDeltaMs);
-        return apiPut('/cal/events/' + item.ev.id, { start: this._localDateTimeStr(nextStart) });
+        return _calApplyEventTimePatch(this, item.ev, { start: this._localDateTimeStr(nextStart) });
       });
       Promise.all(updates).then(() => this._loadEvents()).then(() => this._render()).catch(() => {
         this._showStatus('イベントリサイズに失敗', true);

@@ -33,6 +33,14 @@
       app.component.state.label = titleFromPath(app.path);
       if (app.component._editor) app.component._editor._path = app.path;
     }
+    syncOptionPanel().catch(error => console.error('scenario option panel sync failed', error));
+  }
+
+  async function syncOptionPanel() {
+    if (typeof _syncDetailPanel === 'function') {
+      await _syncDetailPanel(titleFromPath(app.path), app.path, 'scriptnote', {});
+    }
+    await window.MeldexStandaloneParity?.syncOptionFeatures?.();
   }
 
   function editor() {
@@ -46,14 +54,14 @@
     return JSON.stringify(ed.collectDoc(), null, 2) + '\n';
   }
 
-  function loadParsed(parsed, path) {
+  function loadParsed(parsed, path, etag) {
     if (typeof isScriptNoteFileDoc === 'function' && !isScriptNoteFileDoc(parsed)) {
       throw new Error('シナリオ形式ファイルではありません');
     }
     const host = app.component.el.querySelector('#scenario-note-surface');
     if (!app.component._editor) app.component._editor = new ScriptNoteEditor(host);
     app.component._editor.host = host;
-    app.component._editor.loadDoc(parsed, path || '');
+    app.component._editor.loadDoc(parsed, path || '', etag || '');
     app.component.state.scenarioPath = path || '';
     app.component.state.label = parsed.title || titleFromPath(path);
     const titleInput = app.component.el.querySelector('#title-input');
@@ -79,7 +87,7 @@
     try {
       const data = await MeldexStandaloneFS.readText(path);
       const parsed = JSON.parse(data.content || '{}');
-      loadParsed(parsed, path);
+      loadParsed(parsed, path, data.etag || '');
       showStatus('シナリオを読み込みました');
     } catch (error) {
       if (MeldexStandaloneFS.currentPath?.() !== path) {
@@ -90,6 +98,13 @@
     } finally {
       hideLoading();
     }
+  }
+
+  async function canReplaceCurrent() {
+    if ((app.dirty || editor()?._dirty)
+        && !(await cfConfirm('未保存の変更を破棄して開きますか？'))) return false;
+    await localDrafts?.discardCurrent?.();
+    return true;
   }
 
   async function openScenario() {
@@ -113,12 +128,17 @@
     }
     showLoading('シナリオを保存しています...');
     try {
-      const res = await MeldexStandaloneFS.writeText(app.path, json, { skip_if_missing: true });
+      const baselineEtag = editor()._lastSavedEtag || '';
+      const res = await MeldexStandaloneFS.writeText(app.path, json, {
+        if_match_etag: baselineEtag,
+        skip_if_missing: true,
+      });
       if (res?.skipped || res?.missing) {
         showStatus('保存先が見つかりません。名前を付けて保存してください', true);
         await saveScenarioAs();
         return;
       }
+      editor()._lastSavedEtag = res?.etag || baselineEtag;
       editor()._dirty = false;
       setDirty(false);
       await localDrafts?.markSynced?.(res?.etag || '');
@@ -129,15 +149,17 @@
   }
 
   async function saveScenarioAs() {
-    if (!editor()?.doc) return;
+    if (!editor()?.doc) return false;
     const suggested = MeldexStandaloneFS.suggestedName(app.path, '無題.mel-scenario');
     const saved = await MeldexStandaloneFS.saveAs(collectJson(), suggested);
-    if (!saved?.path) return;
-    await localDrafts?.markSynced?.('');
+    if (!saved?.path) return false;
+    editor()._lastSavedEtag = saved?.etag || '';
+    await localDrafts?.markSynced?.(editor()._lastSavedEtag);
     setPath(saved.path);
     editor()._dirty = false;
     setDirty(false);
     showStatus('保存しました');
+    return true;
   }
 
   function bindDirtyObserver() {
@@ -197,47 +219,17 @@
   // gb-scriptnote-clipstudio.js の PNG・HTML・Markdown出力・CLIP STUDIO送信は
   // すべてこの関数経由でエディタを取得するため、これだけでまとめて有効化できる）。
   //
-  // _getScriptNoteEditorForFileStyle 等のファイルスタイル（オプションパネル「テーマ」
-  // タブ）共通基盤は本体では gb-note-enhance.js（ノート機能拡張ファイル）内に同居して
-  // 定義されているが、単独版シナリオはノートエディタ本体を同梱しないため未定義になる。
-  // gb-note-enhance.js 全体（スラッシュコマンド等ノート専用の大きな機能を含む）を
-  // 同梱するのは過剰なため、シナリオの「テーマ」タブが必要とする5つの定義だけを
-  // 本体(gb-note-enhance.part01.js)と同一内容でここに用意する。
-  // 本体側でこの一覧が変わった場合は追随が必要（app/AGENT_INBOX.md に記録済み）。
-  const SN2_FILE_STYLE_KEYS = [
-    'borderColor', 'borderWidth', 'baseTextColor', 'baseTextBold', 'baseTextItalic',
-    'baseTextFontFamily', 'baseTextFontSize', 'baseTextLineHeight', 'baseTextLetterSpacing',
-    'baseTextLineHeightH', 'baseTextLineHeightV', 'baseTextLetterSpacingH', 'baseTextLetterSpacingV',
-    'rubyFontSize', 'rubyOffset', 'spreadBorderColor', 'spreadBorderWidth', 'wrapMode',
-    'hoverBgColor', 'caretColor', 'caretWidth', 'dragSelectColor', 'selectionColor',
-    'selectionTextColor', 'dropIndicatorColor', 'dropIndicatorWidth', 'themeId',
-    '__themeName', '__themeSourceId', '__useOsAccentColor',
-    '--theme-palette-0', '--theme-palette-1', '--theme-palette-2', '--theme-palette-3',
-    '--theme-palette-4', '--theme-palette-5', '--theme-palette-6', '--theme-palette-7',
-    '--theme-palette-8', '--theme-palette-9',
-  ];
-
   function initActiveEditorBridge() {
+    const contract = window.MeldexScriptnoteFileStyleContract;
+    if (!contract) throw new Error('シナリオのファイルスタイル契約を読み込めませんでした');
     window._sn2GetActiveEditor = function () {
       const ed = app.component?._editor;
       return ed?.doc ? ed : null;
     };
     window._getScriptNoteEditorForFileStyle = window._sn2GetActiveEditor;
-    window._SCRIPTNOTE_FILE_STYLE_DEFAULTS = window._SCRIPTNOTE_FILE_STYLE_DEFAULTS || { wrapMode: true };
-    window._isScriptnoteFileStyleKey = window._isScriptnoteFileStyleKey || function (key) {
-      const value = String(key || '').trim();
-      return SN2_FILE_STYLE_KEYS.includes(value) || value.startsWith('--') || /^__[A-Za-z0-9_-]+$/.test(value);
-    };
-    window._filterScriptnoteFileStyle = window._filterScriptnoteFileStyle || function (style) {
-      if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
-      const next = {};
-      Object.entries(style).forEach(([key, value]) => {
-        if (!window._isScriptnoteFileStyleKey(key)) return;
-        if (value === undefined || value === null || value === '') return;
-        next[key] = value;
-      });
-      return next;
-    };
+    window._SCRIPTNOTE_FILE_STYLE_DEFAULTS = contract.defaults;
+    window._isScriptnoteFileStyleKey = contract.isKey;
+    window._filterScriptnoteFileStyle = contract.filter;
   }
 
   async function exportPng() {
@@ -312,35 +304,49 @@
     localDrafts = window.MeldexStandaloneLocalDrafts.create({
       appId: 'scenario',
       getPath: () => app.path,
+      getRevision: () => editor()?._lastSavedEtag || '',
       capture: () => ({
         title: qs('scenario-title-label')?.value || '新規シナリオ',
         content: collectJson(),
       }),
       restore: snapshot => {
         const parsed = JSON.parse(snapshot?.content || '{}');
-        loadParsed(parsed, app.path);
+        // ドラフト復元は「同じパスの未保存編集」を戻すだけなので、既知のbaseline etag
+        // （直前の読込/保存で得たもの）を維持する。空文字へ戻すとif_match_etagが
+        // 送られなくなり、保護が弱まってしまう。
+        loadParsed(parsed, app.path, app.component?._editor?._lastSavedEtag || '');
         qs('scenario-title-label').value = snapshot?.title || parsed.title || titleFromPath(app.path);
         setDirty(true);
       },
       sync: async (snapshot, record) => {
         const result = await MeldexStandaloneFS.writeText(record.remotePath, snapshot.content || '', {
+          if_match_etag: record.baseRevision || '',
           skip_if_missing: true,
         });
         if (result?.missing || result?.skipped || result?.queued) {
           throw new Error(result?.queued ? '接続後に再試行します' : '保存先が見つかりません');
         }
+        editor()._lastSavedEtag = result?.etag || record.baseRevision || '';
         editor()._dirty = false;
         setDirty(false);
       },
       onStatus: (status, message) => {
         const label = qs('scenario-sync-status');
-        if (label && ['saving', 'local-saved', 'pending', 'syncing', 'conflict', 'error'].includes(status)) {
+        if (label && ['waiting', 'local-saving', 'local-saved', 'saving', 'final-saving', 'pending', 'syncing', 'synced', 'conflict', 'error'].includes(status)) {
           label.textContent = message;
           label.dataset.status = status;
         }
       },
     });
     localDrafts.start();
+    window.MeldexStandaloneCloseGuard?.register?.({
+      appId: 'scenario',
+      saveAs: saveScenarioAs,
+      prepareClose: () => {
+        document.activeElement?.blur?.();
+        return true;
+      },
+    });
     await localDrafts.restoreLatest();
     localDrafts.flush();
   }
@@ -405,11 +411,22 @@
     });
   }
 
+  function initParityAdapter() {
+    window.MeldexStandaloneParity?.init?.({
+      appId: 'scenario',
+      getPath: () => app.path,
+      getLabel: () => qs('scenario-title-label')?.value || titleFromPath(app.path),
+      openCurrent: openPath,
+      canReplaceCurrent,
+    });
+  }
+
   function bindUi() {
     initActiveEditorBridge();
     mountComponent();
     initMobileToolbar();
     initOptionPanel();
+    initParityAdapter();
     bindMenus();
     bindTitleEditing();
     bindShortcuts();
@@ -420,7 +437,8 @@
 
   async function initializeData() {
     await MeldexStandaloneFS.init();
-    const initial = MeldexStandaloneFS.nativeInitialPath();
+    const requested = new URLSearchParams(location.search).get('open') || '';
+    const initial = requested || MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newScenario();
     else {
       try { await openPath(initial); }

@@ -1,4 +1,5 @@
 /* gb-scriptnote-editor.css: split stylesheet loader */
 @import url("gb-scriptnote-editor.part01.css");
 @import url("gb-scriptnote-editor.part02.css");
+@import url("gb-scriptnote-role-management.css");
 @import url("gb-scriptnote-rules.css");

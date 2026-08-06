@@ -1,0 +1,156 @@
+/* viewer.css — Meldexビューワーのスタイル（旧・viewer.html内 <style> の抽出）。
+   計画書: app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 2. ビューワーUI」
+   前提: gb-ui.css / gb-tools.css を先に読み込むこと（.gb-toolbar / .tb-icon-btn / .tb-select /
+   .gb-context-menu 系の共通クラス・トークンを利用するため）。旧・独自 .viewer-ctx 系メニューCSSは
+   廃止済み（右クリック/長押しメニューは viewer-context-menu.js が .gb-context-menu 系で生成する）。 */
+:root {
+  --fade-ms: 300ms;
+  --bg: #0a0e14; --bg2: #151922; --bg3: #1c2230;
+  --panel-bg: rgba(20,25,35,0.92);
+  --border: rgba(100,100,120,0.3);
+  --accent: #569cd6; --fg: #e5e7eb; --fg2: #9ca3af;
+  --bg4: #3e3e3e;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--ui-scrollbar-track-bg, var(--bg)); }
+::-webkit-scrollbar-thumb { background: var(--ui-scrollbar-thumb-bg, var(--bg4)); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ui-scrollbar-thumb-hover-bg, var(--fg2)); }
+html, body { width: 100%; height: 100%; background: var(--bg); color: var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans JP", sans-serif; overflow: hidden; display: flex; flex-direction: column; }
+/* #controlsをposition:absoluteの下端オーバーレイにするための位置基準（body=#displayとほぼ同寸のため
+   実質的に#displayの下端に重なる。ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。 */
+body { position: relative; }
+
+/* 背景ブラー */
+.bg-layer { position: absolute; inset: 0; background-size: cover; background-position: center; filter: blur(20px) brightness(0.4) saturate(1.2); transform: scale(1.1); opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; z-index: 0; }
+.bg-layer.show { opacity: 1; }
+
+/* 表示エリア */
+#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; z-index: 1; }
+.viewer-loading-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 12; pointer-events: none; color: var(--fg2); font-size: 13px; }
+.viewer-loading-state.hidden { display: none; }
+.viewer-loading-card { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(10,14,20,0.82); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.viewer-loading-spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.18); border-top-color: var(--accent); border-radius: 999px; animation: viewer-spin 0.9s linear infinite; }
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+.layer { position: absolute; inset: 0; display: flex; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; overflow: auto; }
+.layer.show { opacity: 1; pointer-events: auto; }
+.img-single { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; margin: auto; }
+.spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; margin: auto; }
+.spread img, .spread canvas { max-height: 100%; object-fit: contain; user-select: none; }
+.page-canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; }
+
+/* 注釈の画像固有ピクセル座標シーン（viewer-annotation-scene.js）。
+   img/canvasをこのラッパーで包み、注釈SVGをラッパーに対して100%/100%で重ねることで、
+   フィット倍率・ズーム・パン・回転・反転を画像と同じCSS変換連鎖にそのまま追従させる
+   （JS側で個別に再計算しない）。 */
+.viewer-ann-scene-wrap { position: relative; display: inline-block; line-height: 0; }
+.layer > .viewer-ann-scene-wrap { margin: auto; max-width: 100%; max-height: 100%; }
+.spread > .viewer-ann-scene-wrap { max-height: 100%; }
+.viewer-ann-scene-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
+.viewer-ann-preview { pointer-events: none; }
+.viewer-ann-tail-handle { fill: #fff; stroke: rgba(0,0,0,0.4); stroke-width: 1; cursor: move; }
+.viewer-ann-note { width: 100%; height: 100%; box-sizing: border-box; color: #333; padding: 8px;
+  border-radius: 4px; font-size: 12px; border: 1px solid rgba(0,0,0,0.15); overflow: hidden; }
+.viewer-ann-note-textarea { width: 100%; height: 100%; background: transparent; border: none;
+  color: #333; font-size: 12px; resize: both; outline: none; font-family: inherit; }
+
+/* 旧座標系（coordinateSpaceを持たない既存注釈）の後方互換オーバーレイ。
+   #display全体を基準にした固定位置のまま描画し、ズーム/パンには追従しない
+   （viewer-annotation-legacy.js。破壊的な座標変換を避けるための現状維持）。 */
+.viewer-ann-legacy-note { cursor: move; }
+
+/* ドラッグ移動 */
+#display.panning { cursor: grab; }
+#display.panning:active { cursor: grabbing; }
+/* 左右ナビエリア */
+.nav-area { position: absolute; top: 0; bottom: 0; width: 60px; z-index: 5; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.2s; cursor: pointer; }
+.nav-area:hover { opacity: 1; }
+.nav-area.left { left: 0; }
+.nav-area.right { right: 0; }
+.nav-area svg { filter: drop-shadow(0 0 4px rgba(0,0,0,0.8)); }
+
+/* HUD */
+#hud { position: absolute; top: 12px; right: 12px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 12px; user-select: none; box-shadow: 0 8px 24px rgba(0,0,0,0.5); z-index: 20; transition: opacity 0.3s; max-width: 300px; }
+#hud.hidden { opacity: 0; pointer-events: none; }
+#hud-status { color: var(--accent); font-weight: bold; margin-bottom: 4px; }
+#hud-info { color: var(--fg2); font-size: 11px; line-height: 1.5; }
+
+/* コントロールバー: ボード下端ツールバーと同じ共通クラス（.gb-toolbar系）・高さ・余白トークンを使う。
+   #controls は gb-ui.css の .gb-toolbar が定める min-height: var(--ui-h-md)（32px帯）・
+   padding: var(--ui-space-2) var(--ui-space-4) をそのまま継承し、ビューワー固有の配色と
+   「画像側=上端の区切り線」だけをこのモディファイアで上書きする。
+   #display に重なる下端オーバーレイとして配置し、既定は非表示（マウス近接/フォーカス/タッチで
+   表示。制御は viewer-controls.js）。#display は#controlsの分だけ縮まなくなり、全高を使ってフィット
+   できるようになる（ビューワー残課題修正計画 2026-08-04「6. ツールバーの自動表示/非表示」）。 */
+#controls.gb-toolbar-viewer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--panel-bg);
+  border-bottom: none;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  z-index: 20;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+#controls.gb-toolbar-viewer.controls-active { opacity: 1; pointer-events: auto; }
+/* pointer:coarse（タッチ）では近接検知でボタンに届かないため常時表示する。
+   JS側（viewer-controls.js）でも同条件でcontrols-activeを固定付与する（CSSと二重の保険）。 */
+@media (pointer: coarse) {
+  #controls.gb-toolbar-viewer { opacity: 1; pointer-events: auto; }
+}
+#controls label { flex-shrink: 1; min-width: 0; }
+#controls .zoom-label, #controls .speed-label { min-width: 28px; }
+#controls input[type=range] { accent-color: var(--accent); }
+#seek-bar { flex: 1; height: 4px; cursor: pointer; }
+#counter { color: var(--fg2); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+.speed-label { display: inline-block; width: 32px; text-align: right; font-size: 11px; color: var(--fg2); }
+.zoom-label { display: inline-block; width: 40px; text-align: center; font-size: 11px; color: var(--fg2); }
+
+/* 動画表示中は見開き/マンガ切替を無効化する（gb-ui.css/gb-tools.cssに.tb-select:disabledの
+   見た目が無いためここで補う。ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」）。 */
+#controls .tb-select:disabled { color: var(--fg2); cursor: default; opacity: 0.55; }
+
+/* 狭い時に優先度の低い要素を非表示にする（641～900px）。ボード下端ツールバーと同じmodifier:
+   マウス環境（pointer:fine）はここでは高さを変えない。項目を間引くだけで外寸は32px（.gb-toolbar
+   の共通 --ui-h-md。実ブラウザ検証2026-08-04で確認）のまま。タッチ操作面への切り替えは下の
+   `(max-width: 640px), (pointer: coarse)` だけが担当する。 */
+@media (max-width: 900px) {
+  #controls #sel-mode, #controls label, #controls .zoom-label, #controls .speed-label { display: none; }
+  #controls #btn-bg, #controls #btn-hud { display: none; }
+}
+@media (max-width: 500px) {
+  #controls #btn-shift-back, #controls #btn-shift-fwd { display: none; }
+}
+/* pointer:coarse または 640px以下: ボード下端ツールバーと同じタッチ操作面。外寸53px
+   （44pxの操作対象 + 上下4px(--ui-space-2)ずつの余白 + 上端1pxボーダー）・44px操作対象。
+   反転・回転・原寸ボタンもこの帯でまとめて間引く（44px操作対象化した状態では、
+   これらまで残すと右サイドバー切替ボタン等と合わせて横幅を超え、水平スクロールバーが
+   発生して外寸53pxを維持できなくなるため。実ブラウザ検証2026-08-04で確認）。 */
+@media (max-width: 640px), (pointer: coarse) {
+  #controls #btn-flip-h, #controls #btn-flip-v, #controls #btn-rotate, #controls #btn-original { display: none; }
+  #controls.gb-toolbar-viewer { min-height: 53px; padding: var(--ui-space-2, 4px) var(--ui-space-3, 6px); gap: var(--ui-space-3, 6px); }
+  #controls .tb-icon-btn, #controls select { min-width: var(--ui-h-touch, 44px); min-height: var(--ui-h-touch, 44px); }
+  #controls #seek-bar { flex: 0 0 72px; min-width: 72px; height: var(--ui-h-touch, 44px) !important; }
+  #counter { flex: 0 0 auto; }
+  #controls #sel-mode, #controls label, #controls .zoom-label, #controls .speed-label { display: none; }
+  #controls #btn-bg, #controls #btn-hud { display: none; }
+  .nav-area { width: 44px; }
+}
+/* スマートフォン幅（500px以下）: 44px操作対象のままでは残りのボタン+シークバーが
+   実機幅に収まらず水平スクロールが発生し、外寸53pxを維持できない
+   （実ブラウザ検証2026-08-04で確認）。優先度の低いものをさらに間引く。 */
+@media (max-width: 500px) {
+  #counter { display: none; }
+  #controls #btn-fit { display: none; }
+  #controls #btn-default-apps { display: none; }
+  #controls #btn-fullscreen { display: none; }
+  #controls.gb-toolbar-viewer { gap: var(--ui-space-2, 4px); }
+  #controls #seek-bar { flex: 0 0 50px; min-width: 50px; }
+}

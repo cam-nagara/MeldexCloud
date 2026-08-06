@@ -454,9 +454,18 @@ async function selectDatabase(dbPath, ctx, opts) {
     const activeViewForFilter = typeof getCurrentDbViewConfigEntry === 'function'
       ? getCurrentDbViewConfigEntry(dbPath, { ctx })
       : null;
-    ctx.filter = activeViewForFilter && Object.prototype.hasOwnProperty.call(activeViewForFilter, 'filter')
-      ? (activeViewForFilter.filter || 'disabled')
-      : (ctx.filter || (syncGlobalState ? state.filter : '') || 'disabled');
+    if (activeViewForFilter && Object.prototype.hasOwnProperty.call(activeViewForFilter, 'filter')) {
+      // 対象シートの保存済みビュー設定にフィルタがあれば、それを常に優先する。
+      ctx.filter = activeViewForFilter.filter || 'disabled';
+    } else if (_isDbSwitch) {
+      // 別シートへの切替では前シートの ctx.filter / state.filter を継承しない。
+      // 保存済みビュー設定にフィルタが無いシートへ切り替えた場合はフィルタ無しへ落とす
+      // （前シートのフィルタが残ると status_filter が誤って適用される回帰防止）。
+      ctx.filter = 'disabled';
+    } else {
+      // 同一シートの再描画（forceReload 等）では、直前にユーザーが選んだフィルタを維持する。
+      ctx.filter = ctx.filter || (syncGlobalState ? state.filter : '') || 'disabled';
+    }
     if (syncGlobalState) state.filter = ctx.filter;
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
@@ -604,6 +613,9 @@ async function selectEntity(entityPath, opts) {
   const entityLoadSeq = (window._selectEntityLoadSeq || 0) + 1;
   window._selectEntityLoadSeq = entityLoadSeq;
   state.currentEntityPath = entityPath;
+  // OptionTargetContext（計画書§11.1）: エントリ選択時に選択対象を更新する
+  // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
+  window.GBOptionTargetContext?.set({ path: entityPath, kind: 'entity' }, 'entity-select');
   if (!openOpts.skipStateView) state.view = 'entity';
   if (!openOpts.skipSaveLastView) saveLastView({type:'entity', entityPath});
   const _entityDisplayName = (entityPath.split('/').pop() || '').replace(/\.md$/, '');
@@ -636,7 +648,15 @@ async function selectEntity(entityPath, opts) {
     }
   } catch (e) {
     // error shown by apiFetch
-    if (state.currentEntityPath === entityPath) state.currentEntityPath = null;
+    if (state.currentEntityPath === entityPath) {
+      state.currentEntityPath = null;
+      // 読み込み失敗時は、まだこのエントリが選択対象のままなら取り消す
+      // （後続の別選択で既に上書きされていれば触らない）。
+      const failedTarget = window.GBOptionTargetContext?.get();
+      if (failedTarget?.targets?.length === 1 && failedTarget.targets[0].path === entityPath) {
+        window.GBOptionTargetContext.clear('entity-select-failed');
+      }
+    }
     if (state.view === 'entity' && !openOpts.skipShowView) showView('welcome');
   }
 }

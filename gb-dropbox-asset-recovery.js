@@ -5,12 +5,11 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   const hooks = window.__MeldexPwaPathMutationHooks;
   const identity = window.MeldexDropboxAssetIdentity;
-  if (!internals || !Array.isArray(hooks) || !identity) return;
+  const managedJson = window.MeldexDropboxManagedJson;
+  if (!internals || !Array.isArray(hooks) || !identity || !managedJson) return;
 
   const {
-    _directoryHandle,
     _normalizeFolderPath,
-    _readJsonSafe,
     _requirePwaProvider,
   } = internals;
   const ASSIGNMENTS_FILE = '.meldex/global-tags.json';
@@ -156,20 +155,12 @@
   }
 
   async function writeMerged(provider, path, updater, fallbackValue) {
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(path, updater, { fallbackValue, retries: 5 });
-    }
-    const current = await _readJsonSafe(provider, path, fallbackValue);
-    const saved = await updater(current);
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, saved);
-    else await provider.writeText(path, JSON.stringify(saved, null, 2) + '\n');
-    return saved;
+    return managedJson.writeMerged(provider, path, updater, fallbackValue);
   }
 
   async function persistEvents(provider, event, changes) {
     const month = new Date().toISOString().slice(0, 7);
     const path = `${RECOVERY_ROOT}/events/${month}.json`;
-    await _directoryHandle(provider, `${RECOVERY_ROOT}/events`, true);
     const operationId = String(event.operationId || randomId());
     await writeMerged(provider, path, current => {
       const source = current && typeof current === 'object' ? current : {};
@@ -190,8 +181,7 @@
 
   async function enqueueRetry(provider, event, error) {
     const retryId = String(event.operationId || randomId());
-    await _directoryHandle(provider, `${RECOVERY_ROOT}/retry`, true);
-    await provider.writeJson(`${RECOVERY_ROOT}/retry/${retryId}.json`, {
+    await managedJson.write(provider, `${RECOVERY_ROOT}/retry/${retryId}.json`, {
       version: 1,
       retry_id: retryId,
       status: 'pending',
@@ -227,7 +217,6 @@
       return { ok: true, tracked: 0, noop: true };
     }
     try {
-      await _directoryHandle(provider, '.meldex', true);
       let changes = [];
       let deduplicated = false;
       await writeMerged(provider, ASSIGNMENTS_FILE, async current => {

@@ -282,6 +282,31 @@ function renderDbOptionColorEditor(container, scope) {
   return buffer;
 }
 
+// 列内の全エントリが実際に持つ値を、初出順・重複なしで収集する。
+// セレクト/マルチセレクトの候補ドロップダウンと列タイプ設定の選択肢一覧に、
+// スキーマ未登録の実在値（型変更前の入力・外部書き込み等）も出すために使う。
+// opts.splitCsv: マルチセレクトのカンマ結合値を個別値へ分割する
+function collectDbColumnValues(pivotData, propName, opts) {
+  const out = [];
+  const seen = new Set();
+  const push = (value) => {
+    const v = String(value ?? '').trim();
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  };
+  const entities = pivotData?.entities;
+  if (!entities || !propName) return out;
+  Object.values(entities).forEach(ent => {
+    const values = Array.isArray(ent?.[propName]) ? ent[propName] : [];
+    values.forEach(v => {
+      const raw = String(v?.value ?? '').trim();
+      if (!raw) return;
+      if (opts?.splitCsv) raw.split(',').forEach(push);
+      else push(raw);
+    });
+  });
+  return out;
+}
+
 // 保存直前に呼ぶ: scope の作業バッファ（無ければ prevColors）から有効な色だけを集めて返す。
 // currentOptions は将来の並び替え等に備えた引数（オーファンキーは意図的にプルーニングしない）
 function collectDbOptionColors(scope, prevColors, currentOptions) {

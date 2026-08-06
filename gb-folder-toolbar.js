@@ -411,7 +411,12 @@
       return;
     }
     const topLevelTargets = _folderToolbarTopLevelItems(targets);
-    if (!await cfConfirm(topLevelTargets.length + ' 件を削除しますか？')) return;
+    const impactTargets = topLevelTargets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+      : await cfConfirm(confirmMessage);
+    if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
       label: topLevelTargets.length + ' 件を削除',
       refresh: async () => {

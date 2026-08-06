@@ -223,11 +223,7 @@
         const nextRow = Math.max(1, Math.min(4, parseInt(paletteRowSel.value, 10) || 3));
         if (!this.doc.editor) this.doc.editor = {};
         this.doc.editor.autoColorPaletteRow = nextRow;
-        (this.doc.characters || []).forEach(chara => {
-          if (chara.isDefault) return;
-          delete chara.autoColor;
-          if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(chara);
-        });
+        this._resetAutoColorPaletteAssignments();
         this._refreshRowStyles();
         this._markDirty();
         return;
@@ -242,10 +238,9 @@
       colDefs.forEach(cd => { rule[cd.id] = this.doc.editor.autoColorRule[cd.id] || 'none'; });
       this.doc.editor.autoColorRule = { ...rule };
       // すべての非デフォルトタイプに同じターゲットを適用
-      (this.doc.characters || []).forEach(chara => {
-        if (chara.isDefault) return;
-        chara.autoColorTarget = { ...rule };
-        if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(chara);
+      this._getAutoColorAppearanceTargets().forEach(appearance => {
+        appearance.autoColorTarget = { ...rule };
+        if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(appearance);
       });
       this._refreshRowStyles();
       this._markDirty();

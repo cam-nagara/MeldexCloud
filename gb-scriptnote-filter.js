@@ -6,8 +6,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     const row = roleOrRow && typeof roleOrRow === 'object' ? roleOrRow : null;
     const role = row ? String(row.role || '') : String(roleOrRow || '');
     const status = row ? String(row.status || '') : String(statusValue || '');
-    if (this._hideRoles && this._hideRoles.has(role)) return false;
-    if (this._filterRoles && !this._filterRoles.has(role)) return false;
+    const effective = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row || role);
+    const roleKeys = new Set([role, effective?.name, effective?.type?.name].filter((value) => value != null));
+    if (this._hideRoles && [...roleKeys].some((key) => this._hideRoles.has(key))) return false;
+    if (this._filterRoles && ![...roleKeys].some((key) => this._filterRoles.has(key))) return false;
     if (this.doc?.editor?.statusEnabled) {
       if (this._hideStatuses && this._hideStatuses.has(status)) return false;
       if (this._filterStatuses && !this._filterStatuses.has(status)) return false;
@@ -19,7 +21,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.querySelectorAll('.sn2-filter-popup').forEach((el) => el.remove());
     const anchorForPosition = positionAnchor || anchorBtn;
     const roles = new Set();
-    this.doc.rows.forEach((row) => { if (row.role) roles.add(row.role); });
+    this.doc.rows.forEach((row) => {
+      if (row.role) roles.add(row.role);
+      const typeName = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row)?.type?.name;
+      if (typeName) roles.add(typeName);
+    });
     const statusEnabled = !!this.doc.editor?.statusEnabled;
     const statusItems = statusEnabled
       ? [{ label: '（未設定）', key: '', color: '' }, ...this._getStatusList().map((item) => ({ label: item.name, key: item.name, color: item.color }))]
@@ -215,7 +221,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       });
     };
 
-    const charaOrder = (this.doc.characters || []).map((chara) => chara.name);
+    const charaOrder = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
+      .map((choice) => choice?.name)
+      .filter(Boolean);
     const sortedRoles = Array.from(roles).sort((a, b) => {
       const ai = charaOrder.indexOf(a);
       const bi = charaOrder.indexOf(b);

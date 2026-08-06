@@ -4,7 +4,6 @@
   const rootId = 'external-import-settings-container';
   const runningSetIds = new Set();
   const _scheduleWidgets = {};   // setId → widget
-  const TIMER_PREFIX = 'ext-import-';
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
   const ENEX_MAX_BYTES = 32 * 1024 * 1024;
   const PUREREF_WARN_BYTES = 64 * 1024 * 1024;
@@ -136,64 +135,44 @@
       schedContainer.className = 'gb-section gb-section--boxed';
       schedContainer.style.cssText = 'margin-top:6px;padding:8px;';
       card.appendChild(schedContainer);
+      // 定期実行の判断・実行はバックエンド（meldex_import_scheduler.py）が担う。
+      // ここでは周期を選ばせて保存し、確定した次回予定・前回結果を表示するだけ
+      // にする（ブラウザータイマーでの自己実行はしない）。
       if (window.MeldexScheduler && item.id) {
-        const w = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
-          _saveSetSchedule(item.id, cfg);
-        });
-        if (w) _scheduleWidgets[item.id] = w;
+        let widget = _scheduleWidgets[item.id];
+        if (!widget) {
+          widget = window.MeldexScheduler.createWidget(schedContainer, item.schedule, (cfg) => {
+            _saveSetSchedule(item.id, cfg);
+          });
+          if (widget) _scheduleWidgets[item.id] = widget;
+        }
+        widget?.setStatusText(_formatScheduleState(item.schedule_state));
       }
 
       list.appendChild(card);
     });
   }
 
+  function _formatScheduleState(state) {
+    if (!state) return '';
+    const parts = [];
+    if (state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
+    if (state.last_run) {
+      const label = state.last_run.status === 'done' ? '成功' : (state.last_run.status === 'error' ? '失敗' : state.last_run.status);
+      parts.push(`前回自動実行: ${label}`);
+    }
+    if (state.needs_reselect) parts.push('元ファイルが見つからないため停止しました。再選択してください。');
+    else if (state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
+    return parts.join(' / ');
+  }
+
   async function _saveSetSchedule(setId, cfg) {
     try {
       await apiPost(`/external-import/sets/${encodeURIComponent(setId)}`, { schedule: cfg }, { method: 'PATCH', silentError: true });
-      _applySetTimer(setId, cfg);
+      await refresh();
     } catch (e) {
       console.warn('Failed to save external import schedule:', e);
     }
-  }
-
-  function _applySetTimer(setId, schedule) {
-    if (!window.MeldexScheduler) return;
-    const key = TIMER_PREFIX + setId;
-    const cfg = window.MeldexScheduler.normalize(schedule);
-    if (cfg.type === 'off') {
-      window.MeldexScheduler.destroyTimer(key);
-      return;
-    }
-    window.MeldexScheduler.createTimer(key, cfg, () => _scheduledRunSet(setId));
-  }
-
-  async function _scheduledRunSet(setId) {
-    if (!setId || runningSetIds.has(setId)) return;
-    runningSetIds.add(setId);
-    try {
-      const job = await apiPost(`/external-import/sets/${encodeURIComponent(setId)}/run`, {}, { silentError: true });
-      const result = await pollJob(job.job_id);
-      const total = (result?.created || 0) + (result?.updated || 0);
-      if (total > 0) {
-        if (typeof showStatus === 'function') showStatus(`外部取り込み自動実行: 新規${result.created || 0} / 更新${result.updated || 0}`);
-        if (typeof loadOutliner === 'function') loadOutliner();
-      }
-    } catch (e) {
-      console.warn('External import scheduled run failed:', setId, e);
-    } finally {
-      runningSetIds.delete(setId);
-    }
-  }
-
-  async function _initScheduleTimers() {
-    if (!window.MeldexScheduler) return;
-    try {
-      const data = await loadConfig();
-      const sets = Array.isArray(data?.sets) ? data.sets : [];
-      sets.forEach(item => {
-        if (item.id && item.schedule) _applySetTimer(item.id, item.schedule);
-      });
-    } catch {}
   }
 
   async function refresh() {
@@ -696,6 +675,9 @@
     if (!container) return;
     if (container.dataset.rendered === '1') {
       refresh();
+      // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら
+      // 内部でrefresh()のみ行う（二重追加はしない）。
+      window.MeldexImportScheduleSettings?.mount(rootId);
       return;
     }
     container.dataset.rendered = '1';
@@ -751,12 +733,10 @@
     `;
     bind();
     refresh();
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => setTimeout(_initScheduleTimers, 3000));
-  } else {
-    setTimeout(_initScheduleTimers, 3000);
+    // 定期実行の一覧・管理（Notion同期/Xブックマーク/Xアカウント投稿/外部取り込みを横断）を
+    // この設定画面の末尾へ追加する。Meldex.html への新規コンテナ追加はレーン外のため、
+    // 既存コンテナへランタイムでマウントする。
+    window.MeldexImportScheduleSettings?.mount(rootId);
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;

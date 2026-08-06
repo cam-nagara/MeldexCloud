@@ -180,6 +180,8 @@
       if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorEl);
     };
     const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const roleAdapter = this._roleManagementAdapter?.();
+    const isScenarioType = !!roleAdapter?.types?.includes(chara);
     const ts = chara.textStyle || {};
     const indentNum = parseFloat(chara.indent) || '';
     const textShiftColsValue = Number.isFinite(Number(chara.textShiftCols)) ? Math.max(1, Math.min(10, Number(chara.textShiftCols))) : '';
@@ -278,6 +280,15 @@
         return;
       }
       this._pushUndo('タイプ複製');
+      if (isScenarioType) {
+        const duplicate = roleAdapter.clone('type', chara);
+        this._detailTypeSelection?.clear();
+        this._detailTypeSelection?.add(duplicate.id);
+        roleAdapter.touch();
+        closePopup();
+        this.renderDetailPanel(panelContainer);
+        return;
+      }
       const dup = this._cloneChara(chara);
       dup.name = this._uniqueRoleName((chara.name || 'タイプ') + '（コピー）', chara);
       const idx = this.doc.characters.indexOf(chara);
@@ -294,6 +305,10 @@
         return;
       }
       const name = chara.name || '（名称未設定）';
+      if (isScenarioType) {
+        this._deleteManagedRoles('type', [chara], roleAdapter, panelContainer, closePopup);
+        return;
+      }
       showConfirmDialog(`タイプ「${name}」を削除しますか？`, () => {
         this._pushUndo('タイプ削除');
         this._clearRolesInRows([name]);
@@ -473,6 +488,23 @@
     return colors.length ? colors : fallback.filter(Boolean);
   },
 
+  _getAutoColorAppearanceTargets() {
+    if (Number(this.doc?.schema_version) >= 3 || Array.isArray(this.doc?.scenarioTypes)) {
+      const targets = [...(this.doc?.scenarioTypes || [])];
+      (this.doc?.characters || []).forEach(character => {
+        if (!character?.typeId && character?.legacyAppearance) targets.push(character.legacyAppearance);
+      });
+      return targets;
+    }
+    return (this.doc?.characters || []).filter(character => !character?.isDefault);
+  },
+
+  _resetAutoColorPaletteAssignments() {
+    const targets = this._getAutoColorAppearanceTargets();
+    targets.forEach(target => { delete target.autoColor; });
+    targets.forEach(target => this._reapplyAutoColor(target));
+  },
+
   _reapplyAutoColor(chara) {
     if (!chara) return;
     const acRule = this.doc.editor?.autoColorRule || {};
@@ -482,7 +514,8 @@
     if (!chara.autoColor) {
       const colors = this._getAutoColorPalette();
       if (colors.length) {
-        const existingCount = this.doc.characters.filter(c => c !== chara && (c.autoColor || c.bgColor)).length;
+        const existingCount = this._getAutoColorAppearanceTargets()
+          .filter(item => item !== chara && (item.autoColor || item.bgColor)).length;
         chara.autoColor = colors[existingCount % colors.length];
       }
     }

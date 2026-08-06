@@ -167,6 +167,77 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     return row;
   }
 
+  // ロールアップ/数式型: 保存値ではなくその場の計算結果を表示する（表セルの計算描画と揃える）。
+  // 計算に必要なエントリ全体のプロパティ (options.entityData) を渡せない呼び出し元では、
+  // 変換前の生値をそのまま出さないよう「計算列」の安全なフォールバック表示にする。
+  if (type === 'rollup' || type === 'formula') {
+    const row = document.createElement('div');
+    row.className = 'cell-value';
+    const span = document.createElement('span');
+    span.className = 'db-cell-display-text';
+    span.style.cssText = 'font-size:13px;color:var(--fg2);';
+    row.appendChild(span);
+
+    if (type === 'rollup' && (!propTypeConfig.relationProp || typeof calcRollupValue !== 'function')) {
+      span.classList.add('db-cell-unconfigured');
+      span.textContent = '未設定';
+      span.title = '列タイプの設定でリレーション列と参照先の列を指定してください';
+      return row;
+    }
+    if (type === 'formula' && !propTypeConfig.formula) {
+      span.classList.add('db-cell-unconfigured');
+      span.textContent = '未設定';
+      span.title = '列タイプの設定で数式を入力してください';
+      return row;
+    }
+
+    const entityData = options.entityData || null;
+    const resolvedPropTypes = options.propTypes
+      || (dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, valueCtx) : null);
+    if (!entityData || !resolvedPropTypes
+        || (type === 'formula' && typeof formulaEvalForEntity !== 'function')) {
+      span.textContent = '計算列';
+      span.title = '計算結果を表示するための情報を取得できませんでした';
+      return row;
+    }
+
+    const entityName = options.entityName || entityPath.replace(/\.md$/, '').split('/').pop();
+
+    if (type === 'formula') {
+      const result = formulaEvalForEntity(propTypeConfig.formula, entityData, { propTypes: resolvedPropTypes, dbPath });
+      if (result.error) {
+        span.style.color = 'var(--red)';
+        span.textContent = '#ERROR';
+        span.title = result.error;
+      } else {
+        span.style.color = 'var(--fg)';
+        span.textContent = result.value === '' ? '' : String(result.value);
+      }
+      return row;
+    }
+
+    // ロールアップ: 参照先DBの取得を伴うため非同期で埋める
+    span.textContent = '...';
+    const entitiesMap = { [entityName]: entityData };
+    calcRollupValue(entityName, entitiesMap, propTypeConfig, resolvedPropTypes, dbPath, filterMode)
+      .then(result => {
+        if (!span.isConnected) return;
+        span.classList.remove('db-cell-unconfigured');
+        span.style.color = 'var(--fg)';
+        if (result && typeof result === 'object' && result.kind === 'rollup-values') {
+          span.textContent = result.text || '—';
+          return;
+        }
+        span.textContent = result === '-' ? '-' : String(result);
+      })
+      .catch(() => {
+        if (!span.isConnected) return;
+        span.textContent = '#ERR';
+        span.style.color = 'var(--red)';
+      });
+    return row;
+  }
+
   const row = document.createElement('div');
   row.className = 'cell-value' + (val.status === 'ボツ' ? ' status-botsu' : '');
   _setupCellValueDrag(row, val, entityPath, propName);

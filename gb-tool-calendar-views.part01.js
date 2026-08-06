@@ -154,10 +154,34 @@ function _calRecurringInteractionBlocked(component, ev) {
 }
 
 // === 複数選択イベントのグループD&D移動: 日付演算ヘルパー ===
-// サーバーが自動生成する予定（シフト/休憩/勤怠/工程タスク）は直接更新できず409になるため、
-// グループ移動の「他の選択イベント」からは除外する（ドラッグしたイベント自身はこの判定をしない）。
+// サーバーが自動生成する予定のうち、書き戻し経路を持たないもの（シフト/休憩/勤怠）は
+// グループ移動の「他の選択イベント」から除外する（ドラッグしたイベント自身はこの判定をしない）。
+// production-task は _calApplyEventTimePatch 経由のタスク書き戻しに対応済みのため対象外にしない
+// （制作管理UX改善計画 2026-08-04 §6-4 の残作業: 複数選択グループ移動）。
 function _calGroupMoveSourceBlocked(ev) {
-  return ['shift', 'shift-break', 'attendance', 'production-task'].includes(String(ev?.calendar_source || ''));
+  return ['shift', 'shift-break', 'attendance'].includes(String(ev?.calendar_source || ''));
+}
+
+// 制作管理UX改善計画（2026-08-04）§6-4: production-task イベントの移動・リサイズは、汎用イベント
+// 更新（/cal/events/{id}。自動生成された予定として409で拒否される）ではなく、タスクへの書き戻し
+// （/production-management/task-schedule/update）として処理する。書き戻し時にサーバー側が
+// 「シフト固定」を自動付与するため、失敗ロールバック機構（各呼び出し元の.catch）はそのまま使える
+// （このヘルパーは apiPut と同様に成功時は結果を返し、失敗時は reject する）。
+// シフト・勤怠など他の自動生成イベントは従来どおり409のままとする（このヘルパーを経由させない）。
+function _calIsProductionTaskEvent(ev) {
+  return String(ev?.calendar_source || '') === 'production-task';
+}
+
+async function _calApplyEventTimePatch(component, ev, patch) {
+  if (!_calIsProductionTaskEvent(ev)) return apiPut('/cal/events/' + ev.id, patch);
+  const start = patch?.start || ev?.start || '';
+  const end = patch?.end || ev?.end || '';
+  const result = await apiPost('/production-management/task-schedule/update', {
+    event_id: String(ev?.id || ''), start, end,
+  });
+  if (result?.ok === false) throw new Error(result?.message || '予定を更新できませんでした');
+  component?._showStatus?.('予定を固定しました。再計算でも動かなくなります');
+  return result;
 }
 
 // fromValue（旧開始日時）から toDateStr（新しい日付）までの日数差を返す（時刻は無視）
@@ -344,21 +368,26 @@ CalendarComponent.prototype._moveSelectedEventGroup = async function(draggedEv, 
   const selection = this._eventSelection ? this._eventSelection() : null;
   if (!draggedId || !selection || selection.size < 2 || !selection.has(draggedId)) return false;
 
-  const targets = [{ id: draggedId, applyPatch: draggedApplyPatch, apiPatch: draggedApiPatch }];
+  const targets = [{ id: draggedId, ev: draggedEv, applyPatch: draggedApplyPatch, apiPatch: draggedApiPatch }];
   let skipped = 0;
   (this._selectedEventRecords ? this._selectedEventRecords() : []).forEach(other => {
     if (!other || other.id === draggedId) return;
     if (other._recurrence_instance || _calGroupMoveSourceBlocked(other)) { skipped += 1; return; }
     const patch = otherPatchFn(other);
-    if (patch && Object.keys(patch).length) targets.push({ id: other.id, applyPatch: patch, apiPatch: patch });
+    if (patch && Object.keys(patch).length) targets.push({ id: other.id, ev: other, applyPatch: patch, apiPatch: patch });
   });
 
   const before = targets.map(t => this._snapshotEventLocal(t.id));
-  this._pushUndo('イベント移動');
+  // production-task予定はタスク側が正本で undo 対象外（_eventIsUndoable。コミット前レビュー
+  // 指摘 #5 と同じ扱い）。グループ内に undo 可能なイベントが1件も無ければ偽の undo 記録を積まない。
+  if (targets.some(t => this._eventIsUndoable(t.ev))) this._pushUndo('イベント移動');
   targets.forEach(t => this._applyEventLocal(t.id, t.applyPatch));
   this._render();
 
-  const results = await Promise.allSettled(targets.map(t => apiPut('/cal/events/' + t.id, t.apiPatch)));
+  // production-task予定は汎用更新（自動生成予定として409で拒否される）ではなく、タスクへの
+  // 書き戻し（_calApplyEventTimePatch。分割区間なら event_id の part:N からサーバー側が対象
+  // 区間を判定し、担当者固定409/区間陳腐化409をそれぞれハンドリングする）を経由させる。
+  const results = await Promise.allSettled(targets.map(t => _calApplyEventTimePatch(this, t.ev, t.apiPatch)));
   let failed = 0;
   results.forEach((result, i) => {
     if (result.status !== 'rejected') return;
@@ -400,15 +429,18 @@ CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
   if (grouped) return;
   const before = this._snapshotEventLocal(eventId);
   try {
-    this._pushUndo('イベント移動');
+    // production-task予定はタスク側が正本で undo 対象外（コミット前レビュー指摘 #5 と同じ扱い）。
+    if (this._eventIsUndoable(ev)) this._pushUndo('イベント移動');
     this._applyEventLocal(eventId, { start: newStart, end: newEnd || ev.end || '' });
     this._render();
-    await apiPut('/cal/events/' + eventId, { start: newStart, end: newEnd || undefined });
+    // production-task予定は汎用更新（自動生成予定として409拒否）ではなく、タスクへの書き戻しを経由する
+    // （制作管理UX改善計画 2026-08-04 §6-4 の残作業: 月表示セルへのドロップ）。
+    await _calApplyEventTimePatch(this, ev, { start: newStart, end: newEnd || undefined });
     await this._loadEvents(); this._render();
-  } catch {
+  } catch (error) {
     this._restoreEventLocal(before);
     this._render();
-    this._showStatus('イベント移動に失敗', true);
+    this._showStatus(error?.message || 'イベント移動に失敗', true);
   }
 };
 
@@ -483,11 +515,33 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
       if (!ev) return;
       if (_calRecurringInteractionBlocked(this, ev)) return;
       const dateStr = cell.dataset.date;
+      const dayDelta = _calDateDayDelta(ev.start, dateStr);
+      if (_calIsProductionTaskEvent(ev)) {
+        // タスク予定には終日という概念が無い（作業予定時間は時刻付きの区間で正本管理する）ため、
+        // 終日帯へのドロップは全日化せず、月表示ドロップと同じ「時刻を保ったまま日付だけ移動」
+        // として扱い、タスクへの書き戻し経路（_calApplyEventTimePatch）を経由する
+        // （制作管理UX改善計画 2026-08-04 §6-4 の残作業: 終日帯へのドロップ）。
+        const patch = _calDayShiftPatch(this, ev, dayDelta);
+        if (!patch) return;
+        const grouped = await this._moveSelectedEventGroup(ev, patch, patch, other => _calDayShiftPatch(this, other, dayDelta));
+        if (grouped) return;
+        const before = this._snapshotEventLocal(id);
+        this._applyEventLocal(id, patch);
+        this._render();
+        try {
+          await _calApplyEventTimePatch(this, ev, patch);
+          await this._loadEvents(); this._render();
+        } catch (error) {
+          this._restoreEventLocal(before);
+          this._render();
+          this._showStatus(error?.message || 'イベント移動に失敗', true);
+        }
+        return;
+      }
       const spanDays = _calAllDayDateSpan(ev);
       const startDate = _calParseDateValue(dateStr);
       const endDate = spanDays <= 1 ? dateStr : _calDateOnlyString(_calDateAddDays(startDate, spanDays));
       const patch = { start: dateStr, end: endDate, all_day: 1 };
-      const dayDelta = _calDateDayDelta(ev.start, dateStr);
       const grouped = await this._moveSelectedEventGroup(ev, patch, patch, other => _calDayShiftPatch(this, other, dayDelta));
       if (grouped) return;
       const before = this._snapshotEventLocal(id);
@@ -697,7 +751,10 @@ CalendarComponent.prototype._handleResize = function(e, card, ev, evStart, start
   const onUp = () => {
     document.removeEventListener('pointermove', onMove); document.removeEventListener('pointerup', onUp);
     document.body.style.userSelect = ''; card.style.touchAction = '';
-    this._pushUndo('イベントリサイズ');
+    // コミット前レビュー指摘 #5: production-task予定はタスク側が正本で undo 対象外
+    // （_eventIsUndoable。_calApplyEventTimePatch がタスクへ書き戻す）。undo記録を積んでも
+    // 元に戻せないため、偽のUndo記録を残さない。
+    if (this._eventIsUndoable(ev)) this._pushUndo('イベントリサイズ');
     const minDurationMs = 15 * 60000;
     const originalStart = new Date(ev.start || evStart);
     const originalEnd = ev.end ? new Date(ev.end) : new Date(originalStart.getTime() + 3600000);
@@ -705,12 +762,16 @@ CalendarComponent.prototype._handleResize = function(e, card, ev, evStart, start
       const newEndH = snap15min(startH + card.offsetHeight / 40);
       const ne = new Date(evStart); ne.setHours(Math.floor(newEndH), (newEndH % 1) * 60);
       if (ne <= originalStart) ne.setTime(originalStart.getTime() + minDurationMs);
-      apiPut('/cal/events/' + ev.id, { end: this._localDateTimeStr(ne) }).then(() => { this._loadEvents().then(() => this._render()); });
+      _calApplyEventTimePatch(this, ev, { end: this._localDateTimeStr(ne) })
+        .then(() => { this._loadEvents().then(() => this._render()); })
+        .catch((error) => { this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
     } else {
       const newStartH = snap15min(Math.floor(startH) + parseFloat(card.style.top) / 40);
       const ns = new Date(evStart); ns.setHours(Math.floor(newStartH), (newStartH % 1) * 60);
       if (ns >= originalEnd) ns.setTime(originalEnd.getTime() - minDurationMs);
-      apiPut('/cal/events/' + ev.id, { start: this._localDateTimeStr(ns) }).then(() => { this._loadEvents().then(() => this._render()); });
+      _calApplyEventTimePatch(this, ev, { start: this._localDateTimeStr(ns) })
+        .then(() => { this._loadEvents().then(() => this._render()); })
+        .catch((error) => { this._showStatus?.(error?.message || '予定のリサイズに失敗しました', true); this._loadEvents().then(() => this._render()); });
     }
   };
   card.style.touchAction = 'none';
@@ -783,17 +844,18 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       const deltaMs = ns.getTime() - range.start.getTime();
       const grouped = await self._moveSelectedEventGroup(ev, patch, patch, other => _calWeekShiftPatch(self, other, deltaMs));
       if (grouped) return;
-      self._pushUndo('イベント移動');
+      // コミット前レビュー指摘 #5: production-task予定は undo 対象外なので偽記録を積まない。
+      if (self._eventIsUndoable(ev)) self._pushUndo('イベント移動');
       const before = self._snapshotEventLocal(id);
       self._applyEventLocal(id, patch);
       self._render();
-      apiPut('/cal/events/' + id, patch)
+      _calApplyEventTimePatch(self, ev, patch)
         .then(() => self._loadEvents())
         .then(() => self._render())
-        .catch(() => {
+        .catch((error) => {
           self._restoreEventLocal(before);
           self._render();
-          self._showStatus('イベント移動に失敗', true);
+          self._showStatus(error?.message || 'イベント移動に失敗', true);
         });
     });
   });

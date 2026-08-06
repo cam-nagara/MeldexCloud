@@ -70,11 +70,13 @@ const GBPaneBridge = (() => {
     outliner:   'sidebar',
     detail:     'rp-detail',
     preview:    'gb-preview-pane',
+    subpanel:   'gb-subpanel-root',
   };
   const TOOL_LABELS = Object.freeze({
     outliner: 'フォルダツリー',
     detail: 'オプション',
     preview: 'ビューワー',
+    subpanel: 'サブパネル',
     calendar: 'スケジュール',
     timer: 'タイマー',
     chat: 'チャット',
@@ -199,12 +201,24 @@ const GBPaneBridge = (() => {
       : (tab.type + '::tab:' + tab.id);
   }
 
-  // スナップショット/状態保存は panelset の非アクティブグループも含める
+  // スナップショット/状態保存は panelset の非アクティブグループと、
+  // float/subpanel が paneMap に登録した仮想ペインも含める。
   function _allLayoutTabs() {
     if (typeof GBLayout === 'undefined' || !GBLayout.root) return [];
     const tabs = [];
+    const seenTabIds = new Set();
+    const appendPaneTabs = (pane) => {
+      for (const tab of (pane?.tabs || [])) {
+        if (!tab || seenTabIds.has(tab.id)) continue;
+        seenTabIds.add(tab.id);
+        tabs.push(tab);
+      }
+    };
     for (const pane of _collectAllLayoutPanes(GBLayout.root)) {
-      for (const tab of (pane.tabs || [])) tabs.push(tab);
+      appendPaneTabs(pane);
+    }
+    for (const paneInfo of Object.values(GBLayout.paneMap || {})) {
+      appendPaneTabs(paneInfo?.node);
     }
     return tabs;
   }
@@ -380,6 +394,19 @@ const GBPaneBridge = (() => {
         el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:auto;align-items:center;justify-content:center;background:var(--bg);padding:16px;';
         el.innerHTML = '<div style="color:var(--fg2);font-size:13px;">ファイルを選択するとプレビューが表示されます</div>';
       }
+      if (!el && id === 'gb-subpanel-root') {
+        // サブパネルの外枠(見出し・戻る/進む・「メインパネルで開く」・本文)は
+        // gb-subpanel.js が所有する。ここでは初回のみ持続DOMを生成してもらい、
+        // 他のPANEL_CONTAINERSと同じ退避・移動の仕組みに乗せる。
+        el = (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.createRootElement === 'function')
+          ? GBSubPanel.createRootElement()
+          : null;
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'gb-subpanel-root';
+          el.style.cssText = 'display:flex;flex-direction:column;flex:1;overflow:hidden;';
+        }
+      }
       if (el && el.parentNode) {
         el.style.display = 'none';
         storage.appendChild(el);
@@ -429,6 +456,7 @@ const GBPaneBridge = (() => {
     'smart-db': ['#smart-db-view'],
     detail: _detailScrollSelectors.slice(1),
     preview: ['#gb-preview-pane'],
+    subpanel: ['#gb-subpanel-content'],
     chat: ['__root__'],
     annotation: ['__root__'],
     history: ['__root__'],
@@ -718,8 +746,16 @@ const GBPaneBridge = (() => {
       metaKey: ev.metaKey,
     };
     _stopSnapshotInteraction(ev, true);
-    if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
+    const paneInfo = typeof GBLayout !== 'undefined' ? GBLayout.paneMap?.[paneId] : null;
+    const isVirtualSurface = paneInfo?.surface === 'float' || paneInfo?.surface === 'subpanel';
+    if (!isVirtualSurface && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
       GBLayout.setActivePane(paneId, { sync: true });
+    }
+    if (paneInfo?.node && paneInfo.contentEl) {
+      _mountPaneContent(paneInfo.node, {
+        surface: paneInfo.surface || '',
+        claimLive: true,
+      });
     }
     const replay = () => _replaySnapshotClick(paneId, eventState);
     setTimeout(() => {
@@ -837,7 +873,15 @@ const GBPaneBridge = (() => {
         else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || _folderPath !== path || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
         else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
-        else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) openMedia(label, path, tab.state?.mediaType || 'image', scopedBridgeOpts);
+        else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
+          // tab.state.viewerUrl（例: シート内ギャラリーが渡す特殊なビューワーURL。
+          // gb-db-image-gallery.js 等）が保存されていれば再読み込み時も引き継ぐ
+          // （navPushの保存箇所は _gbNavPushMediaTabState 参照）。
+          const mediaReloadOpts = tab.state?.viewerUrl
+            ? { ...scopedBridgeOpts, viewerUrl: tab.state.viewerUrl }
+            : scopedBridgeOpts;
+          openMedia(label, path, tab.state?.mediaType || 'image', mediaReloadOpts);
+        }
         else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);

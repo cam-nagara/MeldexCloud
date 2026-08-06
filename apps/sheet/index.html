@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="gb-ui.css">
   <link rel="stylesheet" href="gb-tools.css">
   <link rel="stylesheet" href="gb-db-column-filter.css">
+  <link rel="stylesheet" href="gb-db-filter-dialog.css">
   <link rel="stylesheet" href="gb-db-tree-view.css">
   <link rel="stylesheet" href="gb-format-popup.css">
   <link rel="stylesheet" href="standalone-shell.css">
@@ -29,10 +30,12 @@
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="sheet-standalone.css">
   <link rel="stylesheet" href="standalone-tags.css">
+  <link rel="stylesheet" href="gb-csv-workbench.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
   <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
-  <div class="sa-shell sheet-app">
+  <div class="sa-shell sa-options-collapsed sheet-app">
     <header class="sa-toolbar">
       <div class="sa-menu-wrap">
         <button id="sheet-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー" data-e2e-id="sheet-menu-button"><span class="ico ico-menu"></span></button>
@@ -49,17 +52,18 @@
       <input id="sheet-title-label" class="sa-title sa-title-input" type="text" value="新規シート" aria-label="シート名" spellcheck="false">
       <div id="sheet-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="sheet-path-label" class="sa-path">未保存</div>
-      <button id="sheet-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="sheet-option-panel-button"><span class="ico ico-panelRight"></span></button>
+      <button id="sheet-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-gb-tooltip-key="panel.right.toggle" data-e2e-id="sheet-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div id="sheet-db-toolbar" class="gb-toolbar" hidden>
       <div class="tb-spacer"></div>
+      <div class="db-toolbar-actions-right"></div>
       <button type="button" class="tb-icon-btn" id="sheet-tb-undo" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button data-e2e-id="sheet-tb-undo"><span class="ico ico-undo2"></span></button>
       <button type="button" class="tb-icon-btn" id="sheet-tb-redo" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button data-e2e-id="sheet-tb-redo"><span class="ico ico-redo2"></span></button>
       <div class="sep"></div>
       <button type="button" class="tb-icon-btn" id="sheet-tb-filter" title="フィルタ" aria-label="フィルタ" data-e2e-id="sheet-tb-filter"><span class="ico ico-filter"></span></button>
       <button type="button" class="tb-icon-btn" id="sheet-tb-sort" title="並び替え" aria-label="並び替え" data-e2e-id="sheet-tb-sort"><span class="ico ico-arrowUpDown"></span></button>
       <div class="sep"></div>
-      <button type="button" class="tb-icon-btn" id="sheet-tb-cell-wrap" title="折返し" aria-label="折返し" data-e2e-id="sheet-tb-cell-wrap"><span class="ico ico-wrapText"></span></button>
+      <button type="button" class="tb-icon-btn" id="sheet-tb-cell-wrap" title="セル表示" aria-label="セル表示" data-e2e-id="sheet-tb-cell-wrap"><span class="ico ico-wrapText"></span></button>
       <button type="button" class="tb-icon-btn" id="sheet-tb-autofit" title="列幅自動調整" aria-label="列幅自動調整" data-e2e-id="sheet-tb-autofit"><span class="ico ico-columns3"></span></button>
       <button type="button" class="tb-icon-btn" id="sheet-tb-columns" title="列の表示と順序" aria-label="列の表示と順序" data-e2e-id="sheet-tb-columns"><span class="ico ico-listChecks"></span></button>
       <div class="sep"></div>
@@ -119,19 +123,24 @@
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
   <script src="gb-resource-url.js"></script>
+  <script src="gb-link-router.js"></script>
   <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-system-storage.js"></script>
+  <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-dropbox-management-root-resolver.js"></script>
   <script src="gb-source-folder-registry.js"></script>
   <script src="gb-workspace-shared-ledger.js"></script>
   <script src="gb-workspace-ledger-io.js"></script>
   <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
-  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-reference-codecs.js"></script><script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
   <script src="gb-knowledge-signature.js"></script>
   <script src="gb-file-lock-store.js"></script>
   <script src="gb-active-lock-store.js"></script>
   <script src="gb-active-locks.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="gb-document-identity.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
   <script src="gb-dropbox-asset-identity.js"></script>
@@ -147,21 +156,26 @@
   <script src="gb-ui.js"></script>
   <script src="offline-bundles/gb-tooltip.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
   <script src="gb-dropdown-dismiss.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="gb-format-popup.js"></script>
   <script src="gb-events.js"></script>
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
+  <script src="meldex-app-capabilities.js"></script>
   <script src="gb-pane-context.js"></script>
   <script src="offline-bundles/gb-history.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
+  <script src="standalone-parity-adapter.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-file-routes.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
@@ -178,13 +192,18 @@
   <script src="standalone-workspace-tree.js"></script>
   <script src="gb-datetime-utils.js"></script>
   <script src="sheet-standalone-view-config.js"></script>
+  <script src="gb-sheet-view-config.js"></script>
   <script src="gb-db-date.js"></script>
   <script src="gb-db-calendar-mapping.js"></script>
   <script src="gb-db-formula.js"></script>
+  <script src="gb-csv-codec.js"></script>
+  <script src="gb-csv-conversion.js"></script>
   <script src="gb-db-core.js"></script>
+  <script src="gb-db-entry-identity.js"></script>
   <script src="offline-bundles/gb-db-props.js"></script>
   <script src="gb-db-advanced-filter.js"></script>
   <script src="gb-db-column-filter.js"></script>
+  <script src="gb-db-filter-dialog.js"></script>
   <script src="offline-bundles/gb-db-property-types.js"></script>
   <script src="gb-db-pivot-sync.js"></script>
   <script src="gb-db-conditional-color.js"></script>
@@ -194,6 +213,8 @@
   <script src="gb-db-cell-ui.js"></script>
   <script src="offline-bundles/gb-db-value-editors.js"></script>
   <script src="gb-db-image-gallery.js"></script>
+  <script src="gb-db-computed-columns.js"></script>
+  <script src="gb-db-table-display.js"></script>
   <script src="offline-bundles/gb-db-table.js"></script>
   <script src="offline-bundles/gb-database.js"></script>
   <script src="gb-db-autofill.js"></script>
@@ -221,6 +242,8 @@
   <script src="standalone-mobile-toolbar.js"></script>
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="sheet-standalone-app.js"></script>
 </body>
 </html>

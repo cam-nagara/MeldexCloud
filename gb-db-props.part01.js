@@ -5,8 +5,8 @@ const PROP_TYPE_ICON = {
   text: 'alignLeft',
   furigana: 'superscript',
   number: 'hash',
-  select: 'tag',
-  'multi-select': 'tags',
+  select: 'layoutList',
+  'multi-select': 'layoutList',
   'common-tags': 'tags',
   checkbox: 'checkSquare',
   color: 'palette',
@@ -183,6 +183,56 @@ function _refreshDbColumnMenuView(ctx, dbPath) {
   else if (typeof renderPivot === 'function') renderPivot(ctx);
 }
 
+function _dbRenderedColumnTokensForPinning(ctx, dbPath, eventTarget) {
+  const table = eventTarget?.closest?.('table')
+    || (ctx?.containerEl && ctx.containerEl.querySelector?.(`#${CSS.escape(ctx.tableId || 'pivot-table')}`))
+    || document.getElementById(ctx?.tableId || 'pivot-table');
+  const domTokens = table
+    ? [...table.querySelectorAll('thead th[data-db-col-token]')]
+      .map(cell => cell.dataset.dbColToken)
+      .filter(Boolean)
+    : [];
+  if (domTokens.length) return [...new Set(domTokens)];
+
+  const hidden = new Set(typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, { ctx }) || []) : []);
+  const configuredOrder = typeof getColOrder === 'function' ? (getColOrder(dbPath, { ctx }) || []) : [];
+  const visibleProps = _dbOrderedPropertyNamesForMenu(dbPath, ctx).filter(propName => !hidden.has(propName));
+  const tokens = configuredOrder.includes('__entity__')
+    ? configuredOrder.filter(token => token === '__entity__' || visibleProps.includes(token))
+    : ['__entity__'];
+  if (!tokens.includes('__entity__')) tokens.unshift('__entity__');
+  visibleProps.forEach(propName => {
+    if (!tokens.includes(propName)) tokens.push(propName);
+  });
+  return [...new Set(tokens)];
+}
+
+function _dbPinnedRangeForMenu(ctx, dbPath, eventTarget) {
+  const renderedCols = _dbRenderedColumnTokensForPinning(ctx, dbPath, eventTarget);
+  const pinnedCols = typeof getPinnedCols === 'function' ? getPinnedCols(dbPath, { ctx }) : [];
+  const entityPinned = typeof getEntityColumnPinned === 'function'
+    ? getEntityColumnPinned(dbPath, { ctx })
+    : true;
+  const state = typeof getPinnedColumnRangeState === 'function'
+    ? getPinnedColumnRangeState(renderedCols, pinnedCols, entityPinned)
+    : {
+      pinnedTokens: renderedCols.filter(token => token === '__entity__' ? entityPinned : pinnedCols.includes(token)),
+      pinnedCols,
+      entityColumnPinned: entityPinned,
+    };
+  return { renderedCols, ...state };
+}
+
+function _dbSetPinnedRangeFromMenu(ctx, dbPath, renderedCols, boundaryToken, on) {
+  if (typeof setPinnedColumnRange === 'function') {
+    setPinnedColumnRange(dbPath, renderedCols, boundaryToken, on, {
+      ctx,
+      detail: boundaryToken === '__entity__' ? 'エントリ名' : boundaryToken,
+    });
+  }
+  _refreshDbColumnMenuView(ctx, dbPath);
+}
+
 function _makeHiddenColumnMenuItems(dbPath, ctx) {
   const hiddenCols = typeof getHiddenCols === 'function' ? (getHiddenCols(dbPath, { ctx }) || []) : [];
   const hiddenOrdered = _dbOrderedPropertyNamesForMenu(dbPath, ctx).filter(propName => hiddenCols.includes(propName));
@@ -354,7 +404,8 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
     && isProductionManagementSheetPath(dbPath);
   const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, ctx);
-  const pinnedCols = getPinnedCols(dbPath, { ctx });
+  const pinnedRange = _dbPinnedRangeForMenu(ctx, dbPath, e?.target || e?.currentTarget);
+  const pinnedCols = pinnedRange.pinnedCols;
   const groupBy = getGroupBy(dbPath, ctx);
 
   const menu = document.createElement('div');
@@ -471,14 +522,14 @@ function showColHeaderMenu(e, propName, colIndex, ctxOverride, dbPathOverride, m
         // 「列の表示と順序...」はツールバーへ移設（2026-07-19 ユーザー指示）
         { type: 'submenu', label: '列を固定', children: [
           { label: (pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定する', action: () => {
-            const pc = getPinnedCols(dbPath, { ctx });
-            if (!pc.includes(propName)) setPinnedCols(dbPath, [...pc, propName], { ctx });
-            _refreshDbColumnMenuView(ctx, dbPath);
+            if (!pinnedCols.includes(propName)) {
+              _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, propName, true);
+            }
           }},
           { label: (!pinnedCols.includes(propName) ? radioMark(true) : '　') + '固定しない', action: () => {
-            const pc = getPinnedCols(dbPath, { ctx });
-            if (pc.includes(propName)) setPinnedCols(dbPath, pc.filter(c => c !== propName), { ctx });
-            _refreshDbColumnMenuView(ctx, dbPath);
+            if (pinnedCols.includes(propName)) {
+              _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, propName, false);
+            }
           }},
         ]},
         ...(!menuOptions.protectVisibility ? [{ label: 'この列を非表示', action: () => {

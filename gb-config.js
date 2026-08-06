@@ -41,6 +41,8 @@
       'ボード',
       'シート',
       'カレンダー',
+      'Google/Microsoftカレンダー連携',
+      'iPhone向けICS購読',
       'スマートシート',
       'クラウド版フルチャット',
       '暗号化APIキーCloud保存',
@@ -53,7 +55,7 @@
     unsupported: Object.freeze([
       'リアルタイム共同編集',
       'ローカルCLI/MCP/OS連携',
-      '外部カレンダー同期リレー未設定時のGoogle/CalDAV同期',
+      'ローカルCalDAVサーバー同期・iCal URL購読（.icsファイルのインポート/エクスポートは対応）',
     ]),
   });
 
@@ -73,6 +75,10 @@
         'files.content.read',
         'files.content.write',
         'sharing.read',
+        // iPhone向けICS購読（gb-cal-ics-subscribe.js）の共有リンク自動作成に必要。
+        // 2026-08-04追加。既存の接続セッションは再接続するまでこのスコープを持たない
+        // （Dropbox APIエラーで検知し、手動作成手順の案内へフォールバックする）。
+        'sharing.write',
       ],
     },
   });

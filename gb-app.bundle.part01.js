@@ -750,7 +750,15 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
 
 function renameAppPathReferences(oldPath, newPath, opts) {
   if (!oldPath || !newPath || oldPath === newPath) return;
+  // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
+  // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
+  window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
   const options = opts || {};
+  if (typeof rebindPendingDbViewConfigBackendSave === 'function') {
+    rebindPendingDbViewConfigBackendSave(oldPath, newPath, {
+      isFolder: options.type === 'folder' || options.type === 'database',
+    }).catch(error => console.warn('[Meldex] シート表示設定の保存先を更新できませんでした', error));
+  }
   const exactLabel = Object.prototype.hasOwnProperty.call(options, 'label') ? options.label : null;
   const preResolvedId = options.fileId || _pathToFileId(newPath) || _pathToFileId(oldPath) || '';
   const previousDbPath = state.currentDbPath || '';
@@ -890,11 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
       if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
         editor.doc.title = exactLabel;
-        const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
-          ? editor.host.closest('.gb-scriptnote-root')
-          : null;
-        const titleInput = scriptNoteRoot ? scriptNoteRoot.querySelector('#title-input') : null;
-        // プログラムによる value 代入は change イベントを発火しないため、
-        // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
-        if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
-      }

@@ -6,6 +6,8 @@
 
   const registries = new Map();
   const mutationChains = new Map();
+  const deleteQueues = new Map();
+  const deletingKeys = new Set();
   let operationSeq = 0;
 
   function normalize(path) {
@@ -102,13 +104,36 @@
     return id ? `id:${id}` : `path:${followAliases(reg, path) || normalize(dbPath)}`;
   }
 
-  function queueMutation(ref, entityPathValue, dbPath, mutationFactory) {
+  function deleteKeys(ref, entityPathValue, dbPath) {
+    const path = normalize(entityPathValue);
+    const reg = registry(dbPath);
+    const id = String(ref?.entry_id || ref?._id || reg.idByPath.get(path) || '').trim();
+    const keys = [];
+    if (id) keys.push(`id:${id}`);
+    if (path) keys.push(`path:${followAliases(reg, path)}`);
+    return keys;
+  }
+
+  function deletingError() {
+    const error = new Error('このエントリは削除中です');
+    error.code = 'ENTRY_DELETING';
+    error.userMessage = '削除中のエントリは編集できません';
+    return error;
+  }
+
+  function queueMutation(ref, entityPathValue, dbPath, mutationFactory, options = {}) {
     const targetDbPath = normalize(dbPath);
     const key = mutationKey(ref, entityPathValue, targetDbPath);
+    const isDeleting = () => deleteKeys(ref, entityPathValue, targetDbPath)
+      .some(deleteKey => deletingKeys.has(deleteKey));
+    if (!options.allowDeleting && isDeleting()) return Promise.reject(deletingError());
     const previous = mutationChains.get(key);
     const queued = Promise.resolve(previous)
       .catch(() => {})
-      .then(() => mutationFactory(resolvePath(ref, entityPathValue, targetDbPath)));
+      .then(() => {
+        if (!options.allowDeleting && isDeleting()) throw deletingError();
+        return mutationFactory(resolvePath(ref, entityPathValue, targetDbPath));
+      });
     const tracked = typeof _dbTrackValueMutation === 'function'
       ? _dbTrackValueMutation(targetDbPath, queued)
       : queued;
@@ -230,6 +255,408 @@
       || message.includes('failed to fetch');
   }
 
+  function entityNameFromPath(path) {
+    if (typeof _dbEntityNameFromPath === 'function') return _dbEntityNameFromPath(path);
+    return normalize(path).split('/').pop()?.replace(/\.md$/i, '') || '';
+  }
+
+  function getDeleteQueue(dbPath) {
+    const key = normalize(dbPath);
+    if (!deleteQueues.has(key)) {
+      deleteQueues.set(key, {
+        dbPath: key,
+        pending: [],
+        activeByKey: new Map(),
+        contexts: new Set(),
+        requests: new Set(),
+        completed: [],
+        running: false,
+        current: null,
+      });
+    }
+    return deleteQueues.get(key);
+  }
+
+  function addQueueContext(queue, ctx) {
+    if (ctx && !ctx.destroyed && normalize(ctx.dbPath || queue.dbPath) === queue.dbPath) {
+      queue.contexts.add(ctx);
+    }
+    contextsForDb(queue.dbPath).forEach(candidate => queue.contexts.add(candidate));
+  }
+
+  function snapshotEntry(queue, item) {
+    addQueueContext(queue, item.ctx);
+    item.snapshots = item.snapshots || [];
+    queue.contexts.forEach(ctx => {
+      if (item.snapshots.some(snapshot => snapshot.ctx === ctx)) return;
+      const entityData = ctx?.pivotData?.entities?.[item.name];
+      item.snapshots.push({
+        ctx,
+        entityData,
+        order: Array.isArray(ctx?._lastEntityNames) ? [...ctx._lastEntityNames] : null,
+        selected: !!ctx?._selectedEntities?.has?.(item.name),
+      });
+    });
+  }
+
+  function hideEntries(queue, items) {
+    const names = items.map(item => item.name).filter(Boolean);
+    if (!names.length) return;
+    items.forEach(item => snapshotEntry(queue, item));
+    const ctx = items.find(item => item.ctx && !item.ctx.destroyed)?.ctx
+      || [...queue.contexts].find(candidate => candidate && !candidate.destroyed);
+    queue.contexts.forEach(candidate => {
+      if (candidate?._selectedEntities) names.forEach(name => candidate._selectedEntities.delete(name));
+    });
+    if (typeof _dbRemoveCreatedEntitiesLocally === 'function') {
+      _dbRemoveCreatedEntitiesLocally(ctx, queue.dbPath, names, { preserveManualOrder: true });
+    } else {
+      queue.contexts.forEach(candidate => {
+        names.forEach(name => {
+          const escaped = globalThis.CSS?.escape
+            ? CSS.escape(name)
+            : String(name).replace(/["\\]/g, '\\$&');
+          candidate?.containerEl?.querySelector?.(`tr[data-entity-name="${escaped}"]`)?.remove();
+        });
+      });
+    }
+    if (typeof _updateBulkEditBar === 'function') queue.contexts.forEach(candidate => _updateBulkEditBar(candidate));
+  }
+
+  function restoreSelection(ctx, names) {
+    if (!ctx || ctx.destroyed || !names.length) return;
+    names.forEach(name => ctx._selectedEntities?.add?.(name));
+    if (typeof _restoreSelectionByEntityNames === 'function') {
+      _restoreSelectionByEntityNames(ctx, names);
+    }
+  }
+
+  function restoreFailedLocally(failures, successfulNames = []) {
+    const touched = new Set();
+    const orders = new Map();
+    const successfulSet = new Set(successfulNames);
+    failures.forEach(item => {
+      (item.snapshots || []).forEach(snapshot => {
+        const ctx = snapshot.ctx;
+        if (!ctx || ctx.destroyed || !snapshot.entityData) return;
+        if (ctx.pivotData?.entities) ctx.pivotData.entities[item.name] = snapshot.entityData;
+        if (snapshot.order && (!orders.has(ctx) || orders.get(ctx).length < snapshot.order.length)) {
+          orders.set(ctx, snapshot.order);
+        }
+        if (snapshot.selected) ctx._selectedEntities?.add?.(item.name);
+        touched.add(ctx);
+      });
+    });
+    touched.forEach(ctx => {
+      if (orders.has(ctx)) {
+        ctx._lastEntityNames = orders.get(ctx).filter(name => (
+          !successfulSet.has(name) && Object.prototype.hasOwnProperty.call(ctx.pivotData?.entities || {}, name)
+        ));
+      }
+      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, ctx.dbPath);
+      else if (typeof renderPivot === 'function') renderPivot(ctx);
+    });
+  }
+
+  function canonicalContainsEntry(canonical, item) {
+    const entities = canonical?.entities || {};
+    if (item.entryId) {
+      return Object.values(entities).some(entity => entryIdFromEntity(entity) === item.entryId);
+    }
+    return Object.prototype.hasOwnProperty.call(entities, item.name);
+  }
+
+  function promoteUnknownFailuresFromCanonical(completed, canonical) {
+    completed.forEach(({ item, result }) => {
+      if (result.ok || !result.error?.resultUnknown || canonicalContainsEntry(canonical, item)) return;
+      result.ok = true;
+      result.response = {
+        ok: true,
+        reconciled: true,
+        entry_id: item.entryId || '',
+        operation_id: item.operationId,
+      };
+      delete result.error;
+      item.subscribers.forEach(({ request, entry }) => {
+        const requestResult = request.results.find(value => value.entry === entry);
+        if (!requestResult) return;
+        requestResult.ok = true;
+        requestResult.response = result.response;
+        delete requestResult.error;
+      });
+    });
+  }
+
+  function showDeleteProgress(queue, checking = false) {
+    if (typeof showStatus !== 'function') return;
+    if (checking) {
+      showStatus('削除結果を確認中…');
+      return;
+    }
+    const remaining = queue.pending.length + (queue.current ? 1 : 0);
+    if (remaining > 0) showStatus(`削除中…（残り${remaining}件）`);
+  }
+
+  async function reconcileDelete(queue, item) {
+    try {
+      const pivot = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
+        silentError: true,
+        timeoutMs: 60000,
+        skipBrowseCache: true,
+        cache: 'reload',
+      });
+      registerPivot(queue.dbPath, pivot);
+      const entities = pivot?.entities || {};
+      const namedEntity = entities[item.name];
+      if (!item.entryId) return namedEntity ? null : { ok: true, reconciled: true };
+      const matchingName = Object.entries(entities)
+        .find(([, entity]) => entryIdFromEntity(entity) === item.entryId)?.[0];
+      if (!matchingName) return { ok: true, reconciled: true, entry_id: item.entryId };
+      return null;
+    } catch (error) {
+      console.warn('エントリ削除結果の照合に失敗:', error);
+      return null;
+    }
+  }
+
+  async function performDelete(queue, item) {
+    const ref = { entry_id: item.entryId, entry_path: item.path };
+    return queueMutation(ref, item.path, queue.dbPath, async latestPath => {
+      const body = {
+        path: latestPath || item.path,
+        expected_entry_id: item.entryId || undefined,
+        operation_id: item.operationId,
+      };
+      let response;
+      let firstError;
+      try {
+        response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+      } catch (error) {
+        firstError = error;
+        if (!isUnknownResultError(error)) throw error;
+        showDeleteProgress(queue, true);
+        try {
+          response = await apiPost('/outliner/delete', body, { silentError: true, timeoutMs: 60000 });
+        } catch (retryError) {
+          if (!isUnknownResultError(retryError)) throw retryError;
+        }
+        if (!response) response = await reconcileDelete(queue, item);
+        if (!response) {
+          firstError.resultUnknown = true;
+          throw firstError;
+        }
+      }
+      if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
+        try {
+          await window.GbDbCalendarSync.onEntryDeleted(queue.dbPath, latestPath || item.path);
+        } catch {}
+      }
+      return response || { ok: true };
+    }, { allowDeleting: true });
+  }
+
+  function settleItem(queue, item, result) {
+    item.completed = true;
+    item.result = result;
+    item.subscribers.forEach(({ request, entry }) => {
+      request.results.push({ ...result, entry });
+      request.remaining -= 1;
+    });
+    queue.completed.push({ item, result });
+    queue.current = null;
+    showDeleteProgress(queue);
+  }
+
+  async function reloadDeleteCycle(queue, completed) {
+    const liveContexts = [...queue.contexts].filter(ctx => (
+      ctx && !ctx.destroyed && normalize(ctx.dbPath) === queue.dbPath
+    ));
+    const reloadCtx = liveContexts[0] || null;
+    let canonical = null;
+    try {
+      if (reloadCtx) {
+        try {
+          const reloadResult = await reload(reloadCtx, queue.dbPath, { forceReload: true });
+          if (reloadResult?.ok !== false && !reloadCtx.destroyed) canonical = reloadCtx.pivotData || null;
+        } catch (error) {
+          console.warn('エントリ削除後のシート再読込に失敗:', error);
+        }
+      }
+      const hasUnknownFailure = completed.some(value => (
+        !value.result.ok && value.result.error?.resultUnknown
+      ));
+      if (canonical && hasUnknownFailure) {
+        try {
+          const authoritative = await apiFetch('/pivot?path=' + encodeURIComponent(queue.dbPath), {
+            silentError: true,
+            timeoutMs: 60000,
+            skipBrowseCache: true,
+            cache: 'reload',
+          });
+          registerPivot(queue.dbPath, authoritative);
+          promoteUnknownFailuresFromCanonical(completed, authoritative);
+        } catch (error) {
+          console.warn('削除後の正本照合に失敗:', error);
+        }
+      }
+      const successful = completed.filter(value => value.result.ok).map(value => value.item);
+      const failed = completed.filter(value => !value.result.ok).map(value => value.item);
+      const successNames = successful.map(item => item.name).filter(Boolean);
+      if (successNames.length && typeof _dbRemoveNamesFromCurrentManualOrder === 'function') {
+        try {
+          _dbRemoveNamesFromCurrentManualOrder(queue.dbPath, successNames);
+        } catch (error) {
+          console.warn('削除済みエントリの手動並び順更新に失敗:', error);
+        }
+      }
+      if (canonical) {
+        liveContexts.slice(1).forEach(ctx => {
+          if (ctx.destroyed) return;
+          try {
+            ctx.pivotData = canonical;
+            if (Array.isArray(reloadCtx._lastEntityNames)) ctx._lastEntityNames = [...reloadCtx._lastEntityNames];
+            if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, queue.dbPath);
+            else if (typeof renderPivot === 'function') renderPivot(ctx);
+          } catch (error) {
+            console.warn('削除後のシート表示反映に失敗:', error);
+          }
+        });
+      } else if (failed.length) {
+        try {
+          restoreFailedLocally(failed, successNames);
+        } catch (error) {
+          console.warn('削除失敗行の表示復元に失敗:', error);
+        }
+      }
+      liveContexts.forEach(ctx => {
+        if (ctx.destroyed) return;
+        try {
+          const selectedFailures = failed
+            .filter(item => item.snapshots?.some(snapshot => snapshot.ctx === ctx && snapshot.selected))
+            .map(item => item.name);
+          restoreSelection(ctx, selectedFailures);
+          if (typeof _updateBulkEditBar === 'function') _updateBulkEditBar(ctx);
+        } catch (error) {
+          console.warn('削除後の選択状態復元に失敗:', error);
+        }
+      });
+    } finally {
+      completed.forEach(({ item }) => {
+        item.deleteKeys.forEach(key => {
+          deletingKeys.delete(key);
+          if (queue.activeByKey.get(key) === item) queue.activeByKey.delete(key);
+        });
+      });
+    }
+  }
+
+  function resolveReadyDeleteRequests(queue) {
+    const ready = [...queue.requests].filter(request => request.remaining === 0);
+    ready.forEach(request => {
+      queue.requests.delete(request);
+      const successes = request.results.filter(result => result.ok);
+      const failures = request.results.filter(result => !result.ok);
+      request.resolve({
+        ok: failures.length === 0,
+        successes,
+        failures,
+        responses: successes.map(result => result.response),
+        trashRefs: successes.map(result => ({
+          name: result.entry.name,
+          path: result.entry.path,
+          entry_id: result.entry.entryId,
+          trash_name: result.response?.trash_name || '',
+          trash_root: result.response?.trash_root || '',
+        })),
+      });
+    });
+  }
+
+  async function drainDeleteQueue(queue) {
+    if (queue.running) return;
+    queue.running = true;
+    try {
+      while (queue.pending.length) {
+        const item = queue.pending.shift();
+        queue.current = item;
+        showDeleteProgress(queue);
+        try {
+          const response = await performDelete(queue, item);
+          settleItem(queue, item, { ok: true, response });
+        } catch (error) {
+          settleItem(queue, item, { ok: false, error });
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (queue.pending.length) {
+        queue.running = false;
+        return drainDeleteQueue(queue);
+      }
+      const completed = queue.completed.splice(0);
+      await reloadDeleteCycle(queue, completed);
+      resolveReadyDeleteRequests(queue);
+      if (queue.pending.length) hideEntries(queue, queue.pending);
+    } finally {
+      queue.running = false;
+      resolveReadyDeleteRequests(queue);
+      if (queue.pending.length) drainDeleteQueue(queue);
+      else if (!queue.requests.size && !queue.activeByKey.size) deleteQueues.delete(queue.dbPath);
+    }
+  }
+
+  function deleteEntries(options) {
+    const dbPath = normalize(options?.dbPath);
+    if (!dbPath) return Promise.reject(new Error('削除対象のシートが特定できません'));
+    const queue = getDeleteQueue(dbPath);
+    addQueueContext(queue, options?.ctx);
+    const requestEntries = [];
+    const seen = new Set();
+    (Array.isArray(options?.entries) ? options.entries : []).forEach(rawEntry => {
+      const name = String(rawEntry?.name || rawEntry?.entityName || '').trim();
+      const path = normalize(rawEntry?.path || rawEntry?.entry_path || entryPath(dbPath, name, options?.ctx?.pivotData));
+      const entityData = options?.ctx?.pivotData?.entities?.[name];
+      const entryId = String(rawEntry?.entryId || rawEntry?.entry_id || entryIdFromEntity(entityData)).trim();
+      const identityKeys = deleteKeys({ entry_id: entryId, entry_path: path }, path, dbPath);
+      const key = entryId ? `id:${entryId}` : `path:${path}`;
+      if (!path || identityKeys.some(identityKey => seen.has(identityKey))) return;
+      identityKeys.forEach(identityKey => seen.add(identityKey));
+      requestEntries.push({ name: name || entityNameFromPath(path), path, entryId, key, identityKeys });
+    });
+    if (!requestEntries.length) {
+      return Promise.resolve({ ok: true, successes: [], failures: [], responses: [], trashRefs: [] });
+    }
+    return new Promise(resolve => {
+      const request = { source: options?.source || 'entry-delete', results: [], remaining: requestEntries.length, resolve };
+      queue.requests.add(request);
+      const pendingItems = [];
+      requestEntries.forEach(entry => {
+        let item = entry.identityKeys.map(key => queue.activeByKey.get(key)).find(Boolean);
+        if (!item) {
+          item = {
+            ...entry,
+            ctx: options?.ctx || null,
+            operationId: operationId('entry-delete'),
+            subscribers: [],
+          };
+          item.deleteKeys = item.identityKeys;
+          item.deleteKeys.forEach(key => deletingKeys.add(key));
+          item.deleteKeys.forEach(key => queue.activeByKey.set(key, item));
+          queue.pending.push(item);
+        }
+        if (item.completed) {
+          request.results.push({ ...item.result, entry });
+          request.remaining -= 1;
+          return;
+        }
+        item.subscribers.push({ request, entry });
+        pendingItems.push(item);
+      });
+      hideEntries(queue, pendingItems);
+      showDeleteProgress(queue);
+      drainDeleteQueue(queue);
+    });
+  }
+
   async function reconcile(request) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -332,6 +759,7 @@
 
   window.GbDbEntryIdentity = {
     applyRename,
+    deleteEntries,
     operationId,
     queueMutation,
     registerEntry,

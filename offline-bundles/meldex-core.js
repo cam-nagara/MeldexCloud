@@ -132,11 +132,52 @@ async function apiFetch(path, opts) {
   }
 }
 
+async function _meldexCorePrepareFileWrite(path, body) {
+  const payload = { ...(body || {}) };
+  const endpoint = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  const isFullWrite = endpoint === '/file'
+    && (Object.prototype.hasOwnProperty.call(payload, 'content')
+      || Object.prototype.hasOwnProperty.call(payload, 'content_base64'));
+  if (!isFullWrite || payload.force_overwrite || payload.forceOverwrite
+    || payload.create_only || payload.createOnly) return payload;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const supplied = payload.transport_revision || payload.transportRevision
+    || payload.if_match_etag || payload.ifMatchEtag || '';
+  if (supplied) {
+    if (coordinator?.revisionTokenForWrite) payload.if_match_etag = coordinator.revisionTokenForWrite(supplied);
+    return payload;
+  }
+  // 既存ファイルの最新revisionをここで拾って古い本文へ付け直すと、外部更新を
+  // 未確認のまま上書きできてしまう。自動補完は新規作成時のcreate_onlyだけ。
+  try {
+    const separator = String(path).includes('?') ? '&' : '?';
+    const metadata = await apiFetch(`${path}${separator}metadata_only=1`, { silentError: true });
+    const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+    error.status = 428;
+    error.meldexCode = 'precondition_required';
+    error.meldexDetail = {
+      code: 'precondition_required',
+      path: new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current_etag: metadata?.etag || '',
+      current_transport_revision: metadata?.transport_revision || null,
+    };
+    throw error;
+  } catch (error) {
+    if (error?.status === 404 && !(payload.skip_if_missing || payload.skipIfMissing)) {
+      payload.create_only = true;
+      return payload;
+    }
+    if (error?.status === 404 && (payload.skip_if_missing || payload.skipIfMissing)) return payload;
+    throw error;
+  }
+}
+
 async function apiPut(path, body) {
+  const guardedBody = await _meldexCorePrepareFileWrite(path, body);
   return apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(guardedBody),
   });
 }
 
@@ -189,8 +230,11 @@ function fieldHelp(text, opts) {
   if (!t) return '';
   const size = (opts && opts.size) || 13;
   const extra = (opts && opts.className) ? ' ' + opts.className : '';
+  const e2eIdentity = (opts && opts.e2eId)
+    ? ` data-e2e-id="${esc(String(opts.e2eId))}"`
+    : '';
   const glyph = (typeof lucide === 'function') ? lucide('helpCircle', size) : '?';
-  return `<span class="gb-field-help${extra}" tabindex="0" role="img" data-gb-tooltip="${esc(t)}" aria-label="${esc(t)}">${glyph}</span>`;
+  return `<span class="gb-field-help${extra}"${e2eIdentity} tabindex="0" role="img" data-gb-tooltip="${esc(t)}" aria-label="${esc(t)}">${glyph}</span>`;
 }
 if (typeof window !== 'undefined') window.fieldHelp = fieldHelp;
 
@@ -731,6 +775,7 @@ const LUCIDE = {
   db: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
   scenario: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
   sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  calendarSync: '<path d="M11 10v4h4"/><path d="m11 14 1.535-1.605a5 5 0 0 1 8 1.5"/><path d="M16 2v4"/><path d="m21 18-1.535 1.605a5 5 0 0 1-8-1.5"/><path d="M21 22v-4h-4"/><path d="M21 8.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4.3"/><path d="M3 10h4"/><path d="M8 2v4"/>',
   arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   arrowRight: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -742,6 +787,12 @@ const LUCIDE = {
   funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
   panelLeft: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
   panelRight: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
+  // ビューワー残課題修正計画 2026-08-04: 反転2種・回転を共通アイコン置換表へ登録
+  // （既存のビューワー固有直接描画回避を撤去するため。パス値はvendor/lucide-icons.jsの
+  // flipHorizontal2 / flipVertical2 / rotateCw と同一）。
+  flipHorizontal2: '<path d="m3 7 5 5-5 5V7"/><path d="m21 7-5 5 5 5V7"/><path d="M12 20v2"/><path d="M12 14v2"/><path d="M12 8v2"/><path d="M12 2v2"/>',
+  flipVertical2: '<path d="m17 3-5 5-5-5h10"/><path d="m17 21-5-5-5 5h10"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/>',
+  rotateCw: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
   palette: '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
   type: '<path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/>',
   typeOutline: '<path d="M14 16.5a.5.5 0 0 0 .5.5h.5a2 2 0 0 1 0 4H9a2 2 0 0 1 0-4h.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5V8a2 2 0 0 1-4 0V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-4 0v-.5a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5Z"/>',
@@ -768,7 +819,7 @@ const LUCIDE = {
   disc: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/>',
   fileQuestion: '<path d="M12 17h.01"/><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/>',
   layoutGrid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
-  layoutList: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  layoutList: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 4h7"/><path d="M14 9h7"/><path d="M14 15h7"/><path d="M14 20h7"/>',
   externalLink: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
@@ -938,6 +989,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
+  subpanel: 'panelRight',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -1001,6 +1053,10 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
+    else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
+    else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';
+    else if (cls.includes('ico-rotateCw')) name = 'rotateCw';
     else if (cls.includes('ico-layoutGrid')) name = 'layoutDashboard';
     else if (cls.includes('ico-layoutList')) name = 'layoutList';
     else if (cls.includes('ico-externalLink')) name = 'externalLink';
@@ -1036,6 +1092,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
     else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
     else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
+    else if (cls.includes('ico-calendarSync')) name = 'calendarSync';
     else if (cls.includes('ico-calendar')) name = 'calendar';
     else if (cls.includes('ico-arrowRight')) name = 'arrowRight';
     else if (cls.includes('ico-arrowLeft')) name = 'arrowLeft';
@@ -1070,7 +1127,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-listChecks')) name = 'listChecks';
     else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
     else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
+    // ico-maximize2 は ico-maximize の部分文字列一致で全画面アイコンに化けるため、先に判定する
+    // （ビューワーのフィットボタン初期表示バグ修正 2026-08-04）
+    else if (cls.includes('ico-maximize2')) name = 'maximize2';
     else if (cls.includes('ico-maximize')) name = 'maximize';
+    else if (cls.includes('ico-fileCog')) name = 'fileCog';
     else if (cls.includes('ico-timer')) name = 'timer';
     else if (cls.includes('ico-layoutTemplate')) name = 'layoutTemplate';
     else if (cls.includes('ico-rows3')) name = 'rows3';
@@ -1119,7 +1180,7 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);
@@ -1232,7 +1293,7 @@ function initIframeMarkup(scrollContainer) {
       };
     } catch { return { ..._widthDefaults }; }
   }
-  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '' };
+  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '', anchor: null };
 
   // オーバーレイSVG作成
   const host = scrollContainer || document.body;
@@ -1399,6 +1460,135 @@ function initIframeMarkup(scrollContainer) {
     }
     const r = wrapper.getBoundingClientRect();
     return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return [x, y];
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return [x, y];
+  }
+
+  function _boardAnnotationNode(anchor) {
+    if (!boardMode || !anchor?.nodeId) return null;
+    const el = document.getElementById('bdn-' + anchor.nodeId);
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function _annotationAnchorAt(clientX, clientY, worldPoint) {
+    if (!boardMode) return null;
+    const hit = document.elementsFromPoint(clientX, clientY)
+      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
+    const nodeEl = hit?.closest?.('.bd-node');
+    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
+    if (!nodeEl || !nodeId) return null;
+    const width = Math.max(1, nodeEl.offsetWidth || 0);
+    const height = Math.max(1, nodeEl.offsetHeight || 0);
+    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
+    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
+    const imageEl = nodeEl.querySelector?.('.bd-img');
+    const imageRect = imageEl?.getBoundingClientRect?.();
+    const insideImage = !!imageRect
+      && clientX >= imageRect.left && clientX <= imageRect.right
+      && clientY >= imageRect.top && clientY <= imageRect.bottom;
+    return {
+      data: {
+        version: 1,
+        kind: 'board-node',
+        nodeId,
+        subject: insideImage ? 'image' : 'card',
+        baseWidth: width,
+        baseHeight: height,
+        geometrySpace: 'local',
+      },
+      nodeEl,
+    };
+  }
+
+  function _annotationPointToLocal(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const current = _boardWorldToElementLocal(nodeEl, point);
+    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
+    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
+    return [current[0] / scaleX, current[1] / scaleY];
+  }
+
+  function _annotationPointToWorld(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return _elementLocalToBoardWorld(nodeEl, [
+      (Number(point?.[0]) || 0) * scaleX,
+      (Number(point?.[1]) || 0) * scaleY,
+    ]);
+  }
+
+  function _annotationAnchorScale(anchor) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return 1;
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return Math.sqrt(Math.abs(scaleX * scaleY));
+  }
+
+  function _anchoredRectPoints(data) {
+    const x = Number(data?.x) || 0;
+    const y = Number(data?.y) || 0;
+    const width = Number(data?.width) || 0;
+    const height = Number(data?.height) || 0;
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+
+  function _anchoredWorldPoints(type, data) {
+    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
+    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
   }
 
   function _parentMessageTargetOrigin() {
@@ -2266,7 +2456,11 @@ function initIframeMarkup(scrollContainer) {
     }
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path = [[pt.x, pt.y]];
+    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
+    _ann.anchor = anchorHit?.data || null;
+    _ann.path = [_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]];
     _ann.pressures = [e.pressure || 0.5];
     try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
   });
@@ -2274,17 +2468,25 @@ function initIframeMarkup(scrollContainer) {
   svg.addEventListener('pointermove', (e) => {
     if (!_ann.drawing) return;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]);
+    _ann.path.push(_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
       preview.classList.add('ann-preview');
       layer.appendChild(preview);
     }
-    if (_ann.tool === 'rect') {
+    if (_ann.anchor) {
+      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+      const previewData = previewType === 'rect'
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'rect') {
       _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
@@ -2307,8 +2509,11 @@ function initIframeMarkup(scrollContainer) {
     const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect' ? _renderRect(strokeData, _ann.color, _ann.opacity, null) : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width);
+    const savedEl = type === 'rect'
+      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
       target_path: _ann.targetPath,
@@ -2320,7 +2525,7 @@ function initIframeMarkup(scrollContainer) {
     }, (res) => {
       if (res?.id) savedEl.dataset.annId = res.id;
     }, () => { savedEl.remove(); })) {
-      _ann.path = []; _ann.pressures = [];
+      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
       return;
     }
     // 親に保存依頼
@@ -2332,13 +2537,151 @@ function initIframeMarkup(scrollContainer) {
       annClientId,
     });
     // 確定描画
-    _ann.path = []; _ann.pressures = [];
+    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
   });
 
-  function _renderStroke(type, points, pressures, color, opacity, annId, width) {
+  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
     const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const points = _anchoredWorldPoints(type, data);
+    if (type === 'stroke' || type === 'marker') {
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none');
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+    } else {
+      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
+      el.setAttribute('fill', color);
+      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
+      el.setAttribute('stroke-opacity', String(normalizedOpacity));
+      if (preview) el.setAttribute('stroke-dasharray', '4,4');
+      else el.removeAttribute('stroke-dasharray');
+    }
+    return el;
+  }
+
+  const _anchoredAnnotationEntries = new Set();
+  let _anchoredRefreshHandle = 0;
+  const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
+  let _anchoredMutationObserver = null;
+
+  function _ensureAnchoredMutationObserver() {
+    if (_anchoredMutationObserver) return;
+    _anchoredMutationObserver = new MutationObserver(() => _scheduleAnchoredAnnotationRefresh());
+    _anchoredMutationObserver.observe(wrapper, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+  }
+
+  function _releaseAnchoredMutationObserverIfIdle() {
+    if (_anchoredAnnotationEntries.size || !_anchoredMutationObserver) return;
+    _anchoredMutationObserver.disconnect();
+    _anchoredMutationObserver = null;
+  }
+
+  function _trackAnchoredAnnotation(el, type, data, color, opacity) {
+    if (!data?.anchor) return;
+    const nodeEl = _boardAnnotationNode(data.anchor);
+    _anchoredAnnotationEntries.add({
+      el,
+      type,
+      data,
+      color,
+      opacity,
+      detaching: false,
+      lastWorldPoints: _anchoredWorldPoints(type, data),
+      lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
+      observedNode: nodeEl,
+    });
+    _ensureAnchoredMutationObserver();
+    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
+    _scheduleAnchoredAnnotationRefresh();
+  }
+
+  function _boardStillHasNode(nodeId) {
+    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
+      ? bd.nodes.some(node => node?.id === nodeId)
+      : !!document.getElementById('bdn-' + nodeId);
+  }
+
+  function _detachAnchoredAnnotation(entry) {
+    if (entry.detaching || !entry.data?.anchor) return;
+    entry.detaching = true;
+    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+    const worldPoints = entry.lastWorldPoints || [];
+    if (entry.type === 'rect') {
+      entry.type = 'lasso';
+      delete entry.data.x;
+      delete entry.data.y;
+      delete entry.data.height;
+      entry.data.points = worldPoints;
+    } else {
+      entry.data.points = worldPoints;
+      if (entry.type === 'stroke' || entry.type === 'marker') {
+        entry.data.width = entry.lastWorldWidth;
+      }
+    }
+    delete entry.data.anchor;
+    const annId = entry.el?.dataset?.annId || '';
+    const payload = { data: entry.data };
+    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
+    const finish = () => { entry.detaching = false; };
+    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
+    finish();
+  }
+
+  function _refreshAnchoredAnnotations() {
+    _anchoredRefreshHandle = 0;
+    _anchoredAnnotationEntries.forEach(entry => {
+      if (!entry.el?.isConnected) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const anchor = entry.data?.anchor;
+      if (!anchor) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const nodeEl = _boardAnnotationNode(anchor);
+      if (!nodeEl) {
+        if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
+        return;
+      }
+      if (entry.observedNode !== nodeEl) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        entry.observedNode = nodeEl;
+        _anchoredResizeObserver.observe(nodeEl);
+      }
+      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
+      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
+        * _annotationAnchorScale(anchor);
+      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
+    });
+    _releaseAnchoredMutationObserverIfIdle();
+  }
+
+  function _scheduleAnchoredAnnotationRefresh() {
+    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
+    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
+  }
+
+  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const data = sourceData || { points, pressures, width };
     let el;
-    if (type === 'lasso') {
+    if (data.anchor) {
+      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
+      _applyAnchoredShape(el, type, data, color, opacity, false);
+    } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
       el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
@@ -2353,13 +2696,17 @@ function initIframeMarkup(scrollContainer) {
     }
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, type, data, color, opacity);
     return el;
   }
 
   function _renderRect(data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
+    const el = data?.anchor
+      ? _applyAnchoredShape(document.createElementNS(_svgNS, 'polygon'), 'rect', data, color, opacity, false)
+      : _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, 'rect', data, color, opacity);
     return el;
   }
 
@@ -2417,7 +2764,7 @@ function initIframeMarkup(scrollContainer) {
         } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
           _renderRect(data, item.color, item.opacity, item.id);
         } else if (data?.points) {
-          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width);
+          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
       });
       _syncNoteInteractivity();
@@ -2466,7 +2813,15 @@ function initIframeMarkup(scrollContainer) {
     _handleMessage(msg);
   });
 
-  const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
+  const bridge = {
+    svg,
+    layer,
+    notesLayer,
+    ann: _ann,
+    handleMessage: _handleMessage,
+    updateSize: _updateSize,
+    refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
+  };
   const e2eBridgeEnabled = (() => {
     if (typeof window === 'undefined') return false;
     if (window.GBE2EActions) return true;

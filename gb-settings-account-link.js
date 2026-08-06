@@ -9,6 +9,10 @@
  * - 自己同定ラダー（gb-profile-identity.js）が曖昧（unlinked）と判定した場合は、
  *   クラウド版で既に存在するプロフィール候補をインラインで選ばせる（ポップアップに
  *   しない。UI共通ルール: 選ぶだけの単純な一覧は都度モーダルを開かず、その場に置く）。
+ * - 候補を選んだ直後に「クラウド版の設定／この端末の設定」のどちらの名前・アイコンを
+ *   使うかをその場で選ばせる。どちらを選んでも以後は同じ1つの共有プロフィールに
+ *   統合される。「この端末の設定」は、ローカルの名前・アイコンを選んだ共有
+ *   プロフィールへ保存し、クラウド版・他端末にも反映する。
  * - 自己同定ラダー経由でリンク済み（OAuth接続済みを除く）の場合は「別のプロフィールに
  *   切り替える」を出す。押すと記憶（rememberedキー）を消し、直近に把握している候補
  *   一覧をその場で描画する。自動再解決に任せると表示名一致で即座に元の相手へ
@@ -33,6 +37,11 @@
   const TEXT_AMBIGUOUS = 'クラウド版で設定したプロフィールが見つかりました。この端末で使う名前とアイコンを選んでください。';
   const TEXT_REGISTER_NEW = '今の設定のまま新しく登録する';
   const TEXT_SWITCH_PROFILE = '別のプロフィールに切り替える';
+  const TEXT_DIRECTION = 'どちらの名前とアイコンを使いますか？';
+  const TEXT_DIRECTION_HELP = 'どちらを選んでも、以後この端末とクラウド版・他の端末は同じ1つのプロフィールになります。「この端末の設定」を選ぶと、今の名前とアイコンがクラウド版・他の端末にも反映されます。';
+  const TEXT_USE_CLOUD_SUFFIX = '（クラウド版の設定）';
+  const TEXT_USE_LOCAL_SUFFIX = '（この端末の設定）';
+  const TEXT_BACK = '戻る';
 
   // UI共通ルール: 説明文はツールチップに集約する。この関数は共通ヘルパー
   // fieldHelp() を安全に呼び出すラッパー（この file 専用の手作りNode実行
@@ -54,6 +63,7 @@
       .msal-candidate-avatar{width:24px;height:24px;border-radius:50%;background:var(--bg3);display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0;font-size:12px;font-weight:bold;color:var(--fg2);}
       .msal-candidate-avatar img{width:100%;height:100%;object-fit:cover;}
       .msal-candidate-name{font-size:13px;color:var(--fg);}
+      .msal-candidate-suffix{font-size:12px;color:var(--fg2);}
       .msal-register-new-row{margin-top:8px;justify-content:flex-start;}
       .msal-switch-row{margin-top:8px;justify-content:flex-start;}
     `;
@@ -212,6 +222,83 @@
     await renderStatusLine(container);
   }
 
+  // 「この端末の設定を使う」: 選んだ共有プロフィール（クラウド版で作られたエントリ）
+  // へ、この端末の名前・アイコンを保存して統合する。ユーザーが明示的に選んだ
+  // 上書きであり、_selectCandidate が防いでいる「古いローカル更新時刻の持ち越しに
+  // よる事故上書き」とは別経路。そのためここでは clearLocalUpdateMarker() を呼ばず、
+  // afterLocalProfileChanged() が rememberKey 済みの新キーへ紐付けた新しい更新時刻を
+  // 記録する（gb-dropbox-profile-sync.js の _markLocalProfile / _isLocalProfileNewer 参照）。
+  async function _selectCandidateKeepLocal(key, container) {
+    const identity = window.MeldexProfileIdentity;
+    const sync = window.MeldexDropboxProfileSync;
+    if (!identity || !sync || !key) return;
+    identity.rememberKey(key);
+    // 選び直したキーで解決し直すため、成功済みのキャッシュを先に捨てる。
+    sync.resetStartupResolution?.();
+    try {
+      await sync.afterLocalProfileChanged?.({ accountId: key });
+    } catch (e) {
+      try { console.warn('[gb-settings-account-link] keep-local merge failed', e); } catch { /* noop */ }
+    }
+    try {
+      await sync.resolveStartupProfile?.();
+    } catch (e) {
+      try { console.warn('[gb-settings-account-link] resolveStartupProfile failed after keep-local merge', e); } catch { /* noop */ }
+    }
+    _refreshProfileFormFields();
+    await renderStatusLine(container);
+  }
+
+  // 候補を選んだ直後の「どちらの名前とアイコンを使いますか？」の2択をインラインで
+  // 描画する。どちらを選んでも同じ1つの共有プロフィールへ統合される。
+  function _renderDirectionChoice(container, candidate, state) {
+    const wrap = _statusLineWrap(container);
+    wrap.appendChild(_descNode(TEXT_DIRECTION, TEXT_DIRECTION_HELP));
+
+    const list = document.createElement('div');
+    list.className = 'msal-candidate-list';
+
+    const makeRow = (profileLike, suffix, onClick) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'msal-candidate-row';
+      row.appendChild(_candidateAvatarNode(profileLike));
+      const name = document.createElement('span');
+      name.className = 'msal-candidate-name';
+      name.textContent = profileLike?.displayName || '（表示名未設定）';
+      row.appendChild(name);
+      const hint = document.createElement('span');
+      hint.className = 'msal-candidate-suffix';
+      hint.textContent = suffix;
+      row.appendChild(hint);
+      row.addEventListener('click', onClick);
+      return row;
+    };
+
+    list.appendChild(makeRow(candidate, TEXT_USE_CLOUD_SUFFIX, () => _selectCandidate(candidate?.key, container)));
+
+    const localAvatar = (() => {
+      try { return localStorage.getItem('meldex-avatar') || ''; } catch { return ''; }
+    })();
+    const localProfile = {
+      displayName: typeof getUsername === 'function' ? getUsername() : '',
+      avatar: localAvatar,
+    };
+    list.appendChild(makeRow(localProfile, TEXT_USE_LOCAL_SUFFIX, () => _selectCandidateKeepLocal(candidate?.key, container)));
+
+    wrap.appendChild(list);
+
+    const backRow = document.createElement('div');
+    backRow.className = 'gb-field-row msal-switch-row';
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'gb-btn gb-btn-sm';
+    backBtn.textContent = TEXT_BACK;
+    backBtn.addEventListener('click', () => _renderAmbiguous(container, state));
+    backRow.appendChild(backBtn);
+    wrap.appendChild(backRow);
+  }
+
   async function _registerAsNew(container, btn) {
     const identity = window.MeldexProfileIdentity;
     const sync = window.MeldexDropboxProfileSync;
@@ -250,7 +337,12 @@
       name.className = 'msal-candidate-name';
       name.textContent = candidate?.displayName || candidate?.key || '（表示名未設定）';
       row.appendChild(name);
-      row.addEventListener('click', () => _selectCandidate(candidate?.key, container));
+      // 即統合せず、どちらの名前・アイコンを使うかの2択（_renderDirectionChoice）を
+      // 先に出す。キーの無い異常データはここで弾く（従来は _selectCandidate 内のガード）。
+      row.addEventListener('click', () => {
+        if (!candidate?.key) return;
+        _renderDirectionChoice(container, candidate, state);
+      });
       list.appendChild(row);
     });
     wrap.appendChild(list);

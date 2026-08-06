@@ -480,6 +480,16 @@
     if (!await _refreshWriteGuard(instance, path)) return false;
     if (generation !== instance._generation) return false;
     instance.ctx.generation = generation;
+    // 開くパスが直前と異なる場合は、前シートで適用した採用状況フィルタ・保存ビュー選択を
+    // 持ち越さない。制作管理シートの既定ビューは filter キーを持たないため、
+    // selectDatabase() のフォールバック（gb-database.part01.js の _resolveInitialFilter()
+    // 相当）で前シートの ctx.filter がそのまま残ると /pivot?status_filter=... が誤って
+    // 適用され0件表示になる（タスクリスト作品タブ切替バグの真因）。シート自身に保存済み
+    // フィルタがあれば、直後の selectDatabase() が正しく再適用する。
+    if (instance.ctx.dbPath !== path) {
+      instance.ctx.filter = 'disabled';
+      delete instance.ctx.currentViewIdx;
+    }
     try {
       const result = await selectDatabase(path, instance.ctx, mergedOpts);
       if (result === false || result?.ok === false) return false;

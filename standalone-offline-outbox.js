@@ -8,6 +8,8 @@
   let installed = false;
   let flushing = false;
   let serial = Promise.resolve();
+  let localWritePending = 0;
+  let localWriteError = '';
   const originals = {};
 
   function id() {
@@ -57,6 +59,7 @@
   }
 
   function enqueue(operation) {
+    localWritePending += 1;
     serial = serial.then(async () => {
       const rows = await readQueue();
       const duplicate = rows.find(row => row.operationId === operation.operationId);
@@ -64,8 +67,40 @@
       await writeQueue(rows);
       status('pending', '端末に保存済み・同期待ち', rows.length);
       return operation;
+    }).then(value => {
+      localWriteError = '';
+      return value;
+    }).catch(error => {
+      localWriteError = String(error?.message || error || '端末への保存に失敗しました');
+      throw error;
+    }).finally(() => {
+      localWritePending = Math.max(0, localWritePending - 1);
     });
     return serial;
+  }
+
+  async function flushLocal() {
+    try {
+      await serial;
+      return !localWriteError;
+    } catch {
+      return false;
+    }
+  }
+
+  function getCloseState() {
+    return {
+      appId: 'offline-outbox',
+      state: localWriteError ? 'error' : localWritePending ? 'local-saving' : 'clean',
+      pendingLocal: localWritePending > 0,
+      saving: localWritePending > 0,
+      failed: !!localWriteError,
+      unnamed: false,
+      hasSnapshot: !localWriteError,
+      hasFinalDestination: true,
+      shouldWarn: localWritePending > 0 || !!localWriteError,
+      message: localWriteError || (localWritePending ? '変更を端末へ保存しています' : ''),
+    };
   }
 
   function withOperationId(body, operationId) {
@@ -215,6 +250,24 @@
   }
 
   window.MeldexStandaloneOfflineOutbox = { install, flush, readQueue };
+  let closeContractRegistered = false;
+  function registerCloseContract() {
+    if (closeContractRegistered || !window.MeldexStandaloneCloseGuard?.register) return;
+    closeContractRegistered = true;
+    window.MeldexStandaloneCloseGuard.register({
+      appId: 'offline-outbox',
+      getCloseState,
+      flushLocal,
+      async flushFinal() {
+        if (!await flushLocal()) return false;
+        if (navigator.onLine !== false) await flush();
+        // リモート同期待ちでも、順序付きキューが端末に確定していれば閉じられる。
+        return flushLocal();
+      },
+    });
+  }
+  registerCloseContract();
+  window.addEventListener('meldex:standalone-close-guard-ready', registerCloseContract, { once: true });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });
   else install();
 })();

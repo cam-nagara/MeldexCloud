@@ -173,7 +173,25 @@
     return text.substring(0, 16);
   }
 
-  function field(name, labelText, type, rawValue) {
+  function field(name, labelText, type, rawValue, helpText) {
+    if (type === 'checkbox') {
+      // 保護トグル（再計算ロック/担当者固定/シフト固定）は他の設定行と別レイアウト
+      // （チェック+ラベルの横並び）にする（gb-check-help-row と同じ見た目にそろえる）。
+      const row = document.createElement('div');
+      row.className = 'gb-check-help-row gb-production-check-help-row';
+      const label = document.createElement('label');
+      label.className = 'gb-check gb-production-check';
+      const control = document.createElement('input');
+      control.type = 'checkbox';
+      control.checked = String(rawValue || '').trim().toLowerCase() === 'true';
+      control.dataset.propName = name;
+      const caption = document.createElement('span');
+      caption.textContent = labelText;
+      label.append(control, caption);
+      row.appendChild(label);
+      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText));
+      return { label: row, value: () => (control.checked ? 'true' : 'false'), controls: [control] };
+    }
     const label = document.createElement('label');
     label.className = 'gb-production-sidebar-field';
     const caption = document.createElement('span');
@@ -248,14 +266,63 @@
       control = document.createElement('input');
       control.type = type;
       if (type === 'number') {
-        control.step = name === '目標作業時間_値' ? '0.25' : '1';
+        const isHoursField = /時間/.test(name);
+        control.step = isHoursField ? '0.25' : '1';
         if (name === '目標作業時間_値') control.min = '0.25';
+        if (name === '対象数') control.min = '1';
       }
     }
-    control.value = rawValue || (type === 'color' ? '#569cd6' : '');
+    control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
     label.appendChild(control);
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
+  }
+
+  // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間
+  // （目標作業時間_値）は再計算エンジン・同期フックが更新する自動列のため読み取り専用表示に
+  // 統一する（タスクリスト側の計算列と同じ扱い。gb-db-computed-columns.js 参照）。
+  function formatScheduleHoursDisplay(raw) {
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    const rounded = Math.round(num * 10) / 10;
+    return `${rounded}h`;
+  }
+
+  function formatScheduleRangeDisplay(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return '';
+    const [startRaw, endRaw] = text.split('|');
+    const start = dateInputValue(startRaw).replace('T', ' ');
+    const end = dateInputValue(endRaw).replace('T', ' ');
+    if (!start && !end) return '';
+    if (start && end) {
+      const sameDay = start.slice(0, 10) === end.slice(0, 10);
+      return sameDay ? `${start}〜${end.slice(11)}` : `${start}〜${end}`;
+    }
+    return start || end;
+  }
+
+  function readOnlyField(labelText, displayText, options = {}) {
+    const wrap = document.createElement('div');
+    wrap.className = 'gb-production-sidebar-field gb-production-sidebar-readonly';
+    wrap.dataset.e2eId = options.e2eId || '';
+    const caption = document.createElement('span');
+    caption.textContent = labelText;
+    wrap.appendChild(caption);
+    const value = document.createElement('div');
+    value.className = 'gb-production-sidebar-readonly-value';
+    value.textContent = displayText || '未設定';
+    if (options.warning) {
+      const warn = document.createElement('span');
+      warn.className = 'gb-production-sidebar-readonly-warning';
+      warn.textContent = '⚠';
+      warn.title = options.warning;
+      warn.setAttribute('aria-label', options.warning);
+      value.appendChild(document.createTextNode(' '));
+      value.appendChild(warn);
+    }
+    wrap.appendChild(value);
+    return wrap;
   }
 
   // 選択肢が非同期で届く間もフィールドの識別子(DOM要素)は差し替えない。
@@ -461,9 +528,9 @@
     const controls = new Map();
     const fieldControls = [];
     const managedSelectQueue = []; // { item, managedKey } — 開いた後に非同期で選択肢を補う
-    const buildField = (name, label, type, managedKey, rawValueOverride) => {
+    const buildField = (name, label, type, managedKey, rawValueOverride, helpText) => {
       const rawValue = rawValueOverride !== undefined ? rawValueOverride : prop(row, name);
-      const item = field(name, label, type, rawValue);
+      const item = field(name, label, type, rawValue, helpText);
       controls.set(name, item);
       form.appendChild(item.label);
       fieldControls.push(...(item.controls || []));
@@ -483,11 +550,33 @@
     buildField('作業対象リスト', '作業対象', 'managed-select', 'targets');
     buildField('作業内容リスト', '作業内容', 'managed-select', 'contents');
     buildField('作業規模リスト', '作業規模', 'managed-select', 'scales');
-    buildField('作業予定日時', '予定日時', 'range');
-    buildField('目標作業時間_値', '目標時間（時間）', 'number');
+    buildField('対象数', '対象数', 'number');
+    // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間は
+    // 再計算エンジン・同期フックが更新する自動列のため読み取り専用表示にする（編集フォームの
+    // controls/changedProperties には含めない＝保存対象外）。
+    const scheduleReason = prop(row, 'シフト割当不能理由');
+    const scheduleText = [
+      formatScheduleRangeDisplay(prop(row, '作業予定日時')),
+      formatScheduleHoursDisplay(prop(row, '作業予定時間')) ? `（${formatScheduleHoursDisplay(prop(row, '作業予定時間'))}）` : '',
+    ].filter(Boolean).join(' ');
+    form.appendChild(readOnlyField('予定', scheduleText, {
+      e2eId: 'gb-production-task-detail-schedule',
+      warning: scheduleReason ? `シフト割当不能: ${scheduleReason}` : '',
+    }));
+    form.appendChild(readOnlyField('目標時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
+      e2eId: 'gb-production-task-detail-target-hours',
+    }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
+    buildField('作業時間_実績', '実績（時間）', 'number');
+    buildField('開始日時', '開始日時', 'datetime-local');
+    buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
+    // 保護トグル（再計算ロック/担当者固定/シフト固定）。カレンダー上のドラッグ移動・
+    // リサイズ（§6-4）は書き戻し時に「シフト固定」を自動付与する。
+    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは割当再計算で動かなくなります');
+    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、割当再計算でも担当者が変わりません');
+    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は割当再計算で動かなくなります');
     fieldControls.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     const initialValues = new Map(Array.from(controls, ([name, item]) => [name, String(item.value() ?? '')]));
     managedSelectQueue.forEach(({ item, managedKey }) => {
@@ -668,7 +757,11 @@
     delete context.eventRequestId;
     const content = buildShell(body, state, context);
     if (state.mode === 'detail') {
-      if (options.taskListSurface === true || component?._surface === 'productionTasks') taskListSurfaceNotice(content);
+      // forceDetail: 埋め込みシート表そのものが編集場所になる作品別タブとは異なり、
+      // 「すべて」タブのフラット表はセル直接編集を持たない（第一段階の設計）ため、行クリック
+      // からはこのタスクリスト面上でも実際の編集フォームを開く必要がある
+      // （gb-tool-calendar-production-all-view.js の onOpenTask 経由）。
+      if (options.forceDetail !== true && (options.taskListSurface === true || component?._surface === 'productionTasks')) taskListSurfaceNotice(content);
       else taskDetail(content, state.row, context);
     }
     else if (state.mode === 'templates') {
@@ -686,7 +779,7 @@
     }
   }
 
-  function openTask(row, component) {
+  function openTask(row, component, options = {}) {
     const body = optionBody(true);
     if (!body) {
       status('制作管理の詳細パネルを開けませんでした', true);
@@ -694,7 +787,8 @@
     }
     const current = STATE.get(body);
     const sameRow = !!current && current.mode === 'detail' && rowIdentity(current.row) === rowIdentity(row);
-    runAfterDiscardConfirmation(body, sameRow, () => render(body, { mode: 'detail', row, component }));
+    const forceDetail = options.forceDetail === true;
+    runAfterDiscardConfirmation(body, sameRow, () => render(body, { mode: 'detail', row, component, forceDetail }));
   }
 
   function syncTask(row, component) {

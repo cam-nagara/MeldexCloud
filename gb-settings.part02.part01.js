@@ -157,6 +157,7 @@ const UI_STYLE_SECTIONS = {
     { label: '矩形選択', bg:'--bd-select-rect-color', text:'矩形選択' },
     { label: 'グループ', line:'--bd-group-color', text:'━━' },
     { label: 'アンカー', line:'--bd-anchor-color', text:'━━' },
+    { label: 'リンク種別', fg:'--bd-link-type-icon-color', text:'▣' },
     { label: 'カーソル', fg:'--bd-caret-color', width:'--bd-caret-width', text:'┃' },
     { label: 'カード隙間', numbers:[
       { label:'同階層', key:'--bd-gap-siblings', min:0, max:400, step:1, unit:'px', fallback:10 },

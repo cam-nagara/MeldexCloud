@@ -1,7 +1,7 @@
 /* gb-scriptnote-document.js: シナリオ文書の正規化・旧データ移行・直列化 */
 
 const SCRIPTNOTE_DEFAULT_LAYOUT_MODE = 'manga';
-const SCRIPTNOTE_SCHEMA_VERSION = 2;
+const SCRIPTNOTE_SCHEMA_VERSION = 3;
 const SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE = {
   manga: ['めくり', '改ページ', '柱'],
   drama: ['シーン見出し', '場面転換', '柱'],
@@ -13,6 +13,10 @@ const SCRIPTNOTE_DEFAULT_TYPE_BG = '#333333';
 
 function _scriptNotePlainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function _scriptNoteRoleModel() {
+  return typeof globalThis !== 'undefined' ? globalThis.GBScriptNoteRoleModel : null;
 }
 
 function _scriptNoteLayoutOrDefault(layout) {
@@ -27,13 +31,23 @@ function _scriptNoteNormalizeRows(rows, now) {
       ...item,
       id: item.id || `sn-${now}-${index}`,
       role: String(item.role || ''),
+      ...(item.roleRef && typeof item.roleRef === 'object'
+        ? { roleRef: { ...item.roleRef } }
+        : (!item.role ? { roleRef: { kind: 'none', id: 'none' } } : {})),
       status: String(item.status || ''),
       text: String(item.text || ''),
       columns: _scriptNotePlainObject(item.columns),
     };
   }) : [];
   if (normalized.length) return normalized;
-  return [{ id: `sn-${now}-0`, role: '', status: '', text: '', columns: {} }];
+  return [{
+    id: `sn-${now}-0`,
+    role: '',
+    roleRef: { kind: 'none', id: 'none' },
+    status: '',
+    text: '',
+    columns: {},
+  }];
 }
 
 function createScriptNoteDefaultType() {
@@ -44,6 +58,35 @@ function createScriptNoteDefaultType() {
     roleStyle: { bgColor: SCRIPTNOTE_DEFAULT_TYPE_BG },
     textStyle: { bgColor: SCRIPTNOTE_DEFAULT_TYPE_BG },
   };
+}
+
+function createScriptNoteNoneType() {
+  return {
+    isRoleNone: true,
+    name: '',
+    gutterStyle: { bgColor: 'transparent' },
+    gutter2Style: { bgColor: 'transparent' },
+  };
+}
+
+function ensureScriptNoteNoneType(editor) {
+  const target = _scriptNotePlainObject(editor);
+  let current = _scriptNotePlainObject(target.noneType);
+  if (current !== target.noneType) {
+    current = createScriptNoteNoneType();
+    target.noneType = current;
+  }
+  current.isRoleNone = true;
+  current.name = '';
+  ['gutterStyle', 'gutter2Style'].forEach((key) => {
+    let style = _scriptNotePlainObject(current[key]);
+    if (style !== current[key]) {
+      style = {};
+      current[key] = style;
+    }
+    if (!Object.prototype.hasOwnProperty.call(style, 'bgColor')) style.bgColor = 'transparent';
+  });
+  return current;
 }
 
 function ensureScriptNoteDefaultType(editor) {
@@ -88,7 +131,8 @@ function _scriptNoteStylesEqual(left, right) {
 function _scriptNoteMigrateUnifiedGutterStyles(doc) {
   if (!doc || typeof doc !== 'object') return;
   const editor = _scriptNotePlainObject(doc.editor);
-  const characters = Array.isArray(doc.characters) ? doc.characters : [];
+  const characters = Array.isArray(doc.scenarioTypes) && doc.scenarioTypes.length ? doc.scenarioTypes
+    : (Array.isArray(doc.characters) ? doc.characters : []);
   const countConfig = _scriptNotePlainObject(editor.countConfig);
   const columnStyles = _scriptNotePlainObject(editor.columnStyles);
   const columnAllRules = _scriptNotePlainObject(editor.columnAllRules);
@@ -138,10 +182,15 @@ function _scriptNoteMigrateUnifiedGutterStyles(doc) {
 }
 
 function createScriptNoteDoc(parsed = {}, options = {}) {
-  const src = _scriptNotePlainObject(parsed);
+  const input = _scriptNotePlainObject(parsed);
+  const roleModel = _scriptNoteRoleModel();
+  const src = roleModel
+    ? roleModel.normalizeDocument(input, options.roleModelOptions || {})
+    : input;
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const editor = { wrapMode: true, statusEnabled: false, ..._scriptNotePlainObject(src.editor) };
   ensureScriptNoteDefaultType(editor);
+  ensureScriptNoteNoneType(editor);
   if (editor.baseTextLineHeight != null && editor.baseTextLineHeight !== '') {
     if (editor.baseTextLineHeightH == null || editor.baseTextLineHeightH === '') editor.baseTextLineHeightH = editor.baseTextLineHeight;
     if (editor.baseTextLineHeightV == null || editor.baseTextLineHeightV === '') editor.baseTextLineHeightV = editor.baseTextLineHeight;
@@ -162,6 +211,7 @@ function createScriptNoteDoc(parsed = {}, options = {}) {
     layoutMode: _scriptNoteLayoutOrDefault(src.layoutMode),
     // wrapMode の既定値は true。ツールバー状態と保存形式を一致させる。
     editor,
+    scenarioTypes: Array.isArray(src.scenarioTypes) ? src.scenarioTypes : [],
     characters: Array.isArray(src.characters) ? src.characters : [],
     characterDb: Array.isArray(src.characterDb) ? src.characterDb : [],
     notes: Array.isArray(src.notes) ? src.notes : [],
@@ -182,10 +232,12 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
     : (() => 'dialogue');
   const layoutMode = _scriptNoteLayoutOrDefault(doc.layoutMode);
   const legacyBreakNames = SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE[layoutMode] || SCRIPTNOTE_LEGACY_PAGE_BREAK_BY_MODE[SCRIPTNOTE_DEFAULT_LAYOUT_MODE];
-  const characters = Array.isArray(doc.characters) ? doc.characters : [];
+  const characters = Array.isArray(doc.scenarioTypes) && doc.scenarioTypes.length ? doc.scenarioTypes
+    : (Array.isArray(doc.characters) ? doc.characters : []);
   const editor = _scriptNotePlainObject(doc.editor);
   doc.editor = editor;
   ensureScriptNoteDefaultType(editor);
+  ensureScriptNoteNoneType(editor);
 
   characters.forEach((chara) => {
     const item = _scriptNotePlainObject(chara);
@@ -225,6 +277,8 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   }
 
   _scriptNoteMigrateUnifiedGutterStyles(doc);
+  const roleModel = _scriptNoteRoleModel();
+  if (roleModel) roleModel.ensureDocument(doc, options.roleModelOptions || {});
 
   return doc;
 }
@@ -239,13 +293,25 @@ function _scriptNoteSerializedCharacters(doc) {
   });
 }
 
+function _scriptNoteSerializedTypes(doc) {
+  const types = Array.isArray(doc?.scenarioTypes) ? doc.scenarioTypes : [];
+  return types.map(item => {
+    const type = { ..._scriptNotePlainObject(item) };
+    for (const key of ['gutterStyle', 'gutter2Style', 'roleStyle', 'textStyle', 'customStyles']) {
+      if (type[key]) type[key] = { ..._scriptNotePlainObject(type[key]) };
+    }
+    return type;
+  });
+}
+
 function serializeScriptNoteDoc(doc) {
   if (!doc || typeof doc !== 'object') return null;
   if (typeof MeldexRubyPresentation !== 'undefined') MeldexRubyPresentation.ensureDocument(doc);
   if (!doc.editor || typeof doc.editor !== 'object' || Array.isArray(doc.editor)) doc.editor = {};
   ensureScriptNoteDefaultType(doc.editor);
+  ensureScriptNoteNoneType(doc.editor);
   _scriptNoteMigrateUnifiedGutterStyles(doc);
-  return {
+  const serialized = {
     ...doc,
     fileType: doc.fileType || (typeof SCRIPTNOTE_FILE_TYPE !== 'undefined' ? SCRIPTNOTE_FILE_TYPE : 'meldex-scriptnote'),
     schema_version: Math.max(
@@ -257,6 +323,7 @@ function serializeScriptNoteDoc(doc) {
     layoutMode: _scriptNoteLayoutOrDefault(doc.layoutMode),
     editor: { ..._scriptNotePlainObject(doc.editor) },
     // 全体既定は editor.columnStyles、タイプ別上書きは各タイプのスタイルへ分離して保存する。
+    scenarioTypes: _scriptNoteSerializedTypes(doc),
     characters: _scriptNoteSerializedCharacters(doc),
     characterDb: Array.isArray(doc.characterDb) ? doc.characterDb : [],
     notes: Array.isArray(doc.notes) ? doc.notes : [],
@@ -267,6 +334,8 @@ function serializeScriptNoteDoc(doc) {
     rows: _scriptNoteNormalizeRows(doc.rows, Date.now()),
     source: _scriptNotePlainObject(doc.source),
   };
+  const roleModel = _scriptNoteRoleModel();
+  return roleModel ? roleModel.prepareForSave(serialized) : serialized;
 }
 
 function createScriptNoteRowIdSet(doc) {

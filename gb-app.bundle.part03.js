@@ -1,3 +1,11 @@
+      } catch (e) {
+        navNavigating = false;
+        throw e;
+      }
+      _refreshPaneNavUi(navState.paneId);
+      _persistPaneNavState(navState);
+      closeDropdown(false);
+    });
     dd.appendChild(item);
   });
   const anchor = e.currentTarget || e.target?.closest?.('button') || e.target;
@@ -82,682 +90,6 @@ window.addEventListener('mousedown', (e) => {
 }, true);
 window.addEventListener('mouseup', _handlePointerNavigationButtons, true);
 window.addEventListener('pointercancel', () => { _pointerNavPaneId = null; }, true);
-
-// DB表示設定（シートメタデータを正、localStorageを即時キャッシュとして使う）
-const _dbViewConfigBackendSaveTimers = new Map();
-const _dbViewConfigBackendSaveRunners = new Map();
-const _dbViewConfigBackendSavePromises = new Map();
-
-function getDbViewConfigStorageKey(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  return 'dbViewConfig:' + (fileId || dbPath || '');
-}
-function _isDbViewPlainObject(value) {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-function _cloneDbViewValue(value, fallback) {
-  if (value == null) return fallback;
-  try {
-    return typeof structuredClone === 'function'
-      ? structuredClone(value)
-      : JSON.parse(JSON.stringify(value));
-  } catch {
-    try { return JSON.parse(JSON.stringify(value)); } catch { return fallback; }
-  }
-}
-function _cloneDbViewArray(value) {
-  return Array.isArray(value) ? _cloneDbViewValue(value, []) : [];
-}
-function _cloneDbViewObject(value) {
-  return _isDbViewPlainObject(value) ? _cloneDbViewValue(value, {}) : {};
-}
-function _hasDbViewArrayState(value) {
-  return Array.isArray(value) && value.length > 0;
-}
-function _hasDbViewObjectState(value) {
-  return _isDbViewPlainObject(value) && Object.keys(value).length > 0;
-}
-function _normalizeDbViewModeValue(mode) {
-  const value = String(mode || '').trim();
-  return ['pivot', 'tree', 'gallery', 'kanban', 'calendar', 'timeline', 'chart', 'graph', 'form'].includes(value)
-    ? value
-    : 'pivot';
-}
-function _normalizeDbTimelineTypeSpecific(timeline) {
-  const src = _cloneDbViewObject(timeline);
-  const out = {
-    timeProp: String(src.timeProp || ''),
-    endProp: String(src.endProp || ''),
-    rowProp: String(src.rowProp || '_entity'),
-    scale: String(src.scale || 'day'),
-    direction: String(src.direction || 'horizontal'),
-    displayStart: String(src.displayStart || ''),
-    displayEnd: String(src.displayEnd || ''),
-    timeStepMinutes: Math.max(1, Math.round(Number(src.timeStepMinutes || 1) || 1)),
-    calendarSystemId: String(src.calendarSystemId || 'gregorian'),
-    ...src,
-  };
-  out.colWidths = _cloneDbViewObject(src.colWidths);
-  out.rowHeights = _cloneDbViewObject(src.rowHeights);
-  out.cardProps = _cloneDbViewArray(src.cardProps);
-  out.calendarSystems = _cloneDbViewArray(src.calendarSystems);
-  out.displayStart = String(out.displayStart || '');
-  out.displayEnd = String(out.displayEnd || '');
-  out.timeStepMinutes = Math.max(1, Math.round(Number(out.timeStepMinutes || 1) || 1));
-  out.calendarSystemId = String(out.calendarSystemId || 'gregorian');
-  out.cardImageThumbCount = Math.max(1, Math.min(12, Math.round(Number(out.cardImageThumbCount || 3) || 3)));
-  out.cardPropLineCount = Math.max(1, Math.min(20, Math.round(Number(out.cardPropLineCount || 1) || 1)));
-  return out;
-}
-function _makeLegacyDbSavedView(cfg) {
-  const viewMode = _normalizeDbViewModeValue(cfg.currentViewMode || 'pivot');
-  return {
-    name: typeof _defaultDbSavedViewName === 'function' ? _defaultDbSavedViewName(viewMode, 0) : 'テーブル',
-    viewMode,
-    hiddenCols: _cloneDbViewArray(cfg.hiddenCols),
-    pinnedCols: _cloneDbViewArray(cfg.pinnedCols),
-    colOrder: cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null),
-    advancedFilters: _cloneDbViewArray(cfg.advancedFilters),
-    columnValueFilters: _cloneDbViewObject(cfg.columnValueFilters),
-    conditionalFormat: !!cfg.conditionalFormat,
-    conditionalColors: _cloneDbViewObject(cfg.conditionalColors),
-    filter: 'disabled',
-    sortConfig: cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null),
-    manualOrder: cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null),
-    showFooter: !!cfg.showFooter,
-    entityColumnPinned: cfg.entityColumnPinned !== false,
-    countTypes: _cloneDbViewObject(cfg.countTypes),
-    colWidths: _cloneDbViewObject(cfg.colWidths),
-    thumbnailSize: cfg.thumbnailSize || 'small',
-    typeSpecific: {
-      pivot: { groupBy: cfg.groupBy || null },
-      gallery: {},
-      kanban: { groupBy: cfg.kanbanGroupBy || '_status' },
-      calendar: { mapping: _cloneDbViewObject(cfg.calendarMapping) },
-      timeline: _normalizeDbTimelineTypeSpecific(cfg.timeline),
-      chart: _cloneDbViewObject(cfg.chartConfig),
-      graph: _cloneDbViewObject(cfg.graphConfig),
-      form: { formConfig: cfg.formConfig == null ? null : _cloneDbViewValue(cfg.formConfig, null) },
-    },
-  };
-}
-function _ensureDbViewTypeSpecific(view, cfg) {
-  const current = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
-  view.typeSpecific = current;
-  if (!_isDbViewPlainObject(current.pivot)) current.pivot = {};
-  if (current.pivot.groupBy == null) current.pivot.groupBy = view.groupBy || cfg.groupBy || null;
-  if (!_isDbViewPlainObject(current.tree)) current.tree = {};
-  if (!_isDbViewPlainObject(current.gallery)) current.gallery = {};
-  if (!_isDbViewPlainObject(current.kanban)) current.kanban = {};
-  if (current.kanban.groupBy == null) current.kanban.groupBy = view.kanbanGroupBy || cfg.kanbanGroupBy || '_status';
-  if (!_isDbViewPlainObject(current.calendar)) current.calendar = {};
-  if (!_isDbViewPlainObject(current.calendar.mapping)) current.calendar.mapping = _cloneDbViewObject(cfg.calendarMapping);
-  current.timeline = _normalizeDbTimelineTypeSpecific(current.timeline || cfg.timeline);
-  if (!_isDbViewPlainObject(current.chart)) current.chart = _cloneDbViewObject(cfg.chartConfig);
-  if (!_isDbViewPlainObject(current.graph)) current.graph = _cloneDbViewObject(cfg.graphConfig);
-  if (!_isDbViewPlainObject(current.form)) current.form = {};
-  if (current.form.formConfig == null) {
-    current.form.formConfig = view.formConfig != null
-      ? _cloneDbViewValue(view.formConfig, null)
-      : (cfg.formConfig != null ? _cloneDbViewValue(cfg.formConfig, null) : null);
-  }
-}
-function _normalizeSavedDbViewForV2(view, cfg, index) {
-  const v = _isDbViewPlainObject(view) ? view : {};
-  v.viewMode = _normalizeDbViewModeValue(v.viewMode || cfg.currentViewMode || 'pivot');
-  if (!String(v.name || '').trim()) {
-    v.name = typeof _defaultDbSavedViewName === 'function'
-      ? _defaultDbSavedViewName(v.viewMode, index)
-      : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
-  }
-  if (v.hiddenCols == null) v.hiddenCols = _cloneDbViewArray(cfg.hiddenCols);
-  else v.hiddenCols = _cloneDbViewArray(v.hiddenCols);
-  if (v.pinnedCols == null) v.pinnedCols = _cloneDbViewArray(cfg.pinnedCols);
-  else v.pinnedCols = _cloneDbViewArray(v.pinnedCols);
-  if (v.colOrder == null) v.colOrder = cfg.colOrder == null ? null : _cloneDbViewValue(cfg.colOrder, null);
-  else v.colOrder = _cloneDbViewValue(v.colOrder, null);
-  if (v.advancedFilters == null) v.advancedFilters = _cloneDbViewArray(cfg.advancedFilters);
-  else v.advancedFilters = _cloneDbViewArray(v.advancedFilters);
-  if (v.columnValueFilters == null) v.columnValueFilters = _cloneDbViewObject(cfg.columnValueFilters);
-  else v.columnValueFilters = _cloneDbViewObject(v.columnValueFilters);
-  if (v.conditionalFormat == null) v.conditionalFormat = !!cfg.conditionalFormat;
-  else v.conditionalFormat = !!v.conditionalFormat;
-  if (v.conditionalColors == null) v.conditionalColors = _cloneDbViewObject(cfg.conditionalColors);
-  else v.conditionalColors = _cloneDbViewObject(v.conditionalColors);
-  if (v.filter == null) v.filter = 'disabled';
-  if (v.sortConfig == null) v.sortConfig = cfg.sortConfig == null ? null : _cloneDbViewValue(cfg.sortConfig, null);
-  else v.sortConfig = _cloneDbViewValue(v.sortConfig, null);
-  if (v.manualOrder == null) v.manualOrder = cfg.manualOrder == null ? null : _cloneDbViewValue(cfg.manualOrder, null);
-  else v.manualOrder = _cloneDbViewValue(v.manualOrder, null);
-  if (v.showFooter == null) v.showFooter = !!cfg.showFooter;
-  else v.showFooter = !!v.showFooter;
-  if (v.entityColumnPinned == null) v.entityColumnPinned = cfg.entityColumnPinned !== false;
-  else v.entityColumnPinned = v.entityColumnPinned !== false;
-  if (v.countTypes == null) v.countTypes = _cloneDbViewObject(cfg.countTypes);
-  else v.countTypes = _cloneDbViewObject(v.countTypes);
-  if (v.colWidths == null) v.colWidths = _cloneDbViewObject(cfg.colWidths);
-  else v.colWidths = _cloneDbViewObject(v.colWidths);
-  if (v.thumbnailSize == null) v.thumbnailSize = cfg.thumbnailSize || 'small';
-  _ensureDbViewTypeSpecific(v, cfg);
-  return v;
-}
-function _hasLegacyDbViewState(cfg) {
-  return _hasDbViewArrayState(cfg.hiddenCols)
-    || _hasDbViewArrayState(cfg.pinnedCols)
-    || _hasDbViewArrayState(cfg.colOrder)
-    || _hasDbViewArrayState(cfg.advancedFilters)
-    || _hasDbViewObjectState(cfg.columnValueFilters)
-    || _hasDbViewObjectState(cfg.conditionalColors)
-    || _hasDbViewObjectState(cfg.countTypes)
-    || _hasDbViewObjectState(cfg.colWidths)
-    || !!cfg.conditionalFormat
-    || !!cfg.groupBy
-    || !!cfg.kanbanGroupBy
-    || !!cfg.chartConfig
-    || !!cfg.graphConfig
-    || !!cfg.timeline
-    || !!cfg.formConfig
-    || !!cfg.calendarMapping
-    || !!cfg.sortConfig
-    || !!cfg.manualOrder
-    || cfg.showFooter === true
-    || cfg.entityColumnPinned === false
-    || (cfg.thumbnailSize && cfg.thumbnailSize !== 'small')
-    || (cfg.currentViewMode && cfg.currentViewMode !== 'pivot');
-}
-function _hasDbViewMeaningfulValue(value) {
-  if (Array.isArray(value)) return value.length > 0;
-  if (_isDbViewPlainObject(value)) return Object.values(value).some(_hasDbViewMeaningfulValue);
-  return value !== null && value !== undefined && value !== '' && value !== false;
-}
-function _hasMeaningfulDbTimelineState(timeline) {
-  if (!_isDbViewPlainObject(timeline)) return false;
-  if (String(timeline.timeProp || '')) return true;
-  if (String(timeline.endProp || '')) return true;
-  if (String(timeline.rowProp || '_entity') !== '_entity') return true;
-  if (String(timeline.scale || 'day') !== 'day') return true;
-  if (String(timeline.direction || 'horizontal') !== 'horizontal') return true;
-  if (String(timeline.displayStart || '')) return true;
-  if (String(timeline.displayEnd || '')) return true;
-  if (Math.max(1, Math.round(Number(timeline.timeStepMinutes || 1) || 1)) !== 1) return true;
-  if (String(timeline.calendarSystemId || 'gregorian') !== 'gregorian') return true;
-  if (Math.max(1, Math.min(12, Math.round(Number(timeline.cardImageThumbCount || 3) || 3))) !== 3) return true;
-  if (Math.max(1, Math.min(20, Math.round(Number(timeline.cardPropLineCount || 1) || 1))) !== 1) return true;
-  if (_hasDbViewObjectState(timeline.colWidths)) return true;
-  if (_hasDbViewObjectState(timeline.rowHeights)) return true;
-  if (_hasDbViewArrayState(timeline.cardProps)) return true;
-  if (_hasDbViewArrayState(timeline.calendarSystems)) return true;
-  const defaults = new Set([
-    'timeProp', 'endProp', 'rowProp', 'scale', 'direction', 'displayStart', 'displayEnd',
-    'timeStepMinutes', 'calendarSystemId', 'colWidths', 'rowHeights', 'cardProps', 'calendarSystems',
-    'cardImageThumbCount', 'cardPropLineCount',
-  ]);
-  return Object.keys(timeline).some((key) => !defaults.has(key) && _hasDbViewMeaningfulValue(timeline[key]));
-}
-function _hasMeaningfulDbSavedViewState(view, index) {
-  if (!_isDbViewPlainObject(view)) return false;
-  const viewMode = _normalizeDbViewModeValue(view.viewMode || 'pivot');
-  if (viewMode !== 'pivot') return true;
-  const defaultName = typeof _defaultDbSavedViewName === 'function'
-    ? _defaultDbSavedViewName(viewMode, index)
-    : (index === 0 ? 'テーブル' : 'テーブル ' + (index + 1));
-  const name = String(view.name || '').trim();
-  if (name && name !== defaultName) return true;
-  if (_hasDbViewArrayState(view.hiddenCols) || _hasDbViewArrayState(view.pinnedCols)) return true;
-  if (_hasDbViewArrayState(view.colOrder) || _hasDbViewObjectState(view.colOrder)) return true;
-  if (_hasDbViewArrayState(view.advancedFilters)) return true;
-  if (_hasDbViewObjectState(view.columnValueFilters)) return true;
-  if (view.conditionalFormat === true || _hasDbViewObjectState(view.conditionalColors)) return true;
-  if (view.filter && view.filter !== 'disabled') return true;
-  if (_hasDbViewMeaningfulValue(view.sortConfig) || _hasDbViewMeaningfulValue(view.manualOrder)) return true;
-  if (view.showFooter === true || view.entityColumnPinned === false) return true;
-  if (_hasDbViewObjectState(view.countTypes) || _hasDbViewObjectState(view.colWidths)) return true;
-  if (view.thumbnailSize && view.thumbnailSize !== 'small') return true;
-  const typeSpecific = _isDbViewPlainObject(view.typeSpecific) ? view.typeSpecific : {};
-  if (typeSpecific.pivot?.groupBy) return true;
-  if (_hasDbViewObjectState(typeSpecific.tree)) return true;
-  if (typeSpecific.kanban?.groupBy && typeSpecific.kanban.groupBy !== '_status') return true;
-  if (_hasDbViewObjectState(typeSpecific.calendar?.mapping)) return true;
-  if (_hasMeaningfulDbTimelineState(typeSpecific.timeline)) return true;
-  if (_hasDbViewObjectState(typeSpecific.chart) || _hasDbViewObjectState(typeSpecific.graph)) return true;
-  return typeSpecific.form?.formConfig != null;
-}
-function _hasMeaningfulDbViewConfigState(cfg) {
-  if (!_isDbViewPlainObject(cfg)) return false;
-  if (_hasDbViewArrayState(cfg.deletedProps)) return true;
-  if (_hasLegacyDbViewState(cfg)) return true;
-  const views = Array.isArray(cfg.savedViews) ? cfg.savedViews : [];
-  if (views.length > 1) return true;
-  if (Number.isInteger(cfg.currentViewIdx) && cfg.currentViewIdx > 0) return true;
-  return views.some((view, index) => _hasMeaningfulDbSavedViewState(view, index));
-}
-function _migrateLegacyViewConfig(dbPath, cfg) {
-  const config = _isDbViewPlainObject(cfg) ? cfg : {};
-  if (!dbPath) return { cfg: config, changed: false };
-  if (config._viewMigrationV2Done === true) {
-    if (!Array.isArray(config.savedViews)) config.savedViews = [];
-    if (config.savedViews.length > 0
-      && (!Number.isInteger(config.currentViewIdx)
-        || config.currentViewIdx < 0
-        || config.currentViewIdx >= config.savedViews.length)) {
-      config.currentViewIdx = 0;
-      return { cfg: config, changed: true };
-    }
-    return { cfg: config, changed: false };
-  }
-
-  const legacyView = _makeLegacyDbSavedView(config);
-  const existingViews = Array.isArray(config.savedViews) ? config.savedViews : [];
-  config.savedViews = existingViews.map((view, index) => _normalizeSavedDbViewForV2(view, config, index));
-  if (config.savedViews.length === 0) {
-    config.savedViews.push(legacyView);
-    config.currentViewIdx = 0;
-  } else {
-    if (_hasLegacyDbViewState(config) && config.currentViewIdx === -1) {
-      config.savedViews.unshift(legacyView);
-      config.currentViewIdx = 0;
-    } else if (config.currentViewIdx === -1 || config.currentViewIdx == null) {
-      config.currentViewIdx = 0;
-    }
-    if (config.currentViewIdx < 0 || config.currentViewIdx >= config.savedViews.length) {
-      config.currentViewIdx = 0;
-    }
-  }
-  config._viewMigrationV2Done = true;
-  return { cfg: config, changed: true };
-}
-function _persistMigratedDbViewConfig(dbPath, cfg) {
-  try { localStorage.setItem(getDbViewConfigStorageKey(dbPath), JSON.stringify(cfg || {})); } catch {}
-}
-function _sanitizeDbViewConfigForBackend(cfg) {
-  const cleaned = _cloneDbViewObject(cfg);
-  // プロパティ型は property_types として別保存される。重複保存すると新旧形式がずれやすい。
-  if (Object.prototype.hasOwnProperty.call(cleaned, 'propertyTypes')) delete cleaned.propertyTypes;
-  return cleaned;
-}
-function _hasLocalDbViewConfigCache(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  const keys = [];
-  if (fileId) keys.push('dbViewConfig:' + fileId);
-  keys.push('dbViewConfig:' + (dbPath || ''));
-  return [...new Set(keys)].some((key) => {
-    try {
-      const value = localStorage.getItem(key);
-      if (value == null || String(value).trim() === '') return false;
-      return _hasMeaningfulDbViewConfigState(JSON.parse(value));
-    } catch {
-      return false;
-    }
-  });
-}
-function _persistDbViewConfigToBackend(dbPath, cfg, options = {}) {
-  if (!dbPath || typeof apiPut !== 'function') return Promise.resolve(false);
-  const payload = _sanitizeDbViewConfigForBackend(cfg);
-  const key = String(dbPath || '');
-  const writeBlocked = () => typeof isProductionManagementWriteBlocked === 'function'
-    && isProductionManagementWriteBlocked(dbPath, options.ctx);
-  if (writeBlocked()) return Promise.resolve(false);
-  const run = () => {
-    const previous = _dbViewConfigBackendSavePromises.get(key);
-    const promise = Promise.resolve(previous).catch(() => {}).then(() => (
-      writeBlocked() ? false : apiPut('/db-metadata?path=' + encodeURIComponent(dbPath), { view_config: payload })
-        .then(() => true)
-        .catch((error) => {
-          console.warn('[Meldex] シート表示設定を保存できませんでした', error);
-          return false;
-        })
-    ))
-      .finally(() => {
-        if (_dbViewConfigBackendSavePromises.get(key) === promise) {
-          _dbViewConfigBackendSavePromises.delete(key);
-        }
-      });
-    _dbViewConfigBackendSavePromises.set(key, promise);
-    return promise;
-  };
-  _dbViewConfigBackendSaveRunners.set(key, run);
-  if (_dbViewConfigBackendSaveTimers.has(key)) {
-    clearTimeout(_dbViewConfigBackendSaveTimers.get(key));
-    _dbViewConfigBackendSaveTimers.delete(key);
-  }
-  if (options.immediate === true) {
-    _dbViewConfigBackendSaveRunners.delete(key);
-    return run();
-  }
-  const timer = setTimeout(() => {
-    _dbViewConfigBackendSaveTimers.delete(key);
-    const pendingRun = _dbViewConfigBackendSaveRunners.get(key);
-    _dbViewConfigBackendSaveRunners.delete(key);
-    (pendingRun || run)();
-  }, 180);
-  _dbViewConfigBackendSaveTimers.set(key, timer);
-  return Promise.resolve(true);
-}
-function _hasPendingDbViewConfigBackendSave(dbPath) {
-  return _dbViewConfigBackendSaveTimers.has(String(dbPath || ''));
-}
-async function flushPendingDbViewConfigBackendSave(dbPath) {
-  const key = String(dbPath || '');
-  const timer = _dbViewConfigBackendSaveTimers.get(key);
-  if (timer) {
-    clearTimeout(timer);
-    _dbViewConfigBackendSaveTimers.delete(key);
-    const run = _dbViewConfigBackendSaveRunners.get(key);
-    _dbViewConfigBackendSaveRunners.delete(key);
-    if (run) await run();
-  }
-  const inFlight = _dbViewConfigBackendSavePromises.get(key);
-  if (inFlight) await Promise.resolve(inFlight).catch(() => {});
-  return true;
-}
-function getDbViewConfig(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  let cfg = {};
-  if (fileId) {
-    try { const v = localStorage.getItem('dbViewConfig:' + fileId); if (v) cfg = JSON.parse(v) || {}; } catch { cfg = {}; }
-  }
-  if (!fileId || Object.keys(cfg).length === 0) {
-    try {
-      const v = localStorage.getItem('dbViewConfig:' + (dbPath || ''));
-      if (v) cfg = JSON.parse(v) || {};
-    } catch {}
-  }
-  const migrated = _migrateLegacyViewConfig(dbPath, cfg);
-  const productionRepaired = typeof repairProductionManagementDbViewConfig === 'function'
-    && repairProductionManagementDbViewConfig(dbPath, migrated.cfg);
-  if (migrated.changed || productionRepaired) _persistMigratedDbViewConfig(dbPath, migrated.cfg);
-  return migrated.cfg;
-}
-function _dbViewConfigHistoryScope(dbPath) {
-  const fileId = _pathToFileId(dbPath);
-  if (fileId) return 'db:' + fileId;
-  if (dbPath) return 'db:' + String(dbPath).replace(/\\/g, '/');
-  return (typeof _historyActiveScope !== 'undefined') ? _historyActiveScope : '';
-}
-function _refreshDbViewConfigAfterHistory(dbPath) {
-  if (!dbPath) return;
-  // state.currentDbPath だけで判定すると、取り消し直前に対象タブへ切り替えた
-  // 直後（そのタブ自身の再読み込みがまだ state に追いついていないタイミング）に
-  // 「表示中でない」と誤判定して黙って何もしない事故が起きる（v0.7.056）。
-  // GBLayout上で実際にそのタブがアクティブかどうかも併せて確認する。
-  const isCurrentlyShown = state.currentDbPath === dbPath
-    || (typeof _dbFindActiveTabPaneForPath === 'function' && !!_dbFindActiveTabPaneForPath(dbPath));
-  if (!isCurrentlyShown) return;
-  const ctx = typeof _currentPaneState === 'function' ? _currentPaneState() : undefined;
-  if (typeof selectDatabase === 'function') {
-    Promise.resolve(selectDatabase(dbPath, ctx, {
-      silent: true,
-      skipRecent: true,
-      skipNavPush: true,
-      skipSaveLastView: true,
-      skipAutoVersion: true,
-    })).catch(() => {});
-  } else if (typeof renderPivot === 'function') {
-    renderPivot(ctx);
-  }
-}
-function captureDbViewConfigHistory(dbPath) {
-  if (typeof captureLocalStorageSettings !== 'function') return null;
-  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-    && isLocalStorageSettingsHistorySuppressed()) return null;
-  return captureLocalStorageSettings([getDbViewConfigStorageKey(dbPath)]);
-}
-function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, detail, onRestore) {
-  if (!beforeSnapshot || !afterSnapshot || typeof historyPush !== 'function'
-    || typeof restoreLocalStorageSettings !== 'function'
-    || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
-  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-    && isLocalStorageSettingsHistorySuppressed()) return false;
-  const snapshots = _normalizeLocalStorageSettingsSnapshots(beforeSnapshot, afterSnapshot);
-  let beforeKey = '';
-  let afterKey = '';
-  try {
-    beforeKey = JSON.stringify(snapshots.before);
-    afterKey = JSON.stringify(snapshots.after);
-  } catch {}
-  if (beforeKey && beforeKey === afterKey) return false;
-  const refresh = typeof onRestore === 'function'
-    ? onRestore
-    : () => _refreshDbViewConfigAfterHistory(dbPath);
-  const restoreViewConfigSnapshot = (snapshot) => {
-    const restored = restoreLocalStorageSettings(snapshot);
-    if (!restored) return false;
-    const finish = () => refresh(snapshot.keys || [], snapshot);
-    if (typeof _persistDbViewConfigToBackend === 'function') {
-      return _persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true })
-        .finally(finish);
-    }
-    return finish();
-  };
-  historyPush(
-    label || 'シート表示設定',
-    () => restoreViewConfigSnapshot(snapshots.before),
-    () => restoreViewConfigSnapshot(snapshots.after),
-    _dbViewConfigHistoryScope(dbPath),
-    detail || ''
-  );
-  return true;
-}
-function withDbViewConfigHistory(dbPath, label, mutator, detail, onRestore) {
-  const before = captureDbViewConfigHistory(dbPath);
-  const result = typeof mutator === 'function' ? mutator() : undefined;
-  const after = captureDbViewConfigHistory(dbPath);
-  pushDbViewConfigHistory(dbPath, label, before, after, detail, onRestore);
-  return result;
-}
-function saveDbViewConfig(dbPath, cfg, options = {}) {
-  const key = getDbViewConfigStorageKey(dbPath);
-  const label = options.historyLabel || options.label || '';
-  const before = (label && options.skipHistory !== true) ? captureDbViewConfigHistory(dbPath) : null;
-  localStorage.setItem(key, JSON.stringify(cfg || {}));
-  if (options.skipBackend !== true) {
-    _persistDbViewConfigToBackend(dbPath, cfg || {}, { immediate: options.flushBackend === true, ctx: options.ctx });
-  }
-  if (label && options.skipHistory !== true) {
-    pushDbViewConfigHistory(
-      dbPath,
-      label,
-      before,
-      captureDbViewConfigHistory(dbPath),
-      options.historyDetail || options.detail || '',
-      options.onRestore
-    );
-  }
-}
-function _getCurrentDbViewIndexFromConfig(cfg, options = {}) {
-  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
-  if (views.length === 0) return -1;
-  const ctxIdx = Number.isInteger(options?.ctx?.currentViewIdx) ? options.ctx.currentViewIdx : null;
-  const optIdx = Number.isInteger(options?.currentViewIdx) ? options.currentViewIdx : null;
-  const rawIdx = ctxIdx != null ? ctxIdx : (optIdx != null ? optIdx : (Number.isInteger(cfg.currentViewIdx) ? cfg.currentViewIdx : 0));
-  return rawIdx >= 0 && rawIdx < views.length ? rawIdx : 0;
-}
-function _getCurrentDbViewConfigEntryFromConfig(cfg, options = {}) {
-  const views = Array.isArray(cfg?.savedViews) ? cfg.savedViews : [];
-  const idx = _getCurrentDbViewIndexFromConfig(cfg, options);
-  if (idx < 0) return null;
-  return views[idx] || null;
-}
-function getCurrentDbViewConfigEntry(dbPath, options = {}) {
-  return _getCurrentDbViewConfigEntryFromConfig(getDbViewConfig(dbPath), options);
-}
-function getCurrentViewMode(dbPath, options = {}) {
-  return getCurrentDbViewConfigEntry(dbPath, options)?.viewMode || 'pivot';
-}
-function getCurrentDbViewTypeSpecific(dbPath, type, options = {}) {
-  const bucket = getCurrentDbViewConfigEntry(dbPath, options)?.typeSpecific?.[type];
-  return _isDbViewPlainObject(bucket) ? bucket : null;
-}
-function _saveCurrentDbViewField(dbPath, label, detail, options, mutator) {
-  const c = getDbViewConfig(dbPath);
-  const v = _getCurrentDbViewConfigEntryFromConfig(c, options);
-  if (!v || typeof mutator !== 'function') return false;
-  mutator(v, c);
-  saveDbViewConfig(dbPath, c, {
-    historyLabel: label || '',
-    historyDetail: detail || '',
-    skipHistory: options?.skipHistory === true || !label,
-    ctx: options?.ctx,
-  });
-  return true;
-}
-function setCurrentDbViewTypeSpecific(dbPath, type, value, options = {}) {
-  const label = options.historyLabel || options.label || '';
-  return _saveCurrentDbViewField(dbPath, label, options.detail || '', options, (v) => {
-    if (!_isDbViewPlainObject(v.typeSpecific)) v.typeSpecific = {};
-    v.typeSpecific[type] = _isDbViewPlainObject(value) ? value : {};
-  });
-}
-// 非表示カラム
-function getHiddenCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.hiddenCols || []; }
-function setHiddenCols(dbPath, cols, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 表示列', options.detail || '', options, (v) => { v.hiddenCols = cols; });
-}
-// ピン留めカラム
-function getPinnedCols(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.pinnedCols || []; }
-function setPinnedCols(dbPath, cols, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 固定列', options.detail || '', options, (v) => { v.pinnedCols = cols; });
-}
-// カウントタイプ
-function getCountTypes(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.countTypes || {}; }
-function setCountType(dbPath, prop, type, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計タイプ', options.detail || prop || '', options, (v) => {
-    if (!v.countTypes || typeof v.countTypes !== 'object' || Array.isArray(v.countTypes)) v.countTypes = {};
-    v.countTypes[prop] = type;
-  });
-}
-// カラム幅
-function getColWidths(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colWidths || {}; }
-function setColWidthPersist(dbPath, prop, w, options = {}) {
-  const label = options.historyLabel || options.label || '';
-  _saveCurrentDbViewField(dbPath, label, options.detail || prop || '', options, (v) => {
-    if (!v.colWidths || typeof v.colWidths !== 'object' || Array.isArray(v.colWidths)) v.colWidths = {};
-    v.colWidths[prop] = w;
-  });
-}
-// 条件付き書式ON/OFF
-function getConditionalFormat(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.conditionalFormat; }
-function setConditionalFormat(dbPath, on, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 条件付き書式', options.detail || (on ? '有効' : '無効'), options, (v) => { v.conditionalFormat = !!on; });
-}
-// 集計行
-function getShowFooter(dbPath, options = {}) { return !!getCurrentDbViewConfigEntry(dbPath, options)?.showFooter; }
-function setShowFooter(dbPath, on, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 集計行', options.detail || (on ? '表示' : '非表示'), options, (v) => { v.showFooter = !!on; });
-}
-// エントリ名列固定
-function getEntityColumnPinned(dbPath, options = {}) {
-  const view = getCurrentDbViewConfigEntry(dbPath, options);
-  return view ? view.entityColumnPinned !== false : true;
-}
-function setEntityColumnPinned(dbPath, on, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列固定', options.detail || (on ? '固定' : '解除'), options, (v) => { v.entityColumnPinned = on !== false; });
-}
-// エントリ名列の表示名（未設定ならパス由来の既定名を使う）
-function getEntityColumnLabel(dbPath, options = {}) {
-  const view = getCurrentDbViewConfigEntry(dbPath, options);
-  return view && typeof view.entityColumnLabel === 'string' ? view.entityColumnLabel.trim() : '';
-}
-function setEntityColumnLabel(dbPath, label, options = {}) {
-  const clean = String(label == null ? '' : label).trim();
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列名', options.detail || clean, options, (v) => {
-    if (clean) v.entityColumnLabel = clean; else delete v.entityColumnLabel;
-  });
-}
-// ステータス機能ON/OFF（既定OFF。OFF時は候補値追加・ステータスドット・一括編集ステータスを非表示）
-function getStatusEnabled(dbPath) { return getDbViewConfig(dbPath).statusEnabled === true; }
-function setStatusEnabled(dbPath, on, options = {}) {
-  const c = getDbViewConfig(dbPath);
-  c.statusEnabled = !!on;
-  saveDbViewConfig(dbPath, c, { historyLabel: options.label || 'シート表示: ステータス機能', historyDetail: options.detail || (on ? 'オン' : 'オフ'), skipHistory: options.skipHistory === true });
-}
-// サムネサイズ
-function getThumbnailSize(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.thumbnailSize || 'small'; }
-function setThumbnailSize(dbPath, size, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: サムネイル', options.detail || size || '', options, (v) => { v.thumbnailSize = size; });
-}
-// カラム順序
-function getColOrder(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.colOrder || null; }
-function setColOrder(dbPath, order, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 列順序', options.detail || '', options, (v) => { v.colOrder = order; });
-}
-// 並び替え
-function getDbSortConfig(dbPath, options = {}) {
-  const sc = getCurrentDbViewConfigEntry(dbPath, options)?.sortConfig;
-  return sc && typeof sc === 'object' && sc.key ? sc : null;
-}
-function setDbSortConfig(dbPath, sortConfig, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 並び替え', options.detail || '', options, (v) => {
-    if (sortConfig == null) delete v.sortConfig;
-    else v.sortConfig = _cloneDbViewValue(sortConfig, null);
-  });
-}
-// マニュアル行順序
-function getDbManualOrder(dbPath, options = {}) {
-  const order = getCurrentDbViewConfigEntry(dbPath, options)?.manualOrder;
-  return Array.isArray(order) ? order : null;
-}
-function setDbManualOrder(dbPath, order, sortConfig, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || '', options.detail || '', options, (v) => {
-    if (Array.isArray(order)) v.manualOrder = [...order];
-    else delete v.manualOrder;
-    if (sortConfig !== undefined) {
-      if (sortConfig == null) delete v.sortConfig;
-      else v.sortConfig = _cloneDbViewValue(sortConfig, null);
-    }
-  });
-}
-// 複数条件フィルタ
-function getAdvancedFilters(dbPath, options = {}) { return getCurrentDbViewConfigEntry(dbPath, options)?.advancedFilters || []; }
-function setAdvancedFilters(dbPath, filters, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 複数条件フィルタ', options.detail || '', options, (v) => { v.advancedFilters = filters; });
-}
-// 列ヘッダーメニューの値チェックフィルター（列ごとの選択値を保存）
-function getColumnValueFilters(dbPath, options = {}) {
-  const filters = getCurrentDbViewConfigEntry(dbPath, options)?.columnValueFilters;
-  return filters && typeof filters === 'object' && !Array.isArray(filters) ? filters : {};
-}
-function setColumnValueFilters(dbPath, filters, options = {}) {
-  return _saveCurrentDbViewField(dbPath, options.label || 'シート表示: 列の値フィルター', options.detail || '', options, (v) => {
-    v.columnValueFilters = _cloneDbViewObject(filters);
-  });
-}
-
-const _DEFAULT_STATUS_LIST = [
-  { name: '案',     color: '#ce9178' },
-  { name: '採用',   color: '#6fa8dc' },
-  { name: 'ボツ',   color: '#969696' },
-  { name: '掲載済み', color: '#6a9955' },
-];
-// DB単位のカスタムステータス取得
-function getStatusList(dbPath) {
-  if (dbPath) {
-    const cfg = getDbViewConfig(dbPath);
-    if (cfg.statusList && cfg.statusList.length > 0) return cfg.statusList;
-  }
-  return _DEFAULT_STATUS_LIST;
-}
-function setStatusList(dbPath, list) {
-  const cfg = getDbViewConfig(dbPath);
-  cfg.statusList = list;
-  saveDbViewConfig(dbPath, cfg, { historyLabel: 'シート表示: ステータス一覧' });
-}
-function _getStatusColor(statusName, dbPath) {
-  const list = getStatusList(dbPath);
-  const found = list.find(s => s.name === statusName);
-  if (found) return found.color;
-  // 後方互換フォールバック
-  if (STATUS_MAP[statusName]) return STATUS_MAP[statusName].color;
-  return list.length > 0 ? list[0].color : '#ce9178';
-}
-// 後方互換: 旧コードが STATUS_MAP/STATUS_LIST を参照する場合のフォールバック
-const STATUS_MAP = {
-  '掲載済み': { cls: 'st-published', color: '#6a9955' },
-  '採用':     { cls: 'st-adopted',   color: '#6fa8dc' },
-  '案':       { cls: 'st-draft',     color: '#ce9178' },
-  'ボツ':     { cls: 'st-rejected',  color: '#969696' },
-};
-const STATUS_LIST = ['案', '採用', 'ボツ', '掲載済み'];
 
 // esc() は meldex-core.js で定義済み
 function saveLastView(obj) {
@@ -898,3 +230,671 @@ function _apiFetchPerfInfo(path) {
   try {
     const url = new URL(String(path || ''), 'http://meldex.local');
     const endpoint = url.pathname || '';
+    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return null;
+    return {
+      endpoint,
+      label: 'api' + endpoint,
+      targetLabel: _perfTargetLabelFromPath(path),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const _apiFetchInFlightGets = new Map();
+const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
+const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
+const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
+// シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
+// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
+// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
+// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
+const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
+const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
+function _gbAppApiFetchDefaultTimeout(path) {
+  const pathname = String(path || '').split('?')[0];
+  return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
+    ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
+    : GB_APP_API_FETCH_TIMEOUT_MS;
+}
+const _gbAppApiFetchBrowseCache = new Map();
+let _gbAppApiFetchCacheGeneration = 0;
+
+function _gbAppApiFetchMethod(opts) {
+  return String(opts?.method || 'GET').toUpperCase();
+}
+
+function _gbAppApiFetchClonePayload(payload) {
+  if (typeof structuredClone === 'function') {
+    try { return structuredClone(payload); } catch {}
+  }
+  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
+}
+
+function _gbAppApiFetchCanonicalGetPath(path) {
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    const params = [...url.searchParams.entries()]
+      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
+    const query = params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+    return url.pathname + (query ? '?' + query : '');
+  } catch {
+    return String(path || '');
+  }
+}
+
+function _apiFetchInFlightKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.signal) return '';
+  const nonBenignKeys = Object.keys(opts || {}).filter(key => !['method', 'silentError', 'skipBrowseCache'].includes(key));
+  if (nonBenignKeys.length > 0) return '';
+  return _gbAppApiFetchCanonicalGetPath(path)
+    + '|silent=' + (opts?.silentError === true ? '1' : '0')
+    + '|skipBrowseCache=' + (opts?.skipBrowseCache === true ? '1' : '0');
+}
+
+function _gbAppApiFetchBrowseCacheKey(path, opts) {
+  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
+  try {
+    const url = new URL(String(path || ''), 'http://meldex.local');
+    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
+  } catch {
+    return '';
+  }
+}
+
+function _gbAppApiFetchInvalidateReadCaches() {
+  _gbAppApiFetchCacheGeneration += 1;
+  _gbAppApiFetchBrowseCache.clear();
+  _apiFetchInFlightGets.clear();
+  if (typeof _clearBrowseItemResolvedTypeCache === 'function') _clearBrowseItemResolvedTypeCache();
+}
+
+function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
+  _gbAppApiFetchBrowseCache.set(cacheKey, {
+    at: Date.now(),
+    payload: _gbAppApiFetchClonePayload(payload),
+  });
+  while (_gbAppApiFetchBrowseCache.size > GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES) {
+    const oldestKey = _gbAppApiFetchBrowseCache.keys().next().value;
+    if (!oldestKey) break;
+    _gbAppApiFetchBrowseCache.delete(oldestKey);
+  }
+}
+
+function _apiFetchBackendPerf(res) {
+  try {
+    const raw = res?.headers?.get?.('x-meldex-perf') || '';
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function _logPerfEvent(label, startedAt, detail) {
+  try {
+    const durationMs = _perfElapsedMs(startedAt);
+    const payload = {
+      ...(detail || {}),
+      message: `[perf] ${label}: ${durationMs}ms`,
+      perf: true,
+      label,
+      durationMs,
+    };
+    if (typeof console !== 'undefined' && typeof console.info === 'function') {
+      console.info('[Meldex perf] ' + payload.message, payload);
+    }
+    if (typeof _sendLog === 'function') _sendLog('info', payload);
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function _gbAppApiFetchIsAbortError(e) {
+  return !!e && (e.name === 'AbortError' || e.code === 20);
+}
+
+// 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
+// タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
+async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
+  const controller = new AbortController();
+  const externalSignal = requestOpts?.signal || null;
+  const fetchOpts = { ...(requestOpts || {}) };
+  delete fetchOpts.timeoutMs;
+  let timedOut = false;
+  let onExternalAbort = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      // 理由付きabortはfetchが通常Errorを投げるため、呼び出し元キャンセルを
+      // 通信障害と誤判定しないよう内部signalは標準AbortErrorへ正規化する。
+      controller.abort();
+    } else {
+      onExternalAbort = () => controller.abort();
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  try {
+    return await fetch(url, { ...fetchOpts, signal: controller.signal });
+  } catch (e) {
+    if (_gbAppApiFetchIsAbortError(e) && timedOut) {
+      const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
+      timeoutErr.name = 'AbortError';
+      timeoutErr.isTimeout = true;
+      throw timeoutErr;
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+    if (externalSignal && onExternalAbort) externalSignal.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+async function apiFetch(path, opts) {
+  const method = _gbAppApiFetchMethod(opts);
+  const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
+  const cacheGeneration = _gbAppApiFetchCacheGeneration;
+  if (browseCacheKey) {
+    const cached = _gbAppApiFetchBrowseCache.get(browseCacheKey);
+    if (cached && Date.now() - cached.at < GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS) {
+      return _gbAppApiFetchClonePayload(cached.payload);
+    }
+    _gbAppApiFetchBrowseCache.delete(browseCacheKey);
+  }
+  const inFlightKey = _apiFetchInFlightKey(path, opts);
+  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
+    return _gbAppApiFetchClonePayload(await _apiFetchInFlightGets.get(inFlightKey));
+  }
+  const perfInfo = _apiFetchPerfInfo(path);
+  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
+  const requestPromise = (async () => {
+    try {
+      let requestOpts = opts;
+      let retriedAfterMutation = false;
+      while (true) {
+        const requestedTimeout = Number(requestOpts?.timeoutMs);
+        const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+          ? Math.min(requestedTimeout, 300000)
+          : _gbAppApiFetchDefaultTimeout(path);
+        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
+            ...perfInfo,
+            status: res.status,
+            contentLength: res.headers?.get?.('content-length') || '',
+            retriedAfterMutation,
+          });
+        }
+        const backendPerf = _apiFetchBackendPerf(res);
+        if (!res.ok) {
+          let detail = res.statusText || '';
+          let payload = null;
+          try {
+            payload = await res.clone().json();
+            const rawDetail = payload?.error || payload?.detail || detail;
+            detail = rawDetail && typeof rawDetail === 'object'
+              ? (rawDetail.message || rawDetail.code || detail)
+              : rawDetail;
+          } catch {}
+          const error = new Error(`HTTP ${res.status}: ${detail}`);
+          error.status = res.status;
+          error.payload = payload;
+          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
+          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
+        }
+        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
+        const data = await res.json();
+        if (perfInfo) {
+          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
+            ...perfInfo,
+            backendPerf,
+            retriedAfterMutation,
+          });
+        }
+        // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
+        // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
+        if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
+          retriedAfterMutation = true;
+          requestOpts = { ...(opts || {}), skipBrowseCache: true, cache: 'reload' };
+          continue;
+        }
+        if (backendPerf && data && typeof data === 'object') {
+          try {
+            Object.defineProperty(data, '_backendPerf', {
+              value: backendPerf,
+              configurable: true,
+            });
+          } catch {}
+        }
+        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts);
+        if (method !== 'GET') {
+          _gbAppApiFetchInvalidateReadCaches();
+        } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
+          _gbAppApiFetchRememberBrowse(browseCacheKey, data);
+        }
+        if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf, retriedAfterMutation });
+        return data;
+      }
+    } catch (e) {
+      if (perfInfo) {
+        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
+          ...perfInfo,
+          error: e?.message || String(e),
+        });
+      }
+      const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
+      if (!opts?.silentError && !quietReadAbort) {
+        window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
+      }
+      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
+        if (quietReadAbort) {
+          // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
+          try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
+        } else {
+          const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
+          showStatus('エラー: ' + text, true);
+        }
+      }
+      throw e;
+    }
+  })();
+  if (inFlightKey) {
+    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
+    requestPromise.then(
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
+    );
+  }
+  return _gbAppApiFetchClonePayload(await requestPromise);
+}
+
+function _gbAppIsFullFileWrite(path, body) {
+  const pathname = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  return pathname === '/file' && body && typeof body === 'object'
+    && (Object.prototype.hasOwnProperty.call(body, 'content')
+      || Object.prototype.hasOwnProperty.call(body, 'content_base64'));
+}
+
+async function _gbAppPrepareFullFileWrite(path, body) {
+  const payload = { ...(body || {}) };
+  if (!_gbAppIsFullFileWrite(path, payload)) return payload;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const force = !!(payload.force_overwrite || payload.forceOverwrite);
+  const createOnly = !!(payload.create_only || payload.createOnly);
+  let revision = payload.transport_revision || payload.transportRevision
+    || payload.if_match_transport_revision || payload.if_match_etag || payload.ifMatchEtag || '';
+
+  if (revision && coordinator?.revisionTokenForWrite) {
+    payload.if_match_etag = coordinator.revisionTokenForWrite(revision);
+    return payload;
+  }
+  if (revision || force || createOnly) return payload;
+
+  // revision無しの旧呼び出し元を、保存直前に取得した「最新revision」で
+  // 延命してはいけない。古い本文へ最新revisionを付け直すと、読込後に別端末で
+  // 更新された内容をCASに成功させて上書きしてしまう。ここで許可する自動補完は、
+  // 保存先が存在しないことを確認できた時の create_only だけとする。
+  try {
+    const separator = String(path).includes('?') ? '&' : '?';
+    const current = await apiFetch(`${path}${separator}metadata_only=1`, { silentError: true });
+    coordinator?.bindDocumentIdentity?.(
+      new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current,
+    );
+    const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+    error.status = 428;
+    error.meldexCode = 'precondition_required';
+    error.meldexDetail = {
+      code: 'precondition_required',
+      path: new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current_etag: current?.etag || '',
+      current_transport_revision: current?.transport_revision || null,
+    };
+    throw error;
+  } catch (error) {
+    if (error?.status === 404 && !(payload.skip_if_missing || payload.skipIfMissing)) {
+      payload.create_only = true;
+      return payload;
+    }
+    if (error?.status === 404 && (payload.skip_if_missing || payload.skipIfMissing)) return payload;
+    throw error;
+  }
+}
+
+async function apiPut(path, body, options = {}) {
+  const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
+  return apiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(guardedBody),
+    ...(options || {}),
+  });
+}
+
+async function apiPost(path, body, options = {}) {
+  return apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(options || {}),
+  });
+}
+
+/* ==============================
+   初期化
+   ============================== */
+// 認証トークン管理
+// 旧認証変数（互換性のため残す — 他モジュールが参照）
+let _authToken = '';
+let _authUser = null;
+
+function _apiLockJsonBody(opts) {
+  const raw = opts?.body;
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch { return {}; }
+  }
+  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
+  return {};
+}
+
+function _apiLockPathDir(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const index = text.lastIndexOf('/');
+  return index > 0 ? text.slice(0, index) : '';
+}
+
+function _apiLockRenameExtension(path) {
+  const text = String(path || '').replace(/\\/g, '/');
+  const name = text.slice(text.lastIndexOf('/') + 1);
+  if (!name || name.endsWith('.')) return '';
+  const visibleName = name.replace(/^\.+/, '');
+  const dotIndex = visibleName.indexOf('.');
+  return dotIndex >= 0 ? visibleName.slice(dotIndex) : '';
+}
+
+function _apiLockAddPath(paths, value) {
+  const text = String(value || '').trim();
+  if (text) paths.push(text);
+}
+
+function _apiLockWriteCandidatePaths(path, opts) {
+  const method = String(opts?.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
+  let url;
+  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
+  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
+  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
+  const body = _apiLockJsonBody(opts);
+  const query = url.searchParams;
+  const paths = [];
+  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
+  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
+  const addBoth = (key) => { addQuery(key); addBody(key); };
+
+  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
+    addBoth('path');
+    addBody('entry_path');
+    addBody('folder_path');
+  } else if (route === '/upload-file') {
+    addBoth('path');
+    addBody('dir');
+  } else if (route === '/outliner/add') {
+    addBody('parent');
+  } else if (route === '/outliner/delete') {
+    addBody('path');
+  } else if (route === '/outliner/duplicate') {
+    const srcPath = String(body?.path || '').trim();
+    if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
+  } else if (route === '/outliner/save-as') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/delete-batch') {
+    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
+  } else if (route === '/outliner/move') {
+    addBody('path');
+    addBody('dest_folder');
+  } else if (route === '/outliner/rename') {
+    addBody('old_path');
+    const oldPath = String(body?.old_path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName) {
+      const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
+      _apiLockAddPath(paths, destinationBase);
+      const extension = _apiLockRenameExtension(oldPath);
+      if (extension) _apiLockAddPath(paths, destinationBase + extension);
+    }
+  } else if (route === '/entity/create') {
+    addBody('parent_path');
+  } else if (route === '/entity/rename') {
+    addBody('path');
+    const oldPath = String(body?.path || '');
+    const newName = String(body?.new_name || '').trim();
+    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
+  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
+    addBody('target_path');
+  } else if (route === '/entity/auto-name') {
+    addBody('db_path');
+    addBody('entry_path');
+    addBody('path');
+  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
+    addBody('folder_path');
+    addBody('file_path');
+  } else if (route === '/import-csv' || route === '/import-xlsx') {
+    addBody('csv_path');
+    addBody('xlsx_path');
+    addBody('db_path');
+  } else if (route === '/public-form/submit') {
+    addBody('db_path');
+  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
+    addBoth('db_path');
+  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
+    addBody('path');
+  }
+
+  return [...new Set(paths)];
+}
+
+function _apiLockBlockIfNeeded(path, opts) {
+  if (typeof isItemLocked !== 'function') return false;
+  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
+    try { return isItemLocked(p); } catch { return false; }
+  });
+  if (!lockedPath) return false;
+  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
+  const message = reason
+    ? `編集ロック中のため編集できません（理由: ${reason}）`
+    : '編集ロック中のため編集できません';
+  if (typeof showStatus === 'function') showStatus(message, true);
+  throw new Error(message);
+}
+
+function _apiUsesTransientActiveLock(path) {
+  let route = '';
+  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
+  catch { return false; }
+  return new Set([
+    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
+    '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
+    '/outliner/save-as', '/outliner/move', '/trash/restore',
+  ]).has(route);
+}
+
+// apiFetchをオーバーライドしてユーザー名を付加
+const _origApiFetch = apiFetch;
+apiFetch = async function(path, opts) {
+  opts = opts || {};
+  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
+  _apiLockBlockIfNeeded(path, opts);
+  const activeLocks = window.MeldexActiveLocks;
+  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
+    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
+    : null;
+  try {
+    if (activeLocks?.beforeApiFetch) {
+      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
+    }
+    // _user パラメータを自動付与（監査ログ・modified_by 用）
+    const user = getUsername();
+    if (user && user !== 'anonymous') {
+      const sep = path.includes('?') ? '&' : '?';
+      path += sep + '_user=' + encodeURIComponent(user);
+    }
+    return await _origApiFetch(path, opts);
+  } finally {
+    await transientLease?.release?.();
+  }
+};
+
+// チームプロフィール同期（起動時に型付き管理領域へ自分を登録。source folderは変更しない）
+// フォルダ別ロールを保持（DB列ロック等で参照）
+let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
+const _myTeamRoles = {};     // { folderPath: role }
+
+async function _syncMyTeamProfile() {
+  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
+  const name = getUsername();
+  if (!name || name === 'anonymous') return;
+  const avatar = localStorage.getItem('meldex-avatar') || '';
+  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
+  const syncWorkspaceProfiles = async () => {
+    try {
+      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
+        ? await window.MeldexWorkspaces.load({ force: true })
+        : [];
+      for (const workspace of workspaces || []) {
+        if (!workspace?.id) continue;
+        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
+      }
+      await window.MeldexWorkspaces?.load?.({ force: true });
+    } catch {}
+  };
+  // 全ソースフォルダに対応する管理レコードへ同期
+  try {
+    const roots = await apiFetch('/outliner-roots').catch(() => []);
+    const visibleRoots = roots.filter(r => r.visible && r.path);
+    if (visibleRoots.length === 0) {
+      // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
+      try {
+        await apiPost('/team/sync', teamPayload());
+        const members = await apiFetch('/team');
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRole = me.role || 'editor';
+      } catch {}
+      await syncWorkspaceProfiles();
+      return;
+    }
+    for (const root of visibleRoots) {
+      try {
+        await apiPost('/team/sync', teamPayload({ folder: root.path }));
+        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
+        const me = members.find(m => m.name === name);
+        if (me) _myTeamRoles[root.path] = me.role || 'editor';
+      } catch {}
+    }
+    // デフォルトロール = 最初の可視ソースフォルダのロール
+    const firstRole = _myTeamRoles[visibleRoots[0].path];
+    if (firstRole) _myTeamRole = firstRole;
+    await syncWorkspaceProfiles();
+  } catch {}
+}
+
+let _startupSplashHidden = false;
+function _notifyStartupReady() {
+  if (typeof apiPost !== 'function') return;
+  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
+}
+
+function _hideStartupSplash() {
+  if (_startupSplashHidden) return;
+  _startupSplashHidden = true;
+  _notifyStartupReady();
+  const splash = document.getElementById('gb-splash');
+  if (!splash) return;
+  splash.style.pointerEvents = 'none';
+  splash.style.transition = 'opacity 0.3s';
+  splash.style.opacity = '0';
+  setTimeout(() => splash.remove(), 300);
+}
+
+function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
+  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
+  if (!timeout) return Promise.resolve(promise);
+  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
+      }
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
+      }
+      resolve(fallbackValue);
+    }, timeout);
+    Promise.resolve(promise).then((value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
+      resolve(value);
+    }).catch((error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.error.' + label, startedAt, {
+          timeoutMs: timeout,
+          error: error?.message || String(error),
+        });
+      }
+      reject(error);
+    });
+  });
+}
+
+function _runStartupBackground(label, promise, onReady) {
+  Promise.resolve(promise)
+    .then((value) => {
+      if (typeof onReady === 'function') onReady(value);
+      return value;
+    })
+    .catch((error) => {
+      console.warn(`[Meldex] startup background task failed: ${label}`, error);
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', {
+          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
+          stack: error?.stack || '',
+        });
+      }
+      return null;
+    });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();

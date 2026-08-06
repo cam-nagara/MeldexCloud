@@ -751,9 +751,16 @@
     const path = item?.path || '';
     if (!path) return;
     const name = item?.name || item?.label || path.split(/[\\/]/).pop() || 'この項目';
-    const confirmed = typeof cfConfirm === 'function'
-      ? await cfConfirm('「' + name + '」を削除しますか？')
-      : window.confirm('「' + name + '」を削除しますか？');
+    const confirmMessage = '「' + name + '」を削除しますか？';
+    const impactTarget = [{ path, kind: item?.type === 'folder' ? 'folder' : 'file' }];
+    let confirmed;
+    if (typeof MeldexDeleteImpactWarning !== 'undefined' && typeof cfConfirm === 'function') {
+      confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTarget, confirmMessage);
+    } else if (typeof cfConfirm === 'function') {
+      confirmed = await cfConfirm(confirmMessage);
+    } else {
+      confirmed = window.confirm(confirmMessage);
+    }
     if (!confirmed) return;
     const currentKey = _normalizePath(_currentFolder?.path || '');
     const deleteKey = _normalizePath(path);

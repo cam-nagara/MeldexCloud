@@ -287,8 +287,10 @@
 }
 #pivot-table[data-cell-overflow="wrap"] .value-text,
 #pivot-table[data-cell-overflow="wrap"] .db-cell-display-text,
+#pivot-table[data-cell-overflow="wrap"] .relation-link,
 .pivot-table[data-cell-overflow="wrap"] .value-text,
-.pivot-table[data-cell-overflow="wrap"] .db-cell-display-text {
+.pivot-table[data-cell-overflow="wrap"] .db-cell-display-text,
+.pivot-table[data-cell-overflow="wrap"] .relation-link {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: var(--db-cell-wrap-lines, 10);
@@ -343,8 +345,10 @@
    --db-cell-wrap-lines も td に設定されればカスタムプロパティの継承で子孫へ伝わる。 */
 #pivot-table td[data-cell-overflow="wrap"] .value-text,
 #pivot-table td[data-cell-overflow="wrap"] .db-cell-display-text,
+#pivot-table td[data-cell-overflow="wrap"] .relation-link,
 .pivot-table td[data-cell-overflow="wrap"] .value-text,
-.pivot-table td[data-cell-overflow="wrap"] .db-cell-display-text {
+.pivot-table td[data-cell-overflow="wrap"] .db-cell-display-text,
+.pivot-table td[data-cell-overflow="wrap"] .relation-link {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: var(--db-cell-wrap-lines, 10);

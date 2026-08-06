@@ -1,3 +1,193 @@
+  function _noteSelectionRange(editor) {
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+    const range = selection.getRangeAt(0);
+    const root = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer.parentElement;
+    if (!root || !editor.contains(root)) return null;
+    const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height);
+    const rect = rects[0] || range.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) return null;
+    return { range, rect };
+  }
+
+  function _restoreNoteSelection(range) {
+    const selection = window.getSelection?.();
+    if (!selection || !range) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function _noteSelectionValues(range) {
+    let el = range?.startContainer || null;
+    if (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentElement;
+    const computed = el ? getComputedStyle(el) : null;
+    const queryState = command => {
+      try { return !!document.queryCommandState(command); } catch { return false; }
+    };
+    const queryValue = command => {
+      try { return document.queryCommandValue(command) || ''; } catch { return ''; }
+    };
+    const fontWeight = computed?.fontWeight || '';
+    return {
+      textColor: queryValue('foreColor') || computed?.color || '',
+      fontSize: parseInt(computed?.fontSize || '', 10) || '',
+      fontFamily: computed?.fontFamily || '',
+      fontWeight: queryState('bold') || fontWeight === 'bold' || Number(fontWeight) >= 600 ? 'bold' : '',
+      fontStyle: queryState('italic') || computed?.fontStyle === 'italic' ? 'italic' : '',
+      bgColor: computed && !/rgba?\(0,\s*0,\s*0,\s*0\)|transparent/i.test(computed.backgroundColor || '') ? computed.backgroundColor : '',
+      leftAccent: /inset/i.test(computed?.boxShadow || ''),
+      accentColor: computed?.textDecorationColor || '',
+      underline: queryState('underline') || /underline/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
+      strike: queryState('strikeThrough') || /line-through/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
+    };
+  }
+
+  function _setNoteCommandState(command, enabled) {
+    try {
+      const current = !!document.queryCommandState(command);
+      if (current !== !!enabled && typeof document.execCommand === 'function') document.execCommand(command, false, null);
+    } catch {}
+  }
+
+  function _wrapNoteSelectionStyle(styles) {
+    const selection = window.getSelection?.();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const entries = Object.entries(styles || {});
+    const clearKeys = entries.filter(([, value]) => value === '').map(([key]) => key);
+    if (clearKeys.length) _clearNoteSelectionStyles(range, clearKeys);
+    const setEntries = entries.filter(([, value]) => value != null && value !== '');
+    if (!setEntries.length) return;
+    const span = document.createElement('span');
+    setEntries.forEach(([key, value]) => { span.style[key] = value; });
+    if (!span.getAttribute('style')) return;
+    try {
+      range.surroundContents(span);
+    } catch {
+      const fragment = range.extractContents();
+      span.appendChild(fragment);
+      range.insertNode(span);
+    }
+    const nextRange = document.createRange();
+    nextRange.selectNodeContents(span);
+    selection.removeAllRanges();
+    selection.addRange(nextRange);
+  }
+
+  function _clearNoteSelectionStyles(range, styleKeys) {
+    if (!range || !styleKeys?.length) return;
+    const roots = new Set();
+    const addElement = (node) => {
+      const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+      if (el) roots.add(el);
+    };
+    addElement(range.startContainer);
+    addElement(range.endContainer);
+    const common = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.commonAncestorContainer
+      : range.commonAncestorContainer?.parentElement;
+    if (common) {
+      const walker = document.createTreeWalker(common, NodeFilter.SHOW_ELEMENT);
+      for (let el = walker.currentNode; el; el = walker.nextNode()) {
+        try {
+          if (range.intersectsNode(el)) roots.add(el);
+        } catch {}
+      }
+    }
+    roots.forEach(el => {
+      styleKeys.forEach(key => {
+        try { el.style[key] = ''; } catch {}
+      });
+      if (!el.getAttribute('style')) el.removeAttribute('style');
+    });
+  }
+
+  function _applyNoteSelectionFormat(range, prop, value) {
+    _restoreNoteSelection(range);
+    if (prop === 'fontWeight') _setNoteCommandState('bold', value === 'bold');
+    else if (prop === 'fontStyle') _setNoteCommandState('italic', value === 'italic');
+    else if (prop === 'underline') _setNoteCommandState('underline', !!value);
+    else if (prop === 'strike') _setNoteCommandState('strikeThrough', !!value);
+    else if (prop === 'textColor') { try { document.execCommand('foreColor', false, value || '#333333'); } catch {} }
+    else if (prop === 'bgColor') _wrapNoteSelectionStyle({ backgroundColor: value || '' });
+    else if (prop === 'leftAccent') _wrapNoteSelectionStyle(value ? { boxShadow: 'inset 3px 0 0 currentColor', paddingLeft: '6px' } : { boxShadow: '', paddingLeft: '' });
+    else if (prop === 'accentColor') _wrapNoteSelectionStyle({ textDecorationColor: value || '' });
+    else if (prop === 'fontSize') {
+      const size = Number(value);
+      if (Number.isFinite(size) && size > 0) _wrapNoteSelectionStyle({ fontSize: Math.max(8, Math.min(96, size)) + 'px' });
+    } else if (prop === 'fontFamily' && value) {
+      _wrapNoteSelectionStyle({ fontFamily: value });
+    }
+  }
+
+  function _showNoteSelectionPopup(editor, scheduleSave) {
+    if (typeof openFormatPopup !== 'function') return;
+    const info = _noteSelectionRange(editor);
+    if (!info) return;
+    const savedRange = info.range.cloneRange();
+    const anchor = { getBoundingClientRect: () => info.rect };
+    const values = _noteSelectionValues(info.range);
+    // 文字色スウォッチのコントラスト背景に付箋本体の色 (--ann-note-color) を渡す。
+    const noteEl = editor.closest?.('.ann-note');
+    const noteColor = noteEl
+      ? (noteEl.style.getPropertyValue('--ann-note-color')
+         || noteEl.style.backgroundColor
+         || getComputedStyle(noteEl).backgroundColor
+         || '').trim()
+      : '';
+    if (noteColor) values.bgColor = noteColor;
+    openFormatPopup(anchor, {
+      positionAnchor: anchor,
+      className: 'gb-fmt-popup--annotation-note',
+      fields: ['textColor', 'fontSize', 'fontFamily', 'bold', 'italic', 'bgColor', 'leftAccent', 'accentColor', 'strike', 'underline'],
+      values,
+      onChange(prop, value) {
+        _applyNoteSelectionFormat(savedRange, prop, value);
+        scheduleSave();
+      },
+    });
+  }
+
+  function _installNoteResize(note, data, persist) {
+    ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(dir => {
+      const handle = document.createElement('span');
+      handle.className = 'ann-note-resize-handle';
+      handle.dataset.dir = dir;
+      handle.addEventListener('pointerdown', (e) => {
+        if (!_ann.active) return;
+        e.preventDefault();
+        e.stopPropagation();
+        note.classList.add('ann-note-selected');
+        const startPt = _toLocalCoords(e.clientX, e.clientY);
+        const start = { x: startPt.x, y: startPt.y, left: note.offsetLeft, top: note.offsetTop, width: note.offsetWidth, height: note.offsetHeight };
+        const minW = 120, minH = 60;
+        const onMove = (ev) => {
+          const pt = _toLocalCoords(ev.clientX, ev.clientY);
+          const dx = pt.x - start.x;
+          const dy = pt.y - start.y;
+          let left = start.left, top = start.top, width = start.width, height = start.height;
+          if (dir.includes('e')) width = start.width + dx;
+          if (dir.includes('s')) height = start.height + dy;
+          if (dir.includes('w')) { width = start.width - dx; left = start.left + dx; }
+          if (dir.includes('n')) { height = start.height - dy; top = start.top + dy; }
+          if (width < minW) { if (dir.includes('w')) left -= minW - width; width = minW; }
+          if (height < minH) { if (dir.includes('n')) top -= minH - height; height = minH; }
+          note.style.left = left + 'px';
+          note.style.top = top + 'px';
+          note.style.width = width + 'px';
+          note.style.height = height + 'px';
+          data.x = left + _surfaceBounds.left;
+          data.y = top + _surfaceBounds.top;
+          data.width = Math.max(minW, Math.round(width));
+          data.height = Math.max(minH, Math.round(height));
+        };
+        const onUp = () => {
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          data.width = Math.max(minW, Math.round(note.offsetWidth));
+          data.height = Math.max(minH, Math.round(note.offsetHeight));
           persist();
         };
         document.addEventListener('pointermove', onMove);
@@ -472,7 +662,11 @@
     }
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path = [[pt.x, pt.y]];
+    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
+    _ann.anchor = anchorHit?.data || null;
+    _ann.path = [_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]];
     _ann.pressures = [e.pressure || 0.5];
     try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
   });
@@ -480,17 +674,25 @@
   svg.addEventListener('pointermove', (e) => {
     if (!_ann.drawing) return;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]);
+    _ann.path.push(_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
       preview.classList.add('ann-preview');
       layer.appendChild(preview);
     }
-    if (_ann.tool === 'rect') {
+    if (_ann.anchor) {
+      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+      const previewData = previewType === 'rect'
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'rect') {
       _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
@@ -513,8 +715,11 @@
     const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect' ? _renderRect(strokeData, _ann.color, _ann.opacity, null) : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width);
+    const savedEl = type === 'rect'
+      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
       target_path: _ann.targetPath,
@@ -526,7 +731,7 @@
     }, (res) => {
       if (res?.id) savedEl.dataset.annId = res.id;
     }, () => { savedEl.remove(); })) {
-      _ann.path = []; _ann.pressures = [];
+      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
       return;
     }
     // 親に保存依頼
@@ -538,13 +743,151 @@
       annClientId,
     });
     // 確定描画
-    _ann.path = []; _ann.pressures = [];
+    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
   });
 
-  function _renderStroke(type, points, pressures, color, opacity, annId, width) {
+  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
     const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const points = _anchoredWorldPoints(type, data);
+    if (type === 'stroke' || type === 'marker') {
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none');
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+    } else {
+      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
+      el.setAttribute('fill', color);
+      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
+      el.setAttribute('stroke-opacity', String(normalizedOpacity));
+      if (preview) el.setAttribute('stroke-dasharray', '4,4');
+      else el.removeAttribute('stroke-dasharray');
+    }
+    return el;
+  }
+
+  const _anchoredAnnotationEntries = new Set();
+  let _anchoredRefreshHandle = 0;
+  const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
+  let _anchoredMutationObserver = null;
+
+  function _ensureAnchoredMutationObserver() {
+    if (_anchoredMutationObserver) return;
+    _anchoredMutationObserver = new MutationObserver(() => _scheduleAnchoredAnnotationRefresh());
+    _anchoredMutationObserver.observe(wrapper, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+  }
+
+  function _releaseAnchoredMutationObserverIfIdle() {
+    if (_anchoredAnnotationEntries.size || !_anchoredMutationObserver) return;
+    _anchoredMutationObserver.disconnect();
+    _anchoredMutationObserver = null;
+  }
+
+  function _trackAnchoredAnnotation(el, type, data, color, opacity) {
+    if (!data?.anchor) return;
+    const nodeEl = _boardAnnotationNode(data.anchor);
+    _anchoredAnnotationEntries.add({
+      el,
+      type,
+      data,
+      color,
+      opacity,
+      detaching: false,
+      lastWorldPoints: _anchoredWorldPoints(type, data),
+      lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
+      observedNode: nodeEl,
+    });
+    _ensureAnchoredMutationObserver();
+    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
+    _scheduleAnchoredAnnotationRefresh();
+  }
+
+  function _boardStillHasNode(nodeId) {
+    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
+      ? bd.nodes.some(node => node?.id === nodeId)
+      : !!document.getElementById('bdn-' + nodeId);
+  }
+
+  function _detachAnchoredAnnotation(entry) {
+    if (entry.detaching || !entry.data?.anchor) return;
+    entry.detaching = true;
+    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+    const worldPoints = entry.lastWorldPoints || [];
+    if (entry.type === 'rect') {
+      entry.type = 'lasso';
+      delete entry.data.x;
+      delete entry.data.y;
+      delete entry.data.height;
+      entry.data.points = worldPoints;
+    } else {
+      entry.data.points = worldPoints;
+      if (entry.type === 'stroke' || entry.type === 'marker') {
+        entry.data.width = entry.lastWorldWidth;
+      }
+    }
+    delete entry.data.anchor;
+    const annId = entry.el?.dataset?.annId || '';
+    const payload = { data: entry.data };
+    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
+    const finish = () => { entry.detaching = false; };
+    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
+    finish();
+  }
+
+  function _refreshAnchoredAnnotations() {
+    _anchoredRefreshHandle = 0;
+    _anchoredAnnotationEntries.forEach(entry => {
+      if (!entry.el?.isConnected) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const anchor = entry.data?.anchor;
+      if (!anchor) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const nodeEl = _boardAnnotationNode(anchor);
+      if (!nodeEl) {
+        if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
+        return;
+      }
+      if (entry.observedNode !== nodeEl) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        entry.observedNode = nodeEl;
+        _anchoredResizeObserver.observe(nodeEl);
+      }
+      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
+      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
+        * _annotationAnchorScale(anchor);
+      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
+    });
+    _releaseAnchoredMutationObserverIfIdle();
+  }
+
+  function _scheduleAnchoredAnnotationRefresh() {
+    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
+    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
+  }
+
+  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const data = sourceData || { points, pressures, width };
     let el;
-    if (type === 'lasso') {
+    if (data.anchor) {
+      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
+      _applyAnchoredShape(el, type, data, color, opacity, false);
+    } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
       el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
@@ -555,346 +898,3 @@
       el.setAttribute('fill', 'none'); el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', _drawWidth(type, pressures, width));
       el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
-      el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
-    }
-    if (annId) el.dataset.annId = annId;
-    layer.appendChild(el);
-    return el;
-  }
-
-  function _renderRect(data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
-    if (annId) el.dataset.annId = annId;
-    layer.appendChild(el);
-    return el;
-  }
-
-  function _handleMessage(msg) {
-    if (!msg || !msg.type) return;
-    if (msg.type === 'ann-set-state') {
-      _ann.active = msg.active;
-      _ann.tool = msg.tool || 'pen';
-      _ann.color = msg.color || '#c48080';
-      _ann.opacity = msg.opacity ?? 1;
-      _ann.widths = { ..._ann.widths, ...(msg.widths || {}) };
-      _ann.targetPath = msg.targetPath || '';
-      svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-      svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : _ann.tool === 'sticky' ? 'cell' : 'crosshair') : '';
-      if (_ann.active) svg.style.outline = '2px solid rgba(86,156,214,0.3)';
-      else svg.style.outline = '';
-      hitRect.setAttribute('pointer-events', _ann.active ? 'all' : 'none');
-      _updateSize();
-      _syncNoteInteractivity();
-    }
-    if (msg.type === 'ann-set-opacity') {
-      const opacity = _normalizeMarkupOpacity(msg.opacity, _ann.opacity ?? 1);
-      _ann.opacity = opacity;
-      svg.style.opacity = opacity;
-      notesLayer.style.opacity = opacity;
-    }
-    if (msg.type === 'ann-set-visibility') {
-      svg.style.visibility = msg.visible ? '' : 'hidden';
-      notesLayer.style.visibility = msg.visible ? '' : 'hidden';
-    }
-    if (msg.type === 'ann-add-note') {
-      const item = msg.item || {};
-      const data = _parseMarkupAnnotationData(item);
-      if (!data) return;
-      const annId = item.id || msg.annId || '';
-      if (annId && [...notesLayer.querySelectorAll('.ann-note-embedded')].some(note => note.dataset.annId === annId)) return;
-      _renderNote({ ...item, id: annId, shape: item.shape || 'sticky' }, data || {});
-    }
-    if (msg.type === 'ann-remove-note') {
-      const annId = msg.annId || '';
-      [...notesLayer.querySelectorAll('.ann-note-embedded')].forEach(note => {
-        if (!annId || note.dataset.annId === annId) note.remove();
-      });
-    }
-    if (msg.type === 'ann-load') {
-      layer.innerHTML = '';
-      notesLayer.innerHTML = '';
-      (msg.items || []).forEach(item => {
-        const data = _parseMarkupAnnotationData(item);
-        if (!data) return;
-        if (_isEmbeddedStandaloneNoteItem(item, data)) {
-          _renderNote(item, data || {});
-        } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
-          return;
-        } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
-          _renderRect(data, item.color, item.opacity, item.id);
-        } else if (data?.points) {
-          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width);
-        }
-      });
-      _syncNoteInteractivity();
-      _updateSize();
-    }
-    if (msg.type === 'ann-stroke-saved') {
-      // 親が保存したストロークにIDを付与
-      let targetEl = null;
-      if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
-          .find(el => el.dataset.annClientId === msg.annClientId) || null;
-      }
-      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id])');
-      if (!targetEl && els.length > 0) targetEl = els[els.length - 1];
-      if (targetEl && msg.annId) {
-        targetEl.dataset.annId = msg.annId;
-        delete targetEl.dataset.annClientId;
-      }
-    }
-    if (msg.type === 'ann-stroke-save-failed') {
-      let targetEl = null;
-      if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
-          .find(el => el.dataset.annClientId === msg.annClientId) || null;
-      }
-      if (targetEl) targetEl.remove();
-    }
-  }
-
-  function _isTrustedParentMessageEvent(ev) {
-    if (!ev) return false;
-    if (typeof window !== 'undefined' && window.parent && ev.source !== window.parent) return false;
-    try {
-      const origin = window.location?.origin || '';
-      if (origin && origin !== 'null' && ev.origin !== origin) return false;
-    } catch {
-      return false;
-    }
-    return true;
-  }
-
-  // 親からのpostMessageで同期
-  window.addEventListener('message', (ev) => {
-    if (!_isTrustedParentMessageEvent(ev)) return;
-    const msg = ev.data;
-    _handleMessage(msg);
-  });
-
-  const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
-  const e2eBridgeEnabled = (() => {
-    if (typeof window === 'undefined') return false;
-    if (window.GBE2EActions) return true;
-    try {
-      const params = new URLSearchParams(window.location?.search || '');
-      return params.get('smoke') === '1' || params.get('e2e') === '1';
-    } catch {
-      return false;
-    }
-  })();
-  if (e2eBridgeEnabled) {
-    bridge.renderEmbeddedNoteForE2E = (options = {}) => {
-      const item = {
-        id: options.id || ('e2e-embedded-note-' + Date.now().toString(36)),
-        type: 'comment',
-        shape: 'sticky',
-        color: options.color || _ann.color || '#c48080',
-        opacity: options.opacity ?? _ann.opacity ?? 1,
-        user: options.user || _annotationUser(),
-        created: options.created || new Date().toISOString(),
-      };
-      const data = {
-        x: Number(options.x) || 120,
-        y: Number(options.y) || 120,
-        width: Number(options.width) || 180,
-        height: Number(options.height) || 100,
-        text: options.text || '',
-        html: options.html || '',
-        user: item.user,
-      };
-      return _renderNote(item, data);
-    };
-  }
-  wrapper._annBridge = bridge;
-  if (host !== wrapper) host._annBridge = bridge;
-  return bridge;
-}
-
-// ============================================================
-// スタンドアロンメモ（viewer.html等で使用）
-// ============================================================
-
-function initStandaloneMarkup(container, getTargetPath) {
-  const _svgNS = 'http://www.w3.org/2000/svg';
-  const _ann = { active: false, tool: 'pen', color: PALETTE_COLORS[7] || '#c48080', opacity: 1, drawing: false, path: [], pressures: [] };
-  let _loadAnnotationsSeq = 0;
-
-  const svg = document.createElementNS(_svgNS, 'svg');
-  svg.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:10;pointer-events:none;overflow:visible;';
-  const hitRect = document.createElementNS(_svgNS, 'rect');
-  hitRect.setAttribute('width', '100%'); hitRect.setAttribute('height', '100%');
-  hitRect.setAttribute('fill', 'transparent'); hitRect.setAttribute('pointer-events', 'none');
-  svg.appendChild(hitRect);
-  const layer = document.createElementNS(_svgNS, 'g');
-  svg.appendChild(layer);
-  container.style.position = 'relative';
-  container.appendChild(svg);
-
-  function _pathD(pts) {
-    if (pts.length < 2) return '';
-    return 'M ' + pts[0][0] + ' ' + pts[0][1] + pts.slice(1).map(p => ' L ' + p[0] + ' ' + p[1]).join('');
-  }
-  function _toCoords(cx, cy) {
-    const r = svg.getBoundingClientRect();
-    return {
-      x: cx - r.left + (container.scrollLeft || 0),
-      y: cy - r.top + (container.scrollTop || 0),
-    };
-  }
-  function _getUser() { try { return JSON.parse(localStorage.getItem('meldex-user') || '{}').name || 'anonymous'; } catch { return 'anonymous'; } }
-
-  function _saNormalizeOpacity(value, fallback = 1) {
-    return _normalizeCoreAnnotationOpacity(value, fallback);
-  }
-
-  let _saLastSaveFailureAt = 0;
-  function _saReportSaveFailure(error, message = '注釈の保存に失敗しました') {
-    const now = Date.now();
-    if (typeof showStatus === 'function' && now - _saLastSaveFailureAt > 1500) {
-      showStatus(message, true);
-      _saLastSaveFailureAt = now;
-    }
-    try { console.warn(message, error); } catch {}
-  }
-
-  async function _saUpdateAnnotation(annId, payload) {
-    if (!annId || typeof apiPut !== 'function') return null;
-    return apiPut('/annotations/' + encodeURIComponent(annId), payload);
-  }
-
-  async function _saDeleteAnnotation(annId) {
-    if (!annId || typeof apiDelete !== 'function') return null;
-    return apiDelete('/annotations/' + encodeURIComponent(annId));
-  }
-
-  async function _saDeleteNoteElement(note) {
-    const annId = note?.dataset?.annId || '';
-    try {
-      if (annId) await _saDeleteAnnotation(annId);
-      note?.remove();
-    } catch (error) {
-      _saReportSaveFailure(error, '付箋を削除できませんでした');
-    }
-  }
-
-  function _saElementHit(el, x, y, tolerance = 10) {
-    return _coreAnnotationElementHit(el, x, y, tolerance);
-  }
-
-  function _renderStroke(type, points, pressures, color, opacity, annId) {
-    const normalizedOpacity = _saNormalizeOpacity(opacity, 1);
-    let el;
-    if (type === 'lasso') {
-      el = document.createElementNS(_svgNS, 'polygon');
-      el.setAttribute('points', points.map(p => p.join(',')).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
-      el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
-    } else {
-      el = document.createElementNS(_svgNS, 'path');
-      el.setAttribute('d', _pathD(points));
-      el.setAttribute('fill', 'none'); el.setAttribute('stroke', color);
-      const isPen = type === 'stroke';
-      if (isPen && pressures.length > 0) {
-
-/* === meldex-core.part03.js === */
-/* meldex-core.part03.js */
-        const avgP = pressures.reduce((a, b) => a + b, 0) / pressures.length;
-        el.setAttribute('stroke-width', Math.max(1, avgP * 8));
-      } else {
-        el.setAttribute('stroke-width', isPen ? '3' : '12');
-      }
-      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
-      el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
-    }
-    if (annId) el.dataset.annId = annId;
-    layer.appendChild(el);
-    return el;
-  }
-  function _saRectData(pts) {
-    const a = pts?.[0] || [0, 0], b = pts?.[pts.length - 1] || a;
-    const x1 = Number(a[0]) || 0, y1 = Number(a[1]) || 0, x2 = Number(b[0]) || 0, y2 = Number(b[1]) || 0;
-    return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
-  }
-  function _saApplyRect(el, data, color, opacity, preview) {
-    const normalizedOpacity = _saNormalizeOpacity(opacity, 1);
-    el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
-    el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
-    el.setAttribute('fill', color); el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
-    el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1'); el.setAttribute('stroke-opacity', String(normalizedOpacity));
-    if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
-    return el;
-  }
-  function _renderRect(data, color, opacity, annId) {
-    const el = _saApplyRect(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
-    if (annId) el.dataset.annId = annId;
-    layer.appendChild(el);
-    return el;
-  }
-
-  function _saCurrentTargetPath() {
-    return typeof getTargetPath === 'function' ? String(getTargetPath() || '') : '';
-  }
-
-  function _saParseAnnotationData(item, message = '一部の注釈データを読み込めませんでした') {
-    const raw = item?.data;
-    if (raw == null || raw === '') return {};
-    if (typeof raw !== 'string') return raw || {};
-    try {
-      return JSON.parse(raw) || {};
-    } catch (error) {
-      _saReportSaveFailure(error, message);
-      return null;
-    }
-  }
-
-  function _syncStandaloneNoteInteractivity() {
-    container.querySelectorAll('.sa-note').forEach(n => {
-      n.style.pointerEvents = _ann.active ? 'auto' : 'none';
-    });
-  }
-
-  function _saNotePayload(data, textarea, note) {
-    const width = Math.max(
-      120,
-      Math.round(Math.max(note.offsetWidth || 0, (textarea.offsetWidth || 0) + 16, Number(data.width) || 180))
-    );
-    const height = Math.max(
-      60,
-      Math.round(Math.max(note.offsetHeight || 0, (textarea.offsetHeight || 0) + 16, Number(data.height) || 100))
-    );
-    return { ...data, text: textarea.value, width, height };
-  }
-
-  function _applyStandaloneNoteSize(note, textarea, data) {
-    const width = Math.max(120, Number(data.width) || 180);
-    const height = Math.max(60, Number(data.height) || 100);
-    note.style.width = width + 'px';
-    note.style.minHeight = height + 'px';
-    textarea.style.height = Math.max(40, height - 16) + 'px';
-  }
-
-  svg.addEventListener('pointerdown', async (e) => {
-    if (!_ann.active) return;
-    const pt = _toCoords(e.clientX, e.clientY);
-    if (_ann.tool === 'sticky') {
-      const targetPath = _saCurrentTargetPath();
-      if (!targetPath) {
-        _saReportSaveFailure(new Error('missing target path'), '注釈の保存先を確認できませんでした');
-        return;
-      }
-      const noteData = { x: pt.x, y: pt.y, width: 180, height: 100, text: '' };
-      try {
-        const res = await apiPost('/annotations', { target_path: targetPath, type: 'comment', shape: 'sticky', data: noteData, color: _ann.color, opacity: _ann.opacity, user: _getUser() });
-        if (_saCurrentTargetPath() !== targetPath) return;
-        _renderNote(res.id, noteData, _ann.color);
-      } catch (error) { _saReportSaveFailure(error, '付箋作成に失敗しました'); }
-      return;
-    }
-    if (_ann.tool === 'eraser') {
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
-      for (const el of els) {
-        if (el.classList.contains('ann-preview')) continue;
-        if (_saElementHit(el, pt.x, pt.y, 10)) {
-          try {
-            if (el.dataset.annId) await _saDeleteAnnotation(el.dataset.annId);

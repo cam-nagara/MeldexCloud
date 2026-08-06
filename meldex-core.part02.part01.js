@@ -74,7 +74,7 @@ function initIframeMarkup(scrollContainer) {
       };
     } catch { return { ..._widthDefaults }; }
   }
-  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '' };
+  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '', anchor: null };
 
   // オーバーレイSVG作成
   const host = scrollContainer || document.body;
@@ -241,6 +241,135 @@ function initIframeMarkup(scrollContainer) {
     }
     const r = wrapper.getBoundingClientRect();
     return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return [x, y];
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return [x, y];
+  }
+
+  function _boardAnnotationNode(anchor) {
+    if (!boardMode || !anchor?.nodeId) return null;
+    const el = document.getElementById('bdn-' + anchor.nodeId);
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function _annotationAnchorAt(clientX, clientY, worldPoint) {
+    if (!boardMode) return null;
+    const hit = document.elementsFromPoint(clientX, clientY)
+      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
+    const nodeEl = hit?.closest?.('.bd-node');
+    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
+    if (!nodeEl || !nodeId) return null;
+    const width = Math.max(1, nodeEl.offsetWidth || 0);
+    const height = Math.max(1, nodeEl.offsetHeight || 0);
+    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
+    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
+    const imageEl = nodeEl.querySelector?.('.bd-img');
+    const imageRect = imageEl?.getBoundingClientRect?.();
+    const insideImage = !!imageRect
+      && clientX >= imageRect.left && clientX <= imageRect.right
+      && clientY >= imageRect.top && clientY <= imageRect.bottom;
+    return {
+      data: {
+        version: 1,
+        kind: 'board-node',
+        nodeId,
+        subject: insideImage ? 'image' : 'card',
+        baseWidth: width,
+        baseHeight: height,
+        geometrySpace: 'local',
+      },
+      nodeEl,
+    };
+  }
+
+  function _annotationPointToLocal(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const current = _boardWorldToElementLocal(nodeEl, point);
+    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
+    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
+    return [current[0] / scaleX, current[1] / scaleY];
+  }
+
+  function _annotationPointToWorld(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return _elementLocalToBoardWorld(nodeEl, [
+      (Number(point?.[0]) || 0) * scaleX,
+      (Number(point?.[1]) || 0) * scaleY,
+    ]);
+  }
+
+  function _annotationAnchorScale(anchor) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return 1;
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return Math.sqrt(Math.abs(scaleX * scaleY));
+  }
+
+  function _anchoredRectPoints(data) {
+    const x = Number(data?.x) || 0;
+    const y = Number(data?.y) || 0;
+    const width = Number(data?.width) || 0;
+    const height = Number(data?.height) || 0;
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+
+  function _anchoredWorldPoints(type, data) {
+    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
+    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
   }
 
   function _parentMessageTargetOrigin() {
@@ -1108,7 +1237,11 @@ function initIframeMarkup(scrollContainer) {
     }
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path = [[pt.x, pt.y]];
+    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
+    _ann.anchor = anchorHit?.data || null;
+    _ann.path = [_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]];
     _ann.pressures = [e.pressure || 0.5];
     try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
   });
@@ -1116,10 +1249,12 @@ function initIframeMarkup(scrollContainer) {
   svg.addEventListener('pointermove', (e) => {
     if (!_ann.drawing) return;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]);
+    _ann.path.push(_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);

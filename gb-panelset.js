@@ -1040,6 +1040,12 @@
 
     // ==== 各 group 分の見出し + パネルアイコン ====
     let _totalIconCount = 0;
+    // ボタン1個ずつへの直接 addEventListener はやめ、dockBar 側の委譲リスナ1つで
+    // click/dblclick をまとめて処理する（pointerdownからclickまでの間に別要因の
+    // 再描画が挟まりクリックを取りこぼす問題への対策）。dockBar 自体は毎回 render
+    // のたびに作り直されるDOMなので、このMapとリスナも同じ寿命で毎回作り直して
+    // よい（同じ dockBar に重複登録される心配はない）。
+    const _dockIconContexts = new Map();
     if (fixedSide === 'left') {
       // 左レールはフォルダツリー開閉とメインアプリ起動だけに限定する。
     } else groups.forEach((g) => {
@@ -1087,58 +1093,9 @@
           // Phase 5: D4 仕様 (click/dblclick 分岐)
           //   折りたたみ時: click=ポップアップ / dblclick=展開+アクティブ化
           //   展開時:       click=アクティブ化 / dblclick=折りたたみ
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (fixedSide) {
-              activateFixedTab();
-              return;
-            }
-            if (panelsetNode.collapsed) {
-              // R7: 単体パネルのみポップアップ（ドック全体ではなく、対応タブをアクティブにしてポップアップ）
-              if (typeof GBDockPopup?.open === 'function') {
-                GBDockPopup.open({
-                  panelsetNode,
-                  groupId: g.id,
-                  paneNode: pane,
-                  tab,
-                  tabIdx,
-                  anchorEl: btn,
-                });
-              }
-            } else {
-              // 展開時: group をアクティブ化 + タブをアクティブ化
-              switchGroup(panelsetNode, g.id);
-              pane.activeTabIndex = tabIdx;
-              if (typeof GBLayout?.render === 'function') GBLayout.render();
-              if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
-            }
-          });
-          btn.addEventListener('dblclick', (e) => {
-            if (!_isFreeLayoutUiEnabled()) {
-              e.stopPropagation();
-              return;
-            }
-            e.stopPropagation();
-            if (typeof GBDockPopup?.close === 'function') GBDockPopup.close();
-            if (panelsetNode.collapsed) {
-              panelsetNode.activeGroupId = g.id;
-              pane.activeTabIndex = tabIdx;
-              let revealed = false;
-              if (typeof GBLayout?.revealPane === 'function') {
-                revealed = !!GBLayout.revealPane(pane.id, { activate: !preserveWorkActive });
-              }
-              if (!revealed && panelsetNode.collapsed) {
-                panelsetNode.collapsed = false;
-                if (!preserveWorkActive && typeof GBLayout?.setActivePane === 'function') GBLayout.setActivePane(pane.id);
-                if (typeof GBLayout?.render === 'function') GBLayout.render();
-                if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
-              }
-            } else {
-              panelsetNode.collapsed = true;
-              if (typeof GBLayout?.render === 'function') GBLayout.render();
-              if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
-            }
-          });
+          // 実処理は dockBar の委譲リスナ（このforEachの外）にまとめる。ここでは
+          // クリック時に必要な文脈だけ btn 単位で登録する。
+          _dockIconContexts.set(btn, { pane, tab, tabIdx, g, activateFixedTab, preserveWorkActive });
           if (fixedSide === 'right') {
             btn.setAttribute('aria-haspopup', 'menu');
             btn.addEventListener('contextmenu', (e) => _showRightRailToolMenu(e, activateFixedTab, tab));
@@ -1150,6 +1107,75 @@
           _totalIconCount += 1;
         });
       });
+    });
+    // click/dblclick の委譲リスナ（dockBar 単位で1つ）。個々のボタンではなく
+    // dockBar 側で e.target.closest('.gb-dock-icon') により対象を判定するため、
+    // pointerdown〜click の間に別要因の再描画でボタンDOMが作り直されても、
+    // 新しいボタン要素側で改めて発火したclickをここで確実に拾える。
+    dockBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.gb-dock-icon');
+      if (!btn || !dockBar.contains(btn)) return;
+      const ctx = _dockIconContexts.get(btn);
+      if (!ctx) return;
+      e.stopPropagation();
+      const { pane, tab, tabIdx, g, activateFixedTab } = ctx;
+      if (fixedSide) {
+        activateFixedTab();
+        return;
+      }
+      if (panelsetNode.collapsed) {
+        // R7: 単体パネルのみポップアップ（ドック全体ではなく、対応タブをアクティブにしてポップアップ）
+        if (typeof GBDockPopup?.open === 'function') {
+          GBDockPopup.open({
+            panelsetNode,
+            groupId: g.id,
+            paneNode: pane,
+            tab,
+            tabIdx,
+            anchorEl: btn,
+          });
+        }
+      } else {
+        // 展開時: group をアクティブ化 + タブをアクティブ化
+        switchGroup(panelsetNode, g.id);
+        pane.activeTabIndex = tabIdx;
+        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+      }
+    });
+    dockBar.addEventListener('dblclick', (e) => {
+      const btn = e.target.closest('.gb-dock-icon');
+      if (!btn || !dockBar.contains(btn)) return;
+      // rail-toggle/appボタン等（_dockIconContexts未登録）はdblclick対象外。
+      // 旧実装でもこれらのボタンには個別のdblclickリスナが無かったため、
+      // 挙動を変えないようここで context の有無を先に見る。
+      const ctx = _dockIconContexts.get(btn);
+      if (!ctx) return;
+      if (!_isFreeLayoutUiEnabled()) {
+        e.stopPropagation();
+        return;
+      }
+      e.stopPropagation();
+      const { pane, tabIdx, g, preserveWorkActive } = ctx;
+      if (typeof GBDockPopup?.close === 'function') GBDockPopup.close();
+      if (panelsetNode.collapsed) {
+        panelsetNode.activeGroupId = g.id;
+        pane.activeTabIndex = tabIdx;
+        let revealed = false;
+        if (typeof GBLayout?.revealPane === 'function') {
+          revealed = !!GBLayout.revealPane(pane.id, { activate: !preserveWorkActive });
+        }
+        if (!revealed && panelsetNode.collapsed) {
+          panelsetNode.collapsed = false;
+          if (!preserveWorkActive && typeof GBLayout?.setActivePane === 'function') GBLayout.setActivePane(pane.id);
+          if (typeof GBLayout?.render === 'function') GBLayout.render();
+          if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+        }
+      } else {
+        panelsetNode.collapsed = true;
+        if (typeof GBLayout?.render === 'function') GBLayout.render();
+        if (typeof GBLayout?.saveLayout === 'function') GBLayout.saveLayout();
+      }
     });
     if (fixedSide === 'right') {
       const optionButton = dockBar.querySelector('.gb-dock-icon[data-tab-type="detail"]');

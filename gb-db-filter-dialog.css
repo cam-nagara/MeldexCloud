@@ -1,0 +1,73 @@
+/* gb-db-filter-dialog.css — シート統合フィルタダイアログ（gb-db-filter-dialog.js）のスタイル。
+   デスクトップ初期高は560px。画面が低い場合はビューポート内へ縮小し、本文だけスクロールする。 */
+
+.gb-unified-filter-overlay .uf-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: min(560px, calc(100vh - 48px));
+}
+
+.gb-unified-filter-overlay .uf-modal h3 {
+  flex: none;
+  margin: 0 0 8px;
+}
+
+.gb-unified-filter-overlay .uf-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.gb-unified-filter-overlay .uf-modal .btn-row {
+  flex: none;
+}
+
+@media (max-height: 640px) {
+  .gb-unified-filter-overlay .uf-modal {
+    max-height: calc(100vh - 24px);
+  }
+}
+
+.uf-col-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.uf-col-filter-row .uf-col-filter-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+
+.uf-col-filter-row button {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.uf-col-filter-empty {
+  font-size: 11px;
+  color: var(--fg2);
+  padding: 2px 0 4px;
+}
+
+/* 列ヘッダーの値フィルターポップアップ内、条件フィルタの要約表示 */
+.db-column-filter-condition-summary {
+  font-size: 11px;
+  color: var(--fg2);
+  padding: 2px 4px 6px;
+  line-height: 1.4;
+}
+
+.db-column-filter-condition-summary-item {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -6,14 +6,64 @@
   // アカウント一元管理 計画書 Phase 4 で廃止し、全体で1枚の正本
   // 「スタッフ管理シート」（gb-staff-registry-schema.js/gb-user-registry.js）へ
   // 統合した。13→12シート契約変更（破壊的変更・メジャー境界リリース）。
-  const PM_SHEETS = ['作品リスト', 'タスクリスト', 'タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト', 'スケジュール', '勤怠情報', '自動シフト調整設定', 'スケジュール アーカイブ', 'タスクリスト アーカイブ', 'データソース'];
+  // 「自動シフト調整設定」は制作管理UX改善計画（2026-08-04）§5-2で管理対象から
+  // 外した（実行エンジン未実装のため）。既存ワークスペースのフォルダは削除しない
+  // 非破壊変更。12→11シート契約変更。
+  const PM_SHEETS = ['作品リスト', 'タスクリスト', 'タスクテンプレート', '作業対象リスト', '作業内容リスト', '作業規模リスト', 'スケジュール', '勤怠情報', 'スケジュール アーカイブ', 'タスクリスト アーカイブ', 'データソース'];
   const PM_REQUIRED_PAGES = { '制作進行マニュアル.md': '# 制作進行マニュアル\n\n制作管理の手順を記録します。\n', '設定.md': '# 設定\n\n制作管理の設定メモです。\n' };
   const PM_TASK_SHEET_PREFIX = 'タスクリスト_';
   const PM_MAX_GENERATED_TASKS = 5000;
   let PM_TASK_CREATE_QUEUE = Promise.resolve();
-  const PM_NAME_MIGRATED_PROVIDERS = new WeakSet();
+  // コミット前レビュー指摘 #15: providerオブジェクト同一性ではなく、実際に接続している
+  // 管理ルート（Dropboxの名前空間+絶対パス）を文字列キーにしたSetで移行スキップを判定する。
+  // WeakSet<provider> は「同じprovider参照のままワークスペースを切り替える」実装（共有
+  // フォルダ切替・アカウント切替でprovider自体を作り直さない構成）だと、切替後の未移行
+  // ルートに対しても誤って「移行済み」と判定してしまう。
+  // ルートを解決できない場合（リゾルバ未読込等）は、Desktopの「プロセス（相当）につき
+  // 1回」という頻度に合わせてprovider単位のフォールバックキャッシュへ倒す（毎回無条件で
+  // 再スキャンすると、Desktop側の一度きり移行と再スキャン頻度がずれ、同一プロセス内で
+  // 後から作られたエントリだけCloud側が余分に移行してしまいDesktop/Cloudパリティが崩れる。
+  // production-management-ux-improvement-plan-2026-08-04.md 関連のパリティテストで実際に
+  // 検出した — test_meldex_production_engine_parity.py）。
+  const PM_NAME_MIGRATED_ROOTS = new Set();
+  const PM_SCHEMA_CLEANUP_MIGRATED_ROOTS = new Set();
+  const PM_INTERNAL_METADATA_MIGRATED_ROOTS = new Set();
+  const PM_NAME_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
+  const PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
+  const PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
+
+  function _pmCloudMigrationAlreadyDone(rootSet, providerFallback, migrationRootKey, provider) {
+    return migrationRootKey ? rootSet.has(migrationRootKey) : providerFallback.has(provider);
+  }
+
+  function _pmCloudMarkMigrationDone(rootSet, providerFallback, migrationRootKey, provider) {
+    if (migrationRootKey) rootSet.add(migrationRootKey);
+    else providerFallback.add(provider);
+  }
   const PM_TASK_LEGACY_NAME_PROP = 'タスク名';
-  const PM_TASK_HIDDEN_COLUMNS = [PM_TASK_LEGACY_NAME_PROP, 'タスク名を固定', '階層パス', '階層ラベル', '単位レベル1', '単位レベル2', '単位レベル3', '単位レベル4', '単位レベル5', 'プリセット種別', '作業作成粒度', '目標作業時間_値', 'ページソート値', '元テンプレートID', '作成キー'];
+  // 制作管理UX改善計画（2026-08-04）§5-1: タスクリスト（+作品別シート）だけの内部専用列。
+  // 「プロパティ（列）」から外し production_internal: へ移す。Desktop
+  // meldex_production_management_support.INTERNAL_METADATA_PROPERTIES と同一集合
+  // （parityはtest_meldex_production_schema_cleanup.pyで検証）。作品リストにも同名の列
+  // （階層ラベル/プリセット種別/作業作成粒度）があるが別概念のため対象外 — 書込み側は必ず
+  // タスクシートかどうかを先に判定してからこの集合を適用すること。
+  const PM_INTERNAL_METADATA_PROPERTIES = new Set([
+    '階層パス', '階層ラベル',
+    '単位レベル1', '単位レベル2', '単位レベル3', '単位レベル4', '単位レベル5',
+    'プリセット種別', '作業作成粒度', 'ページソート値', '作成キー', '元テンプレートID', '作業予定区間',
+  ]);
+  // 制作管理UX改善計画（2026-08-04）§5-1: 既定表示列を状況/担当者/作業予定日時/目標作業時間/
+  // 作業時間_実績/優先度/作業対象リスト/作業内容リスト/作業規模リスト/対象数/対象色/備考へ
+  // 絞る。コミット前レビュー指摘 #7: 階層パス等の内部専用列は移行後は property_types に
+  // 存在しないため本来このリストは無意味だが、移行がまだ完了していないワークスペース
+  // （新規行、移行キャッシュがヒットする前の一時的な状態等）では properties に残った
+  // ままになり得るため、防御的に既定非表示へ含めておく（未移行データでも表に生JSONが
+  // 出ないように）。
+  const PM_TASK_HIDDEN_COLUMNS = [
+    PM_TASK_LEGACY_NAME_PROP, '開始日時', '完了日時', '作業予定時間', '目標作業時間_値',
+    '再計算ロック', '担当者固定', 'シフト固定', 'シフト割当不能理由', 'ページ', 'コマ', '作品タイトル',
+    ...PM_INTERNAL_METADATA_PROPERTIES,
+  ];
   const PM_SHIFT_PARSER = window.MeldexProductionShiftParser;
   // YAML-liteフロントマター読み書きと権限エラー判定は gb-cloud-frontmatter-lite.js（共有ヘルパー）へ委譲。
   // 実装本体・仕様の説明はそちらを参照（Python meldex_frontmatter 互換）。
@@ -21,9 +71,6 @@
   const _pmCloudFrontmatterText = window.MeldexCloudFrontmatterLite.frontmatterText;
   const _pmCloudIsNotFoundError = window.MeldexCloudFrontmatterLite.isNotFoundError;
   const _pmCloudIsWriteAccessError = window.MeldexCloudFrontmatterLite.isWriteAccessError;
-  function _pmMultiRelation(target) {
-    return { type: 'multi-relation', target, relationDb: `${PM_ROOT}/シート/${target}` };
-  }
   function _pmTaskRowEntryName(row) {
     return String(row?._entry_name || row?.['エントリ名'] || row?.[PM_TASK_LEGACY_NAME_PROP] || row?.name || '無題').trim() || '無題';
   }
@@ -283,28 +330,53 @@
     container.appendChild(wrap);
   }
 
-  async function runProductionAssignment() {
-    if (!_pmEnsureWritable()) return null;
-    const result = await _pmRequest('/production-management/assign/apply', { method: 'POST', body: {} });
-    _pmShowStatus(_pmRecoveryText(`担当者と時間を割り当てました: ${result.updated || 0}件`, result));
-    return result;
-  }
+  // runProductionAssignment（「担当者と時間を割り当て」の即時実行）は制作管理UX改善計画
+  // （2026-08-04）§6-1で廃止した。同じ用途（未割当のタスクだけを素早く埋める）は「予定を
+  // 組み直す」ダイアログの「未割当のタスクだけ」スコープ（unassigned_only）で提供する。
+  // /production-management/assign/preview・/apply エンドポイント自体は互換のため残っている
+  // （フルエンジンの unassigned_only スコープへ委譲。meldex_production_management.py）。
+
+  // コミット前レビュー指摘 #14: 15分毎の自動送信タイマー（_pmStartExternalSyncTimer）と
+  // 手動の「外部カレンダーへ送信」ボタンが同時に走ると、Google側への二重登録や CalDAV
+  // 書込みの競合が起き得る。この関数はDesktop/Cloud共通の唯一の入口（両方とも
+  // POST /production-management/external-sync を叩く）なので、ここで実行中フラグを持てば
+  // 両プラットフォームの並走を一括で防げる。
+  let PM_EXTERNAL_SYNC_IN_FLIGHT = false;
 
   async function runProductionExternalSync(options = {}) {
     if (!_pmEnsureWritable({ notify: !options.silent })) return null;
-    const result = await _pmRequest('/production-management/external-sync', { method: 'POST', body: { automatic: !!options.silent } });
-    if (result?.unsupported) {
-      if (!options.silent) _pmShowStatus(result.message || '外部カレンダー送信はこの環境では使えません', true);
+    if (PM_EXTERNAL_SYNC_IN_FLIGHT) {
+      // 自動側（silent）は次回タイマーに委ねて静かにスキップし、手動側だけ状況を伝える。
+      if (!options.silent) _pmShowStatus('外部カレンダーへの送信が既に進行中です。完了までお待ちください', true);
+      return { ok: true, skipped: true, in_flight: true };
+    }
+    PM_EXTERNAL_SYNC_IN_FLIGHT = true;
+    try {
+      const result = await _pmRequest('/production-management/external-sync', { method: 'POST', body: { automatic: !!options.silent } });
+      if (result?.unsupported) {
+        if (!options.silent) _pmShowStatus(result.message || '外部カレンダー送信はこの環境では使えません', true);
+        return result;
+      }
+      // Cloud（Dropboxモード）でGoogleカレンダー未接続の場合、result.ok は true のまま
+      // result.message に案内文だけが入る（制作管理UX改善計画2026-08-04 §4-4。
+      // gb-production-external-sync-cloud.js の syncGoogle 参照）。行き止まり表示にせず案内する。
+      if (!options.silent) {
+        if (result?.message) {
+          _pmShowStatus(result.message, true);
+        } else {
+          _pmShowStatus(`外部カレンダーへ送信しました: ${result.caldav_synced || 0}件 / Google ${result.google_pushed || 0}件追加・${result.google_updated || 0}件更新`);
+        }
+      }
       return result;
+    } finally {
+      PM_EXTERNAL_SYNC_IN_FLIGHT = false;
     }
-    if (!options.silent) {
-      _pmShowStatus(`外部カレンダーへ送信しました: ${result.caldav_synced || 0}件 / Google ${result.google_pushed || 0}件追加・${result.google_updated || 0}件更新`);
-    }
-    return result;
   }
 
   async function _pmAutoProductionExternalSync() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    // 制作管理UX改善計画（2026-08-04）§4-4: Google送信がCloudにも対応したため、Dropboxモード
+    // 除外は撤去した。Cloud未接続時は runProductionExternalSync が silent:true のもと
+    // result.message だけを受け取り、通知を出さずに静かに終わる（15分毎の無駄な失敗表示を避ける）。
     const status = await _pmRequest('/production-management/status', { method: 'GET' }).catch(() => null);
     if (!status?.ready) return;
     await runProductionExternalSync({ silent: true });
@@ -361,104 +433,10 @@
     }
   }
 
-  async function _pmParseShiftFile(file) {
-    if (!file) return [];
-    if (/\.xlsx$/i.test(file.name)) return PM_SHIFT_PARSER.rowsToShifts(await _pmReadXlsx(file));
-    return PM_SHIFT_PARSER.rowsToShifts(PM_SHIFT_PARSER.parseCsv(await file.text()));
-  }
-
-  async function _pmReadXlsx(file) {
-    if (window.XLSX?.read) {
-      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-      const first = workbook.SheetNames[0];
-      return XLSX.utils.sheet_to_json(workbook.Sheets[first], { header: 1, raw: false });
-    }
-    const files = await _pmUnzipStoreOrDeflate(await file.arrayBuffer());
-    return _pmWorksheetRows(files);
-  }
-
-  async function _pmUnzipStoreOrDeflate(buffer) {
-    const view = new DataView(buffer);
-    const files = {};
-    let offset = 0;
-    while (offset + 30 < view.byteLength && view.getUint32(offset, true) === 0x04034b50) {
-      const method = view.getUint16(offset + 8, true);
-      const compressed = view.getUint32(offset + 18, true);
-      const nameLen = view.getUint16(offset + 26, true);
-      const extraLen = view.getUint16(offset + 28, true);
-      const nameBytes = new Uint8Array(buffer, offset + 30, nameLen);
-      const name = new TextDecoder().decode(nameBytes);
-      const dataStart = offset + 30 + nameLen + extraLen;
-      const data = buffer.slice(dataStart, dataStart + compressed);
-      files[name] = method === 8 ? await _pmInflateRaw(data) : new Uint8Array(data);
-      offset = dataStart + compressed;
-    }
-    return files;
-  }
-
-  async function _pmInflateRaw(buffer) {
-    if (!window.DecompressionStream) throw new Error('このブラウザではExcel解析を利用できません。CSVで取り込んでください');
-    const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  }
-
-  function _pmWorksheetRows(files) {
-    const decoder = new TextDecoder();
-    const shared = _pmSharedStrings(decoder.decode(files['xl/sharedStrings.xml'] || new Uint8Array()));
-    const sheetName = Object.keys(files).find(name => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
-    const xml = decoder.decode(files[sheetName] || new Uint8Array());
-    const rows = [];
-    xml.replace(/<row[^>]*>([\s\S]*?)<\/row>/g, (_, rowXml) => {
-      const row = [];
-      rowXml.replace(/<c([^>]*)>([\s\S]*?)<\/c>/g, (__, attrs, cellXml) => {
-        const ref = (attrs.match(/\sr="([A-Z]+)\d+"/) || [])[1] || '';
-        const index = _pmColIndex(ref);
-        const type = (attrs.match(/\st="([^"]+)"/) || [])[1] || '';
-        const raw = (cellXml.match(/<v[^>]*>([\s\S]*?)<\/v>/) || [])[1] || '';
-        const inline = (cellXml.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || '';
-        row[index] = type === 's'
-          ? (shared[Number(raw)] || '')
-          : type === 'inlineStr'
-            ? _pmXmlText(inline)
-            : _pmXmlText(raw);
-        return '';
-      });
-      if (row.some(v => String(v || '').trim())) rows.push(row);
-      return '';
-    });
-    return rows;
-  }
-
-  function _pmSharedStrings(xml) {
-    const values = [];
-    xml.replace(/<si[^>]*>([\s\S]*?)<\/si>/g, (_, item) => {
-      const parts = [];
-      item.replace(/<t[^>]*>([\s\S]*?)<\/t>/g, (__, text) => {
-        parts.push(_pmXmlText(text));
-        return '';
-      });
-      values.push(parts.join(''));
-      return '';
-    });
-    return values;
-  }
-
-  function _pmXmlText(value) {
-    return String(value || '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"');
-  }
-
-  function _pmColIndex(col) {
-    let n = 0;
-    String(col || '').split('').forEach(ch => { n = n * 26 + ch.charCodeAt(0) - 64; });
-    return Math.max(0, n - 1);
-  }
-
-  function _pmBase64Blob(base64, mime) {
-    const binary = atob(base64 || '');
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return new Blob([bytes], { type: mime || 'application/octet-stream' });
-  }
+  // コミット前レビュー指摘（2026-08-05、部分行数超過対応）: シフト取込XLSX/ZIP解析
+  // ユーティリティ（_pmParseShiftFile 以下）は gb-production-management.part03.js
+  // （CSV/XLSX/ZIP書き出しユーティリティと同じテーマ）へ移動した。同一クロージャの
+  // raw concatenation のため参照は変わらず利用できる。
 
   function _pmCalendarStorePath(internals, name) {
     return internals._joinPath('_calendar', name + '.json');
@@ -543,7 +521,7 @@
     return true;
   }
 
-  async function _pmCloudCleanupExistingShifts(provider, internals, rows) {
+  async function _pmCloudCleanupExistingShifts(provider, internals, rows, journal) {
     const targetPairs = new Set((rows || []).map(_pmCloudShiftPairKey).filter(key => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
     if (!targetPairs.size) return { removed_ids: [] };
     const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => _pmReadCalendarStore(provider, internals, 'shifts'));
@@ -558,7 +536,8 @@
     for (const shiftId of [...new Set(removedIds)]) {
       await _pmCloudDeleteShiftRecord(provider, internals, shiftId);
       const schedulePath = await _pmCloudFindByProp(provider, internals, 'スケジュール', '作成キー', shiftId);
-      await _pmCloudDeleteScheduleEntry(provider, schedulePath).catch(() => false);
+      if (schedulePath && journal) await _pmCloudJournalText(journal, schedulePath);
+      await _pmCloudDeleteScheduleEntry(provider, schedulePath);
     }
     return { removed_ids: [...new Set(removedIds)] };
   }
@@ -583,26 +562,35 @@
         '/production-management/tasks/query',
         '/production-management/tasks/preview',
         '/production-management/tasks/structure/preview',
+        '/production-management/recalculate/preview',
+        '/production-management/assign/preview',
       ].includes(pathname));
       const provider = await internals._requirePwaProvider(readOnlyRequest ? 'read' : 'readwrite');
       let migrationMeta = {};
-      if (migrateOnFirstDisplay && !PM_NAME_MIGRATED_PROVIDERS.has(provider)) {
-        let writableProvider = null;
-        try {
-          writableProvider = await internals._requirePwaProvider('readwrite');
-        } catch (error) {
-          migrationMeta = { read_only: true, migration_skipped: true, migration_message: String(error?.message || error) };
-        }
-        if (writableProvider) {
+      if (migrateOnFirstDisplay) {
+        // コミット前レビュー指摘 #15: provider同一性ではなく管理ルートキーで判定する
+        // （解決できない場合はprovider単位のフォールバックへ。_pmCloudMigrationAlreadyDone参照）。
+        const rootKey = await _pmCloudRootMigrationKey(provider);
+        const alreadyMigrated = _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
+        if (!alreadyMigrated) {
+          let writableProvider = null;
           try {
-            await _pmCloudWithProductionLease(writableProvider, () => (
-              PM_NAME_MIGRATED_PROVIDERS.has(writableProvider) ? Promise.resolve() : _pmCloudInit(writableProvider, internals)
-            ));
-            PM_NAME_MIGRATED_PROVIDERS.add(provider);
+            writableProvider = await internals._requirePwaProvider('readwrite');
           } catch (error) {
-            const readOnly = _pmCloudIsWriteAccessError(error);
-            if (!readOnly && Number(error?.status || 0) !== 423) throw error;
-            migrationMeta = { read_only: readOnly, migration_skipped: true, migration_message: String(error?.message || error) };
+            migrationMeta = { read_only: true, migration_skipped: true, migration_message: String(error?.message || error) };
+          }
+          if (writableProvider) {
+            try {
+              await _pmCloudWithProductionLease(writableProvider, () => (
+                _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, writableProvider)
+                  ? Promise.resolve() : _pmCloudInit(writableProvider, internals)
+              ));
+              _pmCloudMarkMigrationDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
+            } catch (error) {
+              const readOnly = _pmCloudIsWriteAccessError(error);
+              if (!readOnly && Number(error?.status || 0) !== 423) throw error;
+              migrationMeta = { read_only: readOnly, migration_skipped: true, migration_message: String(error?.message || error) };
+            }
           }
         }
       }
@@ -642,11 +630,40 @@
       if (pathname === '/production-management/staff/add' && method === 'POST') {
         return _pmCloudWithProductionLease(provider, () => _pmCloudAddStaff(provider, internals, body || {}));
       }
-      if (pathname === '/production-management/assign/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyAssignment(provider, internals, body || {}));
+      // 「担当者と時間を割り当て」（旧: 簡易割当）はフル再計算エンジンへ一本化した
+      // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。unassigned_only
+      // スコープ（作業予定日時が空で保護されていないタスクだけを新規割当対象にし、他のタスクは
+      // 既存予定を固定扱いで尊重する）でフル再計算を実行する。レスポンス形は互換維持。
+      if (pathname === '/production-management/assign/preview' && method === 'POST') {
+        const result = await window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
+        if (!result.ok) return result;
+        return { ok: true, rows: result.rows || [], count: (result.rows || []).length, cloud: true };
       }
+      if (pathname === '/production-management/assign/apply' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, async () => {
+          const result = await window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
+          if (!result.ok) return result;
+          return { ok: true, updated: result.applied || 0, rows: [], cloud: true };
+        });
+      }
+      if (pathname === '/production-management/recalculate/preview' && method === 'POST') return window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, body || {}, _pmRecalcEngineDeps());
+      if (pathname === '/production-management/recalculate/apply' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      if (pathname === '/production-management/tasks/lock' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.lockCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      // 制作管理UX改善計画（2026-08-04）§6-4: カレンダー上のタスク予定のドラッグ移動・端リサイズ。
+      if (pathname === '/production-management/task-schedule/update' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.updateTaskScheduleCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      }
+      // 制作管理UX改善計画（2026-08-04）§4-4: Google送信のみCloud対応（Phase 5のブラウザ完結OAuth基盤
+      // に乗る）。CalDAV送信（ローカルサーバー常駐が必要）はDesktop限定のまま。未接続時はエラーで
+      // はなく案内メッセージを返す（gb-production-external-sync-cloud.js の syncGoogle 参照）。
+      // Google APIへのネットワークI/Oはワークスペースの書き込みロックを保持せずに行う
+      // （Desktop sync_production_external_calendars と同じ方針。遅い外部I/Oが他の書き込みを
+      // ブロックしないようにする）。
       if (pathname === '/production-management/external-sync' && method === 'POST') {
-        return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
+        if (!window.MeldexProductionExternalSyncCloud?.syncGoogle) {
+          return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
+        }
+        return window.MeldexProductionExternalSyncCloud.syncGoogle(provider, internals, _pmRecalcEngineDeps(), body || {});
       }
       if (pathname === '/production-management/export' && method === 'GET') return _pmCloudExport(url);
       return internals.NOT_HANDLED;
@@ -655,6 +672,25 @@
 
   function _pmCloudRoot(internals) {
     return internals._joinPath(PM_ROOT, 'シート');
+  }
+
+  // コミット前レビュー指摘 #15: 移行スキップキャッシュ用の安定キー。実際に接続している
+  // Dropbox名前空間+絶対ルートパスを合成する（gb-dropbox-management-root-resolver.js。
+  // ワークスペース切替を正しく検知できるのはこちらで、`制作管理/シート` のような
+  // provider内相対パスでは複数ワークスペースが同じ文字列に潰れてしまうため使わない）。
+  // 解決できない場合（リゾルバ未読込・未接続等）は空文字を返し、呼び出し側はキャッシュを
+  // 使わず毎回移行を試みる。
+  async function _pmCloudRootMigrationKey(provider) {
+    try {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      if (!resolver?.resolveConnectionInfo) return '';
+      const info = await resolver.resolveConnectionInfo(provider);
+      const key = `${String(info?.namespaceKind || '')}:${String(info?.rootPath || '')}`.toLowerCase();
+      return key === ':' ? '' : key;
+    } catch (err) {
+      console.warn('制作管理: 管理ルートの解決に失敗しました。移行スキップキャッシュを無効化します:', err);
+      return '';
+    }
   }
 
   async function _pmCloudStatus(provider, internals) {
@@ -827,14 +863,43 @@
   }
 
   async function _pmCloudInit(provider, internals, options = {}) {
+    // コミット前レビュー指摘 #15: 以降のスキップキャッシュ判定はすべてこの1回だけ解決した
+    // 管理ルートキーで揃える（provider同一性は使わない。解決できない場合はprovider単位の
+    // フォールバックへ倒す。_pmCloudMigrationAlreadyDone参照）。
+    const migrationRootKey = await _pmCloudRootMigrationKey(provider);
     // 名称衝突は制作管理ファイルへ一切書き込む前に検出する。
-    const shouldMigrateNames = options.forceNameMigration || !PM_NAME_MIGRATED_PROVIDERS.has(provider);
+    const shouldMigrateNames = options.forceNameMigration
+      || !_pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
     const nameMigration = shouldMigrateNames
       ? await window.MeldexProductionSchemaMigration?.migrateManagedNameProperties?.(
         _pmCloudManagedNameContext(provider, internals)
       ) || { migrated: 0, staff_users_added: 0 }
       : { migrated: 0, staff_users_added: 0 };
-    if (shouldMigrateNames) PM_NAME_MIGRATED_PROVIDERS.add(provider);
+    if (shouldMigrateNames) _pmCloudMarkMigrationDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
+    // 制作管理UX改善計画（2026-08-04）§5-2: 死に列に値が残っていれば production_schema_
+    // cleanup へ退避してから削除する（非破壊）。名称移行と同じ管理ルート単位のスキップ
+    // キャッシュで、毎リクエストの全件スキャンを避ける。
+    const shouldMigrateSchemaCleanup = options.forceSchemaCleanupMigration
+      || !_pmCloudMigrationAlreadyDone(PM_SCHEMA_CLEANUP_MIGRATED_ROOTS, PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
+    if (shouldMigrateSchemaCleanup && window.MeldexProductionSchemaCleanup?.migrateProductionSchemaCleanup) {
+      await window.MeldexProductionSchemaCleanup.migrateProductionSchemaCleanup(
+        _pmCloudManagedNameContext(provider, internals)
+      );
+      _pmCloudMarkMigrationDone(PM_SCHEMA_CLEANUP_MIGRATED_ROOTS, PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
+    }
+    // コミット前レビュー指摘 #7: タスクリスト（+作品別シート）の内部専用列（PM_INTERNAL_
+    // METADATA_PROPERTIES と同一集合。Desktop migrate_production_internal_metadata と同等）を
+    // properties から production_internal へ一括移行する。移動のみで削除ではないため
+    // 非破壊・冪等（既存の production_internal 値は上書きしない）。
+    const shouldMigrateInternalMetadata = options.forceInternalMetadataMigration
+      || !_pmCloudMigrationAlreadyDone(PM_INTERNAL_METADATA_MIGRATED_ROOTS, PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
+    let internalMetadataMigration = { migrated: 0 };
+    if (shouldMigrateInternalMetadata && window.MeldexProductionSchemaCleanup?.migrateProductionInternalMetadata) {
+      internalMetadataMigration = await window.MeldexProductionSchemaCleanup.migrateProductionInternalMetadata(
+        _pmCloudManagedNameContext(provider, internals)
+      ) || { migrated: 0 };
+      _pmCloudMarkMigrationDone(PM_INTERNAL_METADATA_MIGRATED_ROOTS, PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK, migrationRootKey, provider);
+    }
     const missing = await _pmCloudMissing(provider, internals);
     await internals._directoryHandle(provider, PM_ROOT, true);
     for (const [name, text] of Object.entries(PM_REQUIRED_PAGES)) await _pmCloudEnsurePage(provider, internals, name, text);
@@ -859,6 +924,7 @@
       conflict_copies_removed: migration.conflict_copies_removed,
       managed_names_migrated: nameMigration.migrated,
       staff_users_added: nameMigration.staff_users_added,
+      internal_metadata_migrated: internalMetadataMigration.migrated,
       ..._pmCloudRecoveryPayload(recovered),
     };
   }
@@ -884,7 +950,8 @@
   async function _pmCloudRenameManagedEntry(provider, internals, body) {
     const migration = window.MeldexProductionSchemaMigration;
     if (!migration?.isManagedEntryPath?.(body?.path)) return internals.NOT_HANDLED;
-    return _pmCloudWithProductionLease(provider, () => migration.renameManagedEntry(
+    const isTaskEntry = !!_pmCloudTaskSheetEntryInfo(internals, body?.path);
+    const result = await _pmCloudWithProductionLease(provider, () => migration.renameManagedEntry(
       _pmCloudManagedNameContext(provider, internals),
       body?.path,
       body?.new_name,
@@ -893,6 +960,27 @@
         operationId: body?.operation_id,
       },
     ));
+    // 手動リネームは「タスク名を固定」を立て、以後の分類変更で名前が自動更新されないように
+    // する（meldex_production_task_name_autofill と同じ意図。production-management-ux-
+    // improvement-plan-2026-08-04.md §4-3）。
+    if (isTaskEntry && result?.ok && result?.new_path) {
+      await _pmCloudMarkTaskNameFixed(provider, result.new_path);
+    }
+    return result;
+  }
+
+  async function _pmCloudMarkTaskNameFixed(provider, path) {
+    const parsed = await _pmCloudReadFrontmatter(provider, path);
+    const fm = { ...(parsed.frontmatter || {}) };
+    // 制作管理UX改善計画（2026-08-04）§5-1: 「タスク名を固定」は production_internal
+    // へ統一移動済み（gb-production-task-naming.js の isTaskNameFixed / Desktop
+    // meldex_production_task_name_autofill._task_name_fixed と同じ場所）。旧トップレベル
+    // フラグは新規には立てない（読み取り側のフォールバックとしてのみ残す）。
+    fm.production_internal = fm.production_internal && typeof fm.production_internal === 'object' ? { ...fm.production_internal } : {};
+    fm.production_internal.task_name_fixed = true;
+    delete fm['タスク名を固定'];
+    delete fm.task_name_auto_generated;
+    await provider.writeText(path, _pmCloudFrontmatterText(fm, parsed.body || ''));
   }
 
   async function _pmCloudMissing(provider, internals) {
@@ -931,9 +1019,19 @@
   async function _pmCloudEnsureSheet(provider, internals, sheet, schemaSheet = sheet) {
     const dir = internals._joinPath(_pmCloudRoot(internals), sheet);
     await internals._directoryHandle(provider, dir, true);
+    // ストア汚染（v0.6.120〜v0.7.146 の暗黙sheet-store化）の修復。制作管理の初回表示
+    // （_pmCloudInit）とタスクシート作成で必ず通る（production-sheet-store-contamination-
+    // fix-plan-2026-08-05.md Phase 2）。ノート再構築より先に行う（修復後の浄化済み
+    // frontmatter を _pmCloudReadFrontmatter で読み直すため）。
+    await internals._repairProductionSheetStoreIfNeeded?.(provider, dir);
     const note = internals._joinPath(dir, sheet + '.md');
     const parsed = await _pmCloudReadFrontmatter(provider, note);
     const frontmatter = { ...(parsed.frontmatter || {}), type: 'settings-db', schema_version: 1 };
+    // 防御: 修復関数が未読込でも、汚染由来の保存方式キーをノートへ引き継がない
+    ['storage', 'sheet_storage', 'entry_storage', 'storage_backend'].forEach((key) => {
+      if (String(frontmatter[key] || '').toLowerCase() === 'sqlite') delete frontmatter[key];
+    });
+    if (String(frontmatter.cloud_storage || '').toLowerCase() === 'sheet-store-v1') delete frontmatter.cloud_storage;
     const propTypes = { ...(frontmatter.property_types || {}) };
     if (schemaSheet === 'タスクリスト') {
       delete propTypes[PM_TASK_LEGACY_NAME_PROP];
@@ -946,20 +1044,14 @@
         .filter(Boolean)
         .forEach(property => { delete propTypes[property]; });
     }
-    let expectedTypes = PM_PROPERTY_TYPES[schemaSheet] || {};
-    if (schemaSheet === 'タスクリスト' && sheet !== schemaSheet) {
-      expectedTypes = {
-        ...expectedTypes,
-        '次のタスクにより保留中：': _pmMultiRelation(sheet),
-        '次のタスクを保留中：': _pmMultiRelation(sheet),
-      };
-    }
+    const expectedTypes = PM_PROPERTY_TYPES[schemaSheet] || {};
     frontmatter.property_types = _pmCloudMergePropertyTypes(propTypes, expectedTypes);
     if (schemaSheet === 'タスクリスト') {
       frontmatter.calendar_mapping = { ...(frontmatter.calendar_mapping || {}), startProp: '作業予定日時', endProp: '作業予定日時', titleProp: '' };
       if (!frontmatter.calendar_mapping.colorProp) frontmatter.calendar_mapping.colorProp = '対象色';
       if (!frontmatter.calendar_mapping.descriptionProp) frontmatter.calendar_mapping.descriptionProp = '備考';
       _pmCloudApplyTaskHiddenColumns(frontmatter);
+      _pmCloudApplyComputedProps(frontmatter);
     }
     if (sheet === 'スケジュール') frontmatter.calendar_mapping = frontmatter.calendar_mapping || { startProp: '予定日時', endProp: '予定日時', titleProp: '予定名', descriptionProp: '備考' };
     await provider.writeText(note, _pmCloudFrontmatterText(frontmatter, parsed.body || `# ${sheet}\n\n`));
@@ -974,7 +1066,102 @@
     return merged;
   }
 
+  // 制作管理UX改善計画（2026-08-04）§5-1: 読み取り専用の自動列（コードが再計算エンジン・
+  // 同期フック経由で更新し、ユーザーの直接編集は拒否する）。汎用の計算列基盤
+  // （gb-db-computed-columns.js / gb-data-access-dropbox-expanded.part01.js の
+  // _rejectComputedPropertyEdit）が frontmatterの computed_props: 宣言を見てセル編集を拒否
+  // する。内部エンジンの書込み（applyPropsToFrontmatter 等）は /value を通らないため影響しない。
+  // コミット前レビュー指摘 #13: 目標作業時間_値（数値の実体列）にもcomputed_props宣言が
+  // 必要（表示文字列の目標作業時間だけ保護しても、裏の数値列を表示に戻すと直接編集できる
+  // 抜け道になる）。Desktop meldex_production_management.COMPUTED_PROPS と同じ集合。
+  const PM_TASK_COMPUTED_PROPS = ['作業予定日時', '作業予定時間', '目標作業時間', '目標作業時間_値', 'シフト割当不能理由'];
+  function _pmCloudApplyComputedProps(frontmatter) {
+    const current = Array.isArray(frontmatter.computed_props) ? frontmatter.computed_props : [];
+    frontmatter.computed_props = [...new Set([...current, ...PM_TASK_COMPUTED_PROPS])];
+  }
+
+  // 制作管理UX改善計画（2026-08-04）§5-1「予定セルの合成表示」: フル汎用の列合成基盤は
+  // 大掛かりになるため、コーディネーター確定のフォールバック案を採用する。「作業予定日時」
+  // セル（computed_props宣言済みの読み取り専用列）へ、同エントリの「作業予定時間」を
+  // 「（3h）」形式で併記し、「シフト割当不能理由」があれば⚠アイコン＋ツールチップで示す。
+  // gb-db-computed-columns.js の decorateCell 汎用フック（window.MeldexCellDisplayAugment.
+  // decorators）へ登録する（このファイルの読込順に依存しない。描画時に遅延解決されるため）。
+  function _pmScheduleCellFirstValue(entityData, propName) {
+    const raw = entityData && Object.prototype.hasOwnProperty.call(entityData, propName) ? entityData[propName] : null;
+    if (!Array.isArray(raw) || !raw.length) return '';
+    const adopted = raw.find(v => v && (v.status === '採用' || v.status === '掲載済み')) || raw[0];
+    return adopted && adopted.value != null ? String(adopted.value).trim() : '';
+  }
+
+  function _pmFormatScheduleHours(hoursText) {
+    const num = Number(hoursText);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    const rounded = Math.round(num * 10) / 10;
+    return `${rounded}h`;
+  }
+
+  // 制作管理UX改善計画（2026-08-04）§6-2: 保護トグル（再計算ロック/担当者固定/シフト固定）は
+  // タスク詳細サイドバーで編集するが、一覧を見ただけで保護中と分かるよう、既に計算列表示に
+  // なっている「作業予定日時」セルへ小さな🔒/📌アイコンを併記する（decorateCell拡張点の再利用）。
+  function _pmScheduleCellTruthy(entityData, propName) {
+    const value = _pmScheduleCellFirstValue(entityData, propName).toLowerCase();
+    return value === 'true' || value === '1' || value === 'yes' || value === 'on';
+  }
+
+  function _pmDecorateScheduleCell(td, container, entityData) {
+    const hoursLabel = _pmFormatScheduleHours(_pmScheduleCellFirstValue(entityData, '作業予定時間'));
+    if (hoursLabel) {
+      const hoursSpan = document.createElement('span');
+      hoursSpan.className = 'pm-schedule-cell-hours';
+      hoursSpan.textContent = `（${hoursLabel}）`;
+      container.appendChild(hoursSpan);
+    }
+    const reasonText = _pmScheduleCellFirstValue(entityData, 'シフト割当不能理由');
+    if (reasonText) {
+      td.classList.add('pm-schedule-cell-warning');
+      td.title = `シフト割当不能: ${reasonText}`;
+      const warnSpan = document.createElement('span');
+      warnSpan.className = 'pm-schedule-cell-warning-icon';
+      warnSpan.textContent = '⚠';
+      warnSpan.setAttribute('aria-label', `シフト割当不能理由: ${reasonText}`);
+      container.appendChild(warnSpan);
+    }
+    if (_pmScheduleCellTruthy(entityData, '再計算ロック')) {
+      const lockSpan = document.createElement('span');
+      lockSpan.className = 'pm-schedule-cell-protection-icon';
+      lockSpan.textContent = '🔒';
+      lockSpan.title = '再計算ロック: 割当再計算で動きません';
+      lockSpan.setAttribute('aria-label', '再計算ロック中');
+      container.appendChild(lockSpan);
+    }
+    const assigneeFixed = _pmScheduleCellTruthy(entityData, '担当者固定');
+    const shiftFixed = _pmScheduleCellTruthy(entityData, 'シフト固定');
+    if (assigneeFixed || shiftFixed) {
+      const pinLabel = [assigneeFixed && '担当者固定', shiftFixed && 'シフト固定'].filter(Boolean).join(' / ');
+      const pinSpan = document.createElement('span');
+      pinSpan.className = 'pm-schedule-cell-protection-icon';
+      pinSpan.textContent = '📌';
+      pinSpan.title = `${pinLabel}: 割当再計算で動きません`;
+      pinSpan.setAttribute('aria-label', `${pinLabel}中`);
+      container.appendChild(pinSpan);
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MeldexCellDisplayAugment = window.MeldexCellDisplayAugment || {};
+    window.MeldexCellDisplayAugment.decorators = {
+      ...(window.MeldexCellDisplayAugment.decorators || {}),
+      '作業予定日時': _pmDecorateScheduleCell,
+    };
+  }
+
+  // コミット前レビュー指摘 #12: 既定非表示列の適用は初回のみ。_pmCloudEnsureSheet は
+  // シートを開くたびに呼ばれ得るため、無条件に union し続けるとユーザーが表示へ戻した列を
+  // 毎回黙って再び隠してしまう。適用済みマーカー（フォルダノートのfrontmatter直下。
+  // savedViewsの追加・削除に影響されない）が立っていれば以降はスキップする。Desktop
+  // meldex_production_management._apply_default_view_config と同じ意図・同じマーカー名。
   function _pmCloudApplyTaskHiddenColumns(frontmatter) {
+    if (frontmatter.production_hidden_defaults_applied) return;
     const config = (frontmatter.view_config && typeof frontmatter.view_config === 'object') ? frontmatter.view_config : {};
     const views = Array.isArray(config.savedViews) && config.savedViews.length ? config.savedViews : [{ name: 'テーブル', viewMode: 'pivot' }];
     views.forEach(view => {
@@ -985,6 +1172,7 @@
     config.savedViews = views;
     if (!Number.isInteger(config.currentViewIdx)) config.currentViewIdx = 0;
     frontmatter.view_config = config;
+    frontmatter.production_hidden_defaults_applied = true;
   }
 
   function _pmTaskPageOptionCount(rows, fallback) {
@@ -1065,8 +1253,8 @@
     const standardContents = new Map((PM_SEEDS['作業内容リスト'] || []).map(([name, props]) => [name, props]));
     const specs = [
       ['作業対象リスト', values('作業対象リスト'), () => ({ '基準作業時間': '1' })],
-      ['作業内容リスト', values('作業内容リスト'), (name, index) => standardContents.get(name) || { '表示名': name, '作業順': String(100 + index * 10), '依存階層': String(100 + index * 10), '作業時間倍率': '1', '標準粒度': config.granularity || '階層単位' }],
-      ['作業規模リスト', values('作業規模リスト'), () => ({ '作業時間倍率': '1', '面積比': '1' })],
+      ['作業内容リスト', values('作業内容リスト'), (name, index) => standardContents.get(name) || { '表示名': name, '作業順': String(100 + index * 10), '作業時間倍率': '1' }],
+      ['作業規模リスト', values('作業規模リスト'), () => ({ '作業時間倍率': '1' })],
     ];
     let created = 0;
     for (const [sheet, names, propsFor] of specs) {
@@ -1167,172 +1355,90 @@
   async function _pmCloudApplyShifts(provider, internals, body) {
     const init = await _pmCloudInit(provider, internals);
     const rows = (body.rows || body.shifts || []).map(_pmNormalizeIncomingShift).filter(Boolean);
-    const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows);
-    const removed = new Set(cleanup.removed_ids || []);
-    let created = 0;
-    let updated = 0;
-    for (const row of rows) {
-      const id = _pmShiftId(row);
-      const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
-      await _pmCloudUpsertEntry(provider, internals, 'スケジュール', scheduleName, _pmScheduleProps(row, id), '作成キー', id);
-      await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
-      if (removed.has(id)) updated += 1;
-      else created += 1;
-    }
-    return { ok: true, count: rows.length, created, updated, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
-  }
-
-  async function _pmCloudApplyAssignment(provider, internals, body) {
-    const init = await _pmCloudInit(provider, internals);
-    const planned = await _pmCloudAssignmentPlan(provider, internals, body || {});
-    for (const row of planned) {
-      const props = {
-        '担当者': row.user,
-        '作業予定日時': `${row.start}|${row.end}`,
-        '作業予定時間': String(row.hours),
-      };
-      // デスクトップ版と同じく、状況は未設定の場合のみ「着手待ち」を設定する（作業中・保留を巻き戻さない）
-      if (!row.task_status) props['状況'] = '着手待ち';
-      if (row.task_path) {
-        // 既存エントリをパス指定で直接更新する（作成キーの無い手動タスクで複製行が生まれないように）
-        await _pmCloudUpdateEntryAtPath(provider, row.task_path, props);
-      } else {
-        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.task_name, props, '作成キー', row.task_key);
-      }
-      await _pmSyncCloudWorkEvent(provider, internals, row);
-    }
-    return { ok: true, updated: planned.length, rows: planned, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
-  }
-
-  async function _pmCloudAssignmentPlan(provider, internals, body) {
-    const tasks = await _pmCloudUnassignedTasks(provider, internals);
-    const shifts = await _pmCloudWorkShifts(provider, internals, body.date_from || new Date().toISOString().slice(0, 10));
-    const maxCount = Math.max(1, Number(body.limit || 200) || 200);
-    const planned = [];
-    for (const task of tasks.slice(0, maxCount)) {
-      const plan = _pmCloudPlaceTaskInShift(task, shifts);
-      if (plan) planned.push(plan);
-    }
-    return planned;
-  }
-
-  async function _pmCloudUnassignedTasks(provider, internals) {
-    const entries = await _pmCloudListAllTaskEntries(provider, internals);
-    return entries
-      .filter(item => !_pmCloudPropValue(item.frontmatter, '作業予定日時') && _pmCloudPropValue(item.frontmatter, '状況') !== '完了')
-      .map((item) => {
-        const id = String(item.frontmatter?.id || _pmHash(item.path).slice(0, 12));
-        const key = _pmCloudPropValue(item.frontmatter, '作成キー') || id;
-        return {
-          path: item.path,
+    const journal = _pmCloudMutationJournal(provider, internals);
+    await _pmCloudJournalCalendar(journal, 'shifts');
+    await _pmCloudJournalCalendar(journal, 'events');
+    await _pmCloudJournalCalendar(journal, 'calendars');
+    try {
+      const registry = await _pmCloudRegisterShiftStaff(rows, journal);
+      const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows, journal);
+      const removed = new Set(cleanup.removed_ids || []);
+      let created = 0;
+      let updated = 0;
+      for (const row of rows) {
+        const id = _pmShiftId(row);
+        const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
+        await _pmCloudUpsertEntry(
+          provider,
+          internals,
+          'スケジュール',
+          scheduleName,
+          _pmScheduleProps(row, id),
+          '作成キー',
           id,
-          task_key: key,
-          task_name: item.name,
-          hours: Math.max(0.25, Number(_pmCloudPropValue(item.frontmatter, '目標作業時間_値') || 1) || 1),
-          fixed_user: _pmCloudPropValue(item.frontmatter, '担当者'),
-          status: _pmCloudPropValue(item.frontmatter, '状況'),
-        };
-      });
-  }
-
-  function _pmCloudDateIsValid(value) {
-    return value instanceof Date && !Number.isNaN(value.getTime());
-  }
-
-  function _pmCloudBusyForShift(shift, events) {
-    return (events || [])
-      .filter(event => event && event.calendar_source === 'production-task' && String(event.user || '') === String(shift.user || ''))
-      .map(event => {
-        const start = new Date(String(event.start || event.end || ''));
-        const end = new Date(String(event.end || event.start || ''));
-        if (!_pmCloudDateIsValid(start) || !_pmCloudDateIsValid(end)) return null;
-        const clampedStart = start < shift._cursor ? shift._cursor : start;
-        const clampedEnd = end > shift._end ? shift._end : end;
-        return clampedEnd > clampedStart ? [clampedStart, clampedEnd] : null;
-      })
-      .filter(Boolean)
-      .sort((a, b) => a[0] - b[0]);
-  }
-
-  async function _pmCloudWorkShifts(provider, internals, dateFrom) {
-    const rows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => []);
-    const events = await _pmReadCalendarStore(provider, internals, 'events').catch(() => []);
-    return (rows || [])
-      .map(_pmNormalizeIncomingShift)
-      .filter(row => row && row.type === 'work' && (!dateFrom || row.date >= dateFrom))
-      .sort((a, b) => [a.date, a.start_time, a.user].join('|').localeCompare([b.date, b.start_time, b.user].join('|')))
-      .map(row => ({ ...row, _cursor: _pmDateTime(row.date, row.start_time || '00:00'), _end: _pmShiftEndDateTime(row) }))
-      .filter(row => _pmCloudDateIsValid(row._cursor) && _pmCloudDateIsValid(row._end) && row._end > row._cursor)
-      .map(row => ({ ...row, _busy: _pmCloudBusyForShift(row, events) }));
-  }
-
-  function _pmCloudReserveShiftSlot(shift, durationMs) {
-    let cursor = shift._cursor;
-    for (const [busyStart, busyEnd] of shift._busy || []) {
-      if (busyEnd <= cursor) continue;
-      const end = new Date(cursor.getTime() + durationMs);
-      if (end <= busyStart && end <= shift._end) {
-        shift._cursor = end;
-        return [cursor, end];
+          { beforeWrite: path => _pmCloudJournalText(journal, path) },
+        );
+        await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
+        if (removed.has(id)) updated += 1;
+        else created += 1;
       }
-      if (busyStart < shift._end && busyEnd > cursor) cursor = busyEnd;
-    }
-    const end = new Date(cursor.getTime() + durationMs);
-    if (end <= shift._end) {
-      shift._cursor = end;
-      return [cursor, end];
-    }
-    return null;
-  }
-
-  function _pmCloudPlaceTaskInShift(task, shifts) {
-    const durationMs = Math.max(0.25, Number(task.hours || 1) || 1) * 60 * 60 * 1000;
-    for (const shift of shifts) {
-      if (task.fixed_user && task.fixed_user !== shift.user) continue;
-      const slot = _pmCloudReserveShiftSlot(shift, durationMs);
-      if (!slot) continue;
-      const [start, end] = slot;
       return {
-        task_path: task.path,
-        task_id: task.id,
-        task_key: task.task_key,
-        task_name: task.task_name,
-        task_status: task.status || '',
-        user: shift.user,
-        start: _pmDateTimeText(start),
-        end: _pmDateTimeText(end),
-        hours: task.hours,
+        ok: true,
+        count: rows.length,
+        created,
+        updated,
+        registry_added: registry.added,
+        registry_name_warnings: registry.warnings,
+        cloud: true,
+        ..._pmCloudRecoveryPayload(init.recovered_items),
       };
+    } catch (error) {
+      return _pmCloudRollbackMutation(journal, error);
     }
-    return null;
   }
 
-  async function _pmSyncCloudWorkEvent(provider, internals, row) {
-    const calendarId = await _pmEnsureCloudCalendar(provider, internals, `作業予定: ${row.user}`, '#569cd6', 'production-task', row.user);
-    const eventId = `production-task:${row.task_id}`;
-    const now = new Date().toISOString();
-    const rows = (await _pmReadCalendarStore(provider, internals, 'events')).filter(event => String(event.id) !== eventId);
-    rows.push({
-      id: eventId,
-      title: row.task_name,
-      start: row.start,
-      end: row.end,
-      all_day: 0,
-      color: '#569cd6',
-      description: '元シート: ' + row.task_path,
-      location: '',
-      url: '',
-      recurrence: '',
-      external_id: row.task_id,
-      calendar_source: 'production-task',
-      user: row.user,
-      creator: row.user,
-      calendar_id: calendarId,
-      alert_minutes: -1,
-      created: now,
-      modified: now,
+  async function _pmCloudRegisterShiftStaff(rows, journal) {
+    const names = [...new Set((rows || []).map(row => String(row?.user || '').trim()).filter(Boolean))];
+    if (!names.length) return { added: 0, warnings: [] };
+    const ensured = await window.MeldexDataAccess.requestJson('/staff-registry/ensure', {
+      method: 'POST',
+      body: {},
     });
-    await _pmWriteCalendarStore(provider, internals, 'events', rows);
+    const current = await window.MeldexDataAccess.requestJson('/staff-registry/list');
+    if (!current || !Array.isArray(current.staff)) {
+      throw new Error('スタッフ台帳を確認できないため、シフト取込を中止しました');
+    }
+    const existing = Array.isArray(current?.staff) ? current.staff : [];
+    const registryRoot = _pmCloudNormalizePath(current.path || ensured?.path || '');
+    if (!registryRoot) throw new Error('スタッフ台帳の保存先を確認できないため、シフト取込を中止しました');
+    const existingPaths = new Set(
+      (await _pmCloudDirectoryEntries(journal.provider, journal.internals, registryRoot))
+        .filter(entry => entry?.handle?.kind === 'file')
+        .map(entry => _pmCloudNormalizePath(journal.internals._joinPath(registryRoot, entry.name))),
+    );
+    for (const path of existingPaths) await _pmCloudJournalText(journal, path);
+    const identities = new Set(existing.flatMap(row => [
+      String(row?.user || '').trim(),
+      String(row?.display || '').trim(),
+      String(row?.entry_name || '').trim(),
+    ]).filter(Boolean));
+    let added = 0;
+    const warnings = [];
+    for (const name of names) {
+      if (identities.has(name)) continue;
+      const result = await window.MeldexDataAccess.requestJson('/staff-registry/upsert', {
+        method: 'POST',
+        body: { user: '', display: name, fill_only: true },
+      });
+      const resultPath = _pmCloudNormalizePath(result?.staff?.path);
+      if (!resultPath) throw new Error('登録したスタッフの保存先を確認できません');
+      if (!existingPaths.has(resultPath)) _pmCloudJournalCreatedPath(journal, resultPath);
+      existingPaths.add(resultPath);
+      identities.add(name);
+      warnings.push(`${name} はDropboxアカウント未連携のスタッフとして登録しました`);
+      added += 1;
+    }
+    return { added, warnings };
   }
 
   async function _pmCloudRecoverFromCalendar(provider, internals, missing) {

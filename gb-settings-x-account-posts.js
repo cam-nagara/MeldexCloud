@@ -4,6 +4,7 @@
 
   const ROOT_ID = 'x-account-posts-settings-container';
   const USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
+  const ACTIVE_JOB_STORAGE_KEY = 'meldex.x-account-posts.active-job.v1';
   let syncInFlight = false;
   let connected = false;
 
@@ -62,6 +63,38 @@
     updateControls();
   }
 
+  function readActiveJob() {
+    try {
+      const value = JSON.parse(localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) || 'null');
+      if (!value?.jobId || !normalizeUsername(value.username)) return null;
+      return value;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function rememberActiveJob(jobId, username) {
+    try {
+      localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify({
+        jobId: String(jobId || ''),
+        username: normalizeUsername(username),
+        startedAt: Date.now(),
+      }));
+    } catch (_) {
+      // 保存状況の復元が使えない環境でも、現在の画面では処理を継続できる。
+    }
+  }
+
+  function forgetActiveJob(jobId) {
+    const active = readActiveJob();
+    if (jobId && active?.jobId && active.jobId !== jobId) return;
+    try {
+      localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+    } catch (_) {
+      // 追跡情報を消せない環境でも、確定済みの保存結果は変わらない。
+    }
+  }
+
   async function loadConnectionStatus() {
     if (typeof apiFetch !== 'function') {
       connected = false;
@@ -98,27 +131,60 @@
     return String(value || 'しばらく後');
   }
 
-  async function syncAccountPosts() {
-    if (syncInFlight || typeof apiPost !== 'function' || typeof runBackgroundJob !== 'function') return;
-    const raw = document.getElementById('x-account-posts-username')?.value || '';
-    const username = normalizeUsername(raw);
-    if (!username) {
-      setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
-      document.getElementById('x-account-posts-username')?.focus();
-      return;
+  function jobProgressText(progress) {
+    progress = progress || {};
+    const fetched = Number(progress.processed) || 0;
+    const saved = Number(progress.succeeded);
+    const phase = String(progress.phase || '取得中');
+    if (fetched > 0 || (Number.isFinite(saved) && saved > 0)) {
+      const savedText = Number.isFinite(saved) ? `${saved}件保存済み` : `${fetched}件取得済み`;
+      const fetchedText = Number.isFinite(saved) && fetched !== saved ? `（${fetched}件取得）` : '';
+      return `${phase}… ${savedText}${fetchedText}`;
     }
+    return progress.message || formatJobProgress(progress, { unit: '件取得済み', defaultPhase: '取得中' });
+  }
+
+  function partialResultText(detail) {
+    const partial = detail?.partial_result;
+    if (!partial || typeof partial !== 'object') return '';
+    const created = Number(partial.created) || 0;
+    const updated = Number(partial.updated) || 0;
+    const fetched = Number(partial.fetched) || 0;
+    const saved = Number(partial.saved) || created + updated;
+    if (saved <= 0 && fetched <= 0) return '';
+    return ` この実行では${fetched}件を取得し、${saved}件を保存済みです（新規${created}件、更新${updated}件）。`;
+  }
+
+  async function runAccountPostsJob(username, resumeJobId) {
     setBusy(true);
-    setStatus(`@${username} のポストを取得しています。件数が多い場合は時間がかかります。`, false);
+    setStatus(
+      resumeJobId
+        ? `@${username} の保存状況を再確認しています。`
+        : `@${username} のポストを取得しています。件数が多い場合は1時間以上かかることがあります。`,
+      false
+    );
+    let activeJobId = String(resumeJobId || '');
     try {
       const data = await runBackgroundJob(
         '/x-bookmarks/account-posts/sync',
         { username },
         {
+          resumeJobId: activeJobId || undefined,
+          // 3,200件と画像を保存すると1時間を超えるため、時間だけを理由に失敗扱いにしない。
+          maxPolls: Number.POSITIVE_INFINITY,
+          onStarted: (jobId) => {
+            activeJobId = String(jobId || '');
+            rememberActiveJob(activeJobId, username);
+          },
           onProgress: (progress) => {
-            setStatus(formatJobProgress(progress, { unit: '件保存済み', defaultPhase: '取得中' }), false);
+            setStatus(jobProgressText(progress), false);
+          },
+          onLongRunning: () => {
+            setStatus(`@${username} の保存を続けています。設定画面を閉じても処理は継続します。`, false);
           },
         }
       );
+      forgetActiveJob(activeJobId);
       const successMessage = resultSummary(data);
       setStatus(successMessage, false);
       if (typeof loadOutliner === 'function') {
@@ -131,19 +197,65 @@
       }
     } catch (error) {
       const detail = error?.errorDetail || error?.payload?.detail;
+      const terminalStatus = String(error?.jobStatus?.status || '').toLowerCase();
+      const resumedJobMissing = !!resumeJobId
+        && /見つかりません|404/.test(String(error?.userMessage || error?.message || error));
+      // 完了・失敗・中止が確定した時だけ追跡情報を消す。
+      // 一時的な通信失敗ではサーバ側の保存が続いている可能性があるため、再表示時に追跡を再開する。
+      if (['error', 'cancelled', 'canceled'].includes(terminalStatus) || resumedJobMissing) {
+        forgetActiveJob(activeJobId);
+      }
       if (detail && typeof detail === 'object' && (detail.message || detail.partial_result)) {
-        const partial = detail.partial_result;
-        const saved = partial?.fetched
-          ? ` この実行では${partial.fetched}件を取得し、新規${partial.created || 0}件、更新${partial.updated || 0}件を保存済みです。`
-          : '';
+        const saved = partialResultText(detail);
         const retry = detail.retry_at ? ` 再実行目安: ${retryAtText(detail.retry_at)}` : '';
         setStatus(`${detail.message || 'X APIの取得上限に達しました'}${saved}${retry}`, true);
+        if (detail.reason_code === 'x_authentication_required') {
+          connected = false;
+          await loadConnectionStatus();
+        }
+      } else if (resumedJobMissing) {
+        setStatus('前回の処理状況を取得できませんでした。Meldexの再起動前に保存されたポストはフォルダに残っています。', true);
       } else {
-        setStatus('保存できませんでした: ' + (error?.userMessage || error?.message || error), true);
+        const suffix = activeJobId
+          ? ' 設定画面を開き直すと保存状況の確認を再開します。'
+          : '';
+        setStatus('保存状況を確認できませんでした: ' + (error?.userMessage || error?.message || error) + suffix, true);
       }
     } finally {
       setBusy(false);
     }
+  }
+
+  async function confirmAccountPostsCost(username) {
+    const message = `@${username} のポストを最大3,200件まで保存します。\nX APIの従量課金が発生します。料金と残高はX Developer Consoleで確認してください。\n\n続けますか？`;
+    if (typeof cfConfirm === 'function') {
+      return !!await cfConfirm(message, { okLabel: '保存を開始', cancelLabel: 'キャンセル' });
+    }
+    return window.confirm(message);
+  }
+
+  async function syncAccountPosts() {
+    if (syncInFlight || typeof apiPost !== 'function' || typeof runBackgroundJob !== 'function') return;
+    const raw = document.getElementById('x-account-posts-username')?.value || '';
+    const username = normalizeUsername(raw);
+    if (!username) {
+      setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
+      document.getElementById('x-account-posts-username')?.focus();
+      return;
+    }
+    if (!await confirmAccountPostsCost(username)) return;
+    await runAccountPostsJob(username, '');
+  }
+
+  async function resumeActiveJob() {
+    const active = readActiveJob();
+    if (!active || syncInFlight || typeof runBackgroundJob !== 'function') return;
+    const input = document.getElementById('x-account-posts-username');
+    if (input && !input.value) {
+      input.value = `@${active.username}`;
+      updateSavePreview();
+    }
+    await runAccountPostsJob(active.username, active.jobId);
   }
 
   function renderXAccountPostsSettings(scope) {
@@ -151,11 +263,13 @@
     if (!container) return;
     if (container.dataset.rendered === '1') {
       loadConnectionStatus();
+      resumeActiveJob();
       return;
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <div class="gb-section-desc">指定した閲覧可能なアカウントのポストを、返信・リポストを含めて画像つきのシートへ保存します。 ${fieldHelp('取得できるのは最新3,200件までです。')}</div>
+      <div class="gb-section-desc">指定した閲覧可能なアカウントのポストを、返信・リポストを含めて画像つきのシートへ保存します。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
+      <div class="gb-section-desc">最大3,200件・X APIの従量課金対象です。</div>
       <div id="x-account-posts-connection" class="gb-section-desc">X接続状態を確認中...</div>
       <label class="gb-field">
         <span class="gb-label">保存するXアカウント</span>
@@ -174,6 +288,7 @@
     });
     container.querySelector('#x-account-posts-sync')?.addEventListener('click', syncAccountPosts);
     loadConnectionStatus();
+    resumeActiveJob();
   }
 
   window.renderXAccountPostsSettings = renderXAccountPostsSettings;

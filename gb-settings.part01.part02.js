@@ -20,6 +20,9 @@ let _settingsWorkspaceOutlinerRoots = [];
 // だけを基準にすると、台帳合流分の削除が検出できず次回読み込みで復活してしまう）。
 let _outlinerRootsBaseline = [];
 
+// ドラッグ&ドロップ並べ替え中の元インデックス（未ドラッグ時は-1）。
+let _outlinerRootsDragIdx = -1;
+
 // _outlinerRoots は行編集（visible/name変更）でオブジェクトを直接ミューテートするため、
 // 参照を共有したまま控えると控え側まで書き換わってしまう。JSONの深いクローンで
 // 独立させる。roots はサーバーが返すプレーンなJSON値のみを想定する。
@@ -49,6 +52,7 @@ async function loadOutlinerRootsForSettings() {
     if (typeof showStatus === 'function') showStatus('ソースフォルダ一覧を読み込めませんでした', true);
   }
   window._settingsOutlinerRootsDirty = false;
+  window._settingsOutlinerRootsReordered = false;
   renderOutlinerRootsSettings();
 }
 
@@ -126,9 +130,13 @@ function renderOutlinerRootsSettings() {
   }
   _outlinerRoots.forEach((root, i) => {
     const row = document.createElement('div');
+    row.className = 'or-row';
     row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:4px;font-size:12px;';
     const displayPath = _sourceRootDisplayPath(root);
     row.innerHTML = `
+      <span class="or-drag-handle" draggable="true" data-e2e-id="settings-outliner-root-${i}-drag"
+        role="button" tabindex="0" aria-label="${esc(root.name || 'ソースフォルダ')}を並べ替え"
+        title="ドラッグして並べ替え" style="display:inline-flex;cursor:grab;color:var(--fg2);flex-shrink:0;">${lucide('gripVertical', 14)}</span>
       <label style="display:flex;align-items:center;gap:3px;cursor:pointer;" title="フォルダツリーに表示">
         <input type="checkbox" class="or-visible" data-e2e-id="settings-outliner-root-${i}-visible" aria-label="${esc(root.name || 'ソースフォルダ')}をフォルダツリーに表示" ${root.visible ? 'checked' : ''}>
       </label>
@@ -136,7 +144,7 @@ function renderOutlinerRootsSettings() {
         data-e2e-id="settings-outliner-root-${i}-name" aria-label="ソースフォルダ名"
         style="width:80px;font-size:12px;padding:2px 4px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
       <span class="or-path" style="flex:1;min-width:0;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(displayPath)}">${esc(displayPath)}</span>
-      <button type="button" class="or-delete" data-e2e-id="settings-outliner-root-${i}-delete" aria-label="${esc(root.name || 'ソースフォルダ')}を削除" title="削除" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
+      <button type="button" class="or-delete" data-e2e-id="settings-outliner-root-${i}-delete" aria-label="${esc(root.name || 'ソースフォルダ')}を登録解除" title="登録解除" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
     `;
     row.querySelector('.or-visible').addEventListener('change', (e) => {
       _outlinerRoots[i].visible = e.target.checked;
@@ -156,6 +164,48 @@ function renderOutlinerRootsSettings() {
       if (idx === -1) return;
       _outlinerRoots.splice(idx, 1);
       _markOutlinerRootsSettingsDirty();
+      renderOutlinerRootsSettings();
+    });
+    // ドラッグ&ドロップによる並べ替え（ハンドルのみdraggable。行内のテキスト入力・
+    // チェックボックスの通常操作を妨げないため）。
+    const dragHandle = row.querySelector('.or-drag-handle');
+    dragHandle.addEventListener('dragstart', (e) => {
+      _outlinerRootsDragIdx = i;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', '');
+      row.style.opacity = '0.4';
+    });
+    dragHandle.addEventListener('dragend', () => {
+      _outlinerRootsDragIdx = -1;
+      row.style.opacity = '';
+      container.querySelectorAll('.or-row').forEach(r => { r.style.borderTop = ''; r.style.borderBottom = ''; });
+    });
+    row.addEventListener('dragover', (e) => {
+      if (_outlinerRootsDragIdx < 0 || _outlinerRootsDragIdx === i) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      const isTop = e.clientY < mid;
+      row.style.borderTop = isTop ? '2px solid var(--accent)' : '';
+      row.style.borderBottom = isTop ? '' : '2px solid var(--accent)';
+    });
+    row.addEventListener('dragleave', () => { row.style.borderTop = ''; row.style.borderBottom = ''; });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      row.style.borderTop = '';
+      row.style.borderBottom = '';
+      const from = _outlinerRootsDragIdx;
+      _outlinerRootsDragIdx = -1;
+      if (from < 0 || from === i) return;
+      const rect = row.getBoundingClientRect();
+      const mid = rect.top + rect.height / 2;
+      let insertAt = e.clientY < mid ? i : i + 1;
+      if (from < insertAt) insertAt--;
+      const moved = _outlinerRoots.splice(from, 1)[0];
+      _outlinerRoots.splice(insertAt, 0, moved);
+      _markOutlinerRootsSettingsDirty();
+      window._settingsOutlinerRootsReordered = true;
       renderOutlinerRootsSettings();
     });
     // 状態カード側（gb-settings-cloud-link.js の _redecorateRootRowsOnce）が、状態
@@ -370,6 +420,12 @@ function _normalizeOutlinerRootSettings(root) {
     sourceId: root.sourceId || root.id || undefined,
     provider: root.provider || undefined,
     dropboxPath: root.dropboxPath || undefined,
+    // namespaceKind省略時の巻き戻り防止（meldex_path_scope_fullwidth_plan_2026-07-31.md
+    // 第2層タスク1対応）: このフィールドを欠かすと、設定ダイアログの保存・Undo/Redo
+    // スナップショットを経由するたびに team_root 登録が home へ丸められてしまう
+    // （受け側 gb-source-folder-registry.js の namespaceKind継承は「省略」時のみ効く
+    // 保護であり、このフィールド自体を毎回落とし続ける入口を直さないと再発する）。
+    namespaceKind: root.namespaceKind || undefined,
     needsMapping: root.needsMapping === true,
     name: String(root.name || root.path.split(/[\\/]/).pop() || root.path),
     visible: root.visible !== false,
@@ -429,12 +485,21 @@ async function _addDropboxOutlinerRootFromSettings() {
       return;
     }
     const usedIds = new Set(_outlinerRoots.map(root => root?.sourceId || root?.id).filter(Boolean));
-    const sourceId = registry.sourceIdForDropboxPath(dropboxPath, usedIds);
+    // namespaceKind: ピッカーがユーザーの選択（個人用/チーム共有）どおりに返す値を
+    // そのまま使う。ここを省略すると sourceIdForDropboxPath() が team_root 用の
+    // id接頭辞（team-root:）を付けずに採番してしまい、かつ後段の保存経路が
+    // namespaceKindフィールドごと落としてhomeとして台帳へ書いてしまう
+    // （meldex_path_scope_fullwidth_plan_2026-07-31.md 第2層の再発防止）。
+    const namespaceKind = registry.normalizeNamespaceKind
+      ? registry.normalizeNamespaceKind(picked.namespaceKind)
+      : (picked.namespaceKind === 'team_root' ? 'team_root' : 'home');
+    const sourceId = registry.sourceIdForDropboxPath(dropboxPath, usedIds, namespaceKind);
     const name = String(picked.name || dropboxPath.split('/').filter(Boolean).pop() || dropboxPath).trim();
     const root = {
       id: sourceId,
       sourceId,
       provider: 'dropbox',
+      namespaceKind,
       dropboxPath,
       path: registry.sourcePath(sourceId, ''),
       name,

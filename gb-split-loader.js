@@ -1,11 +1,11 @@
 /* gb-split-loader.js: split script loader */
 (function (global) {
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'c5ea2413a42b', parts: { 'meldex-core.bundle.part01.js': 'efec495e85fa', 'meldex-core.bundle.part02.js': 'd8e41fab5bd0', 'meldex-core.bundle.part03.js': '171d08cb7219', 'meldex-core.bundle.part04.js': '68dbe21603c0' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'b5cd1fc8b1de', parts: { 'gb-app.bundle.part01.js': 'b23dbb91fc1d', 'gb-app.bundle.part02.js': '7fc41563d5cf', 'gb-app.bundle.part03.js': '7a6f4da896c0', 'gb-app.bundle.part04.js': 'd8100e36e74b', 'gb-app.bundle.part05.js': 'b6f7042a0bf0', 'gb-app.bundle.part06.js': '70aee0c6ce33', 'gb-app.bundle.part07.js': '39cdd1f9a421' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'b1bcdd0d8625', parts: { 'gb-theme-manager.bundle.part01.js': 'a4c49a7875cb', 'gb-theme-manager.bundle.part02.js': '95519e276884', 'gb-theme-manager.bundle.part03.js': '287af8d88185', 'gb-theme-manager.bundle.part04.js': 'fd95778f4ad8' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '8b2664c4f49d', parts: { 'gb-outliner.bundle.part01.js': '4d098ffc4129', 'gb-outliner.bundle.part02.js': 'c96cd45640e7', 'gb-outliner.bundle.part03.js': '3da9e7eaffaf', 'gb-outliner.bundle.part04.js': '08017e5290ea', 'gb-outliner.bundle.part05.js': '8ed77832ba5c' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '21a50588a96b', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '84fb07821230', 'gb-data-access-dropbox-fileops.bundle.part02.js': '27119800897c', 'gb-data-access-dropbox-fileops.bundle.part03.js': '46febe105437' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'cbe36f91e4a0', parts: { 'meldex-core.bundle.part01.js': '29932b896123', 'meldex-core.bundle.part02.js': 'e9a8d299bd88', 'meldex-core.bundle.part03.js': '0acb89bff133', 'meldex-core.bundle.part04.js': 'bde90ba2d381', 'meldex-core.bundle.part05.js': '62f1591f6621' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: 'f11464a27356', parts: { 'gb-app.bundle.part01.js': 'e7f0aa3212d8', 'gb-app.bundle.part02.js': '2f5a18699840', 'gb-app.bundle.part03.js': 'd9dd407141e4', 'gb-app.bundle.part04.js': 'c61d77a78325', 'gb-app.bundle.part05.js': '36663ad3123c', 'gb-app.bundle.part06.js': '170a2e068c6a' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '40540a8ee095', parts: { 'gb-theme-manager.bundle.part01.js': '224c1b9b707b', 'gb-theme-manager.bundle.part02.js': '0f5fd8abf5aa', 'gb-theme-manager.bundle.part03.js': '771c02da1541', 'gb-theme-manager.bundle.part04.js': '750150dec24a' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '542ad194b8bc', parts: { 'gb-outliner.bundle.part01.js': 'b09c0071af8d', 'gb-outliner.bundle.part02.js': '5990da45ade6', 'gb-outliner.bundle.part03.js': '84fa6733d674', 'gb-outliner.bundle.part04.js': '201e46415f83', 'gb-outliner.bundle.part05.js': 'b9e2711e0b6f' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '01e80a65d40c', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': 'e8867717e5c3', 'gb-data-access-dropbox-fileops.bundle.part02.js': 'dfec2d9639ca', 'gb-data-access-dropbox-fileops.bundle.part03.js': '4a9ab8afdc92', 'gb-data-access-dropbox-fileops.bundle.part04.js': 'cfa23e9b430e' } },
     'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: 'b6075d06a6b1', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': 'bd52ccf8e653', 'gb-cloud-mobile-editbar.bundle.part02.js': '8238efe0caec' } },
   };
 
@@ -71,6 +71,12 @@
   function _loadPrebuiltBundle(entryName, currentScript) {
     const bundle = PREBUILT_SPLIT_BUNDLES[entryName];
     if (!bundle?.file) return '';
+    // Source-level E2E can explicitly bypass generated bundles so changes can be
+    // verified before the separately-authorized production build is performed.
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      if (params.get('splitSource') === '1' || params.get('devBust') === 'split-source') return '';
+    } catch (_) {}
     try {
       const url = _withFingerprint(_resolveChunkUrl(currentScript, bundle.file), bundle.hash);
       return _loadChunkText(url);

@@ -19,11 +19,14 @@
   // ブラウザ版ではユーザーが許可したフォルダを BoardStandaloneApp 側から渡す。
   let _rootHandle = null;
   let _nativeConfig = null;
+  const _localWriteLocks = new Map();
 
   // ハンドルを IndexedDB に永続化する用のキー。
   const IDB_NAME = 'board-standalone-fs';
   const IDB_STORE = 'handles';
   const IDB_KEY_ROOT = 'rootHandle';
+  const IDB_KEY_ROOT_IDENTITIES = 'rootIdentitiesV1';
+  const _sessionRootIdentities = new WeakMap();
 
   // -------------------------------------------------------------------------
   // IndexedDB ユーティリティ（ハンドル永続化用の小さなラッパー）
@@ -143,6 +146,97 @@
 
   NS.getRootHandle = function () {
     return _rootHandle;
+  };
+
+  function _newRootIdentity() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function _sameRootHandle(left, right) {
+    if (!left || !right) return false;
+    if (left === right) return true;
+    let firstError = null;
+    if (typeof left.isSameEntry === 'function') {
+      try { return await left.isSameEntry(right); }
+      catch (error) { firstError = error; }
+    }
+    if (typeof right.isSameEntry === 'function') {
+      try { return await right.isSameEntry(left); }
+      catch (error) {
+        throw new Error('注釈ルート識別台帳のフォルダを比較できません', {
+          cause: error || firstError,
+        });
+      }
+    }
+    if (firstError) {
+      throw new Error('注釈ルート識別台帳のフォルダを比較できません', {
+        cause: firstError,
+      });
+    }
+    return false;
+  }
+
+  async function _storedRootIdentity(handle) {
+    const stored = await _idbGet(IDB_KEY_ROOT_IDENTITIES);
+    if (stored != null && !Array.isArray(stored)) {
+      throw new Error('注釈ルート識別台帳の形式が不正です');
+    }
+    const records = stored || [];
+    if (records.some(item => !item?.id || !item?.handle)) {
+      throw new Error('注釈ルート識別台帳に不完全なレコードがあります');
+    }
+    for (const record of records) {
+      if (await _sameRootHandle(record.handle, handle)) {
+        return { id: String(record.id), records };
+      }
+    }
+    return { id: '', records };
+  }
+
+  async function _registerRootIdentity(handle) {
+    const current = await _storedRootIdentity(handle);
+    if (current.id) return current.id;
+    const id = _newRootIdentity();
+    current.records.push({ id, handle, created: new Date().toISOString() });
+    await _idbSet(IDB_KEY_ROOT_IDENTITIES, current.records);
+    return id;
+  }
+
+  // File System Access API は絶対パスを公開しないため、許可済みDirectoryHandleと
+  // 安定UUIDの対応を、ハンドルの永続化先と同じIndexedDBへ保存する。
+  // フォルダ名だけを識別子にしないことで、別ドライブ/別フォルダの同名ルートを
+  // 混同しない。注釈側はこの値をさらにSHA-256で不可逆な名前空間へ変換する。
+  NS.getRootIdentity = async function () {
+    if (!_rootHandle) throw new Error('注釈の保存先ルートが選択されていません');
+    if (_nativeConfig || _rootHandle?.native) {
+      const root = String(_rootHandle?.root || _nativeConfig?.root || '')
+        .replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase('en-US');
+      if (!root) throw new Error('注釈の保存先ルートを識別できません');
+      return 'native-root:' + root;
+    }
+    const cached = _sessionRootIdentities.get(_rootHandle);
+    if (cached) return cached;
+    const existing = await _storedRootIdentity(_rootHandle);
+    if (existing.id) {
+      _sessionRootIdentities.set(_rootHandle, existing.id);
+      return existing.id;
+    }
+    // 初回登録だけはorigin全体のWeb Lock内で再読込→登録する。同じ未登録
+    // DirectoryHandleを2タブが同時に開いても、後着は先着のUUIDを再利用する。
+    // Web Lock無しで別UUIDを発行するより、安全側で保存を止める。
+    if (!globalThis.navigator?.locks?.request) {
+      throw new Error('このブラウザでは注釈ルートの同時初期化を安全に行えません');
+    }
+    const handle = _rootHandle;
+    const id = await globalThis.navigator.locks.request(
+      'meldex-board-root-identity-v1',
+      () => _registerRootIdentity(handle),
+    );
+    _sessionRootIdentities.set(handle, id);
+    return id;
   };
 
   NS.rootName = function () {
@@ -279,10 +373,79 @@
     return file.text();
   }
 
-  async function _writeFileText(relPath, text) {
+  async function _localFileSnapshot(relPath) {
+    const handle = await _getFileHandle(relPath, { create: false });
+    const file = await handle.getFile();
+    const content = await file.text();
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+    const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+    const etag = `${file.lastModified}:${file.size}:${hash}`;
+    const fmt = window.MeldexDocumentIdentity?.formatForPath?.(relPath);
+    const documentId = fmt
+      ? String(window.MeldexDocumentIdentity?.readDocumentId?.(content, fmt) || '')
+      : '';
+    return {
+      content,
+      etag,
+      transport_revision: { transport: 'local-etag', token: etag },
+      ...(documentId ? {
+        document_id: documentId,
+        document_key: 'document:' + documentId,
+      } : {}),
+    };
+  }
+
+  function _localFileError(status, code, message, detail) {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code;
+    error.meldexCode = code;
+    error.meldexDetail = detail || null;
+    return error;
+  }
+
+  function _localTransportEtag(body) {
+    const revision = body?.transport_revision || body?.transportRevision || '';
+    if (revision && typeof revision === 'object') {
+      const transport = String(revision.transport || revision.kind || 'local-etag');
+      if (transport !== 'local-etag') {
+        throw _localFileError(400, 'transport_mismatch', 'この保存先では別の保存経路のrevisionを使用できません');
+      }
+      return String(revision.token || revision.revision || revision.etag || '');
+    }
+    const raw = String(revision || '');
+    if (raw.startsWith('local-etag:')) return raw.slice('local-etag:'.length);
+    if (raw.startsWith('dropbox-rev:')) {
+      throw _localFileError(400, 'transport_mismatch', 'この保存先ではDropboxのrevisionを使用できません');
+    }
+    return raw;
+  }
+
+  async function _withLocalWriteLock(relPath, callback) {
+    const lockName = 'meldex-board-file:' + String(relPath || '').replace(/\\/g, '/').toLowerCase();
+    if (globalThis.navigator?.locks?.request) return globalThis.navigator.locks.request(lockName, callback);
+    const previous = _localWriteLocks.get(lockName) || Promise.resolve();
+    const current = previous.catch(() => {}).then(callback);
+    _localWriteLocks.set(lockName, current);
+    try {
+      return await current;
+    } finally {
+      if (_localWriteLocks.get(lockName) === current) _localWriteLocks.delete(lockName);
+    }
+  }
+
+  async function _writeFileText(relPath, text, preferredDocumentId, overwrite) {
+    let content = String(text || '');
+    const docIdentity = window.MeldexDocumentIdentity;
+    const fmt = docIdentity?.formatForPath?.(relPath);
+    if (fmt) {
+      content = (overwrite
+        ? docIdentity.ensureDocumentIdForOverwrite(content, fmt, preferredDocumentId)
+        : docIdentity.ensureDocumentId(content, fmt, preferredDocumentId)).text;
+    }
     const handle = await _getFileHandle(relPath, { create: true });
     const writable = await handle.createWritable();
-    await writable.write(new Blob([String(text || '')], { type: 'text/plain;charset=utf-8' }));
+    await writable.write(new Blob([content], { type: 'text/plain;charset=utf-8' }));
     await writable.close();
   }
 
@@ -296,11 +459,12 @@
   function _newScriptnoteJson(title) {
     return JSON.stringify({
       fileType: 'meldex-scriptnote',
-      schema_version: 1,
+      schema_version: 3,
       version: 1,
       title: String(title || ''),
       layoutMode: 'manga',
       editor: { wrapMode: true, statusEnabled: false, viewMode: 'horizontal' },
+      scenarioTypes: [],
       characters: [],
       characterDb: [],
       notes: [],
@@ -361,11 +525,16 @@
     return '';
   }
 
-  const ANNOTATION_STORE_PATH = '_meldex/board-annotations.json';
   const ANNOTATION_UPDATE_KEYS = [
     'target_path', 'target_id', 'type', 'shape', 'data', 'color', 'opacity', 'user',
     'body', 'target_kind', 'target_ref', 'orphan', 'orphaned_at', 'target_file_name',
   ];
+  const _annotationRowBases = new WeakMap();
+
+  function _cloneAnnotationRows(rows) {
+    if (typeof structuredClone === 'function') return structuredClone(rows || []);
+    return JSON.parse(JSON.stringify(rows || []));
+  }
 
   function _sanitizeFilename(name) {
     const cleaned = String(name || 'file').replace(/[<>:"/\\|?*\x00-\x1f]+/g, '_').replace(/^[. ]+|[. ]+$/g, '');
@@ -455,6 +624,7 @@
     const now = _annotationNow();
     const row = { ...(input || {}) };
     return {
+      ...row,
       id: String(row.id || _annotationId()),
       target_path: _annotationPathKey(row.target_path || row.target || ''),
       target_id: String(row.target_id || ''),
@@ -475,25 +645,58 @@
     };
   }
 
-  async function _readAnnotationRows() {
-    try {
-      const text = await _readFileAsText(ANNOTATION_STORE_PATH);
-      const payload = JSON.parse(text || '{}');
-      const rows = Array.isArray(payload) ? payload : payload.annotations;
-      return (Array.isArray(rows) ? rows : []).map(_normalizeAnnotationRecord);
-    } catch (e) {
-      return [];
-    }
+  // 固有形式付随物廃止・管理データ一元化計画 Phase 3: 注釈は対象(targetPath)
+  // ごとに解決した document_id をキーに、IndexedDB(共通ストレージ層)へ保存する
+  // (board-standalone-annotations.js)。旧 `_meldex/board-annotations.json` は
+  // 読取専用フォールバックとしてのみ参照し、二度と書き込まない。
+  async function _readAnnotationRows(targetPath) {
+    const helper = window.BoardStandaloneAnnotations;
+    if (!helper) return [];
+    const rows = await helper.readRawRowsForTarget(targetPath, { readFileAsText: _readFileAsText });
+    const normalized = rows.map(_normalizeAnnotationRecord);
+    _annotationRowBases.set(normalized, {
+      normalized: _cloneAnnotationRows(normalized),
+      raw: _cloneAnnotationRows(rows),
+    });
+    return normalized;
   }
 
-  async function _writeAnnotationRows(rows) {
+  async function _writeAnnotationRows(
+    targetPath,
+    rows,
+    { normalize = true, baseRows: explicitBaseRows } = {},
+  ) {
+    const bases = _annotationRowBases.get(rows);
+    const baseRows = explicitBaseRows || bases?.raw;
     const normalized = (Array.isArray(rows) ? rows : []).map(_normalizeAnnotationRecord);
-    const payload = {
-      version: 1,
-      annotations: normalized,
-    };
-    await _writeFileText(ANNOTATION_STORE_PATH, JSON.stringify(payload, null, 2) + '\n');
+    let rowsToSave = normalize ? normalized : _cloneAnnotationRows(Array.isArray(rows) ? rows : []);
+    if (normalize && bases?.raw && bases?.normalized) {
+      const rawById = new Map(bases.raw.map(row => [String(row.id || ''), row]));
+      const normalizedById = new Map(bases.normalized.map(row => [String(row.id || ''), row]));
+      rowsToSave = normalized.map((row) => {
+        const id = String(row.id || '');
+        const before = normalizedById.get(id);
+        return before && JSON.stringify(before) === JSON.stringify(row) && rawById.has(id)
+          ? _cloneAnnotationRows([rawById.get(id)])[0]
+          : row;
+      });
+    }
+    const helper = window.BoardStandaloneAnnotations;
+    if (helper) {
+      await helper.writeRawRowsForTarget(targetPath, rowsToSave, {
+        readFileAsText: _readFileAsText,
+        writeFileText: _writeFileText,
+        fileExists: _fileExists,
+        baseRows,
+      });
+    }
     return normalized;
+  }
+
+  async function _findAnnotationTarget(annId) {
+    const helper = window.BoardStandaloneAnnotations;
+    if (!helper) return null;
+    return helper.findTargetForAnnotationId(annId, { readFileAsText: _readFileAsText });
   }
 
   function _annotationQuery(apiPath) {
@@ -538,24 +741,26 @@
       created: now,
       modified: now,
     });
-    const rows = await _readAnnotationRows();
+    const rows = await _readAnnotationRows(record.target_path);
     rows.push(record);
-    await _writeAnnotationRows(rows);
+    await _writeAnnotationRows(record.target_path, rows);
     return { ok: true, id: record.id, created: record.created };
   }
 
   async function _restoreAnnotation(body) {
     const record = _normalizeAnnotationRecord(body || {});
-    const rows = await _readAnnotationRows();
+    const rows = await _readAnnotationRows(record.target_path);
     const index = rows.findIndex(row => row.id === record.id);
     if (index >= 0) rows[index] = record;
     else rows.push(record);
-    await _writeAnnotationRows(rows);
+    await _writeAnnotationRows(record.target_path, rows);
     return { ok: true, id: record.id };
   }
 
   async function _updateAnnotation(annId, body) {
-    const rows = await _readAnnotationRows();
+    const oldTarget = await _findAnnotationTarget(annId);
+    if (oldTarget == null) return { ok: true, missing: true };
+    const rows = await _readAnnotationRows(oldTarget);
     const now = _annotationNow();
     const index = rows.findIndex(row => row.id === annId);
     if (index < 0) return { ok: true, missing: true };
@@ -568,14 +773,57 @@
       else if (key === 'target_path') next[key] = _annotationPathKey(body[key]);
       else next[key] = String(body[key] ?? '');
     });
-    rows[index] = _normalizeAnnotationRecord(next);
-    await _writeAnnotationRows(rows);
+    const updated = _normalizeAnnotationRecord(next);
+    if (updated.target_path !== oldTarget) {
+      // 移動先を先に確定し、失敗時に移動元を失わない。
+      const newRows = await _readAnnotationRows(updated.target_path);
+      const existingIndex = newRows.findIndex(row => row.id === updated.id);
+      const destinationBaseRows = _annotationRowBases.get(newRows)?.raw || [];
+      const destinationOriginal = existingIndex >= 0
+        ? _cloneAnnotationRows([
+          destinationBaseRows.find(row => row.id === updated.id) || newRows[existingIndex],
+        ])[0]
+        : null;
+      if (existingIndex >= 0) newRows[existingIndex] = updated;
+      else newRows.push(updated);
+      await _writeAnnotationRows(updated.target_path, newRows);
+      rows.splice(index, 1);
+      try {
+        await _writeAnnotationRows(oldTarget, rows);
+      } catch (error) {
+        const rollbackRows = await _readAnnotationRows(updated.target_path);
+        const rollbackBaseRows = _annotationRowBases.get(rollbackRows)?.raw || [];
+        const rollbackDesiredRows = _cloneAnnotationRows(rollbackBaseRows);
+        const rollbackIndex = rollbackDesiredRows.findIndex(row => row.id === updated.id);
+        if (rollbackIndex >= 0
+            && JSON.stringify(rollbackDesiredRows[rollbackIndex]) === JSON.stringify(updated)) {
+          if (destinationOriginal) rollbackDesiredRows[rollbackIndex] = destinationOriginal;
+          else rollbackDesiredRows.splice(rollbackIndex, 1);
+        }
+        await _writeAnnotationRows(
+          updated.target_path,
+          rollbackDesiredRows,
+          { normalize: false, baseRows: rollbackBaseRows },
+        );
+        throw error;
+      }
+    } else {
+      rows[index] = updated;
+      await _writeAnnotationRows(oldTarget, rows);
+    }
     return { ok: true };
   }
 
   async function _deleteAnnotation(annId) {
-    const rows = await _readAnnotationRows();
-    await _writeAnnotationRows(rows.filter(row => row.id !== annId));
+    const target = await _findAnnotationTarget(annId);
+    if (target == null) return { ok: true };
+    const rows = await _readAnnotationRows(target);
+    // filterは新しいArrayを返すためWeakMap上の読取baseを自動継承しない。
+    // 同じ旧状態から別操作が追加保存した直後でも、その追加を削除側の古い
+    // 全体配列で上書きしないよう、元配列のbaseを明示的に渡す。
+    const baseRows = _annotationRowBases.get(rows)?.raw || [];
+    const desiredRows = baseRows.filter(row => row.id !== annId);
+    await _writeAnnotationRows(target, desiredRows, { normalize: false, baseRows });
     return { ok: true };
   }
 
@@ -693,11 +941,20 @@
     const res = await fetch('/api' + apiPath, opts || {});
     if (!res.ok) {
       let detail = '';
+      let payload = null;
       try {
-        const payload = await res.json();
+        payload = await res.json();
         detail = payload?.detail || payload?.error || '';
       } catch {}
-      throw new Error(detail || ('HTTP ' + res.status));
+      const message = typeof detail === 'string'
+        ? detail
+        : (detail?.message || detail?.detail || ('HTTP ' + res.status));
+      const error = new Error(message || ('HTTP ' + res.status));
+      error.status = res.status;
+      error.code = detail?.code || payload?.code || '';
+      error.meldexCode = error.code;
+      error.meldexDetail = detail && typeof detail === 'object' ? detail : null;
+      throw error;
     }
     return res.json();
   }
@@ -710,17 +967,48 @@
     if (_matchEndpoint(apiPath, '/file')) {
       const filePath = _parsePathQuery(apiPath);
       if (method === 'GET') {
-        const content = await _readFileAsText(filePath);
-        return { path: filePath, content };
+        const snapshot = await _localFileSnapshot(filePath);
+        const metadataOnly = new URL('http://standalone.local' + apiPath).searchParams.get('metadata_only');
+        return {
+          path: filePath,
+          ...snapshot,
+          ...(metadataOnly === '1' || metadataOnly === 'true' ? { content: undefined } : {}),
+        };
       }
       if (method === 'PUT') {
         const body = _jsonBody(opts);
-        if (body?.skip_if_missing && !(await _fileExists(filePath))) {
-          return { ok: false, skipped: true, missing: true, path: filePath };
-        }
         const content = body && typeof body.content === 'string' ? body.content : '';
-        await _writeFileText(filePath, content);
-        return { ok: true, path: filePath };
+        return _withLocalWriteLock(filePath, async () => {
+          const exists = await _fileExists(filePath);
+          if ((body?.skip_if_missing || body?.skipIfMissing) && !exists) {
+            return { ok: false, skipped: true, missing: true, path: filePath };
+          }
+          const current = exists ? await _localFileSnapshot(filePath) : null;
+          const explicit = String(body?.if_match_etag || body?.ifMatchEtag || '');
+          const transportEtag = _localTransportEtag(body);
+          if (explicit && transportEtag && explicit !== transportEtag) {
+            throw _localFileError(400, 'revision_field_mismatch', 'if_match_etagとtransport_revisionが一致しません');
+          }
+          const expected = explicit || transportEtag;
+          const force = !!(body?.force_overwrite || body?.forceOverwrite);
+          const createOnly = !!(body?.create_only || body?.createOnly);
+          if (createOnly && exists) {
+            throw _localFileError(409, 'etag_conflict', '同じ名前のファイルが既にあります', {
+              path: filePath, expected_etag: '', current_etag: current?.etag || '',
+            });
+          }
+          if (!force && expected && expected !== (current?.etag || '')) {
+            throw _localFileError(409, 'etag_conflict', '別の画面またはアプリで更新されたため、上書きを中止しました', {
+              path: filePath, expected_etag: expected, current_etag: current?.etag || '',
+            });
+          }
+          if (exists && !expected && !force) {
+            throw _localFileError(428, 'precondition_required', '既存ファイルを更新するには読込時のrevisionが必要です');
+          }
+          await _writeFileText(filePath, content, current?.document_id || '', exists);
+          const saved = await _localFileSnapshot(filePath);
+          return { ok: true, path: filePath, ...saved, content: undefined };
+        });
       }
     }
     // リンク先の種別問い合わせ: 拡張子から推測のみ返す
@@ -771,18 +1059,23 @@
     if (_matchEndpoint(apiPath, '/outliner/delete') && method === 'POST') {
       const body = _jsonBody(opts);
       const relPath = String(body?.path || '');
-      if (relPath) {
-        try {
-          const { parts, filename } = _splitPath(relPath);
-          let dir = _rootHandle;
-          for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: false });
-          if (filename) await dir.removeEntry(filename);
-        } catch (e) {}
-      }
+      if (!relPath) throw new Error('path は必須です');
+      const { parts, filename } = _splitPath(relPath);
+      if (!filename) throw new Error('ルートフォルダは削除できません');
+      let dir = _rootHandle;
+      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: false });
+      await dir.removeEntry(filename, { recursive: body?.recursive === true });
       return { ok: true, path: relPath };
     }
     if (_matchEndpoint(apiPath, '/annotations') && method === 'GET') {
-      return _annotationRowsForQuery(await _readAnnotationRows(), apiPath);
+      const params = _annotationQuery(apiPath);
+      let target = _annotationPathKey(params.get('target') || '');
+      if (!target) {
+        const annId = params.get('ann_id') || '';
+        if (annId) target = (await _findAnnotationTarget(annId)) || '';
+      }
+      const rows = target ? await _readAnnotationRows(target) : [];
+      return _annotationRowsForQuery(rows, apiPath);
     }
     if (_matchEndpoint(apiPath, '/annotations') && method === 'POST') {
       return _createAnnotation(_jsonBody(opts));
@@ -807,8 +1100,20 @@
 
   // ステータス表示は本体 apiFetch のオプションで silentError を受けるので合わせる。
   const _origApiFetch = window.apiFetch;
+  function _isNativeHostApi(path) {
+    if (!NS.isNativeMode?.()) return false;
+    const endpoint = String(path || '').split('?')[0].replace(/^\/api(?=\/)/, '');
+    return endpoint === '/file-meta'
+      || endpoint === '/standalone/open-target'
+      || endpoint === '/standalone/open-target/capabilities';
+  }
   window.apiFetch = async function (path, opts) {
     try {
+      // Windows単独版のランタイムが持つ読取・許可リスト起動APIは、
+      // File System Access API用のローカル互換層で遮断せず元のHTTP経路へ渡す。
+      if (_isNativeHostApi(path) && typeof _origApiFetch === 'function') {
+        return await _origApiFetch(path, opts || {});
+      }
       return await _handleLocalApi(path, opts || {});
     } catch (e) {
       if (!opts?.silentError && typeof window.showStatus === 'function') {
@@ -820,6 +1125,65 @@
 
   // apiPut / apiPost / apiDelete は meldex-core.js で apiFetch を呼ぶラッパなので、
   // 既存定義をそのまま使えば apiFetch 上書き経由で動く。明示的に再定義はしない。
+
+  // -------------------------------------------------------------------------
+  // 固有形式付随物廃止・管理データ一元化計画 Phase 5: 既存付随物の安全な自動移行。
+  // 実際の検出・コピー・照合・退避・削除・清掃のオーケストレーションは
+  // gb-sidecar-migration.js が担う。ここではFile System Access APIハンドルへの
+  // 削除・空判定アクセスだけを提供する薄いブリッジ。
+  // native mode(exe版、MeldexBoard.py 経由)は系統B として Python側
+  // (app/meldex_sidecar_migration.py)が別途処理するため、ここでは対象外。
+  // -------------------------------------------------------------------------
+  NS.runSidecarMigrationIfSupported = async function () {
+    if (NS.isNativeMode() || !_rootHandle || typeof _rootHandle.getDirectoryHandle !== 'function') return null;
+    const migration = window.MeldexSidecarMigration;
+    if (!migration || typeof migration.migrateStandaloneBoardAnnotations !== 'function') return null;
+    return migration.migrateStandaloneBoardAnnotations({
+      readFileAsText: _readFileAsText,
+      writeFileText: _writeFileText,
+      fileExists: _fileExists,
+      deleteFile: async (relPath) => {
+        const { parts, filename } = _splitPath(relPath);
+        let dir = _rootHandle;
+        for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: false });
+        if (filename) await dir.removeEntry(filename);
+      },
+      directoryIsEmpty: async (relPath) => {
+        try {
+          const { parts, filename } = _splitPath(relPath);
+          let dir = _rootHandle;
+          for (const part of [...parts, filename].filter(Boolean)) dir = await dir.getDirectoryHandle(part, { create: false });
+          // eslint-disable-next-line no-unreachable-loop
+          for await (const _entry of dir.entries()) return false;
+          return true;
+        } catch {
+          // 読込不能を「空」とみなすと、権限・I/O障害時に削除へ進み得る。
+          return false;
+        }
+      },
+      removeEmptyDirectory: async (relPath) => {
+        const { parts, filename } = _splitPath(relPath);
+        const segments = [...parts, filename].filter(Boolean);
+        const target = segments.pop();
+        let dir = _rootHandle;
+        for (const part of segments) dir = await dir.getDirectoryHandle(part, { create: false });
+        if (target) await dir.removeEntry(target);
+      },
+    });
+  };
+
+  // フェーズB徹底チェック(c): 移行バックアップ・競合バックアップの30日保持
+  // (計画書§6.3)が実質無期限だった問題への対応。上の runSidecarMigrationIfSupported
+  // と同じタイミング方針(root確定時に1回、ユーザー操作をブロックしない、
+  // 失敗は握りつぶす)で、期限超過分の掃除を行う。native mode(exe版)は
+  // MeldexBoard.py 側(app/MeldexBoard.py の _run_system_storage_retention_
+  // cleanup_background)が別途処理するため、ここでは対象外。
+  NS.runRetentionCleanupIfSupported = async function () {
+    if (NS.isNativeMode()) return null;
+    const migration = window.MeldexSidecarMigration;
+    if (!migration || typeof migration.runStandaloneRetentionCleanup !== 'function') return null;
+    return migration.runStandaloneRetentionCleanup();
+  };
 
   // -------------------------------------------------------------------------
   // 元の apiFetch を保管（万一の復元用）。

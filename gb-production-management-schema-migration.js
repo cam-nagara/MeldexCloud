@@ -41,6 +41,29 @@
     return String(selected || '').trim();
   }
 
+  // 制作管理UX改善計画（2026-08-04）§5-1: タスクリストの内部専用列は production_internal
+  // へ移った（Desktop meldex_production_management_support.INTERNAL_METADATA_PROPERTIES と
+  // 同一集合。Desktop/Cloud parity は test_meldex_production_schema_cleanup.py で検証する）。
+  // 作成キー追従（_creationKeyParts/_rewriteTaskRecord）が壊れないよう、名称移行の読み書き
+  // でも production_internal を優先し、旧データ（properties に残ったまま）はフォールバック
+  // で読める。
+  const INTERNAL_METADATA_PROPERTIES = new Set([
+    '階層パス', '階層ラベル',
+    '単位レベル1', '単位レベル2', '単位レベル3', '単位レベル4', '単位レベル5',
+    'プリセット種別', '作業作成粒度', 'ページソート値', '作成キー', '元テンプレートID', '作業予定区間',
+  ]);
+
+  function _internalOrCandidateValue(fm, name) {
+    if (INTERNAL_METADATA_PROPERTIES.has(name)) {
+      const internal = fm && fm.production_internal;
+      if (internal && typeof internal === 'object' && Object.prototype.hasOwnProperty.call(internal, name)) {
+        const value = internal[name];
+        if (value !== null && value !== undefined && value !== '') return String(value).trim();
+      }
+    }
+    return _candidateValue(fm && fm.properties ? fm.properties[name] : undefined);
+  }
+
   function _candidate(value, created) {
     return [{ value: String(value || ''), status: '採用', note: '', created }];
   }
@@ -177,6 +200,19 @@
   }
 
   function _rewriteProperty(record, property, aliases, now) {
+    if (INTERNAL_METADATA_PROPERTIES.has(property)) {
+      const internal = record.frontmatter.production_internal;
+      if (internal && typeof internal === 'object' && Object.prototype.hasOwnProperty.call(internal, property)) {
+        const current = String(internal[property] || '');
+        const replacement = aliases && aliases.get ? aliases.get(current) : undefined;
+        if (replacement === undefined || replacement === current) return 0;
+        internal[property] = replacement;
+        _markChanged(record, now);
+        return 1;
+      }
+      // production_internal に無ければ旧データ（properties に残ったまま）を通常どおり書換える
+      // （移行の互換読み書き）。
+    }
     const properties = _properties(record);
     if (!Object.prototype.hasOwnProperty.call(properties, property)) return 0;
     const replaced = _replaceCandidates(properties[property], aliases);
@@ -247,11 +283,11 @@
   function _creationKeyParts(record) {
     const fm = record.frontmatter;
     return [
-      _candidateValue(fm.properties?.['作品タイトル']),
-      _candidateValue(fm.properties?.['階層パス']),
-      _candidateValue(fm.properties?.['作業対象リスト']),
-      _candidateValue(fm.properties?.['作業内容リスト']),
-      _candidateValue(fm.properties?.['作業規模リスト']),
+      _internalOrCandidateValue(fm, '作品タイトル'),
+      _internalOrCandidateValue(fm, '階層パス'),
+      _internalOrCandidateValue(fm, '作業対象リスト'),
+      _internalOrCandidateValue(fm, '作業内容リスト'),
+      _internalOrCandidateValue(fm, '作業規模リスト'),
     ];
   }
 
@@ -262,7 +298,7 @@
     count += _rewriteProperty(record, '作業対象リスト', aliasMaps.get('作業対象リスト'), now);
     count += _rewriteProperty(record, '作業内容リスト', aliasMaps.get('作業内容リスト'), now);
     count += _rewriteProperty(record, '作業規模リスト', aliasMaps.get('作業規模リスト'), now);
-    const creationKey = _candidateValue(record.frontmatter.properties?.['作成キー']);
+    const creationKey = _internalOrCandidateValue(record.frontmatter, '作成キー');
     const oldGeneratedKey = before.join('|');
     const newGeneratedKey = _creationKeyParts(record).join('|');
     let replacementKey = creationKey === oldGeneratedKey ? newGeneratedKey : '';
@@ -277,13 +313,6 @@
       if (keyCount) record.keyChanged = true;
       count += keyCount;
     }
-    return count;
-  }
-
-  function _rewriteTaskNameReferences(record, aliases, now) {
-    let count = 0;
-    count += _rewriteProperty(record, '次のタスクにより保留中：', aliases, now);
-    count += _rewriteProperty(record, '次のタスクを保留中：', aliases, now);
     return count;
   }
 
@@ -466,7 +495,7 @@
   function _validateCreationKeys(taskRecords) {
     const bySheet = new Map();
     taskRecords.forEach(record => {
-      const key = _candidateValue(record.frontmatter.properties?.['作成キー']);
+      const key = _internalOrCandidateValue(record.frontmatter, '作成キー');
       if (!key) return;
       if (!bySheet.has(record.sheet)) bySheet.set(record.sheet, new Map());
       const paths = bySheet.get(record.sheet).get(key) || [];
@@ -571,7 +600,6 @@
       const identities = identitiesBySheet.get(sheet) || [];
       identities.forEach(({ record }) => {
         _rewriteTaskRecord(record, aliasMaps, now);
-        _rewriteTaskNameReferences(record, aliasMaps.get(sheet), now);
         taskRecords.push(record);
       });
     }
@@ -609,8 +637,6 @@
       viewRules.push([sheet, '作業対象リスト', '作業対象リスト']);
       viewRules.push([sheet, '作業内容リスト', '作業内容リスト']);
       viewRules.push([sheet, '作業規模リスト', '作業規模リスト']);
-      viewRules.push([sheet, '次のタスクにより保留中：', sheet]);
-      viewRules.push([sheet, '次のタスクを保留中：', sheet]);
     });
     viewRules.push(
       ['タスクテンプレート', '作業対象リスト', '作業対象リスト'],
@@ -817,6 +843,10 @@
 
   window.MeldexProductionSchemaMigration = Object.freeze({
     MANAGED_NAME_COLUMNS,
+    // コミット前レビュー指摘 #17: Desktop meldex_production_management_support.
+    // INTERNAL_METADATA_PROPERTIES とJS側複製の集合一致をテストで検証できるよう公開する
+    // （test_meldex_production_schema_cleanup.py）。
+    INTERNAL_METADATA_PROPERTIES,
     isManagedEntryPath,
     reservedLegacyPropertyForPath,
     migrateManagedNameProperties,

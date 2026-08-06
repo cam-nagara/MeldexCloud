@@ -251,7 +251,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!this._guardRowBulkAction()) return;
     const selectedIds = this._getVisibleSelectedIds();
     if (!selectedIds.size) return;
-    const roles = (this.doc.characters || []).map((chara) => chara.name).filter(Boolean);
+    const roles = (globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [])
+      .filter((choice) => choice && choice.kind !== 'none')
+      .map((choice) => String(choice.name || choice.label || ''))
+      .filter(Boolean);
     if (!roles.length) return;
     const popup = document.createElement('div');
     popup.className = 'sn2-header-popup sn2-bulk-role-popup';
@@ -287,7 +290,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (!this._guardRowBulkAction()) { close(); return; }
         close();
         this._pushUndo('一括タイプ変更');
-        this.doc.rows.forEach((row) => { if (selectedIds.has(row.id)) row.role = name; });
+        this.doc.rows.forEach((row) => {
+          if (!selectedIds.has(row.id)) return;
+          if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+            globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, name);
+          } else {
+            row.role = name;
+          }
+        });
         this._render();
         this._markDirty();
         this._clearRowSelection();
@@ -555,7 +565,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       const value = (values.length === 1 ? values[0] : (values[i] ?? values[values.length - 1] ?? '')).trim();
       const rowEl = this._roleButtonByRowId(row.id)?.closest?.('.sn2-row') || null;
       if (rowEl && typeof this._setRowRole === 'function') this._setRowRole(idx, rowEl, value);
-      else { row.role = value; needsRender = true; }
+      else {
+        if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+          globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, value);
+        } else {
+          row.role = value;
+        }
+        needsRender = true;
+      }
     });
     if (needsRender) this._render();
     this._markDirty({ skipUndo: true });

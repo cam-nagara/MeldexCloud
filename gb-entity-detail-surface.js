@@ -47,32 +47,6 @@
     return el;
   }
 
-  function selectedTextInside(root) {
-    const selection = window.getSelection?.();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return '';
-    const range = selection.getRangeAt(0);
-    if (!root.contains(range.commonAncestorContainer)) return '';
-    return selection.toString();
-  }
-
-  async function copyText(text) {
-    if (!text) return false;
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.readOnly = true;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const copied = document.execCommand('copy');
-    area.remove();
-    return copied;
-  }
-
   function openChat(path) {
     if (typeof window.openEntityChatForPath === 'function') return window.openEntityChatForPath(path);
     if (typeof window.openEntityAiChat === 'function') return window.openEntityAiChat(path);
@@ -195,7 +169,12 @@
       if (!state.dirty) return true;
       const savingSeq = state.changeSeq;
       const markdown = typeof htmlToMd === 'function' ? htmlToMd(state.editor.innerHTML) : state.editor.textContent;
-      state.saving = Promise.resolve(_saveEntityFreeText(state.path, markdown))
+      state.saving = Promise.resolve(_saveEntityFreeText(
+        state.editor,
+        state.path,
+        markdown,
+        { reason: 'entity-detail-surface' },
+      ))
         .then(saved => {
           if (saved && state.changeSeq === savingSeq) state.dirty = false;
           return !!saved;
@@ -246,9 +225,9 @@
       if (options.showParent !== false && parent) {
         const parentButton = document.createElement('button');
         parentButton.type = 'button';
-        parentButton.className = 'gb-subpanel-link-button meldex-entity-detail-parent';
+        parentButton.className = 'gb-float-panel-link-button meldex-entity-detail-parent';
         parentButton.dataset.e2eId = state.surface === 'float'
-          ? 'gb-subpanel-entity-parent'
+          ? 'gb-float-panel-entity-parent'
           : 'entity-detail-parent-link';
         parentButton.dataset.allowReadonly = '1';
         parentButton.textContent = '← ' + (parent.split('/').pop() || parent);
@@ -271,13 +250,9 @@
       actions.className = 'meldex-entity-detail-actions';
       if (state.surface === 'main') actions.id = 'entity-create-note-btn';
       actions.appendChild(button('チャットを作成', 'messageSquare', () => openChat(state.path), 'entity-create-chat'));
-      const copy = button('選択文字列をコピー', 'copy', async () => {
-        const text = selectedTextInside(root) || state.editor?.innerText || '';
-        const ok = await copyText(text).catch(() => false);
-        if (typeof showStatus === 'function') showStatus(ok ? 'コピーしました' : 'コピーできませんでした', !ok);
-      });
-      copy.dataset.allowReadonly = '1';
-      actions.appendChild(copy);
+      // 旧・専用コピー用ボタンは廃止した（シート表示・ビュー状態・エントリ操作の改善計画
+      // 2026-08-04）。列一覧内の文字選択に応じたコピーポップアップ（gb-entity-props-selection.js）
+      // に置き換わったため、専用ボタンは不要になった。
       const postId = xPostId(data);
       if (postId && typeof window.reimportXBookmarkPost === 'function') {
         actions.appendChild(button('Xからこのポストを再インポート', 'refreshCw', async () => {
@@ -317,10 +292,17 @@
       if (state.surface === 'main') editor.id = 'entity-freetext';
       editor.setAttribute('contenteditable', access.readOnly ? 'false' : 'true');
       editor.dataset.entityPath = state.path;
+      editor.dataset.lastSavedMd = raw;
+      editor.dataset.lastSavedRevision = (data?.revision != null) ? String(data.revision) : '';
+      editor.dataset.lastSavedEtag = data?.freetext_etag || '';
+      editor.dataset.lastSavedTransportRevision = '';
       editor.innerHTML = raw.trim() && typeof mdToHtml === 'function'
         ? (typeof applyAutoLinks === 'function' ? applyAutoLinks(mdToHtml(raw, { basePath: state.path }), state.path) : mdToHtml(raw))
         : '';
       state.editor = editor;
+      if (typeof _bindEntityFreeTextParticipant === 'function') {
+        _bindEntityFreeTextParticipant(editor, state.path);
+      }
       const toolbar = buildToolbar(editor);
       if (state.surface === 'main') toolbar.id = 'entity-rt-toolbar';
       root.appendChild(toolbar);
@@ -367,6 +349,7 @@
 
       if (state.surface !== 'main') stripIds(root);
       applyReadOnly(root, access.readOnly, access.reason);
+      delete root.dataset.loadFailed;
       if (typeof replaceIcons === 'function') replaceIcons();
       return true;
     }
@@ -376,6 +359,7 @@
     controller.ready = Promise.resolve(previousDispose).catch(() => false).then(render).catch(error => {
       if (!state.disposed) {
         root.replaceChildren();
+        root.dataset.loadFailed = '1';
         const message = document.createElement('div');
         message.className = 'meldex-entity-detail-loading';
         message.textContent = 'エントリを読み込めませんでした';

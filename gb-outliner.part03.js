@@ -279,12 +279,6 @@ async function _autoExpandToPath(targetPath, noScroll) {
 /* フィルタ / 検索 / フォルダごとの非表示は gb-outliner-search.js に分離 */
 document.getElementById('outliner-tree')?.addEventListener('dragover', e => e.preventDefault());
 
-const OUTLINER_KEYBOARD_IMAGE_EXTS = new Set([
-  '.png', '.apng', '.jpg', '.jpeg', '.jpe', '.jfif', '.gif', '.bmp', '.webp',
-  '.svg', '.ico', '.avif', '.tif', '.tiff', '.heic', '.heif', '.psd', '.psb',
-]);
-const OUTLINER_KEYBOARD_VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv']);
-const OUTLINER_KEYBOARD_AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac']);
 let _outlinerKeyboardFocusSeq = 0;
 
 function _outlinerKeyboardRow(nodeEl) {
@@ -304,92 +298,41 @@ function _outlinerKeyboardRestoreFocus(row, focusSeq) {
   try { row.focus({ preventScroll: true }); } catch {}
 }
 
-function _outlinerKeyboardNodePathExt(path) {
-  const name = String(path || '').replace(/\\/g, '/').split('/').pop() || '';
-  const index = name.lastIndexOf('.');
-  return index >= 0 ? name.slice(index).toLowerCase() : '';
-}
-
-function _outlinerKeyboardMediaType(item) {
-  const type = item?.type || '';
-  if (type === 'image' || type === 'video' || type === 'audio' || type === 'pdf') return type;
-  const ext = _outlinerKeyboardNodePathExt(item?.path || item?.name || '');
-  if (ext === '.pdf') return 'pdf';
-  if (OUTLINER_KEYBOARD_IMAGE_EXTS.has(ext)) return 'image';
-  if (OUTLINER_KEYBOARD_VIDEO_EXTS.has(ext)) return 'video';
-  if (OUTLINER_KEYBOARD_AUDIO_EXTS.has(ext)) return 'audio';
-  return '';
-}
-
-async function _outlinerKeyboardOpenNode(nodeEl) {
-  const item = nodeEl?._nodeData || null;
-  if (!item || !item.path || item.needsMapping === true) return false;
-  const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
-    ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
-    : null;
-  if (typeof _applyCachedBrowseItemType === 'function') _applyCachedBrowseItemType(item);
-  if (typeof _resolveBrowseItemTypeOnDemand === 'function'
-      && typeof _browseItemNeedsTypeCheck === 'function' && _browseItemNeedsTypeCheck(item)) {
-    await _resolveBrowseItemTypeOnDemand(item);
-    if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
-        && !_browseItemPaneSnapshotIsCurrent(paneSnapshot)) return false;
-    if (typeof _syncOutlinerResolvedItemType === 'function') _syncOutlinerResolvedItemType(nodeEl, item);
-  }
-  const opts = { fromExplorer: true, skipHighlight: true, noScrollHighlight: true };
-  const type = item.type || '';
-  const mediaType = _outlinerKeyboardMediaType(item);
-  if (type === 'folder' || item._isRoot) {
-    if (
-      window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
-      && window.MeldexCloudMobileExplorer?.selectFolderFromTree?.(item, { syncSelection: false })
-    ) {
-      return true;
-    }
-    return openFolder(item.name, item.path, opts);
-  }
-  if (type === 'database') return selectDatabase(item.path, paneSnapshot?.paneContext || null, opts);
-  if (type === 'entity') return selectEntity(item.path, opts);
-  if (type === 'page') return openPage(item.name, item.path, opts);
-  if (type === 'scriptnote' || type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
-    return typeof openScenarioInScriptNote === 'function' ? openScenarioInScriptNote(item.path, item.name, opts) : false;
-  }
-  if (type === 'board') return openBoard(item.name, item.path, opts);
-  if (type === 'calendar') return openCalendarFile(item.name, item.path, { ...opts, paneContext: paneSnapshot?.paneContext || null });
-  if (mediaType) return openMedia(item.name, item.path, mediaType, opts);
-  if (type === 'html') return openHtmlFile(item.name, item.path, opts);
-  if (type === 'csv') {
-    return typeof openCsvFile === 'function' ? openCsvFile(item.name, item.path, opts) : openPage(item.name, item.path, opts);
-  }
-  if (type === 'smart-db' && typeof openSmartDbFile === 'function') {
-    return openSmartDbFile(item.name, item.path, opts);
-  }
-  if (!(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(type)) && typeof showStatus === 'function') {
-    showStatus((item.name || item.path) + ' — 「…」または長押しメニューからアプリで開く');
-  }
-  return false;
-}
-
-function _outlinerKeyboardSelectNode(nodeEl, options = {}) {
+// ↑/↓/Home/Endなどの選択移動専用。開く処理は行わない（§2.4・§5 Phase1）。
+// 実際の選択・フォーカス・オプションパネル対象更新は gb-outliner-activation.js の
+// selectNodeOnly() へ委譲し、マウスクリックと同じ一経路にする。
+function _outlinerKeyboardSelectNode(nodeEl) {
   const row = _outlinerKeyboardRow(nodeEl);
   if (!nodeEl || !row) return false;
   const focusSeq = ++_outlinerKeyboardFocusSeq;
-  treeSelection.clear();
-  treeSelection.add(nodeEl);
-  treeSelection.lastClicked = nodeEl;
-  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
-  row.classList.add('active');
+  window.GBOutlinerActivation?.selectNodeOnly(nodeEl, { focus: false });
   _outlinerKeyboardRestoreFocus(row, focusSeq);
   row.scrollIntoView({ block: 'nearest' });
-  if (options.openPanel !== false) {
-    try {
-      const opened = _outlinerKeyboardOpenNode(nodeEl);
-      Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
-    } catch (err) {
-      _outlinerKeyboardRestoreFocus(row, focusSeq);
-      throw err;
-    }
+  return true;
+}
+
+// Enter／メニュー「開く」と同じ共通アクティベーション経路を使う
+function _outlinerKeyboardActivateNode(nodeEl) {
+  const row = _outlinerKeyboardRow(nodeEl);
+  if (!nodeEl || !row) return false;
+  const focusSeq = ++_outlinerKeyboardFocusSeq;
+  try {
+    const opened = window.GBOutlinerActivation?.activateNode(nodeEl);
+    Promise.resolve(opened).finally(() => _outlinerKeyboardRestoreFocus(row, focusSeq));
+  } catch (err) {
+    _outlinerKeyboardRestoreFocus(row, focusSeq);
+    throw err;
   }
   return true;
+}
+
+// F2: 名前変更開始（ダブルクリックの旧割当はここへ移動済み）
+function _outlinerKeyboardStartRename(nodeEl) {
+  const row = _outlinerKeyboardRow(nodeEl);
+  const label = row?.querySelector(':scope > .tree-label');
+  const item = nodeEl?._nodeData;
+  if (!row || !label || !item) return false;
+  return window.GBOutlinerActivation?.startRenameForNode(nodeEl, label, item) || false;
 }
 
 function _outlinerKeyboardScopeFromTarget(target) {
@@ -417,9 +360,31 @@ function _outlinerKeyboardToggle(nodeEl, expand) {
   return false;
 }
 
+function _outlinerKeyboardIsExpandable(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded !== undefined;
+}
+
+function _outlinerKeyboardIsExpanded(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded === 'true';
+}
+
+// 標準Tree View操作（§2.4）: 閉じている子項目なら親へ選択を移す
+function _outlinerKeyboardParentNode(nodeEl) {
+  const container = nodeEl?.parentElement || null;
+  return container?.closest?.('.tree-node') || null;
+}
+
+// 標準Tree View操作（§2.4）: 展開済みの親なら最初の子へ選択を移す
+function _outlinerKeyboardFirstChildNode(nodeEl) {
+  const childrenDiv = nodeEl?.querySelector?.(':scope > .tree-children') || null;
+  return childrenDiv?.querySelector?.(':scope > .tree-node') || null;
+}
+
 function _handleOutlinerTreeKeydown(event) {
   if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
   const target = event.target;
   if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
   const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
@@ -428,8 +393,52 @@ function _handleOutlinerTreeKeydown(event) {
   event.preventDefault();
   event.stopPropagation();
   _outlinerKeyboardMarkActive();
-  if (event.key === 'ArrowLeft') { _outlinerKeyboardToggle(current, false); return; }
-  if (event.key === 'ArrowRight') { _outlinerKeyboardToggle(current, true); return; }
+  if (event.key === 'ArrowLeft') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current) && _outlinerKeyboardIsExpanded(current)) {
+      _outlinerKeyboardToggle(current, false);
+      return;
+    }
+    // 展開中でない（閉じた子項目・葉）場合は親へ選択を移す
+    const parent = _outlinerKeyboardParentNode(current);
+    if (parent) _outlinerKeyboardSelectNode(parent);
+    return;
+  }
+  if (event.key === 'ArrowRight') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current)) {
+      if (!_outlinerKeyboardIsExpanded(current)) {
+        _outlinerKeyboardToggle(current, true);
+        return;
+      }
+      // 展開済みなら最初の子へ選択を移す
+      const firstChild = _outlinerKeyboardFirstChildNode(current);
+      if (firstChild) {
+        _outlinerKeyboardSelectNode(firstChild);
+      } else {
+        // 展開直後（子の読み込み中）に2打目のArrowRightが押された場合、
+        // まだ子ノードがDOMに存在せずno-opになってしまう。読み込み完了後に
+        // 最初の子へフォーカス移動するデフォルト動作を予約しておく
+        // （gb-outliner.part01.part02.js の読み込み完了処理が消化する）。
+        const childrenDiv = current.querySelector?.(':scope > .tree-children') || null;
+        if (childrenDiv && childrenDiv.dataset.loading === 'true') {
+          childrenDiv._outlinerPendingArrowRightFocusNode = current;
+        }
+      }
+    }
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (current) _outlinerKeyboardActivateNode(current);
+    return;
+  }
+  if (event.key === 'F2') {
+    if (current) _outlinerKeyboardStartRename(current);
+    return;
+  }
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
+  }
   const nodes = _getVisibleTreeNodes(scopeSelector);
   if (!nodes.length) return;
   const rawIndex = nodes.indexOf(current);
@@ -437,7 +446,62 @@ function _handleOutlinerTreeKeydown(event) {
   const nextIndex = event.key === 'ArrowUp'
     ? Math.max(0, currentIndex - 1)
     : Math.min(nodes.length - 1, currentIndex + 1);
-  _outlinerKeyboardSelectNode(nodes[nextIndex], { openPanel: true });
+  _outlinerKeyboardSelectNode(nodes[nextIndex]);
+}
+
+// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
+// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
+// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
+// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
+// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
+// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
+// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
+// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
+// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
+// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
+// （非仮想化フォルダの既存挙動は変更しない）。
+function _outlinerKeyboardVirtualContainerFor(nodeEl) {
+  const childrenDiv = nodeEl && nodeEl.parentElement;
+  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
+}
+
+function _outlinerKeyboardTryVirtualStep(current, key) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
+
+  let childrenDiv = null;
+  let path = null;
+  let recoveringUnmounted = false;
+  if (current) {
+    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
+    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
+    path = current._nodeData && current._nodeData.path;
+  } else {
+    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
+    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
+    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
+    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
+    childrenDiv = vr.containerForPath(lastPath);
+    if (!childrenDiv) return false;
+    path = lastPath;
+    recoveringUnmounted = true;
+  }
+
+  const state = childrenDiv._virtualState;
+  if (!state || !path) return false;
+  const currentIndex = state.flat.findIndex(entry => entry.id === path);
+  if (currentIndex < 0) return false;
+
+  const delta = key === 'ArrowUp' ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
+  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
+  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
+  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
+
+  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
+  if (!target) return false;
+  _outlinerKeyboardSelectNode(target);
+  return true;
 }
 
 (function initOutlinerTreeKeyboardNavigation() {
@@ -480,8 +544,6 @@ function _handleOutlinerTreeKeydown(event) {
   let selectionMode = 'replace';
   let selectionScope = '#outliner-tree,#body-home';
   let baseSelection = [];
-  let candidateRow = null;
-  let candidateRowDraggable = null;
   let pointerId = null;
   let pointerCaptured = false;
   let _savedScrollerPosition = null;
@@ -503,24 +565,20 @@ function _handleOutlinerTreeKeydown(event) {
     return '#outliner-tree,#body-home';
   }
 
-  function _outlinerLassoBlockedTarget(target) {
-    return !!target?.closest?.('.tree-hover-btn, .tree-toggle, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]');
-  }
-
-  function _outlinerLassoAllowedTarget(target) {
+  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
+  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
+  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
+  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
+  function _outlinerLassoIsBlankTarget(target) {
+    if (window.GBOutlinerInput?.classifyPointerTarget) {
+      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
+    }
+    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
+    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
     if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
     const section = target?.closest?.('.sidebar-section');
     if (section?.id === 'section-workspaces') return true;
     return section?.id === 'section-roots' || section?.id === 'section-home';
-  }
-
-  function _outlinerLassoCandidateRow(target, mode) {
-    const row = target?.closest?.('.tree-node-row');
-    if (!row) return null;
-    const node = row.closest('.tree-node');
-    if (!node) return null;
-    if (mode === 'replace' && treeSelection.has(node)) return null;
-    return row;
   }
 
   function _outlinerLassoRectForEvent(event) {
@@ -564,6 +622,14 @@ function _handleOutlinerTreeKeydown(event) {
     });
     treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
     if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
+    // 仮想化コンテナ（フォルダツリー改修Phase3）: 現在マウントされていない行も、
+    // 矩形の論理Y範囲から該当する表示モデルの行を求めて選択状態に反映する（§2.5）。
+    if (window.GBOutlinerVirtualRender?.applyLassoSelection) {
+      const basePaths = new Set([...base].map(node => node?._nodeData?.path).filter(Boolean));
+      window.GBOutlinerVirtualRender.applyLassoSelection({
+        lassoRect, scope: selectionScope, mode: selectionMode, basePaths,
+      });
+    }
   };
 
   const beginLasso = (event) => {
@@ -587,8 +653,6 @@ function _handleOutlinerTreeKeydown(event) {
   const endLasso = () => {
     if (!tracking && !active) return;
     const wasActive = active;
-    const hadCandidateRow = !!candidateRow;
-    const suppressClickNode = candidateRow?.closest?.('.tree-node') || null;
     active = false;
     tracking = false;
     removeDocumentPointerEndHandlers();
@@ -599,25 +663,14 @@ function _handleOutlinerTreeKeydown(event) {
     }
     pointerId = null;
     pointerCaptured = false;
-    if (candidateRow) {
-      candidateRow.draggable = candidateRowDraggable;
-      candidateRow = null;
-      candidateRowDraggable = null;
-    }
     // pointerdown で設定した inline position を元に戻す
     if (_savedScrollerPosition !== null) {
       scroller.style.position = _savedScrollerPosition;
       _savedScrollerPosition = null;
     }
-    if (!wasActive && !hadCandidateRow && selectionMode === 'replace') treeSelection.clear();
-    if (wasActive && hadCandidateRow) {
-      _outlinerSuppressNextTreeRowClick = true;
-      _outlinerSuppressTreeRowClickNode = suppressClickNode;
-      setTimeout(() => {
-        _outlinerSuppressNextTreeRowClick = false;
-        _outlinerSuppressTreeRowClickNode = null;
-      }, 500);
-    }
+    // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
+    // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
+    if (!wasActive && selectionMode === 'replace') treeSelection.clear();
   };
 
   function addDocumentPointerEndHandlers() {
@@ -633,11 +686,12 @@ function _handleOutlinerTreeKeydown(event) {
   scroller.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (e.pointerType && e.pointerType !== 'mouse') return;
-    if (_outlinerLassoBlockedTarget(e.target)) return;
-    if (!_outlinerLassoAllowedTarget(e.target)) return;
+    // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
+    // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない
+    // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
+    //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
+    if (!_outlinerLassoIsBlankTarget(e.target)) return;
     selectionMode = _outlinerLassoMode(e);
-    candidateRow = _outlinerLassoCandidateRow(e.target, selectionMode);
-    if (e.target.closest('.tree-node-row') && !candidateRow) return;
     tracking = true;
     active = false;
     addDocumentPointerEndHandlers();
@@ -650,10 +704,6 @@ function _handleOutlinerTreeKeydown(event) {
     startY = e.clientY - rect.top + scroller.scrollTop;
     startClientX = e.clientX;
     startClientY = e.clientY;
-    if (candidateRow) {
-      candidateRowDraggable = candidateRow.draggable;
-      candidateRow.draggable = false;
-    }
   });
 
   scroller.addEventListener('pointermove', (e) => {

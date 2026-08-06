@@ -212,14 +212,6 @@
     return _joinDropboxPath(settingsPath, PROFILE_STORE_RELATIVE_PATH);
   }
 
-  function _profileStoreParents() {
-    const settingsPath = _normalizeDropboxPath(_auth()?.getSettingsPath?.() || DEFAULT_SETTINGS_PATH);
-    const parents = [];
-    if (settingsPath !== '/') parents.push(settingsPath);
-    parents.push(_joinDropboxPath(settingsPath, '_meldex'));
-    return parents;
-  }
-
   function _isNotFoundError(error) {
     return /not_found|path\/not_found/i.test(String(error?.message || error || ''));
   }
@@ -295,18 +287,6 @@
     }
   }
 
-  async function _ensureProfileDirectory() {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropbox API is unavailable');
-    for (const path of _profileStoreParents()) {
-      try {
-        await auth.apiRpc('files/create_folder_v2', { path, autorename: false });
-      } catch (error) {
-        if (!_isConflictError(error)) throw error;
-      }
-    }
-  }
-
   // gb-profile-store-transport.js が未ロードの場合に備えた、Dropbox HTTP API
   // 直叩きの独立したフォールバック実装。transport モジュールの実装と処理内容は
   // 同じだが、あえて重複させて完全に自己完結させている（transport モジュール側の
@@ -330,23 +310,10 @@
         }
       },
       async write(storePath, storeObj, options) {
-        const auth = _auth();
-        if (!auth?.apiContent) throw new Error('Dropbox API is unavailable');
-        await _ensureProfileDirectory();
-        const rev = options?.ifMatch || '';
-        const mode = rev ? { '.tag': 'update', update: rev } : 'add';
-        const bytes = new TextEncoder().encode(JSON.stringify(storeObj, null, 2));
-        await auth.apiContent('files/upload', {
-          path: storePath,
-          mode,
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        });
+        void storePath;
+        void storeObj;
+        void options;
+        throw new Error('旧プロフィール付随物への書き込みは廃止されました');
       },
     };
   }
@@ -362,23 +329,48 @@
     return _fallbackDropboxApiTransport();
   }
 
+  async function _profileManagementRecord() {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('プロフィール管理データの保存先を安全に判定できません');
+    }
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    const record = await adapter.load(kind, 'dropbox-profiles');
+    return { adapter, kind, record };
+  }
+
   async function _readProfileStore() {
     const transport = await _resolveTransport();
-    const result = await transport.read(_profileStorePath());
-    const current = { store: _normalizeStore(result.store), rev: String(result.rev || '') };
-    if (Object.keys(current.store.profiles).length || !String(transport.id || '').startsWith('dropbox-api')) {
-      return current;
+    if (String(transport?.id || '').startsWith('dropbox-api')) {
+      const managed = await _profileManagementRecord();
+      if (managed.record?.payload) {
+        return { store: _normalizeStore(managed.record.payload), rev: managed.record.revision };
+      }
+      // 旧ファイルは読取専用fallbackとし、初回だけ管理領域へ移す。
+      const legacy = await transport.read(_profileStorePath());
+      let legacyStore = _normalizeStore(legacy.store);
+      if (!Object.keys(legacyStore.profiles).length) {
+        const teamLegacy = await _readLegacyTeamProfileStore();
+        if (teamLegacy) legacyStore = teamLegacy;
+      }
+      if (!Object.keys(legacyStore.profiles).length) return { store: legacyStore, rev: '' };
+      try {
+        await managed.adapter.save(managed.kind, 'dropbox-profiles', legacyStore, {
+          expectedRevision: null,
+        });
+      } catch (error) {
+        if (!_isConflictError(error)) throw error;
+        const winner = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+        if (!winner?.payload) throw error;
+        return { store: _normalizeStore(winner.payload), rev: String(winner.revision || '') };
+      }
+      const migrated = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+      return { store: _normalizeStore(migrated?.payload), rev: String(migrated?.revision || '') };
     }
-    const legacyStore = await _readLegacyTeamProfileStore();
-    if (!legacyStore || !Object.keys(legacyStore.profiles).length) return current;
-    await transport.write(_profileStorePath(), legacyStore, { ifMatch: current.rev });
-    try {
-      window.dispatchEvent(new CustomEvent('meldex:dropbox-profile-store-migrated', {
-        detail: { from: 'team_root', to: 'home', profileCount: Object.keys(legacyStore.profiles).length },
-      }));
-    } catch {}
-    const migrated = await transport.read(_profileStorePath());
-    return { store: _normalizeStore(migrated.store), rev: String(migrated.rev || '') };
+    const result = await transport.read(_profileStorePath());
+    return { store: _normalizeStore(result.store), rev: String(result.rev || '') };
   }
 
   async function _readLegacyTeamProfileStore() {
@@ -406,6 +398,13 @@
 
   async function _writeProfileStore(store, rev) {
     const transport = await _resolveTransport();
+    if (String(transport?.id || '').startsWith('dropbox-api')) {
+      const managed = await _profileManagementRecord();
+      await managed.adapter.save(managed.kind, 'dropbox-profiles', store, {
+        expectedRevision: rev || null,
+      });
+      return;
+    }
     await transport.write(_profileStorePath(), store, { ifMatch: rev || '' });
   }
 

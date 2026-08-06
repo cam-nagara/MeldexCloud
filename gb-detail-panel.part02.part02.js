@@ -68,10 +68,10 @@ async function _syncDetailPanel(label, path, type, opts) {
     // 開いていないフロートパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
     // フロートパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
     const drawerOpen = !!window.MeldexCloudMobileSideDrawer?.isOpen?.();
-    const subPanelOpen = typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.isOpen === 'function'
-      ? GBSubPanel.isOpen('entity')
+    const floatPanelOpen = typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.isOpen === 'function'
+      ? GBFloatPanel.isOpen('entity')
       : false;
-    if (!drawerOpen && !subPanelOpen) return false;
+    if (!drawerOpen && !floatPanelOpen) return false;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。
@@ -124,6 +124,10 @@ async function _syncDetailPanel(label, path, type, opts) {
     if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path, opts?.fileMeta);
     else openInSplitView(label, path);
   } else if (type === 'folder') {
+    // フォルダはバックリンクの対象から除外する（計画書§2.3「フォルダそのものは
+    // 対象から除外する」）。前の選択対象を残すと、フォルダ表示中にバックリンク
+    // タブを開いた時に無関係な古い対象の結果が出てしまうため明示的に空にする。
+    window.GBOptionTargetContext?.clear('folder-open');
     // フォルダ選択時は詳細パネルにフォルダ情報を表示
     await showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
       <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
@@ -147,6 +151,12 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   const seq = _detailSyncSeq;
   if (!await _dpSavePending()) return;
   if (seq !== _detailSyncSeq) return;
+  // OptionTargetContext（計画書§11.1）: シート（DB）選択時も選択対象を更新する。
+  // バックリンク索引はフォルダノート(.md)のpathを対象として記録しているため、
+  // フォルダpathをそのまま渡すのではなく対応するフォルダノートpathへ変換する
+  // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
+  const dbNotePath = window.GbBacklinks?.dbFolderNotePath?.(path) || path;
+  window.GBOptionTargetContext?.set({ path: dbNotePath, kind: 'database' }, 'database-select');
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'

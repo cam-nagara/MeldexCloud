@@ -294,7 +294,9 @@
           // フォルダツリーへ何も出ない空振りになる）。
           const nextRoots = existingRoots.filter((r) => String(r?.relPath || '') !== '');
           nextRoots.push({ provider: 'dropbox', relPath: '', name: picked.name });
-          await ledgerIO.writeWorkspaceLedger(picked.path, nextRoots, picked.namespaceKind);
+          // まだ参加（joined）していないフォルダへの初回書き込みは、直前の確認
+          // ダイアログでユーザーが明示同意したこの1回だけ allowUnjoined で許可する
+          await ledgerIO.writeWorkspaceLedger(picked.path, nextRoots, picked.namespaceKind, { allowUnjoined: true });
         } catch (e) {
           if (typeof showStatus === 'function') showStatus('共有ワークスペースにできませんでした: ' + _errorText(e), true);
           return;
@@ -1113,7 +1115,10 @@
     if (typeof cfConfirm !== 'function') return true;
     const label = root?.name || _pathBasename(root?.path || root?.localPath || root?.dropboxPath || '') || 'このフォルダ';
     const buildMessage = _ROOT_DELETION_CONFIRM_MESSAGES[scope] || _ROOT_DELETION_CONFIRM_MESSAGES.shared;
-    return await cfConfirm(buildMessage(label));
+    // 確定ボタンは「登録解除」を明示指定する（cfConfirmは既定でメッセージ文中の「削除」を
+    // 検出してボタンラベルを自動決定するため、指定しないとメッセージ中の「削除されません」に
+    // 反応して「削除」ボタンになってしまう）。
+    return await cfConfirm(buildMessage(label), { okLabel: '登録解除' });
   }
 
   window.MeldexSettingsCloudLink = {

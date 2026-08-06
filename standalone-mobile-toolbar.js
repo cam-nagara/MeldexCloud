@@ -217,7 +217,17 @@
       row.appendChild(badge);
     }
     _preventMousedownBlur(row);
-    row.addEventListener('click', () => _activateActionRow(entry, sourceEl, row));
+    // 代理クリック（sourceEl.click()）は行のクリックハンドラ内で同期的に完結するが、
+    // 元のクリックイベント自体はそのまま document までバブルし続ける。代理先が
+    // ポップアップ／メニュー（.gb-context-menu 等）を開くボタンの場合、
+    // gb-dropdown-dismiss.js の「外側クリックで閉じる」判定が、開いた直後の
+    // ポップアップをこの行イベントの target（sa-mtb-row、非トリガー要素）で
+    // 即座に閉じてしまう。行クリックはこのモジュール内で処理を完結させるため、
+    // 外側へは伝播させない。
+    row.addEventListener('click', event => {
+      event.stopPropagation();
+      _activateActionRow(entry, sourceEl, row);
+    });
     return row;
   }
 

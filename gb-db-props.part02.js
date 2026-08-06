@@ -153,6 +153,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   menu.className = 'gb-context-menu';
   const ep = _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
+  // フロートパネル／サブパネル内では、右サイドバーで開く・チャットを開く等の
+  // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
+  const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+    || typeof GBPaneBridge.surfaceOf !== 'function'
+    || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(e?.target || null));
   // 上部にリネーム入力欄: エントリ名変更
   _addMenuRenameInput(menu, entityName, (newName) => {
     window.GbDbEntryIdentity.rename({
@@ -183,21 +188,21 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     } }] : []),
     { type: 'sep' },
     { icon: 'layers-2', label: 'フロートパネルで開く', action: () => {
-      if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
+      if (typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
       else selectEntity(ep);
     } },
     { icon: 'panelLeft', label: 'メインパネルで開く', action: () => {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
       else selectEntity(ep);
     } },
-    { icon: 'panelRight', label: 'サイドバーで開く', action: () => {
-      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId });
+    ...(canUseRightSidebar ? [{ icon: 'panelRight', label: '右サイドバーで開く', action: () => {
+      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e?.target || null });
       else selectEntity(ep);
-    } },
-    { icon: 'messagesSquare', label: 'チャットを開く', action: () => {
+    } }] : []),
+    ...(canUseRightSidebar ? [{ icon: 'messagesSquare', label: 'チャットを開く', action: () => {
       if (typeof openEntityChatForPath === 'function') return openEntityChatForPath(ep);
       if (typeof openFileChat === 'function') return openFileChat(ep);
-    } },
+    } }] : []),
     ...(isXBookmarkEntry ? [{ icon: 'refreshCw', label: 'Xからこのポストを再インポート', action: async () => {
       try {
         if (typeof window.reimportXBookmarkEntry !== 'function') throw new Error('X再インポート機能を読み込めません');
@@ -222,20 +227,39 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     }},
     { type: 'sep' },
     { icon: 'trash2', label: 'エントリを削除', danger: true, action: async () => {
-      if (!await cfConfirm(entityName + ' を削除しますか？')) return;
-      apiPost('/outliner/delete', { path: ep }).then(async (response) => {
-        // Phase 2 §5.3: 連動カレンダーイベントを削除/orphan
-        try {
-          if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
-            await window.GbDbCalendarSync.onEntryDeleted(targetDbPath, ep);
-          }
-        } catch {}
-        selectDatabase(targetDbPath, ctx);
+      const confirmMessage = entityName + ' を削除しますか？';
+      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([{ path: ep, kind: 'file' }], confirmMessage)
+        : await cfConfirm(confirmMessage);
+      if (!confirmed) return;
+      const entryId = String(
+        ctx?.pivotData?.entities?.[entityName]?._id
+        || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName]?._id : '')
+        || ''
+      );
+      try {
+        const result = await window.GbDbEntryIdentity.deleteEntries({
+          dbPath: targetDbPath,
+          ctx,
+          entries: [{ name: entityName, path: ep, entryId }],
+          source: 'context-menu',
+        });
+        const response = result.responses[0];
         const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
           ? _dbDeleteCalendarSyncWarningMessage(response)
           : '';
-        showStatus(calendarWarning || '削除しました', !!calendarWarning);
-      }).catch(() => showStatus('削除に失敗', true));
+        if (result.failures.length) {
+          const error = result.failures[0]?.error;
+          showStatus(
+            error?.resultUnknown ? '削除結果を確認できませんでした。行を元に戻しました' : '削除に失敗したため、行を元に戻しました',
+            true
+          );
+        } else {
+          showStatus(calendarWarning || '削除しました', !!calendarWarning);
+        }
+      } catch (error) {
+        showStatus('削除に失敗: ' + (error?.userMessage || error?.message || error), true);
+      }
     }},
   ];
   items.forEach(item => {
@@ -402,10 +426,9 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     }, { placeholder: 'エントリ名列の名前を変更...' });
   }
 
-  const pinnedColsList = getPinnedCols(dbPath, { ctx });
-  const entityPinned = typeof getEntityColumnPinned === 'function'
-    ? getEntityColumnPinned(dbPath, { ctx })
-    : true;
+  const pinnedRange = _dbPinnedRangeForMenu(ctx, dbPath, e?.target || e?.currentTarget);
+  const pinnedTokens = pinnedRange.pinnedTokens;
+  const entityPinned = pinnedRange.entityColumnPinned;
   const entityFilterActive = typeof isDbColumnFilterActive === 'function'
     && isDbColumnFilterActive(dbPath, '__entity__', ctx);
   const items = [
@@ -427,12 +450,14 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
       // 「列の表示と順序...」はツールバーへ移設（2026-07-19 ユーザー指示）
       { type: 'submenu', label: '列を固定', children: [
         { label: (entityPinned ? radioMark(true) : '　') + '固定する', action: () => {
-          if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, true, { ctx });
-          _refreshDbColumnMenuView(ctx, dbPath);
+          if (!entityPinned) {
+            _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, '__entity__', true);
+          }
         }},
         { label: (!entityPinned ? radioMark(true) : '　') + '固定しない', action: () => {
-          if (typeof setEntityColumnPinned === 'function') setEntityColumnPinned(dbPath, false, { ctx });
-          _refreshDbColumnMenuView(ctx, dbPath);
+          if (entityPinned) {
+            _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, '__entity__', false);
+          }
         }},
       ]},
       {
@@ -449,23 +474,23 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     ...(!productionSchemaLocked && !productionWriteBlocked
       ? [{ label: '+ 依存関係の列', action: () => _addDependencyPairProps(dbPath, ctx) }]
       : []),
-    ...(pinnedColsList.length > 0 ? [{
+    ...(pinnedTokens.length > 0 ? [{
       type: 'sep'
     }, {
       type: 'submenu',
-      label: lucide('pinOff', 14) + ' 固定中の列を解除 (' + pinnedColsList.length + ')',
+      label: lucide('pinOff', 14) + ' 固定中の列を解除 (' + pinnedTokens.length + ')',
       children: [
-        ...pinnedColsList.map(propName => ({
-          label: '解除: ' + esc(propName),
+        ...pinnedTokens.map(token => ({
+          label: 'ここから解除: ' + esc(token === '__entity__'
+            ? (_dbEntityColumnDisplayLabel(dbPath, { ctx }) || 'エントリ名')
+            : token),
           action: () => {
-            setPinnedCols(dbPath, getPinnedCols(dbPath, { ctx }).filter(n => n !== propName), { ctx });
-            _refreshDbColumnMenuView(ctx, dbPath);
+            _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, token, false);
           }
         })),
         { type: 'sep' },
         { label: 'すべて解除', action: () => {
-            setPinnedCols(dbPath, [], { ctx });
-            _refreshDbColumnMenuView(ctx, dbPath);
+            _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, pinnedRange.renderedCols[0], false);
           }
         },
       ]

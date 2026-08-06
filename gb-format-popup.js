@@ -396,6 +396,12 @@
    * @param {HTMLElement[]} [options.extraRow2] 専用設定の下段に追加する要素
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
    * @param {HTMLElement[]} [options.extraRow4] row4（リセット行）のリセット直前に追加する要素
+   * @param {Object} [options.footerActions] 最下段1行へ右寄せ配置するコピー/切り取り/
+   *   貼り付け/閉じる。{ commands?: ('copy'|'cut'|'paste')[], onCommand(command),
+   *   onClose?(), closeLabel? }。onClose を渡すと既定の右下floating close button の
+   *   代わりにこの行の右端へ閉じるボタンを出す（二重表示防止）。専用のクリップボード行を
+   *   個別に作らないための共通化オプション（呼び出し元は既存の位置決め・選択保持・
+   *   Escape・外側クリック等をそのまま利用できる）。
    * @param {boolean} [options.closeOnOutside=true] ポップアップ外クリックで閉じる
    * @param {string} [options.className] 追加クラス名（旧命名互換用）
    * @param {boolean} [options.verticalWriting] 縦書き（vertical-rl）対象。textAlign/textValign の
@@ -619,7 +625,54 @@
       popup.appendChild(row5);
     }
 
-    if (options.closeButton !== false && typeof attachMeldexDropdownCloseButton === 'function') {
+    // --- Row footer: コピー・切り取り・貼り付け・閉じるを最下段1行へ右寄せ配置 ---
+    // 計画書2026-08-04版§2.4: 専用のクリップボード行を各呼び出し元が個別に作らず、
+    // ここで共通化する。footerActions.onClose を渡した場合はここで閉じるボタンを
+    // 出すため、右下floatingの既定close button（下のattachMeldexDropdownCloseButton）
+    // は二重表示を避けるため出さない。footerActions未指定時は従来どおり。
+    const footerActions = options.footerActions || null;
+    let footerHasClose = false;
+    if (footerActions) {
+      const commands = Array.isArray(footerActions.commands) ? footerActions.commands : ['copy', 'cut', 'paste'];
+      const commandMeta = {
+        copy: { icon: 'copy', label: 'コピー' },
+        cut: { icon: 'scissors', label: '切り取り' },
+        paste: { icon: 'clipboardPaste', label: '貼り付け' },
+      };
+      const footerRow = document.createElement('div');
+      footerRow.className = 'gb-fmt-popup-row gb-fmt-footer-actions-row';
+      if (typeof footerActions.onCommand === 'function') {
+        commands.forEach((cmd) => {
+          const meta = commandMeta[cmd];
+          if (!meta) return;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'gb-fmt-style-copy gb-fmt-footer-action';
+          btn.title = meta.label;
+          btn.setAttribute('aria-label', meta.label);
+          btn.dataset.footerAction = cmd;
+          btn.innerHTML = _lucideOr(meta.icon, 14, meta.label);
+          _bindPressAction(btn, () => footerActions.onCommand(cmd));
+          footerRow.appendChild(btn);
+        });
+      }
+      if (typeof footerActions.onClose === 'function') {
+        footerHasClose = true;
+        const closeLabel = footerActions.closeLabel || '閉じる';
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'gb-fmt-style-copy gb-fmt-footer-close';
+        closeBtn.title = closeLabel;
+        closeBtn.setAttribute('aria-label', closeLabel);
+        closeBtn.dataset.footerAction = 'close';
+        closeBtn.innerHTML = _lucideOr('x', 14, closeLabel);
+        _bindPressAction(closeBtn, () => footerActions.onClose());
+        footerRow.appendChild(closeBtn);
+      }
+      if (footerRow.childElementCount) popup.appendChild(footerRow);
+    }
+
+    if (options.closeButton !== false && !footerHasClose && typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: () => options.focusTarget || anchorEl,
         close: () => _removeFormatPopup(popup),

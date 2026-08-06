@@ -1,3 +1,11 @@
+        const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
+          ? editor.host.closest('.gb-scriptnote-root')
+          : null;
+        const titleInput = scriptNoteRoot ? scriptNoteRoot.querySelector('#title-input') : null;
+        // プログラムによる value 代入は change イベントを発火しないため、
+        // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
+        if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
+      }
     });
   }
 
@@ -890,11 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
         if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
         _applyNavEntryToBoundTab(navState, entry);
         _withNavFlag(navOpen(entry));
-      } catch (e) {
-        navNavigating = false;
-        throw e;
-      }
-      _refreshPaneNavUi(navState.paneId);
-      _persistPaneNavState(navState);
-      closeDropdown(false);
-    });

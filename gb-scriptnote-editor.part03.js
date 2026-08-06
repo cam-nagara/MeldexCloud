@@ -496,13 +496,21 @@
       for (let i = 1; i < lines.length; i++) {
         const isLast = i === lines.length - 1;
         const lineText = isLast ? escapedLines[i] + afterText : escapedLines[i];
-        newRows.push({
+        const newRow = {
           id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: lineText ? currentRow.role : '', // 空白行はタイプなし
           status: newStatus,
           text: lineText,
           columns: {},
-        });
+        };
+        if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+          globalThis.GBScriptNoteRoleModel.assignRowRole(
+            this.doc,
+            newRow,
+            lineText ? (currentRow.roleRef || currentRow.role) : ''
+          );
+        }
+        newRows.push(newRow);
       }
       this.doc.rows.splice(idx + 1, 0, ...newRows);
       this._calcCache = null;

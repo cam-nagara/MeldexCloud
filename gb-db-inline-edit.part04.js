@@ -849,7 +849,19 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       try { await _autoFillOnCreate(_db, createdPath, {}); } catch {}
     }
     historyPush('エントリ追加: ' + name,
-      async () => { await apiPost('/outliner/delete', { path: _entityPath(_db, name) }); await selectDatabase(_db, ctx); },
+      async () => {
+        const result = await window.GbDbEntryIdentity.deleteEntries({
+          dbPath: _db,
+          ctx,
+          entries: [{
+            name,
+            path: createdPath || _entityPath(_db, name),
+            entryId: String(r?.entry_id || r?.id || ''),
+          }],
+          source: 'entry-create-undo',
+        });
+        if (result.failures.length) throw result.failures[0].error;
+      },
       async () => {
         const redo = await apiPost('/entity/create', { parent_path: _db, name });
         const redoPath = (redo && (redo.path || redo.entry_path)) || `${_db}/${name}.md`;

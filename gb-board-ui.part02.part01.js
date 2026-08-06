@@ -31,17 +31,19 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: cardHtml, line: '' });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  const hasInformation = !!(node && window.MeldexBoardInfoPanel?.hasInformation?.(node));
+  window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
   const nextTab = options.activate === true
-    ? 'board-card'
+    ? (hasInformation ? 'note-editor' : 'board-card')
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
       : 'board-card');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -51,15 +53,16 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: '', line: connHtml });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true });
+  window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   const nextTab = options.activate === true
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
       : 'board-line');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -70,14 +73,15 @@ function _bdSetBoardPrimaryTab() {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: '', line: '' });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // デフォルトはテーマタブ。ユーザーが backlinks / board-note / スタイル管理タブを選んでいた場合は尊重。
   const nextTab = typeof _bdResolveCurrentBoardTab === 'function'
-    ? _bdResolveCurrentBoardTab(['board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
+    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
     : 'file-style';
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -139,10 +143,6 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field bd-detail-field-wide"><span>テキスト</span><textarea data-bd-field="text">${esc(node.text || '')}</textarea></label>
         <label class="bd-detail-field bd-detail-field-wide"><span>リンク先</span><input type="text" value="${_bdEscAttr(node.link || '')}" data-bd-field="link"></label>
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">タグ</div>
-        <div data-bd-node-tags-editor data-e2e-id="bd-node-tags-editor"></div>
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">カードスタイル</div>
@@ -604,7 +604,6 @@ function _bdBindNodeDetailPanel(nodeId) {
     bdDirty();
     if (field === 'link') {
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-      if (value && typeof bdShowLinkedSelectionPreview === 'function') bdShowLinkedSelectionPreview(value, node.linkType);
     }
   };
   roots.forEach(root => {
@@ -732,25 +731,6 @@ function _bdBindNodeDetailPanel(nodeId) {
     root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
       if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
     });
-    const tagsEditorEl = root.querySelector('[data-bd-node-tags-editor]');
-    if (tagsEditorEl && typeof renderInlineTagEditor === 'function') {
-      renderInlineTagEditor(tagsEditorEl, {
-        compact: true,
-        getIds: () => {
-          const target = bd.nodes.find(item => item.id === nodeId);
-          return Array.isArray(target?.tags) ? target.tags : [];
-        },
-        setIds: (ids) => {
-          const target = bd.nodes.find(item => item.id === nodeId);
-          if (!target) return;
-          bdPushUndo();
-          target.tags = ids;
-          bdRender();
-          bdDirty();
-          if (typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
-        },
-      });
-    }
   });
 }
 

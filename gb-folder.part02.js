@@ -29,6 +29,8 @@ function _renderPreviewContent(item) {
     } else {
       iframe.src = _folderItemViewerUrl(item, true);
     }
+    iframe.dataset.gbViewerCurrentUrl = iframe.src;
+    if (typeof _gbBindViewerFastPathListeners === 'function') _gbBindViewerFastPathListeners(iframe);
     frag.appendChild(iframe);
   } else if (item.type === 'audio') {
     const audio = document.createElement('audio');
@@ -186,7 +188,14 @@ function showFolderPreview(item) {
       const newSrc = isPdf
         ? '/viewer?pdf=' + encodeURIComponent(item.path) + '&embed=1'
         : _folderItemViewerUrl(item, true);
-      existingIframe.src = newSrc;
+      if (typeof _gbTryFastViewerSwitch === 'function') {
+        _gbTryFastViewerSwitch(existingIframe, newSrc).then((ok) => {
+          if (ok) existingIframe.dataset.gbViewerCurrentUrl = newSrc;
+          else { existingIframe.dataset.gbViewerCurrentUrl = newSrc; existingIframe.src = newSrc; }
+        });
+      } else {
+        existingIframe.src = newSrc;
+      }
     } else {
       previewPane.innerHTML = '';
       previewPane.appendChild(_renderPreviewContent(item));
@@ -202,6 +211,10 @@ function showFolderPreview(item) {
     if (item.type !== 'folder' && item.path && typeof _showFileInfoInDetailPanel === 'function') {
       _showFileInfoInDetailPanel(item.path, item, { autoTagTargets: selectedItems });
     } else {
+      // フォルダ選択はバックリンクの対象から除外する（計画書§2.3）。この簡易表示
+      // 経路は _showFileInfoInDetailPanel を通らないため、ここで明示的に選択対象を
+      // クリアしないと前に選択していたファイルの古いバックリンクが残ってしまう。
+      window.GBOptionTargetContext?.clear('folder-panel-select-folder');
       detailPane.innerHTML = '';
       const header = document.createElement('div');
       header.style.cssText = 'padding:8px 12px;border-bottom:1px solid var(--border);font-size:14px;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
@@ -619,6 +632,133 @@ function _syncViewerInitialPathToOutliner(url, openOpts) {
   if (filePath) highlightOutlinerNode(filePath);
 }
 
+// === ビューワーiframeの高速切替（フルナビゲーションなしでの表示差し替え） ===
+// viewer.html は初期化完了時に {type:'viewer-ready'} を親へ post し、親から
+// {type:'viewer-open-request', requestId, url} を受けたらページ遷移なしで表示対象を
+// 差し替え、{type:'viewer-open-ack', requestId} を返す（対応不能なら 'viewer-open-nack'）。
+// これはビューワー担当と並行実装中の契約。この応答が来た場合のみ iframe.src の
+// 再代入（=viewer.htmlのフルナビゲーション、スクリプト再実行を伴う重い処理）を回避する。
+const _gbViewerFastPathState = new WeakMap(); // iframe要素 -> {ready, seq, bound}
+
+function _gbViewerFastPathStateFor(iframe) {
+  let st = _gbViewerFastPathState.get(iframe);
+  if (!st) {
+    st = { ready: false, seq: 0, bound: false };
+    _gbViewerFastPathState.set(iframe, st);
+  }
+  return st;
+}
+
+function _gbIsViewerRouteUrl(url) {
+  // 論理URL（/viewer?...）と解決済URL（/viewer.html?...、絶対URL含む）の両方を受け付ける。
+  // 解決形を弾くと高速パスが一度も成立しない（rewriteInternalUrl後のURLが渡るため）。
+  try {
+    const u = new URL(String(url || '').trim(), window.location.origin);
+    if (u.origin !== window.location.origin) return false;
+    return u.pathname === '/viewer' || u.pathname === '/viewer.html' || u.pathname.endsWith('/viewer.html');
+  } catch {
+    return false;
+  }
+}
+
+// このiframeにビューワーが生きているか（同一オリジンの直接プローブ）。
+// 当初は viewer-ready メッセージ + load イベントのフラグ管理だったが、viewer-ready は
+// スクリプト初期化完了時（loadより先）に届くことがあり、後から来る load がフラグを
+// リセットして高速パスが一度も成立しなくなる競合があった（v0.7.139検証で実測）。
+// 同一オリジンなので contentWindow を直接見るのが最も確実。open-request リスナーが
+// まだ未登録の初期化途中でも、ackが250ms以内に来なければ従来のsrc差し替えへ落ちる。
+function _gbViewerFrameLive(iframe) {
+  try {
+    return !!(iframe && iframe.contentWindow && iframe.contentWindow.MeldexViewerScene);
+  } catch {
+    return false;
+  }
+}
+
+// requestId 採番用の状態を保持する（生成直後・高速切替直前のどちらから呼んでもよい）。
+function _gbBindViewerFastPathListeners(iframe) {
+  if (!iframe) return null;
+  return _gbViewerFastPathStateFor(iframe);
+}
+
+// resolvedUrl へ、可能ならページ遷移なしで切り替える。250ms以内にackが来なければ
+// false を返す（呼び出し側は従来どおり iframe.src の代入へフォールバックすること）。
+function _gbTryFastViewerSwitch(iframe, resolvedUrl) {
+  if (!iframe || !_gbIsViewerRouteUrl(resolvedUrl)) return Promise.resolve(false);
+  const st = _gbBindViewerFastPathListeners(iframe);
+  if (!st || !_gbViewerFrameLive(iframe)) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const requestId = 'vreq-' + (++st.seq) + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    let settled = false;
+    const timer = setTimeout(() => finish(false), 250);
+    function finish(ok) {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      clearTimeout(timer);
+      resolve(ok);
+    }
+    function onMessage(ev) {
+      if (ev.source !== iframe.contentWindow) return;
+      const data = ev.data;
+      if (!data || data.requestId !== requestId) return;
+      if (data.type === 'viewer-open-ack') finish(true);
+      else if (data.type === 'viewer-open-nack') finish(false);
+    }
+    window.addEventListener('message', onMessage);
+    try {
+      iframe.contentWindow.postMessage({ type: 'viewer-open-request', requestId, url: resolvedUrl }, window.location.origin);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+function _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts) {
+  if (typeof trackIframeLoading === 'function') {
+    const inferredType = _inferViewerFileType(url);
+    const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
+    if (!(inferredType === 'image' && !openOpts.forceViewerLoading)) {
+      trackIframeLoading(iframe, loadingLabel, openOpts);
+    }
+  }
+  // datasetには論理URL（openViewerへ渡された形）を保存する。タブ復帰時の実内容検証
+  // （gb-pane-bridge.part02.part01.js の _gbVerifyAndFixMediaContainer）が期待値として
+  // 論理URLを組み立てるため、解決済URLを入れると常に不一致→毎回開き直しになる。
+  iframe.dataset.gbViewerCurrentUrl = url;
+  iframe.src = resolvedUrl;
+}
+
+// メインビューワーiframe（#html-iframe）を対象URLへ開く。高速パスが使えれば
+// フルナビゲーションなしで切替え、250ms以内に応答がない／非対応の場合のみ
+// 従来どおり src 代入（+ローディング表示）にフォールバックする。
+// 高速パス成功時はローディング表示を出さない。
+function _gbOpenViewerIframe(iframe, url, resolvedUrl, openOpts) {
+  if (!iframe) return;
+  _gbBindViewerFastPathListeners(iframe);
+  if (_gbViewerFrameLive(iframe) && _gbIsViewerRouteUrl(resolvedUrl)) {
+    _gbTryFastViewerSwitch(iframe, resolvedUrl).then((ok) => {
+      if (ok) {
+        iframe.dataset.gbViewerCurrentUrl = url;
+      } else {
+        _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts);
+      }
+    });
+    return;
+  }
+  _gbNavigateViewerIframeSlow(iframe, url, resolvedUrl, openOpts);
+}
+
+function _gbInitMainViewerIframeFastPath() {
+  const iframe = document.getElementById('html-iframe');
+  if (iframe) _gbBindViewerFastPathListeners(iframe);
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _gbInitMainViewerIframeFastPath);
+} else {
+  _gbInitMainViewerIframeFastPath();
+}
+
 function openViewer(url, opts) {
   const openOpts = opts || {};
   if (!openOpts.skipShowView) showView('html');
@@ -629,14 +769,7 @@ function openViewer(url, opts) {
     const preparedIframe = typeof _gbPrepareUntrustedIframe === 'function'
       ? _gbPrepareUntrustedIframe(iframe, resolvedUrl)
       : iframe;
-    if (typeof trackIframeLoading === 'function') {
-      const inferredType = _inferViewerFileType(url);
-      const loadingLabel = inferredType === 'pdf' ? 'PDFを読み込み中...' : 'ビューアを読み込み中...';
-      if (!(inferredType === 'image' && !openOpts.forceViewerLoading)) {
-        trackIframeLoading(preparedIframe || iframe, loadingLabel, openOpts);
-      }
-    }
-    if (preparedIframe) preparedIframe.src = resolvedUrl;
+    _gbOpenViewerIframe(preparedIframe || iframe, url, resolvedUrl, openOpts);
   }
   // ビューワー表示時に詳細パネルにファイル情報を表示
   if (!openOpts.skipGlobalUi) {
@@ -644,6 +777,12 @@ function openViewer(url, opts) {
     if (filePath && typeof _showFileInfoInDetailPanel === 'function') {
       _showFileInfoInDetailPanel(filePath);
     }
+  }
+  // ステータスバー右側にビューワーのショートカット一覧を表示する。showView('media')→
+  // showView('html') の順で走るとhtml分岐が空文字で上書きするため、ビューワーを開いた
+  // 時点で直接反映して表示を確定させる（メインiframeでの表示時のみ）。
+  if (!openOpts.skipGlobalUi && typeof updateMediaViewerShortcutStatusbar === 'function') {
+    updateMediaViewerShortcutStatusbar();
   }
 }
 

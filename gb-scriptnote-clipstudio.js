@@ -199,11 +199,13 @@ function sn2CopyForClipStudio() {
       const r = rows[i];
       const rowIndex = doc.rows.indexOf(r);
       const nextIndex = i < rows.length - 1 ? doc.rows.indexOf(rows[i + 1]) : -1;
-      const charaR = r.role ? doc.characters?.find(c => !c.isDefault && c.name === r.role) : null;
-      if (charaR?.isBreak) { out += '←\r\n'; continue; }
+      const effectiveRole = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(doc, r);
+      const charaR = effectiveRole?.type || effectiveRole?.style
+        || (r.role ? doc.characters?.find(c => !c.isDefault && c.name === r.role) : null);
+      if (charaR?.isBreak || charaR?.kind === 'break') { out += '←\r\n'; continue; }
       let plainText = _sn2StripRubyToPlain(r.text || '');
       if (includeAffixCb && plainText) {
-        const affix = _sn2GetTextAffix(editor, r.role);
+        const affix = _sn2GetTextAffix(editor, r);
         plainText = (affix.before || '') + plainText + (affix.after || '');
       }
       if (plainText) out += plainText + '\r\n';
@@ -296,10 +298,12 @@ function _sn2ShowSepDialog(editor) {
   window.GBModalShell?.enhanceOverlay?.(o);
 }
 
-function _sn2GetTextAffix(editor, role) {
-  const chara = role
-    ? editor.doc.characters?.find(c => !c.isDefault && c.name === role)
-    : editor.doc.characters?.find(c => c.isDefault);
+function _sn2GetTextAffix(editor, roleOrRow) {
+  const role = typeof roleOrRow === 'object' ? String(roleOrRow?.role || '') : String(roleOrRow || '');
+  const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(editor.doc, roleOrRow)
+    || (role
+      ? editor.doc.characters?.find(c => !c.isDefault && c.name === role)
+      : editor.doc.characters?.find(c => c.isDefault));
   const ts = chara?.textStyle || {};
   const before = ts.textBefore ?? chara?.textBefore ?? '';
   const after = ts.textAfter ?? chara?.textAfter ?? '';
@@ -321,18 +325,6 @@ function _sn2StartSep() {
   const doc = editor.doc;
   const range = document.querySelector('input[name="sn2-sep-range"]:checked')?.value || 'all';
   const sourceRows = range === 'selected' ? _sn2RowsForClipStudio(editor) : doc.rows;
-  const flagSets = typeof editor._getRoleFlagSets === 'function'
-    ? editor._getRoleFlagSets()
-    : { breakNames: new Set(), summaryNames: new Set() };
-  const breakNames = flagSets.breakNames || new Set();
-  const summaryNames = flagSets.summaryNames || new Set();
-  // 「見開き」フラグが立ったタイプ名の集合
-  const spreadNames = new Set();
-  (doc.characters || []).forEach(c => {
-    if (c.isDefault) return;
-    if (!c.name) return;
-    if (c.isSpread) spreadNames.add(c.name);
-  });
   // 「見開き」ONの区切り行が連続したとき、偶数回目はページ送りをスルーしてコマ送り扱いにする。
   // 連続は「区切り行だけを抽出した並び」で数え、他の行を挟んでも継続する。
   // 見開きOFFの区切り行が現れたら連続カウントをリセット。
@@ -340,13 +332,15 @@ function _sn2StartSep() {
   const rows = [];
   for (const r of sourceRows) {
     const role = r.role || '';
-    const isBreak = !!role && breakNames.has(role);
-    const isSummary = !!role && summaryNames.has(role);
-    const isSpread = !!role && spreadNames.has(role);
+    const effectiveRole = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(doc, r);
+    const roleType = effectiveRole?.type || effectiveRole?.style || null;
+    const isBreak = !!role && !!(roleType?.isBreak || roleType?.kind === 'break');
+    const isSummary = !!role && !!(roleType?.isSummary || roleType?.kind === 'summary');
+    const isSpread = !!role && !!roleType?.isSpread;
     if (isSummary && !includeSummary) continue;
     let plainText = _sn2StripRubyToPlain(r.text || '');
     if (includeAffix && plainText) {
-      const affix = _sn2GetTextAffix(editor, role);
+      const affix = _sn2GetTextAffix(editor, r);
       plainText = (affix.before || '') + plainText + (affix.after || '');
     }
     // 「空白行を出力しない」: 区切り/プロットではなく、キャラ名も本文も空の行を除外

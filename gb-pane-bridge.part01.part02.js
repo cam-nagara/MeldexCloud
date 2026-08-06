@@ -66,7 +66,7 @@
   // ペインのアクティブ切替時にstate.viewを同期
   function _onActivePaneChange(paneId, prevPaneId) {
     if (_bridgeUpdating) return;
-    _mountAllPanes();
+    _mountAllPanes({ claimPaneId: paneId });
     _syncStateView();
     _mountFloatingAnnotationUi();
     if (typeof navNavigating !== 'undefined' && navNavigating) return;
@@ -249,7 +249,11 @@
       const comp = getComponentInstance(activeTab.id);
       if (comp && typeof comp._syncDetailPanel === 'function') comp._syncDetailPanel();
       else _clearDetailPaneShell();
-      _updatePreviewPane(false);
+      // ユーティリティペイン（検索欄フォーカス等）へ焦点が移っただけで詳細パネルの
+      // 追いつき同期（fromUtilityPane）が走った場合、対象コンテンツペイン自体は
+      // 変わっていないためビューワーパネルは対象外にする（不具合A対策。詳細は
+      // 下のコメント参照）。
+      if (!options?.fromUtilityPane) _updatePreviewPane(false);
       return;
     }
     // 非scriptnote型: グローバル _syncDetailPanel 経由で詳細パネルを同期
@@ -279,8 +283,24 @@
       // welcome / compare / search 等: 前のアプリ固有オプションを残さない
       _clearDetailPaneShell();
     }
-    // ビューワーも同期
-    _updatePreviewPane(false);
+    // ビューワーも同期。
+    // ただし options.fromUtilityPane（このタブは変わっていないが、検索欄等の
+    // ユーティリティペインへ焦点が移ったことをきっかけに詳細パネルだけを
+    // 追いつかせる再帰呼び出し）の場合は対象外にする。
+    //
+    // 不具合A: ビューワーパネル（gb-preview-pane、showFolderPreview で <iframe> 等の
+    // リッチな内容を表示中）に画像を表示している状態でフォルダツリーの検索欄を
+    // クリックすると、_syncDetailForActivePane が「検索欄のペイン→_shouldSkipDetailSyncForTab
+    // → _findDetailSyncSourcePane で元のコンテンツペインを特定 → _detailPaneLooksStaleForTab
+    // で詳細パネルの陳腐化を検知 → fromUtilityPane:true で自分自身を再帰呼び出し」という
+    // 経路を通り、末尾で無条件に _updatePreviewPane(false) を実行していた。
+    // _updatePreviewPane は imgExts の狭い許可リストのみ対応する簡易描画で、対象を
+    // 特定できない/画像として解決できない場合はファイル名テキストだけを描画するため、
+    // showFolderPreview が既に描画したリッチな <iframe> を上書き破壊していた。
+    // 実際にはこの再帰は「詳細パネルの内容合わせ」だけが目的で、対象コンテンツペイン
+    // 自体（画像を表示しているペイン）は何も変わっていない＝ビューワーパネルは既に
+    // 正しい内容のはずなので、fromUtilityPane 経由ではビューワーパネルへ触れない。
+    if (!options?.fromUtilityPane) _updatePreviewPane(false);
   }
 
   // ================================================================
@@ -354,5 +374,12 @@
   // ================================================================
   // 全ペインにコンテンツをマウント
   // ================================================================
-  function _mountAllPanes() {
-    const allPanes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }).slice().sort((a, b) => {
+  function _mountAllPanes(options) {
+    const claimPaneId = options?.claimPaneId || '';
+    const layoutPanes = GBLayout.getAllPanes(GBLayout.root, { activeOnly: true }).slice();
+    const layoutPaneIds = new Set(layoutPanes.map(pane => pane.id));
+    const virtualPanes = Object.values(GBLayout.paneMap || {})
+      .filter(info => info?.node?.id && !layoutPaneIds.has(info.node.id)
+        && (info.surface === 'float' || info.surface === 'subpanel'))
+      .map(info => ({ pane: info.node, surface: info.surface }));
+    const allPanes = layoutPanes.map(pane => ({ pane, surface: '' })).concat(virtualPanes).sort((a, b) => {

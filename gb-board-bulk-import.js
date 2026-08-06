@@ -222,7 +222,10 @@
       return [{ label: 'スマートシート全体 (フィルタ適用)', kind: 'smart-all' }];
     }
     // 通常のシート: 「現在のフィルタ」「保存済みビュー」「すべて」を列挙。
-    const views = [{ label: '現在のフィルタ', kind: 'db-current' }];
+    const views = [];
+    if (typeof getCurrentDbViewConfigEntry === 'function') {
+      views.push({ label: '現在のフィルタ', kind: 'db-current' });
+    }
     if (typeof getSavedViews === 'function') {
       try {
         const saved = getSavedViews(target.path) || [];
@@ -495,8 +498,7 @@
     // 画像プロパティは並行取得 (最大 6 本)。
     const imgMap = await _fetchImagesParallel(entries.map(e => e.path), 6);
 
-    if (typeof bdPushUndo === 'function') bdPushUndo();
-
+    const createdNodes = [];
     const createdIds = [];
     for (let i = 0; i < entries.length; i++) {
       const e = entries[i];
@@ -510,10 +512,12 @@
         ? bdCreateLinkCardNode(e.path, x, y, e.name || '', { img, linkType, w: cardW })
         : null;
       if (node) {
-        bd.nodes.push(node);
+        createdNodes.push(node);
         createdIds.push(node.id);
       }
     }
+    if (typeof bdPushUndo === 'function') bdPushUndo();
+    bd.nodes.push(...createdNodes);
 
     // 大量追加後の一括再描画。bdRequestFullRender があれば優先使用。
     if (typeof bdRequestFullRender === 'function') bdRequestFullRender('bulk-link-import');
@@ -656,5 +660,8 @@
     return (dir ? dir.replace(/\/+$/, '') + '/' : '') + raw;
   }
 
+  if (window.__MELDEX_BOARD_BULK_IMPORT_TEST__) {
+    window.__MELDEX_BOARD_BULK_IMPORT_TEST__.importEntries = _executeImport;
+  }
   window.bdOpenBulkLinkImport = bdOpenBulkLinkImport;
 })();

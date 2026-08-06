@@ -114,11 +114,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     // 現在の行セット状態（セッション中保持）
     if (!this._rowsetRows) this._rowsetRows = [];
 
-    const charaNames = (this.doc.characters || []).map(c => c.name).filter(Boolean);
-    const validRoles = new Set(charaNames);
-    this._rowsetRows.forEach(entry => {
-      if (entry?.role && !validRoles.has(entry.role)) entry.role = '';
-    });
+    const roleChoices = globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc) || [];
+    const charaNames = roleChoices
+      .filter((choice) => choice && choice.kind !== 'none')
+      .map((choice) => String(choice.name || choice.label || ''))
+      .filter(Boolean);
 
     // ── ヘッダー ──
     const header = document.createElement('div');
@@ -309,6 +309,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       emptyOpt.value = '';
       emptyOpt.textContent = '（なし）';
       sel.appendChild(emptyOpt);
+      if (entry.role && !charaNames.includes(entry.role)) {
+        const retainedOpt = document.createElement('option');
+        retainedOpt.value = entry.role;
+        retainedOpt.textContent = entry.role;
+        retainedOpt.selected = true;
+        sel.appendChild(retainedOpt);
+      }
       charaNames.forEach(name => {
         const opt = document.createElement('option');
         opt.value = name;
@@ -425,6 +432,9 @@ Object.assign(ScriptNoteEditor.prototype, {
           columns: {},
         });
       });
+    }
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      newRows.forEach((row) => globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, row.role));
     }
     this.doc.rows.splice(insertIdx + 1, 0, ...newRows);
     this._calcCache = null;

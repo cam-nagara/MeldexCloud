@@ -1,0 +1,224 @@
+body[data-csv-sheet-mode="1"] #pivot-view {
+  position: relative;
+}
+
+body[data-csv-sheet-mode="1"] .csv-workbench-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--ui-header-bg);
+  color: var(--ui-header-fg);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.csv-workbench-bar input,
+.csv-workbench-bar select {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.csv-workbench-bar .csv-search-input {
+  width: min(260px, 32vw);
+  padding: 0 7px;
+}
+
+.csv-workbench-bar .csv-replace-input {
+  width: min(220px, 25vw);
+  padding: 0 7px;
+}
+
+.csv-workbench-bar button {
+  min-height: 26px;
+}
+
+.csv-workbench-status {
+  margin-left: auto;
+  max-width: 38ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+#pivot-table.csv-sheet-mode-table {
+  table-layout: fixed;
+}
+
+#pivot-table.csv-sheet-mode-table th[data-csv-col],
+#pivot-table.csv-sheet-mode-table td[data-csv-col] {
+  box-sizing: border-box;
+  min-width: var(--csv-column-width, 140px);
+  width: var(--csv-column-width, 140px);
+  max-width: var(--csv-column-width, 140px);
+}
+
+#pivot-table.csv-sheet-mode-table.csv-has-frozen .csv-row-num {
+  position: sticky;
+  left: 0;
+  z-index: 8;
+  background: var(--bg2);
+}
+
+#pivot-table.csv-sheet-mode-table [data-csv-frozen="1"] {
+  position: sticky;
+  left: var(--csv-frozen-left, 48px);
+  z-index: 7;
+  background: var(--bg);
+  box-shadow: 1px 0 0 var(--border);
+}
+
+#pivot-table.csv-sheet-mode-table thead [data-csv-frozen="1"] {
+  z-index: 10;
+  background: var(--bg2);
+}
+
+#pivot-table.csv-sheet-mode-table [data-csv-wrap="1"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#pivot-table.csv-sheet-mode-table [data-csv-wrap="0"] {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#pivot-table.csv-sheet-mode-table .csv-cell-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent) !important;
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+#pivot-table.csv-sheet-mode-table .csv-cell-invalid {
+  text-decoration: underline wavy var(--danger, #d55);
+  text-underline-offset: 3px;
+}
+
+#pivot-table.csv-sheet-mode-table .csv-formula-result::after {
+  content: "fx";
+  float: right;
+  opacity: .45;
+  font-size: 9px;
+}
+
+#pivot-table.csv-sheet-mode-table .csv-virtual-spacer td {
+  height: var(--csv-spacer-height, 0);
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+.csv-column-menu,
+.csv-convert-dialog {
+  position: fixed;
+  z-index: 10020;
+  min-width: 230px;
+  max-width: min(480px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .25);
+}
+
+.csv-column-menu button,
+.csv-column-menu label {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+}
+
+.csv-column-menu button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.csv-column-menu button:hover {
+  background: var(--ui-hover-bg);
+}
+
+.csv-convert-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10010;
+  background: rgba(0, 0, 0, .38);
+}
+
+.csv-convert-dialog {
+  inset: 50% auto auto 50%;
+  width: min(760px, calc(100vw - 24px));
+  transform: translate(-50%, -50%);
+}
+
+.csv-convert-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 17px;
+}
+
+.csv-convert-grid {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.csv-convert-columns {
+  margin-top: 12px;
+  overflow: auto;
+}
+
+.csv-convert-columns table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.csv-convert-columns th,
+.csv-convert-columns td {
+  padding: 5px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.csv-convert-columns input,
+.csv-convert-columns select,
+.csv-convert-grid input,
+.csv-convert-grid select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.csv-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+@media (max-width: 700px) {
+  .csv-workbench-bar {
+    overflow-x: auto;
+  }
+  .csv-workbench-status {
+    display: none;
+  }
+  .csv-convert-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,10 +1,13 @@
 // gb-profile-store-transport.js
 //
-// Dropboxアカウント基準の共有プロフィールストア（profiles.v1.json）を読み書きする
+// Dropboxアカウント基準の共有プロフィールストアを読み書きする
 // transport（搬送経路）を切り替え可能にするモジュール。gb-dropbox-profile-sync.js
 // 本体はこのモジュール経由で read/write を行い、Dropbox HTTP API 直叩き（クラウド版・
 // Dropbox接続済みのデスクトップ版）と、デスクトップのローカルAPIサーバー経由の
 // settings-file API（Dropbox OAuth未接続のデスクトップ版）を透過的に切り替える。
+// settings-file API側の正本は型付き管理領域
+// (profiles-workspace/dropbox-profiles)であり、旧 _meldex/profiles.v1.json は
+// 読取専用fallbackとしてのみ使う。
 //
 // 各 transport は {id, available(), read(storePath), write(storePath, storeObj, options)}
 // の形を持つ。read()/write() の戻り値・例外の意味論は両 transport で揃える:
@@ -39,10 +42,6 @@
     return /not_found|path\/not_found/i.test(String(error?.message || error || ''));
   }
 
-  function _isConflictError(error) {
-    return /conflict|too_many_write_operations|path\/conflict/i.test(String(error?.message || error || ''));
-  }
-
   function _isHttpStatus(error, status) {
     return new RegExp('\\bHTTP ' + status + '\\b').test(String(error?.message || error || ''));
   }
@@ -50,24 +49,6 @@
   // --- dropbox-api transport: Dropbox HTTP API へ直接アクセスする ---------------------
   // クラウド版・Dropbox接続済みのデスクトップ版で使う。既存のクラウド実装
   // （rev楽観ロック・path/not_found→空store・conflict判定）と同じロジック。
-
-  async function _ensureDropboxFolders(auth, storePath) {
-    const segments = String(storePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    segments.pop(); // ファイル名を除く
-    const parents = [];
-    let acc = '';
-    for (const segment of segments) {
-      acc += '/' + segment;
-      parents.push(acc);
-    }
-    for (const path of parents) {
-      try {
-        await auth.apiRpc('files/create_folder_v2', { path, autorename: false });
-      } catch (error) {
-        if (!_isConflictError(error)) throw error;
-      }
-    }
-  }
 
   function _dropboxApiTransport() {
     return {
@@ -98,32 +79,18 @@
         }
       },
       async write(storePath, storeObj, options) {
-        const auth = _auth();
-        if (!auth?.apiContent) throw new Error('Dropbox API is unavailable');
-        await _ensureDropboxFolders(auth, storePath);
-        const rev = options?.ifMatch || '';
-        const mode = rev ? { '.tag': 'update', update: rev } : 'add';
-        const bytes = new TextEncoder().encode(JSON.stringify(storeObj, null, 2));
-        await auth.apiContent('files/upload', {
-          path: storePath,
-          mode,
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        });
+        void storePath;
+        void storeObj;
+        void options;
+        throw new Error('旧プロフィール付随物への書き込みは廃止されました');
       },
     };
   }
 
   // --- settings-bridge transport: デスクトップのローカルAPIサーバー経由 --------------
   // Dropbox OAuth未接続でも、Dropboxデスクトップアプリの同期フォルダが検出できて
-  // いれば、/api/dropbox-link/settings-file 経由で同じ profiles.v1.json を読み書き
-  // できる。ifMtime によるmtime楽観ロックで、Dropbox rev楽観ロックと同等の
-  // 衝突検出を行う。
+  // いれば、/api/dropbox-link/settings-file 経由で型付き管理レコードを読み書き
+  // できる。管理revisionによるCASで衝突検出を行う。
 
   function _relativeToSettingsRoot(path) {
     const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
@@ -133,6 +100,26 @@
   }
 
   function _settingsBridgeTransport() {
+    async function getStore(storePath) {
+      const relative = _relativeToSettingsRoot(storePath);
+      return apiFetch(SETTINGS_FILE_API_PATH + '?path=' + encodeURIComponent(relative), {
+        skipBrowseCache: true,
+      });
+    }
+
+    async function putStore(storePath, storeObj, expectedRevision) {
+      const relative = _relativeToSettingsRoot(storePath);
+      return apiFetch(SETTINGS_FILE_API_PATH, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: relative,
+          content: JSON.stringify(storeObj, null, 2),
+          expectedRevision,
+        }),
+      });
+    }
+
     return {
       id: 'settings-bridge',
       async available() {
@@ -146,35 +133,36 @@
         }
       },
       async read(storePath) {
-        const relative = _relativeToSettingsRoot(storePath);
-        const result = await apiFetch(SETTINGS_FILE_API_PATH + '?path=' + encodeURIComponent(relative), { skipBrowseCache: true });
+        let result = await getStore(storePath);
         if (!result || result.available === false) throw new Error('settings-bridge is unavailable');
         if (!result.found) return { store: null, rev: '' };
         const parsed = _safeJsonParse(result.content, null);
         if (!parsed || typeof parsed !== 'object') throw new Error('settings-file JSON is broken');
-        return { store: parsed, rev: result.mtime == null ? '' : String(result.mtime) };
+        if (result.source === 'legacy') {
+          try {
+            const migrated = await putStore(storePath, parsed, null);
+            return { store: parsed, rev: String(migrated?.revision || '') };
+          } catch (error) {
+            if (!_isHttpStatus(error, 409)) throw error;
+            // 別クライアントが先に移行した。旧内容で上書きせず管理側の勝者を再取得する。
+            result = await getStore(storePath);
+            if (!result?.found || result.source !== 'managed') throw error;
+            const winner = _safeJsonParse(result.content, null);
+            if (!winner || typeof winner !== 'object') throw new Error('settings-file JSON is broken');
+            return { store: winner, rev: String(result.revision || '') };
+          }
+        }
+        return { store: parsed, rev: String(result.revision || '') };
       },
       async write(storePath, storeObj, options) {
-        const relative = _relativeToSettingsRoot(storePath);
-        const ifMatch = options?.ifMatch;
-        const body = {
-          path: relative,
-          content: JSON.stringify(storeObj, null, 2),
-          // ifMatch 無し(初回作成相当) は null にして「未存在のみ許可」を明示する。
-          // Dropbox API の mode:'add' と同じ意味論。
-          ifMtime: ifMatch ? Number(ifMatch) : null,
-        };
+        const expectedRevision = options?.ifMatch || null;
         try {
-          await apiFetch(SETTINGS_FILE_API_PATH, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
+          await putStore(storePath, storeObj, expectedRevision);
         } catch (error) {
           // apiFetch はHTTPステータス文字列(statusText)を含めてエラーにするが、
           // HTTP/2 環境等では statusText が空になり得るため、必ず含まれる数字の
           // ステータスコードで判定する。
-          if (_isHttpStatus(error, 409)) throw new Error('path/conflict: settings-file ifMtime mismatch');
+          if (_isHttpStatus(error, 409)) throw new Error('path/conflict: settings-file revision mismatch');
           throw error;
         }
       },

@@ -116,6 +116,9 @@
       } else if (effectiveToolbarViewName === 'scriptnote') {
         if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
         else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+      } else if (effectiveToolbarViewName === 'media') {
+        if (typeof updateMediaViewerShortcutStatusbar === 'function') updateMediaViewerShortcutStatusbar(sc);
+        else sc.textContent = '';
       } else sc.textContent = '';
     }
   }
@@ -123,6 +126,21 @@
   // ================================================================
   // navPush() オーバーライド
   // ================================================================
+  // openMedia が navPush に渡す entry（{type, label, path, mediaType, viewerUrl}）から、
+  // タブへ保存すべき state を組み立てる。従来は entry.mediaType のみ保存しており、
+  // entry.viewerUrl（シート内ギャラリー等が渡す特殊なビューワーURL。例:
+  // gb-db-image-gallery.js の openMedia(..., {viewerUrl})）が保存されず、タブ復帰時の
+  // 再読み込み（_ensureLegacyTabContent）で汎用URLへ差し替わってしまっていた
+  // （不具合B関連の取りこぼし。共有コンテナの実内容検証は _gbMediaTabExpectedSignature /
+  // _gbVerifyAndFixMediaContainer 参照）。
+  function _gbNavPushMediaTabState(entry) {
+    if (!entry.mediaType && !entry.viewerUrl) return {};
+    const st = {};
+    if (entry.mediaType) st.mediaType = entry.mediaType;
+    if (entry.viewerUrl) st.viewerUrl = entry.viewerUrl;
+    return st;
+  }
+
   function _overrideNavPush() {
     const _prevNavPush = navPush; // gb-app.jsの上書き版
 
@@ -202,7 +220,7 @@
           } else if (tab.type === type && !COMPONENT_TYPES.has(type)) {
             // 同タイプ内のナビゲーション（page→page 等）: render() 不要、タブラベルのみ更新
             // コンポーネント型は render() でマウントが必要なため除外
-            tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
+            tab.state = _gbNavPushMediaTabState(entry);
             tab.label = label;
             tab.path = path;
             // タブバーのラベルを直接更新（full render を避ける）
@@ -214,7 +232,7 @@
             if (typeof removeComponentInstance === 'function') {
               removeComponentInstance(tab.id);
             }
-            tab.state = entry.mediaType ? { mediaType: entry.mediaType } : {};
+            tab.state = _gbNavPushMediaTabState(entry);
             tab.type = type;
             tab.label = label;
             tab.path = path;

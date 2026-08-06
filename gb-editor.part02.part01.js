@@ -239,10 +239,29 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     const card = document.createElement('div');
     card.className = 'entry-prop-card' + (layoutEditMode ? ' layout-editing' : '');
     card.dataset.propName = propName;
-    card.draggable = layoutEditMode;
+    // カード自体は draggable にしない。専用ハンドル（entry-prop-drag-handle）だけで
+    // 並べ替えられるようにし、値要素の文字選択（gb-entity-props-selection.js）と
+    // ゴーストカードが競合しないようにする（シート表示・ビュー状態・エントリ操作の
+    // 改善計画 2026-08-04。行ドラッグハンドル row-drag-handle と同じ慣行）。
+    card.draggable = false;
+    let dragHandle = null;
     const nameEl = document.createElement('div');
     nameEl.className = 'entry-prop-name';
-    if (layoutEditMode) nameEl.appendChild(document.createTextNode('☰ '));
+    if (layoutEditMode) {
+      dragHandle = document.createElement('span');
+      dragHandle.className = 'entry-prop-drag-handle';
+      dragHandle.draggable = true;
+      dragHandle.title = 'ドラッグして並べ替え';
+      dragHandle.dataset.e2eId = _entityPropControlId('entry-prop-drag', propName);
+      dragHandle.setAttribute('role', 'button');
+      dragHandle.setAttribute('aria-label', 'ドラッグして並べ替え: ' + propName);
+      dragHandle.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '☰';
+      dragHandle.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      nameEl.appendChild(dragHandle);
+    }
     // 各列名の前に列タイプのアイコンを表示する
     if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
       const typeIcon = document.createElement('span');
@@ -260,13 +279,21 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     valuesEl.className = 'entry-prop-values cell-values';
     const values = filterValues(data.properties[propName] || []);
     const ptc = propTypes[propName];
-    const renderValues = (ptc?.type === 'image' && values.length === 0)
-      ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
-      : values;
+    // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
+    // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
+    const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
+    const renderValues = isComputedProp
+      ? [values[0] || { value: '', status: '採用' }]
+      : (ptc?.type === 'image' && values.length === 0)
+        ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
+        : values;
     renderValues.forEach(val => {
       let valEl;
       if (typeof createTypedValueElement === 'function' && ptc) {
-        valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc);
+        valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
+          entityData: data.properties,
+          propTypes,
+        });
       } else if (typeof createValueElement === 'function') {
         valEl = createValueElement(val, entityPath, propName);
       }
@@ -302,45 +329,54 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       });
       valuesEl.appendChild(hideBtn);
     }
-    const addBtn = document.createElement('button');
-    addBtn.type = 'button';
-    addBtn.className = 'cell-add-btn';
-    addBtn.dataset.e2eId = _entityPropControlId('entity-prop-add', propName);
-    addBtn.dataset.propName = propName;
-    addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
-    addBtn.title = '候補値を追加';
-    addBtn.setAttribute('aria-label', '候補値を追加');
-    addBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
-    });
-    // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
-    const lastValueEl = !layoutEditMode
-      ? Array.from(valuesEl.children).reverse().find(el => el.classList && el.classList.contains('cell-value'))
-      : null;
-    if (lastValueEl) {
-      const tail = document.createElement('div');
-      tail.className = 'entry-prop-value-tail';
-      valuesEl.insertBefore(tail, lastValueEl);
-      tail.appendChild(lastValueEl);
-      tail.appendChild(addBtn);
-    } else {
-      valuesEl.appendChild(addBtn);
+    // ロールアップ/数式型は計算結果であり候補値を追加できないため、＋ボタンは出さない
+    // （シート表側の _nonValueTypes 除外と同じ扱い）。
+    if (!isComputedProp) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'cell-add-btn';
+      addBtn.dataset.e2eId = _entityPropControlId('entity-prop-add', propName);
+      addBtn.dataset.propName = propName;
+      addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
+      addBtn.title = '候補値を追加';
+      addBtn.setAttribute('aria-label', '候補値を追加');
+      addBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
+      });
+      // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
+      const lastValueEl = !layoutEditMode
+        ? Array.from(valuesEl.children).reverse().find(el => el.classList && el.classList.contains('cell-value'))
+        : null;
+      if (lastValueEl) {
+        const tail = document.createElement('div');
+        tail.className = 'entry-prop-value-tail';
+        valuesEl.insertBefore(tail, lastValueEl);
+        tail.appendChild(lastValueEl);
+        tail.appendChild(addBtn);
+      } else {
+        valuesEl.appendChild(addBtn);
+      }
     }
     card.appendChild(valuesEl);
 
     // D&D 並べ替え (DB 単位の順序保存。同 DB のすべてのエントリ表示で共有)
-    card.addEventListener('dragstart', (e) => {
-      if (!layoutEditMode) return;
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/x-meldex-entry-prop', propName);
-      card.classList.add('dragging');
-    });
-    card.addEventListener('dragend', () => {
-      card.classList.remove('dragging');
-      grid.querySelectorAll('.entry-prop-card.drag-over-left, .entry-prop-card.drag-over-right')
-        .forEach(el => el.classList.remove('drag-over-left', 'drag-over-right'));
-    });
+    // dragstart/dragend はドラッグ操作を実際に開始できる要素（専用ハンドル）へ付ける。
+    // dragover/dragleave/drop はドロップ先判定なのでカード全体のままでよい
+    // （ハンドル以外の場所へドロップしても、そのカードの位置へ挿入される）。
+    if (dragHandle) {
+      dragHandle.addEventListener('dragstart', (e) => {
+        if (!layoutEditMode) return;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/x-meldex-entry-prop', propName);
+        card.classList.add('dragging');
+      });
+      dragHandle.addEventListener('dragend', () => {
+        card.classList.remove('dragging');
+        grid.querySelectorAll('.entry-prop-card.drag-over-left, .entry-prop-card.drag-over-right')
+          .forEach(el => el.classList.remove('drag-over-left', 'drag-over-right'));
+      });
+    }
     card.addEventListener('dragover', (e) => {
       if (!layoutEditMode) return;
       if (!e.dataTransfer.types.includes('text/x-meldex-entry-prop')) return;
@@ -379,12 +415,247 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   });
 }
 
-async function _saveEntityFreeText(ep, md) {
-  const res = ep.endsWith('.md')
-    ? await apiPut('/value?path=' + encodeURIComponent(ep), { new_body: md, skip_if_missing: true })
-    : await apiPut('/file?path=' + encodeURIComponent(ep + '/_freetext.md'), { content: md, skip_if_missing: true });
-  if (typeof _handleFreeTextSkippedMissingSave === 'function' && _handleFreeTextSkippedMissingSave(res)) return false;
-  return true;
+// エントリ自由記述の保存先/方式を決定する。
+// - entityPathが.mdで終わる（新形式=1エントリ1ファイル）: /value経由、entry_revisionでCAS
+// - それ以外（旧形式=フォルダ型エントリ）: 実体は ep + '/_freetext.md' への/file保存、etagでCAS
+function _entityFreeTextTarget(entityPath) {
+  const path = String(entityPath || '');
+  if (!path) return { path: '', mode: 'file' };
+  return path.endsWith('.md') ? { path, mode: 'value' } : { path: path + '/_freetext.md', mode: 'file' };
+}
+
+function _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey) {
+  window.MeldexConflictPendingBanner?.show?.(documentKey, {
+    label: '競合を保留中',
+    e2eId: 'entity-freetext-conflict-pending-banner',
+    onConfirm: () => {
+      _entityFreeTextReviewConflict(hostEl, entityPath, documentKey)
+        .catch(() => showStatus('エントリ本文の競合確認に失敗しました', true));
+    },
+  });
+}
+
+function _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  if (coordinator && record) {
+    const current = coordinator.getConflict?.(documentKey);
+    if (!current || current.generation !== record.generation) return;
+    coordinator.restoreConflict?.(documentKey, record);
+  }
+  _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey);
+}
+
+async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const record = coordinator?.requestConflictReview?.(documentKey) || null;
+  if (coordinator && !record) return;
+  const generation = record?.generation ?? null;
+  const target = _entityFreeTextTarget(entityPath);
+  const localMd = hostEl && typeof htmlToMd === 'function'
+    ? htmlToMd(hostEl.innerHTML)
+    : String(record?.localMd || '');
+  window.MeldexConflictPendingBanner?.hide?.(documentKey);
+  const keepLocal = typeof cfConfirm === 'function'
+    ? await cfConfirm('このエントリ本文は他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は下書きに残ります）')
+    : false;
+  try {
+    if (!hostEl || hostEl.dataset.entityPath !== entityPath) {
+      _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record);
+      return;
+    }
+    if (keepLocal) {
+      const result = target.mode === 'value'
+        ? await apiPut('/value?path=' + encodeURIComponent(target.path), {
+            new_body: localMd,
+            skip_if_missing: true,
+          })
+        : await apiPut('/file?path=' + encodeURIComponent(target.path), {
+            content: localMd,
+            force_overwrite: true,
+          });
+      const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+      if (coordinator && !resolved) {
+        throw new Error('エントリ本文の競合状態が更新されたため、上書き結果を確定できません');
+      }
+      hostEl.dataset.lastSavedMd = localMd;
+      if (target.mode === 'value') {
+        hostEl.dataset.lastSavedRevision = (result?.revision != null)
+          ? String(result.revision)
+          : hostEl.dataset.lastSavedRevision || '';
+      } else {
+        hostEl.dataset.lastSavedEtag = result?.etag || hostEl.dataset.lastSavedEtag || '';
+        if (result?.transport_revision && coordinator?.normalizeTransportRevision) {
+          hostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+            coordinator.currentTransportName(),
+            result.transport_revision,
+          );
+        }
+      }
+      coordinator?.bindDocumentIdentity?.(target.path, result || {});
+      if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+      await window.MeldexDraftRecovery?.markSynced?.(target.path);
+      showStatus('自分の編集でエントリ本文を上書き保存しました');
+      return;
+    }
+
+    await window.MeldexDraftRecovery?.saveDraft?.(
+      target.path,
+      localMd,
+      hostEl.dataset.lastSavedEtag || hostEl.dataset.lastSavedRevision || '',
+    );
+    const latest = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+    if (!hostEl || hostEl.dataset.entityPath !== entityPath) {
+      _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record);
+      return;
+    }
+    const latestMd = String(latest?.page_content || '');
+    hostEl.innerHTML = latestMd.trim() && typeof mdToHtml === 'function'
+      ? (typeof applyAutoLinks === 'function'
+          ? applyAutoLinks(mdToHtml(latestMd, { basePath: entityPath }), entityPath)
+          : mdToHtml(latestMd))
+      : '';
+    hostEl.dataset.lastSavedMd = latestMd;
+    hostEl.dataset.lastSavedRevision = (latest?.revision != null) ? String(latest.revision) : '';
+    hostEl.dataset.lastSavedEtag = latest?.freetext_etag || '';
+    hostEl.dataset.lastSavedTransportRevision = '';
+    const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+    if (coordinator && !resolved) {
+      throw new Error('エントリ本文の競合状態が更新されたため、再読込結果を確定できません');
+    }
+    if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+    _bindEntityFreeTextParticipant(hostEl, entityPath);
+    showStatus('最新版のエントリ本文を読み込みました');
+  } catch (error) {
+    _entityFreeTextRestoreConflictReview(hostEl, entityPath, documentKey, record);
+    throw error;
+  }
+}
+
+// /api/entity のrevisionは新形式エントリの論理版、/api/file の
+// transport_revisionは実ファイルの保存先固有版で役割が異なる。参加登録時は
+// metadata_onlyのidentityだけを文書キー統合へ使い、/valueのCASへファイルetagを
+// 流用しない。旧形式の_freetext.mdだけは同じ/file経路なので読込etagも保持する。
+function _bindEntityFreeTextParticipant(hostEl, entityPath) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const target = _entityFreeTextTarget(entityPath);
+  if (!coordinator || !hostEl || !target.path) return;
+  const provisionalKey = coordinator.documentKeyForPath(target.path);
+  coordinator.registerParticipant(provisionalKey, hostEl);
+  if (coordinator.isConflictPending?.(provisionalKey)) {
+    _entityFreeTextShowConflictPending(hostEl, entityPath, provisionalKey);
+  }
+  Promise.resolve(apiFetch(
+    '/file?path=' + encodeURIComponent(target.path) + '&metadata_only=true',
+    { silentError: true },
+  )).then((metadata) => {
+    if (!metadata || hostEl.dataset.entityPath !== entityPath) return;
+    const documentKey = coordinator.bindDocumentIdentity?.(target.path, metadata) || provisionalKey;
+    coordinator.registerParticipant(documentKey, hostEl);
+    if (target.mode === 'file' && metadata.transport_revision && coordinator.normalizeTransportRevision) {
+      hostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        metadata.transport_revision,
+      );
+    }
+    if (coordinator.isConflictPending?.(documentKey)) {
+      _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey);
+    }
+  }).catch(() => {
+    // 新規の旧形式エントリ本文では _freetext.md がまだ無い。初回保存の
+    // create_onlyで生成するため、metadata 404は表示や入力を妨げない。
+  });
+}
+
+// 工程2-C項目5・6: エントリ自由記述の保存を保存コーディネーター経由へ接続する。
+// メインパネル（ft.oninput/onblur）とタブ/パネル切替flush（flushPendingEditorAutosave）の
+// 双方から呼ばれる共有関数にすることで、同じ文書に対する保存経路の分断を無くす。
+// hostEl は dataset.lastSavedMd / lastSavedRevision / lastSavedEtag を保持する
+// contenteditable要素（メインパネルの#entity-freetext、モバイルドロワーの本文editor等）。
+async function _saveEntityFreeText(hostEl, entityPath, md, opts) {
+  const target = _entityFreeTextTarget(entityPath);
+  if (!target.path) return true;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const revision = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedRevision) || '';
+  const transportRevision = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedTransportRevision) || '';
+  const etag = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedEtag) || '';
+  if (!coordinator) {
+    // コーディネーター未ロード時のフォールバック（従来の直接呼び出し。旧シグネチャ互換）。
+    const res = target.mode === 'value'
+      ? await apiPut('/value?path=' + encodeURIComponent(target.path), {
+          new_body: md,
+          skip_if_missing: true,
+          ...(revision !== '' ? { base_revision: Number(revision) } : {}),
+        })
+      : await apiPut('/file?path=' + encodeURIComponent(target.path), {
+          content: md,
+          ...((transportRevision || etag) ? {
+            if_match_etag: etag,
+            transport_revision: transportRevision,
+            skip_if_missing: true,
+          } : {
+            create_only: true,
+          }),
+        });
+    if (typeof _handleFreeTextSkippedMissingSave === 'function' && _handleFreeTextSkippedMissingSave(res)) return false;
+    return true;
+  }
+  const documentKey = coordinator.documentKeyForPath(target.path);
+  if (hostEl) coordinator.registerParticipant(documentKey, hostEl);
+  const guardedTransportRevision = transportRevision || etag;
+  const sendFn = (previousResult) => (target.mode === 'value'
+    ? apiPut('/value?path=' + encodeURIComponent(target.path), {
+        new_body: md, skip_if_missing: true,
+        ...((previousResult?.revision ?? revision) !== ''
+          ? { base_revision: Number(previousResult?.revision ?? revision) }
+          : {}),
+      })
+    : apiPut('/file?path=' + encodeURIComponent(target.path), {
+        content: md,
+        ...((previousResult?.transport_revision || previousResult?.etag || guardedTransportRevision) ? {
+          if_match_etag: coordinator.revisionTokenForWrite(
+            previousResult?.transport_revision || previousResult?.etag || guardedTransportRevision,
+          ),
+          transport_revision: previousResult?.transport_revision
+            || previousResult?.etag
+            || guardedTransportRevision,
+          skip_if_missing: true,
+        } : {
+          create_only: true,
+        }),
+      }));
+  try {
+    const res = await coordinator.requestSave(documentKey, hostEl, target.path, md, sendFn, {
+      reason: (opts && opts.reason) || 'entity-freetext',
+    });
+    if (res && res.conflictPending) return false;
+    if (typeof _handleFreeTextSkippedMissingSave === 'function' && _handleFreeTextSkippedMissingSave(res)) return false;
+    if (hostEl && hostEl.dataset && hostEl.dataset.entityPath === entityPath) {
+      hostEl.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
+      if (target.mode === 'value') hostEl.dataset.lastSavedRevision = (res && res.revision != null) ? String(res.revision) : revision;
+      else {
+        hostEl.dataset.lastSavedEtag = (res && res.etag) || etag;
+        if (res?.transport_revision && coordinator.normalizeTransportRevision) {
+          hostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+            coordinator.currentTransportName(),
+            res.transport_revision,
+          );
+        }
+      }
+    }
+    if (res) coordinator.bindDocumentIdentity?.(target.path, res);
+    return true;
+  } catch (error) {
+    if (error?.status === 409 || error?.meldexCode === 'etag_conflict') {
+      coordinator.reportConflict(documentKey, {
+        path: target.path,
+        localMd: md,
+        localEtag: target.mode === 'value' ? revision : etag,
+        serverDetail: (error && error.meldexDetail && typeof error.meldexDetail === 'object') ? error.meldexDetail : null,
+      });
+      _entityFreeTextShowConflictPending(hostEl, entityPath, documentKey);
+    }
+    throw error;
+  }
 }
 
 function _setEntityCreateActionButton(button, iconName, label) {
@@ -486,7 +757,7 @@ function renderEntityPage(data) {
         // 即時保存 (空ノートを作成)
         const ep = ft.dataset.entityPath;
         if (ep) {
-          _saveEntityFreeText(ep, '').catch(() => { showStatus('自由記述の作成に失敗しました', true); });
+          _saveEntityFreeText(ft, ep, '', { reason: 'entity-freetext-create' }).catch(() => { showStatus('自由記述の作成に失敗しました', true); });
         }
         ft.focus();
       });
@@ -503,6 +774,13 @@ function renderEntityPage(data) {
 
   // Free text (with auto-links)
   ft.dataset.entityPath = entityPath;
+  // 工程2-C項目5・6: 読込直後の保存済みbaseline（内容+revision/etag）をdatasetへ保持し、
+  // 文書ID単位のarbiterへ参加登録する（新形式=revision、旧形式=freetext_etagのどちらか）。
+  ft.dataset.lastSavedMd = hasNote ? rawContent : '';
+  ft.dataset.lastSavedRevision = (data.revision != null) ? String(data.revision) : '';
+  ft.dataset.lastSavedEtag = data.freetext_etag || '';
+  ft.dataset.lastSavedTransportRevision = '';
+  _bindEntityFreeTextParticipant(ft, entityPath);
   // Markdown→HTML変換してからauto-link適用 (rawContent は冒頭で取得済み)
   if (hasNote) {
     const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
@@ -528,7 +806,7 @@ function renderEntityPage(data) {
       const md = htmlToMd(ft.innerHTML);
       const ep = ft.dataset.entityPath;
       if (!ep) return;
-      _saveEntityFreeText(ep, md).catch(() => { showStatus('自由記述の自動保存に失敗しました', true); });
+      _saveEntityFreeText(ft, ep, md, { reason: 'entity-freetext-auto' }).catch(() => { showStatus('自由記述の自動保存に失敗しました', true); });
     }, 2000);
   };
 
@@ -544,7 +822,7 @@ function renderEntityPage(data) {
     const ep = this.dataset.entityPath;
     if (!ep) return;
     try {
-      const saved = await _saveEntityFreeText(ep, md);
+      const saved = await _saveEntityFreeText(this, ep, md, { reason: 'entity-freetext-blur' });
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
       this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);

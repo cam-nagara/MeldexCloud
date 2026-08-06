@@ -93,12 +93,16 @@ function switchDetailTab(tab) {
   // 空状態プレースホルダー: どのタブもアクティブでない場合のみ表示
   const emptyEl = document.getElementById('detail-tab-empty');
   if (emptyEl) emptyEl.hidden = !!tab;
-  // §12.5 バックリンク: タブに切り替わった瞬間に現在のエントリで一覧取得
+  // §12.5 バックリンク: タブに切り替わった瞬間に現在の選択対象で一覧取得。
+  // OptionTargetContext（計画書§11.1）を単一の情報源として使う。固定優先順位の
+  // フォールバック（currentEntityPath || currentPagePath || currentFilePath）は
+  // フォルダパネルの一般ファイル選択で currentFilePath が誰からも更新されず、
+  // 古い選択対象を表示し続ける不具合があったため廃止した（ファイル参照整合性
+  // 計画 Phase 5）。
   if (tab === 'backlinks' && window.GbBacklinks) {
     const container = document.getElementById('detail-tab-backlinks');
-    const s = (typeof state !== 'undefined') ? state : null;
-    const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
-    window.GbBacklinks.render(path, container);
+    const ctx = window.GBOptionTargetContext ? window.GBOptionTargetContext.get() : _legacyBacklinksTargetFallback();
+    window.GbBacklinks.render(ctx, container);
   }
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
@@ -297,12 +301,20 @@ function toggleDetailPanel() {
   return toggleOptionPanel();
 }
 
+// GBOptionTargetContext が読み込まれていない環境（一部の単独アプリ）向けの
+// 最終フォールバック。新しい render() 契約 {targets, selectionRevision} の
+// 形に合わせて包み直すだけで、フォールバック優先順位そのものは変えない。
+function _legacyBacklinksTargetFallback() {
+  const s = (typeof state !== 'undefined') ? state : null;
+  const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
+  return { targets: path ? [{ path, kind: 'file' }] : [], selectionRevision: 0, origin: 'legacy-fallback' };
+}
+
 function _refreshBacklinksIfActive() {
   if (_currentDetailTab !== 'backlinks' || !window.GbBacklinks) return;
   const container = document.getElementById('detail-tab-backlinks');
-  const s = (typeof state !== 'undefined') ? state : null;
-  const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
-  window.GbBacklinks.render(path, container);
+  const ctx = window.GBOptionTargetContext ? window.GBOptionTargetContext.get() : _legacyBacklinksTargetFallback();
+  window.GbBacklinks.render(ctx, container);
 }
 
 function _clearBacklinksTabIfHidden() {
@@ -600,6 +612,7 @@ const _FS_FIELDS = {
       { key: '--bd-select-rect-color', label: '矩形選択色', type: 'color' },
       { key: '--bd-group-color',       label: 'グループ色', type: 'color' },
       { key: '--bd-anchor-color',      label: 'アンカー色', type: 'color' },
+      { key: '--bd-link-type-icon-color', label: 'リンク種別アイコン', type: 'color' },
       { key: '--bd-gap-siblings',      label: '同階層カード間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
       { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 30, applyCustom: 'gapLevels' },
       { key: '--bd-auto-align',        label: '自動整列',             type: 'checkbox', on: '1', off: '0', defaultOn: true, applyCustom: 'autoAlign' },

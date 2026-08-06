@@ -3,17 +3,25 @@
             ok: false,
             mounted: true,
             access: 'viewer',
-            message: `共有フォルダ内の _meldex/ を作成できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
+            message: `共有ワークスペースのMeldex管理データを初期化できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
             mountInfo,
             rootMeta,
           };
         }
       }
       let access = 'editor';
-      let writeCheckPath = `_meldex/.preflight-${Date.now()}.json`;
       try {
-        await this.writeJson(writeCheckPath, { ok: true, at: new Date().toISOString() });
-        await this.deletePath(writeCheckPath);
+        const resolver = window.MeldexDropboxManagementRootResolver;
+        const kind = window.MeldexSystemStorage?.SystemStorageKind?.DIAGNOSTICS;
+        if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+          throw new Error('Meldex管理データの保存先を安全に判定できません');
+        }
+        const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+        const documentId = `preflight-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        await adapter.save(kind, documentId, { ok: true, at: new Date().toISOString() }, {
+          expectedRevision: null,
+        });
+        await adapter.delete(kind, documentId);
       } catch (err) {
         access = 'viewer';
       }

@@ -400,7 +400,7 @@ function renderSmartDbList() {
     item.style.border = '0';
     item.style.width = '100%';
     item.style.textAlign = 'left';
-    item.innerHTML = lucide('databaseSearch', 14) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(d.name) + '</span>';
+    item.innerHTML = lucide('databaseSearch', 18) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(d.name) + '</span>';
     item.title = (d.filters || []).map(f => f.property + ' ' + f.operator + ' ' + f.value).join(', ');
     item.addEventListener('click', () => selectSmartDb(d.id));
     item.oncontextmenu = (e) => {

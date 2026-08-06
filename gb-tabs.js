@@ -171,10 +171,14 @@ const GBTabs = (() => {
     if (!initialPaneInfo) return null;
     const initialPane = initialPaneInfo.node;
     const preferTargetPane = !!opts.preferTargetPane;
+    // 「メインパネルで開く」昇格専用（2026-07-31計画）。true の場合、既存タブや
+    // 他ペインの同一ファイル・同種タブを一切再利用せず、必ず新しいタブを作る。
+    const forceNewTab = !!opts.forceNewTab;
 
     // メインパネル固定など、呼び出し元が明示したパネルを優先する場合は、
     // 他パネルに残った同種タブで開き先が横取りされないよう対象パネル内だけ再利用する。
-    if (preferTargetPane) {
+    // forceNewTab指定時はこの再利用もスキップする。
+    if (preferTargetPane && !forceNewTab) {
       const existingTargetTab = (initialPane.tabs || []).find(t => {
         if (path) return t.path === path && t.type === type;
         return !t.path && t.type === type;
@@ -189,7 +193,7 @@ const GBTabs = (() => {
     }
 
     // 同じpath+typeのタブがあればそちらをアクティブに（全ペイン横断）
-    if (path) {
+    if (path && !forceNewTab) {
       const existing = preferTargetPane ? null : _findVisibleTab(t => t.path === path && t.type === type);
       if (existing) {
         if (state && typeof state === 'object' && Object.keys(state).length) {
@@ -199,7 +203,7 @@ const GBTabs = (() => {
         return existing.tab.id;
       }
     }
-    if (!path && SINGLETON_TOOL_TYPES.has(type) && !opts.forceNewToolTab) {
+    if (!path && SINGLETON_TOOL_TYPES.has(type) && !opts.forceNewToolTab && !forceNewTab) {
       const existing = preferTargetPane ? null : _findVisibleTab(t => !t.path && t.type === type);
       if (existing) {
         activateTab(existing.paneId, existing.tab.id, opts);
@@ -222,7 +226,7 @@ const GBTabs = (() => {
     if (!paneInfo) return null;
     const pane = paneInfo.node;
 
-    if (!path && targetPaneId !== paneId) {
+    if (!path && targetPaneId !== paneId && !forceNewTab) {
       const existingToolTab = (pane.tabs || []).find(t => t.type === type && !t.path);
       if (existingToolTab) {
         activateTab(targetPaneId, existingToolTab.id, opts);
@@ -517,6 +521,22 @@ const GBTabs = (() => {
     return null;
   }
 
+  // addTab() は指定ペインがロック中の場合、別の未ロックペインへ追加することがある。
+  // 呼び出し側が返されたtabIdから実際の追加先を安全に解決するための公開ヘルパー。
+  function findPaneIdForTab(tabId) {
+    if (!tabId || typeof GBLayout === 'undefined' || typeof GBLayout.getAllPanes !== 'function') return null;
+    let allPanes = [];
+    try {
+      allPanes = GBLayout.getAllPanes(GBLayout.root) || [];
+    } catch {
+      return null;
+    }
+    for (const pane of allPanes) {
+      if ((pane?.tabs || []).some(tab => tab?.id === tabId)) return pane.id || null;
+    }
+    return null;
+  }
+
   // アクティブタブの情報取得
   function getActiveTab(paneId) {
     paneId = paneId || GBLayout.activePane;
@@ -549,6 +569,7 @@ const GBTabs = (() => {
     moveTab,
     addToActivePane,
     findPaneWithTab,
+    findPaneIdForTab,
     getActiveTab,
     getTabs,
     tabIcon,

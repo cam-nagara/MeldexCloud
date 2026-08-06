@@ -37,18 +37,150 @@
     _requirePwaProvider,
     _readJsonSafe,
     _listDirectoryEntries,
-    _removeEntry,
-    _resolveEntryHandle,
     _requireUnlockedPath,
   } = internals;
 
+  function managedDocumentId(path) {
+    const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    const label = value.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '').slice(-72) || 'root';
+    return `${label}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+  function managedKindForPath(path) {
+    const systemStorage = window.MeldexSystemStorage;
+    if (!systemStorage) throw new Error('Dropbox管理データストレージを先に読み込んでください');
+    const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
+    const recovery = value.startsWith('.meldex/asset-recovery/')
+      || value.startsWith('.meldex/auto-tag-recovery/')
+      || value.startsWith('.meldex/global-tag-recovery/');
+    return recovery ? systemStorage.SystemStorageKind.ASSET_RECOVERY : systemStorage.SystemStorageKind.TAGS;
+  }
+  // タグ台帳(auto-tag-dictionary)・割当ストア(global-tags)・その復旧データは、
+  // 常に「接続中ルート」の管理スコープへ置く(2026-08-04 完成監査の設計判断)。
+  //
+  // /global-tags/target 等が受け取る対象文書パス(共有ソースの仮想パスを含む)で
+  // 管理ルートを解決してはならない: 台帳・割当は全対象を1ドキュメントで持つ
+  // 単一ストアのため、対象パスごとにスコープを切り替えると同じストアの複製が
+  // 個人領域と共有領域へ分岐し(どちらも「全体」を自称する)、さらに割当が参照
+  // するタグidの定義(台帳)と別スコープへ割れて参照整合が壊れる。旧実装
+  // (`.meldex/global-tags.json` を接続中ルート直下へ置く)の可視性の意味論
+  // (共有ワークスペードへ接続中はメンバー間で共有・個人接続では個人のみ)を
+  // そのまま新管理領域へ引き継ぐ。ここへ渡す第2引数は種別判定用の旧論理パス
+  // であり、管理ルート解決へは渡さない。
+  async function managedAdapter(provider, _logicalPath) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver || typeof resolver.resolveAdapterForProvider !== 'function') {
+      throw new Error('Dropbox管理データ保存先を安全に判定できません');
+    }
+    return resolver.resolveAdapterForProvider(provider);
+  }
+  async function readManagedJson(provider, path, fallbackValue) {
+    const adapter = await managedAdapter(provider, path);
+    const record = await adapter.load(managedKindForPath(path), managedDocumentId(path));
+    if (record) {
+      const payload = record.payload;
+      if (!payload || typeof payload !== 'object'
+        || payload.legacy_path !== String(path)
+        || !Object.prototype.hasOwnProperty.call(payload, 'value')) {
+        throw new Error(`管理データが破損しています: ${String(path)}`);
+      }
+      return structuredClone(payload.value);
+    }
+    // 旧付随物は移行期間中の読取専用フォールバック。
+    return _readJsonSafe(provider, path, fallbackValue);
+  }
+  async function writeManagedJsonMerged(provider, path, updater, fallbackValue) {
+    const adapter = await managedAdapter(provider, path);
+    const kind = managedKindForPath(path);
+    const documentId = managedDocumentId(path);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      if (current && (current.payload?.legacy_path !== String(path)
+        || !Object.prototype.hasOwnProperty.call(current.payload || {}, 'value'))) {
+        throw new Error(`管理データが破損しています: ${String(path)}`);
+      }
+      const base = current
+        ? structuredClone(current.payload.value)
+        : await _readJsonSafe(provider, path, structuredClone(fallbackValue));
+      const next = await updater(base);
+      try {
+        const saved = await adapter.save(kind, documentId, {
+          legacy_path: String(path),
+          value: next,
+        }, { expectedRevision: current ? current.revision : null });
+        return structuredClone(saved.payload.value);
+      } catch (error) {
+        if (error?.name !== 'SystemStorageConflictError'
+          && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw new Error(`管理データの同時更新を解決できませんでした: ${String(path)}`);
+  }
+  async function writeManagedJson(provider, path, value) {
+    return writeManagedJsonMerged(provider, path, () => value, {});
+  }
+  async function listManagedEntries(provider, directory, includeLegacy = true) {
+    const adapter = await managedAdapter(provider, directory);
+    const prefix = `${String(directory || '').replace(/\/+$/g, '')}/`;
+    const records = await adapter.listDocuments(managedKindForPath(prefix));
+    const managed = records
+      .filter(record => String(record?.payload?.legacy_path || '').startsWith(prefix))
+      .map(record => {
+        const path = String(record.payload.legacy_path);
+        return { name: path.slice(prefix.length), path };
+      })
+      .filter(entry => entry.name && !entry.name.includes('/'));
+    if (!includeLegacy || typeof _listDirectoryEntries !== 'function') return managed;
+    let legacy = [];
+    try {
+      legacy = await _listDirectoryEntries(provider, directory);
+    } catch {
+      return managed;
+    }
+    const byName = new Map(managed.map(entry => [entry.name, entry]));
+    (Array.isArray(legacy) ? legacy : []).forEach(entry => {
+      const name = String(entry?.name || '');
+      if (name && !byName.has(name)) byName.set(name, { ...entry, name });
+    });
+    return [...byName.values()];
+  }
+  async function removeManagedEntry(provider, path) {
+    const adapter = await managedAdapter(provider, path);
+    return adapter.delete(managedKindForPath(path), managedDocumentId(path));
+  }
+  function managedProvider(provider) {
+    return {
+      writeJson: (path, value) => writeManagedJson(provider, path, value),
+      writeText: async (path, text) => {
+        let value;
+        try { value = JSON.parse(String(text)); } catch {
+          throw new Error('管理データはJSON形式で保存する必要があります');
+        }
+        return writeManagedJson(provider, path, value);
+      },
+      writeJsonMerged: (path, updater, options) => writeManagedJsonMerged(
+        provider,
+        path,
+        updater,
+        options?.fallbackValue ?? {},
+      ),
+    };
+  }
+  window.MeldexDropboxManagedJson = {
+    read: readManagedJson, write: writeManagedJson, writeMerged: writeManagedJsonMerged,
+    list: listManagedEntries, remove: removeManagedEntry, provider: managedProvider,
+  };
   const CATALOG_FILE = '.meldex/auto-tag-dictionary.v1.json';
   const CATALOG_CONFLICT_FILE = '.meldex/auto-tag-dictionary.conflict.v1.json';
   const CATALOG_RECOVERY_DIR = '.meldex/auto-tag-recovery';
   const ASSIGNMENTS_FILE = '.meldex/global-tags.json';
   const ASSIGNMENTS_RECOVERY_DIR = '.meldex/global-tag-recovery';
   const DICTIONARY_FOLDER = '自動タグ辞書';
-  const DICTIONARY_NOTE = `${DICTIONARY_FOLDER}/${DICTIONARY_FOLDER}.md`;
   const DEFAULT_PRESET = '標準';
   const catalogNormalizer = window.MeldexDropboxTagCatalogNormalizer;
   if (!catalogNormalizer) {
@@ -95,33 +227,20 @@
     };
   }
 
-  async function ensureDirectory(provider, path) {
-    if (typeof provider.ensureDirectory === 'function') {
-      await provider.ensureDirectory(path);
-      return;
-    }
-    const parts = _normalizeFolderPath(path).split('/').filter(Boolean);
-    let current = '';
-    for (const part of parts) {
-      current = _joinPath(current, part);
-      await provider.getDirectoryHandle(current, { create: true });
-    }
-  }
-
   async function pruneCatalogRecovery(provider) {
     await tagSafety.pruneRecoveryFiles(
-      provider,
+      managedProvider(provider),
       CATALOG_RECOVERY_DIR,
-      _listDirectoryEntries,
-      _removeEntry,
+      (_ignoredProvider, path) => listManagedEntries(provider, path, false),
+      (_ignoredProvider, path) => removeManagedEntry(provider, path),
       12,
     );
   }
 
   async function readCatalog(provider) {
-    const payload = await _readJsonSafe(provider, CATALOG_FILE, null);
+    const payload = await readManagedJson(provider, CATALOG_FILE, null);
     const catalog = normalizeCatalog(payload || { version: 1, tags: [], groups: [] });
-    const marker = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const marker = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (marker?.active) {
       catalog.sync_pending = true;
       catalog.sync_conflict = true;
@@ -150,10 +269,9 @@
   }
 
   async function findPendingAssignmentRollback(provider) {
-    if (typeof _listDirectoryEntries !== 'function') return null;
     let entries;
     try {
-      entries = await _listDirectoryEntries(provider, ASSIGNMENTS_RECOVERY_DIR);
+      entries = await listManagedEntries(provider, ASSIGNMENTS_RECOVERY_DIR);
     } catch {
       return null;
     }
@@ -165,7 +283,7 @@
         ASSIGNMENTS_RECOVERY_DIR,
         String(entry?.name || ''),
       );
-      const payload = await _readJsonSafe(provider, path, null);
+      const payload = await readManagedJson(provider, path, null);
       if (
         payload?.kind === 'assignment-rollback'
         && payload?.requires_edit_block === true
@@ -181,7 +299,6 @@
   }
 
   async function writeCatalogRollbackRecovery(provider, before, published, current) {
-    await ensureDirectory(provider, CATALOG_RECOVERY_DIR);
     const path = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-rollback.json`;
     const payload = {
       version: 1,
@@ -191,8 +308,7 @@
       published,
       current,
     };
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, payload);
-    else await provider.writeText(path, JSON.stringify(payload, null, 2) + '\n');
+    await writeManagedJson(provider, path, payload);
     await pruneCatalogRecovery(provider);
     return path;
   }
@@ -204,7 +320,6 @@
     current,
     conflict,
   ) {
-    await ensureDirectory(provider, ASSIGNMENTS_RECOVERY_DIR);
     const path = `${ASSIGNMENTS_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-assignment-rollback.json`;
     const payload = {
       version: 1,
@@ -215,8 +330,7 @@
       published,
       current,
     };
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, payload);
-    else await provider.writeText(path, JSON.stringify(payload, null, 2) + '\n');
+    await writeManagedJson(provider, path, payload);
 
     const rollbackId = randomId();
     const warning = (
@@ -238,24 +352,12 @@
       updated_at: nowIso(),
     });
     try {
-      if (typeof provider.writeJsonMerged === 'function') {
-        await provider.writeJsonMerged(CATALOG_CONFLICT_FILE, block, {
-          fallbackValue: { version: 1, active: false },
-          retries: 5,
-        });
-      } else {
-        const marker = block(
-          await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null),
-        );
-        if (typeof provider.writeJson === 'function') {
-          await provider.writeJson(CATALOG_CONFLICT_FILE, marker);
-        } else {
-          await provider.writeText(
-            CATALOG_CONFLICT_FILE,
-            JSON.stringify(marker, null, 2) + '\n',
-          );
-        }
-      }
+      await writeManagedJsonMerged(
+        provider,
+        CATALOG_CONFLICT_FILE,
+        block,
+        { version: 1, active: false },
+      );
     } catch (error) {
       throw new AssignmentRollbackMarkerWriteError(
         `タグ変更の復旧データは保存しましたが、編集停止情報を保存できませんでした。`
@@ -269,20 +371,7 @@
         ...(current && typeof current === 'object' ? current : payload),
         requires_edit_block: false,
       });
-      if (typeof provider.writeJsonMerged === 'function') {
-        await provider.writeJsonMerged(
-          path,
-          cleared,
-          { fallbackValue: payload, retries: 5 },
-        );
-      } else {
-        const value = cleared(await _readJsonSafe(provider, path, payload));
-        if (typeof provider.writeJson === 'function') {
-          await provider.writeJson(path, value);
-        } else {
-          await provider.writeText(path, JSON.stringify(value, null, 2) + '\n');
-        }
-      }
+      await writeManagedJsonMerged(provider, path, cleared, payload);
     } catch {
       // marker is active; keeping the recovery block true is the safe fallback.
     }
@@ -290,8 +379,7 @@
   }
 
   async function writeCatalog(provider, updater) {
-    await ensureDirectory(provider, '.meldex');
-    const conflict = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const conflict = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflict?.active) {
       throw new Error(
         conflict.warning
@@ -304,7 +392,7 @@
     let latest = null;
     let previous = null;
     const apply = async current => {
-      const activeConflict = await _readJsonSafe(
+      const activeConflict = await readManagedJson(
         provider,
         CATALOG_CONFLICT_FILE,
         null,
@@ -331,28 +419,19 @@
       latest.updated_at = nowIso();
       return latest;
     };
-    const recoverySource = await _readJsonSafe(provider, CATALOG_FILE, null);
+    const recoverySource = await readManagedJson(provider, CATALOG_FILE, null);
     if (recoverySource && typeof recoverySource === 'object') {
-      await ensureDirectory(provider, CATALOG_RECOVERY_DIR);
       const recoveryPath = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}.json`;
-      if (typeof provider.writeJson === 'function') {
-        await provider.writeJson(recoveryPath, recoverySource);
-      } else {
-        await provider.writeText(recoveryPath, JSON.stringify(recoverySource, null, 2) + '\n');
-      }
+      await writeManagedJson(provider, recoveryPath, recoverySource);
       await pruneCatalogRecovery(provider);
     }
-    if (typeof provider.writeJsonMerged === 'function') {
-      await provider.writeJsonMerged(CATALOG_FILE, apply, {
-        fallbackValue: { version: 1, updated_at: '', tags: [], groups: [] },
-        retries: 5,
-      });
-    } else {
-      await apply(await _readJsonSafe(provider, CATALOG_FILE, null));
-      if (typeof provider.writeJson === 'function') await provider.writeJson(CATALOG_FILE, latest);
-      else await provider.writeText(CATALOG_FILE, JSON.stringify(latest, null, 2) + '\n');
-    }
-    const conflictAfter = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    await writeManagedJsonMerged(
+      provider,
+      CATALOG_FILE,
+      apply,
+      { version: 1, updated_at: '', tags: [], groups: [] },
+    );
+    const conflictAfter = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflictAfter?.active) {
       const expectedConflictId = String(conflictAfter.conflict_id || '');
       let rollbackUnresolved = false;
@@ -362,7 +441,7 @@
         rollbackCurrent = current && typeof current === 'object'
           ? structuredClone(current)
           : { version: 1, tags: [], groups: [] };
-        const activeMarker = await _readJsonSafe(
+        const activeMarker = await readManagedJson(
           provider,
           CATALOG_CONFLICT_FILE,
           null,
@@ -380,18 +459,12 @@
         return reversed.catalog;
       };
       try {
-        if (typeof provider.writeJsonMerged === 'function') {
-          await provider.writeJsonMerged(CATALOG_FILE, rollback, {
-            fallbackValue: { version: 1, updated_at: '', tags: [], groups: [] },
-            retries: 5,
-          });
-        } else {
-          const restored = await rollback(
-            await _readJsonSafe(provider, CATALOG_FILE, null),
-          );
-          if (typeof provider.writeJson === 'function') await provider.writeJson(CATALOG_FILE, restored);
-          else await provider.writeText(CATALOG_FILE, JSON.stringify(restored, null, 2) + '\n');
-        }
+        await writeManagedJsonMerged(
+          provider,
+          CATALOG_FILE,
+          rollback,
+          { version: 1, updated_at: '', tags: [], groups: [] },
+        );
       } catch (rollbackError) {
         let recoveryPath = '';
         try {
@@ -417,7 +490,7 @@
         );
       }
       if (rollbackUnresolved) {
-        const current = await _readJsonSafe(provider, CATALOG_FILE, null);
+        const current = await readManagedJson(provider, CATALOG_FILE, null);
         let recoveryPath = '';
         try {
           recoveryPath = await writeCatalogRollbackRecovery(
@@ -450,13 +523,12 @@
   }
 
   async function readAssignments(provider) {
-    const current = await _readJsonSafe(provider, ASSIGNMENTS_FILE, {});
+    const current = await readManagedJson(provider, ASSIGNMENTS_FILE, {});
     return tagSafety.normalizeAssignmentStore(current);
   }
 
   async function writeAssignments(provider, updater) {
-    await ensureDirectory(provider, '.meldex');
-    const conflict = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const conflict = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflict?.active) {
       throw new Error(
         conflict.warning
@@ -469,7 +541,7 @@
     let latest = null;
     let previous = null;
     const apply = async current => {
-      const activeConflict = await _readJsonSafe(
+      const activeConflict = await readManagedJson(
         provider,
         CATALOG_CONFLICT_FILE,
         null,
@@ -487,17 +559,13 @@
       latest.assignment_revision = randomId();
       return latest;
     };
-    if (typeof provider.writeJsonMerged === 'function') {
-      await provider.writeJsonMerged(ASSIGNMENTS_FILE, apply, {
-        fallbackValue: { version: 5, assignments: {}, auto_assignments: {} },
-        retries: 5,
-      });
-    } else {
-      await apply(await _readJsonSafe(provider, ASSIGNMENTS_FILE, null));
-      if (typeof provider.writeJson === 'function') await provider.writeJson(ASSIGNMENTS_FILE, latest);
-      else await provider.writeText(ASSIGNMENTS_FILE, JSON.stringify(latest, null, 2) + '\n');
-    }
-    const conflictAfter = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    await writeManagedJsonMerged(
+      provider,
+      ASSIGNMENTS_FILE,
+      apply,
+      { version: 5, assignments: {}, auto_assignments: {} },
+    );
+    const conflictAfter = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflictAfter?.active) {
       let rollbackCurrent = null;
       let rollbackUnresolved = false;
@@ -513,16 +581,12 @@
         };
       };
       try {
-        if (typeof provider.writeJsonMerged === 'function') {
-          await provider.writeJsonMerged(ASSIGNMENTS_FILE, rollback, {
-            fallbackValue: { version: 4, assignments: {}, auto_assignments: {} },
-            retries: 5,
-          });
-        } else {
-          const restored = rollback(await _readJsonSafe(provider, ASSIGNMENTS_FILE, null));
-          if (typeof provider.writeJson === 'function') await provider.writeJson(ASSIGNMENTS_FILE, restored);
-          else await provider.writeText(ASSIGNMENTS_FILE, JSON.stringify(restored, null, 2) + '\n');
-        }
+        await writeManagedJsonMerged(
+          provider,
+          ASSIGNMENTS_FILE,
+          rollback,
+          { version: 4, assignments: {}, auto_assignments: {} },
+        );
       } catch (rollbackError) {
         let recoveryPath = '';
         try {
@@ -614,7 +678,7 @@
   }
 
   async function compensateTargetTagCreation(provider, ensured, error) {
-    await tagSafety.compensateCreatedTags(provider, {
+    await tagSafety.compensateCreatedTags(managedProvider(provider), {
       created: ensured.created,
       before: ensured.before,
       published: ensured.catalog,
@@ -624,10 +688,10 @@
       markerPath: CATALOG_CONFLICT_FILE,
       recoveryDirectory: CATALOG_RECOVERY_DIR,
       normalizeCatalog,
-      readJson: _readJsonSafe,
+      readJson: (_managedProvider, path, fallback) => readManagedJson(provider, path, fallback),
       nowIso,
       randomId,
-      ensureDirectory,
+      ensureDirectory: async () => {},
       pruneRecovery: pruneCatalogRecovery,
     });
   }
@@ -789,11 +853,8 @@
     if (pathname === '/auto-tag/dictionary' && method === 'GET') return catalogResponse(await readCatalog(provider));
     if (pathname === '/auto-tag/dictionary/ensure' && method === 'POST') {
       return tagCsv.ensureDictionary(provider, {
-        ensureDirectory,
-        resolveEntryHandle: _resolveEntryHandle,
         writeCatalog,
         dictionaryFolder: DICTIONARY_FOLDER,
-        dictionaryNote: DICTIONARY_NOTE,
         catalogFile: CATALOG_FILE,
       });
     }

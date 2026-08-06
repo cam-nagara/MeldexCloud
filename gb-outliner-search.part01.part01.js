@@ -270,7 +270,10 @@ function _outlinerFilterScanYield() {
 }
 
 function _refreshGlobalFilterFromFileTypeScan() {
-  if (!document.getElementById('gf-chips')) return;
+  // #gf-chips はポップアップを開いている間だけ存在する動的要素になったため、
+  // 初期化済み判定には常時存在する #global-filter-bar を使う（#gf-chips 存在チェックのままだと
+  // ポップアップを閉じている間は背景スキャンでの型一覧更新が一切効かなくなってしまう）。
+  if (!document.getElementById('global-filter-bar')) return;
   renderGlobalFilterUI();
   if (_isGlobalFilterEnabled()) applyGlobalFilter();
 }
@@ -345,6 +348,16 @@ function toggleGlobalFilterBar() {
   localStorage.setItem('gb:filter-bar-visible', hidden ? '1' : '0');
   saveCurrentLayoutFilterState();
   if (hidden) setTimeout(() => _refreshGlobalFilterAfterBackgroundScan(false), 0);
+  // 検索バーのフィルタボタン1クリックでフィルタ設定へ到達できるよう、バーを
+  // 表示した直後にポップアップも開く（バー内トリガーの再クリックを不要にする）。
+  // 非表示化した時は開いているポップアップも閉じる。
+  if (hidden) {
+    setTimeout(() => {
+      if (typeof openGlobalFilterPopup === 'function' && !_gfFilterPopupEl) openGlobalFilterPopup();
+    }, 0);
+  } else if (typeof closeGlobalFilterPopup === 'function') {
+    closeGlobalFilterPopup();
+  }
 }
 
 function initGlobalFilterBar() {
@@ -381,11 +394,21 @@ function _createGlobalFilterButton(label, className, onClick, options = {}) {
   return button;
 }
 
-function renderGlobalFilterUI() {
-  const container = document.getElementById('gf-chips');
-  container.innerHTML = '';
-
-  // キャッシュ + DOM + フォルダビューから収集
+// キャッシュ + DOM + フォルダビューから「現在存在が判明しているタイプ」を毎回“最新値”として
+// 計算するヘルパー。renderGlobalFilterUI() の描画時だけでなく、チップのクリックハンドラ内でも
+// このヘルパーを呼び直すこと（重要: クロージャで昔の一覧を持ち回さない）。
+//
+// 背景（フィルタ表示異常 症状a の根本原因）: 旧実装はrenderGlobalFilterUI()呼び出し時点の
+// sortedTypes配列をチップのクリックハンドラのクロージャに閉じ込めていた。「すべて選択」中に
+// 特定タイプを1つだけOFFにする操作は `_globalFilter.types = sortedTypes.filter(t => t !== typeVal)`
+// という「そのクロージャ内の一覧から対象タイプだけ除いた配列」を書き込む処理のため、
+// 直近のrenderGlobalFilterUI()呼び出し後にフォルダ展開等で新しいタイプ（例: 動画）が
+// 判明していても、そのタイプはこの配列に含まれずtypesから丸ごと落ちてしまう。結果として
+// allTypesがfalseになった瞬間、falseにされたタイプは「フィルタ対象外」として全非表示になり、
+// 画像だけをOFFにしたつもりが動画も含めて全ファイルが消える（さらに_hideEmptyFilteredFoldersが
+// 空になったフォルダ自体を畳んでしまい、見た目上は「次のフォルダが繰り上がって展開されたよう」に
+// 見える）。対策として、クリック時点で必ずこの関数を呼び直し、常に最新のタイプ一覧を使う。
+function _globalFilterPresentTypes() {
   const presentTypes = new Set(_knownFileTypes);
   _globalFilter.types.forEach(type => {
     const visibleType = _globalFilterVisibleType(type);
@@ -400,14 +423,122 @@ function renderGlobalFilterUI() {
     const type = _globalFilterVisibleType(it?.type);
     if (type && type !== 'folder') presentTypes.add(type);
   });
-
-  const sortedTypes = [...presentTypes].sort((a, b) => {
+  return [...presentTypes].sort((a, b) => {
     const ia = GF_TYPE_ORDER.indexOf(a), ib = GF_TYPE_ORDER.indexOf(b);
     if (ia >= 0 && ib >= 0) return ia - ib;
     if (ia >= 0) return -1;
     if (ib >= 0) return 1;
     return a.localeCompare(b);
   });
+}
+
+function _globalFilterIsRestricting() {
+  return _isGlobalFilterEnabled() && (!_hasAllGlobalTypesSelected() || _globalFilter.modifiedDays > 0);
+}
+
+function _gfFilterPopupTriggerEl() {
+  return document.getElementById('gf-filter-popup-trigger');
+}
+
+// トリガーボタンを#global-filter-bar内に用意する（既存なら再利用。多重生成しない）。
+function _ensureGlobalFilterTrigger() {
+  const bar = document.getElementById('global-filter-bar');
+  if (!bar) return null;
+  let row = bar.querySelector(':scope > .gf-trigger-row');
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'gf-trigger-row';
+    bar.insertBefore(row, bar.firstChild);
+  }
+  let trigger = _gfFilterPopupTriggerEl();
+  if (!trigger) {
+    trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.id = 'gf-filter-popup-trigger';
+    trigger.className = 'gf-filter-trigger';
+    trigger.dataset.e2eId = 'global-filter-popup-trigger';
+    trigger.setAttribute('aria-haspopup', 'true');
+    trigger.setAttribute('aria-expanded', 'false');
+    const icon = document.createElement('span');
+    icon.className = 'gf-filter-trigger-icon';
+    icon.innerHTML = typeof lucide === 'function' ? lucide('funnel', 14) : '';
+    const label = document.createElement('span');
+    label.className = 'gf-filter-trigger-label';
+    label.textContent = 'フィルタ';
+    trigger.appendChild(icon);
+    trigger.appendChild(label);
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleGlobalFilterPopup();
+    });
+    row.appendChild(trigger);
+  } else if (trigger.parentElement !== row) {
+    row.appendChild(trigger);
+  }
+  return trigger;
+}
+
+function _updateGlobalFilterTriggerState() {
+  const trigger = _gfFilterPopupTriggerEl();
+  if (!trigger) return;
+  const restricting = _globalFilterIsRestricting();
+  trigger.classList.toggle('is-active', restricting);
+  trigger.setAttribute('aria-pressed', restricting ? 'true' : 'false');
+  trigger.title = restricting ? 'フィルタ（絞り込み中）' : 'フィルタ';
+}
+
+// ポップアップ本体（document.body直下・position:fixedで生成する。共通ルールにより
+// #global-filter-bar内に据え置きにはしない）。
+let _gfFilterPopupEl = null;
+
+function _repositionGlobalFilterPopup() {
+  const trigger = _gfFilterPopupTriggerEl();
+  if (!_gfFilterPopupEl || !trigger) return;
+  if (typeof positionPopup === 'function') positionPopup(_gfFilterPopupEl, trigger.getBoundingClientRect());
+  else if (typeof clampPopupToViewport === 'function') clampPopupToViewport(_gfFilterPopupEl);
+}
+
+function _wireGlobalFilterPopupCloseButton(popup) {
+  if (popup.querySelector('[data-meldex-dropdown-close]')) return;
+  if (typeof attachMeldexDropdownCloseButton === 'function') {
+    attachMeldexDropdownCloseButton(popup, {
+      label: '閉じる',
+      trigger: _gfFilterPopupTriggerEl(),
+      close: closeGlobalFilterPopup,
+    });
+  }
+}
+
+function _renderGlobalFilterPopupBody(popup) {
+  popup.innerHTML = '';
+
+  // フィルタ有効トグル
+  const toggleRow = document.createElement('div');
+  toggleRow.className = 'gf-popup-row';
+  const filterToggle = _createGlobalFilterButton(
+    _isGlobalFilterEnabled() ? 'フィルタOFF' : 'フィルタON',
+    'gf-chip gf-filter-toggle' + (_isGlobalFilterEnabled() ? ' is-active' : ''),
+    () => {
+      _globalFilter.enabled = !_isGlobalFilterEnabled();
+      saveGlobalFilter();
+      renderGlobalFilterUI();
+    },
+    { e2eId: 'global-filter-enabled-toggle', pressed: _isGlobalFilterEnabled() }
+  );
+  toggleRow.appendChild(filterToggle);
+  popup.appendChild(toggleRow);
+
+  // タイプ別チェック一覧
+  const typesSection = document.createElement('div');
+  typesSection.className = 'gf-popup-section';
+  const typesLabel = document.createElement('div');
+  typesLabel.className = 'gf-popup-section-label';
+  typesLabel.textContent = '対象タイプ';
+  typesSection.appendChild(typesLabel);
+  const chipList = document.createElement('div');
+  chipList.id = 'gf-chips';
+  chipList.className = 'gf-popup-chip-list';
+  const sortedTypes = _globalFilterPresentTypes();
   sortedTypes.forEach(typeVal => {
     const active = _hasAllGlobalTypesSelected() || _globalFilter.types.includes(typeVal);
     const label = GF_TYPE_LABELS[typeVal] || typeVal;
@@ -415,9 +546,12 @@ function renderGlobalFilterUI() {
     if (active) classes.push('is-active');
     if (!_isGlobalFilterEnabled()) classes.push('is-muted');
     const chip = _createGlobalFilterButton(label, classes.join(' '), () => {
+      // クリック時点の最新タイプ一覧から算出する（このファイル冒頭のコメント参照。
+      // 描画時点の古い一覧を閉包で持ち回さない）。
+      const liveTypes = _globalFilterPresentTypes();
       if (_hasAllGlobalTypesSelected()) {
         _globalFilter.allTypes = false;
-        _globalFilter.types = sortedTypes.filter(t => t !== typeVal);
+        _globalFilter.types = liveTypes.filter(t => t !== typeVal);
       } else if (active) {
         _globalFilter.types = _globalFilter.types.filter(t => t !== typeVal);
       } else {
@@ -431,14 +565,20 @@ function renderGlobalFilterUI() {
       type: typeVal,
       pressed: active,
     });
-    container.appendChild(chip);
+    chipList.appendChild(chip);
   });
+  if (!sortedTypes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'gf-popup-empty';
+    empty.textContent = '対象タイプがまだありません（フォルダを開くと判明します）';
+    chipList.appendChild(empty);
+  }
+  typesSection.appendChild(chipList);
+  popup.appendChild(typesSection);
 
-  const sep = document.createElement('span');
-  sep.className = 'gf-separator';
-  sep.setAttribute('aria-hidden', 'true');
-  container.appendChild(sep);
-
+  // 更新日時
+  const dateRow = document.createElement('div');
+  dateRow.className = 'gf-popup-row';
   const dateSelect = document.createElement('select');
   dateSelect.id = 'gf-modified-days';
   dateSelect.dataset.e2eId = 'global-filter-modified-days';
@@ -460,32 +600,23 @@ function renderGlobalFilterUI() {
     saveGlobalFilter();
     renderGlobalFilterUI();
   };
-  container.appendChild(dateSelect);
+  dateRow.appendChild(dateSelect);
+  popup.appendChild(dateRow);
 
-  const filterToggle = _createGlobalFilterButton(
-    _isGlobalFilterEnabled() ? 'フィルタOFF' : 'フィルタON',
-    'gf-chip gf-filter-toggle' + (_isGlobalFilterEnabled() ? ' is-active' : ''),
-    () => {
-      _globalFilter.enabled = !_isGlobalFilterEnabled();
-      saveGlobalFilter();
-      renderGlobalFilterUI();
-    },
-    { e2eId: 'global-filter-enabled-toggle', pressed: _isGlobalFilterEnabled() }
-  );
-  container.appendChild(filterToggle);
-
-  const allTypes = sortedTypes;
+  // すべて選択 / すべてオフ
+  const cmdRow = document.createElement('div');
+  cmdRow.className = 'gf-popup-row gf-popup-command-row';
   if (!_hasAllGlobalTypesSelected()) {
     const allOn = _createGlobalFilterButton('すべて選択', 'gf-chip gf-command gf-all-on', () => {
+      const liveTypes = _globalFilterPresentTypes();
       _globalFilter.allTypes = true;
-      _globalFilter.types = [...allTypes];
+      _globalFilter.types = [...liveTypes];
       _globalFilter.enabled = true;
       saveGlobalFilter();
       renderGlobalFilterUI();
     }, { e2eId: 'global-filter-all-on' });
-    container.appendChild(allOn);
+    cmdRow.appendChild(allOn);
   }
-
   const allOff = _createGlobalFilterButton('すべてオフ', 'gf-chip gf-command gf-all-off', () => {
     _globalFilter.allTypes = false;
     _globalFilter.types = [];
@@ -493,7 +624,72 @@ function renderGlobalFilterUI() {
     saveGlobalFilter();
     renderGlobalFilterUI();
   }, { e2eId: 'global-filter-all-off' });
-  container.appendChild(allOff);
+  cmdRow.appendChild(allOff);
+  popup.appendChild(cmdRow);
+}
+
+function _gfPopupOutsideClickHandler(e) {
+  const trigger = _gfFilterPopupTriggerEl();
+  if (!_gfFilterPopupEl) return;
+  if (_gfFilterPopupEl.contains(e.target)) return;
+  if (trigger && (e.target === trigger || trigger.contains(e.target))) return;
+  closeGlobalFilterPopup();
+}
+
+function _gfPopupKeydownHandler(e) {
+  if (e.key !== 'Escape' || !_gfFilterPopupEl) return;
+  e.stopPropagation();
+  closeGlobalFilterPopup();
+  if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(_gfFilterPopupTriggerEl());
+}
+
+function closeGlobalFilterPopup() {
+  if (!_gfFilterPopupEl) return;
+  _gfFilterPopupEl.remove();
+  _gfFilterPopupEl = null;
+  document.removeEventListener('pointerdown', _gfPopupOutsideClickHandler, true);
+  document.removeEventListener('keydown', _gfPopupKeydownHandler, true);
+  const trigger = _gfFilterPopupTriggerEl();
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+function openGlobalFilterPopup() {
+  const trigger = _ensureGlobalFilterTrigger();
+  if (!trigger) return;
+  closeGlobalFilterPopup();
+  const popup = document.createElement('div');
+  popup.className = 'gf-filter-popup';
+  popup.setAttribute('role', 'dialog');
+  popup.setAttribute('aria-label', 'フィルタ');
+  popup.style.cssText = 'position:fixed;z-index:10000;';
+  _gfFilterPopupEl = popup;
+  _renderGlobalFilterPopupBody(popup);
+  _wireGlobalFilterPopupCloseButton(popup);
+  document.body.appendChild(popup);
+  _repositionGlobalFilterPopup();
+  trigger.setAttribute('aria-expanded', 'true');
+  setTimeout(() => {
+    document.addEventListener('pointerdown', _gfPopupOutsideClickHandler, true);
+    document.addEventListener('keydown', _gfPopupKeydownHandler, true);
+  }, 0);
+}
+
+function toggleGlobalFilterPopup() {
+  if (_gfFilterPopupEl) closeGlobalFilterPopup();
+  else openGlobalFilterPopup();
+}
+
+// フィルタUI全体の再描画エントリポイント。トリガーの状態更新に加え、ポップアップが
+// 開いている場合はその中身も最新状態へ更新する（クリック後・タイプ新規判明後などに
+// 呼ばれる。既存呼び出し元は変更不要）。
+function renderGlobalFilterUI() {
+  _ensureGlobalFilterTrigger();
+  _updateGlobalFilterTriggerState();
+  if (_gfFilterPopupEl) {
+    _renderGlobalFilterPopupBody(_gfFilterPopupEl);
+    _wireGlobalFilterPopupCloseButton(_gfFilterPopupEl);
+    _repositionGlobalFilterPopup();
+  }
 }
 
 function saveGlobalFilter() {
@@ -513,6 +709,7 @@ function applyGlobalFilter() {
       if (node._nodeData) node.style.display = '';
     });
     _snapshotBaseTreeVisibility();
+    window.GBOutlinerVirtualRender?.refreshAllFilters();
     if (_treeSearchQuery) applyTreeNameSearch();
     return;
   }
@@ -520,6 +717,7 @@ function applyGlobalFilter() {
   if (!_hasAllGlobalTypesSelected() && _globalFilter.types.length === 0) {
     allNodes.forEach(node => { node.style.display = 'none'; });
     _snapshotBaseTreeVisibility();
+    window.GBOutlinerVirtualRender?.refreshAllFilters();
     if (_treeSearchQuery) applyTreeNameSearch();
     return;
   }
@@ -542,9 +740,58 @@ function applyGlobalFilter() {
     }
     node.style.display = _showRegularNodeByGlobalFilter(data) ? '' : 'none';
   });
+  // 仮想化コンテナのDOM上マウント行数は表示範囲＋オーバースキャン分のみであり、
+  // フィルタ変更直後は旧フィルタ時点の行がまだ乗っている。_hideEmptyFilteredFoldersの
+  // 前に仮想モデルを新フィルタへ再構築しておく（順序を入れ替えても
+  // _hideEmptyFilteredFoldersの仮想化分岐は状態モデルを直接参照するため実害は無いが、
+  // 非仮想フォルダ側の判定材料となるDOMも最終状態に揃えておくため先に実行する）。
+  window.GBOutlinerVirtualRender?.refreshAllFilters();
   _hideEmptyFilteredFolders();
   _snapshotBaseTreeVisibility();
   if (_treeSearchQuery) applyTreeNameSearch();
+}
+
+// 仮想化コンテナ（gb-outliner-virtual-render.js）配下のフォルダは、DOM上に実マウントされて
+// いる行が表示範囲＋オーバースキャン分だけであり、子孫がフラットに祖先コンテナへ直接
+// マウントされる（ネストしたフォルダ自身の.tree-childrenは常に空のプレースホルダ）。
+// そのためDOM子要素数だけを見ると「実際は絞り込み後も表示対象の子孫を持つのに、
+// たまたま今画面外/未マウントなだけ」のフォルダを誤って空フォルダと判定し、
+// フォルダごと非表示にしてしまう（フィルタ表示異常 症状b「フォルダ自体が非表示になる」の
+// 根本原因）。仮想化管理下のノードは、DOM件数ではなく仮想モデルの全項目
+// （state.allItems / state.childrenByParent、マウント状態に関係なく保持される）を
+// 現在のフィルタ条件で再帰的に判定する。
+function _folderHasFilterVisibleDescendant(childrenDiv, path) {
+  const accessor = window.GBOutlinerVirtualRender?.stateChildItemsFor;
+  if (typeof accessor !== 'function') return null;
+  const seen = new Set();
+  function walk(p) {
+    const items = accessor(childrenDiv, p);
+    if (items === undefined) return null; // 仮想化管理下ではない（呼び出し側の判定ミス）
+    if (items === null) return 'unknown'; // 未読込（展開されたことがない）
+    let unknown = false;
+    for (const it of items) {
+      if (!it || !it.path || seen.has(it.path)) continue;
+      seen.add(it.path);
+      if (it.type === 'folder') {
+        const r = walk(it.path);
+        if (r === true) return true;
+        if (r === 'unknown') unknown = true;
+        continue;
+      }
+      if (it.type === 'database') {
+        if (_showDatabaseByGlobalFilter() && matchesGlobalFilter(it)) return true;
+        continue;
+      }
+      if (it.type === 'entity') {
+        if (_showEntityByGlobalFilter()) return true;
+        continue;
+      }
+      if (_showRegularNodeByGlobalFilter(it)) return true;
+    }
+    return unknown ? 'unknown' : false;
+  }
+  const result = walk(path);
+  return result === 'unknown' ? null : result;
 }
 
 function _hideEmptyFilteredFolders() {
@@ -556,8 +803,16 @@ function _hideEmptyFilteredFolders() {
     if (data.type !== 'folder' && data.type !== 'database' && !data._isRoot) return;
     const childrenDiv = node.querySelector(':scope > .tree-children');
     if (!childrenDiv) return;
-    const hasVisibleChild = [...childrenDiv.querySelectorAll(':scope > .tree-node')].some(c => c.style.display !== 'none');
-    if (childrenDiv.dataset.loaded === 'false') return;
+    const virtualManaged = childrenDiv.dataset.virtual === 'true' || !!childrenDiv._virtualOwnerContainer;
+    let hasVisibleChild;
+    if (virtualManaged) {
+      const verdict = _folderHasFilterVisibleDescendant(childrenDiv, data.path);
+      if (verdict == null) return; // 判定不能（未読込含む）は従来どおり表示のまま
+      hasVisibleChild = verdict;
+    } else {
+      if (childrenDiv.dataset.loaded === 'false') return;
+      hasVisibleChild = [...childrenDiv.querySelectorAll(':scope > .tree-node')].some(c => c.style.display !== 'none');
+    }
     if (!hasVisibleChild && (_outlinerNodeIsCurrentOrSelected(node, data) || _outlinerContainerNodeMatchesFilter(data))) {
       node.style.display = '';
       return;
@@ -860,6 +1115,15 @@ async function _openStoredOutlinerItem(item, opts) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
+// 最近使った項目・お気に入りショートカットの単クリック選択（単一選択。開かない）。
+// フォルダツリー本体の treeSelection とは別の軽量な選択状態として扱う（§2.4）。
+function _selectSidebarShortcutItem(item) {
+  if (!item) return;
+  document.querySelectorAll('#body-recent .fav-item.selected, #body-favorites .fav-item.selected')
+    .forEach(el => { if (el !== item) el.classList.remove('selected'); });
+  item.classList.add('selected');
+}
+
 function updateRecentItems() {
   const container = document.getElementById('body-recent');
   if (!container) return;
@@ -900,12 +1164,20 @@ function updateRecentItems() {
     item.className = 'fav-item';
     const name = r.label || r.name || r.path?.split('/').pop() || '?';
     const iconName = _outlinerIconName(r.type, r.path, false);
-    item.innerHTML = lucide(iconName, 14) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(name) + '</span>';
+    item.innerHTML = lucide(iconName, 18) + ' <span style="overflow:hidden;text-overflow:ellipsis;">' + esc(name) + '</span>';
     item.title = r.path || '';
+    // 単クリック=選択のみ、ダブルクリック=開く（§2.4・フォルダツリー行と同じ操作語彙に統一）
     item.addEventListener('click', (e) => {
       if (e.target.closest('.fav-more-btn')) return;
-      const _expOpts = { fromExplorer: true };
-      _openStoredOutlinerItem(r, _expOpts);
+      _selectSidebarShortcutItem(item);
+      if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
+        window.GBOutlinerActivation.activateStoredItem(r, { fromExplorer: true });
+      }
+    });
+    item.addEventListener('dblclick', (e) => {
+      if (e.target.closest('.fav-more-btn')) return;
+      if (window.GBOutlinerActivation?.singleClickOpensItems?.()) return; // 単クリックで既に開いている
+      window.GBOutlinerActivation?.activateStoredItem(r, { fromExplorer: true });
     });
     item.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -1196,8 +1468,8 @@ function renderFavorites() {
 
     if (isFavFolder) {
       const toggle = document.createElement('span');
-      toggle.style.cssText = 'width:12px;text-align:center;cursor:pointer;flex-shrink:0;display:flex;align-items:center;';
-      toggle.innerHTML = lucide('chevronRight', 12);
+      toggle.style.cssText = 'width:16px;text-align:center;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;';
+      toggle.innerHTML = lucide('chevronRight', 16);
       toggle.classList.add('fav-toggle');
       const childDiv = document.createElement('div');
       childDiv.className = 'fav-children';
@@ -1210,8 +1482,8 @@ function renderFavorites() {
       });
       row.appendChild(toggle);
       const ico = document.createElement('span');
-      ico.innerHTML = lucide('folder', 14);
-      ico.style.cssText = 'display:inline;flex-shrink:0;';
+      ico.innerHTML = lucide('folder', 18);
+      ico.style.cssText = 'display:inline-flex;flex-shrink:0;';
       row.appendChild(ico);
       const lbl = document.createElement('span');
       lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;';
@@ -1252,7 +1524,7 @@ function renderFavorites() {
     } else {
       const iconName = _outlinerIconName(node.type, node.path, node.type === 'folder' && node.path === getWorkFolder());
       const ico = document.createElement('span');
-      ico.innerHTML = lucide(iconName, 14);
+      ico.innerHTML = lucide(iconName, 18);
       ico.style.cssText = 'display:inline-flex;flex-shrink:0;';
       row.appendChild(ico);
       const lbl = document.createElement('span');
@@ -1261,9 +1533,18 @@ function renderFavorites() {
       row.appendChild(lbl);
       row.appendChild(_createFavoriteMoreButton(node, false));
       row.title = node.path;
-      row.addEventListener('click', () => {
-        const _expOpts = { fromExplorer: true };
-        _openStoredOutlinerItem(node, _expOpts);
+      // 単クリック=選択のみ、ダブルクリック=開く（§2.4・フォルダツリー行と同じ操作語彙に統一）
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.fav-more-btn')) return;
+        _selectSidebarShortcutItem(row);
+        if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
+          window.GBOutlinerActivation.activateStoredItem(node, { fromExplorer: true });
+        }
+      });
+      row.addEventListener('dblclick', (e) => {
+        if (e.target.closest('.fav-more-btn')) return;
+        if (window.GBOutlinerActivation?.singleClickOpensItems?.()) return; // 単クリックで既に開いている
+        window.GBOutlinerActivation?.activateStoredItem(node, { fromExplorer: true });
       });
       row.oncontextmenu = (e) => _showFavoriteItemMenu(e, node, false);
       if (typeof addLongPressHandler === 'function') {

@@ -1,9 +1,13 @@
-      if (a.id === GBLayout.activePane) return -1;
-      if (b.id === GBLayout.activePane) return 1;
+      if (a.pane.id === GBLayout.activePane) return -1;
+      if (b.pane.id === GBLayout.activePane) return 1;
       return 0;
     });
-    for (const pane of allPanes) {
-      _mountPaneContent(pane);
+    for (const entry of allPanes) {
+      _mountPaneContent(entry.pane, {
+        surface: entry.surface,
+        preserveLiveOwner: true,
+        claimLive: entry.pane.id === claimPaneId,
+      });
     }
     window.MeldexStartupTabGuard?.pruneRestoredTabs?.();
   }
@@ -112,9 +116,110 @@
     }
 
     // レガシーコンテナで描画するタイプ
-    const containerId = LEGACY_CONTAINERS[tabType];
+    let containerId = LEGACY_CONTAINERS[tabType];
     if (!containerId) return;
+    // media タブのうち画像/PDF/動画の実体はビューワー（html-view の #html-iframe）に
+    // 表示される（openMedia→openViewer。media-view を使うのは audio のみ）。マウント先を
+    // 実体側に一致させないと、タブ復帰のたびに空の media-view が html-view を退避
+    // （=iframeのDOM移動→強制再読み込み）してビューワー状態が失われる（v0.7.139）。
+    if (tabType === 'media' && (activeTab.state?.mediaType || 'image') !== 'audio') {
+      containerId = 'html-view';
+    }
     _mountLegacyLikeTab(pane, contentEl, activeTab, tabType, containerId, options);
+    // タブ復帰（タブ切替・タブクローズ後の再アクティブ化）で共有コンテナ
+    // （html-view の iframe / media-view の #media-content）の実内容がこのタブと
+    // 食い違っていないか検証し、不一致なら開き直す（不具合B対策）。詳細は
+    // _gbScheduleMediaContainerResync 参照。
+    _gbScheduleMediaContainerResync(pane, activeTab, tabType, containerId);
+  }
+
+  // ================================================================
+  // 不具合B対策: タブ間メディア混入の防止
+  //
+  // html-view の #html-iframe / media-view の #media-content は、複数タブ・複数ペインで
+  // 使い回される単一の共有DOMである（LEGACY_CONTAINERS参照）。タブ切替・タブクローズ後の
+  // 復帰時、_ensureLegacyTabContent 自身のロード要否判定（コンテナのdataset比較）が
+  // 何らかの理由で更新をスキップした場合や、postMessage経由の高速パス（gb-folder.part02.js
+  // 参照）がまだ応答を返していない場合、共有コンテナには「今アクティブなタブとは別の
+  // タブが最後に表示していた内容」が残ったまま見えてしまうことがある
+  // （例: 動画タブを閉じたら、復帰した画像タブに直前の動画が残って見える）。
+  //
+  // ここでは、アクティブタブが要求する「本来映すべき対象」（署名）と、共有コンテナに
+  // 実際に描画されている内容（openMedia/openViewer が書き込む dataset マーカー）を
+  // 突き合わせ、不一致なら明示的に開き直す。_ensureLegacyTabContent の非同期ロード
+  // （job.promise）完了を待ってから検証することで、進行中の正当な読み込みと競合しない
+  // ようにする。
+  // ================================================================
+
+  // アクティブタブが本来映すべき対象（共有コンテナ種別 + URL/パス）を算出する。
+  // media タブ（openMedia経由の画像/PDF/動画/音声）のみを対象にする。html タブ
+  // （openHtmlFile経由の生HTML表示等）は URL 解決方式が別系統で曖昧なため対象外。
+  // URL解決は gb-app.part03.js の openMedia の実装と必ず一致させること
+  // （image/video は viewerUrl 優先、pdf は常に固定ルートで viewerUrl を見ない）。
+  function _gbMediaTabExpectedSignature(tab, tabType) {
+    if (!tab || !tab.path || tabType !== 'media') return null;
+    const mediaType = tab.state?.mediaType || 'image';
+    if (mediaType === 'audio') {
+      return { container: 'media-view', mediaKind: 'audio', path: tab.path };
+    }
+    if (mediaType === 'pdf') {
+      return { container: 'html-view', url: '/viewer?pdf=' + encodeURIComponent(tab.path) };
+    }
+    // image / video（動画もビューワー(html-view)側に統一。gb-app.part03.js openMedia参照）
+    const url = tab.state?.viewerUrl || '/viewer?file=' + encodeURIComponent(tab.path);
+    return { container: 'html-view', url };
+  }
+
+  function _gbScheduleMediaContainerResync(pane, tab, tabType, containerId) {
+    if (containerId !== 'html-view' && containerId !== 'media-view') return;
+    const expected = _gbMediaTabExpectedSignature(tab, tabType);
+    if (!expected) return;
+    const paneId = pane.id;
+    const tabId = tab.id;
+    const job = _legacyLoadJobs.get(containerId);
+    const afterJob = (job?.promise && typeof job.promise.then === 'function') ? job.promise : Promise.resolve();
+    const verify = () => {
+      // _ensureLegacyTabContent の非同期ロード完了後も、openViewer側のpostMessage高速パス
+      // （最大250ms）が残っている可能性があるため、余裕を持たせてから検証する。
+      setTimeout(() => _gbVerifyAndFixMediaContainer(paneId, tabId, expected), 260);
+    };
+    afterJob.then(verify).catch(verify);
+  }
+
+  function _gbVerifyAndFixMediaContainer(paneId, tabId, expected) {
+    if (typeof GBLayout === 'undefined' || !GBLayout.root) return;
+    const paneInfo = GBLayout.findNode?.(GBLayout.root, paneId);
+    const pane = paneInfo?.node;
+    const currentTab = pane?.tabs?.[pane.activeTabIndex];
+    if (!currentTab || currentTab.id !== tabId) return; // 既にタブ切替済み・タブが閉じられた
+    // このペインが対象コンテナを今もライブ所有していない（スナップショット表示等）場合は対象外
+    if (_containerPane[expected.container] !== paneId) return;
+    // openMedia/openViewer は showView 経由で「今アクティブなペイン」を対象に解決する
+    // （明示的にpaneIdを渡す口が無い）。このペインが今アクティブでない状態で呼ぶと、
+    // 誤って別ペインへ表示してしまう恐れがあるため、アクティブペインの時だけ修正する。
+    if (GBLayout.activePane !== paneId) return;
+    if (expected.container === 'html-view') {
+      const iframe = document.getElementById('html-iframe');
+      if (!iframe) return;
+      if ((iframe.dataset.gbViewerCurrentUrl || '') === expected.url) return;
+      if (typeof openViewer === 'function') {
+        openViewer(expected.url, {
+          skipShowView: true, skipStateView: true, skipNavPush: true, skipSaveLastView: true,
+          skipRecent: true, skipHighlight: true, skipGlobalUi: true,
+        });
+      }
+      return;
+    }
+    const container = document.getElementById('media-content');
+    if (!container) return;
+    if ((container.dataset.gbMediaPath || '') === expected.path
+        && (container.dataset.gbMediaKind || '') === expected.mediaKind) return;
+    if (typeof openMedia === 'function') {
+      openMedia(currentTab.label || '', expected.path, expected.mediaKind, {
+        skipShowView: true, skipStateView: true, skipNavPush: true, skipSaveLastView: true,
+        skipRecent: true, skipHighlight: true, skipGlobalUi: true,
+      });
+    }
   }
 
   function _mountLegacyLikeTab(pane, contentEl, tab, tabType, containerId, options) {
@@ -124,10 +229,17 @@
     contentEl.querySelectorAll('.gb-legacy-snapshot-host').forEach(el => el.remove());
     const ownerPaneId = _containerPane[containerId] || '';
     const ownerIsVisible = ownerPaneId ? _isPaneActuallyVisible(ownerPaneId) : false;
+    const liveBinding = _legacyLiveBindings.get(containerId);
+    const hasVisibleLiveOwner = !!(liveBinding?.paneId && _isPaneActuallyVisible(liveBinding.paneId));
     const isDockPopupMount = !!options?.dockPopup;
-    const isSubPanelMount = !!options?.subPanel || !!contentEl.closest?.('.gb-subpanel');
+    const isVirtualSurfaceMount = options?.surface === 'float' || options?.surface === 'subpanel'
+      || !!contentEl.closest?.('.gb-float-panel, .gb-subpanel');
     const paneIsVisible = _isPaneActuallyVisible(pane.id);
-    const canMountLive = isDockPopupMount || isSubPanelMount || (paneIsVisible && (!ownerPaneId || ownerPaneId === pane.id || pane.id === GBLayout.activePane || !ownerIsVisible));
+    const preservesOtherLiveOwner = !!options?.preserveLiveOwner && hasVisibleLiveOwner
+      && liveBinding.paneId !== pane.id;
+    const canMountLive = !!options?.claimLive || (!preservesOtherLiveOwner
+      && (isDockPopupMount || isVirtualSurfaceMount
+        || (paneIsVisible && (!ownerPaneId || ownerPaneId === pane.id || pane.id === GBLayout.activePane || !ownerIsVisible))));
     const bridgeOpts = pane.id === GBLayout.activePane ? _bridgeOpenOpts : _bridgePassiveOpenOpts;
     if (canMountLive && document.getElementById(containerId)) {
       _teardownSnapshotHost(tab.id);
@@ -204,26 +316,29 @@
     const oldMinimap = pane.querySelector('.bd-minimap');
     if (oldMinimap) pane.innerHTML = '';
     const activePreviewTab = (typeof _getActiveContentPaneInfo === 'function') ? _getActiveContentPaneInfo()?.activeTab : null;
-    const activePreviewPath = activePreviewTab && !['preview', 'detail'].includes(activePreviewTab.type)
+    // 'folder' タブの path はフォルダそのもの（フォルダツリー内で選択中の個別ファイルを
+    // 表さない）。folder タブがアクティブなときにこの path をファイルとして誤解決すると、
+    // showFolderPreview が既に表示済みのリッチな内容（iframe等）を、画像でも何でもない
+    // フォルダパスの「ファイル名テキストだけ」で上書きしてしまう（不具合A関連）。
+    const activePreviewPath = activePreviewTab && !['preview', 'detail', 'folder'].includes(activePreviewTab.type)
       ? (activePreviewTab.path || activePreviewTab.state?.scenarioPath || '')
       : '';
     // 再マウント時は保存済みパスを優先（最大化/復元でグローバルstateがずれる問題の対策）
     const mediaPath = forceRestore
       ? (pane.dataset.previewPath || '')
       : (activePreviewPath || state.currentPagePath || state.currentEntityPath || '');
-    // 現在のパスを保存（次回再マウント用）
-    if (mediaPath) pane.dataset.previewPath = mediaPath;
     if (forceRestore && pane.dataset.previewMode === 'board-link' && mediaPath && typeof bdRenderLinkedPreview === 'function') {
+      pane.dataset.previewPath = mediaPath;
       bdRenderLinkedPreview(mediaPath, pane);
       return;
     }
-    if (!mediaPath) {
-      pane.innerHTML = '<div style="color:var(--fg2);font-size:13px;">ファイルを選択するとプレビューが表示されます</div>';
-      return;
-    }
-    const ext = mediaPath.split('.').pop().toLowerCase();
-    const imgExts = ['jpg','jpeg','png','gif','webp','svg','bmp','avif','ico'];
-    if (imgExts.includes(ext)) {
+    const ext = mediaPath ? mediaPath.split('.').pop().toLowerCase() : '';
+    // フォルダツリー側の許容拡張子（gb-outliner-activation.js の IMAGE_EXTS）と揃える
+    const imgExts = ['jpg','jpeg','jpe','jfif','png','apng','gif','webp','svg','bmp','avif','ico','tif','tiff','heic','heif','psd','psb'];
+    const resolvesToImage = !!mediaPath && imgExts.includes(ext);
+    if (resolvesToImage) {
+      // 現在のパスを保存（次回再マウント用）
+      pane.dataset.previewPath = mediaPath;
       const url = (typeof API_BASE !== 'undefined' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(mediaPath);
       // 既存画像のsrcを更新（白フラッシュ防止）
       const existingImg = pane.querySelector('img');
@@ -232,13 +347,22 @@
       } else {
         pane.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview">';
       }
-    } else {
-      const fname = document.createElement('div');
-      fname.style.cssText = 'color:var(--fg2);font-size:13px;';
-      fname.textContent = mediaPath.split('/').pop();
-      pane.innerHTML = '';
-      pane.appendChild(fname);
+      return;
     }
+    // 不具合A対策: showFolderPreview 等が既にリッチな内容（埋め込みビューワーの
+    // <iframe>、動画/音声プレイヤー、サムネイル画像）を表示済みの場合、対象を
+    // 特定できない/画像として解決できない更新でそれを破壊しない。
+    if (pane.querySelector('iframe, video, audio, img')) return;
+    if (!mediaPath) {
+      pane.innerHTML = '<div style="color:var(--fg2);font-size:13px;">ファイルを選択するとプレビューが表示されます</div>';
+      return;
+    }
+    pane.dataset.previewPath = mediaPath;
+    const fname = document.createElement('div');
+    fname.style.cssText = 'color:var(--fg2);font-size:13px;';
+    fname.textContent = mediaPath.split('/').pop();
+    pane.innerHTML = '';
+    pane.appendChild(fname);
   }
 
   const _ANNOTATION_HOST_TYPES = new Set([
@@ -560,6 +684,19 @@
     if (containerId === 'db-view-container') _scheduleToolbarRecheck(viewName);
   }
 
+  // media-view（#media-content）が退避される際、中の動画/音声を一旦停止する。
+  // 停止するだけで再生位置の復元は保証しない（不具合Bの対策方針として明示的に許容）。
+  // 退避先で別タブの内容へ差し替えられる場合はそのまま消える（DOM自体は
+  // openMedia側の innerHTML 上書きで破棄される）ため、バックグラウンド再生・
+  // 音声の混入リークを防ぐことが目的。
+  function _gbPauseMediaContentPlayback() {
+    const container = document.getElementById('media-content');
+    if (!container) return;
+    container.querySelectorAll('video, audio').forEach(el => {
+      try { el.pause(); } catch {}
+    });
+  }
+
   // ペインからレガシーコンテナを退避（メインビュー＋右パネル両方）
   // exceptId を渡すと、その ID のコンテナだけは退避対象から外す（idempotent 化のため）。
   function _retractLegacyFromPane(contentEl, exceptId = null) {
@@ -576,6 +713,7 @@
       if (id === exceptId) return;
       const el = document.getElementById(id);
       if (el && el.parentNode === contentEl) {
+        if (id === 'media-view') _gbPauseMediaContentPlayback();
         el.style.display = 'none';
         storage.appendChild(el);
         delete _containerPane[id];
@@ -604,6 +742,7 @@
     const storage = document.getElementById('legacy-views');
     const el = document.getElementById(containerId);
     if (el && storage) {
+      if (containerId === 'media-view') _gbPauseMediaContentPlayback();
       el.style.display = 'none';
       storage.appendChild(el);
       delete _containerPane[containerId];
@@ -653,7 +792,7 @@
   function _isPaneActuallyVisible(paneId) {
     if (!paneId) return false;
     const virtualEl = GBLayout?.paneMap?.[paneId]?.el || null;
-    if (virtualEl?.closest?.('.gb-subpanel')) {
+    if (virtualEl?.closest?.('.gb-float-panel, .gb-subpanel')) {
       const rect = virtualEl.getBoundingClientRect?.();
       return !virtualEl.hidden && !!rect && rect.width > 0 && rect.height > 0;
     }

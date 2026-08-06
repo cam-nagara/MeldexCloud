@@ -1,4 +1,33 @@
+/* gb-data-access-dropbox-fileops-core.js
+ *
+ * gb-data-access-dropbox-fileops.* の共通土台(internals分割取り出し・パス変更
+ * フック・trash・CSVサイドカー移設・その他の汎用ヘルパー)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」に基づき、`gb-data-access-dropbox-fileops.part01.part01.js`(1074行、
+ * 1000行超過)を責務別へ分割した際の①パス変更フック・trash・CSVサイドカー
+ * クラスタ。分割後もこのファイル単体では完結しない(このファイルは
+ * `(function(){...` を開くだけで閉じない。閲覧ロック・注釈・版・競合バックアップの
+ * 各兄弟ファイル(gb-data-access-dropbox-fileops-annotations.js 等)と
+ * gb-data-access-dropbox-fileops.part01.part02.js / .part02.js が同じ関数
+ * スコープの続きとして連結され、最後に part02.js が `})();` で閉じる。
+ * これは既存の `gb-data-access-dropbox-fileops-folder-versions.js` と同じ
+ * 「IIFEを開かない継続ファイル」方式であり、build_split_bundles.py が
+ * 単純にテキスト結合するだけの分割(1000行ルール用の物理分割。実行時の
+ * モジュール境界ではない)である前提と一致する。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md
+ * 監査ノート: app/docs/proprietary-format-sidecar-cleanup-audit-2026-08-01/notes.md
+ *
+ * ## このファイルの追加分(Phase 4)
+ *
+ * 閲覧ロック(view-lock)の読み書きを、`_meldex/view-locks/*.json` への直接読み書き
+ * から、共通ストレージ層(gb-system-storage.js 経由、種別 view-locks)へ載せ替える。
+ * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5)。
+ */
 (function () {
+  'use strict';
+
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   if (!internals || !Array.isArray(handlers)) return;
@@ -51,6 +80,7 @@
     _iterateWorkspaceFiles,
     _relocateReferences,
     _queryBacklinks,
+    _queryDeleteImpact,
     _fnvFileId,
   } = internals;
 
@@ -90,8 +120,10 @@
     return PRODUCTION_RESERVED_ENTRY_PROPERTIES[parts[2]] || [];
   }
 
+  const FRONTMATTER_BLOCK_RE = new RegExp('^' + String.fromCharCode(0xFEFF) + '?---\\r?\\n([\\s\\S]*?)\\r?\\n---(?:\\r?\\n|$)');
+
   function _frontmatterContainsProperty(text, property) {
-    const match = String(text || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    const match = String(text || '').match(FRONTMATTER_BLOCK_RE);
     if (!match || !property) return false;
     const frontmatter = match[1];
     const inline = frontmatter.match(/^properties:\s*(\{.*\})\s*$/m);
@@ -258,6 +290,77 @@
     return registry.sourcePath(parsedOriginal.sourceId, relativePath);
   }
 
+  function _csvMetadataPath(path) {
+    if (window.MeldexCsv?.metadataPath) return window.MeldexCsv.metadataPath(path);
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const slash = normalized.lastIndexOf('/');
+    const parent = slash >= 0 ? normalized.slice(0, slash) : '';
+    const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+    const stem = file.replace(/\.csv$/i, '') || 'csv';
+    let hash = 0x811c9dc5;
+    normalized.toLowerCase().split('').forEach(char => {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 0x01000193);
+    });
+    const leaf = `${stem}-${(hash >>> 0).toString(16).padStart(8, '0')}.json`;
+    return (parent ? `${parent}/` : '') + `.meldex/csv/${leaf}`;
+  }
+
+  async function _rewriteCsvSidecarSource(provider, path, sourcePath) {
+    const payload = await _readJsonSafe(provider, path, null);
+    if (!payload || typeof payload !== 'object') return;
+    payload.sourcePath = sourcePath;
+    await provider.writeJson(path, payload);
+  }
+
+  async function _relocateCsvSidecars(provider, oldPath, newPath, isFolder, copied) {
+    const oldNormalized = _normalizeFolderPath(oldPath);
+    const newNormalized = _normalizeFolderPath(newPath);
+    async function moveOne(sourcePath, targetPath, sourceCsvPath, copyFile) {
+      if (!await _pathExists(provider, sourcePath)) return;
+      await _directoryHandle(provider, _dirname(targetPath), true);
+      if (sourcePath !== targetPath) {
+        if (await _pathExists(provider, targetPath)) await _removeEntry(provider, targetPath);
+        if (copyFile) await provider.copyPath(sourcePath, targetPath);
+        else await _moveEntry(provider, sourcePath, targetPath);
+      }
+      await _rewriteCsvSidecarSource(provider, targetPath, sourceCsvPath);
+    }
+    if (!isFolder) {
+      if (!/\.csv$/i.test(oldNormalized) || !/\.csv$/i.test(newNormalized)) return;
+      await moveOne(
+        _csvMetadataPath(oldNormalized),
+        _csvMetadataPath(newNormalized),
+        newNormalized,
+        !!copied,
+      );
+      return;
+    }
+    async function walk(folderPath) {
+      const entries = await _listDirectoryEntries(provider, folderPath);
+      for (const entry of entries) {
+        const childPath = entry.path || _joinPath(folderPath, entry.name);
+        if (entry.handle.kind === 'directory') {
+          if (entry.name === '.meldex') continue;
+          await walk(childPath);
+          continue;
+        }
+        if (!/\.csv$/i.test(entry.name)) continue;
+        const relativeCsv = childPath.slice(newNormalized.length).replace(/^\/+/, '');
+        const oldCsv = _joinPath(oldNormalized, relativeCsv);
+        const oldMetadata = _csvMetadataPath(oldCsv);
+        const relativeMetadata = oldMetadata.slice(oldNormalized.length).replace(/^\/+/, '');
+        await moveOne(
+          _joinPath(newNormalized, relativeMetadata),
+          _csvMetadataPath(childPath),
+          childPath,
+          false,
+        );
+      }
+    }
+    await walk(newNormalized);
+  }
+
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     _rejectProductionStructureMutation(targetPath, '削除');
@@ -279,14 +382,29 @@
       destPath = _joinPath(trashDir, destName);
     }
     const metaPath = destPath + '._trash_meta.json';
+    const csvSidecarPath = source.kind === 'file' && /\.csv$/i.test(targetPath)
+      ? _csvMetadataPath(targetPath)
+      : '';
+    const csvSidecarTrashPath = csvSidecarPath && await _pathExists(provider, csvSidecarPath)
+      ? destPath + '._csv_meta.json'
+      : '';
     await provider.writeJson(metaPath, {
       original_path: targetPath,
       trash_root: trashDir,
       deleted_at: new Date().toISOString(),
+      csv_sidecar_trash_path: csvSidecarTrashPath,
     });
     try {
       await _moveEntry(provider, targetPath, destPath);
+      if (csvSidecarTrashPath) await _moveEntry(provider, csvSidecarPath, csvSidecarTrashPath);
     } catch (error) {
+      if (await _pathExists(provider, destPath) && !await _pathExists(provider, targetPath)) {
+        await _moveEntry(provider, destPath, targetPath).catch(() => {});
+      }
+      if (csvSidecarTrashPath && await _pathExists(provider, csvSidecarTrashPath)) {
+        await _directoryHandle(provider, _dirname(csvSidecarPath), true).catch(() => {});
+        await _moveEntry(provider, csvSidecarTrashPath, csvSidecarPath).catch(() => {});
+      }
       await provider.deletePath(metaPath).catch(() => {});
       throw error;
     }
@@ -361,68 +479,12 @@
     };
   }
 
-  function _isDropboxConflictName(name) {
-    const normalized = String(name || '').toLowerCase();
-    return /\([^)]*\bconflicted\s+copy\b[^)]*\)(?:\.[^.]*)?$/i.test(normalized)
-      || /\([^)]*競合[^)]*コピー[^)]*\)(?:\.[^.]*)?$/.test(normalized);
-  }
-
-  function _originalPathForConflict(conflictPath) {
-    const normalized = _normalizeFolderPath(conflictPath);
-    const name = _basename(normalized);
-    const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
-    if (!match) return '';
-    const originalName = `${match[1]}${match[2] || ''}`.trim();
-    if (!originalName) return '';
-    return _joinPath(_dirname(normalized), originalName);
-  }
-
-  function _conflictBackupStamp() {
-    return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  }
-
-  function _conflictBackupPath(kind, sourcePath, stamp) {
-    return _joinPath('_meldex/conflict-backups', stamp, kind, _normalizeFolderPath(sourcePath));
-  }
-
-  async function _backupConflictSide(provider, kind, sourcePath, stamp) {
-    const normalized = _normalizeFolderPath(sourcePath);
-    if (!normalized || !await _pathExists(provider, normalized)) return '';
-    const backupPath = _conflictBackupPath(kind, normalized, stamp || _conflictBackupStamp());
-    await provider.copyPath(normalized, backupPath);
-    return backupPath;
-  }
-
   async function _textPreview(provider, filePath, maxChars) {
     const text = await provider.readText(filePath);
     const limit = Number(maxChars || 200000);
     if (text.length <= limit) return { content: text, truncated: false, length: text.length };
     return { content: text.slice(0, limit), truncated: true, length: text.length };
   }
-
-  const ANNOTATION_DIR = '_events/annotations';
-  const VIEW_LOCK_DIR = '_meldex/view-locks';
-  const VERSION_FILE_DIR = '_meldex/versions/files';
-  const VERSION_FOLDER_DIR = '_meldex/versions/folders';
-  const FOLDER_VERSION_EXCLUDE = new Set([
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
-    '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
-    '.mp3', '.wav', '.ogg', '.flac', '.aac',
-    '.zip', '.rar', '.7z', '.tar', '.gz',
-    '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
-  ]);
-  const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
-  const ANNOTATION_EXT_KEYS = [
-    'target_kind', 'target_ref', 'target_file_name', 'target_snapshot',
-    'orphan', 'orphaned_at', 'resolved', 'thread_parent_id', 'body',
-    'copied_to_refs', 'monitor_id', 'monitor_w', 'monitor_h',
-    'desktop_x', 'desktop_y', 'width', 'height', 'always_on_top',
-    'z_order', 'collapsed', 'last_seen_at',
-  ];
-  const ANNOTATION_UPDATE_KEYS = [
-    'data', 'color', 'opacity', 'shape', 'type',
-    ...ANNOTATION_EXT_KEYS,
-  ];
 
   function _nowIso() {
     return new Date().toISOString();
@@ -472,502 +534,1113 @@
     }
   }
 
-  function _annotationJsonField(value, fallback) {
-    const parsed = _jsonMaybeParse(value, null);
-    if (parsed && typeof parsed === 'object') return parsed;
-    if (value && typeof value !== 'string') return value;
-    return fallback;
-  }
-
-  function _annotationFlag(value) {
-    if (value === true || value === 1 || value === '1') return 1;
-    if (String(value || '').toLowerCase() === 'true') return 1;
-    return 0;
-  }
-
-  function _currentUserName(body) {
-    const fromBody = String(body?.user || '').trim();
-    if (fromBody) return fromBody;
+  // 複製・名前を付けて保存でコピーしたファイルへ新しい document_id を発行する。
+  // 対象4形式（.mel-board/.mel-scenario/.mel-timer/.mel-sheet）以外は何もしない。
+  // 固有形式付随物廃止・管理データ一元化計画 Phase 2。
+  async function _regenerateDocumentIdForCopiedEntry(provider, destPath, isFile) {
+    if (!isFile) return;
+    const docIdentity = window.MeldexDocumentIdentity;
+    const fmt = docIdentity?.formatForPath?.(destPath);
+    if (!fmt) return;
     try {
-      const username = typeof getUsername === 'function' ? getUsername() : '';
-      if (username) return username;
-    } catch {}
-    return 'anonymous';
+      const content = await provider.readText(destPath);
+      const result = docIdentity.regenerateDocumentId(content, fmt);
+      if (result.changed) await provider.writeText(destPath, result.text);
+    } catch (err) {
+      // ID再発行に失敗しても複製自体は成功させる（保存を失敗させない）。
+    }
   }
 
-  function _annotationPath(id) {
-    return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
+  // --- 共通ストレージ層への保存先解決(固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+  //
+  // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
+  // 参加中の共有ワークスペードかを判定する共通モジュール)へ委譲する。
+  // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
+  // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
+  // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。
+
+  async function _managementAdapterForProvider(provider, kind, targetPath) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    if (kind && typeof resolver.resolveTypedAdapterForProvider === 'function') {
+      return resolver.resolveTypedAdapterForProvider(provider, kind, targetPath ? { targetPath } : undefined);
+    }
+    return resolver.resolveAdapterForProvider(provider, targetPath ? { targetPath } : undefined);
   }
 
-  function _annotationRow(record) {
-    const out = { ...(record || {}) };
-    out.id = String(out.id || '');
-    out.data = typeof out.data === 'string'
-      ? out.data
-      : JSON.stringify(out.data && typeof out.data === 'object' ? out.data : {}, null, 0);
-    if (out.target_ref && typeof out.target_ref !== 'string') out.target_ref = JSON.stringify(out.target_ref, null, 0);
-    if (out.copied_to_refs && typeof out.copied_to_refs !== 'string') out.copied_to_refs = JSON.stringify(out.copied_to_refs, null, 0);
-    out.orphan = _annotationFlag(out.orphan);
-    out.resolved = _annotationFlag(out.resolved);
-    out.created = out.created || out.created_at || '';
-    out.modified = out.modified || out.modified_at || out.created;
-    out.created_at = out.created_at || out.created;
-    out.modified_at = out.modified_at || out.modified;
-    return out;
+  // --- 閲覧ロック(view-lock。固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+  //
+  // 旧実装: `_meldex/view-locks/<viewKeyのfnvハッシュ>.json` への直接読み書き。
+  // 新実装: 共通ストレージ層(種別 view-locks、document_id はfnvハッシュ)。
+  // 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5)。
+
+  const VIEW_LOCK_DIR = '_meldex/view-locks'; // 旧パス読取フォールバック専用(新規書込では使わない)
+
+  function _viewLockDefault(viewKey) {
+    return { view_key: viewKey, target_path: '', pane_id: '', target_kind: '', locked: 0, state: {}, locked_at: '', locked_by: '' };
   }
 
-  function _mergeAnnotationRecord(existing, body, options) {
-    const now = options?.now || _nowIso();
-    const record = { ...(existing || {}) };
-    if (!record.id) record.id = options?.id || _randomId('ann');
-    if (!record.created) record.created = now;
-    if (!record.created_at) record.created_at = record.created;
+  async function _readViewLockRecord(provider, viewKey) {
+    const docId = _fnvFileId(viewKey);
+    const contract = window.MeldexSystemStorage;
+    try {
+      const adapter = await _managementAdapterForProvider(provider, contract.SystemStorageKind.VIEW_LOCKS, viewKey);
+      const record = await adapter.load(contract.SystemStorageKind.VIEW_LOCKS, docId);
+      if (record) return record.payload;
+    } catch (error) {
+      if (!(error instanceof contract.SystemStorageNotFoundError)) {
+        // 共通ストレージ層が使えない場合も、旧パスへフォールバックして機能を維持する。
+      }
+    }
+    const legacy = await _readJsonSafe(provider, _joinPath(VIEW_LOCK_DIR, docId + '.json'), null);
+    return legacy && typeof legacy === 'object' ? legacy : _viewLockDefault(viewKey);
+  }
+
+  async function _writeViewLockRecord(provider, viewKey, entry) {
+    const docId = _fnvFileId(viewKey);
+    const adapter = await _managementAdapterForProvider(
+      provider,
+      window.MeldexSystemStorage.SystemStorageKind.VIEW_LOCKS,
+      entry?.target_path || viewKey,
+    );
+    await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VIEW_LOCKS, docId, entry);
+    return entry;
+  }
+
+  // 注意: このIIFEはここでは閉じない。gb-data-access-dropbox-fileops-conflict-backups.js /
+  // gb-data-access-dropbox-fileops-annotations.js / gb-data-access-dropbox-fileops-versions.js /
+  // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
+  // 同じ関数スコープの続きとして連結され、最後に .part02.js が `})();` で閉じる
+  // (ファイル冒頭のコメント参照。既存の -folder-versions.js と同じ「継続ファイル」方式)。
+/* gb-data-access-dropbox-fileops-conflict-backups.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の②競合バックアップクラスタ(Dropbox自身の競合コピーの検出・
+ * バックアップ)。
+ *
+ * 競合バックアップはファイル／フォルダ内容を管理レコードへ埋め込み、
+ * `SystemStorageKind.CONFLICT_BACKUPS` へ保存する。ユーザーの保存場所に
+ * `_meldex/conflict-backups` を新規作成・更新しない。
+ */
+
+function _isDropboxConflictName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return /\([^)]*\bconflicted\s+copy\b[^)]*\)(?:\.[^.]*)?$/i.test(normalized)
+    || /\([^)]*競合[^)]*コピー[^)]*\)(?:\.[^.]*)?$/.test(normalized);
+}
+
+function _originalPathForConflict(conflictPath) {
+  const normalized = _normalizeFolderPath(conflictPath);
+  const name = _basename(normalized);
+  const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
+  if (!match) return '';
+  const originalName = `${match[1]}${match[2] || ''}`.trim();
+  if (!originalName) return '';
+  return _joinPath(_dirname(normalized), originalName);
+}
+
+function _conflictBackupStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+}
+
+function _bytesToManagedBase64(bytes) {
+  let binary = '';
+  const data = new Uint8Array(bytes || []);
+  for (let offset = 0; offset < data.length; offset += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function _conflictObject(provider, sourcePath) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  const entry = await _resolveEntryHandle(provider, normalized);
+  if (!entry) return null;
+  if (entry.kind === 'file') {
+    const file = await entry.handle.getFile();
+    return {
+      type: 'file',
+      name: _basename(normalized),
+      bytes_base64: _bytesToManagedBase64(await file.arrayBuffer()),
+    };
+  }
+  const children = [];
+  for (const child of await _listDirectoryEntries(provider, normalized)) {
+    children.push(await _conflictObject(provider, child.path || _joinPath(normalized, child.name)));
+  }
+  return { type: 'folder', name: _basename(normalized), children: children.filter(Boolean) };
+}
+
+async function _backupConflictSide(provider, kind, sourcePath, stamp) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  if (!normalized || !await _pathExists(provider, normalized)) return '';
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS,
+    normalized,
+  );
+  const documentId = `${_fnvFileId(normalized)}-${_randomId('c').replace(/[^a-z0-9]/gi, '').slice(-12)}`;
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS, documentId, {
+    kind,
+    original_relative_path: normalized,
+    created_at: stamp || _conflictBackupStamp(),
+    object: await _conflictObject(provider, normalized),
+  });
+  return `${window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS}/${documentId}`;
+}
+/* gb-data-access-dropbox-fileops-annotations.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * (gb-system-storage.js、種別 annotations)へ載せ替える。
+ *
+ * ## 保存先の変更
+ *
+ * 旧: `_events/annotations/<id>.json` への直接読み書き。
+ * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ *     参加中の共有ワークスペードに接続している場合は `<ワークスペード>/MeldexShare/system/v1`
+ *     (gb-dropbox-management-root-resolver.js が判定)。
+ *
+ * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切
+ * 旧パスへ行わない)。削除時だけは、フォールバックで存在し続ける「ゴースト
+ * 注釈」の復活を防ぐため、旧パスの実体があれば併せて削除する(ベストエフォート)。
+ */
+
+const ANNOTATION_DIR = '_events/annotations'; // 旧パス読取フォールバック専用(新規書込では使わない)
+const ANNOTATION_EXT_KEYS = [
+  'target_kind', 'target_ref', 'target_file_name', 'target_snapshot',
+  'orphan', 'orphaned_at', 'resolved', 'thread_parent_id', 'body',
+  'copied_to_refs', 'monitor_id', 'monitor_w', 'monitor_h',
+  'desktop_x', 'desktop_y', 'width', 'height', 'always_on_top',
+  'z_order', 'collapsed', 'last_seen_at',
+];
+const ANNOTATION_UPDATE_KEYS = [
+  'data', 'color', 'opacity', 'shape', 'type',
+  ...ANNOTATION_EXT_KEYS,
+];
+
+function _annotationPath(id) {
+  return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
+}
+
+function _annotationJsonField(value, fallback) {
+  const parsed = _jsonMaybeParse(value, null);
+  if (parsed && typeof parsed === 'object') return parsed;
+  if (value && typeof value !== 'string') return value;
+  return fallback;
+}
+
+function _annotationFlag(value) {
+  if (value === true || value === 1 || value === '1') return 1;
+  if (String(value || '').toLowerCase() === 'true') return 1;
+  return 0;
+}
+
+function _currentUserName(body) {
+  const fromBody = String(body?.user || '').trim();
+  if (fromBody) return fromBody;
+  try {
+    const username = typeof getUsername === 'function' ? getUsername() : '';
+    if (username) return username;
+  } catch {}
+  return 'anonymous';
+}
+
+function _annotationRow(record) {
+  const out = { ...(record || {}) };
+  out.id = String(out.id || '');
+  out.data = typeof out.data === 'string'
+    ? out.data
+    : JSON.stringify(out.data && typeof out.data === 'object' ? out.data : {}, null, 0);
+  if (out.target_ref && typeof out.target_ref !== 'string') out.target_ref = JSON.stringify(out.target_ref, null, 0);
+  if (out.copied_to_refs && typeof out.copied_to_refs !== 'string') out.copied_to_refs = JSON.stringify(out.copied_to_refs, null, 0);
+  out.orphan = _annotationFlag(out.orphan);
+  out.resolved = _annotationFlag(out.resolved);
+  out.created = out.created || out.created_at || '';
+  out.modified = out.modified || out.modified_at || out.created;
+  out.created_at = out.created_at || out.created;
+  out.modified_at = out.modified_at || out.modified;
+  return out;
+}
+
+function _mergeAnnotationRecord(existing, body, options) {
+  const now = options?.now || _nowIso();
+  const record = { ...(existing || {}) };
+  if (!record.id) record.id = options?.id || _randomId('ann');
+  if (!record.created) record.created = now;
+  if (!record.created_at) record.created_at = record.created;
+  record.modified = now;
+  record.modified_at = now;
+  if (!record.target_path && body?.target_path) record.target_path = _normalizeFolderPath(body.target_path);
+  if (!record.target_id && record.target_path) record.target_id = _fnvFileId(record.target_path);
+  if (!record.user) record.user = _currentUserName(body);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_path')) {
+    record.target_path = _normalizeFolderPath(body.target_path || '');
+    record.target_id = body.target_id || (record.target_path ? _fnvFileId(record.target_path) : '');
+  }
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_id')) record.target_id = String(body.target_id || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'type')) record.type = String(body.type || 'stroke');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'shape')) record.shape = String(body.shape || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'data')) record.data = _annotationJsonField(body.data, {});
+  if (body && Object.prototype.hasOwnProperty.call(body, 'color')) record.color = String(body.color || '#ffeb3b');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'opacity')) record.opacity = Number(body.opacity == null ? 1 : body.opacity);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'user')) record.user = _currentUserName(body);
+  ANNOTATION_EXT_KEYS.forEach((key) => {
+    if (!body || !Object.prototype.hasOwnProperty.call(body, key)) return;
+    if (key === 'target_ref' || key === 'copied_to_refs') record[key] = _annotationJsonField(body[key], key === 'copied_to_refs' ? [] : null);
+    else if (key === 'orphan' || key === 'resolved') record[key] = _annotationFlag(body[key]);
+    else record[key] = body[key];
+  });
+  if (!record.type) record.type = 'stroke';
+  if (record.data == null) record.data = {};
+  if (!record.color) record.color = '#ffeb3b';
+  if (record.opacity == null || !Number.isFinite(Number(record.opacity))) record.opacity = 1;
+  return record;
+}
+
+// --- 保存(共通ストレージ層。固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+//
+// 書込は record.target_path から個人/共有ワークスペースの管理スコープを解決する。
+// 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
+// できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
+// ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
+// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+
+async function _annotationScopes(provider) {
+  const resolver = window.MeldexDropboxManagementRootResolver;
+  if (!resolver || typeof resolver.resolveManagementScopesForProvider !== 'function') {
+    throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+  }
+  return resolver.resolveManagementScopesForProvider(provider);
+}
+
+async function _readAnnotationRecord(provider, id, targetPathHint) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const triedScopeKeys = new Set();
+  // 対象パスのヒントがある場合は、書込と同じスコープを最初に読む(最短経路)。
+  const hint = _normalizeFolderPath(targetPathHint || '');
+  if (hint) {
+    try {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const scope = await resolver.resolveManagementScopeForPath(provider, hint);
+      triedScopeKeys.add(scope.scopeKey);
+      const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+      if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
+    } catch {
+      // ヒントのスコープで読めない場合も、全スコープ走査と旧パスで継続する。
+    }
+  }
+  try {
+    for (const scope of await _annotationScopes(provider)) {
+      if (triedScopeKeys.has(scope.scopeKey)) continue;
+      try {
+        const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+        if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
+      } catch {
+        // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+      }
+    }
+  } catch {
+    // 共通ストレージ層が使えない場合も、旧パスへフォールバックして機能を維持する。
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  return legacy && typeof legacy === 'object' ? legacy : null;
+}
+
+async function _writeAnnotationRecord(provider, record) {
+  const docId = _safeId(record.id, 'annotation id');
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+    record.target_path || record.path || '',
+  );
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS, docId, record);
+}
+
+async function _deleteAnnotationRecordFully(provider, id) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  // 書込先スコープはidだけでは特定できないため、全スコープを走査して削除する。
+  // スコープ一覧を確定できない・一部スコープに実体が残った場合に成功扱いに
+  // すると、読取集約が削除済みの注釈を復活させる(ゴースト化)ため、削除は
+  // 安全側で失敗にする(スコープ列挙の失敗はそのまま伝える)。
+  const scopes = await _annotationScopes(provider);
+  let deleteError = null;
+  for (const scope of scopes) {
+    let stored = null;
+    try {
+      stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+    } catch (error) {
+      if (!deleteError) deleteError = error;
+      continue;
+    }
+    if (!stored) continue;
+    try {
+      await scope.adapter.delete(contract.SystemStorageKind.ANNOTATIONS, docId);
+    } catch (error) {
+      if (!deleteError) deleteError = error;
+    }
+  }
+  // 旧パスに実体が残っていると、_readAnnotationRecord のフォールバックが
+  // 削除済みの注釈を復活させてしまう(ゴースト化)。削除時だけは旧パスも消す。
+  await provider.deletePath(_annotationPath(docId)).catch(() => {});
+  if (deleteError) throw deleteError;
+}
+
+async function _listAnnotationRecords(provider) {
+  const contract = window.MeldexSystemStorage;
+  const records = [];
+  const seenIds = new Set();
+  let scopes = [];
+  try {
+    scopes = await _annotationScopes(provider);
+  } catch {
+    scopes = []; // 共通ストレージ層が使えない場合も、旧パスの一覧だけで機能を継続する。
+  }
+  for (const scope of scopes) {
+    let stored = [];
+    try {
+      stored = await scope.adapter.listDocuments(contract.SystemStorageKind.ANNOTATIONS);
+    } catch {
+      continue; // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+    }
+    for (const item of stored) {
+      const payload = item?.payload;
+      if (payload && typeof payload === 'object' && payload.id && !seenIds.has(String(payload.id))) {
+        records.push(payload);
+        seenIds.add(String(payload.id));
+      }
+    }
+  }
+  // 旧パス(_events/annotations)は読取フォールバック専用。新ストレージに
+  // 既にある同一idは、新ストレージ側の内容を優先する(移行はPhase 5)。
+  let legacyEntries = [];
+  try {
+    legacyEntries = await _listDirectoryEntries(provider, ANNOTATION_DIR);
+  } catch {
+    legacyEntries = [];
+  }
+  for (const entry of legacyEntries) {
+    if (entry.handle.kind !== 'file' || !entry.name.endsWith('.json')) continue;
+    const id = entry.name.slice(0, -5);
+    if (seenIds.has(id)) continue;
+    const record = await _readJsonSafe(provider, _annotationPath(id), null);
+    if (record?.id) records.push(record);
+  }
+  return records;
+}
+
+function _annotationRef(record) {
+  const ref = _annotationJsonField(record?.target_ref, null);
+  return ref && typeof ref === 'object' ? ref : {};
+}
+
+function _annotationMatchesOrphan(record, body, cascade) {
+  if (!record || _annotationFlag(record.orphan)) return false;
+  const targetKind = String(body?.target_kind || '');
+  const itemId = String(body?.item_id || '');
+  const colId = String(body?.col_id || '');
+  const targetFile = _normalizeFolderPath(body?.target_file || '');
+  if (!targetKind || !itemId) return false;
+  const ref = _annotationRef(record);
+  if (targetFile && _normalizeFolderPath(ref.file || record.target_path || '') !== targetFile) return false;
+
+  const kind = String(record.target_kind || '');
+  const directKindOk = targetKind === 'sheet_col'
+    ? (kind === 'sheet_col' || kind === 'sheet_cell')
+    : kind === targetKind;
+  if (directKindOk) {
+    if ((targetKind === 'note_line' || targetKind === 'scriptnote_line') && String(ref.lineId || '') === itemId) return true;
+    if (targetKind === 'board_card' && String(ref.cardId || '') === itemId) return true;
+    if (targetKind === 'board_line' && String(ref.lineId || '') === itemId) return true;
+    if (targetKind === 'sheet_entry' && String(ref.entryId || '') === itemId) return true;
+    if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
+    if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
+    if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;
+  }
+
+  if (!cascade || kind !== 'text_range' || !ref.container) return false;
+  const container = ref.container;
+  if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
+    const containerId = container.id || container.lineId || container.cardId || '';
+    return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
+  }
+  if (targetKind === 'sheet_cell') {
+    return String(container.kind || '') === 'sheet_cell'
+      && String(container.entryId || '') === itemId
+      && (!colId || String(container.colId || '') === colId);
+  }
+  if (targetKind === 'sheet_entry') {
+    return String(container.kind || '') === 'sheet_cell' && String(container.entryId || '') === itemId;
+  }
+  if (targetKind === 'sheet_col') {
+    return String(container.kind || '') === 'sheet_cell' && String(container.colId || '') === itemId;
+  }
+  return false;
+}
+
+function _annotationPathMatches(path, targetPath, isFolder) {
+  const normalized = _normalizeFolderPath(path);
+  const target = _normalizeFolderPath(targetPath);
+  if (!normalized || !target) return false;
+  return normalized === target || (!!isFolder && normalized.startsWith(target + '/'));
+}
+
+function _rewriteAnnotationPath(path, oldPath, newPath, isFolder) {
+  const normalized = _normalizeFolderPath(path);
+  const oldNormalized = _normalizeFolderPath(oldPath);
+  const newNormalized = _normalizeFolderPath(newPath);
+  if (!normalized || !oldNormalized) return normalized;
+  if (normalized === oldNormalized) return newNormalized;
+  if (isFolder && normalized.startsWith(oldNormalized + '/')) return newNormalized + normalized.slice(oldNormalized.length);
+  return normalized;
+}
+
+async function _updateAnnotationsForPathMutation(provider, event) {
+  const action = String(event?.action || '');
+  const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
+  const newPath = _normalizeFolderPath(event?.newPath || '');
+  const isFolder = !!event?.isFolder;
+  if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
+  const now = _nowIso();
+  let updated = 0;
+  const records = await _listAnnotationRecords(provider);
+  for (const record of records) {
+    let changed = false;
+    const ref = _annotationRef(record);
+    const recordPaths = [
+      record.target_path,
+      ref.file,
+      ref.path,
+      ref.targetPath,
+      ref.target_path,
+    ].filter(Boolean);
+    const matches = recordPaths.some(path => _annotationPathMatches(path, oldPath, isFolder));
+    if (!matches) continue;
+
+    if (action === 'delete') {
+      record.orphan = 1;
+      record.orphaned_at = now;
+      record.target_file_name = record.target_file_name || _basename(oldPath);
+      changed = true;
+    } else if (action === 'rename' || action === 'move') {
+      if (record.target_path) {
+        const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
+        if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
+          record.target_path = nextTargetPath;
+          record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
+          changed = true;
+        }
+      }
+      ['file', 'path', 'targetPath', 'target_path'].forEach((key) => {
+        if (!ref[key]) return;
+        const rewritten = _rewriteAnnotationPath(ref[key], oldPath, newPath, isFolder);
+        if (rewritten !== _normalizeFolderPath(ref[key])) {
+          ref[key] = rewritten;
+          changed = true;
+        }
+      });
+      if (changed) record.target_ref = ref;
+    }
+    if (!changed) continue;
     record.modified = now;
     record.modified_at = now;
-    if (!record.target_path && body?.target_path) record.target_path = _normalizeFolderPath(body.target_path);
-    if (!record.target_id && record.target_path) record.target_id = _fnvFileId(record.target_path);
-    if (!record.user) record.user = _currentUserName(body);
-    if (body && Object.prototype.hasOwnProperty.call(body, 'target_path')) {
-      record.target_path = _normalizeFolderPath(body.target_path || '');
-      record.target_id = body.target_id || (record.target_path ? _fnvFileId(record.target_path) : '');
+    await _writeAnnotationRecord(provider, record);
+    updated += 1;
+  }
+  return { ok: true, updated };
+}
+/* gb-data-access-dropbox-fileops-versions.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の④版クラスタ(ファイル版・フォルダ版の自動作成・一覧・復元・
+ * 論理削除/復元)。フォルダ版のヘルパーは兄弟ファイル
+ * gb-data-access-dropbox-fileops-folder-versions.js が担当し、このファイルの
+ * 旧パス読取ヘルパーと共通管理領域アダプターを共有する。
+ *
+ * 版履歴は共通ストレージ層（種別 versions）へ内容とメタデータを保存する。
+ * `_meldex/versions/files` / `_meldex/versions/folders` は移行時の読取・照合・
+ * 検証済み削除にのみ使用し、通常運用では作成・更新しない。
+ */
+
+const LEGACY_VERSION_FILE_DIR = '_meldex/versions/files';
+const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
+const FOLDER_VERSION_EXCLUDE = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+  '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
+  '.mp3', '.wav', '.ogg', '.flac', '.aac',
+  '.zip', '.rar', '.7z', '.tar', '.gz',
+  '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
+]);
+const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
+
+function _versionTimestamp() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
+}
+
+function _fileVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FILE_DIR, _fnvFileId(normalized));
+}
+
+function _folderVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
+}
+
+async function _fileEtag(provider, path, entry, writeMeta) {
+  const meta = writeMeta?.meta || writeMeta || {};
+  const metaToken = meta.rev || meta.content_hash || meta.etag || '';
+  if (metaToken) return String(metaToken);
+  const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
+  const statMeta = stat?.meta || {};
+  const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
+  if (statToken) return String(statToken);
+  const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
+  const stats = handle ? await _fileStats(handle).catch(() => null) : null;
+  return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
+}
+
+function _throwEtagConflict(path, expected, current) {
+  const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
+  error.status = 409;
+  error.code = 'etag_conflict';
+  error.detail = {
+    code: 'etag_conflict',
+    path: _normalizeFolderPath(path),
+    expected_etag: String(expected || ''),
+    current_etag: String(current || ''),
+  };
+  throw error;
+}
+
+async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
+  const normalizedOld = _normalizeFolderPath(oldPath);
+  const normalizedNew = _normalizeFolderPath(newPath);
+  if (!normalizedOld || normalizedOld === normalizedNew) return false;
+  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, normalizedOld);
+  const records = await adapter.listDocuments(kind);
+  let moved = 0;
+  for (const record of records) {
+    const payload = record?.payload || {};
+    const current = _normalizeFolderPath(payload.original_relative_path || '');
+    const matches = current === normalizedOld || (isFolder && current.startsWith(normalizedOld + '/'));
+    if (!matches) continue;
+    const suffix = current === normalizedOld ? '' : current.slice(normalizedOld.length);
+    await adapter.save(
+      kind,
+      record.documentId,
+      { ...payload, original_relative_path: normalizedNew + suffix },
+      { expectedRevision: record.revision },
+    );
+    moved += 1;
+  }
+  return moved > 0;
+}
+
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
     }
-    if (body && Object.prototype.hasOwnProperty.call(body, 'target_id')) record.target_id = String(body.target_id || '');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'type')) record.type = String(body.type || 'stroke');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'shape')) record.shape = String(body.shape || '');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'data')) record.data = _annotationJsonField(body.data, {});
-    if (body && Object.prototype.hasOwnProperty.call(body, 'color')) record.color = String(body.color || '#ffeb3b');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'opacity')) record.opacity = Number(body.opacity == null ? 1 : body.opacity);
-    if (body && Object.prototype.hasOwnProperty.call(body, 'user')) record.user = _currentUserName(body);
-    ANNOTATION_EXT_KEYS.forEach((key) => {
-      if (!body || !Object.prototype.hasOwnProperty.call(body, key)) return;
-      if (key === 'target_ref' || key === 'copied_to_refs') record[key] = _annotationJsonField(body[key], key === 'copied_to_refs' ? [] : null);
-      else if (key === 'orphan' || key === 'resolved') record[key] = _annotationFlag(body[key]);
-      else record[key] = body[key];
+  }
+  await walk(folderPath);
+  return size;
+}
+
+function _fileVersionName(path, options) {
+  const split = _splitNameAndExt(_basename(path));
+  const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
+  const prefix = options?.auto ? 'auto_' : '';
+  return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
+}
+
+function _fileVersionInfoFromName(name) {
+  const stem = _splitNameAndExt(name).stem;
+  const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
+  if (!match) return { auto: false, label: '', created: '' };
+  const date = match[2];
+  const time = match[3];
+  return {
+    auto: !!match[1],
+    label: match[5] || '',
+    created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
+  };
+}
+
+function _versionLabelFromName(path, name) {
+  return _fileVersionInfoFromName(name).label || '';
+}
+
+function _versionCreatedFromName(name) {
+  return _fileVersionInfoFromName(name).created || '';
+}
+
+async function _listEntriesSafe(provider, dir) {
+  try {
+    return await _listDirectoryEntries(provider, dir);
+  } catch {
+    return [];
+  }
+}
+
+async function _saveFileVersion(provider, path, options) {
+  const normalized = _normalizeFolderPath(path);
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
+  const versionName = _fileVersionName(normalized, options || {});
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  const content = await provider.readText(normalized);
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
+    object_type: 'text-file',
+    original_relative_path: normalized,
+    version_name: versionName,
+    content,
+    auto: !!options?.auto,
+    label: String(options?.label || ''),
+    created_at: _nowIso(),
+    deleted_at: '',
+  }, { expectedRevision: null });
+
+  const maxAuto = Number(options?.max_auto || 0);
+  if (options?.auto && maxAuto > 0) {
+    const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+    const autoFiles = rows.filter(row => row.payload?.original_relative_path === normalized && row.payload?.auto)
+      .sort((a, b) => String(a.payload?.created_at || '').localeCompare(String(b.payload?.created_at || '')));
+    while (autoFiles.length > maxAuto) {
+      const old = autoFiles.shift();
+      await adapter.delete(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, old.documentId).catch(() => {});
+    }
+  }
+  return { ok: true, version: versionName };
+}
+
+async function _listFileVersions(provider, path) {
+  const normalized = _normalizeFolderPath(path);
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const versions = [];
+  for (const entry of entries) {
+    const payload = entry.payload || {};
+    if (payload.original_relative_path !== normalized || payload.object_type !== 'text-file' || payload.deleted_at) continue;
+    const entryInfo = _fileVersionInfoFromName(payload.version_name);
+    versions.push({
+      name: payload.version_name,
+      auto: !!payload.auto,
+      label: payload.label || entryInfo.label,
+      created: payload.created_at || entryInfo.created || '',
+      modified: payload.created_at || '',
+      size: new TextEncoder().encode(payload.content || '').length,
+      _modifiedMs: Date.parse(payload.created_at || '') || 0,
     });
-    if (!record.type) record.type = 'stroke';
-    if (record.data == null) record.data = {};
-    if (!record.color) record.color = '#ffeb3b';
-    if (record.opacity == null || !Number.isFinite(Number(record.opacity))) record.opacity = 1;
-    return record;
   }
-
-  async function _readAnnotationRecord(provider, id) {
-    const record = await _readJsonSafe(provider, _annotationPath(id), null);
-    return record && typeof record === 'object' ? record : null;
+  const known = new Set(versions.map(row => row.name));
+  for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {
+    if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
+    const entryInfo = _fileVersionInfoFromName(entry.name);
+    if (!entryInfo.created) continue;
+    const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
+    versions.push({
+      name: entry.name,
+      auto: entryInfo.auto,
+      label: entryInfo.label,
+      created: entryInfo.created || stats.modified || '',
+      modified: stats.modified || '',
+      size: stats.size || 0,
+      _modifiedMs: stats.modifiedMs || Date.parse(entryInfo.created || '') || 0,
+    });
   }
+  versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
+  return versions.map(({ _modifiedMs, ...row }) => row);
+}
 
-  async function _writeAnnotationRecord(provider, record) {
-    await provider.writeJson(_annotationPath(record.id), record);
-  }
+function _safeVersionName(value) {
+  const name = _decodePathPart(value).trim();
+  if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
+  return name;
+}
 
-  async function _listAnnotationRecords(provider) {
-    let entries = [];
-    try {
-      entries = await _listDirectoryEntries(provider, ANNOTATION_DIR);
-    } catch {
-      return [];
-    }
-    const records = [];
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'file' || !entry.name.endsWith('.json')) continue;
-      const id = entry.name.slice(0, -5);
-      const record = await _readAnnotationRecord(provider, id);
-      if (record?.id) records.push(record);
-    }
-    return records;
-  }
+function _deletedVersionToken() {
+  return `d_${_versionTimestamp()}`;
+}
 
-  function _annotationRef(record) {
-    const ref = _annotationJsonField(record?.target_ref, null);
-    return ref && typeof ref === 'object' ? ref : {};
-  }
-
-  function _annotationMatchesOrphan(record, body, cascade) {
-    if (!record || _annotationFlag(record.orphan)) return false;
-    const targetKind = String(body?.target_kind || '');
-    const itemId = String(body?.item_id || '');
-    const colId = String(body?.col_id || '');
-    const targetFile = _normalizeFolderPath(body?.target_file || '');
-    if (!targetKind || !itemId) return false;
-    const ref = _annotationRef(record);
-    if (targetFile && _normalizeFolderPath(ref.file || record.target_path || '') !== targetFile) return false;
-
-    const kind = String(record.target_kind || '');
-    const directKindOk = targetKind === 'sheet_col'
-      ? (kind === 'sheet_col' || kind === 'sheet_cell')
-      : kind === targetKind;
-    if (directKindOk) {
-      if ((targetKind === 'note_line' || targetKind === 'scriptnote_line') && String(ref.lineId || '') === itemId) return true;
-      if (targetKind === 'board_card' && String(ref.cardId || '') === itemId) return true;
-      if (targetKind === 'board_line' && String(ref.lineId || '') === itemId) return true;
-      if (targetKind === 'sheet_entry' && String(ref.entryId || '') === itemId) return true;
-      if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
-      if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
-      if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;
-    }
-
-    if (!cascade || kind !== 'text_range' || !ref.container) return false;
-    const container = ref.container;
-    if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
-      const containerId = container.id || container.lineId || container.cardId || '';
-      return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
-    }
-    if (targetKind === 'sheet_cell') {
-      return String(container.kind || '') === 'sheet_cell'
-        && String(container.entryId || '') === itemId
-        && (!colId || String(container.colId || '') === colId);
-    }
-    if (targetKind === 'sheet_entry') {
-      return String(container.kind || '') === 'sheet_cell' && String(container.entryId || '') === itemId;
-    }
-    if (targetKind === 'sheet_col') {
-      return String(container.kind || '') === 'sheet_cell' && String(container.colId || '') === itemId;
-    }
-    return false;
-  }
-
-  function _annotationPathMatches(path, targetPath, isFolder) {
-    const normalized = _normalizeFolderPath(path);
-    const target = _normalizeFolderPath(targetPath);
-    if (!normalized || !target) return false;
-    return normalized === target || (!!isFolder && normalized.startsWith(target + '/'));
-  }
-
-  function _rewriteAnnotationPath(path, oldPath, newPath, isFolder) {
-    const normalized = _normalizeFolderPath(path);
-    const oldNormalized = _normalizeFolderPath(oldPath);
-    const newNormalized = _normalizeFolderPath(newPath);
-    if (!normalized || !oldNormalized) return normalized;
-    if (normalized === oldNormalized) return newNormalized;
-    if (isFolder && normalized.startsWith(oldNormalized + '/')) return newNormalized + normalized.slice(oldNormalized.length);
-    return normalized;
-  }
-
-  async function _updateAnnotationsForPathMutation(provider, event) {
-    const action = String(event?.action || '');
-    const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
-    const newPath = _normalizeFolderPath(event?.newPath || '');
-    const isFolder = !!event?.isFolder;
-    if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
-    const now = _nowIso();
-    let updated = 0;
-    const records = await _listAnnotationRecords(provider);
-    for (const record of records) {
-      let changed = false;
-      const ref = _annotationRef(record);
-      const recordPaths = [
-        record.target_path,
-        ref.file,
-        ref.path,
-        ref.targetPath,
-        ref.target_path,
-      ].filter(Boolean);
-      const matches = recordPaths.some(path => _annotationPathMatches(path, oldPath, isFolder));
-      if (!matches) continue;
-
-      if (action === 'delete') {
-        record.orphan = 1;
-        record.orphaned_at = now;
-        record.target_file_name = record.target_file_name || _basename(oldPath);
-        changed = true;
-      } else if (action === 'rename' || action === 'move') {
-        if (record.target_path) {
-          const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
-          if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
-            record.target_path = nextTargetPath;
-            record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
-            changed = true;
-          }
-        }
-        ['file', 'path', 'targetPath', 'target_path'].forEach((key) => {
-          if (!ref[key]) return;
-          const rewritten = _rewriteAnnotationPath(ref[key], oldPath, newPath, isFolder);
-          if (rewritten !== _normalizeFolderPath(ref[key])) {
-            ref[key] = rewritten;
-            changed = true;
-          }
-        });
-        if (changed) record.target_ref = ref;
+async function _findFileVersionRecord(provider, path, version, includeDeleted, migrateLegacy) {
+  const normalized = _normalizeFolderPath(path);
+  const name = _safeVersionName(version);
+  const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+  const records = await adapter.listDocuments(storageKind);
+  let record = records.find(row => {
+    const payload = row?.payload || {};
+    return payload.object_type === 'text-file'
+      && payload.original_relative_path === normalized
+      && payload.version_name === name
+      && (includeDeleted || !payload.deleted_at);
+  });
+  if (!record) {
+    const legacyPath = _joinPath(_fileVersionDir(normalized), name);
+    const legacyEntry = await _resolveEntryHandle(provider, legacyPath);
+    if (legacyEntry?.kind === 'file') {
+      const info = _fileVersionInfoFromName(name);
+      const stats = await _fileStats(legacyEntry.handle).catch(() => ({ modified: '' }));
+      const payload = {
+        object_type: 'text-file',
+        original_relative_path: normalized,
+        version_name: name,
+        content: await provider.readText(legacyPath),
+        auto: info.auto,
+        label: info.label,
+        created_at: info.created || stats.modified || '',
+        deleted_at: '',
+        deleted_token: '',
+        migrated_from_legacy: true,
+      };
+      if (migrateLegacy) {
+        const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(name)}`;
+        record = await adapter.save(storageKind, documentId, payload, { expectedRevision: null });
+      } else {
+        record = { documentId: '', revision: '', payload };
       }
-      if (!changed) continue;
-      record.modified = now;
-      record.modified_at = now;
-      await _writeAnnotationRecord(provider, record);
-      updated += 1;
     }
-    return { ok: true, updated };
+  }
+  return { adapter, storageKind, record, name };
+}
+
+async function _readFileVersion(provider, path, version) {
+  const { record, name } = await _findFileVersionRecord(provider, path, version, false);
+  if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
+  return { content: String(record.payload?.content || ''), name };
+}
+
+async function _restoreFileVersion(provider, path, version) {
+  const normalized = _normalizeFolderPath(path);
+  if (_isProductionFolderNotePath(normalized)) {
+    throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
+  }
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  const data = await _readFileVersion(provider, normalized, version);
+  _rejectProductionLegacyEntryContent(normalized, data.content || '');
+  await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
+  await provider.writeText(normalized, data.content || '');
+  return { ok: true };
+}
+
+async function _deleteFileVersion(provider, path, version) {
+  const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
+  if (!record) throw new Error('バージョンが見つかりません');
+  const token = _deletedVersionToken();
+  await adapter.save(
+    storageKind,
+    record.documentId,
+    { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, token, version: name };
+}
+
+async function _undeleteFileVersion(provider, path, token) {
+  const normalized = _normalizeFolderPath(path);
+  const safeToken = _safeVersionName(token);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
+  if (!record) throw new Error('削除済みバージョンが見つかりません');
+  await adapter.save(
+    window.MeldexSystemStorage.SystemStorageKind.VERSIONS,
+    record.documentId,
+    { ...record.payload, deleted_at: '', deleted_token: '' },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, version: record.payload.version_name };
+}
+  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
+  function _relativeToFolder(folderPath, filePath) {
+    const folder = _normalizeFolderPath(folderPath);
+    const file = _normalizeFolderPath(filePath);
+    if (!folder) return file;
+    return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
   }
 
-  function _versionTimestamp() {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    const ms = String(d.getMilliseconds()).padStart(3, '0');
-    return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
+  function _skipFolderVersionRelPath(relPath) {
+    const normalized = _normalizeFolderPath(relPath);
+    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   }
 
-  function _fileVersionDir(path) {
-    const normalized = _normalizeFolderPath(path);
-    return _joinPath(VERSION_FILE_DIR, _fnvFileId(normalized));
-  }
-
-  function _folderVersionDir(path) {
-    const normalized = _normalizeFolderPath(path);
-    return _joinPath(VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
-  }
-
-  async function _fileEtag(provider, path, entry, writeMeta) {
-    const meta = writeMeta?.meta || writeMeta || {};
-    const metaToken = meta.rev || meta.content_hash || meta.etag || '';
-    if (metaToken) return String(metaToken);
-    const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
-    const statMeta = stat?.meta || {};
-    const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
-    if (statToken) return String(statToken);
-    const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
-    const stats = handle ? await _fileStats(handle).catch(() => null) : null;
-    return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
-  }
-
-  function _throwEtagConflict(path, expected, current) {
-    const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
-    error.status = 409;
-    error.code = 'etag_conflict';
-    error.detail = {
-      code: 'etag_conflict',
-      path: _normalizeFolderPath(path),
-      expected_etag: String(expected || ''),
-      current_etag: String(current || ''),
-    };
-    throw error;
-  }
-
-  async function _mergeVersionDirectory(provider, oldDir, newDir) {
-    const oldEntry = await _resolveEntryHandle(provider, oldDir);
-    if (!oldEntry || oldEntry.kind !== 'directory') return false;
-    const newEntry = await _resolveEntryHandle(provider, newDir);
-    if (!newEntry) {
-      await _moveEntry(provider, oldDir, newDir);
-      return true;
+  async function _versionFileBase64(provider, path) {
+    const source = await provider.downloadAsFile(path);
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
     }
-    if (newEntry.kind !== 'directory') throw new Error('バージョン履歴の移動先がフォルダではありません');
-    for (const entry of await _listEntriesSafe(provider, oldDir)) {
-      const target = await _moveConflictName(provider, newDir, entry.name, entry.handle.kind === 'file');
-      await _moveEntry(provider, _joinPath(oldDir, entry.name), target.path);
-    }
-    await _removeEntry(provider, oldDir).catch(() => {});
-    return true;
+    return { content_base64: btoa(binary), byte_length: bytes.length };
   }
 
-  async function _relocateChildFileVersionHistories(provider, oldFolder, newFolder) {
-    const oldBase = _normalizeFolderPath(oldFolder);
-    const newBase = _normalizeFolderPath(newFolder);
+  async function _collectFolderVersionFiles(provider, folderPath) {
+    const base = _normalizeFolderPath(folderPath);
+    const files = [];
     async function walk(current) {
-      for (const entry of await _listDirectoryEntries(provider, current)) {
-        const nextPath = entry.path || _joinPath(current, entry.name);
+      const entries = await _listDirectoryEntries(provider, current);
+      for (const entry of entries) {
+        if (!entry.name || entry.name.startsWith('.')) continue;
+        const fullPath = _joinPath(current, entry.name);
+        const relPath = _relativeToFolder(base, fullPath);
+        if (_skipFolderVersionRelPath(relPath)) continue;
         if (entry.handle.kind === 'directory') {
-          await walk(nextPath);
+          await walk(fullPath);
           continue;
         }
-        const rel = _relativeToFolder(newBase, nextPath);
-        await _mergeVersionDirectory(provider, _fileVersionDir(_joinPath(oldBase, rel)), _fileVersionDir(nextPath));
+        const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
+        if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
+        const encoded = await _versionFileBase64(provider, fullPath);
+        files.push({
+          rel_path: relPath,
+          size: stats.size || encoded.byte_length,
+          modified: stats.modified || '',
+          content_base64: encoded.content_base64,
+        });
       }
     }
-    await walk(newBase);
+    await walk(base);
+    return files;
   }
 
-  async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
-    const normalizedOld = _normalizeFolderPath(oldPath);
-    const normalizedNew = _normalizeFolderPath(newPath);
-    if (!normalizedOld || normalizedOld === normalizedNew) return false;
-    const oldDir = isFolder ? _folderVersionDir(normalizedOld) : _fileVersionDir(normalizedOld);
-    const newDir = isFolder ? _folderVersionDir(normalizedNew) : _fileVersionDir(normalizedNew);
-    const moved = await _mergeVersionDirectory(provider, oldDir, newDir);
-    if (isFolder) await _relocateChildFileVersionHistories(provider, normalizedOld, normalizedNew);
-    return moved;
-  }
-
-  async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-    let size = 0;
-    async function walk(current) {
-      for (const entry of await _listDirectoryEntries(provider, current)) {
-        if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-        else size += 1;
-      }
-    }
-    await walk(folderPath);
-    return size;
-  }
-
-  function _fileVersionName(path, options) {
-    const split = _splitNameAndExt(_basename(path));
+  async function _saveFolderVersion(provider, folderPath, options) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const folder = await _resolveEntryHandle(provider, normalized);
+    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-    const prefix = options?.auto ? 'auto_' : '';
-    return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
+    const kind = options?.auto ? 'auto' : 'manual';
+    const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
+    const files = await _collectFolderVersionFiles(provider, normalized);
+    const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+    await adapter.save(storageKind, documentId, {
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: versionName,
+      created_at: _nowIso(),
+      label: options?.label || '',
+      auto: !!options?.auto,
+      files,
+      exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+    }, { expectedRevision: null });
+    return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
 
-  function _fileVersionInfoFromName(name) {
-    const stem = _splitNameAndExt(name).stem;
-    const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
-    if (!match) return { auto: false, label: '', created: '' };
-    const date = match[2];
-    const time = match[3];
+  async function _readLegacyFolderVersion(provider, folderPath, version) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
+    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    if (!meta || typeof meta !== 'object') return null;
+    const files = [];
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file?.rel_path || '', 'rel_path');
+      const encoded = await _versionFileBase64(provider, _joinPath(versionDir, 'files', relPath));
+      files.push({
+        rel_path: relPath,
+        size: Number(file?.size || encoded.byte_length),
+        modified: file?.modified || '',
+        content_base64: encoded.content_base64,
+      });
+    }
     return {
-      auto: !!match[1],
-      label: match[5] || '',
-      created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: safeVersion,
+      created_at: meta.created || _versionCreatedFromName(safeVersion) || '',
+      label: meta.label || '',
+      auto: !!meta.auto,
+      files,
+      exclude_patterns: Array.isArray(meta.exclude_patterns) ? meta.exclude_patterns : [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+      migrated_from_legacy: true,
     };
   }
 
-  function _versionLabelFromName(path, name) {
-    return _fileVersionInfoFromName(name).label || '';
-  }
-
-  function _versionCreatedFromName(name) {
-    return _fileVersionInfoFromName(name).created || '';
-  }
-
-  async function _listEntriesSafe(provider, dir) {
-    try {
-      return await _listDirectoryEntries(provider, dir);
-    } catch {
-      return [];
-    }
-  }
-
-  async function _saveFileVersion(provider, path, options) {
-    const normalized = _normalizeFolderPath(path);
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
-    const versionDir = _fileVersionDir(normalized);
-    const versionName = _fileVersionName(normalized, options || {});
-    const versionPath = _joinPath(versionDir, versionName);
-    await provider.copyPath(normalized, versionPath);
-
-    const maxAuto = Number(options?.max_auto || 0);
-    if (options?.auto && maxAuto > 0) {
-      const entries = await _listEntriesSafe(provider, versionDir);
-      const autoFiles = [];
-      for (const entry of entries) {
-        if (entry.handle.kind !== 'file' || !_fileVersionInfoFromName(entry.name).auto) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ modifiedMs: 0 }));
-        autoFiles.push({ name: entry.name, path: _joinPath(versionDir, entry.name), modifiedMs: stats.modifiedMs || 0 });
-      }
-      autoFiles.sort((a, b) => a.modifiedMs - b.modifiedMs);
-      while (autoFiles.length > maxAuto) {
-        const old = autoFiles.shift();
-        await provider.deletePath(old.path).catch(() => {});
-      }
-    }
-    return { ok: true, version: versionName };
-  }
-
-  async function _listFileVersions(provider, path) {
-    const normalized = _normalizeFolderPath(path);
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    const entries = await _listEntriesSafe(provider, _fileVersionDir(normalized));
+  async function _listFolderVersions(provider, folderPath) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const entries = await adapter.listDocuments(storageKind);
     const versions = [];
     for (const entry of entries) {
-      if (entry.handle.kind !== 'file') continue;
-      const entryInfo = _fileVersionInfoFromName(entry.name);
-      if (!entryInfo.created) continue;
-      const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
+      const meta = entry?.payload || {};
+      if (meta.object_type !== 'folder' || meta.original_relative_path !== normalized || meta.deleted_at) continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
       versions.push({
-        name: entry.name,
-        auto: entryInfo.auto,
-        label: entryInfo.label,
-        created: entryInfo.created || stats.modified || '',
-        modified: stats.modified || '',
-        size: stats.size || 0,
-        _modifiedMs: stats.modifiedMs || 0,
+        name: meta.version_name,
+        created: meta.created_at || _versionCreatedFromName(meta.version_name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
+        file_count: files.length,
+        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
       });
     }
-    versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
-    return versions.map(({ _modifiedMs, ...row }) => row);
-  }
-
-  function _safeVersionName(value) {
-    const name = _decodePathPart(value).trim();
-    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
-    return name;
-  }
-
-  function _deletedVersionToken() {
-    return `d_${_versionTimestamp()}`;
-  }
-
-  function _deletedVersionsDir(baseDir) {
-    return _joinPath(baseDir, '_deleted');
-  }
-
-  async function _softDeleteVersionEntry(provider, baseDir, version, kind) {
-    const safeName = _safeVersionName(version);
-    const sourcePath = _joinPath(baseDir, safeName);
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    if (!source || source.kind !== expectedKind) throw new Error('バージョンが見つかりません');
-    const token = _safeVersionName(_deletedVersionToken());
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), token);
-    await provider.movePath(sourcePath, _joinPath(deletedDir, safeName));
-    await provider.writeJson(_joinPath(deletedDir, '_meta.json'), {
-      kind,
-      version: safeName,
-      deleted_at: _nowIso(),
-    });
-    return { ok: true, token, version: safeName };
-  }
-
-  async function _restoreDeletedVersionEntry(provider, baseDir, token, kind) {
-    const safeToken = _safeVersionName(token);
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), safeToken);
-    const meta = await _readJsonSafe(provider, _joinPath(deletedDir, '_meta.json'), null);
-    if (!meta || meta.kind !== kind) throw new Error('削除済みバージョンが見つかりません');
-    const versionName = _safeVersionName(meta.version || '');
-    const sourcePath = _joinPath(deletedDir, versionName);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    if (!source || source.kind !== expectedKind) throw new Error('削除済みバージョンが見つかりません');
-    const target = await _moveConflictName(provider, baseDir, versionName, kind !== 'folder');
-    await provider.movePath(sourcePath, target.path);
-    await provider.deletePath(deletedDir).catch(() => {});
-    return { ok: true, version: _basename(target.path) };
-  }
-
-  async function _readFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    const name = _safeVersionName(version);
-    const versionPath = _joinPath(_fileVersionDir(normalized), name);
-    const entry = await _resolveEntryHandle(provider, versionPath);
-    if (!entry || entry.kind !== 'file') throw new Error('バージョンが見つかりません');
-    return { content: await provider.readText(versionPath), name };
-  }
-
-  async function _restoreFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    if (_isProductionFolderNotePath(normalized)) {
-      throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
+    const known = new Set(versions.map(row => row.name));
+    const legacyDir = _folderVersionDir(normalized);
+    for (const entry of await _listEntriesSafe(provider, legacyDir)) {
+      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_') || known.has(entry.name)) continue;
+      const meta = await _readJsonSafe(provider, _joinPath(legacyDir, entry.name, '_meta.json'), null);
+      if (!meta || typeof meta !== 'object') continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
+      versions.push({
+        name: entry.name,
+        created: meta.created || _versionCreatedFromName(entry.name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
+        file_count: files.length,
+        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+      });
     }
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    const data = await _readFileVersion(provider, normalized, version);
-    _rejectProductionLegacyEntryContent(normalized, data.content || '');
-    await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-    await provider.writeText(normalized, data.content || '');
-    return { ok: true };
+    versions.sort((a, b) => String(b.name).localeCompare(String(a.name)));
+    return versions;
   }
 
-  async function _deleteFileVersion(provider, path, version) {
-    return _softDeleteVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), version, 'file');
+  async function _findFolderVersionRecord(provider, folderPath, version, includeDeleted, migrateLegacy) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    let record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && (includeDeleted || !payload.deleted_at);
+    });
+    if (!record) {
+      const legacyPayload = await _readLegacyFolderVersion(provider, normalized, safeVersion);
+      if (legacyPayload && migrateLegacy) {
+        const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(safeVersion)}`;
+        record = await adapter.save(storageKind, documentId, legacyPayload, { expectedRevision: null });
+      } else if (legacyPayload) {
+        record = { documentId: '', revision: '', payload: legacyPayload };
+      }
+    }
+    return { adapter, storageKind, record };
   }
 
-  async function _undeleteFileVersion(provider, path, token) {
-    return _restoreDeletedVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), token, 'file');
+  async function _readFolderVersion(provider, folderPath, version) {
+    const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    return record.payload;
+  }
+
+  async function _readFolderVersionFile(provider, folderPath, version, file) {
+    const relFile = _safeRelativeFile(file, 'file');
+    const meta = await _readFolderVersion(provider, folderPath, version);
+    const snapshot = (Array.isArray(meta.files) ? meta.files : []).find(row => row?.rel_path === relFile);
+    if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+    const binary = atob(snapshot.content_base64);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    return { content: new TextDecoder().decode(bytes) };
+  }
+
+  async function _restoreFolderVersion(provider, folderPath, version) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const folder = await _resolveEntryHandle(provider, normalized);
+    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
+    const safeVersion = _safeVersionName(version);
+    const meta = await _readFolderVersion(provider, normalized, safeVersion);
+    const protectedFile = (Array.isArray(meta.files) ? meta.files : []).find(file => {
+      const relPath = _normalizeFolderPath(file?.rel_path || '');
+      return relPath && _isProductionFolderNotePath(_joinPath(normalized, relPath));
+    });
+    if (protectedFile) {
+      throw new Error('制作管理の列定義を含むフォルダ履歴は汎用復元できません');
+    }
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      const dst = _joinPath(normalized, relPath);
+      if (!_productionReservedEntryProperties(dst).length) continue;
+      const snapshot = meta.files.find(row => row?.rel_path === relPath);
+      if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+      const binary = atob(snapshot.content_base64);
+      _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
+    }
+    await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
+    const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
+    let restored = 0;
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
+      const dst = _joinPath(normalized, relPath);
+      if (!file.content_base64) continue;
+      const binary = atob(file.content_base64);
+      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
+      restored += 1;
+    }
+    return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
+  }
+
+  async function _deleteFolderVersion(provider, folderPath, version) {
+    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    const token = _deletedVersionToken();
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, token, version: record.payload.version_name };
+  }
+
+  async function _undeleteFolderVersion(provider, folderPath, token) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeToken = _safeVersionName(token);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.deleted_token === safeToken;
+    });
+    if (!record) throw new Error('削除済みバージョンが見つかりません');
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: '', deleted_token: '' },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, version: record.payload.version_name };
   }
   async function _findDropboxConflictedCopies(provider, limit) {
     const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
@@ -1194,25 +1867,106 @@
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       const entry = await _resolveEntryHandle(provider, targetPath);
-      if (!entry) return { type: 'unknown' };
-      if (entry.kind === 'directory') return { type: await _classifyDirectoryType(provider, targetPath) };
-      return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown' };
+      if (!entry) return { type: 'unknown', exists: false };
+      if (entry.kind === 'directory') {
+        return { type: await _classifyDirectoryType(provider, targetPath), exists: true };
+      }
+      return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown', exists: true };
     }
 
     if (pathname === '/images-in-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      // include_videos=1 はビューワーのフォルダ内前後移動用（サーバー版 /api/images-in-folder と同じ拡張子集合）
+      const includeVideos = url.searchParams.get('include_videos') === '1';
+      const videoExts = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
       const entries = await _listDirectoryEntries(provider, targetPath);
       const items = [];
       for (const entry of entries) {
         if (entry.handle.kind !== 'file') continue;
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (!IMAGE_EXTS.has(ext)) continue;
+        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext))) continue;
         const itemPath = entry.path || _joinPath(targetPath, entry.name);
         const stats = await _fileStats(entry.handle);
         items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
       }
       return items;
+    }
+
+    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
+      let meta = writeMeta?.meta || writeMeta || null;
+      if (!meta?.id && typeof provider?.getMetadata === 'function') {
+        meta = await provider.getMetadata(filePath).catch(() => meta);
+      }
+      if (!meta?.id) {
+        const stat = typeof provider?.statPath === 'function'
+          ? await provider.statPath(filePath).catch(() => null)
+          : null;
+        meta = stat?.meta || meta;
+      }
+      const token = String(etag || '');
+      const providerId = String(meta?.id || '');
+      const identity = window.MeldexDocumentIdentity;
+      const identityFormat = identity?.formatForPath?.(filePath);
+      let content = fileContent;
+      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+        content = await provider.readText(filePath).catch(() => '');
+      }
+      const documentId = identityFormat
+        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        : '';
+      return {
+        etag: token,
+        transport_revision: { transport: 'dropbox-rev', token },
+        ...(documentId ? {
+          document_id: documentId,
+          document_key: `document:${documentId}`,
+        } : {}),
+        ...(providerId ? {
+          provider_id: providerId,
+          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
+        } : {}),
+      };
+    }
+
+    function _throwPreconditionRequired(filePath, currentEtag) {
+      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
+      error.status = 428;
+      error.code = 'precondition_required';
+      error.meldexCode = 'precondition_required';
+      error.detail = {
+        code: 'precondition_required',
+        path: _normalizeFolderPath(filePath),
+        current_etag: String(currentEtag || ''),
+      };
+      throw error;
+    }
+
+    function _dropboxTransportRevisionToken(bodyValue) {
+      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
+      let transport = '';
+      let token = '';
+      if (revision && typeof revision === 'object') {
+        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        token = String(revision.token || revision.revision || revision.etag || '').trim();
+      } else {
+        const raw = String(revision || '').trim();
+        if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('dropbox-rev:')) {
+          transport = 'dropbox-rev';
+          token = raw.slice('dropbox-rev:'.length);
+        } else {
+          transport = 'dropbox-rev';
+          token = raw;
+        }
+      }
+      if (transport && transport !== 'dropbox-rev') {
+        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
+        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        throw error;
+      }
+      return token;
     }
 
     if (pathname === '/file' && method === 'GET') {
@@ -1222,7 +1976,47 @@
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
-      return { path: filePath, content: await provider.readText(filePath), etag: await _fileEtag(provider, filePath, entry) };
+      if (_boolParam(url.searchParams.get('metadata_only'))) {
+        const etag = await _fileEtag(provider, filePath, entry);
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
+        return {
+          path: filePath,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          size: Number(stats.size || 0),
+        };
+      }
+      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
+        const file = await provider.downloadAsFile(filePath);
+        const bytes = await file.arrayBuffer();
+        const view = new Uint8Array(bytes);
+        const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+        let content;
+        let encoding = bom ? 'utf-8-bom' : 'utf-8';
+        try {
+          content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+          content = new TextDecoder('shift_jis', { fatal: true }).decode(bytes);
+          encoding = 'cp932';
+        }
+        const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
+        const etag = await _fileEtag(provider, filePath, entry);
+        return {
+          path: filePath,
+          content,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          encoding,
+          bom,
+          delimiter: dialect.delimiter || ',',
+          newline: dialect.newline || '\n',
+        };
+      }
+      const etag = await _fileEtag(provider, filePath, entry);
+      const content = await provider.readText(filePath);
+      return {
+        path: filePath,
+        content,
+        ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
+      };
     }
 
     if (pathname === '/file' && (method === 'PUT' || method === 'POST')) {
@@ -1232,17 +2026,27 @@
       if (_isProductionFolderNotePath(filePath)) {
         throw new Error('制作管理の列定義ファイルは汎用ファイル保存から変更できません');
       }
-      const content = String(body?.content ?? '');
+      let content = String(body?.content ?? '');
       _rejectProductionLegacyEntryContent(filePath, content);
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
       const createOnly = !!(body?.create_only || body?.createOnly);
-      const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      const explicitEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      const transportEtag = _dropboxTransportRevisionToken(body);
+      if (explicitEtag && transportEtag && explicitEtag !== transportEtag) {
+        const error = new Error('if_match_etagとtransport_revisionが一致しません');
+        error.status = 400; error.code = 'revision_field_mismatch'; error.meldexCode = 'revision_field_mismatch';
+        throw error;
+      }
+      const expectedEtag = explicitEtag || transportEtag;
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
       if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
         _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
+      }
+      if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
+        _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
       if (expectedEtag && entry && !forceOverwrite) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
@@ -1250,8 +2054,28 @@
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
+      const docIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath);
+      if (docIdentityFmt) {
+        let existingDocumentId = '';
+        if (entry) {
+          const currentContent = await provider.readText(filePath);
+          existingDocumentId = String(
+            window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            || '',
+          );
+        }
+        content = window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
+          content,
+          docIdentityFmt,
+          existingDocumentId,
+        ).text;
+      }
       const writeMeta = await provider.writeText(filePath, content);
-      return { ok: true, etag: await _fileEtag(provider, filePath, null, writeMeta) };
+      const etag = await _fileEtag(provider, filePath, null, writeMeta);
+      return {
+        ok: true,
+        ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+      };
     }
 
     if (pathname === '/upload-file' && method === 'POST') {
@@ -1375,6 +2199,15 @@
       return { ok: true, path: normalizedPath };
     }
 
+    if (pathname === '/references/delete-impact' && method === 'POST') {
+      // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
+      // 削除確認ダイアログの被参照警告(gb-delete-impact-warning.js)向け。
+      // Desktop側 /api/references/delete-impact の Cloud（Dropbox直結）等価。
+      const provider = await _requirePwaProvider('read');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      return _queryDeleteImpact(provider, items);
+    }
+
     if (pathname === '/annotations' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('target') || '');
@@ -1403,7 +2236,7 @@
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id);
+      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
       const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
       if (body?.created) {
         record.created = body.created;
@@ -1465,7 +2298,7 @@
     if (/^\/annotations\/[^/]+$/.test(pathname) && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
-      await provider.deletePath(_annotationPath(id)).catch(() => {});
+      await _deleteAnnotationRecordFully(provider, id);
       return { ok: true };
     }
 
@@ -1473,10 +2306,7 @@
       const provider = await _requirePwaProvider('read');
       const viewKey = String(url.searchParams.get('view_key') || '').trim();
       if (!viewKey) throw new Error('view_key required');
-      const entry = await _readJsonSafe(provider, _joinPath(VIEW_LOCK_DIR, _fnvFileId(viewKey) + '.json'), null);
-      return entry && typeof entry === 'object'
-        ? entry
-        : { view_key: viewKey, target_path: '', pane_id: '', target_kind: '', locked: 0, state: {}, locked_at: '', locked_by: '' };
+      return _readViewLockRecord(provider, viewKey);
     }
     if (pathname === '/view-lock' && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
@@ -1493,7 +2323,7 @@
         locked_at: locked ? _nowIso() : '',
         locked_by: String(body?.locked_by || ''),
       };
-      await provider.writeJson(_joinPath(VIEW_LOCK_DIR, _fnvFileId(viewKey) + '.json'), entry);
+      await _writeViewLockRecord(provider, viewKey, entry);
       return { ok: true, view_key: viewKey, locked };
     }
 
@@ -1604,10 +2434,12 @@
         const targetPath = _joinPath(parent, labelName + '.scriptnote.json');
         await provider.writeJson(targetPath, {
           fileType: 'meldex-scriptnote',
+          schema_version: 3,
           version: 1,
           title: labelName,
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
+          scenarioTypes: [],
           characters: [],
           characterDb: [],
           notes: [],
@@ -1619,7 +2451,9 @@
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        await provider.writeText(targetPath, `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`);
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
+        await provider.writeText(targetPath, boardContent);
         return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
       }
       if (type === 'calendar') {
@@ -1664,6 +2498,9 @@
         if (newPath !== oldPath) {
           await _moveEntry(provider, oldPath, newPath);
           await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, newPath, true));
+          await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+            _relocateCsvSidecars(provider, oldPath, newPath, true, false)
+          ));
         }
         const oldNotePath = _joinPath(newPath, sourceName + '.md');
         const newNotePath = _joinPath(newPath, newName + '.md');
@@ -1696,6 +2533,9 @@
       }
       const warnings = [];
       await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, nextPath, false));
+      await _runPostMutationStep(warnings, 'csv-sidecar', () => (
+        _relocateCsvSidecars(provider, oldPath, nextPath, false, false)
+      ));
       await _runPostMutationStep(warnings, 'stored-paths', () => (
         typeof _rewriteStoredPathsForProvider === 'function'
           ? _rewriteStoredPathsForProvider(provider, oldPath, nextPath, false)
@@ -1742,6 +2582,15 @@
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
+      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
+      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
+        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
+          const sidecarPath = _csvMetadataPath(originalPath);
+          await _directoryHandle(provider, _dirname(sidecarPath), true);
+          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
+          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
+        });
+      }
       await _runPathMutationHooksSafe({
         action: 'restore', oldPath: trashPath, newPath: originalPath,
         isFolder: source.kind === 'directory',
@@ -1767,7 +2616,11 @@
       }
       const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
+      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
       const warnings = [];
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
+      ));
       await _runPathMutationHooksSafe({
         action: 'copy', oldPath: sourcePath, newPath: destPath,
         isFolder: source.kind === 'directory',
@@ -1793,7 +2646,11 @@
       }
       const destDirHandle = await _directoryHandle(provider, destFolder, true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
+      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
       const warnings = [];
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
+      ));
       await _runPathMutationHooksSafe({
         action: 'copy', oldPath: sourcePath, newPath: destPath,
         isFolder: source.kind === 'directory',
@@ -1833,6 +2690,9 @@
       await _moveEntry(provider, sourcePath, conflict.path);
       const warnings = [];
       await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
+      ));
       await _runPostMutationStep(warnings, 'stored-paths', () => (
         typeof _rewriteStoredPathsForProvider === 'function'
           ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')

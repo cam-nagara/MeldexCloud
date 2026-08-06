@@ -759,6 +759,9 @@
       }
       resizeHistoryBefore = null;
       resizeStartRatio = null;
+      // ウィンドウリサイズと同じ非破壊経路へ統一: 寸法が変わったことだけを通知する
+      // （DOM再生成やビューワーiframeの退避・再配置は行わない）。
+      if (typeof _notifyLayoutViewportResize === 'function') _notifyLayoutViewportResize();
     };
 
     handle.addEventListener('pointerdown', (e) => {

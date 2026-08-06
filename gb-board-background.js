@@ -324,6 +324,16 @@ function _bdIsImageFile(file) {
   return /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i.test(file.name || '');
 }
 
+async function _bdUploadBoardBackgroundImage(data, file) {
+  const res = await apiFetch('/upload-file?path=' + encodeURIComponent(_bdBoardUploadDir()), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ data, filename: file.name || 'background.png' }),
+  });
+  if (!res?.ok || !res.path) throw new Error('upload failed');
+  return API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+}
+
 async function bdSetBoardBackgroundImageFromFile(file) {
   if (!_bdIsImageFile(file)) {
     if (typeof showStatus === 'function') showStatus('画像ファイルを選択してください', true);
@@ -335,13 +345,15 @@ async function bdSetBoardBackgroundImageFromFile(file) {
   }
   try {
     const data = await _bdReadFileAsDataUrl(file);
-    const res = await apiFetch('/upload-file?path=' + encodeURIComponent(_bdBoardUploadDir()), {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ data, filename: file.name || 'background.png' }),
-    });
-    if (!res?.ok || !res.path) throw new Error('upload failed');
-    const imageUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
+    // 2026-08-01: proprietary-format-sidecar-cleanup-plan-2026-07-31.md §5.1 により、
+    // 背景画像は既定で .mel-board 本体へ埋め込む（アップロードによる隣接ファイル作成はしない）。
+    // サイズが大きい場合だけ、埋め込み/リンクをユーザーに確認する。
+    const choice = typeof bdResolveImageEmbedChoice === 'function'
+      ? await bdResolveImageEmbedChoice(file.size, file.name)
+      : 'embed';
+    const imageUrl = choice === 'link'
+      ? await _bdUploadBoardBackgroundImage(data, file)
+      : data;
     bdSetBoardBackgroundImage(imageUrl, bd._bgImageFit || 'contain');
     if (typeof showStatus === 'function') showStatus('背景画像を設定しました');
     return true;

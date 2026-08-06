@@ -1042,6 +1042,8 @@ function renderTimeline(ctx) {
         const card = document.createElement('div');
         card.className = 'tl-card';
         card.dataset.entity = e.name;
+        card.dataset.entityName = e.name;
+        card.dataset.meldexEntityPath = _entityPath(dbPath, e.name, ctx?.pivotData);
         // 互換テスト用: _renderTimelineEntityContent(card, e, cfg, { dbPath, propTypes, editable: true });
         _renderTimelineEntityContent(card, e, cfg, { dbPath, propTypes, editable: true, ctx, filter: ctx?.filter });
         card.title = e.name + '\n' + cfg.timeProp + ': ' + e.timeVal;
@@ -1049,7 +1051,13 @@ function renderTimeline(ctx) {
         card.draggable = true;
         card.addEventListener('dragstart', (ev) => {
           ev.dataTransfer.setData('text/x-timeline-entity', e.name);
-          ev.dataTransfer.effectAllowed = 'move';
+          window.MeldexBoardTransfer?.setEntityDragData?.(
+            ev.dataTransfer,
+            dbPath,
+            e.name,
+            card.dataset.meldexEntityPath,
+          );
+          ev.dataTransfer.effectAllowed = 'copyMove';
         });
         card.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -1128,9 +1136,17 @@ function renderTimeline(ctx) {
 
       // ドラッグ移動
       bar.draggable = true;
+      bar.dataset.entityName = e.name;
+      bar.dataset.meldexEntityPath = _entityPath(dbPath, e.name, ctx?.pivotData);
       bar.addEventListener('dragstart', (ev) => {
         ev.dataTransfer.setData('text/x-timeline-entity', e.name);
-        ev.dataTransfer.effectAllowed = 'move';
+        window.MeldexBoardTransfer?.setEntityDragData?.(
+          ev.dataTransfer,
+          dbPath,
+          e.name,
+          bar.dataset.meldexEntityPath,
+        );
+        ev.dataTransfer.effectAllowed = 'copyMove';
       });
 
       // リサイズハンドルのドラッグ処理

@@ -32,7 +32,7 @@ function convertScenarioDocToScriptNoteDoc(sourceDoc = {}, options = {}) {
       ? JSON.parse(JSON.stringify(row.columns))
       : {},
   })) : [];
-  return {
+  const converted = {
     fileType: SCRIPTNOTE_FILE_TYPE,
     version: SCRIPTNOTE_FILE_VERSION,
     title: String(src.title || ''),
@@ -58,6 +58,9 @@ function convertScenarioDocToScriptNoteDoc(sourceDoc = {}, options = {}) {
       modeName: settings.modeName || '',
     }
   };
+  return globalThis.GBScriptNoteRoleModel?.ensureDocument
+    ? globalThis.GBScriptNoteRoleModel.ensureDocument(converted)
+    : converted;
 }
 
 function convertScriptNoteDocToScenarioDoc(scriptDoc = {}, options = {}) {
@@ -66,7 +69,15 @@ function convertScriptNoteDocToScenarioDoc(scriptDoc = {}, options = {}) {
   nextDoc.title = String(scriptDoc.title || '');
   nextDoc.rows = [];
   nextDoc.notes = Array.isArray(scriptDoc.notes) ? scriptDoc.notes.map(note => ({ ...note })) : [];
-  nextDoc.characters = Array.isArray(scriptDoc.characters) ? scriptDoc.characters.map(ch => ({ ...ch })) : [];
+  const roleModel = globalThis.GBScriptNoteRoleModel;
+  const legacyTypes = (Array.isArray(scriptDoc.scenarioTypes) ? scriptDoc.scenarioTypes : [])
+    .map((type) => JSON.parse(JSON.stringify(type)));
+  const legacyCharacters = (Array.isArray(scriptDoc.characters) ? scriptDoc.characters : [])
+    .map((character) => ({
+      ...(roleModel?.getEffectiveStyle?.(scriptDoc, { kind: 'character', id: character.id }) || {}),
+      name: character.name,
+    }));
+  nextDoc.characters = [...legacyTypes, ...legacyCharacters];
   nextDoc.characterDb = Array.isArray(scriptDoc.characterDb) ? [...scriptDoc.characterDb] : [];
   nextDoc.settings = typeof ensureScenarioSettings === 'function' ? ensureScenarioSettings(nextDoc) : (nextDoc.settings || {});
   const editor = scriptDoc.editor || {};
@@ -251,7 +262,7 @@ async function saveCurrentScriptNoteAs(path, options = {}) {
   const targetExists = await _sn2ScriptNoteFileExists(targetPath);
   await apiPut('/file?path=' + encodeURIComponent(targetPath), {
     content: JSON.stringify(exportDoc, null, 2),
-    force_overwrite: targetExists,
+    ...(targetExists ? { force_overwrite: true } : { create_only: true }),
   });
   _sn2SetActiveScriptNotePath(ctx, targetPath);
   return true;

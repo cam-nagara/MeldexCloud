@@ -1,9 +1,29 @@
 (function () {
   if (window.MeldexCloudConflictResolver) return;
 
-  const SNOOZE_KEY = 'meldex-cloud-conflict-snooze-until';
-  const SNOOZE_MS = 60 * 60 * 1000;
+  // 計画書 app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+  // §5 工程2-D項目8「gb-cloud-conflict-resolver.jsの『後回し』とノート競合の
+  // 『保留』を共通状態へ接続する。時間制localStorageでバナーだけ消す処理を
+  // 解決扱いにせず…ユーザーが『確認する』を選ぶまで同じ競合世代のモーダルを
+  // 自動表示しない」。
+  //
+  // 旧実装は単一のグローバル時間制フラグ（SNOOZE_KEY/SNOOZE_MS=1時間）
+  // だけで、対象となった競合の識別情報を一切記録しなかった。このため
+  // 1時間経過後は「まだ未解決の同じ競合」に対しても定期監視が無条件で
+  // バナー/通知を再表示していた（§9で明示的に禁止されるパターン）。
+  //
+  // 新実装は「後回しにした時点の競合集合（パス+更新日時の組）から
+  // 決定的に計算した競合世代ID」を期限なしで記録する。同じ世代の間は
+  // 再表示を抑止し、集合が変化（新規競合の出現・解消・再更新）した時だけ
+  // 新しい世代とみなして再び表示する。本文は一切記録しない
+  // （§2.8「両本文は原本、IndexedDBドラフト、競合コピー、解消前バックアップ
+  // で保全する」）。
+  const ACKNOWLEDGED_KEY = 'meldex-cloud-conflict-acknowledged-generation';
+  const ACKNOWLEDGEMENT_PENDING_KEY = 'meldex-cloud-conflict-acknowledgement-pending';
+  const SHARED_ACK_DOCUMENT_ID = 'cloud-conflict-acknowledgement-v1';
   const BINARY_FULL_HASH_MAX_BYTES = 5 * 1024 * 1024;
+  let _sharedAcknowledgedGeneration = '';
+  let _acknowledgementScope = '';
   let _overlay = null;
   let _conflicts = [];
   let _selectedPath = '';
@@ -43,14 +63,123 @@
     else el.textContent = text;
   }
 
-  function _isSnoozed() {
+  // 競合集合（パス+更新日時）から決定的な世代IDを作る。内容そのものではなく
+  // メタデータのみを使う（本文を永続化しない、という既存方針を維持するため）。
+  // 集合が1件でも変化（新規出現・解消・再更新でmodifiedが変わる）すれば
+  // 別の世代IDになり、後回し状態は自動的に無効化される。
+  function conflictGenerationId(conflicts) {
+    const items = Array.isArray(conflicts?.items) ? conflicts.items : (Array.isArray(_conflicts) ? _conflicts : []);
+    const signature = items
+      .map((item) => `${String(item?.path || '')}::${String(item?.modified || '')}`)
+      .sort()
+      .join('|');
+    const count = Number(conflicts?.count ?? conflicts?.total ?? items.length) || items.length;
+    const truncated = conflicts ? !!conflicts.truncated : _conflictTruncated;
+    return `${_acknowledgementScope || 'unscoped'}:${count}:${truncated ? 'truncated' : 'complete'}:${signature}`;
+  }
+
+  function _scopedLocalKey(baseKey) {
+    return _acknowledgementScope ? `${baseKey}:${_acknowledgementScope}` : '';
+  }
+
+  function _readAcknowledgedGeneration() {
+    const key = _scopedLocalKey(ACKNOWLEDGED_KEY);
+    if (!key) return '';
+    try { return localStorage.getItem(key) || ''; } catch { return ''; }
+  }
+
+  function _writeScopedLocal(baseKey, value) {
+    const key = _scopedLocalKey(baseKey);
+    if (!key) return;
     try {
-      const until = Number(localStorage.getItem(SNOOZE_KEY) || 0);
-      if (!until) return false;
-      if (until > Date.now()) return true;
-      localStorage.removeItem(SNOOZE_KEY);
+      if (value) localStorage.setItem(key, String(value));
+      else localStorage.removeItem(key);
     } catch {}
-    return false;
+  }
+
+  async function _sharedAcknowledgementAdapter(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!provider || typeof resolver?.resolveAdapterForProvider !== 'function') return null;
+    return resolver.resolveAdapterForProvider(provider);
+  }
+
+  async function hydrateAcknowledgement(provider) {
+    const storage = window.MeldexSystemStorage;
+    const adapter = await _sharedAcknowledgementAdapter(provider);
+    if (!adapter || !storage?.SystemStorageKind?.PROFILES_WORKSPACE) {
+      _acknowledgementScope = '';
+      _sharedAcknowledgedGeneration = '';
+      return '';
+    }
+    const description = adapter.describe?.() || {};
+    _acknowledgementScope = String(
+      description.boundary || description.management_root || description.environment || '',
+    );
+    const record = await adapter.load(
+      storage.SystemStorageKind.PROFILES_WORKSPACE,
+      SHARED_ACK_DOCUMENT_ID,
+    );
+    _sharedAcknowledgedGeneration = String(record?.payload?.generation || '');
+    let pending = '';
+    try {
+      pending = localStorage.getItem(_scopedLocalKey(ACKNOWLEDGEMENT_PENDING_KEY)) || '';
+    } catch {}
+    if (pending && pending !== _sharedAcknowledgedGeneration) {
+      const persisted = await _persistSharedAcknowledgement(pending, provider);
+      if (persisted) _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+    }
+    return _sharedAcknowledgedGeneration;
+  }
+
+  async function _persistSharedAcknowledgement(generation, provider) {
+    const storage = window.MeldexSystemStorage;
+    const adapter = await _sharedAcknowledgementAdapter(provider);
+    if (!generation || !adapter || !storage?.SystemStorageKind?.PROFILES_WORKSPACE) return false;
+    const kind = storage.SystemStorageKind.PROFILES_WORKSPACE;
+    const current = await adapter.load(kind, SHARED_ACK_DOCUMENT_ID);
+    if (String(current?.payload?.generation || '') === generation) {
+      _sharedAcknowledgedGeneration = generation;
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+      return true;
+    }
+    try {
+      await adapter.save(kind, SHARED_ACK_DOCUMENT_ID, {
+        generation,
+        acknowledged_at: new Date().toISOString(),
+      }, {
+        expectedRevision: current?.revision ?? null,
+      });
+      _sharedAcknowledgedGeneration = generation;
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+      return true;
+    } catch (error) {
+      // 別端末が先に同じ世代を承認した競合だけを成功として吸収する。
+      // 異なる世代なら古い端末から上書きせず、次回監視時に再取得する。
+      const ConflictError = storage.SystemStorageConflictError;
+      if (typeof ConflictError !== 'function' || !(error instanceof ConflictError)) throw error;
+      const refreshed = await adapter.load(kind, SHARED_ACK_DOCUMENT_ID);
+      if (String(refreshed?.payload?.generation || '') === generation) {
+        _sharedAcknowledgedGeneration = generation;
+        _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+        return true;
+      }
+      return false;
+    }
+  }
+
+  // 現在報告されている競合集合(conflicts)が、既に「後回し」で承認済みの
+  // 世代と一致するかどうかを判定する。conflictsを省略した場合は判定できない
+  // ため常にfalse(=通常どおり表示)を返す（未移行の呼び出し元が誤って
+  // 抑止させないための安全側デフォルト）。
+  function isAcknowledged(conflicts) {
+    const current = conflictGenerationId(conflicts);
+    if (!current) return false;
+    return _readAcknowledgedGeneration() === current || _sharedAcknowledgedGeneration === current;
+  }
+
+  // 後方互換名。引数無しの旧呼び出し（存在すれば）は判定できないためfalseを返す。
+  function isSnoozed(conflicts) {
+    return conflicts !== undefined ? isAcknowledged(conflicts) : false;
   }
 
   function _hideConflictBanner() {
@@ -58,13 +187,42 @@
     if (bar?.dataset?.cloudBannerKind === 'health-conflict') bar.remove();
   }
 
-  function snooze() {
-    try {
-      localStorage.setItem(SNOOZE_KEY, String(Date.now() + SNOOZE_MS));
-    } catch {}
+  function _currentConflictsSnapshot() {
+    return { items: _conflicts, count: _conflictTotal || _conflicts.length, truncated: _conflictTruncated };
+  }
+
+  // 「後回し」＝現在の競合集合を承認済み世代として記録する。競合を解決した
+  // ことにはしない（§2.6）。呼び出し元は別途、非モーダルな「確認待ち」表示
+  // （gb-cloud-bootstrap.jsの_applyCloudHealth）を出し続けること。
+  function acknowledge(conflictsInput) {
+    const conflicts = conflictsInput || _currentConflictsSnapshot();
+    const generation = conflictGenerationId(conflicts);
+    let persistence = Promise.resolve(false);
+    if (generation) _writeScopedLocal(ACKNOWLEDGED_KEY, generation);
+    if (generation) {
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, generation);
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      persistence = _persistSharedAcknowledgement(generation, provider).then((persisted) => {
+        if (!persisted && typeof showStatus === 'function') {
+          showStatus('後回し状態はこの端末だけに保存されました。共有は次回再試行します', true);
+        }
+        return persisted;
+      }).catch(() => {
+        if (typeof showStatus === 'function') {
+          showStatus('後回し状態はこの端末だけに保存されました。共有は次回再試行します', true);
+        }
+        return false;
+      });
+    }
     close();
     _hideConflictBanner();
     if (typeof showStatus === 'function') showStatus('競合解消を後回しにしました');
+    return persistence;
+  }
+
+  // 後方互換名（既存呼び出し・E2Eからの参照を壊さない）。
+  function snooze(conflictsInput) {
+    return acknowledge(conflictsInput);
   }
 
   function _appendInlineDiff(container, text, otherText) {
@@ -376,7 +534,7 @@
   }
 
   async function _confirmResolve(label) {
-    const message = `${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`;
+    const message = `${label}を残して競合を解消します。解消前のファイルはMeldexの管理領域へ保存されます。続行しますか？`;
     if (typeof window.cfConfirm === 'function') {
       return !!await window.cfConfirm(message, { danger: true, okLabel: '解消', cancelLabel: 'キャンセル' });
     }
@@ -453,7 +611,7 @@
     const deferBtn = _el('button', 'cloud-conflict-btn', '後回し');
     deferBtn.type = 'button';
     deferBtn.setAttribute('aria-label', '競合解消を後回しにする');
-    deferBtn.addEventListener('click', snooze);
+    deferBtn.addEventListener('click', () => snooze());
     const keepOriginalBtn = _el('button', 'cloud-conflict-btn', '元ファイルを残す');
     keepOriginalBtn.type = 'button';
     keepOriginalBtn.dataset.conflictAction = 'keep_original';
@@ -537,6 +695,10 @@
     open,
     close,
     snooze,
-    isSnoozed: _isSnoozed,
+    acknowledge,
+    isSnoozed,
+    isAcknowledged,
+    hydrateAcknowledgement,
+    conflictGenerationId,
   };
 })();

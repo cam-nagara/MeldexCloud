@@ -339,7 +339,8 @@ async function _resolveScriptNoteTargetFromScenario(sourcePath, label = '') {
     if (!probe.exists) {
       const exportDoc = convertScenarioDocToScriptNoteDoc(parsed, { sourcePath });
       await apiPut('/file?path=' + encodeURIComponent(candidatePath), {
-        content: JSON.stringify(exportDoc, null, 2)
+        content: JSON.stringify(exportDoc, null, 2),
+        create_only: true,
       });
       return { path: candidatePath, label: getScriptNoteLabelFromPath(candidatePath, label), created: true };
     }
@@ -875,7 +876,11 @@ async function _deleteCurrentFile(toolType) {
   const path = getCurrentFilePath();
   if (!path) return;
   const name = _toolMenuDisplayName(path, toolType, '');
-  if (!await cfConfirm(`「${name || path}」を削除しますか？`)) return;
+  const confirmMessage = `「${name || path}」を削除しますか？`;
+  const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([{ path, kind: 'file' }], confirmMessage)
+    : await cfConfirm(confirmMessage);
+  if (!confirmed) return;
   try {
     const result = await deleteOutlinerItemsWithHistory([{ path, name, type: toolType || 'page' }], {
       label: 'ファイル削除',

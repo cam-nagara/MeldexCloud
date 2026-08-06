@@ -1313,6 +1313,82 @@ function bdInitInteraction(root) {
     if (bdIsInteractiveCanvas(canvas)) e.preventDefault();
   }
 
+  function droppedExternalImageUrl(dataTransfer) {
+    const uriList = String(dataTransfer?.getData?.('text/uri-list') || '')
+      .split(/\r?\n/)
+      .map(value => value.trim())
+      .find(value => value && !value.startsWith('#'));
+    let candidate = uriList || '';
+    if (!candidate) {
+      const html = String(dataTransfer?.getData?.('text/html') || '');
+      if (html) {
+        try {
+          const parsed = new DOMParser().parseFromString(html, 'text/html');
+          candidate = parsed.querySelector('img[src]')?.getAttribute('src') || '';
+        } catch {}
+      }
+    }
+    if (!candidate) return '';
+    try {
+      const url = new URL(candidate, location.href);
+      if (!['http:', 'https:', 'data:', 'blob:'].includes(url.protocol)) return '';
+      const host = url.hostname.toLowerCase();
+      const privateHost = host === 'localhost' || host === '::1' || host === '0.0.0.0'
+        || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host)
+        || /^169\.254\./.test(host)
+        || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host);
+      return privateHost ? '' : url.href;
+    } catch {
+      return '';
+    }
+  }
+
+  function blobAsDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('画像を読み込めませんでした'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function addExternalImageDrop(url, wx, wy) {
+    try {
+      const response = await fetch(url, { mode: 'cors', credentials: 'omit', redirect: 'follow' });
+      if (!response.ok) throw new Error('画像を取得できませんでした');
+      const blob = await response.blob();
+      if (!String(blob.type || '').toLowerCase().startsWith('image/')) throw new Error('画像ではありません');
+      if (blob.size > 25 * 1024 * 1024) throw new Error('画像が25MBを超えています');
+      const dataUrl = await blobAsDataUrl(blob);
+      const node = typeof bdCreateNodeWithStyle === 'function'
+        ? bdCreateNodeWithStyle('', wx, wy, { img: dataUrl, w: 250, text: '' })
+        : bdNode('', wx, wy, 250, 0, { img: dataUrl, text: '' });
+      bdPushUndo();
+      bd.nodes.push(node);
+      if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(node)) {
+        if (typeof bdRequestFullRender === 'function') bdRequestFullRender('drop-external-image');
+        else bdRender();
+      }
+      bd.selected = new Set([node.id]);
+      bd._activeNode = node.id;
+      if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(node.id, 'drop-external-image');
+      if (typeof bdMarkExtrasDirty === 'function') {
+        bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [node.id] }, 'drop-external-image');
+      }
+      if (typeof bdClearConnectionSelection === 'function') bdClearConnectionSelection();
+      if (typeof bdApplySelectionDomClass === 'function') bdApplySelectionDomClass();
+      if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(node.id);
+      if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+      bdDirty();
+      window.MeldexBoardImmersive?.updateEmptyGuide?.();
+      if (typeof showStatus === 'function') showStatus('ブラウザから画像を追加しました');
+    } catch {
+      if (typeof showStatus === 'function') {
+        showStatus('画像を保存してからドラッグ＆ドロップしてください', true);
+      }
+    }
+  }
+
   // --- drop on canvas ---
   function onCanvasDrop(e) {
     // パネル/タブ操作系の D&D はキャンバスではなくペイン側で処理させる
@@ -1323,6 +1399,15 @@ function bdInitInteraction(root) {
 
     // フォルダツリーからのドロップ
     const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    const meldexTextData = e.dataTransfer.getData('application/x-meldex-text');
+    if ((cfData || meldexTextData) && window.MeldexBoardTransfer?.processTransfer) {
+      window.MeldexBoardTransfer.processTransfer(e.dataTransfer, { x: wx, y: wy }, {})
+        .catch(err => {
+          console.error('[board] common transfer drop failed:', err);
+          if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
+        });
+      return;
+    }
     if (cfData) {
       try {
         const parsed = JSON.parse(cfData);
@@ -1379,10 +1464,6 @@ function bdInitInteraction(root) {
             if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
           });
           if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-          if (activeId) {
-            const activeNode = bd.nodes.find(node => node.id === activeId);
-            if (activeNode?.link && typeof bdShowLinkedSelectionPreview === 'function') bdShowLinkedSelectionPreview(activeNode.link, activeNode.linkType);
-          }
           if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
           bdDirty();
           showStatus(addedIds.length > 1 ? `${addedIds.length}件のカードを追加しました` : 'カードを追加しました');
@@ -1395,7 +1476,7 @@ function bdInitInteraction(root) {
     }
 
     // ノートからのテキストドロップ → テキストカード追加
-    const meldexText = e.dataTransfer.getData('application/x-meldex-text');
+    const meldexText = meldexTextData;
     if (meldexText) {
       try {
         const { text } = JSON.parse(meldexText);
@@ -1428,7 +1509,11 @@ function bdInitInteraction(root) {
 
     // ファイルドロップ
     const files = e.dataTransfer.files;
-    if (!files.length) return;
+    if (!files.length) {
+      const externalImageUrl = droppedExternalImageUrl(e.dataTransfer);
+      if (externalImageUrl) addExternalImageDrop(externalImageUrl, wx, wy);
+      return;
+    }
     const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = ev => resolve(ev.target.result);
@@ -1469,7 +1554,14 @@ function bdInitInteraction(root) {
           const data = await readFileAsDataURL(f);
           if (!dropStillTargetsCurrentBoard()) return null;
           if (isImage && imageDropMode === 'embed') {
-            return { name: f.name, path: '', isImage, dataUrl: data, offset, embedded: true };
+            // 過大な画像はダイアログでユーザーに埋め込み/リンクを選ばせる（既定は埋め込み）
+            const choice = typeof bdResolveImageEmbedChoice === 'function'
+              ? await bdResolveImageEmbedChoice(f.size, f.name)
+              : 'embed';
+            if (!dropStillTargetsCurrentBoard()) return null;
+            if (choice === 'embed') {
+              return { name: f.name, path: '', isImage, dataUrl: data, offset, embedded: true };
+            }
           }
           try {
             const res = await apiFetch('/upload-file?path=' + encodeURIComponent(boardDir), {
@@ -1545,9 +1637,13 @@ function bdInitInteraction(root) {
       if (typeof showStatus === 'function') {
         const addedImages = nodes.filter(node => node.img).length;
         const label = addedImages === nodes.length ? '画像' : 'ファイル';
-        const modeLabel = addedImages
-          ? (imageDropMode === 'embed' ? '（埋め込み）' : '（リンク）')
-          : '';
+        // サイズ確認ダイアログで一部だけリンクを選べるため、実際のノード内容から表示を決める
+        // （imageDropMode は既定値であり、個々の選択結果とは限らない）
+        const embeddedImages = nodes.filter(node => node.img && !node.link).length;
+        const linkedImages = addedImages - embeddedImages;
+        const modeLabel = !addedImages
+          ? ''
+          : (embeddedImages && linkedImages ? '（埋め込み/リンク混在）' : (linkedImages ? '（リンク）' : '（埋め込み）'));
         const hasFallback = results.filter(Boolean).some(item => item.linkFallback);
         const fallbackLabel = hasFallback ? '（リンク保存できなかった画像は埋め込み）' : modeLabel;
         showStatus(nodes.length > 1 ? `${nodes.length}件の${label}カードを追加しました${fallbackLabel}` : `${label}カードを追加しました${fallbackLabel}`);

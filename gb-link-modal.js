@@ -111,6 +111,64 @@ const MeldexLinkModal = (() => {
     _sidebarOrigDisplay = null;
   }
 
+  // 工程11: リンク挿入モーダル「このノートの見出し」セクション用ヘルパー。
+  // savedRange の位置から、現在編集中のノート（またはエントリ自由記述等の
+  // 同種contenteditableホスト）を特定する。ノート本体に限らず、見出し
+  // (h1〜h6) を含む contenteditable ホストであれば汎用的に対応する。
+  function _resolveHeadingHost(range) {
+    if (!range) return null;
+    const node = range.commonAncestorContainer || range.startContainer;
+    if (!node) return null;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el || typeof el.closest !== 'function') return null;
+    return el.closest('[contenteditable="true"]');
+  }
+
+  // host内の見出し(h1〜h6)を文書順に列挙し、階層（祖先見出しの経路）と
+  // 同名見出しの重複件数を付与する。同名見出しの区別（項目2）に使う。
+  function _collectHeadingCandidates(host) {
+    const headings = Array.from(host.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+    const stack = [];
+    const list = headings.map((el, index) => {
+      const level = Number(el.tagName.slice(1));
+      while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+      const ancestorPath = stack.map(item => item.text);
+      const rawText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const text = rawText || '(無題の見出し)';
+      stack.push({ level, text });
+      return { el, level, text, index, ancestorPath };
+    });
+    const totalByText = new Map();
+    list.forEach(item => totalByText.set(item.text, (totalByText.get(item.text) || 0) + 1));
+    list.forEach(item => { item.duplicateCount = totalByText.get(item.text) || 1; });
+    return list;
+  }
+
+  // 見出し直後の最初の非見出しブロックから短い抜粋を作る（周辺情報での区別用）。
+  function _headingSurroundingSnippet(el) {
+    let node = el?.nextElementSibling;
+    let guard = 0;
+    while (node && guard < 6) {
+      guard++;
+      if (/^H[1-6]$/.test(node.tagName)) break; // 次の見出しに到達したら打ち切り
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text) return text.length > 24 ? text.slice(0, 24) + '…' : text;
+      node = node.nextElementSibling;
+    }
+    return '';
+  }
+
+  // 同名見出しがある場合だけ、階層（祖先見出し）+ 周辺本文の抜粋を返す。
+  function _headingDisambiguationText(candidate) {
+    if (!candidate || candidate.duplicateCount <= 1) return '';
+    const parts = [];
+    if (candidate.ancestorPath.length) parts.push(candidate.ancestorPath.join(' > '));
+    const snippet = _headingSurroundingSnippet(candidate.el);
+    if (snippet) parts.push(snippet);
+    if (!parts.length) parts.push('同名の見出しが複数あります');
+    return parts.join(' ・ ');
+  }
+
   function show(savedRange, callback) {
     if (_overlay) close();
     _savedRange = savedRange;
@@ -164,6 +222,50 @@ const MeldexLinkModal = (() => {
     treeWrap.className = 'link-modal-tree';
     treeWrap.dataset.e2eId = 'link-insert-modal-tree';
     body.appendChild(treeWrap);
+
+    // このノートの見出し（工程11: 見出しリンク作成導線）。
+    // savedRange が実際に見出しを持つ編集ホスト内にある時だけ表示する。
+    // board/canvas 等（savedRange なしでコールバック経由の呼び出し）や
+    // 見出しの無いノートでは、空セクションを出さずそのまま省略する。
+    const headingHost = _resolveHeadingHost(savedRange);
+    const headingCandidates = headingHost ? _collectHeadingCandidates(headingHost) : [];
+    if (headingCandidates.length > 0) {
+      const headingsWrap = document.createElement('div');
+      headingsWrap.className = 'link-modal-headings';
+      headingsWrap.dataset.e2eId = 'link-insert-modal-headings';
+      const headingsLabel = document.createElement('div');
+      headingsLabel.className = 'link-modal-headings-label';
+      headingsLabel.textContent = 'このノートの見出し';
+      headingsWrap.appendChild(headingsLabel);
+      headingCandidates.forEach(candidate => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'link-modal-heading-item';
+        item.dataset.e2eId = 'link-insert-modal-heading-item';
+        item.dataset.headingIndex = String(candidate.index);
+        item.style.paddingLeft = (10 + (candidate.level - 1) * 12) + 'px';
+        const levelBadge = document.createElement('span');
+        levelBadge.className = 'link-modal-heading-level';
+        levelBadge.textContent = 'H' + candidate.level;
+        const textSpan = document.createElement('span');
+        textSpan.className = 'link-modal-heading-text';
+        textSpan.textContent = candidate.text;
+        item.append(levelBadge, textSpan);
+        const extra = _headingDisambiguationText(candidate);
+        if (extra) {
+          const extraSpan = document.createElement('span');
+          extraSpan.className = 'link-modal-heading-extra';
+          extraSpan.textContent = extra;
+          item.appendChild(extraSpan);
+          item.title = `${candidate.text}（${extra}）`;
+        } else {
+          item.title = candidate.text;
+        }
+        item.addEventListener('click', () => insertHeadingLink(candidate));
+        headingsWrap.appendChild(item);
+      });
+      body.appendChild(headingsWrap);
+    }
 
     // URL入力欄
     const urlWrap = document.createElement('div');
@@ -266,6 +368,37 @@ const MeldexLinkModal = (() => {
     }
     const selectedText = window.getSelection()?.toString() || item.name;
     const html = MeldexDnD.createAutoLinkHtml(selectedText, item.path, item.type);
+    document.execCommand('insertHTML', false, html);
+    close();
+  }
+
+  // 工程11: 見出しを選択した時の同一ノート内リンク挿入。
+  // アンカーIDは getOrAssignStableHeadingAnchorId（gb-editor側）で確保する
+  // 既存の安定IDを使う。テキストスラグには依存しないため、見出し名変更・
+  // 重複見出しの増減・保存/再読込があってもリンク先を見失わない。
+  function insertHeadingLink(candidate) {
+    const headingEl = candidate?.el;
+    if (!headingEl) return;
+    const anchorId = typeof getOrAssignStableHeadingAnchorId === 'function'
+      ? getOrAssignStableHeadingAnchorId(headingEl)
+      : (headingEl.dataset?.noteHeadingId || headingEl.id || '');
+    if (!anchorId) {
+      if (typeof showStatus === 'function') showStatus('見出しへのリンクを作成できませんでした', true);
+      return;
+    }
+    const label = candidate.text || headingEl.textContent || '';
+    if (_callback) {
+      _callback({ type: 'heading', anchorId, label });
+      close();
+      return;
+    }
+    if (_savedRange) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(_savedRange);
+    }
+    const selectedText = window.getSelection()?.toString() || label;
+    const html = `<a href="#${esc(anchorId)}" class="note-anchor-link" data-note-anchor="${esc(anchorId)}" data-e2e-id="note-anchor-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${esc(selectedText)}</a> `;
     document.execCommand('insertHTML', false, html);
     close();
   }

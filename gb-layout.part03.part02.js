@@ -302,5 +302,7 @@
     get isPassivePaneType() { return _isPassivePaneType; },
     set isPassivePaneType(fn) { _isPassivePaneType = fn; },
     isMobileLayout: _isMobileLayout,
+    renderPreservingActivePane: _renderPreservingActivePane,
+    notifyLayoutViewportResize: _notifyLayoutViewportResize,
   };
 })();

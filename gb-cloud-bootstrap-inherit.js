@@ -35,31 +35,48 @@
     }
   }
 
-  // 台帳ファイル（/MeldexSettings/_meldex/source-folders.v1.json）が
+  // 台帳（型付き管理レコード /MeldexSettings/system/v1/folder-associations/source-folders.json、
+  // または旧形式ファイル /MeldexSettings/_meldex/source-folders.v1.json）が
   // Dropbox上に実在するかどうかを軽量に確認する。
   //
-  // loadRegistry() はこのファイルが存在しない場合でも、初回起動用に
+  // loadRegistry() はこれらが存在しない場合でも、初回起動用に
   // vaultPath から1件だけ暫定の候補を合成して返す仕様になっている
   // （デスクトップ版を一度も使っていない完全新規ユーザーでも roots.length
   // が 0 にならない）。そのままだと「デスクトップ版で使っているフォルダが
   // 見つかりました」という案内が、実際には何も登録していない新規ユーザーにも
   // 表示されてしまう。ここでは案内の対象を「本当にデスクトップ版が台帳へ
-  // 書き込み済みのケース」に限定するため、先に台帳ファイルそのものの
-  // 実在確認を行う。
+  // 書き込み済みのケース」に限定するため、先に台帳そのものの実在確認を行う。
+  // 管理レコードを優先し、無ければ旧形式ファイルを見る（loadRegistry() の
+  // 読み取り優先順位と同じ）。
   async function _remoteRegistryFileExists() {
     const registry = _registry();
     const auth = _auth();
-    if (!registry?.registryDropboxPath || !auth?.apiRpc) return false;
-    try {
-      await auth.apiRpc('files/get_metadata', {
-        path: registry.registryDropboxPath(),
-        include_deleted: false,
-        include_has_explicit_shared_members: false,
-      });
-      return true;
-    } catch {
-      return false;
+    if (!auth?.apiRpc) return false;
+    // 管理レコード（home）→ 旧形式（home）→ 旧形式（team_root。チームアカウントで
+    // 旧デスクトップが team_root 名前空間だけに台帳を残しているケース。registry 側の
+    // _migrateLegacyTeamRegistry と同じフォールバック順）の3候補を順に確認する。
+    const candidates = [
+      { path: registry?.managedRegistryDropboxPath?.() },
+      { path: registry?.registryDropboxPath?.() },
+      { path: registry?.registryDropboxPath?.(), namespaceKind: 'team_root' },
+    ].filter((candidate) => !!candidate.path);
+    for (const candidate of candidates) {
+      try {
+        await auth.apiRpc(
+          'files/get_metadata',
+          {
+            path: candidate.path,
+            include_deleted: false,
+            include_has_explicit_shared_members: false,
+          },
+          candidate.namespaceKind ? { namespaceKind: candidate.namespaceKind } : undefined,
+        );
+        return true;
+      } catch {
+        // 次の候補へ（存在しない・アクセス不可はどちらも「この経路では見つからない」扱い）
+      }
     }
+    return false;
   }
 
   async function _loadInheritableRoots() {

@@ -176,6 +176,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '矩形選択', fields: pick(['--bd-select-rect-color']) },
           { label: 'グループ', fields: pick(['--bd-group-color']) },
           { label: 'アンカー', fields: pick(['--bd-anchor-color']) },
+          { label: 'リンク', fields: pick(['--bd-link-type-icon-color']) },
           { label: 'カーソル', fields: pick(['--bd-caret-color', '--bd-caret-width']) },
         ],
       },

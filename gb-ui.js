@@ -661,7 +661,10 @@
     }
 
     // footer
-    const footer = el('div', { cls: ['gb-modal-footer'] });
+    // data-dialog-actions: gb-dialog-keyboard.js のアクション領域検出（矢印キーでの
+    // ボタン移動）に拾わせるための共通マーカー。個別に .btn-row 等を付けない
+    // createModal() 素の footer はこのマーカーでのみ検出される。
+    const footer = el('div', { cls: ['gb-modal-footer'], attrs: { 'data-dialog-actions': '1' } });
     if (opts.footer) {
       const arr = Array.isArray(opts.footer) ? opts.footer : [opts.footer];
       for (const c of arr) if (c instanceof Node) footer.appendChild(c);

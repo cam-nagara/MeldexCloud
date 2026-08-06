@@ -132,6 +132,12 @@
     return window.confirm('未保存の変更を破棄して、新規ボードを作成しますか？');
   }
 
+  function _canReplaceCurrentBoard() {
+    const state = _boardState();
+    if (!(state && state.dirty)) return true;
+    return window.confirm('未保存の変更を破棄して、別のボードを現在の画面で開きますか？');
+  }
+
   function _resetBoardForStarter() {
     const state = _boardState();
     if (!state) return null;
@@ -242,7 +248,12 @@
       const result = await apiPost('/outliner/add', { type: 'board', label: '無題', parent });
       const path = result?.node?.path || '';
       if (path && shouldSaveStarter && content) {
-        await apiPut('/file?path=' + encodeURIComponent(path), { content });
+        const metadata = await apiFetch('/file?path=' + encodeURIComponent(path) + '&metadata_only=1');
+        await apiPut('/file?path=' + encodeURIComponent(path), {
+          content,
+          if_match_etag: metadata?.etag || '',
+          transport_revision: metadata?.transport_revision || '',
+        });
       }
       await _renderFileList();
       if (path) await _openBoard(path, { skipDiscardConfirm: shouldSaveStarter });
@@ -253,40 +264,41 @@
 
   async function _saveCurrentBoard() {
     const state = _boardState();
-    if (!state) return;
+    if (!state) return false;
     if (state.path) {
       if (typeof bdSave === 'function') {
         await bdSave();
         await _renderFileList();
       }
-      return;
+      return true;
     }
-    await _saveCurrentBoardAsNewFile();
+    return _saveCurrentBoardAsNewFile();
   }
 
   async function _saveCurrentBoardAsNewFile() {
     const content = typeof bdToMd === 'function' ? bdToMd() : '';
     if (!content) {
       _showError('保存するボード内容を作成できませんでした');
-      return;
+      return false;
     }
     if (FS.isNativeMode?.() && typeof FS.saveBoardAs === 'function') {
       try {
         const title = (document.getElementById('bd-title')?.textContent || '無題').trim() || '無題';
         const saved = await FS.saveBoardAs(content, title + BOARD_FILE_EXTENSION);
-        if (!saved) return;
+        if (!saved) return false;
         _setRootUi(true);
         _initBoardShell();
         await _renderFileList();
         if (saved.path) await _openBoard(saved.path, { skipDiscardConfirm: true });
+        return !!saved.path;
       } catch (e) {
         _showError('ボードを保存できませんでした: ' + (e?.message || e));
+        return false;
       }
-      return;
     }
     if (!FS.getRootHandle?.()) {
       const handle = await _pickRootFolder();
-      if (!handle) return;
+      if (!handle) return false;
       _setRootUi(true);
       _initBoardShell();
     }
@@ -295,13 +307,20 @@
       const path = result?.node?.path || '';
       if (!path) {
         _showError('保存先ファイルを作成できませんでした');
-        return;
+        return false;
       }
-      await apiPut('/file?path=' + encodeURIComponent(path), { content });
+      const metadata = await apiFetch('/file?path=' + encodeURIComponent(path) + '&metadata_only=1');
+      await apiPut('/file?path=' + encodeURIComponent(path), {
+        content,
+        if_match_etag: metadata?.etag || '',
+        transport_revision: metadata?.transport_revision || '',
+      });
       await _renderFileList();
       await _openBoard(path, { skipDiscardConfirm: true });
+      return true;
     } catch (e) {
       _showError('ボードを保存できませんでした: ' + (e?.message || e));
+      return false;
     }
   }
 
@@ -693,6 +712,9 @@
   }
 
   function _isToolbarVisible(position) {
+    if (window.MeldexBoardImmersive?.getMode) {
+      return window.MeldexBoardImmersive.getMode(position) === 'pinned';
+    }
     const shell = document.getElementById('board-standalone-shell');
     return !shell?.classList.contains(_toolbarClass(position));
   }
@@ -700,12 +722,25 @@
   function _setToolbarVisible(position, visible) {
     const shell = document.getElementById('board-standalone-shell');
     if (!shell) return;
+    if (window.MeldexBoardImmersive?.setMode) {
+      shell.classList.remove(_toolbarClass(position));
+      window.MeldexBoardImmersive.setMode(position, visible ? 'pinned' : 'auto');
+      return;
+    }
     shell.classList.toggle(_toolbarClass(position), !visible);
     try { localStorage.setItem(_toolbarStorageKey(position), visible ? '0' : '1'); } catch (e) {}
     _refreshBoardViewport();
   }
 
   function _applyStoredToolbarState() {
+    if (window.MeldexBoardImmersive?.scan) {
+      document.getElementById('board-standalone-shell')?.classList.remove(
+        _toolbarClass('top'),
+        _toolbarClass('bottom')
+      );
+      window.MeldexBoardImmersive.scan();
+      return;
+    }
     [['top', TOP_TOOLBAR_HIDDEN_KEY], ['bottom', BOTTOM_TOOLBAR_HIDDEN_KEY]].forEach(([position, key]) => {
       let hidden = false;
       try { hidden = localStorage.getItem(key) === '1'; } catch (e) {}
@@ -912,6 +947,13 @@
     const shell = document.getElementById('board-standalone-shell');
     if (!shell) return;
     shell.classList.toggle('bsa-options-collapsed', !visible);
+    if (window.MeldexBoardImmersive) {
+      if (visible) window.MeldexBoardImmersive.reveal?.('right');
+      else {
+        window.MeldexBoardImmersive.setMode?.('right', 'auto');
+        window.MeldexBoardImmersive.hide?.('right', true);
+      }
+    }
     if (persist) {
       try { localStorage.setItem(OPTIONS_COLLAPSED_KEY, visible ? '0' : '1'); } catch (e) {}
     }
@@ -932,6 +974,11 @@
   }
 
   function _applyStoredOptionsPanelState() {
+    if (window.MeldexBoardImmersive?.scan) {
+      _setOptionsPanelVisible(false, false);
+      window.MeldexBoardImmersive.scan();
+      return;
+    }
     let stored = null;
     try { stored = localStorage.getItem(OPTIONS_COLLAPSED_KEY); } catch (e) {}
     const narrow = window.matchMedia?.('(max-width: 820px)')?.matches === true;
@@ -956,6 +1003,7 @@
       _menuItem('新規ボード', () => _createNewBoard()),
       _menuItem(hasPath ? '保存' : '名前を付けて保存', () => _saveCurrentBoard()),
       _menuItem('ボードを開く...', () => _openBoardFromMenu()),
+      _menuItem('シート / スマートシートから一括読込...', () => _openStandaloneBulkImport(), { disabled: !hasPath }),
     ];
     if (!native) {
       items.push(
@@ -981,6 +1029,49 @@
       );
     }
     return items;
+  }
+
+  async function _openStandaloneBulkImport() {
+    if (typeof window.bdOpenBulkLinkImport !== 'function') {
+      _showError('一括読込機能を読み込めませんでした。アプリを再読み込みしてください');
+      return;
+    }
+    const path = String(await window.cfPrompt?.(
+      '読み込むシートまたはスマートシートのMeldex内パスを入力してください',
+      '',
+      { okLabel: '選択へ進む' },
+    ) || '').trim().replace(/\\/g, '/');
+    if (!path) return;
+    const type = /\.smart-db(?:\.json)?$/i.test(path) ? 'smart-db' : 'database';
+    const pane = typeof window._bsaSetBulkSourceTab === 'function'
+      ? window._bsaSetBulkSourceTab({
+        id: 'board-standalone-bulk-source',
+        path,
+        type,
+        label: path.split('/').pop() || path,
+        state: {},
+      })
+      : window.GBLayout?.getAllPanes?.(window.GBLayout.root)?.[0];
+    if (!pane || !Array.isArray(pane.tabs)) {
+      _showError('一括読込元を準備できませんでした');
+      return;
+    }
+    if (typeof window._bsaSetBulkSourceTab !== 'function') {
+      pane.tabs = pane.tabs.filter(tab => !tab?._standaloneBulkSource);
+      pane.tabs.push({
+        id: 'board-standalone-bulk-source',
+        path,
+        type,
+        label: path.split('/').pop() || path,
+        state: {},
+        _standaloneBulkSource: true,
+      });
+    }
+    try {
+      await window.bdOpenBulkLinkImport();
+    } catch (error) {
+      _showError('一括読込を開始できませんでした: ' + (error?.message || error));
+    }
   }
 
   function _showStandaloneMenu(event) {
@@ -1147,6 +1238,21 @@
       _showCompatNotice();
       return;
     }
+    window.MeldexStandaloneParity?.init?.({
+      appId: 'board',
+      getPath: () => String(_boardState()?.path || window.state?.currentBoardPath || ''),
+      getLabel: () => document.getElementById('bd-title')?.textContent || '',
+      openCurrent: path => _openBoard(path, { skipDiscardConfirm: true }),
+      canReplaceCurrent: _canReplaceCurrentBoard,
+      openFloat: (target) => window._bsaOpenLinkedPathInSidebar?.(
+        target.path,
+        target.label,
+        { linkType: target.type },
+      ) === true,
+    });
+    if (typeof window._bsaShowLinkDestinationDialog === 'function') {
+      window.openLinkInFloatPanel = window._bsaShowLinkDestinationDialog;
+    }
     // 「フォルダを選ぶ」ボタン
     const pickBtn = document.getElementById('board-pick-folder');
     pickBtn?.addEventListener('click', async () => {
@@ -1177,6 +1283,14 @@
     if (restored) {
       _setRootUi(true);
       _initBoardShell();
+      // 固有形式付随物廃止・管理データ一元化計画 Phase 5: 起動後のバックグラウンド
+      // 保守として1回実行する。ユーザー操作はブロックしない(失敗しても無視)。
+      if (typeof FS.runSidecarMigrationIfSupported === 'function') {
+        FS.runSidecarMigrationIfSupported().catch(() => {});
+      }
+      if (typeof FS.runRetentionCleanupIfSupported === 'function') {
+        FS.runRetentionCleanupIfSupported().catch(() => {});
+      }
       const initialPath = typeof FS.nativeInitialPath === 'function' ? FS.nativeInitialPath() : '';
       let loading = false;
       try {
@@ -1243,6 +1357,7 @@
         const result = await apiPut('/file?path=' + encodeURIComponent(record.remotePath), {
           content: snapshot.content || '',
           skip_if_missing: true,
+          if_match_etag: record.baseRevision || '',
         });
         if (result?.queued) throw new Error('接続後に再試行します');
         if (result?.missing || result?.skipped) throw new Error('保存先が見つかりません');
@@ -1261,6 +1376,15 @@
       },
     });
     localDrafts.start();
+    window.MeldexStandaloneCloseGuard?.register?.({
+      appId: 'board',
+      saveAs: _saveCurrentBoard,
+      prepareClose: async () => {
+        if (document.body.classList.contains('bsa-resizing-sidebar')) return false;
+        document.activeElement?.blur?.();
+        return true;
+      },
+    });
     const boardDirty = window.bdDirty;
     if (typeof boardDirty === 'function' && boardDirty._meldexLocalDraftCapture !== true) {
       const wrappedBoardDirty = function (...args) {

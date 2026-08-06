@@ -7,6 +7,7 @@ function _sn2IsFreshBlankDoc(parsed) {
   if (!parsed || typeof parsed !== 'object') return false;
   return Array.isArray(parsed.rows) && parsed.rows.length === 0
     && Array.isArray(parsed.characters) && parsed.characters.length === 0
+    && (!Array.isArray(parsed.scenarioTypes) || parsed.scenarioTypes.length === 0)
     && Array.isArray(parsed.notes) && parsed.notes.length === 0
     && !parsed?.source?.importedFrom;
 }
@@ -250,6 +251,17 @@ class ScriptNoteComponent extends ToolComponent {
     super.destroy();
   }
 
+  // 遷移前flush契約（計画書「閲覧・編集・保存」節）。gb-float-panel.js /
+  // gb-subpanel.js が対象置換・戻る/進む・閉じる・メインパネル昇格の前に
+  // getComponentInstance(tabId).flush() として汎用的に呼び出す。保留中の
+  // 自動保存タイマーを即座に実行し、保存の成否(true/false)を返す。
+  // 実体は ScriptNoteEditor.prototype.flush()（DOM同期→dirtyならsave()）で、
+  // 保存共通契約(gb-document-save-coordinator.js)経由の保存キューに乗る。
+  async flush() {
+    if (!this._editor) return true;
+    return this._editor.flush();
+  }
+
   handleKeyDown(e) {
     // 軽量エディタはブラウザデフォルト動作を活用するため、ここでは何もしない
     return false;
@@ -424,7 +436,7 @@ class ScriptNoteComponent extends ToolComponent {
         cfg.visible = true;
         localStorage.setItem('detail-panel-cfg', JSON.stringify(cfg));
       } catch (e) {}
-      if (typeof openRightPanelTab === 'function') openRightPanelTab('detail');
+      if (typeof openRightPanelTab === 'function') openRightPanelTab('detail', this.paneId);
       else if (typeof toggleOptionPanel === 'function') toggleOptionPanel();
       else if (typeof toggleDetailPanel === 'function') toggleDetailPanel();
     }
@@ -609,6 +621,12 @@ class ScriptNoteComponent extends ToolComponent {
         const savedDetailTab = this._editor._detailActiveTab;
         const reloadPath = this._editor._path;
         (async () => {
+          const coordinator = window.MeldexDocumentSaveCoordinator;
+          const documentKey = coordinator?.documentKeyForPath?.(reloadPath) || reloadPath;
+          if (coordinator?.isConflictPending?.(documentKey)) {
+            await this._editor._reviewConflict?.(reloadPath, documentKey);
+            return;
+          }
           if (this._editor?._saveTimer) {
             clearTimeout(this._editor._saveTimer);
             this._editor._saveTimer = null;
@@ -656,22 +674,17 @@ class ScriptNoteComponent extends ToolComponent {
             const templates = _snToolReadJsonObject(SN2_TEMPLATE_STORAGE_KEY);
             const tpl = templates[val.slice(7)];
             if (tpl) {
-              if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
-              if (tpl.editor) Object.assign(this._editor.doc.editor, JSON.parse(JSON.stringify(tpl.editor)));
-              if (tpl.characters) this._editor.doc.characters = JSON.parse(JSON.stringify(tpl.characters));
-              if (tpl.rubyPresentation && typeof tpl.rubyPresentation === 'object') {
-                this._editor.doc.rubyPresentation = JSON.parse(JSON.stringify(tpl.rubyPresentation));
-              } else if (tpl.editor?.viewMode && typeof MeldexRubyPresentation !== 'undefined'
-                && typeof MeldexRubyPresentation.updateDocument === 'function') {
-                MeldexRubyPresentation.updateDocument(this._editor.doc, { writingMode: tpl.editor.viewMode });
+              const result = globalThis.GBScriptNoteRoleModel?.applyTemplate
+                ? globalThis.GBScriptNoteRoleModel.applyTemplate(this._editor.doc, tpl)
+                : null;
+              if (!result) {
+                if (tpl.layoutMode) this._editor.doc.layoutMode = tpl.layoutMode;
+                if (tpl.editor) Object.assign(this._editor.doc.editor, JSON.parse(JSON.stringify(tpl.editor)));
+                if (tpl.rubyPresentation && typeof tpl.rubyPresentation === 'object') {
+                  this._editor.doc.rubyPresentation = JSON.parse(JSON.stringify(tpl.rubyPresentation));
+                }
               }
-              if (typeof ensureScriptNoteDefaultType === 'function') ensureScriptNoteDefaultType(this._editor.doc.editor);
-              if (typeof applyLegacyScriptNoteDocMigrations === 'function') {
-                applyLegacyScriptNoteDocMigrations(this._editor.doc, {
-                  legacyDetectKindByName: name => this._editor._legacyDetectKindByName(name),
-                });
-              }
-              this._editor._ensureDefaultChara();
+              if (typeof showStatus === 'function' && result?.message) showStatus(result.message);
             }
           } catch {}
         } else {
@@ -877,12 +890,14 @@ class ScriptNoteComponent extends ToolComponent {
       placeholder: 'マイテンプレート',
       okText: options.okText || '登録',
       onSubmit: name => {
-        const value = {
-          layoutMode: this._editor.doc.layoutMode,
-          editor: _snToolClone(this._editor.doc.editor || {}),
-          characters: _snToolClone(this._editor.doc.characters || []),
-          rubyPresentation: _snToolClone(this._editor.doc.rubyPresentation || {}),
-        };
+        const value = globalThis.GBScriptNoteRoleModel?.createTemplate
+          ? globalThis.GBScriptNoteRoleModel.createTemplate(this._editor.doc)
+          : {
+            layoutMode: this._editor.doc.layoutMode,
+            editor: _snToolClone(this._editor.doc.editor || {}),
+            scenarioTypes: _snToolClone(this._editor.doc.scenarioTypes || []),
+            rubyPresentation: _snToolClone(this._editor.doc.rubyPresentation || {}),
+          };
         const saved = this._savePresetValue('template', name, value, {
           allowOverwrite: options.allowOverwrite,
           label: 'シナリオ: テンプレート登録',
@@ -1117,6 +1132,14 @@ class ScriptNoteComponent extends ToolComponent {
 
   async _loadScenario(path, options = {}) {
     const nextPath = path || '';
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const documentKey = coordinator && nextPath ? coordinator.documentKeyForPath(nextPath) : nextPath;
+    // 競合確認からの明示的な再読込だけが保留状態を解除できる。
+    // 通常のタブ再表示・別パネルでの同一ファイル読込では、他の編集面が保持する
+    // 未保存競合を勝手に解決しない。
+    const conflictGeneration = Object.prototype.hasOwnProperty.call(options, 'conflictGeneration')
+      ? options.conflictGeneration
+      : null;
     const loadSeq = (this._loadSeq || 0) + 1;
     this._loadSeq = loadSeq;
     const isStaleLoad = () => this._loadSeq !== loadSeq;
@@ -1128,11 +1151,11 @@ class ScriptNoteComponent extends ToolComponent {
     if (showGlobalLoading) showLoading('シナリオを読み込み中...');
     try {
       const data = await apiFetch('/file?path=' + encodeURIComponent(nextPath));
-      if (isStaleLoad()) return;
+      if (isStaleLoad()) return false;
       const content = data.content || '{}';
       if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
         await showLoadingBeforeHeavyWork(content, '大きいシナリオを描画中...');
-        if (isStaleLoad()) return;
+        if (isStaleLoad()) return false;
       }
       const parsed = JSON.parse(content);
       _sn2ExpandDefaultFileStyle(parsed);
@@ -1150,7 +1173,10 @@ class ScriptNoteComponent extends ToolComponent {
       } else {
         this._editor.host = host;
       }
-      this._editor.loadDoc(parsed, nextPath);
+      const loaded = this._editor.loadDoc(parsed, nextPath, data.etag || '', conflictGeneration, data);
+      if (!loaded) {
+        throw new Error('競合状態が更新されたため、再読込を中止しました');
+      }
       this.state.scenarioPath = nextPath;
       this.state.label = parsed.title || fallbackLabel;
 
@@ -1191,8 +1217,11 @@ class ScriptNoteComponent extends ToolComponent {
       if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.mountFloatingAnnotationUi === 'function') {
         GBPaneBridge.mountFloatingAnnotationUi();
       }
+      if (this.el) delete this.el.dataset.loadFailed;
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオを読み込みました');
+      return true;
     } catch (err) {
+      if (this.el) this.el.dataset.loadFailed = '1';
       if (!this._editor?.doc) {
         this.state.scenarioPath = '';
         this.state.label = '';
@@ -1205,6 +1234,7 @@ class ScriptNoteComponent extends ToolComponent {
         this._syncTabStateFromScenario();
       }
       if (!options.skipStatus && typeof showStatus === 'function') showStatus('シナリオの読み込みに失敗: ' + err.message, true);
+      return false;
     } finally {
       if (showGlobalLoading) {
         hideLoading();

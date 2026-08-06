@@ -246,7 +246,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     const text = String(value == null ? '' : value);
     if (colId === '_gutter' || colId === '_gutter2') return false;
     if (colId === '_role') {
-      row.role = text.trim();
+      if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+        globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, text.trim());
+      } else {
+        row.role = text.trim();
+      }
       return true;
     }
     if (colId === '_status') {
@@ -269,13 +273,18 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _createGridPasteRow(templateRow = null) {
-    return {
+    const row = {
       id: globalThis.crypto?.randomUUID?.() || `sn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       role: templateRow?.role || '',
+      ...(templateRow?.roleRef ? { roleRef: { ...templateRow.roleRef } } : {}),
       status: templateRow?.status || '',
       text: '',
       columns: {},
     };
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, row, row.roleRef || row.role);
+    }
+    return row;
   },
 
   _handleGridCellPaste(e, plainText, pasteInCell = false) {

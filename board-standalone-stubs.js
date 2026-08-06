@@ -190,10 +190,15 @@
   if (typeof window.GBLayout === 'undefined') {
     const PANE_ID = 'board-standalone-pane';
     const paneNode = { id: PANE_ID, tabs: [], activeTabIndex: 0 };
+    let bulkSourceTab = null;
     const refreshPaneNode = function () {
-      paneNode.tabs = [_standaloneBoardTab()];
+      paneNode.tabs = [_standaloneBoardTab(), ...(bulkSourceTab ? [bulkSourceTab] : [])];
       paneNode.activeTabIndex = 0;
       return paneNode;
+    };
+    window._bsaSetBulkSourceTab = function (tab) {
+      bulkSourceTab = tab && typeof tab === 'object' ? { ...tab, _standaloneBulkSource: true } : null;
+      return refreshPaneNode();
     };
     window.GBLayout = {
       activePane: PANE_ID,
@@ -266,10 +271,16 @@
     window.getToolComponentConfig = function () { return null; };
   }
 
-  // --- テーマ系のダミー -----------------------------------------------------
+  // --- テーマ系フォールバック ------------------------------------------------
+  // 通常は board-standalone.html が本体と同じ gb-theme-manager.js を先に読む。
+  // 配布物の欠落などで読み込めなかった場合だけ、ボード内の themeId を失わない
+  // 最小フォールバックを置く（可視操作を成功扱いする no-op にはしない）。
   if (typeof window.MeldexThemeManager === 'undefined') {
     window.MeldexThemeManager = {
-      applyBoardThemeRuntime: function () {},
+      applyBoardThemeRuntime: function () {
+        window.showStatus?.('テーマ機能を読み込めませんでした。アプリを再読み込みしてください', true);
+        return false;
+      },
       getActiveTheme: function () { return null; },
       getActiveBoardTheme: function () { return null; },
       getAllThemes: function () { return []; },
@@ -298,16 +309,62 @@
     };
   }
 
-  // --- ファイルスタイル系のダミー ---------------------------------------------
-  // 本体ではノート/ボード固有のテーマを部分適用する仕組みがあるが、単独アプリでは不要。
+  // --- ファイルスタイル -------------------------------------------------------
+  // 本体の applyFileStyleToPanel と同じ公開契約で、保存済みCSS変数とテーマ参照を
+  // ボード面だけへ適用する。適用済みキーを記録し、別ファイルを開いた時に確実に戻す。
+  const FILE_STYLE_DATASET_KEY = 'fileStyleAppliedVars';
+  function _bsaFileStyleVariables(style) {
+    if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
+    const vars = {};
+    const themeId = String(style.__themeId || style.themeId || '');
+    const theme = themeId ? window.MeldexThemeManager?.getThemeById?.(themeId) : null;
+    Object.assign(vars, theme?.ui?.cssVars || {});
+    const palette = theme ? window.MeldexThemeManager?.getThemeColorSet?.(theme) : null;
+    if (Array.isArray(palette)) {
+      for (let i = 0; i < 10 && palette.length; i += 1) {
+        vars[`--theme-palette-${i}`] = palette[i % palette.length];
+      }
+    }
+    Object.entries(style).forEach(([key, value]) => {
+      if (key.startsWith('--') && value !== '' && value != null) vars[key] = value;
+    });
+    return vars;
+  }
+  function _bsaClearFileStyleElement(element) {
+    if (!element) return;
+    String(element.dataset?.[FILE_STYLE_DATASET_KEY] || '')
+      .split(',').map(key => key.trim()).filter(Boolean)
+      .forEach(key => element.style.removeProperty(key));
+    if (element.dataset) delete element.dataset[FILE_STYLE_DATASET_KEY];
+  }
   if (typeof window.applyFileStyleToPanel !== 'function') {
-    window.applyFileStyleToPanel = function () {};
+    window.applyFileStyleToPanel = function (style, panelId) {
+      const element = panelId === 'bd-canvas' && typeof window.bdGetBoardElement === 'function'
+        ? window.bdGetBoardElement('canvas')
+        : document.getElementById(panelId);
+      if (!element) return false;
+      _bsaClearFileStyleElement(element);
+      const applied = [];
+      Object.entries(_bsaFileStyleVariables(style)).forEach(([key, value]) => {
+        element.style.setProperty(key, String(value));
+        applied.push(key);
+      });
+      if (applied.length) element.dataset[FILE_STYLE_DATASET_KEY] = applied.join(',');
+      return true;
+    };
   }
   if (typeof window.clearFileStyleForPanel !== 'function') {
-    window.clearFileStyleForPanel = function () {};
+    window.clearFileStyleForPanel = function (panelId) {
+      const element = panelId === 'bd-canvas' && typeof window.bdGetBoardElement === 'function'
+        ? window.bdGetBoardElement('canvas')
+        : document.getElementById(panelId);
+      _bsaClearFileStyleElement(element);
+    };
   }
   if (typeof window.clearFileStyle !== 'function') {
-    window.clearFileStyle = function () {};
+    window.clearFileStyle = function () {
+      window.clearFileStyleForPanel('bd-canvas');
+    };
   }
 
   // --- ヒストリー・自動バージョン -----------------------------------------------
@@ -490,9 +547,163 @@
     pane.appendChild(card);
     return true;
   }
+  window._bsaOpenLinkedPathInSidebar = _standaloneOpenLinkedPath;
 
-  if (typeof window.openLinkInSubPanel !== 'function') {
-    window.openLinkInSubPanel = function (path, label, options) {
+  function _showStandaloneLinkDestinationDialog(path, label, options) {
+    const targetPath = String(path || '').trim();
+    if (!targetPath) {
+      window.showStatus?.('リンク先が指定されていません', true);
+      return false;
+    }
+    const parity = window.MeldexStandaloneParity;
+    if (typeof parity?.openTarget !== 'function') {
+      window.showStatus?.('表示先を選択する機能を読み込めませんでした。アプリを再読み込みしてください', true);
+      return false;
+    }
+    document.querySelector('[data-e2e-id="board-standalone-link-destination-overlay"]')?.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay standalone-parity-overlay';
+    overlay.dataset.e2eId = 'board-standalone-link-destination-overlay';
+    const dialog = document.createElement('div');
+    dialog.className = 'modal standalone-parity-dialog';
+    dialog.dataset.e2eId = 'board-standalone-link-destination-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', '表示先を選択');
+    dialog.tabIndex = -1;
+    const title = document.createElement('h2');
+    title.textContent = '表示先を選択';
+    const description = document.createElement('p');
+    description.textContent = `${String(label || targetPath)} をどこに表示するか選んでください。`;
+    const actions = document.createElement('div');
+    actions.className = 'standalone-parity-actions';
+    actions.style.display = 'grid';
+    actions.style.gap = '8px';
+    const reason = document.createElement('div');
+    reason.dataset.e2eId = 'board-standalone-link-destination-reason';
+    reason.setAttribute('role', 'status');
+    reason.style.minHeight = '20px';
+    const focusReturn = document.activeElement;
+    const close = () => {
+      overlay.remove();
+      focusReturn?.focus?.({ preventScroll: true });
+    };
+    const target = {
+      path: targetPath,
+      label: String(label || ''),
+      linkType: String(options?.linkType || options?.type || ''),
+    };
+    const addDestination = (destination, text, primary) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = primary ? 'gb-btn gb-btn-primary' : 'gb-btn';
+      button.dataset.e2eId = `board-standalone-open-${destination}`;
+      button.textContent = text;
+      button.style.minWidth = '44px';
+      button.style.minHeight = '44px';
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        reason.textContent = '';
+        try {
+          const opened = await parity.openTarget(target, destination, {
+            label: target.label,
+            linkType: target.linkType,
+          });
+          if (opened !== false) {
+            close();
+            return;
+          }
+          reason.textContent = 'この表示先を利用できません。別の表示先を選んでください。';
+        } catch (error) {
+          reason.textContent = error?.message || 'リンク先を開けませんでした。';
+        } finally {
+          if (button.isConnected) button.disabled = false;
+        }
+      });
+      actions.appendChild(button);
+      return button;
+    };
+    addDestination('float', '現在の副画面で開く', true);
+    const newButton = addDestination('new', '新規ウィンドウで開く', false);
+    const mainButton = addDestination('main', 'Meldex本体で開く', false);
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'gb-btn';
+    back.dataset.e2eId = 'board-standalone-open-back';
+    back.textContent = '戻る';
+    back.style.minWidth = '44px';
+    back.style.minHeight = '44px';
+    back.addEventListener('click', close);
+    actions.append(reason, back);
+    dialog.append(title, description, actions);
+    overlay.appendChild(dialog);
+    overlay.addEventListener('pointerdown', event => {
+      if (event.target === overlay) close();
+    });
+    overlay.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    });
+    document.body.appendChild(overlay);
+    window.GBModalShell?.enhanceOverlay?.(overlay);
+    queueMicrotask(() => dialog.focus());
+
+    const nativeMode = new URLSearchParams(window.location?.search || '').get('native') === '1';
+    if (nativeMode && typeof parity.capabilities !== 'function') {
+      newButton.disabled = true;
+      mainButton.disabled = true;
+      reason.textContent = 'アプリの起動可否を確認できません。Meldexを再起動してください。';
+    } else if (nativeMode) {
+      newButton.disabled = true;
+      mainButton.disabled = true;
+      reason.textContent = '利用できるアプリを確認しています…';
+      Promise.resolve(parity.capabilities()).then(capabilities => {
+        if (!overlay.isConnected) return;
+        const allowed = Array.isArray(capabilities?.allowedTargets) ? capabilities.allowedTargets : [];
+        const resolvedType = String(parity.resolveTarget?.(targetPath, target)?.type || target.linkType || '');
+        const targetApp = ({
+          page: 'note',
+          document: 'note',
+          scriptnote: 'scenario',
+          scenario: 'scenario',
+          board: 'board',
+          pivot: 'sheet',
+          database: 'sheet',
+          sheet: 'sheet',
+          tree: 'sheet',
+          gallery: 'sheet',
+          kanban: 'sheet',
+          timeline: 'sheet',
+          chart: 'sheet',
+          graph: 'sheet',
+          timer: 'timer',
+          media: 'viewer',
+          html: 'viewer',
+        })[resolvedType] || '';
+        const mainAvailable = capabilities?.targets?.main?.available === true && allowed.includes('main');
+        const targetAvailable = !!targetApp
+          && capabilities?.targets?.[targetApp]?.available === true
+          && allowed.includes(targetApp);
+        mainButton.disabled = !mainAvailable;
+        newButton.disabled = !targetAvailable;
+        reason.textContent = mainAvailable || !newButton.disabled
+          ? ''
+          : (capabilities?.targets?.[targetApp]?.reason
+            || capabilities?.targets?.main?.reason
+            || capabilities?.error?.message
+            || `対応するアプリを利用できません${targetApp ? `（${targetApp}）` : ''}`);
+      }).catch(error => {
+        if (!overlay.isConnected) return;
+        reason.textContent = error?.message || '利用できるアプリを確認できませんでした。';
+      });
+    }
+    return true;
+  }
+  window._bsaShowLinkDestinationDialog = _showStandaloneLinkDestinationDialog;
+
+  if (typeof window.openLinkInFloatPanel !== 'function') {
+    window.openLinkInFloatPanel = function (path, label, options) {
       return _standaloneOpenLinkedPath(path, label, options || {});
     };
   }

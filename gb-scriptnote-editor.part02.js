@@ -101,15 +101,20 @@
     el.className = 'sn2-row';
     el.dataset.rowId = row.id;
     // 枠線設定（タイプごとのオプション設定で制御）
-    const chara = row.role
-      ? this.doc.characters.find(c => !c.isDefault && c.name === row.role)
-      : this.doc.characters.find(c => c.isDefault);
+    const effectiveRole = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row);
+    const chara = effectiveRole?.style
+      || (row.role
+        ? this.doc.characters.find(c => !c.isDefault && c.name === row.role)
+        : this.doc.characters.find(c => c.isDefault));
     // dataset.kind: 'blank' (空ロール), 'break' (区切り), 'summary' (プロット), 'action', 'heading', 'dialogue'
     let kind = 'dialogue';
     if (!row.role) kind = 'blank';
-    else if (chara?.isSummary) kind = 'summary';
-    else if (chara?.isBreak) kind = 'break';
-    else if (['dialogue', 'action', 'heading'].includes(chara?.kind)) kind = chara.kind;
+    else if (effectiveRole?.type?.isSummary || chara?.isSummary) kind = 'summary';
+    else if (effectiveRole?.type?.isBreak || chara?.isBreak) kind = 'break';
+    else {
+      const resolvedKind = effectiveRole?.type?.kind || chara?.kind;
+      if (['dialogue', 'action', 'heading'].includes(resolvedKind)) kind = resolvedKind;
+    }
     el.dataset.kind = kind;
     const showOutline = !!chara?.outline;
     if (showOutline) {

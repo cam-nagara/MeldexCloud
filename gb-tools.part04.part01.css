@@ -1,24 +1,6 @@
-/* === Note styling: slash command menu === */
-#slash-menu {
-  min-width: 200px;
-  max-height: 300px;
-  overflow-y: auto;
-  z-index: 10030;
-}
-#slash-menu.note-slash-menu {
-  box-sizing: border-box;
-}
-#slash-menu .slash-item:hover,
-#slash-menu .slash-item.selected {
-  background: var(--ui-bg-control-active);
-}
-#slash-menu .slash-item .slash-icon {
-  color: var(--ui-fg-muted);
-}
-#slash-menu .slash-item[aria-selected="true"] {
-  background: var(--ui-bg-control-active);
-  color: var(--ui-fg-strong);
-}
+/* Note styling: slash command menu
+   旧 #slash-menu 専用スタイルは gb-note-block-menu.css の .note-block-menu へ
+   統合済み（note-editor-regression-performance-conflict-plan-2026-08-01.md 工程5）。 */
 
 /* ============================================================
    共通ドロップダウン
@@ -724,7 +706,7 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 .msr-tags { display: flex; flex-wrap: wrap; gap: 3px; }
 .msr-tag {
   display: inline-flex; align-items: center; gap: 2px;
-  background: var(--bg3); border-radius: 3px;
+  background: var(--bg3); border-radius: 4px;
   font-size: 12px; cursor: pointer;
   padding: 1px 6px 1px 2px;
 }

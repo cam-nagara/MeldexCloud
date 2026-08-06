@@ -61,7 +61,7 @@
 
 /* エントリプロパティグリッド (複数段表示・D&D 並べ替え・開閉・列幅設定)
    .entity-props-grid-container は renderEntityPropsGridInto がフルページ版(#entity-props-grid)・
-   サブパネル版(.gb-subpanel-entity-props)双方へ付与する共通クラス。列幅は --entity-prop-col-width
+   フロートパネル版(.gb-float-panel-entity-props)双方へ付与する共通クラス。列幅は --entity-prop-col-width
    (既定300px, 列幅設定ポップアップで上書き) で揃える。 */
 .entity-props-grid-container {
   display: grid;
@@ -129,12 +129,29 @@
   border: 1px solid var(--border);
   border-radius: 3px;
 }
+/* 列一覧の文字選択コピー ポップアップ（gb-entity-props-selection.js）。
+   .gb-context-menu 共通クラスへ相乗りしつつ、複合セレクタで確実に上書きする。 */
+.gb-context-menu.entity-props-selection-copy-popup {
+  display: flex;
+  padding: 3px;
+}
+.entity-props-selection-copy-btn {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px;
+  padding: 4px 8px;
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.entity-props-selection-copy-btn:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
+
 .entry-prop-card {
   display: flex; align-items: flex-start; gap: 6px;
   padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: 4px;
-  cursor: grab;
   background: var(--bg2);
   min-height: 28px;
 }
@@ -148,6 +165,16 @@
   user-select: none;
   display: inline-flex; align-items: center; gap: 4px;
 }
+/* レイアウト編集時の並べ替え専用ハンドル（row-drag-handle と同じ慣行）。
+   カード自体は draggable にしないため、掴めるのはこのハンドルだけになる。 */
+.entry-prop-drag-handle {
+  flex: 0 0 auto;
+  width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--fg2);
+  cursor: grab;
+}
+.entry-prop-drag-handle:active { cursor: grabbing; }
 .entry-prop-type-icon { display: inline-flex; align-items: center; flex: 0 0 auto; color: var(--fg2); }
 .entry-prop-type-icon svg { width: 14px; height: 14px; }
 .entry-prop-values {

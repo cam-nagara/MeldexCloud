@@ -234,9 +234,11 @@ function renderPropertyLayoutToolbar(grid, data, entityPath, opts, appendTarget)
   const toolbar = document.createElement('div');
   toolbar.className = 'gb-prop-layout-toolbar';
   toolbar.dataset.dbPath = dbPath;
-  const contextToken = opts.subPanel
-    ? 'subpanel'
-    : (grid.id || grid.closest?.('[data-pane-id]')?.dataset?.paneId || grid.className || 'main');
+  const secondarySurface = ['float', 'subpanel'].includes(opts?.surface)
+    ? opts.surface
+    : (opts?.subPanel ? 'subpanel' : '');
+  const contextToken = secondarySurface
+    || grid.id || grid.closest?.('[data-pane-id]')?.dataset?.paneId || grid.className || 'main';
   const scopeId = String([dbPath || 'db', entityPath || '', contextToken].filter(Boolean).join('-'))
     .replace(/[^A-Za-z0-9_-]+/g, '-');
   const btn = (label, icon, action) => {

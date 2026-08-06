@@ -110,8 +110,8 @@ function createDbLinkValueElement(val, entityPath, propName, thumbSize, propType
   wrap.addEventListener('click', (e) => {
     e.stopPropagation();
     const paneId = wrap.closest?.('.gb-pane')?.dataset?.paneId || '';
-    if (typeof openLinkInSubPanel === 'function') {
-      openLinkInSubPanel(path, _dbLinkBaseName(path), { linkType: 'link', sourcePaneId: paneId });
+    if (typeof openLinkInFloatPanel === 'function') {
+      openLinkInFloatPanel(path, _dbLinkBaseName(path), { linkType: 'link', sourcePaneId: paneId });
     }
   });
   wrap.addEventListener('dblclick', (e) => {

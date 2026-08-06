@@ -12,8 +12,6 @@
   const LAUNCH_COUNT_KEY = 'meldex-beta-telemetry-launch-count';
   const LAST_SUMMARY_KEY = 'meldex-beta-telemetry-last-summary';
   const FLUSH_INTERVAL_MS = 60 * 1000;
-  const CLOUD_CRASH_DIR = '_meldex/beta/crash-reports';
-  const CLOUD_USAGE_DIR = '_meldex/beta/usage';
   const USAGE_DB_DIR = '利用統計';
   const USAGE_DB_NOTE = '利用統計/利用統計.md';
   const FEEDBACK_DB_DIR = 'Meldexフィードバック';
@@ -33,6 +31,39 @@
   let _flushTelemetryPromise = null;
   let _settingsBound = false;
   let _pwaHandlersInstalled = false;
+
+  async function _appendCloudDiagnostic(provider, channel, payload) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.DIAGNOSTICS;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('診断データの保存先を安全に判定できません');
+    }
+    const documentId = `beta-${channel}-${_today()}`;
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const entries = Array.isArray(current?.payload?.entries)
+        ? current.payload.entries.slice(-999)
+        : [];
+      entries.push(payload);
+      try {
+        await adapter.save(kind, documentId, {
+          version: 1,
+          channel,
+          updatedAt: _nowIso(),
+          entries,
+        }, {
+          expectedRevision: current?.revision ?? null,
+        });
+        return { ok: true, path: `diagnostics/${documentId}` };
+      } catch (error) {
+        lastError = error;
+        if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw lastError;
+  }
 
   function _safeGet(key) {
     try { return localStorage.getItem(key); } catch (_) { return null; }
@@ -558,21 +589,19 @@
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
-    const jsonlPath = _joinPath(CLOUD_USAGE_DIR, `${_today()}.jsonl`);
-    await _appendProviderJsonLine(provider, jsonlPath, summary);
+    const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
     try { await provider.statPath(USAGE_DB_NOTE); }
     catch (_) { await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter()); }
     const flushStamp = _safeFilePart(String(summary.flushedAt || _nowIso()).replace(/[:.]/g, '-'), 'flush');
     const entryPath = _joinPath(USAGE_DB_DIR, `usage_${_today()}_${sessionId}_${flushStamp}.md`);
     await provider.writeText(entryPath, _usageEntryMarkdown(summary));
-    return { ok: true, path: entryPath, jsonlPath };
+    return { ok: true, path: entryPath, jsonlPath: diagnostic.path };
   }
 
   async function _writeCloudCrashReport(payload) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    const filePath = _joinPath(CLOUD_CRASH_DIR, `${_today()}.jsonl`);
-    return _appendProviderJsonLine(provider, filePath, payload);
+    return _appendCloudDiagnostic(provider, 'crash-reports', payload);
   }
 
   function _feedbackFormUrl() { return String(_safeGet(FEEDBACK_FORM_URL_KEY) || feedbackConfig.feedbackFormUrl || '').trim(); }

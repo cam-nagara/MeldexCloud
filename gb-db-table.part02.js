@@ -30,10 +30,14 @@ function _dbTableWarnManualSortRequired() {
 function _dbPinnedColumnOffsets(renderedCols, pinnedCols, entityColumnPinned, savedWidths, entityWidth, rowControlsWidth) {
   const offsets = {};
   let left = Number.isFinite(rowControlsWidth) ? rowControlsWidth : 56;
+  const pinnedState = typeof getPinnedColumnRangeState === 'function'
+    ? getPinnedColumnRangeState(renderedCols, pinnedCols, entityColumnPinned)
+    : { pinnedCols, entityColumnPinned };
+  const effectivePinnedCols = Array.isArray(pinnedState.pinnedCols) ? pinnedState.pinnedCols : [];
   (Array.isArray(renderedCols) ? renderedCols : []).forEach(token => {
     const pinned = token === '__entity__'
-      ? !!entityColumnPinned
-      : (Array.isArray(pinnedCols) && pinnedCols.includes(token));
+      ? !!pinnedState.entityColumnPinned
+      : effectivePinnedCols.includes(token);
     if (!pinned) return;
     offsets[token] = left;
     const rawWidth = token === '__entity__'
@@ -66,20 +70,30 @@ function _handleTbodyDragstart(e) {
     const tr = nameSpan.closest('tr');
     const entityName = tr?.dataset?.entityName;
     if (!entityName) return;
-    const ep = _entityPath(ctx.dbPath, entityName);
+    const ep = tr.dataset.meldexEntityPath || _entityPath(ctx.dbPath, entityName, ctx.pivotData);
     e.dataTransfer.effectAllowed = 'copyMove';
     const sel = ctx._selectedEntities;
     if (sel && sel.has(entityName) && sel.size > 1) {
       const payloadNames = [...sel];
       e.dataTransfer.setData('text/plain', payloadNames.join('\n'));
       e.dataTransfer.setData('text/x-meldex-rows', JSON.stringify(payloadNames));
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+        items: payloadNames.map(name => ({
+          name,
+          path: _entityPath(ctx.dbPath, name, ctx.pivotData),
+          type: 'entity',
+        })),
+      }));
     } else {
-      e.dataTransfer.setData('text/plain', entityName);
-
+      if (window.MeldexBoardTransfer?.setEntityDragData) {
+        window.MeldexBoardTransfer.setEntityDragData(e.dataTransfer, ctx.dbPath, entityName, ep);
+      } else {
+        e.dataTransfer.setData('text/plain', entityName);
+        e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+          name: entityName, path: ep, type: 'entity'
+        }));
+      }
     }
-    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
-      name: entityName, path: ep, type: 'entity'
-    }));
     nameSpan.classList.add('dragging');
     return;
   }
@@ -745,7 +759,7 @@ function _dbRegisterRollupAlignment(ctx, entityName, propName, td, host, result,
 }
 
 function renderEntityCell(entityName, propName, ctx, options) {
-  const { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, cellDisplayByCol } = options;
+  const { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, cellDisplayByCol, cellImageThumbCount } = options;
   const entityData = entitiesMap[entityName];
   const td = document.createElement('td');
   td.dataset.propName = propName;
@@ -757,6 +771,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
   td.tabIndex = -1;
   td.setAttribute('aria-label', `${entityName} / ${propName}`);
   if ((selectedCols || []).includes(propName)) td.classList.add('col-selected');
+  if (typeof window !== 'undefined') window.MeldexComputedColumns?.applyCellStyle?.(td, dbPath, propName, ctx);
   // 列単位のセル折返し/切り詰め上書き（シート全体設定より優先。CSS側は td[data-cell-overflow] で特異度勝ち）。
   // cellDisplayByCol が未設定(null)の大多数のケースでは即座に何もせず抜ける。
   const colDisplay = typeof _dbColumnCellOverrideEntry === 'function' ? _dbColumnCellOverrideEntry(cellDisplayByCol, propName) : null;
@@ -917,7 +932,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
     const val = values.length > 0
       ? values[0]
       : { value: '', status: '採用', file: ep, property: propName, candidate_index: null };
-    container.appendChild(createTypedValueElement(val, ep, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter }));
+    container.appendChild(createTypedValueElement(val, ep, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, imagePreviewCount: cellImageThumbCount }));
   }
   // チェックボックス型: 未設定セルも false として直接切り替え可能にする
   else if (ptc && ptc.type === 'checkbox') {
@@ -994,6 +1009,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
     }
   }
 
+  if (typeof window !== 'undefined') window.MeldexComputedColumns?.decorateCell?.(td, container, dbPath, propName, entityData, ctx);
   td.appendChild(container);
   // 条件付きカラー
   const cellValues = colorValues.map(v => v.value).join(', ');
@@ -1011,10 +1027,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
 }
 
 function renderEntityRow(entityName, ctx, options) {
-  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned, cellDisplayByCol, renderedCols, pinnedOffsets } = options;
+  const { visibleProps, propTypes, entitiesMap, entityNames, dbPath, condFmt, thumbSize, savedWidths, advFilters, pinnedCols, selectedCols, _entityW, _tbl, _tblId, entityColumnPinned, cellDisplayByCol, renderedCols, pinnedOffsets, cellImageThumbCount } = options;
   const entityData = entitiesMap[entityName];
   const tr = document.createElement('tr');
   tr.dataset.entityName = entityName;
+  tr.dataset.meldexEntityPath = _entityPath(dbPath, entityName, ctx?.pivotData || state.pivotData);
   tr.setAttribute('role', 'row');
   // 行並べ替えは専用ハンドルだけを draggable にして、セル選択・セル編集と競合させない。
   tr.draggable = false;
@@ -1162,9 +1179,13 @@ function renderEntityRow(entityName, ctx, options) {
     const target = cfg.defaultPanel || 'main';
     const sourcePaneId = e.target.closest('.gb-pane')?.dataset?.paneId || '';
     if (target === 'float') {
-      if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
+      if (typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
     } else if (target === 'sidebar') {
-      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId });
+      // フロートパネル／サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
+      // 右サイドバー補助操作の制限に触れるため、呼び出し元要素を渡して判定させる
+      // （計画書「右サイドバー操作の制限」節）。制限時は openLinkInRightPane 側が
+      // 実行を中止し、短いステータス通知を出す。
+      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e.target });
     } else {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
     }
@@ -1196,7 +1217,7 @@ function renderEntityRow(entityName, ctx, options) {
   // フェーズ2: エントリ名列（tdName）もプロパティ列と同じ並べ替え順序（renderedCols）に従って配置する。
   // renderedCols が無い場合（保存済み colOrder に '__entity__' が未含有の旧データ等）は先頭固定として扱う。
   const cols = Array.isArray(renderedCols) && renderedCols.length ? renderedCols : ['__entity__', ...visibleProps];
-  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pinnedOffsets, cellDisplayByCol };
+  const cellOpts = { propTypes, entitiesMap, dbPath, advFilters, pinnedCols, savedWidths, thumbSize, selectedCols, pinnedOffsets, cellDisplayByCol, cellImageThumbCount };
   cols.forEach(token => {
     if (token === '__entity__') {
       const entityLeft = pinnedOffsets?.__entity__;

@@ -1,3 +1,101 @@
+function _sortItemsByManualOrder(items, folderPath) {
+  const order = getManualOrder(folderPath);
+  if (!Array.isArray(items) || !items.length || !order.length) return items;
+  const map = new Map(items.map(it => [it?.name, it]));
+  const sorted = [];
+  order.forEach(name => { const it = map.get(name); if (it) { sorted.push(it); map.delete(name); } });
+  map.forEach(it => sorted.push(it));
+  return sorted;
+}
+
+// 編集ロック
+const LOCKED_ITEMS_KEY = 'outliner-locked-items';
+let _systemLockedItemPaths = [];
+let _fileLockEntries = [];
+let _fileLockLoaded = false;
+let _fileLockLoadPromise = null;
+let _fileLockRoleLoaded = false;
+let _fileLockRolePromise = null;
+let _currentRoleCache = null;
+let _legacyFileLocksMigrated = false;
+let _fileLockRefreshTimer = null;
+const FILE_LOCK_SYSTEM_EXCLUDED = ['_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash'];
+
+function _normalizeLockedItemPath(path) {
+  return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+function _pathOrAncestorIn(entries, targetPath) {
+  const target = _normalizeLockedItemPath(targetPath);
+  if (!target) return false;
+  return (entries || []).some(entry => {
+    const raw = typeof entry === 'string' ? entry : (entry?.normalized_path || entry?.path || '');
+    const base = _normalizeLockedItemPath(raw);
+    return base && (target === base || target.startsWith(base + '/'));
+  });
+}
+function setSystemLockedItems(paths) {
+  _systemLockedItemPaths = Array.isArray(paths)
+    ? paths.map(_normalizeLockedItemPath).filter(Boolean)
+    : [];
+}
+function isSystemLockedItem(path) {
+  return _pathOrAncestorIn(_systemLockedItemPaths, path);
+}
+function _legacyLockedItems() {
+  try {
+    const data = JSON.parse(localStorage.getItem(LOCKED_ITEMS_KEY) || '{}');
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  } catch { return {}; }
+}
+function _isFileLockSystemExcluded(path) {
+  const parts = _normalizeLockedItemPath(path).split('/').filter(Boolean);
+  return parts.some(part => FILE_LOCK_SYSTEM_EXCLUDED.includes(part));
+}
+function _fileLockAuthHeaders() {
+  let token = '';
+  try { token = localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || ''; } catch {}
+  return token ? { Authorization: 'Bearer ' + token } : {};
+}
+async function _fileLockApi(path, opts = {}) {
+  const headers = { ..._fileLockAuthHeaders(), ...(opts.headers || {}) };
+  if (opts.body != null && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+  const res = await fetch(API_BASE + path, { ...opts, headers });
+  const text = await res.text();
+  let payload = {};
+  if (text) {
+    try { payload = JSON.parse(text); } catch { payload = { detail: text }; }
+  }
+  if (!res.ok) {
+    const detail = payload?.detail?.message || payload?.detail || payload?.error || res.statusText;
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+  return payload;
+}
+async function _ensureRoleLoaded(force = false) {
+  if (_fileLockRoleLoaded && !force) return _currentRoleCache;
+  if (_fileLockRolePromise && !force) return _fileLockRolePromise;
+  _fileLockRolePromise = (async () => {
+    try {
+      const me = await _fileLockApi('/auth/me');
+      _currentRoleCache = me?.role || 'viewer';
+    } catch {
+      _currentRoleCache = 'viewer';
+    }
+    _fileLockRoleLoaded = true;
+    return _currentRoleCache;
+  })();
+  try { return await _fileLockRolePromise; }
+  finally { _fileLockRolePromise = null; }
+}
+function isFileLockOwner() {
+  return _currentRoleCache === 'owner';
+}
+function _writeFileLockCache(entries) {
+  _fileLockEntries = Array.isArray(entries) ? entries : [];
+  _fileLockLoaded = true;
+  try {
+    localStorage.setItem(LOCKED_ITEMS_KEY, JSON.stringify({ entries: _fileLockEntries, cachedAt: Date.now() }));
+  } catch {}
 }
 function _readCachedFileLocks() {
   const data = _legacyLockedItems();
@@ -485,6 +583,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
       icon.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
     }
     row.appendChild(icon);
+    // フォルダツリー改修Phase4: 軽量サムネイル表示・OS登録形式アイコン（対象外/OFF時は何もしない）
+    window.GBOutlinerThumbnails?.attachToRow(row, item, icon);
   }
 
   // Label
@@ -570,6 +670,14 @@ function createTreeNodeFromBrowse(item, rootPath) {
   toggle.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!isExpandable) return;
+    // 仮想化中の親に属する行は、子孫も同じ論理モデルへ接続する。
+    // 親コンテナ全件をDOM化せず、表示範囲＋オーバースキャンだけを維持する。
+    const parentVirtualContainer = div.parentElement && div.parentElement.dataset && div.parentElement.dataset.virtual === 'true'
+      ? div.parentElement : null;
+    if (parentVirtualContainer) {
+      childrenDiv._virtualOwnerContainer = parentVirtualContainer;
+      childrenDiv._virtualParentPath = item.path;
+    }
     if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
     const currentIsFolder = item.type === 'folder';
     const currentIsDB = item.type === 'database';
@@ -600,6 +708,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
       });
       childrenDiv.classList.remove('collapsed');
       saveExpandedState(item.path, true);
+      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
+      if (parentVirtualContainer && window.GBOutlinerVirtualRender?.expandCachedNested(parentVirtualContainer, item.path)) {
+        return;
+      }
 
       // Lazy load children
       if (childrenDiv.dataset.loaded === 'false' && childrenDiv.dataset.loading !== 'true') {
@@ -615,23 +727,28 @@ function createTreeNodeFromBrowse(item, rootPath) {
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
-            await _appendOutlinerChildrenChunked(childrenDiv, entityItems, rootPath);
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
           } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
             const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + '&all_files=true');
-            const visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
+            let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
+            // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
+            // （renderGlobalFilterUI自体はクリック時点で常に最新一覧を取り直すため必須ではないが、
+            // 一覧の見た目を早めに追従させておく）。
+            if (typeof renderGlobalFilterUI === 'function') renderGlobalFilterUI();
             _registerOutlinerConflictPaths(visibleChildren);
             visibleChildren.forEach(child => {
               if (item.sourceId && !child.sourceId) child.sourceId = item.sourceId;
             });
-            await _appendOutlinerChildrenChunked(childrenDiv, visibleChildren, rootPath);
-            // マニュアルソート適用
-            if (sortCfg.sort === 'manual') applyManualSort(childrenDiv, item.path);
+            // マニュアルソートは配列側で確定してから追加する（仮想化コンテナはDOM順を持たないため）
+            if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
           }
+          delete childrenDiv.dataset.loadError;
           childrenDiv.dataset.loaded = 'true';
           // グローバルフィルタを新規読み込みノードに適用（常時）
           childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
@@ -663,10 +780,23 @@ function createTreeNodeFromBrowse(item, rootPath) {
             });
           }
           childrenDiv.dataset.loaded = 'true';
+          // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
+          // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
+          // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。
+          if (childrenDiv._outlinerPendingArrowRightFocusNode === div) {
+            delete childrenDiv._outlinerPendingArrowRightFocusNode;
+            if (div.isConnected && toggle.dataset.expanded === 'true' && treeSelection.lastClicked === div
+                && typeof _outlinerKeyboardFirstChildNode === 'function' && typeof _outlinerKeyboardSelectNode === 'function') {
+              const pendingFirstChild = _outlinerKeyboardFirstChildNode(div);
+              if (pendingFirstChild) _outlinerKeyboardSelectNode(pendingFirstChild);
+            }
+          }
         } catch (e) {
           // 握りつぶさず理由を表示する。部分的に追加済みの子ノードを取り除き、
           // 折りたたみ直して再クリックすればリロードが走る状態に戻す
           const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          childrenDiv.dataset.loadError = reason || '不明なエラー';
+          console.error('[フォルダツリー] 子項目の読み込みに失敗:', item.path, e);
           showStatus(`「${item.name}」の読み込みに失敗` + (reason ? `（${reason}）` : ''), true);
           childrenDiv.querySelectorAll(':scope > .tree-node').forEach(n => {
             if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
@@ -676,6 +806,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
           toggle.dataset.expanded = 'false';
           childrenDiv.classList.add('collapsed');
           saveExpandedState(item.path, false);
+          // 失敗時は子が存在しないため、予約されていたフォーカス移動も破棄する
+          delete childrenDiv._outlinerPendingArrowRightFocusNode;
         }
         finally {
           delete childrenDiv.dataset.loading;
@@ -687,6 +819,10 @@ function createTreeNodeFromBrowse(item, rootPath) {
       toggle.dataset.expanded = 'false';
       childrenDiv.classList.add('collapsed');
       saveExpandedState(item.path, false);
+      if (parentVirtualContainer) {
+        window.GBOutlinerVirtualRender?.collapseNested(parentVirtualContainer, item.path);
+      }
+      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
       // 作品フォルダ動的アイコン切替（折畳み時）
       if (currentIsFolder) {
         const iconEl = row.querySelector('.tree-icon');
@@ -700,122 +836,47 @@ function createTreeNodeFromBrowse(item, rootPath) {
   });
 
   // 前回展開されていたら自動展開
-  _queueSavedOutlinerExpansion(item, toggle);
+  if (!item._gbVirtualExpansionManaged) _queueSavedOutlinerExpansion(item, toggle);
 
-  // Row click: 選択＋コンテンツ表示
-  row.addEventListener('click', async (e) => {
+  // Row click: 選択のみ（メインパネルの切替・展開／折りたたみは行わない。§2.4）
+  row.addEventListener('click', (e) => {
     try { row.focus({ preventScroll: true }); } catch {}
-    if (_outlinerSuppressNextTreeRowClick && (!_outlinerSuppressTreeRowClickNode || _outlinerSuppressTreeRowClickNode === div)) {
-      _outlinerSuppressNextTreeRowClick = false;
-      _outlinerSuppressTreeRowClickNode = null;
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
     if (e.shiftKey) {
-      // Shift+クリック: 範囲選択
+      // Shift+クリック: 範囲選択（開かない）
       e.preventDefault();
       treeSelection.rangeTo(div);
       treeSelection.lastClicked = div;
       return;
     }
     if (e.ctrlKey || e.metaKey) {
-      // Ctrl+クリック: トグル選択
+      // Ctrl+クリック: トグル選択（開かない）
       treeSelection.toggle(div);
       treeSelection.lastClicked = div;
       return;
     }
 
-    // 通常クリック: 単一選択 + コンテンツ表示
-    treeSelection.clear();
-    treeSelection.add(div);
-    treeSelection.lastClicked = div;
+    // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
+    window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
 
-    document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
-    row.classList.add('active');
-
-    const clickPaneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
-      ? _captureBrowseItemPaneSnapshot('', { requirePath: false })
-      : null;
-    if (_applyCachedBrowseItemType(item)) _syncOutlinerResolvedItemType(div, item);
-    if (_browseItemNeedsTypeCheck(item) && item.type !== 'folder') {
-      await _resolveBrowseItemTypeOnDemand(item);
-      // 型判定待ちの間に別項目へ移動した場合、古いクリックを開かない。
-      if (!row.isConnected || !row.classList.contains('active')) return;
-      if (typeof _browseItemPaneSnapshotIsCurrent === 'function'
-          && !_browseItemPaneSnapshotIsCurrent(clickPaneSnapshot)) return;
-      if (!_browseItemNeedsTypeCheck(item)) _syncOutlinerResolvedItemType(div, item);
-    }
-    const currentIsFolder = item.type === 'folder';
-    const currentIsDB = item.type === 'database';
-
-    // スクロール位置保護は pointerdown 時点のグローバルガード (_treeScrollGuard) に委ねる
-
-    // skipHighlight: クリック側で既に active クラスを付け終えているので、
-    // open* 関数内の highlightOutlinerNode → scrollIntoView は不要かつスクロールジャンプ源。
-    const _expOpts = { fromExplorer: true, skipHighlight: true };
-    if (typeof _chatSetCurrentTargetPath === 'function' && item.path) {
-      _chatSetCurrentTargetPath(item.path, currentIsFolder || currentIsDB ? 'folder' : 'file', { reason: 'tree-click', deferAdoptSource: true });
-    }
-    if (currentIsDB) {
-      selectDatabase(item.path, clickPaneSnapshot?.paneContext || null, _expOpts);
-    } else if (item.type === 'entity') {
-      selectEntity(item.path, _expOpts);
-    } else if (item.type === 'page') {
-      openPage(item.name, item.path, _expOpts);
-    } else if (item.type === 'scriptnote' || item.type === 'scenario' || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
-      if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(item.path, item.name, _expOpts);
-    } else if (item.type === 'board') {
-      openBoard(item.name, item.path, _expOpts);
-    } else if (item.type === 'calendar') {
-      openCalendarFile(item.name, item.path, { ..._expOpts, paneContext: clickPaneSnapshot?.paneContext || null });
-    } else if (item.type === 'image' || item.type === 'video' || item.type === 'audio') {
-      openMedia(item.name, item.path, item.type, _expOpts);
-    } else if (item.type === 'html') {
-      openHtmlFile(item.name, item.path, _expOpts);
-    } else if (item.type === 'csv') {
-      if (typeof openCsvFile === 'function') openCsvFile(item.name, item.path, _expOpts);
-      else openPage(item.name, item.path, _expOpts);
-    } else if (item.type === 'smart-db') {
-      if (typeof openSmartDbFile === 'function') openSmartDbFile(item.name, item.path, _expOpts);
-    } else if (currentIsFolder) {
-      let folderVisiblePromise = null;
-      const mobileExplorer = window.MeldexCloudMobileExplorer;
-      const handledByMobileExplorer = !!(
-        window.MeldexCloudMobile?.shouldUseSidebarDrawer?.()
-        && mobileExplorer?.selectFolderFromTree?.(item, { syncSelection: false })
-      );
-      if (!handledByMobileExplorer) folderVisiblePromise = openFolder(item.name, item.path, _expOpts);
-      if (toggle && toggle.dataset.expanded !== 'true') toggle.click();
-      const paneSnapshot = typeof _captureBrowseItemPaneSnapshot === 'function'
-        ? _captureBrowseItemPaneSnapshot(item.path, { requirePath: !handledByMobileExplorer })
-        : null;
-      _scheduleBrowseItemTypeResolution(div, item, folderVisiblePromise, {
-        paneSnapshot,
-        isStillActive: handledByMobileExplorer
-          ? () => mobileExplorer?.currentFolderTarget?.()?.path === item.path
-          : undefined,
-        onResolved: handledByMobileExplorer && typeof mobileExplorer?.handleResolvedItemType === 'function'
-          ? payload => mobileExplorer.handleResolvedItemType(payload)
-          : undefined,
-      });
-    } else if (!NATIVE_TYPES.has(item.type)) {
-      // ネイティブアプリ専用ファイル（psd, clip, 3d等）: メニューから開く案内
-      showStatus(item.name + ' — 「…」または長押しメニューからアプリで開く');
-    }
-
-    // open* 呼び出し後の念押し復元（ガードは pointerdown で既に張っている）
+    // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
     _treeScrollGuardRestore();
+
+    // 設定「クリックで開く」が単クリックの場合: 選択に続けてそのまま開く。
+    // フォルダも含め全項目種別に一貫して適用する（フォルダだけ例外にすると
+    // 「なぜこれだけ2回押さないと開かないのか」という不整合が生じるため）。
+    // activateNode はフォルダなら開く+展開、ファイルなら対応するビューを開く。
+    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
+      window.GBOutlinerActivation.activateNode(div);
+    }
   });
 
-  // --- ダブルクリック: インラインリネーム ---
+  // --- ダブルクリック: 共通アクティベーション（一度だけ開く）。名前変更はF2/メニューへ移動 ---
   row.ondblclick = (e) => {
     e.stopPropagation();
-    if (item.type === 'entity' || item._isRoot) return;
-    if (item.path && isItemLocked(item.path)) return;
-    // 既にリネーム中なら無視
-    if (label.querySelector('input')) return;
-    startTreeLabelEdit(label, item);
+    // 単クリックで開く設定の時は、直前の2回のclickで既にactivateNodeが呼ばれているため
+    // ここでの追加呼び出しは行わない（3重起動防止）。
+    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) return;
+    window.GBOutlinerActivation?.activateNode(div);
   };
 
   // --- 右クリックメニュー ＋ 長押しで同メニュー（タッチ/ペン） ---
@@ -837,64 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
   }
 
   // --- ドラッグ&ドロップ ---
-  if (item.type === 'entity') {
-    row.draggable = false;
-  }
-
-  row.addEventListener('dragstart', (e) => {
-    if (item._isRoot) {
-      e.preventDefault();
-      return;
-    }
-    // 複数選択中にドラッグ開始: 選択に含まれていなければ単一選択に切り替え
-    if (!treeSelection.has(div)) {
-      treeSelection.clear();
-      treeSelection.add(div);
-      treeSelection.lastClicked = div;
-    }
-    draggedNode = div;
-    // DOM順でソート（上から下の順序を維持）
-    const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')];
-    const selectedNodes = [...treeSelection.items].sort((a, b) => allTreeNodes.indexOf(a) - allTreeNodes.indexOf(b));
-    draggedNodes = selectedNodes.filter(n => !selectedNodes.some(parent => parent !== n && parent.contains(n)));
-    draggedNodes.forEach(n => n.querySelector('.tree-node-row')?.classList.add('dragging'));
-    const payload = _treeDragPayload(item);
-    e.dataTransfer.effectAllowed = 'copyMove';
-    // text/uri-list を入れておくと OS シェル（窓外）が「URL のドラッグ」として
-    // 認識し、赤い禁止カーソルが出にくくなる
-    try {
-      const firstItem = (payload.items && payload.items[0]) || null;
-      if (firstItem && firstItem.path && typeof buildSingleTabWindowUrl === 'function') {
-        const uri = new URL(buildSingleTabWindowUrl(firstItem), location.origin).toString();
-        e.dataTransfer.setData('text/uri-list', uri);
-      }
-    } catch {}
-    e.dataTransfer.setData('text/plain', (payload.items || []).map(entry => entry.name).filter(Boolean).join(', ') || item.name || '');
-    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
-    // 窓外ドロップ時の popout 用に payload を保持
-    window._gbOutlinerDragPayload = payload;
-    // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度にする
-    if (typeof setLowOpacityDragImage === 'function') {
-      setLowOpacityDragImage(e, row, 0.35);
-    }
-  });
-
-  row.addEventListener('dragend', (e) => {
-    (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
-    clearDragIndicators();
-    // ペインタブバーに表示されている挿入位置マーカーを確実にクリア
-    // （ESC キャンセル等でタブバー側の dragleave が発火しないケースの漏れ対策）
-    document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
-      .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
-    // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-    if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
-      const payload = window._gbOutlinerDragPayload;
-      const items = payload && Array.isArray(payload.items) ? payload.items : [];
-      if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
-    }
-    window._gbOutlinerDragPayload = null;
-    draggedNode = null;
-    draggedNodes = null;
-  });
-
-  row.addEventListener('dragover', (e) => {

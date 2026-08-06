@@ -60,6 +60,7 @@ input[type=number] { -moz-appearance: textfield; }
   --fg: #d4d4d4; --fg2: #969696; --accent: #569cd6; --accent2: #4ec9b0;
   --red: #f44747; --green: #6a9955; --orange: #ce9178; --blue: #6fa8dc;
   --border: #333333; --selection: #264f78;
+  --link-fg: #4da3ff;
   --content-bg: var(--bg);
   --page-text-bg: var(--content-bg); --sn2-page-bg: var(--content-bg);
   --db-row-bg: var(--content-bg); --bd-bg: var(--content-bg);
@@ -146,7 +147,7 @@ input[type=number] { -moz-appearance: textfield; }
   --page-drag-guide-color: var(--accent); --page-drag-guide-width: 2px; --page-dragging-opacity: 0.4;
   --page-text-fg: #d4d4d4; --page-text-bg: var(--content-bg); --page-text-bold: normal; --page-text-italic: normal;
   --page-selection-fg: var(--ui-selection-fg); --page-caret-width: var(--editor-caret-width);
-  --page-link-fg: var(--accent2); --page-link-bold: normal; --page-link-italic: normal;
+  --page-link-fg: var(--link-fg); --page-link-bold: normal; --page-link-italic: normal;
   --page-quote-fg: #969696; --page-quote-bg: rgba(255,255,255,0.03); --page-quote-border: var(--border); --page-quote-bold: normal; --page-quote-italic: normal;
   font-family: var(--ui-font,
     'Noto Sans JP',

@@ -19,17 +19,7 @@
     try { target.focus({ preventScroll: true }); } catch { try { target.focus(); } catch {} }
   }
 
-  function _pmDesktopOnly() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      _pmStatus('制作管理の再計算はデスクトップ版で実行してください', true);
-      return true;
-    }
-    return false;
-  }
-
   function _pmRequest(path, body) {
-    const desktopOnly = /^\/production-management\/(?:recalculate\/|tasks\/lock(?:\?|$))/.test(String(path || ''));
-    if (desktopOnly && _pmDesktopOnly()) return Promise.resolve({ ok: false, unsupported: true });
     if (body === undefined) {
       if (typeof apiFetch === 'function') return apiFetch(path);
       if (window.MeldexDataAccess?.requestJson) return window.MeldexDataAccess.requestJson(path);
@@ -198,8 +188,11 @@
   }
 
   function openProductionRecalculate(options = {}) {
-    if (_pmDesktopOnly()) return false;
-    const { body, close } = _pmModal('再計算', '760px', {
+    // 制作管理UX改善計画（2026-08-04）§6-1: 旧「担当者と時間を割り当て」（確認なし即実行）と
+    // 旧「再計算」ダイアログを1本へ統合した（旧称「予定を組み直す」→ 2026-08-05 に
+    // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。表記のみの変更で、
+    // e2eId・エンドポイントは互換のため変更しない。
+    const { body, close } = _pmModal('割当再計算', '760px', {
       trigger: options?.trigger,
       e2eId: 'production-recalculate-dialog-overlay',
       dialogE2eId: 'production-recalculate-dialog',
@@ -217,6 +210,8 @@
     applyButton.disabled = true;
     let rows = [];
     let lastScope = {};
+    let lastAllowOvertime = true;
+    let lastUnassignedOnly = false;
     let previewRequestId = 0;
     // 期間や対象を変えたら古いプレビュー結果を適用できないようにする（旧計画の誤適用防止）
     const resetPreview = () => {
@@ -238,6 +233,41 @@
       from.addEventListener(eventName, resetPreview);
       to.addEventListener(eventName, resetPreview);
     });
+
+    // --- シフト時間内に収める（残業許可の設定。既定OFF=現状どおり残業を許可） ---
+    const allowOvertimeToggle = document.createElement('input');
+    allowOvertimeToggle.type = 'checkbox';
+    allowOvertimeToggle.checked = false;
+    allowOvertimeToggle.dataset.e2eId = 'gb-production-recalc-allow-overtime';
+    const allowOvertimeLabel = document.createElement('label');
+    allowOvertimeLabel.className = 'gb-check gb-production-check';
+    const allowOvertimeText = document.createElement('span');
+    allowOvertimeText.textContent = 'シフト時間内に収める';
+    allowOvertimeLabel.append(allowOvertimeToggle, allowOvertimeText);
+    const allowOvertimeRow = document.createElement('div');
+    allowOvertimeRow.className = 'gb-check-help-row gb-production-check-help-row';
+    allowOvertimeRow.appendChild(allowOvertimeLabel);
+    allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト時間を超える割り当てをしません'));
+    allowOvertimeToggle.addEventListener('change', resetPreview);
+
+    // --- 未割当のタスクだけ（旧「担当者と時間を割り当て」の即時実行に相当するスコープ）。
+    // unassigned_only=true で送ると、既に作業予定日時があるタスクは固定扱いにし、
+    // 未割当のタスクだけを新規に割り当てる（工程順・担当者候補は考慮する。制作管理UX
+    // 改善計画2026-08-04 §6-1）。 ---
+    const unassignedOnlyToggle = document.createElement('input');
+    unassignedOnlyToggle.type = 'checkbox';
+    unassignedOnlyToggle.checked = false;
+    unassignedOnlyToggle.dataset.e2eId = 'production-recalculate-unassigned-only';
+    const unassignedOnlyLabel = document.createElement('label');
+    unassignedOnlyLabel.className = 'gb-check gb-production-check';
+    const unassignedOnlyText = document.createElement('span');
+    unassignedOnlyText.textContent = '未割当のタスクだけ';
+    unassignedOnlyLabel.append(unassignedOnlyToggle, unassignedOnlyText);
+    const unassignedOnlyRow = document.createElement('div');
+    unassignedOnlyRow.className = 'gb-check-help-row gb-production-check-help-row';
+    unassignedOnlyRow.appendChild(unassignedOnlyLabel);
+    unassignedOnlyRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、既に予定があるタスクは動かさず、まだ担当者や時間が決まっていないタスクだけに割り当てます'));
+    unassignedOnlyToggle.addEventListener('change', resetPreview);
 
     // --- 対象タスクリスト（作品ごとのシート）のスコープ選択（production-tasklist-redesign-plan
     // 2026-07-15 6.2章）: 既定は全選択=従来どおり期間内全件。一部だけチェックすると
@@ -355,10 +385,16 @@
       const requestId = ++previewRequestId;
       try {
         const scope = currentScopeBody();
-        const result = await _pmRequest('/production-management/recalculate/preview', { date_from: from.value, date_to: to.value, ...scope });
+        const allowOvertime = !allowOvertimeToggle.checked;
+        const unassignedOnly = unassignedOnlyToggle.checked;
+        // current_user はスタッフ未登録時のソロフォールバック用（Desktopは認証セッションが
+        // あればサーバー側で上書きする）。
+        const result = await _pmRequest('/production-management/recalculate/preview', { date_from: from.value, date_to: to.value, allow_overtime: allowOvertime, unassigned_only: unassignedOnly, current_user: (typeof getUsername === 'function' ? String(getUsername() || '').trim() : ''), ...scope });
         if (requestId !== previewRequestId) return; // 待機中にスコープが変更され陳腐化した応答は破棄
         rows = result.rows || [];
         lastScope = scope;
+        lastAllowOvertime = allowOvertime;
+        lastUnassignedOnly = unassignedOnly;
         _pmRenderPreview(resultBox, result);
         applyButton.disabled = !rows.length;
       } catch (error) {
@@ -375,10 +411,11 @@
     applyButton.addEventListener('click', async () => {
       applyButton.disabled = true;
       try {
-        // プレビュー時と同じスコープ(work_titles/task_paths)を渡す: サーバー側の陳腐化検知は
-        // 同一bodyでプレビューを再計算して比較するため、スコープが変わると誤って409になる。
-        const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows, ...lastScope });
-        _pmStatus(`再計算を適用しました: ${result.applied || 0}件`);
+        // プレビュー時と同じスコープ(work_titles/task_paths)・allow_overtime・unassigned_onlyを
+        // 渡す: サーバー側の陳腐化検知は同一bodyでプレビューを再計算して比較するため、
+        // スコープや条件が変わると誤って409になる。
+        const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows, allow_overtime: lastAllowOvertime, unassigned_only: lastUnassignedOnly, current_user: (typeof getUsername === 'function' ? String(getUsername() || '').trim() : ''), ...lastScope });
+        _pmStatus(`割当再計算を適用しました: ${result.applied || 0}件`);
         _pmRefreshCalendars();
         // 埋め込みタスクリスト(あれば)にも反映する。
         document.dispatchEvent(new CustomEvent('meldex:production-task-updated', { detail: { reason: 'recalculate' } }));
@@ -392,6 +429,8 @@
     body.append(
       _pmField('開始日', from),
       _pmField('終了日', to),
+      allowOvertimeRow,
+      unassignedOnlyRow,
       ...(selectedOnlyField ? [selectedOnlyField] : []),
       scopeFieldset,
       resultBox
@@ -529,10 +568,9 @@
   }
 
   async function toggleProductionTaskRecalcLock(taskPath, locked, eventId) {
-    if (_pmDesktopOnly()) return { ok: false, unsupported: true };
     const result = await _pmRequest('/production-management/tasks/lock', { task_path: taskPath || '', event_id: eventId || '', locked: !!locked });
     if (result.ok) {
-      _pmStatus(locked ? '再計算で動かさないよう固定しました' : '再計算の固定を解除しました');
+      _pmStatus(locked ? '割当再計算で動かさないよう固定しました' : '割当再計算の固定を解除しました');
       _pmRefreshCalendars();
     } else {
       _pmStatus(result.message || '固定を変更できませんでした', true);
@@ -546,11 +584,11 @@
     const banner = document.createElement('div');
     banner.className = 'gb-production-recalc-banner';
     banner.setAttribute('role', 'status');
-    banner.setAttribute('aria-label', '制作管理の再計算案内');
+    banner.setAttribute('aria-label', '制作管理の割当再計算案内');
     const text = document.createElement('span');
     text.className = 'gb-production-recalc-banner-text';
-    text.textContent = 'メンバーを追加しました。再計算しますか？';
-    const open = _pmButton('再計算を確認', true);
+    text.textContent = 'メンバーを追加しました。割当再計算しますか？';
+    const open = _pmButton('割当再計算を確認', true);
     open.dataset.e2eId = 'production-recalc-banner-open';
     const close = _pmButton('閉じる');
     close.dataset.e2eId = 'production-recalc-banner-close';
@@ -601,7 +639,7 @@
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-production-lock-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '制作管理の再計算固定メニュー');
+    menu.setAttribute('aria-label', '制作管理の割当再計算固定メニュー');
     menu.dataset.e2eId = 'production-lock-menu';
     const closeMenu = (restore = true) => {
       document.removeEventListener('pointerdown', onPointerDown, true);
@@ -609,27 +647,22 @@
       menu.remove();
       if (restore) _pmRestoreFocus(sourceEl);
     };
-    const dropboxMode = !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
+    // フル再計算エンジンはCloud（Dropboxモード）でも固定/解除を実行できる
+    // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
     const makeItem = (label, locked) => {
       const item = document.createElement('button');
       item.type = 'button';
       item.className = 'gb-context-menu-item';
       item.setAttribute('role', 'menuitem');
       item.innerHTML = `<span class="menu-icon">${_pmIcon(locked ? 'lock' : 'unlock', 14)}</span><span class="gb-context-menu-item-label"></span>`;
-      item.querySelector('.gb-context-menu-item-label').textContent = dropboxMode ? `${label}（デスクトップ版のみ）` : label;
-      item.disabled = dropboxMode;
-      if (dropboxMode) {
-        item.setAttribute('aria-disabled', 'true');
-        item.title = '再計算の固定はデスクトップ版で実行してください';
-      }
+      item.querySelector('.gb-context-menu-item-label').textContent = label;
       item.addEventListener('click', () => {
-        if (dropboxMode) return;
         closeMenu(false);
         toggleProductionTaskRecalcLock(taskPath, locked, eventId);
       });
       return item;
     };
-    const lock = makeItem('再計算で固定', true);
+    const lock = makeItem('割当再計算で固定', true);
     const unlock = makeItem('固定を解除', false);
     menu.append(lock, unlock);
     document.body.appendChild(menu);

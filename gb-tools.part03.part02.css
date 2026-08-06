@@ -135,10 +135,42 @@
   background: none !important;
 }
 
-/* === Note styling: block drag handle === */
-#page-content .dragging { opacity: var(--page-dragging-opacity, 0.4); }
-#page-content .drag-guide-top { border-top: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
-#page-content .drag-guide-bottom { border-bottom: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important; }
+/* === Note styling: block drag handle ===
+   工程7: gb-note-block-reorder.js が全編集ホスト（メイン/エンティティ自由記述/
+   詳細パネル内ノート）で同じクラス名を使うため、3ホストすべてを対象にする
+   （旧実装は #page-content 専用で他2ホストにスタイルが当たらなかった）。 */
+#page-content .dragging, #entity-freetext .dragging, #dp-editable .dragging {
+  opacity: var(--page-dragging-opacity, 0.4);
+}
+#page-content .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
+  border-top: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
+}
+#page-content .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
+  border-bottom: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
+}
+/* 工程7-1: pointerdown直後〜pointerup/cancelまで対象ブロック全体を「捕捉中」として
+   マークする状態クラス。
+   計画書2026-08-04版§2.3で、対象行の実際のハイライト表示は #note-logical-row-highlight
+   （gb-note-logical-rows.js の矩形オーバーレイ。子リストを含まない行自身の矩形に
+   正確に追従する）へ一本化した。本クラス自体は gb-note-block-reorder.js /
+   gb-note-block-context-menu.js が状態フラグとして引き続き付け外しし、既存E2E契約
+   （targeted-note-micro-handle-drag-persists-order 等）もこのクラスの有無で検証する
+   ため残しているが、旧来のCSSアウトラインは二重表示（新オーバーレイと重なって表示
+   される）を避けるため描画しない（クラスは残す・見た目だけ無効化する）。 */
+#page-content .note-block-reorder-armed, #entity-freetext .note-block-reorder-armed, #dp-editable .note-block-reorder-armed {
+  outline: none;
+}
+/* 工程7-7: 先頭/末尾でこれ以上移動できない状態を視覚的に示す（ハンドルの小さな
+   横揺れ）。prefers-reduced-motion では無効化する。 */
+#block-drag-handle.note-block-reorder-boundary { animation: note-block-reorder-shake 0.3s ease-in-out; }
+@keyframes note-block-reorder-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #block-drag-handle.note-block-reorder-boundary { animation: none; }
+}
 
 /* === Note styling: heading indent sections === */
 .heading-section {

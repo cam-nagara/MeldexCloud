@@ -222,7 +222,10 @@
       const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
       if (!ok) return false;
     }
-    await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: item.content || '', force_overwrite: exists });
+    await apiPut('/file?path=' + encodeURIComponent(nextPath), {
+      content: item.content || '',
+      ...(exists ? { force_overwrite: true } : { create_only: true }),
+    });
     await clearDraft(item.path);
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
     return true;

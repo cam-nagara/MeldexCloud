@@ -399,7 +399,6 @@
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
-  regId('btn-markup',       { label: '注釈モード',    desc: '画像への注釈描画モードを切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });
 
   // CSP（CLIP STUDIO PAINT）連携

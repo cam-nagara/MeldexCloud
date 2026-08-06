@@ -54,9 +54,9 @@
   internals._isProductionProtectedStructurePath = _isProductionProtectedStructurePath;
   internals._rejectProductionStructureMutation = _rejectProductionStructureMutation;
 
-  const SECRET_FILE = '_meldex/secrets/llm-api-keys.v1.json';
+  const SECRET_FILE = '/MeldexSettings/secrets/v1/llm-api-keys.v1.json';
   const CALENDAR_STORE_DIR = '_calendar';
-  const VERSION_FOLDER_DIR = '_meldex/versions/folders';
+  const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
   const CALENDAR_DB_FIELDS = [
     'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'location', 'url', 'description',
     'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members',
@@ -182,6 +182,36 @@
     return { path: note, ...parsed };
   }
 
+  // 計算列（読み取り専用・コードが更新する列）: フォルダノートの computed_props 宣言を
+  // 読み、Desktop側 _reject_computed_property_edit() と同じ拒否をCloud保存経路にも掛ける
+  // （多層防御。内部の再計算フックはこの経路を通らずフロントマターを直接書くため対象外）。
+  async function _computedPropsForSheet(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const raw = note?.frontmatter?.computed_props;
+      if (!Array.isArray(raw)) return [];
+      return raw.map(name => String(name || '').trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  async function _rejectComputedPropertyEdit(provider, dbPath, propNames) {
+    const computed = await _computedPropsForSheet(provider, dbPath);
+    if (!computed.length) return;
+    const set = new Set(computed);
+    const names = (Array.isArray(propNames) ? propNames : [propNames])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    if (!names.some(name => set.has(name))) return;
+    const error = new Error('この列は自動計算のため直接編集できません');
+    error.status = 403;
+    error.code = 'COMPUTED_PROPERTY_READONLY';
+    throw error;
+  }
+
+  internals._rejectComputedPropertyEdit = _rejectComputedPropertyEdit;
+
   async function _ensureFolderNote(provider, folderPath, type) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
@@ -191,13 +221,19 @@
     const existing = await _readFrontmatterFile(provider, note);
     const frontmatter = { ...(existing.frontmatter || {}) };
     if (!frontmatter.type) frontmatter.type = type || 'settings-db';
+    // 制作管理シート（制作管理/シート/*）は「物理.md＝正」が全ロジック（Cloud/Desktopの
+    // 一覧・重複チェック・再計算・同期フック）の不変条件のため、sheet-store化しない
+    // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 1）。
+    const productionSheet = _isProductionManagementSheetMetadataPath(folder);
     if (frontmatter.type === 'settings-db') {
       if (!frontmatter.schema_version) frontmatter.schema_version = 1;
-      if (!frontmatter.storage) frontmatter.storage = 'sqlite';
-      if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      if (!productionSheet) {
+        if (!frontmatter.storage) frontmatter.storage = 'sqlite';
+        if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      }
     }
     await _writeFrontmatterFile(provider, note, frontmatter, existing.body || `# ${name}\n\n`);
-    if (frontmatter.type === 'settings-db') await _ensureSheetStore(provider, folder);
+    if (frontmatter.type === 'settings-db' && !productionSheet) await _ensureSheetStore(provider, folder);
     return note;
   }
 
@@ -680,6 +716,51 @@
     };
   }
 
+  // 制作管理UX改善計画（2026-08-04）Stage 4: window.MeldexProductionManagement.
+  // applyTaskNameAutoRenameOnValueUpdate が返す rename_info を /value レスポンスへ合流させる。
+  // Desktop meldex_api_database.part01.py の attach_auto_task_rename_result と同じ契約
+  // （path/file/new_path/auto_renamed_entry）を返す。gb-db-core.js の _apiPutValue /
+  // _apiPostValue は既にこの契約を汎用的に消費するため（_dbApplyAutoTaskRenameResult /
+  // res.new_path でのvalObj.file更新）、フロント側の追加対応は不要。
+  function _attachAutoTaskRenameResult(result, renameInfo) {
+    if (!result || typeof result !== 'object' || !renameInfo || !renameInfo.auto_generated) return result;
+    result.auto_renamed_entry = renameInfo;
+    const newPath = String(renameInfo.new_path || '');
+    if (newPath) {
+      result.path = newPath;
+      result.file = newPath;
+      result.new_path = newPath;
+    }
+    return result;
+  }
+
+  // 制作管理UX改善計画（2026-08-04）コミット前レビュー指摘 #1: セル保存の4関数（本ファイル）が
+  // await している制作管理フック（目標作業時間の再計算・タスク名自動リネーム）は、あくまで
+  // 保存後の追従処理であり、フックが例外を投げてもセル本体の保存は必ず成功させる
+  // （Desktop meldex_production_sheet_sync_hooks.sync_after_sheet_value_edit が全体を
+  // try/except で包み「保存を守る」意味論と同じにする）。フック失敗はconsole.warnに記録する
+  // だけで、呼び出し元へは伝播させない。
+  async function _pmSafeApplyDurationRecalcHook(provider, path, frontmatter, changedProperty) {
+    try {
+      await window.MeldexProductionManagement?.applyTaskDurationRecalcOnValueUpdate?.(
+        provider, path, frontmatter, changedProperty,
+      );
+    } catch (err) {
+      console.warn('制作管理: 目標作業時間の再計算フックが失敗しました（セル保存は続行します）:', err);
+    }
+  }
+
+  async function _pmSafeApplyTaskNameAutoRenameHook(provider, path, frontmatter) {
+    try {
+      return await window.MeldexProductionManagement?.applyTaskNameAutoRenameOnValueUpdate?.(
+        provider, path, frontmatter,
+      );
+    } catch (err) {
+      console.warn('制作管理: タスク名自動リネームフックが失敗しました（セル保存は続行します）:', err);
+      return null;
+    }
+  }
+
   async function _updateSheetStoreValue(provider, path, body) {
     let stored = null;
     try {
@@ -693,10 +774,17 @@
       throw new Error(`エントリが見つかりません: ${path}`);
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addSheetStoreValue(provider, body) {
@@ -706,6 +794,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
@@ -719,8 +808,14 @@
     list.push(candidate);
     props[prop] = list;
     stored.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, stored.frontmatter, prop,
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
-    return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, stored.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _updateValue(provider, path, body) {
@@ -744,9 +839,16 @@
       await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
       return { ok: true };
     }
+    await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     const applied = _applySettingsEntryValueUpdate(parsed, normalized, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, normalized, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, normalized, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addValue(provider, body) {
@@ -755,6 +857,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
+    await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
@@ -772,8 +875,14 @@
     list.push(candidate);
     props[prop] = list;
     parsed.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, entryPath, parsed.frontmatter, prop,
+    );
     await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
-    return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, entryPath, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _createEntity(provider, body) {
@@ -783,6 +892,9 @@
     _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
     await _ensureFolderNote(provider, parent, 'settings-db');
+    // 汚染済みの制作管理シートは、この時点で修復してから保存方式を判定する
+    // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
+    await _repairProductionSheetStoreIfNeeded(provider, parent);
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
     const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
@@ -791,7 +903,7 @@
     const frontmatter = {
       type: 'settings-entry',
       id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
-      category: _basename(parent),
+      category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
       properties: _normalizeCreateProperties(body?.properties || {}),
@@ -799,6 +911,7 @@
       source: body?.source || '',
       reviewed: body?.reviewed === true,
     };
+    await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
     if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
     else await _writeFrontmatterFile(provider, path, frontmatter, '');
     return {
@@ -984,6 +1097,9 @@
       validation_rules: Array.isArray(fm.validation_rules) ? fm.validation_rules : [],
       storage: fm.storage || '',
       cloud_storage: fm.cloud_storage || '',
+      // 計算列（読み取り専用・コードが更新する列）宣言。追加のみの後方互換キー
+      // （旧版はこのキーを無視して読める。制作管理UX改善計画§5-1）。
+      computed_props: Array.isArray(fm.computed_props) ? fm.computed_props : [],
     };
   }
 
@@ -1016,6 +1132,74 @@
       && parts[sheetIndex + 1] === 'シート'
       && !!parts[sheetIndex + 2];
   }
+
+  // 制作管理シートの暗黙sheet-store化（ストア汚染）の修復
+  // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 2）。
+  // v0.6.120〜v0.7.146 の /entity/create・CSV取込・/db-metadata が制作管理シートを
+  // sheet-store化してしまった場合に、(1) store行の物理.md化 (2) storeファイル削除
+  // (3) フォルダノートの storage系キー除去 を行い「物理.md＝正」の不変条件へ戻す。冪等。
+  // 修復ルール: 物理.mdが無い行→storeの内容で物理化 / 物理があり id 一致（または判定
+  // 不能）→物理を正としてstore行を破棄（セル編集は _writeEntity が物理とstoreの両方へ
+  // 書くため物理は常にstore以上に新しい）/ 物理があり id 不一致（同一パス衝突）→
+  // store行は別エントリのユーザーデータなので一意名で物理化して退避（破棄しない）。
+  const PRODUCTION_SQLITE_STORAGE_KEYS = ['storage', 'sheet_storage', 'entry_storage', 'storage_backend'];
+
+  function _scrubProductionStorageKeys(frontmatter) {
+    let changed = false;
+    PRODUCTION_SQLITE_STORAGE_KEYS.forEach((key) => {
+      if (String(frontmatter[key] || '').toLowerCase() === 'sqlite') {
+        delete frontmatter[key];
+        changed = true;
+      }
+    });
+    if (String(frontmatter.cloud_storage || '').toLowerCase() === 'sheet-store-v1') {
+      delete frontmatter.cloud_storage;
+      changed = true;
+    }
+    return changed;
+  }
+
+  async function _repairProductionSheetStoreIfNeeded(provider, dbPath) {
+    const base = _normalizeFolderPath(dbPath);
+    if (!_isProductionManagementSheetMetadataPath(base)) return { repaired: false };
+    const storePath = _sheetStorePath(base);
+    const storeEntry = await _resolveEntryHandle(provider, storePath).catch(() => null);
+    let materialized = 0;
+    if (storeEntry?.kind === 'file') {
+      const store = _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), base);
+      for (const row of Object.values(store.rows || {})) {
+        const fileName = _sheetStoreFileName(row?.file_name || row?.path || row?.name || '');
+        if (!fileName || fileName.startsWith('_') || fileName === _basename(base) + '.md') continue;
+        const rowFrontmatter = { ...(row?.frontmatter || {}) };
+        if (String(rowFrontmatter.type || '') !== 'settings-entry') continue;
+        const filePath = _joinPath(base, fileName);
+        const physical = await _resolveEntryHandle(provider, filePath).catch(() => null);
+        if (!physical || physical.kind !== 'file') {
+          await _writeFrontmatterFile(provider, filePath, rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+          continue;
+        }
+        const parsed = await _readFrontmatterFile(provider, filePath);
+        const physicalId = String(parsed.frontmatter?.id || '');
+        const rowId = String(rowFrontmatter.id || '');
+        if (physicalId && rowId && physicalId !== rowId) {
+          const stem = await _uniqueName(provider, base, fileName.replace(/\.md$/i, ''), '.md');
+          await _writeFrontmatterFile(provider, _joinPath(base, stem + '.md'), rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+        }
+      }
+      await provider.deletePath(storePath);
+    }
+    const notePath = _joinPath(base, _basename(base) + '.md');
+    const note = await _readFrontmatterFile(provider, notePath);
+    const noteFrontmatter = { ...(note.frontmatter || {}) };
+    if (Object.keys(noteFrontmatter).length && _scrubProductionStorageKeys(noteFrontmatter)) {
+      await _writeFrontmatterFile(provider, notePath, noteFrontmatter, note.body || `# ${_basename(base)}\n\n`);
+    }
+    return { repaired: storeEntry?.kind === 'file', materialized };
+  }
+
+  internals._repairProductionSheetStoreIfNeeded = _repairProductionSheetStoreIfNeeded;
 
   const PRODUCTION_RESERVED_LEGACY_PROPERTIES = Object.freeze({
     '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
@@ -1131,6 +1315,8 @@
     }
     await _requireUnlocked(provider, target, { action: 'db-metadata' });
     await _ensureFolderNote(provider, target, 'settings-db');
+    // 汚染済みの制作管理シートは列設定保存でも自己修復する（ノート浄化後に読み直す）
+    await _repairProductionSheetStoreIfNeeded(provider, target);
     const notePath = await _folderNotePath(provider, target);
     const parsed = await _readFrontmatterFile(provider, notePath);
     const fm = { ...(parsed.frontmatter || {}) };
@@ -1155,12 +1341,14 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
     if (!fm.type) fm.type = 'settings-db';
-    if (fm.type === 'settings-db') {
+    // 制作管理シートはsheet-store化しない（_ensureFolderNote と同じ不変条件。
+    // 保存方式の明示変更自体は _rejectProductionStructuralMetadataChanges が既に拒否する）。
+    if (fm.type === 'settings-db' && !_isProductionManagementSheetMetadataPath(target)) {
       if (!fm.storage) fm.storage = 'sqlite';
       if (!fm.cloud_storage) fm.cloud_storage = 'sheet-store-v1';
       await _ensureSheetStore(provider, target);
@@ -1769,6 +1957,7 @@
   }
 
   function _parseImportCsv(text) {
+    if (window.MeldexCsv) return window.MeldexCsv.parse(text).rows;
     const normalized = String(text || '').replace(/^\uFEFF/, '');
     const rows = [];
     let row = [];
@@ -1814,42 +2003,266 @@
     return rows;
   }
 
+  async function _readImportCsvText(provider, path) {
+    if (typeof provider.downloadAsFile === 'function') {
+      const file = await provider.downloadAsFile(path);
+      const bytes = await file.arrayBuffer();
+      const view = new Uint8Array(bytes);
+      const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+      try {
+        return {
+          text: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+          encoding: bom ? 'utf-8-bom' : 'utf-8',
+          bom,
+        };
+      } catch {
+        return {
+          text: new TextDecoder('shift_jis', { fatal: true }).decode(bytes),
+          encoding: 'cp932',
+          bom: false,
+        };
+      }
+    }
+    const text = await provider.readText(path);
+    return { text, encoding: 'utf-8', bom: String(text || '').charCodeAt(0) === 0xFEFF };
+  }
+
+  function _csvImportSpecs(body, rows) {
+    const hasHeader = body?.has_header !== false && body?.hasHeader !== false;
+    const columnCount = rows.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+    if (!columnCount) throw new Error('CSVに列がありません');
+    const baseHeaders = hasHeader ? rows[0] || [] : [];
+    const headers = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(Array.from({ length: columnCount }, (_, index) => baseHeaders[index] || `列${index + 1}`))
+      : _sheetImportHeaders(baseHeaders);
+    let renamedHeaders = headers.reduce((count, name, index) => (
+      name !== String(baseHeaders[index] ?? '').trim() ? count + 1 : count
+    ), 0);
+    const start = hasHeader ? 1 : 0;
+    const supplied = Array.isArray(body?.columns) ? body.columns : [];
+    const columns = headers.map((header, index) => {
+      const inferred = window.MeldexCsv
+        ? window.MeldexCsv.inferColumn(rows.slice(start).map(row => row?.[index] ?? ''))
+        : { type: 'text', formula: '', warning: '' };
+      const configured = supplied[index] && typeof supplied[index] === 'object' ? supplied[index] : {};
+      const type = String(configured.type || inferred.type || 'text');
+      const formula = String(configured.formula || inferred.formula || '');
+      const name = String(configured.name || header).trim() || header;
+      if (!['text', 'number', 'formula'].includes(type)) throw new Error(`未対応の列タイプです: ${type}`);
+      if (type === 'formula' && (!window.MeldexCsv || !window.MeldexCsv.isMeldexFormula(formula))) {
+        throw new Error(`列「${name}」のMeldex数式が正しくありません`);
+      }
+      if (type === 'number' && window.MeldexCsv) {
+        const invalid = rows.slice(start).find(row => String(row?.[index] ?? '').trim() && !window.MeldexCsv.isSafeNumber(row?.[index]));
+        if (invalid) throw new Error(`列「${name}」に数値でない値があります`);
+      }
+      return { name, type, formula, warning: String(configured.warning || inferred.warning || '') };
+    });
+    const uniqueNames = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(columns.map(column => column.name))
+      : _sheetImportHeaders(columns.map(column => column.name));
+    columns.forEach((column, index) => {
+      if (column.name !== uniqueNames[index]) renamedHeaders += 1;
+      column.name = uniqueNames[index];
+    });
+    const itemColumn = Number(body?.item_name_column ?? body?.itemNameColumn ?? 0);
+    if (!Number.isInteger(itemColumn) || itemColumn < 0 || itemColumn >= columns.length) {
+      throw new Error('項目名に使う列が範囲外です');
+    }
+    const records = [];
+    const names = new Set();
+    let completed = 0;
+    let renamed = 0;
+    rows.slice(start).forEach((row, offset) => {
+      const rawName = String(row?.[itemColumn] ?? '').trim();
+      const baseName = rawName || `行 ${offset + 1}`;
+      if (!rawName) completed += 1;
+      let name = baseName;
+      let suffix = 2;
+      while (names.has(name)) {
+        name = `${baseName} ${suffix}`;
+        suffix += 1;
+      }
+      if (name !== baseName) renamed += 1;
+      names.add(name);
+      const properties = {};
+      columns.forEach((column, index) => {
+        if (index === itemColumn || column.type === 'formula') return;
+        const value = String(row?.[index] ?? '');
+        if (!value) return;
+        properties[column.name] = [{ value, status: '採用', note: '', created: _nowIso() }];
+      });
+      records.push({ name, properties });
+    });
+    return {
+      columns,
+      records,
+      itemColumn,
+      completed,
+      renamed,
+      renamedHeaders,
+      warnings: columns.map(column => column.warning).filter(Boolean),
+    };
+  }
+
+  async function _setCsvImportPropertyTypes(provider, dbPath, specs, append) {
+    const notePath = await _folderNotePath(provider, dbPath);
+    if (!notePath) throw new Error('シート定義を作成できませんでした');
+    const parsed = await _readFrontmatterFile(provider, notePath);
+    const frontmatter = { ...(parsed.frontmatter || {}) };
+    const current = frontmatter.property_types && typeof frontmatter.property_types === 'object'
+      ? { ...frontmatter.property_types }
+      : {};
+    const incoming = {};
+    specs.columns.forEach((column, index) => {
+      if (index === specs.itemColumn) return;
+      incoming[column.name] = column.type === 'formula'
+        ? { type: 'formula', formula: column.formula }
+        : { type: column.type };
+    });
+    if (append) {
+      const conflicts = Object.entries(incoming).filter(([name, spec]) => {
+        const existing = current[name];
+        return existing && (String(existing.type || 'text') !== spec.type
+          || (spec.type === 'formula' && String(existing.formula || '') !== spec.formula));
+      });
+      if (conflicts.length) throw new Error(`列タイプが一致しません: ${conflicts.map(([name]) => name).join('、')}`);
+    }
+    frontmatter.property_types = { ...current, ...incoming };
+    await _writeFrontmatterFile(provider, notePath, frontmatter, parsed.body || '');
+  }
+
   async function _importCsvToDb(provider, body) {
     const csvPath = _normalizeFolderPath(body?.csv_path || body?.csvPath || '');
-    const dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
-    if (!csvPath || !dbPath) throw new Error('csv_path and db_path required');
-    const csvEntry = await _resolveEntryHandle(provider, csvPath);
-    if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
-    const rows = _parseImportCsv(await provider.readText(csvPath));
-    if (!rows.length) return { ok: true, count: 0 };
-    const headers = _sheetImportHeaders(rows[0]);
-    if (!headers.length) return { ok: true, count: 0 };
-    _rejectProductionReservedLegacyProperties(dbPath, headers.slice(1));
-    await _requireUnlocked(provider, dbPath, { action: 'import-csv' });
-    await _ensureFolderNote(provider, dbPath, 'settings-db');
-    await _mergeSheetImportPropertyTypes(provider, dbPath, _sheetImportPropertySpecs(rows[0], headers, rows.slice(1)));
-    let count = 0;
-    for (const row of rows.slice(1)) {
-      const entityName = _sheetImportCellText(row?.[0]);
-      if (!entityName) continue;
-      const properties = {};
-      headers.slice(1).forEach((propName, offset) => {
-        if (!propName) return;
-        const rawText = _sheetImportCellText(row?.[offset + 1]);
-        if (!rawText) return;
-        if (!properties[propName]) properties[propName] = [];
-        properties[propName].push({ value: rawText, status: '採用', note: '', created: _nowIso() });
-      });
-      await _createEntity(provider, {
-        parent_path: dbPath,
-        name: entityName,
-        properties,
-        source: 'csv-import',
-        user: body?.user || 'anonymous',
-      });
-      count += 1;
+    let content = body?.content;
+    let encoding = String(body?.encoding || '');
+    let bom = body?.bom;
+    if (content == null) {
+      if (!csvPath) throw new Error('csv_path または content が必要です');
+      const csvEntry = await _resolveEntryHandle(provider, csvPath);
+      if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
+      const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      if (expectedEtag) {
+        const currentEtag = await _fileEtag(provider, csvPath, csvEntry);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(csvPath, expectedEtag, currentEtag);
+      }
+      const read = await _readImportCsvText(provider, csvPath);
+      content = read.text;
+      encoding = encoding || read.encoding;
+      if (bom == null) bom = read.bom;
     }
-    return { ok: true, count };
+    if (typeof content !== 'string') throw new Error('content must be text');
+    const parsed = window.MeldexCsv
+      ? window.MeldexCsv.parse(content, { delimiter: body?.delimiter || '', encoding, bom })
+      : { rows: _parseImportCsv(content), dialect: { delimiter: ',', newline: '\n', encoding } };
+    if (!parsed.rows.length) throw new Error('CSVに行がありません');
+    const specs = _csvImportSpecs(body || {}, parsed.rows);
+    const explicit = ['mode', 'has_header', 'hasHeader', 'item_name_column', 'itemNameColumn', 'columns', 'sheet_name']
+      .some(key => Object.prototype.hasOwnProperty.call(body || {}, key));
+    const mode = String(body?.mode || (explicit ? 'create' : 'append')).toLowerCase();
+    if (!['create', 'append'].includes(mode)) throw new Error('mode は create または append を指定してください');
+    let dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
+    if (!dbPath) {
+      const parent = _normalizeFolderPath(body?.destination_parent || '');
+      const stem = String(body?.filename || 'CSV').replace(/\.[^.]+$/, '') || 'CSV';
+      dbPath = _joinPath(parent, _safeFileStem(stem, 'CSV'));
+    }
+    if (!dbPath) throw new Error('保存先が必要です');
+    let targetPath = dbPath;
+    const targetExists = await _pathExists(provider, targetPath);
+    const legacyCreate = !explicit && mode === 'append' && !targetExists;
+    if (mode === 'append' && !targetExists && !legacyCreate) throw new Error('追加先シートが見つかりません');
+    if (mode === 'create' && targetExists) {
+      const unique = await _uniqueName(provider, _dirname(targetPath), _basename(targetPath), '');
+      targetPath = _joinPath(_dirname(targetPath), unique);
+    }
+    await _requireUnlocked(provider, targetPath, { action: 'import-csv' });
+
+    _rejectProductionReservedLegacyProperties(
+      targetPath,
+      specs.columns.filter((_column, index) => index !== specs.itemColumn).map(column => column.name),
+    );
+    const legacyDateSpecs = explicit
+      ? null
+      : _sheetImportPropertySpecs(parsed.rows[0] || [], _sheetImportHeaders(parsed.rows[0] || []), parsed.rows.slice(1));
+
+    const importInto = async (path, category) => {
+      await _ensureFolderNote(provider, path, 'settings-db');
+      if (legacyDateSpecs) await _mergeSheetImportPropertyTypes(provider, path, legacyDateSpecs);
+      else await _setCsvImportPropertyTypes(provider, path, specs, mode === 'append');
+      for (const record of specs.records) {
+        await _createEntity(provider, {
+          parent_path: path,
+          category,
+          name: record.name,
+          properties: record.properties,
+          source: 'csv-import',
+          user: body?.user || 'anonymous',
+        });
+      }
+    };
+
+    // 取込先が存在しない場合（append指定の暗黙作成 legacyCreate を含む）は、既存フォルダの
+    // コピー・バックアップを前提とする追記経路を使えないため、新規作成経路で取り込む。
+    if (mode === 'create' || !targetExists) {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      try {
+        await importInto(tempPath, _basename(targetPath));
+        const tempNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        const finalNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        if (tempNote !== finalNote) await provider.movePath(tempNote, finalNote);
+        await provider.movePath(tempPath, targetPath);
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        throw error;
+      }
+    } else {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      const backupPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-backup-${_randomId('')}`);
+      let originalMoved = false;
+      try {
+        await provider.copyPath(targetPath, tempPath);
+        // フォルダノートは「フォルダ名と同名の.md」で解決されるため、一時フォルダ内では
+        // 実ノートを一時フォルダ名へ改名してから取り込む（そのままだと _ensureFolderNote が
+        // 別ノートを新規作成し、既存メタデータを引き継がず列型のマージ先も分裂する）。
+        const copiedNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        const workingNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        if (await _pathExists(provider, copiedNote)) await provider.movePath(copiedNote, workingNote);
+        await importInto(tempPath, _basename(targetPath));
+        await provider.movePath(workingNote, copiedNote);
+        await provider.movePath(targetPath, backupPath);
+        originalMoved = true;
+        try {
+          await provider.movePath(tempPath, targetPath);
+        } catch (error) {
+          await provider.movePath(backupPath, targetPath);
+          originalMoved = false;
+          throw error;
+        }
+        await provider.deletePath(backupPath).catch(() => {});
+        originalMoved = false;
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        if (originalMoved) {
+          await provider.deletePath(targetPath).catch(() => {});
+          await provider.movePath(backupPath, targetPath).catch(() => {});
+        }
+        throw error;
+      }
+    }
+    return {
+      ok: true,
+      path: targetPath,
+      count: specs.records.length,
+      imported_count: specs.records.length,
+      completed_name_count: specs.completed,
+      renamed_count: specs.renamed + specs.renamedHeaders,
+      warnings: specs.warnings,
+      columns: specs.columns,
+      encoding: parsed.dialect?.encoding || encoding || 'utf-8',
+      delimiter: parsed.dialect?.delimiter || ',',
+      newline: parsed.dialect?.newline || '\n',
+    };
   }
 
   function _yamlFlowSplit(text) {
@@ -2082,26 +2495,52 @@
     return name;
   }
 
-  function _folderVersionDir(path) {
-    return _joinPath(VERSION_FOLDER_DIR, _fnvFileId(_normalizeFolderPath(path) || '.'));
-  }
-
   async function _readDbVersionSnapshot(provider, path, version) {
     const normalized = _normalizeFolderPath(path);
     const safeVersion = _safeVersionName(version);
-    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
-    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    const storage = window.MeldexSystemStorage;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!storage?.SystemStorageKind?.VERSIONS || typeof resolver?.resolveTypedAdapterForProvider !== 'function') {
+      throw new Error('シート履歴の管理領域を利用できません');
+    }
+    const kind = storage.SystemStorageKind.VERSIONS;
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind);
+    const records = await adapter.listDocuments(kind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && !payload.deleted_at;
+    });
+    let meta = record?.payload;
+    let legacyVersionDir = '';
+    if (!meta) {
+      legacyVersionDir = _joinPath(
+        LEGACY_VERSION_FOLDER_DIR,
+        _fnvFileId(normalized || '.'),
+        safeVersion,
+      );
+      meta = await _readJsonSafe(provider, _joinPath(legacyVersionDir, '_meta.json'), null);
+    }
     if (!meta || typeof meta !== 'object') throw new Error('シート履歴が見つかりません');
     const files = [];
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
       const rel = _normalizeFolderPath(file.rel_path || '');
       if (!rel || rel.includes('..') || !/^[^/]+\.md$/i.test(rel)) continue;
-      files.push({ path: rel, text: await _readText(provider, _joinPath(versionDir, 'files', rel), '') });
+      if (file.content_base64) {
+        const binary = atob(file.content_base64);
+        const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+        files.push({ path: rel, text: new TextDecoder().decode(bytes) });
+      } else if (legacyVersionDir) {
+        files.push({ path: rel, text: await _readText(provider, _joinPath(legacyVersionDir, 'files', rel), '') });
+      }
     }
     const noteName = _basename(normalized) + '.md';
-    const note = files.find(file => file.path === noteName);
+    const note = files.find(file => file.path === noteName)
+      || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
     const dbType = note ? String(_parseFrontmatter(note.text).frontmatter?.type || '') : '';
-    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created || '' };
+    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '' };
   }
 
   function _recurrenceObject(value) {
@@ -2603,7 +3042,68 @@
   }
 
   async function _requireCloudSecretWritable(provider) {
-    await assertOwnerWrite(provider, SECRET_FILE);
+    const ledger = window.MeldexWorkspaceLedgerIO;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!ledger || typeof ledger.listJoinedWorkspaces !== 'function' || !resolver) {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    try {
+      const joined = ledger.listJoinedWorkspaces();
+      if (!Array.isArray(joined)) throw new Error('workspace-ledger-unavailable');
+    } catch {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    const info = await resolver.resolveConnectionInfo(provider);
+    if (info.isSharedWorkspace) {
+      throw new Error('Cloud保存APIキーは共有ワークスペースへ保存できません');
+    }
+  }
+
+  function _secretAuth() {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth || typeof auth.apiRpc !== 'function' || typeof auth.apiContent !== 'function') {
+      throw new Error('Dropboxへ接続してください');
+    }
+    return auth;
+  }
+
+  async function _readCloudSecretEnvelope() {
+    try {
+      const response = await _secretAuth().apiContent(
+        'files/download',
+        { path: SECRET_FILE },
+        undefined,
+        { namespaceKind: 'home' },
+      );
+      return JSON.parse(await response.text());
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return null;
+      throw error;
+    }
+  }
+
+  async function _writeCloudSecretEnvelope(envelope) {
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    await _secretAuth().apiContent(
+      'files/upload',
+      { path: SECRET_FILE, mode: 'overwrite', autorename: false, mute: false },
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes },
+      { namespaceKind: 'home' },
+    );
+  }
+
+  async function _deleteCloudSecretEnvelope() {
+    try {
+      await _secretAuth().apiRpc(
+        'files/delete_v2',
+        { path: SECRET_FILE },
+        { namespaceKind: 'home' },
+      );
+      return true;
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return false;
+      throw error;
+    }
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
@@ -2708,24 +3208,21 @@
 
     if (pathname === '/llm-keys/cloud' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      const envelope = await _readJsonSafe(provider, SECRET_FILE, null);
+      await _requireCloudSecretWritable(provider);
+      const envelope = await _readCloudSecretEnvelope();
       return envelope ? { exists: true, envelope } : { exists: false, envelope: null };
     }
     if (pathname === '/llm-keys/cloud' && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      await _directoryHandle(provider, _dirname(SECRET_FILE), true);
-      await provider.writeJson(SECRET_FILE, { ...(body || {}), updated_at: _nowIso() });
+      await _writeCloudSecretEnvelope({ ...(body || {}), updated_at: _nowIso() });
       return { ok: true, path: SECRET_FILE };
     }
     if (pathname === '/llm-keys/cloud' && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      const existing = await _resolveEntryHandle(provider, SECRET_FILE);
-      if (!existing) return { ok: true, missing: true };
-      await _removeEntry(provider, SECRET_FILE);
-      if (await _resolveEntryHandle(provider, SECRET_FILE)) throw new Error('Cloud保存APIキーを削除できませんでした');
-      return { ok: true };
+      const removed = await _deleteCloudSecretEnvelope();
+      return removed ? { ok: true } : { ok: true, missing: true };
     }
 
     return NOT_HANDLED;

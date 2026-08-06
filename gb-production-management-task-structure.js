@@ -172,5 +172,9 @@
     }
   }
 
-  window.MeldexProductionCloudTaskStructure = { preview, apply };
+  // protectionReason はタスク構成更新（apply/preview）専用ではなく、目標作業時間の
+  // 分類変更追従フック（gb-production-management.part02.js の
+  // _pmCloudApplyDurationRecalcHook）からも共用する。「タスク構成を更新」と同じ保護条件
+  // （状況/実績/予定時間/ロック系チェックボックス/開始・完了・作業予定日時）を単一箇所で判定する。
+  window.MeldexProductionCloudTaskStructure = { preview, apply, protectionReason };
 })();

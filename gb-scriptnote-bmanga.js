@@ -261,15 +261,25 @@
 
   // クリスタ送信（gb-scriptnote-clipstudio.js の _sn2GetTextAffix）と同じ解決規則。
   // editor ではなく doc のみから引けるようにした純粋関数版。
-  function _getTextAffix(doc, role) {
-    const characters = Array.isArray(doc?.characters) ? doc.characters : [];
-    const chara = role
-      ? characters.find(c => c && !c.isDefault && c.name === role)
-      : characters.find(c => c && c.isDefault);
+  function _getTextAffix(doc, roleOrRow) {
+    const role = typeof roleOrRow === 'object' ? String(roleOrRow?.role || '') : String(roleOrRow || '');
+    const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(doc, roleOrRow)
+      || (role
+        ? (doc?.characters || []).find(c => c && !c.isDefault && c.name === role)
+        : (doc?.characters || []).find(c => c && c.isDefault));
     const ts = chara?.textStyle || {};
     const before = ts.textBefore ?? chara?.textBefore ?? '';
     const after = ts.textAfter ?? chara?.textAfter ?? '';
     return { before: String(before || ''), after: String(after || '') };
+  }
+
+  function _getEffectiveRoleType(doc, row) {
+    const effective = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(doc, row);
+    if (effective) return effective.type || effective.style || null;
+    const role = String(row?.role || '');
+    return role
+      ? (doc?.characters || []).find(item => item && !item.isDefault && item.name === role) || null
+      : (doc?.characters || []).find(item => item && item.isDefault) || null;
   }
 
   function _sharedLinkEntries() {
@@ -312,13 +322,6 @@
     const contractVersion = Number(opts.contractVersion) === VERSION_V2 ? VERSION_V2 : VERSION;
     const id = String(documentId || doc?.source?.documentId || '').trim();
     if (!id) throw new Error('先にシナリオを保存してください');
-    const characters = Array.isArray(doc?.characters) ? doc.characters : [];
-    const breakNames = new Set(characters
-      .filter(item => item && !item.isDefault && item.isBreak && item.name)
-      .map(item => String(item.name)));
-    const summaryNames = new Set(characters
-      .filter(item => item && !item.isDefault && item.isSummary && item.name)
-      .map(item => String(item.name)));
     const allRows = Array.isArray(doc?.rows) ? doc.rows : [];
     let sourceRows = allRows;
     if (Array.isArray(opts.selectedRowIds)) {
@@ -328,8 +331,9 @@
     const pages = [{ pageIndex: 0, rows: [] }];
     sourceRows.forEach((row, index) => {
       const role = String(row?.role || '');
-      const isBreak = !!role && breakNames.has(role);
-      const isSummary = !!role && summaryNames.has(role);
+      const roleType = _getEffectiveRoleType(doc, row);
+      const isBreak = !!role && !!(roleType?.isBreak || roleType?.kind === 'break');
+      const isSummary = !!role && !!(roleType?.isSummary || roleType?.kind === 'summary');
       if (isSummary && !opts.includeSummary) return;
       if (isBreak && index > 0) pages.push({ pageIndex: pages.length, rows: [] });
       const resolved = contractVersion === VERSION_V2
@@ -344,7 +348,7 @@
       let body = resolved.body;
       let rubies = resolved.rubies;
       if (opts.includeAffix && body) {
-        const affix = _getTextAffix(doc, role);
+        const affix = _getTextAffix(doc, row);
         const shift = _visibleLength(affix.before);
         if (shift) rubies = rubies.map(item => ({ ...item, start: item.start + shift }));
         body = affix.before + body + affix.after;

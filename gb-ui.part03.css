@@ -484,6 +484,45 @@ input[type="range"]::-moz-range-thumb {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* 削除確認ダイアログの被参照警告
+   （ファイル参照整合性計画 Phase 4: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §2.2）
+   通常の削除確認と見た目を明確に区別するため、警告色の枠付きボックスにする。
+   警告は削除を止めない（cfConfirm自体の確認は従来どおり必要）。 */
+.gb-delete-impact-warning {
+  border: 1px solid color-mix(in srgb, var(--ui-warning) 45%, var(--ui-border));
+  background: color-mix(in srgb, var(--ui-warning) 10%, transparent);
+  border-radius: var(--ui-radius-xs);
+  padding: var(--ui-space-3) var(--ui-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-1);
+  white-space: normal;
+}
+.gb-delete-impact-warning-headline {
+  font-weight: 600;
+  color: var(--ui-warning);
+  font-size: var(--ui-font-13);
+}
+.gb-delete-impact-warning-list {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-13);
+  word-break: break-word;
+}
+.gb-delete-impact-warning-incomplete {
+  color: var(--ui-warning);
+  font-size: var(--ui-font-13);
+}
+/* 削除影響の照会中プレースホルダー（フェーズB徹底チェック 修正3(b)）。
+   まだ警告と確定していないため、警告色ではなく中立色の枠にする。 */
+.gb-delete-impact-warning-loading {
+  border-color: var(--ui-border);
+  background: transparent;
+}
+.gb-delete-impact-warning-loading-text {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-13);
+}
+
 .gb-confirm-actions {
   display: flex;
   flex-wrap: wrap;
@@ -564,27 +603,3 @@ input[type="number"]:focus-visible::-webkit-inner-spin-button {
   opacity: 1;
 }
 
-.settings-theme-detail-entry-row {
-  display: flex; align-items: center; gap: var(--ui-space-3); flex-wrap: wrap; min-width: 0;
-}
-.settings-theme-detail-open-btn {
-  display: inline-flex; align-items: center; gap: var(--ui-space-2); min-height: var(--ui-h-sm); color: var(--ui-fg-default);
-}
-.settings-theme-detail-open-btn svg { width: 14px; height: 14px; flex: 0 0 14px; }
-.settings-theme-detail-shortcuts {
-  display: flex; align-items: center; gap: var(--ui-space-1); flex-wrap: wrap; min-width: 0;
-}
-.settings-theme-detail-shortcut { min-height: var(--ui-h-xs); }
-.settings-theme-detail-modal .gb-modal-body { padding: var(--ui-space-4); }
-.settings-theme-detail {
-  display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0;
-}
-.settings-theme-detail-tabs {
-  display: flex; align-items: center; gap: var(--ui-space-1); flex-wrap: wrap;
-  padding-bottom: var(--ui-space-2); border-bottom: 1px solid var(--ui-border);
-}
-.settings-theme-detail-panels { min-width: 0; }
-.settings-theme-detail-panel {
-  display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0;
-}
-.settings-theme-detail-panel[hidden] { display: none; }

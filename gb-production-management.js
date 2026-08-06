@@ -5,8 +5,11 @@ __loadSplitScript('gb-production-management.js', [
   'gb-production-management-page-structure.js',
   'gb-production-management-task-structure.js',
   'gb-production-management-schema-migration.js',
+  'gb-production-management-schema-cleanup.js',
   'gb-production-management-ui-availability.js',
   'gb-production-management-shift-row-parser.js',
   'gb-production-management.part01.js',
   'gb-production-management.part02.js',
+  'gb-production-management.part03.js',
+  'gb-production-management.part04.js',
 ]);

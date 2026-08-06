@@ -88,6 +88,28 @@ function _collectCalendarSyncConfig(root) {
   return out;
 }
 
+// 選択肢欄の初期値: スキーマ登録済み選択肢に、列内で実際に使われている値
+// （スキーマ未登録の値。型変更前の入力・外部書き込み等）を統合して表示する。
+// これにより「選択肢の色」欄にも列内の全値が並び、値ごとに色を設定できる。
+// マルチセレクトはカンマ結合で保存されるため個別値へ分割してから統合する。
+// 行ごとに候補が変わる動的選択肢列（optionSource）では実在値を混ぜない。
+function _ptMergedSelectOptions(current, existing, type) {
+  const merged = [];
+  const seen = new Set();
+  const push = (value) => {
+    const v = String(value ?? '').trim();
+    if (v && !seen.has(v)) { seen.add(v); merged.push(v); }
+  };
+  (Array.isArray(current?.options) ? current.options : []).forEach(push);
+  if (!current?.optionSource) {
+    (existing || []).forEach(raw => {
+      if (type === 'multi-select') String(raw ?? '').split(',').forEach(push);
+      else push(raw);
+    });
+  }
+  return merged;
+}
+
 function onPropertyTypeChange(root) {
   const scope = _ptResolveRoot(root);
   window._ptActiveRoot = scope;
@@ -104,7 +126,7 @@ function onPropertyTypeChange(root) {
   const { current, existing, propName: statePropName, dbPath } = _ptState(scope);
 
   if (type === 'select' || type === 'multi-select') {
-    const opts = current.options || existing;
+    const opts = _ptMergedSelectOptions(current, existing, type);
     const optionColorHelp = fieldHelp('色はセル・ドロップダウン・カンバン・グループヘッダーに反映されます。セル編集時の選択肢ドロップダウンからも設定できます')
       .replace('<span ', '<span data-e2e-id="pt-select-option-color-help" ');
     optDiv.innerHTML = `<div class="field"><label>選択肢（1行1項目）</label>

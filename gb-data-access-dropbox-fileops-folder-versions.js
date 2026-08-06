@@ -11,6 +11,16 @@
     return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
   }
 
+  async function _versionFileBase64(provider, path) {
+    const source = await provider.downloadAsFile(path);
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return { content_base64: btoa(binary), byte_length: bytes.length };
+  }
+
   async function _collectFolderVersionFiles(provider, folderPath) {
     const base = _normalizeFolderPath(folderPath);
     const files = [];
@@ -28,7 +38,13 @@
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
         if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        files.push({ rel_path: relPath, path: fullPath, size: stats.size || 0, modified: stats.modified || '' });
+        const encoded = await _versionFileBase64(provider, fullPath);
+        files.push({
+          rel_path: relPath,
+          size: stats.size || encoded.byte_length,
+          modified: stats.modified || '',
+          content_base64: encoded.content_base64,
+        });
       }
     }
     await walk(base);
@@ -42,43 +58,89 @@
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
     const kind = options?.auto ? 'auto' : 'manual';
     const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const versionDir = _joinPath(_folderVersionDir(normalized), versionName);
-    const filesDir = _joinPath(versionDir, 'files');
     const files = await _collectFolderVersionFiles(provider, normalized);
-    let totalSize = 0;
-    try {
-      for (const file of files) {
-        totalSize += Number(file.size || 0);
-        await provider.copyPath(file.path, _joinPath(filesDir, file.rel_path));
-      }
-      await provider.writeJson(_joinPath(versionDir, '_meta.json'), {
-        folder_path: normalized,
-        created: _nowIso(),
-        label: options?.label || '',
-        auto: !!options?.auto,
-        files: files.map(({ rel_path, size, modified }) => ({ rel_path, size, modified })),
-        exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
-      });
-    } catch (error) {
-      await _removeEntry(provider, versionDir).catch(() => {});
-      throw error;
-    }
+    const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+    await adapter.save(storageKind, documentId, {
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: versionName,
+      created_at: _nowIso(),
+      label: options?.label || '',
+      auto: !!options?.auto,
+      files,
+      exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+    }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
 
+  async function _readLegacyFolderVersion(provider, folderPath, version) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
+    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    if (!meta || typeof meta !== 'object') return null;
+    const files = [];
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file?.rel_path || '', 'rel_path');
+      const encoded = await _versionFileBase64(provider, _joinPath(versionDir, 'files', relPath));
+      files.push({
+        rel_path: relPath,
+        size: Number(file?.size || encoded.byte_length),
+        modified: file?.modified || '',
+        content_base64: encoded.content_base64,
+      });
+    }
+    return {
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: safeVersion,
+      created_at: meta.created || _versionCreatedFromName(safeVersion) || '',
+      label: meta.label || '',
+      auto: !!meta.auto,
+      files,
+      exclude_patterns: Array.isArray(meta.exclude_patterns) ? meta.exclude_patterns : [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+      migrated_from_legacy: true,
+    };
+  }
+
   async function _listFolderVersions(provider, folderPath) {
-    const dir = _folderVersionDir(_normalizeFolderPath(folderPath));
-    const entries = await _listEntriesSafe(provider, dir);
+    const normalized = _normalizeFolderPath(folderPath);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const entries = await adapter.listDocuments(storageKind);
     const versions = [];
     for (const entry of entries) {
-      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_')) continue;
-      const meta = await _readJsonSafe(provider, _joinPath(dir, entry.name, '_meta.json'), {});
-      const files = Array.isArray(meta?.files) ? meta.files : [];
+      const meta = entry?.payload || {};
+      if (meta.object_type !== 'folder' || meta.original_relative_path !== normalized || meta.deleted_at) continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
+      versions.push({
+        name: meta.version_name,
+        created: meta.created_at || _versionCreatedFromName(meta.version_name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
+        file_count: files.length,
+        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+      });
+    }
+    const known = new Set(versions.map(row => row.name));
+    const legacyDir = _folderVersionDir(normalized);
+    for (const entry of await _listEntriesSafe(provider, legacyDir)) {
+      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_') || known.has(entry.name)) continue;
+      const meta = await _readJsonSafe(provider, _joinPath(legacyDir, entry.name, '_meta.json'), null);
+      if (!meta || typeof meta !== 'object') continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
       versions.push({
         name: entry.name,
-        created: _versionCreatedFromName(entry.name) || meta?.created || '',
-        label: meta?.label || '',
-        auto: !!meta?.auto,
+        created: meta.created || _versionCreatedFromName(entry.name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
         file_count: files.length,
         total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
       });
@@ -87,18 +149,45 @@
     return versions;
   }
 
+  async function _findFolderVersionRecord(provider, folderPath, version, includeDeleted, migrateLegacy) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    let record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && (includeDeleted || !payload.deleted_at);
+    });
+    if (!record) {
+      const legacyPayload = await _readLegacyFolderVersion(provider, normalized, safeVersion);
+      if (legacyPayload && migrateLegacy) {
+        const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(safeVersion)}`;
+        record = await adapter.save(storageKind, documentId, legacyPayload, { expectedRevision: null });
+      } else if (legacyPayload) {
+        record = { documentId: '', revision: '', payload: legacyPayload };
+      }
+    }
+    return { adapter, storageKind, record };
+  }
+
   async function _readFolderVersion(provider, folderPath, version) {
-    const meta = await _readJsonSafe(provider, _joinPath(_folderVersionDir(_normalizeFolderPath(folderPath)), _safeVersionName(version), '_meta.json'), null);
-    if (!meta || typeof meta !== 'object') throw new Error('フォルダバージョンが見つかりません');
-    return meta;
+    const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    return record.payload;
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
     const relFile = _safeRelativeFile(file, 'file');
-    const path = _joinPath(_folderVersionDir(_normalizeFolderPath(folderPath)), _safeVersionName(version), 'files', relFile);
-    const entry = await _resolveEntryHandle(provider, path);
-    if (!entry || entry.kind !== 'file') throw new Error('バージョン内のファイルが見つかりません');
-    return { content: await provider.readText(path) };
+    const meta = await _readFolderVersion(provider, folderPath, version);
+    const snapshot = (Array.isArray(meta.files) ? meta.files : []).find(row => row?.rel_path === relFile);
+    if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+    const binary = atob(snapshot.content_base64);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    return { content: new TextDecoder().decode(bytes) };
   }
 
   async function _restoreFolderVersion(provider, folderPath, version) {
@@ -118,30 +207,56 @@
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
       const dst = _joinPath(normalized, relPath);
       if (!_productionReservedEntryProperties(dst).length) continue;
-      const src = _joinPath(_folderVersionDir(normalized), safeVersion, 'files', relPath);
-      _rejectProductionLegacyEntryContent(dst, await provider.readText(src));
+      const snapshot = meta.files.find(row => row?.rel_path === relPath);
+      if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+      const binary = atob(snapshot.content_base64);
+      _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     }
     await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
     const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    const versionFilesDir = _joinPath(_folderVersionDir(normalized), safeVersion, 'files');
     let restored = 0;
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const src = _joinPath(versionFilesDir, relPath);
       const dst = _joinPath(normalized, relPath);
-      const srcEntry = await _resolveEntryHandle(provider, src);
-      if (!srcEntry || srcEntry.kind !== 'file') continue;
-      const srcFile = await provider.downloadAsFile(src);
-      await provider.uploadBytes(dst, new Uint8Array(await srcFile.arrayBuffer()));
+      if (!file.content_base64) continue;
+      const binary = atob(file.content_base64);
+      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
       restored += 1;
     }
     return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
   }
 
   async function _deleteFolderVersion(provider, folderPath, version) {
-    return _softDeleteVersionEntry(provider, _folderVersionDir(_normalizeFolderPath(folderPath)), version, 'folder');
+    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    const token = _deletedVersionToken();
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, token, version: record.payload.version_name };
   }
 
   async function _undeleteFolderVersion(provider, folderPath, token) {
-    return _restoreDeletedVersionEntry(provider, _folderVersionDir(_normalizeFolderPath(folderPath)), token, 'folder');
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeToken = _safeVersionName(token);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.deleted_token === safeToken;
+    });
+    if (!record) throw new Error('削除済みバージョンが見つかりません');
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: '', deleted_token: '' },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, version: record.payload.version_name };
   }

@@ -105,6 +105,7 @@
   }
 
   function _parseImportCsv(text) {
+    if (window.MeldexCsv) return window.MeldexCsv.parse(text).rows;
     const normalized = String(text || '').replace(/^\uFEFF/, '');
     const rows = [];
     let row = [];
@@ -150,42 +151,266 @@
     return rows;
   }
 
+  async function _readImportCsvText(provider, path) {
+    if (typeof provider.downloadAsFile === 'function') {
+      const file = await provider.downloadAsFile(path);
+      const bytes = await file.arrayBuffer();
+      const view = new Uint8Array(bytes);
+      const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+      try {
+        return {
+          text: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+          encoding: bom ? 'utf-8-bom' : 'utf-8',
+          bom,
+        };
+      } catch {
+        return {
+          text: new TextDecoder('shift_jis', { fatal: true }).decode(bytes),
+          encoding: 'cp932',
+          bom: false,
+        };
+      }
+    }
+    const text = await provider.readText(path);
+    return { text, encoding: 'utf-8', bom: String(text || '').charCodeAt(0) === 0xFEFF };
+  }
+
+  function _csvImportSpecs(body, rows) {
+    const hasHeader = body?.has_header !== false && body?.hasHeader !== false;
+    const columnCount = rows.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+    if (!columnCount) throw new Error('CSVに列がありません');
+    const baseHeaders = hasHeader ? rows[0] || [] : [];
+    const headers = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(Array.from({ length: columnCount }, (_, index) => baseHeaders[index] || `列${index + 1}`))
+      : _sheetImportHeaders(baseHeaders);
+    let renamedHeaders = headers.reduce((count, name, index) => (
+      name !== String(baseHeaders[index] ?? '').trim() ? count + 1 : count
+    ), 0);
+    const start = hasHeader ? 1 : 0;
+    const supplied = Array.isArray(body?.columns) ? body.columns : [];
+    const columns = headers.map((header, index) => {
+      const inferred = window.MeldexCsv
+        ? window.MeldexCsv.inferColumn(rows.slice(start).map(row => row?.[index] ?? ''))
+        : { type: 'text', formula: '', warning: '' };
+      const configured = supplied[index] && typeof supplied[index] === 'object' ? supplied[index] : {};
+      const type = String(configured.type || inferred.type || 'text');
+      const formula = String(configured.formula || inferred.formula || '');
+      const name = String(configured.name || header).trim() || header;
+      if (!['text', 'number', 'formula'].includes(type)) throw new Error(`未対応の列タイプです: ${type}`);
+      if (type === 'formula' && (!window.MeldexCsv || !window.MeldexCsv.isMeldexFormula(formula))) {
+        throw new Error(`列「${name}」のMeldex数式が正しくありません`);
+      }
+      if (type === 'number' && window.MeldexCsv) {
+        const invalid = rows.slice(start).find(row => String(row?.[index] ?? '').trim() && !window.MeldexCsv.isSafeNumber(row?.[index]));
+        if (invalid) throw new Error(`列「${name}」に数値でない値があります`);
+      }
+      return { name, type, formula, warning: String(configured.warning || inferred.warning || '') };
+    });
+    const uniqueNames = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(columns.map(column => column.name))
+      : _sheetImportHeaders(columns.map(column => column.name));
+    columns.forEach((column, index) => {
+      if (column.name !== uniqueNames[index]) renamedHeaders += 1;
+      column.name = uniqueNames[index];
+    });
+    const itemColumn = Number(body?.item_name_column ?? body?.itemNameColumn ?? 0);
+    if (!Number.isInteger(itemColumn) || itemColumn < 0 || itemColumn >= columns.length) {
+      throw new Error('項目名に使う列が範囲外です');
+    }
+    const records = [];
+    const names = new Set();
+    let completed = 0;
+    let renamed = 0;
+    rows.slice(start).forEach((row, offset) => {
+      const rawName = String(row?.[itemColumn] ?? '').trim();
+      const baseName = rawName || `行 ${offset + 1}`;
+      if (!rawName) completed += 1;
+      let name = baseName;
+      let suffix = 2;
+      while (names.has(name)) {
+        name = `${baseName} ${suffix}`;
+        suffix += 1;
+      }
+      if (name !== baseName) renamed += 1;
+      names.add(name);
+      const properties = {};
+      columns.forEach((column, index) => {
+        if (index === itemColumn || column.type === 'formula') return;
+        const value = String(row?.[index] ?? '');
+        if (!value) return;
+        properties[column.name] = [{ value, status: '採用', note: '', created: _nowIso() }];
+      });
+      records.push({ name, properties });
+    });
+    return {
+      columns,
+      records,
+      itemColumn,
+      completed,
+      renamed,
+      renamedHeaders,
+      warnings: columns.map(column => column.warning).filter(Boolean),
+    };
+  }
+
+  async function _setCsvImportPropertyTypes(provider, dbPath, specs, append) {
+    const notePath = await _folderNotePath(provider, dbPath);
+    if (!notePath) throw new Error('シート定義を作成できませんでした');
+    const parsed = await _readFrontmatterFile(provider, notePath);
+    const frontmatter = { ...(parsed.frontmatter || {}) };
+    const current = frontmatter.property_types && typeof frontmatter.property_types === 'object'
+      ? { ...frontmatter.property_types }
+      : {};
+    const incoming = {};
+    specs.columns.forEach((column, index) => {
+      if (index === specs.itemColumn) return;
+      incoming[column.name] = column.type === 'formula'
+        ? { type: 'formula', formula: column.formula }
+        : { type: column.type };
+    });
+    if (append) {
+      const conflicts = Object.entries(incoming).filter(([name, spec]) => {
+        const existing = current[name];
+        return existing && (String(existing.type || 'text') !== spec.type
+          || (spec.type === 'formula' && String(existing.formula || '') !== spec.formula));
+      });
+      if (conflicts.length) throw new Error(`列タイプが一致しません: ${conflicts.map(([name]) => name).join('、')}`);
+    }
+    frontmatter.property_types = { ...current, ...incoming };
+    await _writeFrontmatterFile(provider, notePath, frontmatter, parsed.body || '');
+  }
+
   async function _importCsvToDb(provider, body) {
     const csvPath = _normalizeFolderPath(body?.csv_path || body?.csvPath || '');
-    const dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
-    if (!csvPath || !dbPath) throw new Error('csv_path and db_path required');
-    const csvEntry = await _resolveEntryHandle(provider, csvPath);
-    if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
-    const rows = _parseImportCsv(await provider.readText(csvPath));
-    if (!rows.length) return { ok: true, count: 0 };
-    const headers = _sheetImportHeaders(rows[0]);
-    if (!headers.length) return { ok: true, count: 0 };
-    _rejectProductionReservedLegacyProperties(dbPath, headers.slice(1));
-    await _requireUnlocked(provider, dbPath, { action: 'import-csv' });
-    await _ensureFolderNote(provider, dbPath, 'settings-db');
-    await _mergeSheetImportPropertyTypes(provider, dbPath, _sheetImportPropertySpecs(rows[0], headers, rows.slice(1)));
-    let count = 0;
-    for (const row of rows.slice(1)) {
-      const entityName = _sheetImportCellText(row?.[0]);
-      if (!entityName) continue;
-      const properties = {};
-      headers.slice(1).forEach((propName, offset) => {
-        if (!propName) return;
-        const rawText = _sheetImportCellText(row?.[offset + 1]);
-        if (!rawText) return;
-        if (!properties[propName]) properties[propName] = [];
-        properties[propName].push({ value: rawText, status: '採用', note: '', created: _nowIso() });
-      });
-      await _createEntity(provider, {
-        parent_path: dbPath,
-        name: entityName,
-        properties,
-        source: 'csv-import',
-        user: body?.user || 'anonymous',
-      });
-      count += 1;
+    let content = body?.content;
+    let encoding = String(body?.encoding || '');
+    let bom = body?.bom;
+    if (content == null) {
+      if (!csvPath) throw new Error('csv_path または content が必要です');
+      const csvEntry = await _resolveEntryHandle(provider, csvPath);
+      if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
+      const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      if (expectedEtag) {
+        const currentEtag = await _fileEtag(provider, csvPath, csvEntry);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(csvPath, expectedEtag, currentEtag);
+      }
+      const read = await _readImportCsvText(provider, csvPath);
+      content = read.text;
+      encoding = encoding || read.encoding;
+      if (bom == null) bom = read.bom;
     }
-    return { ok: true, count };
+    if (typeof content !== 'string') throw new Error('content must be text');
+    const parsed = window.MeldexCsv
+      ? window.MeldexCsv.parse(content, { delimiter: body?.delimiter || '', encoding, bom })
+      : { rows: _parseImportCsv(content), dialect: { delimiter: ',', newline: '\n', encoding } };
+    if (!parsed.rows.length) throw new Error('CSVに行がありません');
+    const specs = _csvImportSpecs(body || {}, parsed.rows);
+    const explicit = ['mode', 'has_header', 'hasHeader', 'item_name_column', 'itemNameColumn', 'columns', 'sheet_name']
+      .some(key => Object.prototype.hasOwnProperty.call(body || {}, key));
+    const mode = String(body?.mode || (explicit ? 'create' : 'append')).toLowerCase();
+    if (!['create', 'append'].includes(mode)) throw new Error('mode は create または append を指定してください');
+    let dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
+    if (!dbPath) {
+      const parent = _normalizeFolderPath(body?.destination_parent || '');
+      const stem = String(body?.filename || 'CSV').replace(/\.[^.]+$/, '') || 'CSV';
+      dbPath = _joinPath(parent, _safeFileStem(stem, 'CSV'));
+    }
+    if (!dbPath) throw new Error('保存先が必要です');
+    let targetPath = dbPath;
+    const targetExists = await _pathExists(provider, targetPath);
+    const legacyCreate = !explicit && mode === 'append' && !targetExists;
+    if (mode === 'append' && !targetExists && !legacyCreate) throw new Error('追加先シートが見つかりません');
+    if (mode === 'create' && targetExists) {
+      const unique = await _uniqueName(provider, _dirname(targetPath), _basename(targetPath), '');
+      targetPath = _joinPath(_dirname(targetPath), unique);
+    }
+    await _requireUnlocked(provider, targetPath, { action: 'import-csv' });
+
+    _rejectProductionReservedLegacyProperties(
+      targetPath,
+      specs.columns.filter((_column, index) => index !== specs.itemColumn).map(column => column.name),
+    );
+    const legacyDateSpecs = explicit
+      ? null
+      : _sheetImportPropertySpecs(parsed.rows[0] || [], _sheetImportHeaders(parsed.rows[0] || []), parsed.rows.slice(1));
+
+    const importInto = async (path, category) => {
+      await _ensureFolderNote(provider, path, 'settings-db');
+      if (legacyDateSpecs) await _mergeSheetImportPropertyTypes(provider, path, legacyDateSpecs);
+      else await _setCsvImportPropertyTypes(provider, path, specs, mode === 'append');
+      for (const record of specs.records) {
+        await _createEntity(provider, {
+          parent_path: path,
+          category,
+          name: record.name,
+          properties: record.properties,
+          source: 'csv-import',
+          user: body?.user || 'anonymous',
+        });
+      }
+    };
+
+    // 取込先が存在しない場合（append指定の暗黙作成 legacyCreate を含む）は、既存フォルダの
+    // コピー・バックアップを前提とする追記経路を使えないため、新規作成経路で取り込む。
+    if (mode === 'create' || !targetExists) {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      try {
+        await importInto(tempPath, _basename(targetPath));
+        const tempNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        const finalNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        if (tempNote !== finalNote) await provider.movePath(tempNote, finalNote);
+        await provider.movePath(tempPath, targetPath);
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        throw error;
+      }
+    } else {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      const backupPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-backup-${_randomId('')}`);
+      let originalMoved = false;
+      try {
+        await provider.copyPath(targetPath, tempPath);
+        // フォルダノートは「フォルダ名と同名の.md」で解決されるため、一時フォルダ内では
+        // 実ノートを一時フォルダ名へ改名してから取り込む（そのままだと _ensureFolderNote が
+        // 別ノートを新規作成し、既存メタデータを引き継がず列型のマージ先も分裂する）。
+        const copiedNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        const workingNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        if (await _pathExists(provider, copiedNote)) await provider.movePath(copiedNote, workingNote);
+        await importInto(tempPath, _basename(targetPath));
+        await provider.movePath(workingNote, copiedNote);
+        await provider.movePath(targetPath, backupPath);
+        originalMoved = true;
+        try {
+          await provider.movePath(tempPath, targetPath);
+        } catch (error) {
+          await provider.movePath(backupPath, targetPath);
+          originalMoved = false;
+          throw error;
+        }
+        await provider.deletePath(backupPath).catch(() => {});
+        originalMoved = false;
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        if (originalMoved) {
+          await provider.deletePath(targetPath).catch(() => {});
+          await provider.movePath(backupPath, targetPath).catch(() => {});
+        }
+        throw error;
+      }
+    }
+    return {
+      ok: true,
+      path: targetPath,
+      count: specs.records.length,
+      imported_count: specs.records.length,
+      completed_name_count: specs.completed,
+      renamed_count: specs.renamed + specs.renamedHeaders,
+      warnings: specs.warnings,
+      columns: specs.columns,
+      encoding: parsed.dialect?.encoding || encoding || 'utf-8',
+      delimiter: parsed.dialect?.delimiter || ',',
+      newline: parsed.dialect?.newline || '\n',
+    };
   }
 
   function _yamlFlowSplit(text) {
@@ -418,26 +643,52 @@
     return name;
   }
 
-  function _folderVersionDir(path) {
-    return _joinPath(VERSION_FOLDER_DIR, _fnvFileId(_normalizeFolderPath(path) || '.'));
-  }
-
   async function _readDbVersionSnapshot(provider, path, version) {
     const normalized = _normalizeFolderPath(path);
     const safeVersion = _safeVersionName(version);
-    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
-    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    const storage = window.MeldexSystemStorage;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!storage?.SystemStorageKind?.VERSIONS || typeof resolver?.resolveTypedAdapterForProvider !== 'function') {
+      throw new Error('シート履歴の管理領域を利用できません');
+    }
+    const kind = storage.SystemStorageKind.VERSIONS;
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind);
+    const records = await adapter.listDocuments(kind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && !payload.deleted_at;
+    });
+    let meta = record?.payload;
+    let legacyVersionDir = '';
+    if (!meta) {
+      legacyVersionDir = _joinPath(
+        LEGACY_VERSION_FOLDER_DIR,
+        _fnvFileId(normalized || '.'),
+        safeVersion,
+      );
+      meta = await _readJsonSafe(provider, _joinPath(legacyVersionDir, '_meta.json'), null);
+    }
     if (!meta || typeof meta !== 'object') throw new Error('シート履歴が見つかりません');
     const files = [];
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
       const rel = _normalizeFolderPath(file.rel_path || '');
       if (!rel || rel.includes('..') || !/^[^/]+\.md$/i.test(rel)) continue;
-      files.push({ path: rel, text: await _readText(provider, _joinPath(versionDir, 'files', rel), '') });
+      if (file.content_base64) {
+        const binary = atob(file.content_base64);
+        const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+        files.push({ path: rel, text: new TextDecoder().decode(bytes) });
+      } else if (legacyVersionDir) {
+        files.push({ path: rel, text: await _readText(provider, _joinPath(legacyVersionDir, 'files', rel), '') });
+      }
     }
     const noteName = _basename(normalized) + '.md';
-    const note = files.find(file => file.path === noteName);
+    const note = files.find(file => file.path === noteName)
+      || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
     const dbType = note ? String(_parseFrontmatter(note.text).frontmatter?.type || '') : '';
-    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created || '' };
+    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '' };
   }
 
   function _recurrenceObject(value) {
@@ -939,7 +1190,68 @@
   }
 
   async function _requireCloudSecretWritable(provider) {
-    await assertOwnerWrite(provider, SECRET_FILE);
+    const ledger = window.MeldexWorkspaceLedgerIO;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!ledger || typeof ledger.listJoinedWorkspaces !== 'function' || !resolver) {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    try {
+      const joined = ledger.listJoinedWorkspaces();
+      if (!Array.isArray(joined)) throw new Error('workspace-ledger-unavailable');
+    } catch {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    const info = await resolver.resolveConnectionInfo(provider);
+    if (info.isSharedWorkspace) {
+      throw new Error('Cloud保存APIキーは共有ワークスペースへ保存できません');
+    }
+  }
+
+  function _secretAuth() {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth || typeof auth.apiRpc !== 'function' || typeof auth.apiContent !== 'function') {
+      throw new Error('Dropboxへ接続してください');
+    }
+    return auth;
+  }
+
+  async function _readCloudSecretEnvelope() {
+    try {
+      const response = await _secretAuth().apiContent(
+        'files/download',
+        { path: SECRET_FILE },
+        undefined,
+        { namespaceKind: 'home' },
+      );
+      return JSON.parse(await response.text());
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return null;
+      throw error;
+    }
+  }
+
+  async function _writeCloudSecretEnvelope(envelope) {
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    await _secretAuth().apiContent(
+      'files/upload',
+      { path: SECRET_FILE, mode: 'overwrite', autorename: false, mute: false },
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes },
+      { namespaceKind: 'home' },
+    );
+  }
+
+  async function _deleteCloudSecretEnvelope() {
+    try {
+      await _secretAuth().apiRpc(
+        'files/delete_v2',
+        { path: SECRET_FILE },
+        { namespaceKind: 'home' },
+      );
+      return true;
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return false;
+      throw error;
+    }
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
@@ -1044,24 +1356,21 @@
 
     if (pathname === '/llm-keys/cloud' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      const envelope = await _readJsonSafe(provider, SECRET_FILE, null);
+      await _requireCloudSecretWritable(provider);
+      const envelope = await _readCloudSecretEnvelope();
       return envelope ? { exists: true, envelope } : { exists: false, envelope: null };
     }
     if (pathname === '/llm-keys/cloud' && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      await _directoryHandle(provider, _dirname(SECRET_FILE), true);
-      await provider.writeJson(SECRET_FILE, { ...(body || {}), updated_at: _nowIso() });
+      await _writeCloudSecretEnvelope({ ...(body || {}), updated_at: _nowIso() });
       return { ok: true, path: SECRET_FILE };
     }
     if (pathname === '/llm-keys/cloud' && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      const existing = await _resolveEntryHandle(provider, SECRET_FILE);
-      if (!existing) return { ok: true, missing: true };
-      await _removeEntry(provider, SECRET_FILE);
-      if (await _resolveEntryHandle(provider, SECRET_FILE)) throw new Error('Cloud保存APIキーを削除できませんでした');
-      return { ok: true };
+      const removed = await _deleteCloudSecretEnvelope();
+      return removed ? { ok: true } : { ok: true, missing: true };
     }
 
     return NOT_HANDLED;

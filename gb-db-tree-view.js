@@ -600,6 +600,7 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   const row = document.createElement('div');
   row.className = 'db-tree-row';
   row.dataset.entityName = node.entityName;
+  row.dataset.meldexEntityPath = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
   row.dataset.e2eId = `db-tree-row-${node.entityName}`;
   row.draggable = true;
   row.style.setProperty('--db-tree-depth', String(depth));
@@ -732,7 +733,13 @@ function _dbTreeRenderRow(node, depth, parentEl, renderCtx) {
   row.addEventListener('dragstart', event => {
     stateInfo.dragging = node.entityName;
     event.dataTransfer?.setData('text/x-db-tree-entity', node.entityName);
-    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    window.MeldexBoardTransfer?.setEntityDragData?.(
+      event.dataTransfer,
+      dbPath,
+      node.entityName,
+      row.dataset.meldexEntityPath,
+    );
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copyMove';
     row.classList.add('dragging');
   });
   row.addEventListener('dragend', () => {

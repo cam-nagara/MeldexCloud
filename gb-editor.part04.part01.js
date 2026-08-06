@@ -408,10 +408,18 @@ function _pageTitleRubyHandler(e) {
     const fm = savedEditable.dataset.frontmatter || '';
     if (fm) md = fm + md;
 
-    const savePromise = isNewFormatFreetext
-      ? apiPut('/value?path=' + encodeURIComponent(savePath), { new_body: md })
-      : apiPut('/file?path=' + encodeURIComponent(savePath), { content: md });
-    savePromise.then(() => {
+    const isEntityFreetext = savedEditable.id === 'entity-freetext';
+    const savePromise = isEntityFreetext && typeof _saveEntityFreeText === 'function'
+      ? _saveEntityFreeText(savedEditable, ep, md, { reason: 'ruby' })
+      : (window.MeldexNoteSaveAdapter
+        ? window.MeldexNoteSaveAdapter.performSave(savedEditable, savePath, md, { reason: 'ruby' })
+        : apiPut('/file?path=' + encodeURIComponent(savePath), {
+            content: md,
+            if_match_etag: savedEditable.dataset.lastSavedEtag || '',
+            transport_revision: savedEditable.dataset.lastSavedTransportRevision || '',
+          }));
+    savePromise.then((saved) => {
+      if (saved === false || saved?.conflictPending) return;
       // 保存後にDOM再描画（auto-link再適用のため）
       const bodyMd = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
       const reHtml = mdToHtml(bodyMd);
@@ -507,7 +515,12 @@ document.addEventListener('keydown', async (e) => {
   if (e.key === 'Delete' && !isEditing && (inTreeByFocus || inTreeByPointer) && treeSelection.items.size > 0 && state.view !== 'folder' && state.view !== 'board') {
     const items = [...treeSelection.items].map(n => n._nodeData).filter(d => d && !d._isRoot && !(d.path && isItemLocked(d.path)));
     if (items.length === 0) return;
-    if (!await cfConfirm(items.length + ' 件を削除しますか？')) return;
+    const impactTargets = items.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const confirmMessage = items.length + ' 件を削除しますか？';
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+      : await cfConfirm(confirmMessage);
+    if (!confirmed) return;
     deleteOutlinerItemsWithHistory(items, {
       label: items.length + ' 件を削除',
       onItemDeleted: (item) => {
@@ -548,151 +561,16 @@ document.addEventListener('keydown', async (e) => {
   }
 });
 
+// 計画書§5工程7-8: 現在行の論理ブロック定義・移動判定は gb-note-block-reorder.js
+// （MeldexNoteBlockTypes.resolveCurrentBlockベース）へ統合した。旧実装は
+// document.activeElement を無条件に「編集ホスト」とみなし、見出しセクション
+// ラッパー（section.heading-section）を越えてpc直下まで無条件に登っていたため
+// heading-section単位で誤って移動する経路があった。ハンドルドラッグと
+// Alt+Shift+↑/↓が同じresolverを共有する（§2.4「ドラッグとキーボードは同じ
+// resolverを使う」）。第一級の実装は gb-note-block-reorder.js を参照。
 function moveBlock(direction) {
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return;
-  let node = sel.anchorNode;
-  while (node && node.nodeType === 3) node = node.parentNode;
-  const editable = document.activeElement;
-  if (!node || node === editable) return;
-  const beforeHtml = editable.innerHTML;
-  let undoPushed = false;
-  const pushCustomUndo = () => {
-    if (undoPushed || typeof _pushCustomUndo !== 'function') return;
-    _pushCustomUndo(editable);
-    undoPushed = true;
-  };
-
-  const markerId = '_mv_' + Date.now();
-  const li = node.closest ? node.closest('li') : null;
-
-  if (li && editable.contains(li)) {
-    const sibling = direction === 'up' ? li.previousElementSibling : li.nextElementSibling;
-    if (sibling) {
-      // 同一リスト内のLI入れ替え
-      pushCustomUndo();
-      _swapAdjacent(li, sibling, direction, sel, markerId);
-    } else {
-      // リスト境界: この1項目だけを抽出して移動
-      _moveLiAcrossBoundary(li, direction, editable, sel, markerId, pushCustomUndo);
-    }
-  } else {
-    // リスト外ブロック
-    while (node && node !== editable && node.parentNode !== editable) node = node.parentNode;
-    if (!node || node === editable) return;
-    const sibling = direction === 'up' ? node.previousElementSibling : node.nextElementSibling;
-    if (!sibling) return;
-
-    // 隣接要素がリスト(UL/OL)またはリストを含む要素なら、そのリストにLIとして合流
-    let targetList = null;
-    if (sibling.tagName === 'UL' || sibling.tagName === 'OL') {
-      targetList = sibling;
-    } else {
-      targetList = sibling.querySelector('ul, ol');
-    }
-    if (targetList) {
-      pushCustomUndo();
-      const newLi = document.createElement('li');
-      newLi.innerHTML = node.innerHTML;
-      newLi.setAttribute('data-mv', markerId);
-      if (direction === 'down') {
-        targetList.insertBefore(newLi, targetList.firstElementChild);
-      } else {
-        targetList.appendChild(newLi);
-      }
-      node.remove();
-    } else {
-      pushCustomUndo();
-      _swapAdjacent(node, sibling, direction, sel, markerId);
-    }
-  }
-
-  // カーソルを移動先の要素に配置
-  const moved = editable.querySelector('[data-mv="' + markerId + '"]');
-  if (moved) {
-    moved.removeAttribute('data-mv');
-    const r = document.createRange();
-    r.selectNodeContents(moved);
-    r.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(r);
-    moved.scrollIntoView({ block: 'nearest' });
-  }
-  if (editable.innerHTML !== beforeHtml) {
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-}
-
-// 隣接する2要素を入れ替え（DOM直接操作、カスタムアンドゥで対応）
-function _swapAdjacent(target, sibling, direction, sel, markerId) {
-  target.setAttribute('data-mv', markerId);
-  if (direction === 'up') {
-    target.parentNode.insertBefore(target, sibling);
-  } else {
-    target.parentNode.insertBefore(sibling, target);
-  }
-}
-
-// リスト境界でLIを1項目だけ移動（同じ階層を維持する）
-function _moveLiAcrossBoundary(li, direction, editable, sel, markerId, beforeMutate) {
-  const parentList = li.parentNode; // UL or OL
-  const listTag = parentList.tagName; // 'UL' or 'OL'
-
-  // 親リストを含む最も近いブロック要素（editable直下まで辿る）
-  let listBlock = parentList;
-  while (listBlock.parentNode !== editable) listBlock = listBlock.parentNode;
-
-  // listBlockの隣接要素を取得
-  const adjacent = direction === 'up'
-    ? listBlock.previousElementSibling
-    : listBlock.nextElementSibling;
-  if (!adjacent) return;
-
-  // ケース1: 隣接要素の中に同タイプのリストがあれば合流
-  // （隣がリストそのもの、または隣の内部にリストがある場合）
-  let targetList = null;
-  if (adjacent.tagName === listTag) {
-    targetList = adjacent;
-  } else {
-    // 隣の要素内（LI, DIV等）から同タイプのリストを探す
-    targetList = adjacent.querySelector(listTag.toLowerCase());
-  }
-  if (targetList) {
-    beforeMutate?.();
-    li.setAttribute('data-mv', markerId);
-    parentList.removeChild(li);
-    if (direction === 'up') {
-      targetList.appendChild(li);
-    } else {
-      targetList.insertBefore(li, targetList.firstElementChild);
-    }
-    if (parentList.children.length === 0) {
-      // 空リストを削除。親が空のDIV等なら一緒に削除
-      const p = parentList.parentNode;
-      parentList.remove();
-      if (p !== editable && p.children.length === 0 && !p.textContent.trim()) p.remove();
-    }
-    return;
-  }
-
-  // ケース2: 隣にリストがない → LIをdivとして抽出
-  const div = document.createElement('div');
-  div.innerHTML = li.innerHTML;
-  div.setAttribute('data-mv', markerId);
-  beforeMutate?.();
-  parentList.removeChild(li);
-  if (direction === 'up') {
-    editable.insertBefore(div, listBlock);
-  } else {
-    listBlock.nextSibling
-      ? editable.insertBefore(div, listBlock.nextSibling)
-      : editable.appendChild(div);
-  }
-  if (parentList.children.length === 0) {
-    const p = parentList.parentNode;
-    parentList.remove();
-    if (p !== editable && p.children.length === 0 && !p.textContent.trim()) p.remove();
-  }
+  if (typeof MeldexNoteBlockReorder === 'undefined') return;
+  return MeldexNoteBlockReorder.moveBlock(direction);
 }
 
 // ノートエディタ用ルビ入力ポップアップ。
@@ -808,8 +686,12 @@ async function confirmNoteTableDelete(message) {
 
 // ノート/自由記述の右クリックメニュー
 // 旧: document 委譲 → editable コンテナ個別登録へ移行（global-contextmenu-refactor-plan.md）
-function _noteCtxMenuHandler(e) {
-  const editable = e.currentTarget;
+// contextOverride: 行ハンドルの右クリック（gb-note-block-reorder.js の
+// _onHandleContextMenu）から呼ばれる場合に渡される { editable, blockInfo }。
+// 通常の contextmenu バインド（bindNoteEditorContextMenu）経由では
+// e.currentTarget が editable 自身なので省略でよい（バグ報告§3の「可能であれば」対応）。
+function _noteCtxMenuHandler(e, contextOverride) {
+  const editable = (contextOverride && contextOverride.editable) || e.currentTarget;
   if (!editable || editable.contentEditable !== 'true') return;
   e.preventDefault();
   closeColHeaderMenu();
@@ -860,6 +742,15 @@ function _noteCtxMenuHandler(e) {
   const _ctxScanEl = e.target;
   const _ctxTargetEl = _ctxScanEl?.nodeType === Node.ELEMENT_NODE ? _ctxScanEl : _ctxScanEl?.parentElement;
   const _commentHighlightEl = _ctxTargetEl?.closest?.('.cmt-highlight,.cmt-line-highlight');
+  // 計画書§5工程9-1: 右クリック/長押し位置(caretRangeFromPoint優先、フォールバックは
+  // e.target位置)から対象の論理ブロック(行)を解決する。ロック中/読み取り専用時は
+  // このハンドラ自体が発火しない(呼び出し元 bindNoteEditorContextMenu 参照)。
+  const _blockInfo = (contextOverride && contextOverride.blockInfo !== undefined)
+    ? contextOverride.blockInfo
+    : ((typeof MeldexNoteBlockContextMenu !== 'undefined')
+      ? MeldexNoteBlockContextMenu.resolveBlockInfoForEvent(editable, e, _ctxTargetEl)
+      : null);
+  const _blockIsHeading = !!(_blockInfo && _blockInfo.kind === 'heading');
   const items = [
     { label: 'コメントを追加', enabled: true, action: () => restoreAndExec(() => {
       if (typeof addCommentHere !== 'function') return;
@@ -880,6 +771,17 @@ function _noteCtxMenuHandler(e) {
     { label: 'やり直し', enabled: true, action: () => { editable.focus(); document.execCommand('redo'); } },
     { type: 'sep' },
     { label: 'すべて選択', enabled: true, action: () => { editable.focus(); document.execCommand('selectAll'); } },
+    { type: 'sep' },
+    // 計画書§5工程9: 「行種変更」(共通行種メニューのサブメニュー)。
+    { type: 'blockType', blockInfo: _blockInfo },
+    // 計画書§5工程11項目4: 見出し限定で「この見出しへのリンクをコピー」を追加する。
+    ...(_blockIsHeading ? [{
+      label: 'この見出しへのリンクをコピー',
+      enabled: true,
+      action: () => {
+        if (typeof MeldexNoteBlockContextMenu !== 'undefined') MeldexNoteBlockContextMenu.copyHeadingLink(_blockInfo.block);
+      },
+    }] : []),
     { type: 'sep' },
     { type: 'format', label: '書式…', enabled: hasSelection },
     { type: 'sep' },
@@ -967,6 +869,11 @@ function _noteCtxMenuHandler(e) {
     if (menuKeyCloser) document.removeEventListener('keydown', menuKeyCloser, true);
     menuPointerCloser = null;
     menuKeyCloser = null;
+    // 工程9: 「行種変更」サブメニューを開いたまま外側の項目クリックやEscapeで
+    // 親メニューだけが閉じると、サブメニューが孤立表示のまま残る。閉じる経路を
+    // 問わず必ず一緒に畳む(ARIA aria-expanded/対象行ハイライトも合わせて解除)。
+    if (typeof MeldexNoteBlockMenu !== 'undefined' && MeldexNoteBlockMenu.isOpen()) MeldexNoteBlockMenu.close();
+    if (typeof MeldexNoteBlockContextMenu !== 'undefined') MeldexNoteBlockContextMenu.clearHighlight();
     if (restoreFocus && editable.isConnected) editable.focus();
   };
 
@@ -1019,6 +926,21 @@ function _noteCtxMenuHandler(e) {
       menu.appendChild(el);
       return;
     }
+    if (item.type === 'blockType') {
+      // 工程9: ホバー/矢印右で開く共通行種メニュー(gb-note-block-menu.js)への
+      // サブメニュートリガー。構築・開閉・対象行ハイライトは共有ヘルパーへ委譲する
+      // (gb-note-block-context-menu.js。ハンドルクリックメニュー側の見出しリンク
+      // コピー統合と同じ対象行解決・ハイライトクラスを再利用するため)。
+      const el = (typeof MeldexNoteBlockContextMenu !== 'undefined')
+        ? MeldexNoteBlockContextMenu.buildBlockTypeMenuTrigger({
+            editable,
+            blockInfo: item.blockInfo,
+            onAfterAction: () => closeNoteContextMenu(false),
+          })
+        : _editorMenuButton('行種変更', false, () => {});
+      menu.appendChild(el);
+      return;
+    }
     const el = _editorMenuButton(item.label, item.enabled, () => { closeNoteContextMenu(false); item.action(); });
     menu.appendChild(el);
   });
@@ -1027,7 +949,17 @@ function _noteCtxMenuHandler(e) {
   _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
   setTimeout(() => {
     menuPointerCloser = (ev) => {
-      if (!menu.contains(ev.target)) closeNoteContextMenu(true);
+      if (menu.contains(ev.target)) return;
+      // 修正2: 「行種変更」サブメニュー(gb-note-block-menu.js の #note-block-menu)は
+      // このメニューの子ではなく document.body 直下の別要素として開く。
+      // pointerdown を素朴に「外側クリック」判定すると、サブメニュー項目を
+      // クリックした瞬間にこの outside-click ハンドラが先に発火し、
+      // MeldexNoteBlockMenu.close() でサブメニューを閉じてしまい、直後の click
+      // イベントが選択項目に届かなくなる（行種変更が「全く機能しない」原因）。
+      // サブメニュー内のクリックは外側クリック扱いにしない。
+      const blockMenuEl = document.getElementById('note-block-menu');
+      if (blockMenuEl && blockMenuEl.contains(ev.target)) return;
+      closeNoteContextMenu(true);
     };
     menuKeyCloser = (ev) => {
       if (ev.key === 'Escape') {

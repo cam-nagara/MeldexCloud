@@ -498,9 +498,13 @@ function _showSettingsNavigationTarget(modal, target) {
     p.hidden = !panelNames.has(p.dataset.panel);
     p.style.display = '';
   });
+  // 再描画後のフィルタ掛け直し用に現在のタブ/サブタブを記録（part05 の _settingsThemeReapplyNavigationView が参照）
+  modal.dataset.settingsActiveTabId = target.tabId || '';
+  modal.dataset.settingsActivePageId = target.pageId || '';
   _renderSettingsSubtabs(modal, target);
-  if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
+  // テーマパネルは遅延描画のため、view フィルタより先に中身を確定させる
   _ensureSettingsThemePanelVisible(target.tabId, modal);
+  if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
   _syncSettingsModalOverlayForPanel(modal, target.tabId);
   _scheduleSettingsPanelInitialization(target, modal, { immediate: true });
 }

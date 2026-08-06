@@ -20,8 +20,33 @@
     return items.length ? '?' + items.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&') : '';
   }
 
+  // 制作管理UX改善計画（2026-08-04）§6-1: 「制作管理を始める」ボタン廃止に伴い、未
+  // セットアップ状態を空状態カードとして扱うための軽量キャッシュ付き判定。/status は
+  // _ensure_existing_or_template を呼ばない唯一の読み取りのため、これを先に呼べば
+  // 未セットアップのワークスペースを自己修復（自動作成）させずに判定できる。
+  const READY_CACHE_TTL_MS = 4000;
+  let readyCache = null; // { value: boolean, ts: number }
+  async function checkReady(options = {}) {
+    const now = Date.now();
+    if (!options.force && readyCache && (now - readyCache.ts) < READY_CACHE_TTL_MS) return readyCache.value;
+    try {
+      const result = await request('/production-management/status');
+      const ready = !!result?.ready;
+      readyCache = { value: ready, ts: now };
+      return ready;
+    } catch {
+      // 状態を取得できない場合は既存の自己修復フローを妨げない（開始済み扱いにフォールバック）。
+      readyCache = { value: true, ts: now };
+      return true;
+    }
+  }
+  function invalidateReady() { readyCache = null; }
+
   window.MeldexProductionApi = {
     summary: () => request('/production-management/summary'),
+    status: () => request('/production-management/status'),
+    checkReady,
+    invalidateReady,
     list: (sheet, params = {}) => request('/production-management/lists' + encodeQuery({ sheet, ...params })),
     taskSheets: () => request('/production-management/task-sheets'),
     taskCreateCatalog: () => request('/production-management/task-create-catalog'),
@@ -46,11 +71,5 @@
     fromTemplate: (payload) => request('/production-management/tasks/from-template', { method: 'POST', body: payload }),
     recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload }),
     recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload }),
-    async recalculateEqual(payload = {}, options = {}) {
-      const body = { mode: 'equal_until_deadline', staff_scope: 'current_user', ...payload };
-      const preview = await request('/production-management/recalculate/preview', { method: 'POST', body });
-      if (!options.apply || preview?.apply_allowed === false) return preview;
-      return request('/production-management/recalculate/apply', { method: 'POST', body });
-    },
   };
 })();

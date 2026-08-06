@@ -6,6 +6,7 @@
   const PWA_UI_CONFIG_KEY = 'meldex-cloud-ui-config';
   const PWA_FOLDER_LINKS_KEY = 'meldex-cloud-folder-links';
   const PWA_FOLDER_LINKS_FILE = '_meldex/folder-links.json';
+  const FOLDER_LINKS_DOCUMENT_ID = 'cloud-folder-links';
   const PWA_TRASH_DIR = '_trash';
   const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.avif']);
   const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogv']);
@@ -290,6 +291,38 @@
     return provider;
   }
 
+  async function _managementAdapter(provider, kind) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider) {
+      throw new Error('Dropboxの管理データ保存先を安全に判定できません');
+    }
+    return resolver.resolveTypedAdapterForProvider(provider, kind);
+  }
+
+  async function _readManagementPayload(provider, kind, documentId) {
+    const adapter = await _managementAdapter(provider, kind);
+    const record = await adapter.load(kind, documentId);
+    return { adapter, record, payload: record?.payload || null };
+  }
+
+  async function _writeManagementPayload(provider, kind, documentId, updater, retries = 5) {
+    const adapter = await _managementAdapter(provider, kind);
+    let lastError = null;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const next = updater(current?.payload || null);
+      try {
+        return await adapter.save(kind, documentId, next, {
+          expectedRevision: current?.revision ?? null,
+        });
+      } catch (error) {
+        lastError = error;
+        if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw lastError;
+  }
+
   async function _pwaWorkspaceDescriptor() {
     const provider = await _pwaProvider();
     const info = provider ? await provider.getWorkspaceInfo() : { connected: false, name: '', path: '' };
@@ -333,6 +366,12 @@
       sourceId: root?.sourceId || root?.id || undefined,
       provider: root?.provider || undefined,
       dropboxPath: root?.dropboxPath || undefined,
+      // namespaceKind省略時の巻き戻り防止（meldex_path_scope_fullwidth_plan_2026-07-31.md
+      // 第2層タスク1対応）: ここは PUT /outliner-roots 呼び出しの合流点であり、
+      // このフィールドを落とすと team_root で正しく登録済みのフォルダも、設定
+      // ダイアログでの無関係な保存操作（改名・表示切替等）のたびに台帳へ
+      // namespaceKind無し（=home扱い）で書き戻され続けてしまう。
+      namespaceKind: root?.namespaceKind || undefined,
       name: String(root?.name || root?.path || '.'),
       visible: root?.visible !== false,
     }));
@@ -378,14 +417,6 @@
     return team;
   }
 
-  async function _writeTeamFile(folderPath, team) {
-    const provider = await _pwaProvider();
-    if (!provider || !await provider.ensureWorkspacePermission('readwrite')) throw new Error('Dropbox 共有フォルダへ書き込めません');
-    const relativeFolder = _normalizeFolderPath(folderPath);
-    const relativeFile = relativeFolder ? (relativeFolder + '/_Meldex_team.json') : '_Meldex_team.json';
-    await provider.writeJson(relativeFile, team || { members: {} });
-  }
-
   function _toTeamPayload(team) {
     return Object.entries(team?.members || {}).map(([name, info]) => ({
       name,
@@ -427,7 +458,15 @@
   }
 
   async function _readFolderLinks(provider) {
-    const persisted = provider ? await _readJsonSafe(provider, PWA_FOLDER_LINKS_FILE, null) : null;
+    let persisted = null;
+    if (provider) {
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+      if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+      const managed = await _readManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID);
+      persisted = managed.payload;
+      // 旧付随物は移行期間中の読取専用fallback。新規・更新書込は必ず管理領域へ行う。
+      if (!persisted) persisted = await _readJsonSafe(provider, PWA_FOLDER_LINKS_FILE, null);
+    }
     const raw = Array.isArray(persisted) ? persisted : (Array.isArray(persisted?.links) ? persisted.links : null);
     if (raw) {
       const links = _normalizeFolderLinks(raw);
@@ -441,12 +480,13 @@
     const normalized = _normalizeFolderLinks(links);
     _writeFolderLinksStore(normalized);
     if (provider) {
-      await _requireUnlockedPath(provider, PWA_FOLDER_LINKS_FILE, { action: 'folder-links' });
-      await provider.writeJson(PWA_FOLDER_LINKS_FILE, {
-        version: 1,
-        updated_at: new Date().toISOString(),
-        links: normalized,
-      });
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+      if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+      await _writeManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID, () => ({
+          version: 1,
+          updated_at: new Date().toISOString(),
+          links: normalized,
+        }), 1);
     }
     return normalized;
   }
@@ -870,9 +910,15 @@
   async function _relocateReferences(provider, oldPath, newPath, isFolder) {
     const normalizedOld = _normalizeFolderPath(oldPath);
     const normalizedNew = _normalizeFolderPath(newPath);
-    const referenceKeys = 'path|file|targetPath|target_path|targetFile|target_file|image|imagePath|url|href|folder_path|file_path|db_path|dbPath|scenarioPath|scriptnotePath|boardPath|csvPath|src';
-    const quotedKeyPattern = new RegExp('((?:["\\\'])(?:' + referenceKeys + ')(?:["\\\'])\\s*:\\s*)(["\\\'])([^"\\\'\\r\\n]*)(\\2)', 'g');
-    const looseKeyPattern = new RegExp('(\\b(?:' + referenceKeys + ')\\s*:\\s*)(["\\\']?)([^"\\\'\\n\\r,}\\]]+)(\\2)', 'g');
+    // キー判定はPython側 meldex_reference_codecs.is_json_reference_path_key と
+    // 1対1移植した gb-reference-codecs.js の正本へ委譲する(ファイル参照整合性
+    // 計画 Phase 3。Phase0監査notes.md §5「重複実装リスク」の解消。移植前は
+    // 固定19キーのみを認識する独立実装だったため、camelCase合成キー
+    // (imageSourcePath等)を取りこぼしていた)。未読込時は認識キーが0件になる
+    // フォールバック関数で安全側に倒す(誤検出を増やさない)。
+    const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
+    const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
+    const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
     const rewritePathValue = (value) => _rewritePath(value, normalizedOld, normalizedNew, isFolder);
     const rewriteReferenceText = (text) => {
       let next = String(text || '');
@@ -880,13 +926,15 @@
         const rewritten = rewritePathValue(target);
         return rewritten === target ? match : prefix + rewritten + suffix;
       });
-      next = next.replace(quotedKeyPattern, (match, prefix, quote, target, suffix) => {
+      next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
+        if (!isReferenceKey(keyName)) return match;
         const rewritten = rewritePathValue(String(target).trim());
-        return rewritten === String(target).trim() ? match : prefix + quote + rewritten + suffix;
+        return rewritten === String(target).trim() ? match : `${prefix}${valueQuote}${rewritten}${valueQuote}`;
       });
-      next = next.replace(looseKeyPattern, (match, prefix, quote, target, suffix) => {
+      next = next.replace(looseKeyPattern, (match, prefix, keyName, quote, target) => {
+        if (!isReferenceKey(keyName)) return match;
         const rewritten = rewritePathValue(String(target).trim());
-        return rewritten === String(target).trim() ? match : prefix + quote + rewritten + suffix;
+        return rewritten === String(target).trim() ? match : `${prefix}${quote}${rewritten}${quote}`;
       });
       return next;
     };
@@ -932,6 +980,73 @@
     });
     items.sort((a, b) => String(a.display_name || '').localeCompare(String(b.display_name || ''), 'ja', { sensitivity: 'base' }));
     return { ok: true, target: normalizedTarget, items };
+  }
+
+  // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
+  // 削除影響照会（POST /references/delete-impact、gb-delete-impact-warning.js の
+  // 呼び出し先）。Desktop側 meldex_api_reference_delete_impact.py の永続索引版と
+  // 意味は同じだが、Cloud（Dropbox直結）にはbacklinksの永続索引が無いため、
+  // _queryBacklinks / _relocateReferences と同じ「毎回workspace全体をライブ走査
+  // する」設計に合わせる（第二の索引エンジンを作らない。Phase0監査notes.md §5
+  // 「重複実装リスク」を踏襲）。ライブ全件走査のため coverage は常に complete
+  // として返す（Desktopのような部分索引・陳腐化の概念がCloud側には無い）。
+  async function _queryDeleteImpact(provider, items) {
+    const requested = (Array.isArray(items) ? items : [])
+      .map((it) => ({
+        path: _normalizeFolderPath(it?.path || ''),
+        kind: it?.kind === 'folder' ? 'folder' : 'file',
+      }))
+      .filter((it) => it.path);
+    if (!requested.length) {
+      return { ok: true, complete: true, sourceFileCount: 0, occurrenceCount: 0, sources: [], truncatedSources: false, unchecked: [], coverage: { status: 'complete', mode: 'live-scan' } };
+    }
+    const folderPrefixes = requested.filter((it) => it.kind === 'folder').map((it) => it.path + '/');
+    const deletionTargets = new Set(requested.filter((it) => it.kind === 'file').map((it) => it.path));
+    requested.forEach((it) => { if (it.kind === 'folder') deletionTargets.add(it.path); });
+
+    const allFiles = [];
+    await _iterateAllWorkspaceFiles(provider, async (filePath) => {
+      allFiles.push(filePath);
+      if (folderPrefixes.some((prefix) => filePath.startsWith(prefix))) deletionTargets.add(filePath);
+    });
+
+    const aggregated = new Map();
+    for (const filePath of allFiles) {
+      if (deletionTargets.has(filePath) || !_isTextLikePath(filePath)) continue;
+      const content = await _readTextSafe(provider, filePath, '');
+      if (!content) continue;
+      let matchCount = 0;
+      deletionTargets.forEach((target) => {
+        if (target && content.includes(target)) matchCount += 1;
+      });
+      if (matchCount > 0) {
+        aggregated.set(filePath, {
+          source_path: filePath,
+          source_asset_id: '',
+          display_name: _displayLabelForPath(filePath, ''),
+          exists: true,
+          entry_type: '',
+          occurrence_count: matchCount,
+        });
+      }
+    }
+
+    const sources = [...aggregated.values()].sort((a, b) => (
+      String(a.source_path || '').localeCompare(String(b.source_path || ''), 'ja', { sensitivity: 'base' })
+    ));
+    const sourceFileCount = sources.length;
+    const occurrenceCount = sources.reduce((sum, row) => sum + Number(row.occurrence_count || 0), 0);
+    const visibleSources = sources.slice(0, 50);
+    return {
+      ok: true,
+      complete: true,
+      sourceFileCount,
+      occurrenceCount,
+      sources: visibleSources,
+      truncatedSources: sources.length > visibleSources.length,
+      unchecked: [],
+      coverage: { status: 'complete', mode: 'live-scan' },
+    };
   }
 
   window.__MeldexPwaDataAccessInternals = {

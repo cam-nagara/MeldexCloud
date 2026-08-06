@@ -719,7 +719,7 @@ function _bdStructureHintHtml(node) {
   const body = hasOwnStructure
     ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
     : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
-  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body)}</div></div>`;
+  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body, { e2eId: 'bd-structure-help' })}</div></div>`;
 }
 
 function _bdCardStyleOptions(node) {

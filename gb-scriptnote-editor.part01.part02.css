@@ -361,10 +361,12 @@
 .sn2-text .auto-link,
 .sn2-custom-text .auto-link {
   cursor: pointer;
-  border-bottom: 1px dashed var(--blue, #4a90d9);
+  color: var(--link-fg);
+  text-decoration: none;
 }
 .sn2-text .auto-link:hover,
 .sn2-custom-text .auto-link:hover {
+  text-decoration: underline;
   background: color-mix(in srgb, var(--ui-selection-bg, var(--accent)) 24%, transparent);
 }
 .sn2-search-popup input[type="text"] {

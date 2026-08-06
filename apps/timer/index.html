@@ -25,10 +25,11 @@
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="timer-standalone.css">
   <link rel="stylesheet" href="standalone-tags.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
   <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
-  <div class="sa-shell timer-app">
+  <div class="sa-shell sa-options-collapsed timer-app">
     <header class="sa-toolbar">
       <div class="sa-menu-wrap">
         <button id="timer-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー"><span class="ico ico-menu"></span></button>
@@ -45,7 +46,7 @@
       <input id="timer-title-label" class="sa-title sa-title-input" type="text" value="タイマー" aria-label="タイマー名" spellcheck="false">
       <div id="timer-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="timer-path-label" class="sa-path">未保存</div>
-      <button id="timer-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="timer-option-panel-button"><span class="ico ico-panelRight"></span></button>
+      <button id="timer-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-gb-tooltip-key="panel.right.toggle" data-e2e-id="timer-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div class="sa-body">
       <main id="timer-root" class="sa-main timer-main"></main>
@@ -69,18 +70,22 @@
   <script src="gb-runtime-adapter.js"></script>
   <script src="gb-resource-url.js"></script>
   <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-system-storage.js"></script>
+  <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-dropbox-management-root-resolver.js"></script>
   <script src="gb-source-folder-registry.js"></script>
   <script src="gb-workspace-shared-ledger.js"></script>
   <script src="gb-workspace-ledger-io.js"></script>
   <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
-  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-reference-codecs.js"></script><script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
   <script src="gb-knowledge-signature.js"></script>
   <script src="gb-file-lock-store.js"></script>
   <script src="gb-active-lock-store.js"></script>
   <script src="gb-active-locks.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="gb-document-identity.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
   <script src="gb-dropbox-asset-identity.js"></script>
@@ -95,14 +100,18 @@
   <script src="gb-icon-assets.js"></script>
   <script src="gb-ui.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
+  <script src="meldex-app-capabilities.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
   <script src="standalone-option-panel.js"></script>
+  <script src="standalone-timer-calendar-provider.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-file-routes.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
@@ -123,6 +132,9 @@
   <script src="gb-tool-timer-custom-alarm.js"></script>
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="offline-bundles/gb-tooltip.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="timer-standalone-app.js"></script>
 </body>
 </html>

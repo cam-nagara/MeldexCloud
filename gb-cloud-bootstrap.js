@@ -181,6 +181,24 @@
     });
   }
 
+  // 計画書§2.6「非モーダル未解決表示は残す」・§5工程2-D項目8。「後回し」
+  // （承認済み）後も、確認導線だけを持つ静かな常設表示は残す。warningではなく
+  // okトーンにし、アクションは「確認する」のみ（新規の警告や自動再検出の
+  // 通知を増やさない。同じDOM要素を使い回すだけで、呼ばれるたびに新しい
+  // 通知が積み上がるわけではない）。
+  function _showAcknowledgedConflictNotice(conflicts) {
+    const conflictCount = Number(conflicts?.count || 0);
+    _showBanner(`Dropbox 競合コピーが ${conflictCount} 件、確認待ちのままです`, false, {
+      kind: 'health-conflict-ack',
+      actions: [
+        {
+          label: '確認する',
+          onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
+        },
+      ],
+    });
+  }
+
   function _applyCloudHealth(spaceUsage, conflicts) {
     const ratio = _spaceUsageRatio(spaceUsage);
     if (ratio >= CLOUD_SPACE_BLOCK_RATIO) {
@@ -191,27 +209,38 @@
     if (spaceUsage?.allocated) _setQuotaBlocked(false);
     if (spaceUsage?.allocated) _hideHealthBanner('health-space-error');
 
+    // 計画書§5工程2-D項目8: 「後回し」は一律の時間経過ではなく、対象となった
+    // 競合集合そのもの（競合世代）が承認済みかどうかで判定する
+    // （isAcknowledged(conflicts)）。承認済みの間はモーダル誘導の強いバナーを
+    // 再生成しないが、§2.6「非モーダル未解決表示は残す」に従い、確認導線
+    // だけを持つ静かな常設表示は維持する（同じDOM要素を使い回すだけで、
+    // 新しい通知を生成し続けるわけではない）。
     const conflictCount = Number(conflicts?.count || 0);
-    if (conflictCount > 0 && !window.MeldexCloudConflictResolver?.isSnoozed?.()) {
-      _reportConflictHealth(conflicts);
-      const first = conflicts?.items?.[0]?.path ? `: ${conflicts.items[0].path}` : '';
-      _showBanner(`Dropbox 競合コピーを ${conflictCount} 件検出しました。内容を確認して手動で統合してください${first}`, 'warning', {
-        kind: 'health-conflict',
-        actions: [
-          {
-            label: '競合を解消',
-            primary: true,
-            onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
-          },
-          {
-            label: '後回し',
-            onClick: () => {
-              window.MeldexCloudConflictResolver?.snooze?.();
-              _hideHealthBanner('health-conflict');
+    if (conflictCount > 0) {
+      const acknowledged = !!window.MeldexCloudConflictResolver?.isAcknowledged?.(conflicts);
+      if (!acknowledged) {
+        _reportConflictHealth(conflicts);
+        const first = conflicts?.items?.[0]?.path ? `: ${conflicts.items[0].path}` : '';
+        _showBanner(`Dropbox 競合コピーを ${conflictCount} 件検出しました。内容を確認して手動で統合してください${first}`, 'warning', {
+          kind: 'health-conflict',
+          actions: [
+            {
+              label: '競合を解消',
+              primary: true,
+              onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
             },
-          },
-        ],
-      });
+            {
+              label: '後回し',
+              onClick: () => {
+                window.MeldexCloudConflictResolver?.acknowledge?.(conflicts);
+                _showAcknowledgedConflictNotice(conflicts);
+              },
+            },
+          ],
+        });
+        return;
+      }
+      _showAcknowledgedConflictNotice(conflicts);
       return;
     }
     if (conflicts) _hideHealthBanner('health-conflict');
@@ -237,7 +266,123 @@
     try {
       conflicts = await window.MeldexDataAccess?.requestJson?.('/cloud/conflicts?limit=20');
     } catch {}
+    if (dropboxMode && provider && window.MeldexCloudConflictResolver?.hydrateAcknowledgement) {
+      await window.MeldexCloudConflictResolver.hydrateAcknowledgement(provider).catch(() => {});
+    }
     _applyCloudHealth(spaceUsage, conflicts);
+  }
+
+  const COMPATIBILITY_LOCK_MESSAGE = '旧バージョンのMeldexによる付随データを検出したため、共有ワークスペースを閲覧専用にしました。全員を最新版へ更新し、ワークスペースの所有者が再移行してください。';
+
+  async function _sharedCompatibilityLock(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const migration = window.MeldexSidecarMigration;
+    if (!provider || !resolver?.resolveConnectionInfo) return { locked: false, shared: false };
+    let info;
+    try {
+      info = await resolver.resolveConnectionInfo(provider);
+    } catch (error) {
+      // 接続先を共有と確定できない場合に互換性ロックを個人領域へ誤適用しない。
+      // 書込み可否は保存先resolver側が別途fail-closeで拒否する。
+      return { locked: false, shared: false, classificationUnavailable: true, detail: String(error?.message || error) };
+    }
+    if (info?.kind === 'unknown') {
+      return {
+        locked: true,
+        shared: true,
+        unavailable: true,
+        classificationUnavailable: true,
+        detail: 'Dropboxの接続先を個人領域か共有ワークスペースか判定できません',
+      };
+    }
+    if (!info?.isSharedWorkspace) return { locked: false, shared: false };
+    if (!migration?.getCompatibilityLock) return { locked: true, shared: true, unavailable: true };
+    try {
+      const lock = await migration.getCompatibilityLock(provider);
+      return { ...(lock || {}), shared: true };
+    } catch (error) {
+      return { locked: true, shared: true, unavailable: true, detail: String(error?.message || error) };
+    }
+  }
+
+  function _applyCompatibilityReadonly(lock) {
+    document.body.dataset.cloudReadonly = '1';
+    document.body.dataset.cloudReadonlyReason = 'compatibility-lock';
+    _applyPhase1UiGuards({ readonly: true });
+    _showBanner(COMPATIBILITY_LOCK_MESSAGE, 'warning', { kind: 'compatibility-lock' });
+  }
+
+  async function _isCurrentWorkspaceOwner(provider) {
+    if (!provider?.readVaultMetadata || !provider?.isCurrentAccountVaultOwner) return false;
+    const auth = window.MeldexDropboxAuth;
+    if (!auth?.getCurrentAccount) return false;
+    try {
+      const [metadata, account] = await Promise.all([
+        provider.readVaultMetadata(),
+        auth.getCurrentAccount(false),
+      ]);
+      return provider.isCurrentAccountVaultOwner(metadata, account) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 移行・旧クライアント検知を起動完了前に実行し、互換性ロックの検査前に
+  // 編集可能な時間が生じないようにする。移行中だけ管理領域の内部書込みを許可する。
+  async function _runSidecarMigrationOnce(provider, options) {
+    const migration = window.MeldexSidecarMigration;
+    if (!migration || typeof migration.migrateCloudSidecars !== 'function' || !provider) return null;
+    const dropboxStorage = window.MeldexSystemStorageDropbox;
+    const migrate = () => migration.migrateCloudSidecars(provider);
+    let migrationResult = null;
+    if (typeof dropboxStorage?.runMigrationWriteScope === 'function') {
+      migrationResult = await dropboxStorage.runMigrationWriteScope(migrate).catch(() => null);
+    } else {
+      migrationResult = await migrate().catch(() => null);
+    }
+    if (
+      options?.allowOwnerUnlock === true
+      && migrationResult?.status === 'completed'
+      && typeof migration.clearCompatibilityLockAfterOwnerRemigration === 'function'
+      && await _isCurrentWorkspaceOwner(provider)
+    ) {
+      const clear = () => migration.clearCompatibilityLockAfterOwnerRemigration(
+        provider, { isOwner: true, remigrationSucceeded: true },
+      );
+      if (typeof dropboxStorage?.runMigrationWriteScope === 'function') {
+        await dropboxStorage.runMigrationWriteScope(clear).catch(() => null);
+      } else {
+        await clear().catch(() => null);
+      }
+    }
+    const connection = await window.MeldexDropboxManagementRootResolver
+      ?.resolveConnectionInfo?.(provider).catch(() => null);
+    if (connection?.isSharedWorkspace && typeof migration.detectLegacyClientActivity === 'function') {
+      const legacyClient = await migration.detectLegacyClientActivity(provider).catch(() => null);
+      if (legacyClient?.detected) return legacyClient.compatibilityLock || { locked: true };
+    }
+    return _sharedCompatibilityLock(provider);
+  }
+
+  // フェーズB徹底チェック(c): 移行バックアップ・競合バックアップの30日保持
+  // (計画書§6.3)が、判定関数(selectDocumentsExceedingRetention)のみ存在し
+  // 呼び出し元が無いため実質無期限だった問題への対応。上の
+  // _runSidecarMigrationOnce と同じ「Dropbox接続確立(owner/editor権限)後に
+  // バックグラウンドで1回」のフックで、期限超過分の掃除を行う
+  // (失敗しても無視。次回接続時に再試行される)。
+  function _runSystemStorageRetentionCleanupOnce() {
+    const storage = window.MeldexSystemStorage;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!storage || typeof storage.runRetentionCleanup !== 'function' || !resolver) return;
+    setTimeout(() => {
+      (async () => {
+        const provider = window.MeldexStorageAdapter?.getProvider?.();
+        if (!provider) return;
+        const adapter = await resolver.resolveAdapterForProvider(provider).catch(() => null);
+        if (!adapter) return;
+        await storage.runRetentionCleanup(adapter).catch(() => {});
+      })().catch(() => {});
+    }, 3000);
   }
 
   function _startCloudHealthMonitor() {
@@ -1015,6 +1160,17 @@
       }
 
       try {
+        const provider = window.MeldexStorageAdapter?.getProvider?.();
+        let startupLock = await _sharedCompatibilityLock(provider);
+        if (startupLock?.locked && !startupLock?.classificationUnavailable && await _isCurrentWorkspaceOwner(provider)) {
+          startupLock = await _runSidecarMigrationOnce(provider, { allowOwnerUnlock: true })
+            || await _sharedCompatibilityLock(provider);
+        }
+        if (startupLock?.locked || startupLock?.unavailable) {
+          _applyCompatibilityReadonly(startupLock);
+          _startCloudHealthMonitor();
+          return true;
+        }
         const preflight = await window.MeldexStorageAdapter.preflight();
         if (!preflight.ok) {
           const result = await _showDropboxSetupModal(preflight.message);
@@ -1022,20 +1178,32 @@
           if (!result?.ok) return false;
           continue;
         }
-        await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
+        const migrationLock = preflight.access === 'viewer'
+          ? null
+          : await _runSidecarMigrationOnce(provider);
+        const compatibilityReadonly = !!(migrationLock?.locked || migrationLock?.unavailable);
+        if (!compatibilityReadonly) {
+          await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
           console.warn('[MeldexCloudBootstrap] sample home preparation failed', err);
-        });
-        window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
-        _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' });
-        if (preflight.access === 'viewer') {
+          });
+          window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
+        }
+        _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' || compatibilityReadonly });
+        if (compatibilityReadonly) {
+          _applyCompatibilityReadonly(migrationLock);
+        } else if (preflight.access === 'viewer') {
           document.body.dataset.cloudReadonly = '1';
+          document.body.dataset.cloudReadonlyReason = 'viewer';
           _showBanner('閲覧専用モードです。編集機能は無効化されます。', false);
         } else {
+          delete document.body.dataset.cloudReadonly;
+          delete document.body.dataset.cloudReadonlyReason;
           _showBanner(`Dropbox 接続済み: ${preflight.state?.name || 'vault'}`, false);
           setTimeout(() => {
             const bar = document.getElementById('cloud-mode-banner');
             if (bar && bar.dataset.cloudPersistent !== '1') bar.remove();
           }, 3000);
+          _runSystemStorageRetentionCleanupOnce();
         }
         _startCloudHealthMonitor();
         return true;

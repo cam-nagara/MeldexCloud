@@ -35,7 +35,20 @@ class CanvasComponent extends ToolComponent {
   }
 
   _isOwnPaneActive() {
-    return this.paneId === (typeof GBLayout !== 'undefined' ? GBLayout.activePane : this.paneId);
+    if (typeof GBLayout === 'undefined') return true;
+    if (this.paneId === GBLayout.activePane) return true;
+    const surface = GBLayout.paneMap?.[this.paneId]?.surface;
+    return surface === 'float' || surface === 'subpanel';
+  }
+
+  _trackBoardLoad(result) {
+    Promise.resolve(result).then((ok) => {
+      if (!this.el) return;
+      if (ok === false) this.el.dataset.loadFailed = '1';
+      else delete this.el.dataset.loadFailed;
+    }).catch(() => {
+      if (this.el) this.el.dataset.loadFailed = '1';
+    });
   }
 
   activate() {
@@ -94,7 +107,7 @@ class CanvasComponent extends ToolComponent {
       if (typeof bdLoadState === 'function') bdLoadState(this._bdDump);
       this._bdDump = null;
     } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
-      bdOpenBoard(this.state.label || '', this.state.boardPath);
+      this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
     }
   }
 
@@ -181,7 +194,11 @@ class CanvasComponent extends ToolComponent {
     if (!this._isOwnPaneActive()) return false;
     if (this._isOwnPaneActive()) _bdSetActiveBoardRootIds(this.el, this.idSuffix);
     const opened = await bdOpenBoard(this.state.label || this._bdDump?.bd?.label || '', path);
-    if (opened === false) return false;
+    if (opened === false) {
+      if (this.el) this.el.dataset.loadFailed = '1';
+      return false;
+    }
+    if (this.el) delete this.el.dataset.loadFailed;
     this._bdDump = null;
     return true;
   }

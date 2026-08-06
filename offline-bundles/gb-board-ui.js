@@ -1,3 +1,233 @@
+/* gb-board-info-panel.js: ボード選択を共通ファイル情報パネルへ接続する */
+(function initMeldexBoardInfoPanel(global) {
+  'use strict';
+
+  const STORAGE_KEY = 'gb:board-default-open-target:v1';
+  const VALID_TARGETS = new Set(['float', 'main', 'sidebar']);
+  let renderRevision = 0;
+  let scheduledHandle = null;
+
+  function escapeHtml(value) {
+    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function isExternal(value) {
+    return /^(?:https?:|mailto:|tel:)/i.test(String(value || '').trim());
+  }
+
+  function imagePathFromUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw || /^data:/i.test(raw)) return '';
+    try {
+      const url = new URL(raw, global.location?.href || 'http://localhost/');
+      if (!/\/(?:file-raw|thumbnail)$/.test(url.pathname)) return '';
+      return String(url.searchParams.get('path') || '').trim();
+    } catch {
+      return '';
+    }
+  }
+
+  function resolveTarget(node) {
+    if (!node) return null;
+    const link = String(node.link || '').trim();
+    if (link) {
+      if (isExternal(link)) {
+        return {
+          kind: 'embedded',
+          label: String(node.text || link),
+          typeLabel: 'リンク',
+          source: link,
+        };
+      }
+      return { kind: 'file', path: link, type: node.linkType || '' };
+    }
+    const sourcePath = String(node.imageSourcePath || '').trim() || imagePathFromUrl(node.img);
+    if (sourcePath) return { kind: 'file', path: sourcePath, type: 'image' };
+    if (node.img) {
+      return {
+        kind: 'embedded',
+        label: String(node.text || '埋め込み画像'),
+        typeLabel: '埋め込み画像',
+        source: /^data:/i.test(String(node.img)) ? '' : String(node.img),
+        width: Number(node._imgNaturalW) || 0,
+        height: Number(node._imgNaturalH) || 0,
+      };
+    }
+    return null;
+  }
+
+  function getDefaultTarget() {
+    const routed = global.MeldexBoardOpenTarget?.getDefault?.();
+    if (VALID_TARGETS.has(routed)) return routed;
+    try {
+      const stored = global.localStorage?.getItem(STORAGE_KEY);
+      return VALID_TARGETS.has(stored) ? stored : 'float';
+    } catch {
+      return 'float';
+    }
+  }
+
+  function setDefaultTarget(value) {
+    const target = VALID_TARGETS.has(value) ? value : 'float';
+    if (global.MeldexBoardOpenTarget?.setDefault) {
+      global.MeldexBoardOpenTarget.setDefault(target);
+      return;
+    }
+    try { global.localStorage?.setItem(STORAGE_KEY, target); } catch {}
+  }
+
+  function availableTargets() {
+    const routed = global.MeldexBoardOpenTarget?.getAvailableTargets?.();
+    const normalized = (Array.isArray(routed) ? routed : [])
+      .map(item => ({
+        value: String(item?.value || '').trim(),
+        label: String(item?.label || '').trim(),
+      }))
+      .filter(item => VALID_TARGETS.has(item.value) && item.label);
+    return normalized.length
+      ? normalized
+      : [
+          { value: 'float', label: 'フロートパネル' },
+          { value: 'main', label: 'メインパネル' },
+          { value: 'sidebar', label: '右サイドバー' },
+        ];
+  }
+
+  function settingsHtml() {
+    const targets = availableTargets();
+    const stored = getDefaultTarget();
+    const selected = targets.some(item => item.value === stored) ? stored : targets[0].value;
+    return `<section class="bd-detail-section bd-board-open-target-setting" data-e2e-id="bd-board-open-target-setting">`
+      + '<div class="bd-detail-section-title">リンクを開く設定</div>'
+      + '<label class="bd-detail-field bd-detail-field-wide"><span>ファイルを開く場所</span>'
+      + '<select data-bd-default-open-target data-e2e-id="bd-default-open-target">'
+      + targets.map(item => (
+        `<option value="${escapeHtml(item.value)}"${selected === item.value ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
+      )).join('')
+      + '</select></label>'
+      + '<p class="gb-section-desc">ダブルクリックとカード右端の開くボタンに適用されます。</p>'
+      + '</section>';
+  }
+
+  function ensureShell(renderKey) {
+    const host = global.document.getElementById('detail-tab-note-editor');
+    if (!host) return null;
+    host.hidden = false;
+    host.innerHTML = `<div class="bd-board-information" data-e2e-id="bd-board-information">`
+      + '<div data-bd-board-file-info></div>'
+      + settingsHtml()
+      + '</div>';
+    host.dataset.bdBoardInfoKey = renderKey || '';
+    host.querySelector('[data-bd-default-open-target]')?.addEventListener('change', event => {
+      setDefaultTarget(event.currentTarget.value);
+      if (typeof global.showStatus === 'function') global.showStatus('ファイルを開く場所を保存しました');
+    });
+    return host.querySelector('[data-bd-board-file-info]');
+  }
+
+  function selectedNodes(fallbackNode) {
+    if (typeof bd === 'undefined' || !(bd.selected instanceof Set)) {
+      return fallbackNode ? [fallbackNode] : [];
+    }
+    if (fallbackNode && bd.selected.size <= 1) return [fallbackNode];
+    const nodes = [];
+    for (const candidate of bd.nodes) {
+      if (!bd.selected.has(candidate.id)) continue;
+      nodes.push(candidate);
+      if (nodes.length === bd.selected.size) break;
+    }
+    if (!nodes.length && fallbackNode) nodes.push(fallbackNode);
+    return nodes;
+  }
+
+  function cancelScheduled() {
+    if (scheduledHandle == null) return;
+    if (typeof global.cancelIdleCallback === 'function') global.cancelIdleCallback(scheduledHandle);
+    else global.clearTimeout(scheduledHandle);
+    scheduledHandle = null;
+  }
+
+  function scheduleTask(task) {
+    cancelScheduled();
+    if (typeof global.requestIdleCallback === 'function') {
+      scheduledHandle = global.requestIdleCallback(() => {
+        scheduledHandle = null;
+        task();
+      }, { timeout: 120 });
+    } else {
+      scheduledHandle = global.setTimeout(() => {
+        scheduledHandle = null;
+        task();
+      }, 0);
+    }
+  }
+
+  function render(node) {
+    const nodes = selectedNodes(node);
+    const targets = nodes.map(resolveTarget).filter(Boolean);
+    const renderKey = targets.length
+      ? targets.map(target => `${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
+      : 'empty';
+    const tabHost = global.document.getElementById('detail-tab-note-editor');
+    if (tabHost?.dataset.bdBoardInfoKey === renderKey && tabHost.querySelector('[data-bd-board-file-info]')) {
+      return targets.length > 0;
+    }
+    const revision = ++renderRevision;
+    const infoHost = ensureShell(renderKey);
+    if (!infoHost) return false;
+    if (!targets.length) {
+      infoHost.innerHTML = '<div class="gb-empty-placeholder">画像またはファイルのリンクを持つカードを選択すると、ここに情報を表示します。</div>';
+      return false;
+    }
+    infoHost.innerHTML = '<div class="folder-multi-info-loading">ファイル情報を読み込んでいます...</div>';
+    scheduleTask(() => {
+      if (revision !== renderRevision || !infoHost.isConnected) return;
+      const fileTargets = targets.filter(target => target.kind === 'file');
+      if (fileTargets.length > 1 && global.MeldexFolderMultiInfo?.renderInto) {
+        global.MeldexFolderMultiInfo.renderInto(
+          infoHost,
+          fileTargets.map(target => ({ path: target.path, type: target.type || 'file' })),
+          { isCurrent: () => revision === renderRevision && infoHost.isConnected },
+        );
+        return;
+      }
+      const target = targets[0];
+      if (target.kind === 'file' && global.MeldexFileInfoPanel?.renderInto) {
+        global.MeldexFileInfoPanel.renderInto(infoHost, target.path, {
+          isCurrent: () => revision === renderRevision && infoHost.isConnected,
+          showTags: true,
+        });
+        return;
+      }
+      global.MeldexFileInfoPanel?.renderEmbedded?.(infoHost, target);
+    });
+    return true;
+  }
+
+  function hasInformation(node) {
+    return !!resolveTarget(node);
+  }
+
+  function cancel() {
+    renderRevision += 1;
+    cancelScheduled();
+    const infoHost = global.document.querySelector('[data-bd-board-file-info]');
+    global.MeldexFileInfoPanel?.cancel?.(infoHost);
+  }
+
+  global.MeldexBoardInfoPanel = Object.freeze({
+    render,
+    cancel,
+    hasInformation,
+    resolveTarget,
+  });
+})(window);
 /* gb-board-ui.js: Board toolbar, styles, filters, preview, detail panel */
 
 function _bdClone(value) {
@@ -1723,7 +1953,7 @@ function _bdStructureHintHtml(node) {
   const body = hasOwnStructure
     ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
     : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
-  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body)}</div></div>`;
+  return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body, { e2eId: 'bd-structure-help' })}</div></div>`;
 }
 
 function _bdCardStyleOptions(node) {
@@ -1781,17 +2011,19 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: cardHtml, line: '' });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  const hasInformation = !!(node && window.MeldexBoardInfoPanel?.hasInformation?.(node));
+  window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
   const nextTab = options.activate === true
-    ? 'board-card'
+    ? (hasInformation ? 'note-editor' : 'board-card')
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
       : 'board-card');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -1801,15 +2033,16 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: '', line: connHtml });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: true, cardStyle: true, lineStyle: true, depthStyle: true });
+  window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   const nextTab = options.activate === true
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
-      ? _bdResolveCurrentBoardTab(['board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
+      ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
       : 'board-line');
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -1820,14 +2053,15 @@ function _bdSetBoardPrimaryTab() {
   if (typeof setBoardDetailTabContent === 'function') {
     setBoardDetailTabContent({ card: '', line: '' });
   }
-  if (typeof showNoteTabs === 'function') showNoteTabs(false);
+  if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: false, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
+  window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // デフォルトはテーマタブ。ユーザーが backlinks / board-note / スタイル管理タブを選んでいた場合は尊重。
   const nextTab = typeof _bdResolveCurrentBoardTab === 'function'
-    ? _bdResolveCurrentBoardTab(['board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
+    ? _bdResolveCurrentBoardTab(['note-editor', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'file-style')
     : 'file-style';
   if (typeof switchDetailTab === 'function') switchDetailTab(nextTab);
 }
@@ -1889,10 +2123,6 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field bd-detail-field-wide"><span>テキスト</span><textarea data-bd-field="text">${esc(node.text || '')}</textarea></label>
         <label class="bd-detail-field bd-detail-field-wide"><span>リンク先</span><input type="text" value="${_bdEscAttr(node.link || '')}" data-bd-field="link"></label>
         ${node.img ? `<label class="bd-detail-field bd-detail-field-wide"><span>画像</span><input type="text" value="${_bdEscAttr(node.img || '')}" data-bd-field="img"></label>` : ''}
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">タグ</div>
-        <div data-bd-node-tags-editor data-e2e-id="bd-node-tags-editor"></div>
       </div>
       <div class="bd-detail-section">
         <div class="bd-detail-section-title">カードスタイル</div>
@@ -2354,7 +2584,6 @@ function _bdBindNodeDetailPanel(nodeId) {
     bdDirty();
     if (field === 'link') {
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-      if (value && typeof bdShowLinkedSelectionPreview === 'function') bdShowLinkedSelectionPreview(value, node.linkType);
     }
   };
   roots.forEach(root => {
@@ -2482,25 +2711,6 @@ function _bdBindNodeDetailPanel(nodeId) {
     root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
       if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
     });
-    const tagsEditorEl = root.querySelector('[data-bd-node-tags-editor]');
-    if (tagsEditorEl && typeof renderInlineTagEditor === 'function') {
-      renderInlineTagEditor(tagsEditorEl, {
-        compact: true,
-        getIds: () => {
-          const target = bd.nodes.find(item => item.id === nodeId);
-          return Array.isArray(target?.tags) ? target.tags : [];
-        },
-        setIds: (ids) => {
-          const target = bd.nodes.find(item => item.id === nodeId);
-          if (!target) return;
-          bdPushUndo();
-          target.tags = ids;
-          bdRender();
-          bdDirty();
-          if (typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
-        },
-      });
-    }
   });
 }
 

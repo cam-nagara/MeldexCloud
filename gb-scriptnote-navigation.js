@@ -360,6 +360,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     let newStatus = this.doc.rows[idx].status || '';
     if (this._filterStatuses && this._filterStatuses.size === 1) newStatus = [...this._filterStatuses][0];
     const newRow = { id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: newRole, status: newStatus, text: '', columns: {} };
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, newRole);
+    }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
     this._render();

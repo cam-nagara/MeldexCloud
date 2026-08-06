@@ -278,7 +278,7 @@ function bdAppendNodeHuds(div, node, opts) {
   if (!opts.fastCardRender) bdAppendCommentHud(div, node);
   const anchorPositions = (opts.fastCardRender || opts.showAnchors === false) ? [] : ['top', 'bottom', 'left', 'right'];
   anchorPositions.forEach(pos => bdAppendAnchorHud(div, node, pos));
-  if (opts.showLinkBadges && node.link) bdAppendLinkBadge(div, node, opts.showStatus);
+  if (node.link || node.imageSourcePath || node.img) bdAppendLinkBadge(div, node, opts.showStatus);
   if (opts.showMenuButtons) bdAppendCardMenuButton(div, node);
 }
 
@@ -551,10 +551,17 @@ function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
 }
 
 function bdAppendLinkBadge(div, node, showStatus) {
+  const resolved = typeof MeldexBoardOpenTarget !== 'undefined'
+    ? MeldexBoardOpenTarget.resolve(node)
+    : {
+        path: String(node.link || node.imageSourcePath || node.img || ''),
+        label: String(node.text || node.link || node.imageSourcePath || ''),
+        linkType: String(node.linkType || (node.img ? 'image' : '')),
+      };
   div.classList.add('bd-link-node');
-  div.dataset.linkPath = node.link || '';
-  div.dataset.linkType = node.linkType || '';
-  div.draggable = true;
+  div.dataset.linkPath = resolved.path;
+  div.dataset.linkType = resolved.linkType;
+  div.draggable = !!node.link;
   div.addEventListener('dragstart', ev => {
     if (!node.link || !ev.dataTransfer) return;
     if (typeof bdSuppressNodeClickAfterDrag === 'function') bdSuppressNodeClickAfterDrag([node.id]);
@@ -570,56 +577,58 @@ function bdAppendLinkBadge(div, node, showStatus) {
   div.addEventListener('dragend', () => {
     if (typeof bdSuppressNodeClickAfterDrag === 'function') bdSuppressNodeClickAfterDrag([node.id]);
   });
-  let linkClickTimer = null;
-  let linkClickToken = 0;
-  div.addEventListener('click', ev => {
-    if (ev.button !== 0 || ev.target.closest('.bd-card-menu-btn')) return;
-    ev.preventDefault();
-    ev.stopPropagation();
-    if (typeof bdShouldSuppressNodeClickAfterDrag === 'function' && bdShouldSuppressNodeClickAfterDrag(node.id)) {
-      linkClickToken++;
-      clearTimeout(linkClickTimer);
-      linkClickTimer = null;
-      return;
-    }
-    if (ev.detail > 1) {
-      linkClickToken++;
-      clearTimeout(linkClickTimer);
-      linkClickTimer = null;
-      return;
-    }
-    const token = ++linkClickToken;
-    clearTimeout(linkClickTimer);
-    linkClickTimer = setTimeout(() => {
-      if (token !== linkClickToken || !node.link) return;
-      const sourcePaneId = div.closest('.gb-pane')?.dataset?.paneId || (typeof GBLayout !== 'undefined' ? (GBLayout.activePane || '') : '');
-      if (typeof openLinkInSubPanel === 'function') {
-        openLinkInSubPanel(node.link, node.text || node.link, { linkType: node.linkType || '', sourcePaneId });
-      } else if (typeof bdOpenLinkedPath === 'function') {
-        bdOpenLinkedPath(node.link, node.text || node.link, { linkType: node.linkType || '', rightOfBoard: true });
-      }
-    }, 320);
-  });
   div.addEventListener('dblclick', ev => {
-    if (ev.button !== 0 || ev.target.closest('.bd-card-menu-btn')) return;
+    if (ev.button !== 0 || ev.target.closest('.bd-card-menu-btn,.bd-link-open-btn')) return;
     ev.preventDefault();
     ev.stopPropagation();
-    linkClickToken++;
-    clearTimeout(linkClickTimer);
-    linkClickTimer = null;
-    if (typeof bdOpenLinkedPathInCurrentPane === 'function') bdOpenLinkedPathInCurrentPane(node.link, node.text || node.link, node.linkType || '');
-    else if (typeof openLink === 'function') openLink(node.link, node.text || node.link);
+    if (typeof bdShouldSuppressNodeClickAfterDrag === 'function' && bdShouldSuppressNodeClickAfterDrag(node.id)) return;
+    if (typeof MeldexBoardOpenTarget !== 'undefined') {
+      MeldexBoardOpenTarget.open(node);
+    } else if (typeof bdOpenLinkedPath === 'function') {
+      bdOpenLinkedPath(resolved.path, resolved.label, { linkType: resolved.linkType });
+    }
   });
-  const showLinkTooltip = () => _showLinkTooltip(div, node.link, node.linkType);
+  bdAppendLinkOpenButton(div, node, resolved);
+  const showLinkTooltip = () => {
+    if (node.link && typeof _showLinkTooltip === 'function') _showLinkTooltip(div, node.link, node.linkType);
+  };
   div.addEventListener('mouseenter', showLinkTooltip);
   div.addEventListener('pointerenter', showLinkTooltip);
   div.addEventListener('pointermove', () => {
-    if (typeof _isLinkTooltipVisible === 'function' && _isLinkTooltipVisible()) {
+    if (node.link && typeof _isLinkTooltipVisible === 'function' && _isLinkTooltipVisible()) {
       _hideLinkTooltip({ suppressNode: div });
       _showLinkTooltip(div, node.link, node.linkType);
     }
   });
   div.addEventListener('mouseleave', _hideLinkTooltip);
+}
+
+function bdAppendLinkOpenButton(div, node, resolved) {
+  if (!resolved?.path) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'bd-link-open-btn';
+  button.dataset.e2eId = `board-card-${node.id}-open-link`;
+  button.title = 'リンク先を開く';
+  button.setAttribute('aria-label', 'リンク先を開く');
+  button.draggable = false;
+  button.innerHTML = typeof lucide === 'function' ? lucide('externalLink', 14) : '↗';
+  button.addEventListener('pointerdown', ev => ev.stopPropagation());
+  button.addEventListener('mousedown', ev => ev.stopPropagation());
+  button.addEventListener('dragstart', ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  });
+  button.addEventListener('click', ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (typeof MeldexBoardOpenTarget !== 'undefined') {
+      MeldexBoardOpenTarget.open(node);
+    } else if (typeof bdOpenLinkedPath === 'function') {
+      bdOpenLinkedPath(resolved.path, resolved.label, { linkType: resolved.linkType });
+    }
+  });
+  div.appendChild(button);
 }
 
 function bdAppendCardMenuButton(div, node) {

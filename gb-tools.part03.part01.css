@@ -327,10 +327,59 @@
 /* 影オン時は SVG 全体に drop-shadow を適用してラインに影を付ける (カードと同じ色を共有) */
 [data-bd-role="canvas"].bd-shadow-on [data-bd-role="svg"] { filter: drop-shadow(0 3px 5px var(--bd-shadow-color, rgba(0,0,0,0.25))); }
 .bd-text { position: relative; z-index: 9; display: block; pointer-events: none; line-height: 1.5; }
-.bd-link-card-content { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: start; gap: 6px; min-width: 0; }
-.bd-link-card-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; min-width: 22px; padding-top: 1px; color: var(--fg2); opacity: 0.9; line-height: 1; }
+.bd-link-card-content { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 6px; min-width: 0; }
+.bd-link-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  color: var(--bd-link-type-icon-color, var(--fg));
+  background: var(--bd-link-type-icon-bg, var(--bg));
+  border: 1px solid var(--bd-link-type-icon-border, var(--border));
+  border-radius: 4px;
+  opacity: 1;
+  line-height: 1;
+  box-sizing: border-box;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.32);
+}
 .bd-link-card-icon svg { width: 18px; height: 18px; }
 .bd-link-card-label { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.bd-link-node > .bd-text { padding-right: 38px; }
+.bd-link-open-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  transform: translateY(-50%);
+  border: 1px solid color-mix(in srgb, var(--bd-link-type-icon-color, var(--fg)) 52%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--bg2) 88%, transparent);
+  color: var(--bd-link-type-icon-color, var(--fg));
+  box-shadow: 0 1px 4px rgba(0,0,0,0.24);
+  cursor: pointer;
+  opacity: 0.82;
+}
+.bd-link-open-btn:hover,
+.bd-link-open-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg2);
+  opacity: 1;
+  outline: none;
+}
+.bd-link-open-btn svg { width: 16px; height: 16px; display: block; pointer-events: none; }
+@media (pointer: coarse), (max-width: 768px) {
+  .bd-link-node > .bd-text { padding-right: 50px; }
+  .bd-link-open-btn { right: 2px; width: 44px; height: 44px; opacity: 1; }
+}
 .bd-link-tooltip { position: fixed; z-index: 9999; background: var(--ui-popup-bg, var(--bg2)); color: var(--fg2); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 4px; padding: 8px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
 .bd-node.bd-selected .bd-text, .bd-node.bd-editing .bd-text { pointer-events: auto; }
 .bd-node .bd-img { position: relative; z-index: 1; width: 100%; height: auto; max-width: 100%; border-radius: 3px; display: block; pointer-events: none; }

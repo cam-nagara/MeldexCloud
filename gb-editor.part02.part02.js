@@ -6,6 +6,10 @@
   // その他は単独行としてブロック前に残し、末尾で span 化 → 隣接ブロックへ移送する。
   md = md.replace(/^<!--nl:([A-Za-z0-9_-]+)-->\r?\n([^\n]*)/gm, (m, id, nextLine) => {
     const sen = '\x02NLID:' + id + '\x02';
+    // チェックリスト行は「- [ ] 」まるごとをbullet接頭辞として扱う（先に判定しないと
+    // 汎用listMが「- 」だけを接頭辞と誤認し、センチネルが [ ] の手前に挟まってしまう）。
+    const clM = nextLine.match(/^(\s*[*\-+]\s+\[[ xX]\]\s+)(.*)$/);
+    if (clM) return clM[1] + sen + clM[2];
     const listM = nextLine.match(/^(\s*(?:[*\-+]|\d+\.)\s+)(.*)$/);
     if (listM) return listM[1] + sen + listM[2];
     const hM = nextLine.match(/^(#{1,6}\s+)(.*)$/);

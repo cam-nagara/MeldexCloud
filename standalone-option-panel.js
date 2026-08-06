@@ -132,15 +132,19 @@
         const startWidth = panel.getBoundingClientRect().width || defaultWidth;
         const startX = event.clientX;
         const onMove = moveEvent => setWidth(startWidth + startX - moveEvent.clientX, false);
-        const onUp = upEvent => {
+        const finish = (upEvent, persist) => {
           document.body.classList.remove('sa-resizing-option-panel');
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
-          setWidth(startWidth + startX - upEvent.clientX, true);
+          document.removeEventListener('pointercancel', onCancel);
+          if (persist) setWidth(startWidth + startX - upEvent.clientX, true);
         };
+        const onUp = upEvent => finish(upEvent, true);
+        const onCancel = cancelEvent => finish(cancelEvent, false);
         document.body.classList.add('sa-resizing-option-panel');
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onCancel);
       });
       resizer?.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
@@ -156,6 +160,38 @@
       });
     }
 
+    function bindCloseButton() {
+      const header = panel.querySelector?.('.sa-option-header');
+      if (!header || header.querySelector?.('[data-standalone-option-close]')) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-btn gb-btn-icon sa-option-close';
+      button.dataset.standaloneOptionClose = '1';
+      button.dataset.e2eId = 'standalone-option-close';
+      button.title = 'オプションを閉じる';
+      button.setAttribute('aria-label', 'オプションを閉じる');
+      button.style.minWidth = '44px';
+      button.style.minHeight = '44px';
+      button.innerHTML = typeof window.lucide === 'function'
+        ? window.lucide('x', 16)
+        : '<span class="ico ico-x" aria-hidden="true"></span>';
+      button.addEventListener('click', () => setVisible(false));
+      header.appendChild(button);
+    }
+
+    function bindEscapeClose() {
+      document.addEventListener?.('keydown', event => {
+        if (event.key !== 'Escape' || !isVisible()) return;
+        if (document.querySelector('.modal-overlay, [role="dialog"][aria-modal="true"]')) return;
+        event.preventDefault();
+        setVisible(false);
+        const button = (opts.toggleButtonIds || [])
+          .map(id => document.getElementById(id))
+          .find(Boolean);
+        try { button?.focus?.({ preventScroll: true }); } catch (error) { button?.focus?.(); }
+      });
+    }
+
     function ensureDetailTabShell() {
       // gb-detail-panel.js（本体のオプションパネル描画エンジン）が同梱されていれば、
       // タブの入れ物だけを先に用意しておく。中身（本体タブの実データ表示）は
@@ -167,12 +203,18 @@
 
     initDrag();
     bindToggleButtons();
+    bindCloseButton();
+    bindEscapeClose();
     applyStoredWidth();
     applyStoredVisibility();
     ensureDetailTabShell();
+    let wasNarrow = _isNarrow();
+    if (wasNarrow && isVisible()) setVisible(false, false);
     window.addEventListener('resize', () => {
+      const narrow = _isNarrow();
       applyStoredWidth();
-      if (_isNarrow() && isVisible()) setVisible(false, false);
+      if (!wasNarrow && narrow && isVisible()) setVisible(false, false);
+      wasNarrow = narrow;
     });
 
     return {

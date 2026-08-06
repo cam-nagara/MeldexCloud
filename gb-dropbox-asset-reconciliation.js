@@ -1,4 +1,23 @@
-/* Explicit Dropbox delta reconciliation. No network or storage I/O runs at startup. */
+/* Explicit Dropbox delta reconciliation. No network or storage I/O runs at startup.
+ *
+ * ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 6
+ * (外部移動・多端末、6c. Dropbox delta接続)。
+ * 計画書: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §13
+ *
+ * Cloud/Dropboxのバックリンク(`_queryBacklinks`/`gb-data-access.part01.js`)は
+ * 永続索引を持たず、参照元候補の全workspaceをその場でライブ走査する設計
+ * (Phase3実装ノート notes.md §7.2)。そのため「同一path置換」への誤接続防止
+ * (target側)はasset識別レイヤー(gb-dropbox-asset-identity.js)が既に担って
+ * おり、本ファイルが新たに何かをする必要はない。
+ *
+ * 唯一欠けていたのは「移動でpath文字列が変わった時、他ファイルが本文中に
+ * 持つ旧pathの文字列を書き換える」処理(`_relocateReferences`。内部
+ * Meldex操作の`/outliner/move`は既に呼んでいるが、Dropbox delta由来の
+ * 外部移動確定〈applyExactMoves〉・ユーザーが確認したambiguous移動候補
+ * 〈applyCandidate〉はこれを呼んでいなかった)。新しい同期プロトコルは
+ * 作らず、既存の`_relocateReferences`をこの2箇所へ接続するだけ。
+ * (copy/replacement/missingは対象pathの文字列が変化しないため対象外)
+ */
 (function () {
   'use strict';
 
@@ -6,14 +25,14 @@
   const handlers = window.__MeldexPwaDataAccessExtensions;
   const identity = window.MeldexDropboxAssetIdentity;
   const recovery = window.MeldexDropboxAssetRecovery;
-  if (!internals || !Array.isArray(handlers) || !identity) return;
+  const managedJson = window.MeldexDropboxManagedJson;
+  if (!internals || !Array.isArray(handlers) || !identity || !managedJson) return;
 
   const {
     NOT_HANDLED,
-    _directoryHandle,
     _fnvFileId,
     _normalizeFolderPath,
-    _readJsonSafe,
+    _relocateReferences,
     _requirePwaProvider,
     _requireUnlockedPath,
   } = internals;
@@ -66,6 +85,26 @@
     return String(_fnvFileId ? _fnvFileId(key) : key);
   }
 
+  // ファイル参照整合性計画 Phase 6 (6c): 確定した移動について、他ファイルが
+  // 本文中に持つ旧pathの文字列を新pathへ書き換える。失敗しても移動確定
+  // そのものは止めない(参照修復だけ失敗しても資産IDの解決で表示を維持し、
+  // 再試行できるという計画書§8.2の方針をここにも適用する)。
+  async function relocateReferencesSafe(provider, oldPath, newPath, isFolder) {
+    if (typeof _relocateReferences !== 'function' || oldPath === newPath) {
+      return { rewritten_count: 0, failed_count: 0, rewritten_paths: [] };
+    }
+    try {
+      return await _relocateReferences(provider, oldPath, newPath, !!isFolder);
+    } catch (error) {
+      return {
+        rewritten_count: 0,
+        failed_count: 0,
+        rewritten_paths: [],
+        error: String(error?.message || error || ''),
+      };
+    }
+  }
+
   function makeCandidate(kind, options) {
     const oldPath = identity.normalizePath(options.oldPath);
     const newPath = identity.normalizePath(options.newPath);
@@ -87,28 +126,20 @@
   }
 
   async function writeMerged(provider, path, updater, fallbackValue) {
-    await _requireUnlockedPath?.(provider, path, { action: 'tag-maintenance' });
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(path, updater, { fallbackValue, retries: 5 });
-    }
-    const current = await _readJsonSafe(provider, path, fallbackValue);
-    const next = await updater(current);
-    await provider.writeJson(path, next);
-    return next;
+    return managedJson.writeMerged(provider, path, updater, fallbackValue);
   }
 
   async function writeState(provider, state) {
-    await _directoryHandle(provider, ROOT, true);
     await writeMerged(provider, STATE_FILE, () => state, {});
     return state;
   }
 
   async function readState(provider) {
-    return objectValue(await _readJsonSafe(provider, STATE_FILE, {}));
+    return objectValue(await managedJson.read(provider, STATE_FILE, {}));
   }
 
   async function readCandidates(provider) {
-    const raw = objectValue(await _readJsonSafe(
+    const raw = objectValue(await managedJson.read(
       provider,
       CANDIDATES_FILE,
       { version: 1, items: {} },
@@ -172,6 +203,7 @@
         operationId: `dropbox-delta:${jobId}:${entry.id}:${path}`,
       };
       const result = await recovery?.handleMutation?.(event, provider);
+      const relocate = await relocateReferencesSafe(provider, oldPath, path, event.isFolder);
       moves.push(makeCandidate('move', {
         jobId,
         assetId,
@@ -180,7 +212,7 @@
         confidence: 'exact',
         status: result?.ok === false ? 'pending' : 'applied',
         evidence: { reason: 'dropbox-stable-id', provider_id: entry.id },
-        result: result || { ok: false },
+        result: { ...(result || { ok: false }), relocate },
       }));
     }
     return moves;
@@ -188,7 +220,7 @@
 
   async function projectMetadata(provider, entries, jobId) {
     const initial = identity.normalizeStore(
-      await _readJsonSafe(provider, ASSIGNMENTS_FILE, {}),
+      await managedJson.read(provider, ASSIGNMENTS_FILE, {}),
     );
     const candidates = await applyExactMoves(provider, initial, entries, jobId);
     await writeMerged(provider, ASSIGNMENTS_FILE, current => {
@@ -380,6 +412,17 @@
         newPath: candidate.new_path,
         operationId: `dropbox-reconcile:${candidateId}`,
       }, provider);
+      // ファイル参照整合性計画 Phase 6: 'copy'は内容が同一(参照先pathの
+      // 文字列は変化しない)ため対象外。'move'(ambiguousをユーザーが確認した
+      // 場合を含む)のみ、他ファイルの本文中の旧pathを書き換える。
+      if (choice === 'move') {
+        result = {
+          ...result,
+          relocate: await relocateReferencesSafe(
+            provider, candidate.old_path, candidate.new_path, false,
+          ),
+        };
+      }
     } else if (choice === 'missing' && candidate.asset_id) {
       await writeMerged(provider, ASSIGNMENTS_FILE, current => {
         const store = identity.normalizeStore(current);
@@ -401,21 +444,16 @@
   }
 
   async function listJsonFiles(provider, directory) {
-    if (typeof provider?.listEntries !== 'function') return [];
-    try {
-      return (await provider.listEntries(directory))
-        .filter(entry => entry?.kind === 'file' && /\.json$/i.test(String(entry?.name || '')))
-        .sort((left, right) => String(right.name || '').localeCompare(String(left.name || '')));
-    } catch {
-      return [];
-    }
+    return (await managedJson.list(provider, directory))
+      .filter(entry => /\.json$/i.test(String(entry?.name || '')))
+      .sort((left, right) => String(right.name || '').localeCompare(String(left.name || '')));
   }
 
   async function recentEvents(provider, limit = 50) {
     const entries = (await listJsonFiles(provider, `${ROOT}/events`)).slice(0, 6);
     const items = [];
     for (const entry of entries) {
-      const ledger = objectValue(await _readJsonSafe(
+      const ledger = objectValue(await managedJson.read(
         provider,
         `${ROOT}/events/${entry.name}`,
         { events: {} },
@@ -442,7 +480,7 @@
     for (const entry of files) {
       if (processed >= Math.max(1, Math.min(100, Number(limit || 20)))) break;
       const path = `${ROOT}/retry/${entry.name}`;
-      const item = objectValue(await _readJsonSafe(provider, path, {}));
+      const item = objectValue(await managedJson.read(provider, path, {}));
       if (!['pending', 'failed'].includes(String(item.status || ''))) continue;
       processed += 1;
       const attempts = Number(item.attempts || 0) + 1;
@@ -451,7 +489,7 @@
           ...objectValue(item.event),
           operationId: String(item?.event?.operationId || item.retry_id || entry.name),
         }, provider);
-        await provider.writeJson(path, {
+        await managedJson.write(provider, path, {
           ...item,
           status: 'complete',
           attempts,
@@ -461,7 +499,7 @@
         });
         completed += 1;
       } catch (error) {
-        await provider.writeJson(path, {
+        await managedJson.write(provider, path, {
           ...item,
           status: 'failed',
           attempts,
@@ -483,7 +521,7 @@
     ]);
     let pendingRetries = 0;
     for (const entry of retries) {
-      const item = objectValue(await _readJsonSafe(
+      const item = objectValue(await managedJson.read(
         provider,
         `${ROOT}/retry/${entry.name}`,
         {},
@@ -522,7 +560,7 @@
   async function rebuild(provider, dryRun) {
     let repaired = 0;
     const current = identity.normalizeStore(
-      await _readJsonSafe(provider, ASSIGNMENTS_FILE, {}),
+      await managedJson.read(provider, ASSIGNMENTS_FILE, {}),
     );
     Object.entries(objectValue(current.legacy_migrations)).forEach(([path, migration]) => {
       if (migration?.status !== 'migrated') return;

@@ -148,7 +148,12 @@
         showStatus('編集ロック中の項目は削除できません', true);
         return;
       }
-      if (!await cfConfirm(targets.length + ' 件を削除しますか？')) return;
+      const impactTargets = targets.map(target => ({ path: target.path, kind: target.type === 'folder' ? 'folder' : 'file' }));
+      const confirmMessage = targets.length + ' 件を削除しますか？';
+      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+        : await cfConfirm(confirmMessage);
+      if (!confirmed) return;
       const result = await deleteOutlinerItemsWithHistory(targets, {
         label: targets.length + ' 件を削除',
         refresh: async () => {
@@ -570,7 +575,7 @@ async function openImageInCanvas(item) {
     const { boardName, boardPath } = await _findAvailableFolderBoardPath(dir, itemName.replace(/\.[^.]+$/, '') + '_canvas');
     const imgUrl = _folderItemRawUrl(item);
     const content = '---\ntype: board\npositions:\n  n0: {x: 100, y: 100}\nsizes:\n  n0: {w: 400, h: 0}\n---\n# [img]' + imgUrl + '\n';
-    await apiPut('/file?path=' + encodeURIComponent(boardPath), { content });
+    await apiPut('/file?path=' + encodeURIComponent(boardPath), { content, create_only: true });
     openBoard(boardName, boardPath, { fromExplorer: true });
     showStatus('ボードを作成しました');
   } catch (e) { showStatus(e?.message || 'ボード作成に失敗', true); }
@@ -597,7 +602,7 @@ async function openImagesInCanvas(items) {
       fm += `# [img]${imgUrl}\n${it.name}\n`;
     });
 
-    await apiPut('/file?path=' + encodeURIComponent(boardPath), { content: fm });
+    await apiPut('/file?path=' + encodeURIComponent(boardPath), { content: fm, create_only: true });
     openBoard(boardName, boardPath, { fromExplorer: true });
     showStatus(items.length + '枚の画像をボードに配置しました');
   } catch (e) { showStatus(e?.message || 'ボード作成に失敗', true); }
@@ -772,7 +777,12 @@ async function fvBulkDelete() {
     showStatus('編集ロック中の項目は削除できません', true);
     return;
   }
-  if (!await cfConfirm(targets.length + ' 件を削除しますか？')) return;
+  const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+  const confirmMessage = targets.length + ' 件を削除しますか？';
+  const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+    : await cfConfirm(confirmMessage);
+  if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
     label: targets.length + ' 件を削除',
     refresh: async () => {

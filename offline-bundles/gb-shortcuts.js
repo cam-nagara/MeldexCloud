@@ -49,13 +49,24 @@ const GB_SHORTCUTS = {
   'note.hr':              { key: 'ctrl+shift+h', label: '水平線を挿入',              scope: 'note' },
   'note.indent':          { key: 'tab',          label: 'インデント',                scope: 'note' },
   'note.outdent':         { key: 'shift+tab',    label: 'アウトデント',              scope: 'note' },
-  'note.moveUp':          { key: 'alt+shift+arrowup',  label: 'ブロックを上に移動',   scope: 'note' },
-  'note.moveDown':        { key: 'alt+shift+arrowdown', label: 'ブロックを下に移動', scope: 'note' },
+  // 修正4（バグ報告§4）: alt+shift+arrowup/down は Windows既定の入力言語切替
+  // ホットキー（Alt+Shift）と衝突し、実機のキー操作では信頼できないことが
+  // 確認された（合成イベントでは正しく動作するがOSに先取りされ得る）。
+  // git log -S 調査: 初期実装は alt+arrowup/down、v0.5.140(9e364c3f)で
+  // alt+shift+arrowup/down へ変更（Alt+↓をルビポップアップに転用したため）。
+  // 「ctrl+arrowup/down」がnoteスコープで使われた記録は本リポジトリ履歴に無いが、
+  // シナリオの行移動(scenario.moveUp/moveDown)は既にこの組み合わせを使っており、
+  // OSホットキーとも衝突しない。scope('note'/'scenario')で分離されるため、
+  // 同一キーの再利用による実害は無い（_checkKeyConflict もscope不一致はコンフリクト
+  // 扱いにしない）。
+  'note.moveUp':          { key: 'ctrl+arrowup',  label: 'ブロックを上に移動',   scope: 'note' },
+  'note.moveDown':        { key: 'ctrl+arrowdown', label: 'ブロックを下に移動', scope: 'note' },
   'note.link':            { key: 'ctrl+k',       label: 'リンクを挿入',              scope: 'note' },
   'note.plainPaste':      { key: 'ctrl+shift+v', label: 'プレーンテキスト貼り付け',   scope: 'note' },
   'note.replace':         { key: 'ctrl+h',       label: '検索と置換',                scope: 'note' },
   'note.codeBlock':       { key: 'ctrl+shift+`', label: 'コードブロック挿入',         scope: 'note' },
   'note.checklist':       { key: 'ctrl+shift+l', label: 'チェックリスト',             scope: 'note' },
+  'note.callout':         { key: 'alt+shift+o',  label: 'コールアウトに変換',         scope: 'note' },
   'note.duplicate':       { key: 'ctrl+d',       label: '行を複製',                  scope: 'note' },
   'note.ruby':            { key: 'alt+arrowdown', label: 'ルビを設定',                scope: 'note' },
   'note.newParagraph':    { key: 'ctrl+enter',   label: '次の段落を追加',            scope: 'note' },
@@ -188,6 +199,22 @@ function _resolveShortcutScope(e) {
     .find(el => el && el.isConnected !== false && (el.isContentEditable || el.contentEditable === 'true' || el.contentEditable === 'plaintext-only' || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.getAttribute?.('role') === 'textbox'));
   const isEditing = !!editEl;
 
+  // 計画書§5工程8-1: noteスコープは全体の state.view ではなく、実フォーカス中の
+  // 編集ホストを優先する。state.view 依存では、メインパネル以外
+  // （フロート/別タブ/右サイドバー/詳細パネル/エンティティ自由記述）でノートを
+  // 編集していても、メインパネルが別ビューを表示していればnoteスコープが返らず
+  // ショートカット（Alt+Shift+↑/↓等）が無視されていた（右サイドバーの
+  // #dp-editable も同様に無視されていた）。scenario側は既存のstate.view依存
+  // 判定（下記の isEditing 分岐）を変更しない — チャット等のドッキング入力欄が
+  // #right-panel の外にあり `.gb-se-root` 外で編集中の場合に、メインビューが
+  // シナリオというだけで誤ってscenarioスコープへ倒れないための既存保護
+  // （2026-07-21 導入）を維持する。
+  if (isEditing) {
+    const noteHostSelector = (typeof MeldexNoteBlockTypes !== 'undefined' && MeldexNoteBlockTypes.EDITABLE_SELECTOR)
+      || '#page-content, #entity-freetext, #dp-editable';
+    if (editEl.closest?.(noteHostSelector)) return ['global', 'note'];
+  }
+
   const rightPanel = document.getElementById('right-panel');
   const inRightPanel = !!(rightPanel && (
     (editEl && rightPanel.contains(editEl)) ||
@@ -200,7 +227,6 @@ function _resolveShortcutScope(e) {
 
   if (isEditing) {
     const scope = _viewToScope(state.view);
-    if (scope === 'note' && editEl?.closest?.('#page-content, #entity-freetext, #dp-editable')) return ['global', 'note'];
     if (scope === 'scenario' && editEl?.closest?.('.gb-se-root')) return ['global', 'scenario'];
     return ['global'];
   }
@@ -478,6 +504,38 @@ function updateCsvShortcutStatusbar(targetEl) {
   if (!sc) return;
   if (!targetEl && typeof state !== 'undefined' && state.view !== 'csv') return;
   sc.textContent = getCsvShortcutStatusText();
+}
+
+// ビューワー（media ビュー）のショートカットは viewer-controls.js 内に固定実装されており、
+// GB_SHORTCUTS のカスタマイズ対象外（他アプリのようにキー変更UIを持たない）ため、
+// _shortcutStatusItem/getShortcutKey は使わず固定文字列で一覧を返す。表示形式・区切り記号
+// （半角スペース区切りのキー表記 + ラベル、項目間は ' | '）は他アプリの一覧に揃える。
+function getMediaViewerShortcutStatusText() {
+  return [
+    '← → 前後',
+    'Shift+←→ 1枚送り',
+    'Space 再生',
+    '+/- 拡大縮小',
+    '1〜4 フィット',
+    'M 反転',
+    'Q 回転',
+    'F 全画面',
+    'H 情報',
+    'A 注釈',
+  ].join(' | ');
+}
+
+function updateMediaViewerShortcutStatusbar(targetEl) {
+  const sc = targetEl || document.getElementById('sb-shortcuts');
+  if (!sc) return;
+  // ビューワーは openMedia→openViewer の順で state.view が 'media'→'html' と遷移するため、
+  // view名でのガードは行わない（'html' 到達後に openViewer 側から直接呼ばれる。呼び出し元が
+  // 表示文脈を判断する契約。v0.7.139）。
+  sc.textContent = getMediaViewerShortcutStatusText();
+}
+if (typeof window !== 'undefined') {
+  window.getMediaViewerShortcutStatusText = getMediaViewerShortcutStatusText;
+  window.updateMediaViewerShortcutStatusbar = updateMediaViewerShortcutStatusbar;
 }
 
 function _runScriptnoteShortcutAction(id, e) {
@@ -847,8 +905,20 @@ const _shortcutHandlers = {
     _runNoteRichTextCommand('formatBlock', 'PRE');
   },
   'note.checklist': () => {
-    // チェックリスト挿入は箇条書きリストで代替
-    _runNoteRichTextCommand('insertUnorderedList');
+    // 計画書§8完了ゲート17: 実際にチェック状態を持つチェック項目へ変換する
+    // （gb-note-block-types.js の共通レジストリへ委譲。重複実装を残さない）。
+    if (!_activeNoteEditable() || typeof MeldexNoteBlockTypes === 'undefined') return false;
+    const result = MeldexNoteBlockTypes.convertCurrentLineTo('checklist');
+    if (!result.ok && result.reason && result.reason !== 'no-current-block' && typeof showStatus === 'function') {
+      showStatus(result.reason, true);
+    }
+  },
+  'note.callout': () => {
+    if (!_activeNoteEditable() || typeof MeldexNoteBlockTypes === 'undefined') return false;
+    const result = MeldexNoteBlockTypes.convertCurrentLineTo('callout');
+    if (!result.ok && result.reason && result.reason !== 'no-current-block' && typeof showStatus === 'function') {
+      showStatus(result.reason, true);
+    }
   },
   'note.duplicate': () => {
     const sel = window.getSelection();
@@ -1123,6 +1193,8 @@ const _shortcutHandlers = {
   },
   'board.paste': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
+    // OS / Meldex 内部の両方を扱う document の paste イベントへ渡す。
+    if (typeof MeldexBoardTransfer !== 'undefined') return false;
     if (typeof bdPaste === 'function') bdPaste();
   },
   'board.cut': () => {
@@ -1260,7 +1332,12 @@ const _shortcutHandlers = {
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;
     if (typeof _folderSelectedItems === 'undefined' || _folderSelectedItems.length === 0) return;
-    if (!await cfConfirm(_folderSelectedItems.length + ' 件を削除しますか？')) return;
+    const impactTargets = _folderSelectedItems.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const confirmMessage = _folderSelectedItems.length + ' 件を削除しますか？';
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+      : await cfConfirm(confirmMessage);
+    if (!confirmed) return;
     const deletedItems = [..._folderSelectedItems];
     const result = await deleteOutlinerItemsWithHistory(deletedItems, {
       label: deletedItems.length + ' 件を削除',

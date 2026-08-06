@@ -12,7 +12,22 @@
     _pathExists,
   } = internals;
 
+  // PC本体(meldex_active_locks.py)が今回のPhase 4では変更対象外のまま同じパスへ
+  // 書き続けるため、Cloud側もこの旧パスの「読取」だけは続ける(相互運用)。
+  // Cloud側からの新規書込は共通ストレージ層(gb-dropbox-management-root-resolver.js
+  // が解決する新管理領域、種別 edit-locks)だけへ行い、この旧パスへは二度と
+  // 書き込まない(PC本体のファイルI/Oとの書込競合を避けるため)。
+  //
+  // PC本体(meldex_active_locks.py)側もDropbox共通ストレージ層(edit-locks)を
+  // 併読するようになり(固有形式付随物廃止 Phase 4引き継ぎ事項の解消)、双方向の
+  // 可視性自体は揃った。ただしPC↔Cloud間のロック競合検知修正までは、双方が
+  // 「見える」だけで実際の競合判定(パス文字列一致)が形式不一致により機能して
+  // いなかった: legacy entry(_readLegacyEntries経由)の normalized_path は
+  // PC本体が書くOS依存の絶対パス(normalize_lock_path の出力)で、Cloud側の
+  // 相対パス空間とは形式が異なる。_cleanEntry はこの絶対パスを信用せず、常に
+  // 相対パスの path フィールドから normalized_path を再計算する(下記参照)。
   const STORE_PATH = '_meldex/active_locks.json';
+  const STORE_DOCUMENT_ID = 'active-lock-store';
   const HEADER = 'X-Meldex-Active-Lock-Token';
   const LEASE_SECONDS = 300;
   // 協調編集事故を減らす短期リース。アクセス権限はDropbox共有権限と既存の編集ロックで扱う。
@@ -109,13 +124,20 @@
 
   function _cleanEntry(entry) {
     const path = _normalizeFolderPath(entry?.path || '');
-    const normalized = _normalize(entry?.normalized_path || path);
+    // entry.normalized_path は信用しない(PC↔Cloud間のロック競合検知修正)。
+    // 旧パス(_meldex/active_locks.json、meldex_active_locks.py が書く)経由で
+    // 読み込んだ legacy entry の normalized_path は PC のOS依存な絶対パス
+    // (normalize_lock_path の出力)であり、Cloud側の相対パス空間とは形式が
+    // 異なるため、そのまま使うと _findConflict が実データでは常に不一致になり
+    // 競合検知が機能しない。Cloud自身が書いたentryの normalized_path も常に
+    // path から導出した値と同一なので、常に path から計算し直しても損はない。
+    const normalized = _normalize(path);
     const tokenHash = String(entry?.token_hash || '').trim().toLowerCase();
     if (!path || !normalized || !tokenHash) return null;
     const holders = _entryHolders(entry);
     if (!holders.length) return null;
     const withHolders = _entryWithHolders(entry, holders);
-    return {
+    const cleaned = {
       path,
       normalized_path: normalized,
       token_hash: tokenHash,
@@ -130,24 +152,131 @@
       expires_at: String(withHolders?.expires_at || _expiresAt(LEASE_SECONDS)),
       holders: withHolders.holders,
     };
+    // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
+    // ワークスペードルート相対。meldex_active_locks.py の相互運用契約と同じ)
+    // で保存された新形式。旧形式entryにはこのフィールドが無く、照合時に
+    // ローカルパスとして再解釈する。
+    if (entry?.path_space === 'root') cleaned.path_space = 'root';
+    return cleaned;
   }
 
-  async function _readStore(provider) {
+  // --- 管理スコープ解決(対象文書パス→個人/共有ワークスペースの管理領域) --------
+  //
+  // ストアは管理スコープごとに1つ。対象文書パスからスコープを決め、共有ソース
+  // 配下の文書のロックは共有管理領域のストアへ、entryのパスはそのスコープの
+  // 正準形で保存する(PC本体 meldex_active_locks.py が併読する際の相対パス基準
+  // と同じ)。スコープを一意に決められない操作(list / release-all / パス変更
+  // フック)は全スコープを集約する。
+
+  function _resolver() {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    return resolver;
+  }
+
+  async function _scopeForPath(provider, targetPath) {
+    return _resolver().resolveManagementScopeForPath(provider, targetPath);
+  }
+
+  async function _allScopes(provider) {
+    return _resolver().resolveManagementScopesForProvider(provider);
+  }
+
+  function _canonicalForScope(scope, localPath) {
+    return _normalizeFolderPath(scope.toCanonicalPath(_normalizeFolderPath(localPath)));
+  }
+
+  // entryの正準パス(一義)。path_space === 'root' の新形式entryは保存済みの値が
+  // そのまま正準形(PC本体 _encode_management_entry も同フィールドを書く)。
+  // 旧形式entry(path_spaceなし)は「そのentryが載っているストアのスコープ」で
+  // 解釈を一つに決める: 接続中スコープのストア(旧パス併読を含む)にある旧entryは
+  // 自分のローカルパスとして正準化し、非接続スコープのストアにある旧entryは
+  // そのルートへ直接接続していたクライアントが書いたもの(ローカル=正準)として
+  // 扱う。二重解釈は別ソースの同名フォルダとの誤一致(誤423)を生むため行わない。
+  function _entryCanonicalForms(entry, scope) {
+    const stored = _normalizeFolderPath(entry?.path || '');
+    if (!stored) return [];
+    if (!scope || entry?.path_space === 'root' || !scope.isConnectedRootScope) return [stored];
+    try {
+      const reinterpreted = _canonicalForScope(scope, stored);
+      return [reinterpreted || stored];
+    } catch {
+      return [stored]; // スコープ外のパスは正準化できない(保存値のまま照合する)。
+    }
+  }
+
+  function _localizedEntry(entry, scope) {
+    if (!scope || !entry) return entry;
+    // 接続中スコープの旧形式entryは保存値が既にローカルパスなので変換しない。
+    if (entry.path_space !== 'root' && scope.isConnectedRootScope) return entry;
+    try {
+      const local = _normalizeFolderPath(scope.toLocalPath(entry.path));
+      if (local && local !== entry.path) {
+        return { ...entry, path: local, normalized_path: _normalize(local) };
+      }
+    } catch {
+      // 逆変換できない場合は保存済みのパスをそのまま表示する。
+    }
+    return entry;
+  }
+
+  async function _readLegacyEntries(provider, scope) {
+    // 旧パス(_meldex/active_locks.json)は接続中ルート配下にしか存在しない。
+    // 別スコープ(共有ソース等)の読取へ接続中ルートの旧データを混ぜない。
+    if (scope && !scope.isConnectedRootScope) return [];
     const exists = await _pathExists(provider, STORE_PATH).catch(() => false);
-    if (!exists) return { entries: [], updated_at: '' };
+    if (!exists) return [];
     const data = await _readJsonSafe(provider, STORE_PATH, { entries: [] });
-    const rawEntries = Array.isArray(data?.entries) ? data.entries : [];
-    const entries = rawEntries.map(_cleanEntry).filter(Boolean);
+    return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
+  }
+
+  async function _readNewStoreRecord(provider, scope) {
+    if (!scope) return null;
+    try {
+      return await scope.adapter.load(window.MeldexSystemStorage.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID);
+    } catch {
+      return null; // 共通ストレージ層が使えない場合も、旧パス読取だけで機能を継続する。
+    }
+  }
+
+  function _mergeEntryLists(...lists) {
+    const byKey = new Map();
+    for (const list of lists) {
+      for (const entry of (list || [])) {
+        if (!entry) continue;
+        const key = `${entry.token_hash}:${entry.normalized_path}`;
+        const prior = byKey.get(key);
+        if (!prior || Date.parse(entry.heartbeat_at || '') > Date.parse(prior.heartbeat_at || '')) {
+          byKey.set(key, entry);
+        }
+      }
+    }
+    return Array.from(byKey.values());
+  }
+
+  async function _readStore(provider, scope) {
+    const [record, legacyEntries] = await Promise.all([
+      _readNewStoreRecord(provider, scope),
+      _readLegacyEntries(provider, scope),
+    ]);
+    const newEntries = record ? _entriesFromStore(record.payload) : [];
     return {
-      entries,
-      updated_at: String(data?.updated_at || ''),
+      entries: _mergeEntryLists(newEntries, legacyEntries),
+      updated_at: String(record?.updatedAt || ''),
     };
   }
 
-  async function _writeStore(provider, entries) {
-    const payload = _storePayload(entries);
-    await provider.writeJson(STORE_PATH, payload);
-    return payload;
+  // 読取専用の操作でスコープを解決できない場合(台帳破損等)は、旧パスのみの
+  // 縮退読取で継続する(書込側はスコープ解決の例外で安全側に拒否される)。
+  async function _readStoreForTarget(provider, path) {
+    let scope = null;
+    try {
+      scope = await _scopeForPath(provider, path);
+    } catch {
+      scope = null;
+    }
+    if (scope) return { scope, store: await _readStore(provider, scope) };
+    return { scope: null, store: { entries: await _readLegacyEntries(provider, null), updated_at: '' } };
   }
 
   function _storePayload(entries) {
@@ -161,27 +290,31 @@
     return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
   }
 
-  async function _mutateStore(provider, updater) {
-    if (typeof provider?.writeJsonMerged === 'function') {
-      let result;
-      await provider.writeJsonMerged(STORE_PATH, async current => {
-        const change = await updater(_entriesFromStore(current));
-        if (change === false) return false;
-        result = change?.result;
-        return _storePayload(Array.isArray(change?.entries) ? change.entries : []);
-      }, { fallbackValue: { entries: [], updated_at: '' } });
-      return result;
+  async function _mutateStore(provider, scope, updater) {
+    const adapter = scope.adapter;
+    const contract = window.MeldexSystemStorage;
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const [record, legacyEntries] = await Promise.all([
+        adapter.load(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID).catch(() => null),
+        _readLegacyEntries(provider, scope),
+      ]);
+      const newEntries = record ? _entriesFromStore(record.payload) : [];
+      const currentEntries = _mergeEntryLists(newEntries, legacyEntries);
+      const change = await updater(currentEntries);
+      if (change === false) return undefined;
+      const payload = _storePayload(Array.isArray(change?.entries) ? change.entries : []);
+      try {
+        await adapter.save(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID, payload, {
+          expectedRevision: record ? record.revision : undefined,
+        });
+        return change?.result;
+      } catch (error) {
+        if (error instanceof contract.SystemStorageConflictError && attempt < MAX_ATTEMPTS - 1) continue;
+        throw error;
+      }
     }
-
-    const store = await _readPruned(provider);
-    const change = await updater(store.entries);
-    if (change === false) return undefined;
-    await _writeStore(provider, Array.isArray(change?.entries) ? change.entries : []);
-    return change?.result;
-  }
-
-  async function _readPruned(provider) {
-    return _readStore(provider);
+    return undefined;
   }
 
   function _pathsOverlap(target, locked, includeDescendants) {
@@ -190,13 +323,19 @@
     return !!includeDescendants && locked.startsWith(target + '/');
   }
 
-  function _findConflict(entries, path, tokenHash, options = {}) {
-    const target = _normalize(path);
+  function _findConflict(entries, canonicalTarget, tokenHash, options = {}, scope = null) {
+    const target = _normalize(canonicalTarget);
     if (!target) return null;
     return (entries || []).find(entry => {
       if (tokenHash && entry?.token_hash === tokenHash) return false;
-      return _pathsOverlap(target, _normalize(entry?.normalized_path || entry?.path || ''), !!options.includeDescendants);
+      return _entryCanonicalForms(entry, scope)
+        .some(form => _pathsOverlap(target, form.toLowerCase(), !!options.includeDescendants));
     }) || null;
+  }
+
+  function _entryMatchesToken(entry, tokenHash, canonicalLower, scope) {
+    return entry.token_hash === tokenHash
+      && _entryCanonicalForms(entry, scope).some(form => form.toLowerCase() === canonicalLower);
   }
 
   function _conflictError(entry, path) {
@@ -219,6 +358,7 @@
     });
     return _entryWithHolders({
       path: _normalizeFolderPath(path),
+      path_space: 'root',
       normalized_path: _normalize(path),
       token_hash: tokenHash,
       lock_id: tokenHash.slice(0, 12),
@@ -236,16 +376,32 @@
   }
 
   async function list(provider) {
-    const store = await _readPruned(provider);
-    return { entries: store.entries, count: store.entries.length };
+    let scopes = null;
+    try {
+      scopes = await _allScopes(provider);
+    } catch {
+      scopes = null; // スコープ一覧を確定できない場合は旧パスのみの縮退読取。
+    }
+    if (!scopes) {
+      const entries = await _readLegacyEntries(provider, null);
+      return { entries, count: entries.length };
+    }
+    const collected = [];
+    for (const scope of scopes) {
+      const store = await _readStore(provider, scope);
+      collected.push(store.entries.map(entry => _localizedEntry(entry, scope)));
+    }
+    const entries = _mergeEntryLists(...collected);
+    return { entries, count: entries.length };
   }
 
   async function check(provider, path, token, options = {}) {
     if (!path || _isSystemExcluded(path)) return { locked: false, entry: null };
     const tokenHash = await _tokenHash(token);
-    const store = await _readPruned(provider);
-    const entry = _findConflict(store.entries, path, tokenHash, options);
-    return { locked: !!entry, entry: entry || null };
+    const { scope, store } = await _readStoreForTarget(provider, path);
+    const target = scope ? _canonicalForScope(scope, path) : _normalizeFolderPath(path);
+    const entry = _findConflict(store.entries, target, tokenHash, options, scope);
+    return { locked: !!entry, entry: entry ? _localizedEntry(entry, scope) : null };
   }
 
   async function requireAvailable(provider, path, token, options = {}) {
@@ -263,15 +419,18 @@
     if (_isSystemExcluded(path)) throw new Error('システムフォルダは自動編集中ロックの対象外です');
     const tokenHash = await _tokenHash(token);
     const includeDescendants = body?.include_descendants === true || body?.includeDescendants === true;
-    return _mutateStore(provider, entries => {
+    const scope = await _scopeForPath(provider, path); // 書込はスコープ不明時に拒否(安全側)
+    const canonical = _canonicalForScope(scope, path);
+    const canonicalLower = _normalize(canonical);
+    return _mutateStore(provider, scope, entries => {
       // writeJsonMerged の競合リトライごとに、必ずその時点の最新 entries で判定する。
-      const conflict = _findConflict(entries, path, tokenHash, { includeDescendants });
-      if (conflict) throw _conflictError(conflict, path);
-      const existing = entries.find(entry => entry.token_hash === tokenHash && entry.normalized_path === _normalize(path));
-      const next = entries.filter(entry => !(entry.token_hash === tokenHash && entry.normalized_path === _normalize(path)));
-      const entry = _entryPayload(path, body, tokenHash, existing);
+      const conflict = _findConflict(entries, canonical, tokenHash, { includeDescendants }, scope);
+      if (conflict) throw _conflictError(_localizedEntry(conflict, scope), path);
+      const existing = entries.find(entry => _entryMatchesToken(entry, tokenHash, canonicalLower, scope));
+      const next = entries.filter(entry => !_entryMatchesToken(entry, tokenHash, canonicalLower, scope));
+      const entry = _entryPayload(canonical, body, tokenHash, existing);
       next.push(entry);
-      return { entries: next, result: { ok: true, entry } };
+      return { entries: next, result: { ok: true, entry: _localizedEntry(entry, scope) } };
     });
   }
 
@@ -286,15 +445,17 @@
   }
 
   async function release(provider, path, token, holderId) {
-    const normalized = _normalize(path);
-    if (!normalized || !token) return { ok: true, removed: false };
+    const localNormalized = _normalize(path);
+    if (!localNormalized || !token) return { ok: true, removed: false };
     const tokenHash = await _tokenHash(token);
     const holder = _cleanText(holderId, 160);
-    return _mutateStore(provider, entries => {
+    const scope = await _scopeForPath(provider, path);
+    const canonicalLower = _normalize(_canonicalForScope(scope, path));
+    return _mutateStore(provider, scope, entries => {
       let removed = false;
       const next = [];
       for (const entry of entries) {
-        if (entry.token_hash !== tokenHash || entry.normalized_path !== normalized) {
+        if (!_entryMatchesToken(entry, tokenHash, canonicalLower, scope)) {
           next.push(entry);
           continue;
         }
@@ -315,26 +476,42 @@
     if (!token) return { ok: true, removed: 0 };
     const tokenHash = await _tokenHash(token);
     const holder = _cleanText(holderId, 160);
-    return _mutateStore(provider, entries => {
-      let removed = 0;
-      const next = [];
-      for (const entry of entries) {
-        if (entry.token_hash !== tokenHash) {
-          next.push(entry);
-          continue;
+    // 対象パスを一意に決められない操作なので、登録ソース由来を含む全スコープの
+    // ストアを走査する(個人領域だけを見て共有側のロックを取り残さない)。
+    // ソース台帳を読めない場合は接続中スコープだけでも解放する(残りは短期
+    // リースの満了で自己回復する)。
+    let scopes = null;
+    try {
+      scopes = await _allScopes(provider);
+    } catch {
+      scopes = [await _scopeForPath(provider, '')];
+    }
+    let removed = 0;
+    for (const scope of scopes) {
+      const result = await _mutateStore(provider, scope, entries => {
+        let scopeRemoved = 0;
+        const next = [];
+        for (const entry of entries) {
+          if (entry.token_hash !== tokenHash) {
+            next.push(entry);
+            continue;
+          }
+          if (!holder) {
+            scopeRemoved += 1;
+            continue;
+          }
+          const before = _entryHolders(entry);
+          const holders = before.filter(row => row.holder_id !== holder);
+          if (holders.length !== before.length) scopeRemoved += 1;
+          const updated = _entryWithHolders(entry, holders);
+          if (updated) next.push(updated);
         }
-        if (!holder) {
-          removed += 1;
-          continue;
-        }
-        const before = _entryHolders(entry);
-        const holders = before.filter(row => row.holder_id !== holder);
-        if (holders.length !== before.length) removed += 1;
-        const updated = _entryWithHolders(entry, holders);
-        if (updated) next.push(updated);
-      }
-      return { entries: next, result: { ok: true, removed } };
-    });
+        if (!scopeRemoved) return false; // 変更が無いスコープのストアは書き換えない。
+        return { entries: next, result: { ok: true, removed: scopeRemoved } };
+      });
+      removed += Number(result?.removed || 0);
+    }
+    return { ok: true, removed };
   }
 
   function _pathDir(path) {
@@ -562,26 +739,66 @@
     if (!provider) return;
     const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
     const newPath = _normalizeFolderPath(event?.newPath || '');
-    if (!oldPath) return;
-    const base = _normalize(oldPath);
-    await _mutateStore(provider, entries => {
+    const isDelete = event?.action === 'delete';
+    const isMove = event?.action === 'rename' || event?.action === 'move';
+    if (!oldPath || (!isDelete && !isMove) || (isMove && !newPath)) return;
+    let oldScope = null;
+    let canonicalOld = '';
+    try {
+      oldScope = await _scopeForPath(provider, oldPath);
+      canonicalOld = _canonicalForScope(oldScope, oldPath);
+    } catch {
+      return; // スコープを判定できない場合はロック台帳を書き換えない。
+    }
+    let newScope = null;
+    let canonicalNew = '';
+    if (isMove) {
+      try {
+        newScope = await _scopeForPath(provider, newPath);
+        canonicalNew = _canonicalForScope(newScope, newPath);
+      } catch {
+        return;
+      }
+    }
+    const base = canonicalOld.toLowerCase();
+    const crossScope = !!newScope && newScope.scopeKey !== oldScope.scopeKey;
+    const moveResult = await _mutateStore(provider, oldScope, entries => {
       const next = [];
+      const moved = [];
       let changed = false;
       for (const row of entries) {
-        const cur = _normalize(row.path);
-        if (event?.action === 'delete' && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-          changed = true;
+        const matchedForm = _entryCanonicalForms(row, oldScope).find((form) => {
+          const cur = form.toLowerCase();
+          return cur === base || (event?.isFolder && cur.startsWith(base + '/'));
+        });
+        if (!matchedForm) {
+          next.push(row);
           continue;
         }
-        if ((event?.action === 'rename' || event?.action === 'move') && newPath && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-          const path = cur === base ? newPath : newPath + row.path.slice(oldPath.length);
-          next.push({ ...row, path: _normalizeFolderPath(path), normalized_path: _normalize(path) });
-          changed = true;
-        } else {
-          next.push(row);
-        }
+        changed = true;
+        if (isDelete) continue;
+        const nextPath = matchedForm.toLowerCase() === base
+          ? canonicalNew
+          : canonicalNew + matchedForm.slice(canonicalOld.length);
+        const rewritten = {
+          ...row,
+          path: _normalizeFolderPath(nextPath),
+          path_space: 'root',
+          normalized_path: _normalize(nextPath),
+        };
+        if (crossScope) moved.push(rewritten);
+        else next.push(rewritten);
       }
-      return changed ? { entries: next, result: { ok: true } } : false;
+      return changed ? { entries: next, result: { ok: true, moved } } : false;
+    }).catch(() => null);
+    const moved = Array.isArray(moveResult?.moved) ? moveResult.moved : [];
+    if (!moved.length || !newScope) return;
+    // スコープをまたぐ移動: 移動先スコープのストアへ引き継ぐ(短期リースのため
+    // 途中失敗してもハートビートの再取得で自己回復する)。
+    await _mutateStore(provider, newScope, entries => {
+      const movedKeys = new Set(moved.map(row => `${row.token_hash}:${row.normalized_path}`));
+      const kept = entries.filter(row => !movedKeys.has(`${row.token_hash}:${row.normalized_path}`));
+      return { entries: [...kept, ...moved], result: { ok: true } };
     }).catch(() => {});
   });
 

@@ -8,6 +8,9 @@
 // --- ボード状態オブジェクト ---
 const bd = {
   path:'', _loadedBoardPath:'', _preservedFrontmatter:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
+  // 工程2-C項目2: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。
+  // 未読込/新規ボードでは空文字のまま（従来通りforce相当で保存される）。
+  lastSavedEtag:'',
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
   cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'',
@@ -482,7 +485,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, tags = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -529,14 +532,6 @@ function bdParseMd(raw) {
     if (lnkBlock) lnkBlock[1].replace(/(\w+):\s*(.+)/g, (_, id, p) => { links[id] = p.trim(); });
     const lnkTypeBlock = fm.match(/linkTypes:\n((?:\s+\w+:.*\n?)*)/);
     if (lnkTypeBlock) lnkTypeBlock[1].replace(/(\w+):\s*([^\s]+)/g, (_, id, value) => { linkTypes[id] = value.trim(); });
-    // 共通タグ（タグID配列。タグ実体は .meldex/global-tags.json 側で一元管理）
-    if (typeof bdYamlNestedMap === 'function') {
-      Object.entries(bdYamlNestedMap(fm, 'tags')).forEach(([id, value]) => {
-        const list = Array.isArray(value) ? value : [];
-        const normalized = list.map(item => String(item == null ? '' : item).trim()).filter(Boolean);
-        if (normalized.length) tags[id] = normalized;
-      });
-    }
     // PureRef属性（transforms）
     const tfBlock = fm.match(/transforms:\n((?:\s+\w+:.*\n?)*)/);
     if (tfBlock) tfBlock[1].replace(/(\w+):\s*\{([^}]+)\}/g, (_, id, props) => {
@@ -729,7 +724,6 @@ function bdParseMd(raw) {
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
       const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
-      const tfm = boardUiBlock[1].match(/tagFilter:\s*(\[[^\n]*\])/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (pvm) boardUi.stylePresetSeedVersion = parseInt(pvm[1], 10) || 0;
@@ -741,14 +735,6 @@ function bdParseMd(raw) {
           const parsedFilters = JSON.parse(dfm[1]);
           if (parsedFilters && typeof parsedFilters === 'object' && !Array.isArray(parsedFilters)) {
             boardUi.displayFilters = parsedFilters;
-          }
-        } catch {}
-      }
-      if (tfm) {
-        try {
-          const parsedTagFilter = JSON.parse(tfm[1]);
-          if (Array.isArray(parsedTagFilter)) {
-            boardUi.tagFilter = parsedTagFilter.map(id => String(id == null ? '' : id)).filter(Boolean);
           }
         } catch {}
       }
@@ -866,9 +852,6 @@ function bdParseMd(raw) {
         if (n.linkType) node.linkType = n.linkType;
         if (n.imageSourcePath) node.imageSourcePath = String(n.imageSourcePath).replace(/\\/g, '/');
         if (n.status) node.status = n.status;
-        if (Array.isArray(n.tags) && n.tags.length) {
-          node.tags = n.tags.map(t => String(t == null ? '' : t).trim()).filter(Boolean);
-        }
         if (n.parent) node._jsonParent = n.parent;
         if (n.container) node.container = true;
         if (n.contained) node.contained = true;
@@ -929,7 +912,21 @@ function bdParseMd(raw) {
         ? bdNormalizeLoadedLlmSemantics(json.llmSemantics || llmSemantics, jIdMap)
         : (json.llmSemantics || llmSemantics);
       if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(jConns, null, parsedLlmSemantics);
-      return { nodes: jNodes, connections: jConns, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics };
+      const legacyArchive = `legacyBoardJson: ${JSON.stringify(JSON.stringify(json))}`;
+      const archivedFrontmatter = [preservedFrontmatter, legacyArchive].filter(Boolean).join('\n');
+      return {
+        nodes: jNodes,
+        connections: jConns,
+        groups,
+        statusDefs,
+        fileTheme,
+        cardStyles,
+        lineStyles,
+        depthStyles,
+        boardUi,
+        llmSemantics: parsedLlmSemantics,
+        preservedFrontmatter: archivedFrontmatter,
+      };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
     }
@@ -970,7 +967,6 @@ function bdParseMd(raw) {
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
-    if (tags[nid]) n.tags = tags[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
   });
   if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(nodes);

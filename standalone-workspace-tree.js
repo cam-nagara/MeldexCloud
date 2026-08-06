@@ -135,7 +135,7 @@
     refs.dialogMessage = _el('p', { id: 'sa-workspace-dialog-message' });
     refs.dialogLabel = _el('label', { for: 'sa-workspace-dialog-input', hidden: true });
     refs.dialogInput = _el('input', { id: 'sa-workspace-dialog-input', type: 'text', autocomplete: 'off', hidden: true });
-    refs.dialogActions = _el('div', { className: 'sa-workspace-dialog-actions' });
+    refs.dialogActions = _el('div', { className: 'sa-workspace-dialog-actions', 'data-dialog-actions': '1' });
     refs.dialogCancel = _button('キャンセル', 'sa-workspace-secondary', 'dialog-cancel');
     refs.dialogConfirm = _button('実行', 'sa-workspace-primary', 'dialog-confirm');
     _append(refs.dialogActions, refs.dialogCancel, refs.dialogConfirm);

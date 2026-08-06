@@ -58,6 +58,9 @@ function _isAdminUser(filePath) {
 function checkColumnEditable(dbPath, propName, ctxOverride) {
   const ptc = dbPath ? getPropertyTypes(dbPath, ctxOverride)[propName] : null;
   if (ptc && ptc.source) return 'この列は自動入力（読み取り専用）です';
+  // 計算列（読み取り専用・コードが更新する列。gb-db-computed-columns.js）
+  const computedMsg = typeof window !== 'undefined' ? window.MeldexComputedColumns?.editBlockedMessage?.(dbPath, propName, ctxOverride) : null;
+  if (computedMsg) return computedMsg;
   const lock = getColumnLock(dbPath, propName);
   if (lock === 'locked') return 'この列はロックされています';
   if (lock === 'admin' && !_isAdminUser(dbPath)) return 'この列は管理者のみ編集できます';
@@ -99,6 +102,9 @@ function getSchemaProtectionLevel(dbPath, propName) {
   if (window.MeldexUserRegistry?.isRegistryPathSync?.(targetPath)) {
     return window.MeldexStaffRegistrySchema?.isRequiredProperty?.(propName) ? 'required' : null;
   }
+  // 計算列（読み取り専用・コードが更新する列。gb-db-computed-columns.js）は
+  // 削除・改名・型変更を不変にする（v0.6.191 必須列保護と同じ経路。制作管理UX改善計画§5-1）。
+  if (window.MeldexComputedColumns?.isComputedColumn?.(targetPath, propName)) return 'computed';
   return null;
 }
 

@@ -6,6 +6,13 @@
   const SETTINGS_PATH_KEY = 'meldex-dropbox-settings-path';
   const DEFAULT_SETTINGS_PATH = '/MeldexSettings';
   const REGISTRY_RELATIVE_PATH = '_meldex/source-folders.v1.json';
+  const REGISTRY_DOCUMENT_ID = 'source-folders';
+  // 型付き管理領域上の台帳ドキュメントの設定パス起点相対パス。
+  // gb-system-storage-dropbox.js の personalManagementRoot()（<設定パス>/system/v1）と
+  // gb-system-storage.js の documentRelativePath(FOLDER_ASSOCIATIONS, REGISTRY_DOCUMENT_ID)
+  // の合成結果に一致させる（デスクトップ版 meldex_dropbox_desktop_link.managed_ledger_file_path
+  // と同一ファイル）。
+  const MANAGED_REGISTRY_RELATIVE_PATH = `system/v1/folder-associations/${REGISTRY_DOCUMENT_ID}.json`;
   const CACHE_KEY = 'meldex-source-folders-cache-v1';
   const OLD_PWA_ROOTS_KEY = 'meldex-cloud-outliner-roots';
   const SOURCE_PREFIX = '__dropbox_root__';
@@ -95,6 +102,10 @@
     return joinDropboxPath(getSettingsPath(), REGISTRY_RELATIVE_PATH);
   }
 
+  function managedRegistryDropboxPath() {
+    return joinDropboxPath(getSettingsPath(), MANAGED_REGISTRY_RELATIVE_PATH);
+  }
+
   function _basename(path) {
     const normalized = normalizeDropboxPath(path) || normalizeRelativePath(path);
     const parts = normalized.split('/').filter(Boolean);
@@ -155,17 +166,26 @@
     return /not_found|path\/not_found/i.test(err?.message || '');
   }
 
-  function _isRegistryWriteConflictError(err) {
-    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
-  }
-
-  function _normalizeRoot(root, existingIds) {
+  function _normalizeRoot(root, existingIds, priorRootsById) {
     const provider = String(root?.provider || (root?.dropboxPath ? 'dropbox' : '')).trim();
     if (provider !== 'dropbox') return null;
     const dropboxPath = normalizeDropboxPath(root?.dropboxPath || root?.path || '');
     if (!dropboxPath) return null;
-    const namespaceKind = normalizeNamespaceKind(root?.namespaceKind);
-    const id = String(root?.id || root?.sourceId || sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind)).trim();
+    const explicitId = String(root?.id || root?.sourceId || '').trim();
+    const priorRoot = explicitId && priorRootsById ? priorRootsById.get(explicitId) : null;
+    // namespaceKind省略時の巻き戻り防止（2026-08、meldex_path_scope_fullwidth_plan_2026-07-31.md
+    // 第2層タスク1対応）: 一部の呼び出し元（例: 設定ダイアログのソースフォルダ保存経路）が
+    // フィールドごと namespaceKind を省略して台帳へ書き戻すことがある。ここで単純に
+    // 'home' へデフォルトすると、既に team_root で正しく登録済みのエントリが、無関係な
+    // 保存操作（名前変更・表示切替・他フォルダの追加削除等）のたびに home へ黙って
+    // 巻き戻ってしまう。同一idの既存エントリが台帳にあれば、その namespaceKind を
+    // 継承することでフィールド欠落がデータ破壊に直結しないようにする。呼び出し元が
+    // root.namespaceKind を明示的に指定した場合は常にそちらを優先する（意図的な
+    // namespaceKind変更を妨げない）。
+    const namespaceKind = (root?.namespaceKind == null && priorRoot)
+      ? normalizeNamespaceKind(priorRoot.namespaceKind)
+      : normalizeNamespaceKind(root?.namespaceKind);
+    const id = explicitId || sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind);
     const timestamp = _now();
     return {
       id,
@@ -220,14 +240,6 @@
     return normalizeRegistryPayload(_readJson(CACHE_KEY, null) || {});
   }
 
-  async function _rpc(route, body, namespaceKind) {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body, {
-      namespaceKind: normalizeNamespaceKind(namespaceKind),
-    });
-  }
-
   async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
@@ -236,32 +248,22 @@
     });
   }
 
-  async function _ensureFolder(dropboxPath) {
-    const normalized = normalizeDropboxPath(dropboxPath);
-    if (!normalized || normalized === '/') return true;
-    try {
-      await _rpc('files/create_folder_v2', { path: normalized, autorename: false });
-      return true;
-    } catch (err) {
-      let meta = null;
-      try {
-        meta = await _rpc('files/get_metadata', {
-          path: normalized,
-          include_deleted: false,
-          include_has_explicit_shared_members: false,
-        });
-      } catch {}
-      if (meta?.['.tag'] === 'folder') return true;
-      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
-      throw err;
-    }
+  async function ensureRegistryFolders() {
+    // 管理領域アダプターが必要な親フォルダを作る。ユーザー保存領域には作らない。
+    await _managementRegistryRecord();
+    return true;
   }
 
-  async function ensureRegistryFolders() {
-    const settingsRoot = getSettingsPath();
-    await _ensureFolder(settingsRoot);
-    await _ensureFolder(joinDropboxPath(settingsRoot, '_meldex'));
-    return true;
+  async function _managementRegistryRecord() {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('フォルダ台帳の管理データ保存先を安全に判定できません');
+    }
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    const record = await adapter.load(kind, REGISTRY_DOCUMENT_ID);
+    return { adapter, kind, record };
   }
 
   function _rootMergeKey(root) {
@@ -337,48 +339,35 @@
   }
 
   async function _readRemoteRegistry() {
+    const managed = await _managementRegistryRecord();
+    if (managed.record?.payload) return normalizeRegistryPayload(managed.record.payload);
     const remote = await _readRemoteRegistryWithMetadata('home');
     return remote.registry;
   }
 
-  async function _readRemoteRegistryForWrite() {
-    try {
-      return await _readRemoteRegistryWithMetadata('home');
-    } catch (err) {
-      if (_isRegistryNotFoundError(err)) return null;
-      throw err;
-    }
-  }
-
   async function writeRegistry(registry, options = {}) {
     const incoming = normalizeRegistryPayload(registry || {});
-    await ensureRegistryFolders();
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const remote = options.mergeRemote === false ? null : await _readRemoteRegistryForWrite();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const managed = await _managementRegistryRecord();
+      const remote = managed.record?.payload
+        ? { registry: normalizeRegistryPayload(managed.record.payload), rev: managed.record.revision }
+        : null;
       const normalized = remote
         ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
         : normalizeRegistryPayload(incoming);
       normalized.updatedAt = _now();
-      const bytes = new TextEncoder().encode(JSON.stringify(normalized, null, 2));
       try {
-        await _content('files/upload', {
-          path: registryDropboxPath(),
-          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
+        await managed.adapter.save(managed.kind, REGISTRY_DOCUMENT_ID, normalized, {
+          expectedRevision: managed.record?.revision ?? null,
         });
         _lastRegistry = normalized;
         _writeJson(CACHE_KEY, normalized);
         return normalized;
       } catch (err) {
         lastError = err;
-        if (attempt === 0 && options.mergeRemote !== false && _isRegistryWriteConflictError(err)) continue;
+        if (attempt < 4 && options.mergeRemote !== false
+          && (err?.name === 'SystemStorageConflictError' || err?.code === 'system_storage_conflict')) continue;
         throw err;
       }
     }
@@ -570,6 +559,9 @@
     const source = Array.isArray(roots) ? roots : [];
     const existing = await loadRegistry({ writeIfMissing: false }).catch(() => _registryFromCache());
     const usedIds = new Set(existing.roots.map((root) => root.id));
+    // 同一idの既存エントリを引けるようにする（_normalizeRootのnamespaceKind継承用。
+    // 上のコメント参照）。
+    const priorRootsById = new Map(existing.roots.map((root) => [root.id, root]));
     const nextRoots = [];
     for (const root of source) {
       // ワークスペース由来（フェーズ3c合流分）はアカウント台帳へ書き戻さない。
@@ -578,7 +570,7 @@
       // (source-folders.v1.json)を破壊する事故を防ぐ。
       if (typeof root?.origin === 'string' && root.origin.startsWith('ws:')) continue;
       if (root?.provider !== 'dropbox' && !root?.dropboxPath) continue;
-      const normalized = _normalizeRoot(root, usedIds);
+      const normalized = _normalizeRoot(root, usedIds, priorRootsById);
       if (!normalized) continue;
       usedIds.add(normalized.id);
       nextRoots.push(normalized);
@@ -680,11 +672,13 @@
     SETTINGS_PATH_KEY,
     DEFAULT_SETTINGS_PATH,
     REGISTRY_RELATIVE_PATH,
+    MANAGED_REGISTRY_RELATIVE_PATH,
     SOURCE_PREFIX,
     CACHE_KEY,
     getSettingsPath,
     setSettingsPath,
     registryDropboxPath,
+    managedRegistryDropboxPath,
     normalizeDropboxPath,
     normalizeRelativePath,
     normalizeNamespaceKind,

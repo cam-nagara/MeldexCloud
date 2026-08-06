@@ -1,0 +1,369 @@
+/* gb-float-panel.css: floating panel (formerly named "subpanel" internally) */
+
+.gb-float-panel {
+  position: fixed;
+  z-index: 10045;
+  display: flex;
+  flex-direction: column;
+  min-width: 240px;
+  min-height: 180px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 2px solid var(--accent, #569cd6);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28), 0 4px 16px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  user-select: none;
+}
+
+.gb-float-panel[hidden] {
+  display: none;
+}
+
+.gb-float-panel ~ .gb-context-menu,
+.gb-float-panel ~ .ab-dropdown,
+.gb-float-panel ~ .bd-style-picker-menu,
+.gb-float-panel ~ #chat-title-dropdown {
+  z-index: 10080 !important;
+}
+
+.gb-float-panel-titlebar {
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 6px 0 10px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+}
+
+.gb-float-panel-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.gb-float-panel-title-icon {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+}
+
+.gb-float-panel-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-float-panel-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.gb-float-panel-button {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg2);
+  cursor: pointer;
+}
+
+.gb-float-panel-button:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.gb-float-panel-button:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+.gb-float-panel-nav-btn {
+  width: 22px;
+  height: 22px;
+}
+
+/* 「メインパネルで開く」: 文字が見えるボタン（アイコンのみ不可のUI共通ルール準拠） */
+.gb-float-panel-open-main-btn {
+  width: auto;
+  height: 24px;
+  padding: 0 8px;
+  gap: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+
+.gb-float-panel-open-main-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.gb-float-panel-open-main-label {
+  line-height: 1;
+}
+
+.gb-float-panel-pathbar {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg2);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.gb-float-panel-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  user-select: text;
+}
+
+.gb-float-panel-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: var(--fg2);
+  font-size: 13px;
+}
+
+.gb-float-panel-entity-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 18px;
+}
+
+.gb-float-panel-entity-parent {
+  min-height: 24px;
+  margin-bottom: 10px;
+}
+
+.gb-float-panel-link-button {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.gb-float-panel-link-button:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.gb-float-panel-entity-title {
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 22px;
+  line-height: 1.35;
+}
+
+.gb-float-panel-entity-props {
+  margin-bottom: 16px;
+}
+
+.gb-float-panel-entity-root .entry-prop-card {
+  min-width: 180px;
+}
+
+.gb-float-panel-entity-prop-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.34fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.gb-float-panel-entity-prop-name {
+  color: var(--fg2);
+}
+
+.gb-float-panel-entity-prop-value {
+  min-width: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.gb-float-panel-entity-note {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  line-height: 1.7;
+  color: var(--fg);
+}
+
+.gb-float-panel-empty-note {
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.gb-float-panel-webclip-html {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 420px;
+}
+
+.gb-float-panel-webclip-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 28px;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.gb-float-panel-webclip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-float-panel-webclip-open {
+  flex: 0 0 auto;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.gb-float-panel-webclip-open:hover {
+  text-decoration: underline;
+}
+
+.gb-float-panel-webclip-frame {
+  width: 100%;
+  min-height: 520px;
+  height: min(72vh, 820px);
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.gb-float-panel.is-minimized {
+  height: 34px !important;
+  min-height: 34px;
+}
+
+.gb-float-panel.is-minimized .gb-float-panel-content,
+.gb-float-panel.is-minimized .gb-float-panel-resize {
+  display: none;
+}
+
+.gb-float-panel.is-maximized {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+}
+
+.gb-float-panel-resize {
+  position: absolute;
+  z-index: 1;
+}
+
+.gb-float-panel-resize-n,
+.gb-float-panel-resize-s {
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.gb-float-panel-resize-e,
+.gb-float-panel-resize-w {
+  top: 8px;
+  bottom: 8px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.gb-float-panel-resize-n {
+  top: -4px;
+}
+
+.gb-float-panel-resize-s {
+  bottom: -4px;
+}
+
+.gb-float-panel-resize-e {
+  right: -4px;
+}
+
+.gb-float-panel-resize-w {
+  left: -4px;
+}
+
+.gb-float-panel-resize-ne,
+.gb-float-panel-resize-nw,
+.gb-float-panel-resize-se,
+.gb-float-panel-resize-sw {
+  width: 12px;
+  height: 12px;
+}
+
+.gb-float-panel-resize-ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+
+.gb-float-panel-resize-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+
+.gb-float-panel-resize-se {
+  right: -4px;
+  bottom: -4px;
+  cursor: nwse-resize;
+}
+
+.gb-float-panel-resize-sw {
+  left: -4px;
+  bottom: -4px;
+  cursor: nesw-resize;
+}
+
+.gb-float-panel.is-maximized .gb-float-panel-resize {
+  display: none;
+}
+
+body:has(.modal-overlay) .gb-float-panel,
+body:has(.gb-modal-overlay) .gb-float-panel,
+body:has(.gb-cal-modal-overlay) .gb-float-panel {
+  z-index: 200;
+  pointer-events: none;
+}

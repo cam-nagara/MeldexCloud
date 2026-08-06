@@ -113,6 +113,9 @@ function bdColorPicker() {
 }
 // --- 9. Clipboard Paste Image ---
 function bdPasteImage() {
+  if (window.MeldexBoardTransfer?.requestPaste) {
+    return window.MeldexBoardTransfer.requestPaste({ imagesOnly: true });
+  }
   navigator.clipboard.read().then(items => {
     for (const item of items) {
       const imgType = item.types.find(t => t.startsWith('image/'));

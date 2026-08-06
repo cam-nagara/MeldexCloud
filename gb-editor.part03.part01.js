@@ -5,14 +5,29 @@
       closeListAll();
       const lv = hm[1].length;
       let content = hm[2];
-      const headingId = _noteHeadingId(content, headingSlugCounts);
+      // 安定アンカーID（工程11）: 見出しリンク作成時に getOrAssignStableHeadingAnchorId
+      // が付与した行ID（<!--nl:ID-->）は、NLID正規化により content 先頭のセンチネルとして
+      // 現れる。これが有る場合はテキストに依存しない永続IDを id/data-note-heading-id の
+      // 正本にし、テキストスラグ由来の旧形式IDは data-note-heading-legacy-id へ退避して
+      // 旧アンカー形式のリンクからも解決できるようにする（安定性検証: 見出し名変更・
+      // 重複見出しの増減があっても、既にリンク済みの見出しのIDは変わらない）。
+      const persistentHeadingIdMatch = content.match(/^\x02NLID:([A-Za-z0-9_-]+)\x02/);
+      const persistentHeadingId = persistentHeadingIdMatch ? persistentHeadingIdMatch[1] : '';
+      const legacyHeadingId = _noteHeadingId(content, headingSlugCounts);
+      const headingId = persistentHeadingId || legacyHeadingId;
       content = content.replace(/^:([a-zA-Z][a-zA-Z0-9-]*):/, (match, iconName) => {
         if (typeof LUCIDE !== 'undefined' && LUCIDE[iconName] && typeof lucide === 'function') {
           return `<span class="heading-icon">${lucide(iconName, lv <= 2 ? 20 : 16)}</span> `;
         }
         return match; // 存在しないアイコン名はテキストとして保持
       });
-      const idAttrs = headingId ? ` id="${esc(headingId)}" data-note-heading-id="${esc(headingId)}"` : '';
+      let idAttrs = '';
+      if (headingId) {
+        idAttrs = ` id="${esc(headingId)}" data-note-heading-id="${esc(headingId)}"`;
+        if (persistentHeadingId && legacyHeadingId && legacyHeadingId !== headingId) {
+          idAttrs += ` data-note-heading-legacy-id="${esc(legacyHeadingId)}"`;
+        }
+      }
       const titleAttrs = pendingNoteTitle ? ' class="note-title" data-note-title="1"' : '';
       html += `<h${lv}${idAttrs}${titleAttrs}>${inlinemd(content)}</h${lv}>`;
       pendingNoteTitle = false;
@@ -61,6 +76,15 @@
       continue;
     }
 
+    // リスト（チェックリスト） — 「- [ ] 」「- [x] 」。箇条書き判定より先に行う。
+    const clm = line.match(/^(\s*)[*\-+]\s+\[([ xX])\]\s+(.*)$/);
+    if (clm) {
+      const indent = clm[1].length;
+      const checked = clm[2].toLowerCase() === 'x';
+      adjustListDepth(indent, 'ul');
+      html += `<li class="note-checklist-item" data-checked="${checked ? 'true' : 'false'}"><input type="checkbox" class="note-checklist-check" contenteditable="false" tabindex="-1" aria-label="チェック項目" data-e2e-id="note-checklist-check"${checked ? ' checked' : ''}>${inlinemd(clm[3])}</li>`;
+      continue;
+    }
     // リスト（箇条書き）
     const ulm = line.match(/^(\s*)[*\-+]\s+(.*)$/);
     if (ulm) {
@@ -171,6 +195,28 @@ function getOrAssignNoteLineId(blockEl) {
   return span.dataset.lineId;
 }
 
+// 見出しの安定アンカーID（工程11: 見出しリンク作成）。
+// 既存の行ID機構（getOrAssignNoteLineId）を再利用し、見出しテキストにも
+// 前後の見出しの増減・改名にも依存しない永続IDを見出しへ割り当てる。
+// - 未割当なら新規採番し、その場で id / data-note-heading-id を更新する
+//   （次回の mdToHtml 再描画を待たず、挿入直後のリンクも即座に機能させるため）。
+// - 既存の（テキストスラグ由来の）ID は data-note-heading-legacy-id へ退避し、
+//   旧アンカー形式のリンクからの解決（_scrollNoteAnchorIntoView）を維持する。
+// 工程9（右クリック／ハンドルへの「見出しへのリンクをコピー」統合）でも
+// このヘルパーをそのまま再利用する想定。
+function getOrAssignStableHeadingAnchorId(headingEl) {
+  if (!headingEl || !/^H[1-6]$/.test(headingEl.tagName || '')) return '';
+  const legacyId = headingEl.id || headingEl.dataset?.noteHeadingId || '';
+  const stableId = typeof getOrAssignNoteLineId === 'function' ? getOrAssignNoteLineId(headingEl) : '';
+  if (!stableId) return legacyId; // 行ID機構が使えない場合は現行ID（旧形式）のまま
+  if (headingEl.id !== stableId) headingEl.id = stableId;
+  if (headingEl.dataset) {
+    headingEl.dataset.noteHeadingId = stableId;
+    if (legacyId && legacyId !== stableId) headingEl.dataset.noteHeadingLegacyId = legacyId;
+  }
+  return stableId;
+}
+
 function _noteHeadingPlainText(value) {
   return String(value || '')
     .replace(/\x02NLID:[A-Za-z0-9_-]+\x02/g, '')
@@ -209,7 +255,7 @@ function _scrollNoteAnchorIntoView(anchorEl, anchorId) {
   const host = anchorEl?.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
   if (!host) return;
   const headings = [...host.querySelectorAll('[data-note-heading-id], h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]')];
-  const target = headings.find(el => el.dataset?.noteHeadingId === id || el.id === id);
+  const target = headings.find(el => el.dataset?.noteHeadingId === id || el.dataset?.noteHeadingLegacyId === id || el.id === id);
   if (!target) {
     if (typeof showStatus === 'function') showStatus('リンク先の見出しが見つかりません');
     return;
@@ -554,6 +600,10 @@ function htmlToMd(html) {
         // BR由来の改行を空白区切りに変換（Markdown LI内では改行=行分離になるため）
         const text = textParts.join(' ').replace(/ ?\n ?/g, ' ');
         const _liMk = _nlIdMarker(node);
+        if (node.classList?.contains('note-checklist-item')) {
+          const checked = node.dataset?.checked === 'true' || !!node.querySelector('input.note-checklist-check')?.checked;
+          return _liMk + indent + '- [' + (checked ? 'x' : ' ') + '] ' + text + '\n' + nestedList;
+        }
         if (parent?.tagName === 'OL') {
           const idx = [...parent.children].indexOf(node) + 1;
           return _liMk + indent + idx + '. ' + text + '\n' + nestedList;
@@ -579,6 +629,10 @@ function htmlToMd(html) {
       case 'DIV': case 'P': {
         // コールアウトブロック → Markdown変換
         if (node.classList.contains('callout-block')) {
+          // 行種変換（gb-note-block-types.js）で他行種からコールアウトへ変換した場合、
+          // 保持対象の _nl-id マーカーは callout-block 自身の先頭子要素として置かれる
+          // （callout-icon より前）。既存の素のコールアウトには無いため空文字のまま。
+          const _calloutMk = _nlIdMarker(node);
           const iconEl = node.querySelector('.callout-icon');
           // data-icon属性があればLucide名、なければtextContent（旧emoji互換）
           const icon = iconEl?.dataset?.icon || iconEl?.textContent || 'lightbulb';
@@ -590,7 +644,7 @@ function htmlToMd(html) {
           const bodyLines = body.split('\n');
           const firstLine = `> [!${icon}${color ? ' ' + color : ''}${type ? ' ' + type : ''}] ${bodyLines[0]}`;
           const restLines = bodyLines.slice(1).map(l => '> ' + l).join('\n');
-          return firstLine + (restLines ? '\n' + restLines : '') + '\n';
+          return _calloutMk + firstLine + (restLines ? '\n' + restLines : '') + '\n';
         }
         const trimmed = children.trim();
         // 空のdiv/p（<div><br></div>等）→ 空行マーカー
@@ -685,6 +739,7 @@ function htmlToMd(html) {
 // パスを解決（絶対パスはそのまま、相対パスはvaultまたは現在のファイル基準で解決）
 function _resolveAutoLinkPath(filePath) {
   if (!filePath) return filePath;
+  if (/^(?:javascript|vbscript|data):/i.test(String(filePath).trim())) return '';
   if (/^(https?:|mailto:)/i.test(filePath)) return filePath;
   // Windowsの絶対パス（D:/ 等）またはUnix絶対パス（/で始まる）
   if (/^[A-Za-z]:[\\/]/.test(filePath) || filePath.startsWith('/')) return filePath;
@@ -731,7 +786,7 @@ async function openLink(filePath, name, options) {
   await _openLinkInCurrentTab(filePath, label);
 }
 
-async function openLinkInSubPanel(filePath, name, options) {
+async function openLinkInFloatPanel(filePath, name, options) {
   if (!filePath) return;
   const noteAnchorId = _noteAnchorIdFromHref(filePath);
   if (noteAnchorId) {
@@ -740,8 +795,8 @@ async function openLinkInSubPanel(filePath, name, options) {
   }
   const label = name || filePath.split(/[/\\]/).pop();
   if (typeof flushPendingEditorAutosave === 'function') await flushPendingEditorAutosave();
-  if (typeof openLinkedPathInSubPanel === 'function') {
-    return openLinkedPathInSubPanel(filePath, label, options || {});
+  if (typeof openLinkedPathInFloatPanel === 'function') {
+    return openLinkedPathInFloatPanel(filePath, label, options || {});
   }
   return _openLinkInCurrentTab(filePath, label);
 }
@@ -751,7 +806,7 @@ function openLinkInRightPane(filePath, name, options) {
     const label = name || filePath.split(/[/\\]/).pop();
     return openLinkedPathInRightPane(filePath, label, options || {});
   }
-  return openLinkInSubPanel(filePath, name, options);
+  return openLinkInFloatPanel(filePath, name, options);
 }
 
 function openLinkInMainPane(filePath, name, options) {
@@ -829,7 +884,7 @@ function onAutoLinkClick(el, e) {
     }
   }
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLinkInSubPanel(filePath, name, {
+  openLinkInFloatPanel(filePath, name, {
     linkType: el.dataset.linkType || el.dataset.type || '',
     sourcePaneId: el.closest('.gb-pane')?.dataset?.paneId || '',
   });
@@ -985,6 +1040,11 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
+  // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // 表示しない（計画書「右サイドバー操作の制限」節）。
+  const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+    || typeof GBPaneBridge.surfaceOf !== 'function'
+    || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(e?.target || null));
 
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu gb-link-context-menu';
@@ -1018,7 +1078,8 @@ function _showLinkContextMenu(e, linkTarget) {
     else openLink(linkTarget.path, linkTarget.label);
   });
   const browserUrl = String(linkTarget.path || '').trim();
-  if (/^https?:\/\//i.test(browserUrl)) {
+  const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
+  if (isExternalContextUrl) {
     addItem('externalLink', '既定のブラウザで開く', () => {
       if (typeof openExternalBrowserUrl === 'function') {
         openExternalBrowserUrl(browserUrl);
@@ -1050,7 +1111,7 @@ function _showLinkContextMenu(e, linkTarget) {
     });
   }
   if (!linkTarget.localAnchor) {
-    addItem('layers-2', 'フロートパネルで開く', () => openLinkInSubPanel(linkTarget.path, linkTarget.label, {
+    addItem('layers-2', 'フロートパネルで開く', () => openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
@@ -1058,15 +1119,21 @@ function _showLinkContextMenu(e, linkTarget) {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
     }));
-    addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
-      linkType: linkTarget.linkType || '',
-      sourcePaneId: linkTarget.sourcePaneId || '',
-    }));
+    if (_canUseRightSidebar) {
+      addItem('panelRight', '右サイドバーで開く', () => openLinkInRightPane(linkTarget.path, linkTarget.label, {
+        linkType: linkTarget.linkType || '',
+        sourcePaneId: linkTarget.sourcePaneId || '',
+        sourceEl: e?.target || null,
+      }));
+    }
     if (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(linkTarget.path, linkTarget.linkType || '')) {
       addItem('externalLink', '単独アプリで開く', () => openLinkStandalone(linkTarget.path, linkTarget.label, {
         linkType: linkTarget.linkType || '',
         sourcePaneId: linkTarget.sourcePaneId || '',
       }));
+    }
+    if (!isExternalContextUrl && typeof window.revealPathInFolderTree === 'function') {
+      addItem('folderTree', 'フォルダツリーに表示', () => window.revealPathInFolderTree(linkTarget.path));
     }
   }
   if (linkTarget.anchorEl && linkTarget.editableHost) {
@@ -1174,13 +1241,13 @@ function _openContextLinkCurrent(linkTarget) {
   openLink(linkTarget.path, linkTarget.label);
 }
 
-function _openContextLinkSubPanel(linkTarget) {
+function _openContextLinkFloatPanel(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
     linkTarget.openAction();
     return;
   }
-  openLinkInSubPanel(linkTarget.path, linkTarget.label, {
+  openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
   });
@@ -1210,7 +1277,7 @@ document.addEventListener('click', (e) => {
   clearTimeout(_linkActivationTimer);
   _linkActivationTimer = setTimeout(() => {
     if (token !== _linkActivationToken) return;
-    _openContextLinkSubPanel(linkTarget);
+    _openContextLinkFloatPanel(linkTarget);
   }, 320);
 }, true);
 
@@ -1280,87 +1347,6 @@ let _fileInfoRenderRevision = 0;
 let _fileInfoCurrentPath = '';
 let _fileInfoCurrentPromise = null;
 
-async function _fileInfoMetadata(filePath, preloadedMeta) {
-  const preloaded = preloadedMeta && typeof preloadedMeta === 'object' ? preloadedMeta : null;
-  const needsEmbeddedMetadata = preloaded?.embedded === undefined;
-  if (preloaded && !needsEmbeddedMetadata) return preloaded;
-  try {
-    const fetched = await apiFetch('/file-meta?path=' + encodeURIComponent(filePath), { silentError: true });
-    return fetched ? { ...(preloaded || {}), ...fetched } : preloaded;
-  } catch (error) {
-    return {
-      ...(preloaded || {}),
-      _metadataLoadError: error?.userMessage || error?.message || String(error),
-    };
-  }
-}
-
-function _fileInfoContext(filePath) {
-  const fileName = filePath.split(/[/\\]/).pop();
-  const ext = fileName.split('.').pop().toLowerCase();
-  const folderPath = filePath.replace(/[/\\][^/\\]+$/, '');
-  return {
-    fileName,
-    ext,
-    folderPath,
-    folderName: folderPath.split(/[/\\]/).pop(),
-    typeLabel: ext === 'md' ? 'ノート' : ext === 'json' ? 'シナリオ/シート' : ext === 'board' ? 'ボード' : ext,
-  };
-}
-
-function _fileInfoMetadataRowsHtml(meta) {
-  if (!meta) return '';
-  let html = '';
-  if (meta.created) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">作成日時</td><td style="padding:4px 0;">${esc(new Date(meta.created).toLocaleString('ja-JP'))}</td></tr>`;
-  if (meta.modified) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">更新日時</td><td style="padding:4px 0;">${esc(new Date(meta.modified).toLocaleString('ja-JP'))}</td></tr>`;
-  if (meta.size != null) html += `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">ファイルサイズ</td><td style="padding:4px 0;">${esc(_formatFileSize(meta.size))}</td></tr>`;
-  return html;
-}
-
-function _fileInfoPanelHtml(filePath, preloadedMeta) {
-  const info = _fileInfoContext(filePath);
-  return `<div style="padding:12px;" data-file-info-path="${esc(filePath)}">`
-    + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${lucide(_fileIcon(info.ext),16)} ${esc(info.fileName)}</div>`
-    + '<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">'
-    + '<tbody>'
-    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${esc(info.typeLabel)}</td></tr>`
-    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;"><button type="button" class="auto-link" data-path="${esc(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${esc(info.folderName)}</button></td></tr>`
-    + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${esc(filePath)}</td></tr>`
-    + '</tbody>'
-    + `<tbody data-file-info-metadata-rows>${_fileInfoMetadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
-    + `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${esc(filePath)}"></div>`
-    + `<div data-global-tags-target-path="${esc(filePath)}"></div></div>`;
-}
-
-function _findFileInfoPanel(detailRoot, filePath) {
-  return [...detailRoot.querySelectorAll('[data-file-info-path]')]
-    .find(element => element.dataset.fileInfoPath === filePath) || null;
-}
-
-function _applyFileInfoMetadata(detailRoot, filePath, meta) {
-  const panel = _findFileInfoPanel(detailRoot, filePath);
-  if (!panel) return;
-  const rows = panel.querySelector('[data-file-info-metadata-rows]');
-  if (rows) rows.innerHTML = _fileInfoMetadataRowsHtml(meta);
-  const embeddedHost = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
-    .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
-  window.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
-}
-
-async function _renderFileInfoInDetailPanel(filePath, preloadedMeta, revision) {
-  const metadataPromise = _fileInfoMetadata(filePath, preloadedMeta);
-  if (typeof showDetailPanel !== 'function') return;
-  if (typeof _dpSavePending === 'function' && !await _dpSavePending()) return;
-  if (revision !== _fileInfoRenderRevision) return;
-  await showDetailPanel(_fileInfoPanelHtml(filePath, preloadedMeta));
-  if (revision !== _fileInfoRenderRevision) return;
-  const detailRoot = document.getElementById('rp-detail') || document;
-  if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(detailRoot);
-  const meta = await metadataPromise;
-  if (revision !== _fileInfoRenderRevision || !_findFileInfoPanel(detailRoot, filePath)) return;
-  _applyFileInfoMetadata(detailRoot, filePath, meta);
-}
-
 function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
   const normalizedPath = String(filePath || '').trim();
   if (!normalizedPath) return Promise.resolve();
@@ -1376,10 +1362,26 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
   const renderKey = multiFileTargets.length > 1
     ? 'multi:' + multiFileTargets.map(item => String(item.path)).sort().join('\n')
     : normalizedPath;
+  // OptionTargetContext（計画書§11.1）: フォルダパネルの一般ファイル選択・メディア表示・
+  // ビューワー内ファイル切替はすべてこの関数を通るため、ここを「今バックリンク等の
+  // オプションパネルが対象にすべきファイル」の単一の更新地点にする。早期returnより前に
+  // 呼ぶことで、キャッシュ済み描画をスキップする場合でも選択状態の追従は必ず起きる
+  // （ファイル参照整合性計画 Phase 5: フォルダパネルの一般ファイル選択が古いノート等の
+  // 対象でバックリンクを表示し続ける不具合の修正）。
+  if (multiFileTargets.length > 1) {
+    window.GBOptionTargetContext?.set(
+      multiFileTargets.map(item => ({ path: item.path, kind: 'file' })),
+      'file-info-panel-multi'
+    );
+  } else {
+    window.GBOptionTargetContext?.set({ path: normalizedPath, kind: 'file' }, 'file-info-panel');
+  }
   const detailRoot = document.getElementById('rp-detail') || document;
   if (renderKey === _fileInfoCurrentPath) {
     if (_fileInfoCurrentPromise) return _fileInfoCurrentPromise;
-    if (_findFileInfoPanel(detailRoot, normalizedPath) || detailRoot.querySelector('[data-folder-multi-info-host]')) return Promise.resolve();
+    const currentFileInfoPanel = [...detailRoot.querySelectorAll('[data-file-info-path]')]
+      .some(element => element.dataset.fileInfoPath === normalizedPath);
+    if (currentFileInfoPanel || detailRoot.querySelector('[data-folder-multi-info-host]')) return Promise.resolve();
   }
   const revision = ++_fileInfoRenderRevision;
   _fileInfoCurrentPath = renderKey;
@@ -1387,7 +1389,10 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
     ? window.MeldexFolderMultiInfo.render(multiFileTargets, {
         isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
       })
-    : _renderFileInfoInDetailPanel(normalizedPath, preloadedMeta, revision);
+    : window.MeldexFileInfoPanel?.showInDetailPanel(normalizedPath, {
+        preloadedMeta,
+        isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
+      });
   const task = Promise.resolve(renderTask).catch(error => {
     if (revision === _fileInfoRenderRevision) {
       console.warn('ファイル情報パネルの更新に失敗しました', error);

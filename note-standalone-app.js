@@ -16,6 +16,7 @@
     dirty: false,
   };
   let localDrafts = null;
+  let lastEditorRange = null;
 
   function qs(id) { return document.getElementById(id); }
   function editor() { return qs('page-content'); }
@@ -89,6 +90,7 @@
 
   async function renderMarkdown(raw) {
     const pc = editor();
+    lastEditorRange = null;
     const source = String(raw || '');
     pc.dataset.frontmatter = splitFrontMatter(source);
     pc.innerHTML = typeof mdToHtml === 'function' ? mdToHtml(source) : '';
@@ -137,25 +139,16 @@
     document.title = (app.dirty ? '* ' : '') + 'Meldex Note';
   }
 
-  // 「公開」（vault全体の公開設定が前提）と「バックリンク」（GbBacklinks未同梱）は
-  // 単独版では機能しないため、行き止まりタブとして残さず隠す
-  // （計画書§4: バックリンク一覧・自動リンクは対象外）。
-  // 本体の _showFileInfoInDetailPanel は _syncDetailPanel からawait無しで
-  // 呼ばれ、その中の showDetailPanel() が showNoteTabs(true) 経由でバックリンク
-  // タブを非同期に再表示する（file-meta取得完了後、タイミング不定）。一度隠す
-  // だけでは間に合わないため、MutationObserverで hidden 属性の変化を監視し、
-  // 再表示された瞬間に隠し直す。
-  let _hideUnsupportedTabsObserver = null;
-  function hideUnsupportedOptionTabs() {
-    document.querySelectorAll('.detail-tab-publish, .detail-tab-backlinks').forEach(tab => {
-      if (!tab.hidden) tab.hidden = true;
-    });
+  function currentSavedEtag() {
+    return String(editor().dataset.lastSavedEtag || '').trim();
   }
-  function watchUnsupportedOptionTabs() {
-    const tabBar = qs('detail-tab-bar');
-    if (!tabBar || _hideUnsupportedTabsObserver) return;
-    _hideUnsupportedTabsObserver = new MutationObserver(hideUnsupportedOptionTabs);
-    _hideUnsupportedTabsObserver.observe(tabBar, { attributes: true, attributeFilter: ['hidden'], subtree: true });
+
+  function requireSavedEtag() {
+    const etag = currentSavedEtag();
+    if (!etag) {
+      throw new Error('現在のファイルの更新情報を確認できないため、上書きを中止しました。名前を付けて保存してください。');
+    }
+    return etag;
   }
 
   // オプションパネル（「エディタ」= ファイル情報 / 「テーマ」= ファイル別スタイル）を
@@ -165,8 +158,7 @@
     if (typeof _syncDetailPanel !== 'function') return;
     const label = qs('note-title-input')?.value || titleFromPath(app.path);
     await _syncDetailPanel(label, app.path, 'page', {});
-    watchUnsupportedOptionTabs();
-    hideUnsupportedOptionTabs();
+    await window.MeldexStandaloneParity?.syncOptionFeatures?.();
   }
 
   function currentZoom() {
@@ -225,6 +217,12 @@
     }
   }
 
+  async function canReplaceCurrent() {
+    if (app.dirty && !(await cfConfirm('未保存の変更を破棄して開きますか？'))) return false;
+    await localDrafts?.discardCurrent?.();
+    return true;
+  }
+
   async function openNote() {
     if (app.dirty && !(await cfConfirm('未保存の変更を破棄して開きますか？'))) {
       MeldexStandaloneFS.discardQueuedOpen?.();
@@ -247,15 +245,23 @@
     }
     showLoading('ノートを保存しています...');
     try {
-      const res = await MeldexStandaloneFS.writeText(app.path, md, { if_match_etag: editor().dataset.lastSavedEtag || '', skip_if_missing: true });
+      const res = await MeldexStandaloneFS.writeText(app.path, md, {
+        if_match_etag: requireSavedEtag(),
+        skip_if_missing: true,
+      });
       if (res?.skipped || res?.missing) {
         showStatus('保存先が見つかりません。名前を付けて保存してください', true);
         await saveNoteAs();
         return;
       }
-      editor().dataset.lastSavedEtag = res?.etag || '';
+      const nextEtag = String(res?.etag || '').trim();
+      if (!nextEtag) {
+        editor().dataset.lastSavedEtag = '';
+        throw new Error('保存後の更新情報を確認できないため、次の上書きを中止しました');
+      }
+      editor().dataset.lastSavedEtag = nextEtag;
       setDirty(false);
-      await localDrafts?.markSynced?.(res?.etag || '');
+      await localDrafts?.markSynced?.(currentSavedEtag());
       showStatus('保存しました');
     } finally {
       hideLoading();
@@ -267,18 +273,42 @@
     const title = qs('note-title-input').value.trim() || titleFromPath(app.path);
     const suggested = MeldexStandaloneFS.suggestedName(app.path, title + MeldexStandaloneFS.defaultExtension());
     const saved = await MeldexStandaloneFS.saveAs(md, suggested);
-    if (!saved?.path) return;
-    await localDrafts?.markSynced?.('');
-    setPath(saved.path, '');
+    if (!saved?.path) return false;
+    const savedEtag = String(saved.etag || '').trim();
+    setPath(saved.path, savedEtag);
+    if (!savedEtag) {
+      throw new Error('保存結果の更新情報を確認できないため、次の上書きを中止しました。もう一度名前を付けて保存してください。');
+    }
+    await localDrafts?.markSynced?.(savedEtag);
     setDirty(false);
     showStatus('保存しました');
+    return true;
   }
 
   // リンク挿入。メニュークリック（savedRange無し・現在の選択範囲を使う）と、
   // gb-shortcuts.js の Ctrl+K ハンドラ（window.showLinkInsertModal 経由・
   // savedRangeあり）の両方から共有する。安全なスキームだけ許可する検証は
   // ここに一本化し、キーボード経路でも menuと同じ安全性を確保する。
+  function cloneEditorRange() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return null;
+    const range = selection.getRangeAt(0);
+    const common = range.commonAncestorContainer;
+    const container = common?.nodeType === Node.ELEMENT_NODE ? common : common?.parentElement;
+    if (!container || !editor().contains(container)) return null;
+    return range.cloneRange();
+  }
+
   function insertLinkAtSelection(savedRange) {
+    const stableRange = savedRange || lastEditorRange?.cloneRange?.() || cloneEditorRange();
+    if (window.MeldexStandaloneParity?.showLinkDialog) {
+      window.MeldexStandaloneParity.showLinkDialog(stableRange || null, insertLinkResult);
+      return;
+    }
+    insertLinkResult(null, stableRange || null);
+  }
+
+  function insertLinkResult(result, savedRange) {
     const restoreRange = (range) => {
       if (!range) return;
       try {
@@ -290,14 +320,16 @@
     restoreRange(savedRange);
     const sel = window.getSelection();
     const selected = sel && sel.rangeCount ? String(sel.toString() || '') : '';
-    const target = window.prompt('リンク先', '');
+    const target = result?.type === 'file' ? result.path
+      : result?.type === 'url' ? result.url
+        : window.prompt('リンク先', '');
     if (!target) return;
     const safeTarget = safeContentUrl(target, 'link');
     if (!safeTarget) {
       showStatus('安全でないリンク先は挿入できません', true);
       return;
     }
-    const label = selected || window.prompt('表示名', target) || target;
+    const label = selected || result?.name || window.prompt('表示名', target) || target;
     restoreRange(savedRange);
     editor().focus();
     document.execCommand('insertHTML', false, `<a href="${esc(safeTarget)}" rel="noopener noreferrer">${esc(label)}</a>`);
@@ -434,10 +466,9 @@
         if (typeof openFileSearch === 'function') openFileSearch('replace');
       }
     });
-    qs('note-rt-heading').addEventListener('change', event => {
-      if (typeof rtHeading === 'function') rtHeading(event.target.value);
-      event.target.value = '';
-    });
+    // 旧ネイティブ select（#note-rt-heading）は #page-rt-heading-btn
+    // （gb-note-toolbar-block-select.js の data-action 委譲）へ置き換え済み。
+    // ここでの change リスナーは不要（本体 Meldex-dev.html と同じ構成）。
   }
 
   // スマホ幅（≤820px）で優先操作だけを常時表示し、残りを「その他」ボトムシートへ畳む
@@ -483,6 +514,24 @@
     await MeldexExportImage.exportCurrentView('page');
   }
 
+  async function exportDocxFile() {
+    if (typeof MeldexDocxExport === 'undefined' || typeof MeldexDocxExport.create !== 'function'
+      || typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveBlob !== 'function') {
+      showStatus('Word書き出しを初期化できませんでした', true);
+      return;
+    }
+    const title = qs('note-title-input').value.trim() || titleFromPath(app.path);
+    const blob = MeldexDocxExport.create(title, collectMarkdown());
+    await MeldexExportSave.saveBlob(blob, {
+      title,
+      extension: '.docx',
+      dialogTitle: 'Word（DOCX）として保存',
+      filetypes: [['Word文書', '*.docx'], ['すべてのファイル', '*.*']],
+      okMessage: 'Word文書として保存しました',
+      errorMessage: 'Word文書の保存に失敗しました',
+    });
+  }
+
   async function copyMarkdownToClipboard() {
     const md = collectMarkdown();
     if (!navigator.clipboard?.writeText) {
@@ -505,6 +554,7 @@
     }
     function showContext(event) {
       event.preventDefault();
+      lastEditorRange = cloneEditorRange() || lastEditorRange;
       context.classList.add('open');
       context.setAttribute('aria-hidden', 'false');
       placeFixedElement(context, event.clientX, event.clientY);
@@ -524,6 +574,7 @@
       if (action === 'toggleVertical') toggleVertical();
       if (action === 'exportMarkdown') await window.runStandaloneFileAction('Markdown出力', exportMarkdownFile);
       if (action === 'exportPng') await window.runStandaloneFileAction('PNG出力', exportPngFile);
+      if (action === 'exportDocx') await window.runStandaloneFileAction('Word出力', exportDocxFile);
       if (action === 'copyMarkdown') await window.runStandaloneFileAction('Markdownコピー', copyMarkdownToClipboard);
       if (fromContext) hideContext(false);
     });
@@ -535,6 +586,10 @@
       if (event.target.closest('#note-context-menu')) hideContext(false);
     });
     editor().addEventListener('contextmenu', showContext);
+    document.addEventListener('selectionchange', () => {
+      const range = cloneEditorRange();
+      if (range) lastEditorRange = range;
+    });
     document.addEventListener('pointerdown', event => {
       if (context.classList.contains('open') && !context.contains(event.target)) hideContext(false);
     });
@@ -579,35 +634,54 @@
         setDirty(true);
       },
       sync: async (snapshot, record) => {
+        const baselineEtag = String(record.baseRevision || '').trim();
+        if (!baselineEtag) {
+          throw new Error('更新情報がないため、下書きの上書きを中止しました');
+        }
         const result = await MeldexStandaloneFS.writeText(record.remotePath, snapshot.content || '', {
-          if_match_etag: record.baseRevision || '',
+          if_match_etag: baselineEtag,
           skip_if_missing: true,
         });
         if (result?.missing || result?.skipped || result?.queued) {
           throw new Error(result?.queued ? '接続後に再試行します' : '保存先が見つかりません');
         }
-        editor().dataset.lastSavedEtag = result?.etag || '';
+        const nextEtag = String(result?.etag || '').trim();
+        if (!nextEtag) {
+          editor().dataset.lastSavedEtag = '';
+          throw new Error('保存後の更新情報を確認できないため、下書きの上書きを中止しました');
+        }
+        editor().dataset.lastSavedEtag = nextEtag;
         setDirty(false);
       },
       onStatus: (status, message) => {
         const label = qs('note-sync-status');
-        if (label && ['saving', 'local-saved', 'pending', 'syncing', 'conflict', 'error'].includes(status)) {
+        if (label && ['waiting', 'local-saving', 'local-saved', 'saving', 'final-saving', 'pending', 'syncing', 'synced', 'conflict', 'error'].includes(status)) {
           label.textContent = message;
           label.dataset.status = status;
         }
       },
     });
     localDrafts.start();
+    window.MeldexStandaloneCloseGuard?.register?.({
+      appId: 'note',
+      saveAs: saveNoteAs,
+      prepareClose: () => {
+        document.activeElement?.blur?.();
+        return true;
+      },
+    });
     await localDrafts.restoreLatest();
     localDrafts.flush();
   }
 
-  // gb-shortcuts.js の note.link ハンドラ（Ctrl+K）は、単独版では未同梱の
-  // showLinkInsertModal（本体のCtrl+K内部リンク検索。要判断#4により対象外のまま）
-  // が無い場合、無検証の window.prompt にフォールバックする。ここで安全な実装を
-  // 用意して差し替え、キーボード経路でもメニューと同じURL検証を確保する。
+  // gb-shortcuts.js の note.link ハンドラ（Ctrl+K）を、メニューと同じ検索可能な
+  // 単独版共通リンクダイアログへ接続する。
   function initLinkModalBridge() {
-    window.showLinkInsertModal = function (savedRange) {
+    window.showLinkInsertModal = function (savedRange, callback) {
+      if (window.MeldexStandaloneParity?.showLinkDialog) {
+        window.MeldexStandaloneParity.showLinkDialog(savedRange || null, callback || insertLinkResult);
+        return;
+      }
       insertLinkAtSelection(savedRange || null);
     };
   }
@@ -640,9 +714,20 @@
     });
   }
 
+  function initParityAdapter() {
+    window.MeldexStandaloneParity?.init?.({
+      appId: 'note',
+      getPath: () => app.path,
+      getLabel: () => qs('note-title-input')?.value || titleFromPath(app.path),
+      openCurrent: openPath,
+      canReplaceCurrent,
+    });
+  }
+
   function bindUi() {
-    initLinkModalBridge();
     initOptionPanel();
+    initParityAdapter();
+    initLinkModalBridge();
     bindMenus();
     bindShortcuts();
     bindEditor();
@@ -654,7 +739,8 @@
 
   async function initializeData() {
     await MeldexStandaloneFS.init();
-    const initial = MeldexStandaloneFS.nativeInitialPath();
+    const requested = new URLSearchParams(location.search).get('open') || '';
+    const initial = requested || MeldexStandaloneFS.nativeInitialPath();
     if (!initial) await newNote();
     else {
       try { await openPath(initial); }

@@ -223,15 +223,11 @@
     }
   }
 
-  async function render(items, options = {}) {
+  async function renderInto(host, items, options = {}) {
     const targets = (Array.isArray(items) ? items : []).filter(item => item?.path && item.type !== 'folder');
-    if (targets.length < 2 || typeof showDetailPanel !== 'function') return false;
+    if (!host || targets.length < 2) return false;
     const token = ++renderToken;
-    await showDetailPanel('<div data-folder-multi-info-host><div class="folder-multi-info-loading">共通情報を読み込んでいます...</div></div>');
-    if (token !== renderToken || options.isCurrent?.() === false) return true;
-    const detailRoot = document.getElementById('rp-detail') || document;
-    const host = detailRoot.querySelector('[data-folder-multi-info-host]');
-    if (!host) return true;
+    host.innerHTML = '<div class="folder-multi-info-loading">共通情報を読み込んでいます...</div>';
     const results = await Promise.all(targets.map(loadMetadata));
     if (token !== renderToken || options.isCurrent?.() === false || !host.isConnected) return true;
     renderContent(
@@ -239,10 +235,21 @@
       targets,
       results.map(result => result.meta),
       results.filter(result => result.error),
-      () => render(targets, options),
+      () => renderInto(host, targets, options),
     );
     return true;
   }
 
-  window.MeldexFolderMultiInfo = { render, commonRows };
+  async function render(items, options = {}) {
+    const targets = (Array.isArray(items) ? items : []).filter(item => item?.path && item.type !== 'folder');
+    if (targets.length < 2 || typeof showDetailPanel !== 'function') return false;
+    await showDetailPanel('<div data-folder-multi-info-host></div>');
+    if (options.isCurrent?.() === false) return true;
+    const detailRoot = document.getElementById('rp-detail') || document;
+    const host = detailRoot.querySelector('[data-folder-multi-info-host]');
+    if (!host) return true;
+    return renderInto(host, targets, options);
+  }
+
+  window.MeldexFolderMultiInfo = { render, renderInto, commonRows };
 })();

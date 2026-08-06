@@ -7,7 +7,7 @@
   const FALLBACK_STORAGE_KEY = 'meldex-llm-keys:fallback';
   const SAVE_MODE_KEY = 'meldex-llm-keys:save-mode';
   const CLOUD_KDF_ITERATIONS = 600000;
-  const CLOUD_KEY_PATH = '_meldex/secrets/llm-api-keys.v1.json';
+  const CLOUD_KEY_PATH = '/MeldexSettings/secrets/v1/llm-api-keys.v1.json';
   const KEY_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'];
   const PROVIDER_KEY = {
     anthropic: 'ANTHROPIC_API_KEY',

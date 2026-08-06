@@ -13,6 +13,7 @@ let _csvSaveVersion = 0;
 let _csvSaveInFlight = null;
 let _csvSaveQueued = false;
 let _csvLastSavedEtag = '';
+let _csvLastSavedTransportRevision = '';
 let _csvSheetModeActive = false;
 
 function _csvHistoryScope() {
@@ -32,6 +33,7 @@ function _csvMarkDirty() {
   _csvSaveVersion += 1;
   if (_csvSaveInFlight) _csvSaveQueued = true;
   if (typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
+  globalThis.MeldexCsvWorkbench?.reconcile?.();
 }
 
 function _csvRestoreSnapshot(snapshot) {
@@ -154,6 +156,7 @@ function _csvSyncSheetViewSwitcher() {
 
 function deactivateCsvSheetMode() {
   _csvSheetModeActive = false;
+  globalThis.MeldexCsvWorkbench?.deactivate?.();
   if (document.body?.dataset) delete document.body.dataset.csvSheetMode;
   _csvClearSheetToolbar();
   const tabs = document.getElementById('db-view-tabs');
@@ -250,10 +253,17 @@ function _csvRenderMessage(message) {
 // === CSVファイルを開く ===
 async function openCsvFile(label, path, opts) {
   const openOpts = opts || {};
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  let documentKeyAtOpen = coordinator ? coordinator.documentKeyForPath(path) : path;
+  const conflictGenerationAtOpen = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    ? openOpts.conflictGeneration
+    : null;
+  const requireExactConflictGeneration = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    && conflictGenerationAtOpen != null;
   const showGlobalLoading = !openOpts.bridgeLoad && !openOpts.silent
     && typeof showLoading === 'function' && typeof hideLoading === 'function';
   // 前のCSVの未保存変更をフラッシュ
-  if (_csvDirty && _csvPath) {
+  if (_csvDirty && _csvPath && !openOpts.discardDirty) {
     clearTimeout(_csvAutoSaveTimer);
     const saved = await saveCsv();
     if (!saved) return false;
@@ -266,6 +276,7 @@ async function openCsvFile(label, path, opts) {
     _csvDirty = false;
     _csvSaveQueued = false;
     _csvLastSavedEtag = '';
+    _csvLastSavedTransportRevision = '';
     clearTimeout(_csvAutoSaveTimer);
 
   if (!openOpts.skipStateView) state.view = 'csv';
@@ -282,26 +293,69 @@ async function openCsvFile(label, path, opts) {
   }
   if (!openOpts.skipRecent) addRecent(label, path, 'csv');
   if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('csv:' + path);
 
   try {
-    const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+    const data = openOpts.prefetchedData || await apiFetch('/file?path=' + encodeURIComponent(path));
     if (_csvOpenSeq !== openSeq) return false;
+    if (coordinator) documentKeyAtOpen = coordinator.bindDocumentIdentity(path, data) || documentKeyAtOpen;
     const raw = data.content || '';
     if (showGlobalLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいCSVを描画中...');
       if (_csvOpenSeq !== openSeq) return false;
     }
-    const parsed = parseCsv(raw);
+    const parsedResult = globalThis.MeldexCsv
+      ? globalThis.MeldexCsv.parse(raw, {
+        encoding: data.encoding || '',
+        delimiter: data.delimiter || '',
+        newline: data.newline || '',
+        bom: data.bom,
+      })
+      : { rows: parseCsv(raw), dialect: null };
+    const parsed = parsedResult.rows;
+    if (
+      requireExactConflictGeneration
+      && coordinator?.getConflict?.(documentKeyAtOpen)?.generation !== conflictGenerationAtOpen
+    ) {
+      throw new Error('CSV conflict generation changed while reloading');
+    }
     _csvPath = path;
     _csvData = parsed;
     _csvHeaders = _csvData.length > 0 ? _csvData[0] : [];
     _csvLastSavedEtag = data.etag || '';
+    _csvLastSavedTransportRevision = coordinator
+      ? coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        data.transport_revision || data.etag || '',
+      )
+      : (data.etag || '');
     _csvNormalizeTableShape();
-    renderCsvTable();
+    if (globalThis.MeldexCsvWorkbench) {
+      await globalThis.MeldexCsvWorkbench.open({
+        path,
+        rows: _csvData,
+        dialect: parsedResult.dialect,
+      });
+    } else {
+      renderCsvTable();
+    }
+    // 取り消しスコープは _csvData が最終読み込み内容になった後（読み込み中の
+    // 別データを取り消しが巻き戻して上書きされないよう）に切り替える。
+    // フェッチより前に呼ぶと、切替直後・読込完了前の取り消しがこの読込完了で
+    // 上書きされ消える（app/docs/undo-pane-context_plan_2026-07-25.md §9 既知バグ）。
+    if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('csv:' + path);
     _csvRefreshAnnotationTarget();
     if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
     if (!openOpts.skipGlobalUi) showStatus('CSV: ' + label);
+    // 競合確認からの明示的な再読込だけを、表の描画と後続UI更新がすべて
+    // 成功した時点で解決済みとする。ここより前で解除すると、後続処理の例外時に
+    // 読込失敗表示へ戻ったのに競合だけ消える状態になり得る。
+    if (coordinator && conflictGenerationAtOpen != null) {
+      const resolved = coordinator.resolveConflict(documentKeyAtOpen, conflictGenerationAtOpen);
+      if (!resolved) throw new Error('CSV conflict generation changed before reload completed');
+      window.MeldexConflictPendingBanner?.hide?.(documentKeyAtOpen);
+    } else if (coordinator?.getConflict?.(documentKeyAtOpen)) {
+      _csvShowConflictPending(documentKeyAtOpen);
+    }
   } catch {
     if (_csvOpenSeq !== openSeq) return false;
     _csvPath = '';
@@ -310,6 +364,7 @@ async function openCsvFile(label, path, opts) {
     _csvDirty = false;
     _csvSaveQueued = false;
     _csvLastSavedEtag = '';
+    _csvLastSavedTransportRevision = '';
     _csvRenderMessage('CSVを読み込めませんでした');
     if (!openOpts.skipGlobalUi) showStatus('CSVを読み込めませんでした', true);
     return false;
@@ -321,6 +376,7 @@ async function openCsvFile(label, path, opts) {
 
 // === CSVパーサー（RFC 4180準拠） ===
 function parseCsv(text) {
+  if (globalThis.MeldexCsv) return globalThis.MeldexCsv.parse(text).rows;
   const normalized = String(text || '').replace(/^\uFEFF/, '');
   const rows = [];
   let row = [];
@@ -348,6 +404,14 @@ function parseCsv(text) {
 }
 
 function serializeCsv(data) {
+  if (globalThis.MeldexCsv) {
+    return globalThis.MeldexCsv.serialize(data, {
+      delimiter: ',',
+      newline: '\r\n',
+      bom: false,
+      finalNewline: false,
+    });
+  }
   return data.map(row =>
     row.map(cell => {
       const s = String(cell ?? '');
@@ -482,6 +546,7 @@ function _csvRenderLegacyTable() {
 }
 
 function renderCsvTable() {
+  if (_csvSheetModeActive && globalThis.MeldexCsvWorkbench?.render?.()) return;
   if (_csvSheetModeActive && _csvRenderSheetTable()) return;
   _csvRenderLegacyTable();
 }
@@ -639,6 +704,10 @@ function _csvCommitActiveEditor() {
 }
 
 function _csvSavePayload() {
+  if (globalThis.MeldexCsvWorkbench?.serialize) {
+    const serialized = String(globalThis.MeldexCsvWorkbench.serialize() || '');
+    return serialized.startsWith('\uFEFF') ? serialized : `\uFEFF${serialized}`;
+  }
   return '\uFEFF' + serializeCsv(_csvData);
 }
 
@@ -646,16 +715,162 @@ function _csvIsMissingSaveResult(result) {
   return !!(result?.skipped || result?.missing);
 }
 
+// 工程2-C項目4: 本物の409だけを共通conflict-pending導線へ接続する。CSVの
+// 既存single-flightキュー（_csvSaveInFlight/_csvSaveQueued）とetag更新は
+// そのまま維持し、別実装で置き換えない。
+function _csvDocumentKey(path) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  return coordinator ? coordinator.documentKeyForPath(path) : path;
+}
+
+function _csvShowConflictPending(documentKey) {
+  window.MeldexConflictPendingBanner?.show?.(documentKey, {
+    label: '競合を保留中',
+    e2eId: 'csv-conflict-pending-banner',
+    onConfirm: () => { _csvReloadAfterConflict().catch(() => showStatus('最新版の取得に失敗しました', true)); },
+  });
+}
+
+function _csvRestoreConflictReview(documentKey, reviewRecord) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  if (coordinator && reviewRecord) {
+    const current = coordinator.getConflict?.(documentKey);
+    if (!current || current.generation !== reviewRecord.generation) return;
+    coordinator.restoreConflict?.(documentKey, reviewRecord);
+  }
+  _csvShowConflictPending(documentKey);
+}
+
+// 「確認する」導線（計画書§2.6・§5工程2-A項目7の等価物）。CSVは差分表示付きの
+// 専用ダイアログを持たないため、上書き/再読込の2択に絞った確認を出す
+// （保留中の未保存編集を無言で破棄しない。計画書§9「実装しないこと」）。
+async function _csvReloadAfterConflict() {
+  const path = _csvPath;
+  if (!path) return;
+  const documentKey = _csvDocumentKey(path);
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const reviewRecord = coordinator?.requestConflictReview?.(documentKey) || null;
+  if (coordinator && !reviewRecord) return;
+  const conflictGeneration = reviewRecord?.generation ?? null;
+  window.MeldexConflictPendingBanner?.hide?.(documentKey);
+  const keepLocal = typeof cfConfirm === 'function'
+    ? await cfConfirm('このCSVは他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は失われます）')
+    : false;
+  if (keepLocal) {
+    try {
+      const content = _csvSavePayload();
+      const result = await apiPut('/file?path=' + encodeURIComponent(path), { content, force_overwrite: true });
+      const resolved = coordinator?.resolveConflict?.(documentKey, conflictGeneration);
+      if (coordinator && !resolved) {
+        throw new Error('CSVの競合状態が更新されたため、上書き結果を確定できません');
+      }
+      if (_csvPath === path) {
+        _csvLastSavedEtag = result?.etag || _csvLastSavedEtag;
+        if (coordinator && (result?.transport_revision || result?.etag)) {
+          _csvLastSavedTransportRevision = coordinator.normalizeTransportRevision(
+            coordinator.currentTransportName(),
+            result.transport_revision || result.etag,
+          );
+          coordinator.bindDocumentIdentity(path, result);
+        }
+        _csvDirty = false;
+      }
+      if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+      await window.MeldexDraftRecovery?.markSynced?.(path);
+      showStatus('自分の編集で上書き保存しました');
+    } catch (e) {
+      _csvRestoreConflictReview(documentKey, reviewRecord);
+      showStatus('上書き保存に失敗しました', true);
+    }
+    return;
+  }
+  // 先に最新版の取得を完了させる。旧実装は取得前にdirty/競合を解除していたため、
+  // 通信失敗だけで未保存の表と再確認導線を同時に失っていた。
+  const localSnapshot = {
+    path: _csvPath,
+    data: _csvSnapshot(),
+    dirty: _csvDirty,
+    saveQueued: _csvSaveQueued,
+    lastSavedEtag: _csvLastSavedEtag,
+    lastSavedTransportRevision: _csvLastSavedTransportRevision,
+    saveVersion: _csvSaveVersion,
+    dialect: globalThis.MeldexCsvWorkbench?.getMetadata?.().dialect || null,
+  };
+  await window.MeldexDraftRecovery?.saveDraft?.(path, _csvSavePayload(), _csvLastSavedEtag || '');
+  let reloadOpenSeq = null;
+  try {
+    const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+    if (_csvPath !== path) {
+      _csvRestoreConflictReview(documentKey, reviewRecord);
+      return;
+    }
+    reloadOpenSeq = _csvOpenSeq + 1;
+    const opened = await openCsvFile(path.split('/').pop(), path, {
+      discardDirty: true,
+      prefetchedData: data,
+      conflictGeneration,
+      skipNavPush: true,
+      skipRecent: true,
+      skipAutoVersion: true,
+    });
+    if (!opened) throw new Error('CSV reload failed');
+    showStatus('最新のCSVを読み込みました');
+  } catch (_) {
+    // この再読込自身が失敗した場合だけローカル表を戻す。途中で別のCSVを開いた
+    // （openSeqが進んだ）場合は、新しい画面を古いスナップショットで巻き戻さない。
+    if (reloadOpenSeq == null || _csvOpenSeq === reloadOpenSeq) {
+      _csvPath = localSnapshot.path;
+      _csvData = localSnapshot.data.map(row => row.slice());
+      _csvHeaders = _csvData.length > 0 ? _csvData[0] : [];
+      _csvDirty = localSnapshot.dirty;
+      _csvSaveQueued = localSnapshot.saveQueued;
+      _csvLastSavedEtag = localSnapshot.lastSavedEtag;
+      _csvLastSavedTransportRevision = localSnapshot.lastSavedTransportRevision;
+      _csvSaveVersion = localSnapshot.saveVersion;
+      if (globalThis.MeldexCsvWorkbench?.open) {
+        try {
+          await globalThis.MeldexCsvWorkbench.open({
+            path: localSnapshot.path,
+            rows: _csvData,
+            dialect: localSnapshot.dialect,
+          });
+        } catch (_) {
+          renderCsvTable();
+        }
+      } else {
+        renderCsvTable();
+      }
+    }
+    _csvRestoreConflictReview(documentKey, reviewRecord);
+    showStatus('最新版の取得に失敗しました', true);
+  }
+}
+
 async function _csvDrainSaveQueue() {
   let ok = true;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
   while (_csvSaveQueued && _csvPath && _csvDirty) {
     _csvSaveQueued = false;
     const savePath = _csvPath;
     const saveVersion = _csvSaveVersion;
+    const documentKey = _csvDocumentKey(savePath);
+    if (coordinator && coordinator.isConflictPending(documentKey)) {
+      // conflict-pending中はネットワーク保存を止める（ローカルのdirty内容は保持したまま）。
+      // 「確認する」から解決するまで、自動保存タイマーの再試行では送らない。
+      window.MeldexDraftRecovery?.queueDraft?.(savePath, _csvSavePayload(), _csvLastSavedEtag || '');
+      break;
+    }
     const content = _csvSavePayload();
     try {
       const payload = { content, skip_if_missing: true };
-      if (_csvLastSavedEtag) payload.if_match_etag = _csvLastSavedEtag;
+      const guardedRevision = coordinator
+        ? coordinator.revisionTokenForWrite(
+          _csvLastSavedTransportRevision || _csvLastSavedEtag || '',
+          coordinator.currentTransportName(),
+        )
+        : (_csvLastSavedEtag || '');
+      if (guardedRevision) payload.if_match_etag = guardedRevision;
+      if (_csvLastSavedTransportRevision) payload.transport_revision = _csvLastSavedTransportRevision;
       const result = await apiPut('/file?path=' + encodeURIComponent(savePath), payload);
       if (_csvIsMissingSaveResult(result)) {
         _csvDirty = true;
@@ -663,6 +878,13 @@ async function _csvDrainSaveQueue() {
         return false;
       }
       if (_csvPath === savePath && result?.etag) _csvLastSavedEtag = result.etag;
+      if (coordinator && _csvPath === savePath && (result?.transport_revision || result?.etag)) {
+        _csvLastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          result.transport_revision || result.etag,
+        );
+        coordinator.bindDocumentIdentity(savePath, result);
+      }
       if (_csvPath === savePath && _csvSaveVersion === saveVersion) {
         _csvDirty = false;
         clearTimeout(_csvAutoSaveTimer);
@@ -671,7 +893,21 @@ async function _csvDrainSaveQueue() {
         _csvDirty = true;
         _csvSaveQueued = true;
       }
-    } catch {
+    } catch (e) {
+      _csvDirty = true;
+      if (coordinator && (e?.status === 409 || e?.meldexCode === 'etag_conflict')) {
+        // 項目15の反転: dirty内容を保持したまま共通の保留/解決導線へ接続する。
+        coordinator.reportConflict(documentKey, {
+          path: savePath,
+          localMd: content,
+          localEtag: _csvLastSavedTransportRevision || _csvLastSavedEtag || '',
+          serverDetail: (e && e.meldexDetail && typeof e.meldexDetail === 'object') ? e.meldexDetail : null,
+        });
+        window.MeldexDraftRecovery?.saveDraft?.(savePath, content, _csvLastSavedEtag || '');
+        _csvShowConflictPending(documentKey);
+        showStatus('CSVは上書きされていません。別の端末で更新されています', true);
+        break;
+      }
       ok = false;
       showStatus('CSV保存に失敗しました', true);
       break;
@@ -715,16 +951,24 @@ function flushCsvBeforeUnload(event) {
   if (!_csvPath || !_csvDirty) return true;
   clearTimeout(_csvAutoSaveTimer);
   const base = typeof API_BASE !== 'undefined' ? API_BASE : '/api';
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const guardedRevision = coordinator
+    ? coordinator.revisionTokenForWrite(
+      _csvLastSavedTransportRevision || _csvLastSavedEtag || '',
+      coordinator.currentTransportName(),
+    )
+    : (_csvLastSavedEtag || '');
   const queued = _csvSendUnloadJson(base + '/file?path=' + encodeURIComponent(_csvPath), {
     content: _csvSavePayload(),
     skip_if_missing: true,
-    if_match_etag: _csvLastSavedEtag || '',
+    if_match_etag: guardedRevision,
+    transport_revision: _csvLastSavedTransportRevision || '',
   });
-  if (!queued && event) {
+  if (event) {
     event.preventDefault?.();
     event.returnValue = '';
   }
-  return queued;
+  return !event && queued;
 }
 
 // === 行・列の追加 ===
@@ -751,6 +995,18 @@ function addCsvColumn() {
 
 // === DB変換 ===
 async function convertCsvToDb() {
+  if (globalThis.MeldexCsvConversion?.open) {
+    _csvCommitActiveEditor();
+    if (_csvDirty && !await saveCsv()) return;
+    return globalThis.MeldexCsvConversion.open({
+      csvPath: _csvPath,
+      filename: _csvPath.split(/[\\/]/).pop() || 'CSV.csv',
+      rows: _csvData,
+      dialect: globalThis.MeldexCsvWorkbench?.getMetadata?.().dialect,
+      columns: globalThis.MeldexCsvWorkbench?.getMetadata?.().columns,
+      sourceEtag: _csvLastSavedEtag,
+    });
+  }
   _csvCommitActiveEditor();
   if (_csvDirty) {
     const saved = await saveCsv();
@@ -797,6 +1053,28 @@ document.getElementById('csv-add-row')?.addEventListener('click', addCsvRow);
 document.getElementById('csv-add-col')?.addEventListener('click', addCsvColumn);
 document.getElementById('csv-to-db')?.addEventListener('click', convertCsvToDb);
 if (typeof window !== 'undefined') {
+  window.MeldexCsvHost = Object.freeze({
+    getState: () => ({
+      path: _csvPath,
+      data: _csvData,
+      headers: _csvHeaders,
+      dirty: _csvDirty,
+      etag: _csvLastSavedEtag,
+      active: _csvSheetModeActive,
+    }),
+    snapshot: _csvSnapshot,
+    normalize: _csvNormalizeTableShape,
+    registerHistory: _csvRegisterHistory,
+    markDirty: _csvMarkDirty,
+    renderLegacy: () => {
+      if (_csvSheetModeActive && _csvRenderSheetTable()) return;
+      _csvRenderLegacyTable();
+    },
+    startCellEdit: startCsvCellEdit,
+    startHeaderEdit: startCsvHeaderEdit,
+    commitActiveEditor: _csvCommitActiveEditor,
+    save: saveCsv,
+  });
   window.deactivateCsvSheetMode = deactivateCsvSheetMode;
   window.isCsvSheetModeActive = () => _csvSheetModeActive;
   window.addEventListener('beforeunload', flushCsvBeforeUnload);

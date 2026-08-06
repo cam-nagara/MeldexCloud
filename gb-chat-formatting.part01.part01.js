@@ -870,16 +870,44 @@
     return part.collapsed ? '' : _chatCopyVisibleText(part);
   }
 
+  // ノート行操作・書式ポップアップ・チャット選択回帰修正計画(2026-08-04)§2.5:
+  // 発言者名・日時（.chat-message-header 内の .chat-message-author /
+  // .chat-message-time）が選択可能になったのに合わせ、Ctrl+Cのチャット選択判定も
+  // ヘッダーまで拡大する。操作ボタン（コピー/削除/再生成/編集/保留取消し）は
+  // .chat-message-author/.chat-message-time のどちらでもないため、この判定に
+  // ボタンが混ざることはない。ヘッダーの実際の見た目テキストではなく、既存どおり
+  // message.dataset.chatCopyAuthor/chatCopyTime（正本の発言者名・日時）を使うため、
+  // 部分選択でも表記が崩れず、ボタン名や認証カードが混入する余地も無い。
+  function _chatCopyHeaderIntersectsSelection(selectionRange, message) {
+    const header = message?.querySelector?.('.chat-message-header');
+    if (!header) return false;
+    const author = header.querySelector('.chat-message-author');
+    const time = header.querySelector('.chat-message-time');
+    return !!((author && selectionRange.intersectsNode?.(author)) || (time && selectionRange.intersectsNode?.(time)));
+  }
+
+  // 1件分のコピー整形行を組み立てる（DOM/Range非依存の純粋関数）。
+  // 本文が選択されていれば従来どおり「[時刻] 発言者\n本文」、ヘッダー
+  // （発言者名・日時）だけが選択されている場合は本文行を付けず「[時刻] 発言者」の
+  // 見出し行だけを返す。どちらも選択されていなければ null（対象外）。
+  // 複数発言をまたぐ場合の結合（entries.join('\n\n')）は呼び出し元のまま維持する。
+  function _chatCopyEntryLine(message, bodyText, headerSelected) {
+    if (!bodyText && !headerSelected) return null;
+    const author = String(message?.dataset?.chatCopyAuthor || '').trim() || '発言者';
+    const time = String(message?.dataset?.chatCopyTime || '').trim();
+    const headerLine = `${time ? `[${time}] ` : ''}${author}`;
+    return bodyText ? `${headerLine}\n${bodyText}` : headerLine;
+  }
+
   function _chatCopyHistoryText(range) {
     const entries = [];
     document.querySelectorAll('.chat-copy-message').forEach(message => {
       if (!range.intersectsNode?.(message)) return;
       const body = message.querySelector('.chat-copy-body');
       const bodyText = _chatCopyBodySelectionText(range, body);
-      if (!bodyText) return;
-      const author = String(message.dataset.chatCopyAuthor || '').trim() || '発言者';
-      const time = String(message.dataset.chatCopyTime || '').trim();
-      entries.push(`${time ? `[${time}] ` : ''}${author}\n${bodyText}`);
+      const headerSelected = _chatCopyHeaderIntersectsSelection(range, message);
+      const entry = _chatCopyEntryLine(message, bodyText, headerSelected);
+      if (entry != null) entries.push(entry);
     });
     return entries.join('\n\n');
   }

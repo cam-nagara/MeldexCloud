@@ -134,9 +134,9 @@ const GBLayout = (() => {
   }
 
   const FIXED_RAIL_LEFT_TYPES = new Set(['outliner']);
-  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'version']);
+  const FIXED_RAIL_RIGHT_TYPES = new Set(['detail', 'preview', 'chat', 'timer', 'history', 'annotation', 'sticky', 'tags', 'version', 'subpanel']);
   const FIXED_RAIL_RIGHT_DEFAULTS = [
-    ['オプション', 'detail'], ['ビューワー', 'preview'], ['バージョン管理', 'version'],
+    ['オプション', 'detail'], ['ビューワー', 'preview'], ['サブパネル', 'subpanel'], ['バージョン管理', 'version'],
     ['チャット', 'chat'], ['タイマー', 'timer'],
     ['ヒストリー', 'history'], ['注釈', 'annotation'], ['タグ', 'tags'],
   ];

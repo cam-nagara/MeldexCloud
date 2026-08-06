@@ -600,10 +600,25 @@ function _showValueContextMenu(e, val, entityPath, propName) {
             name = await _resolveRelationName(idOrName, relDb);
           }
           const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
-          if (path && typeof openLinkInSubPanel === 'function') openLinkInSubPanel(path, name || idOrName, { linkType: 'entity', sourcePaneId });
+          if (path && typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(path, name || idOrName, { linkType: 'entity', sourcePaneId });
           else navigateToEntity(name || idOrName, relDb, currentCtx);
         });
         sub.appendChild(rightItem);
+        if (typeof window.revealPathInFolderTree === 'function') {
+          const revealItem = document.createElement('div');
+          revealItem.className = 'gb-context-menu-item';
+          revealItem.innerHTML = lucide('folderTree', 14) + ' フォルダツリーに表示';
+          revealItem.addEventListener('click', async () => {
+            menu.remove();
+            let name = idOrName;
+            if (typeof _resolveRelationName === 'function' && relDb) {
+              name = await _resolveRelationName(idOrName, relDb);
+            }
+            const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+            if (path) window.revealPathInFolderTree(path);
+          });
+          sub.appendChild(revealItem);
+        }
         attachHoverSubmenu(relItem, sub);
         wrapper.appendChild(relItem);
         wrapper.appendChild(sub);

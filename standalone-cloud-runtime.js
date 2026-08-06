@@ -54,7 +54,7 @@
     constructor(message, detail) {
       super(message || 'Dropbox上のファイルが別の端末で更新されています。最新の内容を開き直してください。');
       this.name = 'StandaloneCloudConflictError';
-      this.code = 'etag_conflict';
+      this.code = 'etag_conflict'; this.status = 409; this.meldexCode = 'etag_conflict';
       this.detail = detail || null;
     }
   }
@@ -146,7 +146,7 @@
   }
   function _asConflictError(error) {
     const message = String(error?.message || error || '');
-    if (error?.code === 'etag_conflict' || /etag_conflict|更新競合|競合コピー/i.test(message)) {
+    if (error?.status === 409 || error?.code === 'etag_conflict' || error?.meldexCode === 'etag_conflict' || /etag_conflict|更新競合|競合コピー/i.test(message)) {
       return new StandaloneCloudConflictError(
         'Dropbox上のファイルが別の端末で更新されています。元ファイルは上書きしていません。最新の内容を開き直してください。',
         error?.detail || error,
@@ -365,6 +365,12 @@
     return { name, path };
   }
 
+  function _providerFileRoutes() {
+    const routes = window.MeldexStandaloneCloudFileRoutes;
+    if (!routes?.handle) throw new Error('Cloudファイル保存モジュールが読み込まれていません');
+    return routes;
+  }
+
   function _fallbackFileType(name) {
     const lower = String(name || '').toLowerCase();
     if (lower.endsWith('.mel-board') || lower.endsWith('.board.md')) return 'board';
@@ -448,29 +454,16 @@
     const body = _bodyObject(options?.body);
     if (endpoint === '/browse' && method === 'GET') return _providerBrowse(provider, url);
     if (endpoint === '/search' && method === 'GET') return _providerSearch(provider, url);
-    if (endpoint === '/file' && method === 'GET') {
-      const filePath = normalizePath(url.searchParams.get('path') || '');
-      const content = await provider.readText(filePath);
-      const metadata = await provider.getMetadata(filePath);
-      return { path: filePath, content, etag: String(metadata?.rev || metadata?.content_hash || '') };
-    }
-    if (endpoint === '/file' && (method === 'PUT' || method === 'POST')) {
-      const filePath = normalizePath(url.searchParams.get('path') || '');
-      const metadata = await provider.refreshMetadata(filePath);
-      const currentEtag = String(metadata?.rev || metadata?.content_hash || '');
-      const expected = String(body?.if_match_etag || body?.ifMatchEtag || '');
-      const createOnly = !!(body?.create_only || body?.createOnly);
-      if (!metadata && (body?.skip_if_missing || body?.skipIfMissing)) return { ok: true, skipped: true, missing: true, etag: '' };
-      if (metadata?.['.tag'] === 'folder') throw new Error('フォルダはファイルとして保存できません');
-      if (createOnly && metadata) {
-        throw new StandaloneCloudConflictError('', { path: filePath, expected: '', current: currentEtag || 'exists' });
-      }
-      if (expected && (!metadata || !currentEtag || expected !== currentEtag)) {
-        throw new StandaloneCloudConflictError('', { path: filePath, expected, current: currentEtag });
-      }
-      const written = await provider.writeText(filePath, String(body?.content ?? ''));
-      return { ok: true, path: filePath, etag: String(written?.rev || written?.content_hash || '') };
-    }
+    const fileRoute = await _providerFileRoutes().handle({
+      endpoint,
+      method,
+      body,
+      url,
+      provider,
+      normalizePath,
+      ConflictError: StandaloneCloudConflictError,
+    });
+    if (fileRoute.handled) return fileRoute.value;
     if (endpoint === '/outliner/add' && method === 'POST' && body?.type === 'folder') {
       const parent = normalizePath(body?.parent || '');
       const requested = String(body?.label || '新しいフォルダ').replace(/[\\/]/g, '').trim() || '新しいフォルダ';
@@ -488,6 +481,7 @@
       const target = await _uniqueProviderPath(provider, dirname(source), requested, '-');
       await requireUnlocked(target.path, { action: 'duplicate-destination' });
       await provider.copyPath(source, target.path);
+      await _providerFileRoutes().regenerateCopiedDocumentIdentity(provider, target.path);
       return { ok: true, new_path: target.path, new_name: target.name };
     }
     if (endpoint === '/outliner/delete' && method === 'POST') {
@@ -518,6 +512,7 @@
       const target = await _uniqueProviderPath(provider, normalizePath(body?.dest_folder || dirname(source)), requested, '-');
       await requireUnlocked(target.path, { action: 'save-as-destination' });
       await provider.copyPath(source, target.path);
+      await _providerFileRoutes().regenerateCopiedDocumentIdentity(provider, target.path);
       return { ok: true, new_path: target.path, new_name: target.name };
     }
     throw Object.assign(new Error('このCloud操作は利用できません: ' + endpoint), { code: 'cloud_route_unwired' });
@@ -625,15 +620,15 @@
     if (write) _requireWriteDependencies();
     let opts = { ...(options || {}), method };
     const originalBody = _bodyObject(opts.body);
+    const mutationSourcePath = normalizePath(originalBody?.old_path || originalBody?.path || '');
     if (endpoint === '/outliner/restore' && method === 'POST') await _resolveRestorePath(originalBody);
     _pathPolicy().authorizeRequest({ endpoint, method, queryPath: _pathQuery(path), body: originalBody });
     if (opts.body != null) opts.body = originalBody;
     if (write) {
       const manualLockPaths = _uniqueLockPaths(_lockPaths(endpoint, path, originalBody));
-      const sourcePath = normalizePath(originalBody?.old_path || originalBody?.path || '');
       for (const lockPath of manualLockPaths) {
         const includeDescendants = ['/outliner/delete', '/outliner/delete-batch'].includes(endpoint)
-          || (['/outliner/move', '/outliner/rename'].includes(endpoint) && lockPath === sourcePath);
+          || (['/outliner/move', '/outliner/rename'].includes(endpoint) && lockPath === mutationSourcePath);
         await requireUnlocked(lockPath, {
           action: 'standalone-' + endpoint.replace(/^\//, '').replace(/\//g, '-'),
           includeDescendants,
@@ -653,11 +648,19 @@
       }
       if (endpoint === '/file' && method !== 'GET') {
         const body = _bodyObject(opts.body);
-        delete body.force_overwrite;
-        delete body.forceOverwrite;
-        const expected = await _expectedEtag(trackedPath, body);
+        const forceOverwrite = !!(body.force_overwrite || body.forceOverwrite);
+        const coordinator = window.MeldexDocumentSaveCoordinator;
+        const suppliedRevision = body.transport_revision || body.transportRevision || '';
+        if (suppliedRevision && coordinator?.revisionTokenForWrite) {
+          body.if_match_etag = coordinator.revisionTokenForWrite(suppliedRevision, 'dropbox-rev');
+        }
+        const expected = forceOverwrite ? '' : await _expectedEtag(trackedPath, body);
         const createOnly = !!(body.create_only || body.createOnly);
-        if (!expected && !createOnly) throw new Error('保存先の更新情報を確認できません。ファイルを開き直してから保存してください。');
+        if (!forceOverwrite && !expected && !createOnly) {
+          const error = new Error('保存先の更新情報を確認できません。ファイルを開き直してから保存してください。');
+          error.status = 428; error.code = 'precondition_required'; error.meldexCode = 'precondition_required';
+          throw error;
+        }
         if (expected) body.if_match_etag = expected;
         opts.body = body;
       }
@@ -669,6 +672,16 @@
       } else if (endpoint === '/file' && method !== 'GET') {
         if (result?.missing) state.etags.delete(trackedPath);
         else if (result?.etag) state.etags.set(trackedPath, String(result.etag));
+      }
+      if (
+        ['/outliner/move', '/outliner/rename'].includes(endpoint)
+        && mutationSourcePath
+        && result?.new_path
+      ) {
+        window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(
+          mutationSourcePath,
+          normalizePath(result.new_path),
+        );
       }
       if (write) _dispatch('meldex:standalone-workspace-mutated', { endpoint, path: trackedPath, result });
       return result;
@@ -766,10 +779,10 @@
     const safeTitle = String(title || '');
     if (id === 'note') return '';
     if (id === 'scenario') return JSON.stringify({
-      fileType: 'meldex-scriptnote', schema_version: 1, version: 1,
+      fileType: 'meldex-scriptnote', schema_version: 3, version: 1,
       title: safeTitle === '無題' ? '' : safeTitle, layoutMode: 'manga',
       editor: { wrapMode: true, statusEnabled: false, viewMode: 'horizontal' },
-      characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},
+      scenarioTypes: [], characters: [], characterDb: [], notes: [], rubyRules: [], rows: [], source: {},
     }, null, 2) + '\n';
     if (id === 'sheet') return '';
     if (id === 'timer') return JSON.stringify({
@@ -884,29 +897,13 @@
   }
 
   async function _fileAsDataUrl(path, extensions) {
-    await ensureReady({ requireConnection: true });
-    const pathOptions = extensions?.length
-      ? { action: '画像を読み込み', extensions }
-      : { action: '添付ファイルを読み込み', requireExtension: false };
-    const normalized = _pathPolicy().assertFile(path, pathOptions);
-    const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider?.downloadAsFile) throw new Error('ファイルを読み込めません');
-    const file = await provider.downloadAsFile(normalized);
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
-      reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めません'));
-      reader.readAsDataURL(file);
+    return _providerFileRoutes().fileAsDataUrl({
+      path,
+      extensions,
+      ensureReady,
+      assertFile: (target, options) => _pathPolicy().assertFile(target, options),
+      getProvider: () => window.MeldexStorageAdapter?.getProvider?.(),
     });
-  }
-
-  function _patchApiGlobals() {
-    const cloudFetch = async (path, opts) => requestJson(path, opts || {});
-    cloudFetch._meldexStandaloneCloudAdapter = true;
-    window.apiFetch = cloudFetch;
-    window.apiPut = (path, body) => cloudFetch(path, { method: 'PUT', body: body || {} });
-    window.apiPost = (path, body, options) => cloudFetch(path, { ...(options || {}), method: 'POST', body: body || {} });
-    window.apiDelete = (path) => cloudFetch(path, { method: 'DELETE' });
   }
 
   function _getEditSession() {
@@ -944,7 +941,7 @@
 
   function installAdapters() {
     if (!isCloudMode()) return { installed: false, reason: 'not-cloud' };
-    _patchApiGlobals();
+    _providerFileRoutes().installApiGlobals(requestJson);
     return _getEditSession().installAdapters();
   }
 

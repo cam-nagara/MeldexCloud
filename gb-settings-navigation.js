@@ -43,10 +43,10 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     icon: 'palette',
     pages: [
       { id: 'theme', label: 'テーマ', panels: ['テーマ'], view: 'theme' },
-      { id: 'color', label: 'テーマカラー', panels: ['テーマ'], view: 'theme' },
-      { id: 'font', label: 'フォント', panels: ['テーマ'], view: 'theme' },
-      { id: 'state', label: '状態・装飾', panels: ['テーマ'], view: 'theme' },
-      { id: 'apps', label: 'アプリ別', panels: ['テーマ'], view: 'theme' },
+      { id: 'color', label: 'テーマカラー', panels: ['テーマ'], view: 'color' },
+      { id: 'font', label: 'フォント', panels: ['テーマ'], view: 'font' },
+      { id: 'state', label: '状態・装飾', panels: ['テーマ'], view: 'state' },
+      { id: 'apps', label: 'アプリ別', panels: ['テーマ'], view: 'apps' },
     ],
   },
   {
@@ -98,7 +98,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     icon: 'history',
     pages: [
       { id: 'history', label: '履歴・復元', panels: ['全般'], view: 'history' },
-      { id: 'transfer', label: '引き継ぎ・初期化', panels: ['全般'], view: 'history' },
+      { id: 'transfer', label: '引き継ぎ・初期化', panels: ['全般'], view: 'transfer' },
     ],
   },
   {
@@ -273,23 +273,23 @@ function _tagSettingsNavigationSections(root = document) {
   // 【重要】このview配列は「全般」パネル直下childの出現順と1対1で一致させること。
   // セクションを追加・削除・並べ替えたら、必ず同じ順序でここを更新する（ずれると別タブへ混ざる）。
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="全般"]'), [
-    'storage',   // 0 ホームフォルダ
-    'storage',   // 1 ソースフォルダ
-    'setup',     // 2 サンプルデータ
-    'connect',   // 3 保存の仕組み・共有サーバー（旧「保存先」。接続タブへ移設）
-    'connect',   // 4 スマホ・タブレットからの接続（接続タブへ移設）
-    'setup',     // 5 ホーム画面に追加
-    'setup',     // 6 ファイルを開くアプリ
-    'history',   // 7 設定の引き継ぎ
-    'display',   // 8 表示サイズ
+    'storage',   // 0 ソースフォルダ
+    'storage',   // 1 #settings-cloud-link-card（Dropbox 状態カード）
+    'storage',   // 2 ホームフォルダ
+    'connect',   // 3 スマホ・タブレットからの接続
+    'connect',   // 4 保存の仕組み・共有サーバー
+    'setup',     // 5 ファイルを開くアプリ
+    'setup',     // 6 サンプルデータ
+    'setup',     // 7 ホーム画面に追加（#settings-install-container）
+    'transfer',  // 8 設定の引き継ぎ
     'display',   // 9 表示オプション
-    'display',   // 10 自動起動
-    'history',   // 11 ヒストリー（Undo/Redo）
-    'history',   // 12 自動バージョン保存
-    'history',   // 13 レイアウト
-    'history',   // 14 履歴データのエクスポート
-    'history',   // 15 全設定リセット
-    'storage',   // 16 #settings-cloud-link-card（Dropbox 状態カード）
+    'display',   // 10 表示サイズ
+    'display',   // 11 自動起動
+    'history',   // 12 ヒストリー（Undo/Redo）
+    'history',   // 13 自動バージョン保存
+    'history',   // 14 レイアウト
+    'history',   // 15 履歴データのエクスポート
+    'transfer',  // 16 全設定リセット
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="LLM"]'), [
     'auto-tag',

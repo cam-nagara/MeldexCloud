@@ -11,7 +11,117 @@ const AnnotationStickyTail = (() => {
     return (window.CSS && CSS.escape) ? CSS.escape(String(value || '')) : String(value || '').replace(/["\\]/g, '\\$&');
   }
 
+  function _boardCanvasFor(el) {
+    const world = el?.closest?.('[data-bd-role="world"],#bd-world');
+    if (!world) return null;
+    return world.closest?.('[data-bd-role="canvas"],#bd-canvas') || document.getElementById('bd-canvas');
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    const world = el?.closest?.('[data-bd-role="world"],#bd-world');
+    if (!world) return null;
+    let x = Number(point?.x) || 0;
+    let y = Number(point?.y) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== world && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return { x, y };
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const world = el?.closest?.('[data-bd-role="world"],#bd-world');
+    if (!world) return null;
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== world && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.x) || 0;
+    let y = Number(point?.y) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return { x, y };
+  }
+
+  function _clientToBoardWorld(canvas, clientX, clientY) {
+    if (typeof bdScreenToWorld === 'function') return bdScreenToWorld(clientX, clientY);
+    const rect = canvas.getBoundingClientRect();
+    const appZoom = typeof bdGetAppZoom === 'function' ? bdGetAppZoom() : 1;
+    let x = (clientX - rect.left) / Math.max(0.1, appZoom);
+    let y = (clientY - rect.top) / Math.max(0.1, appZoom);
+    const cx = canvas.clientWidth / 2;
+    const cy = canvas.clientHeight / 2;
+    const rotation = typeof bd !== 'undefined' ? Number(bd.rotation) || 0 : 0;
+    if (rotation) {
+      const rad = -rotation * Math.PI / 180;
+      const dx = x - cx;
+      const dy = y - cy;
+      x = dx * Math.cos(rad) - dy * Math.sin(rad) + cx;
+      y = dx * Math.sin(rad) + dy * Math.cos(rad) + cy;
+    }
+    const zoom = typeof bd !== 'undefined' ? Math.max(0.1, Number(bd.zoom) || 1) : 1;
+    const panX = typeof bd !== 'undefined' ? Number(bd.panX) || 0 : 0;
+    const panY = typeof bd !== 'undefined' ? Number(bd.panY) || 0 : 0;
+    return { x: (x - panX) / zoom, y: (y - panY) / zoom };
+  }
+
+  function _boardWorldToClient(canvas, point) {
+    const zoom = typeof bd !== 'undefined' ? Math.max(0.1, Number(bd.zoom) || 1) : 1;
+    const panX = typeof bd !== 'undefined' ? Number(bd.panX) || 0 : 0;
+    const panY = typeof bd !== 'undefined' ? Number(bd.panY) || 0 : 0;
+    let x = (Number(point?.x) || 0) * zoom + panX;
+    let y = (Number(point?.y) || 0) * zoom + panY;
+    const cx = canvas.clientWidth / 2;
+    const cy = canvas.clientHeight / 2;
+    const rotation = typeof bd !== 'undefined' ? Number(bd.rotation) || 0 : 0;
+    if (rotation) {
+      const rad = rotation * Math.PI / 180;
+      const dx = x - cx;
+      const dy = y - cy;
+      x = dx * Math.cos(rad) - dy * Math.sin(rad) + cx;
+      y = dx * Math.sin(rad) + dy * Math.cos(rad) + cy;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const appZoom = typeof bdGetAppZoom === 'function' ? bdGetAppZoom() : 1;
+    return { x: rect.left + x * appZoom, y: rect.top + y * appZoom };
+  }
+
   function _localPoint(note, clientX, clientY) {
+    const canvas = _boardCanvasFor(note);
+    if (canvas) {
+      const world = _clientToBoardWorld(canvas, clientX, clientY);
+      const local = _boardWorldToElementLocal(note, world);
+      if (local) return local;
+    }
     const rect = note.getBoundingClientRect();
     const sx = (note.offsetWidth || rect.width || 1) / Math.max(1, rect.width || note.offsetWidth || 1);
     const sy = (note.offsetHeight || rect.height || 1) / Math.max(1, rect.height || note.offsetHeight || 1);
@@ -60,6 +170,16 @@ const AnnotationStickyTail = (() => {
   }
 
   function _targetDescriptor(kind, id, el, clientX, clientY) {
+    const canvas = kind === 'board_card' ? _boardCanvasFor(el) : null;
+    if (canvas) {
+      const worldPoint = _clientToBoardWorld(canvas, clientX, clientY);
+      const localPoint = _boardWorldToElementLocal(el, worldPoint);
+      const width = el.offsetWidth || 1;
+      const height = el.offsetHeight || 1;
+      const fx = Math.max(0, Math.min(1, (Number(localPoint?.x) || 0) / width));
+      const fy = Math.max(0, Math.min(1, (Number(localPoint?.y) || 0) / height));
+      return { kind, id, offsetX: width * fx, offsetY: height * fy, offsetXRatio: fx, offsetYRatio: fy };
+    }
     const rect = el.getBoundingClientRect();
     const fx = rect.width > 0 ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0.5;
     const fy = rect.height > 0 ? Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)) : 0.5;
@@ -91,8 +211,16 @@ const AnnotationStickyTail = (() => {
   function _targetClientPoint(target) {
     const el = _findTarget(target);
     if (!el || !el.isConnected) return null;
-    const rect = el.getBoundingClientRect();
     const { fx, fy } = _targetOffsetFraction(target, el);
+    const canvas = target.kind === 'board_card' ? _boardCanvasFor(el) : null;
+    if (canvas) {
+      const worldPoint = _elementLocalToBoardWorld(el, {
+        x: (el.offsetWidth || 0) * fx,
+        y: (el.offsetHeight || 0) * fy,
+      });
+      if (worldPoint) return _boardWorldToClient(canvas, worldPoint);
+    }
+    const rect = el.getBoundingClientRect();
     return {
       x: rect.left + rect.width * fx,
       y: rect.top + rect.height * fy,

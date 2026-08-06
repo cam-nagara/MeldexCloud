@@ -71,9 +71,7 @@
   border-left: none;
   padding-left: 0;
 }
-.gb-section--boxed > *:not(.gb-section-title) {
-  margin-left: 1em;
-}
+/* インデントは非boxed共通ルール（.gb-section > *:not(.gb-section-title)）に集約済み */
 
 /* 詳細パネル用密度調整 modifier (detail-panel-section-unification-plan.md) */
 .gb-section--detail {

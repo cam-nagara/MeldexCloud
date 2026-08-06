@@ -21,7 +21,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     const rowId = rowEl.dataset.rowId;
     const idx = this.doc.rows.findIndex(r => r.id === rowId);
     if (idx < 0) return;
-    const currentRole = this.doc.rows[idx].role;
+    const currentRow = this.doc.rows[idx];
+    const currentRole = currentRow.role;
+    const currentResolved = globalThis.GBScriptNoteRoleModel?.resolveRole?.(this.doc, currentRow);
 
     const menu = document.createElement('div');
     menu.className = 'sn2-role-menu';
@@ -51,18 +53,41 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
     };
 
-    // タイプ管理に登録されているタイプを、件数に関わらずすべてフラット表示する。
-    // （2026-07-17 ユーザー指示: カテゴリサブメニュー（タイプ/プロット/区切り）へ括らない）
-    this.doc.characters.forEach(c => {
-      if (c.isDefault || !c.name) return;
+    const roleChoices = globalThis.GBScriptNoteRoleModel?.buildRoleChoices?.(this.doc)
+      || this.doc.characters.filter((item) => !item.isDefault && item.name).map((item) => ({
+        kind: 'character',
+        id: item.id || item.name,
+        name: item.name,
+        label: item.name,
+        ref: item.name,
+      }));
+    if (currentResolved?.kind === 'type'
+      && !roleChoices.some((choice) => choice?.kind === 'type' && choice.id === currentResolved.id)) {
+      const noneIndex = roleChoices.findIndex((choice) => choice?.kind === 'none');
+      const retainedChoice = {
+        kind: 'type',
+        id: currentResolved.id,
+        name: currentResolved.name,
+        label: currentResolved.name,
+        ref: { ...currentResolved.ref },
+      };
+      if (noneIndex >= 0) roleChoices.splice(noneIndex, 0, retainedChoice);
+      else roleChoices.push(retainedChoice);
+    }
+    roleChoices.filter((choice) => choice?.kind !== 'none').forEach((choice) => {
+      const choiceName = String(choice.name || choice.label || '');
+      if (!choiceName) return;
       const btn = document.createElement('button');
-      btn.className = 'sn2-role-item' + (c.name === currentRole ? ' active' : '');
+      const isCurrent = currentResolved
+        ? currentResolved.kind === choice.kind && currentResolved.id === choice.id
+        : choiceName === currentRole;
+      btn.className = 'sn2-role-item' + (isCurrent ? ' active' : '');
       btn.type = 'button';
       btn.setAttribute('role', 'menuitem');
-      btn.textContent = c.name;
-      const style = this._getCharaStyle(c.name);
+      btn.textContent = choice.label || choiceName;
+      const style = this._getCharaStyle(choiceName);
       if (style) btn.style.cssText = style;
-      btn.addEventListener('click', () => select(c.name));
+      btn.addEventListener('click', () => select(choice.ref || choiceName));
       menu.appendChild(btn);
     });
 
@@ -367,11 +392,18 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _setRowRole(idx, rowEl, newRole) {
-    this.doc.rows[idx].role = newRole;
+    const targetRow = this.doc.rows[idx];
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, targetRow, newRole);
+      newRole = targetRow.role;
+    } else {
+      targetRow.role = newRole;
+    }
     // dataset.kind: オプション設定 isBreak/isSummary/kind を反映
-    const charaForKind = newRole
+    const effective = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, targetRow);
+    const charaForKind = effective?.type || effective?.style || (newRole
       ? this.doc.characters.find(c => !c.isDefault && c.name === newRole)
-      : null;
+      : null);
     let kind = 'dialogue';
     if (!newRole) kind = 'blank';
     else if (charaForKind?.isSummary) kind = 'summary';
@@ -379,9 +411,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     else if (['dialogue', 'action', 'heading'].includes(charaForKind?.kind)) kind = charaForKind.kind;
     rowEl.dataset.kind = kind;
     // 枠線設定（タイプ個別のoutline）— 役割空時はデフォルトタイプから引く
-    const outlineChara = newRole
+    const outlineChara = effective?.style || (newRole
       ? this.doc.characters.find(c => !c.isDefault && c.name === newRole)
-      : this.doc.characters.find(c => c.isDefault);
+      : this.doc.characters.find(c => c.isDefault));
     if (outlineChara?.outline) {
       rowEl.dataset.outline = 'true';
       if (outlineChara.outlineColor) rowEl.style.setProperty('--sn2-outline-color', outlineChara.outlineColor);
@@ -397,8 +429,9 @@ Object.assign(ScriptNoteEditor.prototype, {
       // 縦書き: 半角英数字を縦中横に再ラップ
       if (this.doc.editor?.viewMode === 'vertical') this._wrapTcy(btn);
     }
-    // キャラクターリストに追加（タイプ管理に反映 + 自動配色）
-    if (newRole && !this.doc.characters.some(c => !c.isDefault && c.name === newRole)) {
+    // 旧形式のfallbackでは、未登録名を従来どおりキャラ候補へ追加する。
+    if (!globalThis.GBScriptNoteRoleModel?.assignRowRole
+      && newRole && !this.doc.characters.some(c => !c.isDefault && c.name === newRole)) {
       const newChara = this._createCharaFromTypeDefault(newRole);
       // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
       const defIdx = this.doc.characters.findIndex(c => c.isDefault);
@@ -415,6 +448,10 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _syncCharactersFromRows() {
     if (!this.doc) return;
+    if (globalThis.GBScriptNoteRoleModel?.ensureDocument) {
+      globalThis.GBScriptNoteRoleModel.ensureDocument(this.doc);
+      return;
+    }
     const registered = new Set(this.doc.characters.map(c => c.name));
     this.doc.rows.forEach(r => {
       if (r.role && !registered.has(r.role)) {
@@ -457,6 +494,10 @@ Object.assign(ScriptNoteEditor.prototype, {
   // 複数あれば 1 件に統合し、末尾以外にあれば末尾へ移動する。
   _ensureDefaultChara() {
     if (!this.doc) return;
+    if (globalThis.GBScriptNoteRoleModel?.ensureDocument) {
+      globalThis.GBScriptNoteRoleModel.ensureDocument(this.doc);
+      return;
+    }
     this._ensureTypeDefaultChara();
     if (!Array.isArray(this.doc.characters)) this.doc.characters = [];
     const chars = this.doc.characters;
@@ -517,6 +558,12 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _getCharacterList() {
+    if (globalThis.GBScriptNoteRoleModel?.buildRoleChoices) {
+      return globalThis.GBScriptNoteRoleModel.buildRoleChoices(this.doc)
+        .filter((choice) => choice?.kind !== 'none')
+        .map((choice) => String(choice.name || choice.label || ''))
+        .filter(Boolean);
+    }
     const set = new Set();
     this.doc.characters.forEach(c => { if (!c.isDefault && c.name) set.add(c.name); });
     return Array.from(set).sort();

@@ -65,16 +65,10 @@
     syncOptionPanel().catch(error => console.error('sheet option panel sync failed', error));
   }
 
-  function hideUnsupportedOptionTabs() {
-    document.querySelectorAll('.detail-tab-publish, .detail-tab-backlinks').forEach(tab => {
-      tab.hidden = true;
-    });
-  }
-
   async function syncOptionPanel() {
     if (!app.path || typeof _syncDetailPanel !== 'function') return;
     await _syncDetailPanel(folderTitle(app.path), app.path, 'database', {});
-    hideUnsupportedOptionTabs();
+    await window.MeldexStandaloneParity?.syncOptionFeatures?.();
   }
 
   async function readSheetMetadata(path) {
@@ -98,8 +92,13 @@
     if (typeof selectDatabase !== 'function') throw new Error('シートエンジンを読み込めませんでした');
     showLoading(options?.message || 'シートを読み込んでいます...');
     try {
+      const result = await selectDatabase(
+        normalized,
+        null,
+        options?.forceReload ? { forceReload: true } : undefined,
+      );
+      if (!result?.ok) throw result?.error || new Error('シートを読み込めませんでした');
       setPath(normalized);
-      await selectDatabase(normalized, null, options?.forceReload ? { forceReload: true } : undefined);
       showStatus(options?.forceReload ? 'シートを再読み込みしました' : 'シートを開きました');
       return true;
     } finally {
@@ -158,54 +157,6 @@
     await openSheetPath(picked);
   }
 
-  function parseCsv(text) {
-    const input = String(text || '').replace(/^\uFEFF/, '');
-    const rows = [];
-    let row = [];
-    let cell = '';
-    let quoted = false;
-    for (let index = 0; index < input.length; index += 1) {
-      const char = input[index];
-      if (quoted) {
-        if (char === '"' && input[index + 1] === '"') {
-          cell += '"';
-          index += 1;
-        } else if (char === '"') quoted = false;
-        else cell += char;
-      } else if (char === '"') quoted = true;
-      else if (char === ',') {
-        row.push(cell);
-        cell = '';
-      } else if (char === '\n' || char === '\r') {
-        if (char === '\r' && input[index + 1] === '\n') index += 1;
-        row.push(cell);
-        rows.push(row);
-        row = [];
-        cell = '';
-      } else cell += char;
-    }
-    if (cell || row.length) {
-      row.push(cell);
-      rows.push(row);
-    }
-    return rows.filter(values => values.some(value => String(value).length > 0));
-  }
-
-  function uniqueHeaders(values) {
-    const used = new Set();
-    return values.map((value, index) => {
-      const base = String(value || '').trim() || `列${index + 1}`;
-      let name = base;
-      let suffix = 2;
-      while (used.has(name)) {
-        name = `${base} ${suffix}`;
-        suffix += 1;
-      }
-      used.add(name);
-      return name;
-    });
-  }
-
   function chooseCsvFile() {
     return new Promise(resolve => {
       const input = document.createElement('input');
@@ -217,44 +168,40 @@
   }
 
   async function importCsv() {
-    if (!app.path) throw new Error('先に読み込み先のシートを作成するか、開いてください');
     const file = await chooseCsvFile();
     if (!file) return;
-    const rows = parseCsv(await file.text());
-    if (rows.length < 2) throw new Error('見出し行とデータ行を含むCSVを選択してください');
-    const headers = uniqueHeaders(rows[0]);
-    const dataRows = rows.slice(1);
-    if (!(await cfConfirm(`${dataRows.length}件を「${folderTitle(app.path)}」へ追加しますか？`))) return;
-    showLoading(`CSVを読み込んでいます（0/${dataRows.length}）...`);
-    try {
-      for (let index = 0; index < dataRows.length; index += 1) {
-        const values = dataRows[index];
-        const properties = {};
-        headers.forEach((header, column) => {
-          properties[header] = [{
-            value: String(values[column] ?? ''),
-            status: '案',
-            note: '',
-            created: new Date().toISOString(),
-          }];
-        });
-        const firstValue = values.find(value => String(value || '').trim());
-        await apiPost('/entity/create', {
-          parent_path: app.path,
-          name: String(firstValue || `行 ${index + 1}`),
-          properties,
-          source: 'csv-import',
-        });
-        if (index === 0 || (index + 1) % 10 === 0 || index + 1 === dataRows.length) {
-          const label = qs('standalone-loading-text');
-          if (label) label.textContent = `CSVを読み込んでいます（${index + 1}/${dataRows.length}）...`;
-        }
-      }
-      await openSheetPath(app.path, { forceReload: true, message: '読み込んだ内容を表示しています...' });
-      showStatus(`${dataRows.length}件をCSVから読み込みました`);
-    } finally {
-      hideLoading();
+    if (!window.MeldexCsvConversion?.openFile) throw new Error('CSV変換機能を読み込めませんでした');
+    const parent = await pickFolder('CSVから作るシートの保存先を選択', 'parent');
+    if (parent == null) return;
+    await window.MeldexCsvConversion.openFile(file, {
+      destinationParent: parent,
+      onCreated: result => openSheetPath(result.path, {
+        forceReload: true,
+        message: '作成したシートを表示しています...',
+      }),
+    });
+  }
+
+  async function canReplaceCurrent() {
+    const active = document.querySelector(
+      '#pivot-table .cell-inline-input, #pivot-table .cell-inline-select, #pivot-table .cell-date-editor input',
+    );
+    active?.blur?.();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const remaining = document.querySelector(
+      '#pivot-table .cell-inline-input, #pivot-table .cell-inline-select, #pivot-table .cell-date-editor',
+    );
+    if (remaining) {
+      remaining.querySelector?.('input,textarea,select')?.focus?.();
+      showStatus('セルの値を確定できません。入力内容を確認してください', true);
+      return false;
     }
+    const flushed = await (window.MeldexStandaloneSaveQueue?.flush?.() ?? Promise.resolve(true));
+    if (flushed === false) {
+      showStatus('保存待ちの変更を確定できないため、シートを切り替えませんでした', true);
+      return false;
+    }
+    return true;
   }
 
   function csvCell(value) {
@@ -297,7 +244,8 @@
   async function renameCurrentSheet() {
     const input = qs('sheet-title-label');
     if (!input || !app.path) return;
-    const previous = folderTitle(app.path);
+    const previousPath = app.path;
+    const previous = folderTitle(previousPath);
     const next = validateSheetName(input.value);
     if (next === previous) return;
     try {
@@ -309,6 +257,7 @@
       const renamedPath = normalizePath(result?.path || result?.new_path || (
         normalizePath(app.path).split('/').slice(0, -1).concat(next).join('/')
       ));
+      window.MeldexSheetViewConfigIdentity?.notifyMoved?.(previousPath, renamedPath);
       setPath(renamedPath);
       showStatus('シート名を変更しました');
     } catch (error) {
@@ -401,8 +350,19 @@
     });
   }
 
+  function initParityAdapter() {
+    window.MeldexStandaloneParity?.init?.({
+      appId: 'sheet',
+      getPath: () => app.path,
+      getLabel: () => folderTitle(app.path),
+      openCurrent: openSheetPath,
+      canReplaceCurrent,
+    });
+  }
+
   function bindUi() {
     initOptionPanel();
+    initParityAdapter();
     bindMenus();
     bindTitleEditing();
     bindDbToolbar();
@@ -412,6 +372,44 @@
       priority: ['#sheet-tb-undo', '#sheet-tb-redo', '#sheet-tb-filter', '#sheet-tb-sort'],
       keep: [],
       sheetTitle: 'その他',
+    });
+    window.MeldexStandaloneCloseGuard?.register?.({
+      appId: 'sheet-editor',
+      getCloseState: () => {
+        const active = document.querySelector(
+          '#pivot-table .cell-inline-input, #pivot-table .cell-inline-select, #pivot-table .cell-date-editor'
+        );
+        return {
+          appId: 'sheet-editor',
+          state: active ? 'editing' : 'clean',
+          pendingLocal: !!active,
+          saving: false,
+          failed: false,
+          unnamed: false,
+          hasSnapshot: false,
+          hasFinalDestination: !!app.path,
+          shouldWarn: !!active,
+          message: active ? '編集中のセルが確定していません' : '',
+        };
+      },
+      prepareClose: async () => {
+        const active = document.querySelector(
+          '#pivot-table .cell-inline-input, #pivot-table .cell-inline-select, #pivot-table .cell-date-editor input'
+        );
+        active?.blur?.();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const remaining = document.querySelector(
+          '#pivot-table .cell-inline-input, #pivot-table .cell-inline-select, #pivot-table .cell-date-editor'
+        );
+        if (remaining) {
+          remaining.querySelector?.('input,textarea,select')?.focus?.();
+          showStatus('セルの値を確定できません。入力内容を確認してください', true);
+          return false;
+        }
+        return window.MeldexStandaloneSaveQueue?.flush?.() ?? true;
+      },
+      flushLocal: () => window.MeldexStandaloneSaveQueue?.flush?.() ?? Promise.resolve(true),
+      flushFinal: () => window.MeldexStandaloneSaveQueue?.flush?.() ?? Promise.resolve(true),
     });
   }
 

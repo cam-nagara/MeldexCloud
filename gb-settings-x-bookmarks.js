@@ -2,7 +2,6 @@
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
-  const TIMER_KEY = 'x-bookmarks-auto';
   let syncInFlight = false;
   let _currentSchedule = null;
   let _scheduleWidget = null;
@@ -100,8 +99,7 @@
           : '前回保存: なし'
       );
       _currentSchedule = config.schedule || null;
-      _initScheduleWidget(config.schedule);
-      _applyScheduleTimer(config.schedule, data.connected);
+      _initScheduleWidget(config.schedule, config.schedule_state);
       if (!options?.preserveStatus) {
         setStatus(data.message || 'Xブックマーク保存を使えます。', !config.client_id_configured);
       }
@@ -110,46 +108,31 @@
     }
   }
 
-  function _initScheduleWidget(schedule) {
+  // 定期実行の判断・実行はバックエンド（meldex_import_scheduler.py）が担う。
+  // ここでは周期を選ばせて保存し、バックエンドが確定した次回予定・前回結果を
+  // 表示するだけにする（ブラウザータイマーでの自己実行はしない）。
+  function _initScheduleWidget(schedule, scheduleState) {
     const container = document.getElementById('x-bookmarks-schedule-container');
-    if (!container || _scheduleWidget) return;
-    _scheduleWidget = window.MeldexScheduler?.createWidget(container, schedule, (cfg) => {
-      _currentSchedule = cfg;
-      saveConfig({ silentError: true });
-    });
+    if (!container) return;
+    if (!_scheduleWidget) {
+      _scheduleWidget = window.MeldexScheduler?.createWidget(container, schedule, (cfg) => {
+        _currentSchedule = cfg;
+        saveConfig({ silentError: true });
+      });
+    }
+    _scheduleWidget?.setStatusText(_formatScheduleState(scheduleState));
   }
 
-  function _applyScheduleTimer(schedule, connected) {
-    if (!window.MeldexScheduler) return;
-    const cfg = window.MeldexScheduler.normalize(schedule);
-    if (cfg.type === 'off' || !connected) {
-      window.MeldexScheduler.destroyTimer(TIMER_KEY);
-      return;
+  function _formatScheduleState(state) {
+    if (!state) return '';
+    const parts = [];
+    if (state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
+    if (state.last_run) {
+      const label = state.last_run.status === 'done' ? '成功' : (state.last_run.status === 'error' ? '失敗' : state.last_run.status);
+      parts.push(`前回自動実行: ${label}`);
     }
-    window.MeldexScheduler.createTimer(TIMER_KEY, cfg, _scheduledSync);
-  }
-
-  async function _scheduledSync() {
-    if (syncInFlight) return;
-    try {
-      const data = await apiFetch('/x-bookmarks/status', { silentError: true });
-      if (!data.connected) return;
-    } catch { return; }
-    syncInFlight = true;
-    setSyncBusy(true);
-    try {
-      const data = await runBackgroundJob('/x-bookmarks/sync', { mode: 'incremental', max_results: 100 });
-      const total = (data?.created || 0) + (data?.updated || 0);
-      if (total > 0 && typeof showStatus === 'function') {
-        showStatus(`Xブックマーク自動保存: 新規${data.created || 0} / 更新${data.updated || 0}`);
-      }
-      if (typeof loadOutliner === 'function') loadOutliner();
-    } catch (e) {
-      console.warn('X bookmarks scheduled sync failed:', e);
-    } finally {
-      syncInFlight = false;
-      setSyncBusy(false);
-    }
+    if (state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
+    return parts.join(' / ');
   }
 
   async function saveConfig(options = {}) {

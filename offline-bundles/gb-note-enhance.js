@@ -26,51 +26,8 @@ const _SCRIPTNOTE_BUILTIN_STYLE_PRESETS = [
   { name: 'デフォルト', style: {}, context: 'scriptnote' },
 ];
 const _SCRIPTNOTE_REMOVED_FILE_STYLE_KEYS = ['pageBgColor'];
-const _SCRIPTNOTE_FILE_STYLE_KEYS = [
-  'borderColor',
-  'borderWidth',
-  'baseTextColor',
-  'baseTextBold',
-  'baseTextItalic',
-  'baseTextFontFamily',
-  'baseTextFontSize',
-  'baseTextLineHeight',
-  'baseTextLetterSpacing',
-  'baseTextLineHeightH',
-  'baseTextLineHeightV',
-  'baseTextLetterSpacingH',
-  'baseTextLetterSpacingV',
-  'rubyFontSize',
-  'rubyOffset',
-  'spreadBorderColor',
-  'spreadBorderWidth',
-  'wrapMode',
-  'hoverBgColor',
-  'caretColor',
-  'caretWidth',
-  'dragSelectColor',
-  'selectionColor',
-  'selectionTextColor',
-  'dropIndicatorColor',
-  'dropIndicatorWidth',
-  'themeId',
-  '__themeName',
-  '__themeSourceId',
-  '__useOsAccentColor',
-  '--theme-palette-0',
-  '--theme-palette-1',
-  '--theme-palette-2',
-  '--theme-palette-3',
-  '--theme-palette-4',
-  '--theme-palette-5',
-  '--theme-palette-6',
-  '--theme-palette-7',
-  '--theme-palette-8',
-  '--theme-palette-9',
-];
-const _SCRIPTNOTE_FILE_STYLE_DEFAULTS = {
-  wrapMode: true,
-};
+const _SCRIPTNOTE_FILE_STYLE_KEYS = MeldexScriptnoteFileStyleContract.keys;
+const _SCRIPTNOTE_FILE_STYLE_DEFAULTS = MeldexScriptnoteFileStyleContract.defaults;
 const _BUILTIN_STYLE_PRESETS = [
   { name: 'デフォルト', style: {} },
   { name: 'セピア', style: { '--bg': '#f5f0e8', '--fg': '#3c3836', '--bg2': '#ede5d8', '--bg3': '#ddd5c8', '--border': '#c8bfb0', '--accent': '#8f6b32' } },
@@ -177,21 +134,8 @@ function _getScriptNoteEditorForFileStyle() {
   return comp?._editor?.doc ? comp._editor : null;
 }
 
-function _filterScriptnoteFileStyle(style) {
-  if (!style || typeof style !== 'object' || Array.isArray(style)) return {};
-  const next = {};
-  Object.entries(style).forEach(([key, value]) => {
-    if (!_isScriptnoteFileStyleKey(key)) return;
-    if (value === undefined || value === null || value === '') return;
-    next[key] = value;
-  });
-  return next;
-}
-
-function _isScriptnoteFileStyleKey(key) {
-  const value = String(key || '').trim();
-  return _SCRIPTNOTE_FILE_STYLE_KEYS.includes(value) || value.startsWith('--') || /^__[A-Za-z0-9_-]+$/.test(value);
-}
+const _filterScriptnoteFileStyle = MeldexScriptnoteFileStyleContract.filter;
+const _isScriptnoteFileStyleKey = MeldexScriptnoteFileStyleContract.isKey;
 
 function _normalizeFileStyleDefaultStore(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
@@ -467,426 +411,161 @@ async function resetCurrentFileStyle() {
 }
 
 // ============================================================
-// 2. スラッシュコマンド
+// 2. スラッシュコマンド（現在行の変換）
 // ============================================================
-let _slashMenuActive = false;
-let _slashMenuSelection = 0;
+// 計画書§5工程5: `/` は行種レジストリ（gb-note-block-types.js）から共通メニュー
+// （gb-note-block-menu.js）を開き、選択された行種へ「現在行」を変換する。
+// 旧実装（スラッシュコマンド専用配列 + execCommand('insertHTML', ...) による
+// 新規ブロック挿入）はここで廃止し、重複定義を残さない。行種の一覧・アイコン・
+// キーワードは MeldexNoteBlockTypes.TYPES を正本として共有する。
+let _slashMenuAnchorRange = null;
+// 実行時点の検索語（例: "/h1"のh1）。MeldexNoteBlockMenu.open()の_state.queryは
+// 選択確定時（_activate）にはメニュー側のclose()が先に呼ばれて既にnullへ戻って
+// いるため、onSelectコールバック（_executeSlashCommand）側からは読み出せない
+// （実機検証で確認: メニュー項目クリック時に空文字列になり、"/"は消えても検索語が
+// 残るという同じ不具合が再現した）。そのため_onSlashInputが検索語を更新する
+// たびにこちら側でも保持しておき、選択確定時はこの値を使う。
+let _slashMenuLastQuery = '';
 
-const _SLASH_COMMANDS = [
-  { id: 'h1', label: '見出し1', icon: 'hash', keywords: ['見出し', 'heading', 'h1', 'みだし'] },
-  { id: 'h2', label: '見出し2', icon: 'hash', keywords: ['見出し', 'heading', 'h2', 'みだし'] },
-  { id: 'h3', label: '見出し3', icon: 'hash', keywords: ['見出し', 'heading', 'h3', 'みだし'] },
-  { id: 'ul', label: '箇条書きリスト', icon: 'minus', keywords: ['リスト', 'list', 'bullet', 'りすと'] },
-  { id: 'ol', label: '番号付きリスト', icon: 'hash', keywords: ['番号', 'リスト', 'number', 'ordered', 'ばんごう'] },
-  { id: 'check', label: 'チェックリスト', icon: 'checkSquare', keywords: ['チェック', 'check', 'todo', 'ちぇっく'] },
-  { id: 'table', label: 'テーブル', icon: 'table', keywords: ['テーブル', 'table', '表', 'ひょう'] },
-  { id: 'callout', label: 'コールアウト', icon: 'alertTriangle', keywords: ['コールアウト', 'callout', '注意', 'info'] },
-  { id: 'hr', label: '水平線', icon: 'minus', keywords: ['水平線', 'hr', 'line', 'すいへいせん'] },
-  { id: 'code', label: 'コードブロック', icon: 'fileText', keywords: ['コード', 'code', 'こーど'] },
-  { id: 'quote', label: '引用', icon: 'fileText', keywords: ['引用', 'quote', 'いんよう'] },
-];
-
-function _createSlashMenu() {
-  const menu = document.createElement('div');
-  menu.id = 'slash-menu';
-  menu.className = 'gb-context-menu note-slash-menu';
-  menu.dataset.e2eId = 'note-slash-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', 'ブロック挿入メニュー');
-  menu.style.display = 'none';
-  document.body.appendChild(menu);
-  menu.addEventListener('mousedown', (e) => e.preventDefault()); // フォーカス奪取防止
-  menu.addEventListener('keydown', _onSlashKeydown);
-  return menu;
+function _slashEditableSelector() {
+  return (typeof MeldexNoteBlockTypes !== 'undefined' && MeldexNoteBlockTypes.EDITABLE_SELECTOR)
+    || '#page-content, #entity-freetext, #dp-editable';
 }
 
-function _noteEnhanceIcon(name, size = 16, fallback = '') {
-  return typeof lucide === 'function' ? lucide(name, size) : fallback;
-}
-
-function _setSlashMenuSelection(menu, index) {
-  const items = Array.from(menu.querySelectorAll('.slash-item'));
-  items.forEach((it, i) => {
-    const selected = i === index;
-    it.classList.toggle('selected', selected);
-    it.setAttribute('aria-selected', selected ? 'true' : 'false');
-    it.tabIndex = selected ? 0 : -1;
-  });
-}
-
-function _renderSlashMenuItems(query) {
-  const menu = document.getElementById('slash-menu') || _createSlashMenu();
-  const q = (query || '').toLowerCase();
-  const filtered = q ? _SLASH_COMMANDS.filter(c =>
-    c.label.toLowerCase().includes(q) || c.id.includes(q) || c.keywords.some(k => k.toLowerCase().includes(q))
-  ) : _SLASH_COMMANDS;
-
-  if (filtered.length === 0) { menu.style.display = 'none'; _slashMenuActive = false; return; }
-  if (_slashMenuSelection >= filtered.length) _slashMenuSelection = 0;
-
-  menu.textContent = '';
-  filtered.forEach((c, i) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'slash-item gb-context-menu-item' + (i === _slashMenuSelection ? ' selected' : '');
-    item.dataset.cmd = c.id;
-    item.dataset.e2eId = 'note-slash-command-' + c.id;
-    item.setAttribute('role', 'menuitem');
-    item.setAttribute('aria-label', c.label);
-    item.tabIndex = i === _slashMenuSelection ? 0 : -1;
-    const icon = document.createElement('span');
-    icon.className = 'slash-icon menu-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    icon.innerHTML = _noteEnhanceIcon(c.icon, 16);
-    const label = document.createElement('span');
-    label.className = 'gb-context-menu-item-label';
-    label.textContent = c.label;
-    item.append(icon, label);
-    item.addEventListener('click', () => _executeSlashCommand(item.dataset.cmd));
-    menu.appendChild(item);
-  });
-  _setSlashMenuSelection(menu, _slashMenuSelection);
-}
-
-function _showSlashMenu() {
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return;
-  const range = sel.getRangeAt(0);
-  const rect = range.getBoundingClientRect();
-  const menu = document.getElementById('slash-menu') || _createSlashMenu();
-  _slashMenuActive = true;
-  _slashMenuSelection = 0;
-  _renderSlashMenuItems('');
-  { const z = _getZoom(); menu.style.top = (rect.bottom / z + 4) + 'px'; menu.style.left = (rect.left / z) + 'px'; }
-  menu.style.display = '';
-  clampPopupToViewport(menu);
-  const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
-  raf(() => {
-    if (_slashMenuActive && menu.style.display !== 'none') clampPopupToViewport(menu);
-  });
+function _isSlashMenuActive() {
+  return typeof MeldexNoteBlockMenu !== 'undefined' && MeldexNoteBlockMenu.isOpen();
 }
 
 function _hideSlashMenu() {
-  const menu = document.getElementById('slash-menu');
-  if (menu) menu.style.display = 'none';
-  _slashMenuActive = false;
+  if (typeof MeldexNoteBlockMenu !== 'undefined') MeldexNoteBlockMenu.close();
+  _slashMenuAnchorRange = null;
+  _slashMenuLastQuery = '';
 }
 
-function _executeSlashCommand(cmd) {
+// "/" と検索語（フィルタ用に入力した文字列）をまとめて取り除く。§5工程5-2:
+// 「/と検索語を除去して現在行変換」。行頭記法（gb-note-enhance.part02.js の
+// beforeConvert）と同じパターンで、undo push直後・DOM変換の直前に実行することで
+// 「削除＋行種変換」を1回のUndoにまとめる。
+//
+// 旧実装は「メニューを開いた瞬間（検索語が空）のRange」を使って"/"1文字だけを
+// 削除しており、その後に入力された検索語（例: "/h1"のh1）が変換後も行頭に
+// 残り続ける不具合があった（h1へ変換されるのは合っているが、"h1"という文字列が
+// 別途残る）。anchorRangeの起点自体は変わらない（_showSlashMenuはquery===''の
+// 時点だけで開き、その時のstartOffsetは常に"/"の直後を指す）ため、削除範囲の
+// 終端をquery文字列の長さぶん伸ばすことで、変換直前の最新の検索語まで含めて
+// 一度に削除する。メニュー表示中は上下左右キーがメニュー側に奪われ、検索語の
+// 入力/削除以外でキャレットが動かないため、「"/"の直後からquery.length文字が
+// 検索語である」という前提が常に成立する。
+function _removeSlashTriggerAndQuery(anchorRange, query) {
+  if (!anchorRange || !anchorRange.startContainer || !anchorRange.startContainer.isConnected) return;
+  const node = anchorRange.startContainer;
+  if (node.nodeType !== Node.TEXT_NODE) return;
+  const slashIdx = node.textContent.lastIndexOf('/', Math.max(0, anchorRange.startOffset - 1));
+  if (slashIdx < 0 || slashIdx >= anchorRange.startOffset) return;
+  const endOffset = Math.min(node.textContent.length, anchorRange.startOffset + (query || '').length);
+  node.textContent = node.textContent.slice(0, slashIdx) + node.textContent.slice(endOffset);
+  const next = document.createRange();
+  next.setStart(node, slashIdx);
+  next.collapse(true);
   const sel = window.getSelection();
-  if (!sel.rangeCount) { _hideSlashMenu(); return; }
-  const range = sel.getRangeAt(0);
-  const node = range.startContainer;
-  if (node.nodeType === Node.TEXT_NODE) {
-    const slashIdx = node.textContent.lastIndexOf('/', Math.max(0, range.startOffset - 1));
-    if (slashIdx >= 0 && slashIdx < range.startOffset) {
-      node.textContent = node.textContent.substring(0, slashIdx) + node.textContent.substring(range.startOffset);
-      range.setStart(node, slashIdx);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }
-  const insertMap = {
-    h1: '<h1>見出し</h1>', h2: '<h2>見出し</h2>', h3: '<h3>見出し</h3>',
-    ul: '<ul><li>項目</li></ul>', ol: '<ol><li>項目</li></ol>',
-    check: '<ul><li>[ ] 項目</li></ul>',
-    hr: '<hr>', code: '<pre style="background:var(--bg3);padding:8px;border-radius:4px;overflow-x:auto;font-size:13px;"><code>コード</code></pre>',
-    callout: '<div class="callout-block callout-info" contenteditable="false"><span class="callout-icon" data-icon="info" style="color:#569cd6;">' + (typeof lucide === 'function' ? lucide('info', 20) : 'ℹ') + '</span><div class="callout-body" contenteditable="true">テキスト</div></div>',
-    table: '<table><tr><th>列1</th><th>列2</th></tr><tr><td>-</td><td>-</td></tr></table>',
-    quote: '<blockquote>引用</blockquote>',
-  };
-  if (insertMap[cmd]) document.execCommand('insertHTML', false, insertMap[cmd]);
-  _hideSlashMenu();
+  sel.removeAllRanges();
+  sel.addRange(next);
 }
 
-// inputイベントで/を検出
+function _currentSlashSelectionRange() {
+  const sel = window.getSelection();
+  return sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+}
+
+function _executeSlashCommand(typeId) {
+  const anchorRange = _slashMenuAnchorRange;
+  const query = _slashMenuLastQuery; // _hideSlashMenu()でリセットされる前に読む
+  _hideSlashMenu();
+  if (!anchorRange || typeof MeldexNoteBlockTypes === 'undefined') return;
+  const range = _currentSlashSelectionRange() || anchorRange;
+  const editable = MeldexNoteBlockTypes.resolveEditableHost(range);
+  const result = MeldexNoteBlockTypes.convertCurrentLineTo(typeId, {
+    editable,
+    range,
+    // §5工程4-4/5-2: "/"と検索語の削除は、undo push直後・DOM変換の直前に実行する
+    // （行頭記法と同じbeforeConvertパターン）。beforeConvertを指定しているため、
+    // 同じ行種を選択した場合もconvertCurrentLineTo側のunchanged早期returnは
+    // スキップされ、トリガー除去とUndo記録が必ず1操作として実行される。
+    beforeConvert() {
+      _removeSlashTriggerAndQuery(anchorRange, query);
+    },
+  });
+  if (!result.ok && result.reason && result.reason !== 'no-current-block' && typeof showStatus === 'function') {
+    showStatus(result.reason, true);
+  }
+}
+
+function _showSlashMenu() {
+  if (typeof MeldexNoteBlockTypes === 'undefined' || typeof MeldexNoteBlockMenu === 'undefined') return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const editable = MeldexNoteBlockTypes.resolveEditableHost(range);
+  if (!editable) return;
+  _slashMenuAnchorRange = range.cloneRange();
+  const rect = range.getBoundingClientRect();
+  const blockInfo = MeldexNoteBlockTypes.resolveCurrentBlock(editable, range);
+  const currentTypeId = MeldexNoteBlockTypes.getBlockTypeId(blockInfo);
+  MeldexNoteBlockMenu.open({
+    anchorRect: rect,
+    editable,
+    range: _slashMenuAnchorRange,
+    blockInfo,
+    currentTypeId,
+    query: '',
+    onSelect: (typeId) => _executeSlashCommand(typeId),
+    onClose: () => { _slashMenuAnchorRange = null; _slashMenuLastQuery = ''; },
+  });
+}
+
+// inputイベントで/を検出（§5工程5-1: 論理行の先頭、または行頭の空白後だけで開く）
 function _onSlashInput(e) {
   if (e.isComposing) return; // IME変換中はスキップ
-  const pc = e.target.closest('#page-content');
-  if (!pc) return;
+  const editable = e.target.closest ? e.target.closest(_slashEditableSelector()) : null;
+  if (!editable) return;
   const sel = window.getSelection();
   if (!sel.rangeCount) return;
   const range = sel.getRangeAt(0);
   const node = range.startContainer;
-  if (node.nodeType !== Node.TEXT_NODE) { if (_slashMenuActive) _hideSlashMenu(); return; }
+  if (node.nodeType !== Node.TEXT_NODE) { if (_isSlashMenuActive()) _hideSlashMenu(); return; }
   const text = node.textContent;
   const pos = range.startOffset;
   const lineStart = text.lastIndexOf('\n', pos - 2) + 1;
   const lineText = text.substring(lineStart, pos);
+  const slashMatch = lineText.match(/^(\s*)\/(.*)$/);
 
-  if (lineText === '/') {
-    _showSlashMenu();
-  } else if (lineText.startsWith('/') && lineText.length > 1) {
-    if (_slashMenuActive) _renderSlashMenuItems(lineText.substring(1));
-  } else {
-    if (_slashMenuActive) _hideSlashMenu();
+  if (!slashMatch) {
+    if (_isSlashMenuActive()) _hideSlashMenu();
+    return;
   }
-}
-
-// keydownイベントでメニュー操作
-function _onSlashKeydown(e) {
-  if (e.isComposing) return; // IME変換中はスキップ
-  if (!_slashMenuActive) return;
-  const menu = document.getElementById('slash-menu');
-  if (!menu || menu.style.display === 'none') return;
-  const items = menu.querySelectorAll('.slash-item');
-  if (items.length === 0) return;
-  if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(e.key)) return;
-  e.preventDefault();
-  e.stopPropagation();
-
-  if (e.key === 'ArrowDown') {
-    _slashMenuSelection = (_slashMenuSelection + 1) % items.length;
-    _setSlashMenuSelection(menu, _slashMenuSelection);
-  } else if (e.key === 'ArrowUp') {
-    _slashMenuSelection = (_slashMenuSelection - 1 + items.length) % items.length;
-    _setSlashMenuSelection(menu, _slashMenuSelection);
-  } else if (e.key === 'Enter') {
-    const selected = items[_slashMenuSelection];
-    if (selected) _executeSlashCommand(selected.dataset.cmd);
-  } else if (e.key === 'Escape') {
-    _hideSlashMenu();
+  const query = slashMatch[2];
+  if (!_isSlashMenuActive() && query === '') {
+    _showSlashMenu();
+    _slashMenuLastQuery = query;
+  } else if (_isSlashMenuActive()) {
+    MeldexNoteBlockMenu.setQuery(query);
+    _slashMenuLastQuery = query;
   }
 }
 
 // ============================================================
 // 3. ブロックドラッグハンドル
 // ============================================================
+// 計画書 工程7: ハンドルの実装は gb-note-block-reorder.js（ポインタイベント
+// ベース、pointer capture対応、全編集ホスト対応）へ統合した。旧実装は
+// #page-content 専用のネイティブHTML5 drag&dropで、pointer capture非対応・
+// クリックとドラッグの閾値判定なし・詳細パネル内ノートとエンティティ自由記述
+// では動作しなかった。ここでは初期化を委譲するだけに留める（関数名・
+// 呼び出し口は既存のopenPageフック等との互換のため維持）。
 function _initBlockDragHandle() {
-  const pc = document.getElementById('page-content');
-  if (!pc || pc._blockDragInit) return;
-  pc._blockDragInit = true;
-
-  // ハンドルは document.body 直下に position:fixed で配置する。
-  // - page-content の親 (フレックスコンテナ) に置くと目次 (note-toc 200px + リサイザ 6px)
-  //   の幅を考慮できず目次領域内に着地してしまう (旧バグ)
-  // - page-content 自身に置くと contenteditable な innerHTML に入り込んで保存内容を汚染する
-  // 上記を避けるため body 直下 + viewport 座標で配置する
-  const handle = document.createElement('div');
-  handle.id = 'block-drag-handle';
-  handle.innerHTML = '⠿';
-  handle.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:20px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--fg2);font-size:16px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;';
-  handle.draggable = true;
-  handle.setAttribute('contenteditable', 'false');
-  document.body.appendChild(handle);
-
-  // section内のブロックにもマッチするヘルパー
-  function _findBlock(el) {
-    // heading-section内の直接ブロック、またはpage-content直下のブロックを返す
-    let node = el;
-    while (node && node !== pc) {
-      if (node === handle || node.id === 'block-drag-handle') return null; // ハンドル自身は除外
-      if (node.parentElement === pc || (node.parentElement && node.parentElement.classList?.contains('heading-section'))) return node;
-      node = node.parentElement;
-    }
-    return null;
+  if (typeof MeldexNoteBlockReorder !== 'undefined' && typeof MeldexNoteBlockReorder.initHandle === 'function') {
+    MeldexNoteBlockReorder.initHandle();
   }
-
-  // ハンドルの viewport 座標を計算
-  // - left: page-content の padding-left の 22px 内側 (固定)
-  // - top: マウス Y にハンドル中心を合わせる (block 範囲内にクランプ)
-  //   これによりユーザーがハンドルに向かって左に動かすだけで掴める。
-  //   旧実装は blockRect.top にハンドルを置いていたため、ハンドルへ向かう途中で
-  //   上のブロック領域に侵入して mouseover が再発火し、ハンドルが連鎖的に上方へ逃げていた。
-  const HANDLE_H = 20;
-  const TOUCH_HANDLE_SIZE = 44;
-  function _setBlockHandleTouchMode(enabled) {
-    const size = enabled ? TOUCH_HANDLE_SIZE : HANDLE_H;
-    handle.classList.toggle('block-drag-handle--touch', !!enabled);
-    handle.style.width = size + 'px';
-    handle.style.height = size + 'px';
-    handle.style.fontSize = enabled ? '20px' : '16px';
-  }
-  function _blockHandleHeight() {
-    return handle.classList.contains('block-drag-handle--touch') ? TOUCH_HANDLE_SIZE : HANDLE_H;
-  }
-  function _positionHandle(blockRect, mouseY) {
-    const pcRect = pc.getBoundingClientRect();
-    const cs = getComputedStyle(pc);
-    const padLeft = parseFloat(cs.paddingLeft) || 0;
-    const z = (typeof _getZoom === 'function') ? _getZoom() : 1;
-    const handleHeight = _blockHandleHeight();
-    // ハンドル top: マウス Y の中心合わせ。ブロック範囲を超えないようクランプ
-    const minTop = blockRect.top;
-    const maxTop = Math.max(blockRect.top, blockRect.bottom - handleHeight);
-    const desiredTop = (typeof mouseY === 'number') ? (mouseY - handleHeight / 2) : blockRect.top;
-    const top = Math.min(maxTop, Math.max(minTop, desiredTop));
-    handle.style.top = (top / z) + 'px';
-    handle.style.left = ((pcRect.left + Math.max(0, padLeft - 22)) / z) + 'px';
-  }
-
-  // 直前にハンドルを表示したマウス Y。同じブロック内で微小に動いただけならハンドルを動かさない
-  // (描画ジッタを防ぐ + 常に新しいマウス位置に追随するとドラッグ開始時に位置がブレる)
-  let _lastBlock = null;
-  let _lastMouseY = null;
-
-  pc.addEventListener('mousemove', (e) => {
-    if (handle._dragBlock) return; // ドラッグ中は再配置しない
-    const block = _findBlock(e.target);
-    if (!block || block.tagName === 'BR') {
-      // padding 内など block 外: ハンドルは現在位置のまま据え置き、表示状態だけは維持
-      return;
-    }
-    // 別ブロックに入った、または同一ブロック内で 16px 以上 Y が動いたときだけ再配置
-    if (block !== _lastBlock || _lastMouseY === null || Math.abs(e.clientY - _lastMouseY) > 16) {
-      _setBlockHandleTouchMode(false);
-      _positionHandle(block.getBoundingClientRect(), e.clientY);
-      _lastBlock = block;
-      _lastMouseY = e.clientY;
-    }
-    handle.style.opacity = '1';
-    handle._targetBlock = block;
-  });
-  pc.addEventListener('mouseleave', (e) => {
-    // ハンドル上にカーソルが移ったときは隠さない
-    if (e.relatedTarget === handle) return;
-    handle.style.opacity = '0';
-    _lastBlock = null;
-    _lastMouseY = null;
-  });
-  // ハンドルから外れたら隠す (page-content に戻る場合は mousemove で再表示される)
-  handle.addEventListener('mouseleave', (e) => {
-    if (e.relatedTarget && pc.contains(e.relatedTarget)) return;
-    handle.style.opacity = '0';
-    _lastBlock = null;
-    _lastMouseY = null;
-  });
-
-  // タッチ対応: touchstart でブロックドラッグハンドル表示
-  pc.addEventListener('touchstart', (e) => {
-    const block = _findBlock(e.target);
-    if (block && block.tagName !== 'BR') {
-      const t = e.touches?.[0];
-      _setBlockHandleTouchMode(true);
-      _positionHandle(block.getBoundingClientRect(), t?.clientY);
-      _lastBlock = block;
-      _lastMouseY = t?.clientY ?? null;
-      handle.style.opacity = '1';
-      handle._targetBlock = block;
-    }
-  }, { passive: true });
-
-  handle.addEventListener('dragstart', (e) => {
-    const block = handle._targetBlock;
-    if (!block) { e.preventDefault(); return; }
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', '');
-    block.classList.add('dragging');
-    handle._dragBlock = block;
-  });
-
-  // dragover / drop は capture フェーズで登録する。
-  // page-content には setupEditableDropHandler ([gb-editor.js](app/gb-editor.js)) のドロップ処理が
-  // bubble フェーズで先に登録されており、bubble で動かすと
-  //   1. 先に走る setupEditableDropHandler が `.drop-caret` を caretRangeFromPoint で表示してしまい
-  //      ブロック境界とズレた位置にインジケーターが出る (「微妙にズレ」)
-  //   2. 同じ handler の drop 内で `sel.addRange(range)` がカーソル位置を書き換え、
-  //      その後の execCommand 周辺と相まってブロック移動の DOM 操作が破綻する
-  // capture フェーズで先に拾い、ブロックドラッグなら stopPropagation して bubble 側を完全に止める。
-  const _isBlockDrag = () => !!handle._dragBlock;
-
-  function _blockAtClientY(clientY) {
-    const blocks = [];
-    Array.from(pc.children || []).forEach((child) => {
-      if (child.nodeType !== Node.ELEMENT_NODE || child.tagName === 'BR') return;
-      if (child.classList?.contains('heading-section')) {
-        Array.from(child.children || []).forEach((sectionChild) => {
-          if (sectionChild.nodeType === Node.ELEMENT_NODE && sectionChild.tagName !== 'BR') blocks.push(sectionChild);
-        });
-      }
-      blocks.push(child);
-    });
-    let nearest = null;
-    let nearestDistance = Infinity;
-    for (const block of blocks) {
-      const rect = block.getBoundingClientRect();
-      if (clientY >= rect.top && clientY <= rect.bottom) return block;
-      const distance = Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
-      if (distance < nearestDistance) {
-        nearest = block;
-        nearestDistance = distance;
-      }
-    }
-    const pcRect = pc.getBoundingClientRect();
-    return clientY >= pcRect.top && clientY <= pcRect.bottom ? nearest : null;
-  }
-
-  function _blockFromDragEvent(e) {
-    const direct = _findBlock(e.target);
-    if (direct) return direct;
-    if (typeof document.elementFromPoint === 'function') {
-      const prevPointerEvents = handle.style.pointerEvents;
-      handle.style.pointerEvents = 'none';
-      try {
-        const hit = document.elementFromPoint(e.clientX, e.clientY);
-        const hitBlock = _findBlock(hit);
-        if (hitBlock) return hitBlock;
-      } finally {
-        handle.style.pointerEvents = prevPointerEvents;
-      }
-    }
-    return _blockAtClientY(e.clientY);
-  }
-
-  function _handleBlockDragOver(e) {
-    if (!_isBlockDrag() || !pc.isConnected) return;
-    e.preventDefault();
-    e.stopPropagation(); // bubble 側 (setupEditableDropHandler) を止める
-    // setupEditableDropHandler が以前に作った drop-caret が残っていたら除去
-    const stale = pc.querySelector('.drop-caret');
-    if (stale) stale.remove();
-    const target = _blockFromDragEvent(e);
-    pc.querySelectorAll('.drag-guide-top, .drag-guide-bottom').forEach(el => el.classList.remove('drag-guide-top', 'drag-guide-bottom'));
-    if (!target || target === handle._dragBlock) return;
-    const rect = target.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    if (e.clientY < midY) target.classList.add('drag-guide-top');
-    else target.classList.add('drag-guide-bottom');
-  }
-
-  function _handleBlockDrop(e) {
-    const dragBlock = handle._dragBlock;
-    if (!dragBlock || !pc.isConnected) return; // ブロックドラッグでない場合は他 drop に任せる
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-    let target = _blockFromDragEvent(e);
-    pc.querySelectorAll('.drag-guide-top, .drag-guide-bottom').forEach(el => el.classList.remove('drag-guide-top', 'drag-guide-bottom'));
-    const stale = pc.querySelector('.drop-caret');
-    if (stale) stale.remove();
-    // dragBlock の内側に落とした場合 (heading-section を引きずって自分の子要素にドロップ等):
-    // dragBlock.contains(target) が真になり target.before(dragBlock) が
-    // HierarchyRequestError ("The new child element contains the parent") を投げる。
-    // この場合は dragBlock 自身を target として扱い (実質ノーオペ)、移動を諦める。
-    if (target && dragBlock.contains(target)) target = dragBlock;
-    if (!target || dragBlock === target) { dragBlock.classList.remove('dragging'); handle._dragBlock = null; return; }
-    const rect = target.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    const beforeHtml = pc.innerHTML;
-    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(pc);
-    try {
-      if (e.clientY < midY) target.before(dragBlock);
-      else target.after(dragBlock);
-    } catch (err) {
-      // 防御的: 想定外の階層エラーが出ても dragging クラスは必ず解除する
-      console.warn('block drop move failed:', err);
-    }
-    dragBlock.classList.remove('dragging');
-    handle._dragBlock = null;
-    if (pc.innerHTML !== beforeHtml) pc.dispatchEvent(new Event('input', { bubbles: true })); // 自動保存トリガー
-  }
-
-  document.addEventListener('dragover', _handleBlockDragOver, true);
-  document.addEventListener('drop', _handleBlockDrop, true);
-
-  handle.addEventListener('dragend', () => {
-    if (handle._dragBlock) handle._dragBlock.classList.remove('dragging');
-    handle._dragBlock = null;
-    pc.querySelectorAll('.drag-guide-top, .drag-guide-bottom').forEach(el => el.classList.remove('drag-guide-top', 'drag-guide-bottom'));
-    const stale = pc.querySelector('.drop-caret');
-    if (stale) stale.remove();
-  });
 }
 
 // ============================================================
@@ -1354,7 +1033,11 @@ function _saveFileThemeToDbFolderNote(theme) {
       } else if (styleYaml) {
         content = '---\n' + styleYaml + '---\n' + content;
       }
-      await apiPut('/file?path=' + encodeURIComponent(notePath), { content });
+      await apiPut('/file?path=' + encodeURIComponent(notePath), {
+        content,
+        if_match_etag: data.etag || '',
+        transport_revision: data.transport_revision || '',
+      });
       if (state?.currentDbPath === dbPath) _syncDbMetadataFileStyle(themeSnapshot);
       showStatus('DBテーマを保存しました');
     } catch (e) { showStatus('テーマ保存に失敗しました', true); }
@@ -2149,82 +1832,85 @@ function bindTableCellContextMenu(el) {
 bindTableCellContextMenu(document.getElementById('page-content'));
 bindTableCellContextMenu(document.getElementById('entity-freetext'));
 
-// Markdown風の行頭ショートカット（例: ### + Space → H3）
-function _noteMarkdownShortcutBlock(editable, range) {
-  if (!editable || !range || !range.collapsed) return null;
-  let node = range.startContainer;
-  if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-  const block = node?.closest?.('div,p,h1,h2,h3,h4,h5,h6,blockquote');
-  if (!block || block === editable || !editable.contains(block)) return null;
-  if (block.closest('table,pre,code,.callout-block')) return null;
-  return block;
-}
+// ============================================================
+// 行頭記法（工程6） — 「・」「数値」「h1〜h6」「既存の#〜######」+ Space
+// ============================================================
+// 計画書§5工程6: 共通の現在行変換（gb-note-block-types.js の
+// MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
+// レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
+// div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。
 
-function _noteTextBeforeCaret(block, range) {
+// 行頭からキャレットまでのテキスト（改行区切りの現在行部分）を取得する。
+function _noteLineTextBeforeCaret(block, range) {
   const before = range.cloneRange();
   before.setStart(block, 0);
-  return before.toString().replace(/\u00a0/g, ' ');
+  const text = before.toString().replace(/\u00a0/g, ' ');
+  return text.slice(text.lastIndexOf('\n') + 1);
 }
 
-function _noteReplaceBlockTag(block, tagName) {
-  if (!block || block.tagName === tagName) return block;
-  const next = document.createElement(tagName.toLowerCase());
-  while (block.firstChild) next.appendChild(block.firstChild);
-  block.replaceWith(next);
-  return next;
-}
-
-function _notePlaceCaretAtStart(block) {
-  if (!block) return;
-  if (!block.childNodes.length) block.appendChild(document.createElement('br'));
-  const range = document.createRange();
-  const lineIdSpan = block.firstElementChild?.classList?.contains('_nl-id') ? block.firstElementChild : null;
-  if (lineIdSpan) range.setStartAfter(lineIdSpan);
-  else range.setStart(block, 0);
-  range.collapse(true);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+// 行頭記法トリガーの判定。一致しなければ null。
+// - 「・」→ 箇条書き
+// - 数値（1桁以上）→ 番号付きリスト（入力した数値をstartとして保持）
+// - h1〜h6（大小文字問わず）→ 見出し1〜6
+// - 既存の #〜###### → 見出し1〜6（維持）
+function _noteLineStartTrigger(lineText) {
+  const headingHash = lineText.match(/^(#{1,6})$/);
+  if (headingHash) return { typeId: 'h' + headingHash[1].length };
+  const headingLetter = lineText.match(/^[hH]([1-6])$/);
+  if (headingLetter) return { typeId: 'h' + headingLetter[1] };
+  if (lineText === '・') return { typeId: 'ul' }; // 「・」
+  const ordered = lineText.match(/^(\d+)$/);
+  if (ordered) return { typeId: 'ol', orderedStart: parseInt(ordered[1], 10) };
+  return null;
 }
 
 function _handleNoteMarkdownShortcutKeydown(e) {
-  if (e.defaultPrevented || e.isComposing) return;
+  if (e.defaultPrevented || e.isComposing) return; // IME変換中は誤発火させない（工程6必須要件）
   if (e.key !== ' ' && e.key !== 'Spacebar') return;
-  const editable = e.target?.closest?.('#page-content');
+  if (typeof MeldexNoteBlockTypes === 'undefined') return;
+  const editable = e.target?.closest?.(MeldexNoteBlockTypes.EDITABLE_SELECTOR);
   if (!editable || editable.contentEditable !== 'true') return;
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
   const range = sel.getRangeAt(0);
   if (!editable.contains(range.startContainer)) return;
-  const block = _noteMarkdownShortcutBlock(editable, range);
-  if (!block) return;
-  const beforeText = _noteTextBeforeCaret(block, range);
-  const lineText = beforeText.slice(beforeText.lastIndexOf('\n') + 1);
-  const headingMatch = lineText.match(/^(#{1,6})$/);
-  if (!headingMatch) return;
+  const info = MeldexNoteBlockTypes.resolveCurrentBlock(editable, range);
+  if (!info) return;
+  // コード・表・コールアウト内では行頭記法を認識しない（誤変換防止。従来挙動を維持）
+  if (info.kind === 'code' || info.kind === 'table' || info.kind === 'callout') return;
+  const lineText = _noteLineTextBeforeCaret(info.block, range);
+  const trigger = _noteLineStartTrigger(lineText);
+  if (!trigger) return;
 
   e.preventDefault();
-  if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
-  const deleteRange = range.cloneRange();
-  const lineIdSpan = block.firstElementChild?.classList?.contains('_nl-id') ? block.firstElementChild : null;
-  if (lineIdSpan) deleteRange.setStartAfter(lineIdSpan);
-  else deleteRange.setStart(block, 0);
-  deleteRange.deleteContents();
-  const heading = _noteReplaceBlockTag(block, 'H' + headingMatch[1].length);
-  heading.classList.remove('note-title');
-  delete heading.dataset.noteTitle;
-  _notePlaceCaretAtStart(heading);
-  editable.dispatchEvent(new Event('input', { bubbles: true }));
+  const originalRange = range.cloneRange();
+  MeldexNoteBlockTypes.convertCurrentLineTo(trigger.typeId, {
+    editable,
+    range: originalRange,
+    orderedStart: trigger.orderedStart,
+    // トリガー文字（"###" 等）の削除は、共通変換の undo push 直後・DOM変換の
+    // 直前で実行し、「削除＋行種変換」を1回のUndoにまとめる（§5工程4-4）。
+    beforeConvert(convInfo, convRange) {
+      const deleteRange = convRange.cloneRange();
+      deleteRange.setStart(convInfo.block, 0);
+      const lineIdSpan = convInfo.block.firstElementChild?.classList?.contains('_nl-id') ? convInfo.block.firstElementChild : null;
+      if (lineIdSpan) deleteRange.setStartAfter(lineIdSpan);
+      deleteRange.deleteContents();
+    },
+  });
 }
 
-function bindNoteMarkdownShortcuts(el) {
-  if (!el || el._noteMarkdownShortcutAttached) return;
-  el._noteMarkdownShortcutAttached = true;
-  el.addEventListener('keydown', _handleNoteMarkdownShortcutKeydown, true);
+function bindNoteMarkdownShortcuts() {
+  if (document._noteMarkdownShortcutAttached) return;
+  document._noteMarkdownShortcutAttached = true;
+  // captureフェーズの単一リスナーへ集約する（#page-content 限定だった旧実装から
+  // #entity-freetext・#dp-editable へも一般化。動的生成される編集ホストにも
+  // 個別バインド不要で追従する）。
+  document.addEventListener('keydown', _handleNoteMarkdownShortcutKeydown, true);
 }
 
-bindNoteMarkdownShortcuts(document.getElementById('page-content'));
+bindNoteMarkdownShortcuts();
 
-// スラッシュコマンドのイベントリスナー登録
+// スラッシュコマンドのイベントリスナー登録（キー操作は gb-note-block-menu.js が
+// document capture フェーズで処理する。ここでは / の検出のみ）
 document.addEventListener('input', _onSlashInput);
-document.addEventListener('keydown', _onSlashKeydown, true); // captureフェーズでメニュー操作を先取り

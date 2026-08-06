@@ -29,12 +29,15 @@
 
   <!-- ボード関連 CSS（本体と共有。ボードのスタイルは gb-tools.css に統合されている） -->
   <link rel="stylesheet" href="gb-tools.css">
+  <link rel="stylesheet" href="gb-folder-multi-info.css">
 
   <!-- exe版の外周シェル -->
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="board-standalone.css">
+  <link rel="stylesheet" href="gb-board-immersive.css">
   <link rel="stylesheet" href="standalone-tags.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
   <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
@@ -210,13 +213,20 @@
   <script src="gb-workspace-ledger-io.js"></script>
   <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
-  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-reference-codecs.js"></script><script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
   <script src="gb-knowledge-signature.js"></script>
   <script src="gb-file-lock-store.js"></script>
   <script src="gb-active-lock-store.js"></script>
   <script src="gb-active-locks.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="gb-document-identity.js"></script>
+  <script src="gb-system-storage.js"></script>
+  <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-dropbox-management-root-resolver.js"></script>
+  <script src="gb-system-storage-indexeddb.js"></script>
+  <script src="board-standalone-annotations.js"></script>
+  <script src="gb-sidecar-migration.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
   <script src="gb-dropbox-asset-identity.js"></script>
@@ -235,8 +245,12 @@
   <script src="gb-ui.js"></script>
   <script src="offline-bundles/gb-tooltip.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
   <script src="gb-dropdown-dismiss.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
+  <script src="gb-theme-coloring-rule.js"></script>
+  <script src="gb-theme-migration.js"></script>
+  <script src="offline-bundles/gb-theme-manager.js"></script>
   <script src="gb-format-popup.js"></script>
   <script src="gb-export-save.js"></script>
   <script src="gb-export-html.js"></script>
@@ -245,6 +259,8 @@
   <!-- 2) 単独アプリ向けのスタブ（本体の必須グローバルを no-op で用意） -->
   <script src="board-standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
+  <script src="meldex-app-capabilities.js"></script>
+  <script src="standalone-parity-adapter.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
 
   <!-- 3) ボードエンジン本体 -->
@@ -253,11 +269,14 @@
   <script src="offline-bundles/gb-canvas-engine.js"></script>
   <script src="gb-canvas-minimap.js"></script>
   <script src="gb-board-image-drop-mode.js"></script>
+  <script src="gb-board-image-embed-guard.js"></script>
+  <script src="gb-board-transfer.js"></script>
   <script src="offline-bundles/gb-canvas-features.js"></script>
   <script src="gb-board-find.js"></script>
   <script src="offline-bundles/gb-canvas-interact.js"></script>
   <script src="gb-board-presets.js"></script>
   <script src="gb-board-links.js"></script>
+  <script src="gb-board-bulk-import.js"></script>
   <script src="offline-bundles/gb-board-ui.js"></script>
   <script src="gb-board-render-node.js"></script>
   <script src="gb-board-dirty.js"></script>
@@ -270,12 +289,15 @@
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-file-routes.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
   <script src="standalone-profile.js"></script>
   <script src="gb-auto-tag-settings.js"></script>
   <script src="gb-global-tags.js"></script>
+  <script src="gb-file-info-panel.js"></script>
+  <script src="gb-folder-multi-info.js"></script>
   <script src="gb-tag-preset-management.js"></script>
 <script src="gb-tag-panel-tabs.js"></script><script src="gb-tag-tree-runtime.js"></script><script src="gb-tag-management-overlays.js"></script><script src="gb-tag-catalog-suggestions.js"></script>
   <script src="gb-tag-display-preferences.js"></script>
@@ -293,6 +315,9 @@
   <!-- 5) 単独アプリのブートストラップ -->
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="gb-board-immersive.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="board-standalone-app.js"></script>
   <script src="offline-bundles/gb-shortcuts.js"></script>
 </body>

@@ -329,10 +329,18 @@ function _dbTreeRenderColumnHeaders(host, options) {
     gridLayout,
   } = options;
   const keys = [gridLayout.labelKey, ...extraProps];
-  const pinnedCols = typeof getPinnedCols === 'function' ? getPinnedCols(dbPath, { ctx }) : [];
-  const entityPinned = typeof getEntityColumnPinned === 'function'
+  const configuredPinnedCols = typeof getPinnedCols === 'function' ? getPinnedCols(dbPath, { ctx }) : [];
+  const configuredEntityPinned = typeof getEntityColumnPinned === 'function'
     ? getEntityColumnPinned(dbPath, { ctx })
     : true;
+  const pinnedRange = typeof getPinnedColumnRangeState === 'function'
+    ? getPinnedColumnRangeState(keys, configuredPinnedCols, configuredEntityPinned)
+    : {
+      pinnedCols: configuredPinnedCols,
+      entityColumnPinned: configuredEntityPinned,
+    };
+  const pinnedCols = pinnedRange.pinnedCols;
+  const entityPinned = pinnedRange.entityColumnPinned;
   const pinnedOffsets = {};
   let left = 0;
   keys.forEach(key => {

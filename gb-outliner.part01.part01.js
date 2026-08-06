@@ -84,6 +84,22 @@ async function _appendOutlinerChildrenChunked(container, children, rootPath) {
   }
 }
 
+// 大量の子（既定150件以上）を持つフォルダ/シートは、フォルダツリー改修Phase3の仮想スクロール
+// （gb-outliner-virtual-render.js）へ委譲し、表示範囲+オーバースキャン分だけをDOM化する。
+// しきい値未満、またはモジュール未読込時は従来通り全件DOM化する。
+async function _appendOrVirtualizeOutlinerChildren(container, children, rootPath, meta) {
+  if (!container || !Array.isArray(children)) return;
+  if (typeof _registerFileIds === 'function') _registerFileIds(children);
+  if (window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.attachNested(container, children)) {
+    return;
+  }
+  if (!children.length) return;
+  if (window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.mount(container, children, rootPath, meta)) {
+    return;
+  }
+  await _appendOutlinerChildrenChunked(container, children, rootPath);
+}
+
 function _treeNodeCacheKey(path) {
   return path == null ? '' : String(path);
 }
@@ -290,6 +306,9 @@ async function loadOutliner(options) {
     showLoading('フォルダを読み込み中...');
     let rendered = false;
     try {
+      // フォルダツリー改修Phase4: 再読込前に未開始のサムネイル/形式アイコン取得と
+      // 監視をすべて後始末する（設定OFF切替後の再読込もこの経路を通る）
+      window.GBOutlinerThumbnails?.resetAll();
       if (typeof _primeFileLockCacheFromStorage === 'function') _primeFileLockCacheFromStorage();
       // スクロール位置を保存してから再読み込み
       const tree = document.getElementById('tree-scroll-container');
@@ -453,8 +472,16 @@ function _captureBrowseItemPaneSnapshot(expectedPath, options) {
   const opts = options || {};
   const paneContext = opts.paneContext
     || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
-  const paneId = paneContext?.paneId
+  let paneId = paneContext?.paneId
     || (typeof GBLayout !== 'undefined' ? (GBLayout.activePane || '') : '');
+  // paneContext 由来の paneId は論理名（例: 'main'）のことがあり、レイアウトの実ノードID
+  // （例: 'pane-main'）と一致しないと _browseItemPaneSnapshotIsCurrent の照合が常に失敗して
+  // 型判定待ちのアクティベーションが無音で中断される。検証用IDは実IDへフォールバックする
+  // （paneContext 自体はペインルーティング用にそのまま保持する）。
+  if (paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function'
+      && !GBLayout.findNode(GBLayout.root, paneId)) {
+    paneId = GBLayout.activePane || '';
+  }
   const activeTab = paneId && typeof GBTabs !== 'undefined' && typeof GBTabs.getActiveTab === 'function'
     ? GBTabs.getActiveTab(paneId)
     : null;
@@ -652,8 +679,9 @@ function renderOutlinerMultiRoot(roots) {
 let draggedNode = null;
 let draggedNodes = null; // 複数選択D&D用
 let _treeClickScrollLock = 0; // ツリークリック中のスクロール復元抑止（参照カウント）
-let _outlinerSuppressNextTreeRowClick = false;
-let _outlinerSuppressTreeRowClickNode = null;
+// 旧・行クリック抑止のための暫定フラグはフォルダツリー改修Phase 2
+// （矩形選択が.tree-node-row内から開始されなくなった）で撤去済み。
+// 計画: app/docs/folder-tree-thumbnail-large-branch-interaction-plan-2026-07-31.md §2.5・§4.1-2
 
 // === ツリーノードクリック時のスクロール位置保護 ===
 // ツリークリックでフォルダツリーペインがアクティブ化されても、
@@ -700,7 +728,17 @@ function _getVisibleTreeNodes(scopeSelector) {
 // 複数選択管理
 const treeSelection = {
   items: new Set(),  // Set of .tree-node elements
-  lastClicked: null, // 最後にクリックした .tree-node（Shift用）
+  _lastClicked: null,
+  // lastClickedの安定パス（ファイルパス）。仮想化フォルダ(150件超)ではスクロールで
+  // lastClickedがDOMからアンマウントされ得るため（gb-outliner-virtual-render.js）、
+  // DOM参照が切れてもrangeTo()が復元できるよう、代入のたびに併記保持する
+  // （下のlastClickedゲッター/セッター経由で、既存の全代入箇所を変更せず自動追従する）。
+  _lastClickedPath: null,
+  get lastClicked() { return this._lastClicked; },
+  set lastClicked(nodeEl) {
+    this._lastClicked = nodeEl;
+    this._lastClickedPath = (nodeEl && nodeEl._nodeData && nodeEl._nodeData.path) || null;
+  },
   clear() {
     this.items.forEach(n => n.querySelector('.tree-node-row')?.classList.remove('selected'));
     this.items.clear();
@@ -727,6 +765,10 @@ const treeSelection = {
     const from = allRows.indexOf(this.lastClicked);
     const to = allRows.indexOf(nodeEl);
     if (from < 0 || to < 0) {
+      // DOM当たり判定(_getVisibleTreeNodes)で見つからない: 仮想化コンテナ内でアンカー
+      // (lastClicked)がスクロールによりアンマウント済みの可能性がある。安定パスと
+      // 論理モデル(GBOutlinerVirtual)で範囲を復元できるか試み、駄目なら単一選択へ。
+      if (this._virtualRangeTo(nodeEl)) return;
       this.clear();
       this.add(nodeEl);
       return;
@@ -734,6 +776,37 @@ const treeSelection = {
     this.clear();
     const [start, end] = from < to ? [from, to] : [to, from];
     for (let i = start; i <= end; i++) this.add(allRows[i]);
+  },
+  // 仮想化コンテナ内でのDOM当たり判定失敗時の範囲選択復元（rangeTo()専用の内部ヘルパー）。
+  // 起点(lastClicked)・終点(nodeEl)の両方が「同一の」仮想化コンテナに属する場合のみ対応し、
+  // それ以外（非仮想化フォルダ・別コンテナ間・所属不明）はfalseを返して既存の単一選択
+  // フォールバックに委ねる。範囲確定時、マウント済み行はtreeSelection経由（DOMクラスも
+  // 更新）、未マウント行は矩形選択(applyLassoSelection)と同じ流儀でstate.selectedIdsへ
+  // 直接安定IDを積む（再マウント時に自動復元される）。
+  _virtualRangeTo(nodeEl) {
+    const vr = window.GBOutlinerVirtualRender;
+    if (!vr || typeof vr.containerForPath !== 'function') return false;
+    const anchorPath = this._lastClickedPath;
+    const targetPath = nodeEl && nodeEl._nodeData && nodeEl._nodeData.path;
+    if (!anchorPath || !targetPath) return false;
+    const childrenDiv = vr.containerForPath(anchorPath);
+    if (!childrenDiv || childrenDiv !== vr.containerForPath(targetPath)) return false;
+    const state = childrenDiv._virtualState;
+    if (!state) return false;
+    const fromIdx = state.flat.findIndex(entry => entry.id === anchorPath);
+    const toIdx = state.flat.findIndex(entry => entry.id === targetPath);
+    if (fromIdx < 0 || toIdx < 0) return false;
+    this.clear();
+    const [start, end] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+    for (let i = start; i <= end; i++) {
+      const entry = state.flat[i];
+      const path = entry && entry.data && entry.data.path;
+      if (!path) continue;
+      const mountedEl = state.mountedById.get(path);
+      if (mountedEl) this.add(mountedEl);
+      else state.selectedIds.add(path);
+    }
+    return true;
   },
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
@@ -790,6 +863,19 @@ function setManualOrder(folderPath, names) {
     localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
   } catch {}
 }
+// 保存済みの手動並び順を破棄する。ルート直下（folderPath='_root'）はマニュアル順が
+// 設定側（ソースフォルダの並べ替え）より優先されるため、設定側で並べ替えを保存した際に
+// 呼び出して古い手動順を無効化する（呼び出さないと設定側の新しい順序がツリーへ反映されない）。
+function clearManualOrder(folderPath) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
+    const key = _pathToFileId(folderPath) || folderPath;
+    if (key in all) {
+      delete all[key];
+      localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
+    }
+  } catch {}
+}
 function applyManualSort(container, folderPath) {
   const order = getManualOrder(folderPath);
   if (order.length === 0) return;
@@ -804,6 +890,18 @@ function applyManualSort(container, folderPath) {
 function saveManualOrderFromDOM(container, folderPath) {
   const names = [...container.querySelectorAll(':scope > .tree-node')].map(n => n._nodeData?.name).filter(Boolean);
   setManualOrder(folderPath, names);
+}
+
+// 配列そのものを保存済み手動順で並べ替える（仮想化コンテナはDOM順ではなく配列順が正なので、
+// DOM追加前にこちらで確定させる。非仮想コンテナでも同じ結果になるため共通で使ってよい）。
+function _sortItemsByManualOrder(items, folderPath) {
+  const order = getManualOrder(folderPath);
+  if (!Array.isArray(items) || !items.length || !order.length) return items;
+  const map = new Map(items.map(it => [it?.name, it]));
+  const sorted = [];
+  order.forEach(name => { const it = map.get(name); if (it) { sorted.push(it); map.delete(name); } });
+  map.forEach(it => sorted.push(it));
+  return sorted;
 }
 
 // 編集ロック

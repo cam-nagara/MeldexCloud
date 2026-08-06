@@ -746,7 +746,15 @@ function _renameRuntimePathReferences(oldPath, newPath, exactLabel) {
 
 function renameAppPathReferences(oldPath, newPath, opts) {
   if (!oldPath || !newPath || oldPath === newPath) return;
+  // 改名/移動後も、開いている各編集面のsingle-flight・競合保留・参加者を
+  // 同じ安定文書IDへ束縛したままにする。フォルダ移動では配下aliasも一括更新。
+  window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
   const options = opts || {};
+  if (typeof rebindPendingDbViewConfigBackendSave === 'function') {
+    rebindPendingDbViewConfigBackendSave(oldPath, newPath, {
+      isFolder: options.type === 'folder' || options.type === 'database',
+    }).catch(error => console.warn('[Meldex] シート表示設定の保存先を更新できませんでした', error));
+  }
   const exactLabel = Object.prototype.hasOwnProperty.call(options, 'label') ? options.label : null;
   const preResolvedId = options.fileId || _pathToFileId(newPath) || _pathToFileId(oldPath) || '';
   const previousDbPath = state.currentDbPath || '';

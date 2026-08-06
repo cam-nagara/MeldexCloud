@@ -24,7 +24,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tags',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -291,6 +291,9 @@ function bdYamlListObjects(fm, key) {
 // --- ボード状態オブジェクト ---
 const bd = {
   path:'', _loadedBoardPath:'', _preservedFrontmatter:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
+  // 工程2-C項目2: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。
+  // 未読込/新規ボードでは空文字のまま（従来通りforce相当で保存される）。
+  lastSavedEtag:'',
   dirty:false, zoom:1, panX:0, panY:0, rotation:0, _id:0,
   connecting:null, _activeNode:null, selectedConnId:'', selectedConnIds:new Set(),
   cardStyles:[], lineStyles:[], depthStyles:[], activeCardStyle:'', activeLineStyle:'',
@@ -765,7 +768,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, tags = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -812,14 +815,6 @@ function bdParseMd(raw) {
     if (lnkBlock) lnkBlock[1].replace(/(\w+):\s*(.+)/g, (_, id, p) => { links[id] = p.trim(); });
     const lnkTypeBlock = fm.match(/linkTypes:\n((?:\s+\w+:.*\n?)*)/);
     if (lnkTypeBlock) lnkTypeBlock[1].replace(/(\w+):\s*([^\s]+)/g, (_, id, value) => { linkTypes[id] = value.trim(); });
-    // 共通タグ（タグID配列。タグ実体は .meldex/global-tags.json 側で一元管理）
-    if (typeof bdYamlNestedMap === 'function') {
-      Object.entries(bdYamlNestedMap(fm, 'tags')).forEach(([id, value]) => {
-        const list = Array.isArray(value) ? value : [];
-        const normalized = list.map(item => String(item == null ? '' : item).trim()).filter(Boolean);
-        if (normalized.length) tags[id] = normalized;
-      });
-    }
     // PureRef属性（transforms）
     const tfBlock = fm.match(/transforms:\n((?:\s+\w+:.*\n?)*)/);
     if (tfBlock) tfBlock[1].replace(/(\w+):\s*\{([^}]+)\}/g, (_, id, props) => {
@@ -1012,7 +1007,6 @@ function bdParseMd(raw) {
       const ssm = boardUiBlock[1].match(/showShadow:\s*(true|false)/);
       const trm = boardUiBlock[1].match(/textRotateOnLine:\s*(true|false)/);
       const dfm = boardUiBlock[1].match(/displayFilters:\s*(\{[^\n]*\})/);
-      const tfm = boardUiBlock[1].match(/tagFilter:\s*(\[[^\n]*\])/);
       if (acm) boardUi.activeCardStyle = acm[1].trim();
       if (alm) boardUi.activeLineStyle = alm[1].trim();
       if (pvm) boardUi.stylePresetSeedVersion = parseInt(pvm[1], 10) || 0;
@@ -1024,14 +1018,6 @@ function bdParseMd(raw) {
           const parsedFilters = JSON.parse(dfm[1]);
           if (parsedFilters && typeof parsedFilters === 'object' && !Array.isArray(parsedFilters)) {
             boardUi.displayFilters = parsedFilters;
-          }
-        } catch {}
-      }
-      if (tfm) {
-        try {
-          const parsedTagFilter = JSON.parse(tfm[1]);
-          if (Array.isArray(parsedTagFilter)) {
-            boardUi.tagFilter = parsedTagFilter.map(id => String(id == null ? '' : id)).filter(Boolean);
           }
         } catch {}
       }
@@ -1149,9 +1135,6 @@ function bdParseMd(raw) {
         if (n.linkType) node.linkType = n.linkType;
         if (n.imageSourcePath) node.imageSourcePath = String(n.imageSourcePath).replace(/\\/g, '/');
         if (n.status) node.status = n.status;
-        if (Array.isArray(n.tags) && n.tags.length) {
-          node.tags = n.tags.map(t => String(t == null ? '' : t).trim()).filter(Boolean);
-        }
         if (n.parent) node._jsonParent = n.parent;
         if (n.container) node.container = true;
         if (n.contained) node.contained = true;
@@ -1212,7 +1195,21 @@ function bdParseMd(raw) {
         ? bdNormalizeLoadedLlmSemantics(json.llmSemantics || llmSemantics, jIdMap)
         : (json.llmSemantics || llmSemantics);
       if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(jConns, null, parsedLlmSemantics);
-      return { nodes: jNodes, connections: jConns, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics };
+      const legacyArchive = `legacyBoardJson: ${JSON.stringify(JSON.stringify(json))}`;
+      const archivedFrontmatter = [preservedFrontmatter, legacyArchive].filter(Boolean).join('\n');
+      return {
+        nodes: jNodes,
+        connections: jConns,
+        groups,
+        statusDefs,
+        fileTheme,
+        cardStyles,
+        lineStyles,
+        depthStyles,
+        boardUi,
+        llmSemantics: parsedLlmSemantics,
+        preservedFrontmatter: archivedFrontmatter,
+      };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
     }
@@ -1253,7 +1250,6 @@ function bdParseMd(raw) {
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
-    if (tags[nid]) n.tags = tags[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
   });
   if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(nodes);
@@ -1322,15 +1318,6 @@ function bdToMd() {
   if (hasLinkTypes) {
     fm += 'linkTypes:\n';
     bd.nodes.forEach((n,i) => { if (n.link && n.linkType) fm += `  n${i}: ${n.linkType}\n`; });
-  }
-  // 共通タグ（タグID配列。カード削除・複製と一緒に自然に付随/消滅させるため、
-  // カード本体へ直接埋め込む。タグ名・色・グループは .meldex/global-tags.json 側で一元管理）
-  const hasTags = bd.nodes.some(n => Array.isArray(n.tags) && n.tags.length);
-  if (hasTags) {
-    fm += 'tags:\n';
-    bd.nodes.forEach((n,i) => {
-      if (Array.isArray(n.tags) && n.tags.length) fm += `  n${i}: ${JSON.stringify(n.tags)}\n`;
-    });
   }
   // PureRef属性
   const hasTransforms = bd.nodes.some(n => n.flipH || n.flipV || n.rotate || (n.opacity != null && n.opacity < 1) || n.locked);
@@ -1459,8 +1446,7 @@ function bdToMd() {
   const defaultDisplayFilters = typeof BD_DEFAULT_DISPLAY_FILTERS !== 'undefined' ? BD_DEFAULT_DISPLAY_FILTERS : {};
   const hasDisplayFilterOverrides = !!displayFiltersForSave && Object.keys(displayFiltersForSave)
     .some(key => displayFiltersForSave[key] !== defaultDisplayFilters[key]);
-  const tagFilterForSave = Array.isArray(bd.tagFilter) ? bd.tagFilter.map(id => String(id)).filter(Boolean) : [];
-  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides || tagFilterForSave.length) {
+  if (bd.activeCardStyle || bd.activeLineStyle || bd._stylePresetSeedVersion || bd.themeId || bd._showShadow || bd._textRotateOnLine || hasDisplayFilterOverrides) {
     fm += 'boardUi:\n';
     if (bd.activeCardStyle) fm += `  activeCardStyle: ${bd.activeCardStyle}\n`;
     if (bd.activeLineStyle) fm += `  activeLineStyle: ${bd.activeLineStyle}\n`;
@@ -1469,7 +1455,6 @@ function bdToMd() {
     if (bd._showShadow) fm += `  showShadow: true\n`;
     if (bd._textRotateOnLine) fm += `  textRotateOnLine: true\n`;
     if (hasDisplayFilterOverrides) fm += `  displayFilters: ${JSON.stringify(displayFiltersForSave)}\n`;
-    if (tagFilterForSave.length) fm += `  tagFilter: ${JSON.stringify(tagFilterForSave)}\n`;
   }
   if (bd.connections.length) {
     fm += 'connections:\n';
@@ -2212,15 +2197,6 @@ function bdRender() {
     if (typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(n, div);
     else { n._rw = div.offsetWidth; n._rh = div.offsetHeight; }
   });
-  // 共通タグによる絞り込み: 非該当カードを減光する（データそのものは変更しない）
-  if (Array.isArray(bd.tagFilter) && bd.tagFilter.length) {
-    const activeTagFilterIds = new Set(bd.tagFilter.map(String));
-    renderedNodes.forEach(({ n, div }) => {
-      const nodeTagIds = Array.isArray(n.tags) ? n.tags.map(String) : [];
-      const matchesFilter = nodeTagIds.some(id => activeTagFilterIds.has(id));
-      div.classList.toggle('bd-tag-filter-dim', !matchesFilter);
-    });
-  }
   if (typeof bdShouldDeferBoardExtras === 'function' && bdShouldDeferBoardExtras()) {
     if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(renderedNodes.map(item => item.n.id), 'render-deferred');
     if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(renderedNodes.map(item => item.n.id));
@@ -4284,21 +4260,7 @@ function bdSelect(id, add) {
       bdDrawConns({ connIds: previousConnIds, reason: 'select-clear-conn' });
     }
   }
-  if (id && !add) {
-    const n = bd.nodes.find(v => v.id === id);
-    if (n?.link) {
-      const label = n.text || n.link.split(/[/\\]/).pop() || n.link;
-      const handledByMobileDrawer = window.MeldexCloudMobileSideDrawer?.openBoardLink?.(n.link, label, n.linkType);
-      if (!handledByMobileDrawer) {
-        if (typeof bdShowLinkedSelectionPreview === 'function') bdShowLinkedSelectionPreview(n.link, n.linkType);
-        if (typeof bdSyncLinkedSelectionToPane === 'function') bdSyncLinkedSelectionToPane(n.link, label, n.linkType);
-      }
-    }
-    if (!n?.link) {
-      if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
-      if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
-    }
-  } else if (!add) {
+  if (!id && !add) {
     if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
     if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
   }
@@ -4573,7 +4535,6 @@ function bdStatusNames() { return ['', ...bd.statuses.map(s=>s.name)]; }
 // --- グループ管理 ---
 if (!bd.groups) bd.groups = [];
 bd.statusFilter = ''; // 空=全表示
-bd.tagFilter = []; // 共通タグID配列。空=全表示（絞り込みは減光のみで、非表示にはしない）
 
 // --- 整列関数 ---
 function bdAlign(type) {
@@ -4632,7 +4593,7 @@ function _bdGetNormalizeMetrics(node, el) {
   };
 }
 
-function _bdApplyNormalizedDimensions(metric, type, targetValue, targetArea) {
+function _bdApplyNormalizedDimensions(metric, type, targetValue) {
   const node = metric?.node;
   if (!node) return;
   if (metric.isImage) {
@@ -4641,7 +4602,6 @@ function _bdApplyNormalizedDimensions(metric, type, targetValue, targetArea) {
     if (type === 'width') nextImageWidth = targetValue;
     else if (type === 'height') nextImageWidth = targetValue * ratio;
     else if (type === 'size') nextImageWidth = ratio >= 1 ? targetValue : targetValue * ratio;
-    else if (type === 'area') nextImageWidth = Math.sqrt(targetArea * ratio);
     node.w = Math.max(40, Math.round(nextImageWidth));
     node.h = 0;
     return;
@@ -4649,21 +4609,17 @@ function _bdApplyNormalizedDimensions(metric, type, targetValue, targetArea) {
   if (type === 'height') node.h = Math.max(28, Math.round(targetValue));
   else if (type === 'width') node.w = Math.max(40, Math.round(targetValue));
   else if (type === 'size') { node.w = Math.max(40, Math.round(targetValue)); node.h = Math.max(28, Math.round(targetValue)); }
-  else if (type === 'area') {
-    const ratio = metric.width / (metric.height || 1);
-    const newH = Math.sqrt(targetArea / ratio);
-    node.w = Math.max(40, Math.round(newH * ratio));
-    node.h = Math.max(28, Math.round(newH));
-  }
 }
 
-function bdNormalize(type) {
-  const ids = [...bd.selected]; if (ids.length < 2) return;
-  bdPushUndo();
-  const elems = ids
+function _bdNormalizeMetricsForIds(ids) {
+  return [...(ids || [])]
     .map(id => ({ id, n: bd.nodes.find(n => n.id === id), el: document.getElementById('bdn-' + id) }))
-    .filter(v => v.n && v.el)
+    .filter(v => v.n && v.el && !v.n.contained && !v.n.locked)
     .map(v => _bdGetNormalizeMetrics(v.n, v.el));
+}
+
+function _bdApplyNormalizeMetrics(elems, type) {
+  if (!Array.isArray(elems) || elems.length < 2) return false;
   if (type === 'height') {
     const maxH = Math.max(...elems.map(v => v.height));
     elems.forEach(v => { _bdApplyNormalizedDimensions(v, 'height', maxH); });
@@ -4673,15 +4629,25 @@ function bdNormalize(type) {
   } else if (type === 'size') {
     const maxS = Math.max(...elems.map(v => Math.max(v.width, v.height)));
     elems.forEach(v => { _bdApplyNormalizedDimensions(v, 'size', maxS); });
-  } else if (type === 'area') {
-    const areas = elems.map(v => v.width * v.height);
-    const avgArea = areas.reduce((s, a) => s + a, 0) / areas.length;
-    elems.forEach(v => { _bdApplyNormalizedDimensions(v, 'area', 0, avgArea); });
-  }
+  } else return false;
+  return true;
+}
+
+function _bdRefreshNormalizedNodeElements(elems) {
   const normalizedIds = elems.map(v => v.node?.id).filter(Boolean);
   normalizedIds.forEach(id => {
     if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(id);
   });
+  return normalizedIds;
+}
+
+function bdNormalize(type) {
+  const ids = [...bd.selected];
+  const elems = _bdNormalizeMetricsForIds(ids);
+  if (elems.length < 2 || !['height', 'width', 'size'].includes(type)) return;
+  bdPushUndo();
+  _bdApplyNormalizeMetrics(elems, type);
+  const normalizedIds = _bdRefreshNormalizedNodeElements(elems);
   if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(normalizedIds, 'normalize');
   else bdRender();
   bdDirty();
@@ -4689,13 +4655,19 @@ function bdNormalize(type) {
 }
 
 // --- Arrange Optimal（自動パッキング）---
-function _bdArrangeItemsForSelection() {
+function _bdArrangeNodeIdsForSelection() {
   const ids = bd.selected.size > 1 ? [...bd.selected] : bd.nodes.map(n => n.id);
+  return ids.filter(id => {
+    const node = bd.nodes.find(item => item.id === id);
+    return !!(node && !node.contained && !node.locked);
+  });
+}
+
+function _bdArrangeItemsForIds(ids) {
   const items = ids.map(id => {
     const n = bd.nodes.find(v => v.id === id);
     const el = document.getElementById('bdn-' + id);
-    // contained カードは相対座標のため自動パッキング対象から除外
-    return n && el && !n.contained ? { n, w: el.offsetWidth, h: el.offsetHeight } : null;
+    return n && el && !n.contained && !n.locked ? { n, w: el.offsetWidth, h: el.offsetHeight } : null;
   }).filter(Boolean);
   if (items.length < 2) return null;
   const minX = Math.min(...items.map(item => item.n.x));
@@ -4711,10 +4683,7 @@ function _bdArrangeItemsForSelection() {
   };
 }
 
-function bdArrangeByWidth(padding, targetWidth) {
-  const layout = _bdArrangeItemsForSelection();
-  if (!layout) return;
-  bdPushUndo();
+function _bdArrangeLayoutByWidth(layout, padding, targetWidth) {
   const gap = padding || 8;
   const canvasEl = document.getElementById('bd-canvas');
   const maxItemWidth = Math.max(...layout.items.map(item => item.w));
@@ -4738,17 +4707,9 @@ function bdArrangeByWidth(padding, targetWidth) {
     x += item.w + gap;
     rowH = Math.max(rowH, item.h);
   });
-  const movedIds = layout.items.map(item => item.n.id);
-  movedIds.forEach(id => { if (typeof bdUpdateNodePosition === 'function') bdUpdateNodePosition(id); });
-  if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(movedIds, 'arrange-width');
-  else bdRender();
-  bdDirty();
 }
 
-function bdArrangeByHeight(padding, targetHeight) {
-  const layout = _bdArrangeItemsForSelection();
-  if (!layout) return;
-  bdPushUndo();
+function _bdArrangeLayoutByHeight(layout, padding, targetHeight) {
   const gap = padding || 8;
   const canvasEl = document.getElementById('bd-canvas');
   const maxItemHeight = Math.max(...layout.items.map(item => item.h));
@@ -4772,11 +4733,91 @@ function bdArrangeByHeight(padding, targetHeight) {
     y += item.h + gap;
     columnW = Math.max(columnW, item.w);
   });
+}
+
+function _bdFinishArrange(layout, reason) {
   const movedIds = layout.items.map(item => item.n.id);
   movedIds.forEach(id => { if (typeof bdUpdateNodePosition === 'function') bdUpdateNodePosition(id); });
-  if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(movedIds, 'arrange-height');
+  if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(movedIds, reason);
   else bdRender();
   bdDirty();
+  return movedIds;
+}
+
+function bdArrangeByWidth(padding, targetWidth) {
+  const layout = _bdArrangeItemsForIds(_bdArrangeNodeIdsForSelection());
+  if (!layout) return;
+  bdPushUndo();
+  _bdArrangeLayoutByWidth(layout, padding, targetWidth);
+  _bdFinishArrange(layout, 'arrange-width');
+}
+
+function bdArrangeByHeight(padding, targetHeight) {
+  const layout = _bdArrangeItemsForIds(_bdArrangeNodeIdsForSelection());
+  if (!layout) return;
+  bdPushUndo();
+  _bdArrangeLayoutByHeight(layout, padding, targetHeight);
+  _bdFinishArrange(layout, 'arrange-height');
+}
+
+function bdArrangeWithSize(direction, padding, targetSpan) {
+  if (direction !== 'width' && direction !== 'height') return;
+  const ids = _bdArrangeNodeIdsForSelection();
+  const metrics = _bdNormalizeMetricsForIds(ids);
+  if (metrics.length < 2) return;
+  bdPushUndo();
+  _bdApplyNormalizeMetrics(metrics, 'size');
+  const normalizedIds = _bdRefreshNormalizedNodeElements(metrics);
+  const layout = _bdArrangeItemsForIds(normalizedIds);
+  if (!layout) return;
+  if (direction === 'width') _bdArrangeLayoutByWidth(layout, padding, targetSpan);
+  else _bdArrangeLayoutByHeight(layout, padding, targetSpan);
+  _bdFinishArrange(layout, direction === 'width' ? 'arrange-size-width' : 'arrange-size-height');
+  if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
+}
+
+function bdRestoreImageNaturalSize(nodeId) {
+  const node = bd.nodes.find(item => item.id === nodeId);
+  if (!node || !node.img || node.locked) return false;
+  const image = document.getElementById('bdn-' + nodeId)?.querySelector('.bd-img');
+  const applyNaturalSize = () => {
+    const width = Math.round(image?.naturalWidth || node._imgNaturalW || 0);
+    const height = Math.round(image?.naturalHeight || node._imgNaturalH || 0);
+    delete node._restoreNaturalSizePending;
+    if (width <= 0 || height <= 0) {
+      if (typeof showStatus === 'function') showStatus('元画像を読み込めませんでした。画像ファイルを再指定してください', true);
+      return false;
+    }
+    node._imgNaturalW = width;
+    node._imgNaturalH = height;
+    if (Math.round(Number(node.w) || 0) === width && !Number(node.h)) return true;
+    bdPushUndo();
+    node.w = width;
+    node.h = 0;
+    if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(nodeId);
+    if (typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved([nodeId], 'image-natural-size');
+    else bdRender();
+    bdDirty();
+    if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(false);
+    return true;
+  };
+  if ((image?.naturalWidth || node._imgNaturalW) && (image?.naturalHeight || node._imgNaturalH)) {
+    return applyNaturalSize();
+  }
+  if (image && !image.complete) {
+    if (!node._restoreNaturalSizePending) {
+      node._restoreNaturalSizePending = true;
+      image.addEventListener('load', applyNaturalSize, { once: true });
+      image.addEventListener('error', () => {
+        delete node._restoreNaturalSizePending;
+        if (typeof showStatus === 'function') showStatus('元画像を読み込めませんでした。画像ファイルを再指定してください', true);
+      }, { once: true });
+    }
+    if (typeof showStatus === 'function') showStatus('画像の読み込み後に元のサイズへ戻します');
+    return false;
+  }
+  if (typeof showStatus === 'function') showStatus('元画像を読み込めませんでした。画像ファイルを再指定してください', true);
+  return false;
 }
 
 function bdArrangeOptimal(padding) {
@@ -4919,6 +4960,83 @@ function bdDirty() {
   bd.dirty=true; markAutoVersionDirty(); clearTimeout(window._bdTimer); window._bdTimer=setTimeout(bdSave,500);
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdDirty', _bdDirtyPerf);
 }
+// 工程2-C項目2: 保存応答/エラーが409（本物の競合）かどうかを判定する。
+// gb-document-save-coordinator.js の _looksLikeConflictError と同じ契約
+// （gb-app.part02.part01.js の apiFetch が enrichError 経由で
+// error.status / error.meldexCode を付与する）。
+function _bdLooksLikeConflictError(e) {
+  return !!e && (e.status === 409 || e.meldexCode === 'etag_conflict');
+}
+
+function _bdShowConflictPending(documentKey, path) {
+  window.MeldexConflictPendingBanner?.show?.(documentKey, {
+    label: '競合を保留中',
+    e2eId: 'board-conflict-pending-banner',
+    onConfirm: () => { _bdReviewConflict(path, documentKey); },
+  });
+}
+
+function _bdRestoreConflictReview(documentKey, record, path) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const current = coordinator?.getConflict?.(documentKey);
+  if (coordinator && record) {
+    if (!current || current.generation !== record.generation) return;
+    coordinator.restoreConflict?.(documentKey, record);
+  }
+  _bdShowConflictPending(documentKey, path);
+}
+
+async function _bdReviewConflict(path, documentKey) {
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const record = coordinator?.requestConflictReview?.(documentKey) || null;
+  if (coordinator && !record) return;
+  const generation = record?.generation ?? null;
+  window.MeldexConflictPendingBanner?.hide?.(documentKey);
+  try {
+    const keepLocal = typeof cfConfirm === 'function'
+      ? await cfConfirm('このボードは他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は失われます）')
+      : false;
+    if (bd.path !== path) {
+      _bdRestoreConflictReview(documentKey, record, path);
+      return;
+    }
+    if (keepLocal) {
+      const markdown = bdToMd();
+      const result = await apiPut('/file?path=' + encodeURIComponent(path), {
+        content: markdown,
+        force_overwrite: true,
+      });
+      const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+      if (coordinator && !resolved) {
+        throw new Error('ボードの競合状態が更新されたため、上書き結果を確定できません');
+      }
+      if (bd.path === path) {
+        bd.lastSavedEtag = result?.etag || bd.lastSavedEtag || '';
+        bd.dirty = false;
+        bd._lastSavedNodeIds = new Set((bd.nodes || []).map(node => node.id));
+      }
+      if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+      await window.MeldexDraftRecovery?.markSynced?.(path);
+      showStatus('自分の編集でボードを上書き保存しました');
+      return;
+    }
+    await window.MeldexDraftRecovery?.saveDraft?.(path, bdToMd(), bd.lastSavedEtag || '');
+    const title = document.getElementById('bd-title')?.textContent || path.split('/').pop();
+    const opened = await bdOpenBoard(title, path, {
+      skipDirtySave: true,
+      skipNavPush: true,
+      skipRecent: true,
+      skipAutoVersion: true,
+      conflictGeneration: generation,
+    });
+    if (!opened) throw new Error('board reload failed');
+    showStatus('最新のボードを読み込みました');
+  } catch (_) {
+    _bdRestoreConflictReview(documentKey, record, path);
+    showStatus('ボードの競合を解決できませんでした', true);
+  }
+}
+
 async function bdSave() {
   const savePath = bd.path;
   if (!savePath) return true;
@@ -4929,13 +5047,50 @@ async function bdSave() {
   const markdown = bdToMd();
   const prevIds = bd._lastSavedNodeIds || new Set();
   const currIds = new Set((bd.nodes || []).map(n => n.id));
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const documentKey = coordinator ? coordinator.documentKeyForPath(savePath) : savePath;
+  const transportRevisionAtRequestTime = bd.lastSavedTransportRevision || bd.lastSavedEtag || '';
+  const sendFn = (previousResult) => {
+    const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
+    const revisionForWrite = chainedRevision && coordinator
+      ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), chainedRevision)
+      : transportRevisionAtRequestTime;
+    return apiPut('/file?path=' + encodeURIComponent(savePath), {
+      content: markdown,
+      if_match_etag: revisionForWrite && coordinator
+        ? coordinator.revisionTokenForWrite(revisionForWrite, coordinator.currentTransportName())
+        : (chainedRevision || bd.lastSavedEtag || ''),
+      transport_revision: revisionForWrite || '',
+      skip_if_missing: true,
+    });
+  };
   try {
-    const saveResult = await apiPut('/file?path='+encodeURIComponent(savePath),{content:markdown, skip_if_missing:true});
+    // 工程2-C項目2: 500ms自動保存・切替/閉じる保存（いずれもbdSave経由）を
+    // 文書単位single-flightへ接続する。coordinator未ロード時は従来通り直接送信する
+    // （フォールバック。単独版の一部読込順で発生し得るため黙って壊さない）。
+    const saveResult = coordinator
+      ? await coordinator.requestSave(documentKey, bd, savePath, markdown, sendFn, { reason: 'board-auto' })
+      : await sendFn();
+    if (saveResult?.conflictPending) {
+      // conflict-pending中はコーディネーターがネットワーク送信自体をスキップしている。
+      // 何も送っていないため dirty のまま維持し、バナーだけ最新化する。
+      window.MeldexDraftRecovery?.queueDraft?.(savePath, markdown, bd.lastSavedEtag || '');
+      _bdShowConflictPending(documentKey, savePath);
+      return false;
+    }
     if (saveResult?.skipped || saveResult?.missing) {
       showStatus('ボード保存を中止しました: ファイルが見つかりません', true);
       return false;
     }
     if (bd.path !== savePath) return true;
+    if (saveResult?.etag) bd.lastSavedEtag = saveResult.etag;
+    if (coordinator && (saveResult?.transport_revision || saveResult?.etag)) {
+      bd.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        saveResult.transport_revision || saveResult.etag,
+      );
+      coordinator.bindDocumentIdentity(savePath, saveResult);
+    }
     const unchanged = bdToMd() === markdown;
     if (unchanged) {
       bd.dirty=false;
@@ -4958,7 +5113,17 @@ async function bdSave() {
     return true;
   } catch(e) {
     const detail = String(e?.message || e || '不明なエラー');
-    if (e?.code === 'etag_conflict' || /etag[_ -]?conflict|外部.*更新|競合/i.test(detail)) {
+    if (_bdLooksLikeConflictError(e)) {
+      // 工程2-A/2-Cと同じ契約: 409を受けた文書をconflict-pendingへ遷移させ、
+      // 以後の自動保存（500msタイマー）をコーディネーター入口で止める。
+      coordinator?.reportConflict?.(documentKey, {
+        path: savePath,
+        localMd: markdown,
+        localEtag: bd.lastSavedTransportRevision || bd.lastSavedEtag || '',
+        serverDetail: (e && e.meldexDetail && typeof e.meldexDetail === 'object') ? e.meldexDetail : null,
+      });
+      window.MeldexDraftRecovery?.saveDraft?.(savePath, markdown, bd.lastSavedEtag || '');
+      _bdShowConflictPending(documentKey, savePath);
       showStatus('ボードは上書きされていません。別の端末で更新されています。最新のボードを開き直してから編集内容を反映してください', true);
     } else {
       showStatus('ボードを保存できません: ' + detail, true);
@@ -4988,19 +5153,20 @@ function bdCopy() {
   _bdClipboardConnections = bd.connections
     .filter(c => selIds.has(c.from) && selIds.has(c.to))
     .map(c => ({ ...c }));
-  showStatus(_bdClipboard.length + '\u500b\u306e\u30ce\u30fc\u30c9\u3092\u30b3\u30d4\u30fc\u3057\u307e\u3057\u305f');
+  window.MeldexBoardTransfer?.captureBoardCopy?.(_bdClipboard);
+  showStatus(_bdClipboard.length + '\u4ef6\u306e\u30ab\u30fc\u30c9\u3092\u30b3\u30d4\u30fc\u3057\u307e\u3057\u305f');
 }
 function bdCloneNodesWithOffset(sourceNodes, offset) {
   const idMap = {};
   const sourceIdSet = new Set((sourceNodes || []).map(n => n?.id).filter(Boolean));
   const newNodes = (sourceNodes || []).map(n => {
-    const {id: _id, x: _x, y: _y, _bdCopyAbsX, _bdCopyAbsY, ...rest} = n;
+    const {id: _id, x: _x, y: _y, tags: _tags, _bdCopyAbsX, _bdCopyAbsY, ...rest} = n;
     const parentCopied = !!(n.contained && n.parent && sourceIdSet.has(n.parent));
     const copyAbsX = Number.isFinite(+_bdCopyAbsX) ? +_bdCopyAbsX : null;
     const copyAbsY = Number.isFinite(+_bdCopyAbsY) ? +_bdCopyAbsY : null;
     const nextX = parentCopied ? n.x : ((n.contained && copyAbsX != null) ? copyAbsX + offset : n.x + offset);
     const nextY = parentCopied ? n.y : ((n.contained && copyAbsY != null) ? copyAbsY + offset : n.y + offset);
-    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined, tags: Array.isArray(n.tags) ? [...n.tags] : undefined});
+    const nn = bdNode(n.text, nextX, nextY, n.w, n.h, {...rest, markers: n.markers ? {...n.markers} : undefined});
     idMap[n.id] = nn.id;
     return nn;
   });
@@ -5102,7 +5268,6 @@ function _bdSnapshot() {
     themeId: bd.themeId || '',
     statuses: bd.statuses,
     displayFilters: bd.displayFilters,
-    tagFilter: bd.tagFilter,
     globalStyleDefaults: typeof bdCaptureGlobalStyleDefaults === 'function' ? bdCaptureGlobalStyleDefaults() : null,
     _numbering: bd._numbering || false,
     _bgColor: bd._bgColor || '',
@@ -5150,7 +5315,6 @@ function _bdApplySnapshot(s) {
   bd.themeId = s.themeId || '';
   if (s.statuses !== undefined) bd.statuses = s.statuses;
   if (s.displayFilters !== undefined) bd.displayFilters = s.displayFilters || {};
-  if (s.tagFilter !== undefined) bd.tagFilter = Array.isArray(s.tagFilter) ? s.tagFilter : [];
   if (s.globalStyleDefaults !== undefined && typeof bdRestoreGlobalStyleDefaults === 'function') {
     bdRestoreGlobalStyleDefaults(s.globalStyleDefaults);
   }
@@ -5233,6 +5397,13 @@ async function bdOpenBoard(label, path, opts) {
   const titleEl = document.getElementById('bd-title');
   const prevTitle = titleEl ? titleEl.textContent : '';
   const nextPath = path || '';
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  let documentKeyAtOpen = coordinator ? coordinator.documentKeyForPath(nextPath) : nextPath;
+  const conflictGenerationAtOpen = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    ? openOpts.conflictGeneration
+    : null;
+  const requireExactConflictGeneration = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    && conflictGenerationAtOpen != null;
   const openSeq = (bd._openSeq || 0) + 1;
   bd._openSeq = openSeq;
   const isCurrentOpenRequest = () => bd._openSeq === openSeq && bdIsCurrentBoardOpenRequest(nextPath);
@@ -5281,7 +5452,6 @@ async function bdOpenBoard(label, path, opts) {
   bd._numbering = false;
   bd.statuses = (typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : [];
   bd.statusFilter = '';
-  bd.tagFilter = [];
   bd.zoom = 1;
   bd.panX = bd.panY = 0;
   bd.rotation = 0;
@@ -5309,6 +5479,12 @@ async function bdOpenBoard(label, path, opts) {
       'ボードファイル読み込み'
     );
     if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
+    // 読込応答のasset/provider IDを文書キーへ束縛し、移動・改名の前後で
+    // single-flight/競合世代が別文書として分裂しないようにする。
+    if (coordinator) {
+      documentKeyAtOpen = coordinator.bindDocumentIdentity(nextPath, data) || documentKeyAtOpen;
+      coordinator.registerParticipant(documentKeyAtOpen, bd);
+    }
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...');
@@ -5321,8 +5497,22 @@ async function bdOpenBoard(label, path, opts) {
       throw new Error('ボード形式ファイルではありません');
     }
     const parsed = bdParseMd(raw);
+    if (
+      requireExactConflictGeneration
+      && coordinator?.getConflict?.(documentKeyAtOpen)?.generation !== conflictGenerationAtOpen
+    ) {
+      throw new Error('ボードの競合状態が更新されたため、再読込を中止しました');
+    }
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
+    // 工程2-C項目2: 読込時のetagを保持する（保存コーディネーター経由のif_match_etag送信に使う）。
+    bd.lastSavedEtag = data.etag || '';
+    bd.lastSavedTransportRevision = coordinator
+      ? coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        data.transport_revision || data.etag || '',
+      )
+      : (data.etag || '');
     // フェーズ3-3: 読み込み直後のパスで取り消し履歴スコープを確定させる
     // （読み込み前に呼んだ bdClearUndoStacks() は「切替前のボード」のスコープを掃除するだけ
     //  なので、ここで新パスのスコープも明示的に掃除し、履歴パネルのアクティブスコープを合わせる）。
@@ -5377,7 +5567,6 @@ async function bdOpenBoard(label, path, opts) {
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
     bd.displayFilters = parsed.boardUi?.displayFilters || {};
-    bd.tagFilter = Array.isArray(parsed.boardUi?.tagFilter) ? parsed.boardUi.tagFilter : [];
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;
     if (typeof MeldexThemeMigration !== 'undefined' && typeof MeldexThemeMigration.migrateBoardState === 'function') {
@@ -5441,6 +5630,16 @@ async function bdOpenBoard(label, path, opts) {
     if (bd.nodes.length > 5) bdFitAll();
     else bdTransform();
     showStatus('\u30ad\u30e3\u30f3\u30d0\u30b9: ' + label);
+    // 競合確認からの明示的な再読込だけを、全描画と後続UI更新の成功後に
+    // 解決済みとする。通常のタブ表示や、途中で失敗した読込で保留状態を消さない。
+    if (coordinator && conflictGenerationAtOpen != null) {
+      const resolved = coordinator.resolveConflict(documentKeyAtOpen, conflictGenerationAtOpen);
+      if (!resolved) throw new Error('ボードの競合状態が更新されたため、再読込を確定できません');
+      window.MeldexConflictPendingBanner?.hide?.(documentKeyAtOpen);
+    } else if (coordinator?.getConflict?.(documentKeyAtOpen)) {
+      // 再起動/再読込を跨いだ保留競合は、本文を自動送信せず非モーダル導線だけ復元する。
+      _bdShowConflictPending(documentKeyAtOpen, nextPath);
+    }
     _bdPendingOpenRollback = null;
     return true;
   } catch (err) {

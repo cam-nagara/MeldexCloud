@@ -93,12 +93,16 @@ function switchDetailTab(tab) {
   // 空状態プレースホルダー: どのタブもアクティブでない場合のみ表示
   const emptyEl = document.getElementById('detail-tab-empty');
   if (emptyEl) emptyEl.hidden = !!tab;
-  // §12.5 バックリンク: タブに切り替わった瞬間に現在のエントリで一覧取得
+  // §12.5 バックリンク: タブに切り替わった瞬間に現在の選択対象で一覧取得。
+  // OptionTargetContext（計画書§11.1）を単一の情報源として使う。固定優先順位の
+  // フォールバック（currentEntityPath || currentPagePath || currentFilePath）は
+  // フォルダパネルの一般ファイル選択で currentFilePath が誰からも更新されず、
+  // 古い選択対象を表示し続ける不具合があったため廃止した（ファイル参照整合性
+  // 計画 Phase 5）。
   if (tab === 'backlinks' && window.GbBacklinks) {
     const container = document.getElementById('detail-tab-backlinks');
-    const s = (typeof state !== 'undefined') ? state : null;
-    const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
-    window.GbBacklinks.render(path, container);
+    const ctx = window.GBOptionTargetContext ? window.GBOptionTargetContext.get() : _legacyBacklinksTargetFallback();
+    window.GbBacklinks.render(ctx, container);
   }
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
@@ -297,12 +301,20 @@ function toggleDetailPanel() {
   return toggleOptionPanel();
 }
 
+// GBOptionTargetContext が読み込まれていない環境（一部の単独アプリ）向けの
+// 最終フォールバック。新しい render() 契約 {targets, selectionRevision} の
+// 形に合わせて包み直すだけで、フォールバック優先順位そのものは変えない。
+function _legacyBacklinksTargetFallback() {
+  const s = (typeof state !== 'undefined') ? state : null;
+  const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
+  return { targets: path ? [{ path, kind: 'file' }] : [], selectionRevision: 0, origin: 'legacy-fallback' };
+}
+
 function _refreshBacklinksIfActive() {
   if (_currentDetailTab !== 'backlinks' || !window.GbBacklinks) return;
   const container = document.getElementById('detail-tab-backlinks');
-  const s = (typeof state !== 'undefined') ? state : null;
-  const path = (s && (s.currentEntityPath || s.currentPagePath || s.currentFilePath)) || '';
-  window.GbBacklinks.render(path, container);
+  const ctx = window.GBOptionTargetContext ? window.GBOptionTargetContext.get() : _legacyBacklinksTargetFallback();
+  window.GbBacklinks.render(ctx, container);
 }
 
 function _clearBacklinksTabIfHidden() {
@@ -600,6 +612,7 @@ const _FS_FIELDS = {
       { key: '--bd-select-rect-color', label: '矩形選択色', type: 'color' },
       { key: '--bd-group-color',       label: 'グループ色', type: 'color' },
       { key: '--bd-anchor-color',      label: 'アンカー色', type: 'color' },
+      { key: '--bd-link-type-icon-color', label: 'リンク種別アイコン', type: 'color' },
       { key: '--bd-gap-siblings',      label: '同階層カード間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
       { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 30, applyCustom: 'gapLevels' },
       { key: '--bd-auto-align',        label: '自動整列',             type: 'checkbox', on: '1', off: '0', defaultOn: true, applyCustom: 'autoAlign' },
@@ -1658,6 +1671,7 @@ function _fsResolveSections(ctx, spec) {
           { label: '矩形選択', fields: pick(['--bd-select-rect-color']) },
           { label: 'グループ', fields: pick(['--bd-group-color']) },
           { label: 'アンカー', fields: pick(['--bd-anchor-color']) },
+          { label: 'リンク', fields: pick(['--bd-link-type-icon-color']) },
           { label: 'カーソル', fields: pick(['--bd-caret-color', '--bd-caret-width']) },
         ],
       },
@@ -2480,10 +2494,10 @@ async function _syncDetailPanel(label, path, type, opts) {
     // 開いていないフロートパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
     // フロートパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
     const drawerOpen = !!window.MeldexCloudMobileSideDrawer?.isOpen?.();
-    const subPanelOpen = typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.isOpen === 'function'
-      ? GBSubPanel.isOpen('entity')
+    const floatPanelOpen = typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.isOpen === 'function'
+      ? GBFloatPanel.isOpen('entity')
       : false;
-    if (!drawerOpen && !subPanelOpen) return false;
+    if (!drawerOpen && !floatPanelOpen) return false;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。
@@ -2536,6 +2550,10 @@ async function _syncDetailPanel(label, path, type, opts) {
     if (typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path, opts?.fileMeta);
     else openInSplitView(label, path);
   } else if (type === 'folder') {
+    // フォルダはバックリンクの対象から除外する（計画書§2.3「フォルダそのものは
+    // 対象から除外する」）。前の選択対象を残すと、フォルダ表示中にバックリンク
+    // タブを開いた時に無関係な古い対象の結果が出てしまうため明示的に空にする。
+    window.GBOptionTargetContext?.clear('folder-open');
     // フォルダ選択時は詳細パネルにフォルダ情報を表示
     await showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
       <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
@@ -2559,6 +2577,12 @@ async function _showDatabaseInfoInDetailPanel(label, path) {
   const seq = _detailSyncSeq;
   if (!await _dpSavePending()) return;
   if (seq !== _detailSyncSeq) return;
+  // OptionTargetContext（計画書§11.1）: シート（DB）選択時も選択対象を更新する。
+  // バックリンク索引はフォルダノート(.md)のpathを対象として記録しているため、
+  // フォルダpathをそのまま渡すのではなく対応するフォルダノートpathへ変換する
+  // （ファイル参照整合性計画 Phase 5、選択対象の取り違え解消の一環）。
+  const dbNotePath = window.GbBacklinks?.dbFolderNotePath?.(path) || path;
+  window.GBOptionTargetContext?.set({ path: dbNotePath, kind: 'database' }, 'database-select');
   if (typeof showDbTabs === 'function') showDbTabs(true);
   if (typeof switchDetailTab === 'function') {
     switchDetailTab(typeof _resolveDetailTabForType === 'function'
@@ -2831,6 +2855,13 @@ function _dpLoadFileInto(body, path) {
     const fm = fmMatch ? fmMatch[0] : '';
     if (fm) md = md.substring(fm.length);
     body.dataset.frontmatter = fm;
+    // 工程1項目9・11: 読込直後の保存済みbaseline（内容+etag）をdatasetへ保持する。
+    // 未変更判定・if_match_etag送信・メインパネルとの文書単位arbiter共有に必要
+    // （従来はetagを一切追跡していなかった）。
+    body.dataset.lastSavedMd = data.content || '';
+    body.dataset.lastSavedEtag = data.etag || '';
+    window.MeldexNoteSaveAdapter?.bindHostIdentity?.(body, path, data);
+    window.MeldexNoteSaveAdapter?.registerHost?.(body, path);
     _dpApplyNoteFileStyle(body, fm);
     const html = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '';
     body.innerHTML = html || '<span style="color:var(--fg2)">内容がありません</span>';
@@ -2850,8 +2881,8 @@ async function openEntityInSplit(entityPath, entityName) {
   _splitPath = entityPath;
   _splitDirty = false;
   if (window.MeldexCloudMobileSideDrawer?.openEntity?.(entityPath, name)) return true;
-  if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
-    return GBSubPanel.open('entity', { path: entityPath, label: name });
+  if (typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.open === 'function') {
+    return GBFloatPanel.open('entity', { path: entityPath, label: name });
   }
   if (typeof selectEntity === 'function') {
     await selectEntity(entityPath);
@@ -2875,6 +2906,13 @@ function _removeStaleDpEditables(root) {
   const scope = root || document;
   scope.querySelectorAll('#dp-editable').forEach(n => {
     if (n._autoSaveTimer) { clearTimeout(n._autoSaveTimer); n._autoSaveTimer = null; }
+    // 工程1: 保存コーディネーターの文書単位参加者リストからも外す（isConnectedで
+    // 自然に無害化はされるが、参照が残り続けるのを避ける）。
+    if (n.dataset?.path && window.MeldexDocumentSaveCoordinator && window.MeldexNoteSaveAdapter) {
+      window.MeldexDocumentSaveCoordinator.unregisterParticipant(
+        window.MeldexNoteSaveAdapter.documentKeyForPath(n.dataset.path), n,
+      );
+    }
     n.remove();
   });
 }
@@ -2915,9 +2953,10 @@ function _dpBuildSavePayload(el) {
   const path = el.dataset.path;
   if (!path) return null;
   if (_dpIsPlaceholderOnly(el)) return null;
-  let md = htmlToMd(el.innerHTML);
-  const fm = el.dataset.frontmatter || '';
-  if (fm) md = fm + md;
+  // _noteMarkdownFromEditor はメインパネルのノートと同じ直列化ロジック
+  // （検索ハイライト除去 + normalize() + htmlToMd + フロントマター付与）を
+  // 汎用的に適用する（gb-editor.part01.part01.js 定義。工程1で共通化）。
+  const md = _noteMarkdownFromEditor(el);
   return { path, content: md, html: el.innerHTML };
 }
 
@@ -2930,10 +2969,40 @@ async function _dpSave(el) {
     return true;
   }
   try {
-    await apiPut('/file?path=' + encodeURIComponent(payload.path), { content: payload.content, skip_if_missing: true });
+    // 工程1項目9・11: 詳細パネル内ノートも保存コーディネーター経由で送信する。
+    // メインパネルのノートと同じdocumentKey（正規化パス）を共有するため、
+    // 同一文書を両パネルで開いている場合にsingle-flightロックとbaseline追従
+    // （未編集側への保存結果反映）が共有される。if_match_etagも初めて送るように
+    // なる（従来は一切etagを追跡・送信していなかった）。
+    const res = await window.MeldexNoteSaveAdapter.performSave(el, payload.path, payload.content, { reason: 'detail-panel' });
+    // 修正2（データ消失の防止）: conflict-pending中はコーディネーターがネットワーク
+    // 送信自体をスキップして返す（res.conflictPending）。従来はこれを見ずに
+    // baseline確定＋_splitDirty=falseへ進んでいたため、実際にはサーバーへ何も
+    // 送信していないのに「保存済み」扱いとなっていた（以後 el.innerHTML との
+    // 差分比較が壊れ、保留解除後も未保存編集が二度と保存されない・見た目上
+    // 消えたように見える）。_saveBoardNote（513行付近）の同型ガードに揃える。
+    if (res && res.conflictPending) {
+      window.MeldexDraftRecovery?.queueDraft?.(payload.path, payload.content, el.dataset.lastSavedMd || '');
+      return false;
+    }
+    if (el.dataset.path === payload.path) {
+      el.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : payload.content;
+      el.dataset.lastSavedEtag = (res && res.etag) || '';
+    }
     if (el.dataset.path === payload.path && el.innerHTML === payload.html) _splitDirty = false;
     return true;
   } catch (e) {
+    // 修正2（競合の検知漏れ防止）: 従来はcatchで一律「保存失敗」表示のみを
+    // 行い、409（他端末での更新）を検知しても競合報告・ドラフト退避を一切
+    // 行っていなかった。メインパネルの _handleNoteSaveFailure
+    // （gb-editor.part01.part01.js）と同じ流儀（reportSaveFailureConflict経由の
+    // 競合報告＋MeldexDraftRecovery.saveDraftによるドラフト退避＋新規競合なら
+    // ダイアログ表示）に揃える。dp-editableはgb-note-save-adapter.jsの
+    // _liveHostForPath()が認識する対象のため、そのまま同じ競合ダイアログ・
+    // 「競合を保留中」表示へ合流できる。
+    if (typeof _handleNoteSaveFailure === 'function' && _handleNoteSaveFailure(e, payload.path, payload.content, el)) {
+      return false;
+    }
     if (typeof showStatus === 'function') showStatus('オプションの保存に失敗しました', true);
     return false;
   }
@@ -3017,6 +3086,7 @@ async function openBoardNoteTab(label, path) {
   body.dataset.boardNoteLoadSeq = String(loadSeq);
   body.innerHTML = '<span style="color:var(--fg2)">読み込み中...</span>';
   body.dataset.frontmatter = '';
+  body.dataset.path = path;
 
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
     if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path || body.dataset.boardNoteLoadSeq !== String(loadSeq) || _boardNoteDirty) return;
@@ -3025,6 +3095,12 @@ async function openBoardNoteTab(label, path) {
     const fm = fmMatch ? fmMatch[0] : '';
     if (fm) md = md.substring(fm.length);
     body.dataset.frontmatter = fm;
+    // 工程2-C項目5: 「ボードノート」も文書ID単位のarbiterへ接続する（メインパネル/
+    // 詳細パネル内ノートと同じ documentKey を共有し、etagも初めて追跡・送信する）。
+    body.dataset.lastSavedMd = data.content || '';
+    body.dataset.lastSavedEtag = data.etag || '';
+    window.MeldexNoteSaveAdapter?.bindHostIdentity?.(body, path, data);
+    window.MeldexNoteSaveAdapter?.registerHost?.(body, path);
     _dpApplyNoteFileStyle(body, fm);
     body.innerHTML = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '<span style="color:var(--fg2)">内容がありません</span>';
     body.contentEditable = 'true';
@@ -3054,9 +3130,12 @@ async function openBoardNoteTab(label, path) {
 function _buildBoardNoteSavePayload(body) {
   if (!body || !_boardNotePath) return null;
   if (_dpIsPlaceholderOnly(body)) return null;
-  const fm = body.dataset.frontmatter || '';
-  const md = htmlToMd(body.innerHTML);
-  return { path: _boardNotePath, content: fm + md, html: body.innerHTML };
+  // ノートと同じ直列化ロジック（検索ハイライト除去+normalize()+htmlToMd+フロントマター付与）
+  // を使う（工程2-C項目5。従来は htmlToMd を直接呼ぶだけで、ハイライト除去等が無かった）。
+  const md = window.MeldexNoteSaveAdapter?.serialize
+    ? window.MeldexNoteSaveAdapter.serialize(body)
+    : (body.dataset.frontmatter || '') + htmlToMd(body.innerHTML);
+  return { path: _boardNotePath, content: md, html: body.innerHTML };
 }
 
 async function _saveBoardNote() {
@@ -3066,20 +3145,117 @@ async function _saveBoardNote() {
   const payload = _buildBoardNoteSavePayload(body);
   if (!payload) return true;
   try {
-    await apiPut('/file?path=' + encodeURIComponent(payload.path), { content: payload.content, skip_if_missing: true });
+    // 工程2-C項目5: メインパネル/詳細パネル内ノートと同じ保存コーディネーター経由で
+    // 送信する。同じ文書を複数箇所で開いている場合にsingle-flightロックとbaseline
+    // 追従が共有され、if_match_etagも初めて送るようになる。
+    const res = window.MeldexNoteSaveAdapter
+      ? await window.MeldexNoteSaveAdapter.performSave(body, payload.path, payload.content, { reason: 'board-note' })
+      : await apiPut('/file?path=' + encodeURIComponent(payload.path), {
+          content: payload.content,
+          if_match_etag: body.dataset.lastSavedEtag || '',
+          transport_revision: body.dataset.lastSavedTransportRevision || '',
+          skip_if_missing: true,
+        });
+    if (res && res.conflictPending) {
+      window.MeldexDraftRecovery?.queueDraft?.(payload.path, payload.content, body.dataset.lastSavedMd || '');
+      return false;
+    }
+    if (_boardNotePath === payload.path) {
+      body.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : payload.content;
+      body.dataset.lastSavedEtag = (res && res.etag) || body.dataset.lastSavedEtag || '';
+    }
     if (_boardNotePath === payload.path && body.innerHTML === payload.html) _boardNoteDirty = false;
     return true;
   } catch (e) {
+    if (window.MeldexNoteSaveAdapter && (e?.status === 409 || e?.meldexCode === 'etag_conflict')) {
+      window.MeldexNoteSaveAdapter.reportSaveFailureConflict(body, payload.path, payload.content, e);
+      window.MeldexDraftRecovery?.saveDraft?.(payload.path, payload.content, body.dataset.lastSavedMd || '');
+      const documentKey = window.MeldexNoteSaveAdapter.documentKeyForPath(payload.path);
+      _showBoardNoteConflictPending(documentKey, payload.path);
+      if (typeof showStatus === 'function') showStatus('ボードノートは上書きされていません。別の端末で更新されています', true);
+      return false;
+    }
     if (typeof showStatus === 'function') showStatus('ボードノートの保存に失敗しました', true);
     return false;
   }
 }
 
+function _showBoardNoteConflictPending(documentKey, path) {
+  window.MeldexConflictPendingBanner?.show?.(documentKey, {
+    label: '競合を保留中',
+    e2eId: 'board-note-conflict-pending-banner',
+    onConfirm: () => _reloadBoardNoteAfterConflict(path),
+  });
+}
+
+// 工程2-C項目5: ボードノートの「確認する」導線。最新のサーバー内容を再取得して
+// baselineを更新し、保留状態を解除する（差分UIは持たないため、常に最新版へ揃える）。
+async function _reloadBoardNoteAfterConflict(path) {
+  const body = document.getElementById('board-note-editable');
+  const adapter = window.MeldexNoteSaveAdapter;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const documentKey = adapter?.documentKeyForPath?.(path) || path;
+  const reviewRecord = coordinator?.requestConflictReview?.(documentKey) || null;
+  if (coordinator && !reviewRecord) return;
+  const conflictGeneration = reviewRecord?.generation ?? adapter?.getConflictGeneration?.(path);
+  window.MeldexConflictPendingBanner?.hide?.(documentKey);
+  // requestConflictReview() で RESOLVING へ移した状態は失敗時に必ず復元する。
+  try {
+    const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+    if (_boardNotePath !== path || !body) {
+      const current = coordinator?.getConflict?.(documentKey);
+      if (coordinator && reviewRecord && current?.generation === reviewRecord.generation) {
+        coordinator.restoreConflict?.(documentKey, reviewRecord);
+        _showBoardNoteConflictPending(documentKey, path);
+      }
+      return;
+    }
+    if (
+      coordinator
+      && reviewRecord
+      && coordinator.getConflict?.(documentKey)?.generation !== reviewRecord.generation
+    ) {
+      return;
+    }
+    let md = data.content || '';
+    const fmMatch = md.match(/^---\n[\s\S]*?\n---\n?/);
+    const fm = fmMatch ? fmMatch[0] : '';
+    if (fm) md = md.substring(fm.length);
+    const renderedHtml = md.trim()
+      ? applyAutoLinks(mdToHtml(md, { basePath: path }), path)
+      : '<span style="color:var(--fg2)">内容がありません</span>';
+    body.dataset.frontmatter = fm;
+    body.dataset.lastSavedMd = data.content || '';
+    body.dataset.lastSavedEtag = data.etag || '';
+    adapter?.bindHostIdentity?.(body, path, data);
+    body.innerHTML = renderedHtml;
+    _boardNoteDirty = false;
+    // 同じノートをメイン/詳細パネルにも開いている場合を含め、全ホストのDOM・
+    // baselineを同じ最新版へ揃えてから、確認開始時と同じ競合世代だけを解除する。
+    adapter?.syncResolvedBaseline?.(path, body, data.content || '', data.etag || '');
+    const resolved = adapter?.resolveConflict?.(path, conflictGeneration);
+    if (resolved === false) throw new Error('競合状態が更新されたため、再読込を中止しました');
+    showStatus('最新のボードノートを読み込みました');
+  } catch (_) {
+    const current = coordinator?.getConflict?.(documentKey);
+    if (!reviewRecord || (current && current.generation === reviewRecord.generation)) {
+      if (coordinator && reviewRecord) coordinator.restoreConflict?.(documentKey, reviewRecord);
+      _showBoardNoteConflictPending(documentKey, path);
+    }
+    showStatus('最新版の取得に失敗しました', true);
+  }
+}
+
 function hideBoardNoteTab() {
   const finalizeHide = () => {
+    const body = document.getElementById('board-note-editable');
+    if (body && body.dataset.path && window.MeldexDocumentSaveCoordinator && window.MeldexNoteSaveAdapter) {
+      window.MeldexDocumentSaveCoordinator.unregisterParticipant(
+        window.MeldexNoteSaveAdapter.documentKeyForPath(body.dataset.path), body,
+      );
+    }
     _boardNotePath = '';
     _boardNoteDirty = false;
-    const body = document.getElementById('board-note-editable');
     if (body && body._boardNoteSaveTimer) {
       clearInterval(body._boardNoteSaveTimer);
       body._boardNoteSaveTimer = null;

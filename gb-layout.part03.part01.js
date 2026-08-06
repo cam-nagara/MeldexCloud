@@ -419,6 +419,10 @@
       GBDockPopup.close();
     }
     const scrollSnap = _saveAllScrollPositions();
+    // 全ペインkeep-alive（ビューワー残課題修正計画 2026-08-04「1」）。_renderPreservingActivePane()
+    // が既にアクティブペインのcontentElを取り外し済みの場合はGBPaneKeepAlive.detachAll内で
+    // 自然にスキップされる（parentNode無しのため）ため、ここでの追加呼び出しは二重処理にならない。
+    if (typeof GBPaneKeepAlive !== 'undefined') GBPaneKeepAlive.detachAll(_paneMap);
     if (_preRender) _preRender();
     _disconnectPaneObservers();
     _paneMap = {};
@@ -450,11 +454,91 @@
     if (typeof GBDocking !== 'undefined' && !_isMobileLayout()) {
       GBDocking.setupDropTargets();
     }
+    // 全ペインkeep-alive: 新しい生成先が見つかったペインへ実体を差し戻す（見つからない
+    // ペインだけ退避ホストへ）。_postRenderより前に完了させる（差し戻し後のcontentElを
+    // pane-bridgeが見るようにするため。差し戻し前だと再マウント判定を誤る）。
+    if (typeof GBPaneKeepAlive !== 'undefined') {
+      GBPaneKeepAlive.reattachAll(_paneMap);
+      GBPaneKeepAlive.pruneStale((paneId) => !!findNode(_root, paneId));
+    }
     if (_postRender) _postRender();
     _restoreAllScrollPositions(scrollSnap);
     queueMicrotask(() => _restoreAllScrollPositions(scrollSnap));
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => _restoreAllScrollPositions(scrollSnap));
     setTimeout(() => _restoreAllScrollPositions(scrollSnap), 80);
+  }
+
+  // === リサイズ後の寸法変更通知（DOM再生成なし） ===
+  // ウィンドウ/visualViewportのリサイズと、サイドバー境界のD&Dリサイズを同じ
+  // 非破壊経路に統一する。どちらもレイアウトルートやビューワーiframeのDOMは
+  // 一切触らず、寸法が変わったことだけを通知する（ビューワー安定化計画 2026-07-31 §1）。
+  let _layoutResizeNotifyTimer = 0;
+  function _notifyLayoutViewportResize() {
+    clearTimeout(_layoutResizeNotifyTimer);
+    _layoutResizeNotifyTimer = setTimeout(() => {
+      _layoutResizeNotifyTimer = 0;
+      if (!_layoutEl || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function'
+          || typeof CustomEvent !== 'function') return;
+      window.dispatchEvent(new CustomEvent('gb:layout-viewport-resize', {
+        detail: { width: _layoutEl.clientWidth, height: _layoutEl.clientHeight },
+      }));
+    }, 80);
+  }
+
+  // === ブレークポイント変更時の再描画（アクティブペインのコンテンツを保持） ===
+  // モバイル⇔デスクトップの切替は render() を通す必要がある（表示するペイン集合や
+  // ラップ構造そのものが変わるため）。ただし render() は毎回 _layoutEl.innerHTML = ''
+  // で全ペインDOMを破棄し、ビューワー等のレガシーコンテナ／iframeを退避先ストレージへ
+  // 一旦移してから作り直したペインへ戻す（この退避・再配置がiframeの再読み込みを招く。
+  // ビューワー安定化計画 2026-07-31 §1「現状と原因」参照）。
+  //
+  // ここでは「今まさに画面に表示されているアクティブペインの中身」だけを、render()の
+  // 破棄・退避対象から完全に外す。具体的には:
+  //   1. アクティブペインの contentEl（タブ本体・iframe等を含む実コンテンツ領域）を、
+  //      render() 実行前に一旦DOMツリーから取り外す（プレースホルダに差し替え）。
+  //      こうするとレガシーコンテナ退避処理は document.getElementById() でこの中身を
+  //      見つけられなくなり、退避対象から自然に外れる。
+  //   2. render() 本体は通常どおり実行し、アクティブペインの「入れ物」（タブバー等の
+  //      chrome）だけを新しく作らせる。
+  //   3. render() が _postRender（マウント処理）を呼ぶ直前に、新しく作られた空の
+  //      contentEl を、退避しておいた実体の contentEl に差し替える。マウント処理は
+  //      同一要素を見ることになり、退避・再配置は一度も発生しない。
+  //
+  // アクティブペインが特定できない・新しいツリーに存在しない等のフォールバック時は
+  // 通常の render() と同じ結果になるだけで、現状より悪化することはない。
+  function _renderPreservingActivePane() {
+    if (!_layoutEl) return;
+    const activePaneId = _activePane;
+    const prevInfo = activePaneId ? _paneMap[activePaneId] : null;
+    const oldContentEl = prevInfo?.contentEl || null;
+    const activeNode = activePaneId ? findNode(_root, activePaneId)?.node : null;
+    const canPreserve = !!(
+      oldContentEl && oldContentEl.parentNode && activeNode && activeNode.type === 'pane'
+    );
+    if (!canPreserve) { render(); return; }
+
+    const placeholder = document.createComment('gb-preserved-pane-content');
+    oldContentEl.parentNode.replaceChild(placeholder, oldContentEl);
+
+    const originalPostRender = _postRender;
+    _postRender = function _patchedPostRenderForModeSwitch() {
+      _postRender = originalPostRender;
+      const freshInfo = _paneMap[activePaneId];
+      const freshContentEl = freshInfo?.contentEl || null;
+      if (freshInfo && freshContentEl && freshContentEl.parentNode && freshContentEl !== oldContentEl) {
+        freshContentEl.replaceWith(oldContentEl);
+        freshInfo.contentEl = oldContentEl;
+      }
+      if (originalPostRender) originalPostRender();
+    };
+    try {
+      render();
+    } finally {
+      // render()が例外を投げた場合や、_postRenderに一度も到達しなかった場合の後始末。
+      // 正常系ではpatchedPostRenderForModeSwitch内で既に元へ戻っている。
+      if (_postRender === originalPostRender) { /* 正常に復元済み */ }
+      else _postRender = originalPostRender;
+    }
   }
 
   // === 初期化 ===
@@ -554,26 +638,23 @@
 
     render();
 
-    // リサイズでモバイル↔デスクトップ切替時に再描画
+    // ウィンドウ/visualViewportのリサイズ・画面回転では、レイアウトルートの
+    // 再生成やビューワーiframeの退避・再配置を一切行わない（ビューワー安定化計画
+    // 2026-07-31 §1）。同一ブレークポイント内はCSS（%指定のflex幅/高さ）が
+    // そのまま追従するためJS側の再描画は不要で、寸法変更の通知だけ行う。
+    // モバイル⇔デスクトップのブレークポイントをまたぐ場合だけ、アクティブペインの
+    // 中身を保持したまま _renderPreservingActivePane() で組み直す。
     _wasMobileLayout = _isMobileLayout();
-    let resizeRenderTimer = 0;
-    const scheduleResizeRender = () => {
-      clearTimeout(resizeRenderTimer);
-      resizeRenderTimer = setTimeout(() => {
-        resizeRenderTimer = 0;
-        render();
-      }, 80);
-    };
-    window.addEventListener('resize', () => {
+    const handleLayoutViewportResize = () => {
       const now = _isMobileLayout();
       if (now !== _wasMobileLayout) {
         _wasMobileLayout = now;
-        render();
-        return;
+        _renderPreservingActivePane();
       }
-      scheduleResizeRender();
-    });
-    window.visualViewport?.addEventListener('resize', scheduleResizeRender, { passive: true });
+      _notifyLayoutViewportResize();
+    };
+    window.addEventListener('resize', handleLayoutViewportResize, { passive: true });
+    window.visualViewport?.addEventListener('resize', handleLayoutViewportResize, { passive: true });
   }
 
   function _createLayoutContextMenuItem(label, icon, options) {

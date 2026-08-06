@@ -1596,6 +1596,9 @@ function bdColorPicker() {
 }
 // --- 9. Clipboard Paste Image ---
 function bdPasteImage() {
+  if (window.MeldexBoardTransfer?.requestPaste) {
+    return window.MeldexBoardTransfer.requestPaste({ imagesOnly: true });
+  }
   navigator.clipboard.read().then(items => {
     for (const item of items) {
       const imgType = item.types.find(t => t.startsWith('image/'));
@@ -2746,36 +2749,40 @@ function bdContextMenu(e, nodeId) {
     const isLinkCard = nd && !!nd.link;
     const isImageCard = nd && !!nd.img;
     const isRootCard = nd && !nd.parent;
-    if (isLinkCard && !multi) {
+    const openTarget = !multi && typeof MeldexBoardOpenTarget !== 'undefined'
+      ? MeldexBoardOpenTarget.resolve(nd)
+      : null;
+    if ((isLinkCard || isImageCard) && openTarget?.path) {
+      // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+      // 一覧に出さない（計画書「右サイドバー操作の制限」節。他の右サイドバー分岐と
+      // 同じ判定パターンに合わせる）。sourceEl を明示的に open() へ渡すことで、実行側の
+      // ガード(guardRightSidebarTool)がフォーカス位置フォールバック頼みでバイパスされる
+      // のも防ぐ（カードメニューは右クリック/メニューボタン起点でフォーカスが伴わない）。
+      const cardMenuSourceEl = e?.target || e?.trigger || null;
+      const cardMenuCanUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+        || typeof GBPaneBridge.surfaceOf !== 'function'
+        || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(cardMenuSourceEl));
       item('リンク先を開く', () => {
-        if (typeof _bdOpenLinkedTarget === 'function') _bdOpenLinkedTarget(nd);
+        MeldexBoardOpenTarget.open(nd, undefined, { sourceEl: cardMenuSourceEl });
       });
-      item('フロートパネルで開く', () => {
-        const linkPath = nd.link;
-        const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
-        if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(linkPath, linkName, { linkType: nd.linkType });
-        else if (typeof bdOpenLinkedPath === 'function') bdOpenLinkedPath(linkPath, linkName, { linkType: nd.linkType, rightOfBoard: true });
-      });
-      item('メインパネルで開く', () => {
-        const linkPath = nd.link;
-        const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
-        if (typeof openLinkedPathInMainPane === 'function') openLinkedPathInMainPane(linkPath, linkName, { linkType: nd.linkType });
-        else if (typeof openLink === 'function') openLink(linkPath, linkName);
-      });
-      item('右サイドバーで開く', () => {
-        const linkPath = nd.link;
-        const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
-        if (typeof openLinkedPathInRightPane === 'function') openLinkedPathInRightPane(linkPath, linkName, { linkType: nd.linkType });
-        else if (typeof openLinkInSubPanel === 'function') openLinkInSubPanel(linkPath, linkName, { linkType: nd.linkType });
-      });
-      if (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nd.link, nd.linkType || '')) {
+      MeldexBoardOpenTarget.getAvailableTargets()
+        .filter(target => cardMenuCanUseRightSidebar || target.value !== 'sidebar')
+        .forEach(target => {
+          item(`${target.label}で開く`, () => MeldexBoardOpenTarget.open(nd, target.value, { sourceEl: cardMenuSourceEl }));
+        });
+      if (isLinkCard && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nd.link, nd.linkType || ''))) {
         item('単独アプリで開く', () => {
           const linkPath = nd.link;
           const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
           if (typeof openLinkedPathStandalone === 'function') openLinkedPathStandalone(linkPath, linkName, { linkType: nd.linkType });
         });
       }
-      item('リンクをコピー', () => {
+      // board-standalone.html にはフォルダツリーが無いため typeof ガードで非表示にする。
+      if (typeof window.revealPathInFolderTree === 'function'
+        && !(typeof _bdIsExternalBrowserUrl === 'function' && _bdIsExternalBrowserUrl(openTarget.path))) {
+        item('フォルダツリーに表示', () => window.revealPathInFolderTree(openTarget.path));
+      }
+      if (isLinkCard) item('リンクをコピー', () => {
         const linkPath = nd.link;
         const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
         if (typeof MeldexBroadcast !== 'undefined') {
@@ -2974,6 +2981,9 @@ function bdContextMenu(e, nodeId) {
       imgSub.item('画像ファイルを再指定...', () => {
         if (typeof bdRelocateImageNode === 'function') bdRelocateImageNode(nodeId);
       });
+      imgSub.item('元のサイズに戻す', () => {
+        if (typeof bdRestoreImageNaturalSize === 'function') bdRestoreImageNaturalSize(nodeId);
+      }, { disabled: !!nd.locked });
       imgSub.sep();
       imgSub.item('水平反転', () => bdFlip('h'));
       imgSub.item('垂直反転', () => bdFlip('v'));
@@ -3200,11 +3210,12 @@ function bdContextMenu(e, nodeId) {
       alSub.sep();
       alSub.item('自動整列（横幅）', () => bdArrangeByWidth());
       alSub.item('自動整列（縦幅）', () => bdArrangeByHeight());
+      alSub.item('自動整列（サイズ・横幅）', () => bdArrangeWithSize('width'));
+      alSub.item('自動整列（サイズ・縦幅）', () => bdArrangeWithSize('height'));
       const nrmSub = sub('サイズ正規化');
       nrmSub.item('高さを揃える', () => bdNormalize('height'));
       nrmSub.item('幅を揃える', () => bdNormalize('width'));
       nrmSub.item('サイズを揃える', () => bdNormalize('size'));
-      nrmSub.item('面積を揃える', () => bdNormalize('area'));
       item('グループ化', () => {
         bdPushUndo();
         bd.groups.push({ id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds: [...bd.selected] });
@@ -3257,13 +3268,21 @@ function bdContextMenu(e, nodeId) {
       if (typeof bdPromptAddLinkCardAt === 'function') bdPromptAddLinkCardAt(clickWx, clickWy);
       else showStatus('リンクカード追加機能を読み込めませんでした', true);
     });
-    if (_bdClipboard && _bdClipboard.length > 0) {
-      item('貼り付け (Ctrl+V)', () => { bdPaste(); });
-    }
+    item('貼り付け (Ctrl+V)', () => {
+      if (window.MeldexBoardTransfer?.requestPaste) {
+        window.MeldexBoardTransfer.requestPaste({ point: { x: clickWx, y: clickWy } });
+      } else if (_bdClipboard && _bdClipboard.length > 0) {
+        bdPaste();
+      } else {
+        showStatus('貼り付け機能を読み込めませんでした', true);
+      }
+    });
     item('画像を貼り付け (Ctrl+Shift+V)', () => bdPasteImage());
     sep();
     item('自動整列（横幅）', () => bdArrangeByWidth());
     item('自動整列（縦幅）', () => bdArrangeByHeight());
+    item('自動整列（サイズ・横幅）', () => bdArrangeWithSize('width'));
+    item('自動整列（サイズ・縦幅）', () => bdArrangeWithSize('height'));
     sep();
     item('検索と置換...', () => bdFindReplace());
     sep();
@@ -3495,7 +3514,7 @@ async function bdLinkifyCardAs(nodeId, type) {
     n.text = label;
     bdRender();
     bdDirty();
-    if (typeof _bdOpenEntryInSubPanel === 'function') _bdOpenEntryInSubPanel(label, path, n.linkType);
+    if (typeof _bdOpenEntryInFloatPanel === 'function') _bdOpenEntryInFloatPanel(label, path, n.linkType);
     showStatus('リンクカード化: ' + label);
   } catch {
     showStatus('リンクカード化に失敗しました', true);

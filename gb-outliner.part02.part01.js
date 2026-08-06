@@ -629,7 +629,11 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       return;
     }
     const names = targets.map(item => item.name).join('、');
-    if (!await cfConfirm(`「${names}」を削除しますか？`)) return;
+    const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, `「${names}」を削除しますか？`)
+      : await cfConfirm(`「${names}」を削除しますか？`);
+    if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {
       label: targets.length + ' 件を削除',
@@ -853,6 +857,31 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'columns');
   }
 
+  // --- 開く（ダブルクリック／Enterと同じ共通アクティベーション経路。§2.4） ---
+  if (!isMulti && nodeData.path && !nodeData._isRoot) {
+    addMenuItem('開く', () => {
+      closeTreeContextMenu();
+      window.GBOutlinerActivation?.activateNode(nodeEl);
+    }, null, 'squareArrowOutUpRight');
+  }
+
+  // --- この階層を閉じる（大量項目向けUI補助導線。§2.3） ---
+  // メニュー構築中に例外が起きても、以降の項目や末尾の_outlinerPlaceContextMenu(menu)を
+  // 必ず実行させる（例外1つでメニュー全体が出なくなる事態を避ける）。
+  try {
+    if (!isMulti && (isFolder || isDB)) {
+      const toggleEl = nodeEl.querySelector(':scope > .tree-node-row .tree-toggle');
+      if (toggleEl && toggleEl.dataset.expanded === 'true') {
+        addMenuItem('この階層を閉じる', () => {
+          closeTreeContextMenu();
+          window.GBOutlinerVirtualPin?.closeBranch(nodeEl);
+        }, null, 'chevronsUp');
+      }
+    }
+  } catch (err) {
+    console.error('[showTreeContextMenu] この階層を閉じるメニューの構築に失敗', err);
+  }
+
   // --- リンクをコピー ---
   if (!isMulti && nodeData.path) {
     addMenuItem('リンクをコピー', () => {
@@ -867,11 +896,11 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'link');
   }
 
-  // --- リネーム（単一選択時のみ、エントリ以外、ロック中は無効） ---
+  // --- リネーム（F2と同じ共通ヘルパー。単一選択時のみ、エントリ以外、ロック中は無効） ---
   if (!isMulti && !isEntity && !_locked && !nodeData._isRoot) {
     addMenuItem('リネーム', () => {
       closeTreeContextMenu();
-      startTreeLabelEdit(labelEl, nodeData);
+      window.GBOutlinerActivation?.startRenameForNode(nodeEl, labelEl, nodeData);
     }, null, 'pencil');
   }
 

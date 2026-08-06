@@ -779,21 +779,7 @@ function bdSelect(id, add) {
       bdDrawConns({ connIds: previousConnIds, reason: 'select-clear-conn' });
     }
   }
-  if (id && !add) {
-    const n = bd.nodes.find(v => v.id === id);
-    if (n?.link) {
-      const label = n.text || n.link.split(/[/\\]/).pop() || n.link;
-      const handledByMobileDrawer = window.MeldexCloudMobileSideDrawer?.openBoardLink?.(n.link, label, n.linkType);
-      if (!handledByMobileDrawer) {
-        if (typeof bdShowLinkedSelectionPreview === 'function') bdShowLinkedSelectionPreview(n.link, n.linkType);
-        if (typeof bdSyncLinkedSelectionToPane === 'function') bdSyncLinkedSelectionToPane(n.link, label, n.linkType);
-      }
-    }
-    if (!n?.link) {
-      if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
-      if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
-    }
-  } else if (!add) {
+  if (!id && !add) {
     if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
     if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
   }

@@ -180,6 +180,14 @@ async function showSettingsModal(opts) {
     : '未接続';
   const _webClipperDesktopSetupAvailable = isWebClipperDesktopSetupAvailable();
   const _webClipperSetupDisabled = _webClipperDesktopSetupAvailable ? '' : ' disabled aria-disabled="true"';
+  const _treeThumbnailsAvailable = window.GBOutlinerThumbnails?.isAvailable?.()
+    ?? document.body?.dataset?.cloudMode !== 'dropbox';
+  const _treeThumbnailsEnabled = window.GBOutlinerThumbnails?.isEnabled?.()
+    ?? localStorage.getItem('gb:tree-thumbnails-enabled') !== '0';
+  const _thumbnailFitMode = typeof resolveThumbnailFitMode === 'function' ? resolveThumbnailFitMode() : (localStorage.getItem('gb:thumbnail-fit') === 'cover' ? 'cover' : 'contain');
+  const _treeThumbnailSizeMode = typeof resolveThumbnailSizeMode === 'function' ? resolveThumbnailSizeMode() : (['small', 'large'].includes(localStorage.getItem('gb:tree-thumbnail-size')) ? localStorage.getItem('gb:tree-thumbnail-size') : 'medium');
+  const _treeOpenClickMode = localStorage.getItem('gb:tree-open-click-mode') === 'double' ? 'double' : 'single';
+  const _viewerWheelMode = localStorage.getItem('gb:viewer-wheel-mode') === 'nav' ? 'nav' : 'zoom';
 
   const o = document.createElement('div');
   o.className = 'modal-overlay';
@@ -205,18 +213,19 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-nav-item{width:100%;display:grid;gap:3px;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
       .settings-modal .settings-nav-item::after{content:attr(data-desc);display:block;color:var(--fg2);font-size:12px;line-height:1.25;}
       .settings-modal .settings-nav-item:hover,.settings-modal .settings-nav-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
-      .settings-modal .settings-subtab-header{display:flex;gap:6px;align-items:center;padding:8px 0 10px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:10px;}
+      .settings-modal .settings-subtab-header{display:flex;gap:6px;align-items:center;padding:6px 0 8px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:8px;}
       .settings-modal .settings-subtab-header[hidden]{display:none!important;}
       .settings-modal .settings-subtab{height:30px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);font:inherit;cursor:pointer;}
       .settings-modal .settings-subtab:hover,.settings-modal .settings-subtab:focus-visible{border-color:var(--accent);color:var(--fg);outline:none;}
       .settings-modal .settings-subtab.active{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 16%, var(--bg2));color:var(--fg);font-weight:700;}
-      .settings-modal .settings-panel.settings-panel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;align-content:start;}
+      /* 2列マルチカラム（masonry風）。grid だと非表示セクションの絞り込みで空セルができるため columns を使う */
+      .settings-modal .settings-panel.settings-panel-grid{display:block;column-count:2;column-gap:12px;}
       .settings-modal .settings-panel.settings-panel-grid[hidden]{display:none!important;}
-      .settings-modal .settings-panel-grid .gb-section{margin:0;}
-      .settings-modal .settings-panel-grid .settings-section-wide{grid-column:1 / -1;}
+      .settings-modal .settings-panel-grid > *{break-inside:avoid;margin:0 0 10px;}
+      .settings-modal .settings-panel-grid .settings-section-wide{column-span:all;}
+      .settings-modal #settings-cloud-link-card:empty{display:none;}
       @media (max-width: 900px){
-        .settings-modal .settings-panel.settings-panel-grid{display:block;}
-        .settings-modal .settings-panel-grid .gb-section{margin-bottom:10px;}
+        .settings-modal .settings-panel.settings-panel-grid{column-count:1;}
       }
     </style>
     <!-- モバイル: セクションリスト -->
@@ -245,13 +254,6 @@ async function showSettingsModal(opts) {
     <div id="settings-subtab-header" class="settings-subtab-header" hidden></div>
     <!-- 全般 -->
     <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
-        <div class="gb-field-row" style="flex-wrap:nowrap;">
-          <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
-          <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
-        </div>
-      </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ ${fieldHelp('フォルダツリーに表示するフォルダを管理します')}</div>
         <div id="modal-outliner-roots"><div class="gb-section-desc">読み込み中...</div></div>
@@ -259,19 +261,12 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">+ フォルダを追加</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません')}</div>
-        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
-        </div>
-      </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます')}</div>
-        <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
-        <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
-        <div class="gb-field-row" style="justify-content:flex-start;">
-          <button class="gb-btn gb-btn-sm" data-action="closeSettingsModalRestoringTheme(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
+      <div id="settings-cloud-link-card" class="settings-section-wide"></div>
+      <section class="gb-section gb-section--boxed settings-section-wide">
+        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
+        <div class="gb-field-row" style="flex-wrap:nowrap;">
+          <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
+          <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
@@ -283,12 +278,14 @@ async function showSettingsModal(opts) {
         </div>
         <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
       </section>
-      <div id="settings-install-container">
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
-          <div class="gb-section-desc">表示時に読み込みます…</div>
-        </section>
-      </div>
+      <section class="gb-section gb-section--boxed settings-section-wide">
+        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます')}</div>
+        <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
+        <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
+        <div class="gb-field-row" style="justify-content:flex-start;">
+          <button class="gb-btn gb-btn-sm" data-action="closeSettingsModalRestoringTheme(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
+        </div>
+      </section>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます')}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
@@ -301,6 +298,19 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
         </div>
       </section>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません')}</div>
+        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
+        </div>
+      </section>
+      <div id="settings-install-container">
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </section>
+      </div>
       <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません')}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
@@ -311,15 +321,6 @@ async function showSettingsModal(opts) {
           <input id="settings-transfer-import-input" type="file" accept=".zip,application/zip" hidden data-onchange="importSettingsTransferBundleFromFile(this)">
         </div>
         <div id="settings-transfer-status" class="gb-section-desc"></div>
-      </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">表示サイズ</div>
-        <label class="gb-field-row">
-          <span class="gb-label">表示サイズ:</span>
-          <select id="modal-ui-scale" class="gb-select">
-            ${[67,75,80,90,100,110,125,150,175,200].map(v => { const cur = parseInt(localStorage.getItem('ui-scale') || '100'); return '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+v+'%</option>'; }).join('')}
-          </select>
-        </label>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">表示オプション</div>
@@ -341,6 +342,51 @@ async function showSettingsModal(opts) {
             <span>色以外でも状態を見分けやすくする</span>
           </label>
         </div>
+        ${_treeThumbnailsAvailable ? `<div class="gb-check-help-row" style="margin-top:6px;">
+          <label class="gb-check">
+            <input type="checkbox" id="modal-tree-thumbnails-enabled" ${_treeThumbnailsEnabled ? 'checked' : ''}>
+            <span>フォルダツリーにサムネイルを表示する</span>
+          </label>
+          ${fieldHelp('PNG・JPEG・PSD・動画など、端末にあるファイルに軽いプレビュー画像を表示します。オンライン上にのみあるファイルは自動取得しません。この端末だけの設定です')}
+        </div>` : ''}
+        <label class="gb-field-row" style="margin-top:6px;">
+          <span class="gb-label">サムネイルの表示方法 ${fieldHelp('フォルダツリーやシートの画像サムネイルに適用されます')}</span>
+          <select id="modal-thumbnail-fit" class="gb-select">
+            <option value="cover" ${_thumbnailFitMode === 'cover' ? 'selected' : ''}>枠いっぱいに表示（はみ出た部分は切り抜き）</option>
+            <option value="contain" ${_thumbnailFitMode === 'contain' ? 'selected' : ''}>全体を枠内に収める</option>
+          </select>
+        </label>
+        <label class="gb-field-row" style="margin-top:6px;">
+          <span class="gb-label">サムネイルのサイズ ${fieldHelp('フォルダツリーの画像サムネイルの大きさです')}</span>
+          <select id="modal-tree-thumbnail-size" class="gb-select">
+            <option value="small" ${_treeThumbnailSizeMode === 'small' ? 'selected' : ''}>小</option>
+            <option value="medium" ${_treeThumbnailSizeMode === 'medium' ? 'selected' : ''}>中</option>
+            <option value="large" ${_treeThumbnailSizeMode === 'large' ? 'selected' : ''}>大</option>
+          </select>
+        </label>
+        <label class="gb-field-row" style="margin-top:6px;">
+          <span class="gb-label">フォルダツリーの項目を開く操作 ${fieldHelp('クリックで開く場合も、Ctrl/Shiftクリックでの複数選択はそのまま使えます')}</span>
+          <select id="modal-tree-open-click-mode" class="gb-select">
+            <option value="double" ${_treeOpenClickMode === 'double' ? 'selected' : ''}>ダブルクリックで開く</option>
+            <option value="single" ${_treeOpenClickMode === 'single' ? 'selected' : ''}>クリックで開く</option>
+          </select>
+        </label>
+        <label class="gb-field-row" style="margin-top:6px;">
+          <span class="gb-label">ビューワーのマウスホイール操作 ${fieldHelp('画像・PDFビューワーを開いた時に、マウスホイールで何を操作するかです')}</span>
+          <select id="modal-viewer-wheel-mode" class="gb-select">
+            <option value="zoom" ${_viewerWheelMode === 'zoom' ? 'selected' : ''}>拡大・縮小</option>
+            <option value="nav" ${_viewerWheelMode === 'nav' ? 'selected' : ''}>前後のファイルへ移動</option>
+          </select>
+        </label>
+      </section>
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">表示サイズ</div>
+        <label class="gb-field-row">
+          <span class="gb-label">表示サイズ:</span>
+          <select id="modal-ui-scale" class="gb-select">
+            ${[67,75,80,90,100,110,125,150,175,200].map(v => { const cur = parseInt(localStorage.getItem('ui-scale') || '100'); return '<option value="'+v+'"'+(v===cur?' selected':'')+'>'+v+'%</option>'; }).join('')}
+          </select>
+        </label>
       </section>
       <section class="gb-section gb-section--boxed" id="settings-autostart-section">
         <div class="gb-section-title">自動起動</div>
@@ -386,11 +432,10 @@ async function showSettingsModal(opts) {
           <span id="export-to-db-status" class="gb-section-desc"></span>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます')}</div>
         <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
       </section>
-      <div id="settings-cloud-link-card" class="settings-section-wide"></div>
     </div>
     <!-- テーマ -->
     <div class="settings-panel" data-panel="テーマ" data-settings-theme-lazy="1" hidden>
@@ -783,7 +828,7 @@ async function showSettingsModal(opts) {
   // 指定パネルを開く
   if (requestedPanel) {
     if (typeof _openSettingsSection === 'function') {
-      _openSettingsSection(opts.panel || requestedPanel);
+      _openSettingsSection(opts.panel || requestedPanel, o, { pageId: opts.pageId || '' });
     } else {
       const tab = o.querySelector(`.settings-tab[data-tab="${requestedPanel}"]`);
       if (tab && typeof switchSettingsTab === 'function') switchSettingsTab(tab);

@@ -96,12 +96,17 @@ Object.assign(ScriptNoteEditor.prototype, {
     const focusState = _sn2CaptureSnapshotFocus(this);
     this._pushUndoSuppressed = true;
     try {
+      // 書式ポップアップはタイプオブジェクトを捕捉するため、配列を復元する前に閉じる。
+      // 復元後も残すと、切断済みオブジェクトへの変更が保存されずに消える。
+      if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
+      if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
       const data = createScriptNoteDoc(JSON.parse(snap));
       this.doc.fileType = data.fileType;
       this.doc.version = data.version;
       this.doc.title = data.title;
       this.doc.layoutMode = data.layoutMode;
       this.doc.editor = data.editor;
+      this.doc.scenarioTypes = data.scenarioTypes;
       this.doc.characters = data.characters;
       this.doc.characterDb = data.characterDb;
       this.doc.notes = data.notes;

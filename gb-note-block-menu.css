@@ -1,0 +1,82 @@
+/* gb-note-block-menu.css
+   計画書: note-editor-regression-performance-conflict-plan-2026-08-01.md §4.3
+   共通行種メニュー（gb-note-block-menu.js）の見た目。
+   基礎は gb-tools.part04.part01.css の .gb-context-menu / .gb-context-menu-item を
+   継承し、ここでは行種メニュー固有の追加要件（390px幅・44pxタッチ・現在選択・
+   無効理由・reduced-motion）だけを補う。 */
+
+.note-block-menu {
+  min-width: 200px;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 16px));
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 10030;
+  box-sizing: border-box;
+}
+
+.note-block-menu-item {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.note-block-menu-item-label {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.note-block-menu-item.disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.note-block-menu-item .note-block-menu-current-mark {
+  margin-left: auto;
+  color: var(--ui-accent, var(--accent));
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.note-block-menu-item .note-block-menu-reason {
+  display: block;
+  width: 100%;
+  font-size: var(--ui-font-11, 11px);
+  color: var(--ui-fg-muted, var(--fg2));
+  margin-top: 2px;
+}
+
+/* 選択中（キーボードフォーカス相当）と現在の行種を視覚的に区別する。
+   selected = キーボード操作の走査位置、aria-checked = 現在この行が持つ行種。 */
+.note-block-menu-item.selected {
+  background: var(--ui-bg-control-active);
+}
+.note-block-menu-item[aria-checked="true"] {
+  font-weight: 600;
+}
+
+/* 44px以上のタッチ対象（§4.3）。ポインタが coarse（タッチ主体）の環境でのみ拡張し、
+   マウス操作時の密度は既存の .gb-context-menu-item のままにする。 */
+@media (pointer: coarse) {
+  .note-block-menu-item {
+    min-height: 44px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+}
+
+/* prefers-reduced-motion 追従（§4.3）。本メニューはアニメーションを持たないが、
+   将来フェード等を追加した場合にここで無効化できるよう明示しておく。 */
+@media (prefers-reduced-motion: reduce) {
+  .note-block-menu, .note-block-menu-item {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* 幅390px相当のビューポートで横スクロールを起こさない */
+@media (max-width: 420px) {
+  .note-block-menu {
+    max-width: calc(100vw - 12px);
+  }
+}

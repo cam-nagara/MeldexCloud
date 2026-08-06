@@ -285,7 +285,6 @@ function _dbUndoBulkPropEdit(dbPath, prop, beforeSnapshots, afterSnapshots, ctx)
 function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
   if (typeof historyPush !== 'function' || !deletedItems.length) return;
   const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : ('db:' + String(dbPath || '').split('/').pop());
-  const names = deletedItems.map(item => item.name);
   const toTrashRef = (item, res = item) => {
     const src = res && typeof res === 'object' ? res : item;
     return src?.trash_name ? {
@@ -295,7 +294,10 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       name: item?.name || '',
     } : null;
   };
-  let trashRefs = deletedItems.map(toTrashRef).filter(Boolean);
+  const historyItems = deletedItems.filter(item => toTrashRef(item));
+  if (!historyItems.length) return;
+  const names = historyItems.map(item => item.name);
+  let trashRefs = historyItems.map(toTrashRef).filter(Boolean);
   const refresh = async (restoreSelection) => {
     await selectDatabase(dbPath, ctx, { silent: true });
     if (restoreSelection) _restoreSelectionByEntityNames(ctx, names);
@@ -303,40 +305,47 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
     _updateBulkEditBar(ctx);
   };
   historyPush(
-    `一括削除: ${deletedItems.length} 件`,
+    `一括削除: ${historyItems.length} 件`,
     async () => {
+      const failedRefs = [];
       for (const ref of trashRefs) {
-        await apiPost('/outliner/restore', {
-          trash_name: ref.trash_name,
-          ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
-        }).catch(() => {});
+        try {
+          await apiPost('/outliner/restore', {
+            trash_name: ref.trash_name,
+            ...(ref.trash_root ? { trash_root: ref.trash_root } : {}),
+          });
+        } catch {
+          failedRefs.push(ref);
+          continue;
+        }
         try {
           if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryRestored === 'function') {
             await window.GbDbCalendarSync.onEntryRestored(dbPath, ref.path);
           }
         } catch {}
       }
+      trashRefs = failedRefs;
       await refresh(true);
+      if (failedRefs.length) throw new Error(`${failedRefs.length} 件のエントリを復元できませんでした`);
     },
     async () => {
-      const nextTrashRefs = [];
-      const deleteResponses = [];
-      for (const item of deletedItems) {
-        const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
-        if (res) deleteResponses.push(res);
-        const ref = toTrashRef(item, res);
-        if (ref) nextTrashRefs.push(ref);
-        try {
-          if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
-            await window.GbDbCalendarSync.onEntryDeleted(dbPath, item.path);
-          }
-        } catch {}
-      }
-      trashRefs = nextTrashRefs;
-      await refresh(false);
+      const result = await window.GbDbEntryIdentity.deleteEntries({
+        dbPath,
+        ctx,
+        entries: historyItems.map(item => ({
+          name: item.name,
+          path: item.path,
+          entryId: item.entry_id || '',
+        })),
+        source: 'bulk-delete-redo',
+      });
+      trashRefs = result.trashRefs.map(toTrashRef).filter(Boolean);
       const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
-        ? _dbDeleteCalendarSyncWarningMessage(deleteResponses)
+        ? _dbDeleteCalendarSyncWarningMessage(result.responses)
         : '';
+      if (result.failures.length && typeof showStatus === 'function') {
+        showStatus(`やり直しで ${result.failures.length} 件の削除に失敗しました`, true);
+      }
       if (calendarWarning && typeof showStatus === 'function') showStatus(calendarWarning, true);
     },
     scope
@@ -682,51 +691,33 @@ async function _bulkDeleteEntities(entityNames, ctx) {
   if (!dbPath) return;
   const names = [...new Set((entityNames || []).filter(Boolean))];
   if (!names.length) return;
-  if (!await cfConfirm(`${names.length} 件のエントリをゴミ箱に移動しますか？`)) return;
-  if (ctx && ctx._selectedEntities) names.forEach(n => ctx._selectedEntities.delete(n));
-  if (typeof _dbRemoveCreatedEntitiesLocally === 'function') {
-    _dbRemoveCreatedEntitiesLocally(ctx, dbPath, names);
-  } else {
-    const tblSel = '#' + ((ctx && ctx.tableId) || 'pivot-table');
-    const paneRoot = _paneEl(ctx, tblSel) || (!ctx ? document : null);
-    names.forEach(name => {
-      const safeName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(name)
-        : String(name).replace(/(["\\])/g, '\\$1');
-      paneRoot?.querySelector(`tr[data-entity-name="${safeName}"]`)?.remove();
-    });
-  }
-  _updateBulkEditBar(ctx);
-  showStatus(`${names.length} 件のエントリを削除中...`);
-  const results = await Promise.all(names.map(async name => {
-    try {
-      const ep = _entityPath(dbPath, name);
-      const res = await apiPost('/outliner/delete', { path: ep });
-      try {
-        if (window.GbDbCalendarSync && typeof window.GbDbCalendarSync.onEntryDeleted === 'function') {
-          await window.GbDbCalendarSync.onEntryDeleted(dbPath, ep);
-        }
-      } catch {}
-      return {
-        ok: true,
-        response: res,
-        item: { name, path: ep, trash_name: res?.trash_name || '', trash_root: res?.trash_root || '' },
-      };
-    } catch {
-      return { ok: false };
-    }
+  const entries = names.map(name => ({
+    name,
+    path: _entityPath(dbPath, name),
+    entryId: String(ctx?.pivotData?.entities?.[name]?._id || ''),
   }));
-  const deletedItems = results.filter(result => result.ok).map(result => result.item);
+  const confirmMessage = `${names.length} 件のエントリをゴミ箱に移動しますか？`;
+  const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        entries.map(entry => ({ path: entry.path, kind: 'file' })),
+        confirmMessage,
+      )
+    : await cfConfirm(confirmMessage);
+  if (!confirmed) return;
+  const result = await window.GbDbEntryIdentity.deleteEntries({
+    dbPath,
+    ctx,
+    entries,
+    source: 'bulk-delete',
+  });
+  const deletedItems = result.trashRefs;
   const ok = deletedItems.length;
-  const fail = results.length - ok;
+  const fail = result.failures.length;
   _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx);
   const summary = `一括削除完了: 成功 ${ok} 件${fail > 0 ? ' / 失敗 ' + fail + ' 件' : ''}`;
   const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
-    ? _dbDeleteCalendarSyncWarningMessage(results.filter(result => result.ok).map(result => result.response))
+    ? _dbDeleteCalendarSyncWarningMessage(result.responses)
     : '';
   showStatus(calendarWarning ? `${summary}。${calendarWarning}` : summary, fail > 0 || !!calendarWarning);
-  if (fail > 0) {
-    await selectDatabase(dbPath, ctx, { silent: true });
-  }
   _updateBulkEditBar(ctx);
 }

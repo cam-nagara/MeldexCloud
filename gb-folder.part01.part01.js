@@ -591,6 +591,7 @@ function renderFolderGrid(opts) {
     el.className = 'fv-item';
     el.dataset.idx = idx;
     el.dataset.itemType = item.type || '';
+    el.dataset.itemName = item.name || '';
     if (item.path) el.dataset.path = item.path;
     const itemLocked = item.path && typeof isItemLocked === 'function' && isItemLocked(item.path);
     el.draggable = !itemLocked;
@@ -956,6 +957,11 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   closeColHeaderMenu();
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
+  // フロートパネル／サブパネル内では、右サイドバーで開く・バージョン管理等の
+  // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
+  const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+    || typeof GBPaneBridge.surfaceOf !== 'function'
+    || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(itemEl || e?.target || null));
   const blankTarget = !!options.blankTarget;
   const alreadySelected = !blankTarget && _folderSelectedItems.some(selected => selected?.path === item.path);
   if (!blankTarget && !alreadySelected) {
@@ -1049,14 +1055,16 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (item.type === 'image') {
     const openSub = addSub('別の方法で開く');
     openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)));
-    openSub.item('サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type }), null, 'panelRight');
+    if (_canUseRightSidebar) {
+      openSub.item('右サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
+    }
     openSub.item('ボードで開く', () => openImageInCanvas(item));
   }
   if (_isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
   if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
-  if (item.type !== 'folder') addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
+  if (item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
   if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
       if (typeof autoTagFolderTarget === 'function') autoTagFolderTarget(item, { recursive: item.type === 'folder' });
@@ -1101,10 +1109,12 @@ function showFolderItemContextMenu(e, item, options = {}) {
     addItem('バージョンを保存', () => {
       if (typeof saveFolderVersion === 'function') saveFolderVersion(item.path);
     }, null, 'save');
-    addItem('バージョン管理', () => {
-      if (typeof openFolderVersionTab === 'function') openFolderVersionTab(item.path);
-      else if (typeof openVersionTab === 'function') openVersionTab(item.path, 'folder');
-    }, null, 'gitBranch');
+    if (_canUseRightSidebar) {
+      addItem('バージョン管理', () => {
+        if (typeof openFolderVersionTab === 'function') openFolderVersionTab(item.path);
+        else if (typeof openVersionTab === 'function') openVersionTab(item.path, 'folder');
+      }, null, 'gitBranch');
+    }
   }
 
   if (item.path) {

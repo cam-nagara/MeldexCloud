@@ -137,7 +137,7 @@
         }),
       });
       config = payload;
-      return { path: _pathFromConfig(payload), config: payload };
+      return { path: _pathFromConfig(payload), etag: String(payload?.etag || ''), config: payload };
     } catch (error) {
       if (error?.status === 499) return null;
       throw error;

@@ -23,6 +23,43 @@
     </div>`;
   }
 
+  // Google Calendar / Microsoft Calendar の自動定期同期（差分取得）の間隔。
+  // Google ToDo（_ensureGoogleTasksAutoSync）と同じ5分間隔だが、あちらは既存の回帰テストが
+  // 文字列一致で参照しているため定数を共有せず、この2系統専用の定数として1箇所にまとめる。
+  const CAL_EXT_AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+  // 連続失敗がこの回数に達したら、次回モーダルを開いた時に状態表示を出す。
+  const CAL_EXT_AUTO_SYNC_FAILURE_NOTICE_THRESHOLD = 2;
+
+  function _calSyncIsDropboxMode() {
+    try {
+      return !!(window.MeldexRuntimeAdapter && typeof window.MeldexRuntimeAdapter.isDropboxMode === 'function' && window.MeldexRuntimeAdapter.isDropboxMode());
+    } catch {
+      return false;
+    }
+  }
+
+  // iPhone購読用.icsの自動更新（gb-cal-ics-subscribe.js）を、Google/Microsoftカレンダーの
+  // 自動同期サイクル成功後に便乗させる単一の呼び出し口。Cloud以外・未購読（有効フラグ無し）
+  // では即bailする（autoRefreshIfEnabled内部のガード）ため、Desktopでは実質no-op。
+  function _icsAutoRefreshOnSyncTick() {
+    if (!_calSyncIsDropboxMode()) return;
+    try {
+      window.MeldexCalIcsSubscribe?.autoRefreshIfEnabled?.().catch((err) => {
+        console.warn('[CalendarComponent] iPhone購読用.icsの自動更新に失敗:', err);
+      });
+    } catch (err) {
+      console.warn('[CalendarComponent] iPhone購読用.icsの自動更新に失敗:', err);
+    }
+  }
+
+  function _autoSyncStatusHtml(connected, failureCount) {
+    if (!connected) return '';
+    const notice = (failureCount || 0) >= CAL_EXT_AUTO_SYNC_FAILURE_NOTICE_THRESHOLD
+      ? '<div class="gb-cal-sync-auto-status-error">自動同期が連続で失敗しています。手動で取得・送信してください。</div>'
+      : '';
+    return `<div class="gb-cal-sync-auto-status">自動同期: 5分ごと ${fieldHelp('接続中は5分ごとに新着・変更・削除を自動で同期します。Meldexを起動している間のみ実行されます。')}</div>${notice}`;
+  }
+
   function _openHttpUrl(value) {
     try {
       const url = new URL(String(value || ''));
@@ -41,12 +78,30 @@
     else o?.remove?.();
   }
 
+  // Cloud（Dropboxモード）向けの案内文・カード出し分け。gb-cal-cloud-sync.js /
+  // gb-cal-oauth-browser.js / gb-cal-ics-subscribe.js が未実装の機能（Google ToDo・
+  // iCal URL購読）はボタンごと非表示にする（行き止まりUI禁止。cloud-mobile-product
+  // -quality-gate.md 準拠）。
+  function _cloudGoogleAuthHelp() {
+    return fieldHelp('Google Cloud Consoleで「OAuthクライアントID」（種類: ウェブアプリケーション）を作成し、'
+      + `承認済みのリダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
+      + 'クライアントIDとシークレットはこのMeldexワークスペース内（Dropbox）へ保存されます。');
+  }
+
+  function _cloudMicrosoftAuthHelp() {
+    return fieldHelp('Microsoft Entra管理センターでアプリを登録し、プラットフォームを「シングルページアプリケーション(SPA)」にして、'
+      + `リダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
+      + 'APIのアクセス許可に Calendars.ReadWrite / offline_access を追加してください。');
+  }
+
   CalendarComponent.prototype._showSyncModal = async function() {
+    const cloud = _calSyncIsDropboxMode();
     let syncStatus = {};
     try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
     const google = syncStatus.google || {};
     const googleTasks = syncStatus.googleTasks || {};
     const microsoft = syncStatus.microsoft || {};
+    const icsEnabled = cloud && !!window.MeldexCalIcsSubscribe?.isAutoRefreshEnabled?.();
     const o = document.createElement('div');
     o.className = 'gb-cal-modal-overlay';
     o.innerHTML = `<div class="gb-cal-modal gb-cal-sync-modal">
@@ -54,29 +109,40 @@
       ${_syncCard('Google Calendar', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!google.connected, !!google.available)}</div>
         ${!google.connected && google.available ? `
-          <div class="field"><label>Client ID</label><input class="sync-gcal-id" type="text" placeholder="Google Cloud Console で取得"></div>
+          <div class="field"><label>Client ID ${cloud ? _cloudGoogleAuthHelp() : ''}</label><input class="sync-gcal-id" type="text" placeholder="Google Cloud Console で取得"></div>
           <div class="field"><label>Client Secret</label><input class="sync-gcal-secret" type="password"></div>
           <button class="sync-gcal-auth gb-cal-sync-action primary" type="button">Googleにログイン</button>` : ''}
         ${google.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gcal-pull gb-cal-sync-action" type="button">Googleから取得</button><button class="sync-gcal-push gb-cal-sync-action" type="button">Googleに送信</button></div>' : ''}
+        ${_autoSyncStatusHtml(!!google.connected, this._googleCalAutoSyncFailures)}
       `)}
       ${_syncCard('Google ToDo', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
-        ${!googleTasks.connected && googleTasks.available !== false ? `
+        ${!googleTasks.connected && googleTasks.available !== false ? (cloud ? `
+          <div class="field"><label>Client ID ${_cloudGoogleAuthHelp()}</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
+          <div class="field"><label>Client Secret</label><input class="sync-gtask-secret" type="password"></div>
+          <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>` : `
           <div class="field"><label>Client ID</label><input class="sync-gtask-id" type="text" placeholder="Google Cloud Console で取得"></div>
           <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>
-          <div class="sync-gtask-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
+          <div class="sync-gtask-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>`) : ''}
         ${googleTasks.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gtask-sync gb-cal-sync-action" type="button">Google ToDoと同期</button></div>' : ''}
       `)}
       ${_syncCard('Microsoft Calendar', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
         ${!microsoft.connected && microsoft.available ? `
-          <div class="field"><label>Application (client) ID</label><input class="sync-ms-id" type="text" placeholder="Microsoft Entra のアプリID"></div>
+          <div class="field"><label>Application (client) ID ${cloud ? _cloudMicrosoftAuthHelp() : ''}</label><input class="sync-ms-id" type="text" placeholder="Microsoft Entra のアプリID"></div>
           <div class="field"><label>Tenant</label><input class="sync-ms-tenant" type="text" value="${_calSyncEsc(microsoft.tenant || 'common')}"></div>
           <button class="sync-ms-auth gb-cal-sync-action primary" type="button">Microsoftにログイン</button>
           <div class="sync-ms-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
         ${microsoft.connected ? '<div class="gb-cal-sync-actions"><button class="sync-ms-pull gb-cal-sync-action" type="button">Microsoftから取得</button><button class="sync-ms-push gb-cal-sync-action" type="button">Microsoftに送信</button></div>' : ''}
+        ${_autoSyncStatusHtml(!!microsoft.connected, this._microsoftCalAutoSyncFailures)}
       `)}
-      ${_syncCard('iCal / .ics', `
+      ${_syncCard('iCal / .ics', cloud ? `
+        <div class="gb-cal-sync-status">.icsファイルをインポート・エクスポートできます${fieldHelp('認証付きURLからの定期取り込みは、静的ホスティング(CORS制約)のため現時点では利用できません。取得したファイルを.icsインポートしてください。')}</div>
+        <div class="gb-cal-sync-actions">
+          <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
+          <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
+        </div>
+      ` : `
         <div class="gb-cal-sync-status">.icsファイル、または認証付きのiCal URLから取り込めます。</div>
         <div class="field"><label>iCal URL</label><input class="sync-ical-url" type="url" placeholder="https://example.com/calendar.ics"></div>
         <div class="gb-cal-sync-split">
@@ -89,6 +155,12 @@
           <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
         </div>
       `)}
+      ${cloud ? _syncCard('iPhoneの照会カレンダー', `
+        <div class="gb-cal-sync-status">Meldexの予定をDropbox経由で読み取り専用購読できます${fieldHelp('iPhoneの「設定」→「カレンダー」→「アカウントを追加」→「照会（購読）カレンダーを追加」で、作成したURLを登録してください。URLを知っている人は誰でも閲覧できる公開リンクです。更新はMeldexでカレンダーを開いている間に反映されます（Google/Microsoftカレンダーの自動同期のタイミングに便乗するため、どちらも未接続の場合は自動更新されません。その場合は「購読用URLを作成」を押し直すと最新化されます）。双方向に同期したい場合はGoogle/Microsoftカレンダー連携をご利用ください。')}</div>
+        <div class="gb-cal-sync-status">URLを知っている人は誰でも閲覧できる公開リンクです</div>
+        <div class="sync-ics-result gb-cal-sync-status gb-cal-sync-auth-status">${icsEnabled ? '購読用ファイルの自動更新: Meldexでカレンダーを開いている間' : ''}</div>
+        <div class="gb-cal-sync-actions"><button class="sync-ics-create gb-cal-sync-action primary" type="button">購読用URLを作成</button></div>
+      `) : ''}
       <div class="btn-row"><button class="sync-close gb-cal-sync-action" type="button">閉じる</button></div>
     </div>`;
     document.body.appendChild(o);
@@ -110,17 +182,18 @@
       if (event.target === o) close();
     });
     document.addEventListener('keydown', onKeyDown, true);
-    o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => this._googleCalAuth(o));
+    o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => (cloud ? this._googleCalAuthCloud(o) : this._googleCalAuth(o)));
     o.querySelector('.sync-gcal-pull')?.addEventListener('click', () => this._googleCalPull(o));
     o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());
-    o.querySelector('.sync-gtask-auth')?.addEventListener('click', () => this._googleTasksAuth(o));
+    o.querySelector('.sync-gtask-auth')?.addEventListener('click', () => (cloud ? this._googleTasksAuthCloud(o) : this._googleTasksAuth(o)));
     o.querySelector('.sync-gtask-sync')?.addEventListener('click', () => this._googleTasksSync());
-    o.querySelector('.sync-ms-auth')?.addEventListener('click', () => this._microsoftCalAuth(o));
+    o.querySelector('.sync-ms-auth')?.addEventListener('click', () => (cloud ? this._microsoftCalAuthCloud(o) : this._microsoftCalAuth(o)));
     o.querySelector('.sync-ms-pull')?.addEventListener('click', () => this._microsoftCalPull(o));
     o.querySelector('.sync-ms-push')?.addEventListener('click', () => this._microsoftCalPush());
     o.querySelector('.sync-ical-url-import')?.addEventListener('click', () => this._icalUrlImport(o));
     o.querySelector('.sync-ical-import')?.addEventListener('click', () => this._icalImport());
     o.querySelector('.sync-ical-export')?.addEventListener('click', () => this._icalExport());
+    o.querySelector('.sync-ics-create')?.addEventListener('click', () => this._icsSubscribeCreate(o));
   };
 
   CalendarComponent.prototype._googleCalAuth = async function(o) {
@@ -129,6 +202,32 @@
     if (!id || !secret) { this._showStatus('Client IDとSecretを入力してください', true); return; }
     try {
       const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret });
+      this._showStatus(res.message || 'Google認証成功');
+      _closeSyncOverlay(o);
+      this._showSyncModal();
+    } catch (e) {
+      this._showStatus('Google認証失敗: ' + e.message, true);
+    }
+  };
+
+  // Cloud（Dropboxモード）向けのGoogle認証。デスクトップ版はローカルサーバー
+  // ポップアップ方式（run_local_server）だが、静的ホスティングにサーバーは無いため
+  // ブラウザ完結のPKCEポップアップ（gb-cal-oauth-browser.js）を使う。ポップアップ
+  // ブロッカー回避のため、クリックハンドラの中でawaitを挟む前に同期的に開く。
+  CalendarComponent.prototype._googleCalAuthCloud = async function(o) {
+    const id = o.querySelector('.sync-gcal-id')?.value.trim();
+    const secret = o.querySelector('.sync-gcal-secret')?.value.trim();
+    if (!id || !secret) { this._showStatus('Client IDとSecretを入力してください', true); return; }
+    let popup;
+    try {
+      popup = window.MeldexCalOAuthBrowser.openBlankPopup('Google');
+    } catch (e) {
+      this._showStatus(e.message, true);
+      return;
+    }
+    this._showStatus('Googleのログイン画面で認証してください...');
+    try {
+      const res = await window.MeldexCalCloudSync.authorizeGoogle({ clientId: id, clientSecret: secret, popup });
       this._showStatus(res.message || 'Google認証成功');
       _closeSyncOverlay(o);
       this._showSyncModal();
@@ -157,6 +256,86 @@
       else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Google送信失敗: ' + e.message, true);
+    }
+  };
+
+  // Google Calendar の自動定期同期（差分取得→ローカル変更の送信）。Google ToDoの
+  // _ensureGoogleTasksAutoSync と同じライフサイクル（activate時に開始・deactivate/destroy時に停止・
+  // 多重起動防止）。Cloud（Dropboxモード）も v0.7.138 以降は同じ5分間隔で動く
+  // （gb-cal-cloud-sync.js が /cal/sync/google/pull|push を実装したため）。
+  CalendarComponent.prototype._ensureGoogleCalAutoSync = function() {
+    if (this._googleCalAutoTimer || this._destroyed || !this._active) return;
+    this._googleCalAutoTimer = setInterval(() => this._googleCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
+    setTimeout(() => this._googleCalAutoSync(), 8000);
+  };
+
+  CalendarComponent.prototype._clearGoogleCalAutoSync = function() {
+    if (this._googleCalAutoTimer) clearInterval(this._googleCalAutoTimer);
+    this._googleCalAutoTimer = null;
+  };
+
+  CalendarComponent.prototype._googleCalAutoSync = async function() {
+    if (this._destroyed || !this._active || this._googleCalAutoSyncing) return;
+    this._googleCalAutoSyncing = true;
+    let failed = false;
+    try {
+      const status = await apiFetch('/cal/sync/status');
+      if (!status?.google?.connected) return;
+      const user = this._getUser();
+      try {
+        await apiPost('/cal/sync/google/pull', { user, incremental: true });
+      } catch (e) {
+        failed = true;
+        console.warn('[CalendarComponent] Google Calendar自動取得に失敗:', e);
+      }
+      try {
+        await apiPost('/cal/sync/google/push', { user });
+      } catch (e) {
+        failed = true;
+        console.warn('[CalendarComponent] Google Calendar自動送信に失敗:', e);
+      }
+      if (!failed) {
+        await this._loadEvents();
+        this._render();
+        // コミット前レビュー指摘 #4: iPhone購読用.icsの自動更新は専用タイマーを別に張らず、
+        // 既存の外部カレンダー自動同期サイクルに便乗する（未接続時はここへ到達しないため、
+        // 「どちらも未接続なら5分毎の専用タイマーは張らない」実態と一致する）。有効フラグが
+        // 立っていない場合・Cloud以外では即bailするため、Desktopや未購読時は何もしない。
+        _icsAutoRefreshOnSyncTick();
+      }
+    } catch (e) {
+      failed = true;
+      console.warn('[CalendarComponent] Google Calendar自動同期に失敗:', e);
+    } finally {
+      this._googleCalAutoSyncFailures = failed ? (this._googleCalAutoSyncFailures || 0) + 1 : 0;
+      this._googleCalAutoSyncing = false;
+    }
+  };
+
+  // Cloud（Dropboxモード）向けのGoogle ToDo認証。デスクトップ版はリダイレクト+ポーリング方式
+  // （ローカルAPIサーバーのコールバックルートへ戻る）だが、静的ホスティングにサーバーは
+  // 無いため、Google Calendarと同じブラウザ完結PKCEポップアップ（gb-cal-oauth-browser.js）
+  // を使う。カレンダー接続とは独立したトークンとして保存する（gb-cal-cloud-tasks.js参照。
+  // スコープが異なるため、カレンダーの接続状態やトークンを流用しない）。
+  CalendarComponent.prototype._googleTasksAuthCloud = async function(o) {
+    const id = o.querySelector('.sync-gtask-id')?.value.trim();
+    const secret = o.querySelector('.sync-gtask-secret')?.value.trim();
+    if (!id || !secret) { this._showStatus('Client IDとSecretを入力してください', true); return; }
+    let popup;
+    try {
+      popup = window.MeldexCalOAuthBrowser.openBlankPopup('Google');
+    } catch (e) {
+      this._showStatus(e.message, true);
+      return;
+    }
+    this._showStatus('Googleのログイン画面で認証してください...');
+    try {
+      const res = await window.MeldexCalCloudTasks.authorizeGoogleTasks({ clientId: id, clientSecret: secret, popup });
+      this._showStatus(res.message || 'Google ToDo認証成功');
+      _closeSyncOverlay(o);
+      this._showSyncModal();
+    } catch (e) {
+      this._showStatus('Google ToDo認証失敗: ' + e.message, true);
     }
   };
 
@@ -285,6 +464,31 @@
     }, session.interval * 1000);
   };
 
+  // Cloud（Dropboxモード）向けのMicrosoft認証。デスクトップ版はデバイスコード方式
+  // （別画面でコード入力）だが、Cloudはブラウザ完結のSPA向けPKCEポップアップ
+  // （gb-cal-oauth-browser.js。クライアントシークレット不要）を使う。
+  CalendarComponent.prototype._microsoftCalAuthCloud = async function(o) {
+    const clientId = o.querySelector('.sync-ms-id')?.value.trim();
+    const tenant = o.querySelector('.sync-ms-tenant')?.value.trim() || 'common';
+    if (!clientId) { this._showStatus('MicrosoftのApplication IDを入力してください', true); return; }
+    let popup;
+    try {
+      popup = window.MeldexCalOAuthBrowser.openBlankPopup('Microsoft');
+    } catch (e) {
+      this._showStatus(e.message, true);
+      return;
+    }
+    this._showStatus('Microsoftのログイン画面で認証してください...');
+    try {
+      const res = await window.MeldexCalCloudSync.authorizeMicrosoft({ clientId, tenant, popup });
+      this._showStatus(res.message || 'Microsoft認証成功');
+      _closeSyncOverlay(o);
+      this._showSyncModal();
+    } catch (e) {
+      this._showStatus('Microsoft認証失敗: ' + e.message, true);
+    }
+  };
+
   CalendarComponent.prototype._microsoftCalPull = async function() {
     this._showStatus('Microsoftカレンダーから取得中...');
     try {
@@ -304,6 +508,56 @@
       this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Microsoft送信失敗: ' + e.message, true);
+    }
+  };
+
+  // Microsoft Calendar の自動定期同期（差分取得→ローカル変更の送信）。Google Calendarの
+  // _ensureGoogleCalAutoSync と同じライフサイクル・ガード方針。Cloud（Dropboxモード）も
+  // v0.7.138 以降は同じ5分間隔で動く（gb-cal-cloud-sync.js 参照）。
+  CalendarComponent.prototype._ensureMicrosoftCalAutoSync = function() {
+    if (this._microsoftCalAutoTimer || this._destroyed || !this._active) return;
+    this._microsoftCalAutoTimer = setInterval(() => this._microsoftCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
+    setTimeout(() => this._microsoftCalAutoSync(), 8000);
+  };
+
+  CalendarComponent.prototype._clearMicrosoftCalAutoSync = function() {
+    if (this._microsoftCalAutoTimer) clearInterval(this._microsoftCalAutoTimer);
+    this._microsoftCalAutoTimer = null;
+  };
+
+  CalendarComponent.prototype._microsoftCalAutoSync = async function() {
+    if (this._destroyed || !this._active || this._microsoftCalAutoSyncing) return;
+    this._microsoftCalAutoSyncing = true;
+    let failed = false;
+    try {
+      const status = await apiFetch('/cal/sync/status');
+      if (!status?.microsoft?.connected) return;
+      const user = this._getUser();
+      try {
+        await apiPost('/cal/sync/microsoft/pull', { user, incremental: true });
+      } catch (e) {
+        failed = true;
+        console.warn('[CalendarComponent] Microsoft Calendar自動取得に失敗:', e);
+      }
+      try {
+        await apiPost('/cal/sync/microsoft/push', { user });
+      } catch (e) {
+        failed = true;
+        console.warn('[CalendarComponent] Microsoft Calendar自動送信に失敗:', e);
+      }
+      if (!failed) {
+        await this._loadEvents();
+        this._render();
+        // コミット前レビュー指摘 #4: Googleと同じく外部カレンダー自動同期サイクルに便乗して
+        // iPhone購読用.icsを更新する。
+        _icsAutoRefreshOnSyncTick();
+      }
+    } catch (e) {
+      failed = true;
+      console.warn('[CalendarComponent] Microsoft Calendar自動同期に失敗:', e);
+    } finally {
+      this._microsoftCalAutoSyncFailures = failed ? (this._microsoftCalAutoSyncFailures || 0) + 1 : 0;
+      this._microsoftCalAutoSyncing = false;
     }
   };
 
@@ -360,22 +614,63 @@
     });
   };
 
+  // iPhone向けICS購読リンクの作成（Cloud専用。gb-cal-ics-subscribe.js参照）。
+  // Dropboxのsharing.writeスコープが無い既存接続では失敗するため、その場合は
+  // ファイルパスを示した手動作成の案内へフォールバックする（行き止まりで終わらせない）。
+  CalendarComponent.prototype._icsSubscribeCreate = async function(o) {
+    const resultEl = o.querySelector('.sync-ics-result');
+    if (!window.MeldexCalIcsSubscribe) {
+      this._showStatus('購読機能を初期化できませんでした', true);
+      return;
+    }
+    this._showStatus('購読用ファイルを作成しています...');
+    try {
+      const res = await window.MeldexCalIcsSubscribe.createSubscriptionLink();
+      this._showStatus('購読用URLを作成しました');
+      if (resultEl) {
+        resultEl.innerHTML = `購読URL: <code class="sync-ics-url">${_calSyncEsc(res.webcalUrl)}</code> `
+          + `<button class="sync-ics-copy gb-cal-sync-action" type="button">コピー</button>`;
+        resultEl.querySelector('.sync-ics-copy')?.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(res.webcalUrl);
+            this._showStatus('購読URLをコピーしました');
+          } catch {
+            this._showStatus('コピーに失敗しました。URLを選択して手動でコピーしてください', true);
+          }
+        });
+      }
+    } catch (e) {
+      this._showStatus('購読用URLの作成に失敗: ' + e.message, true);
+      if (resultEl) {
+        const path = _calSyncEsc(e.manualPath || window.MeldexCalIcsSubscribe.ICS_RELATIVE_PATH);
+        resultEl.innerHTML = `自動作成できませんでした。Dropbox上の <code>${path}</code> を右クリックして共有リンクを作成し、`
+          + `そのURLをiPhoneの照会カレンダーへ登録してください${fieldHelp('Dropboxアプリまたはdropbox.comで対象ファイルを開き、「共有」→「リンクを作成」で取得できます。')}`;
+      }
+    }
+  };
+
   const _calSyncOriginalRefreshAfterActivation = CalendarComponent.prototype._refreshAfterActivation;
   CalendarComponent.prototype._refreshAfterActivation = function(...args) {
     const result = _calSyncOriginalRefreshAfterActivation.apply(this, args);
     if (typeof this._ensureGoogleTasksAutoSync === 'function') this._ensureGoogleTasksAutoSync();
+    if (typeof this._ensureGoogleCalAutoSync === 'function') this._ensureGoogleCalAutoSync();
+    if (typeof this._ensureMicrosoftCalAutoSync === 'function') this._ensureMicrosoftCalAutoSync();
     return result;
   };
 
   const _calSyncOriginalDeactivate = CalendarComponent.prototype.deactivate;
   CalendarComponent.prototype.deactivate = function(...args) {
     if (typeof this._clearGoogleTasksAutoSync === 'function') this._clearGoogleTasksAutoSync();
+    if (typeof this._clearGoogleCalAutoSync === 'function') this._clearGoogleCalAutoSync();
+    if (typeof this._clearMicrosoftCalAutoSync === 'function') this._clearMicrosoftCalAutoSync();
     return _calSyncOriginalDeactivate.apply(this, args);
   };
 
   const _calSyncOriginalDestroy = CalendarComponent.prototype.destroy;
   CalendarComponent.prototype.destroy = function(...args) {
     if (typeof this._clearGoogleTasksAutoSync === 'function') this._clearGoogleTasksAutoSync();
+    if (typeof this._clearGoogleCalAutoSync === 'function') this._clearGoogleCalAutoSync();
+    if (typeof this._clearMicrosoftCalAutoSync === 'function') this._clearMicrosoftCalAutoSync();
     return _calSyncOriginalDestroy.apply(this, args);
   };
 })();

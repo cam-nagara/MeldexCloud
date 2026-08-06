@@ -29,10 +29,11 @@
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="scenario-standalone.css">
   <link rel="stylesheet" href="standalone-tags.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
   <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
-  <div class="sa-shell scenario-app">
+  <div class="sa-shell sa-options-collapsed scenario-app">
     <header class="sa-toolbar">
       <div class="sa-menu-wrap">
         <button id="scenario-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー"><span class="ico ico-menu"></span></button>
@@ -59,7 +60,7 @@
       <input id="scenario-title-label" class="sa-title sa-title-input" type="text" value="新規シナリオ" aria-label="シナリオ名" spellcheck="false">
       <div id="scenario-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="scenario-path-label" class="sa-path">未保存</div>
-      <button id="scenario-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="scenario-option-panel-button"><span class="ico ico-panelRight"></span></button>
+      <button id="scenario-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-gb-tooltip-key="panel.right.toggle" data-e2e-id="scenario-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div class="sa-body">
       <main id="scenario-root" class="sa-main scenario-main"></main>
@@ -83,19 +84,24 @@
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
   <script src="gb-resource-url.js"></script>
+  <script src="gb-link-router.js"></script>
   <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-system-storage.js"></script>
+  <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-dropbox-management-root-resolver.js"></script>
   <script src="gb-source-folder-registry.js"></script>
   <script src="gb-workspace-shared-ledger.js"></script>
   <script src="gb-workspace-ledger-io.js"></script>
   <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
-  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-reference-codecs.js"></script><script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
   <script src="gb-knowledge-signature.js"></script>
   <script src="gb-file-lock-store.js"></script>
   <script src="gb-active-lock-store.js"></script>
   <script src="gb-active-locks.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="gb-document-identity.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
   <script src="gb-dropbox-asset-identity.js"></script>
@@ -110,17 +116,23 @@
   <script src="gb-icon-assets.js"></script>
   <script src="gb-ui.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="gb-format-popup.js"></script>
+  <script src="gb-link-modal.js"></script>
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
+  <script src="meldex-app-capabilities.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
+  <script src="standalone-parity-adapter.js"></script>
 <script src="standalone-file-fs.js"></script>
 <script src="standalone-default-apps.js"></script>
 <script src="standalone-cloud-path-policy.js"></script>
 <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-file-routes.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
@@ -136,6 +148,8 @@
   <script src="standalone-tags.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="gb-component.js"></script>
+  <script src="gb-scriptnote-file-style-contract.js"></script>
+  <script src="gb-scriptnote-role-model.js"></script>
   <script src="gb-scriptnote-format.js"></script>
   <script src="gb-scriptnote-ruby-presentation.js"></script>
   <script src="gb-scriptnote-document.js"></script>
@@ -156,6 +170,7 @@
   <script src="gb-scriptnote-clipstudio.js"></script>
   <script src="gb-scriptnote-rules.js"></script>
   <script src="gb-scriptnote-rowset.js"></script>
+  <script src="gb-scriptnote-role-management.js"></script>
   <script src="offline-bundles/gb-scriptnote-detail.js"></script>
   <script src="gb-tool-scriptnote.js"></script>
   <script src="gb-export-save.js"></script>
@@ -163,6 +178,9 @@
   <script src="standalone-mobile-toolbar.js"></script>
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="offline-bundles/gb-tooltip.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="scenario-standalone-app.js"></script>
 </body>
 </html>

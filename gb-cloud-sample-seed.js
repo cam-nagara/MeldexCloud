@@ -3,6 +3,7 @@
   const DEFAULT_SAMPLE_TARGET_ROOT = 'MeldexHome/サンプル';
   const HOME_STORAGE_KEY = 'meldex-cloud-home-folder';
   const SEED_META_PATH = '_meldex/cloud-sample-seed.json';
+  const SEED_META_DOCUMENT_ID = 'cloud-sample-seed';
   const COPY_YIELD_INTERVAL = 8;
   let _running = null;
   let _preparePromise = null;
@@ -13,6 +14,25 @@
 
   function _provider() {
     return window.MeldexStorageAdapter?.getProvider?.();
+  }
+
+  async function _managementAdapter(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('サンプル管理データの保存先を安全に判定できません');
+    }
+    return {
+      adapter: await resolver.resolveTypedAdapterForProvider(provider, kind),
+      kind,
+    };
+  }
+
+  async function _readSeedMeta(provider) {
+    const managed = await _managementAdapter(provider);
+    const record = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
+    if (record?.payload) return record.payload;
+    return provider?.readJson ? provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
   }
 
   function _isDropboxMode() {
@@ -151,7 +171,7 @@
     if (!provider) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();
     const targetRoot = _normalizePath(manifest.targetRoot);
-    const meta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
+    const meta = await _readSeedMeta(provider);
     const sampleRoot = await _statPath(provider, targetRoot);
     const failed = Number(meta?.failed || 0);
     const hasSampleFolder = sampleRoot?.kind === 'directory';
@@ -257,8 +277,9 @@
   }
 
   async function _writeSeedMeta(provider, manifest, result) {
-    await _ensureDirectory(provider, _dirname(SEED_META_PATH));
-    await provider.writeJson(SEED_META_PATH, {
+    const managed = await _managementAdapter(provider);
+    const current = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
+    await managed.adapter.save(managed.kind, SEED_META_DOCUMENT_ID, {
       type: 'meldex-cloud-sample-seed-result',
       contentHash: manifest.contentHash || '',
       entryHashes: _entryHashMap(manifest),
@@ -270,6 +291,8 @@
       skipped: result.skipped || 0,
       failed: result.failed || 0,
       updatedAt: new Date().toISOString(),
+    }, {
+      expectedRevision: current?.revision ?? null,
     });
   }
 
@@ -280,7 +303,7 @@
     const manifest = await _readManifest();
     const canWrite = await _hasWritePermission(provider);
     if (!canWrite) return { ok: false, skipped: 'readonly' };
-    const previousMeta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
+    const previousMeta = await _readSeedMeta(provider);
     await prepareHome({ createSampleRoot: true });
     await _ensureDirectory(provider, _normalizePath(manifest.targetRoot));
     const result = await _copyMissingEntries(provider, manifest, {

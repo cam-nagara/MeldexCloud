@@ -601,9 +601,14 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
     const entityColumnLabel = typeof _dbEntityColumnDisplayLabel === 'function'
       ? _dbEntityColumnDisplayLabel(dbPath, { ctx })
       : 'エントリ名';
-    const pinned = typeof getEntityColumnPinned === 'function'
-      ? getEntityColumnPinned(dbPath, { ctx })
-      : getDbViewConfig(dbPath).entityColumnPinned !== false;
+    const pinnedRange = typeof _dbPinnedRangeForMenu === 'function'
+      ? _dbPinnedRangeForMenu(ctx, dbPath)
+      : null;
+    const pinned = pinnedRange
+      ? pinnedRange.entityColumnPinned
+      : (typeof getEntityColumnPinned === 'function'
+        ? getEntityColumnPinned(dbPath, { ctx })
+        : getDbViewConfig(dbPath).entityColumnPinned !== false);
     // 制作管理シートのエントリ名列は固定名（変更不可）
     const labelLocked = typeof isProductionManagementSheetPath === 'function'
       && isProductionManagementSheetPath(dbPath);
@@ -636,7 +641,12 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
       else labelInput?.addEventListener('blur', commitLabel);
     }
     target.querySelector('#entity-column-pinned')?.addEventListener('change', function() {
-      if (typeof setEntityColumnPinned === 'function') {
+      if (pinnedRange && typeof setPinnedColumnRange === 'function') {
+        setPinnedColumnRange(dbPath, pinnedRange.renderedCols, '__entity__', !!this.checked, {
+          ctx,
+          detail: entityColumnLabel,
+        });
+      } else if (typeof setEntityColumnPinned === 'function') {
         setEntityColumnPinned(dbPath, !!this.checked, { ctx });
       } else {
         const c = getDbViewConfig(dbPath);

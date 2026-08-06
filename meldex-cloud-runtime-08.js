@@ -587,8 +587,33 @@
     return items.length ? '?' + items.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&') : '';
   }
 
+  // 制作管理UX改善計画（2026-08-04）§6-1: 「制作管理を始める」ボタン廃止に伴い、未
+  // セットアップ状態を空状態カードとして扱うための軽量キャッシュ付き判定。/status は
+  // _ensure_existing_or_template を呼ばない唯一の読み取りのため、これを先に呼べば
+  // 未セットアップのワークスペースを自己修復（自動作成）させずに判定できる。
+  const READY_CACHE_TTL_MS = 4000;
+  let readyCache = null; // { value: boolean, ts: number }
+  async function checkReady(options = {}) {
+    const now = Date.now();
+    if (!options.force && readyCache && (now - readyCache.ts) < READY_CACHE_TTL_MS) return readyCache.value;
+    try {
+      const result = await request('/production-management/status');
+      const ready = !!result?.ready;
+      readyCache = { value: ready, ts: now };
+      return ready;
+    } catch {
+      // 状態を取得できない場合は既存の自己修復フローを妨げない（開始済み扱いにフォールバック）。
+      readyCache = { value: true, ts: now };
+      return true;
+    }
+  }
+  function invalidateReady() { readyCache = null; }
+
   window.MeldexProductionApi = {
     summary: () => request('/production-management/summary'),
+    status: () => request('/production-management/status'),
+    checkReady,
+    invalidateReady,
     list: (sheet, params = {}) => request('/production-management/lists' + encodeQuery({ sheet, ...params })),
     taskSheets: () => request('/production-management/task-sheets'),
     taskCreateCatalog: () => request('/production-management/task-create-catalog'),
@@ -613,12 +638,6 @@
     fromTemplate: (payload) => request('/production-management/tasks/from-template', { method: 'POST', body: payload }),
     recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload }),
     recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload }),
-    async recalculateEqual(payload = {}, options = {}) {
-      const body = { mode: 'equal_until_deadline', staff_scope: 'current_user', ...payload };
-      const preview = await request('/production-management/recalculate/preview', { method: 'POST', body });
-      if (!options.apply || preview?.apply_allowed === false) return preview;
-      return request('/production-management/recalculate/apply', { method: 'POST', body });
-    },
   };
 })();
 
@@ -1160,824 +1179,6 @@
     standardContents: STANDARD_CONTENTS.slice(),
     maxTasks: MAX_TASKS,
   };
-})();
-
-;
-
-/* === gb-tool-calendar-production-panel.js === */
-;
-/* gb-tool-calendar-production-panel.js: production management lists in scheduler option panel */
-(function() {
-  'use strict';
-
-  const TABS = [
-    ['summary', '概要'],
-    ['tasks', 'タスク'],
-    ['works', '作品'],
-    ['targets', '作業対象'],
-    ['contents', '作業内容'],
-    ['scales', '作業規模'],
-    ['staff', 'メンバー'],
-  ];
-  // 「staff」（メンバー）タブは、アカウント一元管理 計画書 Phase 4 で正本
-  // 「スタッフ管理シート」へ完全統合されたため、この汎用シート一覧UI
-  // （SHEET_BY_TAB 経由の _renderList）では扱わず、正本シートを開く導線へ
-  // 差し替えた（_renderStaffRedirect 参照）。SHEET_BY_TAB/DEFAULT_COLUMNS
-  // から staff を除いたのはそのため。
-  const SHEET_BY_TAB = {
-    tasks: 'タスクリスト',
-    works: '作品リスト',
-    targets: '作業対象リスト',
-    contents: '作業内容リスト',
-    scales: '作業規模リスト',
-  };
-  const DEFAULT_COLUMNS = {
-    tasks: ['__name', '作品タイトル', '作業対象リスト', '作業内容リスト', '作業規模リスト', '状況', '担当者', '作業予定日時', '目標作業時間'],
-    works: ['__name', '完了', 'ページ数', '作業作成粒度', '作業期間', '状況', '担当者'],
-    targets: ['__name', '基準作業時間', '担当者候補', '対象色'],
-    contents: ['__name', '表示名', '作業順', '依存階層', '作業時間倍率', '担当者候補', '標準粒度'],
-    scales: ['__name', '作業時間倍率', '面積比'],
-  };
-  const ADD_CONFIG = {
-    works: {
-      label: '作品を追加',
-      nameProp: '__name',
-      fields: [
-        ['__name', 'text', '無題作品'],
-        ['ページ数', 'number', '1'],
-        ['作業作成粒度', 'select', 'ページ単位', ['ページ単位', 'コマ単位']],
-        ['プリセット種別', 'select', 'マンガ', ['マンガ', '汎用']],
-      ],
-    },
-    targets: {
-      label: '作業対象を追加',
-      nameProp: '__name',
-      fields: [['__name', 'text', '全体'], ['基準作業時間', 'number', '1'], ['担当者候補', 'member', ''], ['備考', 'text', '']],
-    },
-    contents: {
-      label: '作業内容を追加',
-      nameProp: '__name',
-      fields: [['__name', 'text', 'ネーム'], ['表示名', 'text', ''], ['作業順', 'number', '1'], ['依存階層', 'number', '1'], ['作業時間倍率', 'number', '1'], ['担当者候補', 'member', '']],
-    },
-    scales: {
-      label: '作業規模を追加',
-      nameProp: '__name',
-      fields: [['__name', 'text', 'ページ全体'], ['作業時間倍率', 'number', '1'], ['面積比', 'number', '1']],
-    },
-  };
-  const TAB_LABELS = Object.fromEntries(TABS);
-  const DISPLAY_LABELS = {
-    common: {
-      '作業作成粒度': 'タスク作成粒度',
-    },
-    tasks: {
-      '__name': 'タスク名',
-      '作業対象リスト': '作業対象',
-      '作業内容リスト': '作業内容',
-      '作業規模リスト': '作業規模',
-      '作業予定日時': '予定日時',
-      '作業予定時間': '予定時間',
-      '目標作業時間': '目標時間',
-      '目標作業時間_値': '目標時間',
-    },
-    works: { '__name': '作品名' },
-    targets: { '__name': '作業対象名' },
-    contents: { '__name': '作業内容名' },
-    scales: { '__name': '作業規模名' },
-  };
-  let _composerSeq = 0;
-
-  function _icon(name, size = 14) {
-    return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  function _esc(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
-  }
-
-  function _api() {
-    if (!window.MeldexProductionApi) throw new Error('制作管理APIを初期化できませんでした');
-    return window.MeldexProductionApi;
-  }
-
-  function _status(message, isError) {
-    if (typeof showStatus === 'function') showStatus(message, !!isError);
-  }
-
-  function _desktopOnlyReason(label, desktopOnly) {
-    if (!desktopOnly || !window.MeldexRuntimeAdapter?.isDropboxMode?.()) return '';
-    return `${label}はデスクトップ版で実行してください`;
-  }
-
-  function _displayLabel(name, tab = '') {
-    return DISPLAY_LABELS[tab]?.[name] || DISPLAY_LABELS.common?.[name] || name;
-  }
-
-  function _truthy(value) {
-    return ['true', '1', 'yes', 'on', '採用', '完了'].includes(String(value || '').trim().toLowerCase());
-  }
-
-  function _isMemberField(name) {
-    return ['担当者', '担当者候補', 'スタッフ'].includes(name);
-  }
-
-  function _createOption(select, value, label = value) {
-    const option = document.createElement('option');
-    option.value = value;
-    option.textContent = label;
-    select.appendChild(option);
-  }
-
-  function _memberChoices(value, memberOptions = []) {
-    const current = String(value || '').trim();
-    const choices = [''];
-    memberOptions.forEach(name => {
-      const text = String(name || '').trim();
-      if (text && !choices.includes(text)) choices.push(text);
-    });
-    if (current && !choices.includes(current)) choices.push(current);
-    return choices;
-  }
-
-  // 候補ユーザー一覧はMeldexUserPickerに統一（正本「スタッフ管理シート」+
-  // ワークスペースメンバーのマージ。ユーザーアカウント一元管理 計画書 Phase 3、
-  // §5.8-5）。/team への参照はここで無くなる。
-  async function _workspaceMemberNames() {
-    const names = new Set();
-    let hasWorkspace = false;
-    const currentUser = typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
-    const add = name => {
-      const text = String(name || '').trim();
-      if (text) names.add(text);
-    };
-    try {
-      const workspaces = window.MeldexWorkspaces?.load
-        ? await window.MeldexWorkspaces.load({ force: false })
-        : [];
-      const active = window.MeldexWorkspaces?.getActiveWorkspace?.() || workspaces[0] || null;
-      hasWorkspace = !!active;
-      (Array.isArray(active?.members) ? active.members : []).forEach(member => add(member?.name || member));
-    } catch {}
-    if (!hasWorkspace && names.size <= 1 && window.MeldexUserPicker) {
-      try {
-        (await window.MeldexUserPicker.getCandidates()).forEach(candidate => add(candidate?.name));
-      } catch {}
-    }
-    if (!hasWorkspace && !names.size) add(currentUser);
-    if (hasWorkspace && !names.size) add(currentUser);
-    return [...names];
-  }
-
-  function _dateParts(value) {
-    const text = String(value || '');
-    const [start = '', end = ''] = text.includes('|') ? text.split('|', 2) : [text, ''];
-    return { start: start.trim(), end: end.trim() };
-  }
-
-  function _toDateInputValue(value, withTime) {
-    const text = String(value || '').trim();
-    if (!text) return '';
-    const normalized = text.replace(' ', 'T');
-    if (withTime && /^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized + 'T00:00';
-    return withTime ? normalized.slice(0, 16) : normalized.slice(0, 10);
-  }
-
-  function _dateDisplay(value) {
-    const { start, end } = _dateParts(value);
-    const fmt = text => String(text || '').replace('T', ' ');
-    if (start && end) return `${fmt(start)} - ${fmt(end)}`;
-    return fmt(start || end);
-  }
-
-  function _displayValue(row, col, spec = {}) {
-    if (col === '__name') return row.name || '';
-    const value = row.properties?.[col];
-    if (spec.type === 'checkbox') return _truthy(value) ? '✓' : '';
-    if (spec.type === 'date') return _dateDisplay(value);
-    return value || '';
-  }
-
-  function _getShowCompletedWorks() {
-    try { return localStorage.getItem('gb:production-show-completed-works') === 'true'; } catch { return false; }
-  }
-
-  function _setShowCompletedWorks(value) {
-    try { localStorage.setItem('gb:production-show-completed-works', value ? 'true' : 'false'); } catch {}
-  }
-
-  function _button(label, icon, handler, options = {}) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = options.primary ? 'gb-btn gb-btn-xs gb-cal-production-button primary' : 'gb-btn gb-btn-xs gb-cal-production-button';
-    btn.setAttribute('aria-label', options.ariaLabel || label);
-    btn.disabled = !!options.disabled;
-    if (options.title) btn.title = options.title;
-    btn.dataset.calProductionAction = options.actionId || label;
-    if (options.actionId) btn.dataset.e2eId = `gb-cal-production-action-${options.actionId}`;
-    btn.innerHTML = `${_icon(icon, 13)} <span>${_esc(label)}</span>`;
-    btn.addEventListener('click', event => {
-      try {
-        const result = handler(event, btn);
-        if (result && typeof result.catch === 'function') {
-          result.catch(error => _status(error?.message || String(error), true));
-        }
-      } catch (error) {
-        _status(error?.message || String(error), true);
-      }
-    });
-    if (options.writeAction) window.MeldexProductionUiAvailability?.markWriteControl?.(btn);
-    return btn;
-  }
-
-  async function _withBusy(button, label, task) {
-    if (button?.disabled) return;
-    const span = button?.querySelector('span');
-    const prev = span?.textContent || '';
-    if (button) button.disabled = true;
-    if (span && label) span.textContent = label;
-    try {
-      return await task();
-    } finally {
-      if (span) span.textContent = prev;
-      if (button) button.disabled = false;
-    }
-  }
-
-  function _ensureShell(body, active) {
-    body.replaceChildren();
-    const shell = document.createElement('div');
-    shell.className = 'gb-cal-production-panel';
-    const tabs = document.createElement('div');
-    tabs.className = 'gb-cal-production-tabs';
-    tabs.setAttribute('role', 'tablist');
-    tabs.setAttribute('aria-label', '制作管理');
-    TABS.forEach(([key, label]) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.className = 'gb-cal-production-tab' + (key === active ? ' is-active' : '');
-      tab.setAttribute('role', 'tab');
-      tab.setAttribute('aria-selected', key === active ? 'true' : 'false');
-      tab.dataset.calProductionTab = key;
-      tab.dataset.e2eId = `gb-cal-production-tab-${key}`;
-      tab.textContent = label;
-      tab.addEventListener('click', () => render(body, { tab: key }));
-      tabs.appendChild(tab);
-    });
-    const content = document.createElement('div');
-    content.className = 'gb-cal-production-content';
-    shell.append(tabs, content);
-    body.appendChild(shell);
-    return content;
-  }
-
-  function _actions(body) {
-    const rows = [
-      ['制作管理を始める', 'hammer', 'openProductionManagementStart', false, true],
-      ['シフトを取り込む', 'fileInput', 'openProductionShiftImport', false, true],
-      ['担当者と時間を割り当て', 'users', 'runProductionAssignment', false, true],
-      ['再計算', 'refreshCw', 'openProductionRecalculate', true, true],
-      ['メンバーを追加', 'userPlus', 'openProductionStaffAdd', false, true],
-      ['外部カレンダーへ送信', 'send', 'runProductionExternalSync', true, true],
-      ['書き出す', 'fileOutput', 'openProductionExport', false, false],
-    ];
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-cal-production-actions';
-    wrap.appendChild(_button('タスクを作成', 'listPlus', () => render(body, { tab: 'tasks' }), { primary: true, actionId: 'task-tab' }));
-    rows.forEach(([label, icon, fn, desktopOnly, writeAction]) => {
-      const unavailableReason = _desktopOnlyReason(label, desktopOnly);
-      const visibleLabel = unavailableReason ? `${label}（デスクトップ版のみ）` : label;
-      wrap.appendChild(_button(visibleLabel, icon, () => {
-        const action = window[fn];
-        if (typeof action === 'function') action();
-        else _status(label + 'を初期化できませんでした', true);
-      }, {
-        actionId: fn.replace(/^openProduction|^runProduction/, '').replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase(),
-        disabled: !!unavailableReason,
-        title: unavailableReason,
-        ariaLabel: unavailableReason ? `${label}（デスクトップ版のみ）` : label,
-        writeAction,
-      }));
-    });
-    return wrap;
-  }
-
-  function _summaryMetrics(data) {
-    const tasks = data?.tasks || {};
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-cal-production-grid';
-    [
-      ['タスク', tasks.total || 0],
-      ['未担当', tasks.unassigned || 0],
-      ['固定', tasks.locked || 0],
-      ['作品', data?.works?.total || 0],
-      ['メンバー', data?.staff?.total || 0],
-    ].forEach(([label, value]) => {
-      const card = document.createElement('div');
-      card.className = 'gb-cal-production-metric';
-      card.innerHTML = `<span>${_esc(label)}</span><strong>${_esc(value)}</strong>`;
-      wrap.appendChild(card);
-    });
-    return wrap;
-  }
-
-  function _summaryLoading() {
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-cal-production-grid';
-    ['タスク', '未担当', '固定', '作品', 'メンバー'].forEach(label => {
-      const card = document.createElement('div');
-      card.className = 'gb-cal-production-metric';
-      card.innerHTML = `<span>${_esc(label)}</span><strong>...</strong>`;
-      wrap.appendChild(card);
-    });
-    return wrap;
-  }
-
-  async function _renderSummary(content, body) {
-    content.replaceChildren(_summaryLoading(), _actions(body));
-    const data = await _api().summary();
-    content.replaceChildren(_summaryMetrics(data));
-    content.appendChild(_actions(body));
-  }
-
-  function _rowGrid(cols) {
-    return cols.map((col, index) => index === 0 ? 'minmax(140px,1.4fr)' : 'minmax(96px,1fr)').join(' ');
-  }
-
-  function _makeField(name, type, value, options = [], context = {}) {
-    const label = document.createElement('label');
-    label.textContent = _displayLabel(name);
-    let input;
-    if (type === 'member' || _isMemberField(name)) {
-      input = document.createElement('select');
-      _memberChoices(value, context.memberOptions || []).forEach((choice, index) => {
-        _createOption(input, choice, index === 0 && !choice ? '未設定' : choice);
-      });
-      input.value = value || '';
-    } else if (type === 'select') {
-      input = document.createElement('select');
-      options.forEach(opt => {
-        _createOption(input, opt);
-      });
-      input.value = value || options[0] || '';
-    } else {
-      input = document.createElement('input');
-      input.type = type || 'text';
-      input.value = value || '';
-    }
-    input.dataset.propName = name;
-    input.dataset.calProductionField = name;
-    input.setAttribute('aria-label', _displayLabel(name));
-    label.appendChild(input);
-    return label;
-  }
-
-  function _markWriteFields(root) {
-    root?.querySelectorAll?.('input, select, textarea, [contenteditable="true"]')
-      ?.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
-  }
-
-  function _renderQuickAdd(tab, onSaved, showInitially = false, context = {}) {
-    const config = ADD_CONFIG[tab];
-    if (!config) return null;
-    const box = document.createElement('div');
-    box.className = 'gb-cal-production-add';
-    box.hidden = !showInitially;
-    const title = document.createElement('strong');
-    title.textContent = config.label;
-    const grid = document.createElement('div');
-    grid.className = 'gb-cal-production-form-grid';
-    config.fields.forEach(([name, type, value, options]) => grid.appendChild(_makeField(name, type, value, options || [], { ...context, fieldScope: tab })));
-    const actions = document.createElement('div');
-    actions.className = 'gb-cal-production-actions';
-    actions.appendChild(_button('追加', 'plus', async (event, button) => {
-      await _withBusy(button, '追加中...', async () => {
-        const props = {};
-        box.querySelectorAll('[data-prop-name]').forEach(input => { props[input.dataset.propName] = input.value; });
-        const name = props[config.nameProp] || config.label;
-        delete props.__name;
-        await _api().createEntry({ sheet: SHEET_BY_TAB[tab], name, properties: props });
-        _status(config.label.replace('を追加', '') + 'を追加しました');
-        await onSaved();
-      });
-    }, { primary: true, actionId: `quick-add-save-${tab}`, writeAction: true }));
-    actions.appendChild(_button('閉じる', 'x', () => { box.hidden = true; }, { actionId: `quick-add-close-${tab}` }));
-    box.append(title, grid, actions);
-    _markWriteFields(box);
-    return box;
-  }
-
-  function _toolbar(label, options = {}) {
-    const toolbar = document.createElement('div');
-    toolbar.className = 'gb-cal-production-toolbar';
-    const caption = document.createElement('div');
-    caption.className = 'gb-cal-production-toolbar-title';
-    caption.innerHTML = `<strong>${_esc(label)}</strong>${Number.isFinite(options.count) ? `<span>${options.count}件</span>` : ''}`;
-    if (typeof options.onSearch === 'function') {
-      const search = document.createElement('input');
-      search.type = 'search';
-      search.placeholder = '検索';
-      search.value = options.query || '';
-      search.className = 'gb-cal-production-search';
-      search.setAttribute('aria-label', `${label}を検索`);
-      search.dataset.calProductionSearch = options.tab || label;
-      search.dataset.e2eId = `gb-cal-production-search-${options.tab || 'list'}`;
-      let timer = null;
-      search.addEventListener('input', () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          const result = options.onSearch(search.value.trim());
-          if (result && typeof result.catch === 'function') result.catch(error => _status(error?.message || String(error), true));
-        }, 220);
-      });
-      search.addEventListener('keydown', event => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        clearTimeout(timer);
-        const result = options.onSearch(search.value.trim());
-        if (result && typeof result.catch === 'function') result.catch(error => _status(error?.message || String(error), true));
-      });
-      caption.appendChild(search);
-    }
-    (options.extraControls || []).forEach(node => caption.appendChild(node));
-    const actions = document.createElement('div');
-    actions.className = 'gb-cal-production-actions';
-    if (options.onAdd) actions.appendChild(_button(options.onAdd.label, 'plus', options.onAdd.handler, { primary: true, actionId: options.onAdd.actionId || `quick-add-open-${options.tab || 'list'}`, writeAction: true }));
-    actions.appendChild(_button('更新', 'refreshCw', options.onRefresh || (() => {}), { actionId: `refresh-${options.tab || 'list'}` }));
-    toolbar.append(caption, actions);
-    return toolbar;
-  }
-
-  async function _optionRows(sheet, fallback) {
-    try {
-      const data = await _api().list(sheet, { limit: 1000 });
-      return (data.rows || []).map(row => row.properties?.[fallback] || row.name || '').filter(Boolean);
-    } catch {
-      return [];
-    }
-  }
-
-  function _checkList(label, values, fallback) {
-    const field = document.createElement('div');
-    field.className = 'gb-cal-production-check-list';
-    const title = document.createElement('label');
-    title.textContent = label;
-    const list = document.createElement('div');
-    list.dataset.checkList = label;
-    const items = values.length ? values : [fallback];
-    items.forEach((value, index) => {
-      const item = document.createElement('label');
-      item.className = 'cal-option-member';
-      const input = document.createElement('input');
-      input.type = 'checkbox';
-      input.value = value;
-      input.checked = index === 0;
-      input.dataset.calProductionChecklist = label;
-      input.setAttribute('aria-label', `${label}: ${value}`);
-      const span = document.createElement('span');
-      span.textContent = value;
-      item.append(input, span);
-      list.appendChild(item);
-    });
-    field.append(title, list);
-    return field;
-  }
-
-  function _checkedValues(root, label, fallback) {
-    const values = [...root.querySelectorAll(`[data-check-list="${label}"] input:checked`)]
-      .map(input => input.value)
-      .filter(Boolean);
-    return values.length ? values : [fallback];
-  }
-
-  async function _taskComposer(onSaved) {
-    const [works, targets, contents, scales] = await Promise.all([
-      _optionRows('作品リスト', ''),
-      _optionRows('作業対象リスト', ''),
-      _optionRows('作業内容リスト', ''),
-      _optionRows('作業規模リスト', ''),
-    ]);
-    const box = document.createElement('div');
-    box.className = 'gb-cal-production-composer';
-    const title = document.createElement('strong');
-    title.textContent = 'タスクを作成';
-    const grid = document.createElement('div');
-    grid.className = 'gb-cal-production-form-grid';
-    const workField = document.createElement('label');
-    workField.textContent = '作品';
-    const workInput = document.createElement('input');
-    const workOptionsId = `gb-cal-production-work-options-${++_composerSeq}`;
-    workInput.setAttribute('list', workOptionsId);
-    workInput.dataset.calProductionField = '作品';
-    workInput.dataset.e2eId = 'gb-cal-production-task-work';
-    workInput.setAttribute('aria-label', '作品');
-    workInput.value = works[0] || '無題作品';
-    const dataList = document.createElement('datalist');
-    dataList.id = workOptionsId;
-    works.forEach(work => {
-      const option = document.createElement('option');
-      option.value = work;
-      dataList.appendChild(option);
-    });
-    workField.append(workInput, dataList);
-    grid.append(
-      workField,
-      _makeField('ページ数', 'number', '1'),
-      _makeField('コマ数', 'number', '1'),
-      _makeField('作業作成粒度', 'select', 'ページ単位', ['ページ単位', 'コマ単位'])
-    );
-    const checks = document.createElement('div');
-    checks.className = 'gb-cal-production-task-lists';
-    checks.append(
-      _checkList('作業対象', targets, '全体'),
-      _checkList('作業内容', contents, 'ネーム'),
-      _checkList('作業規模', scales, 'ページ全体')
-    );
-    const actions = document.createElement('div');
-    actions.className = 'gb-cal-production-actions';
-    actions.appendChild(_button('作成', 'listPlus', async (event, button) => {
-      await _withBusy(button, '作成中...', async () => {
-        const pageCount = box.querySelector('[data-prop-name="ページ数"]')?.value || '1';
-        const panelCount = box.querySelector('[data-prop-name="コマ数"]')?.value || '1';
-        const granularity = box.querySelector('[data-prop-name="作業作成粒度"]')?.value || 'ページ単位';
-        const result = await _api().createTasks({
-          work_title: workInput.value.trim() || '無題作品',
-          page_count: pageCount,
-          panel_count: panelCount,
-          granularity,
-          target_names: _checkedValues(box, '作業対象', '全体'),
-          content_names: _checkedValues(box, '作業内容', 'ネーム'),
-          scale_names: _checkedValues(box, '作業規模', 'ページ全体'),
-        });
-        _status(`タスクを作成しました: ${result.created || 0}件`);
-        await onSaved();
-      });
-    }, { primary: true, actionId: 'task-composer-create', writeAction: true }));
-    box.append(title, grid, checks, actions);
-    _markWriteFields(box);
-    return box;
-  }
-
-  async function _renderList(content, tab, options = {}) {
-    content.textContent = '読み込み中...';
-    const sheet = SHEET_BY_TAB[tab];
-    const query = String(options.q || '');
-    const includeCompletedWorks = tab === 'works' && _getShowCompletedWorks();
-    const [data, memberOptions] = await Promise.all([
-      _api().list(sheet, { limit: 120, q: query, include_completed: includeCompletedWorks ? '1' : '' }),
-      _workspaceMemberNames(),
-    ]);
-    let rows = data.rows || [];
-    if (tab === 'works' && !includeCompletedWorks) {
-      rows = rows.filter(row => !_truthy(row.properties?.['完了']));
-    }
-    const cols = DEFAULT_COLUMNS[tab] || data.columns?.slice(0, 5) || [];
-    // path（初回の行選択）と focusSearch（検索フォーカス）は1回限りの指定。
-    // 引き継ぐと、以後の保存・更新のたびに選択が元の行へ戻り、フォーカスが検索欄へ奪われる
-    const refresh = (next = {}) => {
-      const { path, focusSearch, ...rest } = options;
-      return _renderList(content, tab, { ...rest, ...next });
-    };
-    const addBox = _renderQuickAdd(tab, refresh, Boolean(ADD_CONFIG[tab]), { memberOptions });
-    const extraControls = [];
-    if (tab === 'works') {
-      const doneToggle = document.createElement('label');
-      doneToggle.className = 'gb-cal-production-inline-check';
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = includeCompletedWorks;
-      checkbox.dataset.calProductionShowCompletedWorks = '1';
-      checkbox.dataset.e2eId = 'gb-cal-production-show-completed-works';
-      checkbox.setAttribute('aria-label', '完了の作品を表示');
-      checkbox.addEventListener('change', () => {
-        _setShowCompletedWorks(checkbox.checked);
-        refresh();
-      });
-      doneToggle.append(checkbox, document.createTextNode('完了の作品を表示'));
-      extraControls.push(doneToggle);
-    }
-    const toolbar = _toolbar(TAB_LABELS[tab] || '制作管理', {
-      count: rows.length,
-      query,
-      tab,
-      onSearch: q => refresh({ q, focusSearch: true }),
-      onAdd: addBox ? { label: ADD_CONFIG[tab].label, handler: () => { addBox.hidden = !addBox.hidden; }, actionId: `quick-add-open-${tab}` } : null,
-      onRefresh: () => refresh(),
-      extraControls,
-    });
-    const list = document.createElement('div');
-    list.className = 'gb-cal-production-list';
-    const head = document.createElement('div');
-    head.className = 'gb-cal-production-row is-head';
-    head.style.gridTemplateColumns = _rowGrid(cols);
-    cols.forEach(col => {
-      const cell = document.createElement('div');
-      cell.className = 'gb-cal-production-cell';
-      cell.textContent = _displayLabel(col, tab);
-      head.appendChild(cell);
-    });
-    list.appendChild(head);
-    const detail = document.createElement('div');
-    detail.className = 'gb-cal-production-detail';
-    detail.hidden = true;
-    const selectRow = row => {
-      list.querySelectorAll('.gb-cal-production-row').forEach(item => item.classList.remove('is-selected'));
-      const safePath = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(row.path) : String(row.path || '').replace(/["\\]/g, '\\$&');
-      const rowEl = list.querySelector(`[data-entry-path="${safePath}"]`);
-      rowEl?.classList.add('is-selected');
-      _renderDetail(detail, row, cols.filter(col => col !== '__name'), data.property_types || {}, tab, { memberOptions, refresh });
-    };
-    rows.forEach(row => {
-      const el = document.createElement('div');
-      el.className = 'gb-cal-production-row';
-      el.dataset.entryPath = row.path || '';
-      el.dataset.calProductionRow = row.path || row.name || '';
-      el.setAttribute('role', 'button');
-      el.setAttribute('aria-label', `${row.name || '制作管理項目'}を編集`);
-      el.tabIndex = 0;
-      el.style.gridTemplateColumns = _rowGrid(cols);
-      cols.forEach(col => {
-        const cell = document.createElement('div');
-        cell.className = 'gb-cal-production-cell';
-        cell.textContent = _displayValue(row, col, data.property_types?.[col] || {});
-        el.appendChild(cell);
-      });
-      el.addEventListener('click', () => selectRow(row));
-      el.addEventListener('keydown', event => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        selectRow(row);
-      });
-      list.appendChild(el);
-      if (options.path && row.path === options.path) setTimeout(() => selectRow(row), 0);
-    });
-    const nodes = [toolbar];
-    if (tab === 'tasks') nodes.push(await _taskComposer(refresh));
-    if (addBox) nodes.push(addBox);
-    if (!rows.length) {
-      const empty = document.createElement('div');
-      empty.className = 'cal-option-empty';
-      empty.textContent = '項目がありません。上の追加ボタンから作成できます。';
-      nodes.push(empty);
-    }
-    nodes.push(list, detail);
-    content.replaceChildren(...nodes);
-    if (options.focusSearch) {
-      const search = content.querySelector('.gb-cal-production-search');
-      search?.focus();
-      search?.setSelectionRange?.(search.value.length, search.value.length);
-    }
-  }
-
-  function _dateRangeControl(col, value, spec = {}) {
-    const withTime = spec.withTime !== false;
-    const parts = _dateParts(value);
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-cal-production-date-range';
-    wrap.dataset.propRange = col;
-    const start = document.createElement('input');
-    start.type = withTime ? 'datetime-local' : 'date';
-    start.value = _toDateInputValue(parts.start, withTime);
-    start.dataset.rangeStart = '1';
-    start.dataset.rangeRaw = parts.start;
-    start.dataset.rangeInitial = start.value || '';
-    start.dataset.calProductionRangePart = 'start';
-    start.setAttribute('aria-label', `${_displayLabel(col)} 開始`);
-    const end = document.createElement('input');
-    end.type = withTime ? 'datetime-local' : 'date';
-    end.value = _toDateInputValue(parts.end, withTime);
-    end.dataset.rangeEnd = '1';
-    end.dataset.rangeRaw = parts.end;
-    end.dataset.rangeInitial = end.value || '';
-    end.dataset.calProductionRangePart = 'end';
-    end.setAttribute('aria-label', `${_displayLabel(col)} 終了`);
-    wrap.append(start, end);
-    return wrap;
-  }
-
-  function _detailControl(col, value, spec = {}, context = {}) {
-    const type = String(spec.type || 'text');
-    if (_isMemberField(col)) {
-      const select = document.createElement('select');
-      _memberChoices(value, context.memberOptions || []).forEach((choice, index) => {
-        _createOption(select, choice, index === 0 && !choice ? '未設定' : choice);
-      });
-      select.value = value || '';
-      select.dataset.propName = col;
-      select.dataset.calProductionField = col;
-      select.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
-      return select;
-    }
-    if (type === 'date' && spec.range) return _dateRangeControl(col, value, spec);
-    if (type === 'select' && Array.isArray(spec.options) && spec.options.length) {
-      const select = document.createElement('select');
-      spec.options.forEach(optionValue => _createOption(select, optionValue));
-      if (value && !spec.options.includes(value)) {
-        _createOption(select, value);
-      }
-      select.value = value || '';
-      select.dataset.propName = col;
-      select.dataset.calProductionField = col;
-      select.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
-      return select;
-    }
-    const input = document.createElement('input');
-    input.type = type === 'number' ? 'number' : type === 'checkbox' ? 'checkbox' : type === 'date' ? (spec.withTime ? 'datetime-local' : 'date') : 'text';
-    if (input.type === 'checkbox') input.checked = _truthy(value);
-    else input.value = type === 'date' ? _toDateInputValue(value, !!spec.withTime) : (value || '');
-    input.dataset.propName = col;
-    input.dataset.calProductionField = col;
-    input.setAttribute('aria-label', _displayLabel(col, context.tab || ''));
-    return input;
-  }
-
-  function _renderDetail(detail, row, cols, propertyTypes = {}, tab = '', context = {}) {
-    detail.hidden = false;
-    detail.replaceChildren();
-    const title = document.createElement('strong');
-    title.textContent = row.name || '項目';
-    detail.appendChild(title);
-    cols.forEach(col => {
-      const label = document.createElement('label');
-      label.textContent = _displayLabel(col, tab);
-      label.appendChild(_detailControl(col, row.properties?.[col] || '', propertyTypes[col] || {}, { ...context, tab }));
-      detail.appendChild(label);
-    });
-    const actions = document.createElement('div');
-    actions.className = 'gb-cal-production-actions';
-    actions.appendChild(_button('保存', 'save', async (event, button) => {
-      await _withBusy(button, '保存中...', async () => {
-        const props = {};
-        detail.querySelectorAll('[data-prop-range]').forEach(group => {
-          const propName = group.dataset.propRange;
-          const rangeValue = input => {
-            const value = input?.value || '';
-            const raw = input?.dataset?.rangeRaw || '';
-            const initial = input?.dataset?.rangeInitial || '';
-            return value && raw && value === initial ? raw : value;
-          };
-          const start = rangeValue(group.querySelector('[data-range-start]'));
-          const end = rangeValue(group.querySelector('[data-range-end]'));
-          props[propName] = start && end ? `${start}|${end}` : (start || end);
-        });
-        detail.querySelectorAll('[data-prop-name]').forEach(input => {
-          props[input.dataset.propName] = input.type === 'checkbox' ? input.checked : input.value;
-        });
-        const result = await _api().patchEntry({ sheet: row.sheet, path: row.path, properties: props });
-        Object.assign(row, result.row || row);
-        _status('制作管理リストを保存しました');
-        // 保存後も編集していた行の選択・詳細表示を維持する
-        if (typeof context.refresh === 'function') await context.refresh({ path: row.path });
-      });
-    }, { primary: true, actionId: 'detail-save', writeAction: true }));
-    actions.appendChild(_button('元シートを開く', 'externalLink', () => {
-      if (row.path && typeof openPage === 'function') openPage(row.name || '制作管理', row.path);
-    }, { actionId: 'detail-open-source' }));
-    detail.appendChild(actions);
-    _markWriteFields(detail);
-  }
-
-  // 「メンバー」タブ: 一覧・詳細編集は正本『スタッフ管理シート』で行う
-  // （アカウント一元管理計画書 Phase 4。制作管理ルートごとの独自テーブルは
-  // 廃止し、正本を開く導線のみを提供する）。
-  function _renderStaffRedirect(content) {
-    const wrap = document.createElement('div');
-    wrap.className = 'gb-cal-production-list';
-    const message = document.createElement('p');
-    message.className = 'cal-option-empty';
-    message.textContent = 'メンバーの一覧・追加・編集は、全体で共有される「スタッフ管理シート」で行います。';
-    const openButton = _button('スタッフ管理シートを開く', 'externalLink', async () => {
-      const opened = await window.MeldexUserRegistry?.openSheet?.();
-      if (!opened) _status('スタッフ管理シートを開けませんでした', true);
-    }, { primary: true, actionId: 'staff-open-registry' });
-    wrap.append(message, openButton);
-    content.replaceChildren(wrap);
-  }
-
-  async function render(body, options = {}) {
-    const requestedTab = options.tab || 'summary';
-    const tab = TABS.some(([key]) => key === requestedTab) ? requestedTab : 'summary';
-    const content = _ensureShell(body, tab);
-    try {
-      if (tab === 'summary') await _renderSummary(content, body);
-      else if (tab === 'staff') _renderStaffRedirect(content);
-      else if (SHEET_BY_TAB[tab]) await _renderList(content, tab, options);
-    } catch (error) {
-      content.textContent = '制作管理を読み込めません: ' + (error?.message || error);
-    }
-  }
-
-  async function openTaskEvent(body, event) {
-    try {
-      const data = await _api().taskByEvent(event?.id || '');
-      await render(body, { tab: 'tasks', path: data.row?.path || '' });
-    } catch {
-      await render(body, { tab: 'tasks' });
-    }
-  }
-
-  window.MeldexProductionPanel = { render, openTaskEvent };
 })();
 
 ;
@@ -2675,7 +1876,25 @@
     return text.substring(0, 16);
   }
 
-  function field(name, labelText, type, rawValue) {
+  function field(name, labelText, type, rawValue, helpText) {
+    if (type === 'checkbox') {
+      // 保護トグル（再計算ロック/担当者固定/シフト固定）は他の設定行と別レイアウト
+      // （チェック+ラベルの横並び）にする（gb-check-help-row と同じ見た目にそろえる）。
+      const row = document.createElement('div');
+      row.className = 'gb-check-help-row gb-production-check-help-row';
+      const label = document.createElement('label');
+      label.className = 'gb-check gb-production-check';
+      const control = document.createElement('input');
+      control.type = 'checkbox';
+      control.checked = String(rawValue || '').trim().toLowerCase() === 'true';
+      control.dataset.propName = name;
+      const caption = document.createElement('span');
+      caption.textContent = labelText;
+      label.append(control, caption);
+      row.appendChild(label);
+      if (helpText) row.insertAdjacentHTML('beforeend', fieldHelp(helpText));
+      return { label: row, value: () => (control.checked ? 'true' : 'false'), controls: [control] };
+    }
     const label = document.createElement('label');
     label.className = 'gb-production-sidebar-field';
     const caption = document.createElement('span');
@@ -2750,14 +1969,63 @@
       control = document.createElement('input');
       control.type = type;
       if (type === 'number') {
-        control.step = name === '目標作業時間_値' ? '0.25' : '1';
+        const isHoursField = /時間/.test(name);
+        control.step = isHoursField ? '0.25' : '1';
         if (name === '目標作業時間_値') control.min = '0.25';
+        if (name === '対象数') control.min = '1';
       }
     }
-    control.value = rawValue || (type === 'color' ? '#569cd6' : '');
+    control.value = type === 'datetime-local' ? dateInputValue(rawValue) : (rawValue || (type === 'color' ? '#569cd6' : ''));
     control.dataset.propName = name;
     label.appendChild(control);
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
+  }
+
+  // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間
+  // （目標作業時間_値）は再計算エンジン・同期フックが更新する自動列のため読み取り専用表示に
+  // 統一する（タスクリスト側の計算列と同じ扱い。gb-db-computed-columns.js 参照）。
+  function formatScheduleHoursDisplay(raw) {
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) return '';
+    const rounded = Math.round(num * 10) / 10;
+    return `${rounded}h`;
+  }
+
+  function formatScheduleRangeDisplay(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return '';
+    const [startRaw, endRaw] = text.split('|');
+    const start = dateInputValue(startRaw).replace('T', ' ');
+    const end = dateInputValue(endRaw).replace('T', ' ');
+    if (!start && !end) return '';
+    if (start && end) {
+      const sameDay = start.slice(0, 10) === end.slice(0, 10);
+      return sameDay ? `${start}〜${end.slice(11)}` : `${start}〜${end}`;
+    }
+    return start || end;
+  }
+
+  function readOnlyField(labelText, displayText, options = {}) {
+    const wrap = document.createElement('div');
+    wrap.className = 'gb-production-sidebar-field gb-production-sidebar-readonly';
+    wrap.dataset.e2eId = options.e2eId || '';
+    const caption = document.createElement('span');
+    caption.textContent = labelText;
+    wrap.appendChild(caption);
+    const value = document.createElement('div');
+    value.className = 'gb-production-sidebar-readonly-value';
+    value.textContent = displayText || '未設定';
+    if (options.warning) {
+      const warn = document.createElement('span');
+      warn.className = 'gb-production-sidebar-readonly-warning';
+      warn.textContent = '⚠';
+      warn.title = options.warning;
+      warn.setAttribute('aria-label', options.warning);
+      value.appendChild(document.createTextNode(' '));
+      value.appendChild(warn);
+    }
+    wrap.appendChild(value);
+    return wrap;
   }
 
   // 選択肢が非同期で届く間もフィールドの識別子(DOM要素)は差し替えない。
@@ -2963,9 +2231,9 @@
     const controls = new Map();
     const fieldControls = [];
     const managedSelectQueue = []; // { item, managedKey } — 開いた後に非同期で選択肢を補う
-    const buildField = (name, label, type, managedKey, rawValueOverride) => {
+    const buildField = (name, label, type, managedKey, rawValueOverride, helpText) => {
       const rawValue = rawValueOverride !== undefined ? rawValueOverride : prop(row, name);
-      const item = field(name, label, type, rawValue);
+      const item = field(name, label, type, rawValue, helpText);
       controls.set(name, item);
       form.appendChild(item.label);
       fieldControls.push(...(item.controls || []));
@@ -2985,11 +2253,33 @@
     buildField('作業対象リスト', '作業対象', 'managed-select', 'targets');
     buildField('作業内容リスト', '作業内容', 'managed-select', 'contents');
     buildField('作業規模リスト', '作業規模', 'managed-select', 'scales');
-    buildField('作業予定日時', '予定日時', 'range');
-    buildField('目標作業時間_値', '目標時間（時間）', 'number');
+    buildField('対象数', '対象数', 'number');
+    // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間は
+    // 再計算エンジン・同期フックが更新する自動列のため読み取り専用表示にする（編集フォームの
+    // controls/changedProperties には含めない＝保存対象外）。
+    const scheduleReason = prop(row, 'シフト割当不能理由');
+    const scheduleText = [
+      formatScheduleRangeDisplay(prop(row, '作業予定日時')),
+      formatScheduleHoursDisplay(prop(row, '作業予定時間')) ? `（${formatScheduleHoursDisplay(prop(row, '作業予定時間'))}）` : '',
+    ].filter(Boolean).join(' ');
+    form.appendChild(readOnlyField('予定', scheduleText, {
+      e2eId: 'gb-production-task-detail-schedule',
+      warning: scheduleReason ? `シフト割当不能: ${scheduleReason}` : '',
+    }));
+    form.appendChild(readOnlyField('目標時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
+      e2eId: 'gb-production-task-detail-target-hours',
+    }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
+    buildField('作業時間_実績', '実績（時間）', 'number');
+    buildField('開始日時', '開始日時', 'datetime-local');
+    buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
+    // 保護トグル（再計算ロック/担当者固定/シフト固定）。カレンダー上のドラッグ移動・
+    // リサイズ（§6-4）は書き戻し時に「シフト固定」を自動付与する。
+    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは割当再計算で動かなくなります');
+    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、割当再計算でも担当者が変わりません');
+    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は割当再計算で動かなくなります');
     fieldControls.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     const initialValues = new Map(Array.from(controls, ([name, item]) => [name, String(item.value() ?? '')]));
     managedSelectQueue.forEach(({ item, managedKey }) => {
@@ -3170,7 +2460,11 @@
     delete context.eventRequestId;
     const content = buildShell(body, state, context);
     if (state.mode === 'detail') {
-      if (options.taskListSurface === true || component?._surface === 'productionTasks') taskListSurfaceNotice(content);
+      // forceDetail: 埋め込みシート表そのものが編集場所になる作品別タブとは異なり、
+      // 「すべて」タブのフラット表はセル直接編集を持たない（第一段階の設計）ため、行クリック
+      // からはこのタスクリスト面上でも実際の編集フォームを開く必要がある
+      // （gb-tool-calendar-production-all-view.js の onOpenTask 経由）。
+      if (options.forceDetail !== true && (options.taskListSurface === true || component?._surface === 'productionTasks')) taskListSurfaceNotice(content);
       else taskDetail(content, state.row, context);
     }
     else if (state.mode === 'templates') {
@@ -3188,7 +2482,7 @@
     }
   }
 
-  function openTask(row, component) {
+  function openTask(row, component, options = {}) {
     const body = optionBody(true);
     if (!body) {
       status('制作管理の詳細パネルを開けませんでした', true);
@@ -3196,7 +2490,8 @@
     }
     const current = STATE.get(body);
     const sameRow = !!current && current.mode === 'detail' && rowIdentity(current.row) === rowIdentity(row);
-    runAfterDiscardConfirmation(body, sameRow, () => render(body, { mode: 'detail', row, component }));
+    const forceDetail = options.forceDetail === true;
+    runAfterDiscardConfirmation(body, sameRow, () => render(body, { mode: 'detail', row, component, forceDetail }));
   }
 
   function syncTask(row, component) {
@@ -3312,7 +2607,6 @@
 
   if (typeof CalendarComponent === 'undefined') return;
 
-  const QUICK_WORK_TITLE = '新しい制作';
   const MANAGED_LISTS = [
     ['works', '作品設定', '作品リスト'],
     ['targets', '作業対象', '作業対象リスト'],
@@ -3364,19 +2658,6 @@
     return typeof getUsername === 'function' ? String(getUsername() || '').trim() : '';
   }
 
-  function localDateTime(date) {
-    const pad = value => String(value).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  }
-
-  function initialDeadline() {
-    const date = new Date();
-    date.setDate(date.getDate() + 1);
-    while (date.getDay() === 0 || date.getDay() === 6) date.setDate(date.getDate() + 1);
-    date.setHours(18, 0, 0, 0);
-    return localDateTime(date);
-  }
-
   function makeButton(label, iconName, handler, primary = false) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -3400,7 +2681,6 @@
         embedHostEl: null,
         embed: null,
         allView: null,
-        quickDialog: null,
         sheets: [],
         pmRootPath: '',
         sheetsLoaded: false,
@@ -3414,36 +2694,94 @@
         // タスクリスト面で最後に見ていたのが「すべて」か作品別か（surfaceタブ往復時の復元用）
         lastTasksMode: component.state?.productionTaskSelection?.kind === 'all' ? 'all' : '',
         addingList: false,
-        quickPreview: null,
-        quickPreviewSignature: '',
-        quickPreviewRequestId: 0,
+        // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ判定（undefined=未確認、
+        // true=開始済み、false=未セットアップ=空状態カードを表示中）。
+        productionReady: undefined,
+        productionReadyChecking: false,
       };
     }
     return component._productionTaskState;
   }
 
+  // /production-management/status は _ensure_existing_or_template を呼ばない唯一の読み取り
+  // のため、これで未セットアップと確認できたら taskSheets() 等の自己修復読み取りを呼ばず、
+  // 空状態カードだけを表示する。checkReady が無いAPI実装（テスト用の簡易スタブ等）では
+  // ゲート自体を素通りし、既存どおりの挙動にfail-openする。
+  function ensureProductionReadyGate(component, state) {
+    if (state.productionReady === true) return true;
+    const checkReady = window.MeldexProductionApi?.checkReady;
+    if (typeof checkReady !== 'function') { state.productionReady = true; return true; }
+    if (state.productionReady === false || state.productionReadyChecking) return false;
+    state.productionReadyChecking = true;
+    checkReady().then(ready => {
+      state.productionReadyChecking = false;
+      state.productionReady = !!ready;
+      component._renderProductionTaskView();
+    }).catch(() => {
+      state.productionReadyChecking = false;
+      state.productionReady = true;
+      component._renderProductionTaskView();
+    });
+    return false;
+  }
+
+  function renderProductionEmptyState(component, state) {
+    if (!state.embedHostEl) return;
+    state.listBarEl?.replaceChildren();
+    state.embed?.setVisible(false);
+    state.allView?.setVisible(false);
+    // 依頼8の追加調査で判明した実バグの修正: ensureWorkspaceMounted() は必ずこの関数より先に
+    // 呼ばれており、埋め込みシートは既にここへマウント済み（display:none で非表示にしただけ）。
+    // 埋め込みシートの containerEl は「非表示時もDOMから外さない」制約を持つ
+    // （gb-tool-calendar-production-sheet-embed.js の _setVisible。detachすると
+    // _resolveDatabasePaneContext() がグローバルstateへ静かにフォールバックし、以後
+    // setVisible(true)しても復帰しない）。かつて embedHostEl 全体を replaceChildren() で
+    // 置き換えていたため、この制約に反して埋め込みシートのDOMごと外れてしまい、
+    // 未セットアップ判定→開始操作後もタスクリストが永久に表示されない不具合があった
+    // （制作管理UX改善計画 2026-08-04 §6-1 空状態カード追加時に再発を確認・修正）。
+    // 空状態カードは埋め込みシートの兄弟として追加し、カード自身だけを追跡して差し替える。
+    state._emptyStateCardEl?.remove();
+    state._emptyStateCardEl = null;
+    if (state.productionReadyChecking) return;
+    const card = window.MeldexProductionManagementActions?.emptyStateCard?.(() => {
+      state.productionReady = true;
+      component._renderProductionTaskView();
+    });
+    if (card) {
+      state.embedHostEl.appendChild(card);
+      state._emptyStateCardEl = card;
+    }
+  }
+
+  // 他の画面（管理操作パネル）から制作管理を開始した場合も、このタスクリスト面の
+  // 空状態を解除して再読み込みする。
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('meldex:production-management-started', () => {
+      if (typeof forEachComponent !== 'function' || typeof CalendarComponent === 'undefined') return;
+      forEachComponent(instance => {
+        const state = instance instanceof CalendarComponent ? instance._productionTaskState : null;
+        if (!state || state.productionReady === true) return;
+        state.productionReady = true;
+        state.productionReadyChecking = false;
+        if (instance._surface === 'productionTasks' && typeof instance._renderProductionTaskView === 'function') {
+          instance._renderProductionTaskView();
+        }
+      });
+    });
+  }
+
+  // 旧「かんたん割当／自動割り当て」ボタンは廃止し、割当再計算へ一本化した（2026-08-05
+  // ユーザー判断）。ここでは割当再計算ボタンの状態だけを同期する。
   function syncQuickPlanToolbar(component, state) {
-    const button = component.el?.querySelector?.('[data-e2e-id="gb-production-quick-open"]');
-    const dropboxMode = !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
+    // フル再計算エンジン（割当再計算）はCloud（Dropboxモード）にも移植済み
+    // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
+    // dropboxMode による無効化は撤去し、Desktop/Cloud両対応にする。
     const recalculateButton = component.el?.querySelector?.('[data-e2e-id="gb-production-task-recalculate"]');
     if (recalculateButton) {
-      recalculateButton.disabled = dropboxMode;
-      recalculateButton.title = dropboxMode ? '再計算はデスクトップ版で実行してください' : '再計算';
-      recalculateButton.setAttribute('aria-label', dropboxMode ? '再計算（デスクトップ版のみ）' : '再計算');
+      recalculateButton.disabled = false;
+      recalculateButton.title = '割当再計算';
+      recalculateButton.setAttribute('aria-label', '割当再計算');
     }
-    if (!button) return;
-    const taskSelected = state.selection?.kind === 'task';
-    const allSelected = state.selection?.kind === 'all';
-    const managedSelected = state.selection?.kind === 'managed' || !!managedListInfo(state.pendingTabKey);
-    const ready = !dropboxMode && state.sheetsLoaded && !state.sheetsLoading && taskSelected;
-    button.disabled = !ready;
-    button.setAttribute('aria-busy', state.sheetsLoading ? 'true' : 'false');
-    button.title = dropboxMode ? 'かんたん割当はデスクトップ版で実行してください'
-      : ready ? 'かんたん割当'
-      : allSelected ? 'かんたん割当は作品別のタブで利用できます'
-      : managedSelected ? 'かんたん割当はタスクリストで利用できます'
-      : (state.sheetsError ? 'タスクリストを読み込めませんでした' : 'タスクリストを読み込み中');
-    button.setAttribute('aria-label', dropboxMode ? 'かんたん割当（デスクトップ版のみ）' : 'かんたん割当');
   }
 
   function productionSheetDisplayReady(state) {
@@ -3462,11 +2800,12 @@
       const button = component.el?.querySelector?.(`[data-e2e-id="${id}"]`);
       if (!button) return;
       if (allSelected) {
-        // 「すべて」は複数シートの縦積み表示のため、単一シート前提の表示操作は
-        // 読み込み待ち(aria-busy)ではなく明示的に無効として案内する。
+        // 「すべて」は全作品を横断するフラット表（単一dbPath前提の汎用シート表示操作とは
+        // 別実装）のため、こちらのツールバーボタンは読み込み待ち(aria-busy)ではなく
+        // 明示的に無効として案内する。絞り込み・並べ替えは表の上のコントロールで行う。
         button.disabled = true;
         button.setAttribute('aria-busy', 'false');
-        button.title = '列幅調整・フィルタ・並べ替えは作品別のタブで利用できます';
+        button.title = 'すべてタブでは表の上の絞り込み・並べ替えを利用してください';
         return;
       }
       button.disabled = !ready;
@@ -3721,16 +3060,25 @@
     if (!state.allView) {
       state.allView = window.MeldexProductionAllView.create({
         idSuffix: (component.tabId || component.paneId || 'production') + '-all',
+        // 「作品タブで開く」導線: フラット表の作品セルから作品別タブへジャンプする
+        onOpenWork: sheet => selectTaskList(component, state, sheet),
+        // 行クリック: フラット表はセル直接編集を持たないため、既存のタスク詳細サイドバーを
+        // 強制的に開く（作品別タブでは埋め込みシート自体が編集場所のため通常は抑止される）
+        onOpenTask: row => window.MeldexProductionSidebar?.openTask?.(row, component, { forceDetail: true }),
       });
     }
     if (!state.allView.isMounted()) state.allView.mount(state.embedHostEl);
     state.embed?.setVisible(false);
     state.allView.setVisible(true);
-    // ブロック順はタブバーの並び順に合わせる（閉じたタブのシートも末尾に含めて表示する）
+    // 作品ドロップダウン・作品セルの「作品タブで開く」導線用に、タブバーの並び順に合わせて
+    // シート一覧を渡す（閉じたタブのシートも末尾に含める）
     const tabsModule = window.MeldexProductionListTabs;
     const arranged = tabsModule ? tabsModule.arrange(state.sheets, state.pmRootPath) : null;
     const orderedSheets = arranged ? arranged.visible.concat(arranged.hidden) : state.sheets;
-    const opened = await state.allView.open(orderedSheets, { refresh: options.refreshCurrent === true });
+    const opened = await state.allView.open(orderedSheets, {
+      pmRoot: state.pmRootPath,
+      refresh: options.refreshCurrent === true,
+    });
     syncSheetDisplayToolbar(component, state);
     return opened;
   }
@@ -3989,7 +3337,7 @@
         notify(
           `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
           + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
-          + '必要に応じて「再計算」を実行してください。',
+          + '必要に応じて「割当再計算」を実行してください。',
         );
         busy = false;
         dialog.close?.();
@@ -4020,375 +3368,6 @@
       setBusy(false);
     });
     return dialog;
-  }
-
-  // ---------------------------------------------------------------------
-  // quick plan dialog (かんたん割当)
-  // ---------------------------------------------------------------------
-
-  function openQuickPlanDialog(component, state, trigger) {
-    if (state.quickDialog?.modal?.isConnected) {
-      state.quickDialog.modal.focus?.();
-      return state.quickDialog;
-    }
-    const focusSource = trigger || (
-      typeof HTMLElement !== 'undefined' && document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null
-    );
-    if (!window.GBUI?.createModal) {
-      notify('かんたん割当画面を初期化できませんでした', true);
-      return null;
-    }
-    if (!state.sheetsLoaded || state.sheetsLoading || state.selection?.kind !== 'task') {
-      notify(state.selection?.kind === 'all' ? 'かんたん割当は作品別のタブで利用できます'
-        : state.selection?.kind === 'managed' ? 'かんたん割当はタスクリストで利用できます'
-        : (state.sheetsError || 'タスクリストを読み込み中です'), !!state.sheetsError);
-      return null;
-    }
-    const panel = document.createElement('section');
-    panel.className = 'gb-production-quick-plan';
-    panel.dataset.e2eId = 'gb-production-quick-plan';
-
-    const form = document.createElement('form');
-    form.className = 'gb-production-quick-plan-form';
-    const taskLabel = document.createElement('label');
-    const taskLabelText = document.createElement('span');
-    taskLabelText.className = 'gb-production-quick-field-label';
-    taskLabelText.textContent = 'タスク数';
-    const taskCount = document.createElement('input');
-    taskCount.type = 'number';
-    taskCount.min = '1';
-    taskCount.max = '1000';
-    taskCount.step = '1';
-    taskCount.value = '1';
-    taskCount.required = true;
-    taskCount.dataset.e2eId = 'gb-production-quick-count';
-    taskLabel.append(taskLabelText, taskCount);
-    const deadlineLabel = document.createElement('label');
-    const deadlineLabelText = document.createElement('span');
-    deadlineLabelText.className = 'gb-production-quick-field-label';
-    deadlineLabelText.textContent = '締切日時';
-    const deadline = document.createElement('input');
-    deadline.type = 'datetime-local';
-    deadline.value = initialDeadline();
-    deadline.required = true;
-    deadline.dataset.e2eId = 'gb-production-quick-deadline';
-    deadlineLabel.append(deadlineLabelText, deadline);
-    const preview = makeButton('割り当て案を作成', 'sparkles', null, true);
-    preview.type = 'submit';
-    preview.dataset.e2eId = 'gb-production-quick-preview';
-    form.append(taskLabel, deadlineLabel, preview);
-
-    const details = document.createElement('details');
-    details.className = 'gb-production-quick-advanced';
-    const summary = document.createElement('summary');
-    const summaryIcon = icon('chevronRight', 14);
-    summaryIcon.classList.add('gb-production-quick-chevron');
-    summary.append(summaryIcon, document.createTextNode('詳細設定'));
-    const workLabel = document.createElement('label');
-    const workLabelText = document.createElement('span');
-    workLabelText.className = 'gb-production-quick-field-label';
-    workLabelText.textContent = '作品（任意）';
-    const work = document.createElement('select');
-    work.dataset.e2eId = 'gb-production-quick-work';
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = '新しい制作として作成';
-    work.appendChild(blank);
-    const currentWorkTitle = state.selection?.kind === 'task' ? (state.selection.workTitle || '') : '';
-    const workNames = new Set(Object.keys(state.workMeta || {}));
-    if (currentWorkTitle) workNames.add(currentWorkTitle);
-    [...workNames].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true })).forEach(name => {
-      const option = document.createElement('option');
-      option.value = name;
-      option.textContent = name;
-      work.appendChild(option);
-    });
-    work.value = currentWorkTitle;
-    workLabel.append(workLabelText, work);
-    details.append(summary, workLabel);
-
-    const assumption = document.createElement('div');
-    assumption.className = 'gb-production-assumption-note';
-    const user = currentUser();
-    assumption.appendChild(icon('info'));
-    const note = document.createElement('span');
-    note.textContent = '自動で前提を補いました';
-    assumption.appendChild(note);
-    assumption.insertAdjacentHTML('beforeend', ' ' + fieldHelp(`担当者は${user || '現在のユーザー（未確認）'}のみ。勤務時間は登録シフト、標準勤務時間の順で使い、未設定なら平日9:00〜18:00（12:00〜13:00休憩・残業なし）を一時利用します。`));
-
-    const result = document.createElement('div');
-    result.className = 'gb-production-quick-result';
-    result.dataset.e2eId = 'gb-production-quick-result';
-    const apply = makeButton('この案を適用', 'check', null, true);
-    apply.dataset.e2eId = 'gb-production-quick-apply';
-    apply.disabled = true;
-    const dismiss = makeButton('閉じる', 'x');
-    dismiss.dataset.e2eId = 'gb-production-quick-cancel';
-
-    const hasMeaningfulFocus = active => !!(
-      active
-      && active.isConnected
-      && active !== document.body
-      && active !== document.documentElement
-      && active !== focusSource
-      && active.getClientRects?.().length
-    );
-
-    const restoreFocus = () => {
-      // モーダル中はスマホ用メニューボタンがhiddenになるため、除去後の状態を先に同期する。
-      window.MeldexCloudMobile?.refresh?.();
-      window.MeldexCloudMobileEditBar?.refresh?.();
-      if (!focusSource?.isConnected || focusSource.disabled) return true;
-      const active = document.activeElement;
-      if (hasMeaningfulFocus(active)) return true;
-      if (focusSource.hidden || !focusSource.getClientRects?.().length) return false;
-      try { focusSource?.focus?.({ preventScroll: true }); } catch (_error) { focusSource?.focus?.(); }
-      return document.activeElement === focusSource;
-    };
-    const restoreFocusAfterClose = () => {
-      // GBUI.close() は onClose の後で overlay を外す。次のタスクで戻すことで、
-      // ブラウザが「フォーカス中のモーダルを除去した」後に行うBODYへの復帰と競合しない。
-      // その後もスマホのキーボード終了・editbar同期が落ち着く間だけ状態を見守る。
-      let remaining = 12;
-      const retry = () => {
-        if (remaining-- > 0) window.setTimeout?.(attempt, 50);
-      };
-      const attempt = () => {
-        // モバイルではGBModalShellが退場アニメーション後にoverlayを実際に除去する。
-        // closing中の閉じるボタンへフォーカスが残っていても、除去完了まで待つ。
-        if (dialog?.overlay?.isConnected) {
-          retry();
-          return;
-        }
-        if (!focusSource?.isConnected || focusSource.disabled) return;
-        const active = document.activeElement;
-        if (hasMeaningfulFocus(active)) return;
-        if (active !== focusSource) restoreFocus();
-        retry();
-      };
-      if (typeof queueMicrotask === 'function') queueMicrotask(attempt);
-      else Promise.resolve().then(attempt);
-    };
-    let dialog = null;
-    let closed = false;
-    let applying = false;
-    let headerCloseButton = null;
-    const close = (force = false) => {
-      if (applying && !force) return;
-      dialog?.close?.();
-    };
-    const setApplying = value => {
-      applying = !!value;
-      dismiss.disabled = applying;
-      if (headerCloseButton) headerCloseButton.disabled = applying;
-    };
-    dismiss.addEventListener('click', () => close());
-
-    const payload = () => ({
-      mode: 'equal_until_deadline',
-      staff_scope: 'current_user',
-      current_user: currentUser(),
-      task_count: Number(taskCount.value),
-      deadline: deadline.value,
-      // 対象未選択時も既存作品を横断しない。バックエンドはこの仮作品へ
-      // 不足分のタスクを作成し、task_count 件だけを割り当てる。
-      work_title: work.value || QUICK_WORK_TITLE,
-    });
-    const payloadSignature = () => JSON.stringify(payload());
-    const invalidatePreview = () => {
-      state.quickPreviewRequestId += 1;
-      state.quickPreview = null;
-      state.quickPreviewSignature = '';
-      apply.disabled = true;
-      preview.disabled = false;
-      result.replaceChildren();
-    };
-    taskCount.addEventListener('input', invalidatePreview);
-    deadline.addEventListener('input', invalidatePreview);
-    work.addEventListener('change', invalidatePreview);
-    form.addEventListener('submit', async event => {
-      event.preventDefault();
-      const requestedPayload = payload();
-      const requestedSignature = JSON.stringify(requestedPayload);
-      const requestId = ++state.quickPreviewRequestId;
-      state.quickPreview = null;
-      state.quickPreviewSignature = '';
-      apply.disabled = true;
-      preview.disabled = true;
-      result.replaceChildren();
-      try {
-        const data = await api().recalculateEqual(requestedPayload);
-        if (requestId !== state.quickPreviewRequestId || requestedSignature !== payloadSignature()) return;
-        state.quickPreview = data;
-        state.quickPreviewSignature = requestedSignature;
-        renderQuickResult(component, state, result, data, { taskCount, deadline, apply, close });
-      } catch (error) {
-        if (requestId !== state.quickPreviewRequestId) return;
-        const errorText = document.createElement('p');
-        errorText.className = 'is-error';
-        errorText.textContent = error?.message || '割り当て案を作成できませんでした';
-        result.appendChild(errorText);
-      } finally {
-        if (requestId === state.quickPreviewRequestId) preview.disabled = false;
-      }
-    });
-    apply.addEventListener('click', async event => {
-      const button = event.currentTarget;
-      const approvedPayload = payload();
-      const approvedSignature = JSON.stringify(approvedPayload);
-      if (!state.quickPreview?.apply_allowed || !state.quickPreviewSignature || state.quickPreviewSignature !== approvedSignature) {
-        invalidatePreview();
-        notify('条件が変わったため、割り当て案をもう一度作成してください', true);
-        return;
-      }
-      button.disabled = true;
-      preview.disabled = true;
-      taskCount.disabled = true;
-      deadline.disabled = true;
-      work.disabled = true;
-      setApplying(true);
-      let appliedSuccessfully = false;
-      try {
-        const applied = await api().recalculateEqual(approvedPayload, { apply: true });
-        if (applied?.blocked) throw new Error('締切までの空き時間が足りないため適用しませんでした');
-        notify(`${Number(applied?.applied || 0)}件の担当者と時間を割り当てました`);
-        appliedSuccessfully = true;
-        state.quickPreview = null;
-        state.quickPreviewSignature = '';
-        const [, calendarRefresh] = await Promise.all([refreshEmbedAfterMutation(component), refreshCalendarEvents(component)]);
-        if (calendarRefresh?.ok === false) {
-          notify('割り当ては完了しましたが、カレンダーを再読み込みできませんでした。カレンダーを再読み込みしてください', true);
-        }
-      } catch (error) {
-        notify(error?.message || '割り当てを適用できませんでした', true);
-      } finally {
-        if (appliedSuccessfully) close(true);
-        else {
-          setApplying(false);
-          preview.disabled = false;
-          taskCount.disabled = false;
-          deadline.disabled = false;
-          work.disabled = false;
-          button.disabled = !state.quickPreview?.apply_allowed || state.quickPreviewSignature !== payloadSignature();
-        }
-      }
-    });
-    panel.append(form, details, assumption, result);
-    dialog = window.GBUI.createModal({
-      title: 'かんたん割当',
-      body: panel,
-      footer: [dismiss, apply],
-      closeLabel: 'かんたん割当を閉じる',
-      closeOnOverlay: false,
-      closeOnEsc: false,
-      extraClass: 'gb-production-modal',
-      onClose: () => {
-        if (closed) return;
-        closed = true;
-        state.quickPreviewRequestId += 1;
-        if (state.quickDialog?.overlay === dialog?.overlay) state.quickDialog = null;
-        restoreFocusAfterClose();
-      },
-    });
-    dialog.overlay.classList.add('gb-production-modal-overlay');
-    dialog.overlay.dataset.e2eId = 'production-quick-plan-dialog-overlay';
-    dialog.modal.classList.add('gb-production-quick-plan-dialog');
-    dialog.modal.style.setProperty('--gb-production-modal-width', '680px');
-    dialog.modal.dataset.e2eId = 'production-quick-plan-dialog';
-    dialog.header.classList.add('gb-production-modal-header');
-    dialog.body.classList.add('gb-production-modal-body');
-    dialog.footer.classList.add('gb-production-modal-footer', 'gb-production-quick-footer');
-    dialog.footer.dataset.modalFooter = '1';
-    const quickPlanTitleEl = dialog.header.querySelector('.gb-modal-title');
-    quickPlanTitleEl?.classList.add('gb-production-title');
-    quickPlanTitleEl?.insertAdjacentHTML('beforeend', ' ' + fieldHelp('現在のユーザーへ、締切までの空き時間を15分単位で均等に割り当てます。'));
-    headerCloseButton = dialog.header.querySelector('.gb-modal-close');
-    if (headerCloseButton) headerCloseButton.dataset.e2eId = 'production-quick-plan-dialog-close';
-    dialog.overlay.addEventListener('click', event => {
-      if (event.target === dialog.overlay) close();
-    });
-    dialog.modal.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        close();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = [...dialog.modal.querySelectorAll(
-        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
-      )].filter(element => !element.hidden && element.getAttribute('aria-hidden') !== 'true' && element.getClientRects().length > 0);
-      if (!focusable.length) {
-        event.preventDefault();
-        dialog.modal.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    });
-    document.body.appendChild(dialog.overlay);
-    state.quickPreview = null;
-    state.quickPreviewSignature = '';
-    state.quickDialog = dialog;
-    window.GBModalShell?.enhanceOverlay?.(dialog.overlay);
-    window.requestAnimationFrame?.(() => taskCount.focus?.());
-    return state.quickDialog;
-  }
-
-  function renderQuickResult(component, state, host, data, controls) {
-    host.replaceChildren();
-    const summary = document.createElement('div');
-    summary.className = 'gb-production-quick-summary';
-    const scheduled = Number(data?.summary?.scheduled || 0);
-    const locked = Number(data?.summary?.locked || 0);
-    const unassigned = Number(data?.summary?.unassigned || 0);
-    summary.textContent = data?.apply_allowed
-      ? `${scheduled}件を割り当てます${locked ? `（${locked}件は固定のまま）` : ''}`
-      : `${unassigned}件を割り当てられません`;
-    host.appendChild(summary);
-
-    const assumptions = Array.isArray(data?.assumptions) ? data.assumptions : [];
-    if (assumptions.length) {
-      const list = document.createElement('dl');
-      list.className = 'gb-production-assumption-list';
-      assumptions.forEach(item => {
-        const term = document.createElement('dt');
-        term.textContent = item.label || item.code || '前提';
-        const value = document.createElement('dd');
-        value.textContent = item.value || '—';
-        if (item.source === 'fallback') value.className = 'is-auto';
-        list.append(term, value);
-      });
-      host.appendChild(list);
-    }
-
-    if (!data?.apply_allowed) {
-      controls.apply.disabled = true;
-      const solutions = document.createElement('div');
-      solutions.className = 'gb-production-quick-solutions';
-      const label = document.createElement('strong');
-      label.textContent = '解決するには';
-      const extend = makeButton('締切を延ばす', 'calendarClock', () => controls.deadline.focus());
-      const reduce = makeButton('タスク数を減らす', 'listMinus', () => controls.taskCount.focus());
-      const hours = makeButton('勤務時間を設定する', 'settings2', async () => {
-        controls.close?.();
-        const opened = await window.MeldexUserRegistry?.openSheet?.();
-        if (!opened) notify('スタッフ管理シートを開けませんでした', true);
-      });
-      solutions.append(label, extend, reduce, hours);
-      host.appendChild(solutions);
-      return;
-    }
-    controls.apply.disabled = false;
   }
 
   async function refreshCalendarEvents(component) {
@@ -4544,21 +3523,11 @@
     return true;
   };
 
-  CalendarComponent.prototype._openProductionQuickPlan = function(trigger) {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      notify('かんたん割当はデスクトップ版で実行してください', true);
-      return false;
-    }
-    return openQuickPlanDialog(this, stateFor(this), trigger);
-  };
-
   CalendarComponent.prototype._openProductionRecalculate = function(trigger) {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      notify('再計算はデスクトップ版で実行してください', true);
-      return false;
-    }
+    // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
+    // improvement-plan-2026-08-04.md §4-1）。Desktop限定ガードは撤去した。
     if (typeof window.openProductionRecalculate !== 'function') {
-      notify('再計算画面を初期化できませんでした', true);
+      notify('割当再計算画面を初期化できませんでした', true);
       return;
     }
     const state = stateFor(this);
@@ -4609,6 +3578,16 @@
     const state = stateFor(this);
     if (typeof this._bindProductionTemplateDnD === 'function') this._bindProductionTemplateDnD();
     ensureWorkspaceMounted(this, state);
+    if (!ensureProductionReadyGate(this, state)) {
+      renderProductionEmptyState(this, state);
+      return;
+    }
+    // 空状態カードは埋め込みシートを detach せず兄弟として追加している（renderProductionEmptyState
+    // 参照）。準備完了後はカードだけを取り除く（埋め込みシート側は setVisible(true) で復帰する）。
+    if (state._emptyStateCardEl) {
+      state._emptyStateCardEl.remove();
+      state._emptyStateCardEl = null;
+    }
     if (state.selection?.kind === 'all' && state.allView?.isMounted?.()) {
       state.embed?.setVisible(false);
       state.allView.setVisible(true);
@@ -4721,7 +3700,6 @@
       this._productionWriteAvailabilityHandler = null;
     }
     const state = this._productionTaskState;
-    state?.quickDialog?.close?.();
     this._productionTaskCreateDialog?.close?.();
     this._productionTaskCreateDialog = null;
     if (state?.embed) {
@@ -5223,6 +4201,16 @@
     if (!await _refreshWriteGuard(instance, path)) return false;
     if (generation !== instance._generation) return false;
     instance.ctx.generation = generation;
+    // 開くパスが直前と異なる場合は、前シートで適用した採用状況フィルタ・保存ビュー選択を
+    // 持ち越さない。制作管理シートの既定ビューは filter キーを持たないため、
+    // selectDatabase() のフォールバック（gb-database.part01.js の _resolveInitialFilter()
+    // 相当）で前シートの ctx.filter がそのまま残ると /pivot?status_filter=... が誤って
+    // 適用され0件表示になる（タスクリスト作品タブ切替バグの真因）。シート自身に保存済み
+    // フィルタがあれば、直後の selectDatabase() が正しく再適用する。
+    if (instance.ctx.dbPath !== path) {
+      instance.ctx.filter = 'disabled';
+      delete instance.ctx.currentViewIdx;
+    }
     try {
       const result = await selectDatabase(path, instance.ctx, mergedOpts);
       if (result === false || result?.ok === false) return false;
@@ -5729,168 +4717,611 @@
 /* === gb-tool-calendar-production-all-view.js === */
 ;
 /* gb-tool-calendar-production-all-view.js
- * スケジュール タスクリスト面の「すべて」タブ用に、全作品のタスクリストシートを
- * 縦に積んで一括表示する独立モジュール。各作品ブロックは MeldexProductionSheetEmbed の
- * 独立インスタンスなので、通常の作品別タブと同じようにその場で編集できる。
+ * スケジュール タスクリスト面の「すべて」タブ用に、全作品のタスクを1枚のフラット表で
+ * 横断表示する独立モジュール。
  *
- * 集約用の実シートは存在しないため（作品別シートが正）、読み取り専用の合成表ではなく
- * 「作品ごとの生きたシート表を順に並べる」方式を取る。行の仮想化は CSS の
- * content-visibility が担うので、内側の表スクロールを止めて外側の縦スクロールへ
- * 一本化しても描画コストは増えない。
+ * 実装方式（依頼8での再設計）: 集約用の実シートは存在しない（作品別シートが正）ため、旧版は
+ * 「作品ごとの生きたシート表を縦に積む」方式だったが、作品ごとに独立表示が分かれるため
+ * 担当者フィルタ・目標作業時間ソートが作品をまたいで効かないという実害があった。読み取り
+ * 専用の全作品統合クエリAPI（/production-management/tasks/query、Desktop:
+ * meldex_production_task_query.py、Cloud: _pmCloudQueryTasks）が両環境に実装済みで
+ * 未使用だったため、それを使って1枚のフラット表（行 = タスク、先頭列 = 作品）へ作り直す。
+ * フィルタ・検索・ソート・ページングはすべてサーバー側へ委譲する。
+ *
+ * 編集は第一段階では行わない（セル直接編集は作品間の名前衝突・単一dbPath前提の汎用機構との
+ * 相性が悪いため見送り）。行クリックで既存のタスク詳細サイドバー（MeldexProductionSidebar.
+ * openTask、patchEntry経由の管理された書込経路）を開いて編集する。表示設定（フィルタ・
+ * ソート）は localStorage にのみ保存し、シートデータ・view configへは一切書き込まない
+ * （制作管理シートの暗黙sheet-store化を防止するガードに抵触しないため）。
  */
 (function () {
   'use strict';
 
-  function _sanitizeIdPart(raw) {
-    return String(raw || '').replace(/[^\p{L}\p{N}_-]+/gu, '-');
-  }
+  const PREFS_PREFIX = 'productionAllFlatViewPrefs:';
+  const DEFAULT_GENERIC_LABELS = ['中分類', '小分類', '詳細分類'];
+  const NEW_LEVEL_NAMES = ['中分類', '小分類', '詳細分類'];
+  const LEGACY_LEVEL_NAMES = ['単位レベル1', '単位レベル2', '単位レベル3'];
+  const LIMIT = 200;
+  const SEARCH_DEBOUNCE_MS = 300;
+
+  // field はサーバー側 FIELD_ALIASES（Desktop: meldex_production_task_query.py、
+  // Cloud: gb-production-management.part02.js の _pmCloudQuerySort）と両方が受理する
+  // キー名で揃えている。
+  const COLUMN_DEFS = [
+    { key: 'work', field: 'work_title', label: '作品', sortable: true },
+    { key: 'name', field: 'name', label: 'タスク名', sortable: true },
+    { key: 'status', field: 'status', label: '状況', sortable: true },
+    { key: 'assignee', field: 'assignee', label: '担当者', sortable: true },
+    { key: 'priority', field: 'priority', label: '優先度', sortable: true },
+    { key: 'planned', field: 'planned_start', label: '作業予定日時', sortable: true },
+    { key: 'duration', field: 'duration', label: '目標作業時間', sortable: true },
+    { key: 'level1', field: 'level1', label: '', sortable: true },
+    { key: 'level2', field: 'level2', label: '', sortable: true },
+    { key: 'level3', field: 'level3', label: '', sortable: true },
+  ];
 
   function _logError(instance, message, error) {
     console.error('[MeldexProductionAllView] ' + message + ': ' + (instance?.idSuffix || '(unmounted)'), error || '');
   }
 
-  // 埋め込みシートは1画面用の flex/overflow 設定（インラインstyle）を持つため、
-  // 縦積み用に「内容の高さで伸びて、スクロールは外側へ委ねる」形へ上書きする。
-  function _relaxEmbedLayout(containerEl) {
-    if (!containerEl) return;
-    containerEl.style.height = 'auto';
-    containerEl.style.flex = 'none';
-    containerEl.style.overflow = 'visible';
-    const viewContainer = containerEl.querySelector('.db-view-container');
-    if (viewContainer) {
-      viewContainer.style.flex = 'none';
-      viewContainer.style.minHeight = 'auto';
-      viewContainer.style.overflow = 'visible';
-    }
-    const pivotView = containerEl.querySelector('.pivot-view');
-    if (pivotView) {
-      pivotView.style.flex = 'none';
-      pivotView.style.minHeight = 'auto';
-      pivotView.style.overflow = 'visible';
-    }
+  function _notify(message, error) {
+    if (typeof showStatus === 'function') showStatus(message, !!error);
   }
 
-  function _buildSection(instance, sheet) {
-    if (!window.MeldexProductionSheetEmbed) {
-      _logError(instance, 'MeldexProductionSheetEmbed が未定義です。読み込み順序を確認してください');
+  function _icon(name, size) {
+    const span = document.createElement('span');
+    span.className = 'gb-production-task-icon';
+    if (typeof lucide === 'function') span.innerHTML = lucide(name, size || 14);
+    return span;
+  }
+
+  /* --- localStorage 表示設定（フィルタ・ソートのみ。シートデータは一切書き込まない） --- */
+
+  function _prefsKey(pmRoot) {
+    return PREFS_PREFIX + String(pmRoot || '制作管理');
+  }
+
+  function _loadPrefs(pmRoot) {
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      const raw = localStorage.getItem(_prefsKey(pmRoot));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
       return null;
     }
-    const section = document.createElement('section');
-    section.className = 'gb-production-all-section';
-    section.dataset.e2eId = 'gb-production-all-section-' + _sanitizeIdPart(sheet.sheet_name);
+  }
 
-    const title = document.createElement('h3');
-    title.className = 'gb-production-all-section-title';
-    section.appendChild(title);
+  function _savePrefs(instance) {
+    try {
+      if (typeof localStorage === 'undefined' || !instance._pmRoot) return;
+      localStorage.setItem(_prefsKey(instance._pmRoot), JSON.stringify({
+        filters: { work: instance._filters.work, status: instance._filters.status, assignee: instance._filters.assignee },
+        sort: instance._sort,
+      }));
+    } catch { /* localStorage 不可時は表示設定の保存だけを諦める（機能自体は動く） */ }
+  }
 
-    const embedHost = document.createElement('div');
-    embedHost.className = 'gb-production-all-section-embed';
-    section.appendChild(embedHost);
+  /* --- 行データの表示用ヘルパー --- */
 
-    instance._embedSeq += 1;
-    const embed = window.MeldexProductionSheetEmbed.create({
-      // シート名は日本語主体で embed 側の ASCII サニタイズだと衝突するため、
-      // 連番でインスタンスIDを一意化する（DOM id 重複防止）。
-      idSuffix: instance.idSuffix + '-sec' + instance._embedSeq,
+  function _levelCandidates(customLabels, index) {
+    const candidates = [];
+    const custom = String(customLabels?.[index] || '').trim();
+    if (custom) candidates.push(custom);
+    if (NEW_LEVEL_NAMES[index]) candidates.push(NEW_LEVEL_NAMES[index]);
+    if (LEGACY_LEVEL_NAMES[index]) candidates.push(LEGACY_LEVEL_NAMES[index]);
+    return [...new Set(candidates)];
+  }
+
+  function _workTitleOf(row, instance) {
+    const props = row?.properties || {};
+    const direct = String(props['作品タイトル'] || props['作品タイトル_話数'] || '').trim();
+    if (direct) return direct;
+    // フォールバック: 作品タイトルのリレーションが候補値として登録されていない行がある
+    // （例: 汎用エントリ作成経路では採用候補として書き込まれないことがある）。row.path は
+    // 必ず対象シートのディレクトリ配下にあるため、シート一覧とのパス前方一致で特定する。
+    const path = String(row?.path || '');
+    if (!path || !instance?._sheetsByWork) return '';
+    for (const [title, sheet] of instance._sheetsByWork) {
+      const dir = String(sheet?.dir || '');
+      if (dir && (path === dir || path.startsWith(dir + '/'))) return title;
+    }
+    return '';
+  }
+
+  // 表示用ラベル解決の優先順位（作品固有ラベル > 新名 > 旧名）はサーバー側
+  // resolve_level_prop_names / _pmResolveLevelPropNames と揃えている。
+  function _levelValue(row, index, instance) {
+    const meta = instance?._workMeta?.[_workTitleOf(row, instance)];
+    const customLabels = Array.isArray(meta?.classification_labels) ? meta.classification_labels : [];
+    const props = row?.properties || {};
+    for (const name of _levelCandidates(customLabels, index)) {
+      const value = props[name];
+      if (value) return String(value);
+    }
+    return '';
+  }
+
+  function _formatDuration(row) {
+    const props = row?.properties || {};
+    const num = Number(props['目標作業時間_値']);
+    if (Number.isFinite(num) && num > 0) return `${Math.round(num * 10) / 10}時間`;
+    return String(props['目標作業時間'] || '').trim();
+  }
+
+  function _formatPlanned(row) {
+    const text = String(row?.properties?.['作業予定日時'] || '').trim();
+    if (!text) return '';
+    const [startRaw, endRaw] = text.split('|');
+    const norm = value => String(value || '').trim().replace('T', ' ').slice(0, 16);
+    const start = norm(startRaw);
+    const end = norm(endRaw);
+    if (!start && !end) return '';
+    if (start && end) {
+      const sameDay = start.slice(0, 10) === end.slice(0, 10);
+      return sameDay ? `${start}〜${end.slice(11)}` : `${start}〜${end}`;
+    }
+    return start || end;
+  }
+
+  function _cellText(instance, row, column) {
+    const props = row?.properties || {};
+    switch (column.key) {
+      case 'work': return _workTitleOf(row, instance);
+      case 'name': return row?.name || '';
+      case 'status': return props['状況'] || '';
+      case 'assignee': return props['担当者'] || '';
+      case 'priority': return props['優先度'] || '';
+      case 'planned': return _formatPlanned(row);
+      case 'duration': return _formatDuration(row);
+      case 'level1': return _levelValue(row, 0, instance);
+      case 'level2': return _levelValue(row, 1, instance);
+      case 'level3': return _levelValue(row, 2, instance);
+      default: return '';
+    }
+  }
+
+  /* --- フィルタドロップダウンの選択肢 --- */
+
+  function _fillSelect(selectEl, options, currentValue, blankLabel) {
+    if (!selectEl) return;
+    const previousValue = selectEl.value;
+    selectEl.replaceChildren();
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = blankLabel;
+    selectEl.appendChild(blank);
+    const values = new Set((options || []).filter(Boolean).map(String));
+    if (currentValue) values.add(currentValue);
+    [...values].sort((a, b) => a.localeCompare(b, 'ja', { numeric: true })).forEach(value => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      selectEl.appendChild(option);
     });
-    const containerEl = embed.mount(embedHost);
-    _relaxEmbedLayout(containerEl);
-
-    return { sheet, section, titleEl: title, embed };
+    if (currentValue && values.has(currentValue)) selectEl.value = currentValue;
+    else if (values.has(previousValue)) selectEl.value = previousValue;
+    else selectEl.value = '';
   }
 
-  function _syncTitle(record) {
-    const label = record.sheet.work_title || record.sheet.sheet_name;
-    record.titleEl.textContent = label;
-    record.section.setAttribute('aria-label', `${label} のタスクリスト`);
+  function _renderFilterOptions(instance) {
+    _fillSelect(instance._workSelectEl, [...instance._sheetsByWork.keys()], instance._filters.work, 'すべての作品');
+    _fillSelect(instance._statusSelectEl, [...instance._facets.statuses], instance._filters.status, 'すべての状況');
+    _fillSelect(instance._assigneeSelectEl, [...instance._facets.assignees], instance._filters.assignee, 'すべての担当者');
   }
 
-  function _embedReady(record) {
-    const path = record.sheet.dir;
-    return !!path
-      && record.embed.getCurrentPath() === path
-      && record.embed.ctx?.dbPath === path
-      && !!record.embed.ctx?.pivotData;
+  /* --- ヘッダー・ステータス表示 --- */
+
+  function _sortIndicator(instance, field) {
+    if (instance._sort.field !== field) return '';
+    return instance._sort.direction === 'desc' ? ' ▼' : ' ▲';
   }
 
-  async function _open(instance, sheets, opts) {
+  function _renderHeaderLabels(instance) {
+    COLUMN_DEFS.forEach((column, index) => {
+      const th = instance._headerCells.get(column.key);
+      if (!th) return;
+      const levelIndex = column.key.startsWith('level') ? Number(column.key.slice(-1)) - 1 : -1;
+      const label = levelIndex >= 0
+        ? (instance._genericLabels[levelIndex] || DEFAULT_GENERIC_LABELS[levelIndex] || column.label)
+        : column.label;
+      th.textContent = label + _sortIndicator(instance, column.field);
+      if (column.sortable) {
+        th.setAttribute('aria-sort', instance._sort.field === column.field
+          ? (instance._sort.direction === 'desc' ? 'descending' : 'ascending')
+          : 'none');
+      }
+      void index;
+    });
+  }
+
+  function _renderStatus(instance) {
+    if (!instance._statusEl) return;
+    if (instance._errorText) {
+      instance._statusEl.textContent = instance._errorText;
+      instance._statusEl.classList.add('is-error');
+      return;
+    }
+    instance._statusEl.classList.remove('is-error');
+    if (instance._loading && !instance._rows.length) {
+      instance._statusEl.textContent = '読み込み中…';
+      return;
+    }
+    instance._statusEl.textContent = `${instance._rows.length.toLocaleString('ja-JP')} / ${instance._total.toLocaleString('ja-JP')}件`;
+  }
+
+  /* --- DOM構築 --- */
+
+  function _buildToolbar(instance) {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'gb-production-all-flat-toolbar';
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.placeholder = 'タスクを検索';
+    search.className = 'gb-production-all-flat-search';
+    search.dataset.e2eId = 'gb-production-all-flat-search';
+    search.setAttribute('aria-label', 'タスクを検索');
+    let searchTimer = null;
+    search.addEventListener('input', () => {
+      instance._filters.q = search.value;
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => _fetchRows(instance, { append: false }), SEARCH_DEBOUNCE_MS);
+    });
+    instance._searchEl = search;
+
+    const workSelect = document.createElement('select');
+    workSelect.className = 'gb-production-all-flat-filter';
+    workSelect.dataset.e2eId = 'gb-production-all-flat-filter-work';
+    workSelect.setAttribute('aria-label', '作品で絞り込み');
+    workSelect.addEventListener('change', () => {
+      instance._filters.work = workSelect.value;
+      _savePrefs(instance);
+      _fetchRows(instance, { append: false });
+    });
+    instance._workSelectEl = workSelect;
+
+    const statusSelect = document.createElement('select');
+    statusSelect.className = 'gb-production-all-flat-filter';
+    statusSelect.dataset.e2eId = 'gb-production-all-flat-filter-status';
+    statusSelect.setAttribute('aria-label', '状況で絞り込み');
+    statusSelect.addEventListener('change', () => {
+      instance._filters.status = statusSelect.value;
+      _savePrefs(instance);
+      _fetchRows(instance, { append: false });
+    });
+    instance._statusSelectEl = statusSelect;
+
+    const assigneeSelect = document.createElement('select');
+    assigneeSelect.className = 'gb-production-all-flat-filter';
+    assigneeSelect.dataset.e2eId = 'gb-production-all-flat-filter-assignee';
+    assigneeSelect.setAttribute('aria-label', '担当者で絞り込み');
+    assigneeSelect.addEventListener('change', () => {
+      instance._filters.assignee = assigneeSelect.value;
+      _savePrefs(instance);
+      _fetchRows(instance, { append: false });
+    });
+    instance._assigneeSelectEl = assigneeSelect;
+
+    const status = document.createElement('span');
+    status.className = 'gb-production-all-flat-status';
+    status.dataset.e2eId = 'gb-production-all-flat-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    instance._statusEl = status;
+
+    toolbar.append(search, workSelect, statusSelect, assigneeSelect, status);
+    return toolbar;
+  }
+
+  function _buildTable(instance) {
+    const wrap = document.createElement('div');
+    wrap.className = 'gb-production-all-flat-table-wrap';
+
+    const table = document.createElement('table');
+    table.className = 'pivot-table gb-production-all-flat-table';
+    table.dataset.e2eId = 'gb-production-all-flat-table';
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+
+    const selectTh = document.createElement('th');
+    selectTh.className = 'gb-production-all-flat-select-col';
+    const selectAll = document.createElement('input');
+    selectAll.type = 'checkbox';
+    selectAll.className = 'row-select-cb';
+    selectAll.dataset.e2eId = 'gb-production-all-flat-select-all';
+    selectAll.setAttribute('aria-label', 'すべての行を選択');
+    selectAll.addEventListener('change', () => {
+      const rows = [...instance._tbodyEl.querySelectorAll('tr[data-row-path]')];
+      rows.forEach(rowEl => {
+        if (selectAll.checked) instance._selectedPaths.add(rowEl.dataset.rowPath);
+        else instance._selectedPaths.delete(rowEl.dataset.rowPath);
+      });
+      instance._tbodyEl.querySelectorAll('.gb-production-all-flat-select').forEach(cb => { cb.checked = selectAll.checked; });
+    });
+    selectTh.appendChild(selectAll);
+    instance._selectAllEl = selectAll;
+    headRow.appendChild(selectTh);
+
+    COLUMN_DEFS.forEach(column => {
+      const th = document.createElement('th');
+      th.dataset.sortField = column.field;
+      th.dataset.e2eId = 'gb-production-all-flat-sort-' + column.key;
+      th.setAttribute('role', 'columnheader');
+      if (column.sortable) {
+        th.className = 'gb-production-all-flat-sortable';
+        th.tabIndex = 0;
+        const activate = () => {
+          if (instance._sort.field === column.field) {
+            instance._sort.direction = instance._sort.direction === 'asc' ? 'desc' : 'asc';
+          } else {
+            instance._sort = { field: column.field, direction: 'asc' };
+          }
+          _savePrefs(instance);
+          _fetchRows(instance, { append: false });
+        };
+        th.addEventListener('click', activate);
+        th.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
+        });
+      }
+      instance._headerCells.set(column.key, th);
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    instance._tbodyEl = tbody;
+    table.appendChild(tbody);
+
+    tbody.addEventListener('click', event => {
+      if (event.target.closest?.('.gb-production-all-flat-select, .gb-production-all-flat-work-jump')) return;
+      const rowEl = event.target.closest?.('tr[data-row-path]');
+      if (!rowEl) return;
+      const row = instance._rowsByPath.get(rowEl.dataset.rowPath);
+      if (row) instance.onOpenTask?.(row);
+    });
+
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function _buildLoadMore(instance) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-production-all-flat-load-more';
+    button.dataset.e2eId = 'gb-production-all-flat-load-more';
+    button.textContent = 'さらに読み込む';
+    button.hidden = true;
+    button.addEventListener('click', () => _fetchRows(instance, { append: true }));
+    instance._loadMoreEl = button;
+    return button;
+  }
+
+  function _buildRow(instance, row) {
+    const path = String(row?.path || '');
+    const tr = document.createElement('tr');
+    tr.dataset.rowPath = path;
+    tr.className = 'gb-production-all-flat-row';
+
+    const selectTd = document.createElement('td');
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'row-select-cb gb-production-all-flat-select';
+    checkbox.checked = instance._selectedPaths.has(path);
+    checkbox.setAttribute('aria-label', (row?.name || 'タスク') + 'を選択');
+    checkbox.addEventListener('change', () => {
+      if (checkbox.checked) instance._selectedPaths.add(path);
+      else instance._selectedPaths.delete(path);
+      if (instance._selectAllEl) {
+        instance._selectAllEl.checked = [...instance._tbodyEl.querySelectorAll('.gb-production-all-flat-select')]
+          .every(cb => cb.checked);
+      }
+    });
+    selectTd.appendChild(checkbox);
+    tr.appendChild(selectTd);
+
+    COLUMN_DEFS.forEach(column => {
+      const td = document.createElement('td');
+      if (column.key === 'work') {
+        const text = document.createElement('span');
+        text.className = 'gb-production-all-flat-work-text';
+        text.textContent = _cellText(instance, row, column);
+        td.appendChild(text);
+        const sheet = instance._sheetsByWork.get(_workTitleOf(row, instance));
+        if (sheet) {
+          const jump = document.createElement('button');
+          jump.type = 'button';
+          jump.className = 'gb-production-all-flat-work-jump';
+          jump.title = '作品タブで開く';
+          jump.setAttribute('aria-label', `「${sheet.work_title || sheet.sheet_name}」のタブで開く`);
+          jump.appendChild(_icon('arrowUpRight', 12));
+          jump.addEventListener('click', event => {
+            event.stopPropagation();
+            instance.onOpenWork?.(sheet);
+          });
+          td.appendChild(jump);
+        }
+      } else {
+        td.textContent = _cellText(instance, row, column);
+      }
+      tr.appendChild(td);
+    });
+    return tr;
+  }
+
+  function _renderTable(instance) {
+    const tbody = instance._tbodyEl;
+    if (!tbody) return;
+    tbody.replaceChildren();
+    instance._rowsByPath = new Map();
+    if (!instance._rows.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = COLUMN_DEFS.length + 1;
+      td.className = 'gb-production-all-flat-no-rows';
+      td.textContent = instance._hasLoadedOnce ? '該当するタスクがありません' : '読み込み中…';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      instance._rows.forEach(row => {
+        instance._rowsByPath.set(String(row?.path || ''), row);
+        tbody.appendChild(_buildRow(instance, row));
+      });
+    }
+    if (instance._selectAllEl) {
+      instance._selectAllEl.checked = instance._rows.length > 0
+        && instance._rows.every(row => instance._selectedPaths.has(String(row?.path || '')));
+    }
+    if (instance._loadMoreEl) instance._loadMoreEl.hidden = instance._rows.length >= instance._total;
+  }
+
+  /* --- データ取得（全作品統合クエリAPIへ委譲） --- */
+
+  async function _fetchRows(instance, opts = {}) {
+    if (!instance._mounted || instance._destroyed) return false;
+    if (!window.MeldexProductionApi?.queryTasks) {
+      _logError(instance, 'MeldexProductionApi.queryTasks が未定義です');
+      return false;
+    }
+    const append = opts.append === true;
+    const seq = ++instance._loadSeq;
+    instance._loading = true;
+    _renderStatus(instance);
+    const body = {
+      filters: {
+        work: instance._filters.work || undefined,
+        status: instance._filters.status || undefined,
+        assignee: instance._filters.assignee || undefined,
+      },
+      q: instance._filters.q || '',
+      sort: [{ field: instance._sort.field, direction: instance._sort.direction }],
+      offset: append ? instance._rows.length : 0,
+      limit: LIMIT,
+    };
+    let data;
+    try {
+      data = await window.MeldexProductionApi.queryTasks(body);
+    } catch (error) {
+      if (seq !== instance._loadSeq || instance._destroyed) return false;
+      instance._loading = false;
+      instance._errorText = error?.message || 'タスクを読み込めませんでした';
+      _logError(instance, 'タスクの読み込みに失敗しました', error);
+      _renderStatus(instance);
+      _notify(instance._errorText, true);
+      return false;
+    }
+    if (seq !== instance._loadSeq || instance._destroyed) return false;
+    instance._loading = false;
+    instance._errorText = '';
+    instance._hasLoadedOnce = true;
+    const rows = Array.isArray(data?.rows) ? data.rows : [];
+    instance._total = Number(data?.total || 0);
+    instance._workMeta = data?.work_meta && typeof data.work_meta === 'object' ? data.work_meta : {};
+    if (Array.isArray(data?.generic_classification_labels) && data.generic_classification_labels.length) {
+      instance._genericLabels = data.generic_classification_labels;
+    }
+    // フィルタドロップダウンの候補は取得済みの行から累積する（読み込み済みページの範囲でしか
+    // 分からないが、追加読み込み・再取得のたびに増えていくため実用上は十分機能する）。
+    rows.forEach(row => {
+      const status = row?.properties?.['状況'];
+      const assignee = row?.properties?.['担当者'];
+      if (status) instance._facets.statuses.add(String(status));
+      if (assignee) instance._facets.assignees.add(String(assignee));
+    });
+    if (append) instance._rows = instance._rows.concat(rows);
+    else {
+      instance._rows = rows;
+      instance._selectedPaths.clear();
+    }
+    _renderFilterOptions(instance);
+    _renderHeaderLabels(instance);
+    _renderTable(instance);
+    _renderStatus(instance);
+    return true;
+  }
+
+  async function _open(instance, sheets, opts = {}) {
     if (instance._destroyed || !instance._mounted) return false;
     const list = (Array.isArray(sheets) ? sheets : []).filter(sheet => sheet && sheet.sheet_name && sheet.dir);
-    const seq = ++instance._openSeq;
-
-    // 消えたシートのブロックを破棄
-    const nextNames = new Set(list.map(sheet => sheet.sheet_name));
-    [...instance._sections.keys()].forEach(name => {
-      if (nextNames.has(name)) return;
-      const record = instance._sections.get(name);
-      try { record.embed.destroy(); } catch (error) { _logError(instance, 'ブロックの破棄に失敗しました: ' + name, error); }
-      record.section.remove();
-      instance._sections.delete(name);
-    });
-
-    instance._emptyEl.hidden = list.length > 0;
-
-    // 並び順どおりにブロックを用意して並べ替える
-    const records = [];
+    instance._sheets = list;
+    instance._sheetsByWork = new Map();
     list.forEach(sheet => {
-      let record = instance._sections.get(sheet.sheet_name);
-      if (!record) {
-        record = _buildSection(instance, sheet);
-        if (!record) return;
-        instance._sections.set(sheet.sheet_name, record);
-      }
-      record.sheet = sheet;
-      _syncTitle(record);
-      instance._containerEl.appendChild(record.section);
-      records.push(record);
+      const title = String(sheet.work_title || sheet.sheet_name || '').trim();
+      if (title) instance._sheetsByWork.set(title, sheet);
     });
-
-    // 読み込みは直列にして API・描画の同時多発を避ける（作品数は少数の想定）
-    let allOk = true;
-    for (const record of records) {
-      if (seq !== instance._openSeq || instance._destroyed) return false;
-      try {
-        if (_embedReady(record)) {
-          if (opts?.refresh === true) allOk = (await record.embed.refresh()) && allOk;
-        } else {
-          allOk = (await record.embed.open(record.sheet.dir, {
-            forceReload: record.embed.getCurrentPath() === record.sheet.dir,
-          })) && allOk;
-        }
-        _relaxEmbedLayout(record.embed.containerEl);
-      } catch (error) {
-        _logError(instance, 'タスクリストの読み込みに失敗しました: ' + record.sheet.sheet_name, error);
-        allOk = false;
+    const pmRoot = String(opts?.pmRoot || instance._pmRoot || '');
+    if (pmRoot && pmRoot !== instance._pmRoot) {
+      instance._pmRoot = pmRoot;
+      const prefs = _loadPrefs(pmRoot);
+      if (prefs?.filters) {
+        instance._filters.work = String(prefs.filters.work || '');
+        instance._filters.status = String(prefs.filters.status || '');
+        instance._filters.assignee = String(prefs.filters.assignee || '');
       }
+      if (prefs?.sort?.field) {
+        instance._sort = { field: String(prefs.sort.field), direction: prefs.sort.direction === 'desc' ? 'desc' : 'asc' };
+      }
+    } else if (pmRoot) {
+      instance._pmRoot = pmRoot;
     }
-    return allOk;
+    instance._emptyEl.hidden = list.length > 0;
+    _renderFilterOptions(instance);
+    _renderHeaderLabels(instance);
+    if (!list.length) {
+      instance._rows = [];
+      instance._total = 0;
+      _renderTable(instance);
+      _renderStatus(instance);
+      return true;
+    }
+    if (opts?.refresh === true || !instance._hasLoadedOnce) {
+      return _fetchRows(instance, { append: false });
+    }
+    return true;
   }
 
-  async function _refresh(instance) {
-    if (instance._destroyed || !instance._mounted) return false;
-    const results = await Promise.all([...instance._sections.values()].map(async record => {
-      try {
-        return await record.embed.refresh();
-      } catch (error) {
-        _logError(instance, '再読み込みに失敗しました: ' + record.sheet.sheet_name, error);
-        return false;
-      }
-    }));
-    [...instance._sections.values()].forEach(record => _relaxEmbedLayout(record.embed.containerEl));
-    return results.every(Boolean);
+  function _refresh(instance) {
+    if (instance._destroyed || !instance._mounted) return Promise.resolve(false);
+    return _fetchRows(instance, { append: false });
   }
 
   function create(options) {
     const idSuffix = String(options?.idSuffix || 'production-all').replace(/[^a-zA-Z0-9_-]+/g, '-');
     const instance = {
       idSuffix,
+      onOpenWork: typeof options?.onOpenWork === 'function' ? options.onOpenWork : null,
+      onOpenTask: typeof options?.onOpenTask === 'function' ? options.onOpenTask : null,
       _mounted: false,
       _destroyed: false,
-      _openSeq: 0,
-      _embedSeq: 0,
       _containerEl: null,
       _emptyEl: null,
-      _sections: new Map(),
+      _headerCells: new Map(),
+      _tbodyEl: null,
+      _selectAllEl: null,
+      _searchEl: null,
+      _workSelectEl: null,
+      _statusSelectEl: null,
+      _assigneeSelectEl: null,
+      _statusEl: null,
+      _loadMoreEl: null,
+      _sheets: [],
+      _sheetsByWork: new Map(),
+      _rows: [],
+      _rowsByPath: new Map(),
+      _selectedPaths: new Set(),
+      _facets: { statuses: new Set(), assignees: new Set() },
+      _workMeta: {},
+      _genericLabels: DEFAULT_GENERIC_LABELS.slice(),
+      _filters: { work: '', status: '', assignee: '', q: '' },
+      _sort: { field: 'work_title', direction: 'asc' },
+      _pmRoot: '',
+      _total: 0,
+      _loadSeq: 0,
+      _loading: false,
+      _hasLoadedOnce: false,
+      _errorText: '',
     };
 
     instance.isMounted = function () { return instance._mounted && !instance._destroyed; };
@@ -5908,15 +5339,23 @@
       const container = document.createElement('div');
       container.className = 'gb-production-all-view';
       container.dataset.e2eId = 'gb-production-all-view';
+
       const empty = document.createElement('p');
       empty.className = 'gb-production-all-empty';
       empty.textContent = 'タスクリストがありません。「＋」から作品のタスクリストを追加できます。';
       empty.hidden = true;
-      container.appendChild(empty);
+      instance._emptyEl = empty;
+
+      const toolbar = _buildToolbar(instance);
+      const tableWrap = _buildTable(instance);
+      const loadMore = _buildLoadMore(instance);
+
+      container.append(empty, toolbar, tableWrap, loadMore);
       hostEl.appendChild(container);
       instance._containerEl = container;
-      instance._emptyEl = empty;
       instance._mounted = true;
+      _renderHeaderLabels(instance);
+      _renderFilterOptions(instance);
       return container;
     };
 
@@ -5924,31 +5363,24 @@
     instance.refresh = function () { return _refresh(instance); };
 
     instance.setVisible = function (visible) {
-      // 非表示でも DOM から外さない（埋め込みシートの ctx 解決が containerEl の
-      // document 接続を前提にしているため。sheet-embed 側の注意書きと同じ制約）。
+      // 非表示でも DOM から外さない（埋め込みシートと同じ制約は無いが、表示状態の
+      // 復元を単純にするため他のスケジュール面と同じ display 切替方式に揃える）。
       if (instance._containerEl) instance._containerEl.style.display = visible ? 'flex' : 'none';
     };
 
     instance.getSelectedEntryPaths = function () {
-      const paths = [];
-      instance._sections.forEach(record => {
-        try { paths.push(...(record.embed.getSelectedEntryPaths() || [])); }
-        catch (error) { _logError(instance, '選択エントリの取得に失敗しました: ' + record.sheet.sheet_name, error); }
-      });
-      return paths;
+      return [...instance._selectedPaths];
     };
 
     instance.destroy = function () {
       if (instance._destroyed) return;
       instance._destroyed = true;
-      instance._openSeq += 1;
-      instance._sections.forEach(record => {
-        try { record.embed.destroy(); } catch (error) { _logError(instance, 'ブロックの破棄に失敗しました: ' + record.sheet.sheet_name, error); }
-      });
-      instance._sections.clear();
+      instance._loadSeq += 1;
       instance._containerEl?.remove();
       instance._containerEl = null;
       instance._emptyEl = null;
+      instance._tbodyEl = null;
+      instance._headerCells = new Map();
       instance._mounted = false;
     };
 

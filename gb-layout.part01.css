@@ -261,7 +261,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 .sidebar-section-body.collapsed { display: none; }
 .sidebar-section-body { padding-left: 1em; }
 .sidebar-section-body .fav-item {
-  padding: 3px 12px 3px 20px; font-size: 12px; cursor: pointer;
+  padding: 2px 12px 2px 20px; min-height: 22px; box-sizing: border-box; font-size: 14px; line-height: 16px; cursor: pointer;
   color: var(--outliner-item-fg); background: var(--outliner-item-bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   display: flex; align-items: center; gap: 4px;
 }
@@ -273,6 +273,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 }
 .sidebar-section-body .fav-item svg { flex-shrink: 0; }
 .sidebar-section-body .fav-item:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
+.sidebar-section-body .fav-item.selected { background: var(--outliner-item-selected-bg); color: var(--outliner-item-selected-fg); }
 #smart-db-table [data-e2e-id^="global-index-table-row-"]:focus-visible,
 #smart-db-table [data-e2e-id^="global-index-sort-"]:focus-visible,
 .smart-db-list-row:focus-visible,
@@ -287,6 +288,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
     padding-top: 0;
     padding-bottom: 0;
   }
+  .fav-more-btn { width: 24px; height: 24px; }
   [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-root-label"],
   [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-child-label"],
   [data-e2e-id="smart-folder-picker-dialog"] [data-e2e-id="smart-folder-picker-toggle"] {
@@ -351,7 +353,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   }
 }
 .fav-more-btn {
-  margin-left: auto; flex: 0 0 auto; width: 24px; height: 24px; padding: 0;
+  margin-left: auto; flex: 0 0 auto; width: 18px; height: 18px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: 0; border-radius: 4px; background: transparent; color: inherit;
   cursor: pointer; opacity: 0; transition: opacity 0.15s, background 0.15s;

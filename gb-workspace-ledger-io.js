@@ -18,6 +18,7 @@
   if (window.MeldexWorkspaceLedgerIO) return;
 
   const JOINED_WORKSPACES_KEY = 'meldex-joined-workspaces-v1';
+  const WORKSPACE_LEDGER_DOCUMENT_ID = 'workspace-source-folders';
 
   function _auth() {
     return window.MeldexDropboxAuth;
@@ -96,58 +97,14 @@
     return joinDropboxPath(normalizeDropboxPath(workspaceDropboxPath), relative);
   }
 
-  async function _rpc(route, body, namespaceKind) {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
-  }
-
   async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
     return auth.apiContent(route, arg, init, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
   }
 
-  async function _ensureFolder(dropboxPath, namespaceKind) {
-    const normalized = normalizeDropboxPath(dropboxPath);
-    if (!normalized || normalized === '/') return true;
-    try {
-      await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
-      return true;
-    } catch (err) {
-      let meta = null;
-      try {
-        meta = await _rpc('files/get_metadata', {
-          path: normalized,
-          include_deleted: false,
-          include_has_explicit_shared_members: false,
-        }, namespaceKind);
-      } catch {
-        // メタデータ取得も失敗した場合は、直前の create_folder_v2 の
-        // エラーをそのまま呼び出し元へ投げる（下のthrow errで処理）。
-      }
-      if (meta?.['.tag'] === 'folder') return true;
-      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
-      throw err;
-    }
-  }
-
-  async function _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind) {
-    const sharedLedger = _sharedLedger();
-    const shareDir = sharedLedger?.WORKSPACE_SHARE_DIR || 'MeldexShare';
-    const base = normalizeDropboxPath(workspaceDropboxPath);
-    await _ensureFolder(base, namespaceKind);
-    await _ensureFolder(joinDropboxPath(base, shareDir), namespaceKind);
-    await _ensureFolder(joinDropboxPath(base, shareDir, '_meldex'), namespaceKind);
-    return true;
-  }
-
   function _isWorkspaceLedgerNotFoundError(err) {
     return /not_found|path\/not_found/i.test(err?.message || '');
-  }
-
-  function _isWorkspaceLedgerWriteConflictError(err) {
-    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
   }
 
   async function _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind) {
@@ -172,8 +129,33 @@
     };
   }
 
+  async function _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, options) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!provider || !resolver?.resolveSharedWorkspaceTypedAdapter || !kind) {
+      throw new Error('共有ワークスペース台帳の管理領域を安全に判定できません');
+    }
+    // 対象ワークスペース専用の共有アダプターを解決する（接続中ルート非依存。
+    // 個人領域アダプターへのフォールバックは resolver 側で構造的に禁止）。
+    // 読み取り系は allowUnjoined 相当で常に管理レコードを探す（非破壊で、
+    // パスから導出したワークスペース配下しか見ないため joined ゲート不要）。
+    const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(provider, kind, {
+      workspaceDropboxPath,
+      namespaceKind,
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const record = await adapter.load(kind, WORKSPACE_LEDGER_DOCUMENT_ID);
+    return { adapter, kind, record };
+  }
+
   async function readWorkspaceLedger(workspaceDropboxPath, namespaceKind) {
     try {
+      const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, { allowUnjoined: true });
+      if (managed?.record?.payload) {
+        const sharedLedger = _sharedLedger();
+        return sharedLedger.parseWsLedger(managed.record.payload);
+      }
       const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return result.roots;
     } catch (err) {
@@ -193,6 +175,10 @@
   // ネットワーク一時障害・JSON破損は throw のまま伝播させる（呼び出し元は中断する）。
   async function readWorkspaceLedgerStatus(workspaceDropboxPath, namespaceKind) {
     try {
+      const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, { allowUnjoined: true });
+      if (managed?.record?.payload) {
+        return { exists: true, roots: _sharedLedger().parseWsLedger(managed.record.payload) };
+      }
       const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return { exists: true, roots: result.roots };
     } catch (err) {
@@ -201,45 +187,23 @@
     }
   }
 
-  async function _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind) {
-    try {
-      return await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
-    } catch (err) {
-      if (_isWorkspaceLedgerNotFoundError(err)) return null;
-      throw err;
-    }
-  }
-
-  async function writeWorkspaceLedger(workspaceDropboxPath, roots, namespaceKind) {
+  async function writeWorkspaceLedger(workspaceDropboxPath, roots, namespaceKind, options) {
     const sharedLedger = _sharedLedger();
     if (!sharedLedger?.serializeWsLedger) throw new Error('MeldexWorkspaceSharedLedger が未読み込みです');
-    await _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind);
-    const targetPath = workspaceLedgerDropboxPath(workspaceDropboxPath);
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const remote = await _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind);
-      const serialized = sharedLedger.serializeWsLedger(roots);
-      const bytes = new TextEncoder().encode(JSON.stringify(serialized, null, 2));
-      try {
-        await _content('files/upload', {
-          path: targetPath,
-          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        }, namespaceKind);
-        return serialized;
-      } catch (err) {
-        lastError = err;
-        if (attempt === 0 && _isWorkspaceLedgerWriteConflictError(err)) continue;
-        throw err;
-      }
-    }
-    throw lastError;
+    // 書き込みは「参加中（joined一覧との完全一致）」または「呼び出し元が
+    // 明示した allowUnjoined（『このフォルダを共有ワークスペースにする』導線で
+    // ユーザーが確認した直後の初回書き込み）」の二段ゲート。未参加＋非明示は
+    // resolver が throw する。管理レコードの revision CAS（未作成時は
+    // expectedRevision: null の create-only）はそのまま維持し、同時ワークスペース化は
+    // 上書きではなく競合エラーになる。
+    const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, {
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const serialized = sharedLedger.serializeWsLedger(roots);
+    await managed.adapter.save(managed.kind, WORKSPACE_LEDGER_DOCUMENT_ID, serialized, {
+      expectedRevision: managed.record?.revision ?? null,
+    });
+    return serialized;
   }
 
   // ------------------------------------------------------------------

@@ -1,0 +1,62 @@
+/* gb-import-progress.css — ステータスバーのインポート進捗欄のスタイル
+   WebClipper・インポート定期実行計画 2026-08-04「バックグラウンドジョブと進捗」節。
+   #status-bar 内へ gb-import-progress.js がランタイムで挿入する #sb-import-progress
+   のスタイルをここへ集約する（meldex-core編集禁止のため独立ファイルで完結させる）。 */
+
+.sb-import-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg2);
+  white-space: nowrap;
+  flex-shrink: 0;
+  max-width: 34%;
+  overflow: hidden;
+}
+
+.sb-import-progress-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.sb-import-progress-bar-track {
+  width: 60px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sb-import-progress-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+.sb-import-progress-bar-indeterminate {
+  width: 40% !important;
+  animation: sb-import-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes sb-import-progress-indeterminate {
+  0% { margin-left: 0; }
+  50% { margin-left: 60%; }
+  100% { margin-left: 0; }
+}
+
+.sb-import-progress-queue {
+  color: var(--fg2);
+  flex-shrink: 0;
+}
+
+@media (max-width: 820px) {
+  .sb-import-progress-label {
+    max-width: 120px;
+  }
+}

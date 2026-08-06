@@ -328,6 +328,27 @@
     }
   }
 
+  async function _runPortedBeforeClose(reason) {
+    const ported = _portedPanel;
+    if (!ported || typeof ported.beforeClose !== 'function') return true;
+    try {
+      const ok = await ported.beforeClose({ reason: reason || 'close' });
+      return ok !== false;
+    } catch {
+      if (typeof showStatus === 'function') {
+        showStatus('保存を確認できませんでした。もう一度お試しください', true);
+      }
+      return false;
+    }
+  }
+
+  async function _prepareContentReplacement(seq) {
+    const portedOk = await _runPortedBeforeClose('replace');
+    if (!portedOk || seq !== _renderSeq) return false;
+    const editorOk = await _flushActiveEditor();
+    return editorOk !== false && seq === _renderSeq;
+  }
+
   function _fallbackLinkEntry(target) {
     const path = String(target?.path || '').trim();
     const label = String(target?.label || _fileName(path) || path).trim() || path;
@@ -445,10 +466,22 @@
           continue;
         }
         try {
-          if (payload.mode === 'value') {
-            await apiPut('/value?path=' + encodeURIComponent(payload.path), { new_body: payload.bodyMd });
-          } else {
-            await apiPut('/file?path=' + encodeURIComponent(payload.path), { content: payload.content });
+          // 工程2-C項目5: メインパネルのエントリ自由記述と同じ保存コーディネーター
+          // 経由の共有関数を使う（従来は生apiPutでetag/entry_revisionを一切
+          // 送らない独自実装だった）。
+          const saved = typeof _saveEntityFreeText === 'function'
+            ? await _saveEntityFreeText(editorState.el, editorState.entityPath, payload.bodyMd, { reason: 'mobile-drawer' })
+            : await (payload.mode === 'value'
+              ? apiPut('/value?path=' + encodeURIComponent(payload.path), { new_body: payload.bodyMd })
+              : apiPut('/file?path=' + encodeURIComponent(payload.path), {
+                  content: payload.content,
+                  if_match_etag: editorState.el?.dataset?.lastSavedEtag || '',
+                  transport_revision: editorState.el?.dataset?.lastSavedTransportRevision || '',
+                })).then(() => true);
+          if (!saved) {
+            // conflict-pending中: ネットワーク送信はスキップされている。dirtyを保持し、
+            // 再試行ループを止める（バナーの「確認する」を押すまでネットワークへ送らない）。
+            break;
           }
           if (editorState.el?.innerHTML === payload.html) {
             editorState.dirty = false;
@@ -550,7 +583,15 @@
   }
 
   function openElement(title, element, options) {
-    if (!_isEnabled() || !element?.parentNode) return false;
+    if (!_isEnabled()) return false;
+    // 保存ガードを持つ別パネルを同期APIで黙って置換すると内容を失い得る。
+    // 同じ要素の再表示は、呼び出し元が先にflush済みなので許可する。
+    if (_portedPanel?.beforeClose && _portedPanel.element !== element) {
+      if (typeof showStatus === 'function') showStatus('表示中の内容を閉じてから開いてください', true);
+      return false;
+    }
+    _restorePortedPanel();
+    if (!element?.parentNode) return false;
     const parent = element.parentNode;
     const placeholder = document.createComment('cloud-mobile-side-drawer-panel-placeholder');
     _setCurrentTarget(null);
@@ -560,18 +601,22 @@
     parent.insertBefore(placeholder, element);
     element.classList.add('cloud-mobile-side-drawer-panel-content');
     body.appendChild(element);
-    _portedPanel = { element, placeholder };
+    _portedPanel = { element, placeholder, beforeClose: options?.beforeClose || null };
     _syncHeaderButtons();
     return true;
   }
 
-  function close() {
+  async function close(options) {
     _renderSeq += 1;
     const closeSeq = _renderSeq;
-    _flushActiveEditor().then((ok) => {
-      if (!ok || closeSeq !== _renderSeq) return;
-      _hideDrawerNow();
-    });
+    if (!options?.skipBeforeClose) {
+      const portedOk = await _runPortedBeforeClose('close');
+      if (!portedOk || closeSeq !== _renderSeq) return false;
+    }
+    const editorOk = await _flushActiveEditor();
+    if (!editorOk || closeSeq !== _renderSeq) return false;
+    _hideDrawerNow();
+    return true;
   }
 
   function _setLoading(body, text) {
@@ -593,8 +638,8 @@
   function openBoardLink(path, label, linkType) {
     if (!_isEnabled() || !path) return false;
     const openSeq = ++_renderSeq;
-    _flushActiveEditor().then((ok) => {
-      if (!ok || openSeq !== _renderSeq) return;
+    _prepareContentReplacement(openSeq).then((ok) => {
+      if (!ok) return;
       _setCurrentTarget({
         kind: 'board-link',
         path: String(path),
@@ -675,6 +720,17 @@
       const fm = fmMatch ? fmMatch[0] : '';
       const mdBody = fm ? rawContent.substring(fm.length) : rawContent;
       editor.dataset.frontmatter = fm;
+      editor.dataset.entityPath = entityPath;
+      // 工程2-C項目5: メインパネルのエントリ自由記述と同じ文書ID単位のarbiterへ
+      // 参加登録する。baseline（revision/etag）も保持し、if_match_etag/base_revisionを
+      // 初めて送るようになる（従来は一切追跡していなかった）。
+      editor.dataset.lastSavedMd = rawContent;
+      editor.dataset.lastSavedRevision = (data.revision != null) ? String(data.revision) : '';
+      editor.dataset.lastSavedEtag = data.freetext_etag || '';
+      editor.dataset.lastSavedTransportRevision = '';
+      if (typeof _bindEntityFreeTextParticipant === 'function') {
+        _bindEntityFreeTextParticipant(editor, entityPath);
+      }
       if (typeof _dpApplyNoteFileStyle === 'function') _dpApplyNoteFileStyle(editor, fm);
       if (mdBody.trim()) {
         editor.innerHTML = typeof applyAutoLinks === 'function' && typeof mdToHtml === 'function'
@@ -687,7 +743,7 @@
         placeholder.textContent = 'タップして本文を編集';
         editor.appendChild(placeholder);
       }
-      const editorState = { el: editor, path: noteTarget.path, mode: noteTarget.mode, dirty: false, timer: null, saving: null, saveRequested: false };
+      const editorState = { el: editor, path: noteTarget.path, entityPath: String(entityPath), mode: noteTarget.mode, dirty: false, timer: null, saving: null, saveRequested: false };
       editor.addEventListener('focus', () => {
         const placeholder = editor.querySelector('[data-cloud-mobile-placeholder="1"]');
         if (placeholder) editor.replaceChildren();
@@ -709,8 +765,8 @@
     if (!_isEnabled() || !entityPath) return false;
     const name = entityName || _fileName(entityPath).replace(/\.md$/i, '');
     const openSeq = ++_renderSeq;
-    _flushActiveEditor().then((ok) => {
-      if (!ok || openSeq !== _renderSeq) return;
+    _prepareContentReplacement(openSeq).then((ok) => {
+      if (!ok) return;
       _setCurrentTarget({
         kind: 'entity',
         entityPath: String(entityPath),

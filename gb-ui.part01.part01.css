@@ -752,6 +752,34 @@
   color: var(--fg2);
   font-size: var(--ui-font-13);
 }
+.gb-backlink-count-badge {
+  margin-left: var(--ui-space-2);
+  color: var(--fg2);
+  font-size: var(--ui-font-11);
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm, 4px);
+  padding: 0 var(--ui-space-1);
+}
+.gb-backlinks-coverage-note {
+  padding: var(--ui-space-2) var(--ui-space-4);
+  color: var(--ui-warning);
+  font-size: var(--ui-font-12);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--ui-warning) 8%, transparent);
+}
+.gb-backlinks-group + .gb-backlinks-group {
+  border-top: 1px solid var(--border);
+}
+.gb-backlinks-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-2) var(--ui-space-4);
+  font-size: var(--ui-font-12);
+  font-weight: var(--ui-weight-semibold);
+  color: var(--fg2);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
 
 @media (max-width: 640px), (pointer: coarse) {
   .gb-backlinks-header {

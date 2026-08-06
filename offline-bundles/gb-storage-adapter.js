@@ -148,25 +148,42 @@
     return /not_found|not found|path_lookup/i.test(err?.message || '');
   }
 
-  function _conflictedCopyPath(relativePath) {
-    const normalized = _normalizeRelativePath(relativePath);
-    const dir = _dirname(normalized);
-    const name = _basename(normalized);
-    const dotIndex = name.lastIndexOf('.');
-    const stem = dotIndex > 0 ? name.slice(0, dotIndex) : name;
-    const ext = dotIndex > 0 ? name.slice(dotIndex) : '';
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-    return _joinPath(dir, `${stem} (conflicted copy ${stamp})${ext}`);
+  // 計画書 app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+  // §5 工程2-D項目7・工程2-B項目1〜2「正規化内容hash（サーバー側と同じ規則）」。
+  // サーバー側 meldex_file_safety.canonical_text_for_conflict_compare の
+  // 対応する部分集合をクライアント側で再現する（Dropbox直接書込経路には
+  // Pythonサーバーが介在しないため、同じ規則をクライアント側にも持つ必要がある）。
+  // - `.md`: 改行コード（CRLF/CR）の表記ゆれのみ吸収する最小限の正規化
+  // - それ以外（バイナリ等）: 正規化しない。バイト列同士の完全一致で比較する
+  // 文書ID対象4形式（.mel-board等）の正規化はサーバー専用処理に依存するため、
+  // クライアント側では対象外のまま安全側（=別内容扱い）に倒す。
+  function _canonicalizeBytesForCompare(relativePath, bytes) {
+    const lower = String(relativePath || '').toLowerCase();
+    if (!lower.endsWith('.md')) return bytes;
+    try {
+      const text = new TextDecoder('utf-8').decode(bytes);
+      const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      return new TextEncoder().encode(normalized);
+    } catch (_) {
+      return bytes;
+    }
   }
 
-  function _appendStemSuffix(relativePath, suffix) {
-    const normalized = _normalizeRelativePath(relativePath);
-    const dir = _dirname(normalized);
-    const name = _basename(normalized);
-    const dotIndex = name.lastIndexOf('.');
-    const stem = dotIndex > 0 ? name.slice(0, dotIndex) : name;
-    const ext = dotIndex > 0 ? name.slice(dotIndex) : '';
-    return _joinPath(dir, `${stem}${suffix}${ext}`);
+  async function _canonicalContentHash(relativePath, bytes) {
+    if (!globalThis.crypto?.subtle) return '';
+    try {
+      const canonical = _canonicalizeBytesForCompare(relativePath, bytes);
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', canonical);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _conflictBackupDocumentId() {
+    const random = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
+      || `${Math.random().toString(16).slice(2)}${Date.now().toString(36)}`;
+    return `dropbox-write-conflict-${random}`.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, '');
   }
 
   function _normalizeHandleOptions(options) {
@@ -618,8 +635,25 @@
       const workspace = await this.restoreWorkspace();
       if (!workspace) return false;
       const state = _runtime()?.getWorkspaceState?.() || {};
-      if ((mode || 'readwrite') === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') return false;
-      if ((mode || 'readwrite') === 'readwrite' && state.access === 'viewer') return false;
+      const requestedMode = mode || 'readwrite';
+      if (requestedMode === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') return false;
+      if (requestedMode === 'readwrite' && state.access === 'viewer') return false;
+      if (requestedMode === 'readwrite') {
+        const resolver = window.MeldexDropboxManagementRootResolver;
+        const migration = window.MeldexSidecarMigration;
+        if (!resolver?.resolveConnectionInfo) return false;
+        try {
+          const info = await resolver.resolveConnectionInfo(this);
+          if (info?.kind === 'unknown') return false;
+          if (info?.isSharedWorkspace) {
+            if (!migration?.getCompatibilityLock) return false;
+            const lock = await migration.getCompatibilityLock(this);
+            if (lock?.locked || lock?.unavailable) return false;
+          }
+        } catch {
+          return false;
+        }
+      }
       return true;
     }
 
@@ -636,14 +670,28 @@
       };
     }
 
+    async _workspaceMetadataRecord(documentId) {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+      if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+        throw new Error('ワークスペース管理データの保存先を安全に判定できません');
+      }
+      const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+      const record = await adapter.load(kind, documentId);
+      return { adapter, kind, record };
+    }
+
     async readVaultMetadata() {
-      const meta = await this.readJson('_meldex/vault.json', null);
+      const managed = await this._workspaceMetadataRecord('vault-metadata');
+      const meta = managed.record?.payload || await this.readJson('_meldex/vault.json', null);
       return meta && typeof meta === 'object' ? meta : null;
     }
 
     async writeVaultMetadata(metadata) {
-      await this.ensureDirectory('_meldex');
-      return this.writeJson('_meldex/vault.json', metadata || {});
+      const managed = await this._workspaceMetadataRecord('vault-metadata');
+      return managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
+        expectedRevision: managed.record?.revision ?? null,
+      });
     }
 
     async assertOwnerWrite(relativePath) {
@@ -704,7 +752,8 @@
     async refreshSharedSpaceUsage() {
       const account = await _auth().getCurrentAccount(false).catch(() => null);
       const vaultMeta = await this.readVaultMetadata();
-      const cached = await this.readJson('_meldex/space-usage.json', null);
+      const usageRecord = await this._workspaceMetadataRecord('space-usage');
+      const cached = usageRecord.record?.payload || await this.readJson('_meldex/space-usage.json', null);
       const state = _runtime()?.getWorkspaceState?.() || {};
       const isOwner = this.isCurrentAccountVaultOwner(vaultMeta, account);
       if (!isOwner || state.access === 'viewer') {
@@ -753,8 +802,11 @@
         isOwner: true,
         persisted: true,
       };
-      await this.assertOwnerWrite('_meldex/space-usage.json');
-      await this.writeJson('_meldex/space-usage.json', snapshot);
+      await this.assertOwnerWrite('space-usage');
+      const managed = await this._workspaceMetadataRecord('space-usage');
+      await managed.adapter.save(managed.kind, 'space-usage', snapshot, {
+        expectedRevision: managed.record?.revision ?? null,
+      });
       return snapshot;
     }
 
@@ -999,38 +1051,85 @@
       return meta;
     }
 
-    async _writeConflictCopy(originalPath, bytes) {
+    async _writeConflictCopy(originalPath, bytes, conflictInfo) {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const contract = window.MeldexSystemStorage;
+      const kind = contract?.SystemStorageKind?.CONFLICT_BACKUPS;
+      if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+        throw new Error('競合した編集内容の安全な保存先を判定できません');
+      }
+      const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+      const now = new Date().toISOString();
+      const info = conflictInfo || {};
+      const payload = {
+        kind: 'dropbox-write-conflict',
+        original_relative_path: _normalizeRelativePath(originalPath),
+        attempted_bytes_base64: _bytesToBase64(bytes),
+        attempted_size: Number(bytes?.byteLength ?? bytes?.length ?? 0),
+        attempted_at: now,
+        expected_transport_revision: String(info.expectedRevision || ''),
+        current_transport_revision: String(info.currentRevision || ''),
+      };
       const recent = this._recentConflictCopies.get(originalPath);
       if (recent && Date.now() - recent.at < 30 * 60 * 1000) {
-        const latestMeta = recent.meta?.rev ? recent.meta : await this.refreshMetadata(recent.path).catch(() => null);
-        if (latestMeta?.rev) {
+        const latestRecord = recent.record?.revision
+          ? recent.record
+          : await adapter.load(kind, recent.documentId).catch(() => null);
+        if (latestRecord?.revision) {
           try {
-            const meta = await this._uploadBytesWithMode(recent.path, bytes, { '.tag': 'update', update: latestMeta.rev });
-            this._recentConflictCopies.set(originalPath, { path: recent.path, meta, at: Date.now() });
-            return { path: recent.path, meta, reused: true };
-          } catch (err) {
-            if (!_isDropboxConflictError(err)) throw err;
-            const refreshedMeta = await this.refreshMetadata(recent.path).catch(() => null);
-            if (refreshedMeta?.rev && refreshedMeta.rev !== latestMeta.rev) {
-              const meta = await this._uploadBytesWithMode(recent.path, bytes, { '.tag': 'update', update: refreshedMeta.rev });
-              this._recentConflictCopies.set(originalPath, { path: recent.path, meta, at: Date.now() });
-              return { path: recent.path, meta, reused: true };
-            }
+            const record = await adapter.save(kind, recent.documentId, payload, {
+              expectedRevision: latestRecord.revision,
+            });
+            const path = `${kind}/${recent.documentId}`;
+            this._recentConflictCopies.set(originalPath, {
+              documentId: recent.documentId, path, record, at: Date.now(),
+            });
+            return { path, record, documentId: recent.documentId, reused: true };
+          } catch {
+            // 直近バックアップの更新は最適化に過ぎない。削除・revision競合・
+            // 一時障害のいずれでも、新規管理レコードへ退避して保存内容を失わない。
           }
         }
       }
-      const baseConflictPath = _conflictedCopyPath(originalPath);
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        const conflictPath = attempt === 0 ? baseConflictPath : _appendStemSuffix(baseConflictPath, `-${attempt}`);
+        const documentId = _conflictBackupDocumentId();
         try {
-          const meta = await this._uploadBytesWithMode(conflictPath, bytes, 'add');
-          this._recentConflictCopies.set(originalPath, { path: conflictPath, meta, at: Date.now() });
-          return { path: conflictPath, meta };
-        } catch (err) {
-          if (!_isDropboxConflictError(err) || attempt >= 4) throw err;
+          const record = await adapter.save(kind, documentId, payload, { expectedRevision: null });
+          const path = `${kind}/${documentId}`;
+          this._recentConflictCopies.set(originalPath, { documentId, path, record, at: Date.now() });
+          return { path, record, documentId };
+        } catch (error) {
+          const collision = error instanceof contract.SystemStorageConflictError
+            || /revision|conflict/i.test(error?.message || '');
+          if (!collision || attempt >= 4) throw error;
         }
       }
-      throw new Error('Dropbox 競合コピーを作成できませんでした');
+      throw new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした');
+    }
+
+    // 計画書§5工程2-D項目7「競合コピー作成前に正規化内容hashを比較し、同一なら
+    // 現在revisionを採用して競合コピーを作らない」。事前チェック通過後〜
+    // アップロードまでの間に別端末が書き込んだ結果を取得し、これから書こうと
+    // している内容と正規化後ハッシュが一致するかだけを見る（本文比較であり
+    // rev/etagは一切比較しない＝transport_revisionを跨いだ比較をしない）。
+    // 何らかの理由で比較できない場合（ダウンロード失敗等）は安全側（=別内容
+    // 扱い）に倒し、通常の競合コピー経路へフォールバックする。
+    async _tryConvergeOnIdenticalContent(normalized, bytes) {
+      const latestMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+      if (!latestMeta?.rev) return null;
+      let remoteFile;
+      try {
+        remoteFile = await this.downloadAsFile(normalized);
+      } catch (_) {
+        return null;
+      }
+      const remoteBytes = new Uint8Array(await remoteFile.arrayBuffer());
+      const [localHash, remoteHash] = await Promise.all([
+        _canonicalContentHash(normalized, bytes),
+        _canonicalContentHash(normalized, remoteBytes),
+      ]);
+      if (!localHash || !remoteHash || localHash !== remoteHash) return null;
+      return latestMeta;
     }
 
     async uploadBytes(relativePath, bytes) {
@@ -1046,8 +1145,26 @@
       } catch (err) {
         if (!_isDropboxConflictError(err)) throw err;
         await this.refreshMetadata(normalized).catch(() => null);
-        const conflict = await this._writeConflictCopy(normalized, bytes);
-        throw new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせず競合コピーへ保存しました: ${conflict.path}`);
+        const converged = await this._tryConvergeOnIdenticalContent(normalized, bytes).catch(() => null);
+        if (converged) {
+          this._recentConflictCopies.delete(normalized);
+          return converged;
+        }
+        const currentMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+        const conflict = await this._writeConflictCopy(normalized, bytes, {
+          expectedRevision: cachedMeta?.rev || '',
+          currentRevision: currentMeta?.rev || '',
+        });
+        // 計画書§5工程2-D項目3「CAS失敗時に.status/.codeを付与し、ノート側の
+        // 409判定と接続する」。gb-save-safety.enrichError と同じフィールド名
+        // （status/meldexCode）を使い、HTTP応答を経由しない直接Dropbox書込
+        // エラーでも既存の`error?.status===409`判定を通す。
+        const conflictError = new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせずMeldexの管理領域へ編集内容を保存しました: ${conflict.path}`);
+        conflictError.status = 409;
+        conflictError.meldexCode = 'etag_conflict';
+        conflictError.conflictPath = conflict.path;
+        conflictError.conflictBackupDocumentId = conflict.documentId;
+        throw conflictError;
       }
     }
 
@@ -1211,11 +1328,10 @@
       }
       const account = await _auth().getCurrentAccount(true);
 
-      let metaFolder = await this.getMetadata('_meldex');
-      if (!metaFolder || metaFolder['.tag'] !== 'folder') {
+      let metaFolder = await this.readVaultMetadata();
+      if (!metaFolder) {
         try {
-          await this.ensureDirectory('_meldex');
-          await this.writeJson('_meldex/vault.json', {
+          await this.writeVaultMetadata({
             kind: 'meldex-vault',
             vaultPath,
             initializedAt: new Date().toISOString(),
@@ -1224,23 +1340,31 @@
             ownerEmail: String(account?.email || ''),
             ownerInitializedAt: new Date().toISOString(),
           });
-          metaFolder = await this.getMetadata('_meldex');
+          metaFolder = await this.readVaultMetadata();
         } catch (err) {
           return {
             ok: false,
             mounted: true,
             access: 'viewer',
-            message: `共有フォルダ内の _meldex/ を作成できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
+            message: `共有ワークスペースのMeldex管理データを初期化できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
             mountInfo,
             rootMeta,
           };
         }
       }
       let access = 'editor';
-      let writeCheckPath = `_meldex/.preflight-${Date.now()}.json`;
       try {
-        await this.writeJson(writeCheckPath, { ok: true, at: new Date().toISOString() });
-        await this.deletePath(writeCheckPath);
+        const resolver = window.MeldexDropboxManagementRootResolver;
+        const kind = window.MeldexSystemStorage?.SystemStorageKind?.DIAGNOSTICS;
+        if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+          throw new Error('Meldex管理データの保存先を安全に判定できません');
+        }
+        const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+        const documentId = `preflight-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        await adapter.save(kind, documentId, { ok: true, at: new Date().toISOString() }, {
+          expectedRevision: null,
+        });
+        await adapter.delete(kind, documentId);
       } catch (err) {
         access = 'viewer';
       }

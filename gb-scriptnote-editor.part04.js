@@ -53,6 +53,12 @@
       newStatus = [...this._filterStatuses][0];
     }
     const newRow = { id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: newRole, status: newStatus, text: afterText, columns: {} };
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      const roleValue = opts?.keepRole && !this._filterRoles?.size
+        ? (this.doc.rows[idx].roleRef || newRole)
+        : newRole;
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, roleValue);
+    }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
     // ルビ対応: 全体再描画で正しくDOMを構築

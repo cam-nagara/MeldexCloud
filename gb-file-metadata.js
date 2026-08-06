@@ -187,6 +187,7 @@
       retry.className = 'gb-btn gb-btn-xs gb-btn-quiet';
       retry.textContent = '再試行';
       retry.setAttribute('aria-label', '埋め込み情報を再読み込み');
+      retry.dataset.e2eId = 'file-embedded-metadata-retry';
       retry.addEventListener('click', async () => {
         retry.disabled = true;
         const refreshed = await load(path, null, { force: true });

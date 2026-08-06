@@ -5,6 +5,11 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   renderDetailPanel(container) {
     if (!container || !this.doc) return;
+    return this._renderSeparatedRoleManagement(container);
+  },
+
+  _renderLegacyDetailPanel(container) {
+    if (!container || !this.doc) return;
     this._ensureDefaultChara();
     this._detailSelection = this._detailSelection || new Set();
     container.innerHTML = '';
@@ -834,18 +839,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       overlay.querySelector('#sn2-db-cancel').addEventListener('click', () => closeModal());
       overlay.querySelector('#sn2-db-ok').addEventListener('click', () => {
+        const roleAdapter = this._roleManagementAdapter();
         this._pushUndo('DBインポート');
         selectedNames.forEach(name => {
-          if (!this.doc.characters.some(c => !c.isDefault && c.name === name)) {
-            const newChara = this._createCharaFromTypeDefault(this._uniqueRoleName ? this._uniqueRoleName(name) : name);
-            // デフォルトタイプの直前に挿入（末尾固定の不変条件を維持）
-            const defIdx = this.doc.characters.findIndex(c => c.isDefault);
-            if (defIdx >= 0) this.doc.characters.splice(defIdx, 0, newChara);
-            else this.doc.characters.push(newChara);
-          }
+          if (!roleAdapter.characters.some(character => character.name === name)) roleAdapter.addCharacter(name);
         });
-        this._detailSelection?.clear();
-        this._markDirty();
+        this._detailCharacterSelection?.clear();
+        roleAdapter.touch();
         this.renderDetailPanel(panelContainer);
         closeModal();
       });

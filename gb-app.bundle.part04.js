@@ -1,617 +1,3 @@
-    if (!_apiFetchObservedGetEndpoints.has(endpoint)) return null;
-    return {
-      endpoint,
-      label: 'api' + endpoint,
-      targetLabel: _perfTargetLabelFromPath(path),
-    };
-  } catch {
-    return null;
-  }
-}
-
-const _apiFetchInFlightGets = new Map();
-const GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS = 2500;
-const GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES = 80;
-const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フォルダツリー等が無限ロードになるのを防ぐ上限
-// シート系エンドポイント（セル値・列メタデータ）の保存先 per-sheet SQLite は Dropbox
-// 同期フォルダ上にあり、書き込みロック待ちが最大 busy_timeout=30秒 かかり得る。既定15秒
-// だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
-// ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
-const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
-const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
-function _gbAppApiFetchDefaultTimeout(path) {
-  const pathname = String(path || '').split('?')[0];
-  return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
-    ? GB_APP_API_FETCH_SHEET_TIMEOUT_MS
-    : GB_APP_API_FETCH_TIMEOUT_MS;
-}
-const _gbAppApiFetchBrowseCache = new Map();
-let _gbAppApiFetchCacheGeneration = 0;
-
-function _gbAppApiFetchMethod(opts) {
-  return String(opts?.method || 'GET').toUpperCase();
-}
-
-function _gbAppApiFetchClonePayload(payload) {
-  if (typeof structuredClone === 'function') {
-    try { return structuredClone(payload); } catch {}
-  }
-  try { return JSON.parse(JSON.stringify(payload)); } catch { return payload; }
-}
-
-function _gbAppApiFetchCanonicalGetPath(path) {
-  try {
-    const url = new URL(String(path || ''), 'http://meldex.local');
-    const params = [...url.searchParams.entries()]
-      .sort(([ak, av], [bk, bv]) => (ak + '=' + av).localeCompare(bk + '=' + bv));
-    const query = params.map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
-    return url.pathname + (query ? '?' + query : '');
-  } catch {
-    return String(path || '');
-  }
-}
-
-function _apiFetchInFlightKey(path, opts) {
-  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.signal) return '';
-  const nonBenignKeys = Object.keys(opts || {}).filter(key => !['method', 'silentError', 'skipBrowseCache'].includes(key));
-  if (nonBenignKeys.length > 0) return '';
-  return _gbAppApiFetchCanonicalGetPath(path)
-    + '|silent=' + (opts?.silentError === true ? '1' : '0')
-    + '|skipBrowseCache=' + (opts?.skipBrowseCache === true ? '1' : '0');
-}
-
-function _gbAppApiFetchBrowseCacheKey(path, opts) {
-  if (_gbAppApiFetchMethod(opts) !== 'GET' || opts?.body != null || opts?.skipBrowseCache === true || opts?.cache === 'reload') return '';
-  try {
-    const url = new URL(String(path || ''), 'http://meldex.local');
-    return url.pathname === '/browse' ? _gbAppApiFetchCanonicalGetPath(path) : '';
-  } catch {
-    return '';
-  }
-}
-
-function _gbAppApiFetchInvalidateReadCaches() {
-  _gbAppApiFetchCacheGeneration += 1;
-  _gbAppApiFetchBrowseCache.clear();
-  _apiFetchInFlightGets.clear();
-  if (typeof _clearBrowseItemResolvedTypeCache === 'function') _clearBrowseItemResolvedTypeCache();
-}
-
-function _gbAppApiFetchRememberBrowse(cacheKey, payload) {
-  _gbAppApiFetchBrowseCache.set(cacheKey, {
-    at: Date.now(),
-    payload: _gbAppApiFetchClonePayload(payload),
-  });
-  while (_gbAppApiFetchBrowseCache.size > GB_APP_API_FETCH_BROWSE_CACHE_MAX_ENTRIES) {
-    const oldestKey = _gbAppApiFetchBrowseCache.keys().next().value;
-    if (!oldestKey) break;
-    _gbAppApiFetchBrowseCache.delete(oldestKey);
-  }
-}
-
-function _apiFetchBackendPerf(res) {
-  try {
-    const raw = res?.headers?.get?.('x-meldex-perf') || '';
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function _logPerfEvent(label, startedAt, detail) {
-  try {
-    const durationMs = _perfElapsedMs(startedAt);
-    const payload = {
-      ...(detail || {}),
-      message: `[perf] ${label}: ${durationMs}ms`,
-      perf: true,
-      label,
-      durationMs,
-    };
-    if (typeof console !== 'undefined' && typeof console.info === 'function') {
-      console.info('[Meldex perf] ' + payload.message, payload);
-    }
-    if (typeof _sendLog === 'function') _sendLog('info', payload);
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-function _gbAppApiFetchIsAbortError(e) {
-  return !!e && (e.name === 'AbortError' || e.code === 20);
-}
-
-// 呼び出し元のsignalを尊重しつつ、一定時間で自動中断するfetchラッパー。
-// タイムアウトで中断した場合はisTimeout=trueを付与し、呼び出し元キャンセルと区別できるようにする。
-async function _gbAppApiFetchDoFetch(url, requestOpts, timeoutMs) {
-  const controller = new AbortController();
-  const externalSignal = requestOpts?.signal || null;
-  const fetchOpts = { ...(requestOpts || {}) };
-  delete fetchOpts.timeoutMs;
-  let timedOut = false;
-  let onExternalAbort = null;
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      // 理由付きabortはfetchが通常Errorを投げるため、呼び出し元キャンセルを
-      // 通信障害と誤判定しないよう内部signalは標準AbortErrorへ正規化する。
-      controller.abort();
-    } else {
-      onExternalAbort = () => controller.abort();
-      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
-    }
-  }
-  const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
-  try {
-    return await fetch(url, { ...fetchOpts, signal: controller.signal });
-  } catch (e) {
-    if (_gbAppApiFetchIsAbortError(e) && timedOut) {
-      const timeoutErr = new Error(`HTTPリクエストがタイムアウトしました(${Math.round(timeoutMs / 1000)}秒): ${url}`);
-      timeoutErr.name = 'AbortError';
-      timeoutErr.isTimeout = true;
-      throw timeoutErr;
-    }
-    throw e;
-  } finally {
-    clearTimeout(timeoutId);
-    if (externalSignal && onExternalAbort) externalSignal.removeEventListener('abort', onExternalAbort);
-  }
-}
-
-async function apiFetch(path, opts) {
-  const method = _gbAppApiFetchMethod(opts);
-  const browseCacheKey = _gbAppApiFetchBrowseCacheKey(path, opts);
-  const cacheGeneration = _gbAppApiFetchCacheGeneration;
-  if (browseCacheKey) {
-    const cached = _gbAppApiFetchBrowseCache.get(browseCacheKey);
-    if (cached && Date.now() - cached.at < GB_APP_API_FETCH_BROWSE_CACHE_TTL_MS) {
-      return _gbAppApiFetchClonePayload(cached.payload);
-    }
-    _gbAppApiFetchBrowseCache.delete(browseCacheKey);
-  }
-  const inFlightKey = _apiFetchInFlightKey(path, opts);
-  if (inFlightKey && _apiFetchInFlightGets.has(inFlightKey)) {
-    return _gbAppApiFetchClonePayload(await _apiFetchInFlightGets.get(inFlightKey));
-  }
-  const perfInfo = _apiFetchPerfInfo(path);
-  const perfStartedAt = perfInfo ? _perfNowMs() : 0;
-  const requestPromise = (async () => {
-    try {
-      let requestOpts = opts;
-      let retriedAfterMutation = false;
-      while (true) {
-        const requestedTimeout = Number(requestOpts?.timeoutMs);
-        const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
-          ? Math.min(requestedTimeout, 300000)
-          : _gbAppApiFetchDefaultTimeout(path);
-        const res = await _gbAppApiFetchDoFetch(API_BASE + path, requestOpts, timeoutMs);
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.fetch', perfStartedAt, {
-            ...perfInfo,
-            status: res.status,
-            contentLength: res.headers?.get?.('content-length') || '',
-            retriedAfterMutation,
-          });
-        }
-        const backendPerf = _apiFetchBackendPerf(res);
-        if (!res.ok) {
-          let detail = res.statusText || '';
-          let payload = null;
-          try {
-            payload = await res.clone().json();
-            const rawDetail = payload?.error || payload?.detail || detail;
-            detail = rawDetail && typeof rawDetail === 'object'
-              ? (rawDetail.message || rawDetail.code || detail)
-              : rawDetail;
-          } catch {}
-          const error = new Error(`HTTP ${res.status}: ${detail}`);
-          error.status = res.status;
-          error.payload = payload;
-          error.userMessage = window.MeldexErrorMessages?.toStatusText?.(error, { path }) || error.message;
-          throw (window.MeldexSaveSafety?.enrichError?.(error, payload, res.status) || error);
-        }
-        const jsonStartedAt = perfInfo ? _perfNowMs() : 0;
-        const data = await res.json();
-        if (perfInfo) {
-          _logPerfEvent(perfInfo.label + '.json', jsonStartedAt, {
-            ...perfInfo,
-            backendPerf,
-            retriedAfterMutation,
-          });
-        }
-        // GET開始後に作成・保存・移動等が完了した場合、開始時点の古い一覧を
-        // 呼び出し元へ返さない。アプリ内キャッシュを迂回して1回だけ取り直す。
-        if (browseCacheKey && !retriedAfterMutation && cacheGeneration !== _gbAppApiFetchCacheGeneration) {
-          retriedAfterMutation = true;
-          requestOpts = { ...(opts || {}), skipBrowseCache: true, cache: 'reload' };
-          continue;
-        }
-        if (backendPerf && data && typeof data === 'object') {
-          try {
-            Object.defineProperty(data, '_backendPerf', {
-              value: backendPerf,
-              configurable: true,
-            });
-          } catch {}
-        }
-        window.MeldexSaveSafety?.reportApiSuccess?.(path, requestOpts);
-        if (method !== 'GET') {
-          _gbAppApiFetchInvalidateReadCaches();
-        } else if (browseCacheKey && cacheGeneration === _gbAppApiFetchCacheGeneration) {
-          _gbAppApiFetchRememberBrowse(browseCacheKey, data);
-        }
-        if (perfInfo) _logPerfEvent(perfInfo.label, perfStartedAt, { ...perfInfo, backendPerf, retriedAfterMutation });
-        return data;
-      }
-    } catch (e) {
-      if (perfInfo) {
-        _logPerfEvent(perfInfo.label + '.error', perfStartedAt, {
-          ...perfInfo,
-          error: e?.message || String(e),
-        });
-      }
-      const quietReadAbort = method === 'GET' && _gbAppApiFetchIsAbortError(e);
-      if (!opts?.silentError && !quietReadAbort) {
-        window.MeldexDiagnostics?.captureApiError?.(path, opts, e);
-      }
-      if (!opts?.silentError && !window.MeldexSaveSafety?.reportApiError?.(path, opts, e)) {
-        if (quietReadAbort) {
-          // GET中断/タイムアウトはエラートースト表示せず、コンソールログのみに留める（呼び出し元は再試行等で処理する）
-          try { console.warn('[apiFetch] aborted:', path, e.message); } catch {}
-        } else {
-          const text = window.MeldexErrorMessages?.toStatusText?.(e, { path }) || e.message;
-          showStatus('エラー: ' + text, true);
-        }
-      }
-      throw e;
-    }
-  })();
-  if (inFlightKey) {
-    _apiFetchInFlightGets.set(inFlightKey, requestPromise);
-    requestPromise.then(
-      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
-      () => { if (_apiFetchInFlightGets.get(inFlightKey) === requestPromise) _apiFetchInFlightGets.delete(inFlightKey); },
-    );
-  }
-  return _gbAppApiFetchClonePayload(await requestPromise);
-}
-
-async function apiPut(path, body, options = {}) {
-  return apiFetch(path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
-}
-
-async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    ...(options || {}),
-  });
-}
-
-/* ==============================
-   初期化
-   ============================== */
-// 認証トークン管理
-// 旧認証変数（互換性のため残す — 他モジュールが参照）
-let _authToken = '';
-let _authUser = null;
-
-function _apiLockJsonBody(opts) {
-  const raw = opts?.body;
-  if (!raw) return {};
-  if (typeof raw === 'string') {
-    try { return JSON.parse(raw); } catch { return {}; }
-  }
-  if (raw && typeof raw === 'object' && !(raw instanceof FormData)) return raw;
-  return {};
-}
-
-function _apiLockPathDir(path) {
-  const text = String(path || '').replace(/\\/g, '/');
-  const index = text.lastIndexOf('/');
-  return index > 0 ? text.slice(0, index) : '';
-}
-
-function _apiLockRenameExtension(path) {
-  const text = String(path || '').replace(/\\/g, '/');
-  const name = text.slice(text.lastIndexOf('/') + 1);
-  if (!name || name.endsWith('.')) return '';
-  const visibleName = name.replace(/^\.+/, '');
-  const dotIndex = visibleName.indexOf('.');
-  return dotIndex >= 0 ? visibleName.slice(dotIndex) : '';
-}
-
-function _apiLockAddPath(paths, value) {
-  const text = String(value || '').trim();
-  if (text) paths.push(text);
-}
-
-function _apiLockWriteCandidatePaths(path, opts) {
-  const method = String(opts?.method || 'GET').toUpperCase();
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return [];
-  let url;
-  try { url = new URL(String(path || ''), window.location.origin); } catch { return []; }
-  const route = url.pathname.replace(/^\/api(?=\/|$)/, '') || '/';
-  if (route === '/file-lock' || route.startsWith('/file-lock/') || route === '/active-lock' || route.startsWith('/active-lock/')) return [];
-  const body = _apiLockJsonBody(opts);
-  const query = url.searchParams;
-  const paths = [];
-  const addQuery = (key) => _apiLockAddPath(paths, query.get(key));
-  const addBody = (key) => _apiLockAddPath(paths, body?.[key]);
-  const addBoth = (key) => { addQuery(key); addBody(key); };
-
-  if (route === '/file' || route === '/value' || route === '/db-metadata' || route === '/replace') {
-    addBoth('path');
-    addBody('entry_path');
-    addBody('folder_path');
-  } else if (route === '/upload-file') {
-    addBoth('path');
-    addBody('dir');
-  } else if (route === '/outliner/add') {
-    addBody('parent');
-  } else if (route === '/outliner/delete') {
-    addBody('path');
-  } else if (route === '/outliner/duplicate') {
-    const srcPath = String(body?.path || '').trim();
-    if (srcPath) _apiLockAddPath(paths, _apiLockPathDir(srcPath));
-  } else if (route === '/outliner/save-as') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/delete-batch') {
-    (Array.isArray(body?.items) ? body.items : []).forEach(item => _apiLockAddPath(paths, item?.path));
-  } else if (route === '/outliner/move') {
-    addBody('path');
-    addBody('dest_folder');
-  } else if (route === '/outliner/rename') {
-    addBody('old_path');
-    const oldPath = String(body?.old_path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) {
-      const destinationBase = (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName;
-      _apiLockAddPath(paths, destinationBase);
-      const extension = _apiLockRenameExtension(oldPath);
-      if (extension) _apiLockAddPath(paths, destinationBase + extension);
-    }
-  } else if (route === '/entity/create') {
-    addBody('parent_path');
-  } else if (route === '/entity/rename') {
-    addBody('path');
-    const oldPath = String(body?.path || '');
-    const newName = String(body?.new_name || '').trim();
-    if (oldPath && newName) _apiLockAddPath(paths, (_apiLockPathDir(oldPath) ? _apiLockPathDir(oldPath) + '/' : '') + newName);
-  } else if (route === '/annotations' || route === '/annotations/restore' || route === '/annotations/orphan-by-target') {
-    addBody('target_path');
-  } else if (route === '/entity/auto-name') {
-    addBody('db_path');
-    addBody('entry_path');
-    addBody('path');
-  } else if (route === '/folder-links/add' || route === '/folder-links/remove') {
-    addBody('folder_path');
-    addBody('file_path');
-  } else if (route === '/import-csv' || route === '/import-xlsx') {
-    addBody('csv_path');
-    addBody('xlsx_path');
-    addBody('db_path');
-  } else if (route === '/public-form/submit') {
-    addBody('db_path');
-  } else if (route.startsWith('/calendar-db/events') || route.startsWith('/calendar-db/sync') || route.startsWith('/calendar-db/ical') || route.startsWith('/calendar-db/caldav')) {
-    addBoth('db_path');
-  } else if (route === '/version/restore' || route === '/version/restore-db' || route === '/version/restore-folder' || route === '/version/delete-folder') {
-    addBody('path');
-  }
-
-  return [...new Set(paths)];
-}
-
-function _apiLockBlockIfNeeded(path, opts) {
-  if (typeof isItemLocked !== 'function') return false;
-  const lockedPath = _apiLockWriteCandidatePaths(path, opts).find(p => {
-    try { return isItemLocked(p); } catch { return false; }
-  });
-  if (!lockedPath) return false;
-  const reason = typeof getItemLockReason === 'function' ? getItemLockReason(lockedPath) : '';
-  const message = reason
-    ? `編集ロック中のため編集できません（理由: ${reason}）`
-    : '編集ロック中のため編集できません';
-  if (typeof showStatus === 'function') showStatus(message, true);
-  throw new Error(message);
-}
-
-function _apiUsesTransientActiveLock(path) {
-  let route = '';
-  try { route = new URL(String(path || ''), window.location.origin).pathname.replace(/^\/api(?=\/|$)/, '') || '/'; }
-  catch { return false; }
-  return new Set([
-    '/upload-file', '/outliner/add', '/outliner/rename', '/outliner/delete',
-    '/outliner/delete-batch', '/outliner/restore', '/outliner/duplicate',
-    '/outliner/save-as', '/outliner/move', '/trash/restore',
-  ]).has(route);
-}
-
-// apiFetchをオーバーライドしてユーザー名を付加
-const _origApiFetch = apiFetch;
-apiFetch = async function(path, opts) {
-  opts = opts || {};
-  const lockCandidatePaths = _apiLockWriteCandidatePaths(path, opts);
-  _apiLockBlockIfNeeded(path, opts);
-  const activeLocks = window.MeldexActiveLocks;
-  const transientLease = _apiUsesTransientActiveLock(path) && activeLocks?.acquireMutationLocks
-    ? await activeLocks.acquireMutationLocks(lockCandidatePaths)
-    : null;
-  try {
-    if (activeLocks?.beforeApiFetch) {
-      opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
-    }
-    // _user パラメータを自動付与（監査ログ・modified_by 用）
-    const user = getUsername();
-    if (user && user !== 'anonymous') {
-      const sep = path.includes('?') ? '&' : '?';
-      path += sep + '_user=' + encodeURIComponent(user);
-    }
-    return await _origApiFetch(path, opts);
-  } finally {
-    await transientLease?.release?.();
-  }
-};
-
-// チームプロフィール同期（起動時に全ソースフォルダの _Meldex_team.json に自分を登録）
-// フォルダ別ロールを保持（DB列ロック等で参照）
-let _myTeamRole = 'editor';  // デフォルト（ソースフォルダ未設定時）
-const _myTeamRoles = {};     // { folderPath: role }
-
-async function _syncMyTeamProfile() {
-  try { await window.MeldexDropboxProfileSync?.resolveStartupProfile?.(); } catch {}
-  const name = getUsername();
-  if (!name || name === 'anonymous') return;
-  const avatar = localStorage.getItem('meldex-avatar') || '';
-  const teamPayload = (extra) => window.MeldexDropboxProfileSync?.teamSyncPayload?.({ name, avatar, ...(extra || {}) }) || { name, avatar, ...(extra || {}) };
-  const syncWorkspaceProfiles = async () => {
-    try {
-      const workspaces = typeof window.MeldexWorkspaces?.load === 'function'
-        ? await window.MeldexWorkspaces.load({ force: true })
-        : [];
-      for (const workspace of workspaces || []) {
-        if (!workspace?.id) continue;
-        await apiPost('/workspaces/' + encodeURIComponent(workspace.id) + '/sync-profile', teamPayload({ workspace_id: workspace.id }));
-      }
-      await window.MeldexWorkspaces?.load?.({ force: true });
-    } catch {}
-  };
-  // 全ソースフォルダに同期
-  try {
-    const roots = await apiFetch('/outliner-roots').catch(() => []);
-    const visibleRoots = roots.filter(r => r.visible && r.path);
-    if (visibleRoots.length === 0) {
-      // ソースフォルダなし → デフォルトvaultに同期
-      try {
-        await apiPost('/team/sync', teamPayload());
-        const members = await apiFetch('/team');
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRole = me.role || 'editor';
-      } catch {}
-      await syncWorkspaceProfiles();
-      return;
-    }
-    for (const root of visibleRoots) {
-      try {
-        await apiPost('/team/sync', teamPayload({ folder: root.path }));
-        const members = await apiFetch('/team?folder=' + encodeURIComponent(root.path));
-        const me = members.find(m => m.name === name);
-        if (me) _myTeamRoles[root.path] = me.role || 'editor';
-      } catch {}
-    }
-    // デフォルトロール = 最初の可視ソースフォルダのロール
-    const firstRole = _myTeamRoles[visibleRoots[0].path];
-    if (firstRole) _myTeamRole = firstRole;
-    await syncWorkspaceProfiles();
-  } catch {}
-}
-
-let _startupSplashHidden = false;
-function _notifyStartupReady() {
-  if (typeof apiPost !== 'function') return;
-  void apiPost('/startup-ready', {}, { silentError: true }).catch(() => {});
-}
-
-function _hideStartupSplash() {
-  if (_startupSplashHidden) return;
-  _startupSplashHidden = true;
-  _notifyStartupReady();
-  const splash = document.getElementById('gb-splash');
-  if (!splash) return;
-  splash.style.pointerEvents = 'none';
-  splash.style.transition = 'opacity 0.3s';
-  splash.style.opacity = '0';
-  setTimeout(() => splash.remove(), 300);
-}
-
-function _withStartupTimeout(label, promise, timeoutMs, fallbackValue) {
-  const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
-  if (!timeout) return Promise.resolve(promise);
-  const startedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      console.warn(`[Meldex] startup timeout: ${label} (${timeout}ms)`);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.timeout.' + label, startedAt, { timeoutMs: timeout });
-      }
-      if (typeof _sendLog === 'function') {
-        _sendLog('warn', { message: `[startup-timeout] ${label}`, timeoutMs: timeout });
-      }
-      resolve(fallbackValue);
-    }, timeout);
-    Promise.resolve(promise).then((value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
-      }
-      resolve(value);
-    }).catch((error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (typeof _logPerfEvent === 'function') {
-        _logPerfEvent('startup.error.' + label, startedAt, {
-          timeoutMs: timeout,
-          error: error?.message || String(error),
-        });
-      }
-      reject(error);
-    });
-  });
-}
-
-function _runStartupBackground(label, promise, onReady) {
-  Promise.resolve(promise)
-    .then((value) => {
-      if (typeof onReady === 'function') onReady(value);
-      return value;
-    })
-    .catch((error) => {
-      console.warn(`[Meldex] startup background task failed: ${label}`, error);
-      if (typeof _sendLog === 'function') {
-        _sendLog('warn', {
-          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
-          stack: error?.stack || '',
-        });
-      }
-      return null;
-    });
-}
-
-function _refreshOutlinerAfterStartupReady() {
-  try {
-    const outlinerOptions = {
-      coalesce: true,
-      skipIfRecentlyLoaded: true,
-      reason: 'startup-ready',
-    };
-    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
-    const refreshJobs = [];
-    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
-    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
-    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
-    return Promise.allSettled(refreshJobs);
-  } catch (error) {
-    console.warn('[Meldex] startup outliner refresh failed:', error);
-    return Promise.resolve(null);
-  }
-}
-
-function _highlightLastOutlinerNodeAfterStartup() {
-  setTimeout(() => {
-    const last = _readLastViewFromStorage();
     if (!last) return;
     const p = last.path || last.dbPath || last.entityPath || '';
     if (p) highlightOutlinerNode(p);
@@ -898,3 +284,617 @@ async function init() {
     } // if (!restored) from URL params
 
     // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
+    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
+    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
+      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
+      try {
+        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
+        if (_check && typeof _check.content === 'string') {
+          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
+          openPage('クイックスタート', _qsPath, _qsOpts);
+          localStorage.setItem('meldex-quickstart-shown', '1');
+          restored = true;
+        }
+      } catch (e) {}
+    }
+
+    if (!restored && !_isDesktopStartupLaunch()) {
+      const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
+      if (startupFolder?.path) {
+        const _startupOpts = { fromExplorer: true, skipAutoAppLayout: true };
+        await openFolder(startupFolder.label || _pathTailLabel(startupFolder.path, 'フォルダ'), startupFolder.path, _startupOpts);
+        restored = true;
+      }
+    }
+
+    // v5.0 ペインシステムがタブを復元している場合は welcome にフォールバックしない。
+    // lastView ベースの復元が hit しなくても、ペイン配置が残っていれば画面は埋まっている。
+    if (!restored) {
+      const _paneHasTabs = _paneLayoutHasAnyTabs();
+      if (!_paneHasTabs) showView('welcome');
+    }
+
+    // 起動後の重い補助処理は背景で継続し、表示を先に返す。
+    _scheduleStartupDatabaseViewTabsRepair();
+    _hideStartupSplash();
+    if (typeof _logPerfEvent === 'function') {
+      _logPerfEvent('startup.visible', initStartedAt, { restored });
+    }
+    _runStartupBackground('file-id-migration-finalize', rawMigrationPromise.then(() => _migratePathsToFileIds()), () => {
+      if (state.currentDbPath && typeof _refreshDbViewConfigAfterHistory === 'function') {
+        _refreshDbViewConfigAfterHistory(state.currentDbPath);
+      }
+    });
+    _runStartupBackground('post-init-ready', Promise.allSettled([migrationPromise, outlinerPromise, linkDictPromise]), () => {
+      initGlobalFilterBar();
+      _runStartupBackground('outliner-startup-refresh', _refreshOutlinerAfterStartupReady(), () => {
+        _highlightLastOutlinerNodeAfterStartup();
+        showStatus('準備完了');
+      });
+    });
+  } catch (e) {
+    showStatus('ソースフォルダ情報の取得に失敗しました', true);
+  }
+  _hideStartupSplash();
+}
+/* ==============================
+   表示切替
+   ============================== */
+function showView(viewName, ctx) {
+  const resolvedViewName = ['calendar', 'tasks', 'shifts'].includes(viewName) ? 'timeline' : viewName;
+  const isDbViewName = (name) => ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'calendar', 'tasks', 'shifts'].includes(name);
+  // スプリットペイン内のビュー切替（ctxにcontainerElがある場合）
+  if (ctx && ctx.containerEl) {
+    const isDbView = isDbViewName(viewName);
+    const c = ctx.containerEl;
+    const hasPaneViewSurfaces = !!c.querySelector('#pivot-view, #tree-view, #gallery-view, #kanban-view, #timeline-view, #chart-view, #graph-view, #form-view, #smart-db-view, .pivot-view, .tree-view, .gallery-view, .kanban-view, .timeline-view, .chart-view, .graph-view, .form-view, .smart-db-view');
+    if (hasPaneViewSurfaces) {
+      const _sv = (sel, show) => { const el = c.querySelector(sel); if (el) el.style.display = show; };
+      _sv('#db-view-container, .db-view-container', isDbView ? 'flex' : 'none');
+      _sv('#pivot-view, .pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+      _sv('#tree-view, .tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
+      _sv('#gallery-view, .gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+      _sv('#kanban-view, .kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+      _sv('#timeline-view, .timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+      _sv('#chart-view, .chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+      _sv('#graph-view, .graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+      _sv('#form-view, .form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+      _sv('#smart-db-view, .smart-db-view', resolvedViewName === 'smart-db' ? '' : 'none');
+      ctx.viewMode = viewName;
+      if (typeof _dbTreeSetOptionTabVisible === 'function') {
+        _dbTreeSetOptionTabVisible(resolvedViewName === 'tree', ctx);
+      }
+      return;
+    }
+  }
+  // ビュー切替前にボードの未保存を即時保存
+  if (state.view === 'board' && viewName !== 'board' && typeof bd !== 'undefined' && bd.dirty && bd.path) {
+    if (typeof bdSave === 'function') bdSave();
+  }
+  // ボードから離れたらノートタブを非表示
+  if (state.view === 'board' && viewName !== 'board' && typeof hideBoardNoteTab === 'function') {
+    hideBoardNoteTab();
+  }
+  // フォルダ以外のビューに切り替わったら一括処理バーを非表示
+  if (viewName !== 'folder') {
+    const fvBar = document.getElementById('fv-bulk-bar');
+    if (fvBar) { fvBar.classList.remove('visible'); fvBar.hidden = true; fvBar.setAttribute('aria-hidden', 'true'); }
+  }
+  if (state.view === 'board' && viewName !== 'board' && typeof clearBoardDetailTabs === 'function') {
+    clearBoardDetailTabs();
+  }
+  // viewName: 'welcome' | 'pivot' | 'gallery' | 'kanban' | 'entity' | 'page' | 'board'
+  const isDbView = isDbViewName(viewName);
+  const _setDisplay = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = value;
+  };
+  _setDisplay('login-view', 'none');
+  _setDisplay('welcome-view', resolvedViewName === 'welcome' ? 'flex' : 'none');
+  _setDisplay('db-view-container', isDbView ? 'flex' : 'none');
+  _setDisplay('pivot-view', resolvedViewName === 'pivot' ? '' : 'none');
+  _setDisplay('tree-view', resolvedViewName === 'tree' ? 'flex' : 'none');
+  _setDisplay('gallery-view', resolvedViewName === 'gallery' ? 'flex' : 'none');
+  _setDisplay('kanban-view', resolvedViewName === 'kanban' ? 'flex' : 'none');
+  _setDisplay('timeline-view', resolvedViewName === 'timeline' ? '' : 'none');
+  _setDisplay('chart-view', resolvedViewName === 'chart' ? 'flex' : 'none');
+  _setDisplay('graph-view', resolvedViewName === 'graph' ? 'flex' : 'none');
+  _setDisplay('form-view', resolvedViewName === 'form' ? 'flex' : 'none');
+  _setDisplay('smart-db-view', resolvedViewName === 'smart-db' ? 'flex' : 'none');
+  _setDisplay('compare-view', resolvedViewName === 'compare' ? 'flex' : 'none');
+  _setDisplay('entity-view', resolvedViewName === 'entity' ? 'flex' : 'none');
+  _setDisplay('page-view', resolvedViewName === 'page' ? 'flex' : 'none');
+  _setDisplay('media-view', resolvedViewName === 'media' ? 'flex' : 'none');
+  _setDisplay('html-view', resolvedViewName === 'html' ? 'flex' : 'none');
+  _setDisplay('csv-view', resolvedViewName === 'csv' ? 'flex' : 'none');
+  _setDisplay('folder-view', resolvedViewName === 'folder' ? 'flex' : 'none');
+  if (typeof _dbTreeSetOptionTabVisible === 'function') {
+    _dbTreeSetOptionTabVisible(resolvedViewName === 'tree');
+  }
+  // app-toolbarの表示切替
+  const appTb = document.getElementById('app-toolbar');
+  _setDisplay('tb-db', isDbView ? 'contents' : 'none');
+  // ページビュー: app-toolbarにリッチテキストツールバー表示
+  const showRtInAppbar = (resolvedViewName === 'page');
+  _setDisplay('rt-toolbar', showRtInAppbar ? '' : 'none');
+  const hasAppTb = isDbView || showRtInAppbar;
+  if (appTb) appTb.classList.toggle('visible', hasAppTb);
+  // エントリビュー: エントリ内ツールバー
+  const entityRt = document.getElementById('entity-rt-toolbar');
+  if (entityRt) entityRt.style.display = (resolvedViewName === 'entity') ? 'flex' : 'none';
+  // ステータスバーのショートカットヘルプ
+  const sc = document.getElementById('sb-shortcuts');
+  if (isDbView) {
+    const csvSheetActive = typeof isCsvSheetModeActive === 'function' && isCsvSheetModeActive();
+    if (csvSheetActive && typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar(sc);
+    else if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar(sc);
+    else sc.textContent = '';
+  } else if (resolvedViewName === 'entity' || resolvedViewName === 'page') {
+    sc.textContent = 'Ctrl+B 太字 | Ctrl+I 斜体 | Ctrl+U 下線 | Ctrl+Shift+1~6 見出し | Ctrl+Shift+8 箇条書き | Tab インデント | Ctrl+Shift+↑↓ 移動';
+  } else if (resolvedViewName === 'scriptnote') {
+    if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
+    else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+  } else if (resolvedViewName === 'media') {
+    if (typeof updateMediaViewerShortcutStatusbar === 'function') updateMediaViewerShortcutStatusbar(sc);
+    else sc.textContent = '';
+  } else {
+    sc.textContent = '';
+  }
+
+  state.view = viewName;
+
+  // メモ: ビュー切替時にターゲット更新＋再読み込み＋スクロール同期
+  if (typeof ann !== 'undefined') {
+    const newTarget = typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : '';
+    if (newTarget !== ann.targetPath) {
+      ann.targetPath = newTarget;
+      // 埋め込みサーフェス (board/html) の場合は iframe/bridge 側でロードされるため、
+      // スタンドアロン側の loadAnnotations を呼ぶと同じ注釈が二重に描画される
+      const embedded = typeof _usesEmbeddedAnnotationSurface === 'function'
+        && _usesEmbeddedAnnotationSurface(viewName);
+      if (embedded) {
+        // 旧ビューからの残留（スタンドアロン overlay の描画＋付箋）をクリア
+        const layer = document.getElementById('ann-layer');
+        if (layer) layer.innerHTML = '';
+        if (typeof _forEachStandaloneAnnotationNote === 'function') {
+          _forEachStandaloneAnnotationNote(el => el.remove());
+        }
+      } else if (typeof loadAnnotations === 'function') {
+        loadAnnotations();
+      }
+    }
+    if (typeof _setupOverlayScroll === 'function') _setupOverlayScroll(viewName);
+  }
+}
+// スクリーンショットメニュー
+function showScreenshotMenu(e) {
+  const btn = e?.target?.closest?.('button') || e?.target;
+  const existing = document.querySelector('.ab-dropdown.ss-menu');
+  if (existing) {
+    existing.remove();
+    btn?.setAttribute?.('aria-expanded', 'false');
+    return;
+  }
+  const menu = document.createElement('div');
+  menu.className = 'ab-dropdown ss-menu';
+  menu.id = 'screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット');
+  if (btn?.setAttribute) {
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', menu.id);
+  }
+  let closed = false;
+  let pointerCloser = null;
+  let keyCloser = null;
+  const closeMenu = (restoreFocus = false) => {
+    if (closed) return;
+    closed = true;
+    if (pointerCloser) document.removeEventListener('pointerdown', pointerCloser, true);
+    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
+    if (btn?.setAttribute) btn.setAttribute('aria-expanded', 'false');
+    menu.remove();
+    if (restoreFocus) btn?.focus?.();
+  };
+  function addItem(label, fn, mode) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    if (mode) item.dataset.screenshotMode = mode;
+    item.textContent = label;
+    item.addEventListener('click', () => { closeMenu(false); fn(); });
+    menu.appendChild(item);
+  }
+  function addSep() {
+    const s = document.createElement('div');
+    s.className = 'ab-dropdown-sep';
+    s.setAttribute('role', 'separator');
+    menu.appendChild(s);
+  }
+  addItem('全画面キャプチャ', () => captureScreenshot('full'), 'full');
+  addItem('範囲選択キャプチャ', () => captureScreenshot('region'), 'region');
+  addSep();
+  addItem('全画面（GB非表示）', () => captureScreenshot('full-hide'), 'full-hide');
+  addItem('範囲選択（GB非表示）', () => captureScreenshot('region-hide'), 'region-hide');
+  addSep();
+  addItem('トレイアプリから操作', () => showStatus('Ctrl+Shift+S (全画面) / Ctrl+Shift+R (範囲) / Ctrl+Shift+W (ウィンドウ)'));
+  document.body.appendChild(menu);
+  const placeMenu = () => {
+    if (!btn?.getBoundingClientRect) return;
+    const rect = btn.getBoundingClientRect();
+    if (typeof positionPopup === 'function') {
+      positionPopup(menu, rect, { prefer: 'right', gap: 4 });
+      return;
+    }
+    const z = _getZoom();
+    menu.style.left = (rect.right / z + 4) + 'px';
+    menu.style.top = (rect.top / z) + 'px';
+    requestAnimationFrame(() => {
+      const mr = menu.getBoundingClientRect();
+      if (mr.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - mr.height - 4) / z) + 'px';
+      if (mr.right > window.innerWidth) menu.style.left = ((rect.left - mr.width - 4) / z) + 'px';
+    });
+  };
+  placeMenu();
+  menu.addEventListener('keydown', (ev) => {
+    const items = [...menu.querySelectorAll('.ab-dropdown-item')];
+    const index = items.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const delta = ev.key === 'ArrowDown' ? 1 : -1;
+      items[(index + delta + items.length) % items.length]?.focus();
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      items[0]?.focus();
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      items.at(-1)?.focus();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  });
+  pointerCloser = (ev) => {
+    if (!menu.contains(ev.target) && !btn?.contains?.(ev.target)) closeMenu(false);
+  };
+  keyCloser = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMenu(true);
+    }
+  };
+  document.addEventListener('pointerdown', pointerCloser, true);
+  document.addEventListener('keydown', keyCloser, true);
+  requestAnimationFrame(() => menu.querySelector('.ab-dropdown-item')?.focus());
+}
+
+function _screenshotModeIsRegion(mode) {
+  return String(mode || '').includes('region');
+}
+
+async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
+  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+  try {
+    const res = await fetch(API_BASE + '/app-window-visibility', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, hwnds: hwnds || [] }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+async function _hideMeldexWindowForScreenshot() {
+  const state = await _setMeldexWindowVisibilityForScreenshot('hide');
+  if (!state?.hidden) window.blur();
+  await new Promise(r => setTimeout(r, 500));
+  return state;
+}
+
+async function _restoreMeldexWindowForScreenshot(state) {
+  if (state?.hidden) await _setMeldexWindowVisibilityForScreenshot('restore', state.hwnds || []);
+  else window.focus();
+}
+
+function _cropScreenshotCanvas(canvas, region) {
+  const cropped = document.createElement('canvas');
+  cropped.width = Math.max(1, Math.round(region.width));
+  cropped.height = Math.max(1, Math.round(region.height));
+  cropped.getContext('2d').drawImage(
+    canvas,
+    Math.round(region.x),
+    Math.round(region.y),
+    cropped.width,
+    cropped.height,
+    0,
+    0,
+    cropped.width,
+    cropped.height
+  );
+  return cropped;
+}
+
+function _selectScreenshotRegionFromCanvas(canvas) {
+  return new Promise(resolve => {
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay screenshot-region-overlay';
+    overlay.dataset.modalShell = 'off';
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
+    overlay.style.zIndex = '5000';
+
+    const shell = document.createElement('div');
+    shell.className = 'screenshot-region-shell';
+    shell.dataset.e2eId = 'screenshot-region-shell';
+    shell.tabIndex = -1;
+    shell.setAttribute('role', 'dialog');
+    shell.setAttribute('aria-modal', 'true');
+    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
+
+    const stage = document.createElement('div');
+    stage.className = 'screenshot-region-stage';
+    stage.dataset.e2eId = 'screenshot-region-stage';
+    stage.tabIndex = 0;
+    stage.setAttribute('role', 'group');
+    stage.setAttribute('aria-label', '保存する範囲');
+
+    const preview = document.createElement('canvas');
+    preview.className = 'screenshot-region-preview';
+    preview.setAttribute('aria-hidden', 'true');
+    preview.width = canvas.width;
+    preview.height = canvas.height;
+    preview.getContext('2d').drawImage(canvas, 0, 0);
+    const maxW = Math.max(1, Math.floor(window.innerWidth * 0.94));
+    const maxH = Math.max(1, Math.floor(window.innerHeight * 0.82));
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+    preview.style.width = Math.max(1, Math.round(canvas.width * scale)) + 'px';
+    preview.style.height = Math.max(1, Math.round(canvas.height * scale)) + 'px';
+
+    const selection = document.createElement('div');
+    selection.className = 'screenshot-region-selection';
+    selection.setAttribute('aria-hidden', 'true');
+    selection.style.display = 'none';
+
+    const actions = document.createElement('div');
+    actions.className = 'screenshot-region-actions';
+    actions.setAttribute('aria-label', '範囲選択の操作');
+
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'screenshot-region-cancel';
+    cancel.textContent = 'キャンセル';
+
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.dataset.e2eId = 'screenshot-region-save';
+    ok.textContent = '保存';
+
+    actions.append(cancel, ok);
+    stage.append(preview, selection);
+    shell.append(stage, actions);
+    overlay.append(shell);
+    document.body.appendChild(overlay);
+
+    let start = null;
+    let current = null;
+    let activePointerId = null;
+    let cleaned = false;
+
+    const cleanup = (value) => {
+      if (cleaned) return;
+      cleaned = true;
+      overlay.remove();
+      document.removeEventListener('keydown', onKeyDown);
+      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
+        restoreFocusTo.focus?.();
+      }
+      resolve(value);
+    };
+    const pointFromEvent = (ev) => {
+      const rect = preview.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
+        y: Math.max(0, Math.min(rect.height, ev.clientY - rect.top)),
+        rect,
+      };
+    };
+    const visibleRect = () => {
+      if (!start || !current) return null;
+      const left = Math.min(start.x, current.x);
+      const top = Math.min(start.y, current.y);
+      const width = Math.abs(current.x - start.x);
+      const height = Math.abs(current.y - start.y);
+      return { left, top, width, height };
+    };
+    const updateSelection = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 1 || rect.height < 1) {
+        selection.style.display = 'none';
+        return;
+      }
+      selection.style.display = 'block';
+      selection.style.left = rect.left + 'px';
+      selection.style.top = rect.top + 'px';
+      selection.style.width = rect.width + 'px';
+      selection.style.height = rect.height + 'px';
+    };
+    const canvasRegion = () => {
+      const rect = visibleRect();
+      if (!rect || rect.width < 4 || rect.height < 4) return null;
+      const bounds = preview.getBoundingClientRect();
+      const scaleX = canvas.width / bounds.width;
+      const scaleY = canvas.height / bounds.height;
+      const x = Math.max(0, Math.min(canvas.width - 1, rect.left * scaleX));
+      const y = Math.max(0, Math.min(canvas.height - 1, rect.top * scaleY));
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.min(canvas.width - x, rect.width * scaleX)),
+        height: Math.max(1, Math.min(canvas.height - y, rect.height * scaleY)),
+      };
+    };
+    function onKeyDown(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        cleanup(null);
+      } else if (ev.key === 'Enter') {
+        const region = canvasRegion();
+        if (region) cleanup(region);
+      }
+    }
+    stage.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      stage.focus?.();
+      activePointerId = ev.pointerId;
+      try { stage.setPointerCapture?.(ev.pointerId); } catch {}
+      start = pointFromEvent(ev);
+      current = start;
+      updateSelection();
+    });
+    stage.addEventListener('pointermove', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      updateSelection();
+    });
+    stage.addEventListener('pointerup', (ev) => {
+      if (activePointerId == null || ev.pointerId !== activePointerId) return;
+      current = pointFromEvent(ev);
+      try { stage.releasePointerCapture?.(ev.pointerId); } catch {}
+      activePointerId = null;
+      updateSelection();
+    });
+    stage.addEventListener('pointercancel', (ev) => {
+      if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
+    });
+    cancel.addEventListener('click', () => cleanup(null));
+    ok.addEventListener('click', () => {
+      const region = canvasRegion();
+      if (!region) {
+        showStatus('範囲を選択してください', true);
+        return;
+      }
+      cleanup(region);
+    });
+    document.addEventListener('keydown', onKeyDown);
+    shell.focus();
+  });
+}
+
+async function captureScreenshot(mode) {
+  let stream = null;
+  let hideState = null;
+  try {
+    const hideFirst = mode.includes('hide');
+    if (hideFirst) hideState = await _hideMeldexWindowForScreenshot();
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: 'monitor' } });
+    const video = document.createElement('video');
+    const loaded = new Promise((resolve, reject) => {
+      video.onloadeddata = resolve;
+      video.onerror = () => reject(new Error('画面キャプチャ映像を読み込めませんでした'));
+    });
+    video.srcObject = stream;
+    await video.play();
+    await loaded;
+    await new Promise(r => setTimeout(r, 200));
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    if (hideFirst) {
+      await _restoreMeldexWindowForScreenshot(hideState);
+      hideState = null;
+    }
+    let outputCanvas = canvas;
+    if (_screenshotModeIsRegion(mode)) {
+      const region = await _selectScreenshotRegionFromCanvas(canvas);
+      if (!region) return;
+      outputCanvas = _cropScreenshotCanvas(canvas, region);
+    }
+    const b64 = outputCanvas.toDataURL('image/png');
+    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
+    if (res.path) {
+      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
+      const viewerUrl = window.MeldexResourceUrl?.viewer
+        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
+        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
+      window.open(viewerUrl, '_blank');
+    }
+  } catch (e) {
+    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
+  }
+}
+
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
+      // 左端から右スワイプ → サイドバー開く
+      sidebar.classList.add('open');
+      if (backdrop) {
+        backdrop.classList.add('open');
+        backdrop.style.setProperty('display', 'block', 'important');
+      }
+    } else if (dx < 0 && sidebar.classList.contains('open')) {
+      // 左スワイプ → サイドバー閉じる
+      sidebar.classList.remove('open');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+        backdrop.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }, { passive: true });
+})();
+
+/* ==============================
+   ステータスバー
+   ============================== */
+// メッセージ先頭行をタイトル、残りを本文として HTML を組み立てる。
+// 単一行メッセージは従来通り本文 div のみ表示し、複数行のみタイトル化する。
+function _buildCfDialogBody(message) {
+  const text = String(message ?? '');
+  if (!text) return '';
+  // v0.5.250: .gb-confirm-message クラスに統一 (CSS で line-height / white-space / word-break を一括指定)。
+  // 複数行メッセージでは先頭行を強調表示 (font-weight) し、以降を本文として扱う。
+  const lines = text.split('\n');
+  if (lines.length < 2) {
+    return `<div class="gb-confirm-message">${esc(text)}</div>`;
+  }
+  const title = (lines.shift() || '').trim();
+  const body = lines.join('\n').trim();
+  let html = '';
+  if (title) html += `<div class="gb-confirm-message" style="font-weight:600;">${esc(title)}</div>`;
+  if (body) html += `<div class="gb-confirm-message" style="color:var(--ui-fg-muted);">${esc(body)}</div>`;
+  return html;
+}
+
+// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
+// - ヘッダー / フッター分割なし (短い問いかけ専用)
+// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
+// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
+function _cfIsDeleteMessage(text) {
+  // 破壊的操作を示唆するキーワード。
+  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
+  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。

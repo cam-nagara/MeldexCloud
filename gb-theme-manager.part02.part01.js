@@ -454,6 +454,7 @@
     fallback('--bd-select-rect-color', '--accent', '#569cd6');
     fallback('--bd-group-color', '--accent', '#569cd6');
     fallback('--bd-anchor-color', '--accent', '#569cd6');
+    fallback('--bd-link-type-icon-color', '--fg', '#d4d4d4');
     fallback('--cal-bg', '--bg', '#1e1e1e');
     fallback('--cal-fg', '--fg', '#d4d4d4');
     fallback('--cal-font-family', '--ui-font', 'inherit');

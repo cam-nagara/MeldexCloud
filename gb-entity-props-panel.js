@@ -7,7 +7,7 @@
 
    状態は dbPath (エントリの親フォルダ) 単位で view_config へ保存する (getDbViewConfig/saveDbViewConfig
    は呼ぶだけで gb-app 側は編集しない)。renderEntityPropsGridInto はフルページ版(#entity-props-grid)・
-   サブパネル版(.gb-subpanel-entity-props)・モバイルドロワーの3表示先すべてから共有で呼ばれるため、
+   フロートパネル版(.gb-float-panel-entity-props)・モバイルドロワーの3表示先すべてから共有で呼ばれるため、
    ここに実装すれば自動的に3箇所へ反映される。
    dbPath が解決できないエントリ (親フォルダがシートではない等) ではセッション内のみの
    フォールバック状態を使い、保存もエラーも出さない。 */
@@ -112,11 +112,12 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
 
   const label = document.createElement('span');
   label.className = 'entity-props-header-label';
-  label.textContent = '列';
+  label.textContent = '列一覧';
   toggleBtn.appendChild(label);
 
   toggleBtn.addEventListener('click', () => {
     _closeEntityPropsColWidthPopup();
+    if (typeof _epsClosePopup === 'function') _epsClosePopup();
     const cur = _entityPropsViewState(dbPath, entityPath);
     _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed);
     if (typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);

@@ -273,36 +273,10 @@
     _wrapSelectionWithStyle(_clearStylePatch(styleProp));
   }
 
-  function _selectionClipboardButton(iconName, label, command) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'gb-fmt-btn gb-text-selection-clipboard-btn';
-    btn.title = label;
-    btn.setAttribute('aria-label', label);
-    btn.innerHTML = typeof lucide === 'function' ? lucide(iconName, 14) : label;
-    btn.addEventListener('pointerdown', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      _suppressUntil = Date.now() + 800;
-    });
-    btn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      void _runClipboardCommand(command);
-    });
-    return btn;
-  }
-
-  function _selectionClipboardRow() {
-    const row = document.createElement('div');
-    row.className = 'gb-text-selection-clipboard-row';
-    row.append(
-      _selectionClipboardButton('copy', 'コピー', 'copy'),
-      _selectionClipboardButton('scissors', '切り取り', 'cut'),
-      _selectionClipboardButton('clipboardPaste', '貼り付け', 'paste'),
-    );
-    return row;
-  }
+  // 計画書2026-08-04版§2.4: 専用のクリップボード行(旧 _selectionClipboardRow)は
+  // 廃止し、gb-format-popup.js 共通の footerActions オプション（コピー/切り取り/
+  // 貼り付け/閉じるを最下段1行へ右寄せ配置）へ統合した。呼び出し箇所は
+  // _openForSelection() 内の openFormatPopup() 呼び出しを参照。
 
   // シナリオのテキストセル選択なら、対象エディタ（ルビ挿入APIを持つもの）を返す
   function _scriptnoteRubyEditor(root) {
@@ -486,7 +460,20 @@
       avoidRect: _rangeAvoidRect(range),
       focusTarget: root,
       extraRowTop: [rubyRow].filter(Boolean),
-      extraRow2: [_selectionClipboardRow()],
+      // 計画書2026-08-04版§2.4: コピー/切り取り/貼り付け/閉じるは共通の footerActions
+      // へ統合する（専用のクリップボード行は作らない）。閉じるは既存のEscapeハンドラと
+      // 同じ後始末（パレット→書式ポップアップを閉じ、選択元へフォーカスを戻す）に揃える。
+      footerActions: {
+        commands: ['copy', 'cut', 'paste'],
+        onCommand: (command) => { void _runClipboardCommand(command); },
+        onClose: () => {
+          if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
+          if (typeof closeAllFormatPopups === 'function') closeAllFormatPopups();
+          else _closeSelectionPopup();
+          _suppressUntil = Date.now() + 250;
+          _focusSavedRoot();
+        },
+      },
       onChange(prop, value) {
         const normalized = prop === 'bold' ? 'fontWeight'
           : prop === 'italic' ? 'fontStyle'

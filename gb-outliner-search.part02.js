@@ -331,6 +331,7 @@ function applyTreeNameSearch() {
     delete node._searchMatch;
     delete node._searchAncestor;
   });
+  window.GBOutlinerVirtualRender?.refreshAllFilters();
 }
 
 const _vaultSearchPanelUi = {

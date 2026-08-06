@@ -83,10 +83,85 @@ function _bdOpenExternalActionUrl(path) {
 }
 
 const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
+const _BD_DEFAULT_OPEN_TARGET_KEY = 'gb:board-default-open-target:v1';
+const _BD_VALID_OPEN_TARGETS = new Set(['float', 'main', 'sidebar']);
 const _bdResolvedLinkTypeCache = new Map();
 const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
 let _bdLinkedSelectionSyncSeq = 0;
+
+function _bdNormalizeOpenTarget(target) {
+  const next = String(target || '').trim().toLowerCase();
+  return _BD_VALID_OPEN_TARGETS.has(next) ? next : 'float';
+}
+
+function _bdGetDefaultOpenTarget() {
+  try {
+    return _bdNormalizeOpenTarget(window.localStorage?.getItem(_BD_DEFAULT_OPEN_TARGET_KEY));
+  } catch {
+    return 'float';
+  }
+}
+
+function _bdSetDefaultOpenTarget(target) {
+  const next = _bdNormalizeOpenTarget(target);
+  try {
+    window.localStorage?.setItem(_BD_DEFAULT_OPEN_TARGET_KEY, next);
+  } catch {
+    return false;
+  }
+  try {
+    window.dispatchEvent(new CustomEvent('meldex:board-open-target-changed', {
+      detail: { target: next },
+    }));
+  } catch {}
+  return true;
+}
+
+function _bdResolveOpenInput(nodeOrPath, options) {
+  const opts = options || {};
+  if (nodeOrPath && typeof nodeOrPath === 'object') {
+    const node = nodeOrPath;
+    const path = String(node.link || node.imageSourcePath || node.img || '').trim();
+    return {
+      path,
+      label: String(opts.label || node.text || path.split(/[/\\]/).pop() || path).trim(),
+      linkType: String(opts.linkType || node.linkType || (node.img ? 'image' : '')).trim(),
+    };
+  }
+  const path = String(nodeOrPath || '').trim();
+  return {
+    path,
+    label: String(opts.label || path.split(/[/\\]/).pop() || path).trim(),
+    linkType: String(opts.linkType || '').trim(),
+  };
+}
+
+function _bdIsStandaloneBoardSurface() {
+  return typeof window !== 'undefined' && !!window.MeldexBoardStandalone;
+}
+
+function _bdIsCloudMobileBoardSurface() {
+  return typeof window !== 'undefined'
+    && !!window.MeldexCloudMobile?.isMobileEditingUiEnabled?.();
+}
+
+function _bdAvailableOpenTargets() {
+  if (_bdIsStandaloneBoardSurface()) {
+    return [{ value: 'float', label: 'ビューワー' }];
+  }
+  if (_bdIsCloudMobileBoardSurface()) {
+    return [
+      { value: 'float', label: 'サイドドロワー' },
+      { value: 'main', label: 'メインパネル' },
+    ];
+  }
+  return [
+    { value: 'float', label: 'フロートパネル' },
+    { value: 'main', label: 'メインパネル' },
+    { value: 'sidebar', label: '右サイドバー' },
+  ];
+}
 
 function _bdShouldResolveLinkedType(path, explicitType) {
   if (String(explicitType || '').trim()) return false;
@@ -121,6 +196,13 @@ async function _bdFetchLinkedType(path) {
 }
 
 async function _bdResolveLinkedEntryAsync(path, label, linkType) {
+  if (typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolveAsync === 'function') {
+    const common = await GBLinkRouter.resolveAsync(path, { label, linkType });
+    if (common?.external) {
+      return { type: 'html', label: common.label, path: common.path, urlExternal: true };
+    }
+    return common;
+  }
   const inferred = _bdInferLinkType(path, linkType);
   if (inferred || !_bdShouldResolveLinkedType(path, linkType)) {
     return _bdResolveLinkedEntry(path, label, inferred || linkType);
@@ -233,10 +315,18 @@ function _bdInferLinkType(path, explicitType) {
 }
 
 function _bdResolveLinkedEntry(path, label, linkType) {
+  if (typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolve === 'function') {
+    const common = GBLinkRouter.resolve(path, { label, linkType });
+    if (common?.external) {
+      return { type: 'html', label: common.label, path: common.path, urlExternal: true };
+    }
+    return common;
+  }
   const nextPath = String(path || '').trim();
   const nextLabel = String(label || nextPath.split(/[/\\]/).pop() || nextPath).trim() || nextPath;
   const rawType = String(linkType || '').trim();
   const explicitType = rawType ? _bdResolveOpenType(rawType) : '';
+  const explicitMediaType = ['image', 'video', 'audio'].includes(rawType) ? rawType : '';
   const lower = nextPath.toLowerCase();
   const ext = _bdLinkExt(nextPath);
   if (_bdIsExternalUrl(nextPath)) return { type: 'html', label: nextLabel, path: nextPath, urlExternal: true };
@@ -246,7 +336,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (explicitType === 'csv') return { type: 'csv', label: nextLabel, path: nextPath };
   if (explicitType === 'html') return { type: 'html', label: nextLabel, path: nextPath };
   if (explicitType === 'entity') return { type: 'entity', label: nextLabel, path: nextPath };
-  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(explicitType)) return { type: explicitType, label: nextLabel, path: nextPath };
   if (explicitType === 'smart-db') return { type: 'smart-db', label: nextLabel, path: nextPath };
   if (explicitType === 'folder') return { type: 'folder', label: nextLabel, path: nextPath };
   if (explicitType === 'calendar') return { type: 'timeline', label: nextLabel, path: nextPath, calendarFile: true };
@@ -256,7 +346,7 @@ function _bdResolveLinkedEntry(path, label, linkType) {
   if (explicitType === 'document') return { type: 'page', label: nextLabel, path: nextPath };
   if (explicitType === 'page') return { type: 'page', label: nextLabel, path: nextPath };
   if (explicitType === 'media') {
-    return { type: 'media', mediaType: _bdLinkMediaType(ext) || 'file', label: nextLabel, path: nextPath };
+    return { type: 'media', mediaType: explicitMediaType || _bdLinkMediaType(ext) || 'file', label: nextLabel, path: nextPath };
   }
   if (lower.endsWith('.mel-scenario') || lower.endsWith('.scriptnote.json') || lower.endsWith('.scenario.json')) return { type: 'scriptnote', label: nextLabel, path: nextPath };
   if (lower.endsWith('.mel-board') || lower.endsWith('.board.json') || lower.endsWith('.canvas.json')) return { type: 'board', label: nextLabel, path: nextPath };
@@ -287,6 +377,57 @@ function _bdTabStateForLinkedEntry(entry) {
     state.label = entry.label || '';
   }
   return state;
+}
+
+function _bdBoardHistoryEntry(tab) {
+  const boardPath = String(
+    (typeof bd !== 'undefined' && bd.path)
+    || tab?.state?.boardPath
+    || tab?.path
+    || '',
+  ).trim();
+  const entry = {
+    type: 'board',
+    path: boardPath,
+    boardPath,
+    label: String(tab?.label || (typeof bd !== 'undefined' && bd.label) || boardPath.split(/[/\\]/).pop() || boardPath),
+  };
+  if (typeof bd !== 'undefined' && boardPath && String(bd.path || '') === boardPath) {
+    entry.selectedNodeIds = bd.selected instanceof Set ? [...bd.selected] : [];
+    entry.boardView = {
+      zoom: Number(bd.zoom) || 1,
+      panX: Number(bd.panX) || 0,
+      panY: Number(bd.panY) || 0,
+      rotation: Number(bd.rotation) || 0,
+    };
+  }
+  return entry;
+}
+
+function _bdNavigationEntryForTab(tab) {
+  if (!tab) return null;
+  if (tab.type === 'board') return _bdBoardHistoryEntry(tab);
+  return {
+    type: tab.type,
+    path: tab.path,
+    label: tab.label || tab.path,
+    ...(tab.state || {}),
+  };
+}
+
+function _bdSeedTabNavigation(tab, origin, destination) {
+  if (!tab || !origin?.type || !destination?.type) return;
+  if (!Array.isArray(tab.navHistory)) tab.navHistory = [];
+  if (!Number.isInteger(tab.navIndex)) tab.navIndex = tab.navHistory.length - 1;
+  tab.navHistory.splice(tab.navIndex + 1);
+  const top = tab.navHistory[tab.navHistory.length - 1];
+  if (!top || top.type !== origin.type || top.path !== origin.path) tab.navHistory.push(origin);
+  const current = tab.navHistory[tab.navHistory.length - 1];
+  if (!current || current.type !== destination.type || current.path !== destination.path) {
+    tab.navHistory.push(destination);
+  }
+  if (tab.navHistory.length > 50) tab.navHistory.splice(0, tab.navHistory.length - 50);
+  tab.navIndex = tab.navHistory.length - 1;
 }
 
 function _bdAddLinkedTabToExactPane(targetPaneId, entry, tabState) {
@@ -337,12 +478,7 @@ function _bdRetargetActiveTabInPane(targetPaneId, targetPane, entry, tabState) {
         currentViewIdx: paneCtx?.currentViewIdx ?? activeTab.state?.viewIdx,
       }, entry.type === 'entity' ? entry.label : null);
     } else if (typeof _forcedNavPush === 'function') {
-      _forcedNavPush({
-        type: activeTab.type,
-        path: activeTab.path,
-        label: activeTab.label || activeTab.path,
-        ...(activeTab.state || {}),
-      }, targetPaneId);
+      _forcedNavPush(_bdNavigationEntryForTab(activeTab), targetPaneId);
     }
   }
   const updated = GBTabs.updateTab(
@@ -383,6 +519,9 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!targetPane) return false;
   const forceTargetPane = options?.forceTargetPane === true;
   const preserveActivePane = options?.preserveActivePane === true;
+  const activeTab = (targetPane.tabs || [])[targetPane.activeTabIndex || 0] || null;
+  const historyOrigin = options?.historyOrigin
+    || (activeTab?.type === 'board' ? _bdBoardHistoryEntry(activeTab) : null);
   // 開いているタブを開き先へ切り替える（新しいタブを増やさない）。
   // 同じシートを何度も開くとタブが際限なく増えるため、メインパネルで開く経路で使う。
   if (!existingTab && options?.reuseActiveTab === true) {
@@ -398,44 +537,37 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
       : GBTabs.addTab(targetPaneId, entry.label, entry.type, entry.path, tabState, { preserveActivePane })
   );
   if (!tabId) return false;
+  const openedTab = (targetPane.tabs || []).find(tab => tab.id === tabId) || existingTab;
+  if (historyOrigin && openedTab) _bdSeedTabNavigation(openedTab, historyOrigin, {
+    type: entry.type,
+    path: entry.path,
+    label: entry.label,
+    ...tabState,
+  });
   if (tabId) GBTabs.activateTab(targetPaneId, tabId, { preserveActivePane });
   if (!preserveActivePane && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(targetPaneId, { sync: true });
   return true;
 }
 
 async function bdSyncLinkedSelectionToPane(path, label, linkType) {
-  const seq = ++_bdLinkedSelectionSyncSeq;
-  const entry = await _bdResolveLinkedEntryAsync(path, label, linkType);
-  if (seq !== _bdLinkedSelectionSyncSeq || !_bdIsCurrentLinkedSelection(path)) return false;
-  if (entry.urlExternal && _bdIsExternalActionUrl(entry.path)) return false;
-  if (!_BD_LINK_OPENABLE_TYPES.has(entry.type) || entry.type === 'board') return false;
-  if (typeof GBTabs === 'undefined' || typeof GBLayout === 'undefined' || typeof navOpen !== 'function') return false;
-  const boardPaneId = _bdFindBoardPaneId() || GBLayout.activePane;
-  const targetPaneId = _bdFindPaneByTabType(entry.type, boardPaneId, { preferRight: true }) || _bdFindSidePane(boardPaneId, { preferRight: true });
-  if (!targetPaneId) return false;
-  const opened = _bdActivateNavEntryInPane(targetPaneId, entry, { forceTargetPane: true, preserveActivePane: true });
-  return opened;
+  // 選択は情報表示の更新だけに限定する。以前は選択だけで別ペインへリンク先を
+  // 自動表示しており、クリックやドラッグ終了時にフロートが勝手に開く原因になっていた。
+  _bdLinkedSelectionSyncSeq += 1;
+  return false;
 }
 
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
   const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));
-  if (standaloneType === 'smart-db' && window.MeldexBoardStandalone) {
+  if (standaloneType === 'smart-db' && _bdIsStandaloneBoardSurface()) {
     if (typeof showStatus === 'function') showStatus('スマートシートはMeldex本体で開いてください', true);
-    return;
+    return false;
   }
-  const standaloneOpenable = _bdIsExternalUrl(path) || ['page', 'scriptnote', 'pivot', 'board', 'timer'].includes(standaloneType);
-  if (standaloneOpenable
-    && typeof window !== 'undefined'
-    && window.MeldexBoardStandalone
-    && typeof window.MeldexBoardStandalone.openLinkedPathExternally === 'function') {
-    const launched = await window.MeldexBoardStandalone.openLinkedPathExternally(path, label, { ...opts, linkType: standaloneType });
-    if (launched) return;
-  }
-  const seq = ++_bdLinkOpenSeq;
-  const entry = await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
-  if (seq !== _bdLinkOpenSeq) return;
-  await openLinkedPathInSubPanel(path, label, { ...opts, entry });
+  return MeldexBoardOpenTarget.open(path, opts.target, {
+    ...opts,
+    label,
+    linkType: opts.linkType || standaloneType,
+  });
 }
 
 async function bdOpenLinkedPathInCurrentPane(path, label, linkType) {
@@ -547,13 +679,13 @@ async function openLinkedPathInMainPane(path, label, options) {
   });
 }
 
-async function openLinkedPathInSubPanel(path, label, options) {
+async function openLinkedPathInFloatPanel(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return;
   const tabState = { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) };
-  if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
-    GBSubPanel.open(entry.type, {
+  if (typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.open === 'function') {
+    GBFloatPanel.open(entry.type, {
       path: entry.path || path || '',
       label: entry.label || label || '',
       linkType: opts.linkType || entry.type || '',
@@ -572,24 +704,92 @@ async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
-  _bdRevealRightSidebarTool('preview');
-  // 画面に出ている区画だけを対象にする。退避中の区画へ書き込むと「押しても何も起きない」状態になる。
-  const pane = _bdVisibleRightSidebarPreviewPane();
-  // エントリは汎用プレビュー(先頭240字)ではなく、プロパティ一覧＋本文の本物のエントリ表示を出す
-  const isEntity = (opts.linkType || entry.type) === 'entity';
-  if (pane && isEntity) {
-    const ok = await _bdRenderEntityIntoRightPane(entry.path || path || '', entry.label || label || '', pane);
-    if (ok) return true;
+  // フロートパネル／サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
+  // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
+  // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
+  // sourcePaneId を明示的なヒントとして優先し、無ければフォーカス位置で判定する。
+  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.guardRightSidebarTool === 'function') {
+    const source = opts.sourceEl || (opts.sourcePaneId || undefined);
+    if (!GBPaneBridge.guardRightSidebarTool('subpanel', source)) return false;
   }
-  if (pane && typeof bdRenderLinkedPreview === 'function') {
-    await bdRenderLinkedPreview(entry.path || path || '', pane, opts.linkType || entry.mediaType || entry.type || '');
-    return true;
+  // 右サイドバーで開く = 新しい右サイドバー常設「サブパネル」（GBSubPanel）で表示する。
+  // 対応対象に含まれない拡張子は、既存の解決結果(entry.type)に関わらず
+  // GBLinkRouter の判定を優先し、汎用ビューワー（ノート扱い）へ誤って
+  // フォールバックさせず「未対応形式」としてサブパネル側にエラー表示させる。
+  if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
+    _bdRevealRightSidebarTool('subpanel');
+    const targetPath = entry.path || path || '';
+    // entry.type は _bdResolveLinkedEntryAsync の最終フォールバック（拡張子不明→'page'）を
+    // 経ている場合があるため、ここでは opts.linkType（呼び出し元が実際に渡した明示ヒント）
+    // だけを判定材料にする。entry.type を渡すと常に recognized=true になってしまう。
+    const recognized = typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.isRecognizedPath === 'function'
+      ? GBLinkRouter.isRecognizedPath(targetPath, opts.linkType)
+      : true;
+    return GBSubPanel.open({
+      type: recognized ? entry.type : 'unsupported',
+      path: targetPath,
+      label: entry.label || label || '',
+      state: { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) },
+    });
   }
-  return openLinkedPathInSubPanel(path, label, { ...opts, entry });
+  return openLinkedPathInFloatPanel(path, label, { ...opts, entry });
 }
 
+async function _bdOpenAtTarget(path, label, linkType, target, options) {
+  const opts = { ...(options || {}), linkType };
+  const normalized = _bdNormalizeOpenTarget(target);
+  const mapped = (_bdIsStandaloneBoardSurface() || (_bdIsCloudMobileBoardSurface() && normalized === 'sidebar'))
+    ? 'float'
+    : normalized;
+  if (mapped === 'main') return openLinkedPathInMainPane(path, label, opts);
+  if (mapped === 'sidebar') return openLinkedPathInRightPane(path, label, opts);
+  return openLinkedPathInFloatPanel(path, label, opts);
+}
+
+const MeldexBoardOpenTarget = Object.freeze({
+  key: _BD_DEFAULT_OPEN_TARGET_KEY,
+  getDefault: _bdGetDefaultOpenTarget,
+  setDefault: _bdSetDefaultOpenTarget,
+  getAvailableTargets: _bdAvailableOpenTargets,
+  availableTargets: _bdAvailableOpenTargets,
+  resolve(nodeOrPath, options) {
+    return _bdResolveOpenInput(nodeOrPath, options);
+  },
+  async open(nodeOrPath, explicitTarget, options) {
+    const resolved = _bdResolveOpenInput(nodeOrPath, options);
+    if (!resolved.path) return false;
+    const seq = ++_bdLinkOpenSeq;
+    const target = explicitTarget == null || explicitTarget === ''
+      ? _bdGetDefaultOpenTarget()
+      : _bdNormalizeOpenTarget(explicitTarget);
+    const entry = await _bdResolveLinkedEntryAsync(resolved.path, resolved.label, resolved.linkType);
+    if (seq !== _bdLinkOpenSeq) return false;
+    return _bdOpenAtTarget(resolved.path, resolved.label, resolved.linkType, target, {
+      ...(options || {}),
+      entry,
+    });
+  },
+  showMenu(nodeOrPath, anchorElement, options) {
+    const resolved = _bdResolveOpenInput(nodeOrPath, options);
+    if (!resolved.path || !anchorElement) return false;
+    const rect = anchorElement.getBoundingClientRect?.();
+    return showLinkedOpenTargetMenu({
+      currentTarget: anchorElement,
+      clientX: rect?.right || 0,
+      clientY: rect?.bottom || 0,
+      preventDefault() {},
+      stopPropagation() {},
+    }, resolved.path, resolved.label, {
+      ...(options || {}),
+      linkType: resolved.linkType,
+    });
+  },
+});
+
+if (typeof window !== 'undefined') window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
+
 // 右サイドバー(ビューワータブ)にエントリのプロパティ一覧＋本文を描画する。
-// フルページ/サブパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
+// フルページ/フロートパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
 async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   if (!entityPath || !pane || typeof apiFetch !== 'function' || typeof renderEntityPropsGridInto !== 'function') return false;
   try {
@@ -620,7 +820,7 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
     if (parentDb) {
       const parent = document.createElement('button');
       parent.type = 'button';
-      parent.className = 'gb-subpanel-link-button';
+      parent.className = 'gb-float-panel-link-button';
       parent.style.cssText = 'margin-bottom:8px;';
       parent.textContent = '← ' + (parentDb.split('/').pop() || parentDb);
       parent.title = parentDb;
@@ -662,8 +862,8 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   }
 }
 
-function _bdOpenEntryInSubPanel(label, path, type) {
-  openLinkedPathInSubPanel(path, label, { linkType: type });
+function _bdOpenEntryInFloatPanel(label, path, type) {
+  openLinkedPathInFloatPanel(path, label, { linkType: type });
 }
 
 function _bdStandaloneViewerUrl(entry) {
@@ -683,7 +883,7 @@ function _bdStandaloneUrlForEntry(entry) {
   if (viewerUrl) return viewerUrl;
   if (entry.type === 'page') return 'note-standalone.html?open=' + encodeURIComponent(entry.path);
   if (entry.type === 'scriptnote') return 'scenario-standalone.html?open=' + encodeURIComponent(entry.path);
-  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
+  if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
     return 'sheet-standalone.html?open=' + encodeURIComponent(entry.path);
   }
   if (entry.type === 'board') return 'board-standalone.html?open=' + encodeURIComponent(entry.path);
@@ -724,6 +924,12 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   e?.preventDefault?.();
   e?.stopPropagation?.();
   document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
+  // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // 表示しない（計画書「右サイドバー操作の制限」節）。
+  const anchorEl = e?.currentTarget || e?.target || null;
+  const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+    || typeof GBPaneBridge.surfaceOf !== 'function'
+    || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(anchorEl));
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu gb-linked-open-target-menu';
   menu.style.zIndex = '10080';
@@ -745,13 +951,28 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
     }
     menu.appendChild(item);
   };
-  addItem('フロートパネルで開く', 'layers-2', () => openLinkedPathInSubPanel(targetPath, label, opts));
-  addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
-  addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, opts));
+  if (_bdIsStandaloneBoardSurface()) {
+    addItem('ビューワーで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
+  } else if (_bdIsCloudMobileBoardSurface()) {
+    addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
+    addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
+  } else {
+    addItem('フロートパネルで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
+    addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
+    if (canUseRightSidebar) {
+      addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, { ...opts, sourceEl: anchorEl }));
+    }
+  }
   if (_bdIsExternalBrowserUrl(targetPath)) {
     addItem('既定のブラウザで開く', 'externalLink', () => _bdOpenExternalBrowserUrl(targetPath));
   }
-  addItem('単独アプリで開く', 'externalLink', () => openLinkedPathStandalone(targetPath, label, opts), !canOpenLinkedPathStandalone(targetPath, opts.linkType));
+  if (!_bdIsStandaloneBoardSurface()) {
+    addItem('単独アプリで開く', 'externalLink', () => openLinkedPathStandalone(targetPath, label, opts), !canOpenLinkedPathStandalone(targetPath, opts.linkType));
+  }
+  // board-standalone.html にはフォルダツリーが無いため typeof ガードで非表示にする。
+  if (typeof window.revealPathInFolderTree === 'function' && !_bdIsExternalBrowserUrl(targetPath)) {
+    addItem('フォルダツリーに表示', 'folderTree', () => window.revealPathInFolderTree(targetPath));
+  }
   document.body.appendChild(menu);
   if (e?.currentTarget && typeof positionPopup === 'function') {
     positionPopup(menu, e.currentTarget.getBoundingClientRect());
@@ -791,7 +1012,6 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     if (!path) throw new Error('path missing');
     const linkType = nodeData.type || type;
     const node = bdAddLinkCardAt(x, y, path, label, { w: 200, linkType });
-    _bdOpenEntryInSubPanel(label, path, linkType);
     return node;
   } catch (error) {
     const detail = error?.message ? ': ' + error.message : '';
@@ -990,7 +1210,10 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
   if (!filePath || !pane) return false;
   const fileName = filePath.split(/[/\\]/).pop();
   const ext = _bdLinkExt(filePath);
-  const mediaType = _bdLinkMediaType(ext);
+  const explicitMediaType = ['image', 'video', 'audio'].includes(String(linkType || '').trim())
+    ? String(linkType || '').trim()
+    : '';
+  const mediaType = explicitMediaType || _bdLinkMediaType(ext);
   const pdf = ext === 'pdf';
   const html = ext === 'html' || ext === 'htm';
   const externalUrl = _bdIsExternalUrl(filePath);
@@ -1002,6 +1225,10 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
     && pane.dataset.previewPath === filePath
     && pane.dataset.previewRequestToken === requestToken;
   if (mediaType === 'image' || pdf) {
+    if (mediaType === 'image' && /^data:image\//i.test(filePath)) {
+      pane.innerHTML = `<img src="${_bdEscAttr(filePath)}" alt="${_bdEscAttr(fileName)}" style="width:100%;height:100%;border-radius:6px;background:var(--bg);object-fit:contain;">`;
+      return true;
+    }
     const src = pdf
       ? '/viewer?pdf=' + encodeURIComponent(filePath) + '&embed=1'
       : '/viewer?file=' + encodeURIComponent(filePath) + '&embed=1';

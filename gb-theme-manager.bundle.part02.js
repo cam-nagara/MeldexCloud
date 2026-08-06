@@ -1,3 +1,9 @@
+    if (typeof fetch !== 'function') return Promise.resolve(null);
+    const apiBase = typeof API_BASE === 'string' ? API_BASE : '/api';
+    return fetch(apiBase + '/os-accent-color', { cache: 'no-store' })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        const color = /^#[0-9a-f]{6}$/i.test(String(data?.color || '')) ? data.color : '';
         if (!color) return null;
         _osAccentRuntimeColor = color.toLowerCase();
         if (getUseOsAccentColor()) {
@@ -892,9 +898,3 @@
   function withDerivedUiStyleVars(vars) {
     const next = { ...(vars || {}) };
     Object.keys(next).forEach(key => { next[key] = normalizeThemeStyleVarValue(key, next[key]); });
-    const isLightSurface = () => {
-      const hex = normalizeThemeColor(next['--content-bg'] || next['--bg'] || '');
-      if (!hex) return false;
-      const r = parseInt(hex.slice(1, 3), 16);
-      const g = parseInt(hex.slice(3, 5), 16);
-      const b = parseInt(hex.slice(5, 7), 16);

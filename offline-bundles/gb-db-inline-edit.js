@@ -1131,7 +1131,12 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const invalidDynamicSelections = dynamicResult
       ? [...selected].filter(value => value && !dynamicOptions.includes(value))
       : [];
-    const optionSet = new Set([...baseOptions, ...dynamicOptions, ...selected]);
+    // 列内で実際に使われている値（スキーマ未登録分）も候補へ統合する。
+    // 行ごとに候補が変わる動的選択肢列（optionSource）では他行の値を混ぜない。
+    const columnValues = (!dynamicResult && typeof collectDbColumnValues === 'function')
+      ? collectDbColumnValues(pivotData, propName, { splitCsv: true })
+      : [];
+    const optionSet = new Set([...baseOptions, ...dynamicOptions, ...columnValues, ...selected]);
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
     if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
@@ -1529,6 +1534,8 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     const dd = document.createElement('div');
     dd.className = 'cell-inline-dd status-dropdown';
     if (ctx?.paneId) dd.dataset.dbPaneId = ctx.paneId;
+    dd.style.maxHeight = '300px';
+    dd.style.overflowY = 'auto';
     let pointerCloser = null;
     const closeSelectDropdown = (shouldCancel = false) => {
       if (dd.parentNode) dd.remove();
@@ -1546,7 +1553,16 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     clearItem.textContent = '解除';
     clearItem.addEventListener('click', () => { closeSelectDropdown(true); });
     dd.appendChild(clearItem);
-    (ptc.options || []).forEach(opt => {
+    // 候補 = スキーマ登録済み選択肢 + 列内で実際に使われている値（スキーマ未登録分）。
+    // 行ごとに候補が変わる動的選択肢列（optionSource）では他行の値を混ぜない。
+    const selectOptions = [...(ptc.options || [])];
+    if (!ptc?.optionSource && typeof collectDbColumnValues === 'function') {
+      const selectPivotData = (ctx && ctx.pivotData) || state.pivotData;
+      collectDbColumnValues(selectPivotData, propName).forEach(v => {
+        if (!selectOptions.includes(v)) selectOptions.push(v);
+      });
+    }
+    selectOptions.forEach(opt => {
       const item = document.createElement('div');
       item.className = 'status-dropdown-item';
       if (typeof appendDbOptionColorSwatch === 'function') {
@@ -3938,7 +3954,19 @@ async function triggerNewEntity(table, dataRows, focusCol) {
       try { await _autoFillOnCreate(_db, createdPath, {}); } catch {}
     }
     historyPush('エントリ追加: ' + name,
-      async () => { await apiPost('/outliner/delete', { path: _entityPath(_db, name) }); await selectDatabase(_db, ctx); },
+      async () => {
+        const result = await window.GbDbEntryIdentity.deleteEntries({
+          dbPath: _db,
+          ctx,
+          entries: [{
+            name,
+            path: createdPath || _entityPath(_db, name),
+            entryId: String(r?.entry_id || r?.id || ''),
+          }],
+          source: 'entry-create-undo',
+        });
+        if (result.failures.length) throw result.failures[0].error;
+      },
       async () => {
         const redo = await apiPost('/entity/create', { parent_path: _db, name });
         const redoPath = (redo && (redo.path || redo.entry_path)) || `${_db}/${name}.md`;

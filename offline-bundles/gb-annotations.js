@@ -208,8 +208,21 @@ const _ANNOTATION_TARGET_VIEW_TYPES = new Set([
 const _ANNOTATION_DB_VIEW_TYPES = new Set([
   'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
 ]);
+// ビューワー安定化計画(app/docs/viewer-stability-common-ui-plan-2026-07-31.md「実装変更 > 3」):
+// #html-iframe が信頼済みの内部ビューワー(viewer.html。画像/PDF)を表示している場合、
+// 'html' ビューも「注釈編集を埋め込みサーフェス（iframe内蔵の注釈コントローラー）へ委譲する」
+// 対象として扱う。外部URL・任意HTMLファイルのプレビュー（同じ#html-iframe/'html'ビューを使う）は
+// _gbIsTrustedInternalViewerUrl が false を返すため対象外のまま。
+function _getTrustedViewerIframeElement() {
+  const iframe = document.getElementById('html-iframe');
+  if (!iframe) return null;
+  const src = iframe.getAttribute('src') || iframe.src || '';
+  return (typeof window._gbIsTrustedInternalViewerUrl === 'function' && window._gbIsTrustedInternalViewerUrl(src)) ? iframe : null;
+}
 function _usesEmbeddedAnnotationSurface(viewName) {
-  return viewName === 'board';
+  if (viewName === 'board') return true;
+  if (viewName === 'html') return !!_getTrustedViewerIframeElement();
+  return false;
 }
 function _getActiveAnnotationTab() {
   if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.findNode !== 'function') return null;
@@ -258,9 +271,36 @@ function _getBoardAnnotationControl() {
 function _forEachStandaloneAnnotationNote(callback) {
   document.querySelectorAll('.ann-note:not(.ann-note-embedded)').forEach(callback);
 }
+// ビューワー(viewer.html)への配送: 新設のpostMessageタイプ viewer-ann-set-state のみを使う
+// （既存の 'ann-set-state' ペイロードをそのまま積み替えて送るだけ。'ann-load' はビューワー側が
+// 自前でシーンごとに読み込む設計のため未配線のまま。'ann-set-visibility'/'ann-set-opacity' は
+// ビューワー側では完全スナップショットの一部（visible/opacity）として扱うため、ここで
+// viewer-ann-set-state と同じ完全スナップショットへ合流させて配送する — 部分メッセージを
+// 乱送しない設計（ビューワー残課題修正計画2026-08-04「3. 注釈座標と親画面連携」）。
+function _dispatchAnnotationMessageToViewerIframe(msg) {
+  if (msg?.type !== 'ann-set-state' && msg?.type !== 'ann-set-visibility' && msg?.type !== 'ann-set-opacity') return false;
+  const iframe = _getTrustedViewerIframeElement();
+  if (!iframe?.contentWindow) return false;
+  try {
+    iframe.contentWindow.postMessage({
+      type: 'viewer-ann-set-state',
+      active: msg.type === 'ann-set-state' ? msg.active : ann.active,
+      visible: msg.type === 'ann-set-visibility' ? msg.visible : _overlayVisible,
+      tool: msg.type === 'ann-set-state' ? msg.tool : ann.tool,
+      color: msg.type === 'ann-set-state' ? msg.color : ann.color,
+      opacity: msg.type === 'ann-set-opacity' ? msg.opacity : (msg.type === 'ann-set-state' ? msg.opacity : ann.opacity),
+      widths: msg.type === 'ann-set-state' ? msg.widths : ann.widths,
+      targetPath: msg.type === 'ann-set-state' ? msg.targetPath : ann.targetPath,
+    }, window.location.origin);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function _dispatchEmbeddedAnnotationMessage(msg) {
   const viewName = _getAnnotationViewName();
   if (!_usesEmbeddedAnnotationSurface(viewName)) return false;
+  if (viewName === 'html') return _dispatchAnnotationMessageToViewerIframe(msg);
   const bridge = _getBoardAnnotationControl();
   if (bridge && typeof bridge.handleMessage === 'function') {
     bridge.handleMessage(msg);
@@ -268,12 +308,63 @@ function _dispatchEmbeddedAnnotationMessage(msg) {
   }
   return false;
 }
+
+// ビューワー(viewer.html)からのpostMessage受信: iframe内蔵の注釈コントローラーが
+// 実際にactive/drawing状態を変えた時（Aキー・右クリックメニュー・右サイドバー経由も含む）に
+// 親側の右下フロートボタン／フローティングツールバーの見た目を追従させる。
+// event.source === iframe.contentWindow と同一オリジンを検証してから適用する。
+window.addEventListener('message', (ev) => {
+  const iframe = _getTrustedViewerIframeElement();
+  if (!iframe?.contentWindow || ev.source !== iframe.contentWindow) return;
+  if (ev.origin !== window.location.origin && ev.origin !== 'null') return;
+  const msg = ev.data;
+  if (!msg || typeof msg.type !== 'string') return;
+  if (msg.type === 'viewer-ann-state-changed') {
+    const btn = document.getElementById('btn-tb-annotation');
+    const toolbar = document.getElementById('ann-toolbar');
+    if (btn) btn.classList.toggle('active', !!msg.active);
+    if (toolbar) toolbar.classList.toggle('visible', !!msg.active);
+    if (typeof ann !== 'undefined') ann.active = !!msg.active;
+  }
+  if (msg.type === 'viewer-ann-save-result') {
+    _handleViewerAnnotationSaveResult(msg);
+  }
+});
+
+// ビューワーiframe内の注釈保存結果を受け取る。失敗時のみ共通通知UIへ表示し、成功時は
+// 保存済み状態の更新だけを行う（通知は出さない。ビューワー残課題修正計画2026-08-04「3」）。
+const _VIEWER_ANN_ERROR_CODE_MESSAGES = {
+  forbidden: '権限がないため注釈を保存できませんでした',
+  not_found: '対象のファイルが見つからないため注釈を保存できませんでした',
+  conflict: '他の変更と競合したため注釈を保存できませんでした（再読み込みしてください）',
+  server_error: 'サーバーエラーのため注釈を保存できませんでした',
+  http_error: '通信エラーのため注釈を保存できませんでした',
+  network_error: 'ネットワークに接続できないため注釈を保存できませんでした',
+  timeout: 'タイムアウトしたため注釈を保存できませんでした',
+  unknown_error: '注釈を保存できませんでした',
+};
+const _VIEWER_ANN_ACTION_LABELS = { create: '作成', update: '更新', delete: '削除' };
+function _handleViewerAnnotationSaveResult(msg) {
+  if (msg?.ok) {
+    // 成功時は保存済み状態の更新だけ行う（通知は出さない）。現状このUIには
+    // 「未保存」インジケーターが無いため、追加のDOM更新は不要。
+    return;
+  }
+  const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg?.action] || '';
+  const baseMessage = _VIEWER_ANN_ERROR_CODE_MESSAGES[msg?.errorCode] || _VIEWER_ANN_ERROR_CODE_MESSAGES.unknown_error;
+  const text = actionLabel ? `注釈の${actionLabel}に失敗しました（${baseMessage}）` : baseMessage;
+  if (typeof showStatus === 'function') showStatus(text, true);
+}
 function toggleOverlayVisibility() {
   _overlayVisible = !_overlayVisible;
   const overlay = document.getElementById('ann-overlay');
   const btn = document.getElementById('btn-overlay-toggle');
   const embedded = _usesEmbeddedAnnotationSurface(_getAnnotationViewName());
-  overlay.style.visibility = embedded ? 'hidden' : (_overlayVisible ? '' : 'hidden');
+  // #ann-overlay は 'board'/'page' 等のペイン描画に付随する要素で、'html'（ビューワー埋め込み）
+  // ペインだけがアクティブな画面（レイアウトツリーにボード/ページ系ペインが1つも無い状態）では
+  // マウントされない。埋め込みビューワーへは _dispatchEmbeddedAnnotationMessage が別途状態を
+  // 配送するため、ここでは存在確認してから触る（未マウント時はスキップし、以後の処理は続行する）。
+  if (overlay) overlay.style.visibility = embedded ? 'hidden' : (_overlayVisible ? '' : 'hidden');
   // 付箋ノート（DOM要素）も連動
   _forEachStandaloneAnnotationNote(el => { el.style.visibility = (!embedded && _overlayVisible) ? '' : 'hidden'; });
   if (btn) {

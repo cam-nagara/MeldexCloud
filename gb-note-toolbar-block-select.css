@@ -1,0 +1,152 @@
+/* gb-note-toolbar-block-select.css
+   計画書: note-editor-regression-performance-conflict-plan-2026-08-01.md §5 工程10
+   gb-note-toolbar-block-select.js が生成するツールバーのトリガーボタンと、
+   専用ポップアップ（タイトル・見出し1〜6・本文）の見た目。
+   ポップアップ本体の共通レイアウト（fixed配置・タッチ対象・reduced-motion）は
+   gb-tools.part04.part01.css の .gb-context-menu / .gb-context-menu-item と
+   gb-note-block-menu.css の .note-block-menu 系を継承し、ここでは
+   トリガーボタンの見た目と見本表示だけを追加する。 */
+
+/* ============================================================
+   トリガーボタン（旧 <select class="tb-select"> の置き換え）
+   ============================================================ */
+.note-heading-toolbar-btn {
+  height: var(--ui-h-xs);
+  padding: 0 var(--ui-space-4) 0 var(--ui-space-3);
+  background: var(--ui-bg-control);
+  color: var(--ui-toolbar-fg);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-xs);
+  font-size: var(--ui-font-12);
+  cursor: pointer;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+}
+.note-heading-toolbar-btn:hover {
+  background: var(--ui-bg-control-hover);
+}
+.note-heading-toolbar-btn[aria-expanded="true"] {
+  border-color: var(--ui-accent);
+  background: var(--ui-bg-control-active);
+}
+.note-heading-toolbar-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.note-heading-toolbar-btn-caret {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.75;
+}
+.note-heading-toolbar-btn-caret svg { width: 12px; height: 12px; }
+
+@media (pointer: coarse) {
+  .note-heading-toolbar-btn {
+    min-height: 44px;
+  }
+}
+
+/* ============================================================
+   見本（テーマ／ファイルスタイルのフォント・サイズ・太さ・文字色・背景）
+   ============================================================ */
+.note-heading-toolbar-menu .note-heading-toolbar-sample {
+  display: inline-block;
+  line-height: 1.3;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--ui-border, var(--border));
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+/* 実際のノート描画CSS（gb-tools.part02.part01.css の #page-content h1〜h6 等）と
+   同じ --page-* トークンを参照する。値そのものはテーマ／ファイルスタイルの
+   どちらであっても常に最新のCSS変数を指すため、再描画なしで追従する。 */
+.note-heading-toolbar-menu [data-type-id="title"] .note-heading-toolbar-sample {
+  font-size: var(--page-title-font-size, 28px);
+  font-weight: var(--page-title-bold, bold);
+  font-style: var(--page-title-italic, normal);
+  font-family: var(--page-title-font, inherit);
+  color: var(--page-title-fg);
+  background: var(--page-title-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h1"] .note-heading-toolbar-sample {
+  font-size: var(--page-h1-font-size, 24px);
+  font-weight: var(--page-h1-bold, normal);
+  font-style: var(--page-h1-italic, normal);
+  font-family: var(--page-h1-font, inherit);
+  color: var(--page-h1-fg);
+  background: var(--page-h1-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h2"] .note-heading-toolbar-sample {
+  font-size: var(--page-h2-font-size, 20px);
+  font-weight: var(--page-h2-bold, normal);
+  font-style: var(--page-h2-italic, normal);
+  font-family: var(--page-h2-font, inherit);
+  color: var(--page-h2-fg);
+  background: var(--page-h2-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h3"] .note-heading-toolbar-sample {
+  font-size: var(--page-h3-font-size, 16px);
+  font-weight: var(--page-h3-bold, normal);
+  font-style: var(--page-h3-italic, normal);
+  font-family: var(--page-h3-font, inherit);
+  color: var(--page-h3-fg);
+  background: var(--page-h3-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h4"] .note-heading-toolbar-sample {
+  font-size: var(--page-h4-font-size, 16px);
+  font-weight: var(--page-h4-bold, normal);
+  font-style: var(--page-h4-italic, normal);
+  font-family: var(--page-h4-font, inherit);
+  color: var(--page-h4-fg);
+  background: var(--page-h4-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h5"] .note-heading-toolbar-sample {
+  font-size: var(--page-h5-font-size, 14px);
+  font-weight: var(--page-h5-bold, normal);
+  font-style: var(--page-h5-italic, normal);
+  font-family: var(--page-h5-font, inherit);
+  color: var(--page-h5-fg);
+  background: var(--page-h5-bg, transparent);
+}
+.note-heading-toolbar-menu [data-type-id="h6"] .note-heading-toolbar-sample {
+  font-size: var(--page-h6-font-size, 13px);
+  font-weight: var(--page-h6-bold, normal);
+  font-style: var(--page-h6-italic, normal);
+  font-family: var(--page-h6-font, inherit);
+  color: var(--page-h6-fg);
+  background: var(--page-h6-bg, transparent);
+}
+/* 本文は編集ホスト本体（gb-tools.part02.part01.css の #page-content 等）と同じ
+   --page-text-* を参照する。ファイル単位の太字・斜体・フォント・背景も見本へ
+   反映し、文字色だけが合っている不完全な見本にしない。 */
+.note-heading-toolbar-menu [data-type-id="body"] .note-heading-toolbar-sample {
+  font-size: var(--page-text-font-size, var(--ui-font-13, 13px));
+  font-weight: var(--page-text-bold, normal);
+  font-style: var(--page-text-italic, normal);
+  font-family: var(--page-text-font, inherit);
+  color: var(--page-text-fg, var(--page-fg, var(--fg)));
+  background: var(--page-text-bg, var(--content-bg, var(--page-bg, var(--bg))));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .note-heading-toolbar-btn,
+  .note-heading-toolbar-menu .note-heading-toolbar-sample {
+    transition: none !important;
+    animation: none !important;
+  }
+}

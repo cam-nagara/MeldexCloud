@@ -174,6 +174,23 @@ function clearDbColumnFilter(dbPath, propName, ctx) {
   }
 }
 
+const DB_COLUMN_FILTER_OPERATOR_LABEL = {
+  contains: '含む',
+  not_contains: '含まない',
+  equals: '一致',
+  not_equals: '不一致',
+  empty: '空',
+  not_empty: '空でない',
+};
+// 条件フィルタ1件の要約文字列（列ヘッダーのフィルターポップアップに表示する）。
+function _dbColumnFilterConditionSummaryText(cond) {
+  const fieldLabel = cond?.field === 'status' ? 'ステータス' : '値';
+  const opLabel = DB_COLUMN_FILTER_OPERATOR_LABEL[cond?.operator] || cond?.operator || '';
+  const hasValue = !['empty', 'not_empty'].includes(cond?.operator);
+  const valueText = hasValue && cond?.value !== '' && cond?.value != null ? `「${cond.value}」` : '';
+  return `${fieldLabel} ${opLabel}${valueText}`;
+}
+
 function _dbCloseColumnFilterPopup() {
   document.querySelectorAll('.db-column-filter-popover').forEach(el => el.remove());
 }
@@ -235,10 +252,26 @@ function showDbColumnFilterPopup(source, propName, ctxOverride, dbPathOverride) 
   popover.appendChild(header);
 
   if (propName !== '__entity__') {
+    // 既にこの列に条件フィルタ（advancedFilters）があれば要約を表示し、ダイアログへの導線を示す
+    // （ツールバーの統合フィルタダイアログと同じ状態を読み書きするため、内容はそこで編集した結果と一致する）。
+    const conditions = (typeof getAdvancedFilters === 'function' ? getAdvancedFilters(dbPath, { ctx }) : [])
+      .filter(f => f?.property === propName || f?.prop === propName);
+    if (conditions.length && typeof _dbColumnFilterConditionSummaryText === 'function') {
+      const summary = document.createElement('div');
+      summary.className = 'db-column-filter-condition-summary';
+      conditions.forEach(cond => {
+        const item = document.createElement('span');
+        item.className = 'db-column-filter-condition-summary-item';
+        item.textContent = '条件: ' + _dbColumnFilterConditionSummaryText(cond);
+        summary.appendChild(item);
+      });
+      popover.appendChild(summary);
+    }
     const conditionButton = document.createElement('button');
     conditionButton.type = 'button';
     conditionButton.className = 'db-column-filter-condition';
-    conditionButton.innerHTML = (typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '') + ' 条件フィルターを追加・編集';
+    conditionButton.innerHTML = (typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '')
+      + (conditions.length ? ' 条件フィルターを編集' : ' 条件フィルターを追加');
     conditionButton.addEventListener('click', () => {
       _dbCloseColumnFilterPopup();
       if (typeof showUnifiedFilterModal === 'function') {

@@ -177,7 +177,8 @@ function _dbSchemaProtectionLevel(dbPath, propName) {
 function _showSchemaProtectionBlockedStatus(level) {
   if (typeof showStatus !== 'function') return;
   if (level === 'all') { showStatus('制作管理に必要な列は削除できません。非表示を利用してください', true); return; }
-  if (level === 'required') { showStatus('スタッフ管理に必要な列は削除できません。非表示を利用してください', true); }
+  if (level === 'required') { showStatus('スタッフ管理に必要な列は削除できません。非表示を利用してください', true); return; }
+  if (level === 'computed') { showStatus('自動計算列のため、削除・列名変更・型変更はできません', true); }
 }
 
 function getDeletedDbProperties(dbPath) {

@@ -8,8 +8,7 @@
 (function() {
   'use strict';
 
-  // === 自動同期タイマー管理 ===
-  const _autoSyncTimers = {}; // { timerKey: intervalId }
+  // 自動同期の実行判断・巡回はバックエンド（meldex_import_scheduler.py）が担う。
   let _syncInProgress = false; // 同期の同時実行防止
   let _currentOverlay = null;  // 現在開いているモーダルの参照
   let _currentOverlayKeydown = null;
@@ -312,6 +311,7 @@
         _updateAutoSyncSchedule(card, index, cfg);
       });
       card._scheduleWidget = w;
+      w?.setStatusText(_formatScheduleState(folder.schedule_state));
     }
     card.querySelectorAll('.notion-folder-path, .notion-page-url').forEach(input => {
       input.addEventListener('change', () => _saveFolderConfigFromCard(card, '設定を保存しました'));
@@ -787,95 +787,24 @@
     }
   }
 
-  function _timerKey(index, folder) {
-    return [index, folder.path || '', folder.notion_page_id || '', folder.notion_page_url || ''].join('\u001f');
+  function _formatScheduleState(state) {
+    if (!state) return '';
+    const parts = [];
+    if (state.next_run_display) parts.push(`次回予定: ${state.next_run_display}`);
+    if (state.last_run) {
+      const label = state.last_run.status === 'done' ? '成功' : (state.last_run.status === 'error' ? '失敗' : state.last_run.status);
+      parts.push(`前回自動実行: ${label}`);
+    }
+    if (state.needs_attention) parts.push('連続で失敗しています。設定をご確認ください。');
+    return parts.join(' / ');
   }
 
-  function _clearAllAutoSyncTimers() {
-    Object.keys(_autoSyncTimers).forEach(k => {
-      if (window.MeldexScheduler) window.MeldexScheduler.destroyTimer(k);
-      else clearInterval(_autoSyncTimers[k]);
-      delete _autoSyncTimers[k];
-    });
-  }
+  // 定期実行の実行判断・巡回はバックエンド（meldex_import_scheduler.py）が担うため、
+  // ブラウザー側のタイマー管理・自己実行は廃止した（WebClipper・インポート定期実行
+  // 計画 2026-08-04「永続スケジューラー」節）。以下は他呼び出し元への互換スタブ。
+  function _clearAllAutoSyncTimers() {}
 
-  // === タイマー一覧を現在の config と突き合わせて再構築 ===
-  async function _reconcileTimers() {
-    if (!window.MeldexScheduler) return;
-    try {
-      const cfg = await apiFetch('/notion/config');
-      const folders = cfg.folders || [];
-      const aliveKeys = new Set();
-      folders.forEach((f, index) => {
-        const p = f.path || '';
-        if (!p) return;
-        const key = _timerKey(index, f);
-        aliveKeys.add(key);
-        const schedule = f.schedule || (f.auto_sync && f.sync_interval > 0 ? { type: 'interval', interval_minutes: f.sync_interval } : null);
-        const sched = window.MeldexScheduler.normalize(schedule);
-        if (sched.type !== 'off' && cfg.has_token && f.notion_page_id) {
-          window.MeldexScheduler.createTimer(key, sched, () => _autoSyncExecute(key));
-          _autoSyncTimers[key] = true;
-        } else if (_autoSyncTimers[key]) {
-          window.MeldexScheduler.destroyTimer(key);
-          delete _autoSyncTimers[key];
-        }
-      });
-      Object.keys(_autoSyncTimers).forEach(k => {
-        if (!aliveKeys.has(k)) {
-          window.MeldexScheduler.destroyTimer(k);
-          delete _autoSyncTimers[k];
-        }
-      });
-    } catch (e) {
-      console.warn('Notion auto-sync reconcile failed:', e);
-    }
-  }
-
-  async function _autoSyncExecute(timerKey) {
-    if (_syncInProgress) return; // 他の同期中はスキップ
-    const lockToken = _acquireSyncLock('auto');
-    if (!lockToken) return;
-    // 実行時点で最新の config から設定行の index を再解決（ドリフト対策）
-    let currentIndex = -1;
-    let folders = [];
-    try {
-      const cfg = await apiFetch('/notion/config');
-      folders = cfg.folders || [];
-      currentIndex = folders.findIndex((f, index) => _timerKey(index, f) === timerKey);
-      const folder = currentIndex >= 0 ? folders[currentIndex] : null;
-      if (currentIndex < 0 || !cfg.has_token || !folder?.notion_page_id) {
-        if (_autoSyncTimers[timerKey]) {
-          if (window.MeldexScheduler) window.MeldexScheduler.destroyTimer(timerKey);
-          delete _autoSyncTimers[timerKey];
-        }
-        _releaseSyncLock(lockToken);
-        return;
-      }
-    } catch (e) {
-      console.warn('Notion auto-sync config fetch failed for', timerKey, e);
-      _releaseSyncLock(lockToken);
-      return;
-    }
-    _syncInProgress = true;
-    try {
-      const res = await runBackgroundJob('/notion/sync', { folder_index: currentIndex, mode: 'push' });
-      const total = _countValue(res.pushed);
-      if (_syncResultHasIssues(res)) {
-        showStatus(`Notion自動同期に未完了の項目があります${_syncResultErrorMessage(res)}`, true);
-        return;
-      }
-      if (total > 0) {
-        showStatus(`Notion自動同期: ${total}件の変更を同期しました`);
-        if (typeof loadOutliner === 'function') await loadOutliner();
-      }
-    } catch (e) {
-      console.warn('Notion auto-sync failed for', timerKey, e);
-    } finally {
-      _syncInProgress = false;
-      _releaseSyncLock(lockToken);
-    }
-  }
+  async function _reconcileTimers() {}
 
   // === 起動時の自動同期タイマー初期化 ===
   async function _initAutoSync() {

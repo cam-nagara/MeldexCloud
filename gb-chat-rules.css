@@ -1,5 +1,21 @@
 /* gb-chat-rules.css — チャットLLMルール管理ダイアログ */
 
+/* ノート行操作・書式ポップアップ・チャット選択回帰修正計画(2026-08-04)§2.5:
+   発言者名・日時を選択可能にする。gb-layout.part01.css の
+   "#chat-messages .chat-message-header, #team-messages .chat-message-header
+   { user-select: none }" がLLMチャットのヘッダー全体（名前・日時・操作ボタン）を
+   選択不可にしていたため、名前・日時の要素だけを個別に上書きして選択可能へ戻す。
+   本ファイルは gb-layout.css より後に読み込まれるため、同specificity以下でも
+   後勝ちで有効。操作ボタン（.chat-message-header button）は元のルールのまま
+   選択不可を維持する（除外対象）。 */
+#chat-messages .chat-message-header .chat-message-author,
+#chat-messages .chat-message-header .chat-message-time,
+#team-messages .chat-message-header .chat-message-author,
+#team-messages .chat-message-header .chat-message-time {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .chat-rules-modal .chat-rules-toolbar {
   display: flex;
   align-items: center;

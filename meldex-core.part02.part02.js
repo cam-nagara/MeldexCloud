@@ -1,7 +1,13 @@
       preview.classList.add('ann-preview');
       layer.appendChild(preview);
     }
-    if (_ann.tool === 'rect') {
+    if (_ann.anchor) {
+      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+      const previewData = previewType === 'rect'
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'rect') {
       _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
@@ -24,8 +30,11 @@
     const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect' ? _renderRect(strokeData, _ann.color, _ann.opacity, null) : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width);
+    const savedEl = type === 'rect'
+      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
       target_path: _ann.targetPath,
@@ -37,7 +46,7 @@
     }, (res) => {
       if (res?.id) savedEl.dataset.annId = res.id;
     }, () => { savedEl.remove(); })) {
-      _ann.path = []; _ann.pressures = [];
+      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
       return;
     }
     // 親に保存依頼
@@ -49,13 +58,151 @@
       annClientId,
     });
     // 確定描画
-    _ann.path = []; _ann.pressures = [];
+    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
   });
 
-  function _renderStroke(type, points, pressures, color, opacity, annId, width) {
+  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
     const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const points = _anchoredWorldPoints(type, data);
+    if (type === 'stroke' || type === 'marker') {
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none');
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+    } else {
+      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
+      el.setAttribute('fill', color);
+      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
+      el.setAttribute('stroke-opacity', String(normalizedOpacity));
+      if (preview) el.setAttribute('stroke-dasharray', '4,4');
+      else el.removeAttribute('stroke-dasharray');
+    }
+    return el;
+  }
+
+  const _anchoredAnnotationEntries = new Set();
+  let _anchoredRefreshHandle = 0;
+  const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
+  let _anchoredMutationObserver = null;
+
+  function _ensureAnchoredMutationObserver() {
+    if (_anchoredMutationObserver) return;
+    _anchoredMutationObserver = new MutationObserver(() => _scheduleAnchoredAnnotationRefresh());
+    _anchoredMutationObserver.observe(wrapper, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+  }
+
+  function _releaseAnchoredMutationObserverIfIdle() {
+    if (_anchoredAnnotationEntries.size || !_anchoredMutationObserver) return;
+    _anchoredMutationObserver.disconnect();
+    _anchoredMutationObserver = null;
+  }
+
+  function _trackAnchoredAnnotation(el, type, data, color, opacity) {
+    if (!data?.anchor) return;
+    const nodeEl = _boardAnnotationNode(data.anchor);
+    _anchoredAnnotationEntries.add({
+      el,
+      type,
+      data,
+      color,
+      opacity,
+      detaching: false,
+      lastWorldPoints: _anchoredWorldPoints(type, data),
+      lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
+      observedNode: nodeEl,
+    });
+    _ensureAnchoredMutationObserver();
+    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
+    _scheduleAnchoredAnnotationRefresh();
+  }
+
+  function _boardStillHasNode(nodeId) {
+    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
+      ? bd.nodes.some(node => node?.id === nodeId)
+      : !!document.getElementById('bdn-' + nodeId);
+  }
+
+  function _detachAnchoredAnnotation(entry) {
+    if (entry.detaching || !entry.data?.anchor) return;
+    entry.detaching = true;
+    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+    const worldPoints = entry.lastWorldPoints || [];
+    if (entry.type === 'rect') {
+      entry.type = 'lasso';
+      delete entry.data.x;
+      delete entry.data.y;
+      delete entry.data.height;
+      entry.data.points = worldPoints;
+    } else {
+      entry.data.points = worldPoints;
+      if (entry.type === 'stroke' || entry.type === 'marker') {
+        entry.data.width = entry.lastWorldWidth;
+      }
+    }
+    delete entry.data.anchor;
+    const annId = entry.el?.dataset?.annId || '';
+    const payload = { data: entry.data };
+    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
+    const finish = () => { entry.detaching = false; };
+    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
+    finish();
+  }
+
+  function _refreshAnchoredAnnotations() {
+    _anchoredRefreshHandle = 0;
+    _anchoredAnnotationEntries.forEach(entry => {
+      if (!entry.el?.isConnected) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const anchor = entry.data?.anchor;
+      if (!anchor) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const nodeEl = _boardAnnotationNode(anchor);
+      if (!nodeEl) {
+        if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
+        return;
+      }
+      if (entry.observedNode !== nodeEl) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        entry.observedNode = nodeEl;
+        _anchoredResizeObserver.observe(nodeEl);
+      }
+      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
+      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
+        * _annotationAnchorScale(anchor);
+      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
+    });
+    _releaseAnchoredMutationObserverIfIdle();
+  }
+
+  function _scheduleAnchoredAnnotationRefresh() {
+    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
+    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
+  }
+
+  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const data = sourceData || { points, pressures, width };
     let el;
-    if (type === 'lasso') {
+    if (data.anchor) {
+      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
+      _applyAnchoredShape(el, type, data, color, opacity, false);
+    } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
       el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
@@ -70,13 +217,17 @@
     }
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, type, data, color, opacity);
     return el;
   }
 
   function _renderRect(data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
+    const el = data?.anchor
+      ? _applyAnchoredShape(document.createElementNS(_svgNS, 'polygon'), 'rect', data, color, opacity, false)
+      : _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, 'rect', data, color, opacity);
     return el;
   }
 
@@ -134,7 +285,7 @@
         } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
           _renderRect(data, item.color, item.opacity, item.id);
         } else if (data?.points) {
-          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width);
+          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
       });
       _syncNoteInteractivity();
@@ -183,7 +334,15 @@
     _handleMessage(msg);
   });
 
-  const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
+  const bridge = {
+    svg,
+    layer,
+    notesLayer,
+    ann: _ann,
+    handleMessage: _handleMessage,
+    updateSize: _updateSize,
+    refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
+  };
   const e2eBridgeEnabled = (() => {
     if (typeof window === 'undefined') return false;
     if (window.GBE2EActions) return true;

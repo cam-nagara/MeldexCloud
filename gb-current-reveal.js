@@ -373,13 +373,9 @@
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  async function revealCurrentInFolderTree(hint, event) {
-    const activeSnapshot = _captureActivePane();
-    const path = _normalizePath(_currentRevealPath(hint, event));
-    if (!path) {
-      if (typeof showStatus === 'function') showStatus('現在の項目の場所を特定できません', true);
-      return false;
-    }
+  // revealCurrentInFolderTree / revealPathInFolderTree 共通部。パスは呼び出し側で
+  // 正規化・空チェック済みのものを渡す（メッセージ文言は呼び出し側ごとに変えたいため）。
+  async function _performFolderTreeReveal(path, activeSnapshot) {
     if (!_ensureOutlinerVisible(activeSnapshot)) {
       if (typeof showStatus === 'function') showStatus('フォルダツリーを開けませんでした', true);
       return false;
@@ -406,6 +402,30 @@
     return false;
   }
 
+  async function revealCurrentInFolderTree(hint, event) {
+    const activeSnapshot = _captureActivePane();
+    const path = _normalizePath(_currentRevealPath(hint, event));
+    if (!path) {
+      if (typeof showStatus === 'function') showStatus('現在の項目の場所を特定できません', true);
+      return false;
+    }
+    return _performFolderTreeReveal(path, activeSnapshot);
+  }
+
+  // リンク右クリックメニュー等、任意のパスを指定してフォルダツリー上に表示する版。
+  // revealCurrentInFolderTree と違い「現在開いているタブ」を経由せず、渡されたパスを
+  // そのまま対象にする。
+  async function revealPathInFolderTree(path) {
+    const target = _normalizePath(path);
+    if (!target) {
+      if (typeof showStatus === 'function') showStatus('表示する項目のパスを特定できません', true);
+      return false;
+    }
+    const activeSnapshot = _captureActivePane();
+    return _performFolderTreeReveal(target, activeSnapshot);
+  }
+
   window.revealCurrentInFolderTree = revealCurrentInFolderTree;
+  window.revealPathInFolderTree = revealPathInFolderTree;
   window.getCurrentFolderTreeRevealPath = (hint, event) => _currentRevealPath(hint, event);
 })();

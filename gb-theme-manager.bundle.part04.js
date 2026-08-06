@@ -1,3 +1,10 @@
+      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
+      return;
+    }
+    const next = normalizeCustomThemePayload(currentTheme, '旧テーマカラー');
+    next.id = newCustomThemeId('custom-legacy-palette');
+    next.name = '旧テーマカラー';
+    setThemeColorSetOnTheme(next, storedPalette);
     customThemes.push(next);
     saveCustomThemes(customThemes);
     setDefaultThemeId(next.id);

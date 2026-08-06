@@ -20,6 +20,8 @@
   <link rel="stylesheet" href="quick-memo.css">
   <link rel="stylesheet" href="standalone-tags.css">
   <link rel="stylesheet" href="standalone-profile.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
+  <link rel="stylesheet" href="standalone-secondary-panel.css">
 </head>
 <body data-standalone-profile-local="true">
   <main class="qm-shell" id="editorView">
@@ -141,9 +143,44 @@
   <script src="standalone-app-bootstrap.js"></script>
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="gb-tooltip.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
+  <script src="standalone-secondary-panel.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="quick-memo-editor.js"></script>
   <script src="quick-memo-drawing.js"></script>
   <script src="quick-memo-library.js"></script>
+  <script src="gb-cloud-frontmatter-lite.js"></script>
   <script src="quick-memo.js"></script>
+  <!-- 共通カラーパレット（ビューワー残課題修正計画 2026-08-04「4. 共通カラーパレット」）。
+       quick-memo-drawing.js は本タスクの編集対象外のため、色スウォッチボタンのクリック挙動を
+       クローン置換で差し替えて共通パレット(openColorPalette)を開くよう配線する（下記スクリプト）。 -->
+  <script src="gb-color-palette.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    // colorInput.value が既存コード全体（quick-memo-drawing.js）の唯一の真値なので、
+    // 選択色はそこへ書き戻し、既存のinputリスナー（スウォッチ表示・設定保存）をそのまま動かす。
+    window.addEventListener('load', function () {
+      var swatchBtn = document.getElementById('colorSwatchBtn');
+      var colorInput = document.getElementById('colorInput');
+      var popover = document.getElementById('colorPopover');
+      if (!swatchBtn || !colorInput || typeof openColorPalette !== 'function') return;
+      // 既存のポップオーバートグル用リスナー（quick-memo-drawing.js）を完全に外すため、
+      // ボタンをクローン置換してから独自ハンドラだけを付け直す。
+      var freshBtn = swatchBtn.cloneNode(true);
+      swatchBtn.replaceWith(freshBtn);
+      freshBtn.addEventListener('click', function () {
+        if (popover) popover.hidden = true;
+        openColorPalette(freshBtn, colorInput.value, function (color) {
+          if (!color || color === 'transparent') return;
+          colorInput.value = color;
+          colorInput.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      });
+    });
+  })();
+  </script>
 </body>
 </html>

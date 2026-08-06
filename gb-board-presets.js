@@ -439,8 +439,8 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('board', event)">${_bdIcon('folderTree', 16)}</button>
       <span id="${idFor('bd-title')}" class="tb-title tb-file-title bd-toolbar-title" data-bd-control="title"></span>
       <div class="sep"></div>
-      <button type="button" data-bd-action="undo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button>${_bdIcon('undo2', 16)}</button>
-      <button type="button" data-bd-action="redo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button>${_bdIcon('redo2', 16)}</button>
+      <button type="button" data-bd-action="undo" data-gb-tooltip-key="history.undo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="元に戻す (Ctrl+Z)" aria-label="元に戻す" data-undo-button>${_bdIcon('undo2', 16)}</button>
+      <button type="button" data-bd-action="redo" data-gb-tooltip-key="history.redo" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="やり直し (Ctrl+Y)" aria-label="やり直し" data-redo-button>${_bdIcon('redo2', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
@@ -463,7 +463,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <button type="button" data-bd-action="filters" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="フィルタ" aria-label="フィルタ" aria-haspopup="menu" aria-expanded="false" style="position:relative;">${_bdIcon('funnel', 16)}<span id="${idFor('bd-filter-badge')}" class="bd-filter-badge tb-badge" data-bd-control="filter-badge" style="display:none;position:absolute;top:-4px;right:-4px;"></span></button>
       <button type="button" data-bd-action="reload" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="再読み込み" aria-label="再読み込み">${_bdIcon('refreshCw', 16)}</button>
       <button type="button" data-bd-action="find-replace" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="検索と置換" aria-label="検索と置換">${_bdIcon('search', 16)}</button>
-      <button type="button" data-bd-action="detail" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く">${_bdIcon('slidersHorizontal', 16)}</button>
+      <button type="button" data-bd-action="detail" data-gb-tooltip-key="panel.right.toggle" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false">${_bdIcon('panelRight', 16)}</button>
     </div>
     <div id="${idFor('bd-canvas')}" data-bd-role="canvas" data-gb-tooltip-disabled="true" tabindex="0" aria-label="ボードキャンバス" title="ボードキャンバス" style="position:relative;flex:1;overflow:hidden;outline:none;background:var(--bd-bg,var(--content-bg,var(--bg)));" oncontextmenu="return false;">
       <div id="${idFor('bd-world')}" data-bd-role="world" style="position:absolute;transform-origin:0 0;">

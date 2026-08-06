@@ -124,17 +124,22 @@ function _renderDbViewSelect(select, ctx, views, curIdx) {
   };
 }
 
-function _dbViewToolbarActionHost(tabs) {
-  const root = tabs?.closest?.('#tb-db');
-  return root?.querySelector?.('.db-toolbar-actions-right') || tabs;
+// タブ行（#db-view-tabs）とツールバー（#tb-db / #sheet-db-toolbar）はDOM上の親子関係を持たない
+// 兄弟要素のため、tabs.closest() では見つからない。メイン版・スタンドアロン版のどちらか
+// 存在する方のツールバー右側コンテナを直接探す（1画面に片方しか存在しない）。
+// ツールバーを持たない埋め込み表示（ctx.embedded）では null を返し、呼び出し側はタブ行への
+// 代替配置をせず非表示にする。
+function _dbViewToolbarActionHost(tabs, ctx) {
+  if (ctx?.embedded) return null;
+  return document.querySelector('#tb-db .db-toolbar-actions-right')
+    || document.querySelector('#sheet-db-toolbar .db-toolbar-actions-right')
+    || null;
 }
 
-function _prepareDbViewToolbarActions(tabs) {
-  const host = _dbViewToolbarActionHost(tabs);
-  if (host && host !== tabs) {
-    host.querySelectorAll('[data-db-view-toolbar-action="1"]').forEach(el => el.remove());
-  }
-  return host || tabs;
+function _prepareDbViewToolbarActions(tabs, ctx) {
+  document.querySelectorAll('.db-toolbar-actions-right [data-db-view-toolbar-action="1"]')
+    .forEach(el => el.remove());
+  return _dbViewToolbarActionHost(tabs, ctx);
 }
 
 function _markDbViewToolbarAction(btn) {
@@ -216,7 +221,7 @@ function renderDbViewTabs(ctx) {
   tabs.innerHTML = '';
   _bindDbViewTabsWheelScroll(tabs);
   _syncDbToolbarFilterButtonIcon();
-  const actionHost = _prepareDbViewToolbarActions(tabs);
+  const actionHost = _prepareDbViewToolbarActions(tabs, ctx);
   const e2eScope = String(ctx?.paneId || ctx?.id || dbPath || 'main').replace(/[^\w-]/g, '_');
   const calendarInfo = typeof _getCalendarIntegrationInfo === 'function'
     ? _getCalendarIntegrationInfo(dbPath, ctx.pivotData || state.pivotData, ctx)
@@ -363,27 +368,35 @@ function renderDbViewTabs(ctx) {
   });
   tabs.appendChild(addBtn);
 
-  // テンプレートボタン
-  if (typeof showTemplateGalleryModal === 'function') {
-    const tmplBtn = document.createElement('button');
-    tmplBtn.className = 'view-tab-add tb-icon-btn';
-    _markDbViewToolbarAction(tmplBtn);
-    tmplBtn.dataset.e2eId = `db-template-${e2eScope}`;
-    tmplBtn.innerHTML = lucide('layoutTemplate', 16);
-    tmplBtn.title = 'シートテンプレート';
-    tmplBtn.addEventListener('click', () => showTemplateGalleryModal(dbPath));
-    actionHost.appendChild(tmplBtn);
-  }
+  // 「シートテンプレート」「シート設定」はビュータブ行から外し、メイン版/スタンドアロン版
+  // それぞれのシートツールバー右側（#tb-db / #sheet-db-toolbar の .db-toolbar-actions-right）へ
+  // 配置する。ツールバーを持たない埋め込み表示（actionHost が null）では、タブ行への
+  // 代替配置をせずどちらも表示しない。
+  if (actionHost) {
+    // テンプレートボタン
+    if (typeof showTemplateGalleryModal === 'function') {
+      const tmplBtn = document.createElement('button');
+      tmplBtn.className = 'tb-icon-btn';
+      _markDbViewToolbarAction(tmplBtn);
+      tmplBtn.dataset.e2eId = `db-template-${e2eScope}`;
+      tmplBtn.innerHTML = lucide('layoutTemplate', 16);
+      tmplBtn.title = 'シートテンプレート';
+      tmplBtn.setAttribute('aria-label', 'シートテンプレート');
+      tmplBtn.addEventListener('click', () => showTemplateGalleryModal(dbPath));
+      actionHost.appendChild(tmplBtn);
+    }
 
-  // DB設定ボタン（ギアアイコン）
-  const gearBtn = document.createElement('button');
-  gearBtn.className = 'view-tab-add tb-icon-btn';
-  _markDbViewToolbarAction(gearBtn);
-  gearBtn.dataset.e2eId = `db-settings-${e2eScope}`;
-  gearBtn.innerHTML = lucide('settings', 16);
-  gearBtn.title = 'シート設定';
-  gearBtn.addEventListener('click', () => _showDbConfigModal(dbPath, ctx));
-  actionHost.appendChild(gearBtn);
+    // DB設定ボタン（ギアアイコン）
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'tb-icon-btn';
+    _markDbViewToolbarAction(gearBtn);
+    gearBtn.dataset.e2eId = `db-settings-${e2eScope}`;
+    gearBtn.innerHTML = lucide('settings', 16);
+    gearBtn.title = 'シート設定';
+    gearBtn.setAttribute('aria-label', 'シート設定');
+    gearBtn.addEventListener('click', () => _showDbConfigModal(dbPath, ctx));
+    actionHost.appendChild(gearBtn);
+  }
 }
 
 function renderDbNoViewsGuide(ctx) {

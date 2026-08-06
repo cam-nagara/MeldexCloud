@@ -21,15 +21,18 @@
   <link rel="stylesheet" href="gb-theme.css">
   <link rel="stylesheet" href="gb-ui.css">
   <link rel="stylesheet" href="gb-tools.css">
+  <link rel="stylesheet" href="gb-note-block-menu.css">
+  <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="note-standalone.css">
   <link rel="stylesheet" href="standalone-tags.css">
+  <link rel="stylesheet" href="gb-tooltip.css">
   <link rel="stylesheet" href="standalone-profile.css">
 </head>
 <body>
-  <div class="sa-shell note-app">
+  <div class="sa-shell sa-options-collapsed note-app">
     <header class="sa-toolbar">
       <div class="sa-menu-wrap">
         <button id="note-menu-button" class="sa-icon-btn" type="button" title="メニュー" aria-label="メニュー" data-e2e-id="note-menu-button"><span class="ico ico-menu"></span></button>
@@ -45,6 +48,7 @@
           <div class="sa-menu-sep"></div>
           <button type="button" data-note-action="exportMarkdown" data-e2e-id="note-menu-export-markdown"><span class="ico ico-fileText"></span>Markdownとして保存...</button>
           <button type="button" data-note-action="exportPng" data-e2e-id="note-menu-export-png"><span class="ico ico-image"></span>画像（PNG）として保存...</button>
+          <button type="button" data-note-action="exportDocx" data-e2e-id="note-menu-export-docx"><span class="ico ico-fileText"></span>Word（DOCX）として保存...</button>
           <button type="button" data-note-action="copyMarkdown" data-e2e-id="note-menu-copy-markdown"><span class="ico ico-clipboardCopy"></span>Markdownをコピー</button>
           <div class="sa-menu-sep"></div>
           <button type="button" data-standalone-default-apps-open data-e2e-id="note-menu-default-app"><span class="ico ico-fileCog"></span>既定アプリに設定...</button>
@@ -53,7 +57,7 @@
       <input id="note-title-input" class="note-title-input" type="text" value="無題" aria-label="ノート名" spellcheck="false">
       <div id="note-sync-status" class="sa-sync-status" aria-live="polite"></div>
       <div id="note-path-label" class="sa-path">未保存</div>
-      <button id="note-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-e2e-id="note-option-panel-button"><span class="ico ico-panelRight"></span></button>
+      <button id="note-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-gb-tooltip-key="panel.right.toggle" data-e2e-id="note-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div id="page-rt-toolbar" class="gb-toolbar">
       <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-e2e-id="note-toc-toggle"><span class="ico ico-panelLeft"></span></button>
@@ -68,13 +72,7 @@
       <button type="button" class="tb-icon-btn" title="下線 (Ctrl+U)" aria-label="下線" data-note-rt-cmd="underline" data-e2e-id="note-rt-underline"><span class="ico ico-underline"></span></button>
       <button type="button" class="tb-icon-btn" title="取り消し線" aria-label="取り消し線" data-note-rt-cmd="strikeThrough" data-e2e-id="note-rt-strike"><span class="ico ico-strikethrough"></span></button>
       <div class="sep"></div>
-      <select class="tb-select" id="note-rt-heading" title="見出し" aria-label="見出し" data-e2e-id="note-rt-heading">
-        <option value="">見出し</option>
-        <option value="TITLE">タイトル</option>
-        <option value="H1">H1</option><option value="H2">H2</option><option value="H3">H3</option>
-        <option value="H4">H4</option><option value="H5">H5</option><option value="H6">H6</option>
-        <option value="P">本文</option>
-      </select>
+      <button type="button" id="page-rt-heading-btn" class="note-heading-toolbar-btn" title="行の種類を変更" aria-label="行の種類を変更" aria-haspopup="menu" aria-expanded="false" data-e2e-id="page-rt-heading-btn" data-action="MeldexNoteToolbarBlockSelect.toggle(event)"><span class="note-heading-toolbar-btn-label" data-role="label">行の種類</span><span class="ico ico-chevronDown note-heading-toolbar-btn-caret" aria-hidden="true"></span></button>
       <div class="sep"></div>
       <button type="button" class="tb-icon-btn" title="箇条書き" aria-label="箇条書き" data-note-rt-cmd="insertUnorderedList" data-e2e-id="note-rt-unordered-list"><span class="ico ico-list"></span></button>
       <button type="button" class="tb-icon-btn" title="番号付き" aria-label="番号付き" data-note-rt-cmd="insertOrderedList" data-e2e-id="note-rt-ordered-list"><span class="ico ico-listOrdered"></span></button>
@@ -146,19 +144,24 @@
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
   <script src="gb-resource-url.js"></script>
+  <script src="gb-link-router.js"></script>
   <script src="gb-dropbox-auth.js"></script>
+  <script src="gb-system-storage.js"></script>
+  <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-dropbox-management-root-resolver.js"></script>
   <script src="gb-source-folder-registry.js"></script>
   <script src="gb-workspace-shared-ledger.js"></script>
   <script src="gb-workspace-ledger-io.js"></script>
   <script src="gb-dropbox-folder-picker.js"></script>
   <script src="offline-bundles/gb-storage-adapter.js"></script>
-  <script src="offline-bundles/gb-data-access.js"></script>
+  <script src="gb-reference-codecs.js"></script><script src="offline-bundles/gb-data-access.js"></script>
   <script src="gb-owner-key-store.js"></script>
   <script src="gb-knowledge-signature.js"></script>
   <script src="gb-file-lock-store.js"></script>
   <script src="gb-active-lock-store.js"></script>
   <script src="gb-active-locks.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-expanded.js"></script>
+  <script src="gb-document-identity.js"></script>
   <script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
   <script src="gb-data-access-dropbox-tag-csv.js"></script>
   <script src="gb-dropbox-asset-identity.js"></script>
@@ -174,19 +177,25 @@
   <script src="gb-ui.js"></script>
   <script src="offline-bundles/gb-tooltip.js"></script>
   <script src="gb-modal-shell.js"></script>
+  <script src="gb-dialog-keyboard.js"></script>
   <script src="gb-dropdown-dismiss.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="gb-format-popup.js"></script>
+  <script src="gb-link-modal.js"></script>
   <script src="gb-events.js"></script>
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
+  <script src="meldex-app-capabilities.js"></script>
   <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
+  <script src="standalone-parity-adapter.js"></script>
   <script src="standalone-file-fs.js"></script>
   <script src="standalone-default-apps.js"></script>
   <script src="standalone-cloud-path-policy.js"></script>
   <script src="standalone-cloud-edit-session.js"></script>
+  <script src="standalone-cloud-file-routes.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
@@ -204,14 +213,23 @@
   <script src="gb-note-theme-style.js"></script>
   <script src="gb-editor-preview.js"></script>
   <script src="offline-bundles/gb-editor.js"></script>
+  <script src="gb-scriptnote-file-style-contract.js"></script>
   <script src="offline-bundles/gb-note-enhance.js"></script>
+  <script src="gb-note-block-types.js"></script>
+  <script src="gb-note-block-menu.js"></script>
+  <script src="gb-note-block-reorder.js"></script>
+  <script src="gb-note-block-context-menu.js"></script>
+  <script src="gb-note-toolbar-block-select.js"></script>
   <script src="gb-text-selection-format.js"></script>
   <script src="offline-bundles/gb-shortcuts.js"></script>
   <script src="gb-export-save.js"></script>
+  <script src="gb-docx-export.js"></script>
   <script src="gb-export-image.js"></script>
   <script src="standalone-mobile-toolbar.js"></script>
   <script src="standalone-local-drafts.js"></script>
   <script src="standalone-offline-outbox.js"></script>
+  <script src="standalone-close-guard.js"></script>
+  <script src="standalone-save-queue.js"></script>
   <script src="note-standalone-app.js"></script>
 </body>
 </html>

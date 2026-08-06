@@ -108,7 +108,11 @@ function _saveFileThemeToDbFolderNote(theme) {
       } else if (styleYaml) {
         content = '---\n' + styleYaml + '---\n' + content;
       }
-      await apiPut('/file?path=' + encodeURIComponent(notePath), { content });
+      await apiPut('/file?path=' + encodeURIComponent(notePath), {
+        content,
+        if_match_etag: data.etag || '',
+        transport_revision: data.transport_revision || '',
+      });
       if (state?.currentDbPath === dbPath) _syncDbMetadataFileStyle(themeSnapshot);
       showStatus('DBテーマを保存しました');
     } catch (e) { showStatus('テーマ保存に失敗しました', true); }
@@ -903,82 +907,85 @@ function bindTableCellContextMenu(el) {
 bindTableCellContextMenu(document.getElementById('page-content'));
 bindTableCellContextMenu(document.getElementById('entity-freetext'));
 
-// Markdown風の行頭ショートカット（例: ### + Space → H3）
-function _noteMarkdownShortcutBlock(editable, range) {
-  if (!editable || !range || !range.collapsed) return null;
-  let node = range.startContainer;
-  if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-  const block = node?.closest?.('div,p,h1,h2,h3,h4,h5,h6,blockquote');
-  if (!block || block === editable || !editable.contains(block)) return null;
-  if (block.closest('table,pre,code,.callout-block')) return null;
-  return block;
-}
+// ============================================================
+// 行頭記法（工程6） — 「・」「数値」「h1〜h6」「既存の#〜######」+ Space
+// ============================================================
+// 計画書§5工程6: 共通の現在行変換（gb-note-block-types.js の
+// MeldexNoteBlockTypes.convertCurrentLineTo）へ委譲する。現在行の解決境界も
+// レジストリの resolveCurrentBlock を正本にし、旧実装（#page-content 直下の
+// div/p/h1-6/blockquote だけを対象にした専用ロジック）は残さない。
 
-function _noteTextBeforeCaret(block, range) {
+// 行頭からキャレットまでのテキスト（改行区切りの現在行部分）を取得する。
+function _noteLineTextBeforeCaret(block, range) {
   const before = range.cloneRange();
   before.setStart(block, 0);
-  return before.toString().replace(/\u00a0/g, ' ');
+  const text = before.toString().replace(/\u00a0/g, ' ');
+  return text.slice(text.lastIndexOf('\n') + 1);
 }
 
-function _noteReplaceBlockTag(block, tagName) {
-  if (!block || block.tagName === tagName) return block;
-  const next = document.createElement(tagName.toLowerCase());
-  while (block.firstChild) next.appendChild(block.firstChild);
-  block.replaceWith(next);
-  return next;
-}
-
-function _notePlaceCaretAtStart(block) {
-  if (!block) return;
-  if (!block.childNodes.length) block.appendChild(document.createElement('br'));
-  const range = document.createRange();
-  const lineIdSpan = block.firstElementChild?.classList?.contains('_nl-id') ? block.firstElementChild : null;
-  if (lineIdSpan) range.setStartAfter(lineIdSpan);
-  else range.setStart(block, 0);
-  range.collapse(true);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+// 行頭記法トリガーの判定。一致しなければ null。
+// - 「・」→ 箇条書き
+// - 数値（1桁以上）→ 番号付きリスト（入力した数値をstartとして保持）
+// - h1〜h6（大小文字問わず）→ 見出し1〜6
+// - 既存の #〜###### → 見出し1〜6（維持）
+function _noteLineStartTrigger(lineText) {
+  const headingHash = lineText.match(/^(#{1,6})$/);
+  if (headingHash) return { typeId: 'h' + headingHash[1].length };
+  const headingLetter = lineText.match(/^[hH]([1-6])$/);
+  if (headingLetter) return { typeId: 'h' + headingLetter[1] };
+  if (lineText === '・') return { typeId: 'ul' }; // 「・」
+  const ordered = lineText.match(/^(\d+)$/);
+  if (ordered) return { typeId: 'ol', orderedStart: parseInt(ordered[1], 10) };
+  return null;
 }
 
 function _handleNoteMarkdownShortcutKeydown(e) {
-  if (e.defaultPrevented || e.isComposing) return;
+  if (e.defaultPrevented || e.isComposing) return; // IME変換中は誤発火させない（工程6必須要件）
   if (e.key !== ' ' && e.key !== 'Spacebar') return;
-  const editable = e.target?.closest?.('#page-content');
+  if (typeof MeldexNoteBlockTypes === 'undefined') return;
+  const editable = e.target?.closest?.(MeldexNoteBlockTypes.EDITABLE_SELECTOR);
   if (!editable || editable.contentEditable !== 'true') return;
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return;
   const range = sel.getRangeAt(0);
   if (!editable.contains(range.startContainer)) return;
-  const block = _noteMarkdownShortcutBlock(editable, range);
-  if (!block) return;
-  const beforeText = _noteTextBeforeCaret(block, range);
-  const lineText = beforeText.slice(beforeText.lastIndexOf('\n') + 1);
-  const headingMatch = lineText.match(/^(#{1,6})$/);
-  if (!headingMatch) return;
+  const info = MeldexNoteBlockTypes.resolveCurrentBlock(editable, range);
+  if (!info) return;
+  // コード・表・コールアウト内では行頭記法を認識しない（誤変換防止。従来挙動を維持）
+  if (info.kind === 'code' || info.kind === 'table' || info.kind === 'callout') return;
+  const lineText = _noteLineTextBeforeCaret(info.block, range);
+  const trigger = _noteLineStartTrigger(lineText);
+  if (!trigger) return;
 
   e.preventDefault();
-  if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
-  const deleteRange = range.cloneRange();
-  const lineIdSpan = block.firstElementChild?.classList?.contains('_nl-id') ? block.firstElementChild : null;
-  if (lineIdSpan) deleteRange.setStartAfter(lineIdSpan);
-  else deleteRange.setStart(block, 0);
-  deleteRange.deleteContents();
-  const heading = _noteReplaceBlockTag(block, 'H' + headingMatch[1].length);
-  heading.classList.remove('note-title');
-  delete heading.dataset.noteTitle;
-  _notePlaceCaretAtStart(heading);
-  editable.dispatchEvent(new Event('input', { bubbles: true }));
+  const originalRange = range.cloneRange();
+  MeldexNoteBlockTypes.convertCurrentLineTo(trigger.typeId, {
+    editable,
+    range: originalRange,
+    orderedStart: trigger.orderedStart,
+    // トリガー文字（"###" 等）の削除は、共通変換の undo push 直後・DOM変換の
+    // 直前で実行し、「削除＋行種変換」を1回のUndoにまとめる（§5工程4-4）。
+    beforeConvert(convInfo, convRange) {
+      const deleteRange = convRange.cloneRange();
+      deleteRange.setStart(convInfo.block, 0);
+      const lineIdSpan = convInfo.block.firstElementChild?.classList?.contains('_nl-id') ? convInfo.block.firstElementChild : null;
+      if (lineIdSpan) deleteRange.setStartAfter(lineIdSpan);
+      deleteRange.deleteContents();
+    },
+  });
 }
 
-function bindNoteMarkdownShortcuts(el) {
-  if (!el || el._noteMarkdownShortcutAttached) return;
-  el._noteMarkdownShortcutAttached = true;
-  el.addEventListener('keydown', _handleNoteMarkdownShortcutKeydown, true);
+function bindNoteMarkdownShortcuts() {
+  if (document._noteMarkdownShortcutAttached) return;
+  document._noteMarkdownShortcutAttached = true;
+  // captureフェーズの単一リスナーへ集約する（#page-content 限定だった旧実装から
+  // #entity-freetext・#dp-editable へも一般化。動的生成される編集ホストにも
+  // 個別バインド不要で追従する）。
+  document.addEventListener('keydown', _handleNoteMarkdownShortcutKeydown, true);
 }
 
-bindNoteMarkdownShortcuts(document.getElementById('page-content'));
+bindNoteMarkdownShortcuts();
 
-// スラッシュコマンドのイベントリスナー登録
+// スラッシュコマンドのイベントリスナー登録（キー操作は gb-note-block-menu.js が
+// document capture フェーズで処理する。ここでは / の検出のみ）
 document.addEventListener('input', _onSlashInput);
-document.addEventListener('keydown', _onSlashKeydown, true); // captureフェーズでメニュー操作を先取り

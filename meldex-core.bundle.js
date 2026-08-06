@@ -5,4 +5,5 @@ __loadSplitScript('meldex-core.bundle.js', [
   'meldex-core.bundle.part02.js',
   'meldex-core.bundle.part03.js',
   'meldex-core.bundle.part04.js',
+  'meldex-core.bundle.part05.js',
 ]);

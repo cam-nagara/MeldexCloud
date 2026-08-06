@@ -49,7 +49,7 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 
 /* 自動リンク */
 .auto-link {
-  color: var(--page-link-fg); text-decoration: underline dotted; cursor: pointer;
+  color: var(--page-link-fg); text-decoration: none; cursor: pointer;
   position: relative; font-weight: var(--page-link-bold); font-style: var(--page-link-italic);
   font-size: var(--page-link-font-size, inherit); font-family: var(--page-link-font, inherit);
   background: var(--page-link-bg, transparent);
@@ -57,10 +57,10 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
   -webkit-text-stroke-width: var(--page-link-stroke-width, 0px);
   paint-order: stroke fill;
   box-shadow: calc(-1 * var(--page-link-left-accent, 0px)) 0 0 0 var(--page-link-accent-color, var(--page-link-fg));
-  text-decoration-line: var(--page-link-underline, underline);
+  text-decoration-line: var(--page-link-underline, none);
   text-decoration-color: var(--page-link-accent-color, currentColor);
 }
-.auto-link:hover { color: var(--page-link-fg); text-decoration-style: solid; filter: brightness(1.15); }
+.auto-link:hover { color: var(--page-link-fg); text-decoration-line: underline; text-decoration-style: solid; filter: brightness(1.15); }
 .link-tooltip {
   position: fixed; z-index: 200; background: var(--ui-popup-bg, var(--bg2)); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border)));
   border-radius: 4px; padding: 8px 12px; max-width: 350px; font-size: 13px;
@@ -502,6 +502,19 @@ ruby rt { font-size: 0.5em; color: var(--fg2); }
 .gb-cal-sync-status-connected { color: var(--green); }
 .gb-cal-sync-status-unavailable { color: var(--red); }
 .gb-cal-sync-auth-status { margin-top: 8px; }
+.gb-cal-sync-auto-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--cal-muted-fg, var(--fg2));
+  margin-top: 8px;
+}
+.gb-cal-sync-auto-status-error {
+  font-size: 11px;
+  color: var(--red);
+  margin-top: 4px;
+}
 .gb-cal-sync-actions,
 .gb-cal-sync-split {
   display: flex;

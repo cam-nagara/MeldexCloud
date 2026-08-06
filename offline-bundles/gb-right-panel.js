@@ -67,8 +67,17 @@ function _resolveRpAnnotationCurrentTarget() {
   return '';
 }
 
-function openRightPanelTab(tabName) {
+// フロートパネル／サブパネル内では、右サイドバー補助操作（オプション/ビューワー/
+// バージョン管理/チャット/タイマー/ヒストリー/注釈/タグ/サブパネル）を使用できない。
+// source は明示的な呼び出し元（DOM要素／paneId）。省略時はフォーカス位置で判定する。
+function _rightSidebarToolAllowed(tabName, source) {
+  if (typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.guardRightSidebarTool !== 'function') return true;
+  return GBPaneBridge.guardRightSidebarTool(tabName, source);
+}
+
+function openRightPanelTab(tabName, source) {
   tabName = _normalizeRightPanelTabName(tabName);
+  if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
   const handle = document.getElementById('right-resize-handle');
   // パネルを開く
@@ -78,13 +87,16 @@ function openRightPanelTab(tabName) {
     const savedW = localStorage.getItem('right-panel-width');
     if (savedW) panel.style.width = savedW + 'px';
   }
-  switchRightTab(tabName);
+  // source は既にこの呼び出しで判定済みなので、内部呼び出しにもそのまま引き継ぐ
+  // （引き継がないと switchRightTab 側がフォーカス位置で独自に再判定してしまう）。
+  switchRightTab(tabName, source);
   _updateRabActiveState(tabName);
 }
 
 // 右アクティブバーからのトグル: 同じタブなら閉じる、違うタブなら開く
-function toggleRightPanelTab(tabName) {
+function toggleRightPanelTab(tabName, source) {
   tabName = _normalizeRightPanelTabName(tabName);
+  if (!_rightSidebarToolAllowed(tabName, source)) return;
   const panel = document.getElementById('right-panel');
   const handle = document.getElementById('right-resize-handle');
   const isOpen = panel.classList.contains('open');
@@ -103,7 +115,8 @@ function toggleRightPanelTab(tabName) {
       const savedW = localStorage.getItem('right-panel-width');
       if (savedW) panel.style.width = savedW + 'px';
     }
-    switchRightTab(tabName);
+    // source は既にこの呼び出しで判定済みなので、内部呼び出しにもそのまま引き継ぐ。
+    switchRightTab(tabName, source);
     _updateRabActiveState(tabName);
   }
 }
@@ -121,8 +134,9 @@ function _updateRabActiveState(activeTab) {
   }
 }
 
-function switchRightTab(tabName) {
+function switchRightTab(tabName, source) {
   if (tabName === 'sticky') tabName = 'annotation';
+  if (!_rightSidebarToolAllowed(tabName, source)) return;
   // タブ切り替え
   document.querySelectorAll('.rp-tab').forEach(t => {
     const active = t.dataset.rpTab === tabName;

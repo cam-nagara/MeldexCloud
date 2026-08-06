@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.081",
+    "semver": "0.7.157",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -13,13 +13,20 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.081"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.157"
   },
   "desktop": {
-    "currentVersion": "0.7.081",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/Meldex-v0.7.081.zip",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.081",
+    "currentVersion": "0.7.157",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/Meldex-v0.7.157.zip",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.157",
     "versions": [
+      {
+        "publishedAt": "2026-08-06",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.157",
+        "assetName": "Meldex-v0.7.157.zip",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/Meldex-v0.7.157.zip",
+        "version": "0.7.157"
+      },
       {
         "publishedAt": "2026-07-31",
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.081",
@@ -61,7 +68,7 @@
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.6.152",
         "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.6.152/Meldex-v0.6.152.zip",
         "publishedAt": "2026-06-29T13:51:38Z",
-        "assetName": "Windows用ZIP",
+        "assetName": "Windows騾包ｽｨZIP",
         "sha256": "6dbd5c83188af32fd96494d96cbb03a32c52d6bf3421b90e31f63d6833a3983c"
       }
     ]
@@ -70,36 +77,36 @@
     "note": {
       "cloudUrl": "apps/note/",
       "windowsAsset": "MeldexNote.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexNote.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexNote.zip"
     },
     "scenario": {
       "cloudUrl": "apps/scenario/",
       "windowsAsset": "MeldexScenario.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexScenario.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexScenario.zip"
     },
     "board": {
       "cloudUrl": "apps/board/",
       "windowsAsset": "MeldexBoard.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexBoard.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexBoard.zip"
     },
     "sheet": {
       "cloudUrl": "apps/sheet/",
       "windowsAsset": "MeldexSheet.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexSheet.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexSheet.zip"
     },
     "timer": {
       "cloudUrl": "apps/timer/",
       "windowsAsset": "MeldexTimer.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexTimer.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexTimer.zip"
     },
     "quick-memo": {
       "cloudUrl": "apps/quick-memo/",
       "windowsAsset": "MeldexQuickMemo.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexQuickMemo.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexQuickMemo.zip"
     }
   },
   "samples": {
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.081/MeldexSamples.zip"
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/MeldexSamples.zip"
   },
   "dropbox": {
     "developerAppKey": "ovxy3vacegzu7nu"

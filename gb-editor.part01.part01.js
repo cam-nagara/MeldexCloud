@@ -136,34 +136,10 @@ function flushPendingEditorAutosave() {
     const pc = document.getElementById('page-content');
     const currentPath = pc?.dataset?.path;
     if (currentPath && pc.dataset.loadFailed !== '1') {
-      pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-      pc.normalize();
-      let md = htmlToMd(pc.innerHTML || '');
-      const prevSaved = pc.dataset.lastSavedMd || '';
-      const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const fm = pc.dataset.frontmatter || '';
-      const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
-      if (md.trim() || prevBody.trim() || fm !== prevFm) {
-        if (fm) md = fm + md;
-        window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, pc.dataset.lastSavedMd || '');
-        const req = apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(pc, md));
-        pending.push(req);
-        req
-          .then((res) => {
-            if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
-            // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
-            if (pc.dataset.path === currentPath) {
-              pc.dataset.lastSavedMd = md;
-              pc.dataset.lastSavedEtag = res.etag || '';
-            }
-            window.MeldexDraftRecovery?.markSynced?.(currentPath);
-          })
-          .catch((error) => {
-            if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
-              showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
-            }
-          });
-      }
+      // 工程1: タブ/パネル切替・終了前flushの実処理は、2秒自動保存タイマーの
+      // コールバックと共通の _runNoteAutoSave() へ集約し、保存コーディネーター
+      // 経由のsingle-flight/coalesceへ合流させる（新規の競合保存を起こさない）。
+      pending.push(_runNoteAutoSave(pc));
     }
   }
   if (window._ftAutoSaveTimer) {
@@ -172,11 +148,11 @@ function flushPendingEditorAutosave() {
     const ft = document.getElementById('entity-freetext');
     const ep = ft?.dataset?.entityPath;
     if (ep && ft.textContent.trim() !== '自由記述エリア（クリックして編集）') {
+      // 工程2-C項目5: flush(タブ/パネル切替・終了前)も自動保存/blurと同じ
+      // 保存コーディネーター経由の共有関数（gb-editor.part02.part01.js）を使う
+      // （従来は生apiPutでetag/entry_revisionを一切送らない別実装だった）。
       const md = htmlToMd(ft.innerHTML || '');
-      const req = (ep.endsWith('.md')
-        ? apiPut('/value?path=' + encodeURIComponent(ep), { new_body: md, skip_if_missing: true })
-        : apiPut('/file?path=' + encodeURIComponent(ep + '/_freetext.md'), { content: md, skip_if_missing: true }))
-        .then((res) => { _handleFreeTextSkippedMissingSave(res); return res; });
+      const req = _saveEntityFreeText(ft, ep, md, { reason: 'entity-freetext-flush' });
       pending.push(req);
       req.catch(() => { showStatus('自由記述の自動保存に失敗しました', true); });
     }
@@ -194,10 +170,158 @@ function _noteMarkdownFromEditor(pc) {
   return md;
 }
 
+// ============================================================
+// 工程3: 入力イベントの軽量化（計画書§5工程3。
+// app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md）
+//
+// pc.oninput の同期区間は、dirty revisionの更新・軽量な行情報更新・
+// ドラフト予約（debounce+最大待ち時間で1件へ集約）だけに限定する。
+// 全本文Markdown変換（htmlToMd）とライブDOM正規化（normalize()）は、
+// 同期区間では一切呼ばない。実際に変換が必要になった時は編集DOMのclone上で
+// 行い（ハイライト除去・normalize()もclone側だけに適用）、ライブDOMの
+// 選択・キャレットには一切触れない。
+//
+// 対象外（保存経路レーン・行種系レーンの担当）: 2秒自動保存
+// （_runNoteAutoSave）・blur保存（pc.onblur）・flushPendingEditorAutosave()・
+// 行頭記法フック。ここで行う軽量化はIndexedDBドラフト退避と目次表示だけに
+// 閉じており、ネットワーク保存の挙動・タイミングは変更しない。
+// ============================================================
+
+const NOTE_DRAFT_DEBOUNCE_MS = 300;
+const NOTE_DRAFT_MAX_WAIT_MS = 1000;
+
+// pcは実質シングルトン要素だが、要素そのものをキーにしたWeakMapで状態を
+// 持つ（将来の複数編集ホスト対応や、パス切替時の取り違え防止のため）。
+const _noteDraftReservations = new WeakMap();
+
+// 項目1: dirty revisionの更新。プロパティのインクリメントのみのO(1)処理で、
+// 本文の内容には一切触れない。同時に直列化キャッシュを無効化する。
+function _bumpNoteEditorRevision(pc) {
+  pc._noteEditRevision = (pc._noteEditRevision || 0) + 1;
+  pc._noteEditSerializeCache = null;
+  return pc._noteEditRevision;
+}
+
+// 項目1: 軽量な行情報更新。現在のキャレットが属する、pc直下のブロック要素
+// （見出し・段落・リスト項目等）の参照だけをO(深さ)で記録する。全行走査・
+// 全文パースは行わない。
+function _updateNoteEditorLineHint(pc) {
+  const sel = window.getSelection && window.getSelection();
+  let node = (sel && sel.rangeCount) ? sel.getRangeAt(0).startContainer : null;
+  if (node && node.nodeType === 3) node = node.parentElement;
+  while (node && node.parentElement && node.parentElement !== pc) node = node.parentElement;
+  pc._noteLastEditedBlock = (node && node !== pc) ? node : null;
+}
+
+// 項目3: Markdown変換が必要な時に使う非破壊serializer。pc.cloneNode(true)で
+// 切り離したコピー上でハイライト除去・normalize()・htmlToMd()を行うため、
+// ライブ編集DOM（したがって選択・キャレット）には一切触れない。
+// _noteMarkdownFromEditor（ライブDOMを直接正規化する既存関数。
+// gb-note-save-adapter.js の serialize() 等、正確な現在値が必要な呼び出し元
+// 向けに現状のまま残す）とは別の関数として提供する。
+//
+// 項目5: 直前の _bumpNoteEditorRevision 以降に編集が無い（同一revision）
+// 場合は、キャッシュ済みのserialize結果を再利用し、cloneNode/normalize/
+// htmlToMdを再実行しない。
+function _noteMarkdownFromEditorNonDestructive(pc) {
+  if (!pc) return '';
+  const revision = pc._noteEditRevision || 0;
+  const cache = pc._noteEditSerializeCache;
+  if (cache && cache.revision === revision) return cache.md;
+  const clone = pc.cloneNode(true);
+  clone.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
+  clone.normalize();
+  let md = htmlToMd(clone.innerHTML || '');
+  const fm = pc.dataset.frontmatter || '';
+  if (fm) md = fm + md;
+  pc._noteEditSerializeCache = { revision, md };
+  return md;
+}
+
+// 項目6: 見出し構造の軽量シグネチャ（個数＋各見出しのタグ・文字数）。完全な
+// 文字列比較ではなく変更検知の目安として使う。呼び出しは
+// _maybeRefreshNoteTocAfterEdit（debounce/最大待ち時間の満了時のみ）に限定し、
+// 通常文字入力のたびに呼ぶことはない。
+function _noteHeadingSignature(pc) {
+  const heads = pc.querySelectorAll('h1,h2,h3,h4,h5,h6');
+  let sig = String(heads.length);
+  for (let i = 0; i < heads.length; i++) {
+    sig += '|' + heads[i].tagName + ':' + (heads[i].textContent || '').length;
+  }
+  return sig;
+}
+
+// 項目6: 見出し構造（個数・見出しテキスト長）が変わった時だけ
+// updateNoteToc() を呼ぶ。目次が非表示、または見出し構造に変化が無ければ
+// 全再構築しない。
+function _maybeRefreshNoteTocAfterEdit(pc) {
+  const tocEl = document.getElementById('note-toc');
+  if (!tocEl || tocEl.style.display === 'none') return;
+  const signature = _noteHeadingSignature(pc);
+  if (pc._noteTocSignature === signature) return;
+  pc._noteTocSignature = signature;
+  if (typeof updateNoteToc === 'function') updateNoteToc();
+}
+
+// 項目4: ドラフト退避のdebounce+最大待ち時間。連続入力は1件へ集約し、最終
+// 入力から最大 NOTE_DRAFT_MAX_WAIT_MS 経過したら強制的にflushする（合格
+// 基準「ドラフトは最終入力から最大1秒以内に必ず退避される」）。
+function _scheduleNoteDraftReservation(pc) {
+  if (!pc || !pc.dataset.path || pc.dataset.loadFailed === '1') return;
+  let rec = _noteDraftReservations.get(pc);
+  if (!rec) {
+    rec = { timer: null, firstAt: 0 };
+    _noteDraftReservations.set(pc, rec);
+  }
+  const now = Date.now();
+  if (!rec.firstAt) rec.firstAt = now;
+  clearTimeout(rec.timer);
+  const elapsed = now - rec.firstAt;
+  const wait = Math.max(0, Math.min(NOTE_DRAFT_DEBOUNCE_MS, NOTE_DRAFT_MAX_WAIT_MS - elapsed));
+  rec.timer = setTimeout(() => _flushNoteDraftReservation(pc), wait);
+}
+
+// 項目4・7: 予約済みのドラフト退避を実行する。保留中の予約が無い場合
+// （そのノートで何も編集していない場合）は何もしない —— blur・非表示化・
+// 終了前・ノート切替のたびに無条件でqueueDraftを呼ぶと、未編集のノートにも
+// 「未保存の編集あり」のドラフトが残ってしまうため。
+// IME変換中（pc._noteComposing）は、options.ignoreComposingが無い限り何も
+// せず、compositionend側からの再スケジュールに委ねる（変換確定前の中間文字列
+// をドラフトへ書かない。項目7）。blur・非表示化・終了前は
+// { ignoreComposing: true } を渡し、保留中の編集を取りこぼさない。
+function _flushNoteDraftReservation(pc, options) {
+  const ignoreComposing = !!(options && options.ignoreComposing);
+  const rec = _noteDraftReservations.get(pc);
+  const hadPending = !!(rec && rec.timer);
+  // 修正9（IME変換セッション中のドラフト退避起点の保持）: composing中に
+  // タイマーが満了しただけで実際には退避をスキップする場合（下のcomposing
+  // ガードで判定）、rec.firstAtはリセットしない。従来は無条件で
+  // rec.firstAt = 0 していたため、変換候補選択中の一時停止で debounce
+  // タイマー(300ms)が composing中に満了するたびに起点が0へ戻り、次の
+  // 入力イベントで「今」を新しい起点として再スタートしていた。IME変換に
+  // 時間がかかるほど「最大1秒で必ず退避される」保証が実質失われ、
+  // compositionend まで退避が繰延べされ続けていた。
+  const composingBlocked = !!(pc && pc._noteComposing && !ignoreComposing);
+  if (rec) {
+    clearTimeout(rec.timer);
+    rec.timer = null;
+    if (!composingBlocked) rec.firstAt = 0;
+  }
+  if (!hadPending) return;
+  if (!pc || pc.dataset.loadFailed === '1') return;
+  const draftPath = pc.dataset.path;
+  if (!draftPath) return;
+  if (composingBlocked) return;
+  const md = _noteMarkdownFromEditorNonDestructive(pc);
+  window.MeldexDraftRecovery?.queueDraft?.(draftPath, md, pc.dataset.lastSavedMd || '');
+  _maybeRefreshNoteTocAfterEdit(pc);
+}
+
 function _noteSavePayload(pc, md, extra) {
   const payload = {
     content: md,
     if_match_etag: pc?.dataset?.lastSavedEtag || '',
+    transport_revision: pc?.dataset?.lastSavedTransportRevision || '',
     skip_if_missing: true,
     ...(extra || {}),
   };
@@ -205,8 +329,76 @@ function _noteSavePayload(pc, md, extra) {
   return payload;
 }
 
+// 工程1: 2秒自動保存タイマーのコールバックと flushPendingEditorAutosave() の
+// 双方から共有される、メインパネルノートの自動保存の実処理。
+// 保存コーディネーター（gb-document-save-coordinator.js）とノート用アダプター
+// （gb-note-save-adapter.js）経由で送信することで、blurと同一documentKeyの
+// single-flight/coalesceへ合流させ、同じ内容の2本目のPUTを発生させない
+// （計画書§5工程1-2・5・6）。
+async function _runNoteAutoSave(pc, expectedPath) {
+  const currentPath = pc?.dataset?.path;
+  if (!currentPath || pc.dataset.loadFailed === '1') return;
+  // 修正3（誤PUTの防止・二重防御）: 呼び出し元がタイマー設定時点のパスを
+  // expectedPathとして渡している場合（2秒自動保存タイマーからの呼び出し）、
+  // 発火時点の pc.dataset.path と一致しなければ何もしない。openPage()側の
+  // clearTimeout漏れ・タイミングずれが万一あっても、ここが最終防波堤になる
+  // （flushPendingEditorAutosave()からの直接呼び出しはexpectedPathを渡さず、
+  // 従来どおり「今のcurrentPath」で保存する）。
+  if (expectedPath !== undefined && expectedPath !== currentPath) return;
+  pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
+  pc.normalize();
+  let md = htmlToMd(pc.innerHTML || '');
+  const prevSaved = pc.dataset.lastSavedMd || '';
+  const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  const fm = pc.dataset.frontmatter || '';
+  const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
+  if (fm) md = fm + md;
+  // 工程1項目2: 内容が保存済みbaselineと完全一致するなら何もしない（PUTを発生させない）
+  if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return;
+  if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
+  const _prevSavedForDiff = prevSaved;
+  window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, prevSaved);
+  try {
+    // フォールバック: window.MeldexNoteSaveAdapter が読み込まれていない環境
+    // （単独ノート版 note-standalone.html は保存基盤3ファイル
+    // gb-document-save-coordinator.js/gb-note-save-adapter.js/
+    // gb-conflict-pending-banner.js を読み込まない）では、存在チェック無しの
+    // 呼び出しがTypeErrorとなり自動保存が完全に壊れていた（try/catchで握り
+    // つぶされ「ネットワークを確認してください」と誤表示。実際にはPUT未送信）。
+    // アダプター未読込時は工程1以前と同じ直接PUT経路へフォールバックする。
+    const res = window.MeldexNoteSaveAdapter
+      ? await window.MeldexNoteSaveAdapter.performSave(pc, currentPath, md, { reason: 'auto' })
+      : await apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(pc, md));
+    // 工程2-A項目4・5: conflict-pending中はコーディネーターがネットワーク送信を
+    // スキップして返す。何もサーバーへ送っていないため、baseline更新・
+    // ドラフト同期完了扱いのどちらも行わない（ローカル編集とIndexedDBドラフトの
+    // 継続はoninput側で既に行われている）。
+    if (_noteSaveConflictPending(res)) return;
+    if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
+    _orphanRemovedNoteLines(_prevSavedForDiff, md, currentPath);
+    // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
+    if (pc.dataset.path === currentPath) {
+      pc.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
+      pc.dataset.lastSavedEtag = (res && res.etag) || '';
+    }
+    window.MeldexDraftRecovery?.markSynced?.(currentPath);
+  } catch (error) {
+    if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
+      showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
+    }
+  }
+}
+
 function _noteSaveSkippedMissing(res) {
-  return !!(res?.skipped || res?.missing);
+  return !!(res?.missing);
+}
+
+// 工程2-A項目4: 保存コーディネーターがconflict-pending/resolving中を理由に
+// ネットワーク送信をスキップした結果かどうかを判定する（res.skippedは
+// 「ファイル未検出でスキップ」と共通のフラグだが、conflictPendingは
+// このケース専用に付与される）。
+function _noteSaveConflictPending(res) {
+  return !!(res && res.conflictPending);
 }
 
 function _handleNoteSkippedMissingSave(res, path, md, pc) {
@@ -275,6 +467,11 @@ function _renderNoteConflictDiff(host, mine, other) {
 
 function _showNoteConflictDialog(path, md, pc) {
   if (document.querySelector('[data-note-conflict-dialog="1"]')) return;
+  // ダイアログを開いた競合世代を固定し、非同期処理の完了時に別世代の競合を
+  // 誤って解除しない（計画書§5工程2-A項目8）。
+  const conflictGeneration = window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path);
+  const conflictDocumentKey = window.MeldexNoteSaveAdapter?.documentKeyForPath?.(path) || path;
+  let actionBusy = false;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.dataset.noteConflictDialog = '1';
@@ -291,11 +488,30 @@ function _showNoteConflictDialog(path, md, pc) {
       <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-close" data-conflict-action="close">保留</button>
     </div>
   </div>`;
+  // 工程2-B項目8: ダイアログを閉じた時はノート本文へ固定復帰せず、競合発生前に
+  // ユーザーが移ろうとしていた要素（保存コーディネーターが記録したfocusTarget）へ
+  // preventScroll付きで戻す。復帰先が削除済み・無効・不可視の場合だけpcへ
+  // フォールバックする（項目9）。直接呼び出し（コーディネーターに競合記録が
+  // 無い経路。既存の competed E2E 等）では常にpcへフォールバックする。
   const restoreFocus = () => {
-    if (pc?.isConnected) pc.focus?.({ preventScroll: true });
+    const recorded = window.MeldexNoteSaveAdapter?.getConflictFocusTarget?.(path);
+    const target = window.MeldexNoteSaveAdapter?.isElementUsableForFocus?.(recorded)
+      ? recorded : (pc?.isConnected ? pc : null);
+    target?.focus?.({ preventScroll: true });
   };
+  // 工程2-A項目6: 「保留」とEscapeは同じconflict-pending遷移とし、ダイアログを
+  // 閉じた後は「競合を保留中」の非モーダル表示だけを残す（実際に保存
+  // コーディネーター側へ競合が記録されている場合のみ表示される）。
   const closeDialog = () => {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const current = coordinator?.getConflict?.(conflictDocumentKey);
+    // 「保留」は解決ではない。確認開始時の同じ競合がまだ残っている場合、
+    // RESOLVING から CONFLICT_PENDING へ戻して、次回も確認できるようにする。
+    if (current && current.generation === conflictGeneration) {
+      coordinator.restoreConflict?.(conflictDocumentKey, current);
+    }
     overlay.remove();
+    window.MeldexNoteSaveAdapter?.showConflictPendingBannerIfPending?.(path, pc);
     restoreFocus();
     requestAnimationFrame(restoreFocus);
     setTimeout(restoreFocus, 260);
@@ -308,21 +524,76 @@ function _showNoteConflictDialog(path, md, pc) {
       closeDialog();
       return;
     }
+    if (actionBusy) return;
+    actionBusy = true;
+    overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = true; });
     try {
       if (action === 'overwrite') {
         const res = await apiPut('/file?path=' + encodeURIComponent(path), _noteSavePayload(pc, md, { force_overwrite: true }));
+        if (window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== conflictGeneration) {
+          throw new Error('競合状態が更新されたため、上書き結果を確定できません');
+        }
         // ダイアログを開いた後にpc(singleton)が別ノートへ切り替わっていたら書き込まない（etag汚染防止）
         if (pc && pc.dataset.path === path) {
           pc.dataset.lastSavedMd = md;
           pc.dataset.lastSavedEtag = res.etag || '';
         }
-        window.MeldexSaveSafety?.clearConflict?.(path);
+        window.MeldexNoteSaveAdapter?.syncResolvedBaseline?.(path, pc, md, res.etag || '');
+        // 工程2-A項目8: 実際に解決へ至った時だけconflict-pendingを解除する
+        // （MeldexSaveSafety.clearConflictへの委譲を含む）。
+        const resolved = window.MeldexNoteSaveAdapter?.resolveConflict?.(path, conflictGeneration);
+        if (resolved === false) throw new Error('競合状態が更新されたため、もう一度確認してください');
         await window.MeldexDraftRecovery?.markSynced?.(path);
         showStatus('自分の編集で上書き保存しました');
       } else if (action === 'reload') {
         await window.MeldexDraftRecovery?.saveDraft?.(path, md, pc?.dataset?.lastSavedMd || '');
-        await openPage(path.split('/').pop().replace(/\.md$/i, ''), path);
-        window.MeldexSaveSafety?.clearConflict?.(path);
+        const reloadSnapshot = pc && pc.dataset.path === path ? {
+          html: pc.innerHTML,
+          frontmatter: pc.dataset.frontmatter || '',
+          lastSavedMd: pc.dataset.lastSavedMd || '',
+          lastSavedEtag: pc.dataset.lastSavedEtag || '',
+          loadFailed: pc.dataset.loadFailed || '',
+          contentEditable: pc.contentEditable,
+        } : null;
+        const latest = await apiFetch('/file?path=' + encodeURIComponent(path));
+        if (window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== conflictGeneration) {
+          throw new Error('競合状態が更新されたため、再読込を中止しました');
+        }
+        const opened = await openPage(path.split('/').pop().replace(/\.md$/i, ''), path, {
+          prefetchedFileData: latest,
+          conflictGeneration,
+          skipNavPush: true,
+          skipRecent: true,
+          skipAutoVersion: true,
+        });
+        if (!opened) {
+          // 描画失敗時は、取得前のローカル表示とbaselineを戻す。ドラフトは
+          // 既に退避済みで、競合状態も解除していない。
+          if (reloadSnapshot && pc?.dataset?.path === path) {
+            pc.innerHTML = reloadSnapshot.html;
+            pc.dataset.frontmatter = reloadSnapshot.frontmatter;
+            pc.dataset.lastSavedMd = reloadSnapshot.lastSavedMd;
+            pc.dataset.lastSavedEtag = reloadSnapshot.lastSavedEtag;
+            pc.dataset.loadFailed = reloadSnapshot.loadFailed;
+            pc.contentEditable = reloadSnapshot.contentEditable;
+          }
+          throw new Error('最新版を読み込めませんでした');
+        }
+        if (pc && pc.dataset.path === path) {
+          window.MeldexNoteSaveAdapter?.syncResolvedBaseline?.(
+            path, pc, pc.dataset.lastSavedMd || '', pc.dataset.lastSavedEtag || '',
+          );
+        }
+        const resolved = window.MeldexNoteSaveAdapter?.resolveConflict?.(path, conflictGeneration);
+        if (resolved === false) throw new Error('競合状態が更新されたため、もう一度確認してください');
+        // 修正4（ドラフト残留の防止）: 「相手の変更を読み込む」＝自分の未保存
+        // 編集を破棄することをユーザーが明示した操作。直前のsaveDraft()で
+        // IndexedDBに退避した破棄済み内容を、上書き分岐（923行付近）と同様に
+        // markSynced()で消す。従来はここでドラフトを消しておらず、次回起動時の
+        // 「未保存の編集があります」から、既に破棄したはずの古い内容を復元でき
+        // てしまい、そこで「上書き保存」を選ぶと今読み込んだ最新版の上へ
+        // force_overwriteされ得た。
+        await window.MeldexDraftRecovery?.markSynced?.(path);
         showStatus('相手の変更を読み込みました');
       } else if (action === 'save-as') {
         const fallback = _noteDir(path) + path.split('/').pop().replace(/(\.[^/.]+)?$/, '_copy$1');
@@ -330,7 +601,23 @@ function _showNoteConflictDialog(path, md, pc) {
         document.querySelector('[data-e2e-id="cf-prompt-overlay"]')?.style?.setProperty('z-index', '10100');
         const nextPath = await promptPromise;
         if (!nextPath) return;
-        const res = await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: md });
+        let targetExists = false;
+        try {
+          await apiFetch('/file?path=' + encodeURIComponent(nextPath) + '&metadata_only=1', { silentError: true });
+          targetExists = true;
+        } catch (error) {
+          if (error?.status !== 404) throw error;
+        }
+        if (targetExists && !await cfConfirm('同名のファイルが既にあります。上書きしますか？', {
+          danger: true, okLabel: '上書き', cancelLabel: 'キャンセル',
+        })) return;
+        const res = await apiPut('/file?path=' + encodeURIComponent(nextPath), {
+          content: md,
+          ...(targetExists ? { force_overwrite: true } : { create_only: true }),
+        });
+        if (window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== conflictGeneration) {
+          throw new Error('元ファイルの競合状態が更新されたため、別名保存の結果を確定できません');
+        }
         // ダイアログを開いた後にpc(singleton)が別ノートへ切り替わっていたら書き込まない（path/etag汚染防止）
         if (pc && pc.dataset.path === path) {
           pc.dataset.path = nextPath;
@@ -338,12 +625,25 @@ function _showNoteConflictDialog(path, md, pc) {
           pc.dataset.lastSavedEtag = res.etag || '';
           state.currentPagePath = nextPath;
         }
-        window.MeldexSaveSafety?.clearConflict?.(path);
+        const resolved = window.MeldexNoteSaveAdapter?.resolveConflict?.(path, conflictGeneration);
+        if (resolved === false) throw new Error('元ファイルの競合状態が更新されました');
+        // 修正4（ドラフト残留の防止）: 内容は新パス(nextPath)へ保存成功済みの
+        // ため、旧パス(path)のドラフト（あれば）はもう「未保存」ではない。
+        // pc.dataset.pathの汚染チェックとは無関係に、旧パスのキーで独立して
+        // 残っているドラフトを消す（新パス側は元々ドラフトを持たないため
+        // 移し替えは不要）。従来はここでドラフト処理が皆無で、次回起動時の
+        // 「未保存の編集があります」に旧パスの古い内容が残り続けていた。
+        await window.MeldexDraftRecovery?.markSynced?.(path);
         showStatus('別名で保存しました');
       }
       closeDialog();
     } catch (error) {
       showStatus('競合処理に失敗しました: ' + (error.message || error), true);
+    } finally {
+      actionBusy = false;
+      if (overlay.isConnected) {
+        overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = false; });
+      }
     }
   });
   overlay.addEventListener('keydown', (event) => {
@@ -352,12 +652,48 @@ function _showNoteConflictDialog(path, md, pc) {
     closeDialog();
   });
   document.body.appendChild(overlay);
+  // ダイアログ自体が「競合を保留中」の代わりとなる能動的なUIなので、
+  // 開いている間は非モーダル表示を隠す（既存の直接呼び出し経路では
+  // 対応する保留記録が無いため常に何もしない）。
+  window.MeldexNoteSaveAdapter?.hideConflictPendingBanner?.(path);
   const focusInitialAction = () => overlay.querySelector('[data-conflict-action="overwrite"]')?.focus?.({ preventScroll: true });
   focusInitialAction();
   requestAnimationFrame(focusInitialAction);
   setTimeout(focusInitialAction, 60);
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
-    _renderNoteConflictDiff(overlay.querySelector('[data-conflict-diff]'), md, String(data?.content || ''));
+    // 「保留」または別の解決操作で閉じた後に届いた応答は無効。
+    if (!overlay.isConnected || actionBusy) return;
+    const remote = String(data?.content || '');
+    // 修正7（誤自動解決の防止）: 再起動/再読込後に復元された競合
+    // （restorePendingConflictIfAny経由。コーディネーター側に本当の未保存内容を
+    // 持たず、mdはサーバー再読込済み内容へのフォールバック値）では、正規化
+    // 一致判定をスキップする。フォールバック値はほぼ常にremoteと一致するため、
+    // 判定をそのまま通すと「実質何も比較せずに競合を自動解決した」ことになり、
+    // 本当の未保存編集（ドラフト復元系 MeldexDraftRecovery に隔離されたまま）を
+    // 確認する機会を失う。完全な統合（復元時に対応するドラフトのcontentを
+    // localMdとして引き当てる）は将来課題とし、ここでは誤自動解決だけを防ぐ
+    // 最小対応に留める。
+    const isRestoredConflict = !!window.MeldexNoteSaveAdapter?.isRestoredConflict?.(path);
+    // 工程2-A項目9: 正規化後のローカル内容とサーバー内容が一致した場合は、
+    // 現在etagを取り込んで安全に自動解決する（差分表示・4アクションは出さない）。
+    if (!isRestoredConflict && window.MeldexNoteSaveAdapter?.contentMatchesNormalized?.(md, remote)) {
+      const resolved = window.MeldexNoteSaveAdapter.autoResolveConflictAsMatch(
+        path, pc, remote, data?.etag, conflictGeneration,
+      );
+      if (resolved) {
+        closeDialog();
+        showStatus('内容が一致していたため、競合を自動的に解決しました');
+        return;
+      }
+    }
+    _renderNoteConflictDiff(overlay.querySelector('[data-conflict-diff]'), md, remote);
+    if (isRestoredConflict) {
+      const hint = document.createElement('div');
+      hint.dataset.e2eId = 'note-conflict-restored-hint';
+      hint.style.cssText = 'font-size:12px;color:var(--ui-fg-muted);margin-top:8px;';
+      hint.textContent = '再起動前の編集内容は「未保存の編集があります」の復元から確認できます。';
+      overlay.querySelector('[data-conflict-diff]')?.insertAdjacentElement('afterend', hint);
+    }
   }).catch(() => {
     const diffHost = overlay.querySelector('[data-conflict-diff]');
     if (diffHost) diffHost.textContent = 'ファイル側の最新版を取得できませんでした。必要なら「相手の変更を読み込む」で再読込してください。';
@@ -367,8 +703,15 @@ function _showNoteConflictDialog(path, md, pc) {
 function _handleNoteSaveFailure(error, path, md, pc) {
   window.MeldexDraftRecovery?.saveDraft?.(path, md, pc?.dataset?.lastSavedMd || '');
   if (error?.meldexCode === 'etag_conflict' || error?.status === 409) {
-    window.MeldexSaveSafety?.markConflict?.(path, error?.meldexMessage || error?.message || '保存競合');
-    _showNoteConflictDialog(path, md, pc);
+    // 工程2-A項目2・6・7、工程2-B項目5〜7: 409を無条件でダイアログ表示せず、
+    // まず保存コーディネーターへ報告する。同じ文書が既にconflict-pending/
+    // resolving中（＝この409が「保留」後の後追い再試行や、既に表示中の
+    // ダイアログに由来する二重報告）ならisNew:falseが返り、ダイアログを
+    // 再表示しない（同じ競合世代へ統合するだけ）。新規の競合（isNew:true）
+    // だけがダイアログを開く——このisNew判定こそが「自己起因の古い応答/
+    // 同一文書ID・同じ競合世代の複数409」の分類そのものである。
+    const report = window.MeldexNoteSaveAdapter?.reportSaveFailureConflict?.(pc, path, md, error);
+    if (!report || report.isNew) _showNoteConflictDialog(path, md, pc);
     return true;
   }
   if (error?.status === 404 || error?.meldexCode === 'file_missing' || error?.code === 'file_missing') {
@@ -422,7 +765,8 @@ async function openPage(label, path, opts) {
     && typeof showLoading === 'function'
     && typeof hideLoading === 'function';
   let loadingShown = false;
-  let preloadedFileData = null;
+  let preloadedFileData = openOpts.prefetchedFileData || null;
+  let pageLoadSucceeded = false;
   try {
     if (showOpenLoading) { showLoading('ノートを読み込み中...'); loadingShown = true; }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && _notePathLooksLikeBoard(path)) {
@@ -432,7 +776,7 @@ async function openPage(label, path, opts) {
     }
     if (!openOpts.allowBoardAsPage && typeof openBoard === 'function' && /\.md$/i.test(String(path || ''))) {
       try {
-        preloadedFileData = await apiFetch('/file?path=' + encodeURIComponent(path));
+        preloadedFileData = preloadedFileData || await apiFetch('/file?path=' + encodeURIComponent(path));
         if (_noteMarkdownIsBoard(preloadedFileData?.content || '')) {
           if (loadingShown) { hideLoading(); loadingShown = false; }
           await openBoard(label, path, openOpts);
@@ -444,6 +788,10 @@ async function openPage(label, path, opts) {
     }
   if (!openOpts.skipStateView) state.view = 'page';
   state.currentPagePath = path;
+  // OptionTargetContext（計画書§11.1）: ノートを開いた時点で選択対象を更新する。
+  // これを怠ると、フォルダパネルで一般ファイルを選んだ後にノートへ戻った際、
+  // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
+  window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
   if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
   if (!openOpts.skipShowView) showView('page');
   const pageTitleEl = document.getElementById('page-title');
@@ -462,6 +810,28 @@ async function openPage(label, path, opts) {
   if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
   const pc = document.getElementById('page-content');
   if (!pc) return;
+  // 修正3（誤PUTの防止）: 旧ノート用の2秒自動保存タイマーを、pc.dataset.path
+  // 書き換え（この少し下）より前にここで確実にキャンセルする。従来は
+  // この後に複数回のawait（apiFetch等）を挟んだ後、792行目付近でしか
+  // キャンセルしていなかった。その待ち時間中に旧タイマーが発火すると、
+  // 発火時点で読まれる pc.dataset.path は既に新パスへ書き換わっている一方、
+  // 送信される md はタイマー登録時（旧ノート編集時）のクロージャ内容のままの
+  // ため、「新パス＋旧内容」という誤ったPUTが発生し得た（新旧のetagがたまたま
+  // 一致する窓では無警告のまま別ノートへ上書きしてしまう）。792行目付近の
+  // 既存clearTimeoutは二重キャンセルとして残す（安全側）。
+  clearTimeout(window._noteAutoSaveTimer);
+  // 工程3: ノート切替前に、直前のノート用に予約されていたドラフト退避を
+  // （pc.dataset.pathが新パスへ書き換わる前に）flushする。書き換え後に
+  // flushすると、直前ノートの内容が新ノートのパスへドラフト保存されて
+  // しまう（誤タグ付け）。編集していなければ _flushNoteDraftReservation が
+  // 何もしない（hadPendingガード）ため、未編集ノートへの余計な書き込みは
+  // 起きない。あわせてIME合成フラグ・直列化キャッシュ・目次シグネチャも
+  // 新しいノートへ持ち越さない。
+  _flushNoteDraftReservation(pc, { ignoreComposing: true });
+  pc._noteComposing = false;
+  pc._noteEditRevision = 0;
+  pc._noteEditSerializeCache = null;
+  pc._noteTocSignature = undefined;
   const pageLoadSeq = (window._openPageLoadSeq || 0) + 1;
   window._openPageLoadSeq = pageLoadSeq;
   const isStalePageLoad = () => window._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
@@ -484,17 +854,35 @@ async function openPage(label, path, opts) {
     _openPageFileData = data;
     if (isStalePageLoad()) return;
     const raw = data.content || '';
-    // フロントマターを保存（保存時にプリペンドするため）
     const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
-    pc.dataset.frontmatter = fmMatch ? fmMatch[1] : '';
-    pc.dataset.lastSavedMd = raw;
-    pc.dataset.lastSavedEtag = data.etag || '';
-    pc.dataset.loadFailed = '';
-    pc.contentEditable = isItemLocked(path) ? 'false' : 'true';
     if (showOpenLoading && typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいノートを描画中...');
       if (isStalePageLoad()) return;
     }
+    if (
+      openOpts.conflictGeneration != null
+      && window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== openOpts.conflictGeneration
+    ) {
+      return false;
+    }
+    // 非同期の重い描画待ちと競合世代の再確認が完了してからbaselineを確定する。
+    // 先にdatasetだけ更新すると、待機中に別の解決操作が進んだ場合に
+    // 「古いDOM＋新しいbaseline/etag」という巻き戻し可能な状態が残る。
+    pc.dataset.frontmatter = fmMatch ? fmMatch[1] : '';
+    pc.dataset.lastSavedMd = raw;
+    pc.dataset.lastSavedEtag = data.etag || '';
+    // パスは表示/再取得用、asset/provider ID は保存調停用の安定IDとして分離する。
+    // 名前変更・移動後も同じ文書の保存キューと保留競合を引き継ぐ。
+    window.MeldexNoteSaveAdapter?.bindHostIdentity?.(pc, path, data);
+    pc.dataset.loadFailed = '';
+    // 工程1項目9: メインパネルのノートを文書単位arbiterへ登録する（保存は起こさない）。
+    // 同一パスを詳細パネル内ノートでも開いている場合、single-flightロックと
+    // baseline追従（未編集側への保存結果反映）を共有できるようにする。
+    window.MeldexNoteSaveAdapter?.registerHost?.(pc, path);
+    // 工程2-A項目10: 再起動/再読込後も未解決の保留競合を復元する。パネルは
+    // 強制表示せず「競合を保留中」の非モーダル表示だけを再開する。
+    window.MeldexNoteSaveAdapter?.restorePendingConflictIfAny?.(pc, path);
+    pc.contentEditable = isItemLocked(path) ? 'false' : 'true';
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
@@ -502,6 +890,7 @@ async function openPage(label, path, opts) {
     _loadPageIcon();
     if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
+    pageLoadSucceeded = true;
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
   } catch (e) {
     pc.innerHTML = '<span style="color:var(--fg2)">(ノートを読み込めませんでした)</span>';
@@ -509,6 +898,7 @@ async function openPage(label, path, opts) {
     pc.dataset.lastSavedMd = '';
     pc.dataset.loadFailed = '1';
     pc.contentEditable = 'false';
+    pageLoadSucceeded = false;
   }
 
   // 前回のハンドラを除去してから再登録（openPage呼び出しごとの蓄積防止）
@@ -528,7 +918,7 @@ async function openPage(label, path, opts) {
   // 前のタイマーをキャンセル（ページ切替時に古いパスで保存されるのを防止）
   clearTimeout(window._noteAutoSaveTimer);
 
-  pc.onblur = async function() {
+  pc.onblur = async function(e) {
     clearTimeout(window._noteAutoSaveTimer); // onblur時もタイマーキャンセル
     const currentPath = this.dataset.path;
     if (!currentPath) return;
@@ -544,17 +934,36 @@ async function openPage(label, path, opts) {
     // フロントマターを復元
     const fm = this.dataset.frontmatter || '';
     const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
-    if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
     if (fm) md = fm + md;
+    // 工程1項目2・4: 内容が保存済みbaselineと完全一致するなら、Markdown再変換以降の
+    // 処理（PUT・etag更新・履歴追加）を一切行わない。未変更の非空ノートでも
+    // blurのたびにPUTが発生していた回帰の修正（計画書§5工程1-4）。
+    if (window.MeldexNoteSaveAdapter?.isUnchanged?.(this, md)) return;
+    if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
     const prevMd = this.dataset.lastSavedMd || '';
     try {
-      const res = await apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(this, md));
+      // 工程1項目3・5: 直接apiPutを呼ばず、保存コーディネーターへ
+      // reason:'blur' とフォーカス移動先（relatedTarget）を渡す。進行中の
+      // 自動保存があれば同じdocumentKeyのsingle-flightへ合流し、同一内容の
+      // 2本目のPUTを発生させない。
+      // フォールバック: window.MeldexNoteSaveAdapter が読み込まれていない環境
+      // （単独ノート版 note-standalone.html。保存基盤3ファイル未読込）では
+      // 存在チェック無しの呼び出しがTypeErrorとなりblur保存が完全に壊れて
+      // いたため、工程1以前と同じ直接PUT経路へフォールバックする。
+      const res = window.MeldexNoteSaveAdapter
+        ? await window.MeldexNoteSaveAdapter.performSave(this, currentPath, md, { reason: 'blur', focusTarget: e?.relatedTarget })
+        : await apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(this, md));
+      // 工程2-A項目4・5: conflict-pending中はネットワーク送信自体がスキップ
+      // されている。保存成功扱いの表示・履歴追加・baseline更新を一切行わない
+      // （focusInitialAction由来のblur等が、保留中に古いetagで再試行して
+      // 二重の409を作ってしまう回帰の直接対策）。
+      if (_noteSaveConflictPending(res)) return;
       if (_handleNoteSkippedMissingSave(res, currentPath, md, this)) return;
       _orphanRemovedNoteLines(prevMd, md, currentPath);
       // ページ切替でthis(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
       if (this.dataset.path === currentPath) {
-        this.dataset.lastSavedMd = md;
-        this.dataset.lastSavedEtag = res.etag || '';
+        this.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
+        this.dataset.lastSavedEtag = (res && res.etag) || '';
       }
       await window.MeldexDraftRecovery?.markSynced?.(currentPath);
       showStatus('ノートを保存しました', false, { passiveSave: true });
@@ -566,57 +975,34 @@ async function openPage(label, path, opts) {
         historyPush('ページ編集', null, null, 'page:' + currentPath.split('/').pop(), detail);
       }
       // DOM再構築はしない（ラウンドトリップで改行消失を防止）
-    } catch (e) {
-      if (!_handleNoteSaveFailure(e, currentPath, md, this)) {
+    } catch (saveError) {
+      if (!_handleNoteSaveFailure(saveError, currentPath, md, this)) {
         showStatus('ノートの保存に失敗しました。ネットワークを確認してください', true);
       }
     }
   };
 
   // 自動保存: 入力後2秒で保存（dataset.pathを都度参照し、クロージャのpathは使わない）
+  // 工程3: 同期区間はdirty revision更新・軽量な行情報更新・ドラフト予約だけに
+  // 限定する（計画書§5工程3-1）。全本文Markdown変換・ライブDOM正規化・目次の
+  // 全再構築は同期区間で行わない。実際の変換とドラフト保存・目次判定は
+  // _flushNoteDraftReservation() 側（debounce+最大待ち時間の満了時）に
+  // まとめて1回だけ実行する。
   pc.oninput = () => {
     if (pc.dataset.loadFailed === '1') return;
     markAutoVersionDirty();
     clearTimeout(window._noteAutoSaveTimer);
-    const draftPath = pc.dataset.path;
-    if (draftPath) {
-      window.MeldexDraftRecovery?.queueDraft?.(draftPath, _noteMarkdownFromEditor(pc), pc.dataset.lastSavedMd || '');
-    }
+    _bumpNoteEditorRevision(pc);
+    _updateNoteEditorLineHint(pc);
+    _scheduleNoteDraftReservation(pc);
+    // 修正3（誤PUTの防止・二重防御）: タイマー設定時点のパスを捕捉しておき、
+    // 発火時に _runNoteAutoSave() 側で pc.dataset.path と照合させる。
+    const scheduledPath = pc.dataset.path;
     window._noteAutoSaveTimer = setTimeout(() => {
-      const currentPath = pc.dataset.path;
-      if (!currentPath) return;
-      pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-      pc.normalize();
-      let md = htmlToMd(pc.innerHTML);
-      // 全削除を保存できるように、過去に本文があった場合は空でも保存する
-      const prevSaved = pc.dataset.lastSavedMd || '';
-      const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const fm = pc.dataset.frontmatter || '';
-      const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
-      if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
-      if (fm) md = fm + md;
-      const _prevSavedForDiff = pc.dataset.lastSavedMd || '';
-      window.MeldexDraftRecovery?.queueDraft?.(currentPath, md, pc.dataset.lastSavedMd || '');
-      apiPut('/file?path=' + encodeURIComponent(currentPath), _noteSavePayload(pc, md))
-        .then((res) => {
-          if (_handleNoteSkippedMissingSave(res, currentPath, md, pc)) return;
-          _orphanRemovedNoteLines(_prevSavedForDiff, md, currentPath);
-          // ページ切替でpc(singleton)が別ノートを指していたら書き込まない（etag汚染防止）
-          if (pc.dataset.path === currentPath) {
-            pc.dataset.lastSavedMd = md;
-            pc.dataset.lastSavedEtag = res.etag || '';
-          }
-          window.MeldexDraftRecovery?.markSynced?.(currentPath);
-        })
-        .catch((error) => {
-          if (!_handleNoteSaveFailure(error, currentPath, md, pc)) {
-            showStatus('自動保存に失敗しました。ネットワークを確認してください', true);
-          }
-        });
+      // 工程1: 実処理は _runNoteAutoSave() へ集約（flushPendingEditorAutosave()と共有）。
+      // 保存コーディネーター経由のsingle-flight/coalesceにより、blurと競合しない。
+      _runNoteAutoSave(pc, scheduledPath);
     }, 2000);
-    // 目次更新（#note-toc 不在で TypeError にしない）
-    const tocEl = document.getElementById('note-toc');
-    if (tocEl && tocEl.style.display !== 'none') updateNoteToc();
   };
 
   // 目次を更新（フロントマター優先、なければlocalStorage設定）
@@ -635,6 +1021,10 @@ async function openPage(label, path, opts) {
   }
   syncNoteTocLayout();
   if (_toc && _toc.style.display !== 'none') updateNoteToc();
+  // 工程3: ここで初期シグネチャを記録しておくと、開いた直後の最初の編集で
+  // 見出し構造が変わっていない場合に、debounce満了時の余計な再構築（項目6）を
+  // 避けられる（無くても不整合にはならない軽微な最適化）。
+  pc._noteTocSignature = pc.querySelectorAll ? _noteHeadingSignature(pc) : undefined;
 
   // ビューワーペインにプレビュー表示（読み込み済みデータを渡して再取得を回避）
   if (!openOpts.skipGlobalUi) _updateLinkedPreview(path, _openPageFileData);
@@ -650,6 +1040,7 @@ async function openPage(label, path, opts) {
       }
     }
   }
+  return pageLoadSucceeded;
 }
 
 // ノート縦書き/横書き切替
@@ -753,6 +1144,41 @@ document.getElementById('page-content').addEventListener('keydown', function(e) 
     showLinkInsertModal(range);
   }
 });
+
+// 工程3項目7: IME変換中は保存用DOM整形（Markdown変換・ドラフト直列化）を
+// 走らせない。compositionend後にまとめて1回だけ処理する（既存の
+// pc.onblur・_runNoteAutoSaveの挙動自体は変更しない。ここで制御するのは
+// ドラフト予約のタイミングだけ）。
+document.getElementById('page-content').addEventListener('compositionstart', function() {
+  this._noteComposing = true;
+});
+document.getElementById('page-content').addEventListener('compositionend', function() {
+  this._noteComposing = false;
+  _scheduleNoteDraftReservation(this);
+});
+
+// 工程3項目4: ドラフト退避はblur時に即時flushする。既存のpc.onblur
+// （ネットワーク保存）とは独立した経路であり、onblurプロパティの代入とは
+// 別にaddEventListenerで追加する（既存のblur処理関数自体は変更しない）。
+document.getElementById('page-content').addEventListener('blur', function() {
+  _flushNoteDraftReservation(this, { ignoreComposing: true });
+});
+
+// 工程3項目4: 非表示化・終了前もドラフト退避を即時flushする（IndexedDBドラフト
+// だけを対象にした保険。ネットワーク自動保存の終了前flush＝
+// flushPendingEditorAutosave の既存のbeforeunload配線とは別経路）。
+if (!document._noteDraftFlushGlobalListenersAttached) {
+  document._noteDraftFlushGlobalListenersAttached = true;
+  const _flushCurrentNoteDraftReservation = () => {
+    const pc = document.getElementById('page-content');
+    if (pc) _flushNoteDraftReservation(pc, { ignoreComposing: true });
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) _flushCurrentNoteDraftReservation();
+  });
+  window.addEventListener('pagehide', _flushCurrentNoteDraftReservation);
+  window.addEventListener('beforeunload', _flushCurrentNoteDraftReservation);
+}
 
 function _rangeBelongsToEditable(el, range) {
   if (!el || !range) return false;

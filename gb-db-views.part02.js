@@ -513,6 +513,18 @@ function renderGallery(ctx) {
     const card = document.createElement('div');
     card.className = 'gallery-card';
     card.dataset.entity = entityName;
+    card.dataset.entityName = entityName;
+    card.dataset.meldexEntityPath = _entityPath(dbPath, entityName, ctx?.pivotData);
+    card.draggable = true;
+    card.addEventListener('dragstart', (event) => {
+      window.MeldexBoardTransfer?.setEntityDragData?.(
+        event.dataTransfer,
+        dbPath,
+        entityName,
+        card.dataset.meldexEntityPath,
+      );
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
+    });
     card.addEventListener('click', () => openEntityInSplit(_entityPath(dbPath, entityName), entityName));
     card.addEventListener('dblclick', (ev) => {
       ev.stopPropagation();
@@ -547,24 +559,18 @@ function renderGallery(ctx) {
     const propsDiv = document.createElement('div');
     propsDiv.className = 'gallery-card-props';
     let shown = 0;
-    let imageRendered = false;
     const cardPropNames = Array.isArray(galleryCfg.cardProps)
       ? galleryCfg.cardProps.filter(propName => visibleProps.includes(propName))
       : _galleryDefaultCardProps(visibleProps);
+    // 画像は「カードに表示する列」で有効な画像型列だけを対象にする。未選択列や別列からの
+    // 補完（フィルタリングされていない全画像型列の走査・拡張子推測によるフォールバック）は行わない。
+    // 有効な画像型列が複数ある場合は、列の表示順に、各列のサムネ数（cardImageThumbCount）まで
+    // 個別に並べる（総数の上限は「サムネ数×有効な画像型列数」）。
+    const selectedImageCols = cardPropNames.filter(propName => propTypes[propName]?.type === 'image');
     for (const propName of cardPropNames) {
       // sourceプロパティ: メタデータから表示
       const ptcG = propTypes[propName];
-      if (ptcG?.type === 'image') {
-        if (!imageRendered) {
-          imageRendered = _appendFirstDbCardImagePreview(card, entityData, [propName], propTypes, ctx, {
-            className: 'gallery-card-image-preview',
-            thumbCount: galleryCfg.cardImageThumbCount,
-            columns: Math.min(2, galleryCfg.cardImageThumbCount),
-          });
-        }
-        if (imageRendered) shown++;
-        continue;
-      }
+      if (ptcG?.type === 'image') continue; // 画像はループの外でまとめて表示する
       let displayVal = '';
       if (ptcG && ptcG.source) {
         const metaKey = '_' + ptcG.source;
@@ -595,34 +601,19 @@ function renderGallery(ctx) {
       propsDiv.appendChild(propRow);
       shown++;
     }
-    if (!imageRendered) {
-      const fallbackImageProps = [...cardPropNames, ...visibleProps, ...orderedProps]
-        .filter(propName => propTypes[propName]?.type === 'image');
-      imageRendered = _appendFirstDbCardImagePreview(card, entityData, fallbackImageProps, propTypes, ctx, {
+    // 有効な画像型列が無ければ画像領域は表示しない。列の表示順（cardPropNames の順序）で、
+    // 各列ごとに独立したサムネブロックを追加する（列ごとに cardImageThumbCount 枚まで）。
+    selectedImageCols.forEach(propName => {
+      const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+      const imageItems = _dbCardImageItemsFromValues(vals);
+      if (!imageItems.length) return;
+      _appendDbCardImagePreview(card, imageItems, {
         className: 'gallery-card-image-preview',
         thumbCount: galleryCfg.cardImageThumbCount,
         columns: Math.min(2, galleryCfg.cardImageThumbCount),
+        propName,
       });
-    }
-    if (!imageRendered) {
-      for (const propName of visibleProps) {
-        const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
-        for (const val of vals) {
-          const imgSrc = _galleryImageSrcFromValue(val.value, dbPath, entityName);
-          if (imgSrc) {
-            const img = document.createElement('img');
-            img.className = 'gallery-card-thumb';
-            img.src = imgSrc;
-            img.onerror = () => img.remove();
-            const anchor = title?.nextSibling || propsDiv;
-            card.insertBefore(img, anchor);
-            imageRendered = true;
-            break;
-          }
-        }
-        if (imageRendered) break;
-      }
-    }
+    });
     card.appendChild(propsDiv);
 
     // リレーション表示
@@ -1089,12 +1080,20 @@ function renderKanban(ctx) {
       const cardEl = document.createElement('div');
       cardEl.className = 'kanban-card';
       cardEl.dataset.entity = card.name;
+      cardEl.dataset.entityName = card.name;
+      cardEl.dataset.meldexEntityPath = _entityPath(dbPath, card.name, ctx?.pivotData);
       cardEl.draggable = true;
 
       // D&D: ドラッグ開始
       cardEl.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/x-kanban-entity', card.name);
-        e.dataTransfer.effectAllowed = 'move';
+        window.MeldexBoardTransfer?.setEntityDragData?.(
+          e.dataTransfer,
+          dbPath,
+          card.name,
+          cardEl.dataset.meldexEntityPath,
+        );
+        e.dataTransfer.effectAllowed = 'copyMove';
         cardEl.classList.add('dragging');
       });
       cardEl.addEventListener('dragend', () => cardEl.classList.remove('dragging'));

@@ -98,6 +98,10 @@
     constructor() {
       this.rootHandle = null;
       this._workspaceInfo = null;
+      // 読み取った本文/バイナリと同じ時点のrevisionだけを次の全量保存へ使う。
+      // 保存直前のmetadata GETで最新revisionを拾う方式は、古い内容の上書きを
+      // CASが正当化してしまうため禁止する。
+      this._knownFileRevisions = new Map();
     }
 
     static isSupported() {
@@ -148,6 +152,20 @@
       return ext ? name.slice(0, -ext.length) : name;
     }
 
+    _rekeyKnownRevisions(oldRelativePath, newRelativePath) {
+      const oldPath = _normalizeRelativePath(oldRelativePath);
+      const newPath = _normalizeRelativePath(newRelativePath);
+      if (!oldPath || !newPath || oldPath === newPath) return;
+      const prefix = oldPath + '/';
+      Array.from(this._knownFileRevisions.entries()).forEach(([path, revision]) => {
+        if (path !== oldPath && !path.startsWith(prefix)) return;
+        const suffix = path === oldPath ? '' : path.slice(oldPath.length);
+        this._knownFileRevisions.delete(path);
+        this._knownFileRevisions.set(newPath + suffix, revision);
+      });
+      window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
+    }
+
     async _renamePath(oldRelativePath, newRelativePath) {
       const oldPath = _normalizeRelativePath(oldRelativePath);
       const newPath = _normalizeRelativePath(newRelativePath);
@@ -166,6 +184,7 @@
       if (actualPath && actualPath !== newPath) {
         throw new Error(`ローカル rename 結果が期待と異なります: ${actualPath}`);
       }
+      this._rekeyKnownRevisions(oldPath, actualPath || newPath);
       return result;
     }
 
@@ -201,6 +220,7 @@
     async clearWorkspace() {
       this.rootHandle = null;
       this._workspaceInfo = null;
+      this._knownFileRevisions.clear();
       if (_runtime()?.getMode?.() === 'legacy') _runtime()?.clearWorkspaceState?.();
     }
 
@@ -340,6 +360,13 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      // raw取得より先にrevisionを固定する。途中で外部更新が入った場合は次回保存が
+      // 409になる（安全側）。raw取得後にrevisionを取ると古いbytesへ新しいrevisionを
+      // 結び付ける危険がある。
+      const revisionPayload = await _fetchJson('/file', {
+        query: { path: normalized, metadata_only: '1' },
+      });
+      this._rememberFileRevision(normalized, revisionPayload);
       const meta = await _fetchJson('/file-meta', {
         query: { path: normalized },
         allowStatus: [404],
@@ -361,6 +388,7 @@
     async readText(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const payload = await _fetchJson('/file', { query: { path: normalized } });
+      this._rememberFileRevision(normalized, payload);
       return String(payload?.content || '');
     }
 
@@ -372,33 +400,84 @@
       }
     }
 
-    async uploadBytes(relativePath, bytes) {
+    _rememberFileRevision(relativePath, payload) {
       const normalized = _normalizeRelativePath(relativePath);
-      await _fetchJson('/file', {
+      const revision = payload?.transport_revision || payload?.etag || '';
+      if (revision) this._knownFileRevisions.set(normalized, revision);
+      else this._knownFileRevisions.delete(normalized);
+    }
+
+    _revisionPrecondition(revision) {
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      const token = coordinator?.revisionTokenForWrite
+        ? coordinator.revisionTokenForWrite(revision, coordinator.currentTransportName())
+        : String(revision?.token || revision || '');
+      if (!token) throw new Error('保存元のrevisionを取得できませんでした');
+      return {
+        if_match_etag: token,
+        transport_revision: coordinator?.normalizeTransportRevision
+          ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), revision)
+          : revision,
+      };
+    }
+
+    async _fullWritePrecondition(relativePath, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const opts = options && typeof options === 'object' ? options : {};
+      if (opts.force_overwrite || opts.forceOverwrite) return { force_overwrite: true };
+      if (opts.create_only || opts.createOnly) return { create_only: true };
+      const supplied = opts.transport_revision || opts.transportRevision
+        || opts.if_match_etag || opts.ifMatchEtag || this._knownFileRevisions.get(normalized) || '';
+      if (supplied) return this._revisionPrecondition(supplied);
+      try {
+        const metadata = await _fetchJson('/file', {
+          query: { path: normalized, metadata_only: '1' },
+          allowStatus: [404],
+        });
+        if (!metadata) return { create_only: true };
+        const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+        error.status = 428;
+        error.meldexCode = 'precondition_required';
+        throw error;
+      } catch (error) {
+        if (error?.status === 404) return { create_only: true };
+        throw error;
+      }
+    }
+
+    async uploadBytes(relativePath, bytes, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const precondition = await this._fullWritePrecondition(normalized, options);
+      const result = await _fetchJson('/file', {
         method: 'PUT',
         query: { path: normalized },
         body: {
           binary: true,
           content_base64: _bytesToBase64(bytes),
+          ...precondition,
         },
       });
+      this._rememberFileRevision(normalized, result);
       return this.statPath(normalized);
     }
 
-    async writeText(relativePath, content) {
+    async writeText(relativePath, content, options) {
       const normalized = _normalizeRelativePath(relativePath);
-      await _fetchJson('/file', {
+      const precondition = await this._fullWritePrecondition(normalized, options);
+      const result = await _fetchJson('/file', {
         method: 'PUT',
         query: { path: normalized },
         body: {
           content: String(content ?? ''),
+          ...precondition,
         },
       });
+      this._rememberFileRevision(normalized, result);
       return this.statPath(normalized);
     }
 
-    async writeJson(relativePath, data) {
-      return this.writeText(relativePath, JSON.stringify(data, null, 2));
+    async writeJson(relativePath, data, options) {
+      return this.writeText(relativePath, JSON.stringify(data, null, 2), options);
     }
 
     async deletePath(relativePath) {
@@ -415,6 +494,7 @@
         method: 'POST',
         body: { path: normalized },
       });
+      this._knownFileRevisions.delete(normalized);
       return true;
     }
 
@@ -434,7 +514,9 @@
             dest_folder: _dirname(newPath),
           },
         });
-        currentPath = _normalizeRelativePath(moved?.new_path || currentPath);
+        const movedPath = _normalizeRelativePath(moved?.new_path || currentPath);
+        this._rekeyKnownRevisions(currentPath, movedPath);
+        currentPath = movedPath;
       }
       if (currentPath !== newPath) return this._renamePath(currentPath, newPath);
       return { ok: true, new_path: newPath };
@@ -454,7 +536,14 @@
         return { ok: true, new_path: newPath };
       }
       const file = await this.downloadAsFile(oldPath);
-      await this.uploadBytes(newPath, new Uint8Array(await file.arrayBuffer()));
+      let bytes = new Uint8Array(await file.arrayBuffer());
+      const fmt = window.MeldexDocumentIdentity?.formatForPath?.(newPath);
+      if (fmt) {
+        const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const regenerated = window.MeldexDocumentIdentity.regenerateDocumentId(source, fmt);
+        if (regenerated?.changed) bytes = new TextEncoder().encode(regenerated.text);
+      }
+      await this.uploadBytes(newPath, bytes);
       return { ok: true, new_path: newPath };
     }
 

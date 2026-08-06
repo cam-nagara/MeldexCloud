@@ -1,3 +1,9 @@
+    const isLightSurface = () => {
+      const hex = normalizeThemeColor(next['--content-bg'] || next['--bg'] || '');
+      if (!hex) return false;
+      const r = parseInt(hex.slice(1, 3), 16);
+      const g = parseInt(hex.slice(3, 5), 16);
+      const b = parseInt(hex.slice(5, 7), 16);
       return (r * 0.299 + g * 0.587 + b * 0.114) > 150;
     };
     const fallback = (key, sourceKey, value) => {
@@ -231,6 +237,7 @@
     fallback('--bd-select-rect-color', '--accent', '#569cd6');
     fallback('--bd-group-color', '--accent', '#569cd6');
     fallback('--bd-anchor-color', '--accent', '#569cd6');
+    fallback('--bd-link-type-icon-color', '--fg', '#d4d4d4');
     fallback('--cal-bg', '--bg', '#1e1e1e');
     fallback('--cal-fg', '--fg', '#d4d4d4');
     fallback('--cal-font-family', '--ui-font', 'inherit');
@@ -891,10 +898,3 @@
     if (_initialBuiltinTargetFromId(currentId) && promotedSources.has(currentId)) {
       _updatePromotedInitialThemeSource(currentId, theme => setThemeColorSetOnTheme(theme, storedPalette));
       cancelThemeColorSetCommit();
-      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
-      return;
-    }
-    const next = normalizeCustomThemePayload(currentTheme, '旧テーマカラー');
-    next.id = newCustomThemeId('custom-legacy-palette');
-    next.name = '旧テーマカラー';
-    setThemeColorSetOnTheme(next, storedPalette);

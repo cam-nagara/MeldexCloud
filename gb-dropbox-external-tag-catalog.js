@@ -5,6 +5,7 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   const tagDictionary = window.MeldexDropboxTagDictionary;
+  const managedJson = window.MeldexDropboxManagedJson;
   if (!internals || !Array.isArray(handlers) || !tagDictionary) return;
 
   const {
@@ -266,7 +267,10 @@
         return { ok: true, available: false, offline: true, items: [], startup_io: false };
       }
       const provider = await _requirePwaProvider('read');
-      const shard = await _readJsonSafe(provider, `${ROOT}/${shardName(value)}`, null);
+      const shardPath = `${ROOT}/${shardName(value)}`;
+      const shard = managedJson
+        ? await managedJson.read(provider, shardPath, null)
+        : await _readJsonSafe(provider, shardPath, null);
       const kind = query.get('kind') === 'group' ? 'group' : 'tag';
       const limit = Math.max(1, Math.min(50, Number(query.get('limit') || 20)));
       const offset = Math.max(0, Math.min(1000000, Number(query.get('offset') || 0)));

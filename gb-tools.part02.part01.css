@@ -52,6 +52,8 @@
 .modal .field label { display: block; margin-bottom: var(--ui-space-1); color: var(--ui-fg-muted); font-size: var(--ui-font-12); }
 /* .modal 内の補助説明行は既存 .gb-section-desc を流用しつつ下余白だけ追加 */
 .modal .gb-section-desc { margin-bottom: var(--ui-space-4); }
+/* .gb-section 直下では flex gap が間隔を担うため、margin-bottom を重ねない（gap+margin の加算で間隔が不揃いになる） */
+.modal .gb-section > .gb-section-desc { margin-bottom: 0; }
 .shell-verb-settings-desc {
   color: var(--ui-fg-muted);
   font-size: var(--ui-font-12);
@@ -308,6 +310,67 @@
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--ui-border);
+}
+/* 工程11: リンク挿入モーダル「このノートの見出し」セクション */
+.link-modal-headings {
+  flex: 0 1 auto;
+  max-height: 34vh;
+  overflow: auto;
+  border-bottom: 1px solid var(--ui-border);
+  display: flex;
+  flex-direction: column;
+}
+.link-modal-headings-label {
+  flex-shrink: 0;
+  padding: var(--ui-space-3) var(--ui-space-6) var(--ui-space-2);
+  font-size: var(--ui-font-12);
+  color: var(--ui-fg-muted);
+}
+.link-modal-heading-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ui-space-2);
+  width: 100%;
+  min-height: 30px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-right: var(--ui-space-6);
+  border: 0;
+  background: transparent;
+  color: var(--ui-fg-default);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.link-modal-heading-item:hover,
+.link-modal-heading-item:focus-visible {
+  background: var(--ui-bg-control-hover, var(--bg4));
+}
+.link-modal-heading-level {
+  flex-shrink: 0;
+  font-size: var(--ui-font-11);
+  color: var(--ui-accent);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
+  padding: 0 4px;
+  line-height: 16px;
+}
+.link-modal-heading-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-modal-heading-extra {
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-font-11);
+  color: var(--ui-fg-muted);
 }
 .link-modal-url-row {
   flex: 0 0 auto;
@@ -820,8 +883,160 @@ input.gb-middle-ellipsis-input-active {
 .tree-toggle:hover { color: var(--outliner-item-hover-fg); }
 .tree-icon { flex-shrink: 0; }
 .tree-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-children { padding-left: 14px; }
+.tree-children {
+  padding-left: 14px;
+  position: relative;
+}
 .tree-children.collapsed { display: none; }
+/* 階層を示す縦線（フォルダツリー改修Phase3 §2.3-2）:
+   子項目のアイコン/サムネイルより左に表示専用で描画する。pointer-events:noneのため
+   選択・ドラッグ・矩形選択・右クリック/長押しの判定を一切妨げない。クリックは実装しない。 */
+.tree-children::before {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--outliner-border, var(--border));
+  opacity: 0.6;
+  pointer-events: none;
+}
+/* サムネイル行（Phase4で使用開始）向けの寸法変数を先行定義しておく（§4.1-5） */
+:root {
+  --tree-row-height-thumbnail: 50px;
+  --tree-icon-size: 18px;
+  --tree-thumbnail-width: 64px;
+  --tree-thumbnail-height: 44px;
+}
+/* サムネイルサイズ設定（小/中/大。既定=中=上記:rootの値）。設定ダイアログ「フォルダツリーの
+   サムネイルのサイズ」（localStorage['gb:tree-thumbnail-size']）に連動して <html> へ付与される。 */
+html.thumb-size-small {
+  --tree-row-height-thumbnail: 40px;
+  --tree-thumbnail-width: 48px;
+  --tree-thumbnail-height: 33px;
+}
+html.thumb-size-large {
+  --tree-row-height-thumbnail: 72px;
+  --tree-thumbnail-width: 96px;
+  --tree-thumbnail-height: 66px;
+}
+
+/* 軽量サムネイル表示・OS登録形式アイコン（フォルダツリー改修Phase4 §2.1・§2.2・§4.1-5）
+   行は常に22px（--tree-row-height既定値）で生成し、取得成功時だけ.thumb-readyが
+   付与されて50pxへ昇格する片方向の遷移にする（取得不可/OFF時は現行と完全に同じ見た目）。
+   .tree-thumb-shellは既定display:noneのため、失敗時に壊れた画像枠や空行を残さない。 */
+.tree-node-row.thumb-ready {
+  --tree-row-height: var(--tree-row-height-thumbnail, 50px);
+}
+.tree-node-row.thumb-ready .tree-icon { display: none; }
+.tree-node-row .tree-thumb-shell {
+  display: none;
+  position: relative;
+  flex-shrink: 0;
+  width: var(--tree-thumbnail-width, 64px);
+  height: var(--tree-thumbnail-height, 44px);
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--outliner-border, var(--border));
+  border-radius: 3px;
+  background: var(--outliner-item-bg);
+}
+.tree-node-row.thumb-ready .tree-thumb-shell { display: inline-flex; }
+.tree-node-row .tree-thumb-img {
+  width: 100%; height: 100%;
+  display: block;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.tree-node-row .tree-thumb-img.is-loaded { opacity: 1; }
+/* サムネイル表示フィット設定（設定ダイアログの localStorage['gb:thumbnail-fit'] 連動）。
+   html要素にthumb-fit-containクラスが付与されている間だけ object-fit:contain にする。
+   枠(.tree-thumb-shell)のサイズ・背景色はそのまま維持し、containで生じる余白は
+   .tree-thumb-shell自身の既存背景（--outliner-item-bg）がそのまま透けるため違和感が出ない。 */
+html.thumb-fit-contain .tree-node-row .tree-thumb-img {
+  object-fit: contain;
+}
+.tree-node-row .tree-format-icon-img {
+  width: var(--tree-icon-size, 18px);
+  height: var(--tree-icon-size, 18px);
+  display: block;
+  object-fit: contain;
+}
+
+/* 固定される親階層行（フォルダツリー改修Phase3 §2.3-1） */
+#tree-pinned-bar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--outliner-bg, var(--bg2));
+  border-bottom: 1px solid var(--outliner-border, var(--border));
+  box-shadow: 0 2px 4px rgba(0,0,0,0.12);
+}
+.tree-pinned-row {
+  display: flex; align-items: center;
+  box-sizing: border-box;
+  height: var(--tree-row-height, 22px);
+  padding-left: 8px; font-size: 13px; line-height: 16px;
+  color: var(--outliner-muted-fg, var(--fg2));
+  background: var(--outliner-item-bg);
+}
+.tree-pinned-row:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
+.tree-pinned-row + .tree-pinned-row { border-top: 1px solid color-mix(in srgb, var(--outliner-border, var(--border)) 60%, transparent); }
+.tree-pinned-label,
+.tree-pinned-close {
+  box-sizing: border-box;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.tree-pinned-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-pinned-close {
+  flex: 0 0 var(--tree-row-height, 22px);
+  width: var(--tree-row-height, 22px);
+  height: var(--tree-row-height, 22px);
+  border-radius: 3px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--outliner-muted-fg, var(--fg2));
+}
+.tree-pinned-label:hover,
+.tree-pinned-close:hover { background: var(--outliner-item-hover-bg); color: var(--outliner-item-hover-fg); }
+.tree-pinned-label:focus-visible,
+.tree-pinned-close:focus-visible {
+  outline: 2px solid var(--outliner-accent, var(--accent));
+  outline-offset: -2px;
+}
+.tree-pinned-close svg { width: 12px; height: 12px; }
+@media (max-width: 900px), (pointer: coarse) {
+  .tree-pinned-row {
+    height: 44px;
+    min-height: 44px;
+  }
+  .tree-pinned-label {
+    min-height: 44px;
+  }
+  .tree-pinned-close {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
 /* ツリーメニュー固有（danger等） — 基本スタイルは .gb-context-menu */
 .gb-context-menu > div {
   padding: 4px 12px; font-size: 13px; cursor: pointer;
@@ -910,18 +1125,37 @@ input.gb-middle-ellipsis-input-active {
 #entity-freetext hr, #page-content hr, #dp-editable hr, #board-note-editable hr { border: none; border-top: 1px solid var(--page-hr-color, var(--border)); margin: 8px 0; }
 #entity-freetext ul, #entity-freetext ol, #page-content ul, #page-content ol, #dp-editable ul, #dp-editable ol, #board-note-editable ul, #board-note-editable ol { padding-left: 24px; margin: 4px 0; }
 #entity-freetext li, #page-content li, #dp-editable li, #board-note-editable li { line-height: 1.4; margin: 0.4em 0; }
+/* チェックリスト（gb-note-block-types.js）: 通常の箇条書き記号(disc)と
+   チェックボックスが二重表示にならないよう記号を消し、チェックボックスを
+   行頭に揃える。 */
+#entity-freetext li.note-checklist-item, #page-content li.note-checklist-item, #dp-editable li.note-checklist-item, #board-note-editable li.note-checklist-item {
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+#entity-freetext li.note-checklist-item input.note-checklist-check, #page-content li.note-checklist-item input.note-checklist-check, #dp-editable li.note-checklist-item input.note-checklist-check, #board-note-editable li.note-checklist-item input.note-checklist-check {
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--page-checklist-accent, var(--accent));
+}
+#entity-freetext li.note-checklist-item[data-checked="true"], #page-content li.note-checklist-item[data-checked="true"], #dp-editable li.note-checklist-item[data-checked="true"], #board-note-editable li.note-checklist-item[data-checked="true"] {
+  color: var(--page-checklist-checked-fg, var(--fg2));
+  text-decoration: line-through;
+}
 
 /* フロートパネル・右サイドバーのビューワー・スマホのドロワーに出す本文。
    全体リセット（gb-theme.css の `* { padding: 0 }`）で ul/ol の左余白が 0 になっており、
    箇条書きの記号は本文の外側に描かれるため、そのままだとパネルの枠に接触する。
    上のメインパネル側と同じ余白を与えて、記号が本文の内側に収まるようにする。 */
-.gb-subpanel-entity-note ul, .gb-subpanel-entity-note ol,
+.gb-float-panel-entity-note ul, .gb-float-panel-entity-note ol,
 .gb-preview-entity-note ul, .gb-preview-entity-note ol,
 .cloud-mobile-side-drawer-editable ul, .cloud-mobile-side-drawer-editable ol { padding-left: 24px; margin: 4px 0; }
-.gb-subpanel-entity-note li,
+.gb-float-panel-entity-note li,
 .gb-preview-entity-note li,
 .cloud-mobile-side-drawer-editable li { line-height: 1.4; margin: 0.4em 0; }
-.gb-subpanel-entity-note hr,
+.gb-float-panel-entity-note hr,
 .gb-preview-entity-note hr,
 .cloud-mobile-side-drawer-editable hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
 
@@ -968,13 +1202,88 @@ input.gb-middle-ellipsis-input-active {
 .sp-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid var(--search-border); border-radius:4px; color:var(--search-muted-fg); cursor:pointer; flex-shrink:0; }
 .sp-btn:hover { background:var(--search-hover-bg); color:var(--search-fg); }
 .sp-btn-label { width:auto; padding:0 8px; font-size:12px; }
-#global-filter-bar #gf-chips {
-  display: flex !important;
-  align-items: center !important;
-  gap: 4px !important;
-  flex-wrap: wrap !important;
+/* フィルタトリガーボタン（#global-filter-bar内、常時表示）。クリックでdocument.body直下に
+   .gf-filter-popupを開く。絞り込み中（フィルタ有効かつ実際に対象を絞っている状態）は
+   アクセント色で視覚的に区別する（長文説明はここに置かず、title属性のみで示す）。 */
+.gf-trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
-#global-filter-bar .gf-chip {
+.gf-filter-trigger {
+  box-sizing: border-box;
+  min-height: 22px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  appearance: none;
+}
+.gf-filter-trigger:hover,
+.gf-filter-trigger:focus-visible {
+  background: var(--search-hover-bg);
+  color: var(--search-fg);
+}
+.gf-filter-trigger.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.gf-filter-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* フィルタポップアップ本体。document.body直下・position:fixedで生成される（共通ルール）。 */
+.gf-filter-popup {
+  background: var(--ui-popup-bg, var(--ui-bg-control));
+  border: 1px solid var(--ui-popup-border, var(--ui-border-strong));
+  border-radius: var(--ui-radius-md, 8px);
+  box-shadow: var(--ui-shadow-lg), inset 0 1px 0 rgba(255,255,255,0.05);
+  padding: 8px;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  font-size: 12px;
+  color: var(--fg);
+}
+.gf-popup-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.gf-popup-section {
+  margin-bottom: 6px;
+}
+.gf-popup-section-label {
+  font-size: 11px;
+  color: var(--fg2);
+  margin-bottom: 4px;
+}
+.gf-popup-chip-list {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.gf-popup-empty {
+  font-size: 11px;
+  color: var(--fg2);
+  padding: 2px 0;
+}
+.gf-popup-command-row {
+  margin-bottom: 0;
+}
+.gf-chip {
   box-sizing: border-box;
   min-height: 22px;
   padding: 0 6px;
@@ -991,38 +1300,32 @@ input.gb-middle-ellipsis-input-active {
   cursor: pointer;
   appearance: none;
 }
-#global-filter-bar .gf-chip:hover,
-#global-filter-bar .gf-chip:focus-visible {
+.gf-chip:hover,
+.gf-chip:focus-visible {
   background: var(--search-hover-bg);
   color: var(--search-fg);
 }
-#global-filter-bar .gf-chip.is-active {
+.gf-chip.is-active {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--ui-fg-strong);
 }
-#global-filter-bar .gf-chip.gf-command,
-#global-filter-bar .gf-filter-toggle {
+.gf-chip.gf-command,
+.gf-filter-toggle {
   color: var(--accent);
   border-color: var(--accent);
 }
-#global-filter-bar .gf-chip.gf-command:hover,
-#global-filter-bar .gf-filter-toggle:hover,
-#global-filter-bar .gf-chip.gf-command:focus-visible,
-#global-filter-bar .gf-filter-toggle:focus-visible {
+.gf-chip.gf-command:hover,
+.gf-filter-toggle:hover,
+.gf-chip.gf-command:focus-visible,
+.gf-filter-toggle:focus-visible {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
-#global-filter-bar .gf-chip.is-muted {
+.gf-chip.is-muted {
   color: var(--fg2);
   opacity: 0.6;
 }
-#global-filter-bar .gf-separator {
-  width: 1px;
-  height: 16px;
-  margin: 0 4px;
-  background: var(--border);
-}
-#global-filter-bar #gf-modified-days {
+.gf-filter-popup #gf-modified-days {
   box-sizing: border-box;
   min-height: 22px;
   padding: 1px 4px;
@@ -1083,19 +1386,25 @@ input.gb-middle-ellipsis-input-active {
     padding: 6px 8px !important;
     font-size: 14px !important;
   }
-  #global-filter-bar #gf-chips {
-    gap: 6px !important;
-  }
-  #global-filter-bar .gf-chip,
-  #global-filter-bar #gf-modified-days {
+  .gf-filter-trigger {
     min-height: 44px;
     padding: 0 12px;
     border-radius: 8px;
     font-size: 14px;
     touch-action: manipulation;
   }
-  #global-filter-bar .gf-separator {
-    display: none;
+  .gf-filter-popup {
+    min-width: 240px;
+    max-width: calc(100vw - 16px);
+    font-size: 14px;
+  }
+  .gf-chip,
+  .gf-filter-popup #gf-modified-days {
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 14px;
+    touch-action: manipulation;
   }
   #global-filter-bar .gf-search-row {
     margin-top: 6px !important;

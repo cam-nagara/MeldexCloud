@@ -25,6 +25,8 @@
     voiceTimerInterval: null,
     voiceStartTime: 0,
     voicePausing: false,
+    voiceFinalizePromise: null,
+    localSaveFailed: false,
     installPrompt: null,
     textHistory: { canUndo: false, canRedo: false },
     drawingHistory: { canUndo: false, canRedo: false },
@@ -49,6 +51,7 @@
     restoreDraft();
     applyIncomingShare();
     bindEvents();
+    registerCloseContract();
     switchMode(state.currentMode);
     initCloudMode();
     loadTags();
@@ -284,7 +287,7 @@
     const draft = readJson(CURRENT_KEY, {});
     const memoId = draft.memo_id || newMemoId();
     const html = sanitizeHtml(editorController.getHtml());
-    const memo = {
+    const memo = mergeMemoDraft(draft, {
       memo_id: memoId,
       client_id: draft.client_id || clientId(),
       server_path: draft.server_path || '',
@@ -300,8 +303,19 @@
       created_at: draft.created_at || now,
       updated_at: now,
       source: (state.share?.source_url || state.share?.share_title || state.share?.source_label) ? 'mobile-share' : 'quick-memo',
-    };
+    });
     return memo;
+  }
+
+  function mergeMemoDraft(draft, currentFields) {
+    return {
+      ...(draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : {}),
+      ...(currentFields && typeof currentFields === 'object' ? currentFields : {}),
+    };
+  }
+
+  if (window.__MELDEX_QUICK_MEMO_TEST__) {
+    window.__MELDEX_QUICK_MEMO_TEST__.mergeMemoDraft = mergeMemoDraft;
   }
 
   function startNewMemo() {
@@ -478,6 +492,103 @@
     return drainQueue(opts);
   }
 
+  function registerCloseContract() {
+    const guard = window.MeldexStandaloneCloseGuard;
+    if (!guard?.register) return;
+    guard.register({
+      appId: 'quick-memo',
+      hasFinalDestination: () => true,
+      getCloseState() {
+        const capturing = !!state.recording || !!state.speech || !!state.voiceFinalizePromise;
+        const pendingLocal = !!state.saveTimer || state.localSaveFailed;
+        return {
+          appId: 'quick-memo',
+          state: state.localSaveFailed ? 'error'
+            : capturing ? 'recording'
+              : state.saving ? 'saving'
+                : pendingLocal ? 'waiting'
+                  : state.dirty ? 'pending'
+                    : 'clean',
+          pendingLocal,
+          saving: state.saving || capturing,
+          failed: state.localSaveFailed,
+          unnamed: false,
+          hasSnapshot: !state.localSaveFailed,
+          hasFinalDestination: true,
+          shouldWarn: pendingLocal || state.saving || capturing || state.localSaveFailed,
+          message: state.localSaveFailed
+            ? 'クイックメモを端末へ保存できていません'
+            : capturing
+              ? '録音または文字起こしを確定しています'
+              : pendingLocal || state.saving
+                ? 'クイックメモを保存しています'
+                : '',
+        };
+      },
+      async prepareClose() {
+        clearTimeout(state.saveTimer);
+        state.saveTimer = 0;
+        if (!await finalizeVoiceForClose()) return false;
+        return true;
+      },
+      async flushLocal() {
+        clearTimeout(state.saveTimer);
+        state.saveTimer = 0;
+        const memo = collectMemo();
+        if (!persistDraft(memo) || !enqueueMemo(memo)) {
+          state.localSaveFailed = true;
+          return false;
+        }
+        const store = window.MeldexStandaloneLocalDrafts;
+        if (!store?.putRaw) {
+          state.localSaveFailed = true;
+          setStatus('端末下書きの保存機能を利用できません', true);
+          return false;
+        }
+        try {
+          await Promise.all([
+            store.putRaw(`quick-memo:${CURRENT_KEY}`, memo),
+            store.putRaw(`quick-memo:${QUEUE_KEY}`, readJson(QUEUE_KEY, [])),
+          ]);
+          state.localSaveFailed = false;
+          return true;
+        } catch (error) {
+          state.localSaveFailed = true;
+          setStatus('端末への保存に失敗: ' + (error?.message || error), true);
+          return false;
+        }
+      },
+      async flushFinal() {
+        const localOk = await this.flushLocal();
+        if (!localOk) return false;
+        await saveNow({ manual: false });
+        // オフライン時も、送信待ちキューをIndexedDBへ確定できていれば復元できる。
+        return this.flushLocal();
+      },
+    });
+  }
+
+  async function finalizeVoiceForClose() {
+    const recorder = state.recording;
+    const speech = state.speech;
+    if (!recorder && !speech && !state.voiceFinalizePromise) return true;
+    const stopped = new Promise(resolve => {
+      let pending = Number(!!recorder) + Number(!!speech);
+      if (!pending) return resolve();
+      const done = () => {
+        pending -= 1;
+        if (pending <= 0) resolve();
+      };
+      if (recorder) recorder.addEventListener?.('stop', done, { once: true });
+      if (speech) speech.addEventListener?.('end', done, { once: true });
+      setTimeout(resolve, 8000);
+    });
+    stopVoiceRecording();
+    await stopped;
+    if (state.voiceFinalizePromise) await state.voiceFinalizePromise;
+    return !state.recording && !state.speech;
+  }
+
   async function flushPendingQueue() {
     const queue = readJson(QUEUE_KEY, []);
     if (!Array.isArray(queue) || !queue.length) return true;
@@ -596,10 +707,90 @@
     return JSON.stringify(value == null ? '' : value);
   }
 
-  function cloudFrontmatterText(frontmatter, body) {
+  const CLOUD_MEMO_TOP_KEYS = new Set([
+    'type', 'id', 'category', 'quick_memo', 'quick_memo_id', 'created', 'modified', 'properties',
+  ]);
+  const CLOUD_MEMO_PROPERTY_KEYS = new Set([
+    '種別', 'タグ', '追加日時', '更新日時', '保存先', 'URL', '共有タイトル', '共有元',
+  ]);
+
+  function cloudYamlBlocks(raw, indent) {
+    const lines = String(raw || '').match(/[^\r\n]*(?:\r\n|\n|$)/g)?.filter(Boolean) || [];
+    const starts = [];
+    const prefix = ' '.repeat(indent);
+    lines.forEach((line, index) => {
+      if (!line.startsWith(prefix) || /^\s*(?:#|$)/.test(line)) return;
+      const rest = line.slice(indent);
+      if (/^\s/.test(rest)) return;
+      const match = rest.match(/^([^:#][^:]*):/);
+      if (match) starts.push({ index, key: match[1].trim() });
+    });
+    return starts.map((start, index) => ({
+      key: start.key,
+      start: start.index,
+      end: starts[index + 1]?.index ?? lines.length,
+      text: lines.slice(start.index, starts[index + 1]?.index ?? lines.length).join(''),
+    }));
+  }
+
+  function cloudPatchYamlMapping(raw, updates, allowedKeys, indent) {
+    const source = String(raw || '');
+    const eol = source.includes('\r\n') ? '\r\n' : '\n';
+    const lines = source.match(/[^\r\n]*(?:\r\n|\n|$)/g)?.filter(Boolean) || [];
+    const blocks = cloudYamlBlocks(source, indent);
+    const seen = new Set();
+    let output = blocks.length ? lines.slice(0, blocks[0].start).join('') : source;
+    blocks.forEach(block => {
+      if (!allowedKeys.has(block.key) || !Object.hasOwn(updates, block.key)) {
+        output += block.text;
+        return;
+      }
+      seen.add(block.key);
+      output += `${' '.repeat(indent)}${block.key}: ${cloudJsonValue(updates[block.key])}${eol}`;
+    });
+    const missing = [...allowedKeys].filter(key => !seen.has(key) && Object.hasOwn(updates, key));
+    if (missing.length && output && !/(?:\r\n|\n)$/.test(output)) output += eol;
+    missing.forEach(key => {
+      output += `${' '.repeat(indent)}${key}: ${cloudJsonValue(updates[key])}${eol}`;
+    });
+    return output;
+  }
+
+  function cloudPatchPropertiesBlock(block, properties) {
+    const eol = block.includes('\r\n') ? '\r\n' : '\n';
+    const firstEnd = block.search(/\r?\n/);
+    const firstLine = firstEnd < 0 ? block : block.slice(0, firstEnd);
+    const tail = firstEnd < 0 ? '' : block.slice(firstEnd + (block.slice(firstEnd, firstEnd + 2) === '\r\n' ? 2 : 1));
+    const inline = firstLine.match(/^properties:\s*(.*?)\s*$/)?.[1] || '';
+    if (inline) return `properties: ${cloudJsonValue(properties)}${eol}`;
+    const childIndent = Number(tail.match(/^(\s+)[^#\s][^:]*:/m)?.[1]?.length || 2);
+    return `properties:${eol}${cloudPatchYamlMapping(tail, properties, CLOUD_MEMO_PROPERTY_KEYS, childIndent)}`;
+  }
+
+  function cloudFrontmatterText(frontmatter, body, rawFrontmatter) {
+    if (rawFrontmatter != null) {
+      const source = String(rawFrontmatter);
+      const blocks = cloudYamlBlocks(source, 0);
+      const propertiesBlock = blocks.find(block => block.key === 'properties');
+      let patched = cloudPatchYamlMapping(source, frontmatter, new Set([...CLOUD_MEMO_TOP_KEYS].filter(key => key !== 'properties')), 0);
+      const patchedBlock = cloudYamlBlocks(patched, 0).find(block => block.key === 'properties');
+      if (propertiesBlock && patchedBlock) {
+        const start = patched.indexOf(patchedBlock.text);
+        patched = patched.slice(0, start)
+          + cloudPatchPropertiesBlock(patchedBlock.text, frontmatter.properties || {})
+          + patched.slice(start + patchedBlock.text.length);
+      } else if (!propertiesBlock) {
+        const eol = patched.includes('\r\n') ? '\r\n' : '\n';
+        if (patched && !/(?:\r\n|\n)$/.test(patched)) patched += eol;
+        patched += `properties: ${cloudJsonValue(frontmatter.properties || {})}${eol}`;
+      }
+      const eol = patched.includes('\r\n') ? '\r\n' : '\n';
+      return `---${eol}${patched.replace(/(?:\r\n|\n)?$/, eol)}---${eol}${eol}`
+        + String(body || '').replace(/\s+$/, '') + eol;
+    }
     const lines = ['---'];
     Object.entries(frontmatter || {}).forEach(([key, value]) => {
-      if (!key || key.startsWith('_')) return;
+      if (!key || /[\r\n:]/.test(key)) return;
       lines.push(`${key}: ${cloudJsonValue(value)}`);
     });
     lines.push('---', '');
@@ -633,7 +824,7 @@
     return parts.join('\n');
   }
 
-  function cloudMemoFrontmatter(item, path, tags) {
+  function cloudMemoFrontmatter(item, path, tags, existingFrontmatter) {
     const created = String(item.created_at || new Date().toISOString());
     const updated = String(item.updated_at || new Date().toISOString());
     const properties = {
@@ -646,17 +837,44 @@
     if (item.source_url) properties['URL'] = [cloudCandidate(item.source_url)];
     if (item.share_title) properties['共有タイトル'] = [cloudCandidate(item.share_title)];
     if (item.source_label) properties['共有元'] = [cloudCandidate(item.source_label)];
+    const existing = existingFrontmatter && typeof existingFrontmatter === 'object'
+      && !Array.isArray(existingFrontmatter) ? existingFrontmatter : {};
     return {
+      ...existing,
       type: 'settings-entry',
-      id: 'ent_' + String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12),
+      id: String(existing.id || ('ent_' + String(item.memo_id || item.client_id || Date.now()).replace(/[^A-Za-z0-9]/g, '').slice(0, 12))),
       category: CLOUD_SHEET_NAME,
       quick_memo: true,
       quick_memo_id: String(item.memo_id || item.client_id || ''),
       created,
       modified: updated,
-      properties,
-      relations: [],
+      properties: {
+        ...(existing.properties && typeof existing.properties === 'object' ? existing.properties : {}),
+        ...properties,
+      },
+      relations: Array.isArray(existing.relations) ? existing.relations : [],
     };
+  }
+
+  function parseCloudMemoFile(data) {
+    const content = String(data?.content || '');
+    const match = content.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    const parser = window.MeldexCloudFrontmatterLite?.yamlLite;
+    if (match && typeof parser !== 'function') {
+      throw new Error('既存メモの追加情報を安全に読み取れないため、上書きを中止しました');
+    }
+    return {
+      frontmatter: match && typeof parser === 'function' ? parser(match[1]) : {},
+      rawFrontmatter: match ? match[1] : null,
+      etag: String(data?.etag || ''),
+    };
+  }
+
+  if (window.__MELDEX_QUICK_MEMO_TEST__) {
+    window.__MELDEX_QUICK_MEMO_TEST__.cloudMemoFrontmatter = cloudMemoFrontmatter;
+    window.__MELDEX_QUICK_MEMO_TEST__.cloudFrontmatterText = cloudFrontmatterText;
+    window.__MELDEX_QUICK_MEMO_TEST__.cloudPatchPropertiesBlock = cloudPatchPropertiesBlock;
+    window.__MELDEX_QUICK_MEMO_TEST__.parseCloudMemoFile = parseCloudMemoFile;
   }
 
   async function ensureCloudSheet() {
@@ -686,13 +904,22 @@
   // /file の上書きは、対象パスの事前GETで得たetagが無いと拒否される
   // （standalone-cloud-runtime.jsのrequestJson()側の仕様）。ファイルが存在しなければ
   // create_only指定で新規作成として書く。既存メモの更新にも、フォールバック書き込みにも使う。
-  async function cloudWriteFile(path, content) {
-    let exists = false;
+  async function cloudWriteFile(path, content, existingData) {
+    let current = existingData || null;
     try {
-      await window.apiFetch('/file?path=' + encodeURIComponent(path));
-      exists = true;
-    } catch {}
-    const body = exists ? { content } : { content, create_only: true };
+      if (!current) current = await window.apiFetch('/file?path=' + encodeURIComponent(path));
+    } catch (error) {
+      if (Number(error?.status || 0) !== 404 && !/not found|見つかりません/i.test(String(error?.message || error))) {
+        throw error;
+      }
+      current = null;
+    }
+    if (current && !String(current.etag || '').trim()) {
+      throw new Error('既存メモの更新情報を確認できないため、上書きを中止しました');
+    }
+    const body = current
+      ? { content, if_match_etag: String(current.etag || '') }
+      : { content, create_only: true };
     await window.apiPost('/file?path=' + encodeURIComponent(path), body);
   }
 
@@ -700,8 +927,8 @@
     await ensureCloudSheet();
     const path = cloudMemoPath(item);
     const tags = cloudMemoTags(item);
-    const frontmatter = cloudMemoFrontmatter(item, path, tags);
     if (!item.server_path) {
+      const frontmatter = cloudMemoFrontmatter(item, path, tags, null);
       try {
         const created = await window.apiPost('/entity/create', {
           parent_path: CLOUD_SHEET_NAME,
@@ -719,7 +946,21 @@
         // これにより再試行のたびに重複エントリが増えるのを防ぐ。
       }
     }
-    await cloudWriteFile(path, cloudFrontmatterText(frontmatter, cloudMemoBody(item)));
+    let existingData = null;
+    try {
+      existingData = await window.apiFetch('/file?path=' + encodeURIComponent(path));
+    } catch (error) {
+      if (Number(error?.status || 0) !== 404 && !/not found|見つかりません/i.test(String(error?.message || error))) {
+        throw error;
+      }
+    }
+    const existing = parseCloudMemoFile(existingData);
+    const frontmatter = cloudMemoFrontmatter(item, path, tags, existing.frontmatter);
+    await cloudWriteFile(
+      path,
+      cloudFrontmatterText(frontmatter, cloudMemoBody(item), existing.rawFrontmatter),
+      existingData,
+    );
     return { ok: true, path, target_sheet: CLOUD_SHEET_NAME, tags };
   }
 
@@ -993,13 +1234,14 @@
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size) state.recordChunks.push(event.data);
       };
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
         state.recording = null;
         updateVoiceUI('stopped');
         if (recorder._meldexCancelled) return;
         const blob = new Blob(state.recordChunks, { type: recorder.mimeType || 'audio/webm' });
-        await transcribeBlob(blob);
+        state.voiceFinalizePromise = transcribeBlob(blob)
+          .finally(() => { state.voiceFinalizePromise = null; });
       };
       state.recording = recorder;
       recorder.start();
@@ -1231,6 +1473,7 @@
       });
       const actions = document.createElement('div');
       actions.className = 'qm-tag-picker-actions';
+      actions.setAttribute('data-dialog-actions', '1');
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.textContent = 'キャンセル';
@@ -1273,7 +1516,13 @@
   function writeJson(key, value) {
     durableMemory.set(key, structuredClone(value));
     const durable = window.MeldexStandaloneLocalDrafts?.putRaw?.(`quick-memo:${key}`, value);
-    durable?.catch?.(error => setStatus('端末への保存に失敗: ' + (error?.message || error), true));
+    durable?.then?.(
+      () => { state.localSaveFailed = false; },
+      error => {
+        state.localSaveFailed = true;
+        setStatus('端末への保存に失敗: ' + (error?.message || error), true);
+      },
+    );
     try {
       localStorage.setItem(key, JSON.stringify(value));
       return true;

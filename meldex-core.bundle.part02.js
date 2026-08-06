@@ -1,3 +1,54 @@
+  maximize2: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>',
+  minimize2: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/>',
+  square: '<rect width="18" height="18" x="3" y="3" rx="2"/>',
+  circle: '<circle cx="12" cy="12" r="10"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/>',
+  helpCircle: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
+  circleDot: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+  circlePlus: '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+  monitor: '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+  ellipsis: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  arrowUpDown: '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  tvMinimal: '<rect width="18" height="14" x="3" y="3" rx="2"/><path d="M4 21h1"/><path d="M9 21h1"/><path d="M14 21h1"/><path d="M19 21h1"/>',
+  lockOpen: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+  // アイコン整備 v0.5.130（icon-implementation-plan §1）
+  bookOpenText: '<path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/>',
+  folderDot: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/>',
+  folderOpenDot: '<path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5c0-1.1.9-2 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/><circle cx="14" cy="15" r="1"/>',
+  alignHorizontalJustifyStart: '<rect width="6" height="14" x="6" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M2 2v20"/>',
+  alignHorizontalJustifyCenter: '<rect width="6" height="14" x="2" y="5" rx="2"/><rect width="6" height="10" x="16" y="7" rx="2"/><path d="M12 2v20"/>',
+  alignHorizontalJustifyEnd: '<rect width="6" height="14" x="2" y="5" rx="2"/><rect width="6" height="10" x="12" y="7" rx="2"/><path d="M22 2v20"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  arrowUp: '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  arrowDown: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+  folderPlus: '<path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+  // ツールバー統一 v0.5.131 (toolbar-unification-plan §4-2)
+  bold: '<path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/>',
+  italic: '<line x1="19" x2="10" y1="4" y2="4"/><line x1="14" x2="5" y1="20" y2="20"/><line x1="15" x2="9" y1="4" y2="20"/>',
+  underline: '<path d="M6 4v6a6 6 0 0 0 12 0V4"/><line x1="4" x2="20" y1="20" y2="20"/>',
+  strikethrough: '<path d="M16 4H9a3 3 0 0 0-2.83 4"/><path d="M14 12a4 4 0 0 1 0 8H6"/><line x1="4" x2="20" y1="12" y2="12"/>',
+  list: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  listOrdered: '<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>',
+  quote: '<path d="M16 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 3a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6v-4a2 2 0 0 1 2-2V5a4 4 0 0 0-4 4v6a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/>',
+  heading: '<path d="M6 12h12"/><path d="M6 20V4"/><path d="M18 20V4"/>',
+  wrapText: '<line x1="3" y1="6" x2="21" y2="6"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><polyline points="16 16 14 18 16 20"/><line x1="3" y1="18" x2="10" y2="18"/>',
+  calendarPlus: '<path d="M8 2v4"/><path d="M16 2v4"/><path d="M21 13V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8"/><path d="M3 10h18"/><path d="M16 19h6"/><path d="M19 16v6"/>',
+  listChecks: '<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+  zoomIn: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>',
+  zoomOut: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>',
+  maximize: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
+  timer: '<line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/>',
+  calendarDays: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/>',
+  calendarRange: '<rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M3 10h18"/><path d="M8 2v4"/><path d="M17 14h-6"/><path d="M13 18H7"/><path d="M7 14h.01"/><path d="M17 18h.01"/>',
+  bookmarkPlus: '<path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/><line x1="12" x2="12" y1="7" y2="13"/><line x1="15" x2="9" y1="10" y2="10"/>',
+  clipboardCheck: '<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="m9 14 2 2 4-4"/>',
+  // 書式系追加 v0.5.147（書字方向・インデント・引用の専用アイコン）
+  textAlignStart: '<path d="M15 12H3"/><path d="M17 18H3"/><path d="M21 6H3"/>',
+  kanban: '<path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/>',
   indentIncrease: '<polyline points="3 8 7 12 3 16"/><line x1="21" x2="11" y1="12" y2="12"/><line x1="21" x2="11" y1="6" y2="6"/><line x1="21" x2="11" y1="18" y2="18"/>',
   textQuote: '<path d="M17 6H3"/><path d="M21 12H8"/><path d="M21 18H8"/><path d="M3 12v6"/>',
   pipette: '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>',
@@ -42,6 +93,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
+  subpanel: 'panelRight',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -105,6 +157,10 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
+    else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
+    else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';
+    else if (cls.includes('ico-rotateCw')) name = 'rotateCw';
     else if (cls.includes('ico-layoutGrid')) name = 'layoutDashboard';
     else if (cls.includes('ico-layoutList')) name = 'layoutList';
     else if (cls.includes('ico-externalLink')) name = 'externalLink';
@@ -140,6 +196,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
     else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
     else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
+    else if (cls.includes('ico-calendarSync')) name = 'calendarSync';
     else if (cls.includes('ico-calendar')) name = 'calendar';
     else if (cls.includes('ico-arrowRight')) name = 'arrowRight';
     else if (cls.includes('ico-arrowLeft')) name = 'arrowLeft';
@@ -174,7 +231,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-listChecks')) name = 'listChecks';
     else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
     else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
+    // ico-maximize2 は ico-maximize の部分文字列一致で全画面アイコンに化けるため、先に判定する
+    // （ビューワーのフィットボタン初期表示バグ修正 2026-08-04）
+    else if (cls.includes('ico-maximize2')) name = 'maximize2';
     else if (cls.includes('ico-maximize')) name = 'maximize';
+    else if (cls.includes('ico-fileCog')) name = 'fileCog';
     else if (cls.includes('ico-timer')) name = 'timer';
     else if (cls.includes('ico-layoutTemplate')) name = 'layoutTemplate';
     else if (cls.includes('ico-rows3')) name = 'rows3';
@@ -223,7 +284,7 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);
@@ -338,7 +399,7 @@ function initIframeMarkup(scrollContainer) {
       };
     } catch { return { ..._widthDefaults }; }
   }
-  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '' };
+  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '', anchor: null };
 
   // オーバーレイSVG作成
   const host = scrollContainer || document.body;
@@ -505,6 +566,135 @@ function initIframeMarkup(scrollContainer) {
     }
     const r = wrapper.getBoundingClientRect();
     return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return [x, y];
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return [x, y];
+  }
+
+  function _boardAnnotationNode(anchor) {
+    if (!boardMode || !anchor?.nodeId) return null;
+    const el = document.getElementById('bdn-' + anchor.nodeId);
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function _annotationAnchorAt(clientX, clientY, worldPoint) {
+    if (!boardMode) return null;
+    const hit = document.elementsFromPoint(clientX, clientY)
+      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
+    const nodeEl = hit?.closest?.('.bd-node');
+    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
+    if (!nodeEl || !nodeId) return null;
+    const width = Math.max(1, nodeEl.offsetWidth || 0);
+    const height = Math.max(1, nodeEl.offsetHeight || 0);
+    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
+    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
+    const imageEl = nodeEl.querySelector?.('.bd-img');
+    const imageRect = imageEl?.getBoundingClientRect?.();
+    const insideImage = !!imageRect
+      && clientX >= imageRect.left && clientX <= imageRect.right
+      && clientY >= imageRect.top && clientY <= imageRect.bottom;
+    return {
+      data: {
+        version: 1,
+        kind: 'board-node',
+        nodeId,
+        subject: insideImage ? 'image' : 'card',
+        baseWidth: width,
+        baseHeight: height,
+        geometrySpace: 'local',
+      },
+      nodeEl,
+    };
+  }
+
+  function _annotationPointToLocal(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const current = _boardWorldToElementLocal(nodeEl, point);
+    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
+    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
+    return [current[0] / scaleX, current[1] / scaleY];
+  }
+
+  function _annotationPointToWorld(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return _elementLocalToBoardWorld(nodeEl, [
+      (Number(point?.[0]) || 0) * scaleX,
+      (Number(point?.[1]) || 0) * scaleY,
+    ]);
+  }
+
+  function _annotationAnchorScale(anchor) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return 1;
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return Math.sqrt(Math.abs(scaleX * scaleY));
+  }
+
+  function _anchoredRectPoints(data) {
+    const x = Number(data?.x) || 0;
+    const y = Number(data?.y) || 0;
+    const width = Number(data?.width) || 0;
+    const height = Number(data?.height) || 0;
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+
+  function _anchoredWorldPoints(type, data) {
+    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
+    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
   }
 
   function _parentMessageTargetOrigin() {
@@ -707,194 +897,3 @@ function initIframeMarkup(scrollContainer) {
     clearTimeout(_noteSelectionPopupTimer);
     _noteSelectionPopupTimer = window.setTimeout(() => _showNoteSelectionPopup(editor, scheduleSave), 40);
   }
-
-  function _noteSelectionRange(editor) {
-    const selection = window.getSelection?.();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
-    const range = selection.getRangeAt(0);
-    const root = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer.parentElement;
-    if (!root || !editor.contains(root)) return null;
-    const rects = Array.from(range.getClientRects()).filter(rect => rect.width || rect.height);
-    const rect = rects[0] || range.getBoundingClientRect();
-    if (!rect || (!rect.width && !rect.height)) return null;
-    return { range, rect };
-  }
-
-  function _restoreNoteSelection(range) {
-    const selection = window.getSelection?.();
-    if (!selection || !range) return;
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
-  function _noteSelectionValues(range) {
-    let el = range?.startContainer || null;
-    if (el && el.nodeType !== Node.ELEMENT_NODE) el = el.parentElement;
-    const computed = el ? getComputedStyle(el) : null;
-    const queryState = command => {
-      try { return !!document.queryCommandState(command); } catch { return false; }
-    };
-    const queryValue = command => {
-      try { return document.queryCommandValue(command) || ''; } catch { return ''; }
-    };
-    const fontWeight = computed?.fontWeight || '';
-    return {
-      textColor: queryValue('foreColor') || computed?.color || '',
-      fontSize: parseInt(computed?.fontSize || '', 10) || '',
-      fontFamily: computed?.fontFamily || '',
-      fontWeight: queryState('bold') || fontWeight === 'bold' || Number(fontWeight) >= 600 ? 'bold' : '',
-      fontStyle: queryState('italic') || computed?.fontStyle === 'italic' ? 'italic' : '',
-      bgColor: computed && !/rgba?\(0,\s*0,\s*0,\s*0\)|transparent/i.test(computed.backgroundColor || '') ? computed.backgroundColor : '',
-      leftAccent: /inset/i.test(computed?.boxShadow || ''),
-      accentColor: computed?.textDecorationColor || '',
-      underline: queryState('underline') || /underline/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
-      strike: queryState('strikeThrough') || /line-through/.test(computed?.textDecorationLine || computed?.textDecoration || ''),
-    };
-  }
-
-  function _setNoteCommandState(command, enabled) {
-    try {
-      const current = !!document.queryCommandState(command);
-      if (current !== !!enabled && typeof document.execCommand === 'function') document.execCommand(command, false, null);
-    } catch {}
-  }
-
-  function _wrapNoteSelectionStyle(styles) {
-    const selection = window.getSelection?.();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
-    const range = selection.getRangeAt(0);
-    const entries = Object.entries(styles || {});
-    const clearKeys = entries.filter(([, value]) => value === '').map(([key]) => key);
-    if (clearKeys.length) _clearNoteSelectionStyles(range, clearKeys);
-    const setEntries = entries.filter(([, value]) => value != null && value !== '');
-    if (!setEntries.length) return;
-    const span = document.createElement('span');
-    setEntries.forEach(([key, value]) => { span.style[key] = value; });
-    if (!span.getAttribute('style')) return;
-    try {
-      range.surroundContents(span);
-    } catch {
-      const fragment = range.extractContents();
-      span.appendChild(fragment);
-      range.insertNode(span);
-    }
-    const nextRange = document.createRange();
-    nextRange.selectNodeContents(span);
-    selection.removeAllRanges();
-    selection.addRange(nextRange);
-  }
-
-  function _clearNoteSelectionStyles(range, styleKeys) {
-    if (!range || !styleKeys?.length) return;
-    const roots = new Set();
-    const addElement = (node) => {
-      const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-      if (el) roots.add(el);
-    };
-    addElement(range.startContainer);
-    addElement(range.endContainer);
-    const common = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer?.parentElement;
-    if (common) {
-      const walker = document.createTreeWalker(common, NodeFilter.SHOW_ELEMENT);
-      for (let el = walker.currentNode; el; el = walker.nextNode()) {
-        try {
-          if (range.intersectsNode(el)) roots.add(el);
-        } catch {}
-      }
-    }
-    roots.forEach(el => {
-      styleKeys.forEach(key => {
-        try { el.style[key] = ''; } catch {}
-      });
-      if (!el.getAttribute('style')) el.removeAttribute('style');
-    });
-  }
-
-  function _applyNoteSelectionFormat(range, prop, value) {
-    _restoreNoteSelection(range);
-    if (prop === 'fontWeight') _setNoteCommandState('bold', value === 'bold');
-    else if (prop === 'fontStyle') _setNoteCommandState('italic', value === 'italic');
-    else if (prop === 'underline') _setNoteCommandState('underline', !!value);
-    else if (prop === 'strike') _setNoteCommandState('strikeThrough', !!value);
-    else if (prop === 'textColor') { try { document.execCommand('foreColor', false, value || '#333333'); } catch {} }
-    else if (prop === 'bgColor') _wrapNoteSelectionStyle({ backgroundColor: value || '' });
-    else if (prop === 'leftAccent') _wrapNoteSelectionStyle(value ? { boxShadow: 'inset 3px 0 0 currentColor', paddingLeft: '6px' } : { boxShadow: '', paddingLeft: '' });
-    else if (prop === 'accentColor') _wrapNoteSelectionStyle({ textDecorationColor: value || '' });
-    else if (prop === 'fontSize') {
-      const size = Number(value);
-      if (Number.isFinite(size) && size > 0) _wrapNoteSelectionStyle({ fontSize: Math.max(8, Math.min(96, size)) + 'px' });
-    } else if (prop === 'fontFamily' && value) {
-      _wrapNoteSelectionStyle({ fontFamily: value });
-    }
-  }
-
-  function _showNoteSelectionPopup(editor, scheduleSave) {
-    if (typeof openFormatPopup !== 'function') return;
-    const info = _noteSelectionRange(editor);
-    if (!info) return;
-    const savedRange = info.range.cloneRange();
-    const anchor = { getBoundingClientRect: () => info.rect };
-    const values = _noteSelectionValues(info.range);
-    // 文字色スウォッチのコントラスト背景に付箋本体の色 (--ann-note-color) を渡す。
-    const noteEl = editor.closest?.('.ann-note');
-    const noteColor = noteEl
-      ? (noteEl.style.getPropertyValue('--ann-note-color')
-         || noteEl.style.backgroundColor
-         || getComputedStyle(noteEl).backgroundColor
-         || '').trim()
-      : '';
-    if (noteColor) values.bgColor = noteColor;
-    openFormatPopup(anchor, {
-      positionAnchor: anchor,
-      className: 'gb-fmt-popup--annotation-note',
-      fields: ['textColor', 'fontSize', 'fontFamily', 'bold', 'italic', 'bgColor', 'leftAccent', 'accentColor', 'strike', 'underline'],
-      values,
-      onChange(prop, value) {
-        _applyNoteSelectionFormat(savedRange, prop, value);
-        scheduleSave();
-      },
-    });
-  }
-
-  function _installNoteResize(note, data, persist) {
-    ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].forEach(dir => {
-      const handle = document.createElement('span');
-      handle.className = 'ann-note-resize-handle';
-      handle.dataset.dir = dir;
-      handle.addEventListener('pointerdown', (e) => {
-        if (!_ann.active) return;
-        e.preventDefault();
-        e.stopPropagation();
-        note.classList.add('ann-note-selected');
-        const startPt = _toLocalCoords(e.clientX, e.clientY);
-        const start = { x: startPt.x, y: startPt.y, left: note.offsetLeft, top: note.offsetTop, width: note.offsetWidth, height: note.offsetHeight };
-        const minW = 120, minH = 60;
-        const onMove = (ev) => {
-          const pt = _toLocalCoords(ev.clientX, ev.clientY);
-          const dx = pt.x - start.x;
-          const dy = pt.y - start.y;
-          let left = start.left, top = start.top, width = start.width, height = start.height;
-          if (dir.includes('e')) width = start.width + dx;
-          if (dir.includes('s')) height = start.height + dy;
-          if (dir.includes('w')) { width = start.width - dx; left = start.left + dx; }
-          if (dir.includes('n')) { height = start.height - dy; top = start.top + dy; }
-          if (width < minW) { if (dir.includes('w')) left -= minW - width; width = minW; }
-          if (height < minH) { if (dir.includes('n')) top -= minH - height; height = minH; }
-          note.style.left = left + 'px';
-          note.style.top = top + 'px';
-          note.style.width = width + 'px';
-          note.style.height = height + 'px';
-          data.x = left + _surfaceBounds.left;
-          data.y = top + _surfaceBounds.top;
-          data.width = Math.max(minW, Math.round(width));
-          data.height = Math.max(minH, Math.round(height));
-        };
-        const onUp = () => {
-          document.removeEventListener('pointermove', onMove);
-          document.removeEventListener('pointerup', onUp);
-          data.width = Math.max(minW, Math.round(note.offsetWidth));
-          data.height = Math.max(minH, Math.round(note.offsetHeight));

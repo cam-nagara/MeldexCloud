@@ -1,12 +1,20 @@
 // =====================================================================
-// gb-backlinks.js — §12.5 バックリンク表示
+// gb-backlinks.js — §12.5 バックリンク表示 + 全ファイルバックリンク(計画書§11 Phase5)
 // 計画書: app/docs/debuglist-calendar-linkage-plan.md §12.5
+//         app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §11
+//
+// 2系統の呼び出しをサポートする:
+//   1. レガシー経路: render(pathString, container) — GET /backlinks?target=
+//      （エントリ/ページ単一パス文字列。既存呼び出し元・既存E2Eをそのまま維持）
+//   2. OptionTargetContext経路: render({targets, selectionRevision}, container)
+//      — POST /backlinks/query（全ファイル種別・複数選択・索引カバレッジ対応）
 // パスベース運用。リネーム追従なし（R13 確定）→ リンク切れは可視化。
 // =====================================================================
 (function () {
   'use strict';
 
-  let _currentTarget = null;
+  let _currentTarget = null;    // レガシー経路の現在対象（文字列）。stale応答破棄に使用
+  let _currentRenderArg = null; // 直近の render() 引数（再構築ボタンの再取得に使用）
 
   function _esc(s) {
     return String(s == null ? '' : s)
@@ -48,6 +56,16 @@
     return parts.slice(0, -1).join('/');
   }
 
+  // 順方向変換（_folderNoteDbPath の逆）: DBフォルダの現在pathから、対応する
+  // フォルダノート(.md)のpathを組み立てる。シート(DB)選択時にバックリンクの
+  // 対象pathとして使う（計画書§11.1、選択対象の取り違え解消の一環）。
+  function dbFolderNotePath(dbPath) {
+    const safePath = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!safePath) return '';
+    const name = safePath.split('/').pop() || safePath;
+    return safePath + '/' + name + '.md';
+  }
+
   function _resolveBacklinkOpenPath(item, openType) {
     const path = String(item?.source_path || '').replace(/\\/g, '/');
     if (openType === 'pivot') return _folderNoteDbPath(path) || path;
@@ -78,37 +96,100 @@
     } catch (e) { console.warn('[backlinks] open failed', e); }
   }
 
-  function _renderList(container, data) {
-    const items = (data && data.items) || [];
-    const rows = items.length ? items.map((it, idx) => {
-      const broken = !it.exists;
-      const loc = it.link_location ? ` / ${_esc(it.link_location)}` : '';
-      const typeLabel = it.link_type === 'body' ? '本文' : (it.link_type === 'url-prop' ? 'URL' : it.link_type);
-      const displayName = it.display_name || it.source_path;
-      const title = broken ? 'リンク切れ（参照元ファイルが存在しません）' : 'クリックで開く';
-      const openType = _resolveBacklinkOpenType(it);
-      const openPath = broken ? '' : _resolveBacklinkOpenPath(it, openType);
-      const rowClass = broken ? 'gb-backlink-row gb-backlink-row--broken' : 'gb-backlink-row gb-backlink-row--openable';
-      const rowAttrs = broken
-        ? ''
-        : ` role="button" tabindex="0" aria-label="${_esc(displayName)}を開く"`;
-      const brokenBadge = broken
-        ? `<span class="gb-backlink-broken-badge">(リンク切れ)</span>` : '';
-      return `<li data-idx="${idx}" class="${rowClass}" data-e2e-id="backlink-row-${idx + 1}"${rowAttrs}>
+  function _typeLabel(linkType) {
+    return linkType === 'body' ? '本文' : (linkType === 'url-prop' ? 'URL' : (linkType || ''));
+  }
+
+  // 単一参照元が複数箇所から対象を参照している場合の出現数表示
+  // （計画書§7.1「UIは参照元単位へ集約し、出現数を表示する」）。
+  function _metaHtml(item) {
+    const locations = Array.isArray(item.locations) && item.locations.length
+      ? item.locations
+      : (item.link_type != null ? [{ link_type: item.link_type, location: item.link_location }] : []);
+    if (!locations.length) return '';
+    if (locations.length === 1) {
+      const loc = locations[0];
+      const locStr = loc.location ? ` / ${_esc(loc.location)}` : '';
+      return `<div class="gb-backlink-meta">${_esc(_typeLabel(loc.link_type))}${locStr}</div>`;
+    }
+    const typeLabels = [...new Set(locations.map(loc => _typeLabel(loc.link_type)))].filter(Boolean);
+    return `<div class="gb-backlink-meta">${locations.length}箇所${typeLabels.length ? `（${_esc(typeLabels.join('、'))}）` : ''}</div>`;
+  }
+
+  function _countBadgeHtml(item) {
+    const count = Number(item.occurrence_count
+      || (Array.isArray(item.locations) ? item.locations.length : 1)) || 1;
+    if (count <= 1) return '';
+    return `<span class="gb-backlink-count-badge" title="${count}箇所から参照">${count}件</span>`;
+  }
+
+  function _rowHtml(item, idx) {
+    const broken = !item.exists;
+    const displayName = item.display_name || item.source_path;
+    const title = broken ? 'リンク切れ（参照元ファイルが存在しません）' : 'クリックで開く';
+    const openType = _resolveBacklinkOpenType(item);
+    const openPath = broken ? '' : _resolveBacklinkOpenPath(item, openType);
+    const rowClass = broken ? 'gb-backlink-row gb-backlink-row--broken' : 'gb-backlink-row gb-backlink-row--openable';
+    const rowAttrs = broken ? '' : ` role="button" tabindex="0" aria-label="${_esc(displayName)}を開く"`;
+    const brokenBadge = broken ? `<span class="gb-backlink-broken-badge">(リンク切れ)</span>` : '';
+    return `<li data-idx="${idx}" class="${rowClass}" data-e2e-id="backlink-row-${idx + 1}"${rowAttrs}>
         <span class="bl-link gb-backlink-label" data-path="${_esc(openPath)}" data-link-type="${_esc(openType)}" title="${_esc(title)}">${_esc(displayName)}</span>
+        ${_countBadgeHtml(item)}
         ${brokenBadge}
-        <div class="gb-backlink-meta">${_esc(typeLabel)}${loc}</div>
-        <div class="gb-backlink-path">${_esc(it.source_path)}</div>
+        ${_metaHtml(item)}
+        <div class="gb-backlink-path">${_esc(item.source_path)}</div>
       </li>`;
-    }).join('') : `<li class="gb-backlinks-empty">このエントリへの参照はありません</li>`;
-    container.innerHTML = `
-      <div class="gb-backlinks-header">
-        <span class="gb-backlinks-title">バックリンク</span>
-        <span class="gb-backlinks-count">${items.length}件</span>
-        <span class="gb-backlinks-spacer"></span>
-        <button class="gb-btn gb-btn-sm" type="button" data-action="backlinksRebuild" data-e2e-id="backlinks-rebuild" aria-label="バックリンクを全体再構築" title="バックリンクを全体再構築">全体再構築</button>
-      </div>
-      <ul class="gb-backlinks-list">${rows}</ul>`;
+  }
+
+  // 索引が不完全な時に「参照0件」を確定した0件のように見せない
+  // （計画書 設計原則6・受け入れ条件「索引不完全の0件誤表示0」）。
+  function _emptySectionHtml(coverage) {
+    const status = coverage && coverage.status ? coverage.status : 'complete';
+    if (status !== 'complete') {
+      return `<li class="gb-backlinks-empty" data-e2e-id="backlinks-empty-unconfirmed">索引が不完全なため、参照の有無を確定できません</li>`;
+    }
+    return `<li class="gb-backlinks-empty">このファイルを貼っているファイルはありません</li>`;
+  }
+
+  function _coverageNoteHtml(coverage) {
+    const status = coverage && coverage.status ? coverage.status : 'complete';
+    if (status === 'complete') return '';
+    const message = status === 'partial'
+      ? '一部のファイルを解析できていません。参照が正しく表示されていない可能性があります。'
+      : '索引が最新でない可能性があります。「全体再構築」で更新できます。';
+    return `<div class="gb-backlinks-coverage-note" data-e2e-id="backlinks-coverage-note">${_esc(message)}</div>`;
+  }
+
+  function _rebuildButtonHtml() {
+    return `<button class="gb-btn gb-btn-sm" type="button" data-action="backlinksRebuild" data-e2e-id="backlinks-rebuild" aria-label="バックリンクを全体再構築" title="バックリンクを全体再構築">全体再構築</button>`;
+  }
+
+  function _bindRebuildButton(container, onRebuilt) {
+    const rbBtn = container.querySelector('[data-action="backlinksRebuild"]');
+    if (!rbBtn) return;
+    rbBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      rbBtn.disabled = true;
+      rbBtn.textContent = '再構築中...';
+      try {
+        const r = await apiPost('/backlinks/rebuild', {});
+        if (r && r.ok) {
+          await onRebuilt();
+        } else {
+          const reason = r?.error || r?.reason || '不明なエラー';
+          if (typeof showStatus === 'function') showStatus('バックリンク再構築に失敗しました: ' + reason, true);
+        }
+      } catch (err) {
+        console.warn('[backlinks] rebuild failed', err);
+        if (typeof showStatus === 'function') showStatus('バックリンク再構築に失敗しました: ' + (err?.message || err), true);
+      } finally {
+        rbBtn.disabled = false;
+        rbBtn.textContent = '全体再構築';
+      }
+    });
+  }
+
+  function _bindRows(container, items) {
     container.querySelectorAll('.gb-backlink-row--openable').forEach(li => {
       const idx = parseInt(li.dataset.idx, 10);
       const it = items[idx];
@@ -120,32 +201,29 @@
         _openBacklink(it);
       });
     });
-    const rbBtn = container.querySelector('[data-action="backlinksRebuild"]');
-    if (rbBtn) rbBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      rbBtn.disabled = true;
-      rbBtn.textContent = '再構築中...';
-      try {
-        const r = await apiPost('/backlinks/rebuild', {});
-        if (r && r.ok) {
-          // 再描画
-          await renderBacklinks(_currentTarget, container);
-        } else {
-          const reason = r?.error || r?.reason || '不明なエラー';
-          if (typeof showStatus === 'function') showStatus('バックリンク再構築に失敗しました: ' + reason, true);
-        }
-      } catch (err) {
-        console.warn('[backlinks] rebuild failed', err);
-        if (typeof showStatus === 'function') showStatus('バックリンク再構築に失敗しました: ' + (err?.message || err), true);
-      }
-      finally {
-        rbBtn.disabled = false;
-        rbBtn.textContent = '全体再構築';
-      }
-    });
   }
 
-  async function renderBacklinks(targetPath, container) {
+  // ---- レガシー経路（単一パス文字列、GET /backlinks?target=） ----
+
+  function _renderLegacyList(container, data) {
+    const items = (data && data.items) || [];
+    const allItems = [];
+    const rows = items.length
+      ? items.map(it => _rowHtml(it, allItems.push(it) - 1)).join('')
+      : `<li class="gb-backlinks-empty">このエントリへの参照はありません</li>`;
+    container.innerHTML = `
+      <div class="gb-backlinks-header">
+        <span class="gb-backlinks-title">バックリンク</span>
+        <span class="gb-backlinks-count">${items.length}件</span>
+        <span class="gb-backlinks-spacer"></span>
+        ${_rebuildButtonHtml()}
+      </div>
+      <ul class="gb-backlinks-list">${rows}</ul>`;
+    _bindRows(container, allItems);
+    _bindRebuildButton(container, () => renderBacklinksLegacy(_currentTarget, container));
+  }
+
+  async function renderBacklinksLegacy(targetPath, container) {
     if (!container) return;
     _currentTarget = targetPath;
     if (!targetPath) {
@@ -157,11 +235,80 @@
       const url = '/backlinks?target=' + encodeURIComponent(targetPath);
       const data = await apiFetch(url);
       if (_currentTarget !== targetPath) return; // 遷移していたら破棄
-      _renderList(container, data);
+      _renderLegacyList(container, data);
     } catch (e) {
       if (_currentTarget !== targetPath) return;
       container.innerHTML = `<div style="padding:var(--ui-space-4);color:var(--danger,#f44);">取得失敗: ${_esc(String(e))}</div>`;
     }
+  }
+
+  // ---- OptionTargetContext経路（全ファイル種別・複数選択、POST /backlinks/query） ----
+
+  function _targetDisplayName(target) {
+    const path = String(target?.path || '');
+    return path.split('/').pop() || path || '(不明なファイル)';
+  }
+
+  function _renderGroupedResult(container, responseData) {
+    const targetResults = (responseData && responseData.targets) || [];
+    const coverage = responseData && responseData.coverage;
+    const allItems = [];
+    const totalCount = targetResults.reduce((sum, t) => sum + ((t.items || []).length), 0);
+    const showGroupHeaders = targetResults.length > 1;
+    const groupsHtml = targetResults.map(targetResult => {
+      const items = targetResult.items || [];
+      const rows = items.length
+        ? items.map(it => _rowHtml(it, allItems.push(it) - 1)).join('')
+        : _emptySectionHtml(coverage);
+      const groupHeader = showGroupHeaders
+        ? `<div class="gb-backlinks-group-header">${_esc(_targetDisplayName(targetResult.target))}<span class="gb-backlinks-count">${items.length}件</span></div>`
+        : '';
+      return `<div class="gb-backlinks-group">${groupHeader}<ul class="gb-backlinks-list">${rows}</ul></div>`;
+    }).join('');
+    container.innerHTML = `
+      <div class="gb-backlinks-header">
+        <span class="gb-backlinks-title">バックリンク</span>
+        <span class="gb-backlinks-count">${totalCount}件</span>
+        <span class="gb-backlinks-spacer"></span>
+        ${_rebuildButtonHtml()}
+      </div>
+      ${_coverageNoteHtml(coverage)}
+      ${groupsHtml}`;
+    _bindRows(container, allItems);
+    _bindRebuildButton(container, () => renderBacklinksContext(_currentRenderArg, container));
+  }
+
+  async function renderBacklinksContext(ctx, container) {
+    if (!container) return;
+    const targets = (ctx && ctx.targets) || [];
+    const revision = ctx ? ctx.selectionRevision : 0;
+    if (!targets.length) {
+      container.innerHTML = `<div style="padding:var(--ui-space-4);color:var(--fg2);">ファイルが選択されていません</div>`;
+      return;
+    }
+    container.innerHTML = `<div style="padding:var(--ui-space-4);color:var(--fg2);">読み込み中...</div>`;
+    const isStale = () => window.GBOptionTargetContext
+      && typeof window.GBOptionTargetContext.isCurrentRevision === 'function'
+      && !window.GBOptionTargetContext.isCurrentRevision(revision);
+    try {
+      const data = await apiPost('/backlinks/query', { targets, selectionRevision: revision });
+      if (isStale()) return; // 選択が高速に切り替わった場合、遅れて返った旧結果は表示しない
+      _renderGroupedResult(container, data);
+    } catch (e) {
+      if (isStale()) return;
+      container.innerHTML = `<div style="padding:var(--ui-space-4);color:var(--danger,#f44);">取得失敗: ${_esc(String(e))}</div>`;
+    }
+  }
+
+  // ---- 公開API ----
+
+  async function renderBacklinks(targetOrContext, container) {
+    if (!container) return;
+    _currentRenderArg = targetOrContext;
+    if (typeof targetOrContext === 'string' || targetOrContext == null) {
+      return renderBacklinksLegacy(targetOrContext, container);
+    }
+    return renderBacklinksContext(targetOrContext, container);
   }
 
   async function updateBacklinksFor(path) {
@@ -175,5 +322,6 @@
     render: renderBacklinks,
     requestUpdate: updateBacklinksFor,
     getCurrentTarget: () => _currentTarget,
+    dbFolderNotePath,
   };
 })();

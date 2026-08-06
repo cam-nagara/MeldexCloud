@@ -729,8 +729,45 @@
     button.style.marginLeft = '6px';
     button.textContent = '再試行';
     button.setAttribute('aria-label', 'タグを再読み込み');
+    button.dataset.e2eId = 'target-tag-editor-retry';
     button.addEventListener('click', () => retry());
     host.appendChild(button);
+  }
+
+  // OSタグ再同期(POST /global-tags/target/sync)はNAS/DropboxプレースホルダーへのCOM
+  // 呼び出しで数秒〜十数秒かかり得るため、バックグラウンドジョブとして実行される
+  // （常に job_id を含む応答を返す）。gb-import-job-progress.js の runBackgroundJob が
+  // 読み込まれていればそれで進捗ポーリングし、単独アプリ等で未読込の場合は最小限の
+  // フォールバックで /api/jobs/{id} を自前ポーリングする（単純な1回のapiPostでは
+  // ジョブ受付情報だけを最終結果と取り違えてしまうため、フォールバックでも
+  // ポーリングは省略できない）。
+  async function runOsTagSyncJob(payload, onProgress) {
+    if (typeof runBackgroundJob === 'function') {
+      return runBackgroundJob('/global-tags/target/sync', payload, {
+        onProgress(progress) {
+          if (!onProgress) return;
+          onProgress(typeof formatJobProgress === 'function'
+            ? formatJobProgress(progress, { defaultPhase: 'OSタグを照合しています' })
+            : (progress?.message || progress?.phase || 'OSタグを照合しています...'));
+        },
+      });
+    }
+    const started = await apiPost('/global-tags/target/sync', payload, { silentError: true });
+    const jobId = String(started?.job_id || '');
+    if (!jobId) return started;
+    const pollIntervalMs = 1000;
+    const maxPolls = 120; // 約2分
+    for (let i = 0; i < maxPolls; i += 1) {
+      const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
+      if (onProgress) onProgress(job?.progress?.message || job?.progress?.phase || 'OSタグを照合しています...');
+      if (job.status === 'done') return job.result || {};
+      if (job.status === 'error') throw new Error(job.error || 'OSタグの再同期に失敗しました');
+      if (job.status === 'cancelled' || job.status === 'canceled') throw new Error('OSタグの再同期を中止しました');
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+    const timeoutError = new Error('OSタグの再同期に時間がかかっています。しばらくしてから再度お試しください。');
+    timeoutError.name = 'LongRunningJobError';
+    throw timeoutError;
   }
 
   function bindTargetTagEditor(targetPath, ui, refresh) {
@@ -761,17 +798,21 @@
       if (ui.mutationBlocked) return;
       ui.osSync.disabled = true;
       ui.osSyncStatus.textContent = 'OSタグを照合しています...';
+      const sourceFolder = sourceFolderForTarget(targetPath);
       try {
-        const sourceFolder = sourceFolderForTarget(targetPath);
         invalidateTargetTagsCache(targetPath, sourceFolder);
-        const data = await apiPost('/global-tags/target/sync', withSourcePayload({
-          path: normalizeTargetPath(targetPath),
-        }, sourceFolder), { silentError: true });
+        const data = await runOsTagSyncJob(
+          withSourcePayload({ path: normalizeTargetPath(targetPath) }, sourceFolder),
+          message => { ui.osSyncStatus.textContent = message; },
+        );
         renderOsTagSyncState(ui, data?.os_sync);
         notifyTargetTagsChanged(targetPath, sourceFolder);
         await refresh({ force: true });
       } catch (err) {
-        ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + (err.userMessage || err.message || err);
+        const reason = err && err.name === 'LongRunningJobError'
+          ? '処理に時間がかかっています。しばらくしてから再度お試しください。'
+          : (err.userMessage || err.message || err);
+        ui.osSyncStatus.textContent = 'OSタグを再同期できませんでした: ' + reason;
       } finally {
         ui.osSync.disabled = !!ui.mutationBlocked;
       }

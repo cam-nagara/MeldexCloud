@@ -1,0 +1,25 @@
+/* gb-note-logical-rows.css — ノート行ハイライトオーバーレイ・行ハンドルのスタイル
+   計画書: app/docs/note-row-format-popup-chat-selection-regression-plan-2026-08-04.md §2.3
+
+   行ハイライトは対象行を包むCSSアウトライン（子孫のリストまで含めて枠取りされる）
+   ではなく、対象行自身の矩形（子リストを除く）へ重ねる固定配置のオーバーレイで表す。
+   gb-note-logical-rows.js の showRowHighlight()/hideRowHighlight() が
+   #note-logical-row-highlight の位置・表示を制御する。 */
+.note-logical-row-highlight {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9998;
+  box-sizing: border-box;
+  border: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent));
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.note-logical-row-highlight.is-visible {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .note-logical-row-highlight {
+    transition: none;
+  }
+}

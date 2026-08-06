@@ -5,6 +5,7 @@
   'use strict';
 
   const ATTR_PRIMARY = 'data-gb-tooltip';
+  const ATTR_KEY = 'data-gb-tooltip-key';
   const ATTR_LEGACY = 'data-tooltip';
   const ATTR_HELP = 'data-help';
   const ATTR_DISABLED = 'data-gb-tooltip-disabled';
@@ -98,6 +99,7 @@
   ];
   const TARGET_SELECTORS = [
     '[' + ATTR_PRIMARY + ']',
+    '[' + ATTR_KEY + ']',
     '[' + ATTR_LEGACY + ']',
     '[' + ATTR_HELP + ']',
     '[title]',
@@ -116,6 +118,7 @@
   function regAction(key, entry) { reg('action', key, entry); }
   function regData(name, value, entry) { reg('data:' + name, value, entry); }
   function regIcon(key, entry) { reg('icon', key, entry); }
+  function regSemantic(key, entry) { reg('semantic', key, entry); }
 
   function lookupShortcutKey(id) {
     if (!id) return '';
@@ -364,7 +367,8 @@
   }
 
   function isExplicitTooltip(el) {
-    return el.hasAttribute(ATTR_PRIMARY) || el.hasAttribute(ATTR_LEGACY) || el.hasAttribute(ATTR_HELP);
+    return el.hasAttribute(ATTR_PRIMARY) || el.hasAttribute(ATTR_KEY)
+      || el.hasAttribute(ATTR_LEGACY) || el.hasAttribute(ATTR_HELP);
   }
 
   function isInteractiveLike(el) {
@@ -601,6 +605,11 @@
 
   function registryHint(el) {
     if (!el || !el.getAttribute) return '';
+    const semanticKey = readAttr(el, ATTR_KEY);
+    if (semanticKey) {
+      const semantic = REGISTRY['semantic:' + semanticKey];
+      if (semantic) return formatRegistryEntry(semantic);
+    }
     const id = readAttr(el, 'id');
     if (id) {
       const e = REGISTRY['id:' + id] || REGISTRY['id:' + normalizeKey(id)];
@@ -1005,6 +1014,12 @@
 
   // ====== Registry seed (B1: 左クローム / 右アクティビティバー) ======
   // フォーマット: `label — desc (Ctrl+S)`。shortcutId は GB_SHORTCUTS のキーを参照。
+  regSemantic('panel.right.toggle', { label: '右サイドバー', desc: '右サイドバーを開閉します' });
+  regSemantic('history.undo', { label: '元に戻す', desc: '直前の操作を元に戻します', shortcutId: 'global.undo' });
+  regSemantic('history.redo', { label: 'やり直す', desc: '元に戻した操作をやり直します', shortcutId: 'global.redo' });
+  regSemantic('file.save', { label: '保存', desc: '現在の内容を保存します', shortcutId: 'global.save' });
+  regSemantic('file.open', { label: '開く', desc: 'ファイルを選んで開きます' });
+  regSemantic('file.new', { label: '新規作成', desc: '新しいファイルを作成します' });
   regId('left-chrome-command-trigger', { label: 'コマンドパレット', desc: 'コマンドやファイルを検索します', shortcutId: 'global.commandPalette' });
   regId('left-chrome-floating-command', { label: 'コマンドパレット', desc: 'コマンドやファイルを検索します', shortcutId: 'global.commandPalette' });
   regId('left-chrome-user',     { label: 'ユーザー', desc: 'ユーザー設定を開きます' });

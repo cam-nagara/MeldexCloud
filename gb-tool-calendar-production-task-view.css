@@ -534,6 +534,75 @@
   line-height: 1.5;
 }
 
+/* 制作管理UX改善計画（2026-08-04）§6-1: 管理操作パネルのグルーピング見出し */
+.gb-production-actions-group + .gb-production-actions-group {
+  margin-top: 14px;
+}
+
+.gb-production-actions-group-label {
+  margin: 0 0 6px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* 未セットアップ時の空状態カード（管理操作パネル・タスクリスト面の両方で使用） */
+.gb-production-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 160px;
+  padding: 24px 16px;
+  text-align: center;
+  border: 1px dashed var(--cal-grid-line, var(--border));
+  border-radius: 8px;
+  background: var(--cal-panel-bg, var(--bg2));
+}
+
+.gb-production-empty-state-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  color: var(--cal-muted-fg, var(--fg2));
+  background: var(--cal-control-bg, var(--bg3));
+}
+
+.gb-production-empty-state p {
+  margin: 0;
+  max-width: 320px;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 制作管理UX改善計画（2026-08-04）§6-2: タスク詳細サイドバーの読み取り専用表示（予定・目標時間） */
+.gb-production-sidebar-readonly-value {
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--cal-control-bg, var(--bg3));
+  color: var(--cal-fg, var(--fg));
+  font-size: 12px;
+}
+
+.gb-production-sidebar-readonly-warning {
+  color: var(--cal-warning-fg, var(--orange, #e0a030));
+  cursor: help;
+}
+
+/* タスクリストの行にも同じ意味の🔒/📌を表示する（decorateCell拡張点。gb-db-computed-columns.js） */
+.pm-schedule-cell-protection-icon {
+  margin-right: 2px;
+  cursor: help;
+}
+
 .gb-production-sidebar-empty {
   min-height: 180px;
   padding: 20px;
@@ -909,39 +978,176 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   color: var(--cal-muted-fg, var(--fg2));
 }
 
-/* --- 「すべて」タブ: 全作品タスクリストの縦積み表示 --- */
+/* --- 「すべて」タブ: 全作品タスクを1枚のフラット表で横断表示 --- */
 
 .gb-production-all-view {
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-height: 0;
-  overflow: auto;
-  gap: 12px;
-  padding-bottom: 24px;
-}
-
-.gb-production-all-section {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
   min-width: 0;
-}
-
-/* 見出しは固定表示にしない（シート列ヘッダーが sticky top:-1px / z-index:20 で
-   上端に固定されるため、同じ位置に固定すると重なって列名が隠れる） */
-.gb-production-all-section-title {
-  margin: 0;
-  padding: 8px 10px 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--cal-fg, var(--fg));
-  border-bottom: 1px solid var(--cal-grid-line, var(--border));
-  background: var(--cal-toolbar-bg, var(--bg2));
+  min-height: 0;
+  overflow: hidden;
 }
 
 .gb-production-all-empty {
   margin: 16px;
   color: var(--cal-muted-fg, var(--fg2));
   font-size: 12px;
+}
+
+.gb-production-all-flat-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  background: var(--cal-toolbar-bg, var(--bg2));
+}
+
+.gb-production-all-flat-search {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-control-fg, var(--fg));
+  font: inherit;
+  font-size: 11px;
+}
+
+.gb-production-all-flat-filter {
+  flex: 0 0 auto;
+  height: 28px;
+  min-width: 96px;
+  padding: 3px 6px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 5px;
+  background: var(--cal-control-bg, var(--bg));
+  color: var(--cal-control-fg, var(--fg));
+  font: inherit;
+  font-size: 11px;
+}
+
+.gb-production-all-flat-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--cal-muted-fg, var(--fg2));
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.gb-production-all-flat-status.is-error {
+  color: var(--red, #e06c75);
+}
+
+.gb-production-all-flat-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.gb-production-all-flat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.gb-production-all-flat-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  background: var(--cal-toolbar-bg, var(--bg2));
+  color: var(--cal-fg, var(--fg));
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.gb-production-all-flat-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.gb-production-all-flat-sortable:hover {
+  color: var(--cal-accent, var(--accent));
+}
+
+.gb-production-all-flat-select-col {
+  width: 32px;
+}
+
+.gb-production-all-flat-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--cal-grid-line, var(--border));
+  vertical-align: middle;
+}
+
+.gb-production-all-flat-row {
+  cursor: pointer;
+}
+
+.gb-production-all-flat-row:hover {
+  background: var(--cal-cell-hover-bg, var(--ui-hover-bg, var(--bg3)));
+}
+
+.gb-production-all-flat-work-text {
+  margin-right: 4px;
+}
+
+.gb-production-all-flat-work-jump {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cal-muted-fg, var(--fg2));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.gb-production-all-flat-work-jump:hover {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-accent, var(--accent));
+  background: var(--cal-control-bg, var(--bg));
+}
+
+.gb-production-all-flat-no-rows {
+  padding: 24px 10px;
+  text-align: center;
+  color: var(--cal-muted-fg, var(--fg2));
+}
+
+.gb-production-all-flat-load-more {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 10px 0;
+  min-height: 30px;
+  padding: 4px 14px;
+  border: 1px solid var(--cal-control-border, var(--border));
+  border-radius: 999px;
+  background: var(--cal-control-bg, var(--bg3));
+  color: var(--cal-control-fg, var(--fg));
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gb-production-all-flat-load-more:hover {
+  border-color: var(--cal-accent, var(--accent));
+  color: var(--cal-accent, var(--accent));
+}
+
+@media (max-width: 720px) {
+  .gb-production-all-flat-toolbar { padding: 5px 8px; }
+  .gb-production-all-flat-search,
+  .gb-production-all-flat-filter { font-size: 14px; }
+  .gb-production-all-flat-status { font-size: 12px; }
 }

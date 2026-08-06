@@ -18,12 +18,14 @@
     _requireUnlockedPath,
     _relocateReferences,
     _queryBacklinks,
+    _queryDeleteImpact,
     _fnvFileId,
   };
   window.__MeldexPwaDataAccessExtensions = window.__MeldexPwaDataAccessExtensions || [];
 
   const PWA_WORKSPACES_FILE = '_meldex/workspaces.v1.json';
-  const TEAM_LAST_SEEN_REFRESH_MS = 10 * 60 * 1000;
+  const PWA_WORKSPACES_DOCUMENT_ID = 'cloud-workspaces';
+  const TEAM_MANAGEMENT_DOCUMENT_PREFIX = 'team-members-v1-';
 
   function _nowIso() {
     return new Date().toISOString();
@@ -36,9 +38,11 @@
     return err;
   }
 
-  function _teamFilePath(folderPath) {
-    const relativeFolder = _normalizeFolderPath(folderPath);
-    return relativeFolder ? (relativeFolder + '/_Meldex_team.json') : '_Meldex_team.json';
+  function _teamManagementDocumentId(folderPath) {
+    // Dropboxのパス比較は大文字小文字を区別しないため、表記差で別レコードを
+    // 作らないよう管理IDだけを小文字へ正規化する。
+    const relativeFolder = (_normalizeFolderPath(folderPath) || '.').toLowerCase();
+    return TEAM_MANAGEMENT_DOCUMENT_PREFIX + _fnvFileId(relativeFolder);
   }
 
   function _normalizeTeamFile(team) {
@@ -47,22 +51,60 @@
     return base;
   }
 
+  function _teamStorageKind() {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('チームプロフィール管理データ契約が未初期化です');
+    return kind;
+  }
+
+  async function _readManagedTeamFile(folderPath) {
+    const provider = await _requirePwaProvider('read');
+    const kind = _teamStorageKind();
+    const managed = await _readManagementPayload(
+      provider,
+      kind,
+      _teamManagementDocumentId(folderPath),
+    );
+    if (managed.payload) return _normalizeTeamFile(managed.payload);
+    // 旧ファイルは既存利用者のメンバー情報を失わないために限って併読する。
+    // 保存は必ず型付き管理領域へ行い、source folder側は変更しない。
+    return _normalizeTeamFile(
+      await _readTeamFile(folderPath).catch(() => ({ members: {} })),
+    );
+  }
+
+  function _isSystemStorageConflict(error) {
+    return error?.name === 'SystemStorageConflictError'
+      || error?.code === 'system_storage_conflict';
+  }
+
   async function _writeTeamFileMerged(folderPath, updater) {
     const provider = await _requirePwaProvider('readwrite');
-    const relativeFile = _teamFilePath(folderPath);
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(relativeFile, current => {
-        const team = _normalizeTeamFile(current);
-        const next = updater(team);
-        if (next === false) return false;
-        return _normalizeTeamFile(next || team);
-      }, { fallbackValue: { members: {} }, retries: 5 });
+    const kind = _teamStorageKind();
+    const documentId = _teamManagementDocumentId(folderPath);
+    const adapter = await _managementAdapter(provider, kind);
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const team = current?.payload
+        ? _normalizeTeamFile(current.payload)
+        : _normalizeTeamFile(await _readTeamFile(folderPath).catch(() => ({ members: {} })));
+      const next = updater(team);
+      if (next === false) return { ok: true, skipped: true };
+      try {
+        const saved = await adapter.save(
+          kind,
+          documentId,
+          _normalizeTeamFile(next || team),
+          { expectedRevision: current?.revision ?? null },
+        );
+        return { ok: true, record: saved };
+      } catch (error) {
+        lastError = error;
+        if (!_isSystemStorageConflict(error)) throw error;
+      }
     }
-    const team = _normalizeTeamFile(await _readTeamFile(folderPath).catch(() => ({ members: {} })));
-    const next = updater(team);
-    if (next === false) return { ok: true, skipped: true };
-    await _writeTeamFile(folderPath, _normalizeTeamFile(next || team));
-    return { ok: true };
+    throw lastError;
   }
 
   async function _syncTeamMember(folder, body) {
@@ -102,10 +144,13 @@
         next.role = 'editor';
         changed = true;
       }
-      const seenMs = Date.parse(String(existing.last_seen || ''));
-      const refreshSeen = !Number.isFinite(seenMs) || Date.now() - seenMs > TEAM_LAST_SEEN_REFRESH_MS;
+      // last_seen は書き込みが発生する時（＝プロフィールに実変更がある時）だけ
+      // 付随して更新する。無変更の起動・閲覧だけで共有Dropboxの管理ファイルを
+      // 書き換えないようにするため、経過時間だけを理由にした強制書き込み判定は
+      // 廃止した（last_seen の読み手は一覧整形のみで、UI表示には使われていない
+      // ため、更新頻度が下がっても実害はない）。
       avatarForCache = next.avatar || '';
-      if (!changed && !refreshSeen) return false;
+      if (!changed) return false;
       next.last_seen = _nowIso();
       members[name] = next;
       team.members = members;
@@ -190,7 +235,11 @@
 
   async function _readCloudWorkspaceStore() {
     const provider = await _requirePwaProvider('read');
-    const data = await _readJsonSafe(provider, PWA_WORKSPACES_FILE, { workspaces: [] });
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('ワークスペース管理データ契約が未初期化です');
+    const managed = await _readManagementPayload(provider, kind, PWA_WORKSPACES_DOCUMENT_ID);
+    const data = managed.payload
+      || await _readJsonSafe(provider, PWA_WORKSPACES_FILE, { workspaces: [] });
     return _normalizeWorkspaceStore(data);
   }
 
@@ -218,18 +267,18 @@
       latest.updatedAt = _nowIso();
       return latest;
     };
-    if (typeof provider.writeJsonMerged === 'function') {
-      const result = await provider.writeJsonMerged(PWA_WORKSPACES_FILE, apply, {
-        fallbackValue: { kind: 'meldex-cloud-workspaces', version: 1, workspaces: [] },
-        retries: 5,
-      });
-      return result?.skipped ? null : latest;
-    }
-    const current = await _readCloudWorkspaceStore();
-    const next = apply(current);
-    if (next === false) return null;
-    await provider.writeJson(PWA_WORKSPACES_FILE, latest);
-    return latest;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('ワークスペース管理データ契約が未初期化です');
+    const result = await _writeManagementPayload(
+      provider,
+      kind,
+      PWA_WORKSPACES_DOCUMENT_ID,
+      current => {
+        const next = apply(current || { kind: 'meldex-cloud-workspaces', version: 1, workspaces: [] });
+        return next === false ? _normalizeWorkspaceStore(current || {}) : next;
+      },
+    );
+    return result ? latest : null;
   }
 
   function _currentWorkspaceMember(body, role) {
@@ -381,7 +430,7 @@
     }
     if (pathname === '/team' && method === 'GET') {
       const folder = url.searchParams.get('folder') || '';
-      const team = await _readTeamFile(folder);
+      const team = await _readManagedTeamFile(folder);
       Object.entries(team.members || {}).forEach(([name, info]) => _cacheTeamAvatar(name, info?.avatar || '', folder));
       return _toTeamPayload(team);
     }

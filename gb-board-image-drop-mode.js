@@ -21,7 +21,10 @@
   }
 
   function defaultImageDropMode() {
-    return isStandaloneBoardApp() ? MODE_EMBED : MODE_LINK;
+    // 2026-08-01: proprietary-format-sidecar-cleanup-plan-2026-07-31.md §5.1 により、
+    // カード画像は本体・単独版とも埋め込みを既定にする（旧仕様は本体のみリンクが既定だった）。
+    // ユーザーは引き続き明示的に「画像ファイルへのリンク」へ切り替えられる。
+    return MODE_EMBED;
   }
 
   function storageKey() {

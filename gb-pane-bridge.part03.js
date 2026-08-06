@@ -35,8 +35,8 @@
     };
 
     // オプションパネルトグル → 詳細タブとして開く
-    window.toggleOptionPanel = function() {
-      _openToolPane('detail', { toggleExisting: true });
+    window.toggleOptionPanel = function(source) {
+      _openToolPane('detail', { toggleExisting: true, source });
     };
     window.toggleDetailPanel = window.toggleOptionPanel;
   }
@@ -79,15 +79,18 @@
     }
 
     // toggleRightPanelTab → ペインにツールを開く
-    window.toggleRightPanelTab = function(tabName) {
+    window.toggleRightPanelTab = function(tabName, source) {
+      if (!_guardRightSidebarTool(tabName, source)) return;
       _syncLegacyRightPanelState(tabName);
-      _openToolPane(tabName, { toggleExisting: true });
+      _openToolPane(tabName, { toggleExisting: true, source });
     };
-    window.openRightPanelTab = function(tabName) {
+    window.openRightPanelTab = function(tabName, source) {
+      if (!_guardRightSidebarTool(tabName, source)) return;
       _syncLegacyRightPanelState(tabName);
-      _openToolPane(tabName);
+      _openToolPane(tabName, { source });
     };
-    window.toggleRightPanel = function() {
+    window.toggleRightPanel = function(source) {
+      if (!_guardRightSidebarTool('chat', source)) return;
       const rightPanelTypes = ['chat', 'calendar', 'timer', 'history', 'annotation', 'preview', 'detail'];
       let closed = 0;
       rightPanelTypes.forEach((type) => {
@@ -99,14 +102,15 @@
         }
       });
       if (!closed) {
-        _openToolPane('chat');
+        _openToolPane('chat', { source });
       }
     };
 
     // switchRightTab → ペインタブ切替
-    window.switchRightTab = function(tabName) {
+    window.switchRightTab = function(tabName, source) {
+      if (!_guardRightSidebarTool(tabName, source)) return;
       _syncLegacyRightPanelState(tabName);
-      _openToolPane(tabName);
+      _openToolPane(tabName, { source });
     };
 
     // 旧スプリットビュー → ペイン分割に置換
@@ -351,6 +355,8 @@
   // ツール（chat/calendar/annotation/history等）をペインタブとして開く
   function _openToolPane(toolType, options) {
     const openOpts = options || {};
+    const operationSource = openOpts.source ?? openOpts.sourceEl ?? openOpts.sourcePaneId ?? openOpts.paneId ?? openOpts.surface;
+    if (!_guardRightSidebarTool(toolType, operationSource)) return false;
     const popupToolType = toolType === 'sticky' ? 'annotation' : toolType;
     const mobileSinglePane = typeof GBLayout?.isMobileLayout === 'function' && GBLayout.isMobileLayout();
     const preserveWorkActive = !mobileSinglePane && _isPassiveToolPaneTab(toolType, { type: toolType, path: '' });
@@ -520,12 +526,14 @@
     if (typeof GBLayout === 'undefined' || !pane?.id || !contentEl) return false;
     const paneMap = GBLayout.paneMap;
     if (!paneMap) return false;
+    const surface = options?.surface || 'float';
     paneMap[pane.id] = {
       node: pane,
-      el: contentEl.closest?.('.gb-subpanel') || contentEl,
+      el: contentEl.closest?.('.gb-float-panel, .gb-subpanel') || contentEl,
       contentEl,
+      surface,
     };
-    _mountPaneContent(pane, { ...(options || {}), subPanel: true });
+    _mountPaneContent(pane, { ...(options || {}), surface });
     return true;
   }
 
@@ -596,6 +604,82 @@
   }
 
   // ================================================================
+  // 右サイドバー補助操作の制限（フロートパネル／サブパネル内）
+  //
+  // 計画書「右サイドバー操作の制限」節: オプション・ビューワー・バージョン管理・
+  // チャット・タイマー・ヒストリー・注釈・タグ・別サブパネルを開く操作は、
+  // フロートパネル／サブパネル内では使用できない。メインパネルからは従来どおり。
+  // ================================================================
+  const RIGHT_SIDEBAR_RESTRICTED_TOOLS = new Set([
+    'detail', 'preview', 'version', 'chat', 'timer', 'history',
+    'annotation', 'sticky', 'tags', 'subpanel',
+  ]);
+
+  function _surfaceOfElement(el) {
+    if (!el || typeof el.closest !== 'function') return 'main';
+    if (el.closest('.gb-subpanel')) return 'subpanel';
+    if (el.closest('.gb-float-panel')) return 'float';
+    return 'main';
+  }
+
+  function _surfaceOfPaneId(paneId) {
+    const info = GBLayout?.paneMap?.[paneId];
+    if (!info) return 'main';
+    if (info.surface === 'float' || info.surface === 'subpanel') return info.surface;
+    return _surfaceOfElement(info.contentEl || info.el);
+  }
+
+  // source は DOM要素／paneId文字列／surface文字列／それらを持つoptions風オブジェクト／
+  // 省略のいずれかを受け付ける。
+  // 省略時は現在のフォーカス位置（document.activeElement）で判定する
+  // （計画書「判定はフォーカス位置 or 操作対象paneのsurface」に対応）。
+  function _surfaceOf(source) {
+    if (source == null) {
+      return _surfaceOfElement(typeof document !== 'undefined' ? document.activeElement : null);
+    }
+    if (typeof source === 'string') {
+      if (source === 'main' || source === 'float' || source === 'subpanel') return source;
+      return _surfaceOfPaneId(source);
+    }
+    if (source.nodeType) return _surfaceOfElement(source);
+    if (typeof source === 'object') {
+      if (source.surface === 'main' || source.surface === 'float' || source.surface === 'subpanel') {
+        return source.surface;
+      }
+      const nestedSource = source.source ?? source.sourceEl ?? source.sourcePaneId
+        ?? source.paneId ?? source.target;
+      if (nestedSource != null && nestedSource !== source) return _surfaceOf(nestedSource);
+    }
+    return 'main';
+  }
+
+  function _canUseRightSidebarTools(surface) {
+    return surface !== 'float' && surface !== 'subpanel';
+  }
+
+  function _isRightSidebarRestrictedTool(toolType) {
+    return RIGHT_SIDEBAR_RESTRICTED_TOOLS.has(toolType);
+  }
+
+  function _surfaceStatusLabel(surface) {
+    return surface === 'subpanel' ? 'サブパネル' : 'フロートパネル';
+  }
+
+  // 右サイドバー補助操作（オプション/ビューワー/バージョン管理/チャット/タイマー/
+  // ヒストリー/注釈/タグ/サブパネルを開く）の可否を判定する。制限対象で、かつ
+  // フロートパネル／サブパネル内からの呼び出しであれば false を返し、短いステータス
+  // 通知を出す。呼び出し側はこの戻り値が true の場合のみ処理を継続すること。
+  function _guardRightSidebarTool(toolType, source) {
+    if (!RIGHT_SIDEBAR_RESTRICTED_TOOLS.has(toolType)) return true;
+    const surface = _surfaceOf(source);
+    if (_canUseRightSidebarTools(surface)) return true;
+    if (typeof showStatus === 'function') {
+      showStatus(_surfaceStatusLabel(surface) + '内では使えません', true);
+    }
+    return false;
+  }
+
+  // ================================================================
   // Public API
   // ================================================================
   return {
@@ -617,6 +701,10 @@
     toggleNewMenu: _toggleNewMenu,
     clearDetailPaneShell: _clearDetailPaneShell,
     resetDefaultLayout: _resetDefaultLayout,
+    surfaceOf: _surfaceOf,
+    canUseRightSidebarTools: _canUseRightSidebarTools,
+    isRightSidebarRestrictedTool: _isRightSidebarRestrictedTool,
+    guardRightSidebarTool: _guardRightSidebarTool,
     get initialized() { return _initialized; },
   };
 })();

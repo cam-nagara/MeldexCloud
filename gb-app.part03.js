@@ -44,17 +44,24 @@ function _appShouldHandleStandaloneCalendarDrop() {
 // Ctrl+ドロップ: ファイルをそのパネルで開く
 {
   const mv = document.getElementById('main-views');
+  // 注意: #sidebar は GBLayout のドッキング対象として #gb-layout-root（#main-views の
+  // 子孫）へ組み込まれるため、フォルダツリー（お気に入り・最近使った項目・ワークスペースを
+  // 含む #sidebar 全体）は実行時には #main-views の子孫になる。Ctrl+ドロップでパネルに
+  // 開くこの機能は「ドロップ先がツリー以外のパネル領域」の場合だけに限定し、ツリー内へ
+  // Ctrl+ドロップしても項目が開かないようにする（フォルダツリー改修 Phase 2 §2.5・§9）。
+  const _isMainViewsSidebarDrop = (e) => !!e.target?.closest?.('#sidebar');
   if (mv) mv.addEventListener('dragover', (e) => {
     if (e.dataTransfer.types.includes('application/x-meldex-node')) {
       // Ctrl+ドラッグ時のみmain-viewsレベルで受け付け（ファイルを開く）
       // 通常時は各ビュー固有のdragoverに委ねる
-      if (e.ctrlKey && state.view !== 'board') e.preventDefault();
+      if (e.ctrlKey && state.view !== 'board' && !_isMainViewsSidebarDrop(e)) e.preventDefault();
     }
   });
   if (mv) mv.addEventListener('drop', (e) => {
     // Ctrl+ドロップ: ファイルをパネルで開く
     if (!e.ctrlKey) return; // 通常ドロップは各ビュー固有ハンドラに委ねる
     if (state.view === 'board') return;
+    if (_isMainViewsSidebarDrop(e)) return; // フォルダツリー（サイドバー）内へのCtrl+ドロップでは開かない
     const cfData = e.dataTransfer.getData('application/x-meldex-node');
     if (!cfData) return;
     e.preventDefault();
@@ -472,7 +479,12 @@ async function openBoard(label, path, opts) {
 
 function openMedia(label, path, type, opts) {
   const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('media');
+  // 画像/PDF/動画はビューワー（html-view の #html-iframe）で表示するため、media-view を
+  // 経由する showView('media') は行わない（openViewer 側の showView('html') に一本化）。
+  // media-view を一瞬マウントすると html-view が退避（DOM移動）され、iframe が強制
+  // 再読み込みされて開き直しの高速パスが成立しなくなる（v0.7.139検証で実測）。
+  const viewerRouted = (type === 'image' || type === 'pdf' || type === 'video');
+  if (!openOpts.skipShowView) { if (!viewerRouted) showView('media'); }
   else if (!openOpts.skipStateView) state.view = 'media';
   const mediaTitleEl = document.getElementById('media-title');
   if (mediaTitleEl) mediaTitleEl.textContent = label;
@@ -497,15 +509,26 @@ function openMedia(label, path, type, opts) {
   } else if (type === 'pdf') {
     openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
     return;
+  } else if (type === 'video') {
+    // 動画も画像・PDFと同じくビューワー（viewer.html／#html-iframe）側へ統一する。
+    // ビューワー側の動画対応は並行して実装中で、ここではルーティングのみ行う
+    // （旧・#media-content への直接注入は廃止。共有コンテナのタブ間混入対策も
+    // ビューワー経由に一本化することで簡素化される）。
+    openViewer(openOpts.viewerUrl || openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
+    return;
   } else if (!container) {
     return;
-  } else if (type === 'video') {
-    container.innerHTML = '<video src="' + esc(url) + '" controls autoplay playsinline style="max-width:100%;max-height:80vh;border-radius:4px;">動画を再生できません</video>';
-    window.MeldexMediaPlayback?.start(container.querySelector('video'));
   } else if (type === 'audio') {
     container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
+    // タブ復帰時、共有コンテナ（media-content）の実内容が対象タブと一致しているか
+    // 検証するための署名（gb-pane-bridge.part02.part01.js の _gbMediaTabExpectedSignature /
+    // _gbVerifyAndFixMediaContainer 参照）。
+    container.dataset.gbMediaPath = path;
+    container.dataset.gbMediaKind = 'audio';
   } else {
     container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
+    delete container.dataset.gbMediaPath;
+    delete container.dataset.gbMediaKind;
     if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
     return;
   }

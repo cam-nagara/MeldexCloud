@@ -40,3 +40,54 @@
 .timer-main .gb-timer-display-readout {
   font-weight: 800;
 }
+
+.timer-option-section {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.timer-option-section h3 {
+  margin: 0 0 8px;
+  color: var(--fg);
+  font-size: 13px;
+}
+
+.timer-option-grid {
+  display: grid;
+  grid-template-columns: minmax(90px, auto) minmax(0, 1fr);
+  gap: 7px 10px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.timer-option-grid dt { color: var(--fg2); }
+.timer-option-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.timer-option-grid input[type="color"] {
+  width: 44px;
+  height: 44px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg2);
+}
+
+.timer-calendar-state {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+  font-size: 12px;
+}
+
+.timer-calendar-state[data-source="conflict"],
+.timer-calendar-state[data-source="permission"],
+.timer-calendar-state[data-source="error"] {
+  border-color: var(--danger, #d66);
+}
+
+.timer-calendar-state button {
+  min-height: 44px;
+  justify-self: start;
+}

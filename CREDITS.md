@@ -56,12 +56,6 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 - [html2canvas](https://github.com/niklasvh/html2canvas) — MIT License
 - [PDF.js](https://github.com/mozilla/pdf.js) — Apache License 2.0
 
-## Tag Translation Data
-
-[booru-japanese-tag](https://github.com/boorutan/booru-japanese-tag) の日本語対応表を、Danbooru日本語タグプリセットの翻訳シードとして利用しています（MIT License）。Meldexで使用するWD一般タグだけに絞り、Meldex側の手修正訳を優先して生成しています。
-
-ライセンス本文: [app/MeldexHome/マニュアル/サンプル/Danbooru日本語タグプリセット-LICENSE.txt](app/MeldexHome/マニュアル/サンプル/Danbooru日本語タグプリセット-LICENSE.txt)
-
 ## Python Libraries
 
 必須/主要依存:

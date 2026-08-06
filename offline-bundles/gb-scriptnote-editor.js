@@ -159,6 +159,9 @@ class ScriptNoteEditor {
     this.host = hostEl;
     this.doc = null;
     this._path = '';
+    // 工程2-C項目3: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。
+    this._lastSavedEtag = '';
+    this._lastSavedTransportRevision = '';
     this._dirty = false;
     this._saveTimer = null;
     this._bound = false;
@@ -183,12 +186,36 @@ class ScriptNoteEditor {
 
   // === ドキュメント操作 ===
 
-  loadDoc(parsed, path = '') {
+  loadDoc(parsed, path = '', etag = '', conflictGeneration = null, identity = null) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    let documentKey = path;
+    if (coordinator && path) {
+      documentKey = coordinator.bindDocumentIdentity(path, identity || {}) || coordinator.documentKeyForPath(path);
+    }
+    if (coordinator && path && conflictGeneration != null) {
+      const current = coordinator.getConflict?.(documentKey);
+      if (!current || current.generation !== conflictGeneration) return false;
+    }
     if (this._undoTimer) { clearTimeout(this._undoTimer); this._undoTimer = null; }
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
     const previousRegisteredPath = this._sn2RegisteredPath || '';
     const previousRegisteredScopeId = this._sn2RegisteredScopeId || '';
+    const _prevDocumentKey = (coordinator && this._path)
+      ? coordinator.documentKeyForPath(this._path) : '';
     this._path = path;
+    // 工程2-C項目3: 読込時のetagを保持する。競合の解決として再読込した場合だけ、
+    // 読込開始時に捕捉した世代と一致する保留状態を描画完了後に解除する。
+    this._lastSavedEtag = etag || '';
+    this._lastSavedTransportRevision = coordinator
+      ? coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        identity?.transport_revision || etag || '',
+      )
+      : (etag || '');
+    if (coordinator && path) {
+      if (documentKey !== _prevDocumentKey) coordinator.unregisterParticipant(_prevDocumentKey, this);
+      coordinator.registerParticipant(documentKey, this);
+    }
     this._dirty = false;
     this.doc = createScriptNoteDoc(parsed);
     // 削除検知用の行ID スナップショット
@@ -225,6 +252,13 @@ class ScriptNoteEditor {
     }
     this._render();
     this._pushUndo('初期状態');
+    if (coordinator && path && conflictGeneration != null) {
+      const resolved = coordinator.resolveConflict(documentKey, conflictGeneration);
+      if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+    } else if (coordinator?.getConflict?.(documentKey)) {
+      this._showConflictPending(documentKey, path);
+    }
+    return true;
   }
 
   collectDoc() {
@@ -233,18 +267,147 @@ class ScriptNoteEditor {
     return serializeScriptNoteDoc(this.doc);
   }
 
+  _showConflictPending(documentKey, path) {
+    window.MeldexConflictPendingBanner?.show?.(documentKey, {
+      label: '競合を保留中',
+      e2eId: 'scriptnote-conflict-pending-banner',
+      onConfirm: () => { this._reviewConflict(path, documentKey); },
+    });
+  }
+
+  _restoreConflictReview(documentKey, record, path) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    if (coordinator && record) {
+      const current = coordinator.getConflict?.(documentKey);
+      if (!current || current.generation !== record.generation) return;
+      coordinator.restoreConflict?.(documentKey, record);
+    }
+    this._showConflictPending(documentKey, path);
+  }
+
+  async _reviewConflict(path, documentKey) {
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const record = coordinator?.requestConflictReview?.(documentKey) || null;
+    if (coordinator && !record) return;
+    const generation = record?.generation ?? null;
+    window.MeldexConflictPendingBanner?.hide?.(documentKey);
+    try {
+      const keepLocal = typeof cfConfirm === 'function'
+        ? await cfConfirm('このシナリオは他の場所で更新されています。今の編集内容で上書きしますか？（キャンセルすると最新版を読み込み、今の編集内容は失われます）')
+        : false;
+      if (this._path !== path) {
+        this._restoreConflictReview(documentKey, record, path);
+        return;
+      }
+      if (keepLocal) {
+        const json = JSON.stringify(this.collectDoc(), null, 2);
+        const result = await apiPut('/file?path=' + encodeURIComponent(path), {
+          content: json,
+          force_overwrite: true,
+        });
+        const resolved = coordinator?.resolveConflict?.(documentKey, generation);
+        if (coordinator && !resolved) {
+          throw new Error('シナリオの競合状態が更新されたため、上書き結果を確定できません');
+        }
+        if (this._path === path) {
+          this._lastSavedEtag = result?.etag || this._lastSavedEtag;
+          if (coordinator && (result?.transport_revision || result?.etag)) {
+            this._lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+              coordinator.currentTransportName(),
+              result.transport_revision || result.etag,
+            );
+            coordinator.bindDocumentIdentity(path, result);
+          }
+          this._lastSavedRowIds = createScriptNoteRowIdSet(this.doc);
+          this._dirty = false;
+        }
+        if (resolved) window.MeldexConflictPendingBanner?.hide?.(documentKey);
+        await window.MeldexDraftRecovery?.markSynced?.(path);
+        if (typeof showStatus === 'function') showStatus('自分の編集でシナリオを上書き保存しました');
+        return;
+      }
+
+      const localJson = JSON.stringify(this.collectDoc(), null, 2);
+      await window.MeldexDraftRecovery?.saveDraft?.(path, localJson, this._lastSavedEtag || '');
+      const component = typeof getActiveScriptNoteComponent === 'function'
+        ? getActiveScriptNoteComponent()
+        : null;
+      if (component?._editor === this && typeof component._loadScenario === 'function') {
+        const loaded = await component._loadScenario(path, {
+          skipNavPush: true,
+          skipRecent: true,
+          skipAutoVersion: true,
+          skipSaveLastView: true,
+          conflictGeneration: generation,
+        });
+        if (!loaded) throw new Error('最新版の読み込みに失敗しました');
+      } else {
+        const data = await apiFetch('/file?path=' + encodeURIComponent(path));
+        const parsed = JSON.parse(data.content || '{}');
+        if (typeof _sn2ExpandDefaultFileStyle === 'function') _sn2ExpandDefaultFileStyle(parsed);
+        if (typeof isScriptNoteFileDoc === 'function' && !isScriptNoteFileDoc(parsed)) {
+          throw new Error('シナリオ形式ファイルではありません');
+        }
+        if (!this.loadDoc(parsed, path, data.etag || '', generation, data)) {
+          throw new Error('競合状態が更新されたため、再読込を中止しました');
+        }
+      }
+      const current = coordinator?.getConflict?.(documentKey);
+      if (current?.generation === generation) throw new Error('競合の解除に失敗しました');
+      if (typeof showStatus === 'function') showStatus('相手の変更を読み込みました');
+    } catch (error) {
+      this._restoreConflictReview(documentKey, record, path);
+      if (typeof showStatus === 'function') showStatus('競合の解決に失敗しました: ' + error.message, true);
+    }
+  }
+
   async save() {
     if (!this._path || !this.doc) return true;
     const savePath = this._path;
     const json = JSON.stringify(this.collectDoc(), null, 2);
     const prevIds = this._lastSavedRowIds || new Set();
     const currIds = createScriptNoteRowIdSet(this.doc);
+    const coordinator = window.MeldexDocumentSaveCoordinator;
+    const documentKey = coordinator ? coordinator.documentKeyForPath(savePath) : savePath;
+    const transportRevisionAtRequestTime = this._lastSavedTransportRevision || this._lastSavedEtag || '';
+    const sendFn = (previousResult) => {
+      const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
+      const revisionForWrite = chainedRevision && coordinator
+        ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), chainedRevision)
+        : transportRevisionAtRequestTime;
+      return apiPut('/file?path=' + encodeURIComponent(savePath), {
+        content: json,
+        if_match_etag: revisionForWrite && coordinator
+          ? coordinator.revisionTokenForWrite(revisionForWrite, coordinator.currentTransportName())
+          : (chainedRevision || this._lastSavedEtag || ''),
+        transport_revision: revisionForWrite || '',
+        skip_if_missing: true,
+      });
+    };
     try {
-      const saveResult = await apiPut('/file?path=' + encodeURIComponent(savePath), { content: json, skip_if_missing: true });
+      // 工程2-C項目3: 2秒自動保存・flush()・書式変換保存を同じ文書キューへ接続する
+      // （coordinator未ロード時は従来通り直接送信するフォールバック）。
+      const saveResult = coordinator
+        ? await coordinator.requestSave(documentKey, this, savePath, json, sendFn, { reason: 'scriptnote-auto' })
+        : await sendFn();
+      if (saveResult?.conflictPending) {
+        this._dirty = true;
+        window.MeldexDraftRecovery?.queueDraft?.(savePath, json, this._lastSavedEtag || '');
+        this._showConflictPending(documentKey, savePath);
+        return false;
+      }
       if (saveResult?.skipped || saveResult?.missing) {
         this._dirty = true;
         if (typeof showStatus === 'function') showStatus('保存先が見つかりません。名前を付けて保存してください', true);
         return false;
+      }
+      if (saveResult?.etag && this._path === savePath) this._lastSavedEtag = saveResult.etag;
+      if (coordinator && this._path === savePath && (saveResult?.transport_revision || saveResult?.etag)) {
+        this._lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          saveResult.transport_revision || saveResult.etag,
+        );
+        coordinator.bindDocumentIdentity(savePath, saveResult);
       }
       const unchanged = this._path === savePath && JSON.stringify(this.collectDoc(), null, 2) === json;
       if (this._path === savePath) {
@@ -275,6 +438,21 @@ class ScriptNoteEditor {
       }
       return true;
     } catch (e) {
+      if (coordinator && (e?.status === 409 || e?.meldexCode === 'etag_conflict')) {
+        // 工程2-C項目3: 409を受けた文書をconflict-pendingへ遷移させ、以後の
+        // 自動保存（2秒タイマー）をコーディネーター入口で止める（工程2-Aと同じ契約）。
+        this._dirty = true;
+        coordinator.reportConflict(documentKey, {
+          path: savePath,
+          localMd: json,
+          localEtag: this._lastSavedTransportRevision || this._lastSavedEtag || '',
+          serverDetail: (e && e.meldexDetail && typeof e.meldexDetail === 'object') ? e.meldexDetail : null,
+        });
+        window.MeldexDraftRecovery?.saveDraft?.(savePath, json, this._lastSavedEtag || '');
+        this._showConflictPending(documentKey, savePath);
+        showStatus('シナリオは上書きされていません。別の端末で更新されています。最新のシナリオを開き直してから編集内容を反映してください', true);
+        return false;
+      }
       if (typeof showStatus === 'function') showStatus('保存失敗: ' + e.message, true);
       return false;
     }
@@ -315,11 +493,18 @@ class ScriptNoteEditor {
   _getRoleFlagSets() {
     const breakNames = new Set();
     const summaryNames = new Set();
-    (this.doc?.characters || []).forEach(c => {
-      if (c.isDefault) return;
-      if (!c.name) return;
-      if (c.isBreak) breakNames.add(c.name);
-      if (c.isSummary) summaryNames.add(c.name);
+    const roleModel = globalThis.GBScriptNoteRoleModel;
+    const subjects = [
+      ...(roleModel?.buildRoleChoices?.(this.doc) || []),
+      ...(this.doc?.rows || []),
+    ];
+    subjects.forEach((subject) => {
+      const effective = roleModel?.getEffectiveRole?.(this.doc, subject);
+      const name = String(effective?.name || subject?.role || subject?.name || '');
+      if (!name) return;
+      const type = effective?.type || effective?.style || null;
+      if (type?.isBreak || type?.kind === 'break') breakNames.add(name);
+      if (type?.isSummary || type?.kind === 'summary') summaryNames.add(name);
     });
     return { breakNames, summaryNames };
   }
@@ -444,7 +629,8 @@ class ScriptNoteEditor {
 
   _getCharaStyle(role) {
     if (!role) return null;
-    const chara = this.doc.characters.find(c => !c.isDefault && c.name === role);
+    const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(this.doc, role)
+      || this.doc.characters.find(c => !c.isDefault && c.name === role);
     if (!chara) return null;
     const { bgColor, textColor } = this._resolveCharaColors(chara, '_role');
     const rs = chara.roleStyle || {};
@@ -470,9 +656,10 @@ class ScriptNoteEditor {
     const gutter2El = rowEl.querySelector('.sn2-gutter2');
     const rowId = rowEl.dataset.rowId;
     const rowData = this.doc?.rows?.find((item) => item.id === rowId) || null;
-    const chara = role
-      ? this.doc.characters.find(c => !c.isDefault && c.name === role)
-      : this.doc.characters.find(c => c.isDefault);
+    const chara = globalThis.GBScriptNoteRoleModel?.getEffectiveStyle?.(this.doc, rowData || role)
+      || (role
+        ? this.doc.characters.find(c => !c.isDefault && c.name === role)
+        : this.doc.characters.find(c => c.isDefault));
     // 列スタイル設定
     const colStyles = this.doc.editor?.columnStyles || {};
     // スタイル解決: タイプ別設定（具体的）が列全体設定（汎用的）を常に上書き
@@ -1510,15 +1697,20 @@ class ScriptNoteEditor {
     el.className = 'sn2-row';
     el.dataset.rowId = row.id;
     // 枠線設定（タイプごとのオプション設定で制御）
-    const chara = row.role
-      ? this.doc.characters.find(c => !c.isDefault && c.name === row.role)
-      : this.doc.characters.find(c => c.isDefault);
+    const effectiveRole = globalThis.GBScriptNoteRoleModel?.getEffectiveRole?.(this.doc, row);
+    const chara = effectiveRole?.style
+      || (row.role
+        ? this.doc.characters.find(c => !c.isDefault && c.name === row.role)
+        : this.doc.characters.find(c => c.isDefault));
     // dataset.kind: 'blank' (空ロール), 'break' (区切り), 'summary' (プロット), 'action', 'heading', 'dialogue'
     let kind = 'dialogue';
     if (!row.role) kind = 'blank';
-    else if (chara?.isSummary) kind = 'summary';
-    else if (chara?.isBreak) kind = 'break';
-    else if (['dialogue', 'action', 'heading'].includes(chara?.kind)) kind = chara.kind;
+    else if (effectiveRole?.type?.isSummary || chara?.isSummary) kind = 'summary';
+    else if (effectiveRole?.type?.isBreak || chara?.isBreak) kind = 'break';
+    else {
+      const resolvedKind = effectiveRole?.type?.kind || chara?.kind;
+      if (['dialogue', 'action', 'heading'].includes(resolvedKind)) kind = resolvedKind;
+    }
     el.dataset.kind = kind;
     const showOutline = !!chara?.outline;
     if (showOutline) {
@@ -2959,13 +3151,21 @@ class ScriptNoteEditor {
       for (let i = 1; i < lines.length; i++) {
         const isLast = i === lines.length - 1;
         const lineText = isLast ? escapedLines[i] + afterText : escapedLines[i];
-        newRows.push({
+        const newRow = {
           id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           role: lineText ? currentRow.role : '', // 空白行はタイプなし
           status: newStatus,
           text: lineText,
           columns: {},
-        });
+        };
+        if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+          globalThis.GBScriptNoteRoleModel.assignRowRole(
+            this.doc,
+            newRow,
+            lineText ? (currentRow.roleRef || currentRow.role) : ''
+          );
+        }
+        newRows.push(newRow);
       }
       this.doc.rows.splice(idx + 1, 0, ...newRows);
       this._calcCache = null;
@@ -3508,6 +3708,12 @@ class ScriptNoteEditor {
       newStatus = [...this._filterStatuses][0];
     }
     const newRow = { id: `sn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: newRole, status: newStatus, text: afterText, columns: {} };
+    if (globalThis.GBScriptNoteRoleModel?.assignRowRole) {
+      const roleValue = opts?.keepRole && !this._filterRoles?.size
+        ? (this.doc.rows[idx].roleRef || newRole)
+        : newRole;
+      globalThis.GBScriptNoteRoleModel.assignRowRole(this.doc, newRow, roleValue);
+    }
     this.doc.rows.splice(idx + 1, 0, newRow);
     this._calcCache = null;
     // ルビ対応: 全体再描画で正しくDOMを構築

@@ -257,37 +257,19 @@
     const dependencies = rawDependencies && typeof rawDependencies === 'object'
       ? rawDependencies
       : {};
-    const ensureDirectory = dependencies.ensureDirectory;
-    const resolveEntryHandle = dependencies.resolveEntryHandle;
     const writeCatalog = dependencies.writeCatalog;
-    if (
-      typeof ensureDirectory !== 'function'
-      || typeof resolveEntryHandle !== 'function'
-      || typeof writeCatalog !== 'function'
-    ) {
+    if (typeof writeCatalog !== 'function') {
       throw new Error('タグ辞書作成APIの依存関数が不足しています');
     }
     const dictionaryFolder = String(
       dependencies.dictionaryFolder || '自動タグ辞書',
     );
-    const dictionaryNote = String(
-      dependencies.dictionaryNote
-      || `${dictionaryFolder}/${dictionaryFolder}.md`,
-    );
     const catalogFile = String(
       dependencies.catalogFile || '.meldex/auto-tag-dictionary.v1.json',
     );
-    await ensureDirectory(provider, '.meldex');
-    await ensureDirectory(provider, dictionaryFolder);
-    if (!await resolveEntryHandle(provider, dictionaryNote)) {
-      await provider.writeText(
-        dictionaryNote,
-        dictionaryNoteText(dictionaryFolder),
-      );
-    }
-    if (!await resolveEntryHandle(provider, catalogFile)) {
-      await writeCatalog(provider, catalog => catalog);
-    }
+    // 辞書は管理領域へ保存する。旧「自動タグ辞書」フォルダと説明ノートは
+    // 既存データの読取互換だけに残し、新規作成しない。
+    await writeCatalog(provider, catalog => catalog);
     return {
       ok: true,
       created: true,

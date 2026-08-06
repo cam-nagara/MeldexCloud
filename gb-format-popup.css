@@ -53,13 +53,6 @@
   padding-top: var(--ui-space-3);
 }
 
-.gb-text-selection-clipboard-row {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--ui-space-3);
-  width: 100%;
-}
-
 /* 選択時書式ポップアップのルビ入力行（シナリオのテキストセル選択時のみ表示）。
    ポップアップ最上段に置き、1行目=ラベル+入力+追加 / 2行目=読み取得+ルール追加 */
 .gb-text-selection-fmt .gb-fmt-popup-row--count { flex-wrap: wrap; }
@@ -351,6 +344,17 @@ input.gb-fmt-num:focus::-webkit-inner-spin-button {
 }
 /* 最初のコピー系ボタンを左端グループとして右寄せリセットから分離 */
 .gb-fmt-style-copy + .gb-fmt-style-copy {
+  margin-left: var(--ui-space-1);
+}
+
+/* 共通フッター行（コピー・切り取り・貼り付け・閉じる）
+   計画書2026-08-04版§2.4: 最下段1行へ右寄せ配置し、閉じるを右端にする。 */
+.gb-fmt-footer-actions-row {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: var(--ui-space-3);
+}
+.gb-fmt-footer-close {
   margin-left: var(--ui-space-1);
 }
 

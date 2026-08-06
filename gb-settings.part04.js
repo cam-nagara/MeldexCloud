@@ -22,6 +22,43 @@
     else localStorage.removeItem('meldex-statusbar-hidden');
     if (typeof applyStatusbarHidden === 'function') applyStatusbarHidden(statusbarHiddenCb.checked);
   }
+
+  // フォルダツリーのサムネイル表示（フォルダツリー改修Phase4）。行高・DOM構造が
+  // 変わるため反映には再読込が必要だが、submitSettings()は保存の度に無条件で
+  // 末尾でloadOutliner()を呼ぶため、ここでは値の保存だけを行い二重リロードを避ける。
+  const treeThumbnailsCb = document.getElementById('modal-tree-thumbnails-enabled');
+  if (treeThumbnailsCb) {
+    if (window.GBOutlinerThumbnails?.setEnabled) window.GBOutlinerThumbnails.setEnabled(treeThumbnailsCb.checked);
+    else localStorage.setItem('gb:tree-thumbnails-enabled', treeThumbnailsCb.checked ? '1' : '0');
+  }
+
+  // サムネイルの表示方法（フォルダツリー・シートの画像サムネイル共通）
+  const thumbnailFitSelect = document.getElementById('modal-thumbnail-fit');
+  if (thumbnailFitSelect) {
+    const mode = typeof resolveThumbnailFitMode === 'function' ? resolveThumbnailFitMode(thumbnailFitSelect.value) : (thumbnailFitSelect.value === 'cover' ? 'cover' : 'contain');
+    localStorage.setItem('gb:thumbnail-fit', mode);
+    if (typeof applyThumbnailFit === 'function') applyThumbnailFit(mode);
+  }
+
+  // フォルダツリーのサムネイルサイズ（小/中/大）
+  const thumbnailSizeSelect = document.getElementById('modal-tree-thumbnail-size');
+  if (thumbnailSizeSelect) {
+    const sizeMode = typeof resolveThumbnailSizeMode === 'function' ? resolveThumbnailSizeMode(thumbnailSizeSelect.value) : 'medium';
+    localStorage.setItem('gb:tree-thumbnail-size', sizeMode);
+    if (typeof applyThumbnailSize === 'function') applyThumbnailSize(sizeMode);
+  }
+
+  // フォルダツリーの項目を開く操作（ダブルクリック/クリック）
+  const treeOpenClickModeSelect = document.getElementById('modal-tree-open-click-mode');
+  if (treeOpenClickModeSelect) {
+    localStorage.setItem('gb:tree-open-click-mode', treeOpenClickModeSelect.value === 'single' ? 'single' : 'double');
+  }
+
+  // ビューワーのマウスホイール操作
+  const viewerWheelModeSelect = document.getElementById('modal-viewer-wheel-mode');
+  if (viewerWheelModeSelect) {
+    localStorage.setItem('gb:viewer-wheel-mode', viewerWheelModeSelect.value === 'nav' ? 'nav' : 'zoom');
+  }
   [
     ['modal-a11y-high-contrast', 'highContrast'],
     ['modal-a11y-reduced-motion', 'reducedMotion'],
@@ -173,7 +210,14 @@
       const sourceFolderHistoryAfter = await captureOutlinerRootsSettingsSnapshot().catch(() => null);
       pushOutlinerRootsSettingsHistory('設定: ソースフォルダ保存', sourceFolderHistoryBefore, sourceFolderHistoryAfter);
     }
+    // ソースフォルダの並べ替えを保存した場合、ツリー側に残るルート直下の手動並び順
+    // （localStorage['outliner-manual-order']._root）を破棄する。手動並び順はツリー側で
+    // 常に優先されるため、破棄しないと設定側で並べ替えた新しい順序がツリーへ反映されない。
+    if (window._settingsOutlinerRootsReordered && typeof clearManualOrder === 'function') {
+      clearManualOrder('_root');
+    }
     window._settingsOutlinerRootsDirty = false;
+    window._settingsOutlinerRootsReordered = false;
   }
 
     // UI設定をサーバーにも永続保存
@@ -303,6 +347,11 @@ function _settingsCliProviderRows(config) {
         : item.version
           ? `v${item.version}`
           : '検出済み';
+    // 「検出済み」は実行ファイルの所在確認であり、ログイン状態の確認ではない
+    // （2026-07-31、両者の混同で認証エラーの原因調査が長引いたユーザー報告を踏まえて明記）。
+    const statusTitle = !available || !compatible
+      ? ''
+      : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
     const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
     const compatibilityMessage = String(item.compatibility_message || '').trim();
     const datalistId = `settings-cli-chat-${_settingsCliEsc(key)}-model-list`;
@@ -316,7 +365,7 @@ function _settingsCliProviderRows(config) {
         <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
         <input class="gb-input" list="${datalistId}" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(modelValue)}" placeholder="${_settingsCliEsc(placeholderModel)}" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル名')}">
         <datalist id="${datalistId}">${datalistOptions}</datalist>
-        <span style="font-size:11px;color:${statusColor};white-space:nowrap;">${_settingsCliEsc(statusText)}</span>
+        <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
         ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
       </div>`;
   }).join('');
@@ -511,7 +560,15 @@ async function trashDelete(idx) {
   const item = window._trashItems?.[idx];
   const name = item?.name;
   if (!name) return;
-  if (!await cfConfirm(`「${name}」を完全に削除しますか？この操作は取り消せません。`)) return;
+  const confirmMessage = `「${name}」を完全に削除しますか？この操作は取り消せません。`;
+  const impactPath = item?.original_path || '';
+  const confirmed = (impactPath && typeof MeldexDeleteImpactWarning !== 'undefined')
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file' }],
+        confirmMessage,
+      )
+    : await cfConfirm(confirmMessage);
+  if (!confirmed) return;
   try {
     await apiPost('/trash/delete', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
     showStatus(`「${name}」を完全に削除しました`);
@@ -524,7 +581,14 @@ async function trashDelete(idx) {
 }
 
 async function trashEmpty() {
-  if (!await cfConfirm('ゴミ箱を空にしますか？この操作は取り消せません。')) return;
+  const confirmMessage = 'ゴミ箱を空にしますか？この操作は取り消せません。';
+  const impactTargets = (window._trashItems || [])
+    .filter(item => item?.original_path)
+    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+  const confirmed = (impactTargets.length && typeof MeldexDeleteImpactWarning !== 'undefined')
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+    : await cfConfirm(confirmMessage);
+  if (!confirmed) return;
   try {
     await apiPost('/trash/empty', {});
     showStatus('ゴミ箱を空にしました');
@@ -854,6 +918,45 @@ async function runExportToDb() {
   }
 }
 
+// フォルダツリー・シートの画像サムネイルの表示方法を解決する一元ヘルパー。
+// 既定は 'contain'（全体を枠内に収める）。明示的に 'cover' が保存されている場合だけ
+// 'cover'（枠いっぱいに切り抜き）を維持する（2026-08-05 既定値変更。分散していた
+// `localStorage.getItem('gb:thumbnail-fit') || 'cover'` フォールバックをここへ一元化）。
+function resolveThumbnailFitMode(raw) {
+  const value = raw !== undefined ? raw : (typeof localStorage !== 'undefined' ? localStorage.getItem('gb:thumbnail-fit') : null);
+  return value === 'cover' ? 'cover' : 'contain';
+}
+if (typeof window !== 'undefined') window.resolveThumbnailFitMode = resolveThumbnailFitMode;
+
+// フォルダツリー・シートの画像サムネイルの表示方法を適用（'cover' = 枠いっぱいに切り抜き / 'contain' = 全体を収める）
+function applyThumbnailFit(mode) {
+  const resolved = resolveThumbnailFitMode(mode);
+  document.documentElement.classList.toggle('thumb-fit-contain', resolved === 'contain');
+}
+if (typeof window !== 'undefined') window.applyThumbnailFit = applyThumbnailFit;
+
+// フォルダツリーのサムネイルサイズ設定（小/中/大。既定=中）を解決する一元ヘルパー。
+// 単一情報源は window.GBOutlinerThumbnails.sizeMode()（gb-outliner-thumbnails.js）。
+// 未読込環境（Node単体テスト等）向けに localStorage 直接読みへフォールバックする。
+function resolveThumbnailSizeMode(raw) {
+  if (raw === 'small' || raw === 'large' || raw === 'medium') return raw;
+  if (window.GBOutlinerThumbnails && typeof window.GBOutlinerThumbnails.sizeMode === 'function') {
+    return window.GBOutlinerThumbnails.sizeMode();
+  }
+  const value = typeof localStorage !== 'undefined' ? localStorage.getItem('gb:tree-thumbnail-size') : null;
+  return (value === 'small' || value === 'large') ? value : 'medium';
+}
+if (typeof window !== 'undefined') window.resolveThumbnailSizeMode = resolveThumbnailSizeMode;
+
+// フォルダツリーのサムネイルサイズを適用（html.thumb-size-small / html.thumb-size-large クラス切替。
+// 中は追加クラスなし＝gb-tools.part02.part01.cssの:root既定値のまま）
+function applyThumbnailSize(mode) {
+  const resolved = resolveThumbnailSizeMode(mode);
+  document.documentElement.classList.toggle('thumb-size-small', resolved === 'small');
+  document.documentElement.classList.toggle('thumb-size-large', resolved === 'large');
+}
+if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSize;
+
 // UI設定のサーバー永続保存（localStorageの主要設定をサーバーにバックアップ）
 const _UI_CONFIG_KEYS = [
   // UI設定
@@ -861,6 +964,7 @@ const _UI_CONFIG_KEYS = [
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
+  'gb:thumbnail-fit', 'gb:tree-thumbnail-size', 'gb:tree-open-click-mode', 'gb:viewer-wheel-mode',
   // カレンダー / チャット
   'gb-cal-start-day', 'gb:clock-enabled', 'gb:outliner-filter-shared', 'chat-provider', 'chat-model', 'chat-allow-web-search', 'chat-auto-compress', 'chat-allow-code-execution', 'chat-recommendations-enabled', 'chat-reasoning-level', 'chat-param-preset', 'chat-temperature', 'chat-max-tokens', 'chat-top-p', 'chat-custom-about', 'chat-custom-instructions', 'chat-local-llm-base-url', 'chat-local-llm-model', 'chat-local-llm-mcp-enabled', 'meldex-wheel-speed',
   'meldex-knowledge-automation-settings-v1',
@@ -911,6 +1015,12 @@ function _restoreSettingsDialogStorageAfterHistory(keys) {
   }
   if (keys.includes('meldex-statusbar-hidden') && typeof applyStatusbarHidden === 'function') {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
+  }
+  if (keys.includes('gb:thumbnail-fit') && typeof applyThumbnailFit === 'function') {
+    applyThumbnailFit(resolveThumbnailFitMode());
+  }
+  if (keys.includes('gb:tree-thumbnail-size') && typeof applyThumbnailSize === 'function') {
+    applyThumbnailSize(resolveThumbnailSizeMode());
   }
   if (keys.some(key => key === 'editor-theme' || key === 'editor-theme-name' || key.startsWith('meldex-theme-'))) {
     if (typeof loadColorSettings === 'function') loadColorSettings();
@@ -967,9 +1077,14 @@ async function _restoreUiConfigFromServer() {
       if (typeof loadColorSettings === 'function') loadColorSettings();
       const scale = localStorage.getItem('ui-scale');
       if (scale && typeof applyUIScale === 'function') applyUIScale(parseInt(scale) || 100);
+      if (typeof applyThumbnailFit === 'function') applyThumbnailFit(resolveThumbnailFitMode());
+      if (typeof applyThumbnailSize === 'function') applyThumbnailSize(resolveThumbnailSizeMode());
     }
   } catch {}
 }
+// 起動時: サーバー復元を待たず、既存のローカル設定を即時反映する
+if (typeof applyThumbnailFit === 'function') applyThumbnailFit(resolveThumbnailFitMode());
+if (typeof applyThumbnailSize === 'function') applyThumbnailSize(resolveThumbnailSizeMode());
 _restoreUiConfigFromServer();
 
 /* showNotionSyncModal / saveNotionToken / doNotionSync 等は gb-notion-sync.js に移動 */

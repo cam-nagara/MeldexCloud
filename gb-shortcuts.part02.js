@@ -51,6 +51,8 @@
   },
   'board.paste': () => {
     if (state.view !== 'board' || typeof bd === 'undefined' || bd.editing) return false;
+    // OS / Meldex 内部の両方を扱う document の paste イベントへ渡す。
+    if (typeof MeldexBoardTransfer !== 'undefined') return false;
     if (typeof bdPaste === 'function') bdPaste();
   },
   'board.cut': () => {
@@ -188,7 +190,12 @@
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;
     if (typeof _folderSelectedItems === 'undefined' || _folderSelectedItems.length === 0) return;
-    if (!await cfConfirm(_folderSelectedItems.length + ' 件を削除しますか？')) return;
+    const impactTargets = _folderSelectedItems.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const confirmMessage = _folderSelectedItems.length + ' 件を削除しますか？';
+    const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+      ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
+      : await cfConfirm(confirmMessage);
+    if (!confirmed) return;
     const deletedItems = [..._folderSelectedItems];
     const result = await deleteOutlinerItemsWithHistory(deletedItems, {
       label: deletedItems.length + ' 件を削除',

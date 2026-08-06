@@ -131,7 +131,12 @@
 }
 /* アクティブセル */
 #pivot-table td.active-cell {
-  outline: var(--db-active-width) solid var(--db-active-color); outline-offset: -2px; z-index: 6; position: relative;
+  outline: none !important; z-index: 6; position: relative;
+  border: var(--db-active-width) solid var(--db-active-color) !important;
+  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+}
+#pivot-table td.active-cell.col-entity {
+  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
 }
 /* 範囲選択セル（Shift+矢印/ドラッグ選択の範囲全体）。gb-accessibility.css と同一定義を、
    同ファイルを読み込まないシートホスト（標準版 sheet-standalone / クラウド / モバイル）でも
@@ -215,7 +220,14 @@
 .pivot-table.entity-col-unpinned td.col-entity,
 .pivot-table.entity-col-unpinned th.col-entity-header,
 .pivot-table.entity-col-unpinned tfoot td.col-entity { position: static; }
-.pivot-table td.active-cell { outline: var(--db-active-width) solid var(--db-active-color); outline-offset: -2px; z-index: 6; position: relative; }
+.pivot-table td.active-cell {
+  outline: none !important; z-index: 6; position: relative;
+  border: var(--db-active-width) solid var(--db-active-color) !important;
+  box-shadow: inset var(--db-cell-left-accent, 0px) 0 0 var(--db-cell-accent-color, var(--db-cell-fg)) !important;
+}
+.pivot-table td.active-cell.col-entity {
+  box-shadow: inset var(--db-entity-left-accent, 0px) 0 0 var(--db-entity-accent-color, var(--db-entity-fg)) !important;
+}
 /* 列リサイズハンドル */
 .col-resize-handle {
   position: absolute; right: -3px; top: 0; bottom: 0; width: 6px;
@@ -276,15 +288,17 @@ th.col-drop-right::after { right: -2px; }
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
+.db-rollup-line {
+  /* .relation-link のカード枠（padding+border）と行高を揃えるための透明パディング（content-box基準で揃える） */
+  padding: 1px 8px;
+  border: 1px solid transparent;
+}
 .db-rollup-relation-line {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: var(--accent2);
   cursor: pointer;
-  text-decoration: underline dotted;
 }
-.db-rollup-relation-line:hover { color: var(--accent); }
 .db-rollup-line[data-relation-status="ボツ"],
 .db-rollup-relation-line[data-relation-status="ボツ"] { opacity: 0.5; }
 .cell-value.status-botsu { opacity: 0.5; }
@@ -405,6 +419,12 @@ td.active-cell .cell-value > .cell-value-more {
 #pivot-table td.col-selected, .pivot-table td.col-selected { background: color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 35%, transparent) !important; color: var(--db-selection-fg, var(--ui-selection-fg)) !important; }
 #pivot-table th.col-selected, .pivot-table th.col-selected { background: color-mix(in srgb, var(--db-selection-color, var(--ui-selection-bg)) 50%, transparent) !important; color: var(--db-selection-fg, var(--ui-selection-fg)) !important; }
 #pivot-table td.col-selected, #pivot-table th.col-selected, .pivot-table td.col-selected, .pivot-table th.col-selected { background-image: none !important; }
+/* 計算列（読み取り専用・コードが更新する列）: 薄い背景で編集不可を示す（gb-db-computed-columns.js） */
+#pivot-table td.db-cell-computed, .pivot-table td.db-cell-computed { background: var(--bg2); }
+/* 制作管理「予定」セルの合成表示（作業予定時間の併記・シフト割当不能理由の警告。gb-production-management.part01.js の _pmDecorateScheduleCell） */
+.pm-schedule-cell-hours { margin-left: 4px; color: var(--fg2); font-size: 12px; }
+#pivot-table td.pm-schedule-cell-warning, .pivot-table td.pm-schedule-cell-warning { background: color-mix(in srgb, var(--orange, #d9822b) 16%, var(--bg2)); }
+.pm-schedule-cell-warning-icon { margin-left: 4px; color: var(--orange, #d9822b); cursor: help; }
 /* 行追加ボタン (col-entity 内、最左) */
 .row-add-btn {
   position: static; flex: 0 0 auto; transform: none; margin-right: 2px;
@@ -477,6 +497,14 @@ td.active-cell .cell-value > .cell-value-more {
   background-color: var(--db-th-bg);
 }
 #pivot-table th.col-pinned, .pivot-table th.col-pinned { z-index: 11; }
+/* sticky セルは通常セルより上の独立した描画層になるため、アクティブセルだけを
+   行コントロール列より手前へ出し、4辺の内側ハイライトを欠けずに表示する。 */
+#pivot-table td.col-pinned.active-cell,
+.pivot-table td.col-pinned.active-cell,
+#pivot-table:not(.entity-col-unpinned) td.col-entity.active-cell,
+.pivot-table:not(.entity-col-unpinned) td.col-entity.active-cell {
+  z-index: 8;
+}
 
 /* 条件付き書式（行のステータス色分け） */
 #pivot-table tr.row-status-published td, .pivot-table tr.row-status-published td { background: rgba(106, 153, 85, 0.08); }
@@ -647,6 +675,30 @@ body[data-mobile-ui-local="1"] .count-type-select {
   width: 120px; height: 90px; object-fit: cover;
 }
 .cell-thumbnail:hover { opacity: 0.8; }
+
+/* サムネイルの表示方法: 「収まるように表示（contain）」設定時。
+   枠サイズ（width/height/aspect-ratio）は変更せず object-fit のみ切替。
+   contain時に生じる余白は既存の背景トークンで控えめに埋める。 */
+html.thumb-fit-contain .cell-thumbnail,
+html.thumb-fit-contain .cell-thumbnail.large {
+  object-fit: contain;
+  background: var(--bg3);
+}
+html.thumb-fit-contain .gallery-card-thumb {
+  object-fit: contain;
+  background: var(--bg3);
+}
+/* db-card-image-preview / gallery-card-image-preview / kanban-card-image-preview の
+   img は gb-tools.part01.part02.css で定義されているが、クラス2つ分の詳細度で上書きできる */
+html.thumb-fit-contain .db-card-image-preview img {
+  object-fit: contain;
+}
+/* 画像型プロパティのセル内サムネ・カードプレビュー・一覧モーダル
+   （gb-tools.part04.part02.css 定義分。背景は元スタイル側で var(--bg3) 設定済みのため追加不要） */
+html.thumb-fit-contain .gb-image-thumb,
+html.thumb-fit-contain .gb-image-gallery-card img {
+  object-fit: contain;
+}
 
 /* カスタム数値単位 */
 .value-unit { color: var(--fg2); font-size: 11px; margin-left: 2px; }
@@ -1379,12 +1431,16 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   background: var(--ui-hover-bg); color: var(--ui-hover-fg); white-space: nowrap;
 }
 
-/* リレーションリンク */
+/* リレーションリンク（カード表示） */
 .relation-link {
-  color: var(--accent2); cursor: pointer; text-decoration: underline dotted;
-  font-size: 12px; white-space: nowrap;
+  display: inline-flex; align-items: center;
+  padding: 1px 8px; border-radius: 4px;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--fg); text-decoration: none;
+  cursor: pointer;
+  font-size: 12px; white-space: nowrap; max-width: 100%;
 }
-.relation-link:hover { color: var(--accent); }
+.relation-link:hover { background: var(--bg4); border-color: var(--accent); }
 .relation-links { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; width: 100%; }
 
 /* グループヘッダー */

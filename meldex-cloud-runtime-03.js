@@ -45,6 +45,8 @@
       'ボード',
       'シート',
       'カレンダー',
+      'Google/Microsoftカレンダー連携',
+      'iPhone向けICS購読',
       'スマートシート',
       'クラウド版フルチャット',
       '暗号化APIキーCloud保存',
@@ -57,7 +59,7 @@
     unsupported: Object.freeze([
       'リアルタイム共同編集',
       'ローカルCLI/MCP/OS連携',
-      '外部カレンダー同期リレー未設定時のGoogle/CalDAV同期',
+      'ローカルCalDAVサーバー同期・iCal URL購読（.icsファイルのインポート/エクスポートは対応）',
     ]),
   });
 
@@ -77,6 +79,10 @@
         'files.content.read',
         'files.content.write',
         'sharing.read',
+        // iPhone向けICS購読（gb-cal-ics-subscribe.js）の共有リンク自動作成に必要。
+        // 2026-08-04追加。既存の接続セッションは再接続するまでこのスコープを持たない
+        // （Dropbox APIエラーで検知し、手動作成手順の案内へフォールバックする）。
+        'sharing.write',
       ],
     },
   });
@@ -1088,6 +1094,13 @@
   const SETTINGS_PATH_KEY = 'meldex-dropbox-settings-path';
   const DEFAULT_SETTINGS_PATH = '/MeldexSettings';
   const REGISTRY_RELATIVE_PATH = '_meldex/source-folders.v1.json';
+  const REGISTRY_DOCUMENT_ID = 'source-folders';
+  // 型付き管理領域上の台帳ドキュメントの設定パス起点相対パス。
+  // gb-system-storage-dropbox.js の personalManagementRoot()（<設定パス>/system/v1）と
+  // gb-system-storage.js の documentRelativePath(FOLDER_ASSOCIATIONS, REGISTRY_DOCUMENT_ID)
+  // の合成結果に一致させる（デスクトップ版 meldex_dropbox_desktop_link.managed_ledger_file_path
+  // と同一ファイル）。
+  const MANAGED_REGISTRY_RELATIVE_PATH = `system/v1/folder-associations/${REGISTRY_DOCUMENT_ID}.json`;
   const CACHE_KEY = 'meldex-source-folders-cache-v1';
   const OLD_PWA_ROOTS_KEY = 'meldex-cloud-outliner-roots';
   const SOURCE_PREFIX = '__dropbox_root__';
@@ -1177,6 +1190,10 @@
     return joinDropboxPath(getSettingsPath(), REGISTRY_RELATIVE_PATH);
   }
 
+  function managedRegistryDropboxPath() {
+    return joinDropboxPath(getSettingsPath(), MANAGED_REGISTRY_RELATIVE_PATH);
+  }
+
   function _basename(path) {
     const normalized = normalizeDropboxPath(path) || normalizeRelativePath(path);
     const parts = normalized.split('/').filter(Boolean);
@@ -1237,17 +1254,26 @@
     return /not_found|path\/not_found/i.test(err?.message || '');
   }
 
-  function _isRegistryWriteConflictError(err) {
-    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
-  }
-
-  function _normalizeRoot(root, existingIds) {
+  function _normalizeRoot(root, existingIds, priorRootsById) {
     const provider = String(root?.provider || (root?.dropboxPath ? 'dropbox' : '')).trim();
     if (provider !== 'dropbox') return null;
     const dropboxPath = normalizeDropboxPath(root?.dropboxPath || root?.path || '');
     if (!dropboxPath) return null;
-    const namespaceKind = normalizeNamespaceKind(root?.namespaceKind);
-    const id = String(root?.id || root?.sourceId || sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind)).trim();
+    const explicitId = String(root?.id || root?.sourceId || '').trim();
+    const priorRoot = explicitId && priorRootsById ? priorRootsById.get(explicitId) : null;
+    // namespaceKind省略時の巻き戻り防止（2026-08、meldex_path_scope_fullwidth_plan_2026-07-31.md
+    // 第2層タスク1対応）: 一部の呼び出し元（例: 設定ダイアログのソースフォルダ保存経路）が
+    // フィールドごと namespaceKind を省略して台帳へ書き戻すことがある。ここで単純に
+    // 'home' へデフォルトすると、既に team_root で正しく登録済みのエントリが、無関係な
+    // 保存操作（名前変更・表示切替・他フォルダの追加削除等）のたびに home へ黙って
+    // 巻き戻ってしまう。同一idの既存エントリが台帳にあれば、その namespaceKind を
+    // 継承することでフィールド欠落がデータ破壊に直結しないようにする。呼び出し元が
+    // root.namespaceKind を明示的に指定した場合は常にそちらを優先する（意図的な
+    // namespaceKind変更を妨げない）。
+    const namespaceKind = (root?.namespaceKind == null && priorRoot)
+      ? normalizeNamespaceKind(priorRoot.namespaceKind)
+      : normalizeNamespaceKind(root?.namespaceKind);
+    const id = explicitId || sourceIdForDropboxPath(dropboxPath, existingIds, namespaceKind);
     const timestamp = _now();
     return {
       id,
@@ -1302,14 +1328,6 @@
     return normalizeRegistryPayload(_readJson(CACHE_KEY, null) || {});
   }
 
-  async function _rpc(route, body, namespaceKind) {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body, {
-      namespaceKind: normalizeNamespaceKind(namespaceKind),
-    });
-  }
-
   async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
@@ -1318,32 +1336,22 @@
     });
   }
 
-  async function _ensureFolder(dropboxPath) {
-    const normalized = normalizeDropboxPath(dropboxPath);
-    if (!normalized || normalized === '/') return true;
-    try {
-      await _rpc('files/create_folder_v2', { path: normalized, autorename: false });
-      return true;
-    } catch (err) {
-      let meta = null;
-      try {
-        meta = await _rpc('files/get_metadata', {
-          path: normalized,
-          include_deleted: false,
-          include_has_explicit_shared_members: false,
-        });
-      } catch {}
-      if (meta?.['.tag'] === 'folder') return true;
-      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
-      throw err;
-    }
+  async function ensureRegistryFolders() {
+    // 管理領域アダプターが必要な親フォルダを作る。ユーザー保存領域には作らない。
+    await _managementRegistryRecord();
+    return true;
   }
 
-  async function ensureRegistryFolders() {
-    const settingsRoot = getSettingsPath();
-    await _ensureFolder(settingsRoot);
-    await _ensureFolder(joinDropboxPath(settingsRoot, '_meldex'));
-    return true;
+  async function _managementRegistryRecord() {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('フォルダ台帳の管理データ保存先を安全に判定できません');
+    }
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    const record = await adapter.load(kind, REGISTRY_DOCUMENT_ID);
+    return { adapter, kind, record };
   }
 
   function _rootMergeKey(root) {
@@ -1419,48 +1427,35 @@
   }
 
   async function _readRemoteRegistry() {
+    const managed = await _managementRegistryRecord();
+    if (managed.record?.payload) return normalizeRegistryPayload(managed.record.payload);
     const remote = await _readRemoteRegistryWithMetadata('home');
     return remote.registry;
   }
 
-  async function _readRemoteRegistryForWrite() {
-    try {
-      return await _readRemoteRegistryWithMetadata('home');
-    } catch (err) {
-      if (_isRegistryNotFoundError(err)) return null;
-      throw err;
-    }
-  }
-
   async function writeRegistry(registry, options = {}) {
     const incoming = normalizeRegistryPayload(registry || {});
-    await ensureRegistryFolders();
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const remote = options.mergeRemote === false ? null : await _readRemoteRegistryForWrite();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const managed = await _managementRegistryRecord();
+      const remote = managed.record?.payload
+        ? { registry: normalizeRegistryPayload(managed.record.payload), rev: managed.record.revision }
+        : null;
       const normalized = remote
         ? _mergeRegistryForWrite(incoming, remote.registry, options.baseRegistry)
         : normalizeRegistryPayload(incoming);
       normalized.updatedAt = _now();
-      const bytes = new TextEncoder().encode(JSON.stringify(normalized, null, 2));
       try {
-        await _content('files/upload', {
-          path: registryDropboxPath(),
-          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
+        await managed.adapter.save(managed.kind, REGISTRY_DOCUMENT_ID, normalized, {
+          expectedRevision: managed.record?.revision ?? null,
         });
         _lastRegistry = normalized;
         _writeJson(CACHE_KEY, normalized);
         return normalized;
       } catch (err) {
         lastError = err;
-        if (attempt === 0 && options.mergeRemote !== false && _isRegistryWriteConflictError(err)) continue;
+        if (attempt < 4 && options.mergeRemote !== false
+          && (err?.name === 'SystemStorageConflictError' || err?.code === 'system_storage_conflict')) continue;
         throw err;
       }
     }
@@ -1652,6 +1647,9 @@
     const source = Array.isArray(roots) ? roots : [];
     const existing = await loadRegistry({ writeIfMissing: false }).catch(() => _registryFromCache());
     const usedIds = new Set(existing.roots.map((root) => root.id));
+    // 同一idの既存エントリを引けるようにする（_normalizeRootのnamespaceKind継承用。
+    // 上のコメント参照）。
+    const priorRootsById = new Map(existing.roots.map((root) => [root.id, root]));
     const nextRoots = [];
     for (const root of source) {
       // ワークスペース由来（フェーズ3c合流分）はアカウント台帳へ書き戻さない。
@@ -1660,7 +1658,7 @@
       // (source-folders.v1.json)を破壊する事故を防ぐ。
       if (typeof root?.origin === 'string' && root.origin.startsWith('ws:')) continue;
       if (root?.provider !== 'dropbox' && !root?.dropboxPath) continue;
-      const normalized = _normalizeRoot(root, usedIds);
+      const normalized = _normalizeRoot(root, usedIds, priorRootsById);
       if (!normalized) continue;
       usedIds.add(normalized.id);
       nextRoots.push(normalized);
@@ -1762,11 +1760,13 @@
     SETTINGS_PATH_KEY,
     DEFAULT_SETTINGS_PATH,
     REGISTRY_RELATIVE_PATH,
+    MANAGED_REGISTRY_RELATIVE_PATH,
     SOURCE_PREFIX,
     CACHE_KEY,
     getSettingsPath,
     setSettingsPath,
     registryDropboxPath,
+    managedRegistryDropboxPath,
     normalizeDropboxPath,
     normalizeRelativePath,
     normalizeNamespaceKind,
@@ -2102,6 +2102,7 @@
   if (window.MeldexWorkspaceLedgerIO) return;
 
   const JOINED_WORKSPACES_KEY = 'meldex-joined-workspaces-v1';
+  const WORKSPACE_LEDGER_DOCUMENT_ID = 'workspace-source-folders';
 
   function _auth() {
     return window.MeldexDropboxAuth;
@@ -2180,58 +2181,14 @@
     return joinDropboxPath(normalizeDropboxPath(workspaceDropboxPath), relative);
   }
 
-  async function _rpc(route, body, namespaceKind) {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
-    return auth.apiRpc(route, body, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
-  }
-
   async function _content(route, arg, init, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiContent) throw new Error('Dropboxへ接続してください');
     return auth.apiContent(route, arg, init, { namespaceKind: normalizeNamespaceKind(namespaceKind) });
   }
 
-  async function _ensureFolder(dropboxPath, namespaceKind) {
-    const normalized = normalizeDropboxPath(dropboxPath);
-    if (!normalized || normalized === '/') return true;
-    try {
-      await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
-      return true;
-    } catch (err) {
-      let meta = null;
-      try {
-        meta = await _rpc('files/get_metadata', {
-          path: normalized,
-          include_deleted: false,
-          include_has_explicit_shared_members: false,
-        }, namespaceKind);
-      } catch {
-        // メタデータ取得も失敗した場合は、直前の create_folder_v2 の
-        // エラーをそのまま呼び出し元へ投げる（下のthrow errで処理）。
-      }
-      if (meta?.['.tag'] === 'folder') return true;
-      if (meta) throw new Error(normalized + ' はDropbox上でフォルダではありません');
-      throw err;
-    }
-  }
-
-  async function _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind) {
-    const sharedLedger = _sharedLedger();
-    const shareDir = sharedLedger?.WORKSPACE_SHARE_DIR || 'MeldexShare';
-    const base = normalizeDropboxPath(workspaceDropboxPath);
-    await _ensureFolder(base, namespaceKind);
-    await _ensureFolder(joinDropboxPath(base, shareDir), namespaceKind);
-    await _ensureFolder(joinDropboxPath(base, shareDir, '_meldex'), namespaceKind);
-    return true;
-  }
-
   function _isWorkspaceLedgerNotFoundError(err) {
     return /not_found|path\/not_found/i.test(err?.message || '');
-  }
-
-  function _isWorkspaceLedgerWriteConflictError(err) {
-    return /conflict|path\/conflict|too_many_write_operations/i.test(err?.message || '');
   }
 
   async function _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind) {
@@ -2256,8 +2213,33 @@
     };
   }
 
+  async function _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, options) {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!provider || !resolver?.resolveSharedWorkspaceTypedAdapter || !kind) {
+      throw new Error('共有ワークスペース台帳の管理領域を安全に判定できません');
+    }
+    // 対象ワークスペース専用の共有アダプターを解決する（接続中ルート非依存。
+    // 個人領域アダプターへのフォールバックは resolver 側で構造的に禁止）。
+    // 読み取り系は allowUnjoined 相当で常に管理レコードを探す（非破壊で、
+    // パスから導出したワークスペース配下しか見ないため joined ゲート不要）。
+    const adapter = await resolver.resolveSharedWorkspaceTypedAdapter(provider, kind, {
+      workspaceDropboxPath,
+      namespaceKind,
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const record = await adapter.load(kind, WORKSPACE_LEDGER_DOCUMENT_ID);
+    return { adapter, kind, record };
+  }
+
   async function readWorkspaceLedger(workspaceDropboxPath, namespaceKind) {
     try {
+      const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, { allowUnjoined: true });
+      if (managed?.record?.payload) {
+        const sharedLedger = _sharedLedger();
+        return sharedLedger.parseWsLedger(managed.record.payload);
+      }
       const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return result.roots;
     } catch (err) {
@@ -2277,6 +2259,10 @@
   // ネットワーク一時障害・JSON破損は throw のまま伝播させる（呼び出し元は中断する）。
   async function readWorkspaceLedgerStatus(workspaceDropboxPath, namespaceKind) {
     try {
+      const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, { allowUnjoined: true });
+      if (managed?.record?.payload) {
+        return { exists: true, roots: _sharedLedger().parseWsLedger(managed.record.payload) };
+      }
       const result = await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
       return { exists: true, roots: result.roots };
     } catch (err) {
@@ -2285,45 +2271,23 @@
     }
   }
 
-  async function _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind) {
-    try {
-      return await _readWorkspaceLedgerWithMetadata(workspaceDropboxPath, namespaceKind);
-    } catch (err) {
-      if (_isWorkspaceLedgerNotFoundError(err)) return null;
-      throw err;
-    }
-  }
-
-  async function writeWorkspaceLedger(workspaceDropboxPath, roots, namespaceKind) {
+  async function writeWorkspaceLedger(workspaceDropboxPath, roots, namespaceKind, options) {
     const sharedLedger = _sharedLedger();
     if (!sharedLedger?.serializeWsLedger) throw new Error('MeldexWorkspaceSharedLedger が未読み込みです');
-    await _ensureWorkspaceLedgerFolders(workspaceDropboxPath, namespaceKind);
-    const targetPath = workspaceLedgerDropboxPath(workspaceDropboxPath);
-    let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const remote = await _readWorkspaceLedgerForWrite(workspaceDropboxPath, namespaceKind);
-      const serialized = sharedLedger.serializeWsLedger(roots);
-      const bytes = new TextEncoder().encode(JSON.stringify(serialized, null, 2));
-      try {
-        await _content('files/upload', {
-          path: targetPath,
-          mode: remote?.rev ? { '.tag': 'update', update: remote.rev } : { '.tag': 'overwrite' },
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        }, namespaceKind);
-        return serialized;
-      } catch (err) {
-        lastError = err;
-        if (attempt === 0 && _isWorkspaceLedgerWriteConflictError(err)) continue;
-        throw err;
-      }
-    }
-    throw lastError;
+    // 書き込みは「参加中（joined一覧との完全一致）」または「呼び出し元が
+    // 明示した allowUnjoined（『このフォルダを共有ワークスペースにする』導線で
+    // ユーザーが確認した直後の初回書き込み）」の二段ゲート。未参加＋非明示は
+    // resolver が throw する。管理レコードの revision CAS（未作成時は
+    // expectedRevision: null の create-only）はそのまま維持し、同時ワークスペース化は
+    // 上書きではなく競合エラーになる。
+    const managed = await _managementWorkspaceLedgerRecord(workspaceDropboxPath, namespaceKind, {
+      allowUnjoined: options?.allowUnjoined === true,
+    });
+    const serialized = sharedLedger.serializeWsLedger(roots);
+    await managed.adapter.save(managed.kind, WORKSPACE_LEDGER_DOCUMENT_ID, serialized, {
+      expectedRevision: managed.record?.revision ?? null,
+    });
+    return serialized;
   }
 
   // ------------------------------------------------------------------
@@ -2857,25 +2821,42 @@
     return /not_found|not found|path_lookup/i.test(err?.message || '');
   }
 
-  function _conflictedCopyPath(relativePath) {
-    const normalized = _normalizeRelativePath(relativePath);
-    const dir = _dirname(normalized);
-    const name = _basename(normalized);
-    const dotIndex = name.lastIndexOf('.');
-    const stem = dotIndex > 0 ? name.slice(0, dotIndex) : name;
-    const ext = dotIndex > 0 ? name.slice(dotIndex) : '';
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-    return _joinPath(dir, `${stem} (conflicted copy ${stamp})${ext}`);
+  // 計画書 app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+  // §5 工程2-D項目7・工程2-B項目1〜2「正規化内容hash（サーバー側と同じ規則）」。
+  // サーバー側 meldex_file_safety.canonical_text_for_conflict_compare の
+  // 対応する部分集合をクライアント側で再現する（Dropbox直接書込経路には
+  // Pythonサーバーが介在しないため、同じ規則をクライアント側にも持つ必要がある）。
+  // - `.md`: 改行コード（CRLF/CR）の表記ゆれのみ吸収する最小限の正規化
+  // - それ以外（バイナリ等）: 正規化しない。バイト列同士の完全一致で比較する
+  // 文書ID対象4形式（.mel-board等）の正規化はサーバー専用処理に依存するため、
+  // クライアント側では対象外のまま安全側（=別内容扱い）に倒す。
+  function _canonicalizeBytesForCompare(relativePath, bytes) {
+    const lower = String(relativePath || '').toLowerCase();
+    if (!lower.endsWith('.md')) return bytes;
+    try {
+      const text = new TextDecoder('utf-8').decode(bytes);
+      const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      return new TextEncoder().encode(normalized);
+    } catch (_) {
+      return bytes;
+    }
   }
 
-  function _appendStemSuffix(relativePath, suffix) {
-    const normalized = _normalizeRelativePath(relativePath);
-    const dir = _dirname(normalized);
-    const name = _basename(normalized);
-    const dotIndex = name.lastIndexOf('.');
-    const stem = dotIndex > 0 ? name.slice(0, dotIndex) : name;
-    const ext = dotIndex > 0 ? name.slice(dotIndex) : '';
-    return _joinPath(dir, `${stem}${suffix}${ext}`);
+  async function _canonicalContentHash(relativePath, bytes) {
+    if (!globalThis.crypto?.subtle) return '';
+    try {
+      const canonical = _canonicalizeBytesForCompare(relativePath, bytes);
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', canonical);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _conflictBackupDocumentId() {
+    const random = globalThis.crypto?.randomUUID?.().replace(/-/g, '')
+      || `${Math.random().toString(16).slice(2)}${Date.now().toString(36)}`;
+    return `dropbox-write-conflict-${random}`.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, '');
   }
 
   function _normalizeHandleOptions(options) {
@@ -3327,8 +3308,25 @@
       const workspace = await this.restoreWorkspace();
       if (!workspace) return false;
       const state = _runtime()?.getWorkspaceState?.() || {};
-      if ((mode || 'readwrite') === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') return false;
-      if ((mode || 'readwrite') === 'readwrite' && state.access === 'viewer') return false;
+      const requestedMode = mode || 'readwrite';
+      if (requestedMode === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') return false;
+      if (requestedMode === 'readwrite' && state.access === 'viewer') return false;
+      if (requestedMode === 'readwrite') {
+        const resolver = window.MeldexDropboxManagementRootResolver;
+        const migration = window.MeldexSidecarMigration;
+        if (!resolver?.resolveConnectionInfo) return false;
+        try {
+          const info = await resolver.resolveConnectionInfo(this);
+          if (info?.kind === 'unknown') return false;
+          if (info?.isSharedWorkspace) {
+            if (!migration?.getCompatibilityLock) return false;
+            const lock = await migration.getCompatibilityLock(this);
+            if (lock?.locked || lock?.unavailable) return false;
+          }
+        } catch {
+          return false;
+        }
+      }
       return true;
     }
 
@@ -3345,14 +3343,28 @@
       };
     }
 
+    async _workspaceMetadataRecord(documentId) {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+      if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+        throw new Error('ワークスペース管理データの保存先を安全に判定できません');
+      }
+      const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+      const record = await adapter.load(kind, documentId);
+      return { adapter, kind, record };
+    }
+
     async readVaultMetadata() {
-      const meta = await this.readJson('_meldex/vault.json', null);
+      const managed = await this._workspaceMetadataRecord('vault-metadata');
+      const meta = managed.record?.payload || await this.readJson('_meldex/vault.json', null);
       return meta && typeof meta === 'object' ? meta : null;
     }
 
     async writeVaultMetadata(metadata) {
-      await this.ensureDirectory('_meldex');
-      return this.writeJson('_meldex/vault.json', metadata || {});
+      const managed = await this._workspaceMetadataRecord('vault-metadata');
+      return managed.adapter.save(managed.kind, 'vault-metadata', metadata || {}, {
+        expectedRevision: managed.record?.revision ?? null,
+      });
     }
 
     async assertOwnerWrite(relativePath) {
@@ -3413,7 +3425,8 @@
     async refreshSharedSpaceUsage() {
       const account = await _auth().getCurrentAccount(false).catch(() => null);
       const vaultMeta = await this.readVaultMetadata();
-      const cached = await this.readJson('_meldex/space-usage.json', null);
+      const usageRecord = await this._workspaceMetadataRecord('space-usage');
+      const cached = usageRecord.record?.payload || await this.readJson('_meldex/space-usage.json', null);
       const state = _runtime()?.getWorkspaceState?.() || {};
       const isOwner = this.isCurrentAccountVaultOwner(vaultMeta, account);
       if (!isOwner || state.access === 'viewer') {
@@ -3462,8 +3475,11 @@
         isOwner: true,
         persisted: true,
       };
-      await this.assertOwnerWrite('_meldex/space-usage.json');
-      await this.writeJson('_meldex/space-usage.json', snapshot);
+      await this.assertOwnerWrite('space-usage');
+      const managed = await this._workspaceMetadataRecord('space-usage');
+      await managed.adapter.save(managed.kind, 'space-usage', snapshot, {
+        expectedRevision: managed.record?.revision ?? null,
+      });
       return snapshot;
     }
 
@@ -3708,38 +3724,85 @@
       return meta;
     }
 
-    async _writeConflictCopy(originalPath, bytes) {
+    async _writeConflictCopy(originalPath, bytes, conflictInfo) {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const contract = window.MeldexSystemStorage;
+      const kind = contract?.SystemStorageKind?.CONFLICT_BACKUPS;
+      if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+        throw new Error('競合した編集内容の安全な保存先を判定できません');
+      }
+      const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+      const now = new Date().toISOString();
+      const info = conflictInfo || {};
+      const payload = {
+        kind: 'dropbox-write-conflict',
+        original_relative_path: _normalizeRelativePath(originalPath),
+        attempted_bytes_base64: _bytesToBase64(bytes),
+        attempted_size: Number(bytes?.byteLength ?? bytes?.length ?? 0),
+        attempted_at: now,
+        expected_transport_revision: String(info.expectedRevision || ''),
+        current_transport_revision: String(info.currentRevision || ''),
+      };
       const recent = this._recentConflictCopies.get(originalPath);
       if (recent && Date.now() - recent.at < 30 * 60 * 1000) {
-        const latestMeta = recent.meta?.rev ? recent.meta : await this.refreshMetadata(recent.path).catch(() => null);
-        if (latestMeta?.rev) {
+        const latestRecord = recent.record?.revision
+          ? recent.record
+          : await adapter.load(kind, recent.documentId).catch(() => null);
+        if (latestRecord?.revision) {
           try {
-            const meta = await this._uploadBytesWithMode(recent.path, bytes, { '.tag': 'update', update: latestMeta.rev });
-            this._recentConflictCopies.set(originalPath, { path: recent.path, meta, at: Date.now() });
-            return { path: recent.path, meta, reused: true };
-          } catch (err) {
-            if (!_isDropboxConflictError(err)) throw err;
-            const refreshedMeta = await this.refreshMetadata(recent.path).catch(() => null);
-            if (refreshedMeta?.rev && refreshedMeta.rev !== latestMeta.rev) {
-              const meta = await this._uploadBytesWithMode(recent.path, bytes, { '.tag': 'update', update: refreshedMeta.rev });
-              this._recentConflictCopies.set(originalPath, { path: recent.path, meta, at: Date.now() });
-              return { path: recent.path, meta, reused: true };
-            }
+            const record = await adapter.save(kind, recent.documentId, payload, {
+              expectedRevision: latestRecord.revision,
+            });
+            const path = `${kind}/${recent.documentId}`;
+            this._recentConflictCopies.set(originalPath, {
+              documentId: recent.documentId, path, record, at: Date.now(),
+            });
+            return { path, record, documentId: recent.documentId, reused: true };
+          } catch {
+            // 直近バックアップの更新は最適化に過ぎない。削除・revision競合・
+            // 一時障害のいずれでも、新規管理レコードへ退避して保存内容を失わない。
           }
         }
       }
-      const baseConflictPath = _conflictedCopyPath(originalPath);
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        const conflictPath = attempt === 0 ? baseConflictPath : _appendStemSuffix(baseConflictPath, `-${attempt}`);
+        const documentId = _conflictBackupDocumentId();
         try {
-          const meta = await this._uploadBytesWithMode(conflictPath, bytes, 'add');
-          this._recentConflictCopies.set(originalPath, { path: conflictPath, meta, at: Date.now() });
-          return { path: conflictPath, meta };
-        } catch (err) {
-          if (!_isDropboxConflictError(err) || attempt >= 4) throw err;
+          const record = await adapter.save(kind, documentId, payload, { expectedRevision: null });
+          const path = `${kind}/${documentId}`;
+          this._recentConflictCopies.set(originalPath, { documentId, path, record, at: Date.now() });
+          return { path, record, documentId };
+        } catch (error) {
+          const collision = error instanceof contract.SystemStorageConflictError
+            || /revision|conflict/i.test(error?.message || '');
+          if (!collision || attempt >= 4) throw error;
         }
       }
-      throw new Error('Dropbox 競合コピーを作成できませんでした');
+      throw new Error('Dropbox 競合バックアップを管理領域へ保存できませんでした');
+    }
+
+    // 計画書§5工程2-D項目7「競合コピー作成前に正規化内容hashを比較し、同一なら
+    // 現在revisionを採用して競合コピーを作らない」。事前チェック通過後〜
+    // アップロードまでの間に別端末が書き込んだ結果を取得し、これから書こうと
+    // している内容と正規化後ハッシュが一致するかだけを見る（本文比較であり
+    // rev/etagは一切比較しない＝transport_revisionを跨いだ比較をしない）。
+    // 何らかの理由で比較できない場合（ダウンロード失敗等）は安全側（=別内容
+    // 扱い）に倒し、通常の競合コピー経路へフォールバックする。
+    async _tryConvergeOnIdenticalContent(normalized, bytes) {
+      const latestMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+      if (!latestMeta?.rev) return null;
+      let remoteFile;
+      try {
+        remoteFile = await this.downloadAsFile(normalized);
+      } catch (_) {
+        return null;
+      }
+      const remoteBytes = new Uint8Array(await remoteFile.arrayBuffer());
+      const [localHash, remoteHash] = await Promise.all([
+        _canonicalContentHash(normalized, bytes),
+        _canonicalContentHash(normalized, remoteBytes),
+      ]);
+      if (!localHash || !remoteHash || localHash !== remoteHash) return null;
+      return latestMeta;
     }
 
     async uploadBytes(relativePath, bytes) {
@@ -3755,8 +3818,26 @@
       } catch (err) {
         if (!_isDropboxConflictError(err)) throw err;
         await this.refreshMetadata(normalized).catch(() => null);
-        const conflict = await this._writeConflictCopy(normalized, bytes);
-        throw new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせず競合コピーへ保存しました: ${conflict.path}`);
+        const converged = await this._tryConvergeOnIdenticalContent(normalized, bytes).catch(() => null);
+        if (converged) {
+          this._recentConflictCopies.delete(normalized);
+          return converged;
+        }
+        const currentMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+        const conflict = await this._writeConflictCopy(normalized, bytes, {
+          expectedRevision: cachedMeta?.rev || '',
+          currentRevision: currentMeta?.rev || '',
+        });
+        // 計画書§5工程2-D項目3「CAS失敗時に.status/.codeを付与し、ノート側の
+        // 409判定と接続する」。gb-save-safety.enrichError と同じフィールド名
+        // （status/meldexCode）を使い、HTTP応答を経由しない直接Dropbox書込
+        // エラーでも既存の`error?.status===409`判定を通す。
+        const conflictError = new Error(`Dropbox 上で更新競合が発生したため、元ファイルは上書きせずMeldexの管理領域へ編集内容を保存しました: ${conflict.path}`);
+        conflictError.status = 409;
+        conflictError.meldexCode = 'etag_conflict';
+        conflictError.conflictPath = conflict.path;
+        conflictError.conflictBackupDocumentId = conflict.documentId;
+        throw conflictError;
       }
     }
 
@@ -3920,11 +4001,10 @@
       }
       const account = await _auth().getCurrentAccount(true);
 
-      let metaFolder = await this.getMetadata('_meldex');
-      if (!metaFolder || metaFolder['.tag'] !== 'folder') {
+      let metaFolder = await this.readVaultMetadata();
+      if (!metaFolder) {
         try {
-          await this.ensureDirectory('_meldex');
-          await this.writeJson('_meldex/vault.json', {
+          await this.writeVaultMetadata({
             kind: 'meldex-vault',
             vaultPath,
             initializedAt: new Date().toISOString(),
@@ -3933,23 +4013,31 @@
             ownerEmail: String(account?.email || ''),
             ownerInitializedAt: new Date().toISOString(),
           });
-          metaFolder = await this.getMetadata('_meldex');
+          metaFolder = await this.readVaultMetadata();
         } catch (err) {
           return {
             ok: false,
             mounted: true,
             access: 'viewer',
-            message: `共有フォルダ内の _meldex/ を作成できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
+            message: `共有ワークスペースのMeldex管理データを初期化できません。編集権限のあるメンバーで初期セットアップしてください。詳細: ${err?.message || String(err)}`,
             mountInfo,
             rootMeta,
           };
         }
       }
       let access = 'editor';
-      let writeCheckPath = `_meldex/.preflight-${Date.now()}.json`;
       try {
-        await this.writeJson(writeCheckPath, { ok: true, at: new Date().toISOString() });
-        await this.deletePath(writeCheckPath);
+        const resolver = window.MeldexDropboxManagementRootResolver;
+        const kind = window.MeldexSystemStorage?.SystemStorageKind?.DIAGNOSTICS;
+        if (!resolver?.resolveTypedAdapterForProvider || !kind) {
+          throw new Error('Meldex管理データの保存先を安全に判定できません');
+        }
+        const adapter = await resolver.resolveTypedAdapterForProvider(this, kind);
+        const documentId = `preflight-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        await adapter.save(kind, documentId, { ok: true, at: new Date().toISOString() }, {
+          expectedRevision: null,
+        });
+        await adapter.delete(kind, documentId);
       } catch (err) {
         access = 'viewer';
       }
@@ -4140,6 +4228,10 @@
     constructor() {
       this.rootHandle = null;
       this._workspaceInfo = null;
+      // 読み取った本文/バイナリと同じ時点のrevisionだけを次の全量保存へ使う。
+      // 保存直前のmetadata GETで最新revisionを拾う方式は、古い内容の上書きを
+      // CASが正当化してしまうため禁止する。
+      this._knownFileRevisions = new Map();
     }
 
     static isSupported() {
@@ -4190,6 +4282,20 @@
       return ext ? name.slice(0, -ext.length) : name;
     }
 
+    _rekeyKnownRevisions(oldRelativePath, newRelativePath) {
+      const oldPath = _normalizeRelativePath(oldRelativePath);
+      const newPath = _normalizeRelativePath(newRelativePath);
+      if (!oldPath || !newPath || oldPath === newPath) return;
+      const prefix = oldPath + '/';
+      Array.from(this._knownFileRevisions.entries()).forEach(([path, revision]) => {
+        if (path !== oldPath && !path.startsWith(prefix)) return;
+        const suffix = path === oldPath ? '' : path.slice(oldPath.length);
+        this._knownFileRevisions.delete(path);
+        this._knownFileRevisions.set(newPath + suffix, revision);
+      });
+      window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(oldPath, newPath);
+    }
+
     async _renamePath(oldRelativePath, newRelativePath) {
       const oldPath = _normalizeRelativePath(oldRelativePath);
       const newPath = _normalizeRelativePath(newRelativePath);
@@ -4208,6 +4314,7 @@
       if (actualPath && actualPath !== newPath) {
         throw new Error(`ローカル rename 結果が期待と異なります: ${actualPath}`);
       }
+      this._rekeyKnownRevisions(oldPath, actualPath || newPath);
       return result;
     }
 
@@ -4243,6 +4350,7 @@
     async clearWorkspace() {
       this.rootHandle = null;
       this._workspaceInfo = null;
+      this._knownFileRevisions.clear();
       if (_runtime()?.getMode?.() === 'legacy') _runtime()?.clearWorkspaceState?.();
     }
 
@@ -4382,6 +4490,13 @@
 
     async downloadAsFile(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
+      // raw取得より先にrevisionを固定する。途中で外部更新が入った場合は次回保存が
+      // 409になる（安全側）。raw取得後にrevisionを取ると古いbytesへ新しいrevisionを
+      // 結び付ける危険がある。
+      const revisionPayload = await _fetchJson('/file', {
+        query: { path: normalized, metadata_only: '1' },
+      });
+      this._rememberFileRevision(normalized, revisionPayload);
       const meta = await _fetchJson('/file-meta', {
         query: { path: normalized },
         allowStatus: [404],
@@ -4403,6 +4518,7 @@
     async readText(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const payload = await _fetchJson('/file', { query: { path: normalized } });
+      this._rememberFileRevision(normalized, payload);
       return String(payload?.content || '');
     }
 
@@ -4414,33 +4530,84 @@
       }
     }
 
-    async uploadBytes(relativePath, bytes) {
+    _rememberFileRevision(relativePath, payload) {
       const normalized = _normalizeRelativePath(relativePath);
-      await _fetchJson('/file', {
+      const revision = payload?.transport_revision || payload?.etag || '';
+      if (revision) this._knownFileRevisions.set(normalized, revision);
+      else this._knownFileRevisions.delete(normalized);
+    }
+
+    _revisionPrecondition(revision) {
+      const coordinator = window.MeldexDocumentSaveCoordinator;
+      const token = coordinator?.revisionTokenForWrite
+        ? coordinator.revisionTokenForWrite(revision, coordinator.currentTransportName())
+        : String(revision?.token || revision || '');
+      if (!token) throw new Error('保存元のrevisionを取得できませんでした');
+      return {
+        if_match_etag: token,
+        transport_revision: coordinator?.normalizeTransportRevision
+          ? coordinator.normalizeTransportRevision(coordinator.currentTransportName(), revision)
+          : revision,
+      };
+    }
+
+    async _fullWritePrecondition(relativePath, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const opts = options && typeof options === 'object' ? options : {};
+      if (opts.force_overwrite || opts.forceOverwrite) return { force_overwrite: true };
+      if (opts.create_only || opts.createOnly) return { create_only: true };
+      const supplied = opts.transport_revision || opts.transportRevision
+        || opts.if_match_etag || opts.ifMatchEtag || this._knownFileRevisions.get(normalized) || '';
+      if (supplied) return this._revisionPrecondition(supplied);
+      try {
+        const metadata = await _fetchJson('/file', {
+          query: { path: normalized, metadata_only: '1' },
+          allowStatus: [404],
+        });
+        if (!metadata) return { create_only: true };
+        const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+        error.status = 428;
+        error.meldexCode = 'precondition_required';
+        throw error;
+      } catch (error) {
+        if (error?.status === 404) return { create_only: true };
+        throw error;
+      }
+    }
+
+    async uploadBytes(relativePath, bytes, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const precondition = await this._fullWritePrecondition(normalized, options);
+      const result = await _fetchJson('/file', {
         method: 'PUT',
         query: { path: normalized },
         body: {
           binary: true,
           content_base64: _bytesToBase64(bytes),
+          ...precondition,
         },
       });
+      this._rememberFileRevision(normalized, result);
       return this.statPath(normalized);
     }
 
-    async writeText(relativePath, content) {
+    async writeText(relativePath, content, options) {
       const normalized = _normalizeRelativePath(relativePath);
-      await _fetchJson('/file', {
+      const precondition = await this._fullWritePrecondition(normalized, options);
+      const result = await _fetchJson('/file', {
         method: 'PUT',
         query: { path: normalized },
         body: {
           content: String(content ?? ''),
+          ...precondition,
         },
       });
+      this._rememberFileRevision(normalized, result);
       return this.statPath(normalized);
     }
 
-    async writeJson(relativePath, data) {
-      return this.writeText(relativePath, JSON.stringify(data, null, 2));
+    async writeJson(relativePath, data, options) {
+      return this.writeText(relativePath, JSON.stringify(data, null, 2), options);
     }
 
     async deletePath(relativePath) {
@@ -4457,6 +4624,7 @@
         method: 'POST',
         body: { path: normalized },
       });
+      this._knownFileRevisions.delete(normalized);
       return true;
     }
 
@@ -4476,7 +4644,9 @@
             dest_folder: _dirname(newPath),
           },
         });
-        currentPath = _normalizeRelativePath(moved?.new_path || currentPath);
+        const movedPath = _normalizeRelativePath(moved?.new_path || currentPath);
+        this._rekeyKnownRevisions(currentPath, movedPath);
+        currentPath = movedPath;
       }
       if (currentPath !== newPath) return this._renamePath(currentPath, newPath);
       return { ok: true, new_path: newPath };
@@ -4496,7 +4666,14 @@
         return { ok: true, new_path: newPath };
       }
       const file = await this.downloadAsFile(oldPath);
-      await this.uploadBytes(newPath, new Uint8Array(await file.arrayBuffer()));
+      let bytes = new Uint8Array(await file.arrayBuffer());
+      const fmt = window.MeldexDocumentIdentity?.formatForPath?.(newPath);
+      if (fmt) {
+        const source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const regenerated = window.MeldexDocumentIdentity.regenerateDocumentId(source, fmt);
+        if (regenerated?.changed) bytes = new TextEncoder().encode(regenerated.text);
+      }
+      await this.uploadBytes(newPath, bytes);
       return { ok: true, new_path: newPath };
     }
 
@@ -4538,7 +4715,7 @@
   const FALLBACK_STORAGE_KEY = 'meldex-llm-keys:fallback';
   const SAVE_MODE_KEY = 'meldex-llm-keys:save-mode';
   const CLOUD_KDF_ITERATIONS = 600000;
-  const CLOUD_KEY_PATH = '_meldex/secrets/llm-api-keys.v1.json';
+  const CLOUD_KEY_PATH = '/MeldexSettings/secrets/v1/llm-api-keys.v1.json';
   const KEY_NAMES = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'];
   const PROVIDER_KEY = {
     anthropic: 'ANTHROPIC_API_KEY',
@@ -6062,6 +6239,133 @@
 
 ;
 
+/* === gb-reference-codecs.js === */
+;
+/* gb-reference-codecs.js
+ *
+ * ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 3。
+ * 計画書: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md
+ *         §6.5(共通コーデック)
+ * Phase0監査: app/docs/file-reference-integrity-phase0-2026-08-01/notes.md
+ *
+ * Python側の正本 `meldex_reference_codecs.py`（JSON_REFERENCE_PATH_KEYS /
+ * is_json_reference_path_key / is_external_reference）を、Cloud/Dropbox環境
+ * (gb-data-access.part01.js の `_relocateReferences` 等）が使う判定として
+ * JSへ移植する。キー台帳・判定アルゴリズムはPython側と1対1で対応させ、
+ * `app/tests/test_meldex_reference_codec_parity.py` が両者の一致を機械的に
+ * 固定する（どちらかを変更したら必ずもう片方も直すこと。ズレを検知する
+ * テストが存在する）。
+ *
+ * 「動作を変えずに一元化」ではなく「意図的な拡大」であることに注意:
+ * `gb-data-access.part01.js` の `_relocateReferences` は、移植前は固定19
+ * キーのみを認識する独立実装だった（例: `imageSourcePath` のような
+ * camelCase合成キーを認識できなかった）。本モジュールへの置き換えにより、
+ * Python側と同じ「末尾一致・snake_case正規化」を含む判定へ広がる
+ * （superset。認識するキーが増える方向にのみ変わる）。
+ */
+(function () {
+  'use strict';
+
+  // 旧 meldex_backlinks_service._BACKLINKS_JSON_PATH_KEYS のスナップショット
+  // (camelCase中心・21キー)。
+  var LEGACY_BACKLINKS_JSON_PATH_KEYS = [
+    'path', 'filePath', 'targetPath', 'sourcePath', 'linkPath', 'notePath',
+    'entryPath', 'dbPath', 'folderPath', 'boardPath', 'calendarPath',
+    'scriptnotePath', 'imagePath', 'mediaPath', 'audioPath', 'videoPath',
+    'attachmentPath', 'attachment', 'href', 'src', 'url',
+  ];
+
+  // 旧 meldex_path_relocator_service._JSON_PATH_KEYS のスナップショット
+  // (snake_case中心)。
+  var LEGACY_RELOCATOR_JSON_PATH_KEYS = [
+    'path', 'file_path', 'filepath', 'target_path', 'source_path', 'link', 'links',
+    'url', 'href', 'src', 'source', 'target', 'image', 'images', 'thumbnail', 'thumb',
+    'background', 'bg', 'cover', 'icon', 'avatar', 'attachment', 'attachments', 'file',
+    'files', 'audio', 'video', 'media', 'pdf', 'embed', 'resource',
+  ];
+
+  // 統合後の正本キー集合(和集合)。Python側 JSON_REFERENCE_PATH_KEYS と
+  // 同一の47件になる（test_meldex_reference_codec_parity.pyが件数・集合の
+  // 一致を確認する）。
+  var JSON_REFERENCE_PATH_KEYS = Array.from(new Set(
+    LEGACY_BACKLINKS_JSON_PATH_KEYS.concat(LEGACY_RELOCATOR_JSON_PATH_KEYS),
+  )).sort();
+  var JSON_REFERENCE_PATH_KEYS_SET = new Set(JSON_REFERENCE_PATH_KEYS);
+
+  /**
+   * camelCase・PascalCase・snake_case・混在ケースを lower_snake_case へ
+   * 正規化する。Python側 `_to_snake_case` と同一のアルゴリズム。
+   */
+  function toSnakeCase(key) {
+    var text = String(key == null ? '' : key);
+    var parts = [];
+    var prevIsLowerOrDigit = false;
+    for (var i = 0; i < text.length; i += 1) {
+      var ch = text[i];
+      var isUpper = ch !== ch.toLowerCase() && ch === ch.toUpperCase();
+      if (isUpper && prevIsLowerOrDigit) parts.push('_');
+      parts.push(ch.toLowerCase());
+      var lower = ch.toLowerCase();
+      prevIsLowerOrDigit = (lower === ch && /[a-z0-9]/.test(ch));
+    }
+    var normalized = parts.join('').replace(/[^a-z0-9]+/g, '_');
+    return normalized.replace(/^_+|_+$/g, '');
+  }
+
+  var JSON_REFERENCE_PATH_KEYS_SNAKE = new Set(
+    JSON_REFERENCE_PATH_KEYS.map(function (key) { return toSnakeCase(key); }),
+  );
+
+  /**
+   * JSONのキー名がパス的参照を持ちうるキーかどうかを判定する
+   * （Python側 `is_json_reference_path_key` と同一のアルゴリズム）。
+   *
+   * - 生の文字列、または先頭1文字だけ小文字化した文字列が正本集合に含まれる
+   * - 完全小文字化した文字列が(区切り文字の有無を問わず)'path' で終わる
+   * - snake_case正規化した文字列が正本集合のsnake_case版に含まれる、または
+   *   '_path'/'_url' で終わる
+   */
+  function isJsonReferencePathKey(key) {
+    if (!key) return false;
+    var raw = String(key);
+    var loweredFirst = raw.length ? raw[0].toLowerCase() + raw.slice(1) : raw;
+    if (JSON_REFERENCE_PATH_KEYS_SET.has(raw) || JSON_REFERENCE_PATH_KEYS_SET.has(loweredFirst)) {
+      return true;
+    }
+    if (raw.toLowerCase().endsWith('path')) return true;
+    var normalized = toSnakeCase(raw);
+    if (JSON_REFERENCE_PATH_KEYS_SNAKE.has(normalized)) return true;
+    return normalized.endsWith('_path') || normalized.endsWith('_url');
+  }
+
+  var EXTERNAL_REFERENCE_PREFIXES = [
+    'http://', 'https://', 'mailto:', 'ftp://',
+    'javascript:', 'data:', '#', 'tel:',
+  ];
+
+  /**
+   * URL/mailto等の外部参照、または非パス文字列かどうかを判定する
+   * （Python側 `is_external_reference` と同一のロジック）。
+   */
+  function isExternalReference(value) {
+    if (!value) return false;
+    var lowered = String(value).trim().toLowerCase();
+    return EXTERNAL_REFERENCE_PREFIXES.some(function (prefix) {
+      return lowered.indexOf(prefix) === 0;
+    });
+  }
+
+  window.MeldexReferenceCodecs = {
+    CODEC_VERSION: 1,
+    JSON_REFERENCE_PATH_KEYS: JSON_REFERENCE_PATH_KEYS,
+    isJsonReferencePathKey: isJsonReferencePathKey,
+    isExternalReference: isExternalReference,
+    _toSnakeCase: toSnakeCase,
+  };
+})();
+
+;
+
 /* === gb-data-access.js === */
 ;
 (function () {
@@ -6072,6 +6376,7 @@
   const PWA_UI_CONFIG_KEY = 'meldex-cloud-ui-config';
   const PWA_FOLDER_LINKS_KEY = 'meldex-cloud-folder-links';
   const PWA_FOLDER_LINKS_FILE = '_meldex/folder-links.json';
+  const FOLDER_LINKS_DOCUMENT_ID = 'cloud-folder-links';
   const PWA_TRASH_DIR = '_trash';
   const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.avif']);
   const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogv']);
@@ -6356,6 +6661,38 @@
     return provider;
   }
 
+  async function _managementAdapter(provider, kind) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider) {
+      throw new Error('Dropboxの管理データ保存先を安全に判定できません');
+    }
+    return resolver.resolveTypedAdapterForProvider(provider, kind);
+  }
+
+  async function _readManagementPayload(provider, kind, documentId) {
+    const adapter = await _managementAdapter(provider, kind);
+    const record = await adapter.load(kind, documentId);
+    return { adapter, record, payload: record?.payload || null };
+  }
+
+  async function _writeManagementPayload(provider, kind, documentId, updater, retries = 5) {
+    const adapter = await _managementAdapter(provider, kind);
+    let lastError = null;
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const next = updater(current?.payload || null);
+      try {
+        return await adapter.save(kind, documentId, next, {
+          expectedRevision: current?.revision ?? null,
+        });
+      } catch (error) {
+        lastError = error;
+        if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw lastError;
+  }
+
   async function _pwaWorkspaceDescriptor() {
     const provider = await _pwaProvider();
     const info = provider ? await provider.getWorkspaceInfo() : { connected: false, name: '', path: '' };
@@ -6399,6 +6736,12 @@
       sourceId: root?.sourceId || root?.id || undefined,
       provider: root?.provider || undefined,
       dropboxPath: root?.dropboxPath || undefined,
+      // namespaceKind省略時の巻き戻り防止（meldex_path_scope_fullwidth_plan_2026-07-31.md
+      // 第2層タスク1対応）: ここは PUT /outliner-roots 呼び出しの合流点であり、
+      // このフィールドを落とすと team_root で正しく登録済みのフォルダも、設定
+      // ダイアログでの無関係な保存操作（改名・表示切替等）のたびに台帳へ
+      // namespaceKind無し（=home扱い）で書き戻され続けてしまう。
+      namespaceKind: root?.namespaceKind || undefined,
       name: String(root?.name || root?.path || '.'),
       visible: root?.visible !== false,
     }));
@@ -6444,14 +6787,6 @@
     return team;
   }
 
-  async function _writeTeamFile(folderPath, team) {
-    const provider = await _pwaProvider();
-    if (!provider || !await provider.ensureWorkspacePermission('readwrite')) throw new Error('Dropbox 共有フォルダへ書き込めません');
-    const relativeFolder = _normalizeFolderPath(folderPath);
-    const relativeFile = relativeFolder ? (relativeFolder + '/_Meldex_team.json') : '_Meldex_team.json';
-    await provider.writeJson(relativeFile, team || { members: {} });
-  }
-
   function _toTeamPayload(team) {
     return Object.entries(team?.members || {}).map(([name, info]) => ({
       name,
@@ -6493,7 +6828,15 @@
   }
 
   async function _readFolderLinks(provider) {
-    const persisted = provider ? await _readJsonSafe(provider, PWA_FOLDER_LINKS_FILE, null) : null;
+    let persisted = null;
+    if (provider) {
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+      if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+      const managed = await _readManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID);
+      persisted = managed.payload;
+      // 旧付随物は移行期間中の読取専用fallback。新規・更新書込は必ず管理領域へ行う。
+      if (!persisted) persisted = await _readJsonSafe(provider, PWA_FOLDER_LINKS_FILE, null);
+    }
     const raw = Array.isArray(persisted) ? persisted : (Array.isArray(persisted?.links) ? persisted.links : null);
     if (raw) {
       const links = _normalizeFolderLinks(raw);
@@ -6507,12 +6850,13 @@
     const normalized = _normalizeFolderLinks(links);
     _writeFolderLinksStore(normalized);
     if (provider) {
-      await _requireUnlockedPath(provider, PWA_FOLDER_LINKS_FILE, { action: 'folder-links' });
-      await provider.writeJson(PWA_FOLDER_LINKS_FILE, {
-        version: 1,
-        updated_at: new Date().toISOString(),
-        links: normalized,
-      });
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+      if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+      await _writeManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID, () => ({
+          version: 1,
+          updated_at: new Date().toISOString(),
+          links: normalized,
+        }), 1);
     }
     return normalized;
   }
@@ -6936,9 +7280,15 @@
   async function _relocateReferences(provider, oldPath, newPath, isFolder) {
     const normalizedOld = _normalizeFolderPath(oldPath);
     const normalizedNew = _normalizeFolderPath(newPath);
-    const referenceKeys = 'path|file|targetPath|target_path|targetFile|target_file|image|imagePath|url|href|folder_path|file_path|db_path|dbPath|scenarioPath|scriptnotePath|boardPath|csvPath|src';
-    const quotedKeyPattern = new RegExp('((?:["\\\'])(?:' + referenceKeys + ')(?:["\\\'])\\s*:\\s*)(["\\\'])([^"\\\'\\r\\n]*)(\\2)', 'g');
-    const looseKeyPattern = new RegExp('(\\b(?:' + referenceKeys + ')\\s*:\\s*)(["\\\']?)([^"\\\'\\n\\r,}\\]]+)(\\2)', 'g');
+    // キー判定はPython側 meldex_reference_codecs.is_json_reference_path_key と
+    // 1対1移植した gb-reference-codecs.js の正本へ委譲する(ファイル参照整合性
+    // 計画 Phase 3。Phase0監査notes.md §5「重複実装リスク」の解消。移植前は
+    // 固定19キーのみを認識する独立実装だったため、camelCase合成キー
+    // (imageSourcePath等)を取りこぼしていた)。未読込時は認識キーが0件になる
+    // フォールバック関数で安全側に倒す(誤検出を増やさない)。
+    const isReferenceKey = window.MeldexReferenceCodecs?.isJsonReferencePathKey || (() => false);
+    const quotedKeyPattern = /((["'])([A-Za-z_][A-Za-z0-9_]*)\2\s*:\s*)(["'])([^"'\r\n]*)\4/g;
+    const looseKeyPattern = /(\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*)(["']?)([^"'\n\r,}\]]+)\3/g;
     const rewritePathValue = (value) => _rewritePath(value, normalizedOld, normalizedNew, isFolder);
     const rewriteReferenceText = (text) => {
       let next = String(text || '');
@@ -6946,13 +7296,15 @@
         const rewritten = rewritePathValue(target);
         return rewritten === target ? match : prefix + rewritten + suffix;
       });
-      next = next.replace(quotedKeyPattern, (match, prefix, quote, target, suffix) => {
+      next = next.replace(quotedKeyPattern, (match, prefix, _quoteChar, keyName, valueQuote, target) => {
+        if (!isReferenceKey(keyName)) return match;
         const rewritten = rewritePathValue(String(target).trim());
-        return rewritten === String(target).trim() ? match : prefix + quote + rewritten + suffix;
+        return rewritten === String(target).trim() ? match : `${prefix}${valueQuote}${rewritten}${valueQuote}`;
       });
-      next = next.replace(looseKeyPattern, (match, prefix, quote, target, suffix) => {
+      next = next.replace(looseKeyPattern, (match, prefix, keyName, quote, target) => {
+        if (!isReferenceKey(keyName)) return match;
         const rewritten = rewritePathValue(String(target).trim());
-        return rewritten === String(target).trim() ? match : prefix + quote + rewritten + suffix;
+        return rewritten === String(target).trim() ? match : `${prefix}${quote}${rewritten}${quote}`;
       });
       return next;
     };
@@ -6998,6 +7350,73 @@
     });
     items.sort((a, b) => String(a.display_name || '').localeCompare(String(b.display_name || ''), 'ja', { sensitivity: 'base' }));
     return { ok: true, target: normalizedTarget, items };
+  }
+
+  // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
+  // 削除影響照会（POST /references/delete-impact、gb-delete-impact-warning.js の
+  // 呼び出し先）。Desktop側 meldex_api_reference_delete_impact.py の永続索引版と
+  // 意味は同じだが、Cloud（Dropbox直結）にはbacklinksの永続索引が無いため、
+  // _queryBacklinks / _relocateReferences と同じ「毎回workspace全体をライブ走査
+  // する」設計に合わせる（第二の索引エンジンを作らない。Phase0監査notes.md §5
+  // 「重複実装リスク」を踏襲）。ライブ全件走査のため coverage は常に complete
+  // として返す（Desktopのような部分索引・陳腐化の概念がCloud側には無い）。
+  async function _queryDeleteImpact(provider, items) {
+    const requested = (Array.isArray(items) ? items : [])
+      .map((it) => ({
+        path: _normalizeFolderPath(it?.path || ''),
+        kind: it?.kind === 'folder' ? 'folder' : 'file',
+      }))
+      .filter((it) => it.path);
+    if (!requested.length) {
+      return { ok: true, complete: true, sourceFileCount: 0, occurrenceCount: 0, sources: [], truncatedSources: false, unchecked: [], coverage: { status: 'complete', mode: 'live-scan' } };
+    }
+    const folderPrefixes = requested.filter((it) => it.kind === 'folder').map((it) => it.path + '/');
+    const deletionTargets = new Set(requested.filter((it) => it.kind === 'file').map((it) => it.path));
+    requested.forEach((it) => { if (it.kind === 'folder') deletionTargets.add(it.path); });
+
+    const allFiles = [];
+    await _iterateAllWorkspaceFiles(provider, async (filePath) => {
+      allFiles.push(filePath);
+      if (folderPrefixes.some((prefix) => filePath.startsWith(prefix))) deletionTargets.add(filePath);
+    });
+
+    const aggregated = new Map();
+    for (const filePath of allFiles) {
+      if (deletionTargets.has(filePath) || !_isTextLikePath(filePath)) continue;
+      const content = await _readTextSafe(provider, filePath, '');
+      if (!content) continue;
+      let matchCount = 0;
+      deletionTargets.forEach((target) => {
+        if (target && content.includes(target)) matchCount += 1;
+      });
+      if (matchCount > 0) {
+        aggregated.set(filePath, {
+          source_path: filePath,
+          source_asset_id: '',
+          display_name: _displayLabelForPath(filePath, ''),
+          exists: true,
+          entry_type: '',
+          occurrence_count: matchCount,
+        });
+      }
+    }
+
+    const sources = [...aggregated.values()].sort((a, b) => (
+      String(a.source_path || '').localeCompare(String(b.source_path || ''), 'ja', { sensitivity: 'base' })
+    ));
+    const sourceFileCount = sources.length;
+    const occurrenceCount = sources.reduce((sum, row) => sum + Number(row.occurrence_count || 0), 0);
+    const visibleSources = sources.slice(0, 50);
+    return {
+      ok: true,
+      complete: true,
+      sourceFileCount,
+      occurrenceCount,
+      sources: visibleSources,
+      truncatedSources: sources.length > visibleSources.length,
+      unchecked: [],
+      coverage: { status: 'complete', mode: 'live-scan' },
+    };
   }
 
   window.__MeldexPwaDataAccessInternals = {
@@ -7050,12 +7469,14 @@
     _requireUnlockedPath,
     _relocateReferences,
     _queryBacklinks,
+    _queryDeleteImpact,
     _fnvFileId,
   };
   window.__MeldexPwaDataAccessExtensions = window.__MeldexPwaDataAccessExtensions || [];
 
   const PWA_WORKSPACES_FILE = '_meldex/workspaces.v1.json';
-  const TEAM_LAST_SEEN_REFRESH_MS = 10 * 60 * 1000;
+  const PWA_WORKSPACES_DOCUMENT_ID = 'cloud-workspaces';
+  const TEAM_MANAGEMENT_DOCUMENT_PREFIX = 'team-members-v1-';
 
   function _nowIso() {
     return new Date().toISOString();
@@ -7068,9 +7489,11 @@
     return err;
   }
 
-  function _teamFilePath(folderPath) {
-    const relativeFolder = _normalizeFolderPath(folderPath);
-    return relativeFolder ? (relativeFolder + '/_Meldex_team.json') : '_Meldex_team.json';
+  function _teamManagementDocumentId(folderPath) {
+    // Dropboxのパス比較は大文字小文字を区別しないため、表記差で別レコードを
+    // 作らないよう管理IDだけを小文字へ正規化する。
+    const relativeFolder = (_normalizeFolderPath(folderPath) || '.').toLowerCase();
+    return TEAM_MANAGEMENT_DOCUMENT_PREFIX + _fnvFileId(relativeFolder);
   }
 
   function _normalizeTeamFile(team) {
@@ -7079,22 +7502,60 @@
     return base;
   }
 
+  function _teamStorageKind() {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('チームプロフィール管理データ契約が未初期化です');
+    return kind;
+  }
+
+  async function _readManagedTeamFile(folderPath) {
+    const provider = await _requirePwaProvider('read');
+    const kind = _teamStorageKind();
+    const managed = await _readManagementPayload(
+      provider,
+      kind,
+      _teamManagementDocumentId(folderPath),
+    );
+    if (managed.payload) return _normalizeTeamFile(managed.payload);
+    // 旧ファイルは既存利用者のメンバー情報を失わないために限って併読する。
+    // 保存は必ず型付き管理領域へ行い、source folder側は変更しない。
+    return _normalizeTeamFile(
+      await _readTeamFile(folderPath).catch(() => ({ members: {} })),
+    );
+  }
+
+  function _isSystemStorageConflict(error) {
+    return error?.name === 'SystemStorageConflictError'
+      || error?.code === 'system_storage_conflict';
+  }
+
   async function _writeTeamFileMerged(folderPath, updater) {
     const provider = await _requirePwaProvider('readwrite');
-    const relativeFile = _teamFilePath(folderPath);
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(relativeFile, current => {
-        const team = _normalizeTeamFile(current);
-        const next = updater(team);
-        if (next === false) return false;
-        return _normalizeTeamFile(next || team);
-      }, { fallbackValue: { members: {} }, retries: 5 });
+    const kind = _teamStorageKind();
+    const documentId = _teamManagementDocumentId(folderPath);
+    const adapter = await _managementAdapter(provider, kind);
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const team = current?.payload
+        ? _normalizeTeamFile(current.payload)
+        : _normalizeTeamFile(await _readTeamFile(folderPath).catch(() => ({ members: {} })));
+      const next = updater(team);
+      if (next === false) return { ok: true, skipped: true };
+      try {
+        const saved = await adapter.save(
+          kind,
+          documentId,
+          _normalizeTeamFile(next || team),
+          { expectedRevision: current?.revision ?? null },
+        );
+        return { ok: true, record: saved };
+      } catch (error) {
+        lastError = error;
+        if (!_isSystemStorageConflict(error)) throw error;
+      }
     }
-    const team = _normalizeTeamFile(await _readTeamFile(folderPath).catch(() => ({ members: {} })));
-    const next = updater(team);
-    if (next === false) return { ok: true, skipped: true };
-    await _writeTeamFile(folderPath, _normalizeTeamFile(next || team));
-    return { ok: true };
+    throw lastError;
   }
 
   async function _syncTeamMember(folder, body) {
@@ -7134,10 +7595,13 @@
         next.role = 'editor';
         changed = true;
       }
-      const seenMs = Date.parse(String(existing.last_seen || ''));
-      const refreshSeen = !Number.isFinite(seenMs) || Date.now() - seenMs > TEAM_LAST_SEEN_REFRESH_MS;
+      // last_seen は書き込みが発生する時（＝プロフィールに実変更がある時）だけ
+      // 付随して更新する。無変更の起動・閲覧だけで共有Dropboxの管理ファイルを
+      // 書き換えないようにするため、経過時間だけを理由にした強制書き込み判定は
+      // 廃止した（last_seen の読み手は一覧整形のみで、UI表示には使われていない
+      // ため、更新頻度が下がっても実害はない）。
       avatarForCache = next.avatar || '';
-      if (!changed && !refreshSeen) return false;
+      if (!changed) return false;
       next.last_seen = _nowIso();
       members[name] = next;
       team.members = members;
@@ -7222,7 +7686,11 @@
 
   async function _readCloudWorkspaceStore() {
     const provider = await _requirePwaProvider('read');
-    const data = await _readJsonSafe(provider, PWA_WORKSPACES_FILE, { workspaces: [] });
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('ワークスペース管理データ契約が未初期化です');
+    const managed = await _readManagementPayload(provider, kind, PWA_WORKSPACES_DOCUMENT_ID);
+    const data = managed.payload
+      || await _readJsonSafe(provider, PWA_WORKSPACES_FILE, { workspaces: [] });
     return _normalizeWorkspaceStore(data);
   }
 
@@ -7250,18 +7718,18 @@
       latest.updatedAt = _nowIso();
       return latest;
     };
-    if (typeof provider.writeJsonMerged === 'function') {
-      const result = await provider.writeJsonMerged(PWA_WORKSPACES_FILE, apply, {
-        fallbackValue: { kind: 'meldex-cloud-workspaces', version: 1, workspaces: [] },
-        retries: 5,
-      });
-      return result?.skipped ? null : latest;
-    }
-    const current = await _readCloudWorkspaceStore();
-    const next = apply(current);
-    if (next === false) return null;
-    await provider.writeJson(PWA_WORKSPACES_FILE, latest);
-    return latest;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!kind) throw new Error('ワークスペース管理データ契約が未初期化です');
+    const result = await _writeManagementPayload(
+      provider,
+      kind,
+      PWA_WORKSPACES_DOCUMENT_ID,
+      current => {
+        const next = apply(current || { kind: 'meldex-cloud-workspaces', version: 1, workspaces: [] });
+        return next === false ? _normalizeWorkspaceStore(current || {}) : next;
+      },
+    );
+    return result ? latest : null;
   }
 
   function _currentWorkspaceMember(body, role) {
@@ -7413,7 +7881,7 @@
     }
     if (pathname === '/team' && method === 'GET') {
       const folder = url.searchParams.get('folder') || '';
-      const team = await _readTeamFile(folder);
+      const team = await _readManagedTeamFile(folder);
       Object.entries(team.members || {}).forEach(([name, info]) => _cacheTeamAvatar(name, info?.avatar || '', folder));
       return _toTeamPayload(team);
     }
@@ -7574,15 +8042,1738 @@
 
 ;
 
+/* === gb-system-storage.js === */
+;
+/* gb-system-storage.js
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 1b(共通契約モジュール、ブラウザ/JS側)。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md (§4 目標アーキテクチャ, Phase 1)
+ * 監査ノート: app/docs/proprietary-format-sidecar-cleanup-audit-2026-08-01/notes.md
+ * Phase 1a(正本・Python側契約): app/meldex_system_storage.py
+ *
+ * ## このモジュールの役割
+ *
+ * Phase 1aの meldex_system_storage.py と同じ封筒形式(meldex_system_storage 封筒 +
+ * payload)・種別語彙(ハイフン区切り)・スキーマ版(schema_version=1)を
+ * ブラウザ/JS側でも使うための共通契約を定義する。実際の保存先ごとの実装は
+ * gb-system-storage-indexeddb.js(ブラウザローカル / IndexedDB)、
+ * gb-system-storage-dropbox.js(Dropbox個人領域・共有ワークスペース)が担う。
+ * 環境判定から具体的なアダプターを選ぶ resolveSystemStorageAdapter() は
+ * このファイルに置く(Python側は別モジュール meldex_system_storage_resolver.py
+ * だが、JS側は3ファイル構成の指示に合わせてここへ内包する)。
+ *
+ * ## Phase 1bの範囲(重要)
+ *
+ * このモジュール(と姉妹モジュール)は「層の新設」のみを行う。既存の注釈・
+ * タグ・ロック等の呼び出し元をこの層へ載せ替える配線変更は、Phase 3
+ * (ローカル/単独アプリ)・Phase 4(Cloud/Dropbox共有)で別途行う。
+ * 既存ファイル(gb-active-lock-store.js 等)は変更しない。
+ *
+ * ## 秘密情報について(Phase 0引き継ぎ事項)
+ *
+ * `_meldex/secrets/llm-api-keys.v1.json` のようなAPIキー等の秘密情報は、
+ * 本計画・本モジュールの移行対象に含めない(監査ノート§6.1-6)。
+ *
+ * ## 「meldex_system_storage」封筒と、ファイル内メタデータ「meldex」の違い(重要)
+ *
+ * 計画書§4.3の `meldex: {metadata_version, document_id}`(固有形式ファイル自身に
+ * 埋め込む安定文書ID、Phase 2で実装予定)とは別物。混同しないこと
+ * (meldex_system_storage.py と同じ注意書き)。
+ */
+(function () {
+  'use strict';
+
+  if (window.MeldexSystemStorage) return;
+
+  // --- データ種別(計画書§4.2。Phase 1aの SystemStorageKind と同じ語彙) ---------
+
+  const SystemStorageKind = Object.freeze({
+    ANNOTATIONS: 'annotations',
+    TAGS: 'tags',
+    EDIT_LOCKS: 'edit-locks',
+    VIEW_LOCKS: 'view-locks',
+    VERSIONS: 'versions',
+    CONFLICT_BACKUPS: 'conflict-backups',
+    FOLDER_ASSOCIATIONS: 'folder-associations',
+    PROFILES_WORKSPACE: 'profiles-workspace',
+    AUDIT_INTEGRITY: 'audit-integrity',
+    WORKSPACE_METADATA: 'workspace-metadata',
+    IMPORT_CHECKPOINTS: 'import-checkpoints',
+    ASSET_RECOVERY: 'asset-recovery',
+    DIAGNOSTICS: 'diagnostics',
+    // Phase 5(既存付随物の自動移行)専用。meldex_system_storage.py と対称。
+    MIGRATION_LEDGER: 'migration-ledger',
+    MIGRATION_BACKUPS: 'migration-backups',
+  });
+
+  const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
+
+  function isValidSystemStorageKind(value) {
+    return ALL_SYSTEM_STORAGE_KINDS.includes(value);
+  }
+
+  // 種別 → サブパスの対応。将来、値とサブフォルダ名を分けたくなった場合の
+  // 唯一の変更箇所(meldex_system_storage.py の _KIND_SEGMENT_OVERRIDES と同じ思想)。
+  const _KIND_SEGMENT_OVERRIDES = {};
+
+  function kindSubpathSegment(kind) {
+    if (!isValidSystemStorageKind(kind)) throw new SystemStorageError(`未知の種別です: ${kind}`);
+    return Object.prototype.hasOwnProperty.call(_KIND_SEGMENT_OVERRIDES, kind) ? _KIND_SEGMENT_OVERRIDES[kind] : kind;
+  }
+
+  // --- document_id の安全性検査 ---------------------------------------------
+
+  const _DOCUMENT_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,126}[A-Za-z0-9])?$/;
+
+  function sanitizeDocumentId(value) {
+    const text = String(value == null ? '' : value).trim();
+    if (!_DOCUMENT_ID_RE.test(text)) {
+      throw new SystemStorageError(
+        `document_id は英数字・ハイフン・アンダースコアのみ(1〜128文字、先頭と末尾は英数字)で指定してください: ${JSON.stringify(value)}`,
+      );
+    }
+    return text;
+  }
+
+  function documentRelativePath(kind, documentId) {
+    const docId = sanitizeDocumentId(documentId);
+    const segment = kindSubpathSegment(kind);
+    return `${segment}/${docId}.json`;
+  }
+
+  // --- 禁止された旧付随物名の機械検査(計画書§4.1) -----------------------------
+
+  const _FORBIDDEN_LEGACY_SEGMENTS = new Set(['_meldex', '.meldex', '_events', '自動タグ辞書']);
+
+  function isForbiddenLegacySegment(name) {
+    return _FORBIDDEN_LEGACY_SEGMENTS.has(String(name == null ? '' : name).trim());
+  }
+
+  function pathContainsForbiddenLegacySegment(pathLike) {
+    const text = String(pathLike == null ? '' : pathLike).replace(/\\/g, '/');
+    return text.split('/').filter(Boolean).some(isForbiddenLegacySegment);
+  }
+
+  // --- スキーマ版と移行フック -------------------------------------------------
+
+  const CURRENT_SCHEMA_VERSION = 1;
+  const _MIGRATIONS = new Map(); // kind -> Map(fromVersion -> hook)
+
+  function registerSchemaMigration(kind, fromVersion, hook) {
+    if (!_MIGRATIONS.has(kind)) _MIGRATIONS.set(kind, new Map());
+    _MIGRATIONS.get(kind).set(Number(fromVersion), hook);
+  }
+
+  function applySchemaMigrations(kind, schemaVersion, payload) {
+    let version = schemaVersion ? Number(schemaVersion) : CURRENT_SCHEMA_VERSION;
+    if (version > CURRENT_SCHEMA_VERSION) {
+      throw new SystemStorageError(
+        `${kindSubpathSegment(kind)} の保存データの schema_version=${version} は、`
+        + `このMeldexが扱える上限(schema_version=${CURRENT_SCHEMA_VERSION})より新しいため読み込めません`,
+      );
+    }
+    const hooks = _MIGRATIONS.get(kind);
+    let current = payload;
+    while (version < CURRENT_SCHEMA_VERSION) {
+      const hook = hooks ? hooks.get(version) : null;
+      if (!hook) break; // 移行フック未登録の版はそのまま扱う
+      current = hook(current);
+      version += 1;
+    }
+    return { version, payload: current };
+  }
+
+  // --- 例外 --------------------------------------------------------------
+
+  class SystemStorageError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = 'SystemStorageError';
+    }
+  }
+
+  class SystemStorageNotFoundError extends SystemStorageError {
+    constructor(message) {
+      super(message);
+      this.name = 'SystemStorageNotFoundError';
+    }
+  }
+
+  class SystemStorageCorruptRecordError extends SystemStorageError {
+    constructor(message) {
+      super(message);
+      this.name = 'SystemStorageCorruptRecordError';
+    }
+  }
+
+  class SystemStorageWriteError extends SystemStorageError {
+    constructor(message) {
+      super(message);
+      this.name = 'SystemStorageWriteError';
+    }
+  }
+
+  class SystemStorageQuotaExceededError extends SystemStorageWriteError {
+    constructor(message) {
+      super(message);
+      this.name = 'SystemStorageQuotaExceededError';
+    }
+  }
+
+  class SystemStorageConflictError extends SystemStorageError {
+    constructor({ kind, documentId, expectedRevision, currentRevision, conflictBackupDocumentId, message } = {}) {
+      super(message || `${documentId} の保存内容が別の更新と競合しました`);
+      this.name = 'SystemStorageConflictError';
+      this.kind = kind;
+      this.documentId = documentId;
+      this.expectedRevision = expectedRevision == null ? null : expectedRevision;
+      this.currentRevision = currentRevision == null ? null : currentRevision;
+      this.conflictBackupDocumentId = conflictBackupDocumentId || null;
+    }
+  }
+
+  // --- 容量上限・世代数・保管期限(定数+読み出し関数。強制はアダプター側) ------
+  //
+  // 値は meldex_system_storage.DEFAULT_RETENTION_POLICIES と同じ(初期見積り値。
+  // 実運用でボトルネックが見えた場合は両側を合わせて調整すること)。
+
+  const DEFAULT_RETENTION_POLICIES = Object.freeze({
+    [SystemStorageKind.ANNOTATIONS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.TAGS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.EDIT_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
+    [SystemStorageKind.VIEW_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
+    [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: 20, retentionDays: null },
+    [SystemStorageKind.CONFLICT_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.FOLDER_ASSOCIATIONS]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.PROFILES_WORKSPACE]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.AUDIT_INTEGRITY]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 500_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.WORKSPACE_METADATA]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.IMPORT_CHECKPOINTS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.ASSET_RECOVERY]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.DIAGNOSTICS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.MIGRATION_LEDGER]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.MIGRATION_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
+  });
+
+  function retentionPolicyFor(kind) {
+    const policy = DEFAULT_RETENTION_POLICIES[kind];
+    if (!policy) throw new SystemStorageError(`未知の種別です: ${kind}`);
+    return policy;
+  }
+
+  function checkDocumentSizeQuota(kind, payloadBytes, options) {
+    const policy = (options && options.policy) || retentionPolicyFor(kind);
+    if (policy.maxDocumentBytes != null && payloadBytes > policy.maxDocumentBytes) {
+      throw new SystemStorageQuotaExceededError(
+        `${kind} の1件あたりの保存上限(${policy.maxDocumentBytes}バイト)を超えています(実際: ${payloadBytes}バイト)`,
+      );
+    }
+  }
+
+  function checkTotalSizeQuota(kind, existingTotalBytes, incomingBytes, options) {
+    const policy = (options && options.policy) || retentionPolicyFor(kind);
+    if (policy.maxTotalBytes != null && (existingTotalBytes + incomingBytes) > policy.maxTotalBytes) {
+      throw new SystemStorageQuotaExceededError(
+        `${kind} 種別の合計保存上限(${policy.maxTotalBytes}バイト)を超えています`
+        + `(既存 ${existingTotalBytes} + 今回 ${incomingBytes} バイト)`,
+      );
+    }
+  }
+
+  function selectDocumentsExceedingRetention(records, options) {
+    const opts = options || {};
+    if (!records || !records.length) return [];
+    const policy = opts.policy || retentionPolicyFor(records[0].kind);
+    const now = opts.now instanceof Date ? opts.now : new Date();
+    const ordered = [...records].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    const doomed = new Set();
+    if (policy.maxGenerations != null && ordered.length > policy.maxGenerations) {
+      ordered.slice(policy.maxGenerations).forEach(record => doomed.add(record.documentId));
+    }
+    if (policy.retentionDays != null) {
+      const cutoff = now.getTime() - policy.retentionDays * 24 * 60 * 60 * 1000;
+      ordered.forEach((record) => {
+        const updatedMs = Date.parse(record.updatedAt || '');
+        if (Number.isFinite(updatedMs) && updatedMs < cutoff) doomed.add(record.documentId);
+      });
+    }
+    return Array.from(doomed).sort();
+  }
+
+  // --- 保管期限を超えたバックアップの掃除(計画書§6.3、フェーズB徹底チェック(c)) --
+  //
+  // selectDocumentsExceedingRetention は判定のみのI/Oフリー関数で、これまで
+  // 呼び出し元が無く30日保持の設計が実質無期限のまま放置されていた
+  // (Python側 meldex_system_storage.run_retention_cleanup と対称の実装)。
+  // 掃除対象は移行バックアップ(MIGRATION_BACKUPS)・競合バックアップ
+  // (CONFLICT_BACKUPS)に限定する(理由はPython側と同じ。移行バックアップは
+  // 「全target_pathの照合完了後にのみ」退避されるため常に照合済み、競合
+  // バックアップは保存時のCAS競合スナップショットで追加の照合対象を持たない
+  // ため、いずれも期限判定だけで安全に掃除できる)。
+
+  const RETENTION_CLEANUP_KINDS = Object.freeze([
+    SystemStorageKind.MIGRATION_BACKUPS,
+    SystemStorageKind.CONFLICT_BACKUPS,
+  ]);
+
+  async function runRetentionCleanup(adapter, options) {
+    const opts = options || {};
+    const kinds = opts.kinds || RETENTION_CLEANUP_KINDS;
+    const now = opts.now instanceof Date ? opts.now : new Date();
+    const deletedByKind = {};
+    for (const kind of kinds) {
+      let records = [];
+      try {
+        records = await adapter.listDocuments(kind);
+      } catch {
+        continue;
+      }
+      if (!records || !records.length) continue;
+      const doomed = selectDocumentsExceedingRetention(records, { now });
+      let deleted = 0;
+      for (const documentId of doomed) {
+        try {
+          if (await adapter.delete(kind, documentId)) deleted += 1;
+        } catch {
+          // 個別ドキュメントの削除失敗は無視して他のドキュメントの掃除を続ける
+          // (起動時保守の性質上、掃除の失敗を致命的にしないため)。
+        }
+      }
+      if (deleted) deletedByKind[kind] = deleted;
+    }
+    return deletedByKind;
+  }
+
+  // --- レコード(封筒)とrevision計算 -----------------------------------------
+
+  function nowIso() {
+    return new Date().toISOString().replace(/\.(\d{3})\d*Z$/, '.$1Z');
+  }
+
+  function _canonicalJsonValue(value) {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(_canonicalJsonValue);
+    const out = {};
+    Object.keys(value).sort().forEach((key) => { out[key] = _canonicalJsonValue(value[key]); });
+    return out;
+  }
+
+  function canonicalJsonStringify(payload) {
+    // meldex_system_storage.compute_revision の
+    // json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    // と同じ「キーを再帰的にソートしたコンパクトJSON」を作る。JSON.stringify は
+    // 既定で非ASCII文字をエスケープせず、区切り記号もコンパクト(",", ":"相当)
+    // なので、キー順序だけ揃えれば同じ意味論になる。
+    return JSON.stringify(_canonicalJsonValue(payload));
+  }
+
+  async function _sha256Hex(text) {
+    const bytes = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function computeRevision(payload) {
+    // 不透明な比較用トークン(内容ハッシュ)。真のDropbox revとは別物だが、
+    // 「一致/不一致だけを見る」同じ意味論で設計してある
+    // (gb-system-storage-dropbox.js は真のDropbox revをそのまま使う。
+    // meldex_system_storage_dropbox.py のモジュールdocstringと同じ設計判断)。
+    return _sha256Hex(canonicalJsonStringify(payload));
+  }
+
+  function recordToEnvelope(record) {
+    return {
+      meldex_system_storage: {
+        schema_version: record.schemaVersion,
+        kind: record.kind,
+        document_id: record.documentId,
+        revision: record.revision,
+        created_at: record.createdAt,
+        updated_at: record.updatedAt,
+        boundary: record.boundary,
+      },
+      payload: record.payload,
+    };
+  }
+
+  function envelopeToJsonText(record) {
+    return JSON.stringify(recordToEnvelope(record), null, 2);
+  }
+
+  function recordFromEnvelope(data, options) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new SystemStorageCorruptRecordError('管理データの形式が不正です(dict以外)');
+    }
+    const meta = data.meldex_system_storage;
+    if (!meta || typeof meta !== 'object') {
+      throw new SystemStorageCorruptRecordError('管理データに meldex_system_storage 封筒がありません');
+    }
+    const rawKind = String(meta.kind || '');
+    if (!isValidSystemStorageKind(rawKind)) {
+      throw new SystemStorageCorruptRecordError(`未知の種別です: ${rawKind}`);
+    }
+    let schemaVersion = Number(meta.schema_version);
+    if (!Number.isFinite(schemaVersion)) schemaVersion = 0;
+    const rawPayload = (data.payload && typeof data.payload === 'object' && !Array.isArray(data.payload)) ? data.payload : {};
+    const migrated = applySchemaMigrations(rawKind, schemaVersion, rawPayload);
+    const revisionOverride = options && Object.prototype.hasOwnProperty.call(options, 'revisionOverride') ? options.revisionOverride : undefined;
+    return {
+      kind: rawKind,
+      documentId: String(meta.document_id || ''),
+      schemaVersion: migrated.version,
+      revision: revisionOverride !== undefined ? revisionOverride : String(meta.revision || ''),
+      payload: migrated.payload,
+      createdAt: String(meta.created_at || ''),
+      updatedAt: String(meta.updated_at || ''),
+      boundary: String(meta.boundary || ''),
+    };
+  }
+
+  // --- 監査可能なエラー記録 ---------------------------------------------------
+  //
+  // Python版はファイルへ1行JSONを追記するが、ブラウザ側に等価な「デバッグログ
+  // ファイル」は無い。かわりに CustomEvent で最良努力の記録を broadcast し、
+  // 呼び出し側が渡した sink(関数)があれば追加で呼ぶ(sinkの失敗は本来の
+  // 操作を失敗させない。Python版の「ログ書込失敗で本来の操作まで失敗させない」
+  // と同じ方針)。
+
+  function recordStorageAuditEvent(sink, { level, operation, kind, documentId, environment, message, detail } = {}) {
+    const record = {
+      level: String(level || 'info'),
+      time: nowIso(),
+      source: 'system_storage',
+      operation: String(operation || ''),
+      kind: typeof kind === 'string' ? kind : String(kind || ''),
+      document_id: String(documentId || ''),
+      environment: String(environment || ''),
+      message: String(message || ''),
+    };
+    if (detail) record.detail = detail;
+    try {
+      window.dispatchEvent(new CustomEvent('meldex:system-storage-audit', { detail: record }));
+    } catch { /* CustomEvent非対応環境(Node実行等)では通知を諦めるだけで、本来の操作は継続する */ }
+    if (typeof sink === 'function') {
+      try { sink(record); } catch { /* 監査sinkの失敗で本来の操作まで失敗させない */ }
+    }
+  }
+
+  // --- 共通インターフェース(基底クラス) --------------------------------------
+  //
+  // JSには abc.ABC 相当の強制力は無いため、未実装メソッドは呼び出し時に
+  // 例外を投げるだけの「契約のドキュメント化」として機能する。
+  // 各メソッドの契約は meldex_system_storage.SystemStorageAdapter の
+  // docstringと同じ:
+  //
+  // - save: 新規作成または上書き。expectedRevision を指定すると、現在保存
+  //   されている内容の revision と一致する場合のみ書き込む(楽観的排他制御)。
+  //   不一致なら書き込まずに SystemStorageConflictError を投げる。
+  // - load: 存在しなければ null。破損していれば SystemStorageCorruptRecordError。
+  // - listDocuments: 種別配下の全件を返す。個々の破損レコードは監査ログへ
+  //   記録した上でスキップしてよい。
+  // - delete: 存在すれば削除して true、無ければ false。
+  // - describe: 秘密情報を含まない診断用メタデータ。
+
+  class SystemStorageAdapter {
+    async save(_kind, _documentId, _payload, _options) {
+      throw new SystemStorageError('save() は未実装です');
+    }
+
+    async load(_kind, _documentId) {
+      throw new SystemStorageError('load() は未実装です');
+    }
+
+    async listDocuments(_kind) {
+      throw new SystemStorageError('listDocuments() は未実装です');
+    }
+
+    async delete(_kind, _documentId) {
+      throw new SystemStorageError('delete() は未実装です');
+    }
+
+    describe() {
+      throw new SystemStorageError('describe() は未実装です');
+    }
+  }
+
+  class ReadOnlySystemStorageAdapter extends SystemStorageAdapter {
+    constructor(inner) {
+      super();
+      this._inner = inner;
+    }
+
+    async save() {
+      throw new SystemStorageWriteError('閲覧のみの権限のため保存できません');
+    }
+
+    async delete() {
+      throw new SystemStorageWriteError('閲覧のみの権限のため削除できません');
+    }
+
+    async load(kind, documentId) {
+      return this._inner.load(kind, documentId);
+    }
+
+    async listDocuments(kind) {
+      return this._inner.listDocuments(kind);
+    }
+
+    describe() {
+      return { ...this._inner.describe(), read_only: true };
+    }
+  }
+
+  // --- 保存先解決(環境判定 → アダプター選択) ----------------------------------
+  //
+  // 計画書§4.2「環境、アカウント、ワークスペース、権限に応じた保存先解決」。
+  // 管理領域のパス文字列は gb-system-storage-indexeddb.js /
+  // gb-system-storage-dropbox.js だけが組み立て、このモジュールを含む他の
+  // どのモジュールも直接組み立てない(計画書§4.1)。
+  //
+  // Phase 1bでは「層の新設」のみのため、実際の呼び出し元への配線はまだ無い。
+  // ここでの環境判定・アダプター取得は将来の呼び出し元(Phase 3/4)が
+  // 使うための土台であり、姉妹モジュールが未読み込みでも例外を投げるだけで
+  // このファイル自体の読み込みは失敗しない。
+
+  const StorageEnvironment = Object.freeze({
+    // デスクトップ本体はPython(FastAPI)側で完結するため、JS側からは非対応。
+    DESKTOP_LOCAL: 'desktop-local',
+    DROPBOX_PERSONAL: 'dropbox-personal',
+    DROPBOX_SHARED_WORKSPACE: 'dropbox-shared-workspace',
+    BROWSER_LOCAL_INDEXEDDB: 'browser-local-indexeddb',
+  });
+
+  const _STORAGE_PERMISSIONS = new Set(['owner', 'editor', 'viewer']);
+
+  function detectStorageEnvironment() {
+    // Phase 0監査ノート§1.1の系統C/Dに対応するベストエフォート判定。
+    // Dropbox接続済みのCloud静的版・スマホ/タブレットは系統D、
+    // File System Access APIのローカル単独アプリは系統C。
+    try {
+      if (window.MeldexRuntimeAdapter && typeof window.MeldexRuntimeAdapter.isDropboxMode === 'function'
+        && window.MeldexRuntimeAdapter.isDropboxMode()) {
+        return StorageEnvironment.DROPBOX_PERSONAL;
+      }
+    } catch { /* 判定に失敗したらローカル既定へフォールバックする */ }
+    return StorageEnvironment.BROWSER_LOCAL_INDEXEDDB;
+  }
+
+  function _buildAdapter(request) {
+    const req = request || {};
+    const environment = req.environment || detectStorageEnvironment();
+    if (environment === StorageEnvironment.BROWSER_LOCAL_INDEXEDDB) {
+      const factory = window.MeldexSystemStorageIndexedDB;
+      if (!factory || typeof factory.createLocalBrowserAdapter !== 'function') {
+        throw new SystemStorageError('gb-system-storage-indexeddb.js が読み込まれていません');
+      }
+      return factory.createLocalBrowserAdapter({
+        boundary: req.boundary,
+        auditSink: req.auditSink,
+        preserveConflicts: req.preserveConflicts,
+      });
+    }
+    if (environment === StorageEnvironment.DROPBOX_PERSONAL) {
+      const factory = window.MeldexSystemStorageDropbox;
+      if (!factory || typeof factory.createPersonalAdapter !== 'function') {
+        throw new SystemStorageError('gb-system-storage-dropbox.js が読み込まれていません');
+      }
+      return factory.createPersonalAdapter({
+        accountBoundary: req.accountBoundary,
+        auditSink: req.auditSink,
+      });
+    }
+    if (environment === StorageEnvironment.DROPBOX_SHARED_WORKSPACE) {
+      const factory = window.MeldexSystemStorageDropbox;
+      if (!factory || typeof factory.createSharedWorkspaceAdapter !== 'function') {
+        throw new SystemStorageError('gb-system-storage-dropbox.js が読み込まれていません');
+      }
+      if (!req.workspaceDropboxPath) {
+        throw new SystemStorageError('dropbox-shared-workspace環境には workspaceDropboxPath が必要です');
+      }
+      return factory.createSharedWorkspaceAdapter({
+        workspaceDropboxPath: req.workspaceDropboxPath,
+        workspaceId: req.workspaceId,
+        namespaceKind: req.namespaceKind,
+        auditSink: req.auditSink,
+      });
+    }
+    throw new SystemStorageError(`${environment} 用のアダプターはPhase 1b(JS側)の対象外です(デスクトップ本体はPython側で完結します)`);
+  }
+
+  function resolveSystemStorageAdapter(request) {
+    const req = request || {};
+    const permission = String(req.permission || 'editor').trim().toLowerCase();
+    if (!_STORAGE_PERMISSIONS.has(permission)) {
+      throw new SystemStorageError(`未知の権限です: ${req.permission}`);
+    }
+    const adapter = _buildAdapter(req);
+    return permission === 'viewer' ? new ReadOnlySystemStorageAdapter(adapter) : adapter;
+  }
+
+  // --- 公開 --------------------------------------------------------------
+
+  window.MeldexSystemStorage = {
+    SystemStorageKind,
+    ALL_SYSTEM_STORAGE_KINDS,
+    isValidSystemStorageKind,
+    kindSubpathSegment,
+    sanitizeDocumentId,
+    documentRelativePath,
+    isForbiddenLegacySegment,
+    pathContainsForbiddenLegacySegment,
+    CURRENT_SCHEMA_VERSION,
+    registerSchemaMigration,
+    applySchemaMigrations,
+    SystemStorageError,
+    SystemStorageNotFoundError,
+    SystemStorageCorruptRecordError,
+    SystemStorageWriteError,
+    SystemStorageQuotaExceededError,
+    SystemStorageConflictError,
+    DEFAULT_RETENTION_POLICIES,
+    retentionPolicyFor,
+    checkDocumentSizeQuota,
+    checkTotalSizeQuota,
+    selectDocumentsExceedingRetention,
+    RETENTION_CLEANUP_KINDS,
+    runRetentionCleanup,
+    nowIso,
+    canonicalJsonStringify,
+    computeRevision,
+    recordToEnvelope,
+    envelopeToJsonText,
+    recordFromEnvelope,
+    recordStorageAuditEvent,
+    SystemStorageAdapter,
+    ReadOnlySystemStorageAdapter,
+    StorageEnvironment,
+    detectStorageEnvironment,
+    resolveSystemStorageAdapter,
+  };
+})();
+
+;
+
+/* === gb-system-storage-dropbox.js === */
+;
+/* gb-system-storage-dropbox.js
+ *
+ * Dropbox個人領域/共有ワークスペース向け管理領域アダプター(ブラウザ側。
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 1b)。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md (§4.1・§4.3)
+ * 契約: gb-system-storage.js(window.MeldexSystemStorage)
+ * 対応するPython側: meldex_system_storage_dropbox.py(サーバー経由。PC本体はDropbox
+ * デスクトップアプリが同期済みのローカルフォルダをファイルシステム経由で読み書きする)
+ *
+ * ## 保存先
+ *
+ * - 個人: /MeldexSettings/system/v1 (Dropboxアカウントの home namespace 直下)
+ * - 共有ワークスペース: <ワークスペース>/MeldexShare/system/v1
+ *
+ * Phase 1aと同じパス規約。ただし本モジュールは「ブラウザから直接Dropbox Web API
+ * を呼ぶ」経路(Phase 0監査ノート§1.1 系統D)であり、Python版のような
+ * 「ローカル同期フォルダ経由」ではない。
+ *
+ * ## 既存基盤の再利用(新しい認証経路を作らない)
+ *
+ * - HTTP呼び出し: window.MeldexDropboxAuth.apiRpc / apiContent
+ *   (gb-dropbox-auth.js。トークン取得・401時のリフレッシュ・リトライは
+ *   ここが担う。本モジュールは一切新しい認証コードを書かない)
+ * - 個人領域の設定ルート: window.MeldexSourceFolderRegistry.getSettingsPath()
+ *   (既定 `/MeldexSettings`。gb-source-folder-registry.js)
+ * - 共有ワークスペースの共有フォルダ名: window.MeldexWorkspaceSharedLedger.WORKSPACE_SHARE_DIR
+ *   (既定 `MeldexShare`。gb-workspace-shared-ledger.js)
+ * - Dropboxパスの正規化・結合(normalizeDropboxPath 等)は
+ *   gb-source-folder-registry.js の実装が非公開(モジュール内private関数)の
+ *   ため呼び出せない。gb-workspace-ledger-io.js が同じ理由で採用している
+ *   「既存ファイルへの依存を増やさないための複製」方針にならい、
+ *   同じロジックをこのファイル内に複製する(gb-workspace-ledger-io.js 冒頭コメント参照)。
+ *
+ * ## revisionについて(重要)
+ *
+ * 真のDropbox rev(Web APIが発行する不透明文字列)をそのまま
+ * expected_revision/revision として使う(meldex_system_storage_dropbox.py の
+ * モジュールdocstringと同じ設計判断)。ただし「ファイルの中身に書き込む
+ * revisionフィールド」と「実際にCAS判定へ使うrevision」は別の値になる
+ * (鶏と卵の問題): Dropboxのrevはアップロードが成功して初めてサーバーから
+ * 返るため、アップロードするJSON本文自身に「これからアップロードされる
+ * rev」を事前に書き込むことはできない。そのため:
+ *
+ * - 書き込むJSON本文の meldex_system_storage.revision には
+ *   「書込直前に確認した現在のrev(または空文字)」を参考情報として入れる。
+ * - 実際のCAS判定・戻り値の revision は、常にDropbox APIのレスポンス
+ *   メタデータ(get_metadata / upload / download の `.rev`)から取得し、
+ *   JSON本文に書かれた値は信用しない。
+ *
+ * ## オフライン時の送信待ち
+ *
+ * save() 自体は契約どおり同期的に成功/失敗する(黙って保留にしない)。
+ * オフライン時に自動で送信待ちへ回したい呼び出し元は saveWithOfflineQueue()
+ * を使う。標準の standalone-offline-outbox.js は apiPost/apiPut 等の
+ * グローバル関数を横取りする設計で、save()/load() という別形状のAPIを持つ
+ * 本モジュールには噛み合わないため転用せず、localStorageベースの
+ * 最小限の送信待ちキュー(上限リトライ回数あり。無制限リトライはしない)を
+ * 実装する。
+ */
+(function () {
+  'use strict';
+
+  if (window.MeldexSystemStorageDropbox) return;
+
+  const MANAGEMENT_SUBPATH = 'system/v1';
+  const OUTBOX_KEY_PREFIX = 'meldex-system-storage-dropbox-outbox-v1';
+  const MAX_OFFLINE_QUEUE_ATTEMPTS = 8;
+  let _migrationWriteScopeDepth = 0;
+
+  function _contract() {
+    const contract = window.MeldexSystemStorage;
+    if (!contract) throw new Error('gb-system-storage.js が読み込まれていません');
+    return contract;
+  }
+
+  // --- Dropboxパス正規化・結合(gb-workspace-ledger-io.js と同じ方針で複製) ------
+
+  function _normalizeDropboxPath(path) {
+    const raw = String(path || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+    if (raw === '/') return '/';
+    const normalized = raw.replace(/\/$/, '');
+    if (!normalized) return '';
+    return normalized.startsWith('/') ? normalized : ('/' + normalized);
+  }
+
+  function _normalizeRelativePath(path) {
+    return String(path || '')
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/+/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/$/, '');
+  }
+
+  function _joinDropboxPath(base, relative) {
+    const normalizedBase = _normalizeDropboxPath(base);
+    const normalizedRelative = _normalizeRelativePath(relative);
+    if (!normalizedRelative) return normalizedBase;
+    return normalizedBase === '/' ? `/${normalizedRelative}` : `${normalizedBase}/${normalizedRelative}`;
+  }
+
+  function _normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  // --- 保存先ルート解決 --------------------------------------------------------
+
+  function personalManagementRoot() {
+    const registry = window.MeldexSourceFolderRegistry;
+    if (!registry || typeof registry.getSettingsPath !== 'function') {
+      throw new (_contract().SystemStorageError)('gb-source-folder-registry.js が読み込まれていません');
+    }
+    return _joinDropboxPath(registry.getSettingsPath(), MANAGEMENT_SUBPATH);
+  }
+
+  function sharedWorkspaceManagementRoot(workspaceDropboxPath) {
+    if (!workspaceDropboxPath) {
+      throw new (_contract().SystemStorageError)('共有ワークスペースフォルダの位置が指定されていません');
+    }
+    const sharedLedger = window.MeldexWorkspaceSharedLedger;
+    const shareDir = (sharedLedger && sharedLedger.WORKSPACE_SHARE_DIR) || 'MeldexShare';
+    return _joinDropboxPath(workspaceDropboxPath, `${shareDir}/${MANAGEMENT_SUBPATH}`);
+  }
+
+  // --- Dropbox API呼び出し(既存の gb-dropbox-auth.js をそのまま使う) -----------
+
+  async function _rpc(route, body, namespaceKind) {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth || typeof auth.apiRpc !== 'function') {
+      throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
+    }
+    return auth.apiRpc(route, body, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+  }
+
+  async function _content(route, arg, init, namespaceKind) {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth || typeof auth.apiContent !== 'function') {
+      throw new (_contract().SystemStorageError)('Dropboxへ接続してください');
+    }
+    return auth.apiContent(route, arg, init, { namespaceKind: _normalizeNamespaceKind(namespaceKind) });
+  }
+
+  // gb-storage-adapter.part01.js / gb-workspace-ledger-io.js と同じ正規表現による分類
+  // (apiRpc/apiContent は Dropbox の error_summary テキストを message に持つ Error を投げる)。
+  function _isNotFoundError(err) {
+    return /not_found|path_lookup|path\/not_found/i.test((err && err.message) || '');
+  }
+
+  function _isConflictError(err) {
+    return /conflict|too_many_write_operations|path\/conflict/i.test((err && err.message) || '');
+  }
+
+  const _RETRYABLE_ERROR_RE = /offline|network|failed to fetch|fetch failed|timeout|timed out|接続|認証|unauthori|access.?token/i;
+
+  function _isRetryableOfflineError(error) {
+    if (typeof navigator !== 'undefined' && navigator && navigator.onLine === false) return true;
+    return _RETRYABLE_ERROR_RE.test(String((error && error.message) || error || ''));
+  }
+
+  async function _ensureFolder(dropboxPath, namespaceKind) {
+    const normalized = _normalizeDropboxPath(dropboxPath);
+    if (!normalized || normalized === '/') return true;
+    try {
+      await _rpc('files/create_folder_v2', { path: normalized, autorename: false }, namespaceKind);
+      return true;
+    } catch (err) {
+      let meta = null;
+      try {
+        meta = await _rpc('files/get_metadata', {
+          path: normalized, include_deleted: false, include_has_explicit_shared_members: false,
+        }, namespaceKind);
+      } catch { /* メタデータ取得も失敗した場合は直前の create_folder_v2 のエラーをそのまま投げる */ }
+      if (meta && meta['.tag'] === 'folder') return true;
+      if (meta) throw new (_contract().SystemStorageError)(`${normalized} はDropbox上でフォルダではありません`);
+      throw err;
+    }
+  }
+
+  async function _downloadEnvelope(fullPath, namespaceKind) {
+    let response;
+    try {
+      response = await _content('files/download', { path: fullPath }, undefined, namespaceKind);
+    } catch (err) {
+      if (_isNotFoundError(err)) return null;
+      throw err;
+    }
+    const text = await response.text();
+    let rev = '';
+    try {
+      const metaText = (response.headers && response.headers.get && response.headers.get('dropbox-api-result')) || '';
+      const meta = metaText ? JSON.parse(metaText) : null;
+      rev = String((meta && meta.rev) || '');
+    } catch { /* dropbox-api-result ヘッダーが無い/壊れている場合は rev 無しのまま扱う */ }
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      throw new (_contract().SystemStorageCorruptRecordError)(`管理データを読み込めません(${fullPath}): ${err && err.message}`);
+    }
+    return { data, rev };
+  }
+
+  // --- localStorageベースの最小限の送信待ちキュー ------------------------------
+
+  function _outboxKey(boundary) {
+    return `${OUTBOX_KEY_PREFIX}:${boundary}`;
+  }
+
+  function _readOutbox(boundary) {
+    let raw;
+    try {
+      raw = localStorage.getItem(_outboxKey(boundary));
+    } catch (error) {
+      throw new (_contract().SystemStorageWriteError)(
+        `送信待ちデータを読み込めません: ${error && error.message}`,
+      );
+    }
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('配列ではありません');
+      return parsed;
+    } catch (error) {
+      throw new (_contract().SystemStorageCorruptRecordError)(
+        `送信待ちデータが破損しています: ${error && error.message}`,
+      );
+    }
+  }
+
+  async function runMigrationWriteScope(callback) {
+    if (typeof callback !== 'function') {
+      throw new (_contract().SystemStorageError)('移行処理が指定されていません');
+    }
+    _migrationWriteScopeDepth += 1;
+    try {
+      return await callback();
+    } finally {
+      _migrationWriteScopeDepth = Math.max(0, _migrationWriteScopeDepth - 1);
+    }
+  }
+
+  function _writeOutbox(boundary, rows) {
+    const key = _outboxKey(boundary);
+    let serialized;
+    try {
+      serialized = JSON.stringify(rows);
+      localStorage.setItem(key, serialized);
+      const reloaded = localStorage.getItem(key);
+      if (reloaded !== serialized) {
+        throw new Error('保存後の再読込内容が一致しません');
+      }
+      const parsed = JSON.parse(reloaded);
+      if (!Array.isArray(parsed)) throw new Error('保存後の送信待ちデータが配列ではありません');
+    } catch (error) {
+      throw new (_contract().SystemStorageWriteError)(
+        `送信待ちデータを永続化できません: ${error && error.message}`,
+      );
+    }
+  }
+
+  // --- アダプター本体 ----------------------------------------------------------
+
+  class DropboxSystemStorageAdapter {
+    constructor({ managementRoot, boundary, environment, namespaceKind, auditSink, compatibilityLockProvider } = {}) {
+      if (!managementRoot) throw new (_contract().SystemStorageError)('管理領域のパスが指定されていません');
+      this._managementRoot = _normalizeDropboxPath(managementRoot);
+      this._boundary = String(boundary || 'dropbox');
+      this._environment = String(environment || 'dropbox');
+      this._namespaceKind = _normalizeNamespaceKind(namespaceKind);
+      this._auditSink = typeof auditSink === 'function' ? auditSink : null;
+      this._compatibilityLockProvider = compatibilityLockProvider || null;
+    }
+
+    _pathFor(kind, documentId) {
+      return _joinDropboxPath(this._managementRoot, _contract().documentRelativePath(kind, documentId));
+    }
+
+    _folderFor(kind) {
+      return _joinDropboxPath(this._managementRoot, _contract().kindSubpathSegment(kind));
+    }
+
+    async _assertCompatibilityWriteAllowed(kind) {
+      if (this._environment !== 'dropbox-shared-workspace' || _migrationWriteScopeDepth > 0) return;
+      const contract = _contract();
+      if (kind === contract.SystemStorageKind.MIGRATION_LEDGER) return;
+      const migration = window.MeldexSidecarMigration;
+      const provider = this._compatibilityLockProvider || window.MeldexStorageAdapter?.getProvider?.();
+      let lock;
+      if (!migration || typeof migration.getCompatibilityLock !== 'function') {
+        lock = { locked: true, unavailable: true };
+      } else try {
+        lock = provider ? await migration.getCompatibilityLock(provider) : { locked: true, unavailable: true };
+      } catch (error) {
+        lock = { locked: true, unavailable: true, detail: String((error && error.message) || error) };
+      }
+      if (!lock?.locked && !lock?.unavailable) return;
+      const error = new contract.SystemStorageWriteError(
+        '共有ワークスペースは互換性確認のため閲覧専用です。全員を最新版へ更新し、所有者が再移行してください',
+      );
+      error.code = 'compatibility_lock';
+      error.meldexCode = 'compatibility_lock';
+      error.compatibilityLock = lock || { locked: true };
+      throw error;
+    }
+
+    _audit(level, operation, kind, documentId, extra) {
+      _contract().recordStorageAuditEvent(this._auditSink, {
+        level, operation, kind, documentId, environment: this._environment,
+        message: (extra && extra.message) || '',
+        detail: extra && extra.detail,
+      });
+    }
+
+    async _readExisting(kind, documentId) {
+      const path = this._pathFor(kind, documentId);
+      const result = await _downloadEnvelope(path, this._namespaceKind);
+      if (!result) return null;
+      const contract = _contract();
+      try {
+        const record = contract.recordFromEnvelope(result.data, { revisionOverride: result.rev });
+        return record;
+      } catch (error) {
+        this._audit('error', 'load', kind, documentId, { message: '破損した管理データを検出しました' });
+        throw error;
+      }
+    }
+
+    async load(kind, documentId) {
+      const contract = _contract();
+      const docId = contract.sanitizeDocumentId(documentId);
+      return this._readExisting(kind, docId);
+    }
+
+    async _listFolderEntries(folderPath) {
+      const entries = [];
+      let payload;
+      try {
+        payload = await _rpc('files/list_folder', { path: folderPath, recursive: false }, this._namespaceKind);
+      } catch (err) {
+        if (_isNotFoundError(err)) return [];
+        throw err;
+      }
+      entries.push(...(payload.entries || []));
+      while (payload.has_more) {
+        payload = await _rpc('files/list_folder/continue', { cursor: payload.cursor }, this._namespaceKind);
+        entries.push(...(payload.entries || []));
+      }
+      return entries;
+    }
+
+    async listDocuments(kind) {
+      const contract = _contract();
+      const entries = await this._listFolderEntries(this._folderFor(kind));
+      const records = [];
+      for (const entry of entries) {
+        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        const documentId = String(entry.name).slice(0, -5);
+        try {
+          contract.sanitizeDocumentId(documentId);
+        } catch {
+          continue; // 本契約が作成したものではない未知のファイルは無視する
+        }
+        try {
+          const record = await this.load(kind, documentId);
+          if (record) records.push(record);
+        } catch (error) {
+          this._audit('error', 'list_documents', kind, documentId, {
+            message: `破損データをスキップしました: ${error && error.message}`,
+          });
+        }
+      }
+      return records;
+    }
+
+    async _totalBytesForKind(kind, excludeDocumentId) {
+      let entries;
+      try {
+        entries = await this._listFolderEntries(this._folderFor(kind));
+      } catch (err) {
+        if (_isNotFoundError(err)) return 0;
+        throw err;
+      }
+      const excludeName = excludeDocumentId ? `${excludeDocumentId}.json` : null;
+      return entries
+        .filter(entry => entry['.tag'] === 'file' && (!excludeName || entry.name !== excludeName))
+        .reduce((sum, entry) => sum + Number(entry.size || 0), 0);
+    }
+
+    async _preserveConflictBackup(kind, documentId, attemptedPayload, existing) {
+      const contract = _contract();
+      const backupId = `${documentId}-conflict-${Math.random().toString(16).slice(2, 14)}${Date.now().toString(36)}`;
+      const backupPayload = {
+        original_kind: kind,
+        original_document_id: documentId,
+        attempted_payload: attemptedPayload,
+        current_payload_at_conflict: existing ? existing.payload : null,
+        attempted_at: contract.nowIso(),
+      };
+      try {
+        await this.save(contract.SystemStorageKind.CONFLICT_BACKUPS, backupId, backupPayload);
+        return backupId;
+      } catch {
+        this._audit('error', 'conflict_backup_failed', kind, documentId, { message: '競合バックアップの保全に失敗しました' });
+        return '';
+      }
+    }
+
+    async save(kind, documentId, payload, options) {
+      const contract = _contract();
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new contract.SystemStorageError('payload はオブジェクトである必要があります');
+      }
+      const docId = contract.sanitizeDocumentId(documentId);
+      const opts = options || {};
+      const expectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision') ? opts.expectedRevision : undefined;
+      const path = this._pathFor(kind, docId);
+      await this._assertCompatibilityWriteAllowed(kind);
+
+      const existing = await this._readExisting(kind, docId);
+      const currentRevision = existing ? existing.revision : null;
+
+      // undefined は「CAS指定なし」。明示 null は「未作成を期待する
+      // create-only CAS」なので、既存レコードがあれば必ず競合にする。
+      if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+        const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+        this._audit('warning', 'save_conflict', kind, docId, {
+          message: 'revisionが一致しないため書込を中止しました',
+          detail: { expected_revision: expectedRevision, current_revision: currentRevision },
+        });
+        throw new contract.SystemStorageConflictError({
+          kind, documentId: docId, expectedRevision, currentRevision, conflictBackupDocumentId,
+        });
+      }
+
+      await _ensureFolder(this._managementRoot, this._namespaceKind);
+      await _ensureFolder(this._folderFor(kind), this._namespaceKind);
+
+      const policy = contract.retentionPolicyFor(kind);
+      const timestamp = contract.nowIso();
+      const record = {
+        kind,
+        documentId: docId,
+        schemaVersion: contract.CURRENT_SCHEMA_VERSION,
+        // 書込直前に確認できた現在のrev(参考情報。CAS判定・戻り値は常に
+        // Dropbox APIレスポンスの真のrevを使う。ファイル冒頭コメント参照)。
+        revision: currentRevision || '',
+        payload,
+        createdAt: existing ? existing.createdAt : timestamp,
+        updatedAt: timestamp,
+        boundary: this._boundary,
+      };
+      const bytes = new TextEncoder().encode(JSON.stringify(contract.recordToEnvelope(record), null, 2));
+      contract.checkDocumentSizeQuota(kind, bytes.length, { policy });
+      const existingTotal = await this._totalBytesForKind(kind, docId);
+      contract.checkTotalSizeQuota(kind, existingTotal, bytes.length, { policy });
+
+      const mode = currentRevision ? { '.tag': 'update', update: currentRevision } : 'add';
+      let uploadMeta;
+      try {
+        const response = await _content('files/upload', {
+          path, mode, autorename: false, mute: false, strict_conflict: true,
+        }, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: bytes,
+        }, this._namespaceKind);
+        uploadMeta = await response.json();
+      } catch (error) {
+        if (_isConflictError(error)) {
+          // 事前確認とアップロードの間にDropbox側で更新された(実レース)。
+          const refreshed = await _downloadEnvelope(path, this._namespaceKind).catch(() => null);
+          const conflictBackupDocumentId = await this._preserveConflictBackup(kind, docId, payload, existing);
+          const refreshedRevision = refreshed ? refreshed.rev : currentRevision;
+          this._audit('warning', 'save_conflict', kind, docId, {
+            message: 'Dropbox側で更新競合を検出しました',
+            detail: { expected_revision: expectedRevision, current_revision: refreshedRevision },
+          });
+          throw new contract.SystemStorageConflictError({
+            kind,
+            documentId: docId,
+            expectedRevision: expectedRevision === undefined ? currentRevision : expectedRevision,
+            currentRevision: refreshedRevision,
+            conflictBackupDocumentId,
+          });
+        }
+        this._audit('error', 'save', kind, docId, { message: `書込に失敗しました: ${error && error.message}` });
+        throw new contract.SystemStorageWriteError(`管理データの書込に失敗しました: ${error && error.message}`);
+      }
+      record.revision = String((uploadMeta && uploadMeta.rev) || currentRevision || '');
+      this._audit('info', 'save', kind, docId, { message: '保存しました' });
+      return record;
+    }
+
+    async delete(kind, documentId) {
+      const contract = _contract();
+      const docId = contract.sanitizeDocumentId(documentId);
+      const path = this._pathFor(kind, docId);
+      await this._assertCompatibilityWriteAllowed(kind);
+      try {
+        await _rpc('files/delete_v2', { path }, this._namespaceKind);
+        this._audit('info', 'delete', kind, docId, { message: '削除しました' });
+        return true;
+      } catch (error) {
+        if (_isNotFoundError(error)) return false;
+        this._audit('error', 'delete', kind, docId, { message: `削除に失敗しました: ${error && error.message}` });
+        throw new contract.SystemStorageWriteError(`管理データの削除に失敗しました: ${error && error.message}`);
+      }
+    }
+
+    describe() {
+      return {
+        environment: this._environment,
+        boundary: this._boundary,
+        namespace_kind: this._namespaceKind,
+        management_root: this._managementRoot,
+      };
+    }
+
+    // --- オフライン送信待ち(save() 自体の契約は変えず、opt-inの別APIとして提供) ---
+
+    _enqueuePending(kind, documentId, payload, expectedRevision, hasExpectedRevision, errorMessage) {
+      const rows = _readOutbox(this._boundary);
+      const now = _contract().nowIso();
+      const existingIndex = rows.findIndex(row => row.kind === kind && row.documentId === documentId);
+      const entry = {
+        id: existingIndex >= 0 ? rows[existingIndex].id : `${kind}:${documentId}:${Date.now().toString(36)}`,
+        kind,
+        documentId,
+        payload,
+        expectedRevision: expectedRevision == null ? null : expectedRevision,
+        // 旧キューにはこのフィールドが無い。旧実装は省略時にも null を保存して
+        // いたため、再送時は安全側(create-only)として扱う。
+        // オフライン時に現在revを確認できない無指定保存も、再送では
+        // create-only(null)として扱う。無条件再送は他端末の更新を失わせる。
+        hasExpectedRevision: true,
+        attempts: existingIndex >= 0 ? Number(rows[existingIndex].attempts || 0) : 0,
+        state: 'pending',
+        createdAt: existingIndex >= 0 ? rows[existingIndex].createdAt : now,
+        updatedAt: now,
+        lastError: String(errorMessage || ''),
+      };
+      if (existingIndex >= 0) rows[existingIndex] = entry;
+      else rows.push(entry);
+      _writeOutbox(this._boundary, rows);
+      return entry;
+    }
+
+    listPending() {
+      return _readOutbox(this._boundary);
+    }
+
+    async saveWithOfflineQueue(kind, documentId, payload, options) {
+      const contract = _contract();
+      try {
+        return await this.save(kind, documentId, payload, options);
+      } catch (error) {
+        if (error instanceof contract.SystemStorageConflictError) throw error; // 競合は自動キューしない(ユーザー判断が必要)
+        if (!_isRetryableOfflineError(error)) throw error; // 恒久的エラー(権限不足等)はそのまま伝える
+        const docId = contract.sanitizeDocumentId(documentId);
+        const opts = options || {};
+        const hasExpectedRevision = Object.prototype.hasOwnProperty.call(opts, 'expectedRevision');
+        const expectedRevision = hasExpectedRevision ? opts.expectedRevision : null;
+        const entry = this._enqueuePending(
+          kind, docId, payload, expectedRevision, hasExpectedRevision, error && error.message,
+        );
+        this._audit('warning', 'save_queued_offline', kind, docId, { message: 'オフラインのため送信待ちに登録しました' });
+        return { queued: true, operationId: entry.id, kind, documentId: docId };
+      }
+    }
+
+    async flushPending() {
+      const rows = _readOutbox(this._boundary);
+      if (!rows.length) return { flushed: 0, remaining: 0, failed: 0 };
+      let remaining = rows.slice();
+      let flushed = 0;
+      for (const row of rows) {
+        if (row.state === 'failed') {
+          continue;
+        }
+        try {
+          const replayOptions = row.hasExpectedRevision === false
+            ? {}
+            : { expectedRevision: row.expectedRevision };
+          await this.save(row.kind, row.documentId, row.payload, replayOptions);
+          const next = remaining.filter(item => item.id !== row.id);
+          try {
+            // リモート成功ごとに送信待ちを確定する。ここが失敗した場合は
+            // 直ちに停止し、CAS付きの行を残して安全に再判定できるようにする。
+            _writeOutbox(this._boundary, next);
+          } catch (checkpointError) {
+            const durableError = new (_contract().SystemStorageWriteError)(
+              `リモート保存後の送信待ち確定に失敗しました: ${checkpointError && checkpointError.message}`,
+            );
+            durableError.code = 'outbox_checkpoint_failed';
+            durableError.meldexCode = 'outbox_checkpoint_failed';
+            throw durableError;
+          }
+          remaining = next;
+          flushed += 1;
+        } catch (error) {
+          if (error && (error.code === 'outbox_checkpoint_failed' || error.meldexCode === 'outbox_checkpoint_failed')) {
+            throw error;
+          }
+          const contract = _contract();
+          const attempts = Number(row.attempts || 0) + 1;
+          const isConflict = error instanceof contract.SystemStorageConflictError;
+          const permanentFailure = !isConflict && !_isRetryableOfflineError(error);
+          const updated = {
+            ...row,
+            attempts,
+            state: (permanentFailure || attempts >= MAX_OFFLINE_QUEUE_ATTEMPTS) ? 'failed' : 'pending',
+            updatedAt: contract.nowIso(),
+            lastError: String((error && error.message) || error).slice(0, 500),
+          };
+          remaining = remaining.map(item => item.id === row.id ? updated : item);
+          _writeOutbox(this._boundary, remaining);
+        }
+      }
+      const failed = remaining.filter(row => row.state === 'failed').length;
+      return { flushed, remaining: remaining.length, failed };
+    }
+  }
+
+  // --- ファクトリ ---------------------------------------------------------------
+
+  function createPersonalAdapter({ accountBoundary, auditSink } = {}) {
+    return new DropboxSystemStorageAdapter({
+      managementRoot: personalManagementRoot(),
+      boundary: `dropbox-personal:${String(accountBoundary || 'unknown').trim()}`,
+      environment: 'dropbox-personal',
+      namespaceKind: 'home',
+      auditSink,
+    });
+  }
+
+  function createSharedWorkspaceAdapter({
+    workspaceDropboxPath, workspaceId, namespaceKind, auditSink, compatibilityLockProvider,
+  } = {}) {
+    return new DropboxSystemStorageAdapter({
+      managementRoot: sharedWorkspaceManagementRoot(workspaceDropboxPath),
+      boundary: `dropbox-shared-workspace:${String(workspaceId || workspaceDropboxPath).trim()}`,
+      environment: 'dropbox-shared-workspace',
+      namespaceKind: namespaceKind || 'home',
+      auditSink,
+      compatibilityLockProvider,
+    });
+  }
+
+  window.MeldexSystemStorageDropbox = {
+    MANAGEMENT_SUBPATH,
+    DropboxSystemStorageAdapter,
+    personalManagementRoot,
+    sharedWorkspaceManagementRoot,
+    runMigrationWriteScope,
+    createPersonalAdapter,
+    createSharedWorkspaceAdapter,
+  };
+})();
+
+;
+
+/* === gb-dropbox-management-root-resolver.js === */
+;
+/* gb-dropbox-management-root-resolver.js
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 4(Cloud/Dropbox共有の付随物廃止)。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md (§4.2 保存先解決)
+ * 監査ノート: app/docs/proprietary-format-sidecar-cleanup-audit-2026-08-01/notes.md
+ *
+ * ## このモジュールの役割
+ *
+ * gb-system-storage.js の resolveSystemStorageAdapter() は環境種別(dropbox-personal /
+ * dropbox-shared-workspace)を引数で受け取るだけで、「今このブラウザセッションが
+ * 実際にどちらへ接続しているか」の判定はまだ配線されていない(Phase 1bのコメント
+ * 参照)。このモジュールがその判定を1箇所に集約する。
+ *
+ * 判定方法: 現在接続中のDropboxルート(provider.getWorkspaceInfo().path)が、
+ * 参加中の共有ワークスペース(gb-workspace-ledger-io.js の listJoinedWorkspaces())
+ * のいずれかの workspaceDropboxPath と一致(またはその配下)であれば「共有
+ * ワークスペース」、一致しなければ「個人領域」とみなす。
+ *
+ * 対象パスが指定された場合は、複数ソースの仮想パスを実Dropboxルートへ解決して
+ * 文書単位で判定する。対象を持たない個人設定は常に個人管理領域へ保存する。
+ *
+ * ## 利用元
+ *
+ * - gb-data-access-dropbox-fileops-core.js(同一スコープ内から直接呼べるが、
+ *   他モジュールとの利用方法を揃えるため window.MeldexDropboxManagementRootResolver
+ *   経由で統一して呼ぶ)
+ * - gb-file-lock-store.js / gb-active-lock-store.js(fileopsとは別IIFEスコープの
+ *   ため、グローバル経由でしか共有できない)
+ *
+ * 依存: gb-system-storage-dropbox.js(必須)、gb-source-folder-registry.js /
+ * gb-workspace-ledger-io.js(必須。未読込・例外・破損時は保存先不明として書込を拒否)。
+ * Meldex.html / Meldex-dev.html では gb-system-storage-dropbox.js の直後、
+ * gb-file-lock-store.js より前に読み込むこと。
+ */
+(function () {
+  'use strict';
+
+  if (window.MeldexDropboxManagementRootResolver) return;
+
+  function _normalize(registry, value) {
+    const text = String(value || '');
+    if (registry && typeof registry.normalizeDropboxPath === 'function') {
+      return String(registry.normalizeDropboxPath(text) || '').toLowerCase();
+    }
+    return text.toLowerCase();
+  }
+
+  function _classifyRoot(rootPath) {
+    const ledgerIo = window.MeldexWorkspaceLedgerIO;
+    if (!rootPath || !ledgerIo || typeof ledgerIo.listJoinedWorkspaces !== 'function') {
+      return { kind: 'unknown', workspace: null };
+    }
+    let joined;
+    try {
+      joined = ledgerIo.listJoinedWorkspaces();
+    } catch {
+      return { kind: 'unknown', workspace: null };
+    }
+    if (!Array.isArray(joined)) return { kind: 'unknown', workspace: null };
+    if (joined.some(ws => !ws || typeof ws !== 'object' || !String(ws.dropboxPath || '').trim())) {
+      return { kind: 'unknown', workspace: null };
+    }
+    const registry = window.MeldexSourceFolderRegistry;
+    try {
+      const normalizedRoot = _normalize(registry, rootPath);
+      if (!normalizedRoot) return { kind: 'unknown', workspace: null };
+      const matched = joined.find((ws) => {
+        const wsPath = _normalize(registry, ws.dropboxPath);
+        return !!wsPath && (normalizedRoot === wsPath || normalizedRoot.startsWith(wsPath + '/'));
+      }) || null;
+      return matched
+        ? { kind: 'shared', workspace: matched }
+        : { kind: 'personal', workspace: null };
+    } catch {
+      return { kind: 'unknown', workspace: null };
+    }
+  }
+
+  async function _connectedRootInfo(provider) {
+    if (!provider || typeof provider.getWorkspaceInfo !== 'function') {
+      throw new Error('Dropbox 共有フォルダが未接続です');
+    }
+    const info = await provider.getWorkspaceInfo();
+    const rootPath = String((info && info.path) || '').trim();
+    if (!rootPath) throw new Error('Dropbox 共有フォルダが未接続です');
+    return { rootPath, namespaceKind: (info && info.namespaceKind) || 'home' };
+  }
+
+  async function _effectiveRootInfo(provider, targetPath) {
+    const connected = await _connectedRootInfo(provider);
+    const rawTarget = String(targetPath || '').trim();
+    const registry = window.MeldexSourceFolderRegistry;
+    if (!rawTarget || !registry || typeof registry.resolveDropboxLocation !== 'function') return connected;
+    const location = registry.resolveDropboxLocation(rawTarget, connected.rootPath);
+    const resolvedPath = String(location?.path || '').trim();
+    if (!resolvedPath) throw new Error('対象文書のDropbox保存先を判定できません');
+    return {
+      rootPath: resolvedPath,
+      namespaceKind: location?.namespaceKind || connected.namespaceKind,
+      connectedRootPath: connected.rootPath,
+    };
+  }
+
+  /**
+   * 現在接続中の provider に対応する共通ストレージアダプターを返す。
+   * 参加中の共有ワークスペードのルートに接続している場合は共有ワークスペース
+   * アダプター、それ以外は個人領域アダプターを返す。
+   */
+  async function resolveAdapterForProvider(provider, options) {
+    const dropboxAdapters = window.MeldexSystemStorageDropbox;
+    if (!dropboxAdapters) throw new Error('gb-system-storage-dropbox.js が読み込まれていません');
+    const { rootPath, namespaceKind, connectedRootPath } = await _effectiveRootInfo(provider, options?.targetPath);
+    if (options?.personalOnly) {
+      return dropboxAdapters.createPersonalAdapter({ accountBoundary: connectedRootPath || rootPath });
+    }
+    const classification = _classifyRoot(rootPath);
+    if (classification.kind === 'unknown') throw _unknownRootError();
+    const matched = classification.workspace;
+    if (classification.kind === 'shared') {
+      return dropboxAdapters.createSharedWorkspaceAdapter({
+        workspaceDropboxPath: matched.dropboxPath,
+        workspaceId: matched.id || matched.dropboxPath,
+        namespaceKind: matched.namespaceKind || namespaceKind,
+        compatibilityLockProvider: provider,
+      });
+    }
+    return dropboxAdapters.createPersonalAdapter({ accountBoundary: connectedRootPath || rootPath });
+  }
+
+  /**
+   * 現在接続中ルートが個人領域か共有ワークスペードかの判定結果だけを返す
+   * (旧パス併読(interop)のために「今どのルートに接続しているか」が必要な
+   * 呼び出し元向け。実際の管理データ保存先は resolveAdapterForProvider を使う)。
+   */
+  async function resolveConnectionInfo(provider) {
+    const { rootPath, namespaceKind } = await _connectedRootInfo(provider);
+    const classification = _classifyRoot(rootPath);
+    const matched = classification.workspace;
+    return {
+      rootPath,
+      namespaceKind,
+      kind: classification.kind,
+      isSharedWorkspace: classification.kind === 'shared',
+      workspace: matched || null,
+    };
+  }
+
+  function _unknownRootError() {
+    const error = new Error('Dropboxの管理データ保存先を安全に判定できません');
+    error.status = 503;
+    error.code = 'management_root_unknown';
+    error.meldexCode = 'management_root_unknown';
+    return error;
+  }
+
+  // --- 管理スコープ解決(対象パス→保存先 + 正準パス変換) ------------------------
+  //
+  // 編集ロック・注釈のように「entryが対象文書パスを持ち、共有ワークスペードの
+  // メンバー間で同じentryを見えるようにしたい」管理データは、保存先アダプター
+  // だけでなく「entryへ書くパスの形」も管理ルートごとに揃える必要がある。
+  // PC本体(meldex_active_locks.py の _convert_management_entry_path /
+  // _encode_management_entry)が先行して固定した相互運用契約に合わせる:
+  //
+  // - 個人管理領域: Dropboxホーム同期ルートからの相対パス
+  //   (= 絶対Dropboxパスの先頭スラッシュを除いた形)
+  // - 共有ワークスペース管理領域: ワークスペードルートからの相対パス
+  //
+  // この契約を1箇所へ集約するため、スコープオブジェクトが保存先アダプターと
+  // 正準パス変換(toCanonicalPath / toLocalPath)を併せて提供する。
+
+  function _normalizeAbsolutePreserveCase(registry, value) {
+    if (registry && typeof registry.normalizeDropboxPath === 'function') {
+      return String(registry.normalizeDropboxPath(String(value || '')) || '');
+    }
+    const raw = String(value || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+    if (raw === '/') return '/';
+    const normalized = raw.replace(/\/$/, '');
+    if (!normalized) return '';
+    return normalized.startsWith('/') ? normalized : ('/' + normalized);
+  }
+
+  function _absoluteForTarget(registry, connectedRootPath, localPath) {
+    const raw = String(localPath || '').trim();
+    if (registry && typeof registry.resolveDropboxLocation === 'function') {
+      const location = registry.resolveDropboxLocation(raw, connectedRootPath);
+      return _normalizeAbsolutePreserveCase(registry, location?.path || '');
+    }
+    const relative = raw.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    const base = _normalizeAbsolutePreserveCase(registry, connectedRootPath);
+    if (!relative) return base;
+    return base === '/' ? ('/' + relative) : (base + '/' + relative);
+  }
+
+  function _localPathForAbsolute(registry, connectedRootPath, absolutePath) {
+    const absolute = _normalizeAbsolutePreserveCase(registry, absolutePath);
+    const connectedRoot = _normalizeAbsolutePreserveCase(registry, connectedRootPath);
+    const lower = absolute.toLowerCase();
+    const rootLower = connectedRoot.toLowerCase();
+    if (connectedRoot && lower === rootLower) return '';
+    if (connectedRoot === '/') return absolute.replace(/^\/+/, '');
+    if (connectedRoot && lower.startsWith(rootLower + '/')) return absolute.slice(connectedRoot.length + 1);
+    if (registry && typeof registry.virtualPathFromDropboxPath === 'function') {
+      try {
+        const virtual = registry.virtualPathFromDropboxPath(absolute);
+        if (virtual) return virtual;
+      } catch {
+        // 逆引きできない場合は下の素朴なフォールバックへ。
+      }
+    }
+    return absolute.replace(/^\/+/, '');
+  }
+
+  function _scopeKeyForClassification(registry, classification) {
+    if (classification.kind === 'shared') {
+      return 'shared:' + _normalize(registry, classification.workspace?.dropboxPath);
+    }
+    return 'personal';
+  }
+
+  function _scopeFromClassification(provider, connected, classification) {
+    const dropboxAdapters = window.MeldexSystemStorageDropbox;
+    if (!dropboxAdapters) throw new Error('gb-system-storage-dropbox.js が読み込まれていません');
+    const registry = window.MeldexSourceFolderRegistry;
+    if (classification.kind === 'shared') {
+      const workspace = classification.workspace;
+      const wsRoot = _normalizeAbsolutePreserveCase(registry, workspace.dropboxPath);
+      const wsRootLower = wsRoot.toLowerCase();
+      return {
+        scopeKey: _scopeKeyForClassification(registry, classification),
+        kind: 'shared',
+        workspace,
+        adapter: dropboxAdapters.createSharedWorkspaceAdapter({
+          workspaceDropboxPath: workspace.dropboxPath,
+          workspaceId: workspace.id || workspace.dropboxPath,
+          namespaceKind: workspace.namespaceKind || connected.namespaceKind,
+          compatibilityLockProvider: provider,
+        }),
+        toCanonicalPath(localPath) {
+          const absolute = _absoluteForTarget(registry, connected.rootPath, localPath);
+          const lower = absolute.toLowerCase();
+          if (lower === wsRootLower) return '';
+          if (lower.startsWith(wsRootLower + '/')) return absolute.slice(wsRoot.length + 1);
+          throw new Error('対象文書はこの共有ワークスペースの配下にありません: ' + String(localPath || ''));
+        },
+        toLocalPath(canonicalPath) {
+          const relative = String(canonicalPath || '').replace(/^\/+/, '');
+          const absolute = relative ? (wsRoot === '/' ? ('/' + relative) : (wsRoot + '/' + relative)) : wsRoot;
+          return _localPathForAbsolute(registry, connected.rootPath, absolute);
+        },
+      };
+    }
+    return {
+      scopeKey: 'personal',
+      kind: 'personal',
+      workspace: null,
+      adapter: dropboxAdapters.createPersonalAdapter({ accountBoundary: connected.rootPath }),
+      toCanonicalPath(localPath) {
+        const absolute = _absoluteForTarget(registry, connected.rootPath, localPath);
+        return absolute.replace(/^\/+/, '');
+      },
+      toLocalPath(canonicalPath) {
+        const absolute = '/' + String(canonicalPath || '').replace(/^\/+/, '');
+        return _localPathForAbsolute(registry, connected.rootPath, absolute);
+      },
+    };
+  }
+
+  /**
+   * 対象文書パス(接続ルート相対、またはソース仮想パス)に対応する管理スコープを
+   * 1件返す。スコープは保存先アダプターに加えて、entryへ書く正準パスへの変換
+   * (toCanonicalPath)と表示用ローカルパスへの逆変換(toLocalPath)を提供する。
+   */
+  async function resolveManagementScopeForPath(provider, targetPath) {
+    const connected = await _connectedRootInfo(provider);
+    const registry = window.MeldexSourceFolderRegistry;
+    const absolute = _absoluteForTarget(registry, connected.rootPath, targetPath);
+    if (!absolute) throw new Error('対象文書のDropbox保存先を判定できません');
+    const classification = _classifyRoot(absolute);
+    if (classification.kind === 'unknown') throw _unknownRootError();
+    const connectedClassification = _classifyRoot(connected.rootPath);
+    if (connectedClassification.kind === 'unknown') throw _unknownRootError();
+    const scope = _scopeFromClassification(provider, connected, classification);
+    scope.isConnectedRootScope =
+      scope.scopeKey === _scopeKeyForClassification(registry, connectedClassification);
+    return scope;
+  }
+
+  /**
+   * 現在の接続と登録済みソースフォルダから到達し得る管理スコープを、管理ルート
+   * 単位で重複排除して返す(先頭は必ず接続中ルートのスコープ)。対象パスを
+   * 一意に決められない操作(一覧、release-all、idだけを受け取る読取・削除)が、
+   * 個人領域と共有ワークスペースの両方を漏れなく走査するために使う。
+   * ソース台帳を読めない場合は、黙って個人領域だけへ縮退せずエラーにする
+   * (読取専用の呼び出し元は捕捉して接続中スコープのみで継続してよい)。
+   */
+  async function resolveManagementScopesForProvider(provider) {
+    const connected = await _connectedRootInfo(provider);
+    const registry = window.MeldexSourceFolderRegistry;
+    const scopes = [];
+    const seen = new Set();
+    const connectedClassification = _classifyRoot(connected.rootPath);
+    if (connectedClassification.kind === 'unknown') throw _unknownRootError();
+    const connectedKey = _scopeKeyForClassification(registry, connectedClassification);
+    const push = (classification) => {
+      const key = _scopeKeyForClassification(registry, classification);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const scope = _scopeFromClassification(provider, connected, classification);
+      scope.isConnectedRootScope = key === connectedKey;
+      scopes.push(scope);
+    };
+    push(connectedClassification);
+    if (!registry || typeof registry.loadRegistry !== 'function') return scopes;
+    let payload;
+    try {
+      payload = await registry.loadRegistry({ writeIfMissing: false });
+    } catch (error) {
+      const wrapped = new Error('ソースフォルダ台帳を読めないため、管理データの保存先一覧を確定できません');
+      wrapped.code = 'management_scopes_unavailable';
+      wrapped.meldexCode = 'management_scopes_unavailable';
+      wrapped.cause = error;
+      throw wrapped;
+    }
+    for (const root of Array.isArray(payload?.roots) ? payload.roots : []) {
+      if (!root || root.deleted === true || !String(root.dropboxPath || '').trim()) continue;
+      const classification = _classifyRoot(root.dropboxPath);
+      if (classification.kind === 'unknown') throw _unknownRootError();
+      push(classification);
+    }
+    return scopes;
+  }
+
+  /**
+   * 指定した共有ワークスペースの型付き管理領域アダプターを返す（接続中ルート非依存）。
+   *
+   * resolveTypedAdapterForProvider の targetPath 経路は「接続中ルート相対」の
+   * 意味論のため、個人vault接続中にワークスペースの絶対Dropboxパスを渡すと
+   * 個人管理領域へ誤配し得る。共有ワークスペース台帳（workspace-source-folders）
+   * のように「参加中だが接続中ではないワークスペース」を扱う呼び出し元は
+   * こちらを使う。
+   *
+   * 安全境界:
+   * - 参加中（joined）一覧との正規化済み完全一致でのみ解決する（prefix一致は
+   *   不可。台帳はワークスペースルート直下にしか無いため、サブフォルダ指定は
+   *   呼び出しバグとして弾く）
+   * - 未参加のパスは options.allowUnjoined === true（「このフォルダを共有
+   *   ワークスペースにする」導線で、ユーザーが明示選択・確認した直後の
+   *   初回書き込み専用）のときだけ許可する
+   * - どの分岐でも個人領域アダプターへはフォールバックしない（誤配の構造的排除）
+   */
+  async function resolveSharedWorkspaceTypedAdapter(provider, kind, options) {
+    const contract = window.MeldexSystemStorage;
+    if (!contract || !contract.isValidSystemStorageKind(kind)) {
+      throw new Error(`未知の管理データ種別です: ${String(kind || '')}`);
+    }
+    const dropboxAdapters = window.MeldexSystemStorageDropbox;
+    if (!dropboxAdapters) throw new Error('gb-system-storage-dropbox.js が読み込まれていません');
+    const registry = window.MeldexSourceFolderRegistry;
+    const requestedRaw = String(options?.workspaceDropboxPath || '').trim();
+    const canonical = (registry && typeof registry.normalizeDropboxPath === 'function')
+      ? String(registry.normalizeDropboxPath(requestedRaw) || '').trim()
+      : requestedRaw;
+    if (!canonical || canonical === '/') {
+      throw new Error('共有ワークスペースのフォルダを指定してください');
+    }
+    const ledgerIo = window.MeldexWorkspaceLedgerIO;
+    if (!ledgerIo || typeof ledgerIo.listJoinedWorkspaces !== 'function') {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    let joined;
+    try {
+      joined = ledgerIo.listJoinedWorkspaces();
+    } catch {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    if (!Array.isArray(joined)) {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    const requestedKey = _normalize(registry, canonical);
+    const matched = joined.find(
+      (ws) => ws && typeof ws === 'object' && _normalize(registry, ws.dropboxPath) === requestedKey,
+    ) || null;
+    if (matched) {
+      return dropboxAdapters.createSharedWorkspaceAdapter({
+        workspaceDropboxPath: matched.dropboxPath,
+        workspaceId: matched.id || matched.dropboxPath,
+        namespaceKind: matched.namespaceKind || options?.namespaceKind || 'home',
+        compatibilityLockProvider: provider,
+      });
+    }
+    if (options?.allowUnjoined === true) {
+      return dropboxAdapters.createSharedWorkspaceAdapter({
+        workspaceDropboxPath: canonical,
+        workspaceId: '',
+        namespaceKind: options?.namespaceKind || 'home',
+        compatibilityLockProvider: provider,
+      });
+    }
+    throw new Error('参加していない共有ワークスペースの管理データには書き込めません');
+  }
+
+  async function resolveTypedAdapterForProvider(provider, kind, options) {
+    const contract = window.MeldexSystemStorage;
+    if (!contract || !contract.isValidSystemStorageKind(kind)) {
+      throw new Error(`未知の管理データ種別です: ${String(kind || '')}`);
+    }
+    // プロフィール・ソース台帳・診断等は接続中の共有ルートとは無関係に
+    // 個人管理領域へ置く。共有台帳が未読込／破損していても、この経路は
+    // 共有判定へ依存させない。
+    if (options?.personalOnly) {
+      return resolveAdapterForProvider(provider, options);
+    }
+    const ledgerIo = window.MeldexWorkspaceLedgerIO;
+    if (!ledgerIo || typeof ledgerIo.listJoinedWorkspaces !== 'function') {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    let joined;
+    try {
+      joined = ledgerIo.listJoinedWorkspaces();
+    } catch {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    if (!Array.isArray(joined)) {
+      throw new Error('個人領域か共有ワークスペースか判定できないため書き込めません');
+    }
+    return resolveAdapterForProvider(provider, options);
+  }
+
+  window.MeldexDropboxManagementRootResolver = {
+    resolveAdapterForProvider,
+    resolveConnectionInfo,
+    resolveSharedWorkspaceTypedAdapter,
+    resolveTypedAdapterForProvider,
+    resolveManagementScopeForPath,
+    resolveManagementScopesForProvider,
+  };
+})();
+
+;
+
 /* === gb-profile-store-transport.js === */
 ;
 // gb-profile-store-transport.js
 //
-// Dropboxアカウント基準の共有プロフィールストア（profiles.v1.json）を読み書きする
+// Dropboxアカウント基準の共有プロフィールストアを読み書きする
 // transport（搬送経路）を切り替え可能にするモジュール。gb-dropbox-profile-sync.js
 // 本体はこのモジュール経由で read/write を行い、Dropbox HTTP API 直叩き（クラウド版・
 // Dropbox接続済みのデスクトップ版）と、デスクトップのローカルAPIサーバー経由の
 // settings-file API（Dropbox OAuth未接続のデスクトップ版）を透過的に切り替える。
+// settings-file API側の正本は型付き管理領域
+// (profiles-workspace/dropbox-profiles)であり、旧 _meldex/profiles.v1.json は
+// 読取専用fallbackとしてのみ使う。
 //
 // 各 transport は {id, available(), read(storePath), write(storePath, storeObj, options)}
 // の形を持つ。read()/write() の戻り値・例外の意味論は両 transport で揃える:
@@ -7617,10 +9808,6 @@
     return /not_found|path\/not_found/i.test(String(error?.message || error || ''));
   }
 
-  function _isConflictError(error) {
-    return /conflict|too_many_write_operations|path\/conflict/i.test(String(error?.message || error || ''));
-  }
-
   function _isHttpStatus(error, status) {
     return new RegExp('\\bHTTP ' + status + '\\b').test(String(error?.message || error || ''));
   }
@@ -7628,24 +9815,6 @@
   // --- dropbox-api transport: Dropbox HTTP API へ直接アクセスする ---------------------
   // クラウド版・Dropbox接続済みのデスクトップ版で使う。既存のクラウド実装
   // （rev楽観ロック・path/not_found→空store・conflict判定）と同じロジック。
-
-  async function _ensureDropboxFolders(auth, storePath) {
-    const segments = String(storePath || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    segments.pop(); // ファイル名を除く
-    const parents = [];
-    let acc = '';
-    for (const segment of segments) {
-      acc += '/' + segment;
-      parents.push(acc);
-    }
-    for (const path of parents) {
-      try {
-        await auth.apiRpc('files/create_folder_v2', { path, autorename: false });
-      } catch (error) {
-        if (!_isConflictError(error)) throw error;
-      }
-    }
-  }
 
   function _dropboxApiTransport() {
     return {
@@ -7676,32 +9845,18 @@
         }
       },
       async write(storePath, storeObj, options) {
-        const auth = _auth();
-        if (!auth?.apiContent) throw new Error('Dropbox API is unavailable');
-        await _ensureDropboxFolders(auth, storePath);
-        const rev = options?.ifMatch || '';
-        const mode = rev ? { '.tag': 'update', update: rev } : 'add';
-        const bytes = new TextEncoder().encode(JSON.stringify(storeObj, null, 2));
-        await auth.apiContent('files/upload', {
-          path: storePath,
-          mode,
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        });
+        void storePath;
+        void storeObj;
+        void options;
+        throw new Error('旧プロフィール付随物への書き込みは廃止されました');
       },
     };
   }
 
   // --- settings-bridge transport: デスクトップのローカルAPIサーバー経由 --------------
   // Dropbox OAuth未接続でも、Dropboxデスクトップアプリの同期フォルダが検出できて
-  // いれば、/api/dropbox-link/settings-file 経由で同じ profiles.v1.json を読み書き
-  // できる。ifMtime によるmtime楽観ロックで、Dropbox rev楽観ロックと同等の
-  // 衝突検出を行う。
+  // いれば、/api/dropbox-link/settings-file 経由で型付き管理レコードを読み書き
+  // できる。管理revisionによるCASで衝突検出を行う。
 
   function _relativeToSettingsRoot(path) {
     const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
@@ -7711,6 +9866,26 @@
   }
 
   function _settingsBridgeTransport() {
+    async function getStore(storePath) {
+      const relative = _relativeToSettingsRoot(storePath);
+      return apiFetch(SETTINGS_FILE_API_PATH + '?path=' + encodeURIComponent(relative), {
+        skipBrowseCache: true,
+      });
+    }
+
+    async function putStore(storePath, storeObj, expectedRevision) {
+      const relative = _relativeToSettingsRoot(storePath);
+      return apiFetch(SETTINGS_FILE_API_PATH, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: relative,
+          content: JSON.stringify(storeObj, null, 2),
+          expectedRevision,
+        }),
+      });
+    }
+
     return {
       id: 'settings-bridge',
       async available() {
@@ -7724,35 +9899,36 @@
         }
       },
       async read(storePath) {
-        const relative = _relativeToSettingsRoot(storePath);
-        const result = await apiFetch(SETTINGS_FILE_API_PATH + '?path=' + encodeURIComponent(relative), { skipBrowseCache: true });
+        let result = await getStore(storePath);
         if (!result || result.available === false) throw new Error('settings-bridge is unavailable');
         if (!result.found) return { store: null, rev: '' };
         const parsed = _safeJsonParse(result.content, null);
         if (!parsed || typeof parsed !== 'object') throw new Error('settings-file JSON is broken');
-        return { store: parsed, rev: result.mtime == null ? '' : String(result.mtime) };
+        if (result.source === 'legacy') {
+          try {
+            const migrated = await putStore(storePath, parsed, null);
+            return { store: parsed, rev: String(migrated?.revision || '') };
+          } catch (error) {
+            if (!_isHttpStatus(error, 409)) throw error;
+            // 別クライアントが先に移行した。旧内容で上書きせず管理側の勝者を再取得する。
+            result = await getStore(storePath);
+            if (!result?.found || result.source !== 'managed') throw error;
+            const winner = _safeJsonParse(result.content, null);
+            if (!winner || typeof winner !== 'object') throw new Error('settings-file JSON is broken');
+            return { store: winner, rev: String(result.revision || '') };
+          }
+        }
+        return { store: parsed, rev: String(result.revision || '') };
       },
       async write(storePath, storeObj, options) {
-        const relative = _relativeToSettingsRoot(storePath);
-        const ifMatch = options?.ifMatch;
-        const body = {
-          path: relative,
-          content: JSON.stringify(storeObj, null, 2),
-          // ifMatch 無し(初回作成相当) は null にして「未存在のみ許可」を明示する。
-          // Dropbox API の mode:'add' と同じ意味論。
-          ifMtime: ifMatch ? Number(ifMatch) : null,
-        };
+        const expectedRevision = options?.ifMatch || null;
         try {
-          await apiFetch(SETTINGS_FILE_API_PATH, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
+          await putStore(storePath, storeObj, expectedRevision);
         } catch (error) {
           // apiFetch はHTTPステータス文字列(statusText)を含めてエラーにするが、
           // HTTP/2 環境等では statusText が空になり得るため、必ず含まれる数字の
           // ステータスコードで判定する。
-          if (_isHttpStatus(error, 409)) throw new Error('path/conflict: settings-file ifMtime mismatch');
+          if (_isHttpStatus(error, 409)) throw new Error('path/conflict: settings-file revision mismatch');
           throw error;
         }
       },
@@ -8295,14 +10471,6 @@
     return _joinDropboxPath(settingsPath, PROFILE_STORE_RELATIVE_PATH);
   }
 
-  function _profileStoreParents() {
-    const settingsPath = _normalizeDropboxPath(_auth()?.getSettingsPath?.() || DEFAULT_SETTINGS_PATH);
-    const parents = [];
-    if (settingsPath !== '/') parents.push(settingsPath);
-    parents.push(_joinDropboxPath(settingsPath, '_meldex'));
-    return parents;
-  }
-
   function _isNotFoundError(error) {
     return /not_found|path\/not_found/i.test(String(error?.message || error || ''));
   }
@@ -8378,18 +10546,6 @@
     }
   }
 
-  async function _ensureProfileDirectory() {
-    const auth = _auth();
-    if (!auth?.apiRpc) throw new Error('Dropbox API is unavailable');
-    for (const path of _profileStoreParents()) {
-      try {
-        await auth.apiRpc('files/create_folder_v2', { path, autorename: false });
-      } catch (error) {
-        if (!_isConflictError(error)) throw error;
-      }
-    }
-  }
-
   // gb-profile-store-transport.js が未ロードの場合に備えた、Dropbox HTTP API
   // 直叩きの独立したフォールバック実装。transport モジュールの実装と処理内容は
   // 同じだが、あえて重複させて完全に自己完結させている（transport モジュール側の
@@ -8413,23 +10569,10 @@
         }
       },
       async write(storePath, storeObj, options) {
-        const auth = _auth();
-        if (!auth?.apiContent) throw new Error('Dropbox API is unavailable');
-        await _ensureProfileDirectory();
-        const rev = options?.ifMatch || '';
-        const mode = rev ? { '.tag': 'update', update: rev } : 'add';
-        const bytes = new TextEncoder().encode(JSON.stringify(storeObj, null, 2));
-        await auth.apiContent('files/upload', {
-          path: storePath,
-          mode,
-          autorename: false,
-          mute: false,
-          strict_conflict: true,
-        }, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/octet-stream' },
-          body: bytes,
-        });
+        void storePath;
+        void storeObj;
+        void options;
+        throw new Error('旧プロフィール付随物への書き込みは廃止されました');
       },
     };
   }
@@ -8445,23 +10588,48 @@
     return _fallbackDropboxApiTransport();
   }
 
+  async function _profileManagementRecord() {
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.PROFILES_WORKSPACE;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('プロフィール管理データの保存先を安全に判定できません');
+    }
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    const record = await adapter.load(kind, 'dropbox-profiles');
+    return { adapter, kind, record };
+  }
+
   async function _readProfileStore() {
     const transport = await _resolveTransport();
-    const result = await transport.read(_profileStorePath());
-    const current = { store: _normalizeStore(result.store), rev: String(result.rev || '') };
-    if (Object.keys(current.store.profiles).length || !String(transport.id || '').startsWith('dropbox-api')) {
-      return current;
+    if (String(transport?.id || '').startsWith('dropbox-api')) {
+      const managed = await _profileManagementRecord();
+      if (managed.record?.payload) {
+        return { store: _normalizeStore(managed.record.payload), rev: managed.record.revision };
+      }
+      // 旧ファイルは読取専用fallbackとし、初回だけ管理領域へ移す。
+      const legacy = await transport.read(_profileStorePath());
+      let legacyStore = _normalizeStore(legacy.store);
+      if (!Object.keys(legacyStore.profiles).length) {
+        const teamLegacy = await _readLegacyTeamProfileStore();
+        if (teamLegacy) legacyStore = teamLegacy;
+      }
+      if (!Object.keys(legacyStore.profiles).length) return { store: legacyStore, rev: '' };
+      try {
+        await managed.adapter.save(managed.kind, 'dropbox-profiles', legacyStore, {
+          expectedRevision: null,
+        });
+      } catch (error) {
+        if (!_isConflictError(error)) throw error;
+        const winner = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+        if (!winner?.payload) throw error;
+        return { store: _normalizeStore(winner.payload), rev: String(winner.revision || '') };
+      }
+      const migrated = await managed.adapter.load(managed.kind, 'dropbox-profiles');
+      return { store: _normalizeStore(migrated?.payload), rev: String(migrated?.revision || '') };
     }
-    const legacyStore = await _readLegacyTeamProfileStore();
-    if (!legacyStore || !Object.keys(legacyStore.profiles).length) return current;
-    await transport.write(_profileStorePath(), legacyStore, { ifMatch: current.rev });
-    try {
-      window.dispatchEvent(new CustomEvent('meldex:dropbox-profile-store-migrated', {
-        detail: { from: 'team_root', to: 'home', profileCount: Object.keys(legacyStore.profiles).length },
-      }));
-    } catch {}
-    const migrated = await transport.read(_profileStorePath());
-    return { store: _normalizeStore(migrated.store), rev: String(migrated.rev || '') };
+    const result = await transport.read(_profileStorePath());
+    return { store: _normalizeStore(result.store), rev: String(result.rev || '') };
   }
 
   async function _readLegacyTeamProfileStore() {
@@ -8489,6 +10657,13 @@
 
   async function _writeProfileStore(store, rev) {
     const transport = await _resolveTransport();
+    if (String(transport?.id || '').startsWith('dropbox-api')) {
+      const managed = await _profileManagementRecord();
+      await managed.adapter.save(managed.kind, 'dropbox-profiles', store, {
+        expectedRevision: rev || null,
+      });
+      return;
+    }
     await transport.write(_profileStorePath(), store, { ifMatch: rev || '' });
   }
 
@@ -9299,6 +11474,7 @@
   const SIGNATURE_DIR = '_meldex/integrity';
   const AUDIT_LOG_PATH = '_meldex/audit-log.json';
   const MAX_AUDIT_ROWS = 500;
+  const AUDIT_LOG_DOCUMENT_ID = 'knowledge-audit-log';
 
   function _internals() {
     return window.__MeldexPwaDataAccessInternals || {};
@@ -9306,6 +11482,43 @@
 
   function _normalizeScope(scope) {
     return String(scope || '').trim().replace(/[^a-z0-9_.-]+/gi, '_') || 'default';
+  }
+
+  // options.managementAdapter: 署名の保存先アダプターを明示指定する(省略時は
+  // 接続中ルートの管理領域)。編集ロックのように管理データ本体が対象文書パスで
+  // 個人/共有スコープへ振り分けられる場合、署名も同じスコープの管理領域に
+  // 置かないと、別スコープの署名で上書き・誤検証されてしまうために使う。
+  async function _managementRecord(provider, documentId, options = {}) {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.AUDIT_INTEGRITY;
+    if (!provider || !kind) {
+      throw new Error('監査・整合性データの管理領域が未初期化です');
+    }
+    let adapter = options.managementAdapter || null;
+    if (!adapter) {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      if (!resolver?.resolveTypedAdapterForProvider) {
+        throw new Error('監査・整合性データの管理領域が未初期化です');
+      }
+      adapter = await resolver.resolveTypedAdapterForProvider(provider, kind);
+    }
+    const record = await adapter.load(kind, documentId);
+    return { adapter, kind, record };
+  }
+
+  async function _saveManagementRecord(provider, documentId, payload, options = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await _managementRecord(provider, documentId, options);
+      try {
+        return await current.adapter.save(current.kind, documentId, payload(current.record?.payload || null), {
+          expectedRevision: current.record?.revision ?? null,
+        });
+      } catch (error) {
+        lastError = error;
+        if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw lastError;
   }
 
   function _stable(value) {
@@ -9357,9 +11570,24 @@
     return _bytesToHex(new Uint8Array(sig));
   }
 
-  async function readSignature(provider, scope) {
+  async function readSignature(provider, scope, options = {}) {
     const { _joinPath, _readJsonSafe } = _internals();
     if (!provider || typeof _readJsonSafe !== 'function') return null;
+    const documentId = `knowledge-signature-${_normalizeScope(scope)}`;
+    let managed = null;
+    try {
+      managed = await _managementRecord(provider, documentId, options);
+    } catch {
+      // 管理領域を解決・読取できない場合でも署名読取自体は失敗させない。
+      // 旧パスフォールバック(下記)へ倒し、そこにも無ければ「署名なし」として
+      // 検証側が安全側(書込ブロック)に判定する。
+      managed = null;
+    }
+    if (managed && managed.record?.payload) return managed.record.payload;
+    // 旧パス(_meldex/integrity)は接続中ルート配下にしか存在しない。別スコープの
+    // 管理領域を明示指定された読取で接続中ルートの旧署名を混ぜると誤検証になる
+    // ため、フォールバックは接続中スコープの読取に限定する。
+    if (options.skipLegacyFallback) return null;
     return _readJsonSafe(provider, _joinPath(SIGNATURE_DIR, _normalizeScope(scope) + '.json'), null);
   }
 
@@ -9374,12 +11602,14 @@
       signer: meta.signer || '',
       version: 1,
     };
-    await provider.writeJson(_joinPath(SIGNATURE_DIR, entry.scope + '.json'), entry);
+    await _saveManagementRecord(provider, `knowledge-signature-${entry.scope}`, () => entry, {
+      managementAdapter: meta.managementAdapter || null,
+    });
     return { ok: true, ...entry };
   }
 
   async function verify(provider, scope, payload, options = {}) {
-    const signature = await readSignature(provider, scope);
+    const signature = await readSignature(provider, scope, options);
     const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
     if (!signature?.hmac) {
       return { ok: false, missing: true, missing_key: !key, reason: 'signature-missing', signature };
@@ -9401,7 +11631,10 @@
   async function recordAudit(provider, type, entry = {}) {
     const { _readJsonSafe } = _internals();
     if (!provider || typeof provider.writeJson !== 'function') return { ok: false };
-    const beforeRows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
+    const managed = await _managementRecord(provider, AUDIT_LOG_DOCUMENT_ID);
+    const beforeRows = Array.isArray(managed.record?.payload?.rows)
+      ? managed.record.payload.rows
+      : await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
     const auditEntry = {
       audit_id: _auditId(),
       type: String(type || 'event'),
@@ -9409,16 +11642,22 @@
       user: typeof getUsername === 'function' ? getUsername() : '',
       ...entry,
     };
-    const latestRows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => beforeRows);
-    const nextRows = _mergeAuditRows(beforeRows, latestRows, [auditEntry]);
-    await provider.writeJson(AUDIT_LOG_PATH, nextRows);
+    let nextRows = [];
+    await _saveManagementRecord(provider, AUDIT_LOG_DOCUMENT_ID, current => {
+      const latestRows = Array.isArray(current?.rows) ? current.rows : beforeRows;
+      nextRows = _mergeAuditRows(beforeRows, latestRows, [auditEntry]);
+      return { version: 1, rows: nextRows, updatedAt: new Date().toISOString() };
+    });
     await sign(provider, 'audit_log', nextRows, { signer: auditEntry.user }).catch(() => null);
     return { ok: true, count: nextRows.length };
   }
 
   async function readAudit(provider, type = '') {
     const { _readJsonSafe } = _internals();
-    const rows = await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
+    const managed = await _managementRecord(provider, AUDIT_LOG_DOCUMENT_ID);
+    const rows = Array.isArray(managed.record?.payload?.rows)
+      ? managed.record.payload.rows
+      : await _readJsonSafe(provider, AUDIT_LOG_PATH, []).catch(() => []);
     const list = Array.isArray(rows) ? rows : [];
     if (list.length) {
       const verification = await verify(provider, 'audit_log', list);
@@ -9467,10 +11706,89 @@
     PWA_TRASH_DIR,
   } = internals;
 
-  const STORE_PATH = '_meldex/file_locks.json';
+  const STORE_PATH = '_meldex/file_locks.json'; // 旧パス読取フォールバック専用(新規書込では使わない。移行はPhase 5)
+  const STORE_DOCUMENT_ID = 'file-lock-store';
   const SIGNATURE_SCOPE = 'file_locks';
   const SYSTEM_EXCLUDED = new Set(['_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash']);
   const REASON_TEMPLATES = ['確定済み', '公開済み', 'レビュー中', 'アーカイブ', '編集禁止'];
+
+  // --- 共通ストレージ層(固有形式付随物廃止・管理データ一元化計画 Phase 4) -----------
+  //
+  // 保存先: `_meldex/file_locks.json` への直接読み書きから、共通ストレージ層
+  // (種別 edit-locks、document_id 固定 'file-lock-store')へ載せ替える。
+  // 監査ノート確認済みのとおり、この編集ロックはCloud/PWA専用でPC本体は
+  // 別実装(meldex_file_locks.py、SQLite)を使うため、PCとの相互運用は不要。
+  // 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5)。
+  //
+  // ストアは管理スコープ(個人領域 / 参加中の各共有ワークスペース)ごとに1つ。
+  // 対象文書パスから gb-dropbox-management-root-resolver.js の
+  // resolveManagementScopeForPath でスコープを決め、共有ソース配下の文書の
+  // ロックは共有管理領域のストアへ、entryのパスはそのスコープの正準形
+  // (個人=ホーム同期ルート相対 / 共有=ワークスペードルート相対)で保存する。
+  // 一覧のようにスコープを一意に決められない操作は resolveManagementScopesForProvider
+  // で全スコープを集約する。HMAC署名(MeldexKnowledgeSignature)もストアと同じ
+  // スコープの管理領域へ置く(別スコープの署名で相互に上書き・誤検証しないため)。
+
+  function _resolver() {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    return resolver;
+  }
+
+  async function _scopeForPath(provider, targetPath) {
+    return _resolver().resolveManagementScopeForPath(provider, targetPath);
+  }
+
+  async function _allScopes(provider) {
+    return _resolver().resolveManagementScopesForProvider(provider);
+  }
+
+  function _canonicalForScope(scope, localPath) {
+    return _normalizeFolderPath(scope.toCanonicalPath(_normalizeFolderPath(localPath)));
+  }
+
+  // entryの正準パス(一義)。path_space === 'root' の新形式entryは保存済みの値が
+  // そのまま正準形。旧形式entry(path_spaceなし)は書いたクライアントの接続ルート
+  // 相対のローカルパスなので、「そのentryが載っているストアのスコープ」で解釈を
+  // 一つに決める: 接続中スコープのストアにある旧entryは自分のローカルパスとして
+  // 正準化し、非接続スコープ(共有ソース等)のストアにある旧entryは、そのルートへ
+  // 直接接続していたクライアントが書いたもの(ローカル=正準)として扱う。
+  // 二重解釈(両方を候補にする)は、別ソースの同名フォルダとの誤一致・誤解除を
+  // 生むため行わない。
+  function _entryCanonicalForms(entry, scope) {
+    const stored = _normalizeFolderPath(entry?.path || '');
+    if (!stored) return [];
+    if (!scope || entry?.path_space === 'root' || !scope.isConnectedRootScope) return [stored];
+    try {
+      const reinterpreted = _canonicalForScope(scope, stored);
+      return [reinterpreted || stored];
+    } catch {
+      return [stored]; // スコープ外のパスは正準化できない(保存値のまま照合する)。
+    }
+  }
+
+  function _localizedEntry(entry, scope) {
+    if (!scope || !entry) return entry;
+    // 接続中スコープの旧形式entryは保存値が既にローカルパスなので変換しない。
+    if (entry.path_space !== 'root' && scope.isConnectedRootScope) return entry;
+    try {
+      const local = _normalizeFolderPath(scope.toLocalPath(entry.path));
+      if (local && local !== entry.path) {
+        // 消費側(フォルダツリーのロック表示・編集抑止)は normalized_path と
+        // file_id をローカルパス空間で照合するため、path だけでなく両方を
+        // ローカルパス基準へ再計算して返す。
+        return {
+          ...entry,
+          path: local,
+          normalized_path: _normalize(local),
+          file_id: _fnvFileId ? _fnvFileId(local) : entry.file_id,
+        };
+      }
+    } catch {
+      // 逆変換できない場合は保存済みのパスをそのまま表示する。
+    }
+    return entry;
+  }
 
   function _role() {
     const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
@@ -9569,29 +11887,29 @@
     return registry.sourcePath(parsedOriginal.sourceId, relativePath);
   }
 
-  function _pathOrAncestorEntry(entries, path) {
-    const target = _normalize(path);
+  function _pathOrAncestorEntry(entries, canonicalTarget, scope) {
+    const target = _normalize(canonicalTarget);
     if (!target) return null;
-    return (entries || []).find(entry => {
-      const base = _normalize(entry?.normalized_path || entry?.path || '');
+    return (entries || []).find(entry => _entryCanonicalForms(entry, scope).some((form) => {
+      const base = form.toLowerCase();
       return base && (target === base || target.startsWith(base + '/'));
-    }) || null;
+    })) || null;
   }
 
-  function _descendantEntry(entries, path) {
-    const target = _normalize(path);
+  function _descendantEntry(entries, canonicalTarget, scope) {
+    const target = _normalize(canonicalTarget);
     if (!target) return null;
-    return (entries || []).find(entry => {
-      const base = _normalize(entry?.normalized_path || entry?.path || '');
+    return (entries || []).find(entry => _entryCanonicalForms(entry, scope).some((form) => {
+      const base = form.toLowerCase();
       return base && (base === target || base.startsWith(target + '/'));
-    }) || null;
+    })) || null;
   }
 
   function _cleanEntry(entry) {
     const path = _normalizeFolderPath(entry?.path || '');
     if (!path) return null;
     const normalized = _normalize(path);
-    return {
+    const cleaned = {
       path,
       normalized_path: normalized,
       file_id: String(entry?.file_id || (_fnvFileId ? _fnvFileId(path) : '')),
@@ -9599,21 +11917,85 @@
       locked_at: String(entry?.locked_at || new Date().toISOString()),
       lock_reason: String(entry?.lock_reason || entry?.reason || '').trim(),
     };
+    // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
+    // ワークスペードルート相対)で保存された新形式。旧形式entry(接続ルート
+    // 相対のローカルパス)にはこのフィールドが無く、照合時に再解釈する。
+    if (entry?.path_space === 'root') cleaned.path_space = 'root';
+    return cleaned;
   }
 
-  async function _readStore(provider) {
+  async function _readLegacyRawStoreData(provider) {
     const exists = await _pathExists(provider, STORE_PATH).catch(() => false);
-    if (!exists) {
-      return { entries: [], updated_at: '', verification: { ok: true, skipped: true, reason: 'store-missing' } };
+    if (!exists) return { data: { entries: [] }, found: false, revision: null };
+    return { data: await _readJsonSafe(provider, STORE_PATH, { entries: [] }), found: true, revision: null };
+  }
+
+  async function _readRawStoreData(provider, scope) {
+    if (scope) {
+      try {
+        const record = await scope.adapter.load(window.MeldexSystemStorage.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID);
+        if (record) return { data: record.payload, found: true, revision: record.revision ?? null };
+      } catch {
+        // 「読めなかった」は「無かった」と区別する(loadFailed)。空ストア扱いの
+        // まま書込へ進むと、全置換保存で既存ロックを消してしまうため、書込側は
+        // loadFailed で拒否する。接続中スコープの読取は旧パスへフォールバック
+        // して機能を維持する。
+        if (!scope.isConnectedRootScope) {
+          return { data: { entries: [] }, found: false, revision: null, loadFailed: true };
+        }
+        const legacy = await _readLegacyRawStoreData(provider);
+        return { ...legacy, loadFailed: true };
+      }
+      // 新ストア未作成。旧パス(_meldex/file_locks.json)は接続中ルート配下に
+      // しか存在しないため、別スコープ(共有ソース等)の読取へは混ぜない。
+      if (!scope.isConnectedRootScope) return { data: { entries: [] }, found: false, revision: null };
     }
-    const data = await _readJsonSafe(provider, STORE_PATH, { entries: [] });
+    return _readLegacyRawStoreData(provider);
+  }
+
+  async function _readStore(provider, scope) {
+    const { data, found, revision, loadFailed } = await _readRawStoreData(provider, scope);
+    if (!found) {
+      return {
+        entries: [],
+        updated_at: '',
+        revision: revision ?? null,
+        loadFailed: !!loadFailed,
+        verification: loadFailed
+          ? { ok: false, reason: 'store-unavailable' }
+          : { ok: true, skipped: true, reason: 'store-missing' },
+      };
+    }
     const entries = (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
     const payload = { entries, updated_at: String(data?.updated_at || '') };
-    const verification = await window.MeldexKnowledgeSignature?.verify?.(provider, SIGNATURE_SCOPE, payload).catch(err => ({ ok: false, error: err?.message || String(err) }));
-    return { ...payload, verification };
+    const verifyOptions = scope
+      ? { managementAdapter: scope.adapter, skipLegacyFallback: !scope.isConnectedRootScope }
+      : undefined;
+    const verification = await window.MeldexKnowledgeSignature?.verify?.(provider, SIGNATURE_SCOPE, payload, verifyOptions).catch(err => ({ ok: false, error: err?.message || String(err) }));
+    return { ...payload, revision: revision ?? null, loadFailed: !!loadFailed, verification };
+  }
+
+  // スコープを解決できない場合(台帳破損等)も読取は継続する(旧パスのみ)。
+  // 書込側は _assertStoreVerifiedForWrite / スコープ解決の例外で従来どおり
+  // 安全側(拒否)に倒れる。
+  async function _readStoreForTarget(provider, path) {
+    let scope = null;
+    try {
+      scope = await _scopeForPath(provider, path);
+    } catch {
+      scope = null;
+    }
+    return { scope, store: await _readStore(provider, scope) };
   }
 
   function _assertStoreVerifiedForWrite(store) {
+    if (store?.loadFailed) {
+      // 既存ストアを読めていない状態で全置換保存すると既存ロックを消してしまう。
+      const err = new Error('編集ロック情報を読み込めなかったため、ロック設定を更新できません');
+      err.status = 503;
+      err.code = 'lock_store_unavailable';
+      throw err;
+    }
     const verification = store?.verification;
     if (verification && verification.ok === false && !verification.skipped) {
       const err = new Error('編集ロック情報の署名検証に失敗したため、ロック設定を更新できません');
@@ -9623,12 +12005,13 @@
     }
   }
 
-  async function _signStorePayload(provider, payload) {
+  async function _signStorePayload(provider, payload, scope) {
     if (typeof window.MeldexKnowledgeSignature?.sign !== 'function') {
       throw new Error('編集ロック情報の署名機能を読み込めませんでした');
     }
     const signature = await window.MeldexKnowledgeSignature.sign(provider, SIGNATURE_SCOPE, payload, {
       signer: typeof getUsername === 'function' ? getUsername() : '',
+      managementAdapter: scope ? scope.adapter : null,
     });
     if (!signature?.ok || !signature.hmac) {
       throw new Error('編集ロック情報の署名を保存できませんでした');
@@ -9636,48 +12019,100 @@
     return signature;
   }
 
-  async function _writeStore(provider, entries, audit) {
+  async function _writeStore(provider, scope, entries, audit, expectedRevision) {
     const payload = {
       entries: entries.map(_cleanEntry).filter(Boolean).sort((a, b) => a.normalized_path.localeCompare(b.normalized_path)),
       updated_at: new Date().toISOString(),
     };
-    await provider.writeJson(STORE_PATH, payload);
-    const signature = await _signStorePayload(provider, payload);
+    // CAS付き全置換: 読取時のrevision(未作成ならnull=create-only)を期待値に
+    // して保存し、読取と保存の間の他クライアント更新を黙って上書きしない。
+    await scope.adapter.save(window.MeldexSystemStorage.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID, payload, {
+      expectedRevision: expectedRevision === undefined ? null : expectedRevision,
+    });
+    const signature = await _signStorePayload(provider, payload, scope);
     if (audit) await window.MeldexKnowledgeSignature?.recordAudit?.(provider, 'file_lock', audit).catch(() => {});
     return { ...payload, signature };
   }
 
+  // 読取→判定→CAS保存を、競合時は読み直して最大5回まで再試行する。
+  // updater(store) は false(変更なし) または { entries, result } を返す。
+  async function _mutateLockStore(provider, scope, updater) {
+    const contract = window.MeldexSystemStorage;
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const store = await _readStore(provider, scope);
+      _assertStoreVerifiedForWrite(store);
+      const change = await updater(store);
+      if (change === false) return undefined;
+      try {
+        await _writeStore(provider, scope, change.entries, change.audit, store.revision);
+        return change.result;
+      } catch (error) {
+        if (contract && error instanceof contract.SystemStorageConflictError && attempt < MAX_ATTEMPTS - 1) continue;
+        throw error;
+      }
+    }
+    return undefined;
+  }
+
   async function list(provider, query = '') {
-    const store = await _readStore(provider);
+    let scopes = null;
+    try {
+      scopes = await _allScopes(provider);
+    } catch {
+      scopes = null; // スコープ一覧を確定できない場合は旧パスのみの縮退読取。
+    }
+    const entries = [];
+    let verification = null;
+    let failedVerification = null;
+    for (const scope of scopes || [null]) {
+      const store = await _readStore(provider, scope);
+      entries.push(...store.entries.map(entry => _localizedEntry(entry, scope)));
+      if (!verification) verification = store.verification;
+      if (!failedVerification && store.verification && store.verification.ok === false && !store.verification.skipped) {
+        failedVerification = store.verification;
+      }
+    }
     const q = String(query || '').trim().toLowerCase();
-    const entries = q
-      ? store.entries.filter(entry => `${entry.path} ${entry.lock_reason} ${entry.locked_by}`.toLowerCase().includes(q))
-      : store.entries;
-    return { entries, count: entries.length, verification: store.verification };
+    const filtered = q
+      ? entries.filter(entry => `${entry.path} ${entry.lock_reason} ${entry.locked_by}`.toLowerCase().includes(q))
+      : entries;
+    return { entries: filtered, count: filtered.length, verification: failedVerification || verification };
   }
 
   async function check(provider, path) {
-    const store = await _readStore(provider);
-    const entry = _pathOrAncestorEntry(store.entries, path);
-    return { locked: !!entry, entry: entry || null, lock_reason: entry?.lock_reason || '', verification: store.verification };
+    const { scope, store } = await _readStoreForTarget(provider, path);
+    const target = scope ? _canonicalForScope(scope, path) : _normalizeFolderPath(path);
+    const entry = _pathOrAncestorEntry(store.entries, target, scope);
+    const localized = entry ? _localizedEntry(entry, scope) : null;
+    return { locked: !!entry, entry: localized, lock_reason: entry?.lock_reason || '', verification: store.verification };
   }
 
   async function requireUnlocked(provider, path, options = {}) {
-    const target = _normalizeFolderPath(path || options.path || '');
-    if (!target || _isSystemExcluded(target)) return { ok: true, locked: false };
-    const store = await _readStore(provider);
+    const localTarget = _normalizeFolderPath(path || options.path || '');
+    if (!localTarget || _isSystemExcluded(localTarget)) return { ok: true, locked: false };
+    const { scope, store } = await _readStoreForTarget(provider, localTarget);
+    if (store.loadFailed) {
+      // ロック台帳を読めない間は「ロックなし」と断定できない(特に共有スコープ
+      // では他メンバーの編集ロックを素通りさせない)。安全側で変更を拒否する。
+      const err = new Error('編集ロック情報を確認できないため変更できません: ' + localTarget);
+      err.status = 503;
+      err.code = 'lock_store_unavailable';
+      throw err;
+    }
     if (store.verification && store.verification.ok === false && !store.verification.skipped) {
       const err = new Error('編集ロック情報の署名検証に失敗しました');
       err.lock_verification = store.verification;
       throw err;
     }
-    const entry = _pathOrAncestorEntry(store.entries, target)
-      || (options.includeDescendants ? _descendantEntry(store.entries, target) : null);
+    const target = scope ? _canonicalForScope(scope, localTarget) : localTarget;
+    const entry = _pathOrAncestorEntry(store.entries, target, scope)
+      || (options.includeDescendants ? _descendantEntry(store.entries, target, scope) : null);
     if (!entry) return { ok: true, locked: false };
-    const err = new Error('編集ロック中のため変更できません: ' + target);
+    const err = new Error('編集ロック中のため変更できません: ' + localTarget);
     err.status = 423;
     err.lock_reason = entry.lock_reason || '';
-    err.lock_entry = entry;
+    err.lock_entry = _localizedEntry(entry, scope);
     err.unlock_hint = '管理者が編集ロックを解除してから再実行してください。';
     throw err;
   }
@@ -9876,66 +12311,132 @@
 
   async function setLock(provider, body = {}) {
     _requireOwner();
+    const localPath = _normalizeFolderPath(body.path || '');
+    if (!localPath) throw new Error('path は必須です');
+    if (_isSystemExcluded(localPath)) throw new Error('システムフォルダは編集ロックできません');
+    const scope = await _scopeForPath(provider, localPath); // 書込はスコープ不明時に拒否(安全側)
+    const canonical = _canonicalForScope(scope, localPath);
     const entry = _cleanEntry({
-      path: body.path,
+      path: canonical,
+      path_space: 'root',
       file_id: body.file_id,
       lock_reason: body.reason || body.lock_reason,
       locked_by: typeof getUsername === 'function' ? getUsername() : '',
       locked_at: new Date().toISOString(),
     });
     if (!entry) throw new Error('path は必須です');
-    if (_isSystemExcluded(entry.path)) throw new Error('システムフォルダは編集ロックできません');
-    const store = await _readStore(provider);
-    _assertStoreVerifiedForWrite(store);
-    const next = store.entries.filter(row => row.normalized_path !== entry.normalized_path && row.file_id !== entry.file_id);
-    next.push(entry);
-    await _writeStore(provider, next, { action: 'lock', path: entry.path, reason: entry.lock_reason });
-    return { ok: true, entry };
+    const targetLower = entry.normalized_path;
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const next = store.entries.filter(row => row.file_id !== entry.file_id
+        && !_entryCanonicalForms(row, scope).some(form => form.toLowerCase() === targetLower));
+      next.push(entry);
+      return {
+        entries: next,
+        audit: { action: 'lock', path: localPath, reason: entry.lock_reason },
+        result: { ok: true, entry: _localizedEntry(entry, scope) },
+      };
+    });
+    return result || { ok: true, entry: _localizedEntry(entry, scope) };
   }
 
   async function unlock(provider, path) {
     _requireOwner();
-    const target = _normalize(path);
-    if (!target) throw new Error('path は必須です');
-    const store = await _readStore(provider);
-    _assertStoreVerifiedForWrite(store);
-    const before = store.entries.length;
-    const next = store.entries.filter(row => row.normalized_path !== target);
-    await _writeStore(provider, next, { action: 'unlock', path: _normalizeFolderPath(path), removed: before - next.length });
-    return { ok: true, removed: before - next.length };
+    const localPath = _normalizeFolderPath(path || '');
+    if (!localPath) throw new Error('path は必須です');
+    const scope = await _scopeForPath(provider, localPath);
+    const target = _canonicalForScope(scope, localPath).toLowerCase();
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const before = store.entries.length;
+      const next = store.entries.filter(row => !_entryCanonicalForms(row, scope).some(form => form.toLowerCase() === target));
+      return {
+        entries: next,
+        audit: { action: 'unlock', path: localPath, removed: before - next.length },
+        result: { ok: true, removed: before - next.length },
+      };
+    });
+    return result || { ok: true, removed: 0 };
+  }
+
+  function _rewriteEntriesForMutation(entries, scope, event, canonicalOld, canonicalNew) {
+    const base = canonicalOld.toLowerCase();
+    const isFolder = !!event.isFolder;
+    let changed = false;
+    const kept = [];
+    const moved = [];
+    for (const row of entries) {
+      const forms = _entryCanonicalForms(row, scope);
+      const matched = forms.find((form) => {
+        const cur = form.toLowerCase();
+        return base && (cur === base || (isFolder && cur.startsWith(base + '/')));
+      });
+      if (!matched) {
+        kept.push(row);
+        continue;
+      }
+      changed = true;
+      if (event.action === 'delete') continue;
+      const nextPath = matched.toLowerCase() === base
+        ? canonicalNew
+        : canonicalNew + matched.slice(canonicalOld.length);
+      moved.push({
+        ...row,
+        path: nextPath,
+        path_space: 'root',
+        normalized_path: _normalize(nextPath),
+        file_id: _fnvFileId ? _fnvFileId(nextPath) : row.file_id,
+      });
+    }
+    return { changed, kept, moved };
   }
 
   async function rewriteForPathMutation(provider, event = {}) {
     if (!provider || !event) return;
-    const store = await _readStore(provider).catch(() => ({ entries: [] }));
-    _assertStoreVerifiedForWrite(store);
-    let changed = false;
     const oldPath = _normalizeFolderPath(event.oldPath || event.path || '');
     const newPath = _normalizeFolderPath(event.newPath || '');
-    const isFolder = !!event.isFolder;
-    const next = [];
-    for (const row of store.entries) {
-      let path = row.path;
-      if (event.action === 'delete') {
-        const base = _normalize(oldPath);
-        const cur = _normalize(path);
-        if (base && (cur === base || (isFolder && cur.startsWith(base + '/')))) {
-          changed = true;
-          continue;
-        }
-      } else if ((event.action === 'rename' || event.action === 'move') && oldPath && newPath) {
-        const cur = _normalizeFolderPath(path);
-        if (cur === oldPath) {
-          path = newPath;
-          changed = true;
-        } else if (isFolder && cur.startsWith(oldPath + '/')) {
-          path = newPath + cur.slice(oldPath.length);
-          changed = true;
-        }
-      }
-      next.push({ ...row, path, normalized_path: _normalize(path), file_id: _fnvFileId ? _fnvFileId(path) : row.file_id });
+    if (!oldPath || (event.action !== 'delete' && !newPath)) return;
+    let oldScope = null;
+    let canonicalOld = '';
+    try {
+      oldScope = await _scopeForPath(provider, oldPath);
+      canonicalOld = _canonicalForScope(oldScope, oldPath);
+    } catch {
+      return; // スコープを判定できない場合はロック台帳を書き換えない(ロックは残す=安全側)。
     }
-    if (changed) await _writeStore(provider, next, { action: 'path-mutation', path: oldPath, new_path: newPath, mutation: event.action || '' });
+    let newScope = null;
+    let canonicalNew = '';
+    if (event.action !== 'delete') {
+      try {
+        newScope = await _scopeForPath(provider, newPath);
+        canonicalNew = _canonicalForScope(newScope, newPath);
+      } catch {
+        return;
+      }
+    }
+    const audit = { action: 'path-mutation', path: oldPath, new_path: newPath, mutation: event.action || '' };
+    if (!newScope || newScope.scopeKey === oldScope.scopeKey) {
+      await _mutateLockStore(provider, oldScope, (store) => {
+        const { changed, kept, moved } = _rewriteEntriesForMutation(store.entries, oldScope, event, canonicalOld, canonicalNew);
+        if (!changed) return false;
+        return { entries: [...kept, ...moved], audit, result: { ok: true } };
+      });
+      return;
+    }
+    // スコープをまたぐ移動: 先に移動先ストアへ追加し、成功後に移動元から除く
+    // (途中失敗時は両方に残る=ロックが外れない方向へ倒す)。
+    const preview = _rewriteEntriesForMutation((await _readStore(provider, oldScope)).entries, oldScope, event, canonicalOld, canonicalNew);
+    if (!preview.changed) return;
+    if (preview.moved.length) {
+      await _mutateLockStore(provider, newScope, (destStore) => {
+        const movedLower = new Set(preview.moved.map(row => row.normalized_path));
+        const destKept = destStore.entries.filter(row => !_entryCanonicalForms(row, newScope).some(form => movedLower.has(form.toLowerCase())));
+        return { entries: [...destKept, ...preview.moved], audit, result: { ok: true } };
+      });
+    }
+    await _mutateLockStore(provider, oldScope, (store) => {
+      const { changed, kept } = _rewriteEntriesForMutation(store.entries, oldScope, event, canonicalOld, canonicalNew);
+      if (!changed) return false;
+      return { entries: kept, audit, result: { ok: true } };
+    });
   }
 
   handlers.push(async function _dropboxFileLockHandler({ method, body, url, pathname }) {
@@ -10001,7 +12502,22 @@
     _pathExists,
   } = internals;
 
+  // PC本体(meldex_active_locks.py)が今回のPhase 4では変更対象外のまま同じパスへ
+  // 書き続けるため、Cloud側もこの旧パスの「読取」だけは続ける(相互運用)。
+  // Cloud側からの新規書込は共通ストレージ層(gb-dropbox-management-root-resolver.js
+  // が解決する新管理領域、種別 edit-locks)だけへ行い、この旧パスへは二度と
+  // 書き込まない(PC本体のファイルI/Oとの書込競合を避けるため)。
+  //
+  // PC本体(meldex_active_locks.py)側もDropbox共通ストレージ層(edit-locks)を
+  // 併読するようになり(固有形式付随物廃止 Phase 4引き継ぎ事項の解消)、双方向の
+  // 可視性自体は揃った。ただしPC↔Cloud間のロック競合検知修正までは、双方が
+  // 「見える」だけで実際の競合判定(パス文字列一致)が形式不一致により機能して
+  // いなかった: legacy entry(_readLegacyEntries経由)の normalized_path は
+  // PC本体が書くOS依存の絶対パス(normalize_lock_path の出力)で、Cloud側の
+  // 相対パス空間とは形式が異なる。_cleanEntry はこの絶対パスを信用せず、常に
+  // 相対パスの path フィールドから normalized_path を再計算する(下記参照)。
   const STORE_PATH = '_meldex/active_locks.json';
+  const STORE_DOCUMENT_ID = 'active-lock-store';
   const HEADER = 'X-Meldex-Active-Lock-Token';
   const LEASE_SECONDS = 300;
   // 協調編集事故を減らす短期リース。アクセス権限はDropbox共有権限と既存の編集ロックで扱う。
@@ -10098,13 +12614,20 @@
 
   function _cleanEntry(entry) {
     const path = _normalizeFolderPath(entry?.path || '');
-    const normalized = _normalize(entry?.normalized_path || path);
+    // entry.normalized_path は信用しない(PC↔Cloud間のロック競合検知修正)。
+    // 旧パス(_meldex/active_locks.json、meldex_active_locks.py が書く)経由で
+    // 読み込んだ legacy entry の normalized_path は PC のOS依存な絶対パス
+    // (normalize_lock_path の出力)であり、Cloud側の相対パス空間とは形式が
+    // 異なるため、そのまま使うと _findConflict が実データでは常に不一致になり
+    // 競合検知が機能しない。Cloud自身が書いたentryの normalized_path も常に
+    // path から導出した値と同一なので、常に path から計算し直しても損はない。
+    const normalized = _normalize(path);
     const tokenHash = String(entry?.token_hash || '').trim().toLowerCase();
     if (!path || !normalized || !tokenHash) return null;
     const holders = _entryHolders(entry);
     if (!holders.length) return null;
     const withHolders = _entryWithHolders(entry, holders);
-    return {
+    const cleaned = {
       path,
       normalized_path: normalized,
       token_hash: tokenHash,
@@ -10119,24 +12642,131 @@
       expires_at: String(withHolders?.expires_at || _expiresAt(LEASE_SECONDS)),
       holders: withHolders.holders,
     };
+    // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
+    // ワークスペードルート相対。meldex_active_locks.py の相互運用契約と同じ)
+    // で保存された新形式。旧形式entryにはこのフィールドが無く、照合時に
+    // ローカルパスとして再解釈する。
+    if (entry?.path_space === 'root') cleaned.path_space = 'root';
+    return cleaned;
   }
 
-  async function _readStore(provider) {
+  // --- 管理スコープ解決(対象文書パス→個人/共有ワークスペースの管理領域) --------
+  //
+  // ストアは管理スコープごとに1つ。対象文書パスからスコープを決め、共有ソース
+  // 配下の文書のロックは共有管理領域のストアへ、entryのパスはそのスコープの
+  // 正準形で保存する(PC本体 meldex_active_locks.py が併読する際の相対パス基準
+  // と同じ)。スコープを一意に決められない操作(list / release-all / パス変更
+  // フック)は全スコープを集約する。
+
+  function _resolver() {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    return resolver;
+  }
+
+  async function _scopeForPath(provider, targetPath) {
+    return _resolver().resolveManagementScopeForPath(provider, targetPath);
+  }
+
+  async function _allScopes(provider) {
+    return _resolver().resolveManagementScopesForProvider(provider);
+  }
+
+  function _canonicalForScope(scope, localPath) {
+    return _normalizeFolderPath(scope.toCanonicalPath(_normalizeFolderPath(localPath)));
+  }
+
+  // entryの正準パス(一義)。path_space === 'root' の新形式entryは保存済みの値が
+  // そのまま正準形(PC本体 _encode_management_entry も同フィールドを書く)。
+  // 旧形式entry(path_spaceなし)は「そのentryが載っているストアのスコープ」で
+  // 解釈を一つに決める: 接続中スコープのストア(旧パス併読を含む)にある旧entryは
+  // 自分のローカルパスとして正準化し、非接続スコープのストアにある旧entryは
+  // そのルートへ直接接続していたクライアントが書いたもの(ローカル=正準)として
+  // 扱う。二重解釈は別ソースの同名フォルダとの誤一致(誤423)を生むため行わない。
+  function _entryCanonicalForms(entry, scope) {
+    const stored = _normalizeFolderPath(entry?.path || '');
+    if (!stored) return [];
+    if (!scope || entry?.path_space === 'root' || !scope.isConnectedRootScope) return [stored];
+    try {
+      const reinterpreted = _canonicalForScope(scope, stored);
+      return [reinterpreted || stored];
+    } catch {
+      return [stored]; // スコープ外のパスは正準化できない(保存値のまま照合する)。
+    }
+  }
+
+  function _localizedEntry(entry, scope) {
+    if (!scope || !entry) return entry;
+    // 接続中スコープの旧形式entryは保存値が既にローカルパスなので変換しない。
+    if (entry.path_space !== 'root' && scope.isConnectedRootScope) return entry;
+    try {
+      const local = _normalizeFolderPath(scope.toLocalPath(entry.path));
+      if (local && local !== entry.path) {
+        return { ...entry, path: local, normalized_path: _normalize(local) };
+      }
+    } catch {
+      // 逆変換できない場合は保存済みのパスをそのまま表示する。
+    }
+    return entry;
+  }
+
+  async function _readLegacyEntries(provider, scope) {
+    // 旧パス(_meldex/active_locks.json)は接続中ルート配下にしか存在しない。
+    // 別スコープ(共有ソース等)の読取へ接続中ルートの旧データを混ぜない。
+    if (scope && !scope.isConnectedRootScope) return [];
     const exists = await _pathExists(provider, STORE_PATH).catch(() => false);
-    if (!exists) return { entries: [], updated_at: '' };
+    if (!exists) return [];
     const data = await _readJsonSafe(provider, STORE_PATH, { entries: [] });
-    const rawEntries = Array.isArray(data?.entries) ? data.entries : [];
-    const entries = rawEntries.map(_cleanEntry).filter(Boolean);
+    return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
+  }
+
+  async function _readNewStoreRecord(provider, scope) {
+    if (!scope) return null;
+    try {
+      return await scope.adapter.load(window.MeldexSystemStorage.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID);
+    } catch {
+      return null; // 共通ストレージ層が使えない場合も、旧パス読取だけで機能を継続する。
+    }
+  }
+
+  function _mergeEntryLists(...lists) {
+    const byKey = new Map();
+    for (const list of lists) {
+      for (const entry of (list || [])) {
+        if (!entry) continue;
+        const key = `${entry.token_hash}:${entry.normalized_path}`;
+        const prior = byKey.get(key);
+        if (!prior || Date.parse(entry.heartbeat_at || '') > Date.parse(prior.heartbeat_at || '')) {
+          byKey.set(key, entry);
+        }
+      }
+    }
+    return Array.from(byKey.values());
+  }
+
+  async function _readStore(provider, scope) {
+    const [record, legacyEntries] = await Promise.all([
+      _readNewStoreRecord(provider, scope),
+      _readLegacyEntries(provider, scope),
+    ]);
+    const newEntries = record ? _entriesFromStore(record.payload) : [];
     return {
-      entries,
-      updated_at: String(data?.updated_at || ''),
+      entries: _mergeEntryLists(newEntries, legacyEntries),
+      updated_at: String(record?.updatedAt || ''),
     };
   }
 
-  async function _writeStore(provider, entries) {
-    const payload = _storePayload(entries);
-    await provider.writeJson(STORE_PATH, payload);
-    return payload;
+  // 読取専用の操作でスコープを解決できない場合(台帳破損等)は、旧パスのみの
+  // 縮退読取で継続する(書込側はスコープ解決の例外で安全側に拒否される)。
+  async function _readStoreForTarget(provider, path) {
+    let scope = null;
+    try {
+      scope = await _scopeForPath(provider, path);
+    } catch {
+      scope = null;
+    }
+    if (scope) return { scope, store: await _readStore(provider, scope) };
+    return { scope: null, store: { entries: await _readLegacyEntries(provider, null), updated_at: '' } };
   }
 
   function _storePayload(entries) {
@@ -10150,27 +12780,31 @@
     return (Array.isArray(data?.entries) ? data.entries : []).map(_cleanEntry).filter(Boolean);
   }
 
-  async function _mutateStore(provider, updater) {
-    if (typeof provider?.writeJsonMerged === 'function') {
-      let result;
-      await provider.writeJsonMerged(STORE_PATH, async current => {
-        const change = await updater(_entriesFromStore(current));
-        if (change === false) return false;
-        result = change?.result;
-        return _storePayload(Array.isArray(change?.entries) ? change.entries : []);
-      }, { fallbackValue: { entries: [], updated_at: '' } });
-      return result;
+  async function _mutateStore(provider, scope, updater) {
+    const adapter = scope.adapter;
+    const contract = window.MeldexSystemStorage;
+    const MAX_ATTEMPTS = 5;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const [record, legacyEntries] = await Promise.all([
+        adapter.load(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID).catch(() => null),
+        _readLegacyEntries(provider, scope),
+      ]);
+      const newEntries = record ? _entriesFromStore(record.payload) : [];
+      const currentEntries = _mergeEntryLists(newEntries, legacyEntries);
+      const change = await updater(currentEntries);
+      if (change === false) return undefined;
+      const payload = _storePayload(Array.isArray(change?.entries) ? change.entries : []);
+      try {
+        await adapter.save(contract.SystemStorageKind.EDIT_LOCKS, STORE_DOCUMENT_ID, payload, {
+          expectedRevision: record ? record.revision : undefined,
+        });
+        return change?.result;
+      } catch (error) {
+        if (error instanceof contract.SystemStorageConflictError && attempt < MAX_ATTEMPTS - 1) continue;
+        throw error;
+      }
     }
-
-    const store = await _readPruned(provider);
-    const change = await updater(store.entries);
-    if (change === false) return undefined;
-    await _writeStore(provider, Array.isArray(change?.entries) ? change.entries : []);
-    return change?.result;
-  }
-
-  async function _readPruned(provider) {
-    return _readStore(provider);
+    return undefined;
   }
 
   function _pathsOverlap(target, locked, includeDescendants) {
@@ -10179,13 +12813,19 @@
     return !!includeDescendants && locked.startsWith(target + '/');
   }
 
-  function _findConflict(entries, path, tokenHash, options = {}) {
-    const target = _normalize(path);
+  function _findConflict(entries, canonicalTarget, tokenHash, options = {}, scope = null) {
+    const target = _normalize(canonicalTarget);
     if (!target) return null;
     return (entries || []).find(entry => {
       if (tokenHash && entry?.token_hash === tokenHash) return false;
-      return _pathsOverlap(target, _normalize(entry?.normalized_path || entry?.path || ''), !!options.includeDescendants);
+      return _entryCanonicalForms(entry, scope)
+        .some(form => _pathsOverlap(target, form.toLowerCase(), !!options.includeDescendants));
     }) || null;
+  }
+
+  function _entryMatchesToken(entry, tokenHash, canonicalLower, scope) {
+    return entry.token_hash === tokenHash
+      && _entryCanonicalForms(entry, scope).some(form => form.toLowerCase() === canonicalLower);
   }
 
   function _conflictError(entry, path) {
@@ -10208,6 +12848,7 @@
     });
     return _entryWithHolders({
       path: _normalizeFolderPath(path),
+      path_space: 'root',
       normalized_path: _normalize(path),
       token_hash: tokenHash,
       lock_id: tokenHash.slice(0, 12),
@@ -10225,16 +12866,32 @@
   }
 
   async function list(provider) {
-    const store = await _readPruned(provider);
-    return { entries: store.entries, count: store.entries.length };
+    let scopes = null;
+    try {
+      scopes = await _allScopes(provider);
+    } catch {
+      scopes = null; // スコープ一覧を確定できない場合は旧パスのみの縮退読取。
+    }
+    if (!scopes) {
+      const entries = await _readLegacyEntries(provider, null);
+      return { entries, count: entries.length };
+    }
+    const collected = [];
+    for (const scope of scopes) {
+      const store = await _readStore(provider, scope);
+      collected.push(store.entries.map(entry => _localizedEntry(entry, scope)));
+    }
+    const entries = _mergeEntryLists(...collected);
+    return { entries, count: entries.length };
   }
 
   async function check(provider, path, token, options = {}) {
     if (!path || _isSystemExcluded(path)) return { locked: false, entry: null };
     const tokenHash = await _tokenHash(token);
-    const store = await _readPruned(provider);
-    const entry = _findConflict(store.entries, path, tokenHash, options);
-    return { locked: !!entry, entry: entry || null };
+    const { scope, store } = await _readStoreForTarget(provider, path);
+    const target = scope ? _canonicalForScope(scope, path) : _normalizeFolderPath(path);
+    const entry = _findConflict(store.entries, target, tokenHash, options, scope);
+    return { locked: !!entry, entry: entry ? _localizedEntry(entry, scope) : null };
   }
 
   async function requireAvailable(provider, path, token, options = {}) {
@@ -10252,15 +12909,18 @@
     if (_isSystemExcluded(path)) throw new Error('システムフォルダは自動編集中ロックの対象外です');
     const tokenHash = await _tokenHash(token);
     const includeDescendants = body?.include_descendants === true || body?.includeDescendants === true;
-    return _mutateStore(provider, entries => {
+    const scope = await _scopeForPath(provider, path); // 書込はスコープ不明時に拒否(安全側)
+    const canonical = _canonicalForScope(scope, path);
+    const canonicalLower = _normalize(canonical);
+    return _mutateStore(provider, scope, entries => {
       // writeJsonMerged の競合リトライごとに、必ずその時点の最新 entries で判定する。
-      const conflict = _findConflict(entries, path, tokenHash, { includeDescendants });
-      if (conflict) throw _conflictError(conflict, path);
-      const existing = entries.find(entry => entry.token_hash === tokenHash && entry.normalized_path === _normalize(path));
-      const next = entries.filter(entry => !(entry.token_hash === tokenHash && entry.normalized_path === _normalize(path)));
-      const entry = _entryPayload(path, body, tokenHash, existing);
+      const conflict = _findConflict(entries, canonical, tokenHash, { includeDescendants }, scope);
+      if (conflict) throw _conflictError(_localizedEntry(conflict, scope), path);
+      const existing = entries.find(entry => _entryMatchesToken(entry, tokenHash, canonicalLower, scope));
+      const next = entries.filter(entry => !_entryMatchesToken(entry, tokenHash, canonicalLower, scope));
+      const entry = _entryPayload(canonical, body, tokenHash, existing);
       next.push(entry);
-      return { entries: next, result: { ok: true, entry } };
+      return { entries: next, result: { ok: true, entry: _localizedEntry(entry, scope) } };
     });
   }
 
@@ -10275,15 +12935,17 @@
   }
 
   async function release(provider, path, token, holderId) {
-    const normalized = _normalize(path);
-    if (!normalized || !token) return { ok: true, removed: false };
+    const localNormalized = _normalize(path);
+    if (!localNormalized || !token) return { ok: true, removed: false };
     const tokenHash = await _tokenHash(token);
     const holder = _cleanText(holderId, 160);
-    return _mutateStore(provider, entries => {
+    const scope = await _scopeForPath(provider, path);
+    const canonicalLower = _normalize(_canonicalForScope(scope, path));
+    return _mutateStore(provider, scope, entries => {
       let removed = false;
       const next = [];
       for (const entry of entries) {
-        if (entry.token_hash !== tokenHash || entry.normalized_path !== normalized) {
+        if (!_entryMatchesToken(entry, tokenHash, canonicalLower, scope)) {
           next.push(entry);
           continue;
         }
@@ -10304,26 +12966,42 @@
     if (!token) return { ok: true, removed: 0 };
     const tokenHash = await _tokenHash(token);
     const holder = _cleanText(holderId, 160);
-    return _mutateStore(provider, entries => {
-      let removed = 0;
-      const next = [];
-      for (const entry of entries) {
-        if (entry.token_hash !== tokenHash) {
-          next.push(entry);
-          continue;
+    // 対象パスを一意に決められない操作なので、登録ソース由来を含む全スコープの
+    // ストアを走査する(個人領域だけを見て共有側のロックを取り残さない)。
+    // ソース台帳を読めない場合は接続中スコープだけでも解放する(残りは短期
+    // リースの満了で自己回復する)。
+    let scopes = null;
+    try {
+      scopes = await _allScopes(provider);
+    } catch {
+      scopes = [await _scopeForPath(provider, '')];
+    }
+    let removed = 0;
+    for (const scope of scopes) {
+      const result = await _mutateStore(provider, scope, entries => {
+        let scopeRemoved = 0;
+        const next = [];
+        for (const entry of entries) {
+          if (entry.token_hash !== tokenHash) {
+            next.push(entry);
+            continue;
+          }
+          if (!holder) {
+            scopeRemoved += 1;
+            continue;
+          }
+          const before = _entryHolders(entry);
+          const holders = before.filter(row => row.holder_id !== holder);
+          if (holders.length !== before.length) scopeRemoved += 1;
+          const updated = _entryWithHolders(entry, holders);
+          if (updated) next.push(updated);
         }
-        if (!holder) {
-          removed += 1;
-          continue;
-        }
-        const before = _entryHolders(entry);
-        const holders = before.filter(row => row.holder_id !== holder);
-        if (holders.length !== before.length) removed += 1;
-        const updated = _entryWithHolders(entry, holders);
-        if (updated) next.push(updated);
-      }
-      return { entries: next, result: { ok: true, removed } };
-    });
+        if (!scopeRemoved) return false; // 変更が無いスコープのストアは書き換えない。
+        return { entries: next, result: { ok: true, removed: scopeRemoved } };
+      });
+      removed += Number(result?.removed || 0);
+    }
+    return { ok: true, removed };
   }
 
   function _pathDir(path) {
@@ -10551,26 +13229,66 @@
     if (!provider) return;
     const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
     const newPath = _normalizeFolderPath(event?.newPath || '');
-    if (!oldPath) return;
-    const base = _normalize(oldPath);
-    await _mutateStore(provider, entries => {
+    const isDelete = event?.action === 'delete';
+    const isMove = event?.action === 'rename' || event?.action === 'move';
+    if (!oldPath || (!isDelete && !isMove) || (isMove && !newPath)) return;
+    let oldScope = null;
+    let canonicalOld = '';
+    try {
+      oldScope = await _scopeForPath(provider, oldPath);
+      canonicalOld = _canonicalForScope(oldScope, oldPath);
+    } catch {
+      return; // スコープを判定できない場合はロック台帳を書き換えない。
+    }
+    let newScope = null;
+    let canonicalNew = '';
+    if (isMove) {
+      try {
+        newScope = await _scopeForPath(provider, newPath);
+        canonicalNew = _canonicalForScope(newScope, newPath);
+      } catch {
+        return;
+      }
+    }
+    const base = canonicalOld.toLowerCase();
+    const crossScope = !!newScope && newScope.scopeKey !== oldScope.scopeKey;
+    const moveResult = await _mutateStore(provider, oldScope, entries => {
       const next = [];
+      const moved = [];
       let changed = false;
       for (const row of entries) {
-        const cur = _normalize(row.path);
-        if (event?.action === 'delete' && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-          changed = true;
+        const matchedForm = _entryCanonicalForms(row, oldScope).find((form) => {
+          const cur = form.toLowerCase();
+          return cur === base || (event?.isFolder && cur.startsWith(base + '/'));
+        });
+        if (!matchedForm) {
+          next.push(row);
           continue;
         }
-        if ((event?.action === 'rename' || event?.action === 'move') && newPath && (cur === base || (event?.isFolder && cur.startsWith(base + '/')))) {
-          const path = cur === base ? newPath : newPath + row.path.slice(oldPath.length);
-          next.push({ ...row, path: _normalizeFolderPath(path), normalized_path: _normalize(path) });
-          changed = true;
-        } else {
-          next.push(row);
-        }
+        changed = true;
+        if (isDelete) continue;
+        const nextPath = matchedForm.toLowerCase() === base
+          ? canonicalNew
+          : canonicalNew + matchedForm.slice(canonicalOld.length);
+        const rewritten = {
+          ...row,
+          path: _normalizeFolderPath(nextPath),
+          path_space: 'root',
+          normalized_path: _normalize(nextPath),
+        };
+        if (crossScope) moved.push(rewritten);
+        else next.push(rewritten);
       }
-      return changed ? { entries: next, result: { ok: true } } : false;
+      return changed ? { entries: next, result: { ok: true, moved } } : false;
+    }).catch(() => null);
+    const moved = Array.isArray(moveResult?.moved) ? moveResult.moved : [];
+    if (!moved.length || !newScope) return;
+    // スコープをまたぐ移動: 移動先スコープのストアへ引き継ぐ(短期リースのため
+    // 途中失敗してもハートビートの再取得で自己回復する)。
+    await _mutateStore(provider, newScope, entries => {
+      const movedKeys = new Set(moved.map(row => `${row.token_hash}:${row.normalized_path}`));
+      const kept = entries.filter(row => !movedKeys.has(`${row.token_hash}:${row.normalized_path}`));
+      return { entries: [...kept, ...moved], result: { ok: true } };
     }).catch(() => {});
   });
 
@@ -14919,6 +17637,1889 @@
 
 ;
 
+/* === gb-cal-oauth-browser.js === */
+;
+/* ==============================
+   gb-cal-oauth-browser.js: ブラウザ完結OAuth（PKCE）共通フロー
+
+   Cloud外部カレンダー連携 Phase 5・案A（app/docs/production-management-ux-improvement-plan-2026-08-04.md §6.5）。
+   Google Calendar / Microsoft Calendar の認可コード+PKCEフローを、サーバー無し
+   （静的ホスティング）でブラウザだけで完結させるための共通土台。
+
+   役割:
+   - PKCE の code_verifier / code_challenge 生成（gb-dropbox-auth.js の
+     _randomToken / _sha256Base64Url と同じ方式。Web Cryptoのみに依存し、
+     フォールバック実装は持たない — gb-llm-keys-store.js と同じ方針）
+   - ポップアップを開いて oauth-callback.html からの通知（postMessage /
+     BroadcastChannel の両方）を待つ共通フロー
+   - state の照合（CSRF対策。フラグメント/クエリどちら経由でもここで必ず検証する）
+   - Google / Microsoft のトークンエンドポイントへの交換・更新リクエスト
+     （呼び出し元 gb-cal-cloud-sync.js が実際のフィールドマッピング・保存を担当）
+
+   このファイルは秘密情報をログ出力しない。トークンをURLへ載せない
+   （認可コードはpostMessage/BroadcastChannel経由のみで受け渡す）。
+   ============================== */
+(function () {
+  'use strict';
+
+  const CALLBACK_CHANNEL_NAME = 'meldex-cal-oauth-callback-v1';
+  const CALLBACK_MESSAGE_TYPE = 'meldex-cal-oauth-callback';
+  const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+  const POPUP_POLL_MS = 500;
+
+  function _webCrypto() {
+    const api = globalThis.crypto;
+    if (!api?.subtle || !api?.getRandomValues) throw new Error('このブラウザではWeb Cryptoを利用できないため、OAuth認証を実行できません');
+    return api;
+  }
+
+  function _base64UrlBytes(bytes) {
+    let raw = '';
+    new Uint8Array(bytes || []).forEach((value) => { raw += String.fromCharCode(value); });
+    const b64 = (typeof btoa === 'function' ? btoa(raw) : Buffer.from(raw, 'binary').toString('base64'));
+    return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function randomToken(byteLength) {
+    const bytes = new Uint8Array(byteLength || 32);
+    _webCrypto().getRandomValues(bytes);
+    return _base64UrlBytes(bytes);
+  }
+
+  async function sha256Base64Url(text) {
+    const data = new TextEncoder().encode(String(text || ''));
+    const digest = await _webCrypto().subtle.digest('SHA-256', data);
+    return _base64UrlBytes(new Uint8Array(digest));
+  }
+
+  // --- PKCE ------------------------------------------------------------
+
+  async function generatePkce() {
+    const verifier = randomToken(48);
+    const challenge = await sha256Base64Url(verifier);
+    return { verifier, challenge, method: 'S256' };
+  }
+
+  function generateState() {
+    return randomToken(24);
+  }
+
+  function redirectUri() {
+    // <現在のorigin>/oauth-callback.html。サブパス配信（例: /app/）でも
+    // 相対解決できるよう現在のスクリプトの場所ではなく document.baseURI を基準にする。
+    try {
+      return new URL('oauth-callback.html', document.baseURI || window.location.href).href;
+    } catch {
+      return window.location.origin + '/oauth-callback.html';
+    }
+  }
+
+  // --- ポップアップ + コールバック待受 -------------------------------------
+
+  function openBlankPopup(label) {
+    // ポップアップブロッカー回避のため、URLが決まる前（PKCE生成やAPI呼び出しの前）に
+    // クリックハンドラから同期的に呼び出すことを想定した「空ポップアップを先に開く」関数。
+    const popup = window.open('', 'meldex-cal-oauth', 'width=520,height=680,noopener=no,noreferrer=no');
+    if (!popup) {
+      throw new Error(`ポップアップがブロックされました。ブラウザの設定で${label || 'このサイト'}のポップアップを許可してください`);
+    }
+    try {
+      popup.document.title = 'Meldex 認証';
+      popup.document.body.innerHTML = '<p style="font-family:sans-serif;color:#888;text-align:center;margin-top:40vh;">読み込み中…</p>';
+    } catch {}
+    return popup;
+  }
+
+  function navigatePopup(popup, url) {
+    if (!popup || popup.closed) throw new Error('認証用ウィンドウが閉じられました');
+    popup.location.href = url;
+  }
+
+  function awaitCallback(popup, expectedState, options = {}) {
+    const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : DEFAULT_TIMEOUT_MS;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let channel = null;
+      let pollTimer = 0;
+      let timeoutTimer = 0;
+
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', onMessage);
+        try { channel?.close(); } catch {}
+        if (pollTimer) clearInterval(pollTimer);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+      };
+
+      const finish = (err, payload) => {
+        if (settled) return;
+        cleanup();
+        try { if (popup && !popup.closed) popup.close(); } catch {}
+        if (err) reject(err);
+        else resolve(payload);
+      };
+
+      const handlePayload = (payload) => {
+        if (!payload || typeof payload !== 'object') return;
+        if (payload.error) {
+          finish(new Error(payload.errorDescription || payload.error_description || payload.error));
+          return;
+        }
+        if (!payload.code) return;
+        if (String(payload.state || '') !== String(expectedState || '')) {
+          finish(new Error('認証の状態確認(state)が一致しませんでした。もう一度お試しください'));
+          return;
+        }
+        finish(null, { code: payload.code, state: payload.state });
+      };
+
+      const onMessage = (event) => {
+        if (event.origin !== window.location.origin) return;
+        const data = event.data;
+        if (!data || data.type !== CALLBACK_MESSAGE_TYPE) return;
+        handlePayload(data.payload);
+      };
+      window.addEventListener('message', onMessage);
+
+      try {
+        if (typeof BroadcastChannel === 'function') {
+          channel = new BroadcastChannel(CALLBACK_CHANNEL_NAME);
+          channel.addEventListener('message', (event) => {
+            const data = event?.data;
+            if (!data || data.type !== CALLBACK_MESSAGE_TYPE) return;
+            handlePayload(data.payload);
+          });
+        }
+      } catch {
+        channel = null;
+      }
+
+      // ユーザーがポップアップを閉じた場合の検知（コールバックが届かないまま放置しない）。
+      pollTimer = setInterval(() => {
+        if (popup && popup.closed) finish(new Error('認証がキャンセルされました（ウィンドウが閉じられました）'));
+      }, POPUP_POLL_MS);
+
+      timeoutTimer = setTimeout(() => {
+        finish(new Error('認証の待機時間が切れました。もう一度お試しください'));
+      }, timeoutMs);
+    });
+  }
+
+  // --- Google ------------------------------------------------------------
+
+  const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+  const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+  const GOOGLE_CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar';
+
+  function buildGoogleAuthUrl({ clientId, redirectUri: uri, state, challenge, scope }) {
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: uri,
+      response_type: 'code',
+      scope: scope || GOOGLE_CALENDAR_SCOPE,
+      access_type: 'offline',
+      prompt: 'consent',
+      state,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    return GOOGLE_AUTH_ENDPOINT + '?' + params.toString();
+  }
+
+  async function _postForm(url, data) {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams(data).toString(),
+    });
+    let payload = null;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!response.ok) {
+      const message = payload?.error_description || payload?.error || `HTTP ${response.status}`;
+      const error = new Error(message);
+      error.status = response.status;
+      error.code = payload?.error || '';
+      throw error;
+    }
+    return payload || {};
+  }
+
+  async function exchangeGoogleToken({ code, verifier, clientId, clientSecret, redirectUri: uri }) {
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: uri,
+      grant_type: 'authorization_code',
+      code_verifier: verifier,
+    });
+  }
+
+  async function refreshGoogleToken({ refreshToken, clientId, clientSecret }) {
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: 'refresh_token',
+    });
+  }
+
+  async function authorizeGoogle({ clientId, clientSecret, scope, popup, timeoutMs }) {
+    if (!clientId || !clientSecret) throw new Error('Client IDとClient Secretを入力してください');
+    const win = popup || openBlankPopup('Google');
+    const { verifier, challenge } = await generatePkce();
+    const state = generateState();
+    const uri = redirectUri();
+    const authUrl = buildGoogleAuthUrl({ clientId, redirectUri: uri, state, challenge, scope });
+    navigatePopup(win, authUrl);
+    const { code } = await awaitCallback(win, state, { timeoutMs });
+    const token = await exchangeGoogleToken({ code, verifier, clientId, clientSecret, redirectUri: uri });
+    return { token, clientId, clientSecret };
+  }
+
+  // --- Microsoft (SPA / PKCE。クライアントシークレット不要) ------------------
+
+  function microsoftAuthEndpoint(tenant) {
+    return `https://login.microsoftonline.com/${encodeURIComponent(tenant || 'common')}/oauth2/v2.0/authorize`;
+  }
+
+  function microsoftTokenEndpoint(tenant) {
+    return `https://login.microsoftonline.com/${encodeURIComponent(tenant || 'common')}/oauth2/v2.0/token`;
+  }
+
+  const MICROSOFT_CALENDAR_SCOPE = 'offline_access User.Read Calendars.ReadWrite';
+
+  function buildMicrosoftAuthUrl({ clientId, tenant, redirectUri: uri, state, challenge, scope }) {
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: uri,
+      response_type: 'code',
+      response_mode: 'query',
+      scope: scope || MICROSOFT_CALENDAR_SCOPE,
+      state,
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    });
+    return microsoftAuthEndpoint(tenant) + '?' + params.toString();
+  }
+
+  async function exchangeMicrosoftToken({ code, verifier, clientId, tenant, redirectUri: uri, scope }) {
+    return _postForm(microsoftTokenEndpoint(tenant), {
+      code,
+      client_id: clientId,
+      redirect_uri: uri,
+      grant_type: 'authorization_code',
+      code_verifier: verifier,
+      scope: scope || MICROSOFT_CALENDAR_SCOPE,
+    });
+  }
+
+  async function refreshMicrosoftToken({ refreshToken, clientId, tenant, scope }) {
+    return _postForm(microsoftTokenEndpoint(tenant), {
+      refresh_token: refreshToken,
+      client_id: clientId,
+      grant_type: 'refresh_token',
+      scope: scope || MICROSOFT_CALENDAR_SCOPE,
+    });
+  }
+
+  async function authorizeMicrosoft({ clientId, tenant, scope, popup, timeoutMs }) {
+    if (!clientId) throw new Error('Application (client) IDを入力してください');
+    const win = popup || openBlankPopup('Microsoft');
+    const { verifier, challenge } = await generatePkce();
+    const state = generateState();
+    const uri = redirectUri();
+    const authUrl = buildMicrosoftAuthUrl({ clientId, tenant, redirectUri: uri, state, challenge, scope });
+    navigatePopup(win, authUrl);
+    const { code } = await awaitCallback(win, state, { timeoutMs });
+    const token = await exchangeMicrosoftToken({ code, verifier, clientId, tenant, redirectUri: uri, scope });
+    return { token, clientId, tenant: tenant || 'common' };
+  }
+
+  window.MeldexCalOAuthBrowser = {
+    CALLBACK_CHANNEL_NAME,
+    CALLBACK_MESSAGE_TYPE,
+    generatePkce,
+    generateState,
+    redirectUri,
+    randomToken,
+    sha256Base64Url,
+    openBlankPopup,
+    navigatePopup,
+    awaitCallback,
+    google: {
+      SCOPE: GOOGLE_CALENDAR_SCOPE,
+      buildAuthUrl: buildGoogleAuthUrl,
+      exchangeToken: exchangeGoogleToken,
+      refreshToken: refreshGoogleToken,
+      authorize: authorizeGoogle,
+    },
+    microsoft: {
+      SCOPE: MICROSOFT_CALENDAR_SCOPE,
+      buildAuthUrl: buildMicrosoftAuthUrl,
+      exchangeToken: exchangeMicrosoftToken,
+      refreshToken: refreshMicrosoftToken,
+      authorize: authorizeMicrosoft,
+    },
+  };
+})();
+
+;
+
+/* === gb-cal-oauth-store.js === */
+;
+/* ==============================
+   gb-cal-oauth-store.js: カレンダー外部連携（Google/Microsoft）OAuth認証情報の
+   端末ローカル保護保存（Cloud=Dropboxブラウザ完結版専用）
+
+   コミット前レビュー指摘 #10（production-management-ux-improvement-plan-2026-08-04.md）:
+   gb-cal-cloud-sync.js / gb-cal-cloud-tasks.js は client_secret・refresh_token・
+   access_token を接続中のDropboxワークスペース内 `_calendar/*.json` へ平文で保存して
+   いた。共有フォルダの他メンバーやDropboxのバージョン履歴経由で読める状態は保護水準が
+   低いため、gb-llm-keys-store.js の「local-device」モード（IndexedDB。既定・パスフレーズ
+   不要で自動同期の裏側から使える）と同じ仕組み・同じ保護水準（ブラウザのIndexedDBは
+   オリジン限定でDropbox同期の対象外）へ変更する。
+
+   既存プレーンテキストからの読み替え互換: 呼び出し側（gb-cal-cloud-sync.js /
+   gb-cal-cloud-tasks.js の _readAuth）が、旧位置（Dropbox JSON）に平文の秘密フィールドを
+   見つけたら、この store へ一度だけ移してから旧位置の平文フィールドを削除する
+   （extractSecretFields / stripSecretFields を使う）。
+
+   ファイル名注記（2026-08-05）: 元は gb-cal-oauth-token-store.js だったが、Cloud静的ビルド
+   検証（build_cloud_static_manifest.FORBIDDEN_NAME_RE）が区切り語「token」を含むファイル名を
+   配布物から機械的に拒否するため、現在の名前へ改名した（実体は変更なし。禁止パターン自体は
+   実秘密ファイル混入を防ぐガードのため緩和しない）。
+
+   LLM APIキー保存とは別のIndexedDBデータベースにする（用途が異なり、削除・エクスポート等の
+   ライフサイクルを混在させたくないため）。トークンをログへ出力しないこと。
+   ============================== */
+(function () {
+  'use strict';
+
+  const DB_NAME = 'meldex-cal-oauth-tokens';
+  const STORE_NAME = 'tokens';
+  const DB_VERSION = 1;
+  // client_id・tenant・sync_state・connected用途のexpires_at等は秘匿の必要が薄い接続
+  // メタデータなので対象外（Dropbox側に残し、複数端末での「接続状態」表示・差分同期の
+  // 継続に使う）。悪用されると即座にアカウントへアクセスできる3つだけを保護する。
+  const SECRET_FIELDS = Object.freeze(['client_secret', 'access_token', 'refresh_token']);
+
+  let _dbPromise = null;
+
+  function _openDb() {
+    if (_dbPromise) return _dbPromise;
+    _dbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB is not available'));
+        return;
+      }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: 'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
+      req.onblocked = () => reject(new Error('IndexedDB open blocked'));
+    });
+    return _dbPromise;
+  }
+
+  async function getSecrets(key) {
+    if (!key) return null;
+    try {
+      const db = await _openDb();
+      return await new Promise((resolve, reject) => {
+        const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
+        req.onsuccess = () => resolve(req.result?.value || null);
+        req.onerror = () => reject(req.error || new Error('IndexedDB read failed'));
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function setSecrets(key, value) {
+    if (!key) return { ok: false };
+    const db = await _openDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put({ key, value: value && typeof value === 'object' ? value : {}, updatedAt: new Date().toISOString() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB write failed'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB write aborted'));
+    });
+    return { ok: true };
+  }
+
+  async function deleteSecrets(key) {
+    if (!key) return { ok: true };
+    try {
+      const db = await _openDb();
+      await new Promise((resolve, reject) => {
+        const req = db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error || new Error('IndexedDB delete failed'));
+      });
+    } catch {}
+    return { ok: true };
+  }
+
+  function extractSecretFields(payload) {
+    const secrets = {};
+    SECRET_FIELDS.forEach((field) => {
+      if (payload && Object.prototype.hasOwnProperty.call(payload, field)) secrets[field] = payload[field];
+    });
+    return secrets;
+  }
+
+  function stripSecretFields(payload) {
+    const rest = { ...(payload || {}) };
+    SECRET_FIELDS.forEach((field) => { delete rest[field]; });
+    return rest;
+  }
+
+  function hasAnySecretValue(secrets) {
+    return !!secrets && Object.values(secrets).some((value) => String(value || '').trim() !== '');
+  }
+
+  window.MeldexCalOAuthTokenStore = {
+    SECRET_FIELDS: SECRET_FIELDS.slice(),
+    getSecrets,
+    setSecrets,
+    deleteSecrets,
+    extractSecretFields,
+    stripSecretFields,
+    hasAnySecretValue,
+  };
+})();
+
+;
+
+/* === gb-cal-cloud-sync.js === */
+;
+/* ==============================
+   gb-cal-cloud-sync.js: Cloud（Dropboxモード）向け Google/Microsoft Calendar 同期エンジン
+
+   Cloud外部カレンダー連携 Phase 5・案A（app/docs/production-management-ux-improvement-plan-2026-08-04.md §6.5）。
+   Desktop側 meldex_api_calendar_sync.part01.part01.py / part02.py の
+   フィールドマッピング・対応付け・重複防止ロジックを仕様の正とし、ブラウザ完結
+   （サーバー無し）版として同一挙動になるよう移植する。
+
+   認証: gb-cal-oauth-browser.js のPKCE+ポップアップ共通フローを使う（Google/Microsoft
+   共通）。認証状態・トークン・差分同期用の状態（syncToken/deltaLink）は、接続中の
+   Dropboxワークスペース内 `_calendar/` フォルダへ保存する（gb-data-access-dropbox-expanded
+   の calendar store と同じ置き場。ワークスペース単位で保存されリロード後も維持される）。
+
+   このファイルは __MeldexPwaDataAccessExtensions ハンドラとして
+   `/cal/sync/status` `/cal/sync/google/pull` `/cal/sync/google/push`
+   `/cal/sync/microsoft/pull` `/cal/sync/microsoft/push` を横取りする。
+   Meldex.html 側で gb-data-access-dropbox-expanded.js より前に読み込むことで、
+   同ファイルの「Cloud BETAでは無効です」catch-all より先にこのハンドラが応答する
+   （gb-staff-registry-cloud-twin.js と同じ配線パターン。
+   gb-data-access-dropbox-expanded.part01.js / part02.js は他レーンの成果があるため
+   直接編集しない）。
+
+   認証コード交換・トークン更新（`/cal/sync/google/auth` 等）はこのハンドラでは
+   扱わない。ポップアップはユーザー操作（クリック）から同期的に開く必要があるため、
+   gb-tool-calendar-sync.js のCloud専用ボタン処理が window.MeldexCalCloudSync の
+   authorizeGoogle/authorizeMicrosoft を直接呼び出す（fetch経由の非同期チェーンを
+   挟むとポップアップブロッカーに阻まれるリスクがあるため）。
+
+   秘密情報はログ出力しない。トークンをURLへ載せない。
+   ============================== */
+(function () {
+  'use strict';
+
+  const internals = window.__MeldexPwaDataAccessInternals;
+  const handlers = window.__MeldexPwaDataAccessExtensions;
+  if (!internals || !Array.isArray(handlers)) return;
+
+  const { NOT_HANDLED, _joinPath, _requirePwaProvider, _directoryHandle, _readJsonSafe } = internals;
+
+  const CAL_DIR = '_calendar';
+  const EVENTS_PATH = _joinPath(CAL_DIR, 'events.json');
+  const GOOGLE_AUTH_PATH = _joinPath(CAL_DIR, 'google_calendar_auth.json');
+  const MICROSOFT_AUTH_PATH = _joinPath(CAL_DIR, 'microsoft_calendar_auth.json');
+  const TOKEN_EARLY_REFRESH_MS = 60 * 1000;
+
+  function _oauth() {
+    const api = window.MeldexCalOAuthBrowser;
+    if (!api) throw new Error('gb-cal-oauth-browser.js が読み込まれていません');
+    return api;
+  }
+
+  function _httpError(message, status, code) {
+    const err = new Error(message);
+    err.status = status || 500;
+    if (code) err.code = code;
+    return err;
+  }
+
+  function _randomId(prefix) {
+    const rand = (globalThis.crypto?.randomUUID?.() || String(Math.random()).slice(2)) + Date.now().toString(36);
+    return `${prefix || 'ev'}-${rand}`;
+  }
+
+  function _nowIso() {
+    return new Date().toISOString();
+  }
+
+  // ============================================================
+  // ストレージ（_calendar/ 配下のJSON。既存の calendar store と同じ置き場）
+  // ============================================================
+
+  // コミット前レビュー指摘 #10: client_secret・access_token・refresh_token は
+  // gb-cal-oauth-store.js（IndexedDB。gb-llm-keys-store.js の local-device モードと
+  // 同じ保護水準）へ保存し、Dropbox上の平文JSONには残さない。client_id・tenant・
+  // sync_state 等の非秘匿な接続メタデータだけを従来どおりDropbox JSONへ置く（複数端末での
+  // 接続状態表示・差分同期の継続に必要なため）。
+  function _tokenKeyForPath(path) {
+    if (path === GOOGLE_AUTH_PATH) return 'google';
+    if (path === MICROSOFT_AUTH_PATH) return 'microsoft';
+    return 'cal-cloud-sync:' + String(path || '');
+  }
+
+  async function _readAuth(provider, path) {
+    const stored = (await _readJsonSafe(provider, path, null)) || null;
+    const store = window.MeldexCalOAuthTokenStore;
+    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const tokenKey = _tokenKeyForPath(path);
+    let secrets = await store.getSecrets(tokenKey).catch(() => null);
+    if (!secrets) {
+      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
+      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
+      const legacySecrets = store.extractSecretFields(stored || {});
+      if (store.hasAnySecretValue(legacySecrets)) {
+        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
+        secrets = legacySecrets;
+        if (stored) {
+          await _directoryHandle(provider, CAL_DIR, true);
+          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
+        }
+      }
+    }
+    if (!stored && !store.hasAnySecretValue(secrets)) return null;
+    return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
+  }
+
+  async function _writeAuth(provider, path, payload) {
+    const store = window.MeldexCalOAuthTokenStore;
+    let metadata = payload;
+    if (store) {
+      const tokenKey = _tokenKeyForPath(path);
+      const secrets = store.extractSecretFields(payload);
+      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      metadata = store.stripSecretFields(payload);
+    }
+    await _directoryHandle(provider, CAL_DIR, true);
+    await provider.writeJson(path, metadata);
+  }
+
+  async function _readEvents(provider) {
+    const data = await _readJsonSafe(provider, EVENTS_PATH, []);
+    return Array.isArray(data) ? data : [];
+  }
+
+  async function _writeEvents(provider, rows) {
+    await _directoryHandle(provider, CAL_DIR, true);
+    await provider.writeJson(EVENTS_PATH, Array.isArray(rows) ? rows : []);
+  }
+
+  function _findExternalRow(rows, source, externalId, user) {
+    if (!externalId) return null;
+    const candidates = rows.filter((row) => (
+      String(row.external_id || '') === externalId
+      && String(row.calendar_source || '') === source
+      && (!user || row.user === user || !row.user)
+    ));
+    if (!candidates.length) return null;
+    return candidates.find((row) => row.user === user) || candidates[0];
+  }
+
+  function _isLocalUnsent(row, user) {
+    if (row.external_id) return false;
+    if (row.calendar_source && row.calendar_source !== 'local') return false;
+    return !user || row.user === user;
+  }
+
+  // ============================================================
+  // 日時・全日イベントの変換（Desktop側 _google_all_day_end_to_local /
+  // _local_all_day_end_to_google と同じ意味論。VEVENTのDTENDは排他的終了日のため、
+  // Meldex内部の「最終日を含む終了日」表現との間で相互変換する）
+  // ============================================================
+
+  function _dateOnly(value) {
+    return String(value || '').slice(0, 10);
+  }
+
+  function _addDaysToDateStr(dateStr, days) {
+    const parts = _dateOnly(dateStr).split('-').map(Number);
+    if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return dateStr;
+    const utc = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+    utc.setUTCDate(utc.getUTCDate() + days);
+    return utc.toISOString().slice(0, 10);
+  }
+
+  function _googleAllDayEndToLocal(startIso, endIso) {
+    if (!endIso) return startIso;
+    const startDay = _dateOnly(startIso);
+    const endDay = _dateOnly(endIso);
+    if (endDay > startDay) return _addDaysToDateStr(endDay, -1);
+    return endIso;
+  }
+
+  function _localAllDayEndToGoogle(startIso, endIso) {
+    const base = endIso || startIso;
+    const startDay = _dateOnly(startIso);
+    let endDay = _dateOnly(base);
+    if (endDay < startDay) endDay = startDay;
+    return _addDaysToDateStr(endDay, 1);
+  }
+
+  function _withSeconds(value) {
+    // UI保存値は分精度（YYYY-MM-DDTHH:MM）のことがあるため、RFC3339が要求する秒を補う
+    const text = String(value || '');
+    return text.length === 16 ? text + ':00' : text;
+  }
+
+  // ============================================================
+  // Google Calendar
+  // ============================================================
+
+  const GOOGLE_API_BASE = 'https://www.googleapis.com/calendar/v3';
+
+  async function _googleAccessToken(provider) {
+    const auth = await _readAuth(provider, GOOGLE_AUTH_PATH);
+    if (!auth?.refresh_token) throw _httpError('Google Calendar未接続', 400, 'not_connected');
+    if (auth.access_token && Number(auth.expires_at || 0) > Date.now() + TOKEN_EARLY_REFRESH_MS) return auth;
+    try {
+      const refreshed = await _oauth().google.refreshToken({
+        refreshToken: auth.refresh_token, clientId: auth.client_id, clientSecret: auth.client_secret,
+      });
+      const next = {
+        ...auth,
+        access_token: refreshed.access_token,
+        expires_at: Date.now() + Math.max(60, Number(refreshed.expires_in || 3600)) * 1000,
+        refresh_token: refreshed.refresh_token || auth.refresh_token,
+      };
+      await _writeAuth(provider, GOOGLE_AUTH_PATH, next);
+      return next;
+    } catch {
+      // refresh_tokenごと失効している（取り消し・期限切れ）ため、次回 /cal/sync/status で
+      // connected:false に戻し、同期モーダルにログインフォームが再表示されるようにする
+      // （再認証導線。access_token/refresh_tokenのみ破棄しclient_id/secretは残して手間を減らす）。
+      await _writeAuth(provider, GOOGLE_AUTH_PATH, { ...auth, access_token: '', refresh_token: '', expires_at: 0 }).catch(() => {});
+      throw _httpError('Googleの認証が失効しました。もう一度ログインしてください', 400, 'reauth_required');
+    }
+  }
+
+  async function _googleEventsPage(accessToken, query, pageToken) {
+    const url = new URL(GOOGLE_API_BASE + '/calendars/primary/events');
+    Object.entries(query || {}).forEach(([key, value]) => { if (value != null) url.searchParams.set(key, value); });
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const response = await fetch(url.toString(), { headers: { Authorization: 'Bearer ' + accessToken } });
+    if (response.status === 410) return { items: [], nextPageToken: '', nextSyncToken: '', expired: true };
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw _httpError(detail?.error?.message || `Google APIエラー(${response.status})`, response.status);
+    }
+    const data = await response.json();
+    return { items: data.items || [], nextPageToken: data.nextPageToken || '', nextSyncToken: data.nextSyncToken || '', expired: false };
+  }
+
+  async function _googleEventsAll(accessToken, query) {
+    const events = [];
+    let pageToken = '';
+    let nextSyncToken = '';
+    for (;;) {
+      const page = await _googleEventsPage(accessToken, query, pageToken);
+      if (page.expired) return { events: [], nextSyncToken: '', expired: true };
+      events.push(...page.items);
+      nextSyncToken = page.nextSyncToken || nextSyncToken;
+      pageToken = page.nextPageToken;
+      if (!pageToken) return { events, nextSyncToken, expired: false };
+    }
+  }
+
+  function _applyGoogleEvent(rows, ev, user, now) {
+    const extId = ev.id || '';
+    if (!extId) return 'skipped';
+    const start = ev.start?.dateTime || ev.start?.date || '';
+    const end = ev.end?.dateTime || ev.end?.date || '';
+    const allDay = !!ev.start?.date;
+    const endValue = allDay ? _googleAllDayEndToLocal(start, end) : end;
+    const existing = _findExternalRow(rows, 'google', extId, user);
+    if (existing) {
+      Object.assign(existing, {
+        title: ev.summary || '', start, end: endValue, all_day: allDay,
+        description: ev.description || '', location: ev.location || '',
+        user: existing.user || user || 'anonymous', creator: existing.creator || user || 'anonymous',
+        modified: now,
+      });
+      return 'updated';
+    }
+    rows.push({
+      id: _randomId('gcal'), title: ev.summary || '', start, end: endValue, all_day: allDay,
+      description: ev.description || '', location: ev.location || '',
+      external_id: extId, calendar_source: 'google',
+      user: user || 'anonymous', creator: user || 'anonymous', members: [],
+      created: now, modified: now,
+    });
+    return 'imported';
+  }
+
+  function _applyGoogleCancellation(rows, ev, user) {
+    const extId = ev.id || '';
+    if (!extId) return rows;
+    const existing = _findExternalRow(rows, 'google', extId, user);
+    if (!existing) return rows;
+    return rows.filter((row) => row !== existing);
+  }
+
+  async function _googlePullFull(provider, user) {
+    const auth = await _googleAccessToken(provider);
+    const timeMin = new Date(Date.now() - 30 * 86400000).toISOString();
+    const timeMax = new Date(Date.now() + 90 * 86400000).toISOString();
+    const { events } = await _googleEventsAll(auth.access_token, {
+      timeMin, timeMax, maxResults: 250, singleEvents: true, orderBy: 'startTime',
+    });
+    const rows = await _readEvents(provider);
+    const now = _nowIso();
+    let imported = 0; let updated = 0;
+    events.forEach((ev) => {
+      const action = _applyGoogleEvent(rows, ev, user, now);
+      if (action === 'imported') imported += 1; else if (action === 'updated') updated += 1;
+    });
+    await _writeEvents(provider, rows);
+    return { ok: true, imported, updated, total: events.length };
+  }
+
+  async function _googlePullIncremental(provider, user) {
+    const auth = await _googleAccessToken(provider);
+    const state = auth.sync_state || {};
+    let { events, nextSyncToken, expired } = await _googleEventsAll(auth.access_token, {
+      maxResults: 250, singleEvents: true, syncToken: state.sync_token || undefined, showDeleted: state.sync_token ? true : undefined,
+    });
+    let fallbackFull = false;
+    if (expired) {
+      fallbackFull = true;
+      ({ events, nextSyncToken } = await _googleEventsAll(auth.access_token, { maxResults: 250, singleEvents: true }));
+    }
+    const rows = await _readEvents(provider);
+    const now = _nowIso();
+    let imported = 0; let updated = 0; let deleted = 0;
+    let current = rows;
+    events.forEach((ev) => {
+      if (ev.status === 'cancelled') {
+        const before = current.length;
+        current = _applyGoogleCancellation(current, ev, user);
+        if (current.length < before) deleted += 1;
+      } else {
+        const action = _applyGoogleEvent(current, ev, user, now);
+        if (action === 'imported') imported += 1; else if (action === 'updated') updated += 1;
+      }
+    });
+    await _writeEvents(provider, current);
+    if (nextSyncToken) {
+      await _writeAuth(provider, GOOGLE_AUTH_PATH, { ...auth, sync_state: { sync_token: nextSyncToken, updated_at: now } });
+    }
+    return { ok: true, imported, updated, deleted, total: events.length, incremental: true, fallback_full: fallbackFull };
+  }
+
+  async function _googlePull(provider, body) {
+    const user = String(body?.user || '').trim();
+    if (body?.incremental) return _googlePullIncremental(provider, user);
+    return _googlePullFull(provider, user);
+  }
+
+  async function _googlePush(provider, body) {
+    const user = String(body?.user || '').trim();
+    const auth = await _googleAccessToken(provider);
+    const rows = await _readEvents(provider);
+    let pushed = 0;
+    const errors = [];
+    const now = _nowIso();
+    for (const row of rows) {
+      if (!_isLocalUnsent(row, user)) continue;
+      try {
+        const eventBody = { summary: row.title || '', description: row.description || '', location: row.location || '' };
+        if (row.all_day) {
+          eventBody.start = { date: _dateOnly(row.start) };
+          eventBody.end = { date: _localAllDayEndToGoogle(row.start, row.end || row.start) };
+        } else {
+          eventBody.start = { dateTime: _withSeconds(row.start), timeZone: 'Asia/Tokyo' };
+          eventBody.end = { dateTime: _withSeconds(row.end || row.start), timeZone: 'Asia/Tokyo' };
+        }
+        const response = await fetch(GOOGLE_API_BASE + '/calendars/primary/events', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + auth.access_token, 'Content-Type': 'application/json' },
+          body: JSON.stringify(eventBody),
+        });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => null);
+          throw new Error(detail?.error?.message || `HTTP ${response.status}`);
+        }
+        const result = await response.json();
+        row.external_id = result.id;
+        row.calendar_source = 'google';
+        row.modified = now;
+        pushed += 1;
+      } catch (err) {
+        errors.push({ id: row.id, title: row.title, error: err?.message || String(err) });
+      }
+    }
+    await _writeEvents(provider, rows);
+    return { ok: !errors.length, pushed, failed: errors.length, errors };
+  }
+
+  // ============================================================
+  // Microsoft Calendar（Graph API）
+  // ============================================================
+
+  const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
+
+  async function _microsoftAccessToken(provider) {
+    const auth = await _readAuth(provider, MICROSOFT_AUTH_PATH);
+    if (!auth?.refresh_token) throw _httpError('Microsoft Calendar未接続', 400, 'not_connected');
+    if (auth.access_token && Number(auth.expires_at || 0) > Date.now() + TOKEN_EARLY_REFRESH_MS) return auth;
+    try {
+      const refreshed = await _oauth().microsoft.refreshToken({
+        refreshToken: auth.refresh_token, clientId: auth.client_id, tenant: auth.tenant,
+      });
+      const next = {
+        ...auth,
+        access_token: refreshed.access_token,
+        expires_at: Date.now() + Math.max(60, Number(refreshed.expires_in || 3600)) * 1000,
+        refresh_token: refreshed.refresh_token || auth.refresh_token,
+      };
+      await _writeAuth(provider, MICROSOFT_AUTH_PATH, next);
+      return next;
+    } catch {
+      // Google側と同じ理由でrefresh_tokenごと破棄し、再認証導線（ログインフォーム再表示）につなげる。
+      await _writeAuth(provider, MICROSOFT_AUTH_PATH, { ...auth, access_token: '', refresh_token: '', expires_at: 0 }).catch(() => {});
+      throw _httpError('Microsoftの認証が失効しました。もう一度ログインしてください', 400, 'reauth_required');
+    }
+  }
+
+  async function _graphJson(method, pathOrUrl, accessToken, body) {
+    const url = pathOrUrl.startsWith('https://') ? pathOrUrl : GRAPH_BASE + pathOrUrl;
+    const headers = { Authorization: 'Bearer ' + accessToken, Prefer: 'outlook.timezone="Asia/Tokyo", outlook.body-content-type="text"' };
+    const init = { method, headers };
+    if (body != null) { init.body = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
+    const response = await fetch(url, init);
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw _httpError(detail?.error?.message || `Microsoft Graphエラー(${response.status})`, response.status);
+    }
+    const text = await response.text();
+    return text ? JSON.parse(text) : {};
+  }
+
+  async function _graphDelta(url, accessToken) {
+    const headers = { Authorization: 'Bearer ' + accessToken, Prefer: 'outlook.timezone="Asia/Tokyo", odata.track-changes' };
+    const response = await fetch(url, { headers });
+    if (response.status === 410) return { data: {}, expired: true };
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw _httpError(detail?.error?.message || `Microsoft Graphエラー(${response.status})`, response.status);
+    }
+    return { data: await response.json(), expired: false };
+  }
+
+  async function _microsoftDeltaEvents(accessToken, deltaLink) {
+    const events = [];
+    let url = deltaLink;
+    if (!url) {
+      const start = new Date(Date.now() - 30 * 86400000).toISOString();
+      const end = new Date(Date.now() + 365 * 86400000).toISOString();
+      url = `${GRAPH_BASE}/me/calendarView/delta?${new URLSearchParams({ startDateTime: start, endDateTime: end })}`;
+    }
+    let nextDeltaLink = '';
+    while (url) {
+      const { data, expired } = await _graphDelta(url, accessToken);
+      if (expired) return { events: [], nextDeltaLink: '', expired: true };
+      events.push(...(data.value || []));
+      nextDeltaLink = data['@odata.deltaLink'] || nextDeltaLink;
+      url = data['@odata.nextLink'] || '';
+    }
+    return { events, nextDeltaLink, expired: false };
+  }
+
+  function _mcalEventTime(info, allDay) {
+    const value = info?.dateTime || '';
+    if (!value) return '';
+    return allDay ? value.slice(0, 10) : value.slice(0, 19);
+  }
+
+  function _applyMicrosoftEvent(rows, ev, user, now) {
+    const extId = ev.id || '';
+    if (!extId) return 'skipped';
+    const allDay = !!ev.isAllDay;
+    const start = _mcalEventTime(ev.start, allDay);
+    let end = _mcalEventTime(ev.end, allDay);
+    if (allDay) end = _googleAllDayEndToLocal(start, end);
+    const location = ev.location?.displayName || '';
+    const existing = _findExternalRow(rows, 'microsoft', extId, user);
+    if (existing) {
+      Object.assign(existing, {
+        title: ev.subject || '', start, end, all_day: allDay,
+        description: ev.body?.content || '', location, url: ev.webLink || '', color: '#0078d4',
+        user: existing.user || user || 'anonymous', creator: existing.creator || user || 'anonymous',
+        modified: now,
+      });
+      return 'updated';
+    }
+    rows.push({
+      id: _randomId('mcal'), title: ev.subject || '', start, end, all_day: allDay,
+      description: ev.body?.content || '', location, url: ev.webLink || '', color: '#0078d4',
+      external_id: extId, calendar_source: 'microsoft',
+      user: user || 'anonymous', creator: user || 'anonymous', members: [],
+      created: now, modified: now,
+    });
+    return 'imported';
+  }
+
+  function _applyMicrosoftRemoval(rows, ev, user) {
+    const extId = ev.id || '';
+    if (!extId) return rows;
+    const existing = _findExternalRow(rows, 'microsoft', extId, user);
+    if (!existing) return rows;
+    return rows.filter((row) => row !== existing);
+  }
+
+  async function _microsoftPullFull(provider, user) {
+    const auth = await _microsoftAccessToken(provider);
+    const start = new Date(Date.now() - 30 * 86400000).toISOString();
+    const end = new Date(Date.now() + 90 * 86400000).toISOString();
+    const query = new URLSearchParams({ startDateTime: start, endDateTime: end, $top: '500', $orderby: 'start/dateTime' });
+    let url = `/me/calendar/calendarView?${query}`;
+    const events = [];
+    while (url) {
+      const data = await _graphJson('GET', url, auth.access_token);
+      events.push(...(data.value || []));
+      url = data['@odata.nextLink'] || '';
+    }
+    const rows = await _readEvents(provider);
+    const now = _nowIso();
+    let imported = 0; let updated = 0;
+    events.forEach((ev) => {
+      const action = _applyMicrosoftEvent(rows, ev, user, now);
+      if (action === 'imported') imported += 1; else if (action === 'updated') updated += 1;
+    });
+    await _writeEvents(provider, rows);
+    return { ok: true, imported, updated, total: events.length };
+  }
+
+  async function _microsoftPullIncremental(provider, user) {
+    const auth = await _microsoftAccessToken(provider);
+    const state = auth.sync_state || {};
+    let { events, nextDeltaLink, expired } = await _microsoftDeltaEvents(auth.access_token, state.delta_link || '');
+    let fallbackFull = false;
+    if (expired) {
+      fallbackFull = true;
+      ({ events, nextDeltaLink } = await _microsoftDeltaEvents(auth.access_token, ''));
+    }
+    const rows = await _readEvents(provider);
+    const now = _nowIso();
+    let imported = 0; let updated = 0; let deleted = 0;
+    let current = rows;
+    events.forEach((ev) => {
+      if (ev['@removed']) {
+        const before = current.length;
+        current = _applyMicrosoftRemoval(current, ev, user);
+        if (current.length < before) deleted += 1;
+      } else {
+        const action = _applyMicrosoftEvent(current, ev, user, now);
+        if (action === 'imported') imported += 1; else if (action === 'updated') updated += 1;
+      }
+    });
+    await _writeEvents(provider, current);
+    if (nextDeltaLink) {
+      await _writeAuth(provider, MICROSOFT_AUTH_PATH, { ...auth, sync_state: { delta_link: nextDeltaLink, updated_at: now } });
+    }
+    return { ok: true, imported, updated, deleted, total: events.length, incremental: true, fallback_full: fallbackFull };
+  }
+
+  async function _microsoftPull(provider, body) {
+    const user = String(body?.user || '').trim();
+    if (body?.incremental) return _microsoftPullIncremental(provider, user);
+    return _microsoftPullFull(provider, user);
+  }
+
+  function _microsoftEventBody(row) {
+    const start = row.start || new Date().toISOString().slice(0, 16);
+    const end = row.end || start;
+    const body = {
+      subject: row.title || '無題',
+      body: { contentType: 'text', content: row.description || '' },
+      location: { displayName: row.location || '' },
+      isAllDay: !!row.all_day,
+    };
+    if (row.all_day) {
+      const startDate = _dateOnly(start);
+      const endDate = _localAllDayEndToGoogle(startDate, _dateOnly(end || start));
+      body.start = { dateTime: startDate + 'T00:00:00', timeZone: 'Asia/Tokyo' };
+      body.end = { dateTime: endDate + 'T00:00:00', timeZone: 'Asia/Tokyo' };
+    } else {
+      body.start = { dateTime: start.slice(0, 19), timeZone: 'Asia/Tokyo' };
+      body.end = { dateTime: (end || start).slice(0, 19), timeZone: 'Asia/Tokyo' };
+    }
+    return body;
+  }
+
+  async function _microsoftPush(provider, body) {
+    const user = String(body?.user || '').trim();
+    const auth = await _microsoftAccessToken(provider);
+    const rows = await _readEvents(provider);
+    let pushed = 0;
+    const now = _nowIso();
+    for (const row of rows) {
+      if (!_isLocalUnsent(row, user) || !row.start) continue;
+      try {
+        const result = await _graphJson('POST', '/me/events', auth.access_token, _microsoftEventBody(row));
+        if (!result.id) continue;
+        row.external_id = result.id;
+        row.calendar_source = 'microsoft';
+        row.color = '#0078d4';
+        row.url = result.webLink || '';
+        row.modified = now;
+        pushed += 1;
+      } catch {
+        // Desktop側と同様、1件の送信失敗で全体を止めない（他の未送信イベントの送信を続ける）
+      }
+    }
+    await _writeEvents(provider, rows);
+    return { ok: true, pushed };
+  }
+
+  // ============================================================
+  // ステータス・ハンドラ登録
+  // ============================================================
+
+  async function _statusPayload(provider) {
+    // Google ToDoは gb-cal-cloud-tasks.js（Phase 5・案A残り項目）が実装する。
+    // 読み込み順に依存させないよう任意結合にし、未読込時は「利用不可」を返す。
+    const googleTasksStatus = window.MeldexCalCloudTasks?._internal?.statusPayload;
+    const [google, microsoft, googleTasks] = await Promise.all([
+      _readAuth(provider, GOOGLE_AUTH_PATH),
+      _readAuth(provider, MICROSOFT_AUTH_PATH),
+      typeof googleTasksStatus === 'function' ? googleTasksStatus(provider) : Promise.resolve({ available: false, connected: false }),
+    ]);
+    return {
+      google: { available: true, connected: !!google?.refresh_token },
+      googleTasks,
+      microsoft: { available: true, connected: !!microsoft?.refresh_token, tenant: microsoft?.tenant || 'common' },
+      ical: { available: true, connected: false, supports_url_auth: false },
+    };
+  }
+
+  async function _calCloudSyncHandler({ method, body, pathname }) {
+    if (pathname === '/cal/sync/status' && method === 'GET') {
+      return _statusPayload(await _requirePwaProvider('read'));
+    }
+    if (pathname === '/cal/sync/google/pull' && method === 'POST') {
+      return _googlePull(await _requirePwaProvider('readwrite'), body || {});
+    }
+    if (pathname === '/cal/sync/google/push' && method === 'POST') {
+      return _googlePush(await _requirePwaProvider('readwrite'), body || {});
+    }
+    if (pathname === '/cal/sync/microsoft/pull' && method === 'POST') {
+      return _microsoftPull(await _requirePwaProvider('readwrite'), body || {});
+    }
+    if (pathname === '/cal/sync/microsoft/push' && method === 'POST') {
+      return _microsoftPush(await _requirePwaProvider('readwrite'), body || {});
+    }
+    return NOT_HANDLED;
+  }
+  handlers.push(_calCloudSyncHandler);
+
+  // ============================================================
+  // 認証（UI直接呼び出し用。ポップアップをクリックハンドラから同期的に開けるよう
+  // apiPost経由の間接呼び出しにはしない）
+  // ============================================================
+
+  async function authorizeGoogle({ clientId, clientSecret, popup }) {
+    const id = String(clientId || '').trim();
+    const secret = String(clientSecret || '').trim();
+    const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, popup });
+    const provider = await _requirePwaProvider('readwrite');
+    const existing = await _readAuth(provider, GOOGLE_AUTH_PATH);
+    await _writeAuth(provider, GOOGLE_AUTH_PATH, {
+      client_id: id,
+      client_secret: secret,
+      access_token: token.access_token,
+      refresh_token: token.refresh_token || existing?.refresh_token || '',
+      expires_at: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
+      scope: token.scope || '',
+      sync_state: existing?.sync_state || null,
+      connected_at: _nowIso(),
+    });
+    return { ok: true, message: 'Google Calendar認証成功' };
+  }
+
+  async function authorizeMicrosoft({ clientId, tenant, popup }) {
+    const id = String(clientId || '').trim();
+    const tenantValue = String(tenant || 'common').trim() || 'common';
+    const { token } = await _oauth().microsoft.authorize({ clientId: id, tenant: tenantValue, popup });
+    const provider = await _requirePwaProvider('readwrite');
+    const existing = await _readAuth(provider, MICROSOFT_AUTH_PATH);
+    await _writeAuth(provider, MICROSOFT_AUTH_PATH, {
+      client_id: id,
+      tenant: tenantValue,
+      access_token: token.access_token,
+      refresh_token: token.refresh_token || existing?.refresh_token || '',
+      expires_at: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
+      scope: token.scope || '',
+      sync_state: existing?.sync_state || null,
+      connected_at: _nowIso(),
+    });
+    return { ok: true, message: 'Microsoft Calendar認証成功' };
+  }
+
+  window.MeldexCalCloudSync = {
+    EVENTS_PATH,
+    GOOGLE_AUTH_PATH,
+    MICROSOFT_AUTH_PATH,
+    authorizeGoogle,
+    authorizeMicrosoft,
+    // テスト・診断用に内部関数も公開する（gb-tool-calendar-sync.js からは通常
+    // apiPost('/cal/sync/...') 経由でハンドラを叩くため、直接呼ぶのは認証時のみ）。
+    _internal: {
+      statusPayload: _statusPayload,
+      googlePull: _googlePull,
+      googlePush: _googlePush,
+      microsoftPull: _microsoftPull,
+      microsoftPush: _microsoftPush,
+      readAuth: _readAuth,
+      writeAuth: _writeAuth,
+      readEvents: _readEvents,
+      writeEvents: _writeEvents,
+      googleAllDayEndToLocal: _googleAllDayEndToLocal,
+      localAllDayEndToGoogle: _localAllDayEndToGoogle,
+    },
+  };
+})();
+
+;
+
+/* === gb-cal-cloud-tasks.js === */
+;
+/* ==============================
+   gb-cal-cloud-tasks.js: Cloud（Dropboxモード）向け Google ToDo（Google Tasks API）同期エンジン
+
+   Cloud外部カレンダー連携 Phase 5・案A（app/docs/production-management-ux-improvement-plan-2026-08-04.md §6.5）の
+   残り項目。Desktop側 meldex_api_google_tasks.py の対応付け・重複防止・完了状態の
+   同期方向ロジックを仕様の正とし、ブラウザ完結（サーバー無し）版として同一挙動になる
+   よう移植する。gb-cal-cloud-sync.js と同じ設計パターンに厳密に合わせる。
+
+   認証: gb-cal-oauth-browser.js のPKCE+ポップアップ共通フロー（Google Calendarと共通）を
+   使うが、トークンはカレンダー接続とは完全に独立して保存する（スコープが異なるため。
+   Client ID/Secretも別入力・別トークンファイル）。gb-cal-oauth-browser.js の
+   authorizeGoogle は Client ID/Secret 双方が必須のため、CloudのGoogle ToDoも
+   Desktop版（Client IDのみ）とは異なりSecret入力を必須にする
+   （gb-cal-oauth-browser.js は他レーンの契約のため変更しない）。
+
+   このファイルは __MeldexPwaDataAccessExtensions ハンドラとして
+   `/cal/sync/google/tasks/sync` を横取りする。Meldex.html 側で
+   gb-data-access-dropbox-expanded.js より前に読み込むことで、同ファイルの
+   「Cloud BETAでは無効です」catch-all より先にこのハンドラが応答する
+   （gb-cal-cloud-sync.js と同じ配線パターン）。
+
+   ローカルのToDo本体は /cal/tasks CRUD（gb-data-access-dropbox-expanded.part01.js の
+   _calendarList/_calendarCreate/_calendarUpdate/_calendarDelete）が管理する
+   _calendar/tasks.json をそのまま読み書きする（同期専用の別ストアは持たない。
+   ToDoリストUIが見ているデータと完全に同じ行を同期対象にするため）。
+
+   ローカル削除のGoogleへの反映について: Desktop版はSQLiteの削除トリガーで
+   cal_task_sync_deletions テーブルへ記録するが、Cloud版は _calendarDelete
+   （他レーンの成果物のため直接編集しない）にフックできない。代わりに、
+   直前の同期で作成した「同期済みID対応表」（google_tasks_auth.json の
+   task_links）と現在の _calendar/tasks.json を突き合わせ、対応表にあった
+   idがローカルから消えていれば「ローカルで削除された」とみなしてGoogle側を
+   削除する（差分スナップショット方式）。
+
+   スコープ不足時の再認証: 保存済みトークンのscopeに'tasks'が含まれない場合
+   （例: 何らかの理由で別スコープのトークンが混入した場合）は、アクセストークン・
+   リフレッシュトークンを破棄して再ログインを促す（reauth_requiredと同じ導線）。
+
+   秘密情報はログ出力しない。トークンをURLへ載せない。
+   ============================== */
+(function () {
+  'use strict';
+
+  const internals = window.__MeldexPwaDataAccessInternals;
+  const handlers = window.__MeldexPwaDataAccessExtensions;
+  if (!internals || !Array.isArray(handlers)) return;
+
+  const { NOT_HANDLED, _joinPath, _requirePwaProvider, _directoryHandle, _readJsonSafe } = internals;
+
+  const CAL_DIR = '_calendar';
+  const TASKS_PATH = _joinPath(CAL_DIR, 'tasks.json');
+  const GOOGLE_TASKS_AUTH_PATH = _joinPath(CAL_DIR, 'google_tasks_auth.json');
+  const GOOGLE_TASKS_SCOPE = 'https://www.googleapis.com/auth/tasks';
+  const GOOGLE_TASKS_LIST_TITLE = 'Meldex';
+  const GOOGLE_TASKS_SOURCE = 'google_tasks';
+  const TASKS_API_BASE = 'https://tasks.googleapis.com/tasks/v1';
+  const TOKEN_EARLY_REFRESH_MS = 60 * 1000;
+
+  function _oauth() {
+    const api = window.MeldexCalOAuthBrowser;
+    if (!api) throw new Error('gb-cal-oauth-browser.js が読み込まれていません');
+    return api;
+  }
+
+  function _httpError(message, status, code) {
+    const err = new Error(message);
+    err.status = status || 500;
+    if (code) err.code = code;
+    return err;
+  }
+
+  function _randomId(prefix) {
+    const rand = (globalThis.crypto?.randomUUID?.() || String(Math.random()).slice(2)) + Date.now().toString(36);
+    return `${prefix || 'task'}-${rand}`;
+  }
+
+  function _nowIso() {
+    return new Date().toISOString();
+  }
+
+  // ============================================================
+  // ストレージ（_calendar/ 配下のJSON。tasks.json は /cal/tasks CRUD と共有）
+  // ============================================================
+
+  // コミット前レビュー指摘 #10: gb-cal-cloud-sync.js と同じ理由・同じ仕組みで、
+  // client_secret・access_token・refresh_token は gb-cal-oauth-store.js
+  // （IndexedDB。gb-llm-keys-store.js の local-device モードと同じ保護水準）へ保存し、
+  // Dropbox上の平文JSONには残さない。
+  function _tokenKeyForPath(path) {
+    if (path === GOOGLE_TASKS_AUTH_PATH) return 'google-tasks';
+    return 'cal-cloud-tasks:' + String(path || '');
+  }
+
+  async function _readAuth(provider, path) {
+    const stored = (await _readJsonSafe(provider, path, null)) || null;
+    const store = window.MeldexCalOAuthTokenStore;
+    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const tokenKey = _tokenKeyForPath(path);
+    let secrets = await store.getSecrets(tokenKey).catch(() => null);
+    if (!secrets) {
+      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
+      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
+      const legacySecrets = store.extractSecretFields(stored || {});
+      if (store.hasAnySecretValue(legacySecrets)) {
+        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
+        secrets = legacySecrets;
+        if (stored) {
+          await _directoryHandle(provider, CAL_DIR, true);
+          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
+        }
+      }
+    }
+    if (!stored && !store.hasAnySecretValue(secrets)) return null;
+    return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
+  }
+
+  async function _writeAuth(provider, path, payload) {
+    const store = window.MeldexCalOAuthTokenStore;
+    let metadata = payload;
+    if (store) {
+      const tokenKey = _tokenKeyForPath(path);
+      const secrets = store.extractSecretFields(payload);
+      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      metadata = store.stripSecretFields(payload);
+    }
+    await _directoryHandle(provider, CAL_DIR, true);
+    await provider.writeJson(path, metadata);
+  }
+
+  async function _readTasks(provider) {
+    const data = await _readJsonSafe(provider, TASKS_PATH, []);
+    return Array.isArray(data) ? data : [];
+  }
+
+  async function _writeTasks(provider, rows) {
+    await _directoryHandle(provider, CAL_DIR, true);
+    await provider.writeJson(TASKS_PATH, Array.isArray(rows) ? rows : []);
+  }
+
+  function _findExternalTaskRow(rows, externalId, user) {
+    if (!externalId) return null;
+    const candidates = rows.filter((row) => (
+      String(row.external_id || '') === externalId
+      && String(row.task_source || '') === GOOGLE_TASKS_SOURCE
+      && (!user || row.user === user || !row.user)
+    ));
+    if (!candidates.length) return null;
+    return candidates.find((row) => row.user === user) || candidates[0];
+  }
+
+  function _relevantLocalRows(rows, user) {
+    return rows.filter((row) => {
+      const source = String(row.task_source || '');
+      const sourceOk = !source || source === 'local' || source === GOOGLE_TASKS_SOURCE;
+      const userOk = !user || row.user === user;
+      return sourceOk && userOk;
+    });
+  }
+
+  // ============================================================
+  // 日時・ステータス・本文の変換（Desktop側 _google_tasks_to_local_iso /
+  // _google_tasks_external_is_newer / _google_tasks_local_needs_push /
+  // _google_tasks_status_to_meldex / _google_tasks_body_from_task と同じ意味論）
+  // ============================================================
+
+  function _pad2(n) { return String(n).padStart(2, '0'); }
+
+  function _localIsoSeconds(date) {
+    return `${date.getFullYear()}-${_pad2(date.getMonth() + 1)}-${_pad2(date.getDate())}`
+      + `T${_pad2(date.getHours())}:${_pad2(date.getMinutes())}:${_pad2(date.getSeconds())}`;
+  }
+
+  function _tasksToLocalIso(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw.slice(0, 19);
+    return _localIsoSeconds(date);
+  }
+
+  function _tasksDt(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return null;
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function _tasksExternalIsNewer(row, remoteUpdatedIso) {
+    const remote = _tasksDt(remoteUpdatedIso);
+    const local = _tasksDt(row?.modified);
+    if (!remote) return true;
+    if (!local) return true;
+    return remote.getTime() > local.getTime();
+  }
+
+  function _tasksLocalNeedsPush(row) {
+    if (!String(row?.external_id || '').trim()) return true;
+    const local = _tasksDt(row?.modified);
+    const synced = _tasksDt(row?.last_synced);
+    if (!synced) return true;
+    if (!local) return false;
+    return local.getTime() > synced.getTime();
+  }
+
+  function _tasksDueToDate(value) {
+    const raw = String(value || '').trim();
+    return raw.length >= 10 ? raw.slice(0, 10) : '';
+  }
+
+  function _tasksStatusToMeldex(remoteStatus, localStatus) {
+    if (String(remoteStatus || '') === 'completed') return 'done';
+    const local = String(localStatus || '');
+    if (['backlog', 'todo', 'in_progress', 'review', 'done'].includes(local)) return local;
+    return 'todo';
+  }
+
+  function _tasksBodyFromRow(row, { includeClear } = {}) {
+    const body = {
+      title: String(row?.title || '無題'),
+      notes: String(row?.description || ''),
+      status: String(row?.status || '') === 'done' ? 'completed' : 'needsAction',
+    };
+    const due = String(row?.due_date || '').trim().slice(0, 10);
+    if (due) body.due = due + 'T00:00:00.000Z';
+    else if (includeClear) body.due = null;
+    return body;
+  }
+
+  // ============================================================
+  // Google Tasks API（fetch直叩き。gb-cal-cloud-sync.js の _graphJson/_googleEventsPage と同じ形）
+  // ============================================================
+
+  function _tasksQuote(value) { return encodeURIComponent(String(value || '')); }
+
+  function _tasksRemotePath(tasklistId, taskId) {
+    const base = '/lists/' + _tasksQuote(tasklistId) + '/tasks';
+    return taskId ? base + '/' + _tasksQuote(taskId) : base;
+  }
+
+  async function _tasksApiJson(accessToken, method, pathOrUrl, body, options = {}) {
+    const url = pathOrUrl.startsWith('https://') ? pathOrUrl : TASKS_API_BASE + pathOrUrl;
+    const headers = { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' };
+    const init = { method, headers };
+    if (body !== undefined) { init.body = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
+    const response = await fetch(url, init);
+    if (options.allow404 && response.status === 404) return { missing: true };
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null);
+      throw _httpError(detail?.error?.message || `Google Tasks APIエラー(${response.status})`, response.status);
+    }
+    const text = await response.text();
+    return text ? JSON.parse(text) : {};
+  }
+
+  async function _tasksPagedItems(accessToken, path) {
+    const items = [];
+    let pageToken = '';
+    for (;;) {
+      const sep = path.includes('?') ? '&' : '?';
+      const pagePath = path + (pageToken ? sep + 'pageToken=' + encodeURIComponent(pageToken) : '');
+      const data = await _tasksApiJson(accessToken, 'GET', pagePath);
+      items.push(...(data.items || []));
+      pageToken = data.nextPageToken || '';
+      if (!pageToken) return items;
+    }
+  }
+
+  async function _tasksRemoteItems(accessToken, tasklistId) {
+    const query = 'showCompleted=true&showDeleted=true&showHidden=true&maxResults=100';
+    return _tasksPagedItems(accessToken, _tasksRemotePath(tasklistId) + '?' + query);
+  }
+
+  // ============================================================
+  // 認証・トークン更新・スコープ確認
+  // ============================================================
+
+  async function _googleTasksAccessToken(provider) {
+    const auth = await _readAuth(provider, GOOGLE_TASKS_AUTH_PATH);
+    if (!auth?.refresh_token) throw _httpError('Google ToDo未接続', 400, 'not_connected');
+    if (auth.access_token && Number(auth.expires_at || 0) > Date.now() + TOKEN_EARLY_REFRESH_MS) return auth;
+    try {
+      const refreshed = await _oauth().google.refreshToken({
+        refreshToken: auth.refresh_token, clientId: auth.client_id, clientSecret: auth.client_secret,
+      });
+      const next = {
+        ...auth,
+        access_token: refreshed.access_token,
+        expires_at: Date.now() + Math.max(60, Number(refreshed.expires_in || 3600)) * 1000,
+        refresh_token: refreshed.refresh_token || auth.refresh_token,
+        scope: refreshed.scope || auth.scope || '',
+      };
+      await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, next);
+      return next;
+    } catch {
+      // gb-cal-cloud-sync.js の _googleAccessToken と同じ理由でrefresh_tokenごと破棄し、
+      // 次回 /cal/sync/status で connected:false に戻して再認証導線（ログインフォーム
+      // 再表示）につなげる。
+      await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, { ...auth, access_token: '', refresh_token: '', expires_at: 0 }).catch(() => {});
+      throw _httpError('Google ToDoの認証が失効しました。もう一度ログインしてください', 400, 'reauth_required');
+    }
+  }
+
+  async function _requireTasksScope(provider, auth) {
+    const scope = String(auth?.scope || '');
+    if (scope && !scope.includes('tasks')) {
+      // この接続はtasksスコープを含まないトークンで保存されている（再認証導線）。
+      // access/refresh_tokenを破棄し、次回のstatusで未接続に戻す。
+      await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, { ...auth, access_token: '', refresh_token: '', expires_at: 0 }).catch(() => {});
+      throw _httpError('この接続にはGoogle ToDoの権限が含まれていません。もう一度ログインしてください', 400, 'insufficient_scope');
+    }
+  }
+
+  async function _googleTasksEnsureList(provider, auth) {
+    if (auth.tasklist_id) return auth.tasklist_id;
+    const lists = await _tasksPagedItems(auth.access_token, '/users/@me/lists?maxResults=100');
+    const existing = lists.find((item) => item.title === GOOGLE_TASKS_LIST_TITLE && item.id);
+    if (existing) {
+      await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, { ...auth, tasklist_id: existing.id, tasklist_title: GOOGLE_TASKS_LIST_TITLE });
+      return existing.id;
+    }
+    const created = await _tasksApiJson(auth.access_token, 'POST', '/users/@me/lists', { title: GOOGLE_TASKS_LIST_TITLE });
+    if (!created.id) throw _httpError('Google ToDoリストを作成できませんでした', 502);
+    await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, { ...auth, tasklist_id: created.id, tasklist_title: GOOGLE_TASKS_LIST_TITLE });
+    return created.id;
+  }
+
+  // ============================================================
+  // pull（Google → ローカル）
+  // ============================================================
+
+  function _applyRemoteTask(rows, remote, user, now) {
+    const extId = String(remote?.id || '').trim();
+    if (!extId) return 'skipped';
+    const existing = _findExternalTaskRow(rows, extId, user);
+    const remoteUpdated = _tasksToLocalIso(remote.updated) || now;
+    if (remote.deleted) {
+      if (existing && _tasksExternalIsNewer(existing, remoteUpdated)) {
+        rows.splice(rows.indexOf(existing), 1);
+        return 'deleted';
+      }
+      return 'skipped';
+    }
+    const title = String(remote.title || '無題');
+    const description = String(remote.notes || '');
+    const dueDate = _tasksDueToDate(remote.due || '');
+    if (existing) {
+      if (!_tasksExternalIsNewer(existing, remoteUpdated)) return 'skipped';
+      Object.assign(existing, {
+        title, description, due_date: dueDate,
+        status: _tasksStatusToMeldex(remote.status, existing.status),
+        external_id: extId, task_source: GOOGLE_TASKS_SOURCE,
+        last_synced: remoteUpdated, modified: remoteUpdated,
+      });
+      return 'updated';
+    }
+    rows.push({
+      id: _randomId('gtask'), title, description,
+      status: _tasksStatusToMeldex(remote.status, ''),
+      priority: 'medium', due_date: dueDate,
+      assignee: '', labels: [], parent_id: '',
+      estimated_hours: 0, actual_hours: 0, related_path: '', sort_order: 0,
+      user: user || 'anonymous', creator: user || 'anonymous',
+      external_id: extId, task_source: GOOGLE_TASKS_SOURCE,
+      last_synced: remoteUpdated, created: remoteUpdated, modified: remoteUpdated,
+    });
+    return 'imported';
+  }
+
+  async function _pullGoogleTasks(rows, auth, tasklistId, user, now) {
+    const items = await _tasksRemoteItems(auth.access_token, tasklistId);
+    let imported = 0; let updated = 0; let deleted = 0; let skipped = 0;
+    items.forEach((remote) => {
+      const action = _applyRemoteTask(rows, remote, user, now);
+      if (action === 'imported') imported += 1;
+      else if (action === 'updated') updated += 1;
+      else if (action === 'deleted') deleted += 1;
+      else skipped += 1;
+    });
+    return { imported, updated, deleted, skipped, total: items.length };
+  }
+
+  // ============================================================
+  // push（ローカル → Google）。削除の反映は取得より先に行う
+  // （Desktop側 _sync_google_tasks と同じ順序。逆順だと、ローカルで削除済みの
+  //   タスクがGoogle側にまだ残っている状態のまま取得され、再インポートされて
+  //   一時的に復活してしまう）
+  // ============================================================
+
+  function _linksFromRows(rows, user) {
+    return rows
+      .filter((row) => String(row.task_source || '') === GOOGLE_TASKS_SOURCE && row.external_id)
+      .filter((row) => !user || row.user === user)
+      .map((row) => ({ id: row.id, external_id: row.external_id, user: row.user || '' }));
+  }
+
+  function _mergeLinks(previousLinks, currentUserLinks, user) {
+    const others = user ? previousLinks.filter((link) => link.user !== user) : [];
+    return [...others, ...currentUserLinks];
+  }
+
+  async function _pushDeletedLocal(auth, tasklistId, rows, user) {
+    const previousLinks = Array.isArray(auth.task_links) ? auth.task_links : [];
+    const relevant = user ? previousLinks.filter((link) => link.user === user) : previousLinks;
+    const currentIds = new Set(rows.map((row) => row.id));
+    let deleted = 0;
+    for (const link of relevant) {
+      if (currentIds.has(link.id) || !link.external_id) continue;
+      await _tasksApiJson(auth.access_token, 'DELETE', _tasksRemotePath(tasklistId, link.external_id), undefined, { allow404: true });
+      deleted += 1;
+    }
+    return deleted;
+  }
+
+  async function _pushLocalTasks(auth, tasklistId, rows, user, now) {
+    const result = { pushed: 0, updated: 0, skipped: 0 };
+    for (const row of _relevantLocalRows(rows, user)) {
+      const externalId = String(row.external_id || '').trim();
+      if (externalId && !_tasksLocalNeedsPush(row)) { result.skipped += 1; continue; }
+      let response;
+      if (externalId) {
+        response = await _tasksApiJson(auth.access_token, 'PATCH', _tasksRemotePath(tasklistId, externalId), _tasksBodyFromRow(row, { includeClear: true }), { allow404: true });
+        if (response.missing) {
+          response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+          result.pushed += 1;
+        } else {
+          result.updated += 1;
+        }
+      } else {
+        response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+        result.pushed += 1;
+      }
+      const remoteId = response.id || externalId;
+      const synced = _tasksToLocalIso(response.updated) || now;
+      row.external_id = remoteId;
+      row.task_source = GOOGLE_TASKS_SOURCE;
+      row.last_synced = synced;
+      row.modified = synced;
+    }
+    return result;
+  }
+
+  // ============================================================
+  // 同期オーケストレーション
+  // ============================================================
+
+  async function _syncGoogleTasks(provider, body) {
+    const user = String(body?.user || '').trim();
+    const auth0 = await _googleTasksAccessToken(provider);
+    await _requireTasksScope(provider, auth0);
+    const tasklistId = await _googleTasksEnsureList(provider, auth0);
+    const auth = (await _readAuth(provider, GOOGLE_TASKS_AUTH_PATH)) || auth0;
+    const rows = await _readTasks(provider);
+    const now = _nowIso();
+
+    const deletedRemote = await _pushDeletedLocal(auth, tasklistId, rows, user);
+    const pull = await _pullGoogleTasks(rows, auth, tasklistId, user, now);
+    const push = await _pushLocalTasks(auth, tasklistId, rows, user, now);
+
+    await _writeTasks(provider, rows);
+
+    const currentUserLinks = _linksFromRows(rows, user);
+    const previousLinks = Array.isArray(auth.task_links) ? auth.task_links : [];
+    await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, { ...auth, task_links: _mergeLinks(previousLinks, currentUserLinks, user) });
+
+    return {
+      ok: true,
+      tasklist_id: tasklistId,
+      pull,
+      push,
+      deleted_remote: deletedRemote,
+      imported: pull.imported,
+      updated: pull.updated + push.updated,
+      pushed: push.pushed,
+      deleted: pull.deleted,
+      skipped: pull.skipped + push.skipped,
+      total: pull.total,
+    };
+  }
+
+  // ============================================================
+  // ステータス・ハンドラ登録
+  // ============================================================
+
+  async function _statusPayload(provider) {
+    const auth = await _readAuth(provider, GOOGLE_TASKS_AUTH_PATH);
+    return {
+      available: true,
+      connected: !!auth?.refresh_token,
+      listTitle: auth?.tasklist_title || GOOGLE_TASKS_LIST_TITLE,
+    };
+  }
+
+  async function _calCloudTasksHandler({ method, body, pathname }) {
+    if (pathname === '/cal/sync/google/tasks/sync' && method === 'POST') {
+      return _syncGoogleTasks(await _requirePwaProvider('readwrite'), body || {});
+    }
+    return NOT_HANDLED;
+  }
+  handlers.push(_calCloudTasksHandler);
+
+  // ============================================================
+  // 認証（UI直接呼び出し用。gb-cal-cloud-sync.js の authorizeGoogle/authorizeMicrosoft と
+  // 同じ理由でポップアップをクリックハンドラから同期的に開けるよう、apiPost経由の
+  // 間接呼び出しにはしない）
+  // ============================================================
+
+  async function authorizeGoogleTasks({ clientId, clientSecret, popup }) {
+    const id = String(clientId || '').trim();
+    const secret = String(clientSecret || '').trim();
+    const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, scope: GOOGLE_TASKS_SCOPE, popup });
+    const provider = await _requirePwaProvider('readwrite');
+    const existing = await _readAuth(provider, GOOGLE_TASKS_AUTH_PATH);
+    await _writeAuth(provider, GOOGLE_TASKS_AUTH_PATH, {
+      client_id: id,
+      client_secret: secret,
+      access_token: token.access_token,
+      refresh_token: token.refresh_token || existing?.refresh_token || '',
+      expires_at: Date.now() + Math.max(60, Number(token.expires_in || 3600)) * 1000,
+      scope: token.scope || '',
+      tasklist_id: existing?.tasklist_id || '',
+      tasklist_title: existing?.tasklist_title || GOOGLE_TASKS_LIST_TITLE,
+      task_links: existing?.task_links || [],
+      connected_at: _nowIso(),
+    });
+    return { ok: true, message: 'Google ToDo認証成功' };
+  }
+
+  window.MeldexCalCloudTasks = {
+    TASKS_PATH,
+    GOOGLE_TASKS_AUTH_PATH,
+    GOOGLE_TASKS_SCOPE,
+    authorizeGoogleTasks,
+    // テスト・診断用に内部関数も公開する（gb-cal-cloud-sync.js の _internal と同じ方針）。
+    _internal: {
+      statusPayload: _statusPayload,
+      syncGoogleTasks: _syncGoogleTasks,
+      readAuth: _readAuth,
+      writeAuth: _writeAuth,
+      readTasks: _readTasks,
+      writeTasks: _writeTasks,
+    },
+  };
+})();
+
+;
+
+/* === gb-cal-ics-subscribe.js === */
+;
+/* ==============================
+   gb-cal-ics-subscribe.js: iPhone向けICS購読（読み取り専用）
+
+   Cloud外部カレンダー連携 Phase 5・案A（app/docs/production-management-ux-improvement-plan-2026-08-04.md §6.5）。
+   Meldexのカレンダー（表示対象イベント）を .ics としてDropboxの管理領域へ
+   書き出し、Dropboxの共有リンクを「照会（購読）カレンダー」としてiPhone等へ
+   登録してもらう。書き出しは既存の /cal/sync/ical/export（gb-data-access-dropbox
+   -expanded.part02.js の _handleCalendar）が返すiCal本文を再利用し、iCal生成
+   ロジックを重複させない。
+
+   共有リンク自動作成は Dropbox API sharing.write スコープに依存する（gb-config.js
+   参照）。このスコープは2026-08-04に新規追加したため、既存の接続セッションは
+   再接続するまで持たない。作成に失敗した場合は例外を投げるので、呼び出し側
+   （gb-tool-calendar-sync.js）はファイルパスを示す手動作成の案内へフォールバックする。
+   ============================== */
+(function () {
+  'use strict';
+
+  const ICS_RELATIVE_PATH = '_calendar/meldex-subscribe.ics';
+  const AUTO_REFRESH_FLAG_KEY = 'meldex-cal-ics-subscription-enabled';
+
+  function _dropboxAuth() {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth) throw new Error('gb-dropbox-auth.js が読み込まれていません');
+    return auth;
+  }
+
+  function _rootResolver() {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    return resolver;
+  }
+
+  function _joinDropboxPath(root, relative) {
+    const base = String(root || '').replace(/\/+$/, '');
+    const rel = String(relative || '').replace(/^\/+/, '');
+    return `${base}/${rel}`;
+  }
+
+  // ============================================================
+  // .ics 書き出し（既存の /cal/sync/ical/export を再利用する）
+  // ============================================================
+
+  async function refreshIcsFile() {
+    if (!window.MeldexDataAccess?.requestJson) throw new Error('Cloud保存APIが初期化されていません');
+    const exported = await window.MeldexDataAccess.requestJson('/cal/sync/ical/export');
+    if (!exported?.content) throw new Error('カレンダーの書き出しに失敗しました');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    const internals = window.__MeldexPwaDataAccessInternals;
+    if (internals?._directoryHandle) await internals._directoryHandle(provider, '_calendar', true);
+    await provider.writeText(ICS_RELATIVE_PATH, String(exported.content || ''));
+    return { ok: true, path: ICS_RELATIVE_PATH, bytes: exported.content.length };
+  }
+
+  // ============================================================
+  // Dropbox 共有リンク（sharing.write スコープが必要。無ければ例外を投げる）
+  // ============================================================
+
+  function _toDirectDownloadUrl(shareUrl) {
+    try {
+      const url = new URL(shareUrl);
+      url.searchParams.set('dl', '1');
+      return url.toString();
+    } catch {
+      return shareUrl;
+    }
+  }
+
+  function _toWebcalUrl(directUrl) {
+    return directUrl.replace(/^https?:\/\//i, 'webcal://');
+  }
+
+  async function _absoluteIcsPath(provider) {
+    const { rootPath, namespaceKind } = await _rootResolver().resolveConnectionInfo(provider);
+    return { path: _joinDropboxPath(rootPath, ICS_RELATIVE_PATH), namespaceKind };
+  }
+
+  async function _existingSharedLink(path, namespaceKind) {
+    const result = await _dropboxAuth().apiRpc(
+      'sharing/list_shared_links',
+      { path, direct_only: true },
+      { namespaceKind },
+    );
+    const link = (result?.links || [])[0];
+    return link?.url || '';
+  }
+
+  async function _createSharedLink(path, namespaceKind) {
+    const result = await _dropboxAuth().apiRpc(
+      'sharing/create_shared_link_with_settings',
+      { path, settings: { requested_visibility: 'public' } },
+      { namespaceKind },
+    );
+    return result?.url || '';
+  }
+
+  async function createSubscriptionLink() {
+    await refreshIcsFile();
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    const { path, namespaceKind } = await _absoluteIcsPath(provider);
+    let shareUrl = '';
+    try {
+      shareUrl = await _existingSharedLink(path, namespaceKind);
+      if (!shareUrl) shareUrl = await _createSharedLink(path, namespaceKind);
+    } catch (err) {
+      const message = String(err?.message || err || '');
+      const scopeIssue = /scope|permission|not_authorized/i.test(message);
+      const wrapped = new Error(
+        scopeIssue
+          ? 'Dropboxの共有権限が不足しています。設定でDropbox接続を一度解除し、再接続してください（購読リンクの自動作成には追加の権限が必要です）'
+          : `Dropbox共有リンクの作成に失敗しました: ${message}`,
+      );
+      wrapped.cause = err;
+      wrapped.code = scopeIssue ? 'missing_scope' : 'link_create_failed';
+      wrapped.manualPath = path;
+      throw wrapped;
+    }
+    try { localStorage.setItem(AUTO_REFRESH_FLAG_KEY, '1'); } catch {}
+    const direct = _toDirectDownloadUrl(shareUrl);
+    return {
+      ok: true,
+      relativePath: ICS_RELATIVE_PATH,
+      absolutePath: path,
+      shareUrl,
+      directUrl: direct,
+      webcalUrl: _toWebcalUrl(direct),
+    };
+  }
+
+  function isAutoRefreshEnabled() {
+    try { return localStorage.getItem(AUTO_REFRESH_FLAG_KEY) === '1'; } catch { return false; }
+  }
+
+  // コミット前レビュー指摘 #4: この関数自体は「購読用ファイルの自動更新が有効なら
+  // 書き出し直す」だけの単発処理。呼び出し元（gb-tool-calendar-sync.js の
+  // _googleCalAutoSync / _microsoftCalAutoSync 成功後フック）が5分間隔で叩くため、
+  // 同一実行が重ならないよう多重実行ガードを持つ。
+  let _icsAutoRefreshInFlight = false;
+
+  async function autoRefreshIfEnabled() {
+    if (!isAutoRefreshEnabled()) return { ok: true, skipped: true };
+    if (_icsAutoRefreshInFlight) return { ok: true, skipped: true, inFlight: true };
+    _icsAutoRefreshInFlight = true;
+    try {
+      return await refreshIcsFile();
+    } catch (err) {
+      console.warn('[MeldexCalIcsSubscribe] 購読用.icsファイルの自動更新に失敗しました:', err);
+      return { ok: false, error: err?.message || String(err) };
+    } finally {
+      _icsAutoRefreshInFlight = false;
+    }
+  }
+
+  window.MeldexCalIcsSubscribe = {
+    ICS_RELATIVE_PATH,
+    refreshIcsFile,
+    createSubscriptionLink,
+    isAutoRefreshEnabled,
+    autoRefreshIfEnabled,
+  };
+})();
+
+;
+
 /* === gb-data-access-dropbox-expanded.js === */
 ;
 (function () {
@@ -14977,9 +19578,9 @@
   internals._isProductionProtectedStructurePath = _isProductionProtectedStructurePath;
   internals._rejectProductionStructureMutation = _rejectProductionStructureMutation;
 
-  const SECRET_FILE = '_meldex/secrets/llm-api-keys.v1.json';
+  const SECRET_FILE = '/MeldexSettings/secrets/v1/llm-api-keys.v1.json';
   const CALENDAR_STORE_DIR = '_calendar';
-  const VERSION_FOLDER_DIR = '_meldex/versions/folders';
+  const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
   const CALENDAR_DB_FIELDS = [
     'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'location', 'url', 'description',
     'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members',
@@ -15105,6 +19706,36 @@
     return { path: note, ...parsed };
   }
 
+  // 計算列（読み取り専用・コードが更新する列）: フォルダノートの computed_props 宣言を
+  // 読み、Desktop側 _reject_computed_property_edit() と同じ拒否をCloud保存経路にも掛ける
+  // （多層防御。内部の再計算フックはこの経路を通らずフロントマターを直接書くため対象外）。
+  async function _computedPropsForSheet(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const raw = note?.frontmatter?.computed_props;
+      if (!Array.isArray(raw)) return [];
+      return raw.map(name => String(name || '').trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  async function _rejectComputedPropertyEdit(provider, dbPath, propNames) {
+    const computed = await _computedPropsForSheet(provider, dbPath);
+    if (!computed.length) return;
+    const set = new Set(computed);
+    const names = (Array.isArray(propNames) ? propNames : [propNames])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    if (!names.some(name => set.has(name))) return;
+    const error = new Error('この列は自動計算のため直接編集できません');
+    error.status = 403;
+    error.code = 'COMPUTED_PROPERTY_READONLY';
+    throw error;
+  }
+
+  internals._rejectComputedPropertyEdit = _rejectComputedPropertyEdit;
+
   async function _ensureFolderNote(provider, folderPath, type) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
@@ -15114,13 +19745,19 @@
     const existing = await _readFrontmatterFile(provider, note);
     const frontmatter = { ...(existing.frontmatter || {}) };
     if (!frontmatter.type) frontmatter.type = type || 'settings-db';
+    // 制作管理シート（制作管理/シート/*）は「物理.md＝正」が全ロジック（Cloud/Desktopの
+    // 一覧・重複チェック・再計算・同期フック）の不変条件のため、sheet-store化しない
+    // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 1）。
+    const productionSheet = _isProductionManagementSheetMetadataPath(folder);
     if (frontmatter.type === 'settings-db') {
       if (!frontmatter.schema_version) frontmatter.schema_version = 1;
-      if (!frontmatter.storage) frontmatter.storage = 'sqlite';
-      if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      if (!productionSheet) {
+        if (!frontmatter.storage) frontmatter.storage = 'sqlite';
+        if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      }
     }
     await _writeFrontmatterFile(provider, note, frontmatter, existing.body || `# ${name}\n\n`);
-    if (frontmatter.type === 'settings-db') await _ensureSheetStore(provider, folder);
+    if (frontmatter.type === 'settings-db' && !productionSheet) await _ensureSheetStore(provider, folder);
     return note;
   }
 
@@ -15603,6 +20240,51 @@
     };
   }
 
+  // 制作管理UX改善計画（2026-08-04）Stage 4: window.MeldexProductionManagement.
+  // applyTaskNameAutoRenameOnValueUpdate が返す rename_info を /value レスポンスへ合流させる。
+  // Desktop meldex_api_database.part01.py の attach_auto_task_rename_result と同じ契約
+  // （path/file/new_path/auto_renamed_entry）を返す。gb-db-core.js の _apiPutValue /
+  // _apiPostValue は既にこの契約を汎用的に消費するため（_dbApplyAutoTaskRenameResult /
+  // res.new_path でのvalObj.file更新）、フロント側の追加対応は不要。
+  function _attachAutoTaskRenameResult(result, renameInfo) {
+    if (!result || typeof result !== 'object' || !renameInfo || !renameInfo.auto_generated) return result;
+    result.auto_renamed_entry = renameInfo;
+    const newPath = String(renameInfo.new_path || '');
+    if (newPath) {
+      result.path = newPath;
+      result.file = newPath;
+      result.new_path = newPath;
+    }
+    return result;
+  }
+
+  // 制作管理UX改善計画（2026-08-04）コミット前レビュー指摘 #1: セル保存の4関数（本ファイル）が
+  // await している制作管理フック（目標作業時間の再計算・タスク名自動リネーム）は、あくまで
+  // 保存後の追従処理であり、フックが例外を投げてもセル本体の保存は必ず成功させる
+  // （Desktop meldex_production_sheet_sync_hooks.sync_after_sheet_value_edit が全体を
+  // try/except で包み「保存を守る」意味論と同じにする）。フック失敗はconsole.warnに記録する
+  // だけで、呼び出し元へは伝播させない。
+  async function _pmSafeApplyDurationRecalcHook(provider, path, frontmatter, changedProperty) {
+    try {
+      await window.MeldexProductionManagement?.applyTaskDurationRecalcOnValueUpdate?.(
+        provider, path, frontmatter, changedProperty,
+      );
+    } catch (err) {
+      console.warn('制作管理: 目標作業時間の再計算フックが失敗しました（セル保存は続行します）:', err);
+    }
+  }
+
+  async function _pmSafeApplyTaskNameAutoRenameHook(provider, path, frontmatter) {
+    try {
+      return await window.MeldexProductionManagement?.applyTaskNameAutoRenameOnValueUpdate?.(
+        provider, path, frontmatter,
+      );
+    } catch (err) {
+      console.warn('制作管理: タスク名自動リネームフックが失敗しました（セル保存は続行します）:', err);
+      return null;
+    }
+  }
+
   async function _updateSheetStoreValue(provider, path, body) {
     let stored = null;
     try {
@@ -15616,10 +20298,17 @@
       throw new Error(`エントリが見つかりません: ${path}`);
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addSheetStoreValue(provider, body) {
@@ -15629,6 +20318,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
@@ -15642,8 +20332,14 @@
     list.push(candidate);
     props[prop] = list;
     stored.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, stored.frontmatter, prop,
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
-    return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, stored.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _updateValue(provider, path, body) {
@@ -15667,9 +20363,16 @@
       await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
       return { ok: true };
     }
+    await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     const applied = _applySettingsEntryValueUpdate(parsed, normalized, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, normalized, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, normalized, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addValue(provider, body) {
@@ -15678,6 +20381,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
+    await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
@@ -15695,8 +20399,14 @@
     list.push(candidate);
     props[prop] = list;
     parsed.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, entryPath, parsed.frontmatter, prop,
+    );
     await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
-    return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, entryPath, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _createEntity(provider, body) {
@@ -15706,6 +20416,9 @@
     _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
     await _ensureFolderNote(provider, parent, 'settings-db');
+    // 汚染済みの制作管理シートは、この時点で修復してから保存方式を判定する
+    // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
+    await _repairProductionSheetStoreIfNeeded(provider, parent);
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
     const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
@@ -15714,7 +20427,7 @@
     const frontmatter = {
       type: 'settings-entry',
       id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
-      category: _basename(parent),
+      category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
       properties: _normalizeCreateProperties(body?.properties || {}),
@@ -15722,6 +20435,7 @@
       source: body?.source || '',
       reviewed: body?.reviewed === true,
     };
+    await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
     if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
     else await _writeFrontmatterFile(provider, path, frontmatter, '');
     return {
@@ -15907,6 +20621,9 @@
       validation_rules: Array.isArray(fm.validation_rules) ? fm.validation_rules : [],
       storage: fm.storage || '',
       cloud_storage: fm.cloud_storage || '',
+      // 計算列（読み取り専用・コードが更新する列）宣言。追加のみの後方互換キー
+      // （旧版はこのキーを無視して読める。制作管理UX改善計画§5-1）。
+      computed_props: Array.isArray(fm.computed_props) ? fm.computed_props : [],
     };
   }
 
@@ -15939,6 +20656,74 @@
       && parts[sheetIndex + 1] === 'シート'
       && !!parts[sheetIndex + 2];
   }
+
+  // 制作管理シートの暗黙sheet-store化（ストア汚染）の修復
+  // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 2）。
+  // v0.6.120〜v0.7.146 の /entity/create・CSV取込・/db-metadata が制作管理シートを
+  // sheet-store化してしまった場合に、(1) store行の物理.md化 (2) storeファイル削除
+  // (3) フォルダノートの storage系キー除去 を行い「物理.md＝正」の不変条件へ戻す。冪等。
+  // 修復ルール: 物理.mdが無い行→storeの内容で物理化 / 物理があり id 一致（または判定
+  // 不能）→物理を正としてstore行を破棄（セル編集は _writeEntity が物理とstoreの両方へ
+  // 書くため物理は常にstore以上に新しい）/ 物理があり id 不一致（同一パス衝突）→
+  // store行は別エントリのユーザーデータなので一意名で物理化して退避（破棄しない）。
+  const PRODUCTION_SQLITE_STORAGE_KEYS = ['storage', 'sheet_storage', 'entry_storage', 'storage_backend'];
+
+  function _scrubProductionStorageKeys(frontmatter) {
+    let changed = false;
+    PRODUCTION_SQLITE_STORAGE_KEYS.forEach((key) => {
+      if (String(frontmatter[key] || '').toLowerCase() === 'sqlite') {
+        delete frontmatter[key];
+        changed = true;
+      }
+    });
+    if (String(frontmatter.cloud_storage || '').toLowerCase() === 'sheet-store-v1') {
+      delete frontmatter.cloud_storage;
+      changed = true;
+    }
+    return changed;
+  }
+
+  async function _repairProductionSheetStoreIfNeeded(provider, dbPath) {
+    const base = _normalizeFolderPath(dbPath);
+    if (!_isProductionManagementSheetMetadataPath(base)) return { repaired: false };
+    const storePath = _sheetStorePath(base);
+    const storeEntry = await _resolveEntryHandle(provider, storePath).catch(() => null);
+    let materialized = 0;
+    if (storeEntry?.kind === 'file') {
+      const store = _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), base);
+      for (const row of Object.values(store.rows || {})) {
+        const fileName = _sheetStoreFileName(row?.file_name || row?.path || row?.name || '');
+        if (!fileName || fileName.startsWith('_') || fileName === _basename(base) + '.md') continue;
+        const rowFrontmatter = { ...(row?.frontmatter || {}) };
+        if (String(rowFrontmatter.type || '') !== 'settings-entry') continue;
+        const filePath = _joinPath(base, fileName);
+        const physical = await _resolveEntryHandle(provider, filePath).catch(() => null);
+        if (!physical || physical.kind !== 'file') {
+          await _writeFrontmatterFile(provider, filePath, rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+          continue;
+        }
+        const parsed = await _readFrontmatterFile(provider, filePath);
+        const physicalId = String(parsed.frontmatter?.id || '');
+        const rowId = String(rowFrontmatter.id || '');
+        if (physicalId && rowId && physicalId !== rowId) {
+          const stem = await _uniqueName(provider, base, fileName.replace(/\.md$/i, ''), '.md');
+          await _writeFrontmatterFile(provider, _joinPath(base, stem + '.md'), rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+        }
+      }
+      await provider.deletePath(storePath);
+    }
+    const notePath = _joinPath(base, _basename(base) + '.md');
+    const note = await _readFrontmatterFile(provider, notePath);
+    const noteFrontmatter = { ...(note.frontmatter || {}) };
+    if (Object.keys(noteFrontmatter).length && _scrubProductionStorageKeys(noteFrontmatter)) {
+      await _writeFrontmatterFile(provider, notePath, noteFrontmatter, note.body || `# ${_basename(base)}\n\n`);
+    }
+    return { repaired: storeEntry?.kind === 'file', materialized };
+  }
+
+  internals._repairProductionSheetStoreIfNeeded = _repairProductionSheetStoreIfNeeded;
 
   const PRODUCTION_RESERVED_LEGACY_PROPERTIES = Object.freeze({
     '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
@@ -16054,6 +20839,8 @@
     }
     await _requireUnlocked(provider, target, { action: 'db-metadata' });
     await _ensureFolderNote(provider, target, 'settings-db');
+    // 汚染済みの制作管理シートは列設定保存でも自己修復する（ノート浄化後に読み直す）
+    await _repairProductionSheetStoreIfNeeded(provider, target);
     const notePath = await _folderNotePath(provider, target);
     const parsed = await _readFrontmatterFile(provider, notePath);
     const fm = { ...(parsed.frontmatter || {}) };
@@ -16078,12 +20865,14 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
     if (!fm.type) fm.type = 'settings-db';
-    if (fm.type === 'settings-db') {
+    // 制作管理シートはsheet-store化しない（_ensureFolderNote と同じ不変条件。
+    // 保存方式の明示変更自体は _rejectProductionStructuralMetadataChanges が既に拒否する）。
+    if (fm.type === 'settings-db' && !_isProductionManagementSheetMetadataPath(target)) {
       if (!fm.storage) fm.storage = 'sqlite';
       if (!fm.cloud_storage) fm.cloud_storage = 'sheet-store-v1';
       await _ensureSheetStore(provider, target);
@@ -16692,6 +21481,7 @@
   }
 
   function _parseImportCsv(text) {
+    if (window.MeldexCsv) return window.MeldexCsv.parse(text).rows;
     const normalized = String(text || '').replace(/^\uFEFF/, '');
     const rows = [];
     let row = [];
@@ -16737,42 +21527,266 @@
     return rows;
   }
 
+  async function _readImportCsvText(provider, path) {
+    if (typeof provider.downloadAsFile === 'function') {
+      const file = await provider.downloadAsFile(path);
+      const bytes = await file.arrayBuffer();
+      const view = new Uint8Array(bytes);
+      const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+      try {
+        return {
+          text: new TextDecoder('utf-8', { fatal: true }).decode(bytes),
+          encoding: bom ? 'utf-8-bom' : 'utf-8',
+          bom,
+        };
+      } catch {
+        return {
+          text: new TextDecoder('shift_jis', { fatal: true }).decode(bytes),
+          encoding: 'cp932',
+          bom: false,
+        };
+      }
+    }
+    const text = await provider.readText(path);
+    return { text, encoding: 'utf-8', bom: String(text || '').charCodeAt(0) === 0xFEFF };
+  }
+
+  function _csvImportSpecs(body, rows) {
+    const hasHeader = body?.has_header !== false && body?.hasHeader !== false;
+    const columnCount = rows.reduce((max, row) => Math.max(max, row?.length || 0), 0);
+    if (!columnCount) throw new Error('CSVに列がありません');
+    const baseHeaders = hasHeader ? rows[0] || [] : [];
+    const headers = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(Array.from({ length: columnCount }, (_, index) => baseHeaders[index] || `列${index + 1}`))
+      : _sheetImportHeaders(baseHeaders);
+    let renamedHeaders = headers.reduce((count, name, index) => (
+      name !== String(baseHeaders[index] ?? '').trim() ? count + 1 : count
+    ), 0);
+    const start = hasHeader ? 1 : 0;
+    const supplied = Array.isArray(body?.columns) ? body.columns : [];
+    const columns = headers.map((header, index) => {
+      const inferred = window.MeldexCsv
+        ? window.MeldexCsv.inferColumn(rows.slice(start).map(row => row?.[index] ?? ''))
+        : { type: 'text', formula: '', warning: '' };
+      const configured = supplied[index] && typeof supplied[index] === 'object' ? supplied[index] : {};
+      const type = String(configured.type || inferred.type || 'text');
+      const formula = String(configured.formula || inferred.formula || '');
+      const name = String(configured.name || header).trim() || header;
+      if (!['text', 'number', 'formula'].includes(type)) throw new Error(`未対応の列タイプです: ${type}`);
+      if (type === 'formula' && (!window.MeldexCsv || !window.MeldexCsv.isMeldexFormula(formula))) {
+        throw new Error(`列「${name}」のMeldex数式が正しくありません`);
+      }
+      if (type === 'number' && window.MeldexCsv) {
+        const invalid = rows.slice(start).find(row => String(row?.[index] ?? '').trim() && !window.MeldexCsv.isSafeNumber(row?.[index]));
+        if (invalid) throw new Error(`列「${name}」に数値でない値があります`);
+      }
+      return { name, type, formula, warning: String(configured.warning || inferred.warning || '') };
+    });
+    const uniqueNames = window.MeldexCsv
+      ? window.MeldexCsv.uniqueHeaders(columns.map(column => column.name))
+      : _sheetImportHeaders(columns.map(column => column.name));
+    columns.forEach((column, index) => {
+      if (column.name !== uniqueNames[index]) renamedHeaders += 1;
+      column.name = uniqueNames[index];
+    });
+    const itemColumn = Number(body?.item_name_column ?? body?.itemNameColumn ?? 0);
+    if (!Number.isInteger(itemColumn) || itemColumn < 0 || itemColumn >= columns.length) {
+      throw new Error('項目名に使う列が範囲外です');
+    }
+    const records = [];
+    const names = new Set();
+    let completed = 0;
+    let renamed = 0;
+    rows.slice(start).forEach((row, offset) => {
+      const rawName = String(row?.[itemColumn] ?? '').trim();
+      const baseName = rawName || `行 ${offset + 1}`;
+      if (!rawName) completed += 1;
+      let name = baseName;
+      let suffix = 2;
+      while (names.has(name)) {
+        name = `${baseName} ${suffix}`;
+        suffix += 1;
+      }
+      if (name !== baseName) renamed += 1;
+      names.add(name);
+      const properties = {};
+      columns.forEach((column, index) => {
+        if (index === itemColumn || column.type === 'formula') return;
+        const value = String(row?.[index] ?? '');
+        if (!value) return;
+        properties[column.name] = [{ value, status: '採用', note: '', created: _nowIso() }];
+      });
+      records.push({ name, properties });
+    });
+    return {
+      columns,
+      records,
+      itemColumn,
+      completed,
+      renamed,
+      renamedHeaders,
+      warnings: columns.map(column => column.warning).filter(Boolean),
+    };
+  }
+
+  async function _setCsvImportPropertyTypes(provider, dbPath, specs, append) {
+    const notePath = await _folderNotePath(provider, dbPath);
+    if (!notePath) throw new Error('シート定義を作成できませんでした');
+    const parsed = await _readFrontmatterFile(provider, notePath);
+    const frontmatter = { ...(parsed.frontmatter || {}) };
+    const current = frontmatter.property_types && typeof frontmatter.property_types === 'object'
+      ? { ...frontmatter.property_types }
+      : {};
+    const incoming = {};
+    specs.columns.forEach((column, index) => {
+      if (index === specs.itemColumn) return;
+      incoming[column.name] = column.type === 'formula'
+        ? { type: 'formula', formula: column.formula }
+        : { type: column.type };
+    });
+    if (append) {
+      const conflicts = Object.entries(incoming).filter(([name, spec]) => {
+        const existing = current[name];
+        return existing && (String(existing.type || 'text') !== spec.type
+          || (spec.type === 'formula' && String(existing.formula || '') !== spec.formula));
+      });
+      if (conflicts.length) throw new Error(`列タイプが一致しません: ${conflicts.map(([name]) => name).join('、')}`);
+    }
+    frontmatter.property_types = { ...current, ...incoming };
+    await _writeFrontmatterFile(provider, notePath, frontmatter, parsed.body || '');
+  }
+
   async function _importCsvToDb(provider, body) {
     const csvPath = _normalizeFolderPath(body?.csv_path || body?.csvPath || '');
-    const dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
-    if (!csvPath || !dbPath) throw new Error('csv_path and db_path required');
-    const csvEntry = await _resolveEntryHandle(provider, csvPath);
-    if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
-    const rows = _parseImportCsv(await provider.readText(csvPath));
-    if (!rows.length) return { ok: true, count: 0 };
-    const headers = _sheetImportHeaders(rows[0]);
-    if (!headers.length) return { ok: true, count: 0 };
-    _rejectProductionReservedLegacyProperties(dbPath, headers.slice(1));
-    await _requireUnlocked(provider, dbPath, { action: 'import-csv' });
-    await _ensureFolderNote(provider, dbPath, 'settings-db');
-    await _mergeSheetImportPropertyTypes(provider, dbPath, _sheetImportPropertySpecs(rows[0], headers, rows.slice(1)));
-    let count = 0;
-    for (const row of rows.slice(1)) {
-      const entityName = _sheetImportCellText(row?.[0]);
-      if (!entityName) continue;
-      const properties = {};
-      headers.slice(1).forEach((propName, offset) => {
-        if (!propName) return;
-        const rawText = _sheetImportCellText(row?.[offset + 1]);
-        if (!rawText) return;
-        if (!properties[propName]) properties[propName] = [];
-        properties[propName].push({ value: rawText, status: '採用', note: '', created: _nowIso() });
-      });
-      await _createEntity(provider, {
-        parent_path: dbPath,
-        name: entityName,
-        properties,
-        source: 'csv-import',
-        user: body?.user || 'anonymous',
-      });
-      count += 1;
+    let content = body?.content;
+    let encoding = String(body?.encoding || '');
+    let bom = body?.bom;
+    if (content == null) {
+      if (!csvPath) throw new Error('csv_path または content が必要です');
+      const csvEntry = await _resolveEntryHandle(provider, csvPath);
+      if (!csvEntry || csvEntry.kind !== 'file') throw new Error('CSV not found');
+      const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      if (expectedEtag) {
+        const currentEtag = await _fileEtag(provider, csvPath, csvEntry);
+        if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(csvPath, expectedEtag, currentEtag);
+      }
+      const read = await _readImportCsvText(provider, csvPath);
+      content = read.text;
+      encoding = encoding || read.encoding;
+      if (bom == null) bom = read.bom;
     }
-    return { ok: true, count };
+    if (typeof content !== 'string') throw new Error('content must be text');
+    const parsed = window.MeldexCsv
+      ? window.MeldexCsv.parse(content, { delimiter: body?.delimiter || '', encoding, bom })
+      : { rows: _parseImportCsv(content), dialect: { delimiter: ',', newline: '\n', encoding } };
+    if (!parsed.rows.length) throw new Error('CSVに行がありません');
+    const specs = _csvImportSpecs(body || {}, parsed.rows);
+    const explicit = ['mode', 'has_header', 'hasHeader', 'item_name_column', 'itemNameColumn', 'columns', 'sheet_name']
+      .some(key => Object.prototype.hasOwnProperty.call(body || {}, key));
+    const mode = String(body?.mode || (explicit ? 'create' : 'append')).toLowerCase();
+    if (!['create', 'append'].includes(mode)) throw new Error('mode は create または append を指定してください');
+    let dbPath = _normalizeFolderPath(body?.db_path || body?.dbPath || '');
+    if (!dbPath) {
+      const parent = _normalizeFolderPath(body?.destination_parent || '');
+      const stem = String(body?.filename || 'CSV').replace(/\.[^.]+$/, '') || 'CSV';
+      dbPath = _joinPath(parent, _safeFileStem(stem, 'CSV'));
+    }
+    if (!dbPath) throw new Error('保存先が必要です');
+    let targetPath = dbPath;
+    const targetExists = await _pathExists(provider, targetPath);
+    const legacyCreate = !explicit && mode === 'append' && !targetExists;
+    if (mode === 'append' && !targetExists && !legacyCreate) throw new Error('追加先シートが見つかりません');
+    if (mode === 'create' && targetExists) {
+      const unique = await _uniqueName(provider, _dirname(targetPath), _basename(targetPath), '');
+      targetPath = _joinPath(_dirname(targetPath), unique);
+    }
+    await _requireUnlocked(provider, targetPath, { action: 'import-csv' });
+
+    _rejectProductionReservedLegacyProperties(
+      targetPath,
+      specs.columns.filter((_column, index) => index !== specs.itemColumn).map(column => column.name),
+    );
+    const legacyDateSpecs = explicit
+      ? null
+      : _sheetImportPropertySpecs(parsed.rows[0] || [], _sheetImportHeaders(parsed.rows[0] || []), parsed.rows.slice(1));
+
+    const importInto = async (path, category) => {
+      await _ensureFolderNote(provider, path, 'settings-db');
+      if (legacyDateSpecs) await _mergeSheetImportPropertyTypes(provider, path, legacyDateSpecs);
+      else await _setCsvImportPropertyTypes(provider, path, specs, mode === 'append');
+      for (const record of specs.records) {
+        await _createEntity(provider, {
+          parent_path: path,
+          category,
+          name: record.name,
+          properties: record.properties,
+          source: 'csv-import',
+          user: body?.user || 'anonymous',
+        });
+      }
+    };
+
+    // 取込先が存在しない場合（append指定の暗黙作成 legacyCreate を含む）は、既存フォルダの
+    // コピー・バックアップを前提とする追記経路を使えないため、新規作成経路で取り込む。
+    if (mode === 'create' || !targetExists) {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      try {
+        await importInto(tempPath, _basename(targetPath));
+        const tempNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        const finalNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        if (tempNote !== finalNote) await provider.movePath(tempNote, finalNote);
+        await provider.movePath(tempPath, targetPath);
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        throw error;
+      }
+    } else {
+      const tempPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-import-${_randomId('')}`);
+      const backupPath = _joinPath(_dirname(targetPath), `.${_basename(targetPath)}.meldex-backup-${_randomId('')}`);
+      let originalMoved = false;
+      try {
+        await provider.copyPath(targetPath, tempPath);
+        // フォルダノートは「フォルダ名と同名の.md」で解決されるため、一時フォルダ内では
+        // 実ノートを一時フォルダ名へ改名してから取り込む（そのままだと _ensureFolderNote が
+        // 別ノートを新規作成し、既存メタデータを引き継がず列型のマージ先も分裂する）。
+        const copiedNote = _joinPath(tempPath, _basename(targetPath) + '.md');
+        const workingNote = _joinPath(tempPath, _basename(tempPath) + '.md');
+        if (await _pathExists(provider, copiedNote)) await provider.movePath(copiedNote, workingNote);
+        await importInto(tempPath, _basename(targetPath));
+        await provider.movePath(workingNote, copiedNote);
+        await provider.movePath(targetPath, backupPath);
+        originalMoved = true;
+        try {
+          await provider.movePath(tempPath, targetPath);
+        } catch (error) {
+          await provider.movePath(backupPath, targetPath);
+          originalMoved = false;
+          throw error;
+        }
+        await provider.deletePath(backupPath).catch(() => {});
+        originalMoved = false;
+      } catch (error) {
+        await provider.deletePath(tempPath).catch(() => {});
+        if (originalMoved) {
+          await provider.deletePath(targetPath).catch(() => {});
+          await provider.movePath(backupPath, targetPath).catch(() => {});
+        }
+        throw error;
+      }
+    }
+    return {
+      ok: true,
+      path: targetPath,
+      count: specs.records.length,
+      imported_count: specs.records.length,
+      completed_name_count: specs.completed,
+      renamed_count: specs.renamed + specs.renamedHeaders,
+      warnings: specs.warnings,
+      columns: specs.columns,
+      encoding: parsed.dialect?.encoding || encoding || 'utf-8',
+      delimiter: parsed.dialect?.delimiter || ',',
+      newline: parsed.dialect?.newline || '\n',
+    };
   }
 
   function _yamlFlowSplit(text) {
@@ -17005,26 +22019,52 @@
     return name;
   }
 
-  function _folderVersionDir(path) {
-    return _joinPath(VERSION_FOLDER_DIR, _fnvFileId(_normalizeFolderPath(path) || '.'));
-  }
-
   async function _readDbVersionSnapshot(provider, path, version) {
     const normalized = _normalizeFolderPath(path);
     const safeVersion = _safeVersionName(version);
-    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
-    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    const storage = window.MeldexSystemStorage;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!storage?.SystemStorageKind?.VERSIONS || typeof resolver?.resolveTypedAdapterForProvider !== 'function') {
+      throw new Error('シート履歴の管理領域を利用できません');
+    }
+    const kind = storage.SystemStorageKind.VERSIONS;
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind);
+    const records = await adapter.listDocuments(kind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && !payload.deleted_at;
+    });
+    let meta = record?.payload;
+    let legacyVersionDir = '';
+    if (!meta) {
+      legacyVersionDir = _joinPath(
+        LEGACY_VERSION_FOLDER_DIR,
+        _fnvFileId(normalized || '.'),
+        safeVersion,
+      );
+      meta = await _readJsonSafe(provider, _joinPath(legacyVersionDir, '_meta.json'), null);
+    }
     if (!meta || typeof meta !== 'object') throw new Error('シート履歴が見つかりません');
     const files = [];
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
       const rel = _normalizeFolderPath(file.rel_path || '');
       if (!rel || rel.includes('..') || !/^[^/]+\.md$/i.test(rel)) continue;
-      files.push({ path: rel, text: await _readText(provider, _joinPath(versionDir, 'files', rel), '') });
+      if (file.content_base64) {
+        const binary = atob(file.content_base64);
+        const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+        files.push({ path: rel, text: new TextDecoder().decode(bytes) });
+      } else if (legacyVersionDir) {
+        files.push({ path: rel, text: await _readText(provider, _joinPath(legacyVersionDir, 'files', rel), '') });
+      }
     }
     const noteName = _basename(normalized) + '.md';
-    const note = files.find(file => file.path === noteName);
+    const note = files.find(file => file.path === noteName)
+      || files.find(file => /(?:^|-)db$/i.test(String(_parseFrontmatter(file.text).frontmatter?.type || '')));
     const dbType = note ? String(_parseFrontmatter(note.text).frontmatter?.type || '') : '';
-    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created || '' };
+    return { format: 'new-format-v1', db_type: dbType, files, timestamp: meta.created_at || meta.created || '' };
   }
 
   function _recurrenceObject(value) {
@@ -17526,7 +22566,68 @@
   }
 
   async function _requireCloudSecretWritable(provider) {
-    await assertOwnerWrite(provider, SECRET_FILE);
+    const ledger = window.MeldexWorkspaceLedgerIO;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!ledger || typeof ledger.listJoinedWorkspaces !== 'function' || !resolver) {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    try {
+      const joined = ledger.listJoinedWorkspaces();
+      if (!Array.isArray(joined)) throw new Error('workspace-ledger-unavailable');
+    } catch {
+      throw new Error('個人Dropbox領域か判定できないため、Cloud保存APIキーを書き込めません');
+    }
+    const info = await resolver.resolveConnectionInfo(provider);
+    if (info.isSharedWorkspace) {
+      throw new Error('Cloud保存APIキーは共有ワークスペースへ保存できません');
+    }
+  }
+
+  function _secretAuth() {
+    const auth = window.MeldexDropboxAuth;
+    if (!auth || typeof auth.apiRpc !== 'function' || typeof auth.apiContent !== 'function') {
+      throw new Error('Dropboxへ接続してください');
+    }
+    return auth;
+  }
+
+  async function _readCloudSecretEnvelope() {
+    try {
+      const response = await _secretAuth().apiContent(
+        'files/download',
+        { path: SECRET_FILE },
+        undefined,
+        { namespaceKind: 'home' },
+      );
+      return JSON.parse(await response.text());
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return null;
+      throw error;
+    }
+  }
+
+  async function _writeCloudSecretEnvelope(envelope) {
+    const bytes = new TextEncoder().encode(JSON.stringify(envelope));
+    await _secretAuth().apiContent(
+      'files/upload',
+      { path: SECRET_FILE, mode: 'overwrite', autorename: false, mute: false },
+      { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes },
+      { namespaceKind: 'home' },
+    );
+  }
+
+  async function _deleteCloudSecretEnvelope() {
+    try {
+      await _secretAuth().apiRpc(
+        'files/delete_v2',
+        { path: SECRET_FILE },
+        { namespaceKind: 'home' },
+      );
+      return true;
+    } catch (error) {
+      if (/not_found|path_lookup|path\/not_found/i.test(String(error?.message || error))) return false;
+      throw error;
+    }
   }
 
   handlers.push(async function _dropboxExpandedFeatureHandler({ method, body, url, pathname }) {
@@ -17631,24 +22732,21 @@
 
     if (pathname === '/llm-keys/cloud' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
-      const envelope = await _readJsonSafe(provider, SECRET_FILE, null);
+      await _requireCloudSecretWritable(provider);
+      const envelope = await _readCloudSecretEnvelope();
       return envelope ? { exists: true, envelope } : { exists: false, envelope: null };
     }
     if (pathname === '/llm-keys/cloud' && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      await _directoryHandle(provider, _dirname(SECRET_FILE), true);
-      await provider.writeJson(SECRET_FILE, { ...(body || {}), updated_at: _nowIso() });
+      await _writeCloudSecretEnvelope({ ...(body || {}), updated_at: _nowIso() });
       return { ok: true, path: SECRET_FILE };
     }
     if (pathname === '/llm-keys/cloud' && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       await _requireCloudSecretWritable(provider);
-      const existing = await _resolveEntryHandle(provider, SECRET_FILE);
-      if (!existing) return { ok: true, missing: true };
-      await _removeEntry(provider, SECRET_FILE);
-      if (await _resolveEntryHandle(provider, SECRET_FILE)) throw new Error('Cloud保存APIキーを削除できませんでした');
-      return { ok: true };
+      const removed = await _deleteCloudSecretEnvelope();
+      return removed ? { ok: true } : { ok: true, missing: true };
     }
 
     return NOT_HANDLED;
@@ -17657,9 +22755,321 @@
 
 ;
 
+/* === gb-document-identity.js === */
+;
+/* gb-document-identity.js
+ *
+ * 固有形式ファイル（.mel-board / .mel-scenario / .mel-timer / .mel-sheet）へ、
+ * 安定した文書ID（document_id）を追加型メタデータとして保存するための共通
+ * ヘルパー。app/meldex_document_identity.py のJS版（対になる実装）。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 2 の実装。
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md §4.3
+ *
+ * 設計方針は meldex_document_identity.py のモジュールdocstringを参照。
+ * ここではブラウザ側の書込チョークポイント（board-standalone-fs.js の
+ * ローカルFS直接書込、gb-data-access-dropbox-fileops.* のDropbox直接書込）
+ * から薄く呼ぶことを想定する。
+ *
+ * 「閲覧では書き込まない」原則を守るため、ensureDocumentId/regenerateDocumentId
+ * は呼び出し側が実際に書き込む直前でのみ呼ぶこと。読込専用の経路から
+ * 呼んではならない。
+ */
+(function () {
+  'use strict';
+
+  const NS = (window.MeldexDocumentIdentity = window.MeldexDocumentIdentity || {});
+
+  const METADATA_VERSION = 1;
+
+  // 対象4形式（現行形式のみ）。
+  const CURRENT_FORMAT_EXTENSIONS = [
+    ['.mel-board', 'board'],
+    ['.mel-scenario', 'scenario'],
+    ['.mel-timer', 'timer'],
+    ['.mel-sheet', 'sheet'],
+  ];
+
+  const JSON_FORMATS = new Set(['scenario', 'timer', 'sheet']);
+
+  // フロントマター全体（開始"---" 〜 終了"---"）を検出する正規表現。
+  // ^ は文字列先頭に固定されるため match.index は常に 0 になる
+  // （フラグ 'm' を使っていないため）。
+  const FRONTMATTER_RE = /^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/;
+
+  function formatForPath(path) {
+    const lower = String(path || '').toLowerCase();
+    for (const [ext, fmt] of CURRENT_FORMAT_EXTENSIONS) {
+      if (lower.endsWith(ext)) return fmt;
+    }
+    return null;
+  }
+
+  function newDocumentId() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+    // フォールバック（randomUUID が使えない実行環境用）。
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : ((r & 0x3) | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function _readJsonDocumentId(text) {
+    let doc;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+    const meldex = doc.meldex;
+    if (meldex && typeof meldex === 'object') {
+      const value = meldex.document_id;
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return null;
+  }
+
+  // フロントマター本文から、指定キーで始まるトップレベルブロック（キー行＋
+  // それに続くインデント行・空行）だけを抜き出す。Python版
+  // _extract_top_level_yaml_block と同じロジック。
+  function _extractTopLevelYamlBlock(fmBody, key) {
+    const prefix = key + ':';
+    const lines = String(fmBody || '').split('\n');
+    let start = null;
+    let end = lines.length;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (start === null) {
+        if (line === prefix || line.startsWith(prefix + ' ') || line.startsWith(prefix + '\t')) start = i;
+        continue;
+      }
+      if (line && !/^\s/.test(line)) {
+        end = i;
+        break;
+      }
+    }
+    if (start === null) return null;
+    return lines.slice(start, end).join('\n');
+  }
+
+  // 簡易パーサー: meldex: ブロック配下の "key: value" 行だけを読む。
+  // フルYAMLパーサーは使わず、ボードの手書きフロントマター記法を壊さない
+  // 方針（gb-canvas-engine.js の preserve-unknown-frontmatter と対称）に合わせる。
+  function _parseMeldexBlockValues(block) {
+    const result = {};
+    const rows = String(block || '').split('\n').slice(1)
+      .map(line => ({ line, match: /^([ \t]+)(\w+):\s*(.*)$/.exec(line) }))
+      .filter(row => row.match);
+    if (!rows.length) return result;
+    const directIndent = Math.min(...rows.map(row => row.match[1].replace(/\t/g, '  ').length));
+    rows.forEach(({ match: m }) => {
+      if (!m) return;
+      if (m[1].replace(/\t/g, '  ').length !== directIndent) return;
+      let value = m[3].trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      result[m[2]] = value;
+    });
+    return result;
+  }
+
+  function _readBoardDocumentId(text) {
+    const match = FRONTMATTER_RE.exec(String(text || ''));
+    if (!match) return null;
+    const block = _extractTopLevelYamlBlock(match[2], 'meldex');
+    if (block === null) return null;
+    const values = _parseMeldexBlockValues(block);
+    return values.document_id || null;
+  }
+
+  function readDocumentId(text, fmt) {
+    if (fmt === 'board') return _readBoardDocumentId(text);
+    if (JSON_FORMATS.has(fmt)) return _readJsonDocumentId(text);
+    return null;
+  }
+
+  function _injectJsonDocumentId(text, documentId) {
+    let doc;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+    const meldex = (doc.meldex && typeof doc.meldex === 'object') ? { ...doc.meldex } : {};
+    meldex.metadata_version = METADATA_VERSION;
+    meldex.document_id = documentId;
+    doc.meldex = meldex;
+    return JSON.stringify(doc, null, 2) + '\n';
+  }
+
+  function _boardMeldexBlock(documentId) {
+    return `meldex:\n  metadata_version: ${METADATA_VERSION}\n  document_id: "${documentId}"\n`;
+  }
+
+  function _upsertBoardMeldexFields(block, documentId) {
+    const lines = String(block || '').split('\n');
+    const childIndents = lines.slice(1)
+      .map(line => /^(\s+)\S/.exec(line))
+      .filter(Boolean)
+      .map(match => match[1]);
+    const indent = childIndents.length
+      ? childIndents.reduce((shortest, value) => (value.length < shortest.length ? value : shortest))
+      : '  ';
+    const replacements = {
+      metadata_version: String(METADATA_VERSION),
+      document_id: `"${documentId}"`,
+    };
+    const replaced = new Set();
+    for (let i = 1; i < lines.length; i += 1) {
+      const match = /^(\s+)([A-Za-z0-9_]+):/.exec(lines[i]);
+      if (!match || match[1] !== indent
+          || !Object.prototype.hasOwnProperty.call(replacements, match[2])) continue;
+      lines[i] = `${indent}${match[2]}: ${replacements[match[2]]}`;
+      replaced.add(match[2]);
+    }
+    ['metadata_version', 'document_id'].forEach((key) => {
+      if (!replaced.has(key)) lines.push(`${indent}${key}: ${replacements[key]}`);
+    });
+    return lines.join('\n');
+  }
+
+  function _injectBoardDocumentId(text, documentId) {
+    const source = String(text || '');
+    const match = FRONTMATTER_RE.exec(source);
+    if (!match) {
+      // フロントマター自体が無い（想定外に壊れたファイル）場合は新規付与する。
+      return '---\n' + _boardMeldexBlock(documentId) + '---\n' + source;
+    }
+    const headerLen = match[1].length;
+    const fmBody = match[2];
+    const existingBlock = _extractTopLevelYamlBlock(fmBody, 'meldex');
+    if (existingBlock !== null) {
+      const blockStart = fmBody.indexOf(existingBlock);
+      const newFmBody = fmBody.slice(0, blockStart)
+        + _upsertBoardMeldexFields(existingBlock, documentId)
+        + fmBody.slice(blockStart + existingBlock.length);
+      return source.slice(0, headerLen) + newFmBody + source.slice(headerLen + fmBody.length);
+    }
+    const block = _boardMeldexBlock(documentId);
+    const separator = (!fmBody || fmBody.endsWith('\n')) ? '' : '\n';
+    const newFmBody = fmBody + separator + block.replace(/\n+$/, '');
+    return source.slice(0, headerLen) + newFmBody + source.slice(headerLen + fmBody.length);
+  }
+
+  function _stripBoardDocumentIdBlock(text) {
+    const source = String(text || '');
+    const match = FRONTMATTER_RE.exec(source);
+    if (!match) return source;
+    const headerLen = match[1].length;
+    const fmBody = match[2];
+    const block = _extractTopLevelYamlBlock(fmBody, 'meldex');
+    if (block === null) return source;
+    const idx = fmBody.indexOf(block);
+    if (idx < 0) return source;
+    const newFmBody = fmBody.slice(0, idx) + fmBody.slice(idx + block.length);
+    return source.slice(0, headerLen) + newFmBody + source.slice(headerLen + fmBody.length);
+  }
+
+  function ensureDocumentId(text, fmt, preferredDocumentId) {
+    const existing = readDocumentId(text, fmt);
+    if (existing) return { text, changed: false, documentId: existing };
+    const id = String(preferredDocumentId || '').trim() || newDocumentId();
+    let nextText;
+    if (fmt === 'board') {
+      nextText = _injectBoardDocumentId(text, id);
+    } else if (JSON_FORMATS.has(fmt)) {
+      nextText = _injectJsonDocumentId(text, id);
+      if (nextText === null) return { text, changed: false, documentId: null };
+    } else {
+      return { text, changed: false, documentId: null };
+    }
+    return { text: nextText, changed: true, documentId: id };
+  }
+
+  class DocumentIdConflictError extends Error {
+    constructor(existingDocumentId, incomingDocumentId) {
+      super('保存先と入力内容の文書IDが一致しません');
+      this.name = 'DocumentIdConflictError';
+      this.status = 409;
+      this.code = 'document_id_conflict';
+      this.meldexCode = 'document_id_conflict';
+      this.existingDocumentId = existingDocumentId;
+      this.incomingDocumentId = incomingDocumentId;
+    }
+  }
+
+  function ensureDocumentIdForOverwrite(text, fmt, existingDocumentId) {
+    const authoritativeId = String(existingDocumentId || '').trim();
+    const incomingId = readDocumentId(text, fmt);
+    if (authoritativeId && incomingId && incomingId !== authoritativeId) {
+      throw new DocumentIdConflictError(authoritativeId, incomingId);
+    }
+    return ensureDocumentId(text, fmt, authoritativeId);
+  }
+
+  function regenerateDocumentId(text, fmt) {
+    const id = newDocumentId();
+    let nextText;
+    if (fmt === 'board') {
+      nextText = _injectBoardDocumentId(text, id);
+    } else if (JSON_FORMATS.has(fmt)) {
+      nextText = _injectJsonDocumentId(text, id);
+      if (nextText === null) return { text, changed: false, documentId: null };
+    } else {
+      return { text, changed: false, documentId: null };
+    }
+    return { text: nextText, changed: true, documentId: id };
+  }
+
+  NS.formatForPath = formatForPath;
+  NS.newDocumentId = newDocumentId;
+  NS.readDocumentId = readDocumentId;
+  NS.ensureDocumentId = ensureDocumentId;
+  NS.ensureDocumentIdForOverwrite = ensureDocumentIdForOverwrite;
+  NS.regenerateDocumentId = regenerateDocumentId;
+  NS.DocumentIdConflictError = DocumentIdConflictError;
+})();
+
+;
+
 /* === gb-data-access-dropbox-fileops.js === */
 ;
+/* gb-data-access-dropbox-fileops-core.js
+ *
+ * gb-data-access-dropbox-fileops.* の共通土台(internals分割取り出し・パス変更
+ * フック・trash・CSVサイドカー移設・その他の汎用ヘルパー)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」に基づき、`gb-data-access-dropbox-fileops.part01.part01.js`(1074行、
+ * 1000行超過)を責務別へ分割した際の①パス変更フック・trash・CSVサイドカー
+ * クラスタ。分割後もこのファイル単体では完結しない(このファイルは
+ * `(function(){...` を開くだけで閉じない。閲覧ロック・注釈・版・競合バックアップの
+ * 各兄弟ファイル(gb-data-access-dropbox-fileops-annotations.js 等)と
+ * gb-data-access-dropbox-fileops.part01.part02.js / .part02.js が同じ関数
+ * スコープの続きとして連結され、最後に part02.js が `})();` で閉じる。
+ * これは既存の `gb-data-access-dropbox-fileops-folder-versions.js` と同じ
+ * 「IIFEを開かない継続ファイル」方式であり、build_split_bundles.py が
+ * 単純にテキスト結合するだけの分割(1000行ルール用の物理分割。実行時の
+ * モジュール境界ではない)である前提と一致する。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md
+ * 監査ノート: app/docs/proprietary-format-sidecar-cleanup-audit-2026-08-01/notes.md
+ *
+ * ## このファイルの追加分(Phase 4)
+ *
+ * 閲覧ロック(view-lock)の読み書きを、`_meldex/view-locks/*.json` への直接読み書き
+ * から、共通ストレージ層(gb-system-storage.js 経由、種別 view-locks)へ載せ替える。
+ * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5)。
+ */
 (function () {
+  'use strict';
+
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   if (!internals || !Array.isArray(handlers)) return;
@@ -17712,6 +23122,7 @@
     _iterateWorkspaceFiles,
     _relocateReferences,
     _queryBacklinks,
+    _queryDeleteImpact,
     _fnvFileId,
   } = internals;
 
@@ -17751,8 +23162,10 @@
     return PRODUCTION_RESERVED_ENTRY_PROPERTIES[parts[2]] || [];
   }
 
+  const FRONTMATTER_BLOCK_RE = new RegExp('^' + String.fromCharCode(0xFEFF) + '?---\\r?\\n([\\s\\S]*?)\\r?\\n---(?:\\r?\\n|$)');
+
   function _frontmatterContainsProperty(text, property) {
-    const match = String(text || '').match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    const match = String(text || '').match(FRONTMATTER_BLOCK_RE);
     if (!match || !property) return false;
     const frontmatter = match[1];
     const inline = frontmatter.match(/^properties:\s*(\{.*\})\s*$/m);
@@ -17919,6 +23332,77 @@
     return registry.sourcePath(parsedOriginal.sourceId, relativePath);
   }
 
+  function _csvMetadataPath(path) {
+    if (window.MeldexCsv?.metadataPath) return window.MeldexCsv.metadataPath(path);
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const slash = normalized.lastIndexOf('/');
+    const parent = slash >= 0 ? normalized.slice(0, slash) : '';
+    const file = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+    const stem = file.replace(/\.csv$/i, '') || 'csv';
+    let hash = 0x811c9dc5;
+    normalized.toLowerCase().split('').forEach(char => {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 0x01000193);
+    });
+    const leaf = `${stem}-${(hash >>> 0).toString(16).padStart(8, '0')}.json`;
+    return (parent ? `${parent}/` : '') + `.meldex/csv/${leaf}`;
+  }
+
+  async function _rewriteCsvSidecarSource(provider, path, sourcePath) {
+    const payload = await _readJsonSafe(provider, path, null);
+    if (!payload || typeof payload !== 'object') return;
+    payload.sourcePath = sourcePath;
+    await provider.writeJson(path, payload);
+  }
+
+  async function _relocateCsvSidecars(provider, oldPath, newPath, isFolder, copied) {
+    const oldNormalized = _normalizeFolderPath(oldPath);
+    const newNormalized = _normalizeFolderPath(newPath);
+    async function moveOne(sourcePath, targetPath, sourceCsvPath, copyFile) {
+      if (!await _pathExists(provider, sourcePath)) return;
+      await _directoryHandle(provider, _dirname(targetPath), true);
+      if (sourcePath !== targetPath) {
+        if (await _pathExists(provider, targetPath)) await _removeEntry(provider, targetPath);
+        if (copyFile) await provider.copyPath(sourcePath, targetPath);
+        else await _moveEntry(provider, sourcePath, targetPath);
+      }
+      await _rewriteCsvSidecarSource(provider, targetPath, sourceCsvPath);
+    }
+    if (!isFolder) {
+      if (!/\.csv$/i.test(oldNormalized) || !/\.csv$/i.test(newNormalized)) return;
+      await moveOne(
+        _csvMetadataPath(oldNormalized),
+        _csvMetadataPath(newNormalized),
+        newNormalized,
+        !!copied,
+      );
+      return;
+    }
+    async function walk(folderPath) {
+      const entries = await _listDirectoryEntries(provider, folderPath);
+      for (const entry of entries) {
+        const childPath = entry.path || _joinPath(folderPath, entry.name);
+        if (entry.handle.kind === 'directory') {
+          if (entry.name === '.meldex') continue;
+          await walk(childPath);
+          continue;
+        }
+        if (!/\.csv$/i.test(entry.name)) continue;
+        const relativeCsv = childPath.slice(newNormalized.length).replace(/^\/+/, '');
+        const oldCsv = _joinPath(oldNormalized, relativeCsv);
+        const oldMetadata = _csvMetadataPath(oldCsv);
+        const relativeMetadata = oldMetadata.slice(oldNormalized.length).replace(/^\/+/, '');
+        await moveOne(
+          _joinPath(newNormalized, relativeMetadata),
+          _csvMetadataPath(childPath),
+          childPath,
+          false,
+        );
+      }
+    }
+    await walk(newNormalized);
+  }
+
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     _rejectProductionStructureMutation(targetPath, '削除');
@@ -17940,14 +23424,29 @@
       destPath = _joinPath(trashDir, destName);
     }
     const metaPath = destPath + '._trash_meta.json';
+    const csvSidecarPath = source.kind === 'file' && /\.csv$/i.test(targetPath)
+      ? _csvMetadataPath(targetPath)
+      : '';
+    const csvSidecarTrashPath = csvSidecarPath && await _pathExists(provider, csvSidecarPath)
+      ? destPath + '._csv_meta.json'
+      : '';
     await provider.writeJson(metaPath, {
       original_path: targetPath,
       trash_root: trashDir,
       deleted_at: new Date().toISOString(),
+      csv_sidecar_trash_path: csvSidecarTrashPath,
     });
     try {
       await _moveEntry(provider, targetPath, destPath);
+      if (csvSidecarTrashPath) await _moveEntry(provider, csvSidecarPath, csvSidecarTrashPath);
     } catch (error) {
+      if (await _pathExists(provider, destPath) && !await _pathExists(provider, targetPath)) {
+        await _moveEntry(provider, destPath, targetPath).catch(() => {});
+      }
+      if (csvSidecarTrashPath && await _pathExists(provider, csvSidecarTrashPath)) {
+        await _directoryHandle(provider, _dirname(csvSidecarPath), true).catch(() => {});
+        await _moveEntry(provider, csvSidecarTrashPath, csvSidecarPath).catch(() => {});
+      }
       await provider.deletePath(metaPath).catch(() => {});
       throw error;
     }
@@ -18022,68 +23521,12 @@
     };
   }
 
-  function _isDropboxConflictName(name) {
-    const normalized = String(name || '').toLowerCase();
-    return /\([^)]*\bconflicted\s+copy\b[^)]*\)(?:\.[^.]*)?$/i.test(normalized)
-      || /\([^)]*競合[^)]*コピー[^)]*\)(?:\.[^.]*)?$/.test(normalized);
-  }
-
-  function _originalPathForConflict(conflictPath) {
-    const normalized = _normalizeFolderPath(conflictPath);
-    const name = _basename(normalized);
-    const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
-    if (!match) return '';
-    const originalName = `${match[1]}${match[2] || ''}`.trim();
-    if (!originalName) return '';
-    return _joinPath(_dirname(normalized), originalName);
-  }
-
-  function _conflictBackupStamp() {
-    return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  }
-
-  function _conflictBackupPath(kind, sourcePath, stamp) {
-    return _joinPath('_meldex/conflict-backups', stamp, kind, _normalizeFolderPath(sourcePath));
-  }
-
-  async function _backupConflictSide(provider, kind, sourcePath, stamp) {
-    const normalized = _normalizeFolderPath(sourcePath);
-    if (!normalized || !await _pathExists(provider, normalized)) return '';
-    const backupPath = _conflictBackupPath(kind, normalized, stamp || _conflictBackupStamp());
-    await provider.copyPath(normalized, backupPath);
-    return backupPath;
-  }
-
   async function _textPreview(provider, filePath, maxChars) {
     const text = await provider.readText(filePath);
     const limit = Number(maxChars || 200000);
     if (text.length <= limit) return { content: text, truncated: false, length: text.length };
     return { content: text.slice(0, limit), truncated: true, length: text.length };
   }
-
-  const ANNOTATION_DIR = '_events/annotations';
-  const VIEW_LOCK_DIR = '_meldex/view-locks';
-  const VERSION_FILE_DIR = '_meldex/versions/files';
-  const VERSION_FOLDER_DIR = '_meldex/versions/folders';
-  const FOLDER_VERSION_EXCLUDE = new Set([
-    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
-    '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
-    '.mp3', '.wav', '.ogg', '.flac', '.aac',
-    '.zip', '.rar', '.7z', '.tar', '.gz',
-    '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
-  ]);
-  const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
-  const ANNOTATION_EXT_KEYS = [
-    'target_kind', 'target_ref', 'target_file_name', 'target_snapshot',
-    'orphan', 'orphaned_at', 'resolved', 'thread_parent_id', 'body',
-    'copied_to_refs', 'monitor_id', 'monitor_w', 'monitor_h',
-    'desktop_x', 'desktop_y', 'width', 'height', 'always_on_top',
-    'z_order', 'collapsed', 'last_seen_at',
-  ];
-  const ANNOTATION_UPDATE_KEYS = [
-    'data', 'color', 'opacity', 'shape', 'type',
-    ...ANNOTATION_EXT_KEYS,
-  ];
 
   function _nowIso() {
     return new Date().toISOString();
@@ -18133,503 +23576,852 @@
     }
   }
 
-  function _annotationJsonField(value, fallback) {
-    const parsed = _jsonMaybeParse(value, null);
-    if (parsed && typeof parsed === 'object') return parsed;
-    if (value && typeof value !== 'string') return value;
-    return fallback;
-  }
-
-  function _annotationFlag(value) {
-    if (value === true || value === 1 || value === '1') return 1;
-    if (String(value || '').toLowerCase() === 'true') return 1;
-    return 0;
-  }
-
-  function _currentUserName(body) {
-    const fromBody = String(body?.user || '').trim();
-    if (fromBody) return fromBody;
+  // 複製・名前を付けて保存でコピーしたファイルへ新しい document_id を発行する。
+  // 対象4形式（.mel-board/.mel-scenario/.mel-timer/.mel-sheet）以外は何もしない。
+  // 固有形式付随物廃止・管理データ一元化計画 Phase 2。
+  async function _regenerateDocumentIdForCopiedEntry(provider, destPath, isFile) {
+    if (!isFile) return;
+    const docIdentity = window.MeldexDocumentIdentity;
+    const fmt = docIdentity?.formatForPath?.(destPath);
+    if (!fmt) return;
     try {
-      const username = typeof getUsername === 'function' ? getUsername() : '';
-      if (username) return username;
-    } catch {}
-    return 'anonymous';
+      const content = await provider.readText(destPath);
+      const result = docIdentity.regenerateDocumentId(content, fmt);
+      if (result.changed) await provider.writeText(destPath, result.text);
+    } catch (err) {
+      // ID再発行に失敗しても複製自体は成功させる（保存を失敗させない）。
+    }
   }
 
-  function _annotationPath(id) {
-    return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
+  // --- 共通ストレージ層への保存先解決(固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+  //
+  // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
+  // 参加中の共有ワークスペードかを判定する共通モジュール)へ委譲する。
+  // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
+  // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
+  // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。
+
+  async function _managementAdapterForProvider(provider, kind, targetPath) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+    if (kind && typeof resolver.resolveTypedAdapterForProvider === 'function') {
+      return resolver.resolveTypedAdapterForProvider(provider, kind, targetPath ? { targetPath } : undefined);
+    }
+    return resolver.resolveAdapterForProvider(provider, targetPath ? { targetPath } : undefined);
   }
 
-  function _annotationRow(record) {
-    const out = { ...(record || {}) };
-    out.id = String(out.id || '');
-    out.data = typeof out.data === 'string'
-      ? out.data
-      : JSON.stringify(out.data && typeof out.data === 'object' ? out.data : {}, null, 0);
-    if (out.target_ref && typeof out.target_ref !== 'string') out.target_ref = JSON.stringify(out.target_ref, null, 0);
-    if (out.copied_to_refs && typeof out.copied_to_refs !== 'string') out.copied_to_refs = JSON.stringify(out.copied_to_refs, null, 0);
-    out.orphan = _annotationFlag(out.orphan);
-    out.resolved = _annotationFlag(out.resolved);
-    out.created = out.created || out.created_at || '';
-    out.modified = out.modified || out.modified_at || out.created;
-    out.created_at = out.created_at || out.created;
-    out.modified_at = out.modified_at || out.modified;
-    return out;
+  // --- 閲覧ロック(view-lock。固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+  //
+  // 旧実装: `_meldex/view-locks/<viewKeyのfnvハッシュ>.json` への直接読み書き。
+  // 新実装: 共通ストレージ層(種別 view-locks、document_id はfnvハッシュ)。
+  // 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5)。
+
+  const VIEW_LOCK_DIR = '_meldex/view-locks'; // 旧パス読取フォールバック専用(新規書込では使わない)
+
+  function _viewLockDefault(viewKey) {
+    return { view_key: viewKey, target_path: '', pane_id: '', target_kind: '', locked: 0, state: {}, locked_at: '', locked_by: '' };
   }
 
-  function _mergeAnnotationRecord(existing, body, options) {
-    const now = options?.now || _nowIso();
-    const record = { ...(existing || {}) };
-    if (!record.id) record.id = options?.id || _randomId('ann');
-    if (!record.created) record.created = now;
-    if (!record.created_at) record.created_at = record.created;
+  async function _readViewLockRecord(provider, viewKey) {
+    const docId = _fnvFileId(viewKey);
+    const contract = window.MeldexSystemStorage;
+    try {
+      const adapter = await _managementAdapterForProvider(provider, contract.SystemStorageKind.VIEW_LOCKS, viewKey);
+      const record = await adapter.load(contract.SystemStorageKind.VIEW_LOCKS, docId);
+      if (record) return record.payload;
+    } catch (error) {
+      if (!(error instanceof contract.SystemStorageNotFoundError)) {
+        // 共通ストレージ層が使えない場合も、旧パスへフォールバックして機能を維持する。
+      }
+    }
+    const legacy = await _readJsonSafe(provider, _joinPath(VIEW_LOCK_DIR, docId + '.json'), null);
+    return legacy && typeof legacy === 'object' ? legacy : _viewLockDefault(viewKey);
+  }
+
+  async function _writeViewLockRecord(provider, viewKey, entry) {
+    const docId = _fnvFileId(viewKey);
+    const adapter = await _managementAdapterForProvider(
+      provider,
+      window.MeldexSystemStorage.SystemStorageKind.VIEW_LOCKS,
+      entry?.target_path || viewKey,
+    );
+    await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VIEW_LOCKS, docId, entry);
+    return entry;
+  }
+
+  // 注意: このIIFEはここでは閉じない。gb-data-access-dropbox-fileops-conflict-backups.js /
+  // gb-data-access-dropbox-fileops-annotations.js / gb-data-access-dropbox-fileops-versions.js /
+  // gb-data-access-dropbox-fileops-folder-versions.js / .part01.part02.js / .part02.js が
+  // 同じ関数スコープの続きとして連結され、最後に .part02.js が `})();` で閉じる
+  // (ファイル冒頭のコメント参照。既存の -folder-versions.js と同じ「継続ファイル」方式)。
+/* gb-data-access-dropbox-fileops-conflict-backups.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の②競合バックアップクラスタ(Dropbox自身の競合コピーの検出・
+ * バックアップ)。
+ *
+ * 競合バックアップはファイル／フォルダ内容を管理レコードへ埋め込み、
+ * `SystemStorageKind.CONFLICT_BACKUPS` へ保存する。ユーザーの保存場所に
+ * `_meldex/conflict-backups` を新規作成・更新しない。
+ */
+
+function _isDropboxConflictName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return /\([^)]*\bconflicted\s+copy\b[^)]*\)(?:\.[^.]*)?$/i.test(normalized)
+    || /\([^)]*競合[^)]*コピー[^)]*\)(?:\.[^.]*)?$/.test(normalized);
+}
+
+function _originalPathForConflict(conflictPath) {
+  const normalized = _normalizeFolderPath(conflictPath);
+  const name = _basename(normalized);
+  const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
+  if (!match) return '';
+  const originalName = `${match[1]}${match[2] || ''}`.trim();
+  if (!originalName) return '';
+  return _joinPath(_dirname(normalized), originalName);
+}
+
+function _conflictBackupStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+}
+
+function _bytesToManagedBase64(bytes) {
+  let binary = '';
+  const data = new Uint8Array(bytes || []);
+  for (let offset = 0; offset < data.length; offset += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function _conflictObject(provider, sourcePath) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  const entry = await _resolveEntryHandle(provider, normalized);
+  if (!entry) return null;
+  if (entry.kind === 'file') {
+    const file = await entry.handle.getFile();
+    return {
+      type: 'file',
+      name: _basename(normalized),
+      bytes_base64: _bytesToManagedBase64(await file.arrayBuffer()),
+    };
+  }
+  const children = [];
+  for (const child of await _listDirectoryEntries(provider, normalized)) {
+    children.push(await _conflictObject(provider, child.path || _joinPath(normalized, child.name)));
+  }
+  return { type: 'folder', name: _basename(normalized), children: children.filter(Boolean) };
+}
+
+async function _backupConflictSide(provider, kind, sourcePath, stamp) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  if (!normalized || !await _pathExists(provider, normalized)) return '';
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS,
+    normalized,
+  );
+  const documentId = `${_fnvFileId(normalized)}-${_randomId('c').replace(/[^a-z0-9]/gi, '').slice(-12)}`;
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS, documentId, {
+    kind,
+    original_relative_path: normalized,
+    created_at: stamp || _conflictBackupStamp(),
+    object: await _conflictObject(provider, normalized),
+  });
+  return `${window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS}/${documentId}`;
+}
+/* gb-data-access-dropbox-fileops-annotations.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * (gb-system-storage.js、種別 annotations)へ載せ替える。
+ *
+ * ## 保存先の変更
+ *
+ * 旧: `_events/annotations/<id>.json` への直接読み書き。
+ * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ *     参加中の共有ワークスペードに接続している場合は `<ワークスペード>/MeldexShare/system/v1`
+ *     (gb-dropbox-management-root-resolver.js が判定)。
+ *
+ * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切
+ * 旧パスへ行わない)。削除時だけは、フォールバックで存在し続ける「ゴースト
+ * 注釈」の復活を防ぐため、旧パスの実体があれば併せて削除する(ベストエフォート)。
+ */
+
+const ANNOTATION_DIR = '_events/annotations'; // 旧パス読取フォールバック専用(新規書込では使わない)
+const ANNOTATION_EXT_KEYS = [
+  'target_kind', 'target_ref', 'target_file_name', 'target_snapshot',
+  'orphan', 'orphaned_at', 'resolved', 'thread_parent_id', 'body',
+  'copied_to_refs', 'monitor_id', 'monitor_w', 'monitor_h',
+  'desktop_x', 'desktop_y', 'width', 'height', 'always_on_top',
+  'z_order', 'collapsed', 'last_seen_at',
+];
+const ANNOTATION_UPDATE_KEYS = [
+  'data', 'color', 'opacity', 'shape', 'type',
+  ...ANNOTATION_EXT_KEYS,
+];
+
+function _annotationPath(id) {
+  return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
+}
+
+function _annotationJsonField(value, fallback) {
+  const parsed = _jsonMaybeParse(value, null);
+  if (parsed && typeof parsed === 'object') return parsed;
+  if (value && typeof value !== 'string') return value;
+  return fallback;
+}
+
+function _annotationFlag(value) {
+  if (value === true || value === 1 || value === '1') return 1;
+  if (String(value || '').toLowerCase() === 'true') return 1;
+  return 0;
+}
+
+function _currentUserName(body) {
+  const fromBody = String(body?.user || '').trim();
+  if (fromBody) return fromBody;
+  try {
+    const username = typeof getUsername === 'function' ? getUsername() : '';
+    if (username) return username;
+  } catch {}
+  return 'anonymous';
+}
+
+function _annotationRow(record) {
+  const out = { ...(record || {}) };
+  out.id = String(out.id || '');
+  out.data = typeof out.data === 'string'
+    ? out.data
+    : JSON.stringify(out.data && typeof out.data === 'object' ? out.data : {}, null, 0);
+  if (out.target_ref && typeof out.target_ref !== 'string') out.target_ref = JSON.stringify(out.target_ref, null, 0);
+  if (out.copied_to_refs && typeof out.copied_to_refs !== 'string') out.copied_to_refs = JSON.stringify(out.copied_to_refs, null, 0);
+  out.orphan = _annotationFlag(out.orphan);
+  out.resolved = _annotationFlag(out.resolved);
+  out.created = out.created || out.created_at || '';
+  out.modified = out.modified || out.modified_at || out.created;
+  out.created_at = out.created_at || out.created;
+  out.modified_at = out.modified_at || out.modified;
+  return out;
+}
+
+function _mergeAnnotationRecord(existing, body, options) {
+  const now = options?.now || _nowIso();
+  const record = { ...(existing || {}) };
+  if (!record.id) record.id = options?.id || _randomId('ann');
+  if (!record.created) record.created = now;
+  if (!record.created_at) record.created_at = record.created;
+  record.modified = now;
+  record.modified_at = now;
+  if (!record.target_path && body?.target_path) record.target_path = _normalizeFolderPath(body.target_path);
+  if (!record.target_id && record.target_path) record.target_id = _fnvFileId(record.target_path);
+  if (!record.user) record.user = _currentUserName(body);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_path')) {
+    record.target_path = _normalizeFolderPath(body.target_path || '');
+    record.target_id = body.target_id || (record.target_path ? _fnvFileId(record.target_path) : '');
+  }
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_id')) record.target_id = String(body.target_id || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'type')) record.type = String(body.type || 'stroke');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'shape')) record.shape = String(body.shape || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'data')) record.data = _annotationJsonField(body.data, {});
+  if (body && Object.prototype.hasOwnProperty.call(body, 'color')) record.color = String(body.color || '#ffeb3b');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'opacity')) record.opacity = Number(body.opacity == null ? 1 : body.opacity);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'user')) record.user = _currentUserName(body);
+  ANNOTATION_EXT_KEYS.forEach((key) => {
+    if (!body || !Object.prototype.hasOwnProperty.call(body, key)) return;
+    if (key === 'target_ref' || key === 'copied_to_refs') record[key] = _annotationJsonField(body[key], key === 'copied_to_refs' ? [] : null);
+    else if (key === 'orphan' || key === 'resolved') record[key] = _annotationFlag(body[key]);
+    else record[key] = body[key];
+  });
+  if (!record.type) record.type = 'stroke';
+  if (record.data == null) record.data = {};
+  if (!record.color) record.color = '#ffeb3b';
+  if (record.opacity == null || !Number.isFinite(Number(record.opacity))) record.opacity = 1;
+  return record;
+}
+
+// --- 保存(共通ストレージ層。固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+//
+// 書込は record.target_path から個人/共有ワークスペースの管理スコープを解決する。
+// 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
+// できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
+// ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
+// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+
+async function _annotationScopes(provider) {
+  const resolver = window.MeldexDropboxManagementRootResolver;
+  if (!resolver || typeof resolver.resolveManagementScopesForProvider !== 'function') {
+    throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+  }
+  return resolver.resolveManagementScopesForProvider(provider);
+}
+
+async function _readAnnotationRecord(provider, id, targetPathHint) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const triedScopeKeys = new Set();
+  // 対象パスのヒントがある場合は、書込と同じスコープを最初に読む(最短経路)。
+  const hint = _normalizeFolderPath(targetPathHint || '');
+  if (hint) {
+    try {
+      const resolver = window.MeldexDropboxManagementRootResolver;
+      const scope = await resolver.resolveManagementScopeForPath(provider, hint);
+      triedScopeKeys.add(scope.scopeKey);
+      const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+      if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
+    } catch {
+      // ヒントのスコープで読めない場合も、全スコープ走査と旧パスで継続する。
+    }
+  }
+  try {
+    for (const scope of await _annotationScopes(provider)) {
+      if (triedScopeKeys.has(scope.scopeKey)) continue;
+      try {
+        const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+        if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
+      } catch {
+        // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+      }
+    }
+  } catch {
+    // 共通ストレージ層が使えない場合も、旧パスへフォールバックして機能を維持する。
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  return legacy && typeof legacy === 'object' ? legacy : null;
+}
+
+async function _writeAnnotationRecord(provider, record) {
+  const docId = _safeId(record.id, 'annotation id');
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+    record.target_path || record.path || '',
+  );
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS, docId, record);
+}
+
+async function _deleteAnnotationRecordFully(provider, id) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  // 書込先スコープはidだけでは特定できないため、全スコープを走査して削除する。
+  // スコープ一覧を確定できない・一部スコープに実体が残った場合に成功扱いに
+  // すると、読取集約が削除済みの注釈を復活させる(ゴースト化)ため、削除は
+  // 安全側で失敗にする(スコープ列挙の失敗はそのまま伝える)。
+  const scopes = await _annotationScopes(provider);
+  let deleteError = null;
+  for (const scope of scopes) {
+    let stored = null;
+    try {
+      stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
+    } catch (error) {
+      if (!deleteError) deleteError = error;
+      continue;
+    }
+    if (!stored) continue;
+    try {
+      await scope.adapter.delete(contract.SystemStorageKind.ANNOTATIONS, docId);
+    } catch (error) {
+      if (!deleteError) deleteError = error;
+    }
+  }
+  // 旧パスに実体が残っていると、_readAnnotationRecord のフォールバックが
+  // 削除済みの注釈を復活させてしまう(ゴースト化)。削除時だけは旧パスも消す。
+  await provider.deletePath(_annotationPath(docId)).catch(() => {});
+  if (deleteError) throw deleteError;
+}
+
+async function _listAnnotationRecords(provider) {
+  const contract = window.MeldexSystemStorage;
+  const records = [];
+  const seenIds = new Set();
+  let scopes = [];
+  try {
+    scopes = await _annotationScopes(provider);
+  } catch {
+    scopes = []; // 共通ストレージ層が使えない場合も、旧パスの一覧だけで機能を継続する。
+  }
+  for (const scope of scopes) {
+    let stored = [];
+    try {
+      stored = await scope.adapter.listDocuments(contract.SystemStorageKind.ANNOTATIONS);
+    } catch {
+      continue; // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+    }
+    for (const item of stored) {
+      const payload = item?.payload;
+      if (payload && typeof payload === 'object' && payload.id && !seenIds.has(String(payload.id))) {
+        records.push(payload);
+        seenIds.add(String(payload.id));
+      }
+    }
+  }
+  // 旧パス(_events/annotations)は読取フォールバック専用。新ストレージに
+  // 既にある同一idは、新ストレージ側の内容を優先する(移行はPhase 5)。
+  let legacyEntries = [];
+  try {
+    legacyEntries = await _listDirectoryEntries(provider, ANNOTATION_DIR);
+  } catch {
+    legacyEntries = [];
+  }
+  for (const entry of legacyEntries) {
+    if (entry.handle.kind !== 'file' || !entry.name.endsWith('.json')) continue;
+    const id = entry.name.slice(0, -5);
+    if (seenIds.has(id)) continue;
+    const record = await _readJsonSafe(provider, _annotationPath(id), null);
+    if (record?.id) records.push(record);
+  }
+  return records;
+}
+
+function _annotationRef(record) {
+  const ref = _annotationJsonField(record?.target_ref, null);
+  return ref && typeof ref === 'object' ? ref : {};
+}
+
+function _annotationMatchesOrphan(record, body, cascade) {
+  if (!record || _annotationFlag(record.orphan)) return false;
+  const targetKind = String(body?.target_kind || '');
+  const itemId = String(body?.item_id || '');
+  const colId = String(body?.col_id || '');
+  const targetFile = _normalizeFolderPath(body?.target_file || '');
+  if (!targetKind || !itemId) return false;
+  const ref = _annotationRef(record);
+  if (targetFile && _normalizeFolderPath(ref.file || record.target_path || '') !== targetFile) return false;
+
+  const kind = String(record.target_kind || '');
+  const directKindOk = targetKind === 'sheet_col'
+    ? (kind === 'sheet_col' || kind === 'sheet_cell')
+    : kind === targetKind;
+  if (directKindOk) {
+    if ((targetKind === 'note_line' || targetKind === 'scriptnote_line') && String(ref.lineId || '') === itemId) return true;
+    if (targetKind === 'board_card' && String(ref.cardId || '') === itemId) return true;
+    if (targetKind === 'board_line' && String(ref.lineId || '') === itemId) return true;
+    if (targetKind === 'sheet_entry' && String(ref.entryId || '') === itemId) return true;
+    if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
+    if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
+    if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;
+  }
+
+  if (!cascade || kind !== 'text_range' || !ref.container) return false;
+  const container = ref.container;
+  if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
+    const containerId = container.id || container.lineId || container.cardId || '';
+    return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
+  }
+  if (targetKind === 'sheet_cell') {
+    return String(container.kind || '') === 'sheet_cell'
+      && String(container.entryId || '') === itemId
+      && (!colId || String(container.colId || '') === colId);
+  }
+  if (targetKind === 'sheet_entry') {
+    return String(container.kind || '') === 'sheet_cell' && String(container.entryId || '') === itemId;
+  }
+  if (targetKind === 'sheet_col') {
+    return String(container.kind || '') === 'sheet_cell' && String(container.colId || '') === itemId;
+  }
+  return false;
+}
+
+function _annotationPathMatches(path, targetPath, isFolder) {
+  const normalized = _normalizeFolderPath(path);
+  const target = _normalizeFolderPath(targetPath);
+  if (!normalized || !target) return false;
+  return normalized === target || (!!isFolder && normalized.startsWith(target + '/'));
+}
+
+function _rewriteAnnotationPath(path, oldPath, newPath, isFolder) {
+  const normalized = _normalizeFolderPath(path);
+  const oldNormalized = _normalizeFolderPath(oldPath);
+  const newNormalized = _normalizeFolderPath(newPath);
+  if (!normalized || !oldNormalized) return normalized;
+  if (normalized === oldNormalized) return newNormalized;
+  if (isFolder && normalized.startsWith(oldNormalized + '/')) return newNormalized + normalized.slice(oldNormalized.length);
+  return normalized;
+}
+
+async function _updateAnnotationsForPathMutation(provider, event) {
+  const action = String(event?.action || '');
+  const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
+  const newPath = _normalizeFolderPath(event?.newPath || '');
+  const isFolder = !!event?.isFolder;
+  if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
+  const now = _nowIso();
+  let updated = 0;
+  const records = await _listAnnotationRecords(provider);
+  for (const record of records) {
+    let changed = false;
+    const ref = _annotationRef(record);
+    const recordPaths = [
+      record.target_path,
+      ref.file,
+      ref.path,
+      ref.targetPath,
+      ref.target_path,
+    ].filter(Boolean);
+    const matches = recordPaths.some(path => _annotationPathMatches(path, oldPath, isFolder));
+    if (!matches) continue;
+
+    if (action === 'delete') {
+      record.orphan = 1;
+      record.orphaned_at = now;
+      record.target_file_name = record.target_file_name || _basename(oldPath);
+      changed = true;
+    } else if (action === 'rename' || action === 'move') {
+      if (record.target_path) {
+        const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
+        if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
+          record.target_path = nextTargetPath;
+          record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
+          changed = true;
+        }
+      }
+      ['file', 'path', 'targetPath', 'target_path'].forEach((key) => {
+        if (!ref[key]) return;
+        const rewritten = _rewriteAnnotationPath(ref[key], oldPath, newPath, isFolder);
+        if (rewritten !== _normalizeFolderPath(ref[key])) {
+          ref[key] = rewritten;
+          changed = true;
+        }
+      });
+      if (changed) record.target_ref = ref;
+    }
+    if (!changed) continue;
     record.modified = now;
     record.modified_at = now;
-    if (!record.target_path && body?.target_path) record.target_path = _normalizeFolderPath(body.target_path);
-    if (!record.target_id && record.target_path) record.target_id = _fnvFileId(record.target_path);
-    if (!record.user) record.user = _currentUserName(body);
-    if (body && Object.prototype.hasOwnProperty.call(body, 'target_path')) {
-      record.target_path = _normalizeFolderPath(body.target_path || '');
-      record.target_id = body.target_id || (record.target_path ? _fnvFileId(record.target_path) : '');
-    }
-    if (body && Object.prototype.hasOwnProperty.call(body, 'target_id')) record.target_id = String(body.target_id || '');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'type')) record.type = String(body.type || 'stroke');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'shape')) record.shape = String(body.shape || '');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'data')) record.data = _annotationJsonField(body.data, {});
-    if (body && Object.prototype.hasOwnProperty.call(body, 'color')) record.color = String(body.color || '#ffeb3b');
-    if (body && Object.prototype.hasOwnProperty.call(body, 'opacity')) record.opacity = Number(body.opacity == null ? 1 : body.opacity);
-    if (body && Object.prototype.hasOwnProperty.call(body, 'user')) record.user = _currentUserName(body);
-    ANNOTATION_EXT_KEYS.forEach((key) => {
-      if (!body || !Object.prototype.hasOwnProperty.call(body, key)) return;
-      if (key === 'target_ref' || key === 'copied_to_refs') record[key] = _annotationJsonField(body[key], key === 'copied_to_refs' ? [] : null);
-      else if (key === 'orphan' || key === 'resolved') record[key] = _annotationFlag(body[key]);
-      else record[key] = body[key];
-    });
-    if (!record.type) record.type = 'stroke';
-    if (record.data == null) record.data = {};
-    if (!record.color) record.color = '#ffeb3b';
-    if (record.opacity == null || !Number.isFinite(Number(record.opacity))) record.opacity = 1;
-    return record;
+    await _writeAnnotationRecord(provider, record);
+    updated += 1;
   }
+  return { ok: true, updated };
+}
+/* gb-data-access-dropbox-fileops-versions.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の④版クラスタ(ファイル版・フォルダ版の自動作成・一覧・復元・
+ * 論理削除/復元)。フォルダ版のヘルパーは兄弟ファイル
+ * gb-data-access-dropbox-fileops-folder-versions.js が担当し、このファイルの
+ * 旧パス読取ヘルパーと共通管理領域アダプターを共有する。
+ *
+ * 版履歴は共通ストレージ層（種別 versions）へ内容とメタデータを保存する。
+ * `_meldex/versions/files` / `_meldex/versions/folders` は移行時の読取・照合・
+ * 検証済み削除にのみ使用し、通常運用では作成・更新しない。
+ */
 
-  async function _readAnnotationRecord(provider, id) {
-    const record = await _readJsonSafe(provider, _annotationPath(id), null);
-    return record && typeof record === 'object' ? record : null;
-  }
+const LEGACY_VERSION_FILE_DIR = '_meldex/versions/files';
+const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
+const FOLDER_VERSION_EXCLUDE = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
+  '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
+  '.mp3', '.wav', '.ogg', '.flac', '.aac',
+  '.zip', '.rar', '.7z', '.tar', '.gz',
+  '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
+]);
+const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
 
-  async function _writeAnnotationRecord(provider, record) {
-    await provider.writeJson(_annotationPath(record.id), record);
-  }
+function _versionTimestamp() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  const ms = String(d.getMilliseconds()).padStart(3, '0');
+  return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
+}
 
-  async function _listAnnotationRecords(provider) {
-    let entries = [];
-    try {
-      entries = await _listDirectoryEntries(provider, ANNOTATION_DIR);
-    } catch {
-      return [];
-    }
-    const records = [];
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'file' || !entry.name.endsWith('.json')) continue;
-      const id = entry.name.slice(0, -5);
-      const record = await _readAnnotationRecord(provider, id);
-      if (record?.id) records.push(record);
-    }
-    return records;
-  }
+function _fileVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FILE_DIR, _fnvFileId(normalized));
+}
 
-  function _annotationRef(record) {
-    const ref = _annotationJsonField(record?.target_ref, null);
-    return ref && typeof ref === 'object' ? ref : {};
-  }
+function _folderVersionDir(path) {
+  const normalized = _normalizeFolderPath(path);
+  return _joinPath(LEGACY_VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
+}
 
-  function _annotationMatchesOrphan(record, body, cascade) {
-    if (!record || _annotationFlag(record.orphan)) return false;
-    const targetKind = String(body?.target_kind || '');
-    const itemId = String(body?.item_id || '');
-    const colId = String(body?.col_id || '');
-    const targetFile = _normalizeFolderPath(body?.target_file || '');
-    if (!targetKind || !itemId) return false;
-    const ref = _annotationRef(record);
-    if (targetFile && _normalizeFolderPath(ref.file || record.target_path || '') !== targetFile) return false;
+async function _fileEtag(provider, path, entry, writeMeta) {
+  const meta = writeMeta?.meta || writeMeta || {};
+  const metaToken = meta.rev || meta.content_hash || meta.etag || '';
+  if (metaToken) return String(metaToken);
+  const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
+  const statMeta = stat?.meta || {};
+  const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
+  if (statToken) return String(statToken);
+  const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
+  const stats = handle ? await _fileStats(handle).catch(() => null) : null;
+  return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
+}
 
-    const kind = String(record.target_kind || '');
-    const directKindOk = targetKind === 'sheet_col'
-      ? (kind === 'sheet_col' || kind === 'sheet_cell')
-      : kind === targetKind;
-    if (directKindOk) {
-      if ((targetKind === 'note_line' || targetKind === 'scriptnote_line') && String(ref.lineId || '') === itemId) return true;
-      if (targetKind === 'board_card' && String(ref.cardId || '') === itemId) return true;
-      if (targetKind === 'board_line' && String(ref.lineId || '') === itemId) return true;
-      if (targetKind === 'sheet_entry' && String(ref.entryId || '') === itemId) return true;
-      if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
-      if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
-      if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;
-    }
+function _throwEtagConflict(path, expected, current) {
+  const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
+  error.status = 409;
+  error.code = 'etag_conflict';
+  error.detail = {
+    code: 'etag_conflict',
+    path: _normalizeFolderPath(path),
+    expected_etag: String(expected || ''),
+    current_etag: String(current || ''),
+  };
+  throw error;
+}
 
-    if (!cascade || kind !== 'text_range' || !ref.container) return false;
-    const container = ref.container;
-    if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
-      const containerId = container.id || container.lineId || container.cardId || '';
-      return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
-    }
-    if (targetKind === 'sheet_cell') {
-      return String(container.kind || '') === 'sheet_cell'
-        && String(container.entryId || '') === itemId
-        && (!colId || String(container.colId || '') === colId);
-    }
-    if (targetKind === 'sheet_entry') {
-      return String(container.kind || '') === 'sheet_cell' && String(container.entryId || '') === itemId;
-    }
-    if (targetKind === 'sheet_col') {
-      return String(container.kind || '') === 'sheet_cell' && String(container.colId || '') === itemId;
-    }
-    return false;
-  }
-
-  function _annotationPathMatches(path, targetPath, isFolder) {
-    const normalized = _normalizeFolderPath(path);
-    const target = _normalizeFolderPath(targetPath);
-    if (!normalized || !target) return false;
-    return normalized === target || (!!isFolder && normalized.startsWith(target + '/'));
-  }
-
-  function _rewriteAnnotationPath(path, oldPath, newPath, isFolder) {
-    const normalized = _normalizeFolderPath(path);
-    const oldNormalized = _normalizeFolderPath(oldPath);
-    const newNormalized = _normalizeFolderPath(newPath);
-    if (!normalized || !oldNormalized) return normalized;
-    if (normalized === oldNormalized) return newNormalized;
-    if (isFolder && normalized.startsWith(oldNormalized + '/')) return newNormalized + normalized.slice(oldNormalized.length);
-    return normalized;
-  }
-
-  async function _updateAnnotationsForPathMutation(provider, event) {
-    const action = String(event?.action || '');
-    const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
-    const newPath = _normalizeFolderPath(event?.newPath || '');
-    const isFolder = !!event?.isFolder;
-    if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
-    const now = _nowIso();
-    let updated = 0;
-    const records = await _listAnnotationRecords(provider);
-    for (const record of records) {
-      let changed = false;
-      const ref = _annotationRef(record);
-      const recordPaths = [
-        record.target_path,
-        ref.file,
-        ref.path,
-        ref.targetPath,
-        ref.target_path,
-      ].filter(Boolean);
-      const matches = recordPaths.some(path => _annotationPathMatches(path, oldPath, isFolder));
-      if (!matches) continue;
-
-      if (action === 'delete') {
-        record.orphan = 1;
-        record.orphaned_at = now;
-        record.target_file_name = record.target_file_name || _basename(oldPath);
-        changed = true;
-      } else if (action === 'rename' || action === 'move') {
-        if (record.target_path) {
-          const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
-          if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
-            record.target_path = nextTargetPath;
-            record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
-            changed = true;
-          }
-        }
-        ['file', 'path', 'targetPath', 'target_path'].forEach((key) => {
-          if (!ref[key]) return;
-          const rewritten = _rewriteAnnotationPath(ref[key], oldPath, newPath, isFolder);
-          if (rewritten !== _normalizeFolderPath(ref[key])) {
-            ref[key] = rewritten;
-            changed = true;
-          }
-        });
-        if (changed) record.target_ref = ref;
-      }
-      if (!changed) continue;
-      record.modified = now;
-      record.modified_at = now;
-      await _writeAnnotationRecord(provider, record);
-      updated += 1;
-    }
-    return { ok: true, updated };
-  }
-
-  function _versionTimestamp() {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    const ms = String(d.getMilliseconds()).padStart(3, '0');
-    return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
-  }
-
-  function _fileVersionDir(path) {
-    const normalized = _normalizeFolderPath(path);
-    return _joinPath(VERSION_FILE_DIR, _fnvFileId(normalized));
-  }
-
-  function _folderVersionDir(path) {
-    const normalized = _normalizeFolderPath(path);
-    return _joinPath(VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
-  }
-
-  async function _fileEtag(provider, path, entry, writeMeta) {
-    const meta = writeMeta?.meta || writeMeta || {};
-    const metaToken = meta.rev || meta.content_hash || meta.etag || '';
-    if (metaToken) return String(metaToken);
-    const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
-    const statMeta = stat?.meta || {};
-    const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
-    if (statToken) return String(statToken);
-    const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
-    const stats = handle ? await _fileStats(handle).catch(() => null) : null;
-    return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
-  }
-
-  function _throwEtagConflict(path, expected, current) {
-    const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
-    error.status = 409;
-    error.code = 'etag_conflict';
-    error.detail = {
-      code: 'etag_conflict',
-      path: _normalizeFolderPath(path),
-      expected_etag: String(expected || ''),
-      current_etag: String(current || ''),
-    };
-    throw error;
-  }
-
-  async function _mergeVersionDirectory(provider, oldDir, newDir) {
-    const oldEntry = await _resolveEntryHandle(provider, oldDir);
-    if (!oldEntry || oldEntry.kind !== 'directory') return false;
-    const newEntry = await _resolveEntryHandle(provider, newDir);
-    if (!newEntry) {
-      await _moveEntry(provider, oldDir, newDir);
-      return true;
-    }
-    if (newEntry.kind !== 'directory') throw new Error('バージョン履歴の移動先がフォルダではありません');
-    for (const entry of await _listEntriesSafe(provider, oldDir)) {
-      const target = await _moveConflictName(provider, newDir, entry.name, entry.handle.kind === 'file');
-      await _moveEntry(provider, _joinPath(oldDir, entry.name), target.path);
-    }
-    await _removeEntry(provider, oldDir).catch(() => {});
-    return true;
-  }
-
-  async function _relocateChildFileVersionHistories(provider, oldFolder, newFolder) {
-    const oldBase = _normalizeFolderPath(oldFolder);
-    const newBase = _normalizeFolderPath(newFolder);
-    async function walk(current) {
-      for (const entry of await _listDirectoryEntries(provider, current)) {
-        const nextPath = entry.path || _joinPath(current, entry.name);
-        if (entry.handle.kind === 'directory') {
-          await walk(nextPath);
-          continue;
-        }
-        const rel = _relativeToFolder(newBase, nextPath);
-        await _mergeVersionDirectory(provider, _fileVersionDir(_joinPath(oldBase, rel)), _fileVersionDir(nextPath));
-      }
-    }
-    await walk(newBase);
-  }
-
-  async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
-    const normalizedOld = _normalizeFolderPath(oldPath);
-    const normalizedNew = _normalizeFolderPath(newPath);
-    if (!normalizedOld || normalizedOld === normalizedNew) return false;
-    const oldDir = isFolder ? _folderVersionDir(normalizedOld) : _fileVersionDir(normalizedOld);
-    const newDir = isFolder ? _folderVersionDir(normalizedNew) : _fileVersionDir(normalizedNew);
-    const moved = await _mergeVersionDirectory(provider, oldDir, newDir);
-    if (isFolder) await _relocateChildFileVersionHistories(provider, normalizedOld, normalizedNew);
-    return moved;
-  }
-
-  async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-    let size = 0;
-    async function walk(current) {
-      for (const entry of await _listDirectoryEntries(provider, current)) {
-        if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-        else size += 1;
-      }
-    }
-    await walk(folderPath);
-    return size;
-  }
-
-  function _fileVersionName(path, options) {
-    const split = _splitNameAndExt(_basename(path));
-    const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-    const prefix = options?.auto ? 'auto_' : '';
-    return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
-  }
-
-  function _fileVersionInfoFromName(name) {
-    const stem = _splitNameAndExt(name).stem;
-    const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
-    if (!match) return { auto: false, label: '', created: '' };
-    const date = match[2];
-    const time = match[3];
-    return {
-      auto: !!match[1],
-      label: match[5] || '',
-      created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
-    };
-  }
-
-  function _versionLabelFromName(path, name) {
-    return _fileVersionInfoFromName(name).label || '';
-  }
-
-  function _versionCreatedFromName(name) {
-    return _fileVersionInfoFromName(name).created || '';
-  }
-
-  async function _listEntriesSafe(provider, dir) {
-    try {
-      return await _listDirectoryEntries(provider, dir);
-    } catch {
-      return [];
-    }
-  }
-
-  async function _saveFileVersion(provider, path, options) {
-    const normalized = _normalizeFolderPath(path);
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
-    const versionDir = _fileVersionDir(normalized);
-    const versionName = _fileVersionName(normalized, options || {});
-    const versionPath = _joinPath(versionDir, versionName);
-    await provider.copyPath(normalized, versionPath);
-
-    const maxAuto = Number(options?.max_auto || 0);
-    if (options?.auto && maxAuto > 0) {
-      const entries = await _listEntriesSafe(provider, versionDir);
-      const autoFiles = [];
-      for (const entry of entries) {
-        if (entry.handle.kind !== 'file' || !_fileVersionInfoFromName(entry.name).auto) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ modifiedMs: 0 }));
-        autoFiles.push({ name: entry.name, path: _joinPath(versionDir, entry.name), modifiedMs: stats.modifiedMs || 0 });
-      }
-      autoFiles.sort((a, b) => a.modifiedMs - b.modifiedMs);
-      while (autoFiles.length > maxAuto) {
-        const old = autoFiles.shift();
-        await provider.deletePath(old.path).catch(() => {});
-      }
-    }
-    return { ok: true, version: versionName };
-  }
-
-  async function _listFileVersions(provider, path) {
-    const normalized = _normalizeFolderPath(path);
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    const entries = await _listEntriesSafe(provider, _fileVersionDir(normalized));
-    const versions = [];
-    for (const entry of entries) {
-      if (entry.handle.kind !== 'file') continue;
-      const entryInfo = _fileVersionInfoFromName(entry.name);
-      if (!entryInfo.created) continue;
-      const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
-      versions.push({
-        name: entry.name,
-        auto: entryInfo.auto,
-        label: entryInfo.label,
-        created: entryInfo.created || stats.modified || '',
-        modified: stats.modified || '',
-        size: stats.size || 0,
-        _modifiedMs: stats.modifiedMs || 0,
-      });
-    }
-    versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
-    return versions.map(({ _modifiedMs, ...row }) => row);
-  }
-
-  function _safeVersionName(value) {
-    const name = _decodePathPart(value).trim();
-    if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
-    return name;
-  }
-
-  function _deletedVersionToken() {
-    return `d_${_versionTimestamp()}`;
-  }
-
-  function _deletedVersionsDir(baseDir) {
-    return _joinPath(baseDir, '_deleted');
-  }
-
-  async function _softDeleteVersionEntry(provider, baseDir, version, kind) {
-    const safeName = _safeVersionName(version);
-    const sourcePath = _joinPath(baseDir, safeName);
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    if (!source || source.kind !== expectedKind) throw new Error('バージョンが見つかりません');
-    const token = _safeVersionName(_deletedVersionToken());
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), token);
-    await provider.movePath(sourcePath, _joinPath(deletedDir, safeName));
-    await provider.writeJson(_joinPath(deletedDir, '_meta.json'), {
+async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
+  const normalizedOld = _normalizeFolderPath(oldPath);
+  const normalizedNew = _normalizeFolderPath(newPath);
+  if (!normalizedOld || normalizedOld === normalizedNew) return false;
+  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, normalizedOld);
+  const records = await adapter.listDocuments(kind);
+  let moved = 0;
+  for (const record of records) {
+    const payload = record?.payload || {};
+    const current = _normalizeFolderPath(payload.original_relative_path || '');
+    const matches = current === normalizedOld || (isFolder && current.startsWith(normalizedOld + '/'));
+    if (!matches) continue;
+    const suffix = current === normalizedOld ? '' : current.slice(normalizedOld.length);
+    await adapter.save(
       kind,
-      version: safeName,
-      deleted_at: _nowIso(),
-    });
-    return { ok: true, token, version: safeName };
+      record.documentId,
+      { ...payload, original_relative_path: normalizedNew + suffix },
+      { expectedRevision: record.revision },
+    );
+    moved += 1;
   }
+  return moved > 0;
+}
 
-  async function _restoreDeletedVersionEntry(provider, baseDir, token, kind) {
-    const safeToken = _safeVersionName(token);
-    const deletedDir = _joinPath(_deletedVersionsDir(baseDir), safeToken);
-    const meta = await _readJsonSafe(provider, _joinPath(deletedDir, '_meta.json'), null);
-    if (!meta || meta.kind !== kind) throw new Error('削除済みバージョンが見つかりません');
-    const versionName = _safeVersionName(meta.version || '');
-    const sourcePath = _joinPath(deletedDir, versionName);
-    const expectedKind = kind === 'folder' ? 'directory' : 'file';
-    const source = await _resolveEntryHandle(provider, sourcePath);
-    if (!source || source.kind !== expectedKind) throw new Error('削除済みバージョンが見つかりません');
-    const target = await _moveConflictName(provider, baseDir, versionName, kind !== 'folder');
-    await provider.movePath(sourcePath, target.path);
-    await provider.deletePath(deletedDir).catch(() => {});
-    return { ok: true, version: _basename(target.path) };
-  }
-
-  async function _readFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    const name = _safeVersionName(version);
-    const versionPath = _joinPath(_fileVersionDir(normalized), name);
-    const entry = await _resolveEntryHandle(provider, versionPath);
-    if (!entry || entry.kind !== 'file') throw new Error('バージョンが見つかりません');
-    return { content: await provider.readText(versionPath), name };
-  }
-
-  async function _restoreFileVersion(provider, path, version) {
-    const normalized = _normalizeFolderPath(path);
-    if (_isProductionFolderNotePath(normalized)) {
-      throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
+async function _countFolderEntriesIncludingTrash(provider, folderPath) {
+  let size = 0;
+  async function walk(current) {
+    for (const entry of await _listDirectoryEntries(provider, current)) {
+      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
+      else size += 1;
     }
-    const source = await _resolveEntryHandle(provider, normalized);
-    if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-    const data = await _readFileVersion(provider, normalized, version);
-    _rejectProductionLegacyEntryContent(normalized, data.content || '');
-    await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-    await provider.writeText(normalized, data.content || '');
-    return { ok: true };
   }
+  await walk(folderPath);
+  return size;
+}
 
-  async function _deleteFileVersion(provider, path, version) {
-    return _softDeleteVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), version, 'file');
-  }
+function _fileVersionName(path, options) {
+  const split = _splitNameAndExt(_basename(path));
+  const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
+  const prefix = options?.auto ? 'auto_' : '';
+  return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
+}
 
-  async function _undeleteFileVersion(provider, path, token) {
-    return _restoreDeletedVersionEntry(provider, _fileVersionDir(_normalizeFolderPath(path)), token, 'file');
+function _fileVersionInfoFromName(name) {
+  const stem = _splitNameAndExt(name).stem;
+  const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
+  if (!match) return { auto: false, label: '', created: '' };
+  const date = match[2];
+  const time = match[3];
+  return {
+    auto: !!match[1],
+    label: match[5] || '',
+    created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
+  };
+}
+
+function _versionLabelFromName(path, name) {
+  return _fileVersionInfoFromName(name).label || '';
+}
+
+function _versionCreatedFromName(name) {
+  return _fileVersionInfoFromName(name).created || '';
+}
+
+async function _listEntriesSafe(provider, dir) {
+  try {
+    return await _listDirectoryEntries(provider, dir);
+  } catch {
+    return [];
   }
+}
+
+async function _saveFileVersion(provider, path, options) {
+  const normalized = _normalizeFolderPath(path);
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
+  const versionName = _fileVersionName(normalized, options || {});
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  const content = await provider.readText(normalized);
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
+    object_type: 'text-file',
+    original_relative_path: normalized,
+    version_name: versionName,
+    content,
+    auto: !!options?.auto,
+    label: String(options?.label || ''),
+    created_at: _nowIso(),
+    deleted_at: '',
+  }, { expectedRevision: null });
+
+  const maxAuto = Number(options?.max_auto || 0);
+  if (options?.auto && maxAuto > 0) {
+    const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+    const autoFiles = rows.filter(row => row.payload?.original_relative_path === normalized && row.payload?.auto)
+      .sort((a, b) => String(a.payload?.created_at || '').localeCompare(String(b.payload?.created_at || '')));
+    while (autoFiles.length > maxAuto) {
+      const old = autoFiles.shift();
+      await adapter.delete(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, old.documentId).catch(() => {});
+    }
+  }
+  return { ok: true, version: versionName };
+}
+
+async function _listFileVersions(provider, path) {
+  const normalized = _normalizeFolderPath(path);
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const versions = [];
+  for (const entry of entries) {
+    const payload = entry.payload || {};
+    if (payload.original_relative_path !== normalized || payload.object_type !== 'text-file' || payload.deleted_at) continue;
+    const entryInfo = _fileVersionInfoFromName(payload.version_name);
+    versions.push({
+      name: payload.version_name,
+      auto: !!payload.auto,
+      label: payload.label || entryInfo.label,
+      created: payload.created_at || entryInfo.created || '',
+      modified: payload.created_at || '',
+      size: new TextEncoder().encode(payload.content || '').length,
+      _modifiedMs: Date.parse(payload.created_at || '') || 0,
+    });
+  }
+  const known = new Set(versions.map(row => row.name));
+  for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {
+    if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
+    const entryInfo = _fileVersionInfoFromName(entry.name);
+    if (!entryInfo.created) continue;
+    const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
+    versions.push({
+      name: entry.name,
+      auto: entryInfo.auto,
+      label: entryInfo.label,
+      created: entryInfo.created || stats.modified || '',
+      modified: stats.modified || '',
+      size: stats.size || 0,
+      _modifiedMs: stats.modifiedMs || Date.parse(entryInfo.created || '') || 0,
+    });
+  }
+  versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
+  return versions.map(({ _modifiedMs, ...row }) => row);
+}
+
+function _safeVersionName(value) {
+  const name = _decodePathPart(value).trim();
+  if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
+  return name;
+}
+
+function _deletedVersionToken() {
+  return `d_${_versionTimestamp()}`;
+}
+
+async function _findFileVersionRecord(provider, path, version, includeDeleted, migrateLegacy) {
+  const normalized = _normalizeFolderPath(path);
+  const name = _safeVersionName(version);
+  const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+  const records = await adapter.listDocuments(storageKind);
+  let record = records.find(row => {
+    const payload = row?.payload || {};
+    return payload.object_type === 'text-file'
+      && payload.original_relative_path === normalized
+      && payload.version_name === name
+      && (includeDeleted || !payload.deleted_at);
+  });
+  if (!record) {
+    const legacyPath = _joinPath(_fileVersionDir(normalized), name);
+    const legacyEntry = await _resolveEntryHandle(provider, legacyPath);
+    if (legacyEntry?.kind === 'file') {
+      const info = _fileVersionInfoFromName(name);
+      const stats = await _fileStats(legacyEntry.handle).catch(() => ({ modified: '' }));
+      const payload = {
+        object_type: 'text-file',
+        original_relative_path: normalized,
+        version_name: name,
+        content: await provider.readText(legacyPath),
+        auto: info.auto,
+        label: info.label,
+        created_at: info.created || stats.modified || '',
+        deleted_at: '',
+        deleted_token: '',
+        migrated_from_legacy: true,
+      };
+      if (migrateLegacy) {
+        const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(name)}`;
+        record = await adapter.save(storageKind, documentId, payload, { expectedRevision: null });
+      } else {
+        record = { documentId: '', revision: '', payload };
+      }
+    }
+  }
+  return { adapter, storageKind, record, name };
+}
+
+async function _readFileVersion(provider, path, version) {
+  const { record, name } = await _findFileVersionRecord(provider, path, version, false);
+  if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
+  return { content: String(record.payload?.content || ''), name };
+}
+
+async function _restoreFileVersion(provider, path, version) {
+  const normalized = _normalizeFolderPath(path);
+  if (_isProductionFolderNotePath(normalized)) {
+    throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
+  }
+  const source = await _resolveEntryHandle(provider, normalized);
+  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
+  const data = await _readFileVersion(provider, normalized, version);
+  _rejectProductionLegacyEntryContent(normalized, data.content || '');
+  await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
+  await provider.writeText(normalized, data.content || '');
+  return { ok: true };
+}
+
+async function _deleteFileVersion(provider, path, version) {
+  const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
+  if (!record) throw new Error('バージョンが見つかりません');
+  const token = _deletedVersionToken();
+  await adapter.save(
+    storageKind,
+    record.documentId,
+    { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, token, version: name };
+}
+
+async function _undeleteFileVersion(provider, path, token) {
+  const normalized = _normalizeFolderPath(path);
+  const safeToken = _safeVersionName(token);
+  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
+  const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
+  const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
+  if (!record) throw new Error('削除済みバージョンが見つかりません');
+  await adapter.save(
+    window.MeldexSystemStorage.SystemStorageKind.VERSIONS,
+    record.documentId,
+    { ...record.payload, deleted_at: '', deleted_token: '' },
+    { expectedRevision: record.revision },
+  );
+  return { ok: true, version: record.payload.version_name };
+}
   /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
@@ -18641,6 +24433,16 @@
   function _skipFolderVersionRelPath(relPath) {
     const normalized = _normalizeFolderPath(relPath);
     return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
+  }
+
+  async function _versionFileBase64(provider, path) {
+    const source = await provider.downloadAsFile(path);
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return { content_base64: btoa(binary), byte_length: bytes.length };
   }
 
   async function _collectFolderVersionFiles(provider, folderPath) {
@@ -18660,7 +24462,13 @@
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
         if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        files.push({ rel_path: relPath, path: fullPath, size: stats.size || 0, modified: stats.modified || '' });
+        const encoded = await _versionFileBase64(provider, fullPath);
+        files.push({
+          rel_path: relPath,
+          size: stats.size || encoded.byte_length,
+          modified: stats.modified || '',
+          content_base64: encoded.content_base64,
+        });
       }
     }
     await walk(base);
@@ -18674,43 +24482,89 @@
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
     const kind = options?.auto ? 'auto' : 'manual';
     const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const versionDir = _joinPath(_folderVersionDir(normalized), versionName);
-    const filesDir = _joinPath(versionDir, 'files');
     const files = await _collectFolderVersionFiles(provider, normalized);
-    let totalSize = 0;
-    try {
-      for (const file of files) {
-        totalSize += Number(file.size || 0);
-        await provider.copyPath(file.path, _joinPath(filesDir, file.rel_path));
-      }
-      await provider.writeJson(_joinPath(versionDir, '_meta.json'), {
-        folder_path: normalized,
-        created: _nowIso(),
-        label: options?.label || '',
-        auto: !!options?.auto,
-        files: files.map(({ rel_path, size, modified }) => ({ rel_path, size, modified })),
-        exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
-      });
-    } catch (error) {
-      await _removeEntry(provider, versionDir).catch(() => {});
-      throw error;
-    }
+    const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+    await adapter.save(storageKind, documentId, {
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: versionName,
+      created_at: _nowIso(),
+      label: options?.label || '',
+      auto: !!options?.auto,
+      files,
+      exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+    }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
 
+  async function _readLegacyFolderVersion(provider, folderPath, version) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
+    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
+    if (!meta || typeof meta !== 'object') return null;
+    const files = [];
+    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
+      const relPath = _safeRelativeFile(file?.rel_path || '', 'rel_path');
+      const encoded = await _versionFileBase64(provider, _joinPath(versionDir, 'files', relPath));
+      files.push({
+        rel_path: relPath,
+        size: Number(file?.size || encoded.byte_length),
+        modified: file?.modified || '',
+        content_base64: encoded.content_base64,
+      });
+    }
+    return {
+      object_type: 'folder',
+      original_relative_path: normalized,
+      version_name: safeVersion,
+      created_at: meta.created || _versionCreatedFromName(safeVersion) || '',
+      label: meta.label || '',
+      auto: !!meta.auto,
+      files,
+      exclude_patterns: Array.isArray(meta.exclude_patterns) ? meta.exclude_patterns : [...FOLDER_VERSION_EXCLUDE],
+      deleted_at: '',
+      deleted_token: '',
+      migrated_from_legacy: true,
+    };
+  }
+
   async function _listFolderVersions(provider, folderPath) {
-    const dir = _folderVersionDir(_normalizeFolderPath(folderPath));
-    const entries = await _listEntriesSafe(provider, dir);
+    const normalized = _normalizeFolderPath(folderPath);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const entries = await adapter.listDocuments(storageKind);
     const versions = [];
     for (const entry of entries) {
-      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_')) continue;
-      const meta = await _readJsonSafe(provider, _joinPath(dir, entry.name, '_meta.json'), {});
-      const files = Array.isArray(meta?.files) ? meta.files : [];
+      const meta = entry?.payload || {};
+      if (meta.object_type !== 'folder' || meta.original_relative_path !== normalized || meta.deleted_at) continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
+      versions.push({
+        name: meta.version_name,
+        created: meta.created_at || _versionCreatedFromName(meta.version_name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
+        file_count: files.length,
+        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+      });
+    }
+    const known = new Set(versions.map(row => row.name));
+    const legacyDir = _folderVersionDir(normalized);
+    for (const entry of await _listEntriesSafe(provider, legacyDir)) {
+      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_') || known.has(entry.name)) continue;
+      const meta = await _readJsonSafe(provider, _joinPath(legacyDir, entry.name, '_meta.json'), null);
+      if (!meta || typeof meta !== 'object') continue;
+      const files = Array.isArray(meta.files) ? meta.files : [];
       versions.push({
         name: entry.name,
-        created: _versionCreatedFromName(entry.name) || meta?.created || '',
-        label: meta?.label || '',
-        auto: !!meta?.auto,
+        created: meta.created || _versionCreatedFromName(entry.name) || '',
+        label: meta.label || '',
+        auto: !!meta.auto,
         file_count: files.length,
         total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
       });
@@ -18719,18 +24573,45 @@
     return versions;
   }
 
+  async function _findFolderVersionRecord(provider, folderPath, version, includeDeleted, migrateLegacy) {
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeVersion = _safeVersionName(version);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    let record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.version_name === safeVersion
+        && (includeDeleted || !payload.deleted_at);
+    });
+    if (!record) {
+      const legacyPayload = await _readLegacyFolderVersion(provider, normalized, safeVersion);
+      if (legacyPayload && migrateLegacy) {
+        const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(safeVersion)}`;
+        record = await adapter.save(storageKind, documentId, legacyPayload, { expectedRevision: null });
+      } else if (legacyPayload) {
+        record = { documentId: '', revision: '', payload: legacyPayload };
+      }
+    }
+    return { adapter, storageKind, record };
+  }
+
   async function _readFolderVersion(provider, folderPath, version) {
-    const meta = await _readJsonSafe(provider, _joinPath(_folderVersionDir(_normalizeFolderPath(folderPath)), _safeVersionName(version), '_meta.json'), null);
-    if (!meta || typeof meta !== 'object') throw new Error('フォルダバージョンが見つかりません');
-    return meta;
+    const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    return record.payload;
   }
 
   async function _readFolderVersionFile(provider, folderPath, version, file) {
     const relFile = _safeRelativeFile(file, 'file');
-    const path = _joinPath(_folderVersionDir(_normalizeFolderPath(folderPath)), _safeVersionName(version), 'files', relFile);
-    const entry = await _resolveEntryHandle(provider, path);
-    if (!entry || entry.kind !== 'file') throw new Error('バージョン内のファイルが見つかりません');
-    return { content: await provider.readText(path) };
+    const meta = await _readFolderVersion(provider, folderPath, version);
+    const snapshot = (Array.isArray(meta.files) ? meta.files : []).find(row => row?.rel_path === relFile);
+    if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+    const binary = atob(snapshot.content_base64);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    return { content: new TextDecoder().decode(bytes) };
   }
 
   async function _restoreFolderVersion(provider, folderPath, version) {
@@ -18750,32 +24631,58 @@
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
       const dst = _joinPath(normalized, relPath);
       if (!_productionReservedEntryProperties(dst).length) continue;
-      const src = _joinPath(_folderVersionDir(normalized), safeVersion, 'files', relPath);
-      _rejectProductionLegacyEntryContent(dst, await provider.readText(src));
+      const snapshot = meta.files.find(row => row?.rel_path === relPath);
+      if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
+      const binary = atob(snapshot.content_base64);
+      _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
     }
     await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
     const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    const versionFilesDir = _joinPath(_folderVersionDir(normalized), safeVersion, 'files');
     let restored = 0;
     for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
       const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const src = _joinPath(versionFilesDir, relPath);
       const dst = _joinPath(normalized, relPath);
-      const srcEntry = await _resolveEntryHandle(provider, src);
-      if (!srcEntry || srcEntry.kind !== 'file') continue;
-      const srcFile = await provider.downloadAsFile(src);
-      await provider.uploadBytes(dst, new Uint8Array(await srcFile.arrayBuffer()));
+      if (!file.content_base64) continue;
+      const binary = atob(file.content_base64);
+      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
       restored += 1;
     }
     return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
   }
 
   async function _deleteFolderVersion(provider, folderPath, version) {
-    return _softDeleteVersionEntry(provider, _folderVersionDir(_normalizeFolderPath(folderPath)), version, 'folder');
+    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
+    if (!record) throw new Error('フォルダバージョンが見つかりません');
+    const token = _deletedVersionToken();
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, token, version: record.payload.version_name };
   }
 
   async function _undeleteFolderVersion(provider, folderPath, token) {
-    return _restoreDeletedVersionEntry(provider, _folderVersionDir(_normalizeFolderPath(folderPath)), token, 'folder');
+    const normalized = _normalizeFolderPath(folderPath);
+    const safeToken = _safeVersionName(token);
+    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
+    const records = await adapter.listDocuments(storageKind);
+    const record = records.find(row => {
+      const payload = row?.payload || {};
+      return payload.object_type === 'folder'
+        && payload.original_relative_path === normalized
+        && payload.deleted_token === safeToken;
+    });
+    if (!record) throw new Error('削除済みバージョンが見つかりません');
+    await adapter.save(
+      storageKind,
+      record.documentId,
+      { ...record.payload, deleted_at: '', deleted_token: '' },
+      { expectedRevision: record.revision },
+    );
+    return { ok: true, version: record.payload.version_name };
   }
   async function _findDropboxConflictedCopies(provider, limit) {
     const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
@@ -19002,25 +24909,106 @@
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       const entry = await _resolveEntryHandle(provider, targetPath);
-      if (!entry) return { type: 'unknown' };
-      if (entry.kind === 'directory') return { type: await _classifyDirectoryType(provider, targetPath) };
-      return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown' };
+      if (!entry) return { type: 'unknown', exists: false };
+      if (entry.kind === 'directory') {
+        return { type: await _classifyDirectoryType(provider, targetPath), exists: true };
+      }
+      return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown', exists: true };
     }
 
     if (pathname === '/images-in-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
+      // include_videos=1 はビューワーのフォルダ内前後移動用（サーバー版 /api/images-in-folder と同じ拡張子集合）
+      const includeVideos = url.searchParams.get('include_videos') === '1';
+      const videoExts = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
       const entries = await _listDirectoryEntries(provider, targetPath);
       const items = [];
       for (const entry of entries) {
         if (entry.handle.kind !== 'file') continue;
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (!IMAGE_EXTS.has(ext)) continue;
+        if (!IMAGE_EXTS.has(ext) && !(includeVideos && videoExts.has(ext))) continue;
         const itemPath = entry.path || _joinPath(targetPath, entry.name);
         const stats = await _fileStats(entry.handle);
         items.push({ name: entry.name, path: itemPath, size: stats.size, modified: stats.modified });
       }
       return items;
+    }
+
+    async function _fileIdentityAndRevision(provider, filePath, entry, etag, writeMeta, fileContent) {
+      let meta = writeMeta?.meta || writeMeta || null;
+      if (!meta?.id && typeof provider?.getMetadata === 'function') {
+        meta = await provider.getMetadata(filePath).catch(() => meta);
+      }
+      if (!meta?.id) {
+        const stat = typeof provider?.statPath === 'function'
+          ? await provider.statPath(filePath).catch(() => null)
+          : null;
+        meta = stat?.meta || meta;
+      }
+      const token = String(etag || '');
+      const providerId = String(meta?.id || '');
+      const identity = window.MeldexDocumentIdentity;
+      const identityFormat = identity?.formatForPath?.(filePath);
+      let content = fileContent;
+      if (content == null && identityFormat && typeof provider?.readText === 'function') {
+        content = await provider.readText(filePath).catch(() => '');
+      }
+      const documentId = identityFormat
+        ? String(identity?.readDocumentId?.(String(content || ''), identityFormat) || '')
+        : '';
+      return {
+        etag: token,
+        transport_revision: { transport: 'dropbox-rev', token },
+        ...(documentId ? {
+          document_id: documentId,
+          document_key: `document:${documentId}`,
+        } : {}),
+        ...(providerId ? {
+          provider_id: providerId,
+          ...(!documentId ? { document_key: `dropbox-item:${providerId}` } : {}),
+        } : {}),
+      };
+    }
+
+    function _throwPreconditionRequired(filePath, currentEtag) {
+      const error = new Error('既存ファイルを更新するには読込時のrevisionが必要です');
+      error.status = 428;
+      error.code = 'precondition_required';
+      error.meldexCode = 'precondition_required';
+      error.detail = {
+        code: 'precondition_required',
+        path: _normalizeFolderPath(filePath),
+        current_etag: String(currentEtag || ''),
+      };
+      throw error;
+    }
+
+    function _dropboxTransportRevisionToken(bodyValue) {
+      const revision = bodyValue?.transport_revision || bodyValue?.transportRevision || '';
+      let transport = '';
+      let token = '';
+      if (revision && typeof revision === 'object') {
+        transport = String(revision.transport || revision.kind || 'dropbox-rev');
+        token = String(revision.token || revision.revision || revision.etag || '').trim();
+      } else {
+        const raw = String(revision || '').trim();
+        if (raw.startsWith('local-etag:')) transport = 'local-etag';
+        else if (raw.startsWith('dropbox-rev:')) {
+          transport = 'dropbox-rev';
+          token = raw.slice('dropbox-rev:'.length);
+        } else {
+          transport = 'dropbox-rev';
+          token = raw;
+        }
+      }
+      if (transport && transport !== 'dropbox-rev') {
+        const error = new Error('異なる保存経路のrevisionはDropbox保存に使用できません');
+        error.status = 400; error.code = 'transport_mismatch'; error.meldexCode = 'transport_mismatch';
+        error.detail = { code: 'transport_mismatch', expected_transport: 'dropbox-rev', actual_transport: transport };
+        throw error;
+      }
+      return token;
     }
 
     if (pathname === '/file' && method === 'GET') {
@@ -19030,7 +25018,47 @@
       if (!_isTextLikePath(filePath)) throw new Error('Binary file cannot be read as text');
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${filePath}`);
-      return { path: filePath, content: await provider.readText(filePath), etag: await _fileEtag(provider, filePath, entry) };
+      if (_boolParam(url.searchParams.get('metadata_only'))) {
+        const etag = await _fileEtag(provider, filePath, entry);
+        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0 }));
+        return {
+          path: filePath,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          size: Number(stats.size || 0),
+        };
+      }
+      if (/\.csv$/i.test(filePath) && typeof provider.downloadAsFile === 'function') {
+        const file = await provider.downloadAsFile(filePath);
+        const bytes = await file.arrayBuffer();
+        const view = new Uint8Array(bytes);
+        const bom = view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF;
+        let content;
+        let encoding = bom ? 'utf-8-bom' : 'utf-8';
+        try {
+          content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+          content = new TextDecoder('shift_jis', { fatal: true }).decode(bytes);
+          encoding = 'cp932';
+        }
+        const dialect = window.MeldexCsv?.detectDialect?.(content, { encoding, bom }) || {};
+        const etag = await _fileEtag(provider, filePath, entry);
+        return {
+          path: filePath,
+          content,
+          ...await _fileIdentityAndRevision(provider, filePath, entry, etag),
+          encoding,
+          bom,
+          delimiter: dialect.delimiter || ',',
+          newline: dialect.newline || '\n',
+        };
+      }
+      const etag = await _fileEtag(provider, filePath, entry);
+      const content = await provider.readText(filePath);
+      return {
+        path: filePath,
+        content,
+        ...await _fileIdentityAndRevision(provider, filePath, entry, etag, null, content),
+      };
     }
 
     if (pathname === '/file' && (method === 'PUT' || method === 'POST')) {
@@ -19040,17 +25068,27 @@
       if (_isProductionFolderNotePath(filePath)) {
         throw new Error('制作管理の列定義ファイルは汎用ファイル保存から変更できません');
       }
-      const content = String(body?.content ?? '');
+      let content = String(body?.content ?? '');
       _rejectProductionLegacyEntryContent(filePath, content);
       const skipIfMissing = !!(body?.skip_if_missing || body?.skipIfMissing);
       const forceOverwrite = !!(body?.force_overwrite || body?.forceOverwrite);
       const createOnly = !!(body?.create_only || body?.createOnly);
-      const expectedEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      const explicitEtag = String(body?.if_match_etag || body?.ifMatchEtag || '').trim();
+      const transportEtag = _dropboxTransportRevisionToken(body);
+      if (explicitEtag && transportEtag && explicitEtag !== transportEtag) {
+        const error = new Error('if_match_etagとtransport_revisionが一致しません');
+        error.status = 400; error.code = 'revision_field_mismatch'; error.meldexCode = 'revision_field_mismatch';
+        throw error;
+      }
+      const expectedEtag = explicitEtag || transportEtag;
       const entry = await _resolveEntryHandle(provider, filePath);
       if (!entry && skipIfMissing) return { ok: true, skipped: true, missing: true, etag: '' };
       if (entry?.kind === 'directory') throw new Error(`フォルダはファイルとして保存できません: ${filePath}`);
       if ((createOnly && entry) || (expectedEtag && !entry && !forceOverwrite)) {
         _throwEtagConflict(filePath, expectedEtag, entry ? await _fileEtag(provider, filePath, entry) : '');
+      }
+      if (entry && !expectedEtag && !forceOverwrite && !createOnly) {
+        _throwPreconditionRequired(filePath, await _fileEtag(provider, filePath, entry));
       }
       if (expectedEtag && entry && !forceOverwrite) {
         const currentEtag = await _fileEtag(provider, filePath, entry);
@@ -19058,8 +25096,28 @@
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
+      const docIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath);
+      if (docIdentityFmt) {
+        let existingDocumentId = '';
+        if (entry) {
+          const currentContent = await provider.readText(filePath);
+          existingDocumentId = String(
+            window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            || '',
+          );
+        }
+        content = window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
+          content,
+          docIdentityFmt,
+          existingDocumentId,
+        ).text;
+      }
       const writeMeta = await provider.writeText(filePath, content);
-      return { ok: true, etag: await _fileEtag(provider, filePath, null, writeMeta) };
+      const etag = await _fileEtag(provider, filePath, null, writeMeta);
+      return {
+        ok: true,
+        ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+      };
     }
 
     if (pathname === '/upload-file' && method === 'POST') {
@@ -19183,6 +25241,15 @@
       return { ok: true, path: normalizedPath };
     }
 
+    if (pathname === '/references/delete-impact' && method === 'POST') {
+      // ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 4:
+      // 削除確認ダイアログの被参照警告(gb-delete-impact-warning.js)向け。
+      // Desktop側 /api/references/delete-impact の Cloud（Dropbox直結）等価。
+      const provider = await _requirePwaProvider('read');
+      const items = Array.isArray(body?.items) ? body.items : [];
+      return _queryDeleteImpact(provider, items);
+    }
+
     if (pathname === '/annotations' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('target') || '');
@@ -19211,7 +25278,7 @@
     if (pathname === '/annotations/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const id = body?.id ? _safeId(body.id, 'annotation id') : _randomId('ann');
-      const existing = await _readAnnotationRecord(provider, id);
+      const existing = await _readAnnotationRecord(provider, id, body?.target_path || '');
       const record = _mergeAnnotationRecord(existing, { ...(body || {}), id }, { id, now: _nowIso() });
       if (body?.created) {
         record.created = body.created;
@@ -19273,7 +25340,7 @@
     if (/^\/annotations\/[^/]+$/.test(pathname) && method === 'DELETE') {
       const provider = await _requirePwaProvider('readwrite');
       const id = _safeId(pathname.split('/').pop(), 'annotation id');
-      await provider.deletePath(_annotationPath(id)).catch(() => {});
+      await _deleteAnnotationRecordFully(provider, id);
       return { ok: true };
     }
 
@@ -19281,10 +25348,7 @@
       const provider = await _requirePwaProvider('read');
       const viewKey = String(url.searchParams.get('view_key') || '').trim();
       if (!viewKey) throw new Error('view_key required');
-      const entry = await _readJsonSafe(provider, _joinPath(VIEW_LOCK_DIR, _fnvFileId(viewKey) + '.json'), null);
-      return entry && typeof entry === 'object'
-        ? entry
-        : { view_key: viewKey, target_path: '', pane_id: '', target_kind: '', locked: 0, state: {}, locked_at: '', locked_by: '' };
+      return _readViewLockRecord(provider, viewKey);
     }
     if (pathname === '/view-lock' && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
@@ -19301,7 +25365,7 @@
         locked_at: locked ? _nowIso() : '',
         locked_by: String(body?.locked_by || ''),
       };
-      await provider.writeJson(_joinPath(VIEW_LOCK_DIR, _fnvFileId(viewKey) + '.json'), entry);
+      await _writeViewLockRecord(provider, viewKey, entry);
       return { ok: true, view_key: viewKey, locked };
     }
 
@@ -19412,10 +25476,12 @@
         const targetPath = _joinPath(parent, labelName + '.scriptnote.json');
         await provider.writeJson(targetPath, {
           fileType: 'meldex-scriptnote',
+          schema_version: 3,
           version: 1,
           title: labelName,
           layoutMode: 'manga',
           editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
+          scenarioTypes: [],
           characters: [],
           characterDb: [],
           notes: [],
@@ -19427,7 +25493,9 @@
       if (type === 'board') {
         const labelName = await _uniqueName(provider, parent, label, '.mel-board');
         const targetPath = _joinPath(parent, labelName + '.mel-board');
-        await provider.writeText(targetPath, `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`);
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
+        await provider.writeText(targetPath, boardContent);
         return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
       }
       if (type === 'calendar') {
@@ -19472,6 +25540,9 @@
         if (newPath !== oldPath) {
           await _moveEntry(provider, oldPath, newPath);
           await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, newPath, true));
+          await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+            _relocateCsvSidecars(provider, oldPath, newPath, true, false)
+          ));
         }
         const oldNotePath = _joinPath(newPath, sourceName + '.md');
         const newNotePath = _joinPath(newPath, newName + '.md');
@@ -19504,6 +25575,9 @@
       }
       const warnings = [];
       await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, oldPath, nextPath, false));
+      await _runPostMutationStep(warnings, 'csv-sidecar', () => (
+        _relocateCsvSidecars(provider, oldPath, nextPath, false, false)
+      ));
       await _runPostMutationStep(warnings, 'stored-paths', () => (
         typeof _rewriteStoredPathsForProvider === 'function'
           ? _rewriteStoredPathsForProvider(provider, oldPath, nextPath, false)
@@ -19550,6 +25624,15 @@
       if (await _pathExists(provider, originalPath)) throw new Error(`復元先に既にファイルが存在: ${originalPath}`);
       await _moveEntry(provider, trashPath, originalPath);
       const warnings = [];
+      const sidecarTrashPath = _normalizeFolderPath(meta?.csv_sidecar_trash_path || '');
+      if (sidecarTrashPath && await _pathExists(provider, sidecarTrashPath)) {
+        await _runPostMutationStep(warnings, 'csv-sidecar', async () => {
+          const sidecarPath = _csvMetadataPath(originalPath);
+          await _directoryHandle(provider, _dirname(sidecarPath), true);
+          await _moveEntry(provider, sidecarTrashPath, sidecarPath);
+          await _rewriteCsvSidecarSource(provider, sidecarPath, originalPath);
+        });
+      }
       await _runPathMutationHooksSafe({
         action: 'restore', oldPath: trashPath, newPath: originalPath,
         isFolder: source.kind === 'directory',
@@ -19575,7 +25658,11 @@
       }
       const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
+      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
       const warnings = [];
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
+      ));
       await _runPathMutationHooksSafe({
         action: 'copy', oldPath: sourcePath, newPath: destPath,
         isFolder: source.kind === 'directory',
@@ -19601,7 +25688,11 @@
       }
       const destDirHandle = await _directoryHandle(provider, destFolder, true);
       await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
+      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
       const warnings = [];
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
+      ));
       await _runPathMutationHooksSafe({
         action: 'copy', oldPath: sourcePath, newPath: destPath,
         isFolder: source.kind === 'directory',
@@ -19641,6 +25732,9 @@
       await _moveEntry(provider, sourcePath, conflict.path);
       const warnings = [];
       await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
+      ));
       await _runPostMutationStep(warnings, 'stored-paths', () => (
         typeof _rewriteStoredPathsForProvider === 'function'
           ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
@@ -20122,37 +26216,19 @@
     const dependencies = rawDependencies && typeof rawDependencies === 'object'
       ? rawDependencies
       : {};
-    const ensureDirectory = dependencies.ensureDirectory;
-    const resolveEntryHandle = dependencies.resolveEntryHandle;
     const writeCatalog = dependencies.writeCatalog;
-    if (
-      typeof ensureDirectory !== 'function'
-      || typeof resolveEntryHandle !== 'function'
-      || typeof writeCatalog !== 'function'
-    ) {
+    if (typeof writeCatalog !== 'function') {
       throw new Error('タグ辞書作成APIの依存関数が不足しています');
     }
     const dictionaryFolder = String(
       dependencies.dictionaryFolder || '自動タグ辞書',
     );
-    const dictionaryNote = String(
-      dependencies.dictionaryNote
-      || `${dictionaryFolder}/${dictionaryFolder}.md`,
-    );
     const catalogFile = String(
       dependencies.catalogFile || '.meldex/auto-tag-dictionary.v1.json',
     );
-    await ensureDirectory(provider, '.meldex');
-    await ensureDirectory(provider, dictionaryFolder);
-    if (!await resolveEntryHandle(provider, dictionaryNote)) {
-      await provider.writeText(
-        dictionaryNote,
-        dictionaryNoteText(dictionaryFolder),
-      );
-    }
-    if (!await resolveEntryHandle(provider, catalogFile)) {
-      await writeCatalog(provider, catalog => catalog);
-    }
+    // 辞書は管理領域へ保存する。旧「自動タグ辞書」フォルダと説明ノートは
+    // 既存データの読取互換だけに残し、新規作成しない。
+    await writeCatalog(provider, catalog => catalog);
     return {
       ok: true,
       created: true,
@@ -20896,18 +26972,150 @@
     _requirePwaProvider,
     _readJsonSafe,
     _listDirectoryEntries,
-    _removeEntry,
-    _resolveEntryHandle,
     _requireUnlockedPath,
   } = internals;
 
+  function managedDocumentId(path) {
+    const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    const label = value.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '').slice(-72) || 'root';
+    return `${label}-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+  function managedKindForPath(path) {
+    const systemStorage = window.MeldexSystemStorage;
+    if (!systemStorage) throw new Error('Dropbox管理データストレージを先に読み込んでください');
+    const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
+    const recovery = value.startsWith('.meldex/asset-recovery/')
+      || value.startsWith('.meldex/auto-tag-recovery/')
+      || value.startsWith('.meldex/global-tag-recovery/');
+    return recovery ? systemStorage.SystemStorageKind.ASSET_RECOVERY : systemStorage.SystemStorageKind.TAGS;
+  }
+  // タグ台帳(auto-tag-dictionary)・割当ストア(global-tags)・その復旧データは、
+  // 常に「接続中ルート」の管理スコープへ置く(2026-08-04 完成監査の設計判断)。
+  //
+  // /global-tags/target 等が受け取る対象文書パス(共有ソースの仮想パスを含む)で
+  // 管理ルートを解決してはならない: 台帳・割当は全対象を1ドキュメントで持つ
+  // 単一ストアのため、対象パスごとにスコープを切り替えると同じストアの複製が
+  // 個人領域と共有領域へ分岐し(どちらも「全体」を自称する)、さらに割当が参照
+  // するタグidの定義(台帳)と別スコープへ割れて参照整合が壊れる。旧実装
+  // (`.meldex/global-tags.json` を接続中ルート直下へ置く)の可視性の意味論
+  // (共有ワークスペードへ接続中はメンバー間で共有・個人接続では個人のみ)を
+  // そのまま新管理領域へ引き継ぐ。ここへ渡す第2引数は種別判定用の旧論理パス
+  // であり、管理ルート解決へは渡さない。
+  async function managedAdapter(provider, _logicalPath) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver || typeof resolver.resolveAdapterForProvider !== 'function') {
+      throw new Error('Dropbox管理データ保存先を安全に判定できません');
+    }
+    return resolver.resolveAdapterForProvider(provider);
+  }
+  async function readManagedJson(provider, path, fallbackValue) {
+    const adapter = await managedAdapter(provider, path);
+    const record = await adapter.load(managedKindForPath(path), managedDocumentId(path));
+    if (record) {
+      const payload = record.payload;
+      if (!payload || typeof payload !== 'object'
+        || payload.legacy_path !== String(path)
+        || !Object.prototype.hasOwnProperty.call(payload, 'value')) {
+        throw new Error(`管理データが破損しています: ${String(path)}`);
+      }
+      return structuredClone(payload.value);
+    }
+    // 旧付随物は移行期間中の読取専用フォールバック。
+    return _readJsonSafe(provider, path, fallbackValue);
+  }
+  async function writeManagedJsonMerged(provider, path, updater, fallbackValue) {
+    const adapter = await managedAdapter(provider, path);
+    const kind = managedKindForPath(path);
+    const documentId = managedDocumentId(path);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      if (current && (current.payload?.legacy_path !== String(path)
+        || !Object.prototype.hasOwnProperty.call(current.payload || {}, 'value'))) {
+        throw new Error(`管理データが破損しています: ${String(path)}`);
+      }
+      const base = current
+        ? structuredClone(current.payload.value)
+        : await _readJsonSafe(provider, path, structuredClone(fallbackValue));
+      const next = await updater(base);
+      try {
+        const saved = await adapter.save(kind, documentId, {
+          legacy_path: String(path),
+          value: next,
+        }, { expectedRevision: current ? current.revision : null });
+        return structuredClone(saved.payload.value);
+      } catch (error) {
+        if (error?.name !== 'SystemStorageConflictError'
+          && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw new Error(`管理データの同時更新を解決できませんでした: ${String(path)}`);
+  }
+  async function writeManagedJson(provider, path, value) {
+    return writeManagedJsonMerged(provider, path, () => value, {});
+  }
+  async function listManagedEntries(provider, directory, includeLegacy = true) {
+    const adapter = await managedAdapter(provider, directory);
+    const prefix = `${String(directory || '').replace(/\/+$/g, '')}/`;
+    const records = await adapter.listDocuments(managedKindForPath(prefix));
+    const managed = records
+      .filter(record => String(record?.payload?.legacy_path || '').startsWith(prefix))
+      .map(record => {
+        const path = String(record.payload.legacy_path);
+        return { name: path.slice(prefix.length), path };
+      })
+      .filter(entry => entry.name && !entry.name.includes('/'));
+    if (!includeLegacy || typeof _listDirectoryEntries !== 'function') return managed;
+    let legacy = [];
+    try {
+      legacy = await _listDirectoryEntries(provider, directory);
+    } catch {
+      return managed;
+    }
+    const byName = new Map(managed.map(entry => [entry.name, entry]));
+    (Array.isArray(legacy) ? legacy : []).forEach(entry => {
+      const name = String(entry?.name || '');
+      if (name && !byName.has(name)) byName.set(name, { ...entry, name });
+    });
+    return [...byName.values()];
+  }
+  async function removeManagedEntry(provider, path) {
+    const adapter = await managedAdapter(provider, path);
+    return adapter.delete(managedKindForPath(path), managedDocumentId(path));
+  }
+  function managedProvider(provider) {
+    return {
+      writeJson: (path, value) => writeManagedJson(provider, path, value),
+      writeText: async (path, text) => {
+        let value;
+        try { value = JSON.parse(String(text)); } catch {
+          throw new Error('管理データはJSON形式で保存する必要があります');
+        }
+        return writeManagedJson(provider, path, value);
+      },
+      writeJsonMerged: (path, updater, options) => writeManagedJsonMerged(
+        provider,
+        path,
+        updater,
+        options?.fallbackValue ?? {},
+      ),
+    };
+  }
+  window.MeldexDropboxManagedJson = {
+    read: readManagedJson, write: writeManagedJson, writeMerged: writeManagedJsonMerged,
+    list: listManagedEntries, remove: removeManagedEntry, provider: managedProvider,
+  };
   const CATALOG_FILE = '.meldex/auto-tag-dictionary.v1.json';
   const CATALOG_CONFLICT_FILE = '.meldex/auto-tag-dictionary.conflict.v1.json';
   const CATALOG_RECOVERY_DIR = '.meldex/auto-tag-recovery';
   const ASSIGNMENTS_FILE = '.meldex/global-tags.json';
   const ASSIGNMENTS_RECOVERY_DIR = '.meldex/global-tag-recovery';
   const DICTIONARY_FOLDER = '自動タグ辞書';
-  const DICTIONARY_NOTE = `${DICTIONARY_FOLDER}/${DICTIONARY_FOLDER}.md`;
   const DEFAULT_PRESET = '標準';
   const catalogNormalizer = window.MeldexDropboxTagCatalogNormalizer;
   if (!catalogNormalizer) {
@@ -20954,33 +27162,20 @@
     };
   }
 
-  async function ensureDirectory(provider, path) {
-    if (typeof provider.ensureDirectory === 'function') {
-      await provider.ensureDirectory(path);
-      return;
-    }
-    const parts = _normalizeFolderPath(path).split('/').filter(Boolean);
-    let current = '';
-    for (const part of parts) {
-      current = _joinPath(current, part);
-      await provider.getDirectoryHandle(current, { create: true });
-    }
-  }
-
   async function pruneCatalogRecovery(provider) {
     await tagSafety.pruneRecoveryFiles(
-      provider,
+      managedProvider(provider),
       CATALOG_RECOVERY_DIR,
-      _listDirectoryEntries,
-      _removeEntry,
+      (_ignoredProvider, path) => listManagedEntries(provider, path, false),
+      (_ignoredProvider, path) => removeManagedEntry(provider, path),
       12,
     );
   }
 
   async function readCatalog(provider) {
-    const payload = await _readJsonSafe(provider, CATALOG_FILE, null);
+    const payload = await readManagedJson(provider, CATALOG_FILE, null);
     const catalog = normalizeCatalog(payload || { version: 1, tags: [], groups: [] });
-    const marker = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const marker = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (marker?.active) {
       catalog.sync_pending = true;
       catalog.sync_conflict = true;
@@ -21009,10 +27204,9 @@
   }
 
   async function findPendingAssignmentRollback(provider) {
-    if (typeof _listDirectoryEntries !== 'function') return null;
     let entries;
     try {
-      entries = await _listDirectoryEntries(provider, ASSIGNMENTS_RECOVERY_DIR);
+      entries = await listManagedEntries(provider, ASSIGNMENTS_RECOVERY_DIR);
     } catch {
       return null;
     }
@@ -21024,7 +27218,7 @@
         ASSIGNMENTS_RECOVERY_DIR,
         String(entry?.name || ''),
       );
-      const payload = await _readJsonSafe(provider, path, null);
+      const payload = await readManagedJson(provider, path, null);
       if (
         payload?.kind === 'assignment-rollback'
         && payload?.requires_edit_block === true
@@ -21040,7 +27234,6 @@
   }
 
   async function writeCatalogRollbackRecovery(provider, before, published, current) {
-    await ensureDirectory(provider, CATALOG_RECOVERY_DIR);
     const path = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-rollback.json`;
     const payload = {
       version: 1,
@@ -21050,8 +27243,7 @@
       published,
       current,
     };
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, payload);
-    else await provider.writeText(path, JSON.stringify(payload, null, 2) + '\n');
+    await writeManagedJson(provider, path, payload);
     await pruneCatalogRecovery(provider);
     return path;
   }
@@ -21063,7 +27255,6 @@
     current,
     conflict,
   ) {
-    await ensureDirectory(provider, ASSIGNMENTS_RECOVERY_DIR);
     const path = `${ASSIGNMENTS_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-assignment-rollback.json`;
     const payload = {
       version: 1,
@@ -21074,8 +27265,7 @@
       published,
       current,
     };
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, payload);
-    else await provider.writeText(path, JSON.stringify(payload, null, 2) + '\n');
+    await writeManagedJson(provider, path, payload);
 
     const rollbackId = randomId();
     const warning = (
@@ -21097,24 +27287,12 @@
       updated_at: nowIso(),
     });
     try {
-      if (typeof provider.writeJsonMerged === 'function') {
-        await provider.writeJsonMerged(CATALOG_CONFLICT_FILE, block, {
-          fallbackValue: { version: 1, active: false },
-          retries: 5,
-        });
-      } else {
-        const marker = block(
-          await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null),
-        );
-        if (typeof provider.writeJson === 'function') {
-          await provider.writeJson(CATALOG_CONFLICT_FILE, marker);
-        } else {
-          await provider.writeText(
-            CATALOG_CONFLICT_FILE,
-            JSON.stringify(marker, null, 2) + '\n',
-          );
-        }
-      }
+      await writeManagedJsonMerged(
+        provider,
+        CATALOG_CONFLICT_FILE,
+        block,
+        { version: 1, active: false },
+      );
     } catch (error) {
       throw new AssignmentRollbackMarkerWriteError(
         `タグ変更の復旧データは保存しましたが、編集停止情報を保存できませんでした。`
@@ -21128,20 +27306,7 @@
         ...(current && typeof current === 'object' ? current : payload),
         requires_edit_block: false,
       });
-      if (typeof provider.writeJsonMerged === 'function') {
-        await provider.writeJsonMerged(
-          path,
-          cleared,
-          { fallbackValue: payload, retries: 5 },
-        );
-      } else {
-        const value = cleared(await _readJsonSafe(provider, path, payload));
-        if (typeof provider.writeJson === 'function') {
-          await provider.writeJson(path, value);
-        } else {
-          await provider.writeText(path, JSON.stringify(value, null, 2) + '\n');
-        }
-      }
+      await writeManagedJsonMerged(provider, path, cleared, payload);
     } catch {
       // marker is active; keeping the recovery block true is the safe fallback.
     }
@@ -21149,8 +27314,7 @@
   }
 
   async function writeCatalog(provider, updater) {
-    await ensureDirectory(provider, '.meldex');
-    const conflict = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const conflict = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflict?.active) {
       throw new Error(
         conflict.warning
@@ -21163,7 +27327,7 @@
     let latest = null;
     let previous = null;
     const apply = async current => {
-      const activeConflict = await _readJsonSafe(
+      const activeConflict = await readManagedJson(
         provider,
         CATALOG_CONFLICT_FILE,
         null,
@@ -21190,28 +27354,19 @@
       latest.updated_at = nowIso();
       return latest;
     };
-    const recoverySource = await _readJsonSafe(provider, CATALOG_FILE, null);
+    const recoverySource = await readManagedJson(provider, CATALOG_FILE, null);
     if (recoverySource && typeof recoverySource === 'object') {
-      await ensureDirectory(provider, CATALOG_RECOVERY_DIR);
       const recoveryPath = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}.json`;
-      if (typeof provider.writeJson === 'function') {
-        await provider.writeJson(recoveryPath, recoverySource);
-      } else {
-        await provider.writeText(recoveryPath, JSON.stringify(recoverySource, null, 2) + '\n');
-      }
+      await writeManagedJson(provider, recoveryPath, recoverySource);
       await pruneCatalogRecovery(provider);
     }
-    if (typeof provider.writeJsonMerged === 'function') {
-      await provider.writeJsonMerged(CATALOG_FILE, apply, {
-        fallbackValue: { version: 1, updated_at: '', tags: [], groups: [] },
-        retries: 5,
-      });
-    } else {
-      await apply(await _readJsonSafe(provider, CATALOG_FILE, null));
-      if (typeof provider.writeJson === 'function') await provider.writeJson(CATALOG_FILE, latest);
-      else await provider.writeText(CATALOG_FILE, JSON.stringify(latest, null, 2) + '\n');
-    }
-    const conflictAfter = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    await writeManagedJsonMerged(
+      provider,
+      CATALOG_FILE,
+      apply,
+      { version: 1, updated_at: '', tags: [], groups: [] },
+    );
+    const conflictAfter = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflictAfter?.active) {
       const expectedConflictId = String(conflictAfter.conflict_id || '');
       let rollbackUnresolved = false;
@@ -21221,7 +27376,7 @@
         rollbackCurrent = current && typeof current === 'object'
           ? structuredClone(current)
           : { version: 1, tags: [], groups: [] };
-        const activeMarker = await _readJsonSafe(
+        const activeMarker = await readManagedJson(
           provider,
           CATALOG_CONFLICT_FILE,
           null,
@@ -21239,18 +27394,12 @@
         return reversed.catalog;
       };
       try {
-        if (typeof provider.writeJsonMerged === 'function') {
-          await provider.writeJsonMerged(CATALOG_FILE, rollback, {
-            fallbackValue: { version: 1, updated_at: '', tags: [], groups: [] },
-            retries: 5,
-          });
-        } else {
-          const restored = await rollback(
-            await _readJsonSafe(provider, CATALOG_FILE, null),
-          );
-          if (typeof provider.writeJson === 'function') await provider.writeJson(CATALOG_FILE, restored);
-          else await provider.writeText(CATALOG_FILE, JSON.stringify(restored, null, 2) + '\n');
-        }
+        await writeManagedJsonMerged(
+          provider,
+          CATALOG_FILE,
+          rollback,
+          { version: 1, updated_at: '', tags: [], groups: [] },
+        );
       } catch (rollbackError) {
         let recoveryPath = '';
         try {
@@ -21276,7 +27425,7 @@
         );
       }
       if (rollbackUnresolved) {
-        const current = await _readJsonSafe(provider, CATALOG_FILE, null);
+        const current = await readManagedJson(provider, CATALOG_FILE, null);
         let recoveryPath = '';
         try {
           recoveryPath = await writeCatalogRollbackRecovery(
@@ -21309,13 +27458,12 @@
   }
 
   async function readAssignments(provider) {
-    const current = await _readJsonSafe(provider, ASSIGNMENTS_FILE, {});
+    const current = await readManagedJson(provider, ASSIGNMENTS_FILE, {});
     return tagSafety.normalizeAssignmentStore(current);
   }
 
   async function writeAssignments(provider, updater) {
-    await ensureDirectory(provider, '.meldex');
-    const conflict = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    const conflict = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflict?.active) {
       throw new Error(
         conflict.warning
@@ -21328,7 +27476,7 @@
     let latest = null;
     let previous = null;
     const apply = async current => {
-      const activeConflict = await _readJsonSafe(
+      const activeConflict = await readManagedJson(
         provider,
         CATALOG_CONFLICT_FILE,
         null,
@@ -21346,17 +27494,13 @@
       latest.assignment_revision = randomId();
       return latest;
     };
-    if (typeof provider.writeJsonMerged === 'function') {
-      await provider.writeJsonMerged(ASSIGNMENTS_FILE, apply, {
-        fallbackValue: { version: 5, assignments: {}, auto_assignments: {} },
-        retries: 5,
-      });
-    } else {
-      await apply(await _readJsonSafe(provider, ASSIGNMENTS_FILE, null));
-      if (typeof provider.writeJson === 'function') await provider.writeJson(ASSIGNMENTS_FILE, latest);
-      else await provider.writeText(ASSIGNMENTS_FILE, JSON.stringify(latest, null, 2) + '\n');
-    }
-    const conflictAfter = await _readJsonSafe(provider, CATALOG_CONFLICT_FILE, null);
+    await writeManagedJsonMerged(
+      provider,
+      ASSIGNMENTS_FILE,
+      apply,
+      { version: 5, assignments: {}, auto_assignments: {} },
+    );
+    const conflictAfter = await readManagedJson(provider, CATALOG_CONFLICT_FILE, null);
     if (conflictAfter?.active) {
       let rollbackCurrent = null;
       let rollbackUnresolved = false;
@@ -21372,16 +27516,12 @@
         };
       };
       try {
-        if (typeof provider.writeJsonMerged === 'function') {
-          await provider.writeJsonMerged(ASSIGNMENTS_FILE, rollback, {
-            fallbackValue: { version: 4, assignments: {}, auto_assignments: {} },
-            retries: 5,
-          });
-        } else {
-          const restored = rollback(await _readJsonSafe(provider, ASSIGNMENTS_FILE, null));
-          if (typeof provider.writeJson === 'function') await provider.writeJson(ASSIGNMENTS_FILE, restored);
-          else await provider.writeText(ASSIGNMENTS_FILE, JSON.stringify(restored, null, 2) + '\n');
-        }
+        await writeManagedJsonMerged(
+          provider,
+          ASSIGNMENTS_FILE,
+          rollback,
+          { version: 4, assignments: {}, auto_assignments: {} },
+        );
       } catch (rollbackError) {
         let recoveryPath = '';
         try {
@@ -21473,7 +27613,7 @@
   }
 
   async function compensateTargetTagCreation(provider, ensured, error) {
-    await tagSafety.compensateCreatedTags(provider, {
+    await tagSafety.compensateCreatedTags(managedProvider(provider), {
       created: ensured.created,
       before: ensured.before,
       published: ensured.catalog,
@@ -21483,10 +27623,10 @@
       markerPath: CATALOG_CONFLICT_FILE,
       recoveryDirectory: CATALOG_RECOVERY_DIR,
       normalizeCatalog,
-      readJson: _readJsonSafe,
+      readJson: (_managedProvider, path, fallback) => readManagedJson(provider, path, fallback),
       nowIso,
       randomId,
-      ensureDirectory,
+      ensureDirectory: async () => {},
       pruneRecovery: pruneCatalogRecovery,
     });
   }
@@ -21648,11 +27788,8 @@
     if (pathname === '/auto-tag/dictionary' && method === 'GET') return catalogResponse(await readCatalog(provider));
     if (pathname === '/auto-tag/dictionary/ensure' && method === 'POST') {
       return tagCsv.ensureDictionary(provider, {
-        ensureDirectory,
-        resolveEntryHandle: _resolveEntryHandle,
         writeCatalog,
         dictionaryFolder: DICTIONARY_FOLDER,
-        dictionaryNote: DICTIONARY_NOTE,
         catalogFile: CATALOG_FILE,
       });
     }
@@ -21818,6 +27955,7 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   const tagDictionary = window.MeldexDropboxTagDictionary;
+  const managedJson = window.MeldexDropboxManagedJson;
   if (!internals || !Array.isArray(handlers) || !tagDictionary) return;
 
   const {
@@ -22079,7 +28217,10 @@
         return { ok: true, available: false, offline: true, items: [], startup_io: false };
       }
       const provider = await _requirePwaProvider('read');
-      const shard = await _readJsonSafe(provider, `${ROOT}/${shardName(value)}`, null);
+      const shardPath = `${ROOT}/${shardName(value)}`;
+      const shard = managedJson
+        ? await managedJson.read(provider, shardPath, null)
+        : await _readJsonSafe(provider, shardPath, null);
       const kind = query.get('kind') === 'group' ? 'group' : 'tag';
       const limit = Math.max(1, Math.min(50, Number(query.get('limit') || 20)));
       const offset = Math.max(0, Math.min(1000000, Number(query.get('offset') || 0)));
@@ -22125,12 +28266,11 @@
   const internals = window.__MeldexPwaDataAccessInternals;
   const hooks = window.__MeldexPwaPathMutationHooks;
   const identity = window.MeldexDropboxAssetIdentity;
-  if (!internals || !Array.isArray(hooks) || !identity) return;
+  const managedJson = window.MeldexDropboxManagedJson;
+  if (!internals || !Array.isArray(hooks) || !identity || !managedJson) return;
 
   const {
-    _directoryHandle,
     _normalizeFolderPath,
-    _readJsonSafe,
     _requirePwaProvider,
   } = internals;
   const ASSIGNMENTS_FILE = '.meldex/global-tags.json';
@@ -22276,20 +28416,12 @@
   }
 
   async function writeMerged(provider, path, updater, fallbackValue) {
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(path, updater, { fallbackValue, retries: 5 });
-    }
-    const current = await _readJsonSafe(provider, path, fallbackValue);
-    const saved = await updater(current);
-    if (typeof provider.writeJson === 'function') await provider.writeJson(path, saved);
-    else await provider.writeText(path, JSON.stringify(saved, null, 2) + '\n');
-    return saved;
+    return managedJson.writeMerged(provider, path, updater, fallbackValue);
   }
 
   async function persistEvents(provider, event, changes) {
     const month = new Date().toISOString().slice(0, 7);
     const path = `${RECOVERY_ROOT}/events/${month}.json`;
-    await _directoryHandle(provider, `${RECOVERY_ROOT}/events`, true);
     const operationId = String(event.operationId || randomId());
     await writeMerged(provider, path, current => {
       const source = current && typeof current === 'object' ? current : {};
@@ -22310,8 +28442,7 @@
 
   async function enqueueRetry(provider, event, error) {
     const retryId = String(event.operationId || randomId());
-    await _directoryHandle(provider, `${RECOVERY_ROOT}/retry`, true);
-    await provider.writeJson(`${RECOVERY_ROOT}/retry/${retryId}.json`, {
+    await managedJson.write(provider, `${RECOVERY_ROOT}/retry/${retryId}.json`, {
       version: 1,
       retry_id: retryId,
       status: 'pending',
@@ -22347,7 +28478,6 @@
       return { ok: true, tracked: 0, noop: true };
     }
     try {
-      await _directoryHandle(provider, '.meldex', true);
       let changes = [];
       let deduplicated = false;
       await writeMerged(provider, ASSIGNMENTS_FILE, async current => {
@@ -22403,7 +28533,26 @@
 
 /* === gb-dropbox-asset-reconciliation.js === */
 ;
-/* Explicit Dropbox delta reconciliation. No network or storage I/O runs at startup. */
+/* Explicit Dropbox delta reconciliation. No network or storage I/O runs at startup.
+ *
+ * ファイル参照整合性・削除警告・全ファイルバックリンク実装計画 Phase 6
+ * (外部移動・多端末、6c. Dropbox delta接続)。
+ * 計画書: app/docs/file-reference-integrity-and-backlinks-plan-2026-07-31.md §13
+ *
+ * Cloud/Dropboxのバックリンク(`_queryBacklinks`/`gb-data-access.part01.js`)は
+ * 永続索引を持たず、参照元候補の全workspaceをその場でライブ走査する設計
+ * (Phase3実装ノート notes.md §7.2)。そのため「同一path置換」への誤接続防止
+ * (target側)はasset識別レイヤー(gb-dropbox-asset-identity.js)が既に担って
+ * おり、本ファイルが新たに何かをする必要はない。
+ *
+ * 唯一欠けていたのは「移動でpath文字列が変わった時、他ファイルが本文中に
+ * 持つ旧pathの文字列を書き換える」処理(`_relocateReferences`。内部
+ * Meldex操作の`/outliner/move`は既に呼んでいるが、Dropbox delta由来の
+ * 外部移動確定〈applyExactMoves〉・ユーザーが確認したambiguous移動候補
+ * 〈applyCandidate〉はこれを呼んでいなかった)。新しい同期プロトコルは
+ * 作らず、既存の`_relocateReferences`をこの2箇所へ接続するだけ。
+ * (copy/replacement/missingは対象pathの文字列が変化しないため対象外)
+ */
 (function () {
   'use strict';
 
@@ -22411,14 +28560,14 @@
   const handlers = window.__MeldexPwaDataAccessExtensions;
   const identity = window.MeldexDropboxAssetIdentity;
   const recovery = window.MeldexDropboxAssetRecovery;
-  if (!internals || !Array.isArray(handlers) || !identity) return;
+  const managedJson = window.MeldexDropboxManagedJson;
+  if (!internals || !Array.isArray(handlers) || !identity || !managedJson) return;
 
   const {
     NOT_HANDLED,
-    _directoryHandle,
     _fnvFileId,
     _normalizeFolderPath,
-    _readJsonSafe,
+    _relocateReferences,
     _requirePwaProvider,
     _requireUnlockedPath,
   } = internals;
@@ -22471,6 +28620,26 @@
     return String(_fnvFileId ? _fnvFileId(key) : key);
   }
 
+  // ファイル参照整合性計画 Phase 6 (6c): 確定した移動について、他ファイルが
+  // 本文中に持つ旧pathの文字列を新pathへ書き換える。失敗しても移動確定
+  // そのものは止めない(参照修復だけ失敗しても資産IDの解決で表示を維持し、
+  // 再試行できるという計画書§8.2の方針をここにも適用する)。
+  async function relocateReferencesSafe(provider, oldPath, newPath, isFolder) {
+    if (typeof _relocateReferences !== 'function' || oldPath === newPath) {
+      return { rewritten_count: 0, failed_count: 0, rewritten_paths: [] };
+    }
+    try {
+      return await _relocateReferences(provider, oldPath, newPath, !!isFolder);
+    } catch (error) {
+      return {
+        rewritten_count: 0,
+        failed_count: 0,
+        rewritten_paths: [],
+        error: String(error?.message || error || ''),
+      };
+    }
+  }
+
   function makeCandidate(kind, options) {
     const oldPath = identity.normalizePath(options.oldPath);
     const newPath = identity.normalizePath(options.newPath);
@@ -22492,28 +28661,20 @@
   }
 
   async function writeMerged(provider, path, updater, fallbackValue) {
-    await _requireUnlockedPath?.(provider, path, { action: 'tag-maintenance' });
-    if (typeof provider.writeJsonMerged === 'function') {
-      return provider.writeJsonMerged(path, updater, { fallbackValue, retries: 5 });
-    }
-    const current = await _readJsonSafe(provider, path, fallbackValue);
-    const next = await updater(current);
-    await provider.writeJson(path, next);
-    return next;
+    return managedJson.writeMerged(provider, path, updater, fallbackValue);
   }
 
   async function writeState(provider, state) {
-    await _directoryHandle(provider, ROOT, true);
     await writeMerged(provider, STATE_FILE, () => state, {});
     return state;
   }
 
   async function readState(provider) {
-    return objectValue(await _readJsonSafe(provider, STATE_FILE, {}));
+    return objectValue(await managedJson.read(provider, STATE_FILE, {}));
   }
 
   async function readCandidates(provider) {
-    const raw = objectValue(await _readJsonSafe(
+    const raw = objectValue(await managedJson.read(
       provider,
       CANDIDATES_FILE,
       { version: 1, items: {} },
@@ -22577,6 +28738,7 @@
         operationId: `dropbox-delta:${jobId}:${entry.id}:${path}`,
       };
       const result = await recovery?.handleMutation?.(event, provider);
+      const relocate = await relocateReferencesSafe(provider, oldPath, path, event.isFolder);
       moves.push(makeCandidate('move', {
         jobId,
         assetId,
@@ -22585,7 +28747,7 @@
         confidence: 'exact',
         status: result?.ok === false ? 'pending' : 'applied',
         evidence: { reason: 'dropbox-stable-id', provider_id: entry.id },
-        result: result || { ok: false },
+        result: { ...(result || { ok: false }), relocate },
       }));
     }
     return moves;
@@ -22593,7 +28755,7 @@
 
   async function projectMetadata(provider, entries, jobId) {
     const initial = identity.normalizeStore(
-      await _readJsonSafe(provider, ASSIGNMENTS_FILE, {}),
+      await managedJson.read(provider, ASSIGNMENTS_FILE, {}),
     );
     const candidates = await applyExactMoves(provider, initial, entries, jobId);
     await writeMerged(provider, ASSIGNMENTS_FILE, current => {
@@ -22785,6 +28947,17 @@
         newPath: candidate.new_path,
         operationId: `dropbox-reconcile:${candidateId}`,
       }, provider);
+      // ファイル参照整合性計画 Phase 6: 'copy'は内容が同一(参照先pathの
+      // 文字列は変化しない)ため対象外。'move'(ambiguousをユーザーが確認した
+      // 場合を含む)のみ、他ファイルの本文中の旧pathを書き換える。
+      if (choice === 'move') {
+        result = {
+          ...result,
+          relocate: await relocateReferencesSafe(
+            provider, candidate.old_path, candidate.new_path, false,
+          ),
+        };
+      }
     } else if (choice === 'missing' && candidate.asset_id) {
       await writeMerged(provider, ASSIGNMENTS_FILE, current => {
         const store = identity.normalizeStore(current);
@@ -22806,21 +28979,16 @@
   }
 
   async function listJsonFiles(provider, directory) {
-    if (typeof provider?.listEntries !== 'function') return [];
-    try {
-      return (await provider.listEntries(directory))
-        .filter(entry => entry?.kind === 'file' && /\.json$/i.test(String(entry?.name || '')))
-        .sort((left, right) => String(right.name || '').localeCompare(String(left.name || '')));
-    } catch {
-      return [];
-    }
+    return (await managedJson.list(provider, directory))
+      .filter(entry => /\.json$/i.test(String(entry?.name || '')))
+      .sort((left, right) => String(right.name || '').localeCompare(String(left.name || '')));
   }
 
   async function recentEvents(provider, limit = 50) {
     const entries = (await listJsonFiles(provider, `${ROOT}/events`)).slice(0, 6);
     const items = [];
     for (const entry of entries) {
-      const ledger = objectValue(await _readJsonSafe(
+      const ledger = objectValue(await managedJson.read(
         provider,
         `${ROOT}/events/${entry.name}`,
         { events: {} },
@@ -22847,7 +29015,7 @@
     for (const entry of files) {
       if (processed >= Math.max(1, Math.min(100, Number(limit || 20)))) break;
       const path = `${ROOT}/retry/${entry.name}`;
-      const item = objectValue(await _readJsonSafe(provider, path, {}));
+      const item = objectValue(await managedJson.read(provider, path, {}));
       if (!['pending', 'failed'].includes(String(item.status || ''))) continue;
       processed += 1;
       const attempts = Number(item.attempts || 0) + 1;
@@ -22856,7 +29024,7 @@
           ...objectValue(item.event),
           operationId: String(item?.event?.operationId || item.retry_id || entry.name),
         }, provider);
-        await provider.writeJson(path, {
+        await managedJson.write(provider, path, {
           ...item,
           status: 'complete',
           attempts,
@@ -22866,7 +29034,7 @@
         });
         completed += 1;
       } catch (error) {
-        await provider.writeJson(path, {
+        await managedJson.write(provider, path, {
           ...item,
           status: 'failed',
           attempts,
@@ -22888,7 +29056,7 @@
     ]);
     let pendingRetries = 0;
     for (const entry of retries) {
-      const item = objectValue(await _readJsonSafe(
+      const item = objectValue(await managedJson.read(
         provider,
         `${ROOT}/retry/${entry.name}`,
         {},
@@ -22927,7 +29095,7 @@
   async function rebuild(provider, dryRun) {
     let repaired = 0;
     const current = identity.normalizeStore(
-      await _readJsonSafe(provider, ASSIGNMENTS_FILE, {}),
+      await managedJson.read(provider, ASSIGNMENTS_FILE, {}),
     );
     Object.entries(objectValue(current.legacy_migrations)).forEach(([path, migration]) => {
       if (migration?.status !== 'migrated') return;
@@ -23039,6 +29207,1082 @@
     projectMetadata,
     startScan,
     status,
+  };
+})();
+
+;
+
+/* === gb-sidecar-migration.js === */
+;
+/* gb-sidecar-migration.js
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 5: 既存付随物の安全な自動移行
+ * (ブラウザ側。系統C=ブラウザローカル/File System Access API と、
+ * 系統D=Cloud静的版・Dropbox個人/共有 の両方を担当する)。
+ *
+ * 計画書: app/docs/proprietary-format-sidecar-cleanup-plan-2026-07-31.md
+ * (§6 既存付随物の安全な自動移行、Phase 5)
+ * 監査ノート: app/docs/proprietary-format-sidecar-cleanup-audit-2026-08-01/notes.md
+ * 対応するPython側(系統B・単独exe専用): app/meldex_sidecar_migration.py
+ *
+ * ## 対象
+ *
+ * - 系統C(board-standalone-fs.js、ブラウザのFile System Access API):
+ *   `_meldex/board-annotations.json` → IndexedDB(ANNOTATIONS種別)。
+ *   実体のtarget_pathごとのコピー処理は board-standalone-annotations.js の
+ *   `migrateLegacyStore` に委譲し、本ファイルは検出→バックアップ→削除→清掃の
+ *   オーケストレーションだけを行う。
+ * - 系統D(Cloud静的版・Dropbox個人/共有、gb-data-access-dropbox-fileops-*.js):
+ *   - 注釈: `_events/annotations/<id>.json` → 共通ストレージ層(ANNOTATIONS種別)
+ *   - 閲覧ロック: `_meldex/view-locks/<hash>.json` → 共通ストレージ層(VIEW_LOCKS種別)
+ *   - 編集ロック(Cloud専用): `_meldex/file_locks.json` → 共通ストレージ層(EDIT_LOCKS種別)
+ *
+ * 他の旧付随物は各機能が型付き管理領域を正本とし、旧パスを読取専用
+ * フォールバックとして扱う。本モジュールは注釈・閲覧ロック・編集ロックの
+ * 検証済み移行と、旧クライアント再生成時の互換性ロックだけを担当する。
+ *
+ * ## 冪等性・中断安全性
+ *
+ * 各対象は台帳(MIGRATION_LEDGER種別)の状態を見て「次に何をすべきか」を判断する。
+ * 途中で処理が中断されても、次回呼び出し時に未完了の部分から自然に再開する。
+ *
+ * ## 失敗時の原則(計画書§6.3)
+ *
+ * 破損・権限不足・容量不足・競合・不明ファイル混在では、該当対象の移行を保留する
+ * だけで削除は行わない。新領域に既にデータがある場合も上書きしない。
+ */
+(function () {
+  'use strict';
+
+  const NS = (window.MeldexSidecarMigration = window.MeldexSidecarMigration || {});
+
+  function _contract() {
+    return window.MeldexSystemStorage || null;
+  }
+
+  function _nowText() {
+    const contract = _contract();
+    return contract ? contract.nowIso() : new Date().toISOString();
+  }
+
+  // --- 系統C: ブラウザローカル(board-standalone-fs.js) ---------------------------
+  //
+  // 台帳・移行バックアップの保存先はIndexedDB(gb-system-storage-indexeddb.js)。
+  // 削除・空フォルダ判定はFile System Access APIハンドルへ直接触れる必要があるため、
+  // 呼び出し元(board-standalone-fs.js)が deleteFile/directoryHasEntries を提供する。
+
+  const STANDALONE_LEDGER_DOC_ID = 'standalone-board-annotations-v1';
+
+  function _localBrowserAdapter() {
+    const factory = window.MeldexSystemStorageIndexedDB;
+    if (!factory || typeof factory.createLocalBrowserAdapter !== 'function') return null;
+    return factory.createLocalBrowserAdapter({ boundary: 'browser-local' });
+  }
+
+  /**
+   * ブラウザローカル単独アプリ向けの移行エントリポイント。
+   * `board-standalone-fs.js` が起動時(ルートフォルダ確定後)に1回呼ぶことを想定する。
+   *
+   * @param {object} fsHelpers
+   * @param {(relPath:string)=>Promise<string>} fsHelpers.readFileAsText
+   * @param {(relPath:string,text:string)=>Promise<void>} fsHelpers.writeFileText
+   * @param {(relPath:string)=>Promise<boolean>} fsHelpers.fileExists
+   * @param {(relPath:string)=>Promise<void>} fsHelpers.deleteFile
+   * @param {(dirRelPath:string)=>Promise<boolean>} fsHelpers.directoryIsEmpty - 対象フォルダが空(またはフォルダ自体が無い)なら true
+   * @param {(dirRelPath:string)=>Promise<void>} fsHelpers.removeEmptyDirectory
+   */
+  NS.migrateStandaloneBoardAnnotations = async function (fsHelpers) {
+    const helper = window.BoardStandaloneAnnotations;
+    const adapter = _localBrowserAdapter();
+    const contract = _contract();
+    if (!helper || !adapter || !contract) {
+      return { status: 'error', detail: '移行に必要なモジュールが読み込まれていません' };
+    }
+    const legacyPath = helper.LEGACY_STORE_PATH || '_meldex/board-annotations.json';
+    let exists = true;
+    if (typeof fsHelpers.fileExists === 'function') {
+      try {
+        exists = await fsHelpers.fileExists(legacyPath);
+      } catch (error) {
+        return { status: 'error', detail: `旧付随物の存在を確認できません: ${error && error.message}` };
+      }
+    }
+    if (!exists) return { status: 'no_legacy_data' };
+
+    const nowText = _nowText();
+    let ledgerRecord = null;
+    try {
+      ledgerRecord = await adapter.load(contract.SystemStorageKind.MIGRATION_LEDGER, STANDALONE_LEDGER_DOC_ID);
+    } catch (error) {
+      return { status: 'error', detail: `移行台帳を読み込めません: ${error && error.message}` };
+    }
+    const ledgerPayload = (ledgerRecord && ledgerRecord.payload) ? { ...ledgerRecord.payload } : {};
+
+    const result = await helper.migrateLegacyStore({
+      readFileAsText: fsHelpers.readFileAsText,
+      writeFileText: fsHelpers.writeFileText,
+      fileExists: fsHelpers.fileExists,
+    });
+    if (result.status === 'no_legacy_data') return result;
+    if (result.status === 'error') {
+      ledgerPayload.last_error = result.detail;
+      ledgerPayload.last_checked_at = nowText;
+      try {
+        await adapter.save(contract.SystemStorageKind.MIGRATION_LEDGER, STANDALONE_LEDGER_DOC_ID, ledgerPayload);
+      } catch (error) {
+        return { status: 'error', detail: `移行失敗を台帳へ保存できません: ${error && error.message}` };
+      }
+      return result;
+    }
+
+    ledgerPayload.source_kind = 'local-board-annotations';
+    ledgerPayload.legacy_relative_path = legacyPath;
+    ledgerPayload.last_checked_at = nowText;
+    ledgerPayload.targets_total = result.targetsTotal;
+    ledgerPayload.targets_migrated = result.targetsMigrated;
+    delete ledgerPayload.last_error;
+
+    if (result.status === 'in_progress') {
+      ledgerPayload.target_errors = result.targetErrors;
+      try {
+        await adapter.save(contract.SystemStorageKind.MIGRATION_LEDGER, STANDALONE_LEDGER_DOC_ID, ledgerPayload);
+      } catch (error) {
+        return { status: 'in_progress', detail: `移行途中の台帳を保存できないため旧データを残しました: ${error && error.message}`, ...result };
+      }
+      return { status: 'in_progress', detail: '一部のtarget_pathで移行できませんでした(次回実行時に再試行します)', ...result };
+    }
+
+    // 退避(まだ済んでいなければ)
+    let backupDocumentId = ledgerPayload.backup_document_id;
+    if (!backupDocumentId) {
+      backupDocumentId = `${STANDALONE_LEDGER_DOC_ID}-${Date.now().toString(36)}`;
+      try {
+        const backupPayload = {
+          source_kind: 'local-board-annotations',
+          legacy_relative_path: legacyPath,
+          legacy_content: result.legacyContent,
+          backed_up_at: nowText,
+        };
+        const savedBackup = await adapter.save(
+          contract.SystemStorageKind.MIGRATION_BACKUPS, backupDocumentId, backupPayload,
+          { expectedRevision: null },
+        );
+        const reloadedBackup = await adapter.load(contract.SystemStorageKind.MIGRATION_BACKUPS, backupDocumentId);
+        if (!reloadedBackup || !_recordsMatch(reloadedBackup.payload, backupPayload)) {
+          throw new Error('移行バックアップを再読込して照合できませんでした');
+        }
+        if (savedBackup?.revision && reloadedBackup.revision && savedBackup.revision !== reloadedBackup.revision) {
+          throw new Error('移行バックアップのrevisionが再読込結果と一致しません');
+        }
+        ledgerPayload.backup_document_id = backupDocumentId;
+        ledgerPayload.backed_up_at = nowText;
+        await adapter.save(contract.SystemStorageKind.MIGRATION_LEDGER, STANDALONE_LEDGER_DOC_ID, ledgerPayload);
+      } catch (error) {
+        return { status: 'in_progress', detail: `移行バックアップへの退避に失敗したため削除を保留しました: ${error && error.message}` };
+      }
+    }
+
+    // 削除直前に旧ファイルが変わっていないか再確認する(同時編集への対応)。
+    let currentText = null;
+    try {
+      currentText = await fsHelpers.readFileAsText(legacyPath);
+    } catch (error) {
+      return { status: 'in_progress', detail: `削除直前に旧付随物を再読込できないため削除を保留しました: ${error && error.message}` };
+    }
+    if (currentText !== result.legacyContent) {
+      return { status: 'in_progress', detail: '削除直前に旧付随物が更新されていたため、今回は削除を見送りました(次回実行で再評価します)' };
+    }
+
+    if (typeof fsHelpers.deleteFile === 'function') {
+      try {
+        await fsHelpers.deleteFile(legacyPath);
+      } catch (error) {
+        return { status: 'in_progress', detail: `旧付随物の削除に失敗しました: ${error && error.message}` };
+      }
+      ledgerPayload.legacy_deleted_at = nowText;
+      try {
+        await adapter.save(contract.SystemStorageKind.MIGRATION_LEDGER, STANDALONE_LEDGER_DOC_ID, ledgerPayload);
+      } catch (error) {
+        return { status: 'in_progress', legacyDeleted: true, detail: `旧データ削除後の台帳保存に失敗しました: ${error && error.message}` };
+      }
+    }
+
+    let folderCleaned = false;
+    if (typeof fsHelpers.directoryIsEmpty === 'function' && typeof fsHelpers.removeEmptyDirectory === 'function') {
+      const legacyDir = legacyPath.slice(0, legacyPath.lastIndexOf('/')) || '_meldex';
+      try {
+        if (await fsHelpers.directoryIsEmpty(legacyDir)) {
+          await fsHelpers.removeEmptyDirectory(legacyDir);
+          folderCleaned = true;
+        }
+      } catch { /* 清掃の失敗は致命的ではない */ }
+    }
+
+    return { status: 'completed', targetsTotal: result.targetsTotal, targetsMigrated: result.targetsMigrated, folderCleaned };
+  };
+
+  // 固有形式付随物廃止・管理データ一元化計画 フェーズB徹底チェック(c): 移行
+  // バックアップ・競合バックアップの30日保持(計画書§6.3)が、判定関数
+  // (selectDocumentsExceedingRetention)のみ存在し呼び出し元が無いため
+  // 実質無期限だった問題への対応。ブラウザローカル(IndexedDB)向けの
+  // エントリポイント。呼び出し元(board-standalone-fs.js)が起動時(ルート
+  // フォルダ確定後)に1回呼ぶことを想定する(移行と同じタイミング方針)。
+  NS.runStandaloneRetentionCleanup = async function () {
+    const adapter = _localBrowserAdapter();
+    const contract = _contract();
+    if (!adapter || !contract || typeof contract.runRetentionCleanup !== 'function') return null;
+    return contract.runRetentionCleanup(adapter);
+  };
+
+  // --- 系統D: Cloud静的版・Dropbox個人/共有 -------------------------------------
+
+  const CLOUD_LEDGER_DOC_ID = 'cloud-sidecar-migration-v1';
+
+  function _internals() {
+    return window.__MeldexPwaDataAccessInternals || null;
+  }
+
+  async function _managementAdapterForProvider(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!resolver) return null;
+    try { return await resolver.resolveAdapterForProvider(provider); } catch { return null; }
+  }
+
+  const CLOUD_MULTI_DOCUMENT_SOURCES = [
+    { key: 'cloud-annotations', legacyDir: '_events/annotations', kindName: 'ANNOTATIONS' },
+    { key: 'cloud-view-locks', legacyDir: '_meldex/view-locks', kindName: 'VIEW_LOCKS' },
+  ];
+  const CLOUD_SINGLE_DOCUMENT_SOURCES = [
+    { key: 'cloud-file-locks', legacyPath: '_meldex/file_locks.json', kindName: 'EDIT_LOCKS', documentId: 'file-lock-store' },
+  ];
+
+  // 照合(計画書の手順3。Python版=件数再照合、ブラウザローカル版=部分集合
+  // 安全性チェックと同等の安全策をCloud版へも追加する。フェーズB徹底チェック
+  // で判明: 従来はadapter.save()の成功(例外なし)だけを根拠に即verified扱い
+  // していたため、書込が実際に反映されたかを一切確認していなかった)。
+  //
+  // Cloud側の1ドキュメントは(board注釈のようなtarget_path単位の行配列では
+  // なく)旧ファイル1つ=新領域1ドキュメントの対応なので、「件数」ではなく
+  // 「新領域から再読込した内容が、書き込もうとした内容と一致するか」を
+  // 照合の基準にする(単一ドキュメントに対しては件数一致より厳密な検査)。
+  function _canonicalJson(value) {
+    if (Array.isArray(value)) return `[${value.map(_canonicalJson).join(',')}]`;
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${_canonicalJson(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function _recordsMatch(a, b) {
+    try { return _canonicalJson(a) === _canonicalJson(b); } catch { return false; }
+  }
+
+  async function _sha256Text(text) {
+    const bytes = new TextEncoder().encode(String(text));
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+  }
+
+  function _schemaOf(value) {
+    return value && typeof value === 'object'
+      ? (value.schema_version ?? value.schema ?? 1) : 1;
+  }
+
+  function _itemsAndIds(value, fallbackId) {
+    let items = null;
+    if (Array.isArray(value)) items = value;
+    else if (value && typeof value === 'object') {
+      for (const key of ['annotations', 'entries', 'items', 'locks']) {
+        if (Array.isArray(value[key])) { items = value[key]; break; }
+      }
+    }
+    if (!items) return { count: 1, sortedIds: [String(fallbackId)] };
+    const ids = items.map((item, index) => String(
+      item && typeof item === 'object'
+        ? (item.id ?? item.path ?? item.target_path ?? item.name ?? '')
+        : '',
+    ));
+    if (ids.some(id => !id) || new Set(ids).size !== ids.length) {
+      throw new Error('IDの無い行または重複IDが含まれています');
+    }
+    return { count: items.length, sortedIds: ids.sort() };
+  }
+
+  async function _sourceRevision(provider, path, rawHash) {
+    let meta = null;
+    try {
+      if (typeof provider.getMetadata === 'function') meta = await provider.getMetadata(path);
+      else if (typeof provider.statPath === 'function') meta = await provider.statPath(path);
+    } catch { meta = null; }
+    return String((meta && (meta.rev || meta.content_hash || meta.etag)) || rawHash);
+  }
+
+  async function _readLegacyArtifact(provider, path, fallbackId) {
+    let rawText;
+    if (typeof provider.readText === 'function') {
+      rawText = await provider.readText(path);
+    } else {
+      const value = await _internals()._readJsonSafe(provider, path, null);
+      if (value == null) throw new Error('旧付随物を読み込めません');
+      rawText = JSON.stringify(value);
+    }
+    const record = JSON.parse(rawText);
+    if (record == null || typeof record !== 'object') throw new Error('旧付随物が既知の形式ではありません');
+    const rawBytesSha256 = await _sha256Text(rawText);
+    const ids = _itemsAndIds(record, fallbackId);
+    return {
+      record,
+      rawText,
+      integrity: {
+        count: ids.count,
+        sorted_ids: ids.sortedIds,
+        normalized_json_sha256: await _sha256Text(_canonicalJson(record)),
+        raw_bytes_sha256: rawBytesSha256,
+        schema: _schemaOf(record),
+        source_revision: await _sourceRevision(provider, path, rawBytesSha256),
+      },
+    };
+  }
+
+  const LEGACY_DELETE_QUARANTINE_SUFFIX = '.migration-quarantine';
+
+  async function _strictPathExists(provider, path) {
+    const internals = _internals();
+    if (!internals || typeof internals._pathExists !== 'function') {
+      throw new Error('旧付随物の存在確認機能がありません');
+    }
+    return internals._pathExists(provider, path);
+  }
+
+  async function _recoverInterruptedQuarantine(provider, legacyPath) {
+    const quarantinePath = `${legacyPath}${LEGACY_DELETE_QUARANTINE_SUFFIX}`;
+    const quarantineExists = await _strictPathExists(provider, quarantinePath);
+    if (!quarantineExists) return { ok: true, recovered: false };
+    const originalExists = await _strictPathExists(provider, legacyPath);
+    if (originalExists) {
+      return { ok: false, detail: `旧付随物と削除隔離データの両方が存在します: ${legacyPath}` };
+    }
+    if (typeof provider.movePath !== 'function') {
+      return { ok: false, detail: `中断された削除隔離データを復旧できません: ${legacyPath}` };
+    }
+    await provider.movePath(quarantinePath, legacyPath);
+    return { ok: true, recovered: true };
+  }
+
+  async function _quarantineVerifiedLegacyArtifact(provider, legacyPath, expectedIntegrity, fallbackId) {
+    if (typeof provider.movePath !== 'function') {
+      return { ok: false, detail: '条件付き削除に必要な隔離移動機能がありません' };
+    }
+    const quarantinePath = `${legacyPath}${LEGACY_DELETE_QUARANTINE_SUFFIX}`;
+    if (await _strictPathExists(provider, quarantinePath)) {
+      return { ok: false, detail: `削除隔離データが既に存在します: ${quarantinePath}` };
+    }
+    try {
+      await provider.movePath(legacyPath, quarantinePath);
+    } catch (error) {
+      return { ok: false, detail: `旧付随物を削除前に隔離できません: ${error && error.message}` };
+    }
+    let moved;
+    try {
+      moved = await _readLegacyArtifact(provider, quarantinePath, fallbackId);
+    } catch (error) {
+      try {
+        if (!await _strictPathExists(provider, legacyPath)) {
+          await provider.movePath(quarantinePath, legacyPath);
+        }
+      } catch { /* 隔離データを残し、削除はしない。 */ }
+      return { ok: false, detail: `隔離後の旧付随物を再読込できません: ${error && error.message}`, quarantinePath };
+    }
+    const matches = (
+      moved.integrity.raw_bytes_sha256 === expectedIntegrity.raw_bytes_sha256
+      && moved.integrity.normalized_json_sha256 === expectedIntegrity.normalized_json_sha256
+      && moved.integrity.count === expectedIntegrity.count
+      && _recordsMatch(moved.integrity.sorted_ids, expectedIntegrity.sorted_ids)
+      && moved.integrity.schema === expectedIntegrity.schema
+    );
+    if (!matches) {
+      try {
+        if (!await _strictPathExists(provider, legacyPath)) {
+          await provider.movePath(quarantinePath, legacyPath);
+        }
+      } catch { /* 隔離データを残す。削除はしない。 */ }
+      return { ok: false, detail: `隔離後の旧付随物が照合済み内容と異なるため保全しました: ${legacyPath}` };
+    }
+    try {
+      await provider.deletePath(quarantinePath);
+    } catch (error) {
+      try {
+        if (!await _strictPathExists(provider, legacyPath)) {
+          await provider.movePath(quarantinePath, legacyPath);
+        }
+      } catch { /* 隔離データを残し、削除はしない。 */ }
+      return { ok: false, detail: `照合済み隔離データを削除できません: ${error && error.message}` };
+    }
+    if (await _strictPathExists(provider, legacyPath)) {
+      return { ok: false, detail: `削除処理中に旧クライアントが付随物を再生成しました: ${legacyPath}`, recreated: true };
+    }
+    return { ok: true };
+  }
+
+  async function _verifyWrittenRecord(adapter, kind, docId, { wroteNew, record }) {
+    let verifyRecord = null;
+    try {
+      verifyRecord = await adapter.load(kind, docId);
+    } catch {
+      verifyRecord = null;
+    }
+    const verifyPayload = (verifyRecord && typeof verifyRecord.payload === 'object' && verifyRecord.payload !== null)
+      ? verifyRecord.payload : null;
+    if (!verifyPayload) {
+      return { ok: false, detail: '照合に失敗しました(新領域から読み戻せません)' };
+    }
+    if (!_recordsMatch(verifyPayload, record)) {
+      return { ok: false, detail: '照合に失敗しました(書き込んだ内容と一致しません)' };
+    }
+    return { ok: true, record: verifyRecord };
+  }
+
+  async function _migrateMultiDocumentSource(provider, adapter, source, sourceState, nowText) {
+    const internals = _internals();
+    const contract = _contract();
+    const kind = contract.SystemStorageKind[source.kindName];
+    let entries;
+    try {
+      entries = await internals._listDirectoryEntries(provider, source.legacyDir);
+    } catch (error) {
+      if (/フォルダが見つかりません|path[_ ]?not[_ ]?found|not found/i.test(String((error && error.message) || error))) {
+        return {
+          targetsTotal: 0, targetsMigrated: 0, targetErrors: {},
+          legacyEntries: [], unknownEntries: [], readFailed: false, noLegacyData: true,
+        };
+      }
+      return {
+        targetsTotal: 0, targetsMigrated: 0, targetErrors: { _directory: `旧フォルダを読み込めません: ${error && error.message}` },
+        legacyEntries: [], unknownEntries: [], readFailed: true,
+      };
+    }
+    const interrupted = entries.filter(entry => String(entry && entry.name || '').endsWith(LEGACY_DELETE_QUARANTINE_SUFFIX));
+    for (const entry of interrupted) {
+      const originalName = String(entry.name).slice(0, -LEGACY_DELETE_QUARANTINE_SUFFIX.length);
+      try {
+        const recovered = await _recoverInterruptedQuarantine(provider, `${source.legacyDir}/${originalName}`);
+        if (!recovered.ok) {
+          return {
+            targetsTotal: 0, targetsMigrated: 0,
+            targetErrors: { _quarantine: recovered.detail },
+            legacyEntries: [], unknownEntries: [entry.name], readFailed: true,
+          };
+        }
+      } catch (error) {
+        return {
+          targetsTotal: 0, targetsMigrated: 0,
+          targetErrors: { _quarantine: `削除隔離データを復旧できません: ${error && error.message}` },
+          legacyEntries: [], unknownEntries: [entry.name], readFailed: true,
+        };
+      }
+    }
+    if (interrupted.length) {
+      try {
+        entries = await internals._listDirectoryEntries(provider, source.legacyDir);
+      } catch (error) {
+        return {
+          targetsTotal: 0, targetsMigrated: 0,
+          targetErrors: { _directory: `復旧後の旧フォルダを読み込めません: ${error && error.message}` },
+          legacyEntries: [], unknownEntries: [], readFailed: true,
+        };
+      }
+    }
+    const jsonEntries = entries.filter(entry => entry && entry.handle && entry.handle.kind === 'file' && /\.json$/i.test(entry.name || ''));
+    const unknownEntries = entries.filter(entry => !jsonEntries.includes(entry)).map(entry => String(entry && entry.name || ''));
+    const targets = sourceState.targets || (sourceState.targets = {});
+    const targetErrors = {};
+    let migratedCount = 0;
+    for (const entry of jsonEntries) {
+      const docId = entry.name.slice(0, -5);
+      const legacyRelPath = `${source.legacyDir}/${entry.name}`;
+      try {
+        const artifact = await _readLegacyArtifact(provider, legacyRelPath, docId);
+        const record = artifact.record;
+        let existing = null;
+        try { existing = await adapter.load(kind, docId); } catch (error) { throw error; }
+        const wroteNew = existing == null;
+        let saveResponse = existing;
+        if (wroteNew) {
+          try {
+            saveResponse = await adapter.save(kind, docId, record, { expectedRevision: null });
+          } catch (error) {
+            const raced = await adapter.load(kind, docId).catch(() => null);
+            if (!raced || !_recordsMatch(raced.payload, record)) throw error;
+            existing = raced;
+            saveResponse = raced;
+          }
+        } else if (!_recordsMatch(existing.payload, record)) {
+          targets[docId] = {
+            ...artifact.integrity, status: 'conflict',
+            destination_revision: existing.revision || '',
+            last_error: '新領域に異なる既存データがあるため双方を保全しました',
+          };
+          targetErrors[docId] = targets[docId].last_error;
+          continue;
+        }
+        const verification = await _verifyWrittenRecord(adapter, kind, docId, { wroteNew, record });
+        if (!verification.ok) {
+          targets[docId] = { status: 'error', last_error: verification.detail };
+          targetErrors[docId] = verification.detail;
+          continue;
+        }
+        const saveRevision = String((saveResponse && saveResponse.revision) || '');
+        const reloadRevision = String((verification.record && verification.record.revision) || '');
+        if (saveRevision && reloadRevision && saveRevision !== reloadRevision) {
+          throw new Error('保存応答と再読込先のrevisionが一致しません');
+        }
+        targets[docId] = {
+          ...artifact.integrity, status: 'verified', verified_at: nowText,
+          legacy_relative_path: legacyRelPath,
+          save_response_revision: saveRevision || reloadRevision,
+          reloaded_destination_revision: reloadRevision,
+        };
+        migratedCount += 1;
+      } catch (error) {
+        targets[docId] = { status: 'error', last_error: String((error && error.message) || error) };
+        targetErrors[docId] = targets[docId].last_error;
+      }
+    }
+    if (unknownEntries.length) targetErrors._unknown = `不明ファイルが混在しています: ${unknownEntries.join(', ')}`;
+    return {
+      targetsTotal: jsonEntries.length, targetsMigrated: migratedCount, targetErrors,
+      legacyEntries: jsonEntries.map(entry => ({ name: entry.name, path: `${source.legacyDir}/${entry.name}` })),
+      unknownEntries,
+    };
+  }
+
+  async function _migrateSingleDocumentSource(provider, adapter, source, sourceState, nowText) {
+    const internals = _internals();
+    const contract = _contract();
+    const kind = contract.SystemStorageKind[source.kindName];
+    try {
+      const recovered = await _recoverInterruptedQuarantine(provider, source.legacyPath);
+      if (!recovered.ok) {
+        return {
+          targetsTotal: 0, targetsMigrated: 0,
+          targetErrors: { _quarantine: recovered.detail },
+          readFailed: true,
+        };
+      }
+    } catch (error) {
+      return {
+        targetsTotal: 0, targetsMigrated: 0,
+        targetErrors: { _quarantine: `削除隔離データを復旧できません: ${error && error.message}` },
+        readFailed: true,
+      };
+    }
+    let exists;
+    try {
+      exists = await internals._pathExists(provider, source.legacyPath);
+    } catch (error) {
+      return {
+        targetsTotal: 0,
+        targetsMigrated: 0,
+        targetErrors: { _path: `旧付随物の存在を確認できません: ${error && error.message}` },
+        readFailed: true,
+      };
+    }
+    if (!exists) return { targetsTotal: 0, targetsMigrated: 0, targetErrors: {}, noLegacyData: true };
+    const targets = sourceState.targets || (sourceState.targets = {});
+    try {
+      const artifact = await _readLegacyArtifact(provider, source.legacyPath, source.documentId);
+      const record = artifact.record;
+      let existing = null;
+      existing = await adapter.load(kind, source.documentId);
+      const wroteNew = existing == null;
+      let saveResponse = existing;
+      if (wroteNew) {
+        saveResponse = await adapter.save(kind, source.documentId, record, { expectedRevision: null });
+      } else if (!_recordsMatch(existing.payload, record)) {
+        const detail = '新領域に異なる既存データがあるため双方を保全しました';
+        targets[source.documentId] = {
+          ...artifact.integrity, status: 'conflict',
+          destination_revision: existing.revision || '', last_error: detail,
+        };
+        return { targetsTotal: 1, targetsMigrated: 0, targetErrors: { [source.documentId]: detail }, legacyArtifact: artifact };
+      }
+      const verification = await _verifyWrittenRecord(adapter, kind, source.documentId, { wroteNew, record });
+      if (!verification.ok) {
+        targets[source.documentId] = { status: 'error', last_error: verification.detail };
+        return { targetsTotal: 1, targetsMigrated: 0, targetErrors: { [source.documentId]: verification.detail } };
+      }
+      targets[source.documentId] = {
+        ...artifact.integrity, status: 'verified', verified_at: nowText,
+        legacy_relative_path: source.legacyPath,
+        save_response_revision: String((saveResponse && saveResponse.revision) || ''),
+        reloaded_destination_revision: String(verification.record.revision || ''),
+      };
+      if (
+        targets[source.documentId].save_response_revision
+        && targets[source.documentId].reloaded_destination_revision
+        && targets[source.documentId].save_response_revision !== targets[source.documentId].reloaded_destination_revision
+      ) throw new Error('保存応答と再読込先のrevisionが一致しません');
+      return { targetsTotal: 1, targetsMigrated: 1, targetErrors: {}, legacyArtifact: artifact };
+    } catch (error) {
+      const message = String((error && error.message) || error);
+      targets[source.documentId] = { status: 'error', last_error: message };
+      return { targetsTotal: 1, targetsMigrated: 0, targetErrors: { [source.documentId]: message } };
+    }
+  }
+
+  async function _backupAndDeleteLegacyDir(provider, adapter, source, sourceState, legacyEntries, nowText, persistLedger) {
+    const internals = _internals();
+    const snapshot = {};
+    for (const entry of legacyEntries) {
+      try {
+        const artifact = await _readLegacyArtifact(provider, entry.path, entry.name.slice(0, -5));
+        snapshot[entry.name] = { raw_text: artifact.rawText, integrity: artifact.integrity };
+      } catch (error) {
+        return { ok: false, detail: `バックアップ元の読込に失敗しました(${entry.name}): ${error && error.message}` };
+      }
+    }
+    let backupId = sourceState.backup_document_id;
+    let backupPayload = null;
+    if (backupId) {
+      const existingBackup = await adapter.load(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId).catch(() => null);
+      if (existingBackup && _recordsMatch(existingBackup.payload.legacy_snapshot, snapshot)) {
+        backupPayload = existingBackup.payload;
+      } else {
+        backupId = null;
+      }
+    }
+    if (!backupId) {
+      backupId = `${CLOUD_LEDGER_DOC_ID}-${source.key}-${Date.now().toString(36)}`;
+      backupPayload = {
+        source_kind: source.key, legacy_dir: source.legacyDir,
+        legacy_snapshot: snapshot, backed_up_at: nowText,
+      };
+      try {
+        await adapter.save(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId, backupPayload, { expectedRevision: null });
+        const reloaded = await adapter.load(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId);
+        if (!reloaded || !_recordsMatch(reloaded.payload, backupPayload)) throw new Error('バックアップ再読込照合に失敗しました');
+      } catch (error) {
+        return { ok: false, detail: `移行バックアップへの退避に失敗しました: ${error && error.message}` };
+      }
+      sourceState.backup_document_id = backupId;
+      sourceState.backed_up_at = nowText;
+    }
+    try { await persistLedger(); } catch (error) {
+      return { ok: false, detail: `台帳へバックアップ情報を保存できません: ${error && error.message}` };
+    }
+
+    let currentEntries;
+    try {
+      currentEntries = await internals._listDirectoryEntries(provider, source.legacyDir);
+    } catch (error) {
+      return { ok: false, detail: `削除直前の旧フォルダ再読込に失敗しました: ${error && error.message}` };
+    }
+    const currentNames = currentEntries.map(entry => String(entry && entry.name || '')).sort();
+    const expectedNames = legacyEntries.map(entry => entry.name).sort();
+    if (!_recordsMatch(currentNames, expectedNames)) {
+      return { ok: false, detail: '削除直前に不明ファイル混在または内容一覧の変更を検出しました' };
+    }
+    const kind = _contract().SystemStorageKind[source.kindName];
+    for (const entry of legacyEntries) {
+      const docId = entry.name.slice(0, -5);
+      const current = await _readLegacyArtifact(provider, entry.path, docId).catch(() => null);
+      const expected = snapshot[entry.name];
+      const destination = await adapter.load(kind, docId).catch(() => null);
+      const targetState = (sourceState.targets || {})[docId] || {};
+      if (
+        !current || current.integrity.raw_bytes_sha256 !== expected.integrity.raw_bytes_sha256
+        || current.integrity.source_revision !== expected.integrity.source_revision
+        || !destination
+        || String(destination.revision || '') !== String(targetState.reloaded_destination_revision || '')
+        || await _sha256Text(_canonicalJson(destination.payload)) !== targetState.normalized_json_sha256
+      ) {
+        return { ok: false, detail: `削除直前のhash/revision照合に失敗しました: ${entry.name}` };
+      }
+    }
+    // 削除失敗を握りつぶさない(PC側 meldex_sidecar_migration.py・ブラウザ
+    // ローカル側 board-standalone-annotations.js の migrateLegacyStore と
+    // 同じ意味論に揃える)。一部だけ削除に失敗しても、成功した分は次回実行時
+    // 再スキャンで自然に対象から外れるため個別のロールバックは不要だが、
+    // 全体としては「完了」にせず、エラーを台帳へ残して次回接続時の再試行
+    // 対象に残す(フェーズB徹底チェックで判明。Cloud側だけ削除失敗が
+    // ok:true 扱いになり、台帳が誤って完了扱いになっていた)。
+    const deleteErrors = {};
+    for (const { name } of legacyEntries) {
+      const expected = snapshot[name];
+      const deleted = await _quarantineVerifiedLegacyArtifact(
+        provider,
+        `${source.legacyDir}/${name}`,
+        expected.integrity,
+        name.slice(0, -5),
+      );
+      if (!deleted.ok) deleteErrors[name] = deleted.detail;
+    }
+    if (Object.keys(deleteErrors).length) {
+      return {
+        ok: false,
+        detail: `旧付随物の削除に失敗しました: ${Object.values(deleteErrors).join('; ')}`,
+        deleteErrors,
+      };
+    }
+    return { ok: true };
+  }
+
+  async function _backupAndDeleteLegacyFile(provider, adapter, source, sourceState, artifact, nowText, persistLedger) {
+    let backupId = sourceState.backup_document_id;
+    const backupPayload = {
+      source_kind: source.key, legacy_path: source.legacyPath,
+      legacy_raw_text: artifact.rawText, source_snapshot: artifact.integrity,
+      backed_up_at: nowText,
+    };
+    if (backupId) {
+      const existing = await adapter.load(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId).catch(() => null);
+      if (!existing || !_recordsMatch(existing.payload.source_snapshot, artifact.integrity)) backupId = null;
+    }
+    if (!backupId) {
+      backupId = `${CLOUD_LEDGER_DOC_ID}-${source.key}-${Date.now().toString(36)}`;
+      try {
+        await adapter.save(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId, backupPayload, { expectedRevision: null });
+        const reloaded = await adapter.load(_contract().SystemStorageKind.MIGRATION_BACKUPS, backupId);
+        if (!reloaded || !_recordsMatch(reloaded.payload, backupPayload)) throw new Error('バックアップ再読込照合に失敗しました');
+      } catch (error) {
+        return { ok: false, detail: `移行バックアップへの退避に失敗しました: ${error && error.message}` };
+      }
+      sourceState.backup_document_id = backupId;
+      sourceState.backed_up_at = nowText;
+    }
+    try { await persistLedger(); } catch (error) {
+      return { ok: false, detail: `台帳へバックアップ情報を保存できません: ${error && error.message}` };
+    }
+    const current = await _readLegacyArtifact(provider, source.legacyPath, source.documentId).catch(() => null);
+    const destination = await adapter.load(_contract().SystemStorageKind[source.kindName], source.documentId).catch(() => null);
+    const state = (sourceState.targets || {})[source.documentId] || {};
+    if (
+      !current
+      || current.integrity.raw_bytes_sha256 !== artifact.integrity.raw_bytes_sha256
+      || current.integrity.source_revision !== artifact.integrity.source_revision
+      || !destination
+      || String(destination.revision || '') !== String(state.reloaded_destination_revision || '')
+      || await _sha256Text(_canonicalJson(destination.payload)) !== state.normalized_json_sha256
+    ) {
+      return { ok: false, detail: '削除直前の元/先hash・revision照合に失敗しました' };
+    }
+    // 削除失敗を握りつぶさない(上記 _backupAndDeleteLegacyDir と同じ理由。
+    // フェーズB徹底チェックで判明)。
+    return _quarantineVerifiedLegacyArtifact(
+      provider, source.legacyPath, artifact.integrity, source.documentId,
+    );
+  }
+
+  /**
+   * Cloud静的版・Dropbox個人/共有 向けの移行エントリポイント。
+   * `gb-cloud-bootstrap.js` が接続確立(owner/editor権限)後に1回呼ぶことを想定する。
+   */
+  async function _persistCloudLedger(adapter, payload) {
+    const kind = _contract().SystemStorageKind.MIGRATION_LEDGER;
+    // 読込不能を「台帳なし」とみなすと既存台帳をcreate-onlyで上書きし得る。
+    const current = await adapter.load(kind, CLOUD_LEDGER_DOC_ID);
+    const options = current && current.revision
+      ? { expectedRevision: current.revision } : (current ? {} : { expectedRevision: null });
+    const saved = await adapter.save(kind, CLOUD_LEDGER_DOC_ID, payload, options);
+    const reloaded = await adapter.load(kind, CLOUD_LEDGER_DOC_ID);
+    if (!reloaded || !_recordsMatch(reloaded.payload, payload)) throw new Error('移行台帳の再読込照合に失敗しました');
+    if (saved && saved.revision && reloaded.revision && saved.revision !== reloaded.revision) {
+      throw new Error('移行台帳の保存応答revisionと再読込revisionが一致しません');
+    }
+    return reloaded;
+  }
+
+  NS.migrateCloudSidecars = async function (provider) {
+    const internals = _internals();
+    const contract = _contract();
+    if (!internals || !contract || !provider) {
+      return { status: 'error', detail: '移行に必要なモジュールが読み込まれていません' };
+    }
+    const adapter = await _managementAdapterForProvider(provider);
+    if (!adapter) return { status: 'error', detail: '管理領域アダプターを解決できませんでした(Dropbox未接続の可能性)' };
+
+    const nowText = _nowText();
+    let ledgerRecord = null;
+    try {
+      ledgerRecord = await adapter.load(contract.SystemStorageKind.MIGRATION_LEDGER, CLOUD_LEDGER_DOC_ID);
+    } catch (error) {
+      return { status: 'error', detail: `移行台帳を読み込めません: ${error && error.message}` };
+    }
+    const ledgerPayload = (ledgerRecord && ledgerRecord.payload) ? { ...ledgerRecord.payload } : {};
+    const sources = ledgerPayload.sources || (ledgerPayload.sources = {});
+    const persistLedger = () => _persistCloudLedger(adapter, ledgerPayload);
+
+    const summary = { status: 'completed', sources: {} };
+    for (const source of CLOUD_MULTI_DOCUMENT_SOURCES) {
+      const sourceState = sources[source.key] || (sources[source.key] = {});
+      const stepResult = await _migrateMultiDocumentSource(provider, adapter, source, sourceState, nowText);
+      let sourceStatus = 'completed';
+      if (Object.keys(stepResult.targetErrors).length) {
+        sourceStatus = 'in_progress';
+      } else if (stepResult.targetsTotal > 0) {
+        try { await persistLedger(); } catch (error) {
+          sourceState.last_error = `台帳保存に失敗しました: ${error && error.message}`;
+          sourceStatus = 'in_progress';
+        }
+        const outcome = sourceStatus === 'completed'
+          ? await _backupAndDeleteLegacyDir(provider, adapter, source, sourceState, stepResult.legacyEntries, nowText, persistLedger)
+          : { ok: false, detail: sourceState.last_error };
+        if (!outcome.ok) {
+          sourceStatus = 'in_progress';
+          sourceState.last_error = outcome.detail;
+        } else {
+          sourceState.legacy_deleted_at = nowText;
+          delete sourceState.last_error;
+        }
+      }
+      sourceState.last_checked_at = nowText;
+      summary.sources[source.key] = { status: sourceStatus, ...stepResult };
+      if (sourceStatus !== 'completed') summary.status = 'in_progress';
+    }
+    for (const source of CLOUD_SINGLE_DOCUMENT_SOURCES) {
+      const sourceState = sources[source.key] || (sources[source.key] = {});
+      const stepResult = await _migrateSingleDocumentSource(provider, adapter, source, sourceState, nowText);
+      let sourceStatus = 'completed';
+      if (stepResult.noLegacyData) {
+        sourceStatus = 'no_legacy_data';
+      } else if (Object.keys(stepResult.targetErrors).length) {
+        sourceStatus = 'in_progress';
+      } else if (stepResult.targetsTotal > 0) {
+        try { await persistLedger(); } catch (error) {
+          sourceState.last_error = `台帳保存に失敗しました: ${error && error.message}`;
+          sourceStatus = 'in_progress';
+        }
+        const outcome = sourceStatus === 'completed'
+          ? await _backupAndDeleteLegacyFile(provider, adapter, source, sourceState, stepResult.legacyArtifact, nowText, persistLedger)
+          : { ok: false, detail: sourceState.last_error };
+        if (!outcome.ok) {
+          sourceStatus = 'in_progress';
+          sourceState.last_error = outcome.detail;
+        } else {
+          sourceState.legacy_deleted_at = nowText;
+          delete sourceState.last_error;
+        }
+      }
+      sourceState.last_checked_at = nowText;
+      summary.sources[source.key] = { status: sourceStatus, ...stepResult };
+      if (sourceStatus === 'in_progress') summary.status = 'in_progress';
+    }
+
+    ledgerPayload.last_checked_at = nowText;
+    ledgerPayload.migration_completed_at = summary.status === 'completed' ? nowText : (ledgerPayload.migration_completed_at || null);
+    try {
+      await persistLedger();
+    } catch (error) {
+      summary.status = 'in_progress';
+      summary.ledger_error = String((error && error.message) || error);
+      ledgerPayload.migration_completed_at = null;
+    }
+
+    return summary;
+  };
+
+  function _sourceDefinition(sourceKey) {
+    return [...CLOUD_MULTI_DOCUMENT_SOURCES, ...CLOUD_SINGLE_DOCUMENT_SOURCES]
+      .find(source => source.key === sourceKey) || null;
+  }
+
+  NS.restoreCloudSidecarMigrationBackup = async function (provider, backupDocumentId, options) {
+    const adapter = await _managementAdapterForProvider(provider);
+    const contract = _contract();
+    if (!adapter || !contract) return { status: 'error', detail: '管理領域アダプターを解決できませんでした' };
+    const backup = await adapter.load(contract.SystemStorageKind.MIGRATION_BACKUPS, backupDocumentId).catch(() => null);
+    if (!backup || !backup.payload) return { status: 'error', detail: 'バックアップが見つかりません' };
+    const payload = backup.payload;
+    const backedUpMs = Date.parse(payload.backed_up_at || '');
+    const nowMs = options && Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+    if (!Number.isFinite(backedUpMs)) return { status: 'error', detail: 'バックアップ日時が不正です' };
+    if (nowMs - backedUpMs > 30 * 24 * 60 * 60 * 1000) return { status: 'expired', detail: '30日の復元期限を過ぎています' };
+    const source = _sourceDefinition(payload.source_kind);
+    if (!source) return { status: 'error', detail: '未知のバックアップ種別です' };
+    const kind = contract.SystemStorageKind[source.kindName];
+    const artifacts = [];
+    try {
+      if (payload.legacy_snapshot) {
+        for (const [name, item] of Object.entries(payload.legacy_snapshot)) {
+          const record = JSON.parse(item.raw_text);
+          const rawHash = await _sha256Text(item.raw_text);
+          const normalizedHash = await _sha256Text(_canonicalJson(record));
+          if (rawHash !== item.integrity.raw_bytes_sha256 || normalizedHash !== item.integrity.normalized_json_sha256) {
+            throw new Error(`${name} のhashが一致しません`);
+          }
+          artifacts.push({ docId: name.slice(0, -5), record });
+        }
+      } else {
+        const record = JSON.parse(payload.legacy_raw_text);
+        const rawHash = await _sha256Text(payload.legacy_raw_text);
+        const normalizedHash = await _sha256Text(_canonicalJson(record));
+        if (rawHash !== payload.source_snapshot.raw_bytes_sha256 || normalizedHash !== payload.source_snapshot.normalized_json_sha256) {
+          throw new Error('バックアップのhashが一致しません');
+        }
+        artifacts.push({ docId: source.documentId, record });
+      }
+    } catch (error) {
+      return { status: 'error', detail: `バックアップ検証に失敗しました: ${error && error.message}` };
+    }
+
+    const restored = [];
+    const idempotent = [];
+    const conflicts = [];
+    for (const artifact of artifacts) {
+      try {
+        const existing = await adapter.load(kind, artifact.docId);
+        if (existing) {
+          if (_recordsMatch(existing.payload, artifact.record)) idempotent.push(artifact.docId);
+          else conflicts.push(artifact.docId);
+          continue;
+        }
+        const saved = await adapter.save(kind, artifact.docId, artifact.record, { expectedRevision: null });
+        const reloaded = await adapter.load(kind, artifact.docId);
+        if (!reloaded || !_recordsMatch(reloaded.payload, artifact.record)) throw new Error('復元後の内容照合に失敗しました');
+        if (saved && saved.revision && reloaded.revision && saved.revision !== reloaded.revision) {
+          throw new Error('復元後のrevision照合に失敗しました');
+        }
+        restored.push(artifact.docId);
+      } catch (error) {
+        const raced = await adapter.load(kind, artifact.docId).catch(() => null);
+        if (raced && !_recordsMatch(raced.payload, artifact.record)) conflicts.push(artifact.docId);
+        else return { status: 'error', detail: `${artifact.docId} の復元に失敗しました: ${error && error.message}` };
+      }
+    }
+    return {
+      status: conflicts.length ? 'conflict' : 'completed',
+      restored, idempotent, conflicts,
+    };
+  };
+
+  NS.getCompatibilityLock = async function (provider) {
+    const adapter = await _managementAdapterForProvider(provider);
+    if (!adapter) return { locked: true, unavailable: true, reason: 'management_adapter_unavailable' };
+    let record;
+    try {
+      record = await adapter.load(_contract().SystemStorageKind.MIGRATION_LEDGER, CLOUD_LEDGER_DOC_ID);
+    } catch (error) {
+      return {
+        locked: true,
+        unavailable: true,
+        reason: 'compatibility_lock_unreadable',
+        detail: String((error && error.message) || error),
+      };
+    }
+    return (record && record.payload && record.payload.compatibility_lock)
+      ? { ...record.payload.compatibility_lock } : { locked: false };
+  };
+
+  NS.clearCompatibilityLockAfterOwnerRemigration = async function (provider, options) {
+    if (!options || options.isOwner !== true || options.remigrationSucceeded !== true) {
+      return { status: 'denied', detail: 'ownerによる再移行成功後のみ解除できます' };
+    }
+    const adapter = await _managementAdapterForProvider(provider);
+    if (!adapter) return { status: 'error', detail: '管理領域アダプターを解決できませんでした' };
+    const record = await adapter.load(_contract().SystemStorageKind.MIGRATION_LEDGER, CLOUD_LEDGER_DOC_ID);
+    const payload = record && record.payload ? { ...record.payload } : {};
+    payload.compatibility_lock = {
+      ...(payload.compatibility_lock || {}),
+      locked: false,
+      unlocked_at: _nowText(),
+      unlock_reason: 'owner_remigration_succeeded',
+    };
+    try { await _persistCloudLedger(adapter, payload); } catch (error) {
+      return { status: 'error', detail: `compatibility lockを解除できません: ${error && error.message}` };
+    }
+    return { status: 'completed', compatibilityLock: payload.compatibility_lock };
+  };
+
+  // --- 旧クライアント検知(計画書§6.3最終項) --------------------------------------
+  //
+  // 完全な読取専用化は影響が大きすぎるため、検出+警告表示+旧パス再読込という
+  // 縮退運用にする(Part 1指示どおり)。移行完了(migration_completed_at記録済み)
+  // にも関わらず、旧パスへ新しいファイルが存在する場合、旧バージョンのMeldexが
+  // 同じ共有ワークスペースへ接続していると推定し、呼び出し元へ通知する。
+  // 通知を受け取った側は、警告表示に加えて旧パスの内容も再読込することを推奨する
+  // (旧クライアントが書いた新しいデータを見逃さないため)。
+  NS.detectLegacyClientActivity = async function (provider) {
+    const internals = _internals();
+    const contract = _contract();
+    if (!internals || !contract || !provider) {
+      return {
+        detected: true,
+        unavailable: true,
+        compatibilityLock: { locked: true, unavailable: true, reason: 'legacy_detection_unavailable' },
+      };
+    }
+    const adapter = await _managementAdapterForProvider(provider);
+    if (!adapter) {
+      return {
+        detected: true,
+        unavailable: true,
+        compatibilityLock: { locked: true, unavailable: true, reason: 'management_adapter_unavailable' },
+      };
+    }
+    let ledgerRecord = null;
+    try {
+      ledgerRecord = await adapter.load(contract.SystemStorageKind.MIGRATION_LEDGER, CLOUD_LEDGER_DOC_ID);
+    } catch (error) {
+      return {
+        detected: true,
+        unavailable: true,
+        compatibilityLock: {
+          locked: true,
+          unavailable: true,
+          reason: 'migration_ledger_unreadable',
+          detail: String((error && error.message) || error),
+        },
+      };
+    }
+    const payload = ledgerRecord && ledgerRecord.payload;
+    if (!payload || !payload.migration_completed_at) return { detected: false };
+
+    const staleSources = [];
+    const detectionErrors = [];
+    for (const source of CLOUD_MULTI_DOCUMENT_SOURCES) {
+      let entries = [];
+      try {
+        entries = await internals._listDirectoryEntries(provider, source.legacyDir);
+      } catch (error) {
+        if (/フォルダが見つかりません|path[_ ]?not[_ ]?found|not found/i.test(String((error && error.message) || error))) continue;
+        detectionErrors.push(`${source.key}: ${String((error && error.message) || error)}`);
+        continue;
+      }
+      const jsonNames = entries
+        .filter(entry => entry && entry.handle && entry.handle.kind === 'file' && /\.json$/i.test(entry.name || ''))
+        .map(entry => entry.name);
+      if (jsonNames.length) staleSources.push(source.key);
+    }
+    for (const source of CLOUD_SINGLE_DOCUMENT_SOURCES) {
+      try {
+        if (await internals._pathExists(provider, source.legacyPath)) staleSources.push(source.key);
+      } catch (error) {
+        detectionErrors.push(`${source.key}: ${String((error && error.message) || error)}`);
+      }
+    }
+    if (!staleSources.length && !detectionErrors.length) return { detected: false };
+    payload.compatibility_lock = {
+      locked: true,
+      unavailable: detectionErrors.length > 0,
+      reason: detectionErrors.length ? 'legacy_detection_unavailable' : 'legacy_client_regenerated_sidecars',
+      stale_sources: [...new Set(staleSources)].sort(),
+      detection_errors: detectionErrors,
+      locked_at: _nowText(),
+    };
+    try {
+      await _persistCloudLedger(adapter, payload);
+    } catch (error) {
+      return {
+        detected: true, staleSources, compatibilityLock: { locked: true, persistence_failed: true },
+        detail: `compatibility lockの永続化に失敗しました: ${error && error.message}`,
+      };
+    }
+    return {
+      detected: true,
+      staleSources,
+      compatibilityLock: payload.compatibility_lock,
+      message: '旧バージョンのMeldexが同じ共有フォルダへ接続している可能性があります。全員が最新版に更新するまで、この画面の内容が最新でない場合があります。',
+    };
   };
 })();
 
@@ -23824,6 +31068,7 @@
   const DEFAULT_SAMPLE_TARGET_ROOT = 'MeldexHome/サンプル';
   const HOME_STORAGE_KEY = 'meldex-cloud-home-folder';
   const SEED_META_PATH = '_meldex/cloud-sample-seed.json';
+  const SEED_META_DOCUMENT_ID = 'cloud-sample-seed';
   const COPY_YIELD_INTERVAL = 8;
   let _running = null;
   let _preparePromise = null;
@@ -23834,6 +31079,25 @@
 
   function _provider() {
     return window.MeldexStorageAdapter?.getProvider?.();
+  }
+
+  async function _managementAdapter(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('サンプル管理データの保存先を安全に判定できません');
+    }
+    return {
+      adapter: await resolver.resolveTypedAdapterForProvider(provider, kind),
+      kind,
+    };
+  }
+
+  async function _readSeedMeta(provider) {
+    const managed = await _managementAdapter(provider);
+    const record = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
+    if (record?.payload) return record.payload;
+    return provider?.readJson ? provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
   }
 
   function _isDropboxMode() {
@@ -23972,7 +31236,7 @@
     if (!provider) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();
     const targetRoot = _normalizePath(manifest.targetRoot);
-    const meta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
+    const meta = await _readSeedMeta(provider);
     const sampleRoot = await _statPath(provider, targetRoot);
     const failed = Number(meta?.failed || 0);
     const hasSampleFolder = sampleRoot?.kind === 'directory';
@@ -24078,8 +31342,9 @@
   }
 
   async function _writeSeedMeta(provider, manifest, result) {
-    await _ensureDirectory(provider, _dirname(SEED_META_PATH));
-    await provider.writeJson(SEED_META_PATH, {
+    const managed = await _managementAdapter(provider);
+    const current = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
+    await managed.adapter.save(managed.kind, SEED_META_DOCUMENT_ID, {
       type: 'meldex-cloud-sample-seed-result',
       contentHash: manifest.contentHash || '',
       entryHashes: _entryHashMap(manifest),
@@ -24091,6 +31356,8 @@
       skipped: result.skipped || 0,
       failed: result.failed || 0,
       updatedAt: new Date().toISOString(),
+    }, {
+      expectedRevision: current?.revision ?? null,
     });
   }
 
@@ -24101,7 +31368,7 @@
     const manifest = await _readManifest();
     const canWrite = await _hasWritePermission(provider);
     if (!canWrite) return { ok: false, skipped: 'readonly' };
-    const previousMeta = provider?.readJson ? await provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
+    const previousMeta = await _readSeedMeta(provider);
     await prepareHome({ createSampleRoot: true });
     await _ensureDirectory(provider, _normalizePath(manifest.targetRoot));
     const result = await _copyMissingEntries(provider, manifest, {
@@ -24617,6 +31884,24 @@
     });
   }
 
+  // 計画書§2.6「非モーダル未解決表示は残す」・§5工程2-D項目8。「後回し」
+  // （承認済み）後も、確認導線だけを持つ静かな常設表示は残す。warningではなく
+  // okトーンにし、アクションは「確認する」のみ（新規の警告や自動再検出の
+  // 通知を増やさない。同じDOM要素を使い回すだけで、呼ばれるたびに新しい
+  // 通知が積み上がるわけではない）。
+  function _showAcknowledgedConflictNotice(conflicts) {
+    const conflictCount = Number(conflicts?.count || 0);
+    _showBanner(`Dropbox 競合コピーが ${conflictCount} 件、確認待ちのままです`, false, {
+      kind: 'health-conflict-ack',
+      actions: [
+        {
+          label: '確認する',
+          onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
+        },
+      ],
+    });
+  }
+
   function _applyCloudHealth(spaceUsage, conflicts) {
     const ratio = _spaceUsageRatio(spaceUsage);
     if (ratio >= CLOUD_SPACE_BLOCK_RATIO) {
@@ -24627,27 +31912,38 @@
     if (spaceUsage?.allocated) _setQuotaBlocked(false);
     if (spaceUsage?.allocated) _hideHealthBanner('health-space-error');
 
+    // 計画書§5工程2-D項目8: 「後回し」は一律の時間経過ではなく、対象となった
+    // 競合集合そのもの（競合世代）が承認済みかどうかで判定する
+    // （isAcknowledged(conflicts)）。承認済みの間はモーダル誘導の強いバナーを
+    // 再生成しないが、§2.6「非モーダル未解決表示は残す」に従い、確認導線
+    // だけを持つ静かな常設表示は維持する（同じDOM要素を使い回すだけで、
+    // 新しい通知を生成し続けるわけではない）。
     const conflictCount = Number(conflicts?.count || 0);
-    if (conflictCount > 0 && !window.MeldexCloudConflictResolver?.isSnoozed?.()) {
-      _reportConflictHealth(conflicts);
-      const first = conflicts?.items?.[0]?.path ? `: ${conflicts.items[0].path}` : '';
-      _showBanner(`Dropbox 競合コピーを ${conflictCount} 件検出しました。内容を確認して手動で統合してください${first}`, 'warning', {
-        kind: 'health-conflict',
-        actions: [
-          {
-            label: '競合を解消',
-            primary: true,
-            onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
-          },
-          {
-            label: '後回し',
-            onClick: () => {
-              window.MeldexCloudConflictResolver?.snooze?.();
-              _hideHealthBanner('health-conflict');
+    if (conflictCount > 0) {
+      const acknowledged = !!window.MeldexCloudConflictResolver?.isAcknowledged?.(conflicts);
+      if (!acknowledged) {
+        _reportConflictHealth(conflicts);
+        const first = conflicts?.items?.[0]?.path ? `: ${conflicts.items[0].path}` : '';
+        _showBanner(`Dropbox 競合コピーを ${conflictCount} 件検出しました。内容を確認して手動で統合してください${first}`, 'warning', {
+          kind: 'health-conflict',
+          actions: [
+            {
+              label: '競合を解消',
+              primary: true,
+              onClick: () => window.MeldexCloudConflictResolver?.open?.(conflicts),
             },
-          },
-        ],
-      });
+            {
+              label: '後回し',
+              onClick: () => {
+                window.MeldexCloudConflictResolver?.acknowledge?.(conflicts);
+                _showAcknowledgedConflictNotice(conflicts);
+              },
+            },
+          ],
+        });
+        return;
+      }
+      _showAcknowledgedConflictNotice(conflicts);
       return;
     }
     if (conflicts) _hideHealthBanner('health-conflict');
@@ -24673,7 +31969,123 @@
     try {
       conflicts = await window.MeldexDataAccess?.requestJson?.('/cloud/conflicts?limit=20');
     } catch {}
+    if (dropboxMode && provider && window.MeldexCloudConflictResolver?.hydrateAcknowledgement) {
+      await window.MeldexCloudConflictResolver.hydrateAcknowledgement(provider).catch(() => {});
+    }
     _applyCloudHealth(spaceUsage, conflicts);
+  }
+
+  const COMPATIBILITY_LOCK_MESSAGE = '旧バージョンのMeldexによる付随データを検出したため、共有ワークスペースを閲覧専用にしました。全員を最新版へ更新し、ワークスペースの所有者が再移行してください。';
+
+  async function _sharedCompatibilityLock(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const migration = window.MeldexSidecarMigration;
+    if (!provider || !resolver?.resolveConnectionInfo) return { locked: false, shared: false };
+    let info;
+    try {
+      info = await resolver.resolveConnectionInfo(provider);
+    } catch (error) {
+      // 接続先を共有と確定できない場合に互換性ロックを個人領域へ誤適用しない。
+      // 書込み可否は保存先resolver側が別途fail-closeで拒否する。
+      return { locked: false, shared: false, classificationUnavailable: true, detail: String(error?.message || error) };
+    }
+    if (info?.kind === 'unknown') {
+      return {
+        locked: true,
+        shared: true,
+        unavailable: true,
+        classificationUnavailable: true,
+        detail: 'Dropboxの接続先を個人領域か共有ワークスペースか判定できません',
+      };
+    }
+    if (!info?.isSharedWorkspace) return { locked: false, shared: false };
+    if (!migration?.getCompatibilityLock) return { locked: true, shared: true, unavailable: true };
+    try {
+      const lock = await migration.getCompatibilityLock(provider);
+      return { ...(lock || {}), shared: true };
+    } catch (error) {
+      return { locked: true, shared: true, unavailable: true, detail: String(error?.message || error) };
+    }
+  }
+
+  function _applyCompatibilityReadonly(lock) {
+    document.body.dataset.cloudReadonly = '1';
+    document.body.dataset.cloudReadonlyReason = 'compatibility-lock';
+    _applyPhase1UiGuards({ readonly: true });
+    _showBanner(COMPATIBILITY_LOCK_MESSAGE, 'warning', { kind: 'compatibility-lock' });
+  }
+
+  async function _isCurrentWorkspaceOwner(provider) {
+    if (!provider?.readVaultMetadata || !provider?.isCurrentAccountVaultOwner) return false;
+    const auth = window.MeldexDropboxAuth;
+    if (!auth?.getCurrentAccount) return false;
+    try {
+      const [metadata, account] = await Promise.all([
+        provider.readVaultMetadata(),
+        auth.getCurrentAccount(false),
+      ]);
+      return provider.isCurrentAccountVaultOwner(metadata, account) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 移行・旧クライアント検知を起動完了前に実行し、互換性ロックの検査前に
+  // 編集可能な時間が生じないようにする。移行中だけ管理領域の内部書込みを許可する。
+  async function _runSidecarMigrationOnce(provider, options) {
+    const migration = window.MeldexSidecarMigration;
+    if (!migration || typeof migration.migrateCloudSidecars !== 'function' || !provider) return null;
+    const dropboxStorage = window.MeldexSystemStorageDropbox;
+    const migrate = () => migration.migrateCloudSidecars(provider);
+    let migrationResult = null;
+    if (typeof dropboxStorage?.runMigrationWriteScope === 'function') {
+      migrationResult = await dropboxStorage.runMigrationWriteScope(migrate).catch(() => null);
+    } else {
+      migrationResult = await migrate().catch(() => null);
+    }
+    if (
+      options?.allowOwnerUnlock === true
+      && migrationResult?.status === 'completed'
+      && typeof migration.clearCompatibilityLockAfterOwnerRemigration === 'function'
+      && await _isCurrentWorkspaceOwner(provider)
+    ) {
+      const clear = () => migration.clearCompatibilityLockAfterOwnerRemigration(
+        provider, { isOwner: true, remigrationSucceeded: true },
+      );
+      if (typeof dropboxStorage?.runMigrationWriteScope === 'function') {
+        await dropboxStorage.runMigrationWriteScope(clear).catch(() => null);
+      } else {
+        await clear().catch(() => null);
+      }
+    }
+    const connection = await window.MeldexDropboxManagementRootResolver
+      ?.resolveConnectionInfo?.(provider).catch(() => null);
+    if (connection?.isSharedWorkspace && typeof migration.detectLegacyClientActivity === 'function') {
+      const legacyClient = await migration.detectLegacyClientActivity(provider).catch(() => null);
+      if (legacyClient?.detected) return legacyClient.compatibilityLock || { locked: true };
+    }
+    return _sharedCompatibilityLock(provider);
+  }
+
+  // フェーズB徹底チェック(c): 移行バックアップ・競合バックアップの30日保持
+  // (計画書§6.3)が、判定関数(selectDocumentsExceedingRetention)のみ存在し
+  // 呼び出し元が無いため実質無期限だった問題への対応。上の
+  // _runSidecarMigrationOnce と同じ「Dropbox接続確立(owner/editor権限)後に
+  // バックグラウンドで1回」のフックで、期限超過分の掃除を行う
+  // (失敗しても無視。次回接続時に再試行される)。
+  function _runSystemStorageRetentionCleanupOnce() {
+    const storage = window.MeldexSystemStorage;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!storage || typeof storage.runRetentionCleanup !== 'function' || !resolver) return;
+    setTimeout(() => {
+      (async () => {
+        const provider = window.MeldexStorageAdapter?.getProvider?.();
+        if (!provider) return;
+        const adapter = await resolver.resolveAdapterForProvider(provider).catch(() => null);
+        if (!adapter) return;
+        await storage.runRetentionCleanup(adapter).catch(() => {});
+      })().catch(() => {});
+    }, 3000);
   }
 
   function _startCloudHealthMonitor() {
@@ -25451,6 +32863,17 @@
       }
 
       try {
+        const provider = window.MeldexStorageAdapter?.getProvider?.();
+        let startupLock = await _sharedCompatibilityLock(provider);
+        if (startupLock?.locked && !startupLock?.classificationUnavailable && await _isCurrentWorkspaceOwner(provider)) {
+          startupLock = await _runSidecarMigrationOnce(provider, { allowOwnerUnlock: true })
+            || await _sharedCompatibilityLock(provider);
+        }
+        if (startupLock?.locked || startupLock?.unavailable) {
+          _applyCompatibilityReadonly(startupLock);
+          _startCloudHealthMonitor();
+          return true;
+        }
         const preflight = await window.MeldexStorageAdapter.preflight();
         if (!preflight.ok) {
           const result = await _showDropboxSetupModal(preflight.message);
@@ -25458,20 +32881,32 @@
           if (!result?.ok) return false;
           continue;
         }
-        await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
+        const migrationLock = preflight.access === 'viewer'
+          ? null
+          : await _runSidecarMigrationOnce(provider);
+        const compatibilityReadonly = !!(migrationLock?.locked || migrationLock?.unavailable);
+        if (!compatibilityReadonly) {
+          await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
           console.warn('[MeldexCloudBootstrap] sample home preparation failed', err);
-        });
-        window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
-        _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' });
-        if (preflight.access === 'viewer') {
+          });
+          window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
+        }
+        _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' || compatibilityReadonly });
+        if (compatibilityReadonly) {
+          _applyCompatibilityReadonly(migrationLock);
+        } else if (preflight.access === 'viewer') {
           document.body.dataset.cloudReadonly = '1';
+          document.body.dataset.cloudReadonlyReason = 'viewer';
           _showBanner('閲覧専用モードです。編集機能は無効化されます。', false);
         } else {
+          delete document.body.dataset.cloudReadonly;
+          delete document.body.dataset.cloudReadonlyReason;
           _showBanner(`Dropbox 接続済み: ${preflight.state?.name || 'vault'}`, false);
           setTimeout(() => {
             const bar = document.getElementById('cloud-mode-banner');
             if (bar && bar.dataset.cloudPersistent !== '1') bar.remove();
           }, 3000);
+          _runSystemStorageRetentionCleanupOnce();
         }
         _startCloudHealthMonitor();
         return true;
@@ -25560,31 +32995,48 @@
     }
   }
 
-  // 台帳ファイル（/MeldexSettings/_meldex/source-folders.v1.json）が
+  // 台帳（型付き管理レコード /MeldexSettings/system/v1/folder-associations/source-folders.json、
+  // または旧形式ファイル /MeldexSettings/_meldex/source-folders.v1.json）が
   // Dropbox上に実在するかどうかを軽量に確認する。
   //
-  // loadRegistry() はこのファイルが存在しない場合でも、初回起動用に
+  // loadRegistry() はこれらが存在しない場合でも、初回起動用に
   // vaultPath から1件だけ暫定の候補を合成して返す仕様になっている
   // （デスクトップ版を一度も使っていない完全新規ユーザーでも roots.length
   // が 0 にならない）。そのままだと「デスクトップ版で使っているフォルダが
   // 見つかりました」という案内が、実際には何も登録していない新規ユーザーにも
   // 表示されてしまう。ここでは案内の対象を「本当にデスクトップ版が台帳へ
-  // 書き込み済みのケース」に限定するため、先に台帳ファイルそのものの
-  // 実在確認を行う。
+  // 書き込み済みのケース」に限定するため、先に台帳そのものの実在確認を行う。
+  // 管理レコードを優先し、無ければ旧形式ファイルを見る（loadRegistry() の
+  // 読み取り優先順位と同じ）。
   async function _remoteRegistryFileExists() {
     const registry = _registry();
     const auth = _auth();
-    if (!registry?.registryDropboxPath || !auth?.apiRpc) return false;
-    try {
-      await auth.apiRpc('files/get_metadata', {
-        path: registry.registryDropboxPath(),
-        include_deleted: false,
-        include_has_explicit_shared_members: false,
-      });
-      return true;
-    } catch {
-      return false;
+    if (!auth?.apiRpc) return false;
+    // 管理レコード（home）→ 旧形式（home）→ 旧形式（team_root。チームアカウントで
+    // 旧デスクトップが team_root 名前空間だけに台帳を残しているケース。registry 側の
+    // _migrateLegacyTeamRegistry と同じフォールバック順）の3候補を順に確認する。
+    const candidates = [
+      { path: registry?.managedRegistryDropboxPath?.() },
+      { path: registry?.registryDropboxPath?.() },
+      { path: registry?.registryDropboxPath?.(), namespaceKind: 'team_root' },
+    ].filter((candidate) => !!candidate.path);
+    for (const candidate of candidates) {
+      try {
+        await auth.apiRpc(
+          'files/get_metadata',
+          {
+            path: candidate.path,
+            include_deleted: false,
+            include_has_explicit_shared_members: false,
+          },
+          candidate.namespaceKind ? { namespaceKind: candidate.namespaceKind } : undefined,
+        );
+        return true;
+      } catch {
+        // 次の候補へ（存在しない・アクセス不可はどちらも「この経路では見つからない」扱い）
+      }
     }
+    return false;
   }
 
   async function _loadInheritableRoots() {
@@ -26544,9 +33996,29 @@
 (function () {
   if (window.MeldexCloudConflictResolver) return;
 
-  const SNOOZE_KEY = 'meldex-cloud-conflict-snooze-until';
-  const SNOOZE_MS = 60 * 60 * 1000;
+  // 計画書 app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+  // §5 工程2-D項目8「gb-cloud-conflict-resolver.jsの『後回し』とノート競合の
+  // 『保留』を共通状態へ接続する。時間制localStorageでバナーだけ消す処理を
+  // 解決扱いにせず…ユーザーが『確認する』を選ぶまで同じ競合世代のモーダルを
+  // 自動表示しない」。
+  //
+  // 旧実装は単一のグローバル時間制フラグ（SNOOZE_KEY/SNOOZE_MS=1時間）
+  // だけで、対象となった競合の識別情報を一切記録しなかった。このため
+  // 1時間経過後は「まだ未解決の同じ競合」に対しても定期監視が無条件で
+  // バナー/通知を再表示していた（§9で明示的に禁止されるパターン）。
+  //
+  // 新実装は「後回しにした時点の競合集合（パス+更新日時の組）から
+  // 決定的に計算した競合世代ID」を期限なしで記録する。同じ世代の間は
+  // 再表示を抑止し、集合が変化（新規競合の出現・解消・再更新）した時だけ
+  // 新しい世代とみなして再び表示する。本文は一切記録しない
+  // （§2.8「両本文は原本、IndexedDBドラフト、競合コピー、解消前バックアップ
+  // で保全する」）。
+  const ACKNOWLEDGED_KEY = 'meldex-cloud-conflict-acknowledged-generation';
+  const ACKNOWLEDGEMENT_PENDING_KEY = 'meldex-cloud-conflict-acknowledgement-pending';
+  const SHARED_ACK_DOCUMENT_ID = 'cloud-conflict-acknowledgement-v1';
   const BINARY_FULL_HASH_MAX_BYTES = 5 * 1024 * 1024;
+  let _sharedAcknowledgedGeneration = '';
+  let _acknowledgementScope = '';
   let _overlay = null;
   let _conflicts = [];
   let _selectedPath = '';
@@ -26586,14 +34058,123 @@
     else el.textContent = text;
   }
 
-  function _isSnoozed() {
+  // 競合集合（パス+更新日時）から決定的な世代IDを作る。内容そのものではなく
+  // メタデータのみを使う（本文を永続化しない、という既存方針を維持するため）。
+  // 集合が1件でも変化（新規出現・解消・再更新でmodifiedが変わる）すれば
+  // 別の世代IDになり、後回し状態は自動的に無効化される。
+  function conflictGenerationId(conflicts) {
+    const items = Array.isArray(conflicts?.items) ? conflicts.items : (Array.isArray(_conflicts) ? _conflicts : []);
+    const signature = items
+      .map((item) => `${String(item?.path || '')}::${String(item?.modified || '')}`)
+      .sort()
+      .join('|');
+    const count = Number(conflicts?.count ?? conflicts?.total ?? items.length) || items.length;
+    const truncated = conflicts ? !!conflicts.truncated : _conflictTruncated;
+    return `${_acknowledgementScope || 'unscoped'}:${count}:${truncated ? 'truncated' : 'complete'}:${signature}`;
+  }
+
+  function _scopedLocalKey(baseKey) {
+    return _acknowledgementScope ? `${baseKey}:${_acknowledgementScope}` : '';
+  }
+
+  function _readAcknowledgedGeneration() {
+    const key = _scopedLocalKey(ACKNOWLEDGED_KEY);
+    if (!key) return '';
+    try { return localStorage.getItem(key) || ''; } catch { return ''; }
+  }
+
+  function _writeScopedLocal(baseKey, value) {
+    const key = _scopedLocalKey(baseKey);
+    if (!key) return;
     try {
-      const until = Number(localStorage.getItem(SNOOZE_KEY) || 0);
-      if (!until) return false;
-      if (until > Date.now()) return true;
-      localStorage.removeItem(SNOOZE_KEY);
+      if (value) localStorage.setItem(key, String(value));
+      else localStorage.removeItem(key);
     } catch {}
-    return false;
+  }
+
+  async function _sharedAcknowledgementAdapter(provider) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!provider || typeof resolver?.resolveAdapterForProvider !== 'function') return null;
+    return resolver.resolveAdapterForProvider(provider);
+  }
+
+  async function hydrateAcknowledgement(provider) {
+    const storage = window.MeldexSystemStorage;
+    const adapter = await _sharedAcknowledgementAdapter(provider);
+    if (!adapter || !storage?.SystemStorageKind?.PROFILES_WORKSPACE) {
+      _acknowledgementScope = '';
+      _sharedAcknowledgedGeneration = '';
+      return '';
+    }
+    const description = adapter.describe?.() || {};
+    _acknowledgementScope = String(
+      description.boundary || description.management_root || description.environment || '',
+    );
+    const record = await adapter.load(
+      storage.SystemStorageKind.PROFILES_WORKSPACE,
+      SHARED_ACK_DOCUMENT_ID,
+    );
+    _sharedAcknowledgedGeneration = String(record?.payload?.generation || '');
+    let pending = '';
+    try {
+      pending = localStorage.getItem(_scopedLocalKey(ACKNOWLEDGEMENT_PENDING_KEY)) || '';
+    } catch {}
+    if (pending && pending !== _sharedAcknowledgedGeneration) {
+      const persisted = await _persistSharedAcknowledgement(pending, provider);
+      if (persisted) _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+    }
+    return _sharedAcknowledgedGeneration;
+  }
+
+  async function _persistSharedAcknowledgement(generation, provider) {
+    const storage = window.MeldexSystemStorage;
+    const adapter = await _sharedAcknowledgementAdapter(provider);
+    if (!generation || !adapter || !storage?.SystemStorageKind?.PROFILES_WORKSPACE) return false;
+    const kind = storage.SystemStorageKind.PROFILES_WORKSPACE;
+    const current = await adapter.load(kind, SHARED_ACK_DOCUMENT_ID);
+    if (String(current?.payload?.generation || '') === generation) {
+      _sharedAcknowledgedGeneration = generation;
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+      return true;
+    }
+    try {
+      await adapter.save(kind, SHARED_ACK_DOCUMENT_ID, {
+        generation,
+        acknowledged_at: new Date().toISOString(),
+      }, {
+        expectedRevision: current?.revision ?? null,
+      });
+      _sharedAcknowledgedGeneration = generation;
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+      return true;
+    } catch (error) {
+      // 別端末が先に同じ世代を承認した競合だけを成功として吸収する。
+      // 異なる世代なら古い端末から上書きせず、次回監視時に再取得する。
+      const ConflictError = storage.SystemStorageConflictError;
+      if (typeof ConflictError !== 'function' || !(error instanceof ConflictError)) throw error;
+      const refreshed = await adapter.load(kind, SHARED_ACK_DOCUMENT_ID);
+      if (String(refreshed?.payload?.generation || '') === generation) {
+        _sharedAcknowledgedGeneration = generation;
+        _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, '');
+        return true;
+      }
+      return false;
+    }
+  }
+
+  // 現在報告されている競合集合(conflicts)が、既に「後回し」で承認済みの
+  // 世代と一致するかどうかを判定する。conflictsを省略した場合は判定できない
+  // ため常にfalse(=通常どおり表示)を返す（未移行の呼び出し元が誤って
+  // 抑止させないための安全側デフォルト）。
+  function isAcknowledged(conflicts) {
+    const current = conflictGenerationId(conflicts);
+    if (!current) return false;
+    return _readAcknowledgedGeneration() === current || _sharedAcknowledgedGeneration === current;
+  }
+
+  // 後方互換名。引数無しの旧呼び出し（存在すれば）は判定できないためfalseを返す。
+  function isSnoozed(conflicts) {
+    return conflicts !== undefined ? isAcknowledged(conflicts) : false;
   }
 
   function _hideConflictBanner() {
@@ -26601,13 +34182,42 @@
     if (bar?.dataset?.cloudBannerKind === 'health-conflict') bar.remove();
   }
 
-  function snooze() {
-    try {
-      localStorage.setItem(SNOOZE_KEY, String(Date.now() + SNOOZE_MS));
-    } catch {}
+  function _currentConflictsSnapshot() {
+    return { items: _conflicts, count: _conflictTotal || _conflicts.length, truncated: _conflictTruncated };
+  }
+
+  // 「後回し」＝現在の競合集合を承認済み世代として記録する。競合を解決した
+  // ことにはしない（§2.6）。呼び出し元は別途、非モーダルな「確認待ち」表示
+  // （gb-cloud-bootstrap.jsの_applyCloudHealth）を出し続けること。
+  function acknowledge(conflictsInput) {
+    const conflicts = conflictsInput || _currentConflictsSnapshot();
+    const generation = conflictGenerationId(conflicts);
+    let persistence = Promise.resolve(false);
+    if (generation) _writeScopedLocal(ACKNOWLEDGED_KEY, generation);
+    if (generation) {
+      _writeScopedLocal(ACKNOWLEDGEMENT_PENDING_KEY, generation);
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      persistence = _persistSharedAcknowledgement(generation, provider).then((persisted) => {
+        if (!persisted && typeof showStatus === 'function') {
+          showStatus('後回し状態はこの端末だけに保存されました。共有は次回再試行します', true);
+        }
+        return persisted;
+      }).catch(() => {
+        if (typeof showStatus === 'function') {
+          showStatus('後回し状態はこの端末だけに保存されました。共有は次回再試行します', true);
+        }
+        return false;
+      });
+    }
     close();
     _hideConflictBanner();
     if (typeof showStatus === 'function') showStatus('競合解消を後回しにしました');
+    return persistence;
+  }
+
+  // 後方互換名（既存呼び出し・E2Eからの参照を壊さない）。
+  function snooze(conflictsInput) {
+    return acknowledge(conflictsInput);
   }
 
   function _appendInlineDiff(container, text, otherText) {
@@ -26919,7 +34529,7 @@
   }
 
   async function _confirmResolve(label) {
-    const message = `${label}を残して競合を解消します。解消前のファイルは _meldex/conflict-backups に保存されます。続行しますか？`;
+    const message = `${label}を残して競合を解消します。解消前のファイルはMeldexの管理領域へ保存されます。続行しますか？`;
     if (typeof window.cfConfirm === 'function') {
       return !!await window.cfConfirm(message, { danger: true, okLabel: '解消', cancelLabel: 'キャンセル' });
     }
@@ -26996,7 +34606,7 @@
     const deferBtn = _el('button', 'cloud-conflict-btn', '後回し');
     deferBtn.type = 'button';
     deferBtn.setAttribute('aria-label', '競合解消を後回しにする');
-    deferBtn.addEventListener('click', snooze);
+    deferBtn.addEventListener('click', () => snooze());
     const keepOriginalBtn = _el('button', 'cloud-conflict-btn', '元ファイルを残す');
     keepOriginalBtn.type = 'button';
     keepOriginalBtn.dataset.conflictAction = 'keep_original';
@@ -27080,7 +34690,11 @@
     open,
     close,
     snooze,
-    isSnoozed: _isSnoozed,
+    acknowledge,
+    isSnoozed,
+    isAcknowledged,
+    hydrateAcknowledgement,
+    conflictGenerationId,
   };
 })();
 
@@ -27230,11 +34844,52 @@ async function apiFetch(path, opts) {
   }
 }
 
+async function _meldexCorePrepareFileWrite(path, body) {
+  const payload = { ...(body || {}) };
+  const endpoint = String(path || '').split('?', 1)[0].replace(/^\/api/, '');
+  const isFullWrite = endpoint === '/file'
+    && (Object.prototype.hasOwnProperty.call(payload, 'content')
+      || Object.prototype.hasOwnProperty.call(payload, 'content_base64'));
+  if (!isFullWrite || payload.force_overwrite || payload.forceOverwrite
+    || payload.create_only || payload.createOnly) return payload;
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  const supplied = payload.transport_revision || payload.transportRevision
+    || payload.if_match_etag || payload.ifMatchEtag || '';
+  if (supplied) {
+    if (coordinator?.revisionTokenForWrite) payload.if_match_etag = coordinator.revisionTokenForWrite(supplied);
+    return payload;
+  }
+  // 既存ファイルの最新revisionをここで拾って古い本文へ付け直すと、外部更新を
+  // 未確認のまま上書きできてしまう。自動補完は新規作成時のcreate_onlyだけ。
+  try {
+    const separator = String(path).includes('?') ? '&' : '?';
+    const metadata = await apiFetch(`${path}${separator}metadata_only=1`, { silentError: true });
+    const error = new Error('既存ファイルの保存には、読込時のrevisionが必要です');
+    error.status = 428;
+    error.meldexCode = 'precondition_required';
+    error.meldexDetail = {
+      code: 'precondition_required',
+      path: new URLSearchParams(String(path).split('?')[1] || '').get('path') || '',
+      current_etag: metadata?.etag || '',
+      current_transport_revision: metadata?.transport_revision || null,
+    };
+    throw error;
+  } catch (error) {
+    if (error?.status === 404 && !(payload.skip_if_missing || payload.skipIfMissing)) {
+      payload.create_only = true;
+      return payload;
+    }
+    if (error?.status === 404 && (payload.skip_if_missing || payload.skipIfMissing)) return payload;
+    throw error;
+  }
+}
+
 async function apiPut(path, body) {
+  const guardedBody = await _meldexCorePrepareFileWrite(path, body);
   return apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(guardedBody),
   });
 }
 
@@ -27287,8 +34942,11 @@ function fieldHelp(text, opts) {
   if (!t) return '';
   const size = (opts && opts.size) || 13;
   const extra = (opts && opts.className) ? ' ' + opts.className : '';
+  const e2eIdentity = (opts && opts.e2eId)
+    ? ` data-e2e-id="${esc(String(opts.e2eId))}"`
+    : '';
   const glyph = (typeof lucide === 'function') ? lucide('helpCircle', size) : '?';
-  return `<span class="gb-field-help${extra}" tabindex="0" role="img" data-gb-tooltip="${esc(t)}" aria-label="${esc(t)}">${glyph}</span>`;
+  return `<span class="gb-field-help${extra}"${e2eIdentity} tabindex="0" role="img" data-gb-tooltip="${esc(t)}" aria-label="${esc(t)}">${glyph}</span>`;
 }
 if (typeof window !== 'undefined') window.fieldHelp = fieldHelp;
 
@@ -27829,6 +35487,7 @@ const LUCIDE = {
   db: '<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
   scenario: '<path d="M13.4 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7.4"/><path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><path d="M21.378 5.626a1 1 0 1 0-3.004-3.004l-5.01 5.012a2 2 0 0 0-.506.854l-.837 2.87a.5.5 0 0 0 .62.62l2.87-.837a2 2 0 0 0 .854-.506z"/>',
   sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  calendarSync: '<path d="M11 10v4h4"/><path d="m11 14 1.535-1.605a5 5 0 0 1 8 1.5"/><path d="M16 2v4"/><path d="m21 18-1.535 1.605a5 5 0 0 1-8-1.5"/><path d="M21 22v-4h-4"/><path d="M21 8.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4.3"/><path d="M3 10h4"/><path d="M8 2v4"/>',
   arrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   arrowRight: '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
@@ -27840,6 +35499,12 @@ const LUCIDE = {
   funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
   panelLeft: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
   panelRight: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
+  // ビューワー残課題修正計画 2026-08-04: 反転2種・回転を共通アイコン置換表へ登録
+  // （既存のビューワー固有直接描画回避を撤去するため。パス値はvendor/lucide-icons.jsの
+  // flipHorizontal2 / flipVertical2 / rotateCw と同一）。
+  flipHorizontal2: '<path d="m3 7 5 5-5 5V7"/><path d="m21 7-5 5 5 5V7"/><path d="M12 20v2"/><path d="M12 14v2"/><path d="M12 8v2"/><path d="M12 2v2"/>',
+  flipVertical2: '<path d="m17 3-5 5-5-5h10"/><path d="m17 21-5-5-5 5h10"/><path d="M4 12H2"/><path d="M10 12H8"/><path d="M16 12h-2"/><path d="M22 12h-2"/>',
+  rotateCw: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
   palette: '<circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
   type: '<path d="M12 4v16"/><path d="M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2"/><path d="M9 20h6"/>',
   typeOutline: '<path d="M14 16.5a.5.5 0 0 0 .5.5h.5a2 2 0 0 1 0 4H9a2 2 0 0 1 0-4h.5a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5V8a2 2 0 0 1-4 0V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v3a2 2 0 0 1-4 0v-.5a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5Z"/>',
@@ -27866,7 +35531,7 @@ const LUCIDE = {
   disc: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="2"/>',
   fileQuestion: '<path d="M12 17h.01"/><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/>',
   layoutGrid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
-  layoutList: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  layoutList: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 4h7"/><path d="M14 9h7"/><path d="M14 15h7"/><path d="M14 20h7"/>',
   externalLink: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   filter: '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
@@ -28036,6 +35701,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
+  subpanel: 'panelRight',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -28099,6 +35765,10 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
+    else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
+    else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';
+    else if (cls.includes('ico-rotateCw')) name = 'rotateCw';
     else if (cls.includes('ico-layoutGrid')) name = 'layoutDashboard';
     else if (cls.includes('ico-layoutList')) name = 'layoutList';
     else if (cls.includes('ico-externalLink')) name = 'externalLink';
@@ -28134,6 +35804,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-calendarPlus')) name = 'calendarPlus';
     else if (cls.includes('ico-calendarDays')) name = 'calendarDays';
     else if (cls.includes('ico-calendarRange')) name = 'calendarRange';
+    else if (cls.includes('ico-calendarSync')) name = 'calendarSync';
     else if (cls.includes('ico-calendar')) name = 'calendar';
     else if (cls.includes('ico-arrowRight')) name = 'arrowRight';
     else if (cls.includes('ico-arrowLeft')) name = 'arrowLeft';
@@ -28168,7 +35839,11 @@ function replaceIcons(root) {
     else if (cls.includes('ico-listChecks')) name = 'listChecks';
     else if (cls.includes('ico-zoomIn')) name = 'zoomIn';
     else if (cls.includes('ico-zoomOut')) name = 'zoomOut';
+    // ico-maximize2 は ico-maximize の部分文字列一致で全画面アイコンに化けるため、先に判定する
+    // （ビューワーのフィットボタン初期表示バグ修正 2026-08-04）
+    else if (cls.includes('ico-maximize2')) name = 'maximize2';
     else if (cls.includes('ico-maximize')) name = 'maximize';
+    else if (cls.includes('ico-fileCog')) name = 'fileCog';
     else if (cls.includes('ico-timer')) name = 'timer';
     else if (cls.includes('ico-layoutTemplate')) name = 'layoutTemplate';
     else if (cls.includes('ico-rows3')) name = 'rows3';
@@ -28217,7 +35892,7 @@ function replaceIcons(root) {
 function inheritParentTheme() {
   try {
     const parentComputed = window.parent.getComputedStyle(window.parent.document.documentElement);
-    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
+    const themeVars = ['--bg', '--bg2', '--bg3', '--bg4', '--fg', '--fg2', '--accent', '--accent2', '--border', '--red', '--green', '--orange', '--blue', '--selection', '--link-fg', '--page-link-fg', '--ui-header-fg', '--ui-header-bg', '--ui-header-font', '--ui-toolbar-fg', '--ui-toolbar-bg', '--ui-toolbar-font', '--ui-muted-font', '--ui-hover-fg', '--ui-hover-bg', '--ui-fg-strong', '--ui-selection-fg', '--ui-selection-bg', '--ui-range-fill-bg', '--ui-range-track-bg', '--db-th-font', '--db-entity-font', '--db-cell-font'];
     themeVars.forEach(v => {
       const val = parentComputed.getPropertyValue(v).trim();
       if (val) document.documentElement.style.setProperty(v, val);
@@ -28330,7 +36005,7 @@ function initIframeMarkup(scrollContainer) {
       };
     } catch { return { ..._widthDefaults }; }
   }
-  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '' };
+  let _ann = { active: false, tool: 'pen', color: '#c48080', opacity: 1, widths: _loadToolWidths(), drawing: false, path: [], pressures: [], targetPath: '', anchor: null };
 
   // オーバーレイSVG作成
   const host = scrollContainer || document.body;
@@ -28497,6 +36172,135 @@ function initIframeMarkup(scrollContainer) {
     }
     const r = wrapper.getBoundingClientRect();
     return { x: clientX - r.left + wrapper.scrollLeft, y: clientY - r.top + wrapper.scrollTop };
+  }
+
+  function _elementTransformOrigin(el) {
+    const style = getComputedStyle(el);
+    const parts = String(style.transformOrigin || '0 0').split(/\s+/);
+    return {
+      x: Number.parseFloat(parts[0]) || 0,
+      y: Number.parseFloat(parts[1]) || 0,
+      matrix: style.transform && style.transform !== 'none' ? new DOMMatrix(style.transform) : new DOMMatrix(),
+    };
+  }
+
+  function _elementLocalToBoardWorld(el, point) {
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      const transform = _elementTransformOrigin(current);
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(transform.matrix);
+      x = transformed.x + transform.x + (Number(current.offsetLeft) || 0);
+      y = transformed.y + transform.y + (Number(current.offsetTop) || 0);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    return [x, y];
+  }
+
+  function _boardWorldToElementLocal(el, point) {
+    const chain = [];
+    let current = el;
+    let depth = 0;
+    while (current && current !== wrapper && current.nodeType === 1 && depth < 64) {
+      chain.push(current);
+      current = current.offsetParent;
+      depth += 1;
+    }
+    let x = Number(point?.[0]) || 0;
+    let y = Number(point?.[1]) || 0;
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      const item = chain[i];
+      x -= Number(item.offsetLeft) || 0;
+      y -= Number(item.offsetTop) || 0;
+      const transform = _elementTransformOrigin(item);
+      let inverse;
+      try { inverse = transform.matrix.inverse(); } catch { inverse = new DOMMatrix(); }
+      const transformed = new DOMPoint(x - transform.x, y - transform.y).matrixTransform(inverse);
+      x = transformed.x + transform.x;
+      y = transformed.y + transform.y;
+    }
+    return [x, y];
+  }
+
+  function _boardAnnotationNode(anchor) {
+    if (!boardMode || !anchor?.nodeId) return null;
+    const el = document.getElementById('bdn-' + anchor.nodeId);
+    if (!el || !el.isConnected) return null;
+    return el;
+  }
+
+  function _annotationAnchorAt(clientX, clientY, worldPoint) {
+    if (!boardMode) return null;
+    const hit = document.elementsFromPoint(clientX, clientY)
+      .find(el => el?.closest?.('.bd-node') && !el.closest?.('#iframe-ann-overlay,.ann-note-layer'));
+    const nodeEl = hit?.closest?.('.bd-node');
+    const nodeId = nodeEl?.dataset?.cardId || nodeEl?.id?.replace(/^bdn-/, '') || '';
+    if (!nodeEl || !nodeId) return null;
+    const width = Math.max(1, nodeEl.offsetWidth || 0);
+    const height = Math.max(1, nodeEl.offsetHeight || 0);
+    const local = _boardWorldToElementLocal(nodeEl, [worldPoint.x, worldPoint.y]);
+    if (local[0] < 0 || local[1] < 0 || local[0] > width || local[1] > height) return null;
+    const imageEl = nodeEl.querySelector?.('.bd-img');
+    const imageRect = imageEl?.getBoundingClientRect?.();
+    const insideImage = !!imageRect
+      && clientX >= imageRect.left && clientX <= imageRect.right
+      && clientY >= imageRect.top && clientY <= imageRect.bottom;
+    return {
+      data: {
+        version: 1,
+        kind: 'board-node',
+        nodeId,
+        subject: insideImage ? 'image' : 'card',
+        baseWidth: width,
+        baseHeight: height,
+        geometrySpace: 'local',
+      },
+      nodeEl,
+    };
+  }
+
+  function _annotationPointToLocal(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const current = _boardWorldToElementLocal(nodeEl, point);
+    const scaleX = Math.max(0.0001, (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1));
+    const scaleY = Math.max(0.0001, (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1));
+    return [current[0] / scaleX, current[1] / scaleY];
+  }
+
+  function _annotationPointToWorld(anchor, point) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return [Number(point?.[0]) || 0, Number(point?.[1]) || 0];
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return _elementLocalToBoardWorld(nodeEl, [
+      (Number(point?.[0]) || 0) * scaleX,
+      (Number(point?.[1]) || 0) * scaleY,
+    ]);
+  }
+
+  function _annotationAnchorScale(anchor) {
+    const nodeEl = _boardAnnotationNode(anchor);
+    if (!nodeEl) return 1;
+    const scaleX = (nodeEl.offsetWidth || anchor.baseWidth || 1) / Math.max(1, anchor.baseWidth || 1);
+    const scaleY = (nodeEl.offsetHeight || anchor.baseHeight || 1) / Math.max(1, anchor.baseHeight || 1);
+    return Math.sqrt(Math.abs(scaleX * scaleY));
+  }
+
+  function _anchoredRectPoints(data) {
+    const x = Number(data?.x) || 0;
+    const y = Number(data?.y) || 0;
+    const width = Number(data?.width) || 0;
+    const height = Number(data?.height) || 0;
+    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+  }
+
+  function _anchoredWorldPoints(type, data) {
+    const localPoints = type === 'rect' ? _anchoredRectPoints(data) : (Array.isArray(data?.points) ? data.points : []);
+    return localPoints.map(point => _annotationPointToWorld(data.anchor, point));
   }
 
   function _parentMessageTargetOrigin() {
@@ -29364,7 +37168,11 @@ function initIframeMarkup(scrollContainer) {
     }
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path = [[pt.x, pt.y]];
+    const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
+    _ann.anchor = anchorHit?.data || null;
+    _ann.path = [_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]];
     _ann.pressures = [e.pressure || 0.5];
     try { svg.setPointerCapture?.(e.pointerId); } catch (_) {}
   });
@@ -29372,17 +37180,25 @@ function initIframeMarkup(scrollContainer) {
   svg.addEventListener('pointermove', (e) => {
     if (!_ann.drawing) return;
     const pt = _toLocalCoords(e.clientX, e.clientY);
-    _ann.path.push([pt.x, pt.y]);
+    _ann.path.push(_ann.anchor
+      ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
+      : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = _ann.tool === 'lasso' ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
       preview.classList.add('ann-preview');
       layer.appendChild(preview);
     }
-    if (_ann.tool === 'rect') {
+    if (_ann.anchor) {
+      const previewType = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+      const previewData = previewType === 'rect'
+        ? { ..._rectData(_ann.path), anchor: _ann.anchor }
+        : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
+      _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
+    } else if (_ann.tool === 'rect') {
       _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
@@ -29405,8 +37221,11 @@ function initIframeMarkup(scrollContainer) {
     const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
     if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect' ? _renderRect(strokeData, _ann.color, _ann.opacity, null) : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width);
+    const savedEl = type === 'rect'
+      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+      : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
       target_path: _ann.targetPath,
@@ -29418,7 +37237,7 @@ function initIframeMarkup(scrollContainer) {
     }, (res) => {
       if (res?.id) savedEl.dataset.annId = res.id;
     }, () => { savedEl.remove(); })) {
-      _ann.path = []; _ann.pressures = [];
+      _ann.path = []; _ann.pressures = []; _ann.anchor = null;
       return;
     }
     // 親に保存依頼
@@ -29430,13 +37249,151 @@ function initIframeMarkup(scrollContainer) {
       annClientId,
     });
     // 確定描画
-    _ann.path = []; _ann.pressures = [];
+    _ann.path = []; _ann.pressures = []; _ann.anchor = null;
   });
 
-  function _renderStroke(type, points, pressures, color, opacity, annId, width) {
+  function _applyAnchoredShape(el, type, data, color, opacity, preview) {
     const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const points = _anchoredWorldPoints(type, data);
+    if (type === 'stroke' || type === 'marker') {
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none');
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, data.pressures || [], data.width) * _annotationAnchorScale(data.anchor));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+    } else {
+      el.setAttribute('points', points.map(point => point.join(',')).join(' '));
+      el.setAttribute('fill', color);
+      el.setAttribute('fill-opacity', String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+      el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', String(_annotationAnchorScale(data.anchor)));
+      el.setAttribute('stroke-opacity', String(normalizedOpacity));
+      if (preview) el.setAttribute('stroke-dasharray', '4,4');
+      else el.removeAttribute('stroke-dasharray');
+    }
+    return el;
+  }
+
+  const _anchoredAnnotationEntries = new Set();
+  let _anchoredRefreshHandle = 0;
+  const _anchoredResizeObserver = new ResizeObserver(() => _scheduleAnchoredAnnotationRefresh());
+  let _anchoredMutationObserver = null;
+
+  function _ensureAnchoredMutationObserver() {
+    if (_anchoredMutationObserver) return;
+    _anchoredMutationObserver = new MutationObserver(() => _scheduleAnchoredAnnotationRefresh());
+    _anchoredMutationObserver.observe(wrapper, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['style', 'class'],
+    });
+  }
+
+  function _releaseAnchoredMutationObserverIfIdle() {
+    if (_anchoredAnnotationEntries.size || !_anchoredMutationObserver) return;
+    _anchoredMutationObserver.disconnect();
+    _anchoredMutationObserver = null;
+  }
+
+  function _trackAnchoredAnnotation(el, type, data, color, opacity) {
+    if (!data?.anchor) return;
+    const nodeEl = _boardAnnotationNode(data.anchor);
+    _anchoredAnnotationEntries.add({
+      el,
+      type,
+      data,
+      color,
+      opacity,
+      detaching: false,
+      lastWorldPoints: _anchoredWorldPoints(type, data),
+      lastWorldWidth: (Number(data.width) || _widthDefaults[type === 'marker' ? 'marker' : 'pen']) * _annotationAnchorScale(data.anchor),
+      observedNode: nodeEl,
+    });
+    _ensureAnchoredMutationObserver();
+    if (nodeEl) _anchoredResizeObserver.observe(nodeEl);
+    _scheduleAnchoredAnnotationRefresh();
+  }
+
+  function _boardStillHasNode(nodeId) {
+    return typeof bd !== 'undefined' && Array.isArray(bd.nodes)
+      ? bd.nodes.some(node => node?.id === nodeId)
+      : !!document.getElementById('bdn-' + nodeId);
+  }
+
+  function _detachAnchoredAnnotation(entry) {
+    if (entry.detaching || !entry.data?.anchor) return;
+    entry.detaching = true;
+    if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+    const worldPoints = entry.lastWorldPoints || [];
+    if (entry.type === 'rect') {
+      entry.type = 'lasso';
+      delete entry.data.x;
+      delete entry.data.y;
+      delete entry.data.height;
+      entry.data.points = worldPoints;
+    } else {
+      entry.data.points = worldPoints;
+      if (entry.type === 'stroke' || entry.type === 'marker') {
+        entry.data.width = entry.lastWorldWidth;
+      }
+    }
+    delete entry.data.anchor;
+    const annId = entry.el?.dataset?.annId || '';
+    const payload = { data: entry.data };
+    if (entry.type === 'lasso' && entry.el?.tagName?.toLowerCase() === 'polygon') payload.type = 'lasso';
+    const finish = () => { entry.detaching = false; };
+    if (annId && _updateBoardAnnotation(annId, payload, finish, finish)) return;
+    finish();
+  }
+
+  function _refreshAnchoredAnnotations() {
+    _anchoredRefreshHandle = 0;
+    _anchoredAnnotationEntries.forEach(entry => {
+      if (!entry.el?.isConnected) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const anchor = entry.data?.anchor;
+      if (!anchor) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        _anchoredAnnotationEntries.delete(entry);
+        return;
+      }
+      const nodeEl = _boardAnnotationNode(anchor);
+      if (!nodeEl) {
+        if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
+        return;
+      }
+      if (entry.observedNode !== nodeEl) {
+        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
+        entry.observedNode = nodeEl;
+        _anchoredResizeObserver.observe(nodeEl);
+      }
+      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
+      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
+        * _annotationAnchorScale(anchor);
+      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
+    });
+    _releaseAnchoredMutationObserverIfIdle();
+  }
+
+  function _scheduleAnchoredAnnotationRefresh() {
+    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
+    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
+  }
+
+  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const data = sourceData || { points, pressures, width };
     let el;
-    if (type === 'lasso') {
+    if (data.anchor) {
+      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
+      _applyAnchoredShape(el, type, data, color, opacity, false);
+    } else if (type === 'lasso') {
       el = document.createElementNS(_svgNS, 'polygon');
       el.setAttribute('points', points.map(p => p.join(',')).join(' '));
       el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
@@ -29451,13 +37408,17 @@ function initIframeMarkup(scrollContainer) {
     }
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, type, data, color, opacity);
     return el;
   }
 
   function _renderRect(data, color, opacity, annId) {
-    const el = _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
+    const el = data?.anchor
+      ? _applyAnchoredShape(document.createElementNS(_svgNS, 'polygon'), 'rect', data, color, opacity, false)
+      : _applyRectEl(document.createElementNS(_svgNS, 'rect'), data, color, opacity, false);
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
+    _trackAnchoredAnnotation(el, 'rect', data, color, opacity);
     return el;
   }
 
@@ -29515,7 +37476,7 @@ function initIframeMarkup(scrollContainer) {
         } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
           _renderRect(data, item.color, item.opacity, item.id);
         } else if (data?.points) {
-          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width);
+          _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
       });
       _syncNoteInteractivity();
@@ -29564,7 +37525,15 @@ function initIframeMarkup(scrollContainer) {
     _handleMessage(msg);
   });
 
-  const bridge = { svg, layer, notesLayer, ann: _ann, handleMessage: _handleMessage, updateSize: _updateSize };
+  const bridge = {
+    svg,
+    layer,
+    notesLayer,
+    ann: _ann,
+    handleMessage: _handleMessage,
+    updateSize: _updateSize,
+    refreshAnchoredAnnotations: _refreshAnchoredAnnotations,
+  };
   const e2eBridgeEnabled = (() => {
     if (typeof window === 'undefined') return false;
     if (window.GBE2EActions) return true;
@@ -30630,6 +38599,547 @@ function enableCheckboxDragToggle(container, scopeSelector) {
 document.addEventListener('DOMContentLoaded', () => {
   enableCheckboxDragToggle(document.body, '.modal-overlay');
 }, { once: true });
+
+;
+
+/* === meldex-app-capabilities.js === */
+;
+(function (root, factory) {
+  const registry = factory();
+  if (typeof module === 'object' && module.exports) module.exports = registry;
+  if (root) root.MeldexAppCapabilities = registry;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const STATUS = Object.freeze({
+    available: 'available',
+    alternative: 'alternative',
+    exception: 'exception',
+    out_of_scope: 'out_of_scope',
+  });
+
+  const APPS = Object.freeze([
+    'note',
+    'scenario',
+    'board',
+    'sheet',
+    'timer',
+    'quick_memo',
+    'viewer',
+  ]);
+
+  const ENVIRONMENTS = Object.freeze([
+    'desktop_main',
+    'windows_standalone',
+    'cloud_main',
+    'cloud_standalone',
+    'mobile_cloud',
+  ]);
+
+  const CAPABILITIES = Object.freeze([
+    'load',
+    'edit',
+    'save',
+    'save_as',
+    'export',
+    'file_info',
+    'file_style',
+    'publish',
+    'backlinks',
+    'annotations_comments',
+    'internal_link_selection',
+    'main',
+    'float',
+    'right_sidebar_drawer',
+    'open_external_app',
+    'drag_drop',
+    'clipboard',
+    'multiple_import',
+    'conflict_detection',
+    'edit_lock',
+    'move_tracking',
+    'offline_save',
+    'dropbox_sync',
+    'auto_link',
+    'version_history',
+  ]);
+
+  const DEFINITIONS = Object.freeze({
+    apps: APPS,
+    environments: ENVIRONMENTS,
+    capabilities: CAPABILITIES,
+    statuses: Object.freeze(Object.values(STATUS)),
+  });
+
+  const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
+  const APP_OUT_OF_SCOPE = Object.freeze({
+    note: Object.freeze({
+      multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
+    }),
+    scenario: Object.freeze({
+      multiple_import: 'シナリオは単一作品編集を正本とし複数作品一括取込を扱わない',
+    }),
+    board: Object.freeze({
+      publish: 'ボードは編集・書出し対象であり公開ページ生成は製品範囲外',
+    }),
+    sheet: Object.freeze({
+      save_as: 'シートはフォルダ実体を直接編集し別名ファイル保存を行わない',
+      multiple_import: 'シートは一件ずつ取込先を確認し複数ファイル一括取込を扱わない',
+    }),
+    timer: Object.freeze({
+      export: 'タイマーは状態をタイマーファイルへ保存し別形式へ書き出さない',
+      publish: 'タイマー記録は公開コンテンツではない',
+      backlinks: 'タイマーファイルは参照索引の表示対象ではない',
+      annotations_comments: 'タイマーに文書注釈やコメントを付けない',
+      internal_link_selection: 'タイマーは内部リンク編集面を持たない',
+      drag_drop: 'タイマーはファイルのD&D取込を扱わない',
+      clipboard: 'タイマーは文書クリップボード操作を扱わない',
+      multiple_import: 'タイマーは複数ファイル一括取込を扱わない',
+    }),
+    quick_memo: Object.freeze({
+      save_as: 'クイックメモは現在の同期先へ即時保存し別名保存を行わない',
+      export: 'クイックメモは即時同期を目的とし独立した書出し機能を持たない',
+      file_info: 'クイックメモは独立ファイル情報パネルを持たない',
+      file_style: 'クイックメモは文書スタイルを持たない',
+      publish: 'クイックメモは公開コンテンツを生成しない',
+      backlinks: 'クイックメモは参照索引の表示対象ではない',
+      annotations_comments: 'クイックメモに別系統の注釈やコメントを重ねない',
+      internal_link_selection: 'クイックメモは内部リンク選択UIを持たない',
+      drag_drop: 'クイックメモは入力欄へのファイルD&D取込を行わない',
+      multiple_import: 'クイックメモは複数ファイル一括取込を扱わない',
+      conflict_detection: 'クイックメモは追記同期を使い文書revision競合UIを持たない',
+      edit_lock: 'クイックメモは短文追記を共有し排他的な文書編集ロックを取得しない',
+      move_tracking: 'クイックメモは固定同期領域を使い編集中ファイル移動を追跡しない',
+      right_sidebar_drawer: 'クイックメモは専用のメモ一覧を使い共通右サイドバーを持たない',
+    }),
+    viewer: Object.freeze({
+      file_style: 'ビューワーは元ファイルの表示スタイルを編集しない',
+      backlinks: 'ビューワーは参照索引を編集・表示する文書画面ではない',
+      internal_link_selection: 'ビューワーは内部リンクを挿入・選択しない',
+      drag_drop: 'ビューワーはファイルを取込対象としてD&Dしない',
+      clipboard: 'ビューワーは文書内容のコピー・貼り付け編集を行わない',
+      multiple_import: 'ビューワーはフォルダー内媒体を閲覧し複数取込を行わない',
+      dropbox_sync: '単独ビューワーはローカル媒体を表示しDropbox同期を担当しない',
+    }),
+  });
+  const VIEWER_READ_ONLY_CAPABILITIES = new Set([
+    'edit',
+    'save',
+    'save_as',
+    'export',
+    'publish',
+    'internal_link_selection',
+    'conflict_detection',
+    'edit_lock',
+    'move_tracking',
+    'offline_save',
+  ]);
+  const STANDALONE_MAIN_ALTERNATIVES = new Set([
+    'publish',
+    'backlinks',
+    'annotations_comments',
+    'internal_link_selection',
+    'float',
+  ]);
+  const CLOUD_STANDALONE_MAIN_ALTERNATIVES = new Set([
+    'publish',
+    'backlinks',
+    'annotations_comments',
+    'internal_link_selection',
+    'float',
+    'open_external_app',
+  ]);
+  const MOBILE_ALTERNATIVES = new Set([
+    'float',
+    'right_sidebar_drawer',
+    'open_external_app',
+    'drag_drop',
+    'multiple_import',
+  ]);
+
+  const CAPABILITY_STRATEGIES = Object.freeze({
+    load: 'document-loader',
+    edit: 'application-editor-engine',
+    save: 'document-save-coordinator',
+    save_as: 'document-save-as-adapter',
+    export: 'application-export-adapter',
+    file_info: 'file-metadata-adapter',
+    file_style: 'file-style-runtime',
+    publish: 'publication-adapter',
+    backlinks: 'reference-graph-adapter',
+    annotations_comments: 'annotation-comment-adapter',
+    internal_link_selection: 'link-selection-router',
+    main: 'main-surface-host',
+    float: 'float-panel-host',
+    right_sidebar_drawer: 'secondary-surface-host',
+    open_external_app: 'external-open-router',
+    drag_drop: 'drag-drop-adapter',
+    clipboard: 'clipboard-adapter',
+    multiple_import: 'multi-import-adapter',
+    conflict_detection: 'revision-conflict-adapter',
+    edit_lock: 'active-edit-lock-adapter',
+    move_tracking: 'file-identity-relocation-adapter',
+    offline_save: 'offline-draft-outbox-adapter',
+    dropbox_sync: 'dropbox-sync-adapter',
+    auto_link: 'main-autolink-service',
+    version_history: 'main-version-history-service',
+  });
+
+  const ADAPTERS = Object.create(null);
+
+  function _defineAdapter(id, definition) {
+    if (!id || ADAPTERS[id]) throw new Error(`duplicate or empty adapter definition: ${id}`);
+    ADAPTERS[id] = Object.freeze({
+      id,
+      executable: typeof definition.execute === 'function',
+      handlerRequired: definition.handlerRequired === true,
+      strategy: definition.strategy,
+      nextAction: definition.nextAction || null,
+      execute: definition.execute || null,
+    });
+  }
+
+  for (const environment of ENVIRONMENTS) {
+    for (const capability of CAPABILITIES) {
+      const id = `implementation:${environment}:${capability}`;
+      _defineAdapter(id, {
+        handlerRequired: true,
+        strategy: `${environment}/${CAPABILITY_STRATEGIES[capability]}`,
+      });
+    }
+  }
+  _defineAdapter('route:desktop_main', {
+    strategy: 'route-to-desktop-main',
+    nextAction: 'デスクトップ版本体で開く',
+    execute: route => Object.freeze({ supported: true, route }),
+  });
+  _defineAdapter('route:cloud_main', {
+    strategy: 'route-to-cloud-main',
+    nextAction: 'Cloud版本体で開く',
+    execute: route => Object.freeze({ supported: true, route }),
+  });
+  _defineAdapter('route:cloud_main:viewer', {
+    strategy: 'route-to-cloud-main-viewer',
+    nextAction: 'Cloud版本体のビューワーで開く',
+    execute: route => Object.freeze({ supported: true, route }),
+  });
+  _defineAdapter('route:web-open', {
+    strategy: 'web-download-or-associated-app',
+    nextAction: 'ダウンロードまたはWebで利用可能なアプリで開く',
+    execute: route => Object.freeze({ supported: true, route }),
+  });
+  for (const capability of MOBILE_ALTERNATIVES) {
+    _defineAdapter(`mobile-alternative:${capability}`, {
+      strategy: `mobile/${CAPABILITY_STRATEGIES[capability]}`,
+      nextAction: capability === 'float'
+        ? '全画面副画面またはドロワーで開く'
+        : 'タッチ端末用の代替操作を使う',
+      execute: route => Object.freeze({ supported: true, route }),
+    });
+  }
+  _defineAdapter('exception:standalone:auto_link', {
+    executable: false,
+    strategy: 'preserve-autolink-source-data',
+    nextAction: '同じファイルをMeldex本体で開く',
+  });
+  _defineAdapter('exception:standalone:version_history', {
+    executable: false,
+    strategy: 'preserve-main-version-history',
+    nextAction: '同じファイルをMeldex本体で開く',
+  });
+  _defineAdapter('scope:viewer-read-only', {
+    executable: false,
+    strategy: 'viewer-read-only-boundary',
+    nextAction: '編集できる対応アプリで開く',
+  });
+  for (const app of APPS) {
+    for (const capability of Object.keys(APP_OUT_OF_SCOPE[app])) {
+      _defineAdapter(`scope:${app}:${capability}`, {
+        executable: false,
+        strategy: `${app}-product-boundary`,
+        nextAction: '対応するMeldexアプリで操作する',
+      });
+    }
+  }
+
+  function _assertUniqueList(name, values) {
+    if (!Array.isArray(values) || values.length === 0) {
+      throw new TypeError(`${name} must be a non-empty array`);
+    }
+    const seen = new Set();
+    for (const value of values) {
+      if (typeof value !== 'string' || !value.trim()) {
+        throw new TypeError(`${name} contains an empty or non-string value`);
+      }
+      if (seen.has(value)) throw new Error(`duplicate ${name} value: ${value}`);
+      seen.add(value);
+    }
+  }
+
+  function validateDefinition(definition) {
+    if (!definition || typeof definition !== 'object') {
+      throw new TypeError('capability definition is required');
+    }
+    _assertUniqueList('apps', definition.apps);
+    _assertUniqueList('environments', definition.environments);
+    _assertUniqueList('capabilities', definition.capabilities);
+    _assertUniqueList('statuses', definition.statuses);
+    const requiredStatuses = Object.values(STATUS);
+    for (const status of requiredStatuses) {
+      if (!definition.statuses.includes(status)) {
+        throw new Error(`missing status: ${status}`);
+      }
+    }
+    return true;
+  }
+
+  function _route(environment, app, reason) {
+    const targetEnvironment = environment.includes('cloud') ? 'cloud_main' : 'desktop_main';
+    return Object.freeze({
+      environment: targetEnvironment,
+      app,
+      reason,
+    });
+  }
+
+  function _record(status, adapter, route, reason, nextAction) {
+    if (!Object.values(STATUS).includes(status)) {
+      throw new Error(`unknown capability status: ${status}`);
+    }
+    if (!adapter || typeof adapter !== 'string' || !ADAPTERS[adapter]) {
+      throw new Error(`known capability adapter is required: ${String(adapter)}`);
+    }
+    if (status === STATUS.alternative && !route) {
+      throw new Error(`alternative capability requires a route: ${adapter}`);
+    }
+    if (status === STATUS.available && ADAPTERS[adapter].handlerRequired !== true
+        && ADAPTERS[adapter].executable !== true) {
+      throw new Error(`available capability requires a handler contract or executable adapter: ${adapter}`);
+    }
+    return Object.freeze({
+      status,
+      adapter,
+      route: route || null,
+      reason: String(reason || ''),
+      nextAction: nextAction || ADAPTERS[adapter].nextAction || null,
+    });
+  }
+
+  function _exceptionRecord(environment, capability) {
+    return _record(
+      STATUS.exception,
+      `exception:standalone:${capability}`,
+      null,
+      capability === 'auto_link'
+        ? '自動リンクはMeldex本体が表示時に付加する許容例外'
+        : '版履歴はMeldex本体の管理サービスに限定する許容例外',
+      environment === 'cloud_standalone'
+        ? '同じファイルをCloud版本体で開く'
+        : '同じファイルをデスクトップ版本体で開く',
+    );
+  }
+
+  function _viewerReadOnlyRecord(environment, app, capability) {
+    const isStandalone = environment === 'windows_standalone' || environment === 'cloud_standalone';
+    const route = isStandalone
+      ? _route(environment, app, '編集操作が必要な場合は対応するMeldex本体で開く')
+      : null;
+    return _record(
+      STATUS.out_of_scope,
+      'scope:viewer-read-only',
+      route,
+      `ビューワーでは${capability}を製品範囲外とする`,
+    );
+  }
+
+  function _classificationFor(app, environment, capability) {
+    if (environment === 'cloud_standalone' && app === 'viewer') {
+      return _record(
+        STATUS.out_of_scope,
+        'route:cloud_main:viewer',
+        Object.freeze({
+          environment: 'cloud_main',
+          app: 'viewer',
+          reason: 'Cloud単独ビューワーは提供せずCloud版本体のビューワーへ移送する',
+        }),
+        'Cloud単独ビューワーは製品として提供しない',
+        'Cloud版本体のビューワーで開く',
+      );
+    }
+    if (EXCEPTION_CAPABILITIES.has(capability)
+        && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
+      return _exceptionRecord(environment, capability);
+    }
+    const scopeReason = APP_OUT_OF_SCOPE[app][capability];
+    if (scopeReason) {
+      return _record(
+        STATUS.out_of_scope,
+        `scope:${app}:${capability}`,
+        null,
+        scopeReason,
+        '対応するMeldexアプリで操作する',
+      );
+    }
+    if (app === 'viewer' && VIEWER_READ_ONLY_CAPABILITIES.has(capability)) {
+      return _viewerReadOnlyRecord(environment, app, capability);
+    }
+    if (app === 'viewer'
+        && environment === 'windows_standalone'
+        && capability === 'annotations_comments') {
+      return _record(
+        STATUS.available,
+        'implementation:windows_standalone:annotations_comments',
+        null,
+        'Windows単独ビューワーの注釈画面とローカル注釈APIで利用可能',
+      );
+    }
+    if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {
+      return _record(
+        STATUS.alternative,
+        'route:desktop_main',
+        _route(environment, app, '本体管理の共通機能はデスクトップ版本体で開く'),
+        'Windows単独版ではデスクトップ版本体へ明示的に移送する',
+      );
+    }
+    if (environment === 'cloud_standalone' && CLOUD_STANDALONE_MAIN_ALTERNATIVES.has(capability)) {
+      return _record(
+        STATUS.alternative,
+        'route:cloud_main',
+        _route(environment, app, '本体管理の共通機能はCloud版本体で開く'),
+        'Cloud単独版ではCloud版本体へ明示的に移送する',
+      );
+    }
+    if (environment === 'mobile_cloud' && MOBILE_ALTERNATIVES.has(capability)) {
+      return _record(
+        STATUS.alternative,
+        `mobile-alternative:${capability}`,
+        Object.freeze({
+          environment: 'mobile_cloud',
+          app,
+          reason: capability === 'float'
+            ? 'フロートの代わりに全画面副画面またはドロワーを使う'
+            : 'タッチ端末で同じ意味を持つ操作へ置き換える',
+        }),
+        'モバイル固有の代替操作を提供する',
+      );
+    }
+    if ((environment === 'cloud_main' || environment === 'cloud_standalone')
+        && capability === 'open_external_app') {
+      return _record(
+        STATUS.alternative,
+        'route:web-open',
+        Object.freeze({
+          environment,
+          app,
+          reason: 'Webで利用可能なアプリ起動またはダウンロードへ置き換える',
+        }),
+        'Windows固有の関連付けをWebの明示操作へ置き換える',
+      );
+    }
+    return _record(
+      STATUS.available,
+      `implementation:${environment}:${capability}`,
+      null,
+      'この環境で意味的に利用可能',
+    );
+  }
+
+  function _buildCatalog() {
+    const catalog = Object.create(null);
+    for (const app of APPS) {
+      catalog[app] = Object.create(null);
+      for (const environment of ENVIRONMENTS) {
+        const profile = Object.create(null);
+        for (const capability of CAPABILITIES) {
+          profile[capability] = _classificationFor(app, environment, capability);
+        }
+        catalog[app][environment] = Object.freeze(profile);
+      }
+      Object.freeze(catalog[app]);
+    }
+    return Object.freeze(catalog);
+  }
+
+  function _requireKnown(kind, value, allowed) {
+    if (typeof value !== 'string' || !allowed.includes(value)) {
+      throw new RangeError(`unknown ${kind}: ${String(value)}`);
+    }
+  }
+
+  validateDefinition(DEFINITIONS);
+  const CATALOG = _buildCatalog();
+
+  function classify(app, environment, capability) {
+    _requireKnown('app', app, APPS);
+    _requireKnown('environment', environment, ENVIRONMENTS);
+    _requireKnown('capability', capability, CAPABILITIES);
+    const result = CATALOG[app][environment][capability];
+    if (!result) throw new Error(`missing capability classification: ${app}/${environment}/${capability}`);
+    return result;
+  }
+
+  function getProfile(app, environment) {
+    _requireKnown('app', app, APPS);
+    _requireKnown('environment', environment, ENVIRONMENTS);
+    return CATALOG[app][environment];
+  }
+
+  function supports(app, environment, capability) {
+    const status = classify(app, environment, capability).status;
+    return status === STATUS.available || status === STATUS.alternative;
+  }
+
+  function assertVisibleAction(app, environment, capability, options) {
+    const classification = classify(app, environment, capability);
+    const settings = options && typeof options === 'object' ? options : {};
+    if (settings.visible === false) return false;
+    const adapter = ADAPTERS[classification.adapter];
+    const hasHandler = typeof settings.handler === 'function';
+    const isExecutable = hasHandler || typeof adapter?.execute === 'function';
+    const statusSupportsAction = classification.status === STATUS.available
+      || classification.status === STATUS.alternative;
+    if (statusSupportsAction && isExecutable) {
+      return true;
+    }
+    const missingExecution = statusSupportsAction && !isExecutable;
+    const unsupported = Object.freeze({
+      supported: false,
+      status: classification.status,
+      reason: missingExecution
+        ? '操作の実処理が接続されていません'
+        : classification.reason || 'この環境では操作できません',
+      nextAction: (missingExecution ? settings.nextAction : classification.nextAction)
+        || classification.route?.reason
+        || (missingExecution
+          ? '画面を閉じ、実処理が接続された対応画面からやり直してください'
+          : '操作を閉じて対応する画面を開いてください'),
+      route: classification.route,
+    });
+    if (settings.development === false) return unsupported;
+    const actionId = settings.actionId ? ` (${settings.actionId})` : '';
+    const error = new Error(
+      !isExecutable && (classification.status === STATUS.available || classification.status === STATUS.alternative)
+        ? `visible action${actionId} has no executable handler or adapter: ${classification.adapter}`
+        : `visible action${actionId} requires available/alternative capability: `
+          + `${app}/${environment}/${capability}=${classification.status}`,
+    );
+    error.meldexCapabilityResult = unsupported;
+    throw error;
+  }
+
+  return Object.freeze({
+    STATUS,
+    APPS,
+    ENVIRONMENTS,
+    CAPABILITIES,
+    ADAPTERS: Object.freeze(ADAPTERS),
+    classify,
+    getProfile,
+    supports,
+    assertVisibleAction,
+    validateDefinition,
+  });
+});
 
 ;
 
@@ -32548,6 +41058,64 @@ const MeldexLinkModal = (() => {
     _sidebarOrigDisplay = null;
   }
 
+  // 工程11: リンク挿入モーダル「このノートの見出し」セクション用ヘルパー。
+  // savedRange の位置から、現在編集中のノート（またはエントリ自由記述等の
+  // 同種contenteditableホスト）を特定する。ノート本体に限らず、見出し
+  // (h1〜h6) を含む contenteditable ホストであれば汎用的に対応する。
+  function _resolveHeadingHost(range) {
+    if (!range) return null;
+    const node = range.commonAncestorContainer || range.startContainer;
+    if (!node) return null;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (!el || typeof el.closest !== 'function') return null;
+    return el.closest('[contenteditable="true"]');
+  }
+
+  // host内の見出し(h1〜h6)を文書順に列挙し、階層（祖先見出しの経路）と
+  // 同名見出しの重複件数を付与する。同名見出しの区別（項目2）に使う。
+  function _collectHeadingCandidates(host) {
+    const headings = Array.from(host.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+    const stack = [];
+    const list = headings.map((el, index) => {
+      const level = Number(el.tagName.slice(1));
+      while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+      const ancestorPath = stack.map(item => item.text);
+      const rawText = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const text = rawText || '(無題の見出し)';
+      stack.push({ level, text });
+      return { el, level, text, index, ancestorPath };
+    });
+    const totalByText = new Map();
+    list.forEach(item => totalByText.set(item.text, (totalByText.get(item.text) || 0) + 1));
+    list.forEach(item => { item.duplicateCount = totalByText.get(item.text) || 1; });
+    return list;
+  }
+
+  // 見出し直後の最初の非見出しブロックから短い抜粋を作る（周辺情報での区別用）。
+  function _headingSurroundingSnippet(el) {
+    let node = el?.nextElementSibling;
+    let guard = 0;
+    while (node && guard < 6) {
+      guard++;
+      if (/^H[1-6]$/.test(node.tagName)) break; // 次の見出しに到達したら打ち切り
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text) return text.length > 24 ? text.slice(0, 24) + '…' : text;
+      node = node.nextElementSibling;
+    }
+    return '';
+  }
+
+  // 同名見出しがある場合だけ、階層（祖先見出し）+ 周辺本文の抜粋を返す。
+  function _headingDisambiguationText(candidate) {
+    if (!candidate || candidate.duplicateCount <= 1) return '';
+    const parts = [];
+    if (candidate.ancestorPath.length) parts.push(candidate.ancestorPath.join(' > '));
+    const snippet = _headingSurroundingSnippet(candidate.el);
+    if (snippet) parts.push(snippet);
+    if (!parts.length) parts.push('同名の見出しが複数あります');
+    return parts.join(' ・ ');
+  }
+
   function show(savedRange, callback) {
     if (_overlay) close();
     _savedRange = savedRange;
@@ -32601,6 +41169,50 @@ const MeldexLinkModal = (() => {
     treeWrap.className = 'link-modal-tree';
     treeWrap.dataset.e2eId = 'link-insert-modal-tree';
     body.appendChild(treeWrap);
+
+    // このノートの見出し（工程11: 見出しリンク作成導線）。
+    // savedRange が実際に見出しを持つ編集ホスト内にある時だけ表示する。
+    // board/canvas 等（savedRange なしでコールバック経由の呼び出し）や
+    // 見出しの無いノートでは、空セクションを出さずそのまま省略する。
+    const headingHost = _resolveHeadingHost(savedRange);
+    const headingCandidates = headingHost ? _collectHeadingCandidates(headingHost) : [];
+    if (headingCandidates.length > 0) {
+      const headingsWrap = document.createElement('div');
+      headingsWrap.className = 'link-modal-headings';
+      headingsWrap.dataset.e2eId = 'link-insert-modal-headings';
+      const headingsLabel = document.createElement('div');
+      headingsLabel.className = 'link-modal-headings-label';
+      headingsLabel.textContent = 'このノートの見出し';
+      headingsWrap.appendChild(headingsLabel);
+      headingCandidates.forEach(candidate => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'link-modal-heading-item';
+        item.dataset.e2eId = 'link-insert-modal-heading-item';
+        item.dataset.headingIndex = String(candidate.index);
+        item.style.paddingLeft = (10 + (candidate.level - 1) * 12) + 'px';
+        const levelBadge = document.createElement('span');
+        levelBadge.className = 'link-modal-heading-level';
+        levelBadge.textContent = 'H' + candidate.level;
+        const textSpan = document.createElement('span');
+        textSpan.className = 'link-modal-heading-text';
+        textSpan.textContent = candidate.text;
+        item.append(levelBadge, textSpan);
+        const extra = _headingDisambiguationText(candidate);
+        if (extra) {
+          const extraSpan = document.createElement('span');
+          extraSpan.className = 'link-modal-heading-extra';
+          extraSpan.textContent = extra;
+          item.appendChild(extraSpan);
+          item.title = `${candidate.text}（${extra}）`;
+        } else {
+          item.title = candidate.text;
+        }
+        item.addEventListener('click', () => insertHeadingLink(candidate));
+        headingsWrap.appendChild(item);
+      });
+      body.appendChild(headingsWrap);
+    }
 
     // URL入力欄
     const urlWrap = document.createElement('div');
@@ -32703,6 +41315,37 @@ const MeldexLinkModal = (() => {
     }
     const selectedText = window.getSelection()?.toString() || item.name;
     const html = MeldexDnD.createAutoLinkHtml(selectedText, item.path, item.type);
+    document.execCommand('insertHTML', false, html);
+    close();
+  }
+
+  // 工程11: 見出しを選択した時の同一ノート内リンク挿入。
+  // アンカーIDは getOrAssignStableHeadingAnchorId（gb-editor側）で確保する
+  // 既存の安定IDを使う。テキストスラグには依存しないため、見出し名変更・
+  // 重複見出しの増減・保存/再読込があってもリンク先を見失わない。
+  function insertHeadingLink(candidate) {
+    const headingEl = candidate?.el;
+    if (!headingEl) return;
+    const anchorId = typeof getOrAssignStableHeadingAnchorId === 'function'
+      ? getOrAssignStableHeadingAnchorId(headingEl)
+      : (headingEl.dataset?.noteHeadingId || headingEl.id || '');
+    if (!anchorId) {
+      if (typeof showStatus === 'function') showStatus('見出しへのリンクを作成できませんでした', true);
+      return;
+    }
+    const label = candidate.text || headingEl.textContent || '';
+    if (_callback) {
+      _callback({ type: 'heading', anchorId, label });
+      close();
+      return;
+    }
+    if (_savedRange) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(_savedRange);
+    }
+    const selectedText = window.getSelection()?.toString() || label;
+    const html = `<a href="#${esc(anchorId)}" class="note-anchor-link" data-note-anchor="${esc(anchorId)}" data-e2e-id="note-anchor-link" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${esc(selectedText)}</a> `;
     document.execCommand('insertHTML', false, html);
     close();
   }
@@ -33553,7 +42196,10 @@ if (typeof window !== 'undefined') {
     }
 
     // footer
-    const footer = el('div', { cls: ['gb-modal-footer'] });
+    // data-dialog-actions: gb-dialog-keyboard.js のアクション領域検出（矢印キーでの
+    // ボタン移動）に拾わせるための共通マーカー。個別に .btn-row 等を付けない
+    // createModal() 素の footer はこのマーカーでのみ検出される。
+    const footer = el('div', { cls: ['gb-modal-footer'], attrs: { 'data-dialog-actions': '1' } });
     if (opts.footer) {
       const arr = Array.isArray(opts.footer) ? opts.footer : [opts.footer];
       for (const c of arr) if (c instanceof Node) footer.appendChild(c);
@@ -33957,6 +42603,48 @@ if (typeof window !== 'undefined') {
     return Object.prototype.hasOwnProperty.call(_readConflictMap(), _normalizePath(path));
   }
 
+  // 計画書§5工程2-A項目3: 現行のpath-only競合記録（markConflict/clearConflict）を
+  // 壊さず、文書ID・正規化パス・local revision・remote etag・競合世代・状態・
+  // 保留日時を持つ記録へ拡張する。「本文は記録しない」ため、ローカル内容は
+  // 非可逆な短い署名（_fnv1aHash）だけをlocalRevisionHashへ保存する。
+  function _fnv1aHash(text) {
+    let hash = 0x811c9dc5;
+    const source = String(text || '');
+    for (let i = 0; i < source.length; i += 1) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function recordConflictState(path, info = {}) {
+    const normalized = _normalizePath(path);
+    if (!normalized) return false;
+    const map = _readConflictMap();
+    const existing = map[normalized] || {};
+    map[normalized] = Object.assign({}, existing, {
+      path: normalized,
+      normalizedPath: normalized,
+      detail: info.detail != null ? info.detail : (existing.detail || ''),
+      updated: new Date().toISOString(),
+      documentId: info.documentId || existing.documentId || '',
+      localRevisionHash: info.localMd != null ? _fnv1aHash(info.localMd) : (existing.localRevisionHash || ''),
+      remoteEtag: info.remoteEtag != null ? info.remoteEtag : (existing.remoteEtag || ''),
+      conflictGeneration: info.generation != null ? info.generation : (existing.conflictGeneration || 0),
+      state: info.state || existing.state || 'conflict-pending',
+      pendingSince: existing.pendingSince || info.pendingSince || Date.now(),
+    });
+    _writeConflictMap(map);
+    _notifyConflictChange(normalized);
+    return true;
+  }
+
+  function getConflictState(path) {
+    const normalized = _normalizePath(path);
+    const map = _readConflictMap();
+    return Object.prototype.hasOwnProperty.call(map, normalized) ? map[normalized] : null;
+  }
+
   function _showFailureModal(error) {
     if (modalOpen) return;
     modalOpen = true;
@@ -34027,9 +42715,11 @@ if (typeof window !== 'undefined') {
     clearConflict,
     enrichError,
     getConflictPaths,
+    getConflictState,
     isSaveMutation,
     isConflictPath,
     markConflict,
+    recordConflictState,
     reportApiError,
     reportApiSuccess,
   };
@@ -34263,7 +42953,10 @@ if (typeof window !== 'undefined') {
       const ok = await cfConfirm('同名のファイルが既にあります。上書きしますか？', { danger: true, okLabel: '上書き', cancelLabel: 'キャンセル' });
       if (!ok) return false;
     }
-    await apiPut('/file?path=' + encodeURIComponent(nextPath), { content: item.content || '', force_overwrite: exists });
+    await apiPut('/file?path=' + encodeURIComponent(nextPath), {
+      content: item.content || '',
+      ...(exists ? { force_overwrite: true } : { create_only: true }),
+    });
     await clearDraft(item.path);
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
     return true;
@@ -34358,6 +43051,1431 @@ if (typeof window !== 'undefined') {
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scheduleStartupCheck, { once: true });
   else scheduleStartupCheck();
+})();
+
+;
+
+/* === gb-document-save-coordinator.js === */
+;
+/**
+ * gb-document-save-coordinator.js
+ *
+ * 文書単位（安定asset/provider identity。取得前だけ正規化パスへfallback）の
+ * 保存を一元管理する共通コーディネーター。
+ * 計画書: app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+ *   §4.1 gb-document-save-coordinator.js の責務 / §5 工程1
+ *
+ * 工程1で実装する範囲:
+ *   - 保存キー（文書ID相当。現状はノート等が持つ「正規化パス」をそのまま使う）
+ *   - editorInstanceId 相当（ここでは呼び出し側が渡す host 参照そのものをキーにする）
+ *   - single-flight 保存（同一内容の重複PUTを合流させる）
+ *   - 保存中に発生した編集の「最新1件」coalesce（複数の追送を1件へまとめる）
+ *   - 保存理由の記録（reason / focusTarget を doc ごとに直近分だけ保持）
+ *   - 応答からの baseline 更新は行わない（呼び出し側 = アダプターの責務。
+ *     ここでは「どの md を実際に送信したか」を savedMd として結果へ付与し、
+ *     coalesce によって古い呼び出し元へ新しい応答が返っても baseline を
+ *     巻き戻さないための材料を提供するに留める）
+ *   - 文書単位の参加者（participant）登録。同一 documentKey を共有する
+ *     複数の編集ホスト（例: メインパネルのノートと詳細パネル内ノート）が
+ *     同じ single-flight ロックを共有できるようにする
+ *   - clean/dirty/saving の文書単位状態機械。conflict-pending/resolving は
+ *     計画書§4.1の「枠」として列挙するのみで、工程1では遷移させない
+ *     （実際の競合検知・保留状態への遷移は工程2-Aで実装する）
+ *
+ * 工程1で実装しない範囲（後続工程に委ねる）:
+ *   - 409応答の真偽判定・conflict-pending遷移（工程2-A）
+ *   - サーバー側の同一内容409無害化（工程2-B）
+ *   - ノート以外の編集面（ボード/シナリオ/CSV等）への配線（工程2-C）
+ *   - Desktop/Cloud/スマートフォン間のtransport_revision分離（工程2-D）
+ *
+ * 工程2-Aで追加した範囲（§5工程2-A項目1〜11）:
+ *   - 409（etag_conflict）を受けた文書をCONFLICT_PENDINGへ遷移させ、
+ *     待機中のネットワーク保存（追送coalesce分）を破棄する（項目1）。
+ *     このタイミング判定は _startSend() の失敗ハンドラ内で同期的に行う
+ *     （_maybeFlushPending() による追送より先に確定させるため）。
+ *   - 同じ文書が既にCONFLICT_PENDING/RESOLVING中に届いた後追いの409は、
+ *     新しい競合世代（generation）を発行せず、既存レコードへ同一世代の
+ *     まま統合する（項目2・6・7。「保留」後の再表示ループの根本対策）。
+ *   - 保存前に必ずCONFLICT_PENDING/RESOLVING状態を確認し、pending/resolving
+ *     中はネットワークPUTを一切開始しない（requestSave/flush内の入口で
+ *     ガードする。項目4・5）。
+ *   - 「確認する」導線から呼ぶrequestConflictReview()でRESOLVINGへ遷移し、
+ *     resolveConflict()は対象の競合世代が一致する場合だけ状態を解除する
+ *     （項目7・8）。
+ *   - restoreConflict()で再起動/再読込後の状態復元を受け付ける（項目10）。
+ *   - 本文そのものはこのモジュールが保持しない。呼び出し側（アダプター）が
+ *     ローカルmdへの参照を渡すが、永続化（MeldexSaveSafety経由）は
+ *     ハッシュ化した署名のみを保存する（項目3・4.1「本文は記録しない」）。
+ *
+ * 公開API: window.MeldexDocumentSaveCoordinator
+ */
+(function () {
+  'use strict';
+  if (window.MeldexDocumentSaveCoordinator) return;
+
+  // 計画書§4.1「clean/dirty/saving/conflict-pending/resolvingの文書単位状態機械」。
+  // conflict-pending/resolvingは工程2-Aから使用する。
+  const STATES = Object.freeze({
+    CLEAN: 'clean',
+    DIRTY: 'dirty',
+    SAVING: 'saving',
+    CONFLICT_PENDING: 'conflict-pending',
+    RESOLVING: 'resolving',
+  });
+
+  /** @type {Map<string, DocRecord>} */
+  const docs = new Map();
+  /** @type {Map<string, string>} path -> stable documentKey */
+  const pathAliases = new Map();
+  const CONFLICT_STORAGE_KEY = 'meldex-document-save-conflicts-v1';
+
+  /**
+   * @typedef {Object} ConflictRecord
+   * @property {number} generation 文書の生涯で単調増加する競合世代番号
+   * @property {string} localMd ローカルの未保存内容（本文そのもの。コーディネーター内メモリのみ）
+   * @property {string} localEtag 競合発生時点でのローカルbaseline etag
+   * @property {object|null} serverDetail サーバー409応答のdetail（current_etag/content_hash/document_id/updated_at等）
+   * @property {*} focusTarget 競合発生直前にユーザーが移ろうとしていたフォーカス先
+   * @property {string} path 表示・再取得用のパス
+   * @property {number} pendingSince 最初にpendingへ入った時刻
+   * @property {number} lastReportedAt 直近にこの世代へ409が報告された時刻
+   */
+
+  /**
+   * @typedef {Object} DocRecord
+   * @property {string} key
+   * @property {string} state
+   * @property {Set<any>} participants
+   * @property {{md:string, path:string, promise:Promise<any>}|null} inFlight
+   * @property {{md:string, path:string, hostRef:any, sendFn:Function}|null} pendingFollowUp
+   * @property {Promise<any>|null} followUpPromise
+   * @property {{reason:string, focusTarget:any, at:number}|null} lastRequest
+   * @property {ConflictRecord|null} conflict
+   * @property {number} conflictGenerationSeq
+   * @property {string} transportRevision
+   */
+
+  function _normalizePath(path) {
+    return String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  }
+
+  // apiPut等が投げるエラーの共通契約（gb-save-safety.js enrichError参照）に基づき、
+  // 409/etag_conflictを「本物の競合として扱うべき失敗」と判定する。将来ノート以外の
+  // アダプター（工程2-C）が同じエラー契約を共有する前提の、コーディネーター側の
+  // 唯一の判定箇所（重複実装を避ける）。
+  function _looksLikeConflictError(err) {
+    return !!err && (err.status === 409 || err.meldexCode === 'etag_conflict');
+  }
+
+  function _readPersistedConflicts() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(CONFLICT_STORAGE_KEY) || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function _writePersistedConflicts(records) {
+    try {
+      if (Object.keys(records).length) localStorage.setItem(CONFLICT_STORAGE_KEY, JSON.stringify(records));
+      else localStorage.removeItem(CONFLICT_STORAGE_KEY);
+    } catch {
+      // private browsing / storage quota: in-memory safety remains available.
+    }
+  }
+
+  function _persistableServerDetail(detail) {
+    if (!detail || typeof detail !== 'object') return null;
+    const out = {};
+    [
+      'code', 'path', 'expected_etag', 'current_etag', 'content_hash',
+      'document_id', 'asset_id', 'provider_id', 'updated_at',
+    ].forEach((key) => {
+      if (detail[key] != null && typeof detail[key] !== 'object') out[key] = detail[key];
+    });
+    return Object.keys(out).length ? out : null;
+  }
+
+  function _persistConflict(doc) {
+    if (!doc?.key) return;
+    const records = _readPersistedConflicts();
+    if (!doc.conflict) {
+      delete records[doc.key];
+      _writePersistedConflicts(records);
+      return;
+    }
+    records[doc.key] = {
+      generation: doc.conflict.generation,
+      localEtag: doc.conflict.localEtag || '',
+      serverDetail: _persistableServerDetail(doc.conflict.serverDetail),
+      path: doc.conflict.path || '',
+      pendingSince: doc.conflict.pendingSince || Date.now(),
+      lastReportedAt: doc.conflict.lastReportedAt || Date.now(),
+      state: STATES.CONFLICT_PENDING,
+    };
+    _writePersistedConflicts(records);
+  }
+
+  function _restorePersistedConflict(doc) {
+    const record = _readPersistedConflicts()[doc.key];
+    if (!record || record.state !== STATES.CONFLICT_PENDING) return;
+    const generation = Math.max(1, Number(record.generation) || 1);
+    doc.conflictGenerationSeq = Math.max(doc.conflictGenerationSeq, generation);
+    doc.conflict = {
+      generation,
+      localMd: '',
+      localEtag: record.localEtag || '',
+      serverDetail: record.serverDetail || null,
+      focusTarget: null,
+      path: record.path || doc.key,
+      pendingSince: record.pendingSince || Date.now(),
+      lastReportedAt: record.lastReportedAt || Date.now(),
+    };
+    doc.state = STATES.CONFLICT_PENDING;
+  }
+
+  function _stableDocumentKey(path, identity) {
+    const info = identity && typeof identity === 'object' ? identity : {};
+    const explicit = String(
+      info.document_key || info.documentKey || (typeof identity === 'string' ? identity : ''),
+    ).trim();
+    if (explicit) return explicit;
+    const documentId = String(info.document_id || info.documentId || '').trim();
+    if (documentId) return `document:${documentId}`;
+    const assetId = String(info.asset_id || info.assetId || '').trim();
+    if (assetId) return `asset:${assetId}`;
+    const providerId = String(info.provider_id || info.providerId || '').trim();
+    if (providerId) return `dropbox-item:${providerId}`;
+    return _normalizePath(path);
+  }
+
+  function _mergeDocRecords(target, source) {
+    if (!source || source === target) return target;
+    source.participants.forEach((participant) => target.participants.add(participant));
+    target.conflictGenerationSeq = Math.max(target.conflictGenerationSeq, source.conflictGenerationSeq);
+    if (!target.conflict || (
+      source.conflict && Number(source.conflict.lastReportedAt || 0) > Number(target.conflict.lastReportedAt || 0)
+    )) target.conflict = source.conflict;
+    if (!target.lastRequest || (
+      source.lastRequest && Number(source.lastRequest.at || 0) > Number(target.lastRequest.at || 0)
+    )) target.lastRequest = source.lastRequest;
+    if (!target.transportRevision) target.transportRevision = source.transportRevision || '';
+    if (!target.inFlight && source.inFlight) {
+      target.inFlight = source.inFlight;
+      target.pendingFollowUp = source.pendingFollowUp;
+      target.followUpPromise = source.followUpPromise;
+      target.state = source.state;
+    } else if (target.conflict) {
+      target.state = source.state === STATES.RESOLVING ? STATES.RESOLVING : STATES.CONFLICT_PENDING;
+    }
+    return target;
+  }
+
+  function _syncParticipantDocumentKeys(doc, documentKey) {
+    doc?.participants?.forEach?.((participant) => {
+      if (participant?.dataset) participant.dataset.documentKey = documentKey;
+    });
+  }
+
+  function _consolidateDocumentKey(candidateKey, canonicalKey) {
+    const candidate = String(candidateKey || '');
+    const canonical = String(canonicalKey || candidate);
+    if (!candidate || !canonical || candidate === canonical) return canonical;
+    const source = docs.get(candidate);
+    const target = docs.get(canonical);
+    let merged = target || source;
+    if (source) {
+      if (target && target !== source) merged = _mergeDocRecords(target, source);
+      merged.key = canonical;
+      docs.set(canonical, merged);
+      docs.delete(candidate);
+      _syncParticipantDocumentKeys(merged, canonical);
+    }
+    pathAliases.forEach((value, path) => {
+      if (value === candidate) pathAliases.set(path, canonical);
+    });
+    const records = _readPersistedConflicts();
+    if (records[candidate]) {
+      if (!records[canonical] || (
+        Number(records[candidate].lastReportedAt || 0)
+          > Number(records[canonical].lastReportedAt || 0)
+      )) records[canonical] = records[candidate];
+      delete records[candidate];
+      _writePersistedConflicts(records);
+    }
+    return canonical;
+  }
+
+  function _canonicalKeyForRequest(candidateKey, path) {
+    const normalizedPath = _normalizePath(path);
+    if (!normalizedPath) return String(candidateKey || '');
+    const mapped = pathAliases.get(normalizedPath);
+    if (mapped) return _consolidateDocumentKey(candidateKey, mapped);
+    const candidate = String(candidateKey || '');
+    if (candidate && candidate !== normalizedPath) {
+      pathAliases.set(normalizedPath, candidate);
+      return candidate;
+    }
+    return normalizedPath;
+  }
+
+  function bindDocumentIdentity(path, identity) {
+    const normalizedPath = _normalizePath(path);
+    if (!normalizedPath) return '';
+    const previousKey = pathAliases.get(normalizedPath) || normalizedPath;
+    const stableKey = _stableDocumentKey(normalizedPath, identity);
+    pathAliases.set(normalizedPath, stableKey);
+
+    if (previousKey !== stableKey) _consolidateDocumentKey(previousKey, stableKey);
+
+    const doc = _doc(stableKey);
+    _syncParticipantDocumentKeys(doc, stableKey);
+    // 読込応答より先にパス仮キーの空レコードが作られていた場合でも、
+    // 安定IDキーで永続化されている保留競合を取りこぼさない。
+    if (!doc.conflict) _restorePersistedConflict(doc);
+    const revision = identity && typeof identity === 'object'
+      ? (identity.transport_revision || identity.transportRevision || '')
+      : '';
+    if (revision) doc.transportRevision = normalizeTransportRevision(currentTransportName(), revision);
+    return stableKey;
+  }
+
+  function rebindDocumentPath(oldPath, newPath, identity) {
+    const oldNormalized = _normalizePath(oldPath);
+    const oldKey = pathAliases.get(oldNormalized) || oldNormalized;
+    const nextIdentity = identity || { document_key: oldKey };
+    const nextKey = bindDocumentIdentity(newPath, nextIdentity);
+    if (oldNormalized) pathAliases.set(oldNormalized, nextKey);
+    return nextKey;
+  }
+
+  function rebindDocumentPathPrefix(oldPath, newPath) {
+    const oldNormalized = _normalizePath(oldPath);
+    const newNormalized = _normalizePath(newPath);
+    if (!oldNormalized || !newNormalized || oldNormalized === newNormalized) return 0;
+    const oldPrefix = oldNormalized + '/';
+    let rebound = 0;
+    Array.from(pathAliases.entries()).forEach(([path, documentKey]) => {
+      if (path !== oldNormalized && !path.startsWith(oldPrefix)) return;
+      const suffix = path === oldNormalized ? '' : path.slice(oldNormalized.length);
+      pathAliases.set(newNormalized + suffix, documentKey);
+      // 旧パスは遅延中応答や既存ホストが参照する可能性があるためaliasを残す。
+      rebound += 1;
+    });
+
+    // asset/provider identityを取得できない外部Markdown等は正規化path自体が
+    // documentKeyになる。folder move後もdocsと永続競合キーを新prefixへ実移管し、
+    // 再起動後に旧パス側へ保留状態が孤立しないようにする。
+    const fallbackKeys = new Set([
+      ...Array.from(docs.keys()),
+      ...Object.keys(_readPersistedConflicts()),
+    ].filter(key => key === oldNormalized || key.startsWith(oldPrefix)));
+    const persisted = _readPersistedConflicts();
+    fallbackKeys.forEach((oldKey) => {
+      const suffix = oldKey === oldNormalized ? '' : oldKey.slice(oldNormalized.length);
+      const newKey = newNormalized + suffix;
+      const oldDoc = docs.get(oldKey);
+      if (oldDoc) {
+        const existing = docs.get(newKey);
+        const moved = existing && existing !== oldDoc ? _mergeDocRecords(existing, oldDoc) : oldDoc;
+        moved.key = newKey;
+        if (moved.conflict?.path === oldKey || moved.conflict?.path?.startsWith?.(oldPrefix)) {
+          moved.conflict.path = newNormalized + moved.conflict.path.slice(oldNormalized.length);
+        }
+        docs.set(newKey, moved);
+        docs.delete(oldKey);
+      }
+      if (persisted[oldKey]) {
+        const record = { ...persisted[oldKey] };
+        if (record.path === oldKey || record.path?.startsWith?.(oldPrefix)) {
+          record.path = newNormalized + record.path.slice(oldNormalized.length);
+        }
+        if (!persisted[newKey]) persisted[newKey] = record;
+        delete persisted[oldKey];
+      }
+      pathAliases.set(oldKey, newKey);
+      pathAliases.set(newKey, newKey);
+      rebound += 1;
+    });
+    _writePersistedConflicts(persisted);
+    return rebound;
+  }
+
+  function documentKeyForPath(path, identity) {
+    if (identity) return bindDocumentIdentity(path, identity);
+    const normalized = _normalizePath(path);
+    return pathAliases.get(normalized) || normalized;
+  }
+
+  // ==========================================================
+  // 工程2-D項目2: transport adapter契約。
+  // 計画書§2.8「document_idは環境をまたぐ文書識別子、transport_revisionは
+  // 保存経路内だけで有効な不透明token…と役割を分ける。ローカルetagと
+  // Dropbox revを文字列比較したり、一方を他方のif-matchへ流用したりしない」。
+  //
+  // Desktop（Python FastAPIサーバー経由の/api/file。meldex_file_safety.file_etag）
+  // とCloud/スマートフォン（gb-storage-adapter.jsのDropbox rev/content_hash）は
+  // 別々のプロセス/デプロイであるため、同一トークンが実行時に混ざることは
+  // 通常無い。それでも将来、gb-document-save-coordinator.js/
+  // gb-note-save-adapter.jsのような環境をまたいで共有されるコード（同じ
+  // ConflictRecordの型を両環境で使う等）が、名前空間の異なるtokenを誤って
+  // 比較・流用しないよう、ここで「不透明tokenへの名前空間付与」と
+  // 「異なるtransportの比較を拒否する実行時ガード」を提供する。
+  // ==========================================================
+  const TRANSPORT_LOCAL_FS = 'local-etag';
+  const TRANSPORT_DROPBOX = 'dropbox-rev';
+
+  // 現在の実行環境から transport 名を判定する。Cloud/スマートフォン
+  // /Windows単独版のDropbox直接書込経路は runtime adapter が
+  // isDropboxMode()/isStandaloneCloud() 相当を提供する。判定できない場合は
+  // Desktopサーバー経由（既定の/api/file）とみなす。
+  function currentTransportName() {
+    const runtime = window.MeldexRuntimeAdapter;
+    if (runtime && typeof runtime.isDropboxMode === 'function' && runtime.isDropboxMode()) return TRANSPORT_DROPBOX;
+    if (typeof document !== 'undefined' && document?.documentElement?.hasAttribute?.('data-standalone-cloud')) return TRANSPORT_DROPBOX;
+    return TRANSPORT_LOCAL_FS;
+  }
+
+  // 既に名前空間付きのtokenはそのまま返す（二重ラップしない）。空文字は
+  // そのまま空文字（未取得状態はtransportを問わず同じ意味を持つため）。
+  function wrapTransportRevision(transport, token) {
+    const raw = String(token || '');
+    if (!raw) return '';
+    if (raw.includes(':') && (raw.startsWith(TRANSPORT_LOCAL_FS + ':') || raw.startsWith(TRANSPORT_DROPBOX + ':'))) {
+      return raw;
+    }
+    const ns = transport === TRANSPORT_DROPBOX ? TRANSPORT_DROPBOX : TRANSPORT_LOCAL_FS;
+    return `${ns}:${raw}`;
+  }
+
+  function transportOfRevision(wrapped) {
+    const raw = String(wrapped || '');
+    if (raw.startsWith(TRANSPORT_DROPBOX + ':')) return TRANSPORT_DROPBOX;
+    if (raw.startsWith(TRANSPORT_LOCAL_FS + ':')) return TRANSPORT_LOCAL_FS;
+    return '';
+  }
+
+  // 名前空間を剥がした素のtoken（サーバー/Dropboxへ実際に送る値）を返す。
+  function unwrapTransportRevision(wrapped) {
+    const raw = String(wrapped || '');
+    const transport = transportOfRevision(raw);
+    return transport ? raw.slice(transport.length + 1) : raw;
+  }
+
+  // 異なるtransportのtokenを比較・代用しようとした場合に例外を投げる実行時
+  // ガード（計画書§5工程2-D項目2「実行時ガードで禁止する」）。どちらかが
+  // 空文字/未ラップ（transport不明）の場合は判定不能として許容する
+  // （既存の素のetag文字列を扱う既存コードとの後方互換のため）。
+  function assertSameTransportRevision(a, b) {
+    const ta = transportOfRevision(a);
+    const tb = transportOfRevision(b);
+    if (ta && tb && ta !== tb) {
+      throw new Error(`MeldexDocumentSaveCoordinator: 異なる保存経路のrevisionを比較しようとしました（${ta} vs ${tb}）`);
+    }
+  }
+
+  function normalizeTransportRevision(transport, revision) {
+    if (revision && typeof revision === 'object') {
+      return wrapTransportRevision(
+        revision.transport || revision.kind || transport,
+        revision.token || revision.revision || revision.etag || '',
+      );
+    }
+    const raw = String(revision || '');
+    return transportOfRevision(raw) ? raw : wrapTransportRevision(transport, raw);
+  }
+
+  // 実保存経路から必ず通す送信直前ガード。名前空間付きrevisionが現在の
+  // transportと一致することをassertSameTransportRevision()で検査した後にだけ、
+  // API/Dropboxへ渡せる素のtokenを返す。
+  function revisionTokenForWrite(revision, expectedTransport) {
+    if (!revision) return '';
+    const transport = expectedTransport || currentTransportName();
+    const wrapped = normalizeTransportRevision(transport, revision);
+    assertSameTransportRevision(wrapped, wrapTransportRevision(transport, '__transport_guard__'));
+    return unwrapTransportRevision(wrapped);
+  }
+
+  function _doc(documentKey) {
+    let doc = docs.get(documentKey);
+    if (!doc) {
+      doc = {
+        key: documentKey,
+        state: STATES.CLEAN,
+        participants: new Set(),
+        inFlight: null,
+        pendingFollowUp: null,
+        followUpPromise: null,
+        lastRequest: null,
+        conflict: null,
+        conflictGenerationSeq: 0,
+        transportRevision: '',
+      };
+      docs.set(documentKey, doc);
+      _restorePersistedConflict(doc);
+    }
+    return doc;
+  }
+
+  function registerParticipant(documentKey, hostRef) {
+    if (!documentKey || !hostRef) return;
+    _doc(documentKey).participants.add(hostRef);
+  }
+
+  function unregisterParticipant(documentKey, hostRef) {
+    const doc = docs.get(documentKey);
+    if (!doc) return;
+    doc.participants.delete(hostRef);
+  }
+
+  function getParticipants(documentKey) {
+    const doc = docs.get(documentKey);
+    return doc ? Array.from(doc.participants) : [];
+  }
+
+  function getState(documentKey) {
+    const doc = docs.get(documentKey);
+    return doc ? doc.state : STATES.CLEAN;
+  }
+
+  function isSaving(documentKey) {
+    const doc = docs.get(documentKey);
+    return !!(doc && doc.inFlight);
+  }
+
+  // 「保存理由（入力停止、blurと移動先、タブ切替、終了前）の記録」（計画書§4.1）。
+  // 直近1件だけを保持する軽量な記録に留める（永続化・履歴一覧化はスコープ外）。
+  function markDirty(documentKey, hostRef, opts) {
+    if (!documentKey) return;
+    const doc = _doc(documentKey);
+    if (hostRef) doc.participants.add(hostRef);
+    if (doc.state !== STATES.SAVING) doc.state = STATES.DIRTY;
+    doc.lastRequest = {
+      reason: (opts && opts.reason) || 'edit',
+      focusTarget: (opts && opts.focusTarget) || null,
+      at: Date.now(),
+    };
+  }
+
+  function _finishInFlight(doc, promiseRef) {
+    if (doc.inFlight && doc.inFlight.promise === promiseRef) {
+      doc.inFlight = null;
+    }
+    if (!doc.inFlight && !doc.pendingFollowUp && doc.state !== STATES.CONFLICT_PENDING && doc.state !== STATES.RESOLVING) {
+      doc.state = STATES.CLEAN;
+    }
+  }
+
+  function _startSend(doc, hostRef, path, md, sendFn, previousResult) {
+    doc.state = STATES.SAVING;
+    doc.participants.add(hostRef);
+    // 同じ文書キュー内の追送だけは直前の成功応答を渡し、CAS revisionを
+    // R0→R1へ連鎖させる。path/contentは各requestSave呼出時の固定値を維持する。
+    const promise = Promise.resolve().then(() => sendFn(previousResult || null)).then(
+      (res) => {
+        _finishInFlight(doc, promise);
+        _maybeFlushPending(doc, res);
+        return Object.assign({}, res, { savedMd: md, savedPath: path, joined: false });
+      },
+      (err) => {
+        _finishInFlight(doc, promise);
+        if (_looksLikeConflictError(err)) {
+          // 工程2-A項目1: 409を受けた文書をconflict-pendingへ遷移させ、待機中の
+          // ネットワーク保存（追送coalesce分）を破棄する。_maybeFlushPendingを
+          // 呼ばず、この時点でpendingFollowUpを確実に捨てる（呼び出し元の
+          // reportConflict()より前に、同期的にここで確定させる必要がある —
+          // でないと_maybeFlushPendingが古いetagのまま2本目を送ってしまう）。
+          doc.pendingFollowUp = null;
+          doc.followUpPromise = null;
+          doc.state = STATES.CONFLICT_PENDING;
+        } else {
+          _maybeFlushPending(doc);
+        }
+        throw err;
+      },
+    );
+    doc.inFlight = { md, path, promise };
+    return promise;
+  }
+
+  // 保存中に発生した編集を最新1件へcoalesceする（計画書§5工程1-2・工程1-6）。
+  // 同時に複数回 requestSave が呼ばれても、進行中の保存が終わった直後に
+  // 実行されるのは「最後に上書きされた1件」だけになる。
+  function _maybeFlushPending(doc, previousResult) {
+    if (!doc.pendingFollowUp || doc.inFlight) return;
+    const pending = doc.pendingFollowUp;
+    doc.pendingFollowUp = null;
+    doc.followUpPromise = null;
+    _startSend(doc, pending.hostRef, pending.path, pending.md, pending.sendFn, previousResult);
+  }
+
+  /**
+   * 文書単位の保存を要求する（single-flight + coalesce）。
+   *
+   * - 進行中の保存が無ければ即座に送信する。
+   * - 進行中の保存と「送信しようとしている内容」が完全一致するなら、
+   *   2本目のPUTを発生させず進行中のPromiseへ合流する（計画書§5工程1-5）。
+   * - 進行中の保存と内容が異なるなら、進行中の保存の完了を待ってから
+   *   最新1件だけを追送する（同時に複数回呼ばれても追送は1件にcoalesceされる）。
+   *
+   * @param {string} documentKey 保存キー（正規化パス）
+   * @param {*} hostRef 編集ホスト参照（アダプターが用意するDOM要素等。同一性比較にのみ使う）
+   * @param {string} path サーバーへ送るパス（documentKeyの元になった値。表示用途にも使う）
+   * @param {string} md 保存しようとしている内容（アダプターが直列化済みのもの）
+   * @param {() => Promise<any>} sendFn 実際にネットワーク送信を行う関数（アダプターが提供）
+   * @param {{reason?:string, focusTarget?:*}} [opts]
+   * @returns {Promise<any>} 応答（savedMd/savedPath/joinedを付加したもの）
+   */
+  function requestSave(documentKey, hostRef, path, md, sendFn, opts) {
+    if (!documentKey || typeof sendFn !== 'function') {
+      return Promise.reject(new Error('MeldexDocumentSaveCoordinator.requestSave: documentKey/sendFn is required'));
+    }
+    documentKey = _canonicalKeyForRequest(documentKey, path);
+    const doc = _doc(documentKey);
+    doc.participants.add(hostRef);
+    if (hostRef?.dataset) hostRef.dataset.documentKey = documentKey;
+    doc.lastRequest = {
+      reason: (opts && opts.reason) || 'save',
+      focusTarget: (opts && opts.focusTarget) || null,
+      at: Date.now(),
+    };
+
+    if (doc.state === STATES.CONFLICT_PENDING || doc.state === STATES.RESOLVING) {
+      // 工程2-A項目4・5: 保存前に競合状態を必ず確認し、conflict-pending/resolving
+      // 中はネットワークPUTを一切開始しない。ローカルrevision・IndexedDBドラフトは
+      // 呼び出し側（アダプター）が別経路で継続更新するため、ここでは何も送らず
+      // 「保留中でスキップした」ことだけを呼び出し元へ返す。
+      return Promise.resolve({ ok: true, skipped: true, conflictPending: true, savedPath: path });
+    }
+
+    if (!doc.inFlight) {
+      return _startSend(doc, hostRef, path, md, sendFn, null);
+    }
+
+    if (doc.inFlight.md === md && doc.inFlight.path === path) {
+      // 同一内容の保存が既に進行中 → 2本目を送らず合流する。
+      return doc.inFlight.promise.then((res) => Object.assign({}, res, { joined: true }));
+    }
+
+    // 内容が異なる → 「最新1件」スロットを上書きし、既存の待機者は同じPromiseへ合流する。
+    doc.pendingFollowUp = { md, path, hostRef, sendFn };
+    if (!doc.followUpPromise) {
+      doc.followUpPromise = doc.inFlight.promise.catch(() => {}).then(() => {
+        doc.followUpPromise = null;
+        _maybeFlushPending(doc);
+        // _maybeFlushPending は pendingFollowUp を doc.inFlight へ差し替えるだけなので、
+        // ここで最終的な結果を待つには「今の doc.inFlight」を参照する必要がある。
+        if (doc.inFlight) return doc.inFlight.promise;
+        // 修正1（データ消失バグ）: doc.inFlight が立っていない＝_maybeFlushPending が
+        // 何もflushしなかったことを意味する。この分岐に到達する経路は実質1つだけ:
+        // 進行中の保存（R1）が409で失敗し、_startSendの失敗ハンドラが
+        // doc.pendingFollowUp/doc.followUpPromise を同期的に破棄した場合
+        // （このcoalesce済み追送＝この呼び出し元が待っていた「最新の追送」自体が
+        // 送信されずに捨てられたということ）。
+        // 従来はここで無条件に undefined を返しており、待機していた呼び出し元
+        // （gb-note-save-adapter.js performSave等）は「res.savedMd/etagが無い
+        // だけの成功応答」と誤認して baseline（lastSavedEtag）を空文字で上書きし、
+        // MeldexDraftRecovery.markSynced() でIndexedDBドラフトまで削除していた。
+        // 結果、追送しようとしていた内容がサーバーにもドラフトにも残らず完全消失する
+        // （Node再現済み。app/tests/test_meldex_document_save_coordinator.py
+        // DocumentSaveCoordinatorConflictPendingTests
+        // .test_conflict_discarded_followup_does_not_resolve_as_silent_success）。
+        // 既存の「conflict-pending中はネットワーク送信をスキップした」時の
+        // 戻り値（requestSave冒頭の早期returnと同じ形）に揃えて返すことで、
+        // 呼び出し元の `if (res && res.conflictPending) return res;` 系の
+        // 既存ガードにそのまま乗せる（新しい分岐を呼び出し元へ増やさない）。
+        if (doc.state === STATES.CONFLICT_PENDING || doc.state === STATES.RESOLVING) {
+          return { ok: true, skipped: true, conflictPending: true, discarded: true, savedPath: path };
+        }
+        return undefined;
+      });
+    }
+    const waitFor = doc.followUpPromise;
+    return waitFor.then((res) => (res ? Object.assign({}, res, { coalesced: true }) : res));
+  }
+
+  // 計画書§5工程1-8「blur、タブ切替、閉じる操作は、新規の競合保存を起こさず
+  // 進行中処理を待って最新revisionをflushする」に対応する別名エントリ。
+  // 実装上の機構は requestSave と同一（single-flight/coalesceを共有する）。
+  function flush(documentKey, hostRef, path, md, sendFn, opts) {
+    return requestSave(documentKey, hostRef, path, md, sendFn, Object.assign({}, opts, { reason: (opts && opts.reason) || 'flush' }));
+  }
+
+  function _debugSnapshot(documentKey) {
+    const doc = docs.get(documentKey);
+    if (!doc) return null;
+    return {
+      key: doc.key,
+      state: doc.state,
+      participantCount: doc.participants.size,
+      saving: !!doc.inFlight,
+      hasPending: !!doc.pendingFollowUp,
+      lastRequest: doc.lastRequest,
+      conflict: doc.conflict,
+    };
+  }
+
+  function isConflictPending(documentKey) {
+    const doc = docs.get(documentKey);
+    return !!doc && (doc.state === STATES.CONFLICT_PENDING || doc.state === STATES.RESOLVING);
+  }
+
+  function getConflict(documentKey) {
+    const doc = docs.get(documentKey);
+    return doc ? doc.conflict : null;
+  }
+
+  function getLastRequest(documentKey) {
+    const doc = docs.get(documentKey);
+    return doc ? doc.lastRequest : null;
+  }
+
+  /**
+   * 409（本物/自己起因の別なし）を報告する。文書が既にCONFLICT_PENDING/RESOLVING
+   * 中であれば、同じ競合世代へ統合するだけで新しい世代を発行しない
+   * （計画書§5工程2-A項目2「同じ文書ID・同じ競合世代のパネルを再表示しない」）。
+   *
+   * @returns {{generation:number, isNew:boolean, record:ConflictRecord}}
+   *   isNew=true のときだけ、呼び出し側は競合ダイアログを新規に開いてよい。
+   */
+  function reportConflict(documentKey, info) {
+    const doc = _doc(documentKey);
+    // 待機中の追送も念のためここで再度破棄する（_startSendの失敗ハンドラで
+    // 既に破棄済みだが、reportConflictが直接呼ばれる経路にも同じ保証を持たせる）。
+    doc.pendingFollowUp = null;
+    doc.followUpPromise = null;
+    const opts = info || {};
+    if (doc.conflict) {
+      doc.conflict.localMd = opts.localMd != null ? opts.localMd : doc.conflict.localMd;
+      doc.conflict.localEtag = opts.localEtag || doc.conflict.localEtag;
+      doc.conflict.serverDetail = opts.serverDetail || doc.conflict.serverDetail;
+      doc.conflict.lastReportedAt = Date.now();
+      if (doc.state !== STATES.RESOLVING) doc.state = STATES.CONFLICT_PENDING;
+      _persistConflict(doc);
+      return { generation: doc.conflict.generation, isNew: false, record: doc.conflict };
+    }
+    doc.conflictGenerationSeq += 1;
+    doc.conflict = {
+      generation: doc.conflictGenerationSeq,
+      localMd: opts.localMd || '',
+      localEtag: opts.localEtag || '',
+      serverDetail: opts.serverDetail || null,
+      focusTarget: opts.focusTarget || null,
+      path: opts.path || documentKey,
+      pendingSince: Date.now(),
+      lastReportedAt: Date.now(),
+    };
+    doc.state = STATES.CONFLICT_PENDING;
+    _persistConflict(doc);
+    return { generation: doc.conflict.generation, isNew: true, record: doc.conflict };
+  }
+
+  // 「確認する」導線から呼ぶ。RESOLVINGへ遷移し、現在の競合レコードを返す
+  // （呼び出し側はこれを使って最新版を再取得し、競合パネルを1回だけ開く。項目7）。
+  function requestConflictReview(documentKey) {
+    const doc = docs.get(documentKey);
+    if (!doc || !doc.conflict) return null;
+    // 同じ競合に対する確認処理を二重起動しない。複数のバナー/パネルや
+    // 連打から同時に上書き・再読込が走ると、遅れて完了した方が新しい表示を
+    // 巻き戻し得る。保留時は呼び出し側が restoreConflict() で
+    // CONFLICT_PENDING へ戻してから、改めて確認できるようにする。
+    if (doc.state === STATES.RESOLVING) return null;
+    doc.state = STATES.RESOLVING;
+    return doc.conflict;
+  }
+
+  // 上書き/再読込/別名保存の成功時、または正規化内容一致による自動解決時に呼ぶ。
+  // generationを渡した場合、現在の競合世代と一致する時だけ解除する
+  // （計画書§5工程2-A項目8「対象文書IDと競合世代が一致する場合だけ競合状態を解除する。
+  // 無関係な保存成功で解除しない」）。
+  function resolveConflict(documentKey, generation) {
+    const doc = docs.get(documentKey);
+    if (!doc || !doc.conflict) return false;
+    if (generation != null && doc.conflict.generation !== generation) return false;
+    doc.conflict = null;
+    doc.state = doc.inFlight ? STATES.SAVING : STATES.CLEAN;
+    _persistConflict(doc);
+    return true;
+  }
+
+  // 再起動/再読込後の状態復元（計画書§5工程2-A項目10）。永続化された記録から
+  // メモリ上の状態を再構築するだけで、競合パネルは開かない（呼び出し側が
+  // 「競合を保留中」の非モーダル表示だけを出す）。
+  function restoreConflict(documentKey, record) {
+    if (!documentKey || !record) return null;
+    const doc = _doc(documentKey);
+    const generation = Number(record.generation) || 1;
+    doc.conflictGenerationSeq = Math.max(doc.conflictGenerationSeq, generation);
+    doc.conflict = {
+      generation,
+      localMd: record.localMd || '',
+      localEtag: record.localEtag || '',
+      serverDetail: record.serverDetail || null,
+      focusTarget: record.focusTarget || null,
+      path: record.path || documentKey,
+      pendingSince: record.pendingSince || Date.now(),
+      lastReportedAt: Date.now(),
+    };
+    doc.state = STATES.CONFLICT_PENDING;
+    _persistConflict(doc);
+    return doc.conflict;
+  }
+
+  window.MeldexDocumentSaveCoordinator = {
+    STATES,
+    documentKeyForPath,
+    bindDocumentIdentity,
+    rebindDocumentPath,
+    rebindDocumentPathPrefix,
+    currentTransportName,
+    wrapTransportRevision,
+    unwrapTransportRevision,
+    transportOfRevision,
+    assertSameTransportRevision,
+    normalizeTransportRevision,
+    revisionTokenForWrite,
+    registerParticipant,
+    unregisterParticipant,
+    getParticipants,
+    getState,
+    isSaving,
+    isConflictPending,
+    getConflict,
+    getLastRequest,
+    reportConflict,
+    requestConflictReview,
+    resolveConflict,
+    restoreConflict,
+    markDirty,
+    requestSave,
+    flush,
+    _debugSnapshot,
+  };
+})();
+
+;
+
+/* === gb-note-save-adapter.js === */
+;
+/**
+ * gb-note-save-adapter.js
+ *
+ * ノート固有のDOM→Markdown変換・フォーカス制御を、共通の
+ * gb-document-save-coordinator.js への「アダプター」として分離する。
+ * 計画書: app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+ *   §4.1（アダプター契約） / §5 工程1
+ *
+ * 対象ホスト（工程1時点）:
+ *   - メインパネルのノート本文（#page-content）
+ *   - 詳細パネル内ノート（#dp-editable。gb-detail-panel.part03.js）
+ * どちらも「path / frontmatter / lastSavedMd / lastSavedEtag を dataset に持つ
+ * contenteditable要素」という同じ形をしているため、同一のアダプターで扱える。
+ *
+ * 実際のDOM→Markdown変換自体（_noteMarkdownFromEditor 等）は
+ * gb-editor.part01.part01.js に残したままグローバル関数として呼び出す
+ * （工程0の固定テスト群がこれらの関数の所在・実装を直接検証しているため、
+ * 物理的な移設は行わず、委譲先として呼び出す形に留める）。
+ *
+ * 公開API: window.MeldexNoteSaveAdapter
+ */
+(function () {
+  'use strict';
+  if (window.MeldexNoteSaveAdapter) return;
+
+  function _coordinator() {
+    return window.MeldexDocumentSaveCoordinator;
+  }
+
+  // 修正7: 再起動/再読込後に restorePendingConflictIfAny() で復元された競合
+  // （record.localMd が必ず空文字になるケース）を識別するための文書キー集合。
+  // 復元時点ではコーディネーター側に「比較対象となる本当の未保存内容」を
+  // 持たせられない（本文はメモリのみ保持する設計＝再起動で失われる。実際の
+  // 未保存編集はドラフト復元系 MeldexDraftRecovery 側に別途隔離されている）。
+  // 完全な統合（復元時にドラフト内容を引き当てて localMd として渡す）は
+  // 将来課題とし、ここでは「サーバー再読込済み内容へフォールバックした値を
+  // 本当の未保存内容であるかのように自動一致判定してしまう」誤爆だけを防ぐ。
+  const _restoredConflictDocKeys = new Set();
+
+  function documentKeyForPath(path) {
+    const coordinator = _coordinator();
+    return coordinator ? coordinator.documentKeyForPath(path) : String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  }
+
+  function bindHostIdentity(hostEl, path, identity) {
+    const coordinator = _coordinator();
+    if (!coordinator || !path) return documentKeyForPath(path);
+    const info = identity && typeof identity === 'object' ? identity : {};
+    const documentKey = coordinator.bindDocumentIdentity?.(path, info)
+      || coordinator.documentKeyForPath(path);
+    if (hostEl?.dataset) {
+      hostEl.dataset.documentKey = documentKey;
+      if (info.asset_id || info.assetId) hostEl.dataset.assetId = String(info.asset_id || info.assetId);
+      if (info.provider_id || info.providerId) hostEl.dataset.providerId = String(info.provider_id || info.providerId);
+      const revision = info.transport_revision || info.transportRevision || info.etag || '';
+      if (revision && coordinator.normalizeTransportRevision) {
+        hostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          revision,
+        );
+      }
+    }
+    return documentKey;
+  }
+
+  // ノート本文の直列化（DOM→Markdown）。既存のグローバル関数へ委譲する。
+  function serialize(hostEl) {
+    return typeof window._noteMarkdownFromEditor === 'function'
+      ? window._noteMarkdownFromEditor(hostEl)
+      : '';
+  }
+
+  // 「未変更」判定: 直列化結果が自ホストの保存済みbaselineと完全一致するか。
+  // 計画書§5工程1-4「現在revisionが保存済みbaselineと同じなら、blur時にMarkdown
+  // 再変換、PUT、etag更新、履歴追加を一切行わない」の判定に使う。
+  function isUnchanged(hostEl, md) {
+    const prevSaved = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedMd) || '';
+    return md === prevSaved;
+  }
+
+  // 文書単位のarbiterへ「このホストは今この文書を表示している」ことだけを
+  // 登録する（保存は起こさない）。パネルを開いた直後、まだ未編集の段階から
+  // 登録しておくことで、他ホストの保存成功時にbaselineへ追従できるようにする
+  // （計画書§5工程1-9・工程1-10）。
+  function registerHost(hostEl, path) {
+    const coordinator = _coordinator();
+    if (!coordinator || !hostEl || !path) return;
+    coordinator.registerParticipant(bindHostIdentity(hostEl, path, hostEl.dataset || {}), hostEl);
+  }
+
+  // ============================================================
+  // 工程2-A: 「保留」を文書単位の競合状態へ接続する
+  // 計画書§2.6・§5工程2-A（app/docs/note-editor-regression-performance-
+  // conflict-plan-2026-08-01.md）
+  // ============================================================
+
+  function _safety() {
+    return window.MeldexSaveSafety;
+  }
+
+  function _isElementUsableForFocus(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.disabled) return false;
+    if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
+    return true;
+  }
+
+  // 409を受けた時、保存コーディネーターへ競合を報告する。同じ文書が既に
+  // conflict-pending/resolving中であれば新しい世代を発行せず、既存の競合へ
+  // 統合する（isNew:false）。呼び出し側（gb-editor.part01.part01.jsの
+  // _handleNoteSaveFailure）はisNewの時だけ競合ダイアログを新規に開く
+  // （計画書§5工程2-A項目2・6・7、§5工程2-B項目5〜7の「自己起因の古い応答」
+  // 「同一文書ID・同じ競合世代への複数の409を1件へまとめる」に対応する）。
+  //
+  // MeldexSaveSafetyへの記録はここへ一本化する（呼び出し元がmarkConflictを
+  // 別途呼ばないこと）。markConflict()は記録を丸ごと上書きするため、
+  // recordConflictState()と両方呼ぶと拡張フィールド（pendingSince等）が
+  // 呼ばれるたびにリセットされてしまう。コーディネーター未ロード時だけ、
+  // 従来のpath-only記録へフォールバックする。
+  function reportSaveFailureConflict(hostEl, path, md, error) {
+    const coordinator = _coordinator();
+    const safetyDetail = (error && (error.meldexMessage || error.message)) || '保存競合';
+    if (!coordinator) {
+      _safety()?.markConflict?.(path, safetyDetail);
+      return null;
+    }
+    const documentKey = documentKeyForPath(path);
+    // 修正7: ここは実際のライブ編集内容（md）を伴う本物の409報告なので、
+    // 復元プレースホルダー扱い（自動一致判定スキップ）を解除する。
+    _restoredConflictDocKeys.delete(documentKey);
+    const lastRequest = coordinator.getLastRequest ? coordinator.getLastRequest(documentKey) : null;
+    const detail = (error && error.meldexDetail && typeof error.meldexDetail === 'object') ? error.meldexDetail : null;
+    const rawLocalEtag = (hostEl && hostEl.dataset && (
+      hostEl.dataset.lastSavedTransportRevision || hostEl.dataset.lastSavedEtag
+    )) || '';
+    // 工程2-D項目2: 記録するetagを、現在の実行環境（Desktopサーバー経由 or
+    // Cloud/スマホDropbox直接）で名前空間付けする。異なるtransportのtokenを
+    // 誤って比較・流用しないための実行時ガード対象にする。
+    const localEtag = (typeof coordinator.wrapTransportRevision === 'function')
+      ? coordinator.wrapTransportRevision(coordinator.currentTransportName(), rawLocalEtag)
+      : rawLocalEtag;
+    const result = coordinator.reportConflict(documentKey, {
+      path,
+      localMd: md,
+      localEtag,
+      serverDetail: detail,
+      focusTarget: (lastRequest && lastRequest.focusTarget) || null,
+    });
+    _safety()?.recordConflictState?.(path, {
+      detail: safetyDetail,
+      localMd: md,
+      remoteEtag: (detail && detail.current_etag) || '',
+      documentId: (detail && detail.document_id) || '',
+      generation: result && result.generation,
+      state: 'conflict-pending',
+    });
+    return result;
+  }
+
+  function isConflictPending(path) {
+    const coordinator = _coordinator();
+    return !!coordinator && !!coordinator.isConflictPending(documentKeyForPath(path));
+  }
+
+  function getConflictFocusTarget(path) {
+    const coordinator = _coordinator();
+    if (!coordinator) return null;
+    const record = coordinator.getConflict(documentKeyForPath(path));
+    return (record && record.focusTarget) || null;
+  }
+
+  // 上書き/再読込/別名保存の成功時、または正規化内容一致による自動解決時に呼ぶ。
+  // 対象文書・競合世代が一致する場合だけ解除する（計画書§5工程2-A項目8）。
+  function resolveConflict(path, generation) {
+    const coordinator = _coordinator();
+    const documentKey = documentKeyForPath(path);
+    const resolved = coordinator ? coordinator.resolveConflict(documentKey, generation) : false;
+    // 世代不一致・競合記録なしの場合は、永続記録や非モーダル表示も残す。
+    // コーディネーターだけが解除を拒否しているのにUI側だけ消すと、未解決競合を
+    // ユーザーが再確認できなくなる（計画書§5工程2-A項目8）。
+    if (!resolved) return false;
+    _safety()?.clearConflict?.(path);
+    _hideConflictPendingBanner(documentKey);
+    _restoredConflictDocKeys.delete(documentKey);
+    return true;
+  }
+
+  function getConflictGeneration(path) {
+    const record = _coordinator()?.getConflict?.(documentKeyForPath(path));
+    return record ? record.generation : null;
+  }
+
+  // 修正7: この文書の競合が「再起動/再読込後にプレースホルダーとして復元された
+  // もの」かどうかを返す（本当の未保存内容を伴わない）。呼び出し元
+  // （gb-editor.part01.part01.js _showNoteConflictDialog）は、これが true の間は
+  // サーバー最新内容との自動一致判定をスキップし、代わりにドラフト復元系への
+  // 案内を表示する。
+  function isRestoredConflict(path) {
+    return _restoredConflictDocKeys.has(documentKeyForPath(path));
+  }
+
+  // 正規化後の内容が一致するかどうかを比較する（計画書§5工程2-A項目9）。
+  // サーバー側（meldex_file_safety.canonical_text_for_conflict_compare）と
+  // 同じく、.mdは改行コードの表記ゆれのみ吸収する最小正規化に留める。
+  function contentMatchesNormalized(a, b) {
+    const norm = (value) => String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    return norm(a) === norm(b);
+  }
+
+  function autoResolveConflictAsMatch(path, hostEl, remoteContent, etag, generation) {
+    // 取得開始後に別の解決処理が進んだ場合、古い取得結果でDOM/baselineを
+    // 巻き戻さない。対象世代を解除できた時だけ表示も同期する。
+    if (!resolveConflict(path, generation)) return false;
+    syncResolvedBaseline(path, hostEl, remoteContent, etag);
+    return true;
+  }
+
+  // ---- 「競合を保留中」非モーダル表示（計画書§2.6・§5工程2-A項目7） ----
+  // 修正8: ボードノート/シナリオ等の他の編集面と同じ共通実装
+  // （gb-conflict-pending-banner.js）へ委譲する。従来はノート専用に、同じ
+  // 固定座標（position:fixed;right:16px;bottom:16px）へ描画する非モーダル表示を
+  // 自前で再実装しており、ノートの競合とボードノート/シナリオの競合が同時に
+  // 保留中になると2つの独立実装が同一座標へ重なって二重表示になっていた。
+  // data-e2e-id はノート専用の既存値（note-conflict-pending-banner /
+  // note-conflict-pending-review）を維持し、既存E2E
+  // （gb-e2e-actions-note-micro.js）との互換性を保つ。共通実装が未読込の
+  // 場合だけ従来の自前実装へフォールバックする。
+
+  function _bannerId(documentKey) {
+    return 'gb-note-conflict-pending-banner';
+  }
+
+  function _hideConflictPendingBanner(documentKey) {
+    if (window.MeldexConflictPendingBanner) { window.MeldexConflictPendingBanner.hide(documentKey); return; }
+    document.getElementById(_bannerId(documentKey))?.remove();
+  }
+
+  function _liveHostForPath(path) {
+    const pc = document.getElementById('page-content');
+    if (pc && pc.dataset && pc.dataset.path === path) return pc;
+    const dp = document.getElementById('dp-editable');
+    if (dp && dp.dataset && dp.dataset.path === path) return dp;
+    return null;
+  }
+
+  function _confirmConflictReview(documentKey, path) {
+    const coordinator = _coordinator();
+    const record = coordinator ? coordinator.requestConflictReview(documentKey) : null;
+    if (!record) return;
+    _hideConflictPendingBanner(documentKey);
+    const hostEl = _liveHostForPath(path);
+    if (!hostEl || typeof window._showNoteConflictDialog !== 'function') {
+      // 修正6: 対象ノートが表示されていない（別のノート/ビューを開いている）、
+      // またはダイアログ関数が未読込の場合、従来はここで無言returnしていた。
+      // 直前の requestConflictReview() 呼び出しで状態は既にRESOLVINGへ遷移して
+      // いるため、放置するとダイアログを一切開けないままRESOLVINGに固着し、
+      // 以後この文書へのネットワーク保存がすべてブロックされ続ける
+      // （isConflictPendingはRESOLVINGも保留中として扱うため）。
+      // 確認可能な状態（CONFLICT_PENDING）へ戻し、非モーダル表示も再表示して、
+      // ユーザーに次の行動（対象ノートを開き直す）を促す。
+      if (coordinator && typeof coordinator.restoreConflict === 'function') {
+        coordinator.restoreConflict(documentKey, record);
+      }
+      _showConflictPendingBanner(documentKey, path);
+      if (typeof window.showStatus === 'function') {
+        window.showStatus('このノートを開いてから確認してください', true);
+      }
+      return;
+    }
+    const localMd = record.localMd || serialize(hostEl);
+    window._showNoteConflictDialog(path, localMd, hostEl);
+  }
+
+  function _showConflictPendingBanner(documentKey, path) {
+    if (window.MeldexConflictPendingBanner) {
+      window.MeldexConflictPendingBanner.show(documentKey, {
+        label: '競合を保留中',
+        e2eId: 'note-conflict-pending-banner',
+        confirmE2eId: 'note-conflict-pending-review',
+        onConfirm: () => _confirmConflictReview(documentKey, path),
+      });
+      return;
+    }
+    // フォールバック（共通実装が未読込の場合のみ）。
+    _hideConflictPendingBanner(documentKey);
+    if (!document.body) return;
+    const bar = document.createElement('div');
+    bar.id = _bannerId(documentKey);
+    bar.setAttribute('role', 'status');
+    bar.dataset.e2eId = 'note-conflict-pending-banner';
+    bar.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9500;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:var(--bg2,#222);color:var(--fg,#eee);border:1px solid var(--border,#444);box-shadow:0 2px 10px rgba(0,0,0,.25);font-size:12px;';
+    const label = document.createElement('span');
+    label.textContent = '競合を保留中';
+    const reviewBtn = document.createElement('button');
+    reviewBtn.type = 'button';
+    reviewBtn.className = 'gb-btn gb-btn-xs gb-btn-primary';
+    reviewBtn.dataset.e2eId = 'note-conflict-pending-review';
+    reviewBtn.textContent = '確認する';
+    reviewBtn.addEventListener('click', () => _confirmConflictReview(documentKey, path));
+    bar.append(label, reviewBtn);
+    document.body.appendChild(bar);
+  }
+
+  // 競合パネルを閉じる（保留/Escape）たびに呼ぶ。実際にconflict-pendingが
+  // 残っている場合だけ非モーダル表示を出す（直接呼び出し等でコーディネーター側に
+  // 競合記録が無い場合は何も出さない）。
+  function showConflictPendingBannerIfPending(path, hostEl) {
+    const coordinator = _coordinator();
+    const documentKey = documentKeyForPath(path);
+    if (!coordinator || !coordinator.isConflictPending(documentKey)) return;
+    _showConflictPendingBanner(documentKey, path);
+  }
+
+  function hideConflictPendingBanner(path) {
+    _hideConflictPendingBanner(documentKeyForPath(path));
+  }
+
+  // 再起動/再読込後の状態復元（計画書§5工程2-A項目10）。ノートを開いた直後に
+  // 呼ぶ。永続化された保留記録があれば、パネルを強制表示せず非モーダル表示
+  // だけを再開する。
+  function restorePendingConflictIfAny(hostEl, path) {
+    const coordinator = _coordinator();
+    const safety = _safety();
+    if (!coordinator) return;
+    const documentKey = documentKeyForPath(path);
+    // 共通コーディネーターの汎用永続記録を最優先する。旧ノート専用記録が
+    // 無くても、保留状態とネットワーク保存停止を再起動後に復元できる。
+    const persisted = coordinator.getConflict?.(documentKey);
+    if (persisted) {
+      if (!persisted.localMd) _restoredConflictDocKeys.add(documentKey);
+      _showConflictPendingBanner(documentKey, path);
+      return;
+    }
+    if (!safety || typeof safety.getConflictState !== 'function') return;
+    const record = safety.getConflictState(path);
+    if (!record || record.state !== 'conflict-pending') return;
+    const rawRestoreEtag = record.remoteEtag || (hostEl && hostEl.dataset && hostEl.dataset.lastSavedEtag) || '';
+    const restoreEtag = (typeof coordinator.wrapTransportRevision === 'function')
+      ? coordinator.wrapTransportRevision(coordinator.currentTransportName(), rawRestoreEtag)
+      : rawRestoreEtag;
+    coordinator.restoreConflict(documentKey, {
+      generation: record.conflictGeneration || 1,
+      localMd: '',
+      localEtag: restoreEtag,
+      serverDetail: null,
+      focusTarget: null,
+      path,
+      pendingSince: record.pendingSince || Date.now(),
+    });
+    // 修正7: localMdが空（＝本当の未保存内容を持たないプレースホルダー復元）で
+    // あることを記録する。呼び出し側の「確認する」導線がこの記録を見ずに
+    // hostEl.serialize()（＝直前のopenPage()で読み込んだサーバー最新内容）を
+    // localMdの代わりに使うと、直後の自動一致判定でほぼ確実に「一致」判定され、
+    // 本当の未保存編集（ドラフト復元系に隔離されたまま）を確認する機会なく
+    // 競合が自動解決されてしまう。
+    _restoredConflictDocKeys.add(documentKey);
+    _showConflictPendingBanner(documentKey, path);
+  }
+
+  // 保存成功後、同一文書を表示している他ホスト（例: メインパネルのノートと
+  // 詳細パネル内ノート）のうち「自分自身は未編集」のものだけ、baselineを
+  // 新しい保存結果へ追従させる。編集中（自分の直列化結果が自分のbaselineと
+  // 異なる）ホストへは触れない（計画書§5工程1-10「片方が未編集なら他方の
+  // 保存結果を追従する。双方が異なる未保存内容を持つ場合だけ、ローカル分岐
+  // として扱う」）。
+  function _renderSavedMarkdownIntoCleanHost(host, path, md) {
+    if (typeof window.mdToHtml !== 'function') return false;
+    const raw = String(md || '');
+    const fmMatch = raw.match(/^(---\n[\s\S]*?\n---\n?)/);
+    const frontmatter = fmMatch ? fmMatch[1] : '';
+    const bodyMd = frontmatter ? raw.slice(frontmatter.length) : raw;
+    const scrollTop = Number(host.scrollTop) || 0;
+    const scrollLeft = Number(host.scrollLeft) || 0;
+    let html = window.mdToHtml(bodyMd, { basePath: path });
+    if (typeof window.applyAutoLinks === 'function') html = window.applyAutoLinks(html, path);
+    host.dataset.frontmatter = frontmatter;
+    host.innerHTML = html;
+    host._noteEditRevision = (host._noteEditRevision || 0) + 1;
+    host._noteEditSerializeCache = null;
+    host._noteTocSignature = undefined;
+    if (typeof window._dpApplyNoteFileStyle === 'function') window._dpApplyNoteFileStyle(host, frontmatter);
+    if (typeof window._prepareEmbeddedMediaControls === 'function') window._prepareEmbeddedMediaControls(host);
+    if (typeof window._maybeRefreshNoteTocAfterEdit === 'function') window._maybeRefreshNoteTocAfterEdit(host);
+    host.scrollTop = scrollTop;
+    host.scrollLeft = scrollLeft;
+    return true;
+  }
+
+  function _syncSiblingBaselines(documentKey, sourceHostEl, path, md, etag, transportRevision) {
+    const coordinator = _coordinator();
+    if (!coordinator) return;
+    const participants = coordinator.getParticipants(documentKey);
+    participants.forEach((host) => {
+      if (!host || host === sourceHostEl) return;
+      if (!host.isConnected) return;
+      if (!host.dataset || host.dataset.path !== path) return;
+      if (host.dataset.loadFailed === '1') return;
+      if (typeof window._dpIsPlaceholderOnly === 'function' && window._dpIsPlaceholderOnly(host)) return;
+      // フォーカス中のホストへはnormalize()等の副作用を及ぼさない（キャレット保護）。
+      // フォーカス中は保守的に「編集中の可能性あり」として扱い、追従を見送る。
+      if (document.activeElement === host) return;
+      let liveMd;
+      try {
+        liveMd = serialize(host);
+      } catch (_) {
+        return;
+      }
+      const ownBaseline = host.dataset.lastSavedMd || '';
+      if (liveMd !== ownBaseline) return; // 自ホストに未保存編集がある → 触らない
+      // baselineだけを新内容へ進めてDOMを古いまま残すと、次のblurで古いDOMが
+      // 「新baselineからの編集」と判定され、新etag付きで直前の保存を巻き戻す。
+      // 未編集・非フォーカスのホストは表示本文も同じ保存結果へ追従させる。
+      if (!_renderSavedMarkdownIntoCleanHost(host, path, md)) return;
+      host.dataset.lastSavedMd = md;
+      host.dataset.lastSavedEtag = etag || '';
+      if (coordinator.normalizeTransportRevision) {
+        host.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          transportRevision || etag || '',
+        );
+      }
+    });
+  }
+
+  function syncResolvedBaseline(path, sourceHostEl, md, etag) {
+    const coordinator = _coordinator();
+    const documentKey = documentKeyForPath(path);
+    if (sourceHostEl && sourceHostEl.dataset && sourceHostEl.dataset.path === path) {
+      sourceHostEl.dataset.lastSavedMd = md;
+      sourceHostEl.dataset.lastSavedEtag = etag || sourceHostEl.dataset.lastSavedEtag || '';
+      if (coordinator?.normalizeTransportRevision) {
+        sourceHostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          etag || sourceHostEl.dataset.lastSavedEtag || '',
+        );
+      }
+    }
+    _syncSiblingBaselines(documentKey, sourceHostEl, path, md, etag, etag);
+  }
+
+  /**
+   * ノートの保存をコーディネーター経由で実行する。
+   *
+   * 呼び出し側（gb-editor.part01.part01.js / gb-detail-panel.part03.js）は、
+   * 既に直列化済みの md（と、そのmdを算出する直前のbaseline比較）を渡す。
+   * 実際にネットワークへ送るかどうか（single-flight/coalesce/合流）は
+   * コーディネーターが判断する。
+   *
+   * @param {HTMLElement} hostEl path/frontmatter/lastSavedMd/lastSavedEtagをdatasetに持つ編集ホスト
+   * @param {string} path 保存先パス
+   * @param {string} md 直列化済みのMarkdown（フロントマター込み）
+   * @param {{reason?:string, focusTarget?:*, extra?:object}} [opts]
+   * @returns {Promise<any>} apiPutの応答（savedMd/savedPath/joined/coalescedを付加したもの）
+   */
+  function performSave(hostEl, path, md, opts) {
+    const coordinator = _coordinator();
+    if (!coordinator) {
+      return Promise.reject(new Error('MeldexDocumentSaveCoordinator is not loaded'));
+    }
+    const documentKey = hostEl?.dataset?.documentKey || bindHostIdentity(hostEl, path, hostEl?.dataset || {});
+    coordinator.registerParticipant(documentKey, hostEl);
+    const options = opts || {};
+    // 修正5: if_match_etagはこの performSave() 呼び出し時点のhostEl.dataset.
+    // lastSavedEtagをここでクロージャへ固定する（path/mdと同じ扱い）。sendFnは
+    // single-flight/coalesceにより実際の送信タイミングが遅延しうる
+    // （進行中の保存の完了を待ってから送られる）。従来はsendFn内で
+    // hostEl.dataset.lastSavedEtagを毎回ライブに読んでいたため、送信が遅延する
+    // 間にhostElが（ノート切替や他の保存の成功で）別文書のetagを指すように
+    // なっていた場合、その新しいetagをこの古い文書のPUTへ誤って付けてしまい、
+    // 本来成功するはずの保存がfalse-positiveな409になり得た。
+    const etagAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedEtag) || '';
+    const transportRevisionAtRequestTime = (hostEl && hostEl.dataset && hostEl.dataset.lastSavedTransportRevision)
+      || coordinator.normalizeTransportRevision?.(coordinator.currentTransportName(), etagAtRequestTime)
+      || etagAtRequestTime;
+    const sendFn = (previousResult) => {
+      const chainedRevision = previousResult?.transport_revision || previousResult?.etag || '';
+      const revisionForWrite = chainedRevision
+        ? coordinator.normalizeTransportRevision(
+            coordinator.currentTransportName(),
+            chainedRevision,
+          )
+        : transportRevisionAtRequestTime;
+      const guardedEtag = coordinator.revisionTokenForWrite
+        ? coordinator.revisionTokenForWrite(revisionForWrite)
+        : (chainedRevision || etagAtRequestTime);
+      const extraWithRevision = Object.assign({
+        if_match_etag: guardedEtag,
+        transport_revision: revisionForWrite,
+      }, options.extra || {});
+      return window.apiPut(
+        '/file?path=' + encodeURIComponent(path),
+        typeof window._noteSavePayload === 'function'
+          ? window._noteSavePayload(hostEl, md, extraWithRevision)
+          : {
+            content: md,
+            if_match_etag: guardedEtag,
+            transport_revision: revisionForWrite,
+            skip_if_missing: true,
+            ...(options.extra || {}),
+          },
+      );
+    };
+    return coordinator.requestSave(documentKey, hostEl, path, md, sendFn, {
+      reason: options.reason || 'save',
+      focusTarget: options.focusTarget || null,
+    }).then((res) => {
+      // 工程2-A項目4: conflict-pending中はコーディネーターがネットワーク送信
+      // 自体をスキップして返す（res.conflictPending）。実際にサーバーへ何も
+      // 送っていないため、baseline同期（他ホストへの追従）を一切行わない
+      // ——ここで触ると「未送信の内容が保存された」ことになってしまう。
+      if (res && res.conflictPending) return res;
+      const savedMd = (res && res.savedMd != null) ? res.savedMd : md;
+      _syncSiblingBaselines(
+        documentKey,
+        hostEl,
+        path,
+        savedMd,
+        res && res.etag,
+        res && res.transport_revision,
+      );
+      if (res?.etag && hostEl?.dataset && hostEl.dataset.path === path) {
+        hostEl.dataset.lastSavedTransportRevision = coordinator.normalizeTransportRevision(
+          coordinator.currentTransportName(),
+          res.transport_revision || res.etag,
+        );
+      }
+      if (res) coordinator.bindDocumentIdentity?.(path, res);
+      return res;
+    });
+  }
+
+  window.MeldexNoteSaveAdapter = {
+    documentKeyForPath,
+    bindHostIdentity,
+    serialize,
+    isUnchanged,
+    registerHost,
+    performSave,
+    reportSaveFailureConflict,
+    isConflictPending,
+    getConflictFocusTarget,
+    isElementUsableForFocus: _isElementUsableForFocus,
+    resolveConflict,
+    getConflictGeneration,
+    isRestoredConflict,
+    confirmConflictReview: _confirmConflictReview,
+    contentMatchesNormalized,
+    autoResolveConflictAsMatch,
+    syncResolvedBaseline,
+    showConflictPendingBannerIfPending,
+    hideConflictPendingBanner,
+    restorePendingConflictIfAny,
+  };
+})();
+
+;
+
+/* === gb-conflict-pending-banner.js === */
+;
+/**
+ * gb-conflict-pending-banner.js
+ *
+ * ノート以外の編集面（ボード、CSV等）向けの、汎用「競合を保留中」非モーダル表示。
+ * 計画書: app/docs/note-editor-regression-performance-conflict-plan-2026-08-01.md
+ *   §5 工程2-C 項目4・5・9・10（「共通の状態表示用語」「対象文書のネットワーク保存だけ停止」）
+ *
+ * ノート本文の「競合を保留中」表示は gb-note-save-adapter.js が自前で持つ
+ * （既存の note micro E2E がその実装・data-e2e-id に依存済みのため、統合はしない）。
+ * このモジュールは、ノート以外の編集面が同じ文言・同じ配置規則で
+ * 「保留中→確認する」導線を出すための共通実装を提供する。
+ *
+ * 公開API: window.MeldexConflictPendingBanner
+ */
+(function () {
+  'use strict';
+  if (window.MeldexConflictPendingBanner) return;
+
+  function _bannerId(documentKey) {
+    return 'gb-conflict-pending-banner-' + String(documentKey || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+
+  function hide(documentKey) {
+    document.getElementById(_bannerId(documentKey))?.remove();
+  }
+
+  function isShown(documentKey) {
+    return !!document.getElementById(_bannerId(documentKey));
+  }
+
+  /**
+   * @param {string} documentKey coordinator.documentKeyForPath() の戻り値
+   * @param {{label?:string, e2eId?:string, confirmE2eId?:string, onConfirm?:Function}} [opts]
+   */
+  function show(documentKey, opts) {
+    hide(documentKey);
+    if (!document.body) return;
+    const options = opts || {};
+    const bar = document.createElement('div');
+    bar.id = _bannerId(documentKey);
+    bar.setAttribute('role', 'status');
+    bar.dataset.e2eId = options.e2eId || 'conflict-pending-banner';
+    bar.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9500;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:var(--bg2,#222);color:var(--fg,#eee);border:1px solid var(--border,#444);box-shadow:0 2px 10px rgba(0,0,0,.25);font-size:12px;';
+    const label = document.createElement('span');
+    label.textContent = options.label || '競合を保留中';
+    bar.appendChild(label);
+    if (typeof options.onConfirm === 'function') {
+      const reviewBtn = document.createElement('button');
+      reviewBtn.type = 'button';
+      reviewBtn.className = 'gb-btn gb-btn-xs gb-btn-primary';
+      reviewBtn.dataset.e2eId = options.confirmE2eId || 'conflict-pending-review';
+      reviewBtn.textContent = '確認する';
+      reviewBtn.addEventListener('click', () => { options.onConfirm(); });
+      bar.appendChild(reviewBtn);
+    }
+    document.body.appendChild(bar);
+  }
+
+  window.MeldexConflictPendingBanner = { show, hide, isShown };
 })();
 
 ;
@@ -35674,8 +45792,6 @@ if (typeof window !== 'undefined') {
   const LAUNCH_COUNT_KEY = 'meldex-beta-telemetry-launch-count';
   const LAST_SUMMARY_KEY = 'meldex-beta-telemetry-last-summary';
   const FLUSH_INTERVAL_MS = 60 * 1000;
-  const CLOUD_CRASH_DIR = '_meldex/beta/crash-reports';
-  const CLOUD_USAGE_DIR = '_meldex/beta/usage';
   const USAGE_DB_DIR = '利用統計';
   const USAGE_DB_NOTE = '利用統計/利用統計.md';
   const FEEDBACK_DB_DIR = 'Meldexフィードバック';
@@ -35695,6 +45811,39 @@ if (typeof window !== 'undefined') {
   let _flushTelemetryPromise = null;
   let _settingsBound = false;
   let _pwaHandlersInstalled = false;
+
+  async function _appendCloudDiagnostic(provider, channel, payload) {
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.DIAGNOSTICS;
+    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
+      throw new Error('診断データの保存先を安全に判定できません');
+    }
+    const documentId = `beta-${channel}-${_today()}`;
+    const adapter = await resolver.resolveTypedAdapterForProvider(provider, kind, { personalOnly: true });
+    let lastError = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const current = await adapter.load(kind, documentId);
+      const entries = Array.isArray(current?.payload?.entries)
+        ? current.payload.entries.slice(-999)
+        : [];
+      entries.push(payload);
+      try {
+        await adapter.save(kind, documentId, {
+          version: 1,
+          channel,
+          updatedAt: _nowIso(),
+          entries,
+        }, {
+          expectedRevision: current?.revision ?? null,
+        });
+        return { ok: true, path: `diagnostics/${documentId}` };
+      } catch (error) {
+        lastError = error;
+        if (error?.name !== 'SystemStorageConflictError' && error?.code !== 'system_storage_conflict') throw error;
+      }
+    }
+    throw lastError;
+  }
 
   function _safeGet(key) {
     try { return localStorage.getItem(key); } catch (_) { return null; }
@@ -36220,21 +46369,19 @@ if (typeof window !== 'undefined') {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
-    const jsonlPath = _joinPath(CLOUD_USAGE_DIR, `${_today()}.jsonl`);
-    await _appendProviderJsonLine(provider, jsonlPath, summary);
+    const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
     try { await provider.statPath(USAGE_DB_NOTE); }
     catch (_) { await provider.writeText(USAGE_DB_NOTE, _usageDbFrontmatter()); }
     const flushStamp = _safeFilePart(String(summary.flushedAt || _nowIso()).replace(/[:.]/g, '-'), 'flush');
     const entryPath = _joinPath(USAGE_DB_DIR, `usage_${_today()}_${sessionId}_${flushStamp}.md`);
     await provider.writeText(entryPath, _usageEntryMarkdown(summary));
-    return { ok: true, path: entryPath, jsonlPath };
+    return { ok: true, path: entryPath, jsonlPath: diagnostic.path };
   }
 
   async function _writeCloudCrashReport(payload) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    const filePath = _joinPath(CLOUD_CRASH_DIR, `${_today()}.jsonl`);
-    return _appendProviderJsonLine(provider, filePath, payload);
+    return _appendCloudDiagnostic(provider, 'crash-reports', payload);
   }
 
   function _feedbackFormUrl() { return String(_safeGet(FEEDBACK_FORM_URL_KEY) || feedbackConfig.feedbackFormUrl || '').trim(); }
@@ -37866,6 +48013,7 @@ if (typeof window !== 'undefined') {
   'use strict';
 
   const ATTR_PRIMARY = 'data-gb-tooltip';
+  const ATTR_KEY = 'data-gb-tooltip-key';
   const ATTR_LEGACY = 'data-tooltip';
   const ATTR_HELP = 'data-help';
   const ATTR_DISABLED = 'data-gb-tooltip-disabled';
@@ -37959,6 +48107,7 @@ if (typeof window !== 'undefined') {
   ];
   const TARGET_SELECTORS = [
     '[' + ATTR_PRIMARY + ']',
+    '[' + ATTR_KEY + ']',
     '[' + ATTR_LEGACY + ']',
     '[' + ATTR_HELP + ']',
     '[title]',
@@ -37977,6 +48126,7 @@ if (typeof window !== 'undefined') {
   function regAction(key, entry) { reg('action', key, entry); }
   function regData(name, value, entry) { reg('data:' + name, value, entry); }
   function regIcon(key, entry) { reg('icon', key, entry); }
+  function regSemantic(key, entry) { reg('semantic', key, entry); }
 
   function lookupShortcutKey(id) {
     if (!id) return '';
@@ -38225,7 +48375,8 @@ if (typeof window !== 'undefined') {
   }
 
   function isExplicitTooltip(el) {
-    return el.hasAttribute(ATTR_PRIMARY) || el.hasAttribute(ATTR_LEGACY) || el.hasAttribute(ATTR_HELP);
+    return el.hasAttribute(ATTR_PRIMARY) || el.hasAttribute(ATTR_KEY)
+      || el.hasAttribute(ATTR_LEGACY) || el.hasAttribute(ATTR_HELP);
   }
 
   function isInteractiveLike(el) {
@@ -38462,6 +48613,11 @@ if (typeof window !== 'undefined') {
 
   function registryHint(el) {
     if (!el || !el.getAttribute) return '';
+    const semanticKey = readAttr(el, ATTR_KEY);
+    if (semanticKey) {
+      const semantic = REGISTRY['semantic:' + semanticKey];
+      if (semantic) return formatRegistryEntry(semantic);
+    }
     const id = readAttr(el, 'id');
     if (id) {
       const e = REGISTRY['id:' + id] || REGISTRY['id:' + normalizeKey(id)];
@@ -38866,6 +49022,12 @@ if (typeof window !== 'undefined') {
 
   // ====== Registry seed (B1: 左クローム / 右アクティビティバー) ======
   // フォーマット: `label — desc (Ctrl+S)`。shortcutId は GB_SHORTCUTS のキーを参照。
+  regSemantic('panel.right.toggle', { label: '右サイドバー', desc: '右サイドバーを開閉します' });
+  regSemantic('history.undo', { label: '元に戻す', desc: '直前の操作を元に戻します', shortcutId: 'global.undo' });
+  regSemantic('history.redo', { label: 'やり直す', desc: '元に戻した操作をやり直します', shortcutId: 'global.redo' });
+  regSemantic('file.save', { label: '保存', desc: '現在の内容を保存します', shortcutId: 'global.save' });
+  regSemantic('file.open', { label: '開く', desc: 'ファイルを選んで開きます' });
+  regSemantic('file.new', { label: '新規作成', desc: '新しいファイルを作成します' });
   regId('left-chrome-command-trigger', { label: 'コマンドパレット', desc: 'コマンドやファイルを検索します', shortcutId: 'global.commandPalette' });
   regId('left-chrome-floating-command', { label: 'コマンドパレット', desc: 'コマンドやファイルを検索します', shortcutId: 'global.commandPalette' });
   regId('left-chrome-user',     { label: 'ユーザー', desc: 'ユーザー設定を開きます' });
@@ -39286,7 +49448,6 @@ if (typeof window !== 'undefined') {
   regId('btn-fullscreen',   { label: 'フルスクリーン', desc: 'フルスクリーン表示を切り替えます', shortcutId: 'global.fullscreen' });
   regId('btn-slideshow',    { label: 'スライドショー', desc: 'スライドショー再生を開始します' });
   regId('btn-hud',          { label: 'HUD表示',       desc: '操作HUDの表示/非表示を切り替えます' });
-  regId('btn-markup',       { label: '注釈モード',    desc: '画像への注釈描画モードを切り替えます' });
   regId('btn-bg',           { label: '背景色',        desc: 'ビューワーの背景色を切り替えます' });
 
   // CSP（CLIP STUDIO PAINT）連携
@@ -40578,6 +50739,455 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === gb-dialog-keyboard.js === */
+;
+(function() {
+  'use strict';
+
+  // ダイアログ共通キーボード操作モジュール（Tab / Shift+Tab 循環フォーカス、
+  // 矢印キーでのアクションボタン移動）。
+  //
+  // documentのcapture段階で最前面の可視ダイアログだけを処理する。依存なしの
+  // 単独モジュール。Meldex本体・全Standaloneアプリのエントリーポイントへ個別に
+  // <script> で読み込む（gb-modal-shell.js を読み込む画面はその直後）。
+  //
+  // 計画書: app/docs/subpanel-floatpanel-dialog-keyboard-plan_2026-07-31.md
+  //   「ダイアログのキーボード操作」「ダイアログ共通基盤」節
+  //
+  // 対象: role="dialog" または role="alertdialog" かつ aria-modal="true" の
+  // 可視ダイアログ。複数表示時はz-indexとDOM順から最前面の1つだけを処理する。
+  //
+  // 本モジュールが扱うのはTabキーと矢印キーのみ。Escape・Enter/Space・危険操作の
+  // 初期フォーカス・閉じた後の呼び出し元へのフォーカス復帰は、各ダイアログの
+  // 既存実装が引き続き担当する（本モジュールはそれらに干渉しない）。
+  //
+  // 個別ダイアログに既存のTab循環処理（bubble段階のkeydown等）がある場合、本
+  // モジュールがcapture段階で先に処理しpreventDefault+stopPropagationするため、
+  // 二重処理は起きない（旧実装は事実上呼ばれなくなる。削除は本計画の対象外）。
+
+  const HANDLED_KEYS = new Set(['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+
+  // ダイアログ内の「フォーカス可能要素」（Tab循環の対象）
+  const FOCUSABLE_SELECTOR = [
+    'a[href]', 'area[href]', 'button', 'input', 'select', 'textarea',
+    'iframe', 'audio[controls]', 'video[controls]', 'summary',
+    '[contenteditable="true"]', '[contenteditable=""]', '[tabindex]',
+  ].join(', ');
+
+  // アクション領域内で「ボタン」とみなす要素（矢印キー移動の対象）
+  const ACTION_BUTTON_SELECTOR = [
+    'button', '[role="button"]',
+    'input[type="button"]', 'input[type="submit"]', 'input[type="reset"]',
+    'a[href]',
+  ].join(', ');
+
+  // アクション領域の検出順（計画書どおり）:
+  // ①共通フッター ②cfAlert/cfConfirm/cfPrompt系 ③汎用ボタン列 ④明示マーカー
+  const ACTION_CONTAINER_SELECTORS = [
+    '[data-modal-footer]',
+    '.gb-confirm-actions',
+    '.btn-row',
+    '[data-dialog-actions]',
+  ];
+
+  // 矢印キーの本来の意味（キャレット移動・値変更・一覧内移動等）を奪ってはいけない要素。
+  const NATIVE_ARROW_SELECTOR = [
+    'input', 'textarea', 'select',
+    '[contenteditable="true"]', '[contenteditable=""]',
+    '[role="slider"]', '[role="spinbutton"]', '[role="combobox"]',
+    '[role="listbox"]', '[role="menu"]', '[role="menuitem"]',
+    '[role="menuitemcheckbox"]', '[role="menuitemradio"]',
+    '[role="tree"]', '[role="treeitem"]', '[role="grid"]', '[role="gridcell"]',
+    '[role="table"]', '[role="row"]', '[role="cell"]',
+    '[role="columnheader"]', '[role="rowheader"]',
+    '[role="tab"]', '[role="tablist"]', '[role="radiogroup"]', '[role="option"]',
+    '.CodeMirror', '.cm-editor', '.ProseMirror',
+  ].join(', ');
+
+  // Tabキー自体を独自消費するエディタ（インデント等）。矢印より狭い対象。
+  // 通常の input/textarea/select は対象外（Tabで次要素へ抜けるのが既定挙動）。
+  const TAB_CONSUMING_SELECTOR = [
+    '[contenteditable="true"]', '[contenteditable=""]',
+    '.CodeMirror', '.cm-editor', '.ProseMirror',
+  ].join(', ');
+
+  let enabled = true;
+
+  function _safeClosest(el, selector) {
+    if (!el || typeof el.closest !== 'function') return null;
+    try { return el.closest(selector); } catch (_e) { return null; }
+  }
+
+  function _withinSelector(el, selector) {
+    return !!_safeClosest(el, selector);
+  }
+
+  function _isDialogEligible(el) {
+    if (!el || !el.getAttribute) return false;
+    const role = el.getAttribute('role');
+    if (role !== 'dialog' && role !== 'alertdialog') return false;
+    if (el.getAttribute('aria-modal') !== 'true') return false;
+    // 個別ダイアログ側の明示的なオプトアウト（gb-modal-shell.js の
+    // data-modal-shell="off" と同じ流儀）。
+    if (el.getAttribute('data-dialog-keyboard') === 'off') return false;
+    return true;
+  }
+
+  function _isVisible(el) {
+    if (!el) return false;
+    if (el.isConnected === false) return false;
+    if (el.hidden) return false;
+    if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+    if (el.style && (el.style.display === 'none' || el.style.visibility === 'hidden')) return false;
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const cs = window.getComputedStyle(el);
+        if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return false;
+      } catch (_e) { /* 計測不能な要素は素通りさせる */ }
+    }
+    if (typeof el.getBoundingClientRect === 'function') {
+      const rect = el.getBoundingClientRect();
+      if (rect && !(rect.width > 0 && rect.height > 0)) return false;
+    }
+    return true;
+  }
+
+  function _isEnabledNow(el) {
+    if (!el) return false;
+    if (el.disabled) return false;
+    if (typeof el.hasAttribute === 'function' && el.hasAttribute('disabled')) return false;
+    if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return false;
+    return true;
+  }
+
+  function _tabIndexOf(el) {
+    if (!el || !el.getAttribute) return null;
+    const raw = el.getAttribute('tabindex');
+    if (raw === null || raw === undefined) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function _isFocusCandidate(el) {
+    if (!_isEnabledNow(el)) return false;
+    const t = _tabIndexOf(el);
+    if (t !== null && t < 0) return false;
+    return _isVisible(el);
+  }
+
+  function _numericZIndex(el) {
+    if (!el) return NaN;
+    const inline = el.style ? el.style.zIndex : undefined;
+    if (inline !== undefined && inline !== null && inline !== '') {
+      const n = parseInt(inline, 10);
+      if (Number.isFinite(n)) return n;
+    }
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const cs = window.getComputedStyle(el);
+        const n = parseInt(cs.zIndex, 10);
+        if (Number.isFinite(n)) return n;
+      } catch (_e) { /* 計測不能な要素は無視 */ }
+    }
+    return NaN;
+  }
+
+  // 最も近い明示的なz-index指定を祖先方向に探す（簡易スタッキング推定）。
+  // 見つからない場合は0（同点はDOM順で後方＝最近追加されたものを優先）。
+  function _stackingZIndex(el) {
+    let node = el;
+    let guard = 0;
+    while (node && node !== document && guard < 200) {
+      guard += 1;
+      const z = _numericZIndex(node);
+      if (Number.isFinite(z)) return z;
+      node = node.parentNode;
+    }
+    return 0;
+  }
+
+  function _dialogCandidates() {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return [];
+    let nodes;
+    try { nodes = document.querySelectorAll('[role]'); } catch (_e) { return []; }
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (_isDialogEligible(el) && _isVisible(el)) out.push(el);
+    }
+    return out;
+  }
+
+  // 複数ダイアログが同時に可視の場合、z-indexとDOM順（querySelectorAllの
+  // document順を利用。同点はより後方＝より新しく開かれたものを優先）から
+  // 最前面の1つだけを選ぶ。
+  function topmostDialog() {
+    const candidates = _dialogCandidates();
+    if (!candidates.length) return null;
+    let best = candidates[0];
+    let bestZ = _stackingZIndex(best);
+    for (let i = 1; i < candidates.length; i++) {
+      const el = candidates[i];
+      const z = _stackingZIndex(el);
+      if (z >= bestZ) {
+        best = el;
+        bestZ = z;
+      }
+    }
+    return best;
+  }
+
+  // ----------------------------------------------------------------------
+  // 浮動UI（ダイアログの外、document.body直下に置かれるポップアップ/メニュー/
+  // ツールチップ等）の除外判定。
+  //
+  // プロジェクト規約（app/CLAUDE.md「ポップアップの位置制御」節）により、
+  // ポップアップは常に document.body 直下へ position:fixed で追加される
+  // （ダイアログのDOM子孫にはならない）。そのため「フォーカスがダイアログの
+  // 外へ抜けたら呼び戻す」処理をそのまま適用すると、ダイアログ内から開いた
+  // ポップアップ（例: gb-color-palette.part01.js の色パレット、スウォッチは
+  // tabIndex=0）にフォーカスがある状態でTab/矢印キーを押した時にポップアップ
+  // からフォーカスを奪ってしまう。
+  //
+  // 判定条件（両方満たす場合のみ「浮動UI内」とみなしTab/矢印を素通しする）:
+  //   (a) フォーカス中の要素、またはその祖先が position:fixed であるか、
+  //       既知の浮動UIクラス命名規則（*-popup / *-menu / *-dropdown /
+  //       *-tooltip / *-picker / *-suggest / *-autocomplete / *-combobox）に
+  //       一致する（色パレット等の特定機能名に限定しない汎用パターン）
+  //   (b) その要素のスタッキングz-indexが最前面ダイアログ以上（＝視覚的に
+  //       ダイアログより手前）
+  // ただし、ダイアログ自身や「role=dialog/alertdialogな要素を内包する外枠
+  // （オーバーレイ）」は対象外とする。オーバーレイは実CSSで position:fixed
+  // が指定されているため、これを除外しないと2枚重ねダイアログの背面側
+  // オーバーレイまで「浮動UI」と誤検出し、既存の「最前面ダイアログへ呼び戻す」
+  // 挙動を壊してしまう。
+  //
+  // 条件を満たさない場合（本当に背面へフォーカスが抜けた場合）は、従来どおり
+  // ダイアログへ呼び戻す。
+  const FLOATING_UI_CLASS_TOKEN = /(^|-)(popup|menu|submenu|dropdown|tooltip|picker|suggest|autocomplete|combobox)(-|$)/i;
+
+  function _hasFloatingUiClass(el) {
+    const cls = el && el.className;
+    if (!cls) return false;
+    const tokens = String(cls).split(/\s+/);
+    for (let i = 0; i < tokens.length; i++) {
+      if (FLOATING_UI_CLASS_TOKEN.test(tokens[i])) return true;
+    }
+    return false;
+  }
+
+  function _isFixedPositioned(el) {
+    if (!el) return false;
+    if (el.style && el.style.position === 'fixed') return true;
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const cs = window.getComputedStyle(el);
+        if (cs && cs.position === 'fixed') return true;
+      } catch (_e) { /* 計測不能なら次の判定へ */ }
+    }
+    return false;
+  }
+
+  // ダイアログそのもの、またはrole=dialog/alertdialogな要素を内包する
+  // 外枠（オーバーレイ）を「ダイアログ機構」として浮動UI判定から除外する。
+  function _isDialogOwnedElement(el) {
+    if (!el || !el.getAttribute) return false;
+    if (_isDialogEligible(el)) return true;
+    if (typeof el.querySelector !== 'function') return false;
+    let found = null;
+    try { found = el.querySelector('[role="dialog"], [role="alertdialog"]'); } catch (_e) { found = null; }
+    return !!found;
+  }
+
+  function _isFloatingUiHostCandidate(el) {
+    if (!el || !el.getAttribute) return false;
+    if (_isDialogOwnedElement(el)) return false;
+    return _isFixedPositioned(el) || _hasFloatingUiClass(el);
+  }
+
+  // フォーカス中の要素自身、またはその祖先（document.bodyの手前まで）から、
+  // 浮動UIの入口とみなせる要素を探す。見つかった最初の要素を返す。
+  function _findFloatingUiHost(el) {
+    if (typeof document === 'undefined') return null;
+    const body = document.body;
+    let node = el;
+    let guard = 0;
+    while (node && node !== body && guard < 200) {
+      guard += 1;
+      if (_isFloatingUiHostCandidate(node)) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  // フォーカス中の要素が「ダイアログより手前に表示されている浮動UI」に
+  // 属している場合はtrue。この場合、本モジュールはTab/矢印キーへ一切
+  // 介入しない（各浮動UI自身のキー処理、またはブラウザ既定へ委ねる）。
+  function _isFocusInsideFrontFloatingUi(active, dialog) {
+    const host = _findFloatingUiHost(active);
+    if (!host) return false;
+    const dialogZ = _stackingZIndex(dialog);
+    const hostZ = _stackingZIndex(host);
+    return hostZ >= dialogZ;
+  }
+
+  function focusableElements(dialog) {
+    if (!dialog || !dialog.querySelectorAll) return [];
+    let nodes;
+    try { nodes = dialog.querySelectorAll(FOCUSABLE_SELECTOR); } catch (_e) { return []; }
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+      if (_isFocusCandidate(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function _actionContainer(dialog) {
+    if (!dialog || !dialog.querySelector) return null;
+    for (let i = 0; i < ACTION_CONTAINER_SELECTORS.length; i++) {
+      let found = null;
+      try { found = dialog.querySelector(ACTION_CONTAINER_SELECTORS[i]); } catch (_e) { found = null; }
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function actionButtons(dialog) {
+    const container = _actionContainer(dialog);
+    if (!container || !container.querySelectorAll) return [];
+    let nodes;
+    try { nodes = container.querySelectorAll(ACTION_BUTTON_SELECTOR); } catch (_e) { return []; }
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+      if (_isFocusCandidate(nodes[i])) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  // フォーカス可能要素が1つもない場合の最終フォールバック。
+  // 一時的にtabindex=-1を付与し、ダイアログ本体へフォーカスする。
+  // 付与したtabindexは、フォーカスが離れた時点で取り除く（「一時的」を維持）。
+  function _focusDialogBody(dialog) {
+    if (!dialog || typeof dialog.focus !== 'function') return;
+    let addedTabIndex = false;
+    if (dialog.getAttribute && dialog.getAttribute('tabindex') === null) {
+      dialog.setAttribute('tabindex', '-1');
+      addedTabIndex = true;
+    }
+    dialog.focus();
+    if (addedTabIndex && typeof dialog.addEventListener === 'function') {
+      const cleanup = () => { dialog.removeAttribute('tabindex'); };
+      dialog.addEventListener('blur', cleanup, { once: true });
+    }
+  }
+
+  function _activeElement() {
+    return (typeof document !== 'undefined' && document.activeElement) || null;
+  }
+
+  function _handleTab(event, dialog, shiftKey) {
+    const active = _activeElement();
+    // Tabインデント等でTabを独自消費するエディタからは奪わない。
+    if (_withinSelector(active, TAB_CONSUMING_SELECTOR)) return;
+
+    const items = focusableElements(dialog);
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (!items.length) {
+      _focusDialogBody(dialog);
+      return;
+    }
+    const insideDialog = typeof dialog.contains === 'function' ? dialog.contains(active) : false;
+    if (!insideDialog) {
+      (shiftKey ? items[items.length - 1] : items[0]).focus();
+      return;
+    }
+    const idx = items.indexOf(active);
+    if (idx === -1) {
+      (shiftKey ? items[items.length - 1] : items[0]).focus();
+      return;
+    }
+    let nextIdx;
+    if (shiftKey) nextIdx = idx <= 0 ? items.length - 1 : idx - 1;
+    else nextIdx = idx >= items.length - 1 ? 0 : idx + 1;
+    items[nextIdx].focus();
+  }
+
+  function _handleArrow(event, dialog, key) {
+    const active = _activeElement();
+    // 入力欄・選択欄・編集可能領域・スライダー・表・ツリー・メニュー等では、
+    // 本来の矢印キー操作（キャレット移動・値変更・一覧内移動）を奪わない。
+    if (_withinSelector(active, NATIVE_ARROW_SELECTOR)) return;
+
+    const buttons = actionButtons(dialog);
+    if (!buttons.length) return; // アクション領域が見つからなければ矢印処理はしない
+
+    const forward = key === 'ArrowRight' || key === 'ArrowDown';
+    event.preventDefault();
+    event.stopPropagation();
+
+    const idx = buttons.indexOf(active);
+    let nextIdx;
+    if (idx === -1) {
+      // ダイアログ外、またはアクションボタン以外へフォーカスがある状態からの
+      // 矢印操作は、進行方向の端（前進なら先頭、後退なら末尾）へ着地させる。
+      nextIdx = forward ? 0 : buttons.length - 1;
+    } else if (forward) {
+      nextIdx = idx >= buttons.length - 1 ? 0 : idx + 1;
+    } else {
+      nextIdx = idx <= 0 ? buttons.length - 1 : idx - 1;
+    }
+    buttons[nextIdx].focus();
+  }
+
+  function handleKeydown(event) {
+    if (!enabled || !event || event.defaultPrevented) return;
+    const key = event.key;
+    if (!HANDLED_KEYS.has(key)) return;
+    const dialog = topmostDialog();
+    if (!dialog) return; // ダイアログが無ければ何もしない
+    const active = _activeElement();
+    const insideDialog = active && typeof dialog.contains === 'function' ? dialog.contains(active) : false;
+    // ダイアログの外にフォーカスがあり、かつそこがダイアログより手前の浮動UI
+    // （ダイアログ内から開いたポップアップ等）である場合は、Tab/矢印キーへ
+    // 一切介入しない（素通し）。本当に背面へ抜けたケースはこの分岐に入らず、
+    // 従来どおり以降の処理でダイアログへ呼び戻す。
+    if (!insideDialog && _isFocusInsideFrontFloatingUi(active, dialog)) return;
+    if (key === 'Tab') {
+      _handleTab(event, dialog, !!event.shiftKey);
+      return;
+    }
+    _handleArrow(event, dialog, key);
+  }
+
+  function _installListener() {
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return;
+    document.addEventListener('keydown', handleKeydown, true);
+  }
+
+  window.GBDialogKeyboard = {
+    // イベント処理本体（documentのcapture keydownから呼ばれる。テストからも直接呼べる）
+    handleKeydown,
+    // 対象判定（テスト・他モジュールから直接参照可能にする）
+    topmostDialog,
+    isDialogEligible: _isDialogEligible,
+    isVisible: _isVisible,
+    focusableElements,
+    actionButtons,
+    // 浮動UI（ポップアップ/メニュー等）除外判定（テストから直接参照可能にする）
+    isFocusInsideFrontFloatingUi: _isFocusInsideFrontFloatingUi,
+    // 有効/無効切替
+    enable() { enabled = true; },
+    disable() { enabled = false; },
+    isEnabled() { return enabled; },
+  };
+
+  _installListener();
+})();
+
+;
+
 /* === gb-color-palette.js === */
 ;
 /* gb-color-palette.js: 統一カラーパレット + カスタムカラー管理 (v7.0) */
@@ -40609,6 +51219,18 @@ if (typeof window !== 'undefined') {
 .gb-palette-row-swatches { display: flex; flex-wrap: wrap; gap: 3px; width: calc(24px * 8 + 3px * 7); }
 .gb-palette-section-heading { font-size: 10px; color: var(--fg2); line-height: 1.4; padding: 4px 0 2px; border-top: 1px solid var(--border); margin-top: 2px; }
 .gb-palette-section-heading:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
+.gb-palette-custom-header-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.gb-palette-custom-header-row .gb-palette-section-heading-label { flex: 1; min-width: 0; }
+.gb-palette-custom-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.gb-palette-custom-action-btn {
+  width: 18px; height: 18px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--fg2); border: 1px solid transparent; border-radius: 3px; cursor: pointer;
+}
+.gb-palette-custom-action-btn:hover { color: var(--fg); border-color: var(--border); background: var(--bg4); }
+.gb-palette-custom-action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gb-palette-import-mode-dialog .btn-row button.danger {
+  color: var(--ui-danger, var(--red, #d16969)); border-color: var(--ui-danger, var(--red, #d16969));
+}
 .gb-swatch {
   width: 24px; height: 24px; border-radius: 3px; cursor: pointer;
   border: 2px solid transparent; box-sizing: border-box; flex-shrink: 0;
@@ -40742,7 +51364,8 @@ if (typeof window !== 'undefined') {
   .gb-palette-reset-btn,
   .gb-palette-picker-row .gb-btn-save,
   .gb-palette-picker-row .gb-btn-eyedropper,
-  .gb-palette-close-row .gb-btn-close {
+  .gb-palette-close-row .gb-btn-close,
+  .gb-palette-custom-action-btn {
     min-height: 44px;
     font-size: 14px;
   }
@@ -40754,7 +51377,8 @@ if (typeof window !== 'undefined') {
   .gb-palette-picker-row .gb-btn-save,
   .gb-palette-picker-row .gb-btn-eyedropper,
   .gb-palette-picker-row .gb-palette-os-accent-swatch,
-  .gb-palette-close-row .gb-btn-close {
+  .gb-palette-close-row .gb-btn-close,
+  .gb-palette-custom-action-btn {
     min-width: 44px;
   }
   .gb-palette-picker-row input[type="color"],
@@ -40864,6 +51488,12 @@ function _saveCustomColors(colors, options) {
       _refreshCustomColorsAfterHistory
     );
   }
+  // サーバー側の反映（_adoptPersonalColorsRecord経由の書き戻し等）による
+  // 呼び出しはskipServerSyncで無限ループを防ぐ。_queuePersonalColorsSync は実行直前に
+  // localStorageから最新値を読み直すため、ここでは変更が起きたことだけを伝える。
+  if (options?.skipServerSync !== true && typeof _queuePersonalColorsSync === 'function') {
+    _queuePersonalColorsSync();
+  }
 }
 function saveCustomColor(color) {
   const next = _normalizeCustomColor(color);
@@ -40879,6 +51509,10 @@ function removeCustomColor(color) {
     { label: '設定: カスタムカラー削除', detail: target }
   );
 }
+
+// カスタムカラーのPC内共有ストア連携（初回移行・バックグラウンド保存・
+// 書き出し/読み込み）は gb-color-palette.part03.js に分離。
+// ビューワー安定化・共通UI計画書「4. 共通カスタムカラー」対応。
 
 function _clampPaletteAdjustValue(value, min, max, fallback) {
   const num = Number(value);
@@ -41468,10 +52102,40 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   }
 
   // --- カスタムカラーセット ---
-  const customSectionHeading = document.createElement('div');
-  customSectionHeading.className = 'gb-palette-section-heading';
+  const customSectionHeaderRow = document.createElement('div');
+  customSectionHeaderRow.className = 'gb-palette-section-heading gb-palette-custom-header-row';
+  palette.appendChild(customSectionHeaderRow);
+
+  const customSectionHeading = document.createElement('span');
+  customSectionHeading.className = 'gb-palette-section-heading-label';
   customSectionHeading.textContent = 'カスタムカラーセット';
-  palette.appendChild(customSectionHeading);
+  customSectionHeaderRow.appendChild(customSectionHeading);
+
+  const customActionsRow = document.createElement('span');
+  customActionsRow.className = 'gb-palette-custom-actions';
+  customSectionHeaderRow.appendChild(customActionsRow);
+
+  const exportCustomColorsBtn = document.createElement('button');
+  exportCustomColorsBtn.type = 'button';
+  exportCustomColorsBtn.className = 'gb-palette-custom-action-btn';
+  exportCustomColorsBtn.dataset.e2eId = 'color-palette-custom-export';
+  exportCustomColorsBtn.innerHTML = (typeof uiTransferIcon === 'function' && uiTransferIcon('export', 12))
+    || (typeof lucide === 'function' ? lucide('upload', 12) : '書出');
+  exportCustomColorsBtn.title = 'カスタムカラーをファイルへ書き出す（.meldex-colors.json）';
+  exportCustomColorsBtn.setAttribute('aria-label', 'カスタムカラーをファイルへ書き出す');
+  exportCustomColorsBtn.addEventListener('click', () => { _exportCustomColorsToFile(); });
+  customActionsRow.appendChild(exportCustomColorsBtn);
+
+  const importCustomColorsBtn = document.createElement('button');
+  importCustomColorsBtn.type = 'button';
+  importCustomColorsBtn.className = 'gb-palette-custom-action-btn';
+  importCustomColorsBtn.dataset.e2eId = 'color-palette-custom-import';
+  importCustomColorsBtn.innerHTML = (typeof uiTransferIcon === 'function' && uiTransferIcon('import', 12))
+    || (typeof lucide === 'function' ? lucide('download', 12) : '読込');
+  importCustomColorsBtn.title = 'ファイルからカスタムカラーを読み込む（.meldex-colors.json）';
+  importCustomColorsBtn.setAttribute('aria-label', 'ファイルからカスタムカラーを読み込む');
+  importCustomColorsBtn.addEventListener('click', () => { _promptImportCustomColorsFile(); });
+  customActionsRow.appendChild(importCustomColorsBtn);
 
   const customGrid = document.createElement('div'); customGrid.className = 'gb-palette-grid';
   palette.appendChild(customGrid);
@@ -41481,6 +52145,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   function renderCustomGrid() {
     customGrid.innerHTML = '';
     const customs = getCustomColors();
+    // 見出しテキストは色が無い間だけ隠す。書き出し/読み込みボタンは0色でも
+    // 常に使える（最初のカスタムカラーをファイルから読み込めるようにするため）。
     customSectionHeading.hidden = customs.length === 0;
     customs.forEach((c, i) => {
       const swatch = document.createElement('div');
@@ -41819,6 +52485,396 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
 
   updateSwatchHighlights();
   return palette;
+}
+// ============================================================
+// 個人カラーストア（PC内共有・Meldex本体/単独アプリ間の同期）
+// ビューワー安定化・共通UI計画書「4. 共通カスタムカラー」対応。
+// getCustomColors()/saveCustomColor()/removeCustomColor() は既存どおり
+// localStorage を同期キャッシュとして即座に反映し続け、永続化の共有先
+// （%LOCALAPPDATA%\Meldex\custom-color-sets.json）への反映だけを
+// バックグラウンドで非同期に行う。GETが一時的に失敗した場合は
+// _personalColorsApiAvailable=false のまま GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS
+// の間だけlocalStorageのみで動作し、その後の色の追加/削除操作で自動的に再試行する
+// （セッション中ずっと固定フォールバックにはしない）。ローカルAPIを持たない
+// Cloud/静的版など、明確な404を受け取った場合だけ
+// _personalColorsApiPermanentlyUnavailable=true とし、以後はセッション中
+// localStorageのみで動作する（恒久フォールバック）。
+// ============================================================
+const GB_PERSONAL_COLORS_API_PATH = '/personal/custom-colors';
+const GB_PERSONAL_COLORS_MIGRATED_KEY = '_gb-colors-server-migrated';
+const GB_PERSONAL_COLORS_SCHEMA_VERSION = 1;
+const GB_PERSONAL_COLORS_EXPORT_FILENAME_PREFIX = 'meldex-custom-colors';
+const GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS = 30000;
+
+let _personalColorsApiAvailable = null; // null=未確認 / true=利用可 / false=利用不可（一時的な失敗を含む）
+let _personalColorsApiPermanentlyUnavailable = false; // true=明確な404でAPI自体が無いと確認済み（以後は再試行しない）
+let _personalColorsInitFailedAt = 0; // 直近の初期化失敗時刻(ms)。短時間の連続リトライを避ける抑止に使う
+let _personalColorsRevision = null;
+let _personalColorsSyncChain = Promise.resolve();
+let _personalColorsSyncPending = false; // 実行待ちの同期要求が既にあるか（連続呼び出しの合流用）
+let _personalColorsInitPromise = null;
+
+// #RRGGBB以外（transparent/rgba/不正値）を読み飛ばしつつ重複排除する。
+// 共有ストア（meldex_personal_colors.py）の正規化と同じ意味論。
+function _personalColorsNormalizeList(colors) {
+  const seen = new Set();
+  const out = [];
+  (Array.isArray(colors) ? colors : []).forEach((c) => {
+    const hex = _colorValueToHex(c);
+    if (!hex) return;
+    const key = hex.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(key);
+  });
+  return out;
+}
+
+function _personalColorsApiUsable() {
+  return typeof apiFetch === 'function' && _personalColorsApiAvailable !== false;
+}
+
+async function _fetchPersonalColorsRecord() {
+  return apiFetch(GB_PERSONAL_COLORS_API_PATH, { method: 'GET', silentError: true, skipBrowseCache: true });
+}
+
+// baseRevision省略時（undefined）はnull（＝ストア未作成を期待）として送る。
+// 背景保存は常にsilentError（トーストで邪魔しない。失敗はconsole.warnのみ）。
+async function _putPersonalColorsRecord(colors, baseRevision, options) {
+  return apiFetch(GB_PERSONAL_COLORS_API_PATH, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION,
+      baseRevision: baseRevision === undefined ? null : baseRevision,
+      colors,
+    }),
+    silentError: options?.silentError !== false,
+  });
+}
+
+function _adoptPersonalColorsRecord(record, options) {
+  if (!record || !Array.isArray(record.colors)) return;
+  _personalColorsRevision = record.revision == null ? null : record.revision;
+  if (options?.applyToLocal === false) return;
+  // mergeWithLocal: レコード（サーバー由来。通常は既にローカルとマージ済みの内容）を
+  // 先頭に置き、ローカルにしか無い色（レコード算出後に別の編集が割り込んで積まれた分）
+  // だけを末尾に足す。全置換ではなく和集合にすることで、書き戻しの間に積まれた
+  // 別の編集を消さない。
+  const next = options?.mergeWithLocal
+    ? _personalColorsNormalizeList([...record.colors, ...getCustomColors()])
+    : _personalColorsNormalizeList(record.colors);
+  _saveCustomColors(next, { skipHistory: true, skipServerSync: true });
+}
+
+// 初回のみ実行される起動時同期: サーバー到達性を確認し、未移行なら
+// localStorageの色を共有ストアへ重複なく統合する（既存移行と同じ「一度だけ」方式）。
+// GETが失敗した場合はキャッシュした初期化Promiseを破棄し、次回のユーザー操作
+// （色の追加/削除など）で再試行できるようにする。ただし失敗直後
+// GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS 以内の呼び出しは即座に諦めて
+// 連続リトライ（無限ループ）を避ける。明確な404だけは恒久フォールバックとする。
+function _ensurePersonalColorsInit() {
+  if (_personalColorsApiPermanentlyUnavailable) return Promise.resolve();
+  if (_personalColorsInitPromise) return _personalColorsInitPromise;
+  if (_personalColorsApiAvailable === false
+    && (Date.now() - _personalColorsInitFailedAt) < GB_PERSONAL_COLORS_INIT_RETRY_SUPPRESS_MS) {
+    return Promise.resolve();
+  }
+  _personalColorsInitPromise = (async () => {
+    let record;
+    try {
+      record = await _fetchPersonalColorsRecord();
+    } catch (e) {
+      _personalColorsApiAvailable = false;
+      _personalColorsInitFailedAt = Date.now();
+      if (e?.status === 404) _personalColorsApiPermanentlyUnavailable = true;
+      _personalColorsInitPromise = null;
+      return;
+    }
+    if (!record || record.ok === false || !Array.isArray(record.colors)) {
+      _personalColorsApiAvailable = false;
+      _personalColorsInitFailedAt = Date.now();
+      _personalColorsInitPromise = null;
+      return;
+    }
+    _personalColorsApiAvailable = true;
+    _personalColorsRevision = record.revision == null ? null : record.revision;
+
+    let migrated = false;
+    try { migrated = localStorage.getItem(GB_PERSONAL_COLORS_MIGRATED_KEY) === '1'; } catch {}
+
+    if (migrated) {
+      _adoptPersonalColorsRecord(record, { applyToLocal: true });
+      return;
+    }
+
+    const localColors = getCustomColors();
+    const merged = _personalColorsNormalizeList([...record.colors, ...localColors]);
+    const sameAsServer = merged.length === record.colors.length
+      && merged.every((c, i) => c === record.colors[i]);
+    try {
+      if (sameAsServer) {
+        _adoptPersonalColorsRecord(record, { applyToLocal: true });
+      } else {
+        const putRecord = await _putPersonalColorsRecord(merged, _personalColorsRevision);
+        _adoptPersonalColorsRecord(putRecord, { applyToLocal: true });
+      }
+      try { localStorage.setItem(GB_PERSONAL_COLORS_MIGRATED_KEY, '1'); } catch {}
+    } catch (e) {
+      // 初回移行の書き込みに失敗しても致命的ではない（localStorage側の色は
+      // そのまま使い続けられる）。移行フラグを立てないため次回起動時に再試行する。
+      console.warn('[gb-color-palette] personal colors migration failed:', e);
+    }
+  })();
+  return _personalColorsInitPromise;
+}
+
+// 色リストの変更をバックグラウンドで共有ストアへ反映する。呼び出しは
+// _personalColorsSyncChain で直列化し、baseRevisionのズレによる取りこぼしを防ぐ。
+// 実際に送信するpayloadは実行直前に localStorage（getCustomColors()）から読み直す
+// （呼び出し時点のスナップショットをクロージャへ固定しない）。ある同期が409再試行で
+// 時間がかかっている間に別の編集が積まれても、その内容を取りこぼさないようにするため。
+// 連続呼び出しは「実行待ちの同期要求を1つに合流」させる（_personalColorsSyncPending
+// によるコアレス）。ただし実行中の同期には合流できないため、実行中に積まれた編集は
+// 新しい同期要求としてチェーンの次に実行される（読み直しにより最新値が送られる）。
+// 409（競合）時は最新状態を再取得し、サーバー最新∪ローカル最新でマージして
+// 一度だけ再試行する（計画書「公開インターフェースと保存形式 > カスタムカラー」の
+// 規約通り）。再試行成功後のローカルへの書き戻しは mergeWithLocal で行い、
+// 再試行の実行中に積まれた別の編集（ローカルの直近値）を上書きで消さない。
+function _queuePersonalColorsSync() {
+  if (_personalColorsApiPermanentlyUnavailable) return;
+  if (typeof apiFetch !== 'function') return;
+  if (_personalColorsSyncPending) return; // 既に未実行の同期要求があるので合流する
+  _personalColorsSyncPending = true;
+  _personalColorsSyncChain = _personalColorsSyncChain
+    .then(() => _ensurePersonalColorsInit())
+    .then(async () => {
+      _personalColorsSyncPending = false;
+      if (!_personalColorsApiUsable()) return;
+      const payload = _personalColorsNormalizeList(getCustomColors());
+      try {
+        const record = await _putPersonalColorsRecord(payload, _personalColorsRevision);
+        _adoptPersonalColorsRecord(record, { applyToLocal: false });
+      } catch (e) {
+        if (e?.status !== 409) {
+          console.warn('[gb-color-palette] personal colors sync failed:', e);
+          return;
+        }
+        try {
+          const latest = await _fetchPersonalColorsRecord();
+          const merged = _personalColorsNormalizeList([...(latest?.colors || []), ...getCustomColors()]);
+          const retryRecord = await _putPersonalColorsRecord(merged, latest?.revision == null ? null : latest.revision);
+          _adoptPersonalColorsRecord(retryRecord, { applyToLocal: true, mergeWithLocal: true });
+        } catch (retryErr) {
+          console.warn('[gb-color-palette] personal colors sync retry failed:', retryErr);
+        }
+      }
+    })
+    .catch((e) => {
+      _personalColorsSyncPending = false;
+      console.warn('[gb-color-palette] personal colors sync chain error:', e);
+    });
+}
+
+if (typeof apiFetch === 'function') {
+  _ensurePersonalColorsInit().catch(() => {});
+}
+
+// ============================================================
+// カスタムカラーの書き出し・読み込み（.meldex-colors.json）
+// ============================================================
+function _personalColorsExportDateStamp() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+}
+
+function _downloadJsonFile(filename, data) {
+  try {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(url); } catch {} }, 1000);
+  } catch (e) {
+    if (typeof showStatus === 'function') showStatus('書き出しに失敗しました: ' + e.message, true);
+  }
+}
+
+// ローカルAPIが使える環境ではサーバーの/export（PC共有ストアの内容）を使い、
+// Cloud/静的版等ローカルAPIが無い環境では現在の画面上のカスタムカラーを
+// そのまま書き出す（計画書「ローカルAPIを持たないCloud／静的版では、
+// ブラウザー内保存とダウンロード／ファイル選択へフォールバックする」）。
+async function _exportCustomColorsToFile() {
+  // クリック直後は起動時initが未完了(_personalColorsApiAvailable===null)な
+  // ことがあるため、可用性判定を待ってから分岐する。
+  if (typeof _ensurePersonalColorsInit === 'function') { try { await _ensurePersonalColorsInit(); } catch {} }
+  let colors = null;
+  let exportedAt = new Date().toISOString();
+  if (_personalColorsApiAvailable === true && typeof apiPost === 'function') {
+    try {
+      const res = await apiPost(GB_PERSONAL_COLORS_API_PATH + '/export', {});
+      if (res && Array.isArray(res.colors)) {
+        colors = res.colors;
+        exportedAt = res.exportedAt || exportedAt;
+      }
+    } catch (e) {
+      console.warn('[gb-color-palette] export via API failed, falling back to local list:', e);
+    }
+  }
+  if (!colors) colors = _personalColorsNormalizeList(getCustomColors());
+  const fileBody = { schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION, colors, exportedAt };
+  _downloadJsonFile(`${GB_PERSONAL_COLORS_EXPORT_FILENAME_PREFIX}-${_personalColorsExportDateStamp()}.meldex-colors.json`, fileBody);
+  if (typeof showStatus === 'function') showStatus(`カスタムカラーを書き出しました（${colors.length}色）`);
+}
+
+let _personalColorsImportFileInput = null;
+function _promptImportCustomColorsFile() {
+  if (!_personalColorsImportFileInput) {
+    _personalColorsImportFileInput = document.createElement('input');
+    _personalColorsImportFileInput.type = 'file';
+    _personalColorsImportFileInput.accept = '.json,.meldex-colors.json,application/json';
+    _personalColorsImportFileInput.style.display = 'none';
+    _personalColorsImportFileInput.dataset.e2eId = 'color-palette-custom-import-file';
+    document.body.appendChild(_personalColorsImportFileInput);
+    _personalColorsImportFileInput.addEventListener('change', () => {
+      const file = _personalColorsImportFileInput.files && _personalColorsImportFileInput.files[0];
+      _personalColorsImportFileInput.value = '';
+      if (file) _handleImportCustomColorsFile(file);
+    });
+  }
+  _personalColorsImportFileInput.click();
+}
+
+const GB_PERSONAL_COLORS_MAX_IMPORT_RAW_COLORS = 5000;
+
+function _handleImportCustomColorsFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(reader.result || ''));
+    } catch {
+      if (typeof showStatus === 'function') showStatus('読み込みファイルの形式が正しくありません(JSONとして解析できません)', true);
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray(parsed.colors)) {
+      if (typeof showStatus === 'function') showStatus('読み込みファイルにカスタムカラーの一覧がありません', true);
+      return;
+    }
+    if (parsed.colors.length > GB_PERSONAL_COLORS_MAX_IMPORT_RAW_COLORS) {
+      if (typeof showStatus === 'function') showStatus('読み込みファイルの色数が多すぎます', true);
+      return;
+    }
+    _showPersonalColorsImportModeDialog((mode) => {
+      if (mode) _applyImportedCustomColors(parsed.colors, mode);
+    });
+  };
+  reader.onerror = () => {
+    if (typeof showStatus === 'function') showStatus('ファイルを読み込めませんでした', true);
+  };
+  reader.readAsText(file);
+}
+
+// 「追加して読み込む」を既定、「現在のセットを置き換える」も選べるようにする
+// （計画書の規約通り）。置き換えは既存のカスタムカラーを失う操作のため、
+// 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
+// 非破壊の「追加」に置く。
+function _showPersonalColorsImportModeDialog(onChoose) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.dataset.e2eId = 'color-palette-import-mode-overlay';
+
+  const modal = document.createElement('div');
+  modal.className = 'modal gb-palette-import-mode-dialog';
+  modal.dataset.e2eId = 'color-palette-import-mode-dialog';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-label', 'カスタムカラーの読み込み方法');
+  modal.tabIndex = -1;
+
+  const body = document.createElement('div');
+  body.className = 'modal-body';
+  body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';
+  modal.appendChild(body);
+
+  const buttonRow = document.createElement('div');
+  buttonRow.className = 'btn-row';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'cancel-btn';
+  cancelBtn.dataset.e2eId = 'color-palette-import-mode-cancel';
+  cancelBtn.textContent = 'キャンセル';
+
+  const replaceBtn = document.createElement('button');
+  replaceBtn.type = 'button';
+  replaceBtn.className = 'danger';
+  replaceBtn.dataset.e2eId = 'color-palette-import-mode-replace';
+  replaceBtn.textContent = '置き換える';
+  replaceBtn.title = '現在のカスタムカラーをすべて削除してから読み込みます';
+
+  const appendBtn = document.createElement('button');
+  appendBtn.type = 'button';
+  appendBtn.className = 'primary ok-btn';
+  appendBtn.dataset.e2eId = 'color-palette-import-mode-append';
+  appendBtn.textContent = '追加して読み込む';
+
+  buttonRow.append(cancelBtn, replaceBtn, appendBtn);
+  modal.appendChild(buttonRow);
+  overlay.appendChild(modal);
+
+  let closed = false;
+  const close = (mode) => {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    document.removeEventListener('keydown', onKey, true);
+    if (typeof onChoose === 'function') onChoose(mode || null);
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); close(null); }
+  };
+  cancelBtn.addEventListener('click', () => close(null));
+  replaceBtn.addEventListener('click', () => close('replace'));
+  appendBtn.addEventListener('click', () => close('append'));
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(null); });
+  document.addEventListener('keydown', onKey, true);
+
+  document.body.appendChild(overlay);
+  appendBtn.focus({ preventScroll: true });
+}
+
+// APIが使える場合はサーバーの/importで追加/置換を確定させ、使えない場合
+// （Cloud/静的版フォールバック）はローカルのカスタムカラーへ直接反映する。
+async function _applyImportedCustomColors(rawColors, mode) {
+  if (typeof _ensurePersonalColorsInit === 'function') { try { await _ensurePersonalColorsInit(); } catch {} }
+  const normalized = _personalColorsNormalizeList(rawColors);
+  const label = mode === 'replace' ? 'カスタムカラー: ファイルから置き換え' : 'カスタムカラー: ファイルから追加';
+  if (_personalColorsApiAvailable === true && typeof apiPost === 'function') {
+    try {
+      const res = await apiPost(GB_PERSONAL_COLORS_API_PATH + '/import', {
+        content: { schemaVersion: GB_PERSONAL_COLORS_SCHEMA_VERSION, colors: normalized },
+        mode,
+      });
+      if (res && Array.isArray(res.colors)) {
+        _personalColorsRevision = res.revision == null ? null : res.revision;
+        _saveCustomColors(res.colors, { label, skipServerSync: true });
+        if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${res.colors.length}色）`);
+        return;
+      }
+    } catch (e) {
+      console.warn('[gb-color-palette] import via API failed, falling back to local merge:', e);
+    }
+  }
+  const finalColors = mode === 'replace'
+    ? normalized
+    : _personalColorsNormalizeList([...getCustomColors(), ...normalized]);
+  _saveCustomColors(finalColors, { label });
+  if (typeof showStatus === 'function') showStatus(`カスタムカラーを読み込みました（${finalColors.length}色）`);
 }
 
 ;
@@ -42430,7 +53486,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--version-bg',
     '--cal-scroll-thumb', '--cal-scroll-thumb-hover',
     '--fv-item-border', '--fv-item-hover-bg', '--fv-item-selected-fg', '--fv-item-selected-bg',
-    '--page-link-fg', '--page-link-bold', '--page-link-italic',
+    '--link-fg', '--page-link-fg', '--page-link-bold', '--page-link-italic',
     '--page-hr-color', '--page-quote-border',
     '--page-selection-fg', '--page-selection-color', '--page-caret-color', '--page-caret-width',
     '--sn2-border-color', '--sn2-border-width', '--sn2-spread-border-color', '--sn2-spread-border-width',
@@ -42438,6 +53494,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-border-color', '--db-selection-fg', '--db-selection-color',
     '--db-active-color', '--db-active-width', '--db-grid-border', '--db-show-grid',
     '--bd-selection-fg', '--bd-selection-color', '--bd-caret-color', '--bd-caret-width',
+    '--bd-link-type-icon-color',
   ]);
   const COMMON_INTEGRATED_APP_STYLE_KEY_SET = new Set(COMMON_INTEGRATED_APP_STYLE_KEYS);
   const THEME_OS_ACCENT_STYLE_KEYS = Object.freeze([
@@ -42458,6 +53515,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--fg': '#d4d4d4', '--fg2': '#969696', '--accent': '#569cd6', '--accent2': '#4ec9b0',
     '--red': '#f44747', '--green': '#6a9955', '--orange': '#ce9178', '--blue': '#6fa8dc',
     '--border': '#333333', '--selection': '#264f78',
+    '--link-fg': '#4da3ff',
     '--content-bg': '#252525',
     '--ui-tooltip-bg': '#2d2d2d', '--ui-tooltip-fg': '#f2f2f2', '--ui-tooltip-border': '#555555',
     '--ui-scrollbar-track-bg': '#252525', '--ui-scrollbar-thumb-bg': '#3e3e3e', '--ui-scrollbar-thumb-hover-bg': '#969696',
@@ -42475,7 +53533,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-cell-fg': '#d4d4d4', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#d4d4d4', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #569cd6)', '--page-h2-fg': 'var(--theme-palette-1, #4ec9b0)', '--page-h3-fg': 'var(--theme-palette-2, #dcdcaa)', '--page-h4-fg': 'var(--theme-palette-3, #6a9955)', '--page-h5-fg': 'var(--theme-palette-4, #ce9178)', '--page-h6-fg': 'var(--theme-palette-5, #6fa8dc)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#d4d4d4', '--page-text-bg': '#252525', '--page-link-fg': 'var(--accent2)',
+    '--page-text-fg': '#d4d4d4', '--page-text-bg': '#252525', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#969696', '--page-quote-border': 'var(--border)',
   };
   const LIGHT_VARS = {
@@ -42483,6 +53541,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--fg': '#1e1e1e', '--fg2': '#555555', '--accent': '#0055aa', '--accent2': '#007050',
     '--red': '#c62828', '--green': '#2e7d32', '--orange': '#c2410c', '--blue': '#1565c0',
     '--border': '#c0c0c0', '--selection': '#bbdefb',
+    '--link-fg': '#0b57d0',
     '--content-bg': '#ffffff',
     '--ui-tooltip-bg': '#ffffff', '--ui-tooltip-fg': '#1e1e1e', '--ui-tooltip-border': '#9aa4b2',
     '--ui-scrollbar-track-bg': '#f5f5f5', '--ui-scrollbar-thumb-bg': '#d4d4d4', '--ui-scrollbar-thumb-hover-bg': '#8a8f98',
@@ -42499,7 +53558,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-cell-fg': '#1e1e1e', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#1e1e1e', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #0055aa)', '--page-h2-fg': 'var(--theme-palette-1, #007050)', '--page-h3-fg': 'var(--theme-palette-2, #b45309)', '--page-h4-fg': 'var(--theme-palette-3, #2e7d32)', '--page-h5-fg': 'var(--theme-palette-4, #1565c0)', '--page-h6-fg': 'var(--theme-palette-5, #7c3aed)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#1e1e1e', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--accent2)',
+    '--page-text-fg': '#1e1e1e', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#555555', '--page-quote-border': 'var(--border)',
   };
   const PASTEL_VARS = {
@@ -42507,6 +53566,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--fg': '#2f3440', '--fg2': '#5b6475', '--accent': '#8e44ad', '--accent2': '#0f766e',
     '--red': '#be123c', '--green': '#2f855a', '--orange': '#b45309', '--blue': '#2563eb',
     '--border': '#d8dee8', '--selection': '#eadcff',
+    '--link-fg': '#3b5bdb',
     '--content-bg': '#ffffff',
     '--ui-tooltip-bg': '#ffffff', '--ui-tooltip-fg': '#2f3440', '--ui-tooltip-border': '#c7cfdb',
     '--ui-scrollbar-track-bg': '#f6f7f9', '--ui-scrollbar-thumb-bg': '#cdd6e1', '--ui-scrollbar-thumb-hover-bg': '#9aa6b7',
@@ -42523,7 +53583,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-cell-fg': '#2f3440', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#2f3440', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #9b59b6)', '--page-h2-fg': 'var(--theme-palette-1, #1abc9c)', '--page-h3-fg': 'var(--theme-palette-2, #f39c12)', '--page-h4-fg': 'var(--theme-palette-3, #e74c3c)', '--page-h5-fg': 'var(--theme-palette-4, #3498db)', '--page-h6-fg': 'var(--theme-palette-5, #7f8c8d)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#2f3440', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--accent2)',
+    '--page-text-fg': '#2f3440', '--page-text-bg': '#ffffff', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#5b6475', '--page-quote-border': 'var(--border)',
   };
   const EARTH_VARS = {
@@ -42531,6 +53591,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--fg': '#d9ddd8', '--fg2': '#aab3aa', '--accent': '#6fa85a', '--accent2': '#8dbf70',
     '--red': '#d06050', '--green': '#90b870', '--orange': '#b88a4a', '--blue': '#6898b0',
     '--border': '#343a35', '--selection': '#2d472b',
+    '--link-fg': '#5fb0e8',
     '--content-bg': '#101210',
     '--ui-tooltip-bg': '#242824', '--ui-tooltip-fg': '#f2f6f1', '--ui-tooltip-border': '#465044',
     '--ui-scrollbar-track-bg': '#181b19', '--ui-scrollbar-thumb-bg': '#333a34', '--ui-scrollbar-thumb-hover-bg': '#657064',
@@ -42548,7 +53609,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-cell-fg': '#d9ddd8', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#d9ddd8', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #6fa85a)', '--page-h2-fg': 'var(--theme-palette-1, #8dbf70)', '--page-h3-fg': 'var(--theme-palette-2, #b88a4a)', '--page-h4-fg': 'var(--theme-palette-3, #90b870)', '--page-h5-fg': 'var(--theme-palette-4, #6898b0)', '--page-h6-fg': 'var(--theme-palette-5, #d06050)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#d9ddd8', '--page-text-bg': '#101210', '--page-link-fg': 'var(--accent2)',
+    '--page-text-fg': '#d9ddd8', '--page-text-bg': '#101210', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#aab3aa', '--page-quote-border': 'var(--border)',
   };
   const GIRLY_VARS = {
@@ -42556,6 +53617,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--fg': '#3a1828', '--fg2': '#704060', '--accent': '#c01878', '--accent2': '#b050b0',
     '--red': '#d01070', '--green': '#2a8a50', '--orange': '#d06030', '--blue': '#4070c0',
     '--border': '#e8a0c0', '--selection': '#ffb6c1',
+    '--link-fg': '#3f6fd1',
     '--ui-header-fg': '#704060', '--ui-header-bg': '#ffdce8',
     '--ui-toolbar-fg': '#3a1828', '--ui-toolbar-bg': '#ffe8f0',
     '--ui-hover-fg': '#3a1828', '--ui-hover-bg': '#ffc8d8',
@@ -42567,7 +53629,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     '--db-cell-fg': '#3a1828', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#3a1828', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #c01878)', '--page-h2-fg': 'var(--theme-palette-1, #b050b0)', '--page-h3-fg': 'var(--theme-palette-2, #d06030)', '--page-h4-fg': 'var(--theme-palette-3, #2a8a50)', '--page-h5-fg': 'var(--theme-palette-4, #4070c0)', '--page-h6-fg': 'var(--theme-palette-5, #d01070)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#3a1828', '--page-text-bg': '#ffe8f0', '--page-link-fg': 'var(--accent2)',
+    '--page-text-fg': '#3a1828', '--page-text-bg': '#ffe8f0', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#704060', '--page-quote-border': 'var(--border)',
   };
 
@@ -44200,6 +55262,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     fallback('--bd-select-rect-color', '--accent', '#569cd6');
     fallback('--bd-group-color', '--accent', '#569cd6');
     fallback('--bd-anchor-color', '--accent', '#569cd6');
+    fallback('--bd-link-type-icon-color', '--fg', '#d4d4d4');
     fallback('--cal-bg', '--bg', '#1e1e1e');
     fallback('--cal-fg', '--fg', '#d4d4d4');
     fallback('--cal-font-family', '--ui-font', 'inherit');
@@ -45359,6 +56422,12 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
    * @param {HTMLElement[]} [options.extraRow2] 専用設定の下段に追加する要素
    * @param {HTMLElement[]} [options.extraRow3] row3 末尾に追加する要素
    * @param {HTMLElement[]} [options.extraRow4] row4（リセット行）のリセット直前に追加する要素
+   * @param {Object} [options.footerActions] 最下段1行へ右寄せ配置するコピー/切り取り/
+   *   貼り付け/閉じる。{ commands?: ('copy'|'cut'|'paste')[], onCommand(command),
+   *   onClose?(), closeLabel? }。onClose を渡すと既定の右下floating close button の
+   *   代わりにこの行の右端へ閉じるボタンを出す（二重表示防止）。専用のクリップボード行を
+   *   個別に作らないための共通化オプション（呼び出し元は既存の位置決め・選択保持・
+   *   Escape・外側クリック等をそのまま利用できる）。
    * @param {boolean} [options.closeOnOutside=true] ポップアップ外クリックで閉じる
    * @param {string} [options.className] 追加クラス名（旧命名互換用）
    * @param {boolean} [options.verticalWriting] 縦書き（vertical-rl）対象。textAlign/textValign の
@@ -45582,7 +56651,54 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
       popup.appendChild(row5);
     }
 
-    if (options.closeButton !== false && typeof attachMeldexDropdownCloseButton === 'function') {
+    // --- Row footer: コピー・切り取り・貼り付け・閉じるを最下段1行へ右寄せ配置 ---
+    // 計画書2026-08-04版§2.4: 専用のクリップボード行を各呼び出し元が個別に作らず、
+    // ここで共通化する。footerActions.onClose を渡した場合はここで閉じるボタンを
+    // 出すため、右下floatingの既定close button（下のattachMeldexDropdownCloseButton）
+    // は二重表示を避けるため出さない。footerActions未指定時は従来どおり。
+    const footerActions = options.footerActions || null;
+    let footerHasClose = false;
+    if (footerActions) {
+      const commands = Array.isArray(footerActions.commands) ? footerActions.commands : ['copy', 'cut', 'paste'];
+      const commandMeta = {
+        copy: { icon: 'copy', label: 'コピー' },
+        cut: { icon: 'scissors', label: '切り取り' },
+        paste: { icon: 'clipboardPaste', label: '貼り付け' },
+      };
+      const footerRow = document.createElement('div');
+      footerRow.className = 'gb-fmt-popup-row gb-fmt-footer-actions-row';
+      if (typeof footerActions.onCommand === 'function') {
+        commands.forEach((cmd) => {
+          const meta = commandMeta[cmd];
+          if (!meta) return;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'gb-fmt-style-copy gb-fmt-footer-action';
+          btn.title = meta.label;
+          btn.setAttribute('aria-label', meta.label);
+          btn.dataset.footerAction = cmd;
+          btn.innerHTML = _lucideOr(meta.icon, 14, meta.label);
+          _bindPressAction(btn, () => footerActions.onCommand(cmd));
+          footerRow.appendChild(btn);
+        });
+      }
+      if (typeof footerActions.onClose === 'function') {
+        footerHasClose = true;
+        const closeLabel = footerActions.closeLabel || '閉じる';
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'gb-fmt-style-copy gb-fmt-footer-close';
+        closeBtn.title = closeLabel;
+        closeBtn.setAttribute('aria-label', closeLabel);
+        closeBtn.dataset.footerAction = 'close';
+        closeBtn.innerHTML = _lucideOr('x', 14, closeLabel);
+        _bindPressAction(closeBtn, () => footerActions.onClose());
+        footerRow.appendChild(closeBtn);
+      }
+      if (footerRow.childElementCount) popup.appendChild(footerRow);
+    }
+
+    if (options.closeButton !== false && !footerHasClose && typeof attachMeldexDropdownCloseButton === 'function') {
       attachMeldexDropdownCloseButton(popup, {
         trigger: () => options.focusTarget || anchorEl,
         close: () => _removeFormatPopup(popup),
@@ -46107,6 +57223,840 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   document.addEventListener('pointerdown', () => _hideTip(true));
 
 })();
+
+;
+
+/* === standalone-parity-adapter.js === */
+;
+/* standalone-parity-adapter.js
+ * ノート / シナリオ / シート単独版で、環境能力・リンク表示先・本体管理機能の
+ * 代替導線を共通化する。編集・保存処理には介入しない。
+ */
+(function initStandaloneParityAdapter(global) {
+  'use strict';
+
+  const APP_ENTRY = Object.freeze({
+    note: 'note-standalone.html',
+    scenario: 'scenario-standalone.html',
+    board: 'board-standalone.html',
+    sheet: 'sheet-standalone.html',
+    timer: 'timer-standalone.html',
+    viewer: 'viewer.html',
+  });
+  const TYPE_APP = Object.freeze({
+    page: 'note',
+    document: 'note',
+    scriptnote: 'scenario',
+    scenario: 'scenario',
+    board: 'board',
+    timer: 'timer',
+    pivot: 'sheet',
+    database: 'sheet',
+    sheet: 'sheet',
+    tree: 'sheet',
+    gallery: 'sheet',
+    kanban: 'sheet',
+    timeline: 'sheet',
+    chart: 'sheet',
+    graph: 'sheet',
+    media: 'viewer',
+    html: 'viewer',
+  });
+  const FEATURE_LABELS = Object.freeze({
+    file_info: 'ファイル情報',
+    publish: '公開',
+    backlinks: 'バックリンク',
+    annotations_comments: '注釈・コメント',
+  });
+
+  let currentConfig = null;
+  let optionObserver = null;
+  let optionRevision = 0;
+  let openDialog = null;
+  let linkDialog = null;
+  let nativeCapabilitiesPromise = null;
+
+  function text(value) {
+    return String(value == null ? '' : value);
+  }
+
+  function basename(path) {
+    return text(path).replace(/\\/g, '/').split('/').pop() || text(path);
+  }
+
+  function isCloud() {
+    return global.MeldexStandaloneCloud?.isCloudMode?.() === true
+      || global.MeldexRuntimeAdapter?.isCloudMode?.() === true;
+  }
+
+  function environment() {
+    return isCloud() ? 'cloud_standalone' : 'windows_standalone';
+  }
+
+  function isNativeMode() {
+    return !isCloud() && new URLSearchParams(global.location?.search || '').get('native') === '1';
+  }
+
+  async function nativeCapabilities(refresh) {
+    if (!isNativeMode()) return { ok: true, targets: {}, allowedTargets: [] };
+    if (!nativeCapabilitiesPromise || refresh) {
+      nativeCapabilitiesPromise = Promise.resolve(
+        global.apiFetch?.('/standalone/open-target/capabilities', { silentError: true }),
+      ).then(payload => {
+        if (!payload?.ok || !payload.targets || !Array.isArray(payload.allowedTargets)) {
+          throw new Error('起動機能の応答が正しくありません');
+        }
+        return payload;
+      }).catch(error => ({
+        ok: false,
+        targets: {},
+        allowedTargets: [],
+        error: { code: 'launcher_unavailable', message: error?.message || 'Meldexの起動機能を利用できません' },
+      }));
+    }
+    return nativeCapabilitiesPromise;
+  }
+
+  function classify(capability) {
+    const registry = global.MeldexAppCapabilities;
+    if (!registry?.classify || !currentConfig?.appId) {
+      return {
+        status: 'alternative',
+        adapter: 'standalone-parity-fallback',
+        route: { environment: isCloud() ? 'cloud_main' : 'desktop_main', app: currentConfig?.appId || '' },
+        reason: 'この機能はMeldex本体で利用します',
+      };
+    }
+    try {
+      return registry.classify(currentConfig.appId, environment(), capability);
+    } catch (error) {
+      console.error('[standalone-parity] capability lookup failed', error);
+      return {
+        status: 'alternative',
+        adapter: 'standalone-parity-fallback',
+        route: { environment: isCloud() ? 'cloud_main' : 'desktop_main', app: currentConfig.appId },
+        reason: '環境の機能判定に失敗したためMeldex本体で開きます',
+      };
+    }
+  }
+
+  function resolveTarget(pathOrTarget, hints) {
+    const path = text(pathOrTarget?.path || pathOrTarget).trim();
+    const label = text(hints?.label || pathOrTarget?.label || basename(path)).trim() || path;
+    const linkType = text(hints?.linkType || pathOrTarget?.linkType || pathOrTarget?.type).trim();
+    const resolved = global.GBLinkRouter?.resolve?.(path, { label, linkType });
+    if (resolved) return resolved;
+    return { type: linkType || 'page', path, label, state: {}, recognized: !!path };
+  }
+
+  function appForTarget(target) {
+    return TYPE_APP[target?.type] || '';
+  }
+
+  function canOpenStandalone(target) {
+    const targetApp = appForTarget(target);
+    return !!targetApp && !(targetApp === 'viewer' && isCloud());
+  }
+
+  function standaloneUrl(target) {
+    const targetApp = appForTarget(target);
+    const entry = APP_ENTRY[targetApp];
+    if (!entry || !target?.path) return '';
+    const runtime = global.MeldexRuntimeAdapter;
+    if (runtime?.resolveAppPath) {
+      return runtime.resolveAppPath(entry, { open: target.path, label: target.label || '' });
+    }
+    const url = new URL(entry, global.location?.href || 'http://localhost/');
+    url.searchParams.set('open', target.path);
+    if (target.label) url.searchParams.set('label', target.label);
+    return url.pathname + url.search;
+  }
+
+  function mainUrl(target, handoff) {
+    if (!target?.path) {
+      return global.MeldexResourceUrl?.appEntry?.() || 'Meldex.html';
+    }
+    if (typeof global.buildSingleTabWindowUrl === 'function') {
+      const built = global.buildSingleTabWindowUrl({
+        path: target.path,
+        name: target.label || basename(target.path),
+        type: target.type || 'page',
+      });
+      const url = new URL(built, global.location?.href || 'http://localhost/');
+      if (handoff?.feature) url.searchParams.set('standaloneFeature', handoff.feature);
+      if (handoff?.targetKind) url.searchParams.set('standaloneTargetKind', handoff.targetKind);
+      if (handoff?.targetRef) url.searchParams.set('standaloneTargetRef', JSON.stringify(handoff.targetRef));
+      if (handoff?.snapshot) url.searchParams.set('standaloneSnapshot', String(handoff.snapshot).slice(0, 1000));
+      if (handoff?.action) url.searchParams.set('standaloneFeatureAction', handoff.action);
+      return url.pathname + url.search;
+    }
+    const fallback = global.MeldexResourceUrl?.appEntry?.({
+      single: 1,
+      open: target.type || 'page',
+      path: target.path,
+      label: target.label || '',
+    }) || ('Meldex.html?single=1&open=' + encodeURIComponent(target.type || 'page')
+      + '&path=' + encodeURIComponent(target.path)
+      + '&label=' + encodeURIComponent(target.label || ''));
+    const url = new URL(fallback, global.location?.href || 'http://localhost/');
+    if (handoff?.feature) url.searchParams.set('standaloneFeature', handoff.feature);
+    if (handoff?.targetKind) url.searchParams.set('standaloneTargetKind', handoff.targetKind);
+    if (handoff?.targetRef) url.searchParams.set('standaloneTargetRef', JSON.stringify(handoff.targetRef));
+    if (handoff?.snapshot) url.searchParams.set('standaloneSnapshot', String(handoff.snapshot).slice(0, 1000));
+    if (handoff?.action) url.searchParams.set('standaloneFeatureAction', handoff.action);
+    return url.pathname + url.search;
+  }
+
+  function openWindow(url) {
+    let opened = null;
+    try {
+      opened = global.open?.(url, '_blank');
+      if (opened) opened.opener = null;
+    } catch (error) { opened = null; }
+    if (!opened) {
+      global.showStatus?.('新しいウィンドウを開けませんでした。ポップアップを許可して再試行してください', true);
+      return false;
+    }
+    return true;
+  }
+
+  async function openNativeTarget(target, destination, handoff) {
+    const targetApp = destination === 'main' ? 'main' : appForTarget(target);
+    const capabilities = await nativeCapabilities();
+    const targetCapability = capabilities.targets?.[targetApp];
+    if (!targetApp
+        || !capabilities.ok
+        || !capabilities.allowedTargets.includes(targetApp)
+        || targetCapability?.available !== true) {
+      global.showStatus?.(
+        targetCapability?.reason || capabilities.error?.message || '対応するアプリがインストールされていません',
+        true,
+      );
+      return false;
+    }
+    try {
+      const result = await global.apiPost('/standalone/open-target', {
+        target: targetApp,
+        path: target?.path || '',
+        type: target?.type || '',
+        label: target?.label || '',
+        handoff: handoff || {},
+      });
+      if (result?.ok === false) throw new Error(result.error?.message || '対象アプリを起動できませんでした');
+      return true;
+    } catch (error) {
+      global.showStatus?.(error?.message || '対象アプリを起動できませんでした', true);
+      return false;
+    }
+  }
+
+  function makeButton(label, e2eId, primary) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = primary ? 'gb-btn gb-btn-primary' : 'gb-btn';
+    button.textContent = label;
+    button.dataset.e2eId = e2eId;
+    button.style.minWidth = '44px';
+    button.style.minHeight = '44px';
+    return button;
+  }
+
+  function closeOverlay(kind, restoreFocus) {
+    const record = kind === 'link' ? linkDialog : openDialog;
+    if (!record) return;
+    record.overlay.remove();
+    if (kind === 'link') linkDialog = null;
+    else openDialog = null;
+    if (restoreFocus?.isConnected) {
+      try { restoreFocus.focus({ preventScroll: true }); } catch (error) { restoreFocus.focus?.(); }
+    }
+  }
+
+  function createOverlay(kind, title, description) {
+    closeOverlay(kind);
+    const focusReturn = document.activeElement;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay standalone-parity-overlay';
+    overlay.dataset.e2eId = `standalone-parity-${kind}-overlay`;
+    const dialog = document.createElement('div');
+    dialog.className = 'modal standalone-parity-dialog';
+    dialog.dataset.e2eId = `standalone-parity-${kind}-dialog`;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', title);
+    dialog.tabIndex = -1;
+    dialog.style.maxWidth = 'min(520px, calc(100vw - 24px))';
+    dialog.style.maxHeight = 'min(720px, calc(100vh - 24px))';
+    dialog.style.overflow = 'auto';
+    const heading = document.createElement('h2');
+    heading.textContent = title;
+    heading.style.margin = '0 0 8px';
+    heading.style.fontSize = '18px';
+    const message = document.createElement('p');
+    message.textContent = description || '';
+    message.dataset.e2eId = `standalone-parity-${kind}-message`;
+    message.style.margin = '0 0 16px';
+    dialog.append(heading, message);
+    overlay.appendChild(dialog);
+    overlay.addEventListener('pointerdown', event => {
+      if (event.target === overlay) closeOverlay(kind, focusReturn);
+    });
+    overlay.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closeOverlay(kind, focusReturn);
+    });
+    document.body.appendChild(overlay);
+    const record = { overlay, dialog, message, focusReturn };
+    if (kind === 'link') linkDialog = record;
+    else openDialog = record;
+    global.GBModalShell?.enhanceOverlay?.(overlay);
+    queueMicrotask(() => dialog.focus());
+    return record;
+  }
+
+  async function openTarget(targetInput, destination, hints) {
+    const target = resolveTarget(targetInput, hints);
+    if (!target.path) {
+      global.showStatus?.('リンク先が指定されていません', true);
+      return false;
+    }
+    if (destination === 'float') {
+      if (typeof currentConfig?.openFloat !== 'function') {
+        global.showStatus?.('この画面では副画面を利用できません', true);
+        return false;
+      }
+      return await currentConfig.openFloat(target, hints) !== false;
+    }
+    if (destination === 'main') {
+      return isNativeMode() ? openNativeTarget(target, 'main', hints) : openWindow(mainUrl(target, hints));
+    }
+    if (appForTarget(target) === 'viewer' && isCloud()) {
+      return openWindow(mainUrl(target, hints));
+    }
+    if (!target.recognized || !appForTarget(target)) {
+      showOpenTargetDialog(target, target.recognized
+        ? 'この形式は単独アプリ内では表示できません。Meldex本体で開いてください。'
+        : 'このファイル形式を単独アプリで表示できません。Meldex本体なら対応アプリを確認できます。');
+      return false;
+    }
+    if (destination === 'new') {
+      return isNativeMode() ? openNativeTarget(target, 'new', hints) : openWindow(standaloneUrl(target));
+    }
+    if (destination === 'current') {
+      const targetApp = appForTarget(target);
+      if (targetApp === currentConfig?.appId && typeof currentConfig.openCurrent === 'function') {
+        if (typeof currentConfig.canReplaceCurrent !== 'function') {
+          throw new Error('現在の編集内容を安全に切り替える準備ができていません');
+        }
+        if (!await currentConfig.canReplaceCurrent(target)) return false;
+        await currentConfig.openCurrent(target.path, target);
+        return true;
+      }
+      const url = standaloneUrl(target);
+      if (!url) return openWindow(mainUrl(target, hints));
+      global.location.assign(url);
+      return true;
+    }
+    return false;
+  }
+
+  function showOpenTargetDialog(targetInput, reason) {
+    const target = resolveTarget(targetInput);
+    const supportedStandalone = canOpenStandalone(target) && target.recognized !== false;
+    const record = createOverlay(
+      'open',
+      '表示先を選択',
+      reason || `${target.label || basename(target.path)} をどこに表示するか選んでください。`,
+    );
+    const actions = document.createElement('div');
+    actions.style.display = 'grid';
+    actions.style.gap = '8px';
+    if (supportedStandalone) {
+      const current = makeButton('現在の画面で開く', 'standalone-open-current', true);
+      const separate = makeButton('新しいウィンドウで開く', 'standalone-open-new', false);
+      current.addEventListener('click', () => {
+        closeOverlay('open', record.focusReturn);
+        Promise.resolve(openTarget(target, 'current')).catch(error => global.showStatus?.(error?.message || error, true));
+      });
+      separate.addEventListener('click', () => {
+        closeOverlay('open', record.focusReturn);
+        openTarget(target, 'new');
+      });
+      actions.append(current, separate);
+    }
+    const main = makeButton('Meldex本体で開く', 'standalone-open-main', !supportedStandalone);
+    const back = makeButton('戻る', 'standalone-open-back', false);
+    main.addEventListener('click', () => {
+      closeOverlay('open', record.focusReturn);
+      openTarget(target, 'main');
+    });
+    back.addEventListener('click', () => closeOverlay('open', record.focusReturn));
+    actions.append(main, back);
+    record.dialog.appendChild(actions);
+    return true;
+  }
+
+  async function pickLinkTarget() {
+    if (isCloud() && global.MeldexStandaloneWorkspaceTree?.pickOpen) {
+      return global.MeldexStandaloneWorkspaceTree.pickOpen({ title: 'リンク先を検索' });
+    }
+    throw new Error('Meldexファイル検索を利用してください');
+  }
+
+  function linkResultForPath(path) {
+    const resolved = resolveTarget(path);
+    const fileType = resolved.type === 'scriptnote' ? 'scenario'
+      : resolved.type === 'pivot' ? 'database'
+        : resolved.type;
+    return { type: 'file', name: resolved.label || basename(path), path, fileType };
+  }
+
+  function showLinkDialog(savedRange, callback) {
+    const record = createOverlay(
+      'link',
+      'リンクを挿入',
+      'Meldex内のファイルを検索するか、外部URLを入力してください。',
+    );
+    const selected = document.createElement('div');
+    selected.dataset.e2eId = 'standalone-link-selected';
+    selected.style.minHeight = '24px';
+    selected.style.marginBottom = '8px';
+    selected.style.wordBreak = 'break-all';
+    selected.textContent = 'ファイルは選択されていません';
+    const error = document.createElement('div');
+    error.dataset.e2eId = 'standalone-link-error';
+    error.setAttribute('role', 'alert');
+    error.style.color = 'var(--danger, #f66)';
+    error.style.minHeight = '20px';
+    const pick = makeButton('Meldexファイルを検索', 'standalone-link-pick', false);
+    pick.hidden = !isCloud();
+    let pickedResult = null;
+    pick.addEventListener('click', async () => {
+      error.textContent = '';
+      try {
+        const picked = await pickLinkTarget();
+        if (!picked?.path) return;
+        pickedResult = linkResultForPath(picked.path);
+        selected.textContent = pickedResult.path;
+      } catch (cause) {
+        error.textContent = 'リンク先を選べませんでした: ' + (cause?.message || cause);
+      }
+    });
+    const searchLabel = document.createElement('label');
+    searchLabel.textContent = 'Meldexファイルを検索';
+    searchLabel.htmlFor = 'standalone-link-search';
+    const search = document.createElement('input');
+    search.id = 'standalone-link-search';
+    search.className = 'gb-input';
+    search.type = 'search';
+    search.placeholder = 'ファイル名またはパス';
+    search.dataset.e2eId = 'standalone-link-search';
+    search.style.width = '100%';
+    search.style.minHeight = '44px';
+    const results = document.createElement('div');
+    results.dataset.e2eId = 'standalone-link-results';
+    results.setAttribute('role', 'listbox');
+    results.style.display = 'grid';
+    results.style.gap = '4px';
+    results.style.maxHeight = '240px';
+    results.style.overflow = 'auto';
+    let candidates = [];
+    const renderCandidates = () => {
+      const query = search.value.trim().toLocaleLowerCase('ja');
+      results.replaceChildren();
+      candidates
+        .filter(item => !query || `${item.name || ''} ${item.path || ''}`.toLocaleLowerCase('ja').includes(query))
+        .slice(0, 100)
+        .forEach(item => {
+          const row = makeButton(item.name || basename(item.path), 'standalone-link-result', false);
+          row.setAttribute('role', 'option');
+          row.title = item.path;
+          row.style.textAlign = 'left';
+          row.addEventListener('click', () => {
+            pickedResult = linkResultForPath(item.path);
+            selected.textContent = pickedResult.path;
+            results.querySelectorAll('[role="option"]').forEach(option => {
+              option.setAttribute('aria-selected', option === row ? 'true' : 'false');
+            });
+          });
+          results.appendChild(row);
+        });
+      if (!results.children.length) {
+        const empty = document.createElement('div');
+        empty.textContent = query ? '一致するファイルはありません' : 'リンクにできるファイルはありません';
+        empty.style.color = 'var(--fg2)';
+        empty.style.padding = '8px';
+        results.appendChild(empty);
+      }
+    };
+    search.addEventListener('input', renderCandidates);
+    Promise.resolve(global.apiFetch?.('/global-index'))
+      .then(payload => {
+        const files = Array.isArray(payload) ? payload : payload?.files;
+        candidates = (Array.isArray(files) ? files : [])
+          .map(item => typeof item === 'string'
+            ? { path: item, name: basename(item) }
+            : { path: text(item?.path), name: text(item?.name || basename(item?.path)) })
+          .filter(item => item.path);
+        renderCandidates();
+      })
+      .catch(cause => {
+        error.textContent = 'ファイル一覧を読み込めませんでした: ' + (cause?.message || cause);
+        renderCandidates();
+      });
+    const label = document.createElement('label');
+    label.textContent = '外部URL';
+    label.htmlFor = 'standalone-link-url';
+    const input = document.createElement('input');
+    input.id = 'standalone-link-url';
+    input.className = 'gb-input';
+    input.type = 'url';
+    input.placeholder = 'https://...';
+    input.dataset.e2eId = 'standalone-link-url';
+    input.style.width = '100%';
+    input.style.minHeight = '44px';
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.flexWrap = 'wrap';
+    actions.style.gap = '8px';
+    actions.style.marginTop = '12px';
+    const insert = makeButton('リンクを挿入', 'standalone-link-insert', true);
+    const back = makeButton('戻る', 'standalone-link-back', false);
+    insert.addEventListener('click', () => {
+      const url = input.value.trim();
+      let result = pickedResult;
+      if (url) {
+        try {
+          const parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : 'https://' + url);
+          if (!['http:', 'https:', 'mailto:', 'tel:'].includes(parsed.protocol)) throw new Error();
+          result = { type: 'url', url: parsed.href };
+        } catch (cause) {
+          error.textContent = '安全なURLを入力してください';
+          return;
+        }
+      }
+      if (!result) {
+        error.textContent = 'リンク先を選択するかURLを入力してください';
+        return;
+      }
+      closeOverlay('link', record.focusReturn);
+      callback?.(result, savedRange || null);
+    });
+    back.addEventListener('click', () => closeOverlay('link', record.focusReturn));
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        insert.click();
+      }
+    });
+    record.dialog.append(searchLabel, search, results, pick, selected, label, input, error, actions);
+    actions.append(insert, back);
+    queueMicrotask(() => pick.focus());
+  }
+
+  function fallbackPanelHtml(feature, classification, path) {
+    const label = FEATURE_LABELS[feature] || feature;
+    const reason = classification?.reason || `${label}はこの単独版ではMeldex本体から利用します。`;
+    const routeReason = classification?.route?.reason || '';
+    const pathMessage = path ? '' : '対象ファイルを保存または開いた後に利用できます。';
+    return `<div data-standalone-feature-fallback="${feature}" style="padding:16px;display:grid;gap:12px;">`
+      + `<div style="font-weight:600;">${label}</div>`
+      + `<div style="color:var(--fg2);line-height:1.6;">${global.esc?.(reason) || reason}</div>`
+      + (routeReason ? `<div style="color:var(--fg2);line-height:1.6;">${global.esc?.(routeReason) || routeReason}</div>` : '')
+      + (pathMessage ? `<div style="color:var(--warning,#e9b44c);">${pathMessage}</div>` : '')
+      + `<button type="button" class="gb-btn gb-btn-primary" data-standalone-open-main="${feature}" `
+      + `style="min-height:44px;">Meldex本体で開く</button></div>`;
+  }
+
+  function ensureOptionFeature(feature, path) {
+    const bar = document.getElementById('detail-tab-bar');
+    const detail = document.getElementById('rp-detail');
+    if (!bar || !detail) return null;
+    const id = `standalone-${feature.replace(/_/g, '-')}`;
+    let button = bar.querySelector(`[data-detail-tab="${id}"]`);
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-inner-tab detail-tab';
+      button.dataset.detailTab = id;
+      button.dataset.e2eId = `detail-tab-${id}`;
+      button.setAttribute('role', 'tab');
+      button.textContent = FEATURE_LABELS[feature] || feature;
+      button.style.minHeight = '44px';
+      bar.appendChild(button);
+    }
+    button.hidden = false;
+    let panel = document.getElementById(`detail-tab-${id}`);
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = `detail-tab-${id}`;
+      panel.className = 'gb-panel-body-scroll';
+      panel.hidden = true;
+      detail.appendChild(panel);
+    }
+    const activate = event => {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      bar.querySelectorAll('[data-detail-tab]').forEach(item => {
+        item.classList.toggle('active', item === button);
+        item.setAttribute('aria-selected', item === button ? 'true' : 'false');
+      });
+      detail.querySelectorAll(':scope > [id^="detail-tab-"]').forEach(item => {
+        item.hidden = item !== panel;
+      });
+      panel.hidden = false;
+    };
+    if (button.dataset.standaloneBound !== '1') {
+      button.dataset.standaloneBound = '1';
+      button.addEventListener('click', activate);
+    }
+    panel.querySelector('[data-standalone-open-main]')?.addEventListener('click', () => {
+      const target = resolveTarget(path, { label: currentConfig?.getLabel?.() || basename(path) });
+      if (target.path) openTarget(target, 'main', { feature });
+      else openWindow(mainUrl(null));
+    });
+    return { button, panel, activate };
+  }
+
+  async function renderOptionFeature(feature, path, revision) {
+    const parts = ensureOptionFeature(feature, path);
+    if (!parts || revision !== optionRevision) return;
+    const capability = feature === 'annotations_comments' ? 'annotations_comments' : feature;
+    const classification = classify(capability);
+    if (feature === 'file_info' && classification.status === 'available'
+        && global.MeldexFileInfoPanel?.renderInto) {
+      if (!path) {
+        await global.MeldexFileInfoPanel.renderInto(parts.panel, '', { showTags: false });
+        return;
+      }
+      try {
+        const metadata = await global.apiFetch?.('/file-meta?path=' + encodeURIComponent(path), { silentError: true });
+        if (revision !== optionRevision) return;
+        await global.MeldexFileInfoPanel.renderInto(parts.panel, path, {
+          showTags: false,
+          preloadedMeta: { ...(metadata || {}), embedded: metadata?.embedded ?? null },
+        });
+        return;
+      } catch (cause) {
+        parts.panel.innerHTML = fallbackPanelHtml(feature, {
+          status: 'alternative',
+          reason: 'この単独ランタイムでは作成日時・更新日時・ファイルサイズを取得できません。',
+          route: { reason: '完全なファイル情報はMeldex本体で確認してください。' },
+        }, path);
+        parts.panel.querySelector('[data-standalone-open-main]')?.addEventListener('click', () => {
+          openTarget(
+            resolveTarget(path, { label: currentConfig?.getLabel?.() || basename(path) }),
+            'main',
+            { feature },
+          );
+        });
+        return;
+      }
+    }
+    parts.panel.innerHTML = fallbackPanelHtml(feature, classification, path);
+    parts.panel.querySelector('[data-standalone-open-main]')?.addEventListener('click', () => {
+      const target = resolveTarget(path, { label: currentConfig?.getLabel?.() || basename(path) });
+      if (target.path) openTarget(target, 'main', { feature });
+      else openWindow(mainUrl(null));
+    });
+  }
+
+  async function syncOptionFeatures() {
+    const path = text(currentConfig?.getPath?.()).trim();
+    const revision = ++optionRevision;
+    await Promise.all([
+      renderOptionFeature('file_info', path, revision),
+      renderOptionFeature('publish', path, revision),
+      renderOptionFeature('backlinks', path, revision),
+      renderOptionFeature('annotations_comments', path, revision),
+    ]);
+  }
+
+  function watchOptionPanel() {
+    optionObserver?.disconnect();
+    const detail = document.getElementById('rp-detail');
+    if (!detail) return;
+    optionObserver = new MutationObserver(() => {
+      if (document.getElementById('detail-tab-standalone-file-info')) return;
+      queueMicrotask(() => syncOptionFeatures().catch(error => console.error('[standalone-parity] option sync failed', error)));
+    });
+    optionObserver.observe(detail, { childList: true, subtree: true });
+  }
+
+  async function openOptionFeature(feature, path) {
+    await syncOptionFeatures();
+    const targetPath = text(path || currentConfig?.getPath?.()).trim();
+    const parts = ensureOptionFeature(feature, targetPath);
+    if (!parts) {
+      showOpenTargetDialog(resolveTarget(targetPath), `${FEATURE_LABELS[feature] || feature}はMeldex本体で利用できます。`);
+      return false;
+    }
+    if (targetPath) {
+      const shell = document.querySelector('.sa-shell');
+      shell?.classList.remove('sa-options-collapsed');
+      document.querySelectorAll('[data-e2e-id$="-option-panel-button"]').forEach(button => {
+        button.setAttribute('aria-pressed', 'true');
+      });
+    }
+    parts.activate();
+    return true;
+  }
+
+  function installGlobalOpeners() {
+    global.openLink = function (path, label, options) {
+      return showOpenTargetDialog(resolveTarget(path, { label, linkType: options?.linkType || options?.type }));
+    };
+    global.openLinkInFloatPanel = global.openLink;
+    global.openLinkInRightPane = global.openLink;
+    global.openLinkInMainPane = function (path, label, options) {
+      return openTarget(resolveTarget(path, { label, linkType: options?.linkType || options?.type }), 'main');
+    };
+    global.openLinkStandalone = global.openLink;
+    global.openViewer = function (path, label) {
+      return showOpenTargetDialog(resolveTarget(path, { label }));
+    };
+    global.openMedia = function (label, path, mediaType) {
+      return showOpenTargetDialog(resolveTarget(path, { label, linkType: mediaType }));
+    };
+    global._showFileInfoInDetailPanel = function (_label, path) {
+      return openOptionFeature('file_info', path);
+    };
+    global.addCommentHere = function (override) {
+      const path = text(override?.filePath || currentConfig?.getPath?.()).trim();
+      const target = resolveTarget(path, { label: currentConfig?.getLabel?.() || basename(path) });
+      return openWindow(mainUrl(target, {
+        feature: 'annotations_comments',
+        targetKind: override?.targetKind || '',
+        targetRef: override?.targetRef || null,
+        snapshot: override?.snapshot || '',
+        action: 'add',
+      }));
+    };
+    global.CommentBadges = global.CommentBadges || {
+      openPanelForFileComments(path) {
+        return openWindow(mainUrl(resolveTarget(path), { feature: 'annotations_comments' }));
+      },
+    };
+  }
+
+  function init(options) {
+    currentConfig = { ...(options || {}) };
+    if (!currentConfig.appId) throw new Error('standalone parity adapter requires appId');
+    installGlobalOpeners();
+    global.showLinkInsertModal = showLinkDialog;
+    watchOptionPanel();
+    return {
+      classify,
+      environment,
+      openTarget,
+      capabilities: nativeCapabilities,
+      showOpenTargetDialog,
+      showLinkDialog,
+      syncOptionFeatures,
+      openOptionFeature,
+    };
+  }
+
+  function startMainFeatureHandoff() {
+    const params = new URLSearchParams(global.location?.search || '');
+    const feature = text(params.get('standaloneFeature')).trim();
+    if (!feature) return;
+    const path = text(params.get('path')).trim();
+    const targetKind = text(params.get('standaloneTargetKind')).trim();
+    const snapshot = text(params.get('standaloneSnapshot'));
+    const action = text(params.get('standaloneFeatureAction')).trim();
+    let targetRef = null;
+    try { targetRef = JSON.parse(params.get('standaloneTargetRef') || 'null'); } catch {}
+    const normalizedPath = value => text(value).replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
+    const targetIsActive = () => {
+      const wanted = normalizedPath(path);
+      if (!wanted) return true;
+      const candidates = [
+        document.getElementById('page-content')?.dataset?.path,
+        document.getElementById('bd-canvas')?.dataset?.path,
+      ];
+      try {
+        if (typeof state !== 'undefined') {
+          candidates.push(state.currentPagePath, state.currentDbPath, state.currentBoardPath, state.currentEntityPath);
+        }
+      } catch {}
+      try {
+        const tab = typeof GBTabs !== 'undefined' ? GBTabs.getActiveTab?.(typeof GBLayout !== 'undefined' ? GBLayout.activePane : undefined) : null;
+        candidates.push(
+          tab?.path,
+          tab?.state?.pagePath,
+          tab?.state?.dbPath,
+          tab?.state?.smartDbPath,
+          tab?.state?.boardPath,
+          tab?.state?.scenarioPath,
+          tab?.state?.scriptnotePath,
+        );
+      } catch {}
+      return candidates.some(candidate => normalizedPath(candidate) === wanted);
+    };
+    let attempts = 0;
+    const run = () => {
+      attempts += 1;
+      try {
+        if (feature === 'annotations_comments') {
+          if (action === 'add' && typeof global.addCommentHere === 'function') {
+            global.addCommentHere({ filePath: path, targetKind, targetRef, snapshot });
+            return;
+          }
+          if (global.CommentBadges?.openPanelForTarget && targetKind) {
+            global.CommentBadges.openPanelForTarget(path, targetKind, targetRef || { file: path });
+            return;
+          }
+          if (global.CommentBadges?.openPanelForFileComments) {
+            global.CommentBadges.openPanelForFileComments(path);
+            return;
+          }
+        } else if (feature === 'file_info' && typeof global._showFileInfoInDetailPanel === 'function') {
+          global._showFileInfoInDetailPanel(basename(path), path);
+          return;
+        } else if (['publish', 'backlinks'].includes(feature)
+            && targetIsActive()
+            && typeof global.switchDetailTab === 'function') {
+          global.switchDetailTab(feature);
+          return;
+        }
+      } catch (error) {
+        console.warn('[standalone-parity] 本体機能への引き継ぎを再試行します', error);
+      }
+      if (attempts < 240) {
+        global.setTimeout(run, 250);
+        return;
+      }
+      const label = FEATURE_LABELS[feature] || feature;
+      global.showStatus?.(
+        `対象ファイルの読み込みに時間がかかったため「${label}」を自動で開けませんでした。`
+          + `読み込み完了後にオプションパネルから「${label}」を選び直してください。`,
+        true,
+      );
+    };
+    global.setTimeout(run, 700);
+  }
+
+  global.MeldexStandaloneParity = Object.freeze({
+    init,
+    classify,
+    environment,
+    resolveTarget,
+    canOpenStandalone,
+    openTarget,
+    capabilities: nativeCapabilities,
+    showOpenTargetDialog,
+    showLinkDialog,
+    syncOptionFeatures,
+    openOptionFeature,
+  });
+  if (document.readyState === 'loading') {
+    global.addEventListener('DOMContentLoaded', startMainFeatureHandoff, { once: true });
+  } else {
+    startMainFeatureHandoff();
+  }
+})(window);
 
 ;
 

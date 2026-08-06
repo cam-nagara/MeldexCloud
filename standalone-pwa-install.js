@@ -72,7 +72,7 @@
     refs.status = _el('div', {
       className: 'sa-pwa-install-status', role: 'status', 'aria-live': 'polite', 'aria-atomic': 'true',
     });
-    refs.actions = _el('div', { className: 'sa-pwa-install-actions' });
+    refs.actions = _el('div', { className: 'sa-pwa-install-actions', 'data-dialog-actions': '1' });
     refs.close = _el('button', { type: 'button' }, '閉じる');
     refs.install = _el('button', { type: 'button', className: 'is-primary' }, 'この端末に追加');
     refs.actions.append(refs.close, refs.install);

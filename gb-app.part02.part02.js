@@ -2,7 +2,7 @@
     const roots = await apiFetch('/outliner-roots').catch(() => []);
     const visibleRoots = roots.filter(r => r.visible && r.path);
     if (visibleRoots.length === 0) {
-      // ソースフォルダなし → デフォルトvaultに同期
+      // ソースフォルダなし → デフォルトvaultに対応する管理レコードへ同期
       try {
         await apiPost('/team/sync', teamPayload());
         const members = await apiFetch('/team');
@@ -562,6 +562,9 @@ function showView(viewName, ctx) {
   } else if (resolvedViewName === 'scriptnote') {
     if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar(sc);
     else sc.textContent = 'Enter 行追加 | Ctrl+Enter 同タイプ行追加 | Shift+Del 行削除 | Tab タイプ選択 | Ctrl+↑↓ 行移動 | Ctrl+R ルビ | Ctrl+Z Undo | Ctrl+Y Redo';
+  } else if (resolvedViewName === 'media') {
+    if (typeof updateMediaViewerShortcutStatusbar === 'function') updateMediaViewerShortcutStatusbar(sc);
+    else sc.textContent = '';
   } else {
     sc.textContent = '';
   }
@@ -1097,9 +1100,14 @@ function cfAlert(message, options) {
 }
 
 // カスタムconfirmダイアログ（confirm()の代替、画面中央モーダル）
-// options: { danger?: boolean, okLabel?: string, cancelLabel?: string }
+// options: { danger?: boolean, okLabel?: string, cancelLabel?: string, extraNode?: Node }
+// extraNode: メッセージ本文とボタン列の間に挿入する追加DOM要素（呼び出し元が
+// textContent等で安全に組み立てたNodeを渡す想定。innerHTML文字列連結はしない。
+// ファイル参照整合性計画 Phase 4: 削除確認ダイアログへの被参照警告表示に使う
+// （app/gb-delete-impact-warning.js 参照）。
 function cfConfirm(message, options) {
   const opts = options || {};
+  const extraNode = opts.extraNode instanceof Node ? opts.extraNode : null;
   const autoDanger = _cfIsDeleteMessage(message);
   const isDanger = opts.danger !== undefined ? !!opts.danger : autoDanger;
   const defaultOk = isDanger ? (autoDanger && /削除/.test(String(message)) ? '削除' : '実行') : '決定';
@@ -1118,6 +1126,11 @@ function cfConfirm(message, options) {
         <button id="_gb-ok" class="gb-btn gb-btn-sm ${okVariant}">${esc(okLabel)}</button>
       </div>
     </div>`;
+    if (extraNode) {
+      const dialog = o.querySelector('.gb-confirm');
+      const actions = o.querySelector('.gb-confirm-actions');
+      if (dialog && actions) dialog.insertBefore(extraNode, actions);
+    }
     document.body.appendChild(o);
     _enhanceCfDialog(o, 'cf-confirm', '確認');
     let done = false;

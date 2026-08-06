@@ -54,9 +54,9 @@
   internals._isProductionProtectedStructurePath = _isProductionProtectedStructurePath;
   internals._rejectProductionStructureMutation = _rejectProductionStructureMutation;
 
-  const SECRET_FILE = '_meldex/secrets/llm-api-keys.v1.json';
+  const SECRET_FILE = '/MeldexSettings/secrets/v1/llm-api-keys.v1.json';
   const CALENDAR_STORE_DIR = '_calendar';
-  const VERSION_FOLDER_DIR = '_meldex/versions/folders';
+  const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
   const CALENDAR_DB_FIELDS = [
     'title', 'uid', 'ical_uid', 'start', 'end', 'all_day', 'color', 'location', 'url', 'description',
     'recurrence', 'alert_minutes', 'calendar_id', 'creator', 'members',
@@ -182,6 +182,36 @@
     return { path: note, ...parsed };
   }
 
+  // 計算列（読み取り専用・コードが更新する列）: フォルダノートの computed_props 宣言を
+  // 読み、Desktop側 _reject_computed_property_edit() と同じ拒否をCloud保存経路にも掛ける
+  // （多層防御。内部の再計算フックはこの経路を通らずフロントマターを直接書くため対象外）。
+  async function _computedPropsForSheet(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const raw = note?.frontmatter?.computed_props;
+      if (!Array.isArray(raw)) return [];
+      return raw.map(name => String(name || '').trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  async function _rejectComputedPropertyEdit(provider, dbPath, propNames) {
+    const computed = await _computedPropsForSheet(provider, dbPath);
+    if (!computed.length) return;
+    const set = new Set(computed);
+    const names = (Array.isArray(propNames) ? propNames : [propNames])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    if (!names.some(name => set.has(name))) return;
+    const error = new Error('この列は自動計算のため直接編集できません');
+    error.status = 403;
+    error.code = 'COMPUTED_PROPERTY_READONLY';
+    throw error;
+  }
+
+  internals._rejectComputedPropertyEdit = _rejectComputedPropertyEdit;
+
   async function _ensureFolderNote(provider, folderPath, type) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
@@ -191,13 +221,19 @@
     const existing = await _readFrontmatterFile(provider, note);
     const frontmatter = { ...(existing.frontmatter || {}) };
     if (!frontmatter.type) frontmatter.type = type || 'settings-db';
+    // 制作管理シート（制作管理/シート/*）は「物理.md＝正」が全ロジック（Cloud/Desktopの
+    // 一覧・重複チェック・再計算・同期フック）の不変条件のため、sheet-store化しない
+    // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 1）。
+    const productionSheet = _isProductionManagementSheetMetadataPath(folder);
     if (frontmatter.type === 'settings-db') {
       if (!frontmatter.schema_version) frontmatter.schema_version = 1;
-      if (!frontmatter.storage) frontmatter.storage = 'sqlite';
-      if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      if (!productionSheet) {
+        if (!frontmatter.storage) frontmatter.storage = 'sqlite';
+        if (!frontmatter.cloud_storage) frontmatter.cloud_storage = 'sheet-store-v1';
+      }
     }
     await _writeFrontmatterFile(provider, note, frontmatter, existing.body || `# ${name}\n\n`);
-    if (frontmatter.type === 'settings-db') await _ensureSheetStore(provider, folder);
+    if (frontmatter.type === 'settings-db' && !productionSheet) await _ensureSheetStore(provider, folder);
     return note;
   }
 
@@ -680,6 +716,51 @@
     };
   }
 
+  // 制作管理UX改善計画（2026-08-04）Stage 4: window.MeldexProductionManagement.
+  // applyTaskNameAutoRenameOnValueUpdate が返す rename_info を /value レスポンスへ合流させる。
+  // Desktop meldex_api_database.part01.py の attach_auto_task_rename_result と同じ契約
+  // （path/file/new_path/auto_renamed_entry）を返す。gb-db-core.js の _apiPutValue /
+  // _apiPostValue は既にこの契約を汎用的に消費するため（_dbApplyAutoTaskRenameResult /
+  // res.new_path でのvalObj.file更新）、フロント側の追加対応は不要。
+  function _attachAutoTaskRenameResult(result, renameInfo) {
+    if (!result || typeof result !== 'object' || !renameInfo || !renameInfo.auto_generated) return result;
+    result.auto_renamed_entry = renameInfo;
+    const newPath = String(renameInfo.new_path || '');
+    if (newPath) {
+      result.path = newPath;
+      result.file = newPath;
+      result.new_path = newPath;
+    }
+    return result;
+  }
+
+  // 制作管理UX改善計画（2026-08-04）コミット前レビュー指摘 #1: セル保存の4関数（本ファイル）が
+  // await している制作管理フック（目標作業時間の再計算・タスク名自動リネーム）は、あくまで
+  // 保存後の追従処理であり、フックが例外を投げてもセル本体の保存は必ず成功させる
+  // （Desktop meldex_production_sheet_sync_hooks.sync_after_sheet_value_edit が全体を
+  // try/except で包み「保存を守る」意味論と同じにする）。フック失敗はconsole.warnに記録する
+  // だけで、呼び出し元へは伝播させない。
+  async function _pmSafeApplyDurationRecalcHook(provider, path, frontmatter, changedProperty) {
+    try {
+      await window.MeldexProductionManagement?.applyTaskDurationRecalcOnValueUpdate?.(
+        provider, path, frontmatter, changedProperty,
+      );
+    } catch (err) {
+      console.warn('制作管理: 目標作業時間の再計算フックが失敗しました（セル保存は続行します）:', err);
+    }
+  }
+
+  async function _pmSafeApplyTaskNameAutoRenameHook(provider, path, frontmatter) {
+    try {
+      return await window.MeldexProductionManagement?.applyTaskNameAutoRenameOnValueUpdate?.(
+        provider, path, frontmatter,
+      );
+    } catch (err) {
+      console.warn('制作管理: タスク名自動リネームフックが失敗しました（セル保存は続行します）:', err);
+      return null;
+    }
+  }
+
   async function _updateSheetStoreValue(provider, path, body) {
     let stored = null;
     try {
@@ -693,10 +774,17 @@
       throw new Error(`エントリが見つかりません: ${path}`);
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addSheetStoreValue(provider, body) {
@@ -706,6 +794,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
+    await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
@@ -719,8 +808,14 @@
     list.push(candidate);
     props[prop] = list;
     stored.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, stored.path, stored.frontmatter, prop,
+    );
     await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
-    return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, stored.path, stored.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _updateValue(provider, path, body) {
@@ -744,9 +839,16 @@
       await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
       return { ok: true };
     }
+    await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     const applied = _applySettingsEntryValueUpdate(parsed, normalized, body || {});
+    await _pmSafeApplyDurationRecalcHook(
+      provider, normalized, parsed.frontmatter, String(body?.property || ''),
+    );
     await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
-    return applied.result;
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, normalized, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult(applied.result, renameInfo);
   }
 
   async function _addValue(provider, body) {
@@ -755,6 +857,7 @@
     const prop = String(body?.property || '');
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
+    await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
@@ -772,8 +875,14 @@
     list.push(candidate);
     props[prop] = list;
     parsed.frontmatter.properties = props;
+    await _pmSafeApplyDurationRecalcHook(
+      provider, entryPath, parsed.frontmatter, prop,
+    );
     await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
-    return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+    const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
+      provider, entryPath, parsed.frontmatter,
+    );
+    return _attachAutoTaskRenameResult({ ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 }, renameInfo);
   }
 
   async function _createEntity(provider, body) {
@@ -783,6 +892,9 @@
     _rejectProductionReservedLegacyPropertyObject(parent, body?.properties);
     await _requireUnlocked(provider, parent, { action: 'create-entity-parent' });
     await _ensureFolderNote(provider, parent, 'settings-db');
+    // 汚染済みの制作管理シートは、この時点で修復してから保存方式を判定する
+    // （storeが消え useStore が偽＝物理.md書き込みになる。非制作管理シートは即no-op）。
+    await _repairProductionSheetStoreIfNeeded(provider, parent);
     const useStore = (await _sheetStoreMode(provider, parent)).enabled;
     const targetName = useStore ? await _uniqueSheetEntryStem(provider, parent, name) : await _uniqueName(provider, parent, name, '.md');
     const path = _joinPath(parent, targetName + '.md');
@@ -791,7 +903,7 @@
     const frontmatter = {
       type: 'settings-entry',
       id: 'ent_' + _randomId('').replace(/[^a-z0-9]/gi, '').slice(0, 12),
-      category: _basename(parent),
+      category: String(body?.category || _basename(parent)),
       created: now,
       created_by: String(body?.user || 'anonymous'),
       properties: _normalizeCreateProperties(body?.properties || {}),
@@ -799,6 +911,7 @@
       source: body?.source || '',
       reviewed: body?.reviewed === true,
     };
+    await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
     if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
     else await _writeFrontmatterFile(provider, path, frontmatter, '');
     return {
@@ -984,6 +1097,9 @@
       validation_rules: Array.isArray(fm.validation_rules) ? fm.validation_rules : [],
       storage: fm.storage || '',
       cloud_storage: fm.cloud_storage || '',
+      // 計算列（読み取り専用・コードが更新する列）宣言。追加のみの後方互換キー
+      // （旧版はこのキーを無視して読める。制作管理UX改善計画§5-1）。
+      computed_props: Array.isArray(fm.computed_props) ? fm.computed_props : [],
     };
   }
 
@@ -1016,6 +1132,74 @@
       && parts[sheetIndex + 1] === 'シート'
       && !!parts[sheetIndex + 2];
   }
+
+  // 制作管理シートの暗黙sheet-store化（ストア汚染）の修復
+  // （production-sheet-store-contamination-fix-plan-2026-08-05.md Phase 2）。
+  // v0.6.120〜v0.7.146 の /entity/create・CSV取込・/db-metadata が制作管理シートを
+  // sheet-store化してしまった場合に、(1) store行の物理.md化 (2) storeファイル削除
+  // (3) フォルダノートの storage系キー除去 を行い「物理.md＝正」の不変条件へ戻す。冪等。
+  // 修復ルール: 物理.mdが無い行→storeの内容で物理化 / 物理があり id 一致（または判定
+  // 不能）→物理を正としてstore行を破棄（セル編集は _writeEntity が物理とstoreの両方へ
+  // 書くため物理は常にstore以上に新しい）/ 物理があり id 不一致（同一パス衝突）→
+  // store行は別エントリのユーザーデータなので一意名で物理化して退避（破棄しない）。
+  const PRODUCTION_SQLITE_STORAGE_KEYS = ['storage', 'sheet_storage', 'entry_storage', 'storage_backend'];
+
+  function _scrubProductionStorageKeys(frontmatter) {
+    let changed = false;
+    PRODUCTION_SQLITE_STORAGE_KEYS.forEach((key) => {
+      if (String(frontmatter[key] || '').toLowerCase() === 'sqlite') {
+        delete frontmatter[key];
+        changed = true;
+      }
+    });
+    if (String(frontmatter.cloud_storage || '').toLowerCase() === 'sheet-store-v1') {
+      delete frontmatter.cloud_storage;
+      changed = true;
+    }
+    return changed;
+  }
+
+  async function _repairProductionSheetStoreIfNeeded(provider, dbPath) {
+    const base = _normalizeFolderPath(dbPath);
+    if (!_isProductionManagementSheetMetadataPath(base)) return { repaired: false };
+    const storePath = _sheetStorePath(base);
+    const storeEntry = await _resolveEntryHandle(provider, storePath).catch(() => null);
+    let materialized = 0;
+    if (storeEntry?.kind === 'file') {
+      const store = _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), base);
+      for (const row of Object.values(store.rows || {})) {
+        const fileName = _sheetStoreFileName(row?.file_name || row?.path || row?.name || '');
+        if (!fileName || fileName.startsWith('_') || fileName === _basename(base) + '.md') continue;
+        const rowFrontmatter = { ...(row?.frontmatter || {}) };
+        if (String(rowFrontmatter.type || '') !== 'settings-entry') continue;
+        const filePath = _joinPath(base, fileName);
+        const physical = await _resolveEntryHandle(provider, filePath).catch(() => null);
+        if (!physical || physical.kind !== 'file') {
+          await _writeFrontmatterFile(provider, filePath, rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+          continue;
+        }
+        const parsed = await _readFrontmatterFile(provider, filePath);
+        const physicalId = String(parsed.frontmatter?.id || '');
+        const rowId = String(rowFrontmatter.id || '');
+        if (physicalId && rowId && physicalId !== rowId) {
+          const stem = await _uniqueName(provider, base, fileName.replace(/\.md$/i, ''), '.md');
+          await _writeFrontmatterFile(provider, _joinPath(base, stem + '.md'), rowFrontmatter, String(row?.body || ''));
+          materialized += 1;
+        }
+      }
+      await provider.deletePath(storePath);
+    }
+    const notePath = _joinPath(base, _basename(base) + '.md');
+    const note = await _readFrontmatterFile(provider, notePath);
+    const noteFrontmatter = { ...(note.frontmatter || {}) };
+    if (Object.keys(noteFrontmatter).length && _scrubProductionStorageKeys(noteFrontmatter)) {
+      await _writeFrontmatterFile(provider, notePath, noteFrontmatter, note.body || `# ${_basename(base)}\n\n`);
+    }
+    return { repaired: storeEntry?.kind === 'file', materialized };
+  }
+
+  internals._repairProductionSheetStoreIfNeeded = _repairProductionSheetStoreIfNeeded;
 
   const PRODUCTION_RESERVED_LEGACY_PROPERTIES = Object.freeze({
     '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
@@ -1131,6 +1315,8 @@
     }
     await _requireUnlocked(provider, target, { action: 'db-metadata' });
     await _ensureFolderNote(provider, target, 'settings-db');
+    // 汚染済みの制作管理シートは列設定保存でも自己修復する（ノート浄化後に読み直す）
+    await _repairProductionSheetStoreIfNeeded(provider, target);
     const notePath = await _folderNotePath(provider, target);
     const parsed = await _readFrontmatterFile(provider, notePath);
     const fm = { ...(parsed.frontmatter || {}) };
@@ -1155,12 +1341,14 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
     if (!fm.type) fm.type = 'settings-db';
-    if (fm.type === 'settings-db') {
+    // 制作管理シートはsheet-store化しない（_ensureFolderNote と同じ不変条件。
+    // 保存方式の明示変更自体は _rejectProductionStructuralMetadataChanges が既に拒否する）。
+    if (fm.type === 'settings-db' && !_isProductionManagementSheetMetadataPath(target)) {
       if (!fm.storage) fm.storage = 'sqlite';
       if (!fm.cloud_storage) fm.cloud_storage = 'sheet-store-v1';
       await _ensureSheetStore(provider, target);

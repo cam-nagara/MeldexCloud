@@ -1,11 +1,19 @@
-/* gb-scheduler.js — 定期自動実行の共通スケジューラ
+/* gb-scheduler.js — 定期自動実行の周期選択UIウィジェット（表示専用）
    分間隔 / 毎日（時刻） / 毎週（曜日+時刻） / 毎月（日+時刻）
-   各取込・同期機能が共有する UI ウィジェットとタイマー管理 */
+
+   WebClipper・インポート定期実行計画 2026-08-04「永続スケジューラー」節により、
+   実行そのもの（setInterval/setTimeoutでの自己実行）はここでは行わない。
+   Meldexを開いている間しか動かないブラウザータイマーは、再起動・スリープ・
+   画面未表示・予定の取りこぼしに対応できないため廃止した。
+   実行判断と次回予定の計算はバックエンド（meldex_import_scheduler.py）が担い、
+   共通API（/api/import-schedules）へ委譲する。本ファイルは周期の選択UIと、
+   保存前のプレビュー表示（nextRunText）だけを提供する。
+   実際に確定した次回予定・前回結果はバックエンドの応答（next_run_display等）を
+   表示すること。 */
 
 (function () {
   'use strict';
 
-  const _timers = {};   // key → { id, type:'interval'|'timeout', config, execute }
   const _DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 
   // === スケジュール設定の既定値 ===
@@ -92,44 +100,6 @@
     return '';
   }
 
-  // === タイマー管理 ===
-  function _clearTimer(key) {
-    const existing = _timers[key];
-    if (!existing) return;
-    if (existing.type === 'interval') clearInterval(existing.id);
-    else clearTimeout(existing.id);
-    delete _timers[key];
-  }
-
-  function createTimer(key, config, execute) {
-    _clearTimer(key);
-    const c = normalize(config);
-    if (c.type === 'off' || typeof execute !== 'function') return;
-
-    if (c.type === 'interval') {
-      const ms = c.interval_minutes * 60000;
-      _timers[key] = { id: setInterval(execute, ms), type: 'interval', config: c, execute };
-      return;
-    }
-
-    function scheduleNext() {
-      const next = nextRunDate(c);
-      if (!next) return;
-      const delay = Math.max(next.getTime() - Date.now(), 1000);
-      _timers[key] = {
-        id: setTimeout(() => { execute(); scheduleNext(); }, delay),
-        type: 'timeout', config: c, execute,
-      };
-    }
-    scheduleNext();
-  }
-
-  function destroyTimer(key) { _clearTimer(key); }
-
-  function destroyAll() {
-    Object.keys(_timers).forEach(_clearTimer);
-  }
-
   // === UI ウィジェット ===
   function createWidget(container, config, onChange) {
     if (!container) return;
@@ -177,6 +147,11 @@
     const summaryEl = document.createElement('div');
     summaryEl.className = 'gb-scheduler-summary gb-section-desc';
     wrap.appendChild(summaryEl);
+
+    const statusEl = document.createElement('div');
+    statusEl.className = 'gb-scheduler-status gb-section-desc';
+    statusEl.dataset.e2eId = idBase + '-status';
+    wrap.appendChild(statusEl);
 
     function getCurrentConfig() {
       const type = typeSelect.value;
@@ -291,7 +266,15 @@
 
     container.innerHTML = '';
     container.appendChild(wrap);
-    return { getCurrentConfig };
+    return {
+      getCurrentConfig,
+      // バックエンドが確定した次回予定・前回結果を表示する（保存直後や
+      // 一覧再読み込み時に、ローカル計算のプレビューではなく信頼できる値へ
+      // 差し替えるために使う）。文字列以外を渡すと表示をクリアする。
+      setStatusText(text) {
+        statusEl.textContent = typeof text === 'string' ? text : '';
+      },
+    };
   }
 
   // === CSS ===
@@ -306,6 +289,8 @@
       .gb-scheduler-detail { display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-height:0; }
       .gb-scheduler-detail:empty { display:none; }
       .gb-scheduler-summary { font-size:11px; color:var(--fg2); margin:0; }
+      .gb-scheduler-status { font-size:11px; color:var(--fg2); margin:0; }
+      .gb-scheduler-status:empty { display:none; }
       .gb-scheduler-time { width:100px; font-size:12px; padding:2px 4px; }
       .gb-scheduler-dom { width:120px; font-size:12px; padding:2px 4px; }
       .gb-scheduler-dow-row { display:flex; gap:2px; flex-wrap:wrap; }
@@ -323,5 +308,5 @@
     _injectCSS();
   }
 
-  window.MeldexScheduler = { normalize, nextRunDate, nextRunText, createTimer, destroyTimer, destroyAll, createWidget };
+  window.MeldexScheduler = { normalize, nextRunDate, nextRunText, createWidget };
 })();

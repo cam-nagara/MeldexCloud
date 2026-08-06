@@ -72,7 +72,6 @@ function _bdSnapshot() {
     themeId: bd.themeId || '',
     statuses: bd.statuses,
     displayFilters: bd.displayFilters,
-    tagFilter: bd.tagFilter,
     globalStyleDefaults: typeof bdCaptureGlobalStyleDefaults === 'function' ? bdCaptureGlobalStyleDefaults() : null,
     _numbering: bd._numbering || false,
     _bgColor: bd._bgColor || '',
@@ -120,7 +119,6 @@ function _bdApplySnapshot(s) {
   bd.themeId = s.themeId || '';
   if (s.statuses !== undefined) bd.statuses = s.statuses;
   if (s.displayFilters !== undefined) bd.displayFilters = s.displayFilters || {};
-  if (s.tagFilter !== undefined) bd.tagFilter = Array.isArray(s.tagFilter) ? s.tagFilter : [];
   if (s.globalStyleDefaults !== undefined && typeof bdRestoreGlobalStyleDefaults === 'function') {
     bdRestoreGlobalStyleDefaults(s.globalStyleDefaults);
   }
@@ -203,6 +201,13 @@ async function bdOpenBoard(label, path, opts) {
   const titleEl = document.getElementById('bd-title');
   const prevTitle = titleEl ? titleEl.textContent : '';
   const nextPath = path || '';
+  const coordinator = window.MeldexDocumentSaveCoordinator;
+  let documentKeyAtOpen = coordinator ? coordinator.documentKeyForPath(nextPath) : nextPath;
+  const conflictGenerationAtOpen = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    ? openOpts.conflictGeneration
+    : null;
+  const requireExactConflictGeneration = Object.prototype.hasOwnProperty.call(openOpts, 'conflictGeneration')
+    && conflictGenerationAtOpen != null;
   const openSeq = (bd._openSeq || 0) + 1;
   bd._openSeq = openSeq;
   const isCurrentOpenRequest = () => bd._openSeq === openSeq && bdIsCurrentBoardOpenRequest(nextPath);
@@ -251,7 +256,6 @@ async function bdOpenBoard(label, path, opts) {
   bd._numbering = false;
   bd.statuses = (typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : [];
   bd.statusFilter = '';
-  bd.tagFilter = [];
   bd.zoom = 1;
   bd.panX = bd.panY = 0;
   bd.rotation = 0;
@@ -279,6 +283,12 @@ async function bdOpenBoard(label, path, opts) {
       'ボードファイル読み込み'
     );
     if (bd._openSeq !== openSeq || !bdIsCurrentBoardOpenRequest(nextPath)) return false;
+    // 読込応答のasset/provider IDを文書キーへ束縛し、移動・改名の前後で
+    // single-flight/競合世代が別文書として分裂しないようにする。
+    if (coordinator) {
+      documentKeyAtOpen = coordinator.bindDocumentIdentity(nextPath, data) || documentKeyAtOpen;
+      coordinator.registerParticipant(documentKeyAtOpen, bd);
+    }
     const raw = data.content || '';
     if (typeof showLoadingBeforeHeavyWork === 'function') {
       await showLoadingBeforeHeavyWork(raw, '大きいボードを描画中...');
@@ -291,8 +301,22 @@ async function bdOpenBoard(label, path, opts) {
       throw new Error('ボード形式ファイルではありません');
     }
     const parsed = bdParseMd(raw);
+    if (
+      requireExactConflictGeneration
+      && coordinator?.getConflict?.(documentKeyAtOpen)?.generation !== conflictGenerationAtOpen
+    ) {
+      throw new Error('ボードの競合状態が更新されたため、再読込を中止しました');
+    }
     bd.path = nextPath;
     bd._loadedBoardPath = nextPath;
+    // 工程2-C項目2: 読込時のetagを保持する（保存コーディネーター経由のif_match_etag送信に使う）。
+    bd.lastSavedEtag = data.etag || '';
+    bd.lastSavedTransportRevision = coordinator
+      ? coordinator.normalizeTransportRevision(
+        coordinator.currentTransportName(),
+        data.transport_revision || data.etag || '',
+      )
+      : (data.etag || '');
     // フェーズ3-3: 読み込み直後のパスで取り消し履歴スコープを確定させる
     // （読み込み前に呼んだ bdClearUndoStacks() は「切替前のボード」のスコープを掃除するだけ
     //  なので、ここで新パスのスコープも明示的に掃除し、履歴パネルのアクティブスコープを合わせる）。
@@ -347,7 +371,6 @@ async function bdOpenBoard(label, path, opts) {
     bd._stylePresetSeedVersion = parsed.boardUi?.stylePresetSeedVersion || 0;
     bd.themeId = parsed.boardUi?.themeId || '';
     bd.displayFilters = parsed.boardUi?.displayFilters || {};
-    bd.tagFilter = Array.isArray(parsed.boardUi?.tagFilter) ? parsed.boardUi.tagFilter : [];
     bd._showShadow = !!parsed.boardUi?.showShadow;
     bd._textRotateOnLine = !!parsed.boardUi?.textRotateOnLine;
     if (typeof MeldexThemeMigration !== 'undefined' && typeof MeldexThemeMigration.migrateBoardState === 'function') {
@@ -411,6 +434,16 @@ async function bdOpenBoard(label, path, opts) {
     if (bd.nodes.length > 5) bdFitAll();
     else bdTransform();
     showStatus('\u30ad\u30e3\u30f3\u30d0\u30b9: ' + label);
+    // 競合確認からの明示的な再読込だけを、全描画と後続UI更新の成功後に
+    // 解決済みとする。通常のタブ表示や、途中で失敗した読込で保留状態を消さない。
+    if (coordinator && conflictGenerationAtOpen != null) {
+      const resolved = coordinator.resolveConflict(documentKeyAtOpen, conflictGenerationAtOpen);
+      if (!resolved) throw new Error('ボードの競合状態が更新されたため、再読込を確定できません');
+      window.MeldexConflictPendingBanner?.hide?.(documentKeyAtOpen);
+    } else if (coordinator?.getConflict?.(documentKeyAtOpen)) {
+      // 再起動/再読込を跨いだ保留競合は、本文を自動送信せず非モーダル導線だけ復元する。
+      _bdShowConflictPending(documentKeyAtOpen, nextPath);
+    }
     _bdPendingOpenRollback = null;
     return true;
   } catch (err) {
