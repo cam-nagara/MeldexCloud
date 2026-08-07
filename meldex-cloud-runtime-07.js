@@ -23768,8 +23768,13 @@ function settingsThemeNoteContentMaxWidthChanged(value) {
 
 function _settingsThemeRefreshActionStates(root) {
   const custom = _settingsThemeIsCustom();
+  // data-action は「探すための目印」として読むだけで、値を差し込んで書き出してはいない。
+  // ただしセレクタ文字列へのテンプレート補間は静的検査（js-template-data-handler）に
+  // 引っかかるため、属性値の比較で同じことをする。
   const setDisabled = (action, disabled) => {
-    (root || document).querySelectorAll(`[data-action="${action}"]`).forEach(btn => { btn.disabled = disabled; });
+    (root || document).querySelectorAll('[data-action]').forEach(btn => {
+      if (btn.getAttribute('data-action') === action) btn.disabled = disabled;
+    });
   };
   setDisabled('settingsThemeRename()', !custom);
   setDisabled('settingsThemeSave()', !custom);
@@ -141789,6 +141794,10 @@ function setSystemLockedItems(paths) {
   _systemLockedItemPaths = Array.isArray(paths)
     ? paths.map(_normalizeLockedItemPath).filter(Boolean)
     : [];
+  // ロック一覧が確定した時点で、閲覧専用ファイルに残っている未保存ドラフトを掃除する。
+  // 起動直後（1.8秒）の時点ではまだここに到達していないことがあり、掃除が空振りしたまま
+  // 「未保存の編集があります」が出ていた。
+  try { window.MeldexDraftRecovery?.notifySystemLocksLoaded?.(); } catch (_) {}
 }
 function isSystemLockedItem(path) {
   return _pathOrAncestorIn(_systemLockedItemPaths, path);
@@ -159109,7 +159118,10 @@ const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フ
 // だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
 // ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
 const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
-const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
+// 共有設定（プロフィール等）の読み書きも Dropbox 同期フォルダ上のファイルを触るため、
+// 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
+// （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
+const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 function _gbAppApiFetchDefaultTimeout(path) {
   const pathname = String(path || '').split('?')[0];
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)

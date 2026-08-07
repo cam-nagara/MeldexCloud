@@ -1,3 +1,7 @@
+// アイテムを指定パス配下に追加（部分更新、チラつき防止）
+async function addItemAt(parentPath, type) {
+  if (_isCloudPhase1BlockedCreateType(type)) {
+    _showCloudPhase1BlockedCreate(type);
     return;
   }
   const label = '無題';

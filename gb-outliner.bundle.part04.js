@@ -1,3 +1,7 @@
+  if (!_outlinerPathIsAbsolute(path)) {
+    const rootNode = nodeEl?.closest?.('#outliner-tree > .tree-node');
+    const rootPath = rootNode?._nodeData?.path || '';
+    const base = nodeEl?.closest?.('#body-home') && _homeFolderPath
       ? _homeFolderPath
       : (rootPath || (typeof state !== 'undefined' ? state.vaultPath : ''));
     if (base && _outlinerPathIsAbsolute(base)) path = _outlinerJoinPath(base, path);
@@ -893,8 +897,3 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
     _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
   }
 }
-
-// アイテムを指定パス配下に追加（部分更新、チラつき防止）
-async function addItemAt(parentPath, type) {
-  if (_isCloudPhase1BlockedCreateType(type)) {
-    _showCloudPhase1BlockedCreate(type);

@@ -933,6 +933,10 @@ function setSystemLockedItems(paths) {
   _systemLockedItemPaths = Array.isArray(paths)
     ? paths.map(_normalizeLockedItemPath).filter(Boolean)
     : [];
+  // ロック一覧が確定した時点で、閲覧専用ファイルに残っている未保存ドラフトを掃除する。
+  // 起動直後（1.8秒）の時点ではまだここに到達していないことがあり、掃除が空振りしたまま
+  // 「未保存の編集があります」が出ていた。
+  try { window.MeldexDraftRecovery?.notifySystemLocksLoaded?.(); } catch (_) {}
 }
 function isSystemLockedItem(path) {
   return _pathOrAncestorIn(_systemLockedItemPaths, path);

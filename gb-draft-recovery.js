@@ -8,6 +8,22 @@
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
   let recoveryRetryTimer = 0;
+  // 編集ロック一覧（マニュアル等のシステム保護）がまだ読み込まれていない間は、
+  // ロック済みパスの残留ドラフトを掃除できない。起動1.8秒時点ではホームフォルダの
+  // 読み込みが終わっていないことがあり、掃除が空振りしたまま「未保存の編集があります」
+  // が出てしまう（実機で再現）。読み込み完了まで待ってから出す。
+  let systemLocksReady = false;
+  // ダイアログを一度出した／出す必要が無いと判断した、の印。ロック一覧の再読込を
+  // きっかけにダイアログが勝手に復活するのを防ぐ。
+  let startupPromptSettled = false;
+  let lockWaitAttempts = 0;
+  const MAX_LOCK_WAIT_ATTEMPTS = 20; // 700ms × 20 ≒ 14秒で諦めて表示する
+
+  function _systemLocksPending() {
+    // setSystemLockedItems が無い環境（単独アプリ等）はロックの概念自体が無いので待たない
+    if (typeof setSystemLockedItems !== 'function') return false;
+    return !systemLocksReady && lockWaitAttempts < MAX_LOCK_WAIT_ATTEMPTS;
+  }
 
   function _hasBlockingStartupDialog() {
     return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, .meldex-sample-install-overlay');
@@ -259,9 +275,44 @@
     return (drafts || []).filter(item => !locked.includes(item));
   }
 
+  // 編集ロック一覧の読み込みが終わったときに呼ばれる。ロック済みパスの残留ドラフトを
+  // 掃除し、既にダイアログが開いていれば該当行を消す（全部消えたら閉じる）。
+  async function notifySystemLocksLoaded() {
+    systemLocksReady = true;
+    const remaining = await _pruneLockedDrafts(await listDrafts());
+    const overlay = document.querySelector('[data-draft-recovery-dialog="1"]');
+    if (!overlay) {
+      if (recoveryRetryTimer) {
+        clearTimeout(recoveryRetryTimer);
+        recoveryRetryTimer = 0;
+      }
+      // 一度出した（あるいは出す必要が無いと判断した）あとは出し直さない。
+      // setSystemLockedItems は設定画面やツリー更新でも呼ばれるため、ここで無条件に
+      // 開くと、ユーザーが閉じたダイアログが操作のたびに復活してしまう。
+      if (remaining.length && !startupPromptSettled) showRecoveryDialog().catch(() => {});
+      return;
+    }
+    const alive = new Set(remaining.map(item => String(item.path || '')));
+    overlay.querySelectorAll('[data-draft-row]').forEach((row) => {
+      const label = row.querySelector('.draft-recovery-meta')?.getAttribute('title') || '';
+      if (label && !alive.has(label)) row.remove();
+    });
+    if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
+  }
+
   async function showRecoveryDialog() {
     const drafts = await _pruneLockedDrafts(await listDrafts());
-    if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
+    if (!drafts.length) {
+      startupPromptSettled = true;
+      return;
+    }
+    if (document.querySelector('[data-draft-recovery-dialog="1"]')) return;
+    if (_systemLocksPending()) {
+      // ロック一覧が来る前に出すと、閲覧専用ファイルの残骸まで一緒に出てしまう
+      lockWaitAttempts += 1;
+      _scheduleRecoveryRetry();
+      return;
+    }
     if (_hasBlockingStartupDialog()) {
       _scheduleRecoveryRetry();
       return;
@@ -321,6 +372,7 @@
       }
     });
     document.body.appendChild(overlay);
+    startupPromptSettled = true;
   }
 
   function scheduleStartupCheck() {
@@ -336,6 +388,7 @@
     listDrafts,
     showRecoveryDialog,
     scheduleStartupCheck,
+    notifySystemLocksLoaded,
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scheduleStartupCheck, { once: true });

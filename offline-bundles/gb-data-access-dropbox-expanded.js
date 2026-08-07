@@ -3186,6 +3186,15 @@
       return _renameEntity(await _requirePwaProvider('readwrite'), body || {});
     }
     if (pathname === '/import-csv' && method === 'POST') return _importCsvToDb(await _requirePwaProvider('readwrite'), body || {});
+    // 画像列を編集するたびに呼ばれる後始末（画像の参照一覧の作り直し）。クラウド版では
+    // 保存先全体を走査する処理を行わない（Dropbox越しの全走査は現実的な時間で終わらない）。
+    // 参照一覧はデスクトップ版の不要画像の掃除だけが使うため、ここで何もしなくても
+    // データは壊れない。**ただし空の参照一覧を書き戻してはならない**（掃除が
+    // 「どこからも参照されていない」と誤判定して実データを消しうる）。
+    // 未配線のままだと画像セルを触るたびに「操作を完了できませんでした」が出る。
+    if (pathname === '/media/rebuild-refs' && method === 'POST') {
+      return { ok: true, refs: {}, hash_count: 0, skipped: true, reason: 'cloud-no-index-rebuild' };
+    }
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});

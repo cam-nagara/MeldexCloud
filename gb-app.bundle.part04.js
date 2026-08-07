@@ -1,3 +1,6 @@
+function _highlightLastOutlinerNodeAfterStartup() {
+  setTimeout(() => {
+    const last = _readLastViewFromStorage();
     if (!last) return;
     const p = last.path || last.dbPath || last.entityPath || '';
     if (p) highlightOutlinerNode(p);
@@ -895,6 +898,3 @@ function _buildCfDialogBody(message) {
 // - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
 // - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
 function _cfIsDeleteMessage(text) {
-  // 破壊的操作を示唆するキーワード。
-  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
-  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。

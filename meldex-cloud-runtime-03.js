@@ -22755,6 +22755,15 @@
       return _renameEntity(await _requirePwaProvider('readwrite'), body || {});
     }
     if (pathname === '/import-csv' && method === 'POST') return _importCsvToDb(await _requirePwaProvider('readwrite'), body || {});
+    // 画像列を編集するたびに呼ばれる後始末（画像の参照一覧の作り直し）。クラウド版では
+    // 保存先全体を走査する処理を行わない（Dropbox越しの全走査は現実的な時間で終わらない）。
+    // 参照一覧はデスクトップ版の不要画像の掃除だけが使うため、ここで何もしなくても
+    // データは壊れない。**ただし空の参照一覧を書き戻してはならない**（掃除が
+    // 「どこからも参照されていない」と誤判定して実データを消しうる）。
+    // 未配線のままだと画像セルを触るたびに「操作を完了できませんでした」が出る。
+    if (pathname === '/media/rebuild-refs' && method === 'POST') {
+      return { ok: true, refs: {}, hash_count: 0, skipped: true, reason: 'cloud-no-index-rebuild' };
+    }
     if (pathname === '/db-metadata' && method === 'GET') return _dbMetadata(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
     if (pathname === '/db-metadata' && method === 'PUT') return _putDbMetadata(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
@@ -30498,12 +30507,52 @@ async function _undeleteFileVersion(provider, path, token) {
     return pending;
   }
 
+  // シートの画像列などが持つ `_media/blobs/...` は「ホームフォルダからの相対」で
+  // 記録されている（デスクトップ版はホームフォルダを基準に解決する）。クラウド版は
+  // ソースフォルダ直下として探していたため、実体が
+  // `<ソースフォルダ>/<ホームフォルダ>/_media/...` にあると必ず見つからず、
+  // シートの画像がすべて壊れた画像として表示されていた。
+  // ホームフォルダ基準 → 従来どおりのソースフォルダ直下、の順で探す。
+  function _cloudHomeFolderPath() {
+    try {
+      if (typeof _homeFolderPath === 'string' && _homeFolderPath) return _homeFolderPath;
+    } catch (_) { /* 未定義の環境（単独アプリ等）では localStorage を見る */ }
+    try {
+      const stored = JSON.parse(localStorage.getItem('meldex-cloud-home-folder') || 'null');
+      return String(stored?.path || '');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _mediaPathCandidates(relativePath) {
+    const clean = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!clean.startsWith('_media/')) return [clean];
+    const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!home) return [clean];
+    const homeRelative = `${home}/${clean}`;
+    return homeRelative === clean ? [clean] : [homeRelative, clean];
+  }
+
+  async function _downloadMediaFile(provider, relativePath) {
+    const candidates = _mediaPathCandidates(relativePath);
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        return await provider.downloadAsFile(candidate);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('ファイルを取得できませんでした: ' + relativePath);
+  }
+
   async function providerResponse(url) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     const relativePath = String(url.searchParams.get('path') || '').replace(/^\/+/, '');
     if (url.pathname.endsWith('/file-raw') || url.pathname.endsWith('/media/file')) {
-      const file = await provider.downloadAsFile(relativePath);
+      const file = await _downloadMediaFile(provider, relativePath);
       return new Response(typeof file.stream === 'function' ? file.stream() : await file.arrayBuffer(), {
         status: 200,
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -30518,7 +30567,7 @@ async function _undeleteFileVersion(provider, path, token) {
             headers: { 'Content-Type': thumbnail.type || 'image/jpeg' },
           });
         }
-        const file = await provider.downloadAsFile(relativePath);
+        const file = await _downloadMediaFile(provider, relativePath);
         return new Response(await file.arrayBuffer(), {
           status: 200,
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -30529,13 +30578,17 @@ async function _undeleteFileVersion(provider, path, token) {
       }
     }
     if (url.pathname.endsWith('/file-meta')) {
-      const stat = await provider.statPath(relativePath);
-      if (!stat) return new Response('', { status: 404 });
-      return jsonResponse({
-        created: stat.modified,
-        modified: stat.modified,
-        size: stat.size,
-      });
+      for (const candidate of _mediaPathCandidates(relativePath)) {
+        const stat = await provider.statPath(candidate).catch(() => null);
+        if (stat) {
+          return jsonResponse({
+            created: stat.modified,
+            modified: stat.modified,
+            size: stat.size,
+          });
+        }
+      }
+      return new Response('', { status: 404 });
     }
     return null;
   }
@@ -30720,6 +30773,13 @@ async function _undeleteFileVersion(provider, path, token) {
       return jsonResponse({ error: detail.message, detail }, status);
     }
   };
+
+  // `_media/...`（ホームフォルダ相対）の探索先候補。画像URLを組み立てる
+  // gb-cloud-file-url.js からも同じ規則を使うため公開する。
+  window.MeldexCloudMediaPath = {
+    candidates: _mediaPathCandidates,
+    homeFolderPath: _cloudHomeFolderPath,
+  };
 })();
 
 ;
@@ -30897,6 +30957,26 @@ async function _undeleteFileVersion(provider, path, token) {
     return provider;
   }
 
+  // `_media/blobs/...` はホームフォルダからの相対で記録されているため、
+  // ソースフォルダ直下として探すと必ず見つからない（シートの画像列が全滅する）。
+  // gb-cloud-fetch.js が公開する探索先候補（ホームフォルダ基準→ソースフォルダ直下）を
+  // 順に試す。未読込の環境では従来どおり1つだけ試す。
+  async function _getFileWithMediaFallback(provider, normalized) {
+    const candidates = typeof window.MeldexCloudMediaPath?.candidates === 'function'
+      ? window.MeldexCloudMediaPath.candidates(normalized)
+      : [normalized];
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        const handle = await provider.getFileHandle(candidate, { create: false });
+        return await handle.getFile();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('ファイルを取得できませんでした: ' + normalized);
+  }
+
   async function ensureRawUrl(pathLike, options) {
     const opts = options || {};
     const direct = String(pathLike || '').trim();
@@ -30908,8 +30988,7 @@ async function _undeleteFileVersion(provider, path, token) {
     if (!_runtime()?.isDropboxMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
-    const fileHandle = await provider.getFileHandle(normalized, { create: false });
-    const file = await fileHandle.getFile();
+    const file = await _getFileWithMediaFallback(provider, normalized);
     const fileSize = Number(file.size || 0);
     if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
       const cachedLarge = CACHE[normalized];
@@ -42812,6 +42891,22 @@ if (typeof window !== 'undefined') {
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
   let recoveryRetryTimer = 0;
+  // 編集ロック一覧（マニュアル等のシステム保護）がまだ読み込まれていない間は、
+  // ロック済みパスの残留ドラフトを掃除できない。起動1.8秒時点ではホームフォルダの
+  // 読み込みが終わっていないことがあり、掃除が空振りしたまま「未保存の編集があります」
+  // が出てしまう（実機で再現）。読み込み完了まで待ってから出す。
+  let systemLocksReady = false;
+  // ダイアログを一度出した／出す必要が無いと判断した、の印。ロック一覧の再読込を
+  // きっかけにダイアログが勝手に復活するのを防ぐ。
+  let startupPromptSettled = false;
+  let lockWaitAttempts = 0;
+  const MAX_LOCK_WAIT_ATTEMPTS = 20; // 700ms × 20 ≒ 14秒で諦めて表示する
+
+  function _systemLocksPending() {
+    // setSystemLockedItems が無い環境（単独アプリ等）はロックの概念自体が無いので待たない
+    if (typeof setSystemLockedItems !== 'function') return false;
+    return !systemLocksReady && lockWaitAttempts < MAX_LOCK_WAIT_ATTEMPTS;
+  }
 
   function _hasBlockingStartupDialog() {
     return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, .meldex-sample-install-overlay');
@@ -43063,9 +43158,44 @@ if (typeof window !== 'undefined') {
     return (drafts || []).filter(item => !locked.includes(item));
   }
 
+  // 編集ロック一覧の読み込みが終わったときに呼ばれる。ロック済みパスの残留ドラフトを
+  // 掃除し、既にダイアログが開いていれば該当行を消す（全部消えたら閉じる）。
+  async function notifySystemLocksLoaded() {
+    systemLocksReady = true;
+    const remaining = await _pruneLockedDrafts(await listDrafts());
+    const overlay = document.querySelector('[data-draft-recovery-dialog="1"]');
+    if (!overlay) {
+      if (recoveryRetryTimer) {
+        clearTimeout(recoveryRetryTimer);
+        recoveryRetryTimer = 0;
+      }
+      // 一度出した（あるいは出す必要が無いと判断した）あとは出し直さない。
+      // setSystemLockedItems は設定画面やツリー更新でも呼ばれるため、ここで無条件に
+      // 開くと、ユーザーが閉じたダイアログが操作のたびに復活してしまう。
+      if (remaining.length && !startupPromptSettled) showRecoveryDialog().catch(() => {});
+      return;
+    }
+    const alive = new Set(remaining.map(item => String(item.path || '')));
+    overlay.querySelectorAll('[data-draft-row]').forEach((row) => {
+      const label = row.querySelector('.draft-recovery-meta')?.getAttribute('title') || '';
+      if (label && !alive.has(label)) row.remove();
+    });
+    if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
+  }
+
   async function showRecoveryDialog() {
     const drafts = await _pruneLockedDrafts(await listDrafts());
-    if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
+    if (!drafts.length) {
+      startupPromptSettled = true;
+      return;
+    }
+    if (document.querySelector('[data-draft-recovery-dialog="1"]')) return;
+    if (_systemLocksPending()) {
+      // ロック一覧が来る前に出すと、閲覧専用ファイルの残骸まで一緒に出てしまう
+      lockWaitAttempts += 1;
+      _scheduleRecoveryRetry();
+      return;
+    }
     if (_hasBlockingStartupDialog()) {
       _scheduleRecoveryRetry();
       return;
@@ -43125,6 +43255,7 @@ if (typeof window !== 'undefined') {
       }
     });
     document.body.appendChild(overlay);
+    startupPromptSettled = true;
   }
 
   function scheduleStartupCheck() {
@@ -43140,6 +43271,7 @@ if (typeof window !== 'undefined') {
     listDrafts,
     showRecoveryDialog,
     scheduleStartupCheck,
+    notifySystemLocksLoaded,
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', scheduleStartupCheck, { once: true });

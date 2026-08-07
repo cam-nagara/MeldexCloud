@@ -612,8 +612,13 @@ function settingsThemeNoteContentMaxWidthChanged(value) {
 
 function _settingsThemeRefreshActionStates(root) {
   const custom = _settingsThemeIsCustom();
+  // data-action は「探すための目印」として読むだけで、値を差し込んで書き出してはいない。
+  // ただしセレクタ文字列へのテンプレート補間は静的検査（js-template-data-handler）に
+  // 引っかかるため、属性値の比較で同じことをする。
   const setDisabled = (action, disabled) => {
-    (root || document).querySelectorAll(`[data-action="${action}"]`).forEach(btn => { btn.disabled = disabled; });
+    (root || document).querySelectorAll('[data-action]').forEach(btn => {
+      if (btn.getAttribute('data-action') === action) btn.disabled = disabled;
+    });
   };
   setDisabled('settingsThemeRename()', !custom);
   setDisabled('settingsThemeSave()', !custom);

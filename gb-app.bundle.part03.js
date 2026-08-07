@@ -250,7 +250,10 @@ const GB_APP_API_FETCH_TIMEOUT_MS = 15000; // fetch()がハングし続け、フ
 // だとサーバー処理中でもフロントが先に abort して「保存に失敗しました」の偽エラーになる
 // ため、これらは 30秒 を上回る既定タイムアウトにする（明示 timeoutMs があればそちら優先）。
 const GB_APP_API_FETCH_SHEET_TIMEOUT_MS = 35000;
-const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata']);
+// 共有設定（プロフィール等）の読み書きも Dropbox 同期フォルダ上のファイルを触るため、
+// 同じ理由で15秒では足りずに「通信に失敗しました」の偽エラーになることがある
+// （実機で、プロフィール統合の直後に発生。処理自体は成功していた）。
+const GB_APP_API_FETCH_SHEET_ENDPOINTS = new Set(['/value', '/db-metadata', '/dropbox-link/settings-file']);
 function _gbAppApiFetchDefaultTimeout(path) {
   const pathname = String(path || '').split('?')[0];
   return GB_APP_API_FETCH_SHEET_ENDPOINTS.has(pathname)
@@ -894,7 +897,3 @@ function _refreshOutlinerAfterStartupReady() {
     return Promise.resolve(null);
   }
 }
-
-function _highlightLastOutlinerNodeAfterStartup() {
-  setTimeout(() => {
-    const last = _readLastViewFromStorage();

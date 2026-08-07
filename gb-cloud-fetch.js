@@ -133,12 +133,52 @@
     return pending;
   }
 
+  // シートの画像列などが持つ `_media/blobs/...` は「ホームフォルダからの相対」で
+  // 記録されている（デスクトップ版はホームフォルダを基準に解決する）。クラウド版は
+  // ソースフォルダ直下として探していたため、実体が
+  // `<ソースフォルダ>/<ホームフォルダ>/_media/...` にあると必ず見つからず、
+  // シートの画像がすべて壊れた画像として表示されていた。
+  // ホームフォルダ基準 → 従来どおりのソースフォルダ直下、の順で探す。
+  function _cloudHomeFolderPath() {
+    try {
+      if (typeof _homeFolderPath === 'string' && _homeFolderPath) return _homeFolderPath;
+    } catch (_) { /* 未定義の環境（単独アプリ等）では localStorage を見る */ }
+    try {
+      const stored = JSON.parse(localStorage.getItem('meldex-cloud-home-folder') || 'null');
+      return String(stored?.path || '');
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function _mediaPathCandidates(relativePath) {
+    const clean = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!clean.startsWith('_media/')) return [clean];
+    const home = _cloudHomeFolderPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!home) return [clean];
+    const homeRelative = `${home}/${clean}`;
+    return homeRelative === clean ? [clean] : [homeRelative, clean];
+  }
+
+  async function _downloadMediaFile(provider, relativePath) {
+    const candidates = _mediaPathCandidates(relativePath);
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        return await provider.downloadAsFile(candidate);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('ファイルを取得できませんでした: ' + relativePath);
+  }
+
   async function providerResponse(url) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
     const relativePath = String(url.searchParams.get('path') || '').replace(/^\/+/, '');
     if (url.pathname.endsWith('/file-raw') || url.pathname.endsWith('/media/file')) {
-      const file = await provider.downloadAsFile(relativePath);
+      const file = await _downloadMediaFile(provider, relativePath);
       return new Response(typeof file.stream === 'function' ? file.stream() : await file.arrayBuffer(), {
         status: 200,
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -153,7 +193,7 @@
             headers: { 'Content-Type': thumbnail.type || 'image/jpeg' },
           });
         }
-        const file = await provider.downloadAsFile(relativePath);
+        const file = await _downloadMediaFile(provider, relativePath);
         return new Response(await file.arrayBuffer(), {
           status: 200,
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
@@ -164,13 +204,17 @@
       }
     }
     if (url.pathname.endsWith('/file-meta')) {
-      const stat = await provider.statPath(relativePath);
-      if (!stat) return new Response('', { status: 404 });
-      return jsonResponse({
-        created: stat.modified,
-        modified: stat.modified,
-        size: stat.size,
-      });
+      for (const candidate of _mediaPathCandidates(relativePath)) {
+        const stat = await provider.statPath(candidate).catch(() => null);
+        if (stat) {
+          return jsonResponse({
+            created: stat.modified,
+            modified: stat.modified,
+            size: stat.size,
+          });
+        }
+      }
+      return new Response('', { status: 404 });
     }
     return null;
   }
@@ -354,5 +398,12 @@
       };
       return jsonResponse({ error: detail.message, detail }, status);
     }
+  };
+
+  // `_media/...`（ホームフォルダ相対）の探索先候補。画像URLを組み立てる
+  // gb-cloud-file-url.js からも同じ規則を使うため公開する。
+  window.MeldexCloudMediaPath = {
+    candidates: _mediaPathCandidates,
+    homeFolderPath: _cloudHomeFolderPath,
   };
 })();

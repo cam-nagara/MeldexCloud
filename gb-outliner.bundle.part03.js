@@ -1,3 +1,7 @@
+    addLongPressHandler(row, _openTreeRowCtxMenu);
+  }
+
+  // --- ドラッグ&ドロップ ---
   row.addEventListener('dragstart', (e) => {
     if (item._isRoot) {
       e.preventDefault();
@@ -894,7 +898,3 @@ function _outlinerNativeClipboardPath(path) {
 function _outlinerLocalCopyPath(nodeEl, nodeData) {
   let path = String(nodeData?.path || '');
   if (!path) return '';
-  if (!_outlinerPathIsAbsolute(path)) {
-    const rootNode = nodeEl?.closest?.('#outliner-tree > .tree-node');
-    const rootPath = rootNode?._nodeData?.path || '';
-    const base = nodeEl?.closest?.('#body-home') && _homeFolderPath

@@ -169,6 +169,26 @@
     return provider;
   }
 
+  // `_media/blobs/...` はホームフォルダからの相対で記録されているため、
+  // ソースフォルダ直下として探すと必ず見つからない（シートの画像列が全滅する）。
+  // gb-cloud-fetch.js が公開する探索先候補（ホームフォルダ基準→ソースフォルダ直下）を
+  // 順に試す。未読込の環境では従来どおり1つだけ試す。
+  async function _getFileWithMediaFallback(provider, normalized) {
+    const candidates = typeof window.MeldexCloudMediaPath?.candidates === 'function'
+      ? window.MeldexCloudMediaPath.candidates(normalized)
+      : [normalized];
+    let lastError = null;
+    for (const candidate of candidates) {
+      try {
+        const handle = await provider.getFileHandle(candidate, { create: false });
+        return await handle.getFile();
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error('ファイルを取得できませんでした: ' + normalized);
+  }
+
   async function ensureRawUrl(pathLike, options) {
     const opts = options || {};
     const direct = String(pathLike || '').trim();
@@ -180,8 +200,7 @@
     if (!_runtime()?.isDropboxMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
-    const fileHandle = await provider.getFileHandle(normalized, { create: false });
-    const file = await fileHandle.getFile();
+    const file = await _getFileWithMediaFallback(provider, normalized);
     const fileSize = Number(file.size || 0);
     if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
       const cachedLarge = CACHE[normalized];

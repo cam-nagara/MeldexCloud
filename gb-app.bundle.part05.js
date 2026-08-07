@@ -1,3 +1,6 @@
+  // 破壊的操作を示唆するキーワード。
+  // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
+  // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。
   return /削除|破棄|除去|消去|初期化|リセット|を空に|デフォルト.{0,8}戻/.test(String(text || ''));
 }
 
@@ -895,6 +898,3 @@ function getUsername() {
 // replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
 
 const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';
-const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-
-function _gbClampModalValue(value, min, max) {

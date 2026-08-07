@@ -1,3 +1,6 @@
+const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+
+function _gbClampModalValue(value, min, max) {
   if (max < min) return min;
   return Math.max(min, Math.min(max, value));
 }
