@@ -14699,6 +14699,10 @@ ${spEsc(actionText)}</pre>
  *   使うかをその場で選ばせる。どちらを選んでも以後は同じ1つの共有プロフィールに
  *   統合される。「この端末の設定」は、ローカルの名前・アイコンを選んだ共有
  *   プロフィールへ保存し、クラウド版・他端末にも反映する。
+ *   候補が1件しか無い場合は「候補を選ぶ」段階に選択の意味が無い（唯一の候補しか
+ *   選べず、この端末側の選択肢が無いように見えてしまう）ため、その中間画面は
+ *   省略し、最初からこの2択を直接表示する（この場合「戻る」は出さず、代わりに
+ *   分離登録ボタンをこの画面に出す）。
  * - 自己同定ラダー経由でリンク済み（OAuth接続済みを除く）の場合は「別のプロフィールに
  *   切り替える」を出す。押すと記憶（rememberedキー）を消し、直近に把握している候補
  *   一覧をその場で描画する。自動再解決に任せると表示名一致で即座に元の相手へ
@@ -14721,7 +14725,8 @@ ${spEsc(actionText)}</pre>
   const TEXT_UNAVAILABLE = 'この名前とアイコンは今のところこの端末だけの設定です。';
   const TEXT_UNAVAILABLE_HELP = '保存先にDropboxのフォルダを使うと、他の端末やクラウド版と共通になります。';
   const TEXT_AMBIGUOUS = 'クラウド版で設定したプロフィールが見つかりました。この端末で使う名前とアイコンを選んでください。';
-  const TEXT_REGISTER_NEW = '今の設定のまま新しく登録する';
+  const TEXT_REGISTER_NEW = '別人として新しいプロフィールを登録する';
+  const TEXT_REGISTER_NEW_HELP = '候補とは統合されず、この端末専用の新しいプロフィールになります。';
   const TEXT_SWITCH_PROFILE = '別のプロフィールに切り替える';
   const TEXT_DIRECTION = 'どちらの名前とアイコンを使いますか？';
   const TEXT_DIRECTION_HELP = 'どちらを選んでも、以後この端末とクラウド版・他の端末は同じ1つのプロフィールになります。「この端末の設定」を選ぶと、今の名前とアイコンがクラウド版・他の端末にも反映されます。';
@@ -14737,6 +14742,12 @@ ${spEsc(actionText)}</pre>
     return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
   }
 
+  // 候補行のchevronアイコン用。fieldHelpと同じ理由で、Lucideが未読込の
+  // Node手作りテストハーネスでも落ちないようtypeofガードする。
+  function _icon(name, size) {
+    return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+  }
+
   function _injectStyles() {
     if (document.getElementById('msal-styles')) return;
     const style = document.createElement('style');
@@ -14750,6 +14761,8 @@ ${spEsc(actionText)}</pre>
       .msal-candidate-avatar img{width:100%;height:100%;object-fit:cover;}
       .msal-candidate-name{font-size:13px;color:var(--fg);}
       .msal-candidate-suffix{font-size:12px;color:var(--fg2);}
+      .msal-candidate-hint{margin-left:auto;padding-left:8px;display:inline-flex;align-items:center;color:var(--fg2);flex-shrink:0;}
+      .msal-candidate-hint-text{font-size:12px;}
       .msal-register-new-row{margin-top:8px;justify-content:flex-start;}
       .msal-switch-row{margin-top:8px;justify-content:flex-start;}
     `;
@@ -14861,6 +14874,22 @@ ${spEsc(actionText)}</pre>
     return av;
   }
 
+  // 候補行がクリックできることを見た目で示す右端のヒント（chevronアイコン、
+  // 未読込環境では文字ラベルにフォールバック）。
+  function _candidateHintNode() {
+    const hint = document.createElement('span');
+    hint.setAttribute('aria-hidden', 'true');
+    const glyph = _icon('chevronRight', 14);
+    if (glyph) {
+      hint.className = 'msal-candidate-hint';
+      hint.innerHTML = glyph;
+    } else {
+      hint.className = 'msal-candidate-hint msal-candidate-hint-text';
+      hint.textContent = '選ぶ';
+    }
+    return hint;
+  }
+
   // マイプロフィール節の表示（ユーザー名入力欄・アバタープレビュー）を、
   // 直近に反映されたローカル値（localStorage）へ再同期する。
   // 共有プロフィール適用自体（_applyProfileToLocal）はヘッダーアイコン等の
@@ -14935,9 +14964,17 @@ ${spEsc(actionText)}</pre>
     await renderStatusLine(container);
   }
 
-  // 候補を選んだ直後の「どちらの名前とアイコンを使いますか？」の2択をインラインで
-  // 描画する。どちらを選んでも同じ1つの共有プロフィールへ統合される。
-  function _renderDirectionChoice(container, candidate, state) {
+  // 候補を選んだ直後（または候補が1件で中間の候補選択画面を省略した直後）の
+  // 「どちらの名前とアイコンを使いますか？」の2択をインラインで描画する。
+  // どちらを選んでも同じ1つの共有プロフィールへ統合される。
+  //
+  // options.showBack: 中間の候補選択画面（_renderAmbiguous）を経由してここへ来た
+  //   場合はtrue（既定）で「戻る」を出す。候補が1件でその中間画面自体を省略した
+  //   場合はfalseを渡す。戻る先が無いため「戻る」は出さず、代わりに「今の設定の
+  //   まま新しく登録する」相当のボタンをこの画面に出す（省略すると、そのボタンへ
+  //   到達する手段がなくなるため）。
+  function _renderDirectionChoice(container, candidate, state, options) {
+    const showBack = !options || options.showBack !== false;
     const wrap = _statusLineWrap(container);
     wrap.appendChild(_descNode(TEXT_DIRECTION, TEXT_DIRECTION_HELP));
 
@@ -14953,10 +14990,11 @@ ${spEsc(actionText)}</pre>
       name.className = 'msal-candidate-name';
       name.textContent = profileLike?.displayName || '（表示名未設定）';
       row.appendChild(name);
-      const hint = document.createElement('span');
-      hint.className = 'msal-candidate-suffix';
-      hint.textContent = suffix;
-      row.appendChild(hint);
+      const suffixEl = document.createElement('span');
+      suffixEl.className = 'msal-candidate-suffix';
+      suffixEl.textContent = suffix;
+      row.appendChild(suffixEl);
+      row.appendChild(_candidateHintNode());
       row.addEventListener('click', onClick);
       return row;
     };
@@ -14974,15 +15012,19 @@ ${spEsc(actionText)}</pre>
 
     wrap.appendChild(list);
 
-    const backRow = document.createElement('div');
-    backRow.className = 'gb-field-row msal-switch-row';
-    const backBtn = document.createElement('button');
-    backBtn.type = 'button';
-    backBtn.className = 'gb-btn gb-btn-sm';
-    backBtn.textContent = TEXT_BACK;
-    backBtn.addEventListener('click', () => _renderAmbiguous(container, state));
-    backRow.appendChild(backBtn);
-    wrap.appendChild(backRow);
+    if (showBack) {
+      const backRow = document.createElement('div');
+      backRow.className = 'gb-field-row msal-switch-row';
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'gb-btn gb-btn-sm';
+      backBtn.textContent = TEXT_BACK;
+      backBtn.addEventListener('click', () => _renderAmbiguous(container, state));
+      backRow.appendChild(backBtn);
+      wrap.appendChild(backRow);
+    } else {
+      wrap.appendChild(_buildRegisterNewRow(container));
+    }
   }
 
   async function _registerAsNew(container, btn) {
@@ -15007,13 +15049,45 @@ ${spEsc(actionText)}</pre>
     }
   }
 
+  // 「別人として新しいプロフィールを登録する」ボタン行を組み立てる。統合せず
+  // 分離登録する操作であることをツールチップで補足する（基本UIに長文を
+  // 直接置かないため）。候補一覧画面（_renderAmbiguous）と、候補1件で中間画面を
+  // 省略した場合の2択画面（_renderDirectionChoice）の両方から使う共通部品。
+  function _buildRegisterNewRow(container) {
+    const registerRow = document.createElement('div');
+    registerRow.className = 'gb-field-row msal-register-new-row';
+    const registerBtn = document.createElement('button');
+    registerBtn.type = 'button';
+    registerBtn.className = 'gb-btn gb-btn-sm';
+    registerBtn.textContent = TEXT_REGISTER_NEW;
+    registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
+    registerRow.appendChild(registerBtn);
+    const help = _accountLinkHelp(TEXT_REGISTER_NEW_HELP);
+    if (help) {
+      const helpWrap = document.createElement('span');
+      helpWrap.innerHTML = help;
+      registerRow.appendChild(helpWrap);
+    }
+    return registerRow;
+  }
+
   function _renderAmbiguous(container, state) {
+    const candidates = Array.isArray(state?.candidates) ? state.candidates : [];
+    // 候補が1件だけの場合、「候補を選ぶ」という分岐自体に選択の意味が無い
+    // （唯一の候補ボタンしか押せず、他に選べる相手がいないように見えてしまう。
+    // 実際のユーザー報告: この端末側の選択肢が無いように見える）。中間の候補
+    // 選択画面を省略し、最初から「どちらの名前とアイコンを使いますか？」の
+    // 2択を表示する。候補が2件以上のときだけ従来どおり2段階にする。
+    if (candidates.length === 1) {
+      _renderDirectionChoice(container, candidates[0], state, { showBack: false });
+      return;
+    }
+
     const wrap = _statusLineWrap(container);
     wrap.appendChild(_descNode(TEXT_AMBIGUOUS));
 
     const list = document.createElement('div');
     list.className = 'msal-candidate-list';
-    const candidates = Array.isArray(state?.candidates) ? state.candidates : [];
     candidates.forEach((candidate) => {
       const row = document.createElement('button');
       row.type = 'button';
@@ -15023,6 +15097,7 @@ ${spEsc(actionText)}</pre>
       name.className = 'msal-candidate-name';
       name.textContent = candidate?.displayName || candidate?.key || '（表示名未設定）';
       row.appendChild(name);
+      row.appendChild(_candidateHintNode());
       // 即統合せず、どちらの名前・アイコンを使うかの2択（_renderDirectionChoice）を
       // 先に出す。キーの無い異常データはここで弾く（従来は _selectCandidate 内のガード）。
       row.addEventListener('click', () => {
@@ -15033,15 +15108,7 @@ ${spEsc(actionText)}</pre>
     });
     wrap.appendChild(list);
 
-    const registerRow = document.createElement('div');
-    registerRow.className = 'gb-field-row msal-register-new-row';
-    const registerBtn = document.createElement('button');
-    registerBtn.type = 'button';
-    registerBtn.className = 'gb-btn gb-btn-sm';
-    registerBtn.textContent = TEXT_REGISTER_NEW;
-    registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
-    registerRow.appendChild(registerBtn);
-    wrap.appendChild(registerRow);
+    wrap.appendChild(_buildRegisterNewRow(container));
   }
 
   async function renderStatusLine(container) {
@@ -16665,7 +16732,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Gemini CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
+        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
         <div id="settings-cli-chat-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
@@ -22263,35 +22330,65 @@ function _settingsCliIcon(name, size) {
   return typeof lucide === 'function' ? lucide(name, size || 14) : '';
 }
 
+// CLIチャット設定のモデル選択肢。チャットパネルのモデル一覧（CHAT_CLI_MODEL_CATALOG）と
+// 同じ表を使い、設定ダイアログ側だけ候補が古い・少ないという食い違いを作らない。
+// CHAT_CLI_MODEL_CATALOG が未読込の環境向けに、同じ内容のフォールバックを持つ。
+const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
+  codex: [
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+  ],
+  claude_code: [
+    { id: 'claude-fable-5', name: 'Fable 5' },
+    { id: 'claude-opus-5', name: 'Opus 5' },
+    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
+    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
+    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+  ],
+  antigravity_cli: [
+    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
+  ],
+};
+
+function _settingsCliModelChoices(key) {
+  const sentinel = typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  const shared = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || null;
+  const source = shared || SETTINGS_CLI_CHAT_MODEL_FALLBACK[key] || [];
+  return source
+    .filter(item => item && item.id && item.id !== sentinel)
+    .map(item => ({ id: String(item.id), name: String(item.name || item.id) }));
+}
+
 function _settingsCliProviderRows(config) {
   const providers = config?.providers || {};
-  const order = ['codex', 'claude_code', 'gemini_cli'];
+  const order = ['codex', 'claude_code', 'antigravity_cli'];
   const labels = {
     codex: 'Codex CLI',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
+    antigravity_cli: 'Antigravity CLI',
   };
-  // モデル世代交代時はここ（既定値とcodexの代表候補）を更新して新バージョンとしてリリースする。
+  // サーバ側 CLI_CHAT_PROVIDER_DEFAULTS の既定model値と対。この値が入っている＝未設定なので、
+  // 「CLI既定」扱いにする。
   const defaultModels = {
     codex: 'CLI既定（推奨）',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
-  };
-  // モデル入力欄のdatalist代表候補。自由入力も引き続き可能。
-  const modelCandidates = {
-    codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-    claude_code: ['sonnet', 'opus', 'haiku'],
-    gemini_cli: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    antigravity_cli: 'Antigravity CLI',
   };
   const modelTitles = {
-    codex: 'CLIへ渡すモデル名（空欄はCLI自身の既定モデルを使います）',
-    claude_code: 'CLIへ渡すモデル名（例: sonnet / opus / haiku。空欄はCLI側の既定モデルを使います）',
-    gemini_cli: 'CLIへ渡すモデル名（空欄はCLI側の既定モデルを使います）',
+    codex: 'CLIへ渡すモデルです。「CLI既定」ならCodex CLI自身の既定モデルを使います',
+    claude_code: 'CLIへ渡すモデルです。「CLI既定」ならClaude Code自身の既定モデルを使います',
+    antigravity_cli: 'CLIへ渡すモデルです。「CLI既定」ならAntigravity CLI自身の既定モデルを使います',
   };
   return order.map(key => {
     const item = providers[key] || {};
     const label = item.label || labels[key] || key;
-    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'gemini_cli' ? 'gemini' : 'codex');
+    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'antigravity_cli' ? 'agy' : 'codex');
     const placeholderModel = defaultModels[key] || label;
     const rawModel = String(item.model || '').trim();
     // valueは実設定値のみ（未設定・プレースホルダ既定ラベルと同じ場合は空欄）にし、
@@ -22314,8 +22411,18 @@ function _settingsCliProviderRows(config) {
       : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
     const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
     const compatibilityMessage = String(item.compatibility_message || '').trim();
-    const datalistId = `settings-cli-chat-${_settingsCliEsc(key)}-model-list`;
-    const datalistOptions = (modelCandidates[key] || []).map(value => `<option value="${_settingsCliEsc(value)}"></option>`).join('');
+    // 旧実装は「候補付きテキスト入力（datalist）」だった。ブラウザは入力済みの文字列で候補を
+    // 絞り込むため、一度モデルを保存すると次回から候補が1件しか出ず、他のモデルへ変え直せない
+    // という報告があった（2026-08-07）。常に全候補が見えるドロップダウンにしている。
+    // 一覧に無い保存済みモデル（旧バージョンで保存した別名など）は、黙って別の値へ変わらないよう
+    // そのまま選択肢へ足して選択状態を保つ。別のモデルを選び直せばその選択肢は次回から消える。
+    const choices = _settingsCliModelChoices(key).slice();
+    if (modelValue && !choices.some(choice => choice.id === modelValue)) {
+      choices.push({ id: modelValue, name: modelValue });
+    }
+    const modelOptions = [`<option value=""${modelValue ? '' : ' selected'}>CLI既定（推奨）</option>`]
+      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}"${choice.id === modelValue ? ' selected' : ''}>${_settingsCliEsc(choice.name)}</option>`))
+      .join('');
     return `
       <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
         <label class="gb-check" style="min-width:0;">
@@ -22323,8 +22430,7 @@ function _settingsCliProviderRows(config) {
           <span>${_settingsCliEsc(label)}</span>
         </label>
         <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
-        <input class="gb-input" list="${datalistId}" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(modelValue)}" placeholder="${_settingsCliEsc(placeholderModel)}" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル名')}">
-        <datalist id="${datalistId}">${datalistOptions}</datalist>
+        <select class="gb-select" style="min-width:0;" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル')}">${modelOptions}</select>
         <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
         ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
       </div>`;
@@ -119424,13 +119530,24 @@ function openCalendar() {
 
 /* === gb-chat-markdown.js === */
 ;
-/* gb-chat-markdown.js: safe Markdown-ish rendering for chat bubbles */
+/* gb-chat-markdown.part01.js: チャット本文のMarkdown描画（見出し/表/コード/リンク要素の生成）
+   リンク先の解決とオープン処理は gb-chat-markdown.part02.js が担当する。 */
 (function (global) {
   'use strict';
 
   const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.ico']);
   const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv']);
   const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac']);
+
+  // 「裸書き」（[表示名](...) で囲まれていない、本文中にそのまま書かれた文字列）を
+  // Meldex内のパスとして自動リンク化してよいかの判定に使う。日本語の本文には空白が
+  // 無いため、「心の隙間/絶望」「インカージョン/剪定」のようにスラッシュを含む言い回しが
+  // 1文まるごとパスとして誤認されていた（2026-08-07 ユーザー報告）。
+  // 句読点・かぎ括弧・全角記号を1つでも含む文字列は、裸書きのパスとして扱わない。
+  // これらの文字を実際に含むファイル名は [表示名](パス) 形式で書けばリンクになる。
+  const BARE_PATH_PROSE_RE = /[、。，．・‥…！？!?；;：「」『』【】〔〕〈〉《》（）()［］\[\]｛｝{}〝〟“”‘’＝＋＊×÷＆％＄＃＠～〜｜＜＞<>#"'`,＝=&%$@|]/;
+  const BARE_PATH_MAX_SEGMENTS = 12;
+  const BARE_PATH_MAX_SEGMENT_LENGTH = 120;
 
   function _trimTrailingPunctuation(value) {
     let text = String(value || '');
@@ -119510,9 +119627,28 @@ function openCalendar() {
     return base + '/file-raw?path=' + encodeURIComponent(path);
   }
 
+  // `パス#見出し名` を「開く対象」と「開いた後にスクロールする見出し」へ分ける。
+  // Web URL と file:// URL の `#` はそのままURLの一部として扱う。
+  // `#見出し` だけ（対象ファイルの指定なし）は、チャットには「今開いているノート」の
+  // 概念が無いため分離しない。
+  function _splitTargetAnchor(target) {
+    const raw = String(target || '');
+    const empty = { path: raw, anchor: '' };
+    if (!raw || _isWebUrl(raw) || _isFileUrl(raw)) return empty;
+    const index = raw.indexOf('#');
+    if (index <= 0) return empty;
+    const path = raw.slice(0, index).trim();
+    if (!path) return empty;
+    let anchor = raw.slice(index + 1).trim();
+    try { anchor = decodeURIComponent(anchor); } catch {}
+    return anchor ? { path, anchor } : empty;
+  }
+
   function _linkLabel(target) {
     if (_isWebUrl(target)) return target;
     if (_isFileUrl(target)) return _basename(_fileUrlToPath(target));
+    const split = _splitTargetAnchor(target);
+    if (split.anchor) return split.anchor;
     return _basename(target);
   }
 
@@ -119647,12 +119783,18 @@ function openCalendar() {
   function _looksLikeWorkspacePathToken(value) {
     const target = _normalizeMarkdownTarget(value);
     if (!target || _isWebUrl(target) || _isFileUrl(target) || _isAbsoluteLocalPath(target)) return false;
-    if (/^(?:home|source|vault):\/+/i.test(target) || /^meldex:\/\//i.test(target)) return true;
+    const scheme = target.match(/^(?:(?:home|source|vault):\/+|meldex:\/\/)/i);
+    const body = scheme ? target.slice(scheme[0].length) : target;
+    if (BARE_PATH_PROSE_RE.test(body)) return false;
+    const segments = _normalizeSlashPath(body).split('/').filter(Boolean);
+    if (!segments.length || segments.length > BARE_PATH_MAX_SEGMENTS) return false;
+    if (segments.some(segment => segment.length > BARE_PATH_MAX_SEGMENT_LENGTH)) return false;
+    if (scheme) return true;
     if (!/[\\/]/.test(target)) return false;
-    const clean = _normalizeSlashPath(target);
+    const clean = segments.join('/');
     if (/^\d{1,4}\/\d{1,2}(?:\/\d{1,2})?$/.test(clean)) return false;
     if (!/[^\d\/._-]/.test(clean)) return false;
-    return clean.split('/').filter(Boolean).length >= 2;
+    return segments.length >= 2;
   }
 
   function _matchWorkspaceInline(rest) {
@@ -119675,7 +119817,7 @@ function openCalendar() {
     return wrap;
   }
 
-  function _makeLink(label, target) {
+  function _makeLink(label, target, options) {
     const normalized = _normalizeMarkdownTarget(target);
     const a = document.createElement('a');
     a.className = 'chat-md-link';
@@ -119683,6 +119825,9 @@ function openCalendar() {
     a.textContent = label || _linkLabel(normalized);
     a.dataset.chatLinkTarget = normalized;
     a.dataset.gbTooltipDisabled = 'true';
+    // 裸書き（本文にそのまま書かれたパス）由来のリンクだけ、描画後に実在確認して
+    // 見つからなければ通常の文字へ戻す（誤リンク化の残りを自動で解消する）。
+    if (options?.bare) a.dataset.chatLinkBare = 'true';
     if (_isWebUrl(normalized)) {
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
@@ -119887,7 +120032,7 @@ function openCalendar() {
       const workspacePath = _matchWorkspaceInline(rest);
       if (workspacePath) {
         flush();
-        parent.appendChild(_makeLink(workspacePath.target, workspacePath.target));
+        parent.appendChild(_makeLink(workspacePath.target, workspacePath.target, { bare: true }));
         i += workspacePath.length;
         continue;
       }
@@ -120084,8 +120229,12 @@ function openCalendar() {
     }
     container.replaceChildren(root);
     container.style.whiteSpace = 'normal';
+    _verifyBareWorkspaceLinks(root);
     return root;
   }
+  /* gb-chat-markdown.part02.js: チャット内リンクの解決とオープン処理
+     （Meldex内パスの候補生成・実在確認、ノート見出しへのスクロール、
+     裸書きリンクの実在確認、種別ごとの表示先の振り分け）。 */
 
   function _pushUniquePath(list, value) {
     const path = String(value || '').trim();
@@ -120280,6 +120429,121 @@ function openCalendar() {
     return { path: candidates[0] || target, type: '', exists: false };
   }
 
+  function _normalizeHeadingText(value) {
+    return String(value || '').replace(/\s+/g, '').replace(/^[#＃]+/, '').trim().toLowerCase();
+  }
+
+  // 見出しを探す範囲。チャット吹き出し自身もMarkdown見出しを描画するため必ず除外する。
+  function _noteHeadingSearchRoots() {
+    const doc = global.document;
+    if (!doc?.querySelectorAll) return [];
+    const roots = [];
+    const add = (element) => {
+      if (!element || roots.includes(element)) return;
+      if (element.closest?.('.chat-markdown, .chat-message-bubble')) return;
+      roots.push(element);
+    };
+    add(doc.getElementById('page-content'));
+    doc.querySelectorAll('[contenteditable="true"]').forEach(add);
+    return roots;
+  }
+
+  // `パス#見出し名` の見出し部分を解決する。安定アンカーID（見出しの右クリック
+  // 「この見出しへのリンクをコピー」が作る形式）と、見出しの文字そのものの両方を受け付ける。
+  // AIは内部IDを知らないため、実運用では文字一致がほぼすべてになる。
+  function _findNoteHeadingElement(anchor) {
+    const id = String(anchor || '').trim();
+    if (!id) return null;
+    const headings = [];
+    _noteHeadingSearchRoots().forEach(root => {
+      root.querySelectorAll?.('h1, h2, h3, h4, h5, h6').forEach(element => {
+        if (!headings.includes(element)) headings.push(element);
+      });
+    });
+    if (!headings.length) return null;
+    const byId = headings.find(element => element.dataset?.noteHeadingId === id
+      || element.dataset?.noteHeadingLegacyId === id
+      || element.id === id);
+    if (byId) return byId;
+    const wanted = _normalizeHeadingText(id);
+    if (!wanted) return null;
+    return headings.find(element => _normalizeHeadingText(element.textContent) === wanted)
+      || headings.find(element => _normalizeHeadingText(element.textContent).startsWith(wanted))
+      || null;
+  }
+
+  async function _scrollToNoteHeading(anchor, { timeoutMs = 6000 } = {}) {
+    const id = String(anchor || '').trim();
+    if (!id || !global.document) return false;
+    const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+    for (;;) {
+      const target = _findNoteHeadingElement(id);
+      if (target) {
+        try {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch {
+          target.scrollIntoView();
+        }
+        target.classList?.add('chat-link-heading-flash');
+        global.setTimeout?.(() => target.classList?.remove('chat-link-heading-flash'), 1600);
+        return true;
+      }
+      if (Date.now() >= deadline) break;
+      await new Promise(resolve => global.setTimeout?.(resolve, 120) ?? resolve());
+    }
+    if (typeof showStatus === 'function') showStatus('リンク先の見出しが見つかりません: ' + id);
+    return false;
+  }
+
+  // 裸書きリンクの実在確認結果。同じ文字列を毎回問い合わせないためのキャッシュ。
+  // 値は true（実在）/ false（実在しない）/ Promise（確認中）。
+  const _bareLinkExistence = new Map();
+  const BARE_LINK_CACHE_LIMIT = 500;
+
+  function _rememberBareLinkExistence(target, value) {
+    if (_bareLinkExistence.size >= BARE_LINK_CACHE_LIMIT) {
+      const oldest = _bareLinkExistence.keys().next().value;
+      if (oldest !== undefined) _bareLinkExistence.delete(oldest);
+    }
+    _bareLinkExistence.set(target, value);
+  }
+
+  function _demoteBareWorkspaceLink(target) {
+    const doc = global.document;
+    if (!doc?.querySelectorAll) return;
+    doc.querySelectorAll('a.chat-md-link[data-chat-link-bare="true"]').forEach(link => {
+      if (link.dataset.chatLinkTarget !== target || !link.parentNode) return;
+      link.replaceWith(doc.createTextNode(link.textContent || target));
+    });
+  }
+
+  function _verifyBareWorkspaceLinks(root) {
+    if (!root?.querySelectorAll || typeof apiFetch !== 'function') return;
+    const links = [...root.querySelectorAll('a.chat-md-link[data-chat-link-bare="true"]')];
+    if (!links.length) return;
+    const targets = [...new Set(links.map(link => link.dataset.chatLinkTarget).filter(Boolean))];
+    targets.forEach(target => {
+      const cached = _bareLinkExistence.get(target);
+      if (cached === false) {
+        _demoteBareWorkspaceLink(target);
+        return;
+      }
+      if (cached !== undefined) return;
+      const pending = _resolveWorkspaceTarget(_splitTargetAnchor(target).path)
+        .then(resolved => {
+          _rememberBareLinkExistence(target, !!resolved?.exists);
+          if (!resolved?.exists) _demoteBareWorkspaceLink(target);
+          return !!resolved?.exists;
+        })
+        .catch(() => {
+          // 確認できなかった場合はリンクのまま残す（クリック時に改めて解決する）。
+          _bareLinkExistence.delete(target);
+          return true;
+        });
+      _rememberBareLinkExistence(target, pending);
+    });
+  }
+
   function _activateChatWorkspaceOpenPane() {
     try {
       if (global.GBPaneBridge?.activateFileOpenPane) {
@@ -120296,7 +120560,7 @@ function openCalendar() {
     return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext);
   }
 
-  async function _openWorkspacePath(path) {
+  async function _openWorkspacePath(path, anchor) {
     const target = String(path || '').trim();
     if (!target) return false;
     const resolvedTarget = await _resolveWorkspaceTarget(target);
@@ -120336,6 +120600,9 @@ function openCalendar() {
       } else if (typeof showStatus === 'function') {
         showStatus('リンクを開けませんでした', true);
       }
+      // 見出しへのスクロールはノートだけ。シートやボードに `#...` が付いていても
+      // 見つからない通知を出さず、ファイルを開くところまでで止める。
+      if (anchor && (type === 'page' || ext === '.md' || ext === '.txt')) _scrollToNoteHeading(anchor);
       return true;
     } catch (error) {
       if (typeof showStatus === 'function') showStatus('リンクを開けませんでした: ' + (error?.message || error), true);
@@ -120378,13 +120645,15 @@ function openCalendar() {
         ? _openWorkspacePath(filePath)
         : _openAbsoluteLocalPath(filePath);
     }
-    if (_isAbsoluteLocalPath(target)) {
+    // ここから先は `パス#見出し名` を受け付ける（開いた後にその見出しまでスクロールする）。
+    const { path: targetPath, anchor } = _splitTargetAnchor(target);
+    if (_isAbsoluteLocalPath(targetPath)) {
       const roots = await _workspaceRoots();
-      return roots.some(root => _isWorkspaceChildPath(target, root.path))
-        ? _openWorkspacePath(target)
-        : _openAbsoluteLocalPath(target);
+      return roots.some(root => _isWorkspaceChildPath(targetPath, root.path))
+        ? _openWorkspacePath(targetPath, anchor)
+        : _openAbsoluteLocalPath(targetPath);
     }
-    return _openWorkspacePath(target);
+    return _openWorkspacePath(targetPath, anchor);
   }
 
   global.renderChatMarkdown = renderChatMarkdown;
@@ -120650,10 +120919,18 @@ const CHAT_CLI_MODEL_CATALOG = {
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
   ],
-  gemini_cli: [
+  // Antigravity CLI が受け付けるモデル名は `agy models` の一覧と対（2026-08-07 実機確認）。
+  // CLIのモデル名は末尾に思考の深さを含む（例: gemini-3.6-flash-high）が、ここでは系統名だけを
+  // 並べる。実際に渡す名前は「系統名＋思考の深さ」へサーバ側で解決する
+  // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
+  antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
   ],
 };
 
@@ -120667,7 +120944,7 @@ const CHAT_DEFAULT_MODELS = {
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
   claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
-  gemini_cli: CHAT_CLI_MODEL_CATALOG.gemini_cli.map(item => item.id),
+  antigravity_cli: CHAT_CLI_MODEL_CATALOG.antigravity_cli.map(item => item.id),
 };
 const CHAT_PROVIDER_META = {
   gemini: { label: 'Gemini', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
@@ -120676,16 +120953,16 @@ const CHAT_PROVIDER_META = {
   local_llm: { label: 'ローカルLLM', iconColor: '#23c55e', iconBg: 'rgba(35,197,94,0.14)', iconBorder: 'rgba(35,197,94,0.48)' },
   codex: { label: 'Codex CLI', iconColor: '#10a37f', iconBg: 'rgba(16,163,127,0.14)', iconBorder: 'rgba(16,163,127,0.48)' },
   claude_code: { label: 'Claude Code', iconColor: '#d97745', iconBg: 'rgba(217,119,69,0.14)', iconBorder: 'rgba(217,119,69,0.48)' },
-  gemini_cli: { label: 'Gemini CLI', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
+  antigravity_cli: { label: 'Antigravity CLI', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
 };
 const CHAT_LOCAL_LLM_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const CHAT_CLI_PROVIDERS = {
   codex: { label: 'Codex CLI', command: 'codex' },
   claude_code: { label: 'Claude Code', command: 'claude' },
-  gemini_cli: { label: 'Gemini CLI', command: 'gemini' },
+  antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 5;
+const CHAT_MODELS_CACHE_VERSION = 6;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
     default: { input: 0.30, output: 2.50 },
@@ -129043,10 +129320,11 @@ function _chatGenerationCurrentProvider() {
 }
 
 // 思考の深さ（reasoning）はサーバ実装（meldex_chat_stream_support.py / meldex_api_cli_chat.py）で
-// anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex（CLI経由、--effort注入）
-// でも生成オプションへ反映される。local_llm、およびgemini_cli（CLIに思考深度の指定手段が無い）は
-// 未対応のまま。
-const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex']);
+// anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex/antigravity_cli
+// （CLI経由、--effort注入）でも生成オプションへ反映される。local_llm は未対応のまま。
+// antigravity_cli は low/medium/high の3段階のみ受け付けるため、それ以上はhighへ丸める
+// （meldex_cli_chat_model_args.py の _cli_chat_reasoning_effort_for_antigravity 参照）。
+const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex', 'antigravity_cli']);
 
 function _chatGenerationReasoningSupported(provider) {
   return CHAT_REASONING_SUPPORTED_PROVIDERS.has(String(provider || '').trim().toLowerCase());
@@ -129635,7 +129913,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   function _fillExecutionProviderSelect(select) {
     const options = [
       ['codex', 'Codex CLI'],
-      ['gemini_cli', 'Gemini CLI'],
+      ['antigravity_cli', 'Antigravity CLI'],
       ['claude_code', 'Claude Code'],
       ['gemini', 'Gemini API'],
       ['openai', 'OpenAI API'],
@@ -130313,12 +130591,12 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   const CLI_TRANSCRIPT_PROVIDERS = [
     { key: 'claude_code', label: 'Claude Code', watchPath: '~/.claude/projects', enabled: true },
     { key: 'codex', label: 'Codex', watchPath: '~/.codex/sessions', enabled: false },
-    { key: 'gemini_cli', label: 'Gemini CLI', watchPath: '~/.gemini', enabled: false },
+    { key: 'gemini_cli', label: 'Gemini CLI（過去ログ）', watchPath: '~/.gemini', enabled: false },
   ];
   const CLI_CHAT_PROVIDERS = [
     { key: 'codex', label: 'Codex CLI', model: 'Codex CLI', command: 'codex' },
     { key: 'claude_code', label: 'Claude Code', model: 'Claude Code', command: 'claude' },
-    { key: 'gemini_cli', label: 'Gemini CLI', model: 'Gemini CLI', command: 'gemini' },
+    { key: 'antigravity_cli', label: 'Antigravity CLI', model: 'Antigravity CLI', command: 'agy' },
   ];
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
@@ -130326,7 +130604,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
   const CLI_CHAT_SESSION_STATE_PREFIX = 'chat-cli-session-state:v1:';
   const CLI_CHAT_PROVIDER_KEYS = new Set(CLI_CHAT_PROVIDERS.map(provider => provider.key));
-  const CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS = new Set(['codex', 'claude_code']);
+  const CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS = new Set(['codex', 'claude_code', 'antigravity_cli']);
   let cliChatConfig = null;
   let originalChatSend = null;
   let activeCliChatStream = null;
@@ -131193,7 +131471,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   }
 
   function cliChatErrorAllowsContinuation(error) {
-    if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
+    if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
       return false;
     }
     const message = String(error?.message || error || '');
@@ -131573,6 +131851,15 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             ensureAssistantVisible(fullText);
             ensureActivityVisible();
             scrollStreamContainer();
+          } else if (data.type === 'text_replace') {
+            // 途中送信で文字が壊れていた場合、CLIが最後に返す完成テキストで本文を差し替える。
+            const finalText = data.content == null ? '' : String(data.content);
+            if (!finalText) continue;
+            fullText = finalText;
+            markCliOutput(true);
+            if (!streamVisibleInCurrentChat()) assistantDiv = null;
+            ensureAssistantVisible(fullText);
+            scrollStreamContainer();
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
@@ -131596,7 +131883,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
             streamError.detail = detail;
             streamError.action = String(data.action || '');
-            if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
+            if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
               resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
             }
             throw streamError;

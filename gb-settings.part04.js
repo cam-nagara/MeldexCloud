@@ -303,35 +303,65 @@ function _settingsCliIcon(name, size) {
   return typeof lucide === 'function' ? lucide(name, size || 14) : '';
 }
 
+// CLIチャット設定のモデル選択肢。チャットパネルのモデル一覧（CHAT_CLI_MODEL_CATALOG）と
+// 同じ表を使い、設定ダイアログ側だけ候補が古い・少ないという食い違いを作らない。
+// CHAT_CLI_MODEL_CATALOG が未読込の環境向けに、同じ内容のフォールバックを持つ。
+const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
+  codex: [
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+  ],
+  claude_code: [
+    { id: 'claude-fable-5', name: 'Fable 5' },
+    { id: 'claude-opus-5', name: 'Opus 5' },
+    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
+    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
+    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+  ],
+  antigravity_cli: [
+    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
+  ],
+};
+
+function _settingsCliModelChoices(key) {
+  const sentinel = typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  const shared = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || null;
+  const source = shared || SETTINGS_CLI_CHAT_MODEL_FALLBACK[key] || [];
+  return source
+    .filter(item => item && item.id && item.id !== sentinel)
+    .map(item => ({ id: String(item.id), name: String(item.name || item.id) }));
+}
+
 function _settingsCliProviderRows(config) {
   const providers = config?.providers || {};
-  const order = ['codex', 'claude_code', 'gemini_cli'];
+  const order = ['codex', 'claude_code', 'antigravity_cli'];
   const labels = {
     codex: 'Codex CLI',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
+    antigravity_cli: 'Antigravity CLI',
   };
-  // モデル世代交代時はここ（既定値とcodexの代表候補）を更新して新バージョンとしてリリースする。
+  // サーバ側 CLI_CHAT_PROVIDER_DEFAULTS の既定model値と対。この値が入っている＝未設定なので、
+  // 「CLI既定」扱いにする。
   const defaultModels = {
     codex: 'CLI既定（推奨）',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
-  };
-  // モデル入力欄のdatalist代表候補。自由入力も引き続き可能。
-  const modelCandidates = {
-    codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
-    claude_code: ['sonnet', 'opus', 'haiku'],
-    gemini_cli: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    antigravity_cli: 'Antigravity CLI',
   };
   const modelTitles = {
-    codex: 'CLIへ渡すモデル名（空欄はCLI自身の既定モデルを使います）',
-    claude_code: 'CLIへ渡すモデル名（例: sonnet / opus / haiku。空欄はCLI側の既定モデルを使います）',
-    gemini_cli: 'CLIへ渡すモデル名（空欄はCLI側の既定モデルを使います）',
+    codex: 'CLIへ渡すモデルです。「CLI既定」ならCodex CLI自身の既定モデルを使います',
+    claude_code: 'CLIへ渡すモデルです。「CLI既定」ならClaude Code自身の既定モデルを使います',
+    antigravity_cli: 'CLIへ渡すモデルです。「CLI既定」ならAntigravity CLI自身の既定モデルを使います',
   };
   return order.map(key => {
     const item = providers[key] || {};
     const label = item.label || labels[key] || key;
-    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'gemini_cli' ? 'gemini' : 'codex');
+    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'antigravity_cli' ? 'agy' : 'codex');
     const placeholderModel = defaultModels[key] || label;
     const rawModel = String(item.model || '').trim();
     // valueは実設定値のみ（未設定・プレースホルダ既定ラベルと同じ場合は空欄）にし、
@@ -354,8 +384,18 @@ function _settingsCliProviderRows(config) {
       : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
     const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
     const compatibilityMessage = String(item.compatibility_message || '').trim();
-    const datalistId = `settings-cli-chat-${_settingsCliEsc(key)}-model-list`;
-    const datalistOptions = (modelCandidates[key] || []).map(value => `<option value="${_settingsCliEsc(value)}"></option>`).join('');
+    // 旧実装は「候補付きテキスト入力（datalist）」だった。ブラウザは入力済みの文字列で候補を
+    // 絞り込むため、一度モデルを保存すると次回から候補が1件しか出ず、他のモデルへ変え直せない
+    // という報告があった（2026-08-07）。常に全候補が見えるドロップダウンにしている。
+    // 一覧に無い保存済みモデル（旧バージョンで保存した別名など）は、黙って別の値へ変わらないよう
+    // そのまま選択肢へ足して選択状態を保つ。別のモデルを選び直せばその選択肢は次回から消える。
+    const choices = _settingsCliModelChoices(key).slice();
+    if (modelValue && !choices.some(choice => choice.id === modelValue)) {
+      choices.push({ id: modelValue, name: modelValue });
+    }
+    const modelOptions = [`<option value=""${modelValue ? '' : ' selected'}>CLI既定（推奨）</option>`]
+      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}"${choice.id === modelValue ? ' selected' : ''}>${_settingsCliEsc(choice.name)}</option>`))
+      .join('');
     return `
       <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
         <label class="gb-check" style="min-width:0;">
@@ -363,8 +403,7 @@ function _settingsCliProviderRows(config) {
           <span>${_settingsCliEsc(label)}</span>
         </label>
         <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
-        <input class="gb-input" list="${datalistId}" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" value="${_settingsCliEsc(modelValue)}" placeholder="${_settingsCliEsc(placeholderModel)}" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル名')}">
-        <datalist id="${datalistId}">${datalistOptions}</datalist>
+        <select class="gb-select" style="min-width:0;" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル')}">${modelOptions}</select>
         <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
         ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
       </div>`;

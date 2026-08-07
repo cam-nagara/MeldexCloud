@@ -590,6 +590,19 @@
       });
     }
 
+    // フォルダの存在確認・作成のように「そのフォルダ自身の情報だけが変わりうる」
+    // 操作用の軽い無効化。_forgetMeta() は配下の版情報(rev)まで巻き添えで消すため、
+    // ensureDirectory() から呼ぶと、直前に読み込んだ「これから書くファイル」の rev
+    // まで失われ、uploadBytes() が既存ファイルを新規作成(add)として送ってしまい
+    // Dropbox 側で必ず競合になっていた（起動しただけで競合コピーが生成される真因）。
+    // フォルダを作る操作は配下ファイルの rev を変えないので、配下は保持してよい。
+    _forgetMetaSelf(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      this._metaCache.delete(normalized);
+      this._forgetFileCache(normalized);
+      this._forgetListCache(normalized);
+    }
+
     async restoreWorkspace() {
       if (!_runtime()?.isDropboxMode?.()) return null;
       const appKey = _auth()?.getAppKey?.();
@@ -902,11 +915,11 @@
             autorename: false,
           }, location);
         } catch (err) {
-          this._forgetMeta(current);
+          this._forgetMetaSelf(current);
           const existing = await this.statPath(current);
           if (!existing || existing.kind !== 'directory') throw err;
         }
-        this._forgetMeta(current);
+        this._forgetMetaSelf(current);
       }
       return new DropboxDirectoryHandle(this, normalized);
     }
@@ -1132,11 +1145,26 @@
       return latestMeta;
     }
 
+    // 書き込み直前の版情報(rev)を確定する。キャッシュに「このパスの項目そのものが
+    // 無い」場合は、存在するかどうかを確かめずに 'add'（新規作成）へ落ちると、
+    // 既存ファイルに対して strict_conflict の衝突を必ず起こす。値が null で
+    // 記録されている場合は「存在しないと確認済み」なので追加問い合わせをしない。
+    async _resolveUploadMeta(normalizedPath) {
+      if (this._metaCache.has(normalizedPath)) return this._metaCache.get(normalizedPath);
+      try {
+        return await this.getMetadata(normalizedPath);
+      } catch (_) {
+        // 版情報を取得できない場合は従来どおりの挙動（新規作成として送る）に倒す。
+        // 競合時は既存の退避・再取得経路が受け止める。
+        return null;
+      }
+    }
+
     async uploadBytes(relativePath, bytes) {
       const normalized = _normalizeRelativePath(relativePath);
       const parent = _dirname(normalized);
       if (parent) await this.ensureDirectory(parent);
-      const cachedMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+      const cachedMeta = await this._resolveUploadMeta(normalized);
       const mode = cachedMeta?.rev ? { '.tag': 'update', update: cachedMeta.rev } : 'add';
       try {
         const result = await this._uploadBytesWithMode(normalized, bytes, mode);

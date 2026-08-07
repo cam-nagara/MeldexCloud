@@ -158,10 +158,18 @@ const CHAT_CLI_MODEL_CATALOG = {
     { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
   ],
-  gemini_cli: [
+  // Antigravity CLI が受け付けるモデル名は `agy models` の一覧と対（2026-08-07 実機確認）。
+  // CLIのモデル名は末尾に思考の深さを含む（例: gemini-3.6-flash-high）が、ここでは系統名だけを
+  // 並べる。実際に渡す名前は「系統名＋思考の深さ」へサーバ側で解決する
+  // （meldex_cli_chat_model_args.py の _antigravity_model_with_effort）。
+  antigravity_cli: [
     { id: CLI_CHAT_DEFAULT_MODEL_SENTINEL, name: 'CLI既定（推奨）' },
-    { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' },
-    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
   ],
 };
 
@@ -175,7 +183,7 @@ const CHAT_DEFAULT_MODELS = {
   local_llm: ['llama3.1', 'qwen2.5', 'mistral', 'gemma3'],
   codex: CHAT_CLI_MODEL_CATALOG.codex.map(item => item.id),
   claude_code: CHAT_CLI_MODEL_CATALOG.claude_code.map(item => item.id),
-  gemini_cli: CHAT_CLI_MODEL_CATALOG.gemini_cli.map(item => item.id),
+  antigravity_cli: CHAT_CLI_MODEL_CATALOG.antigravity_cli.map(item => item.id),
 };
 const CHAT_PROVIDER_META = {
   gemini: { label: 'Gemini', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
@@ -184,16 +192,16 @@ const CHAT_PROVIDER_META = {
   local_llm: { label: 'ローカルLLM', iconColor: '#23c55e', iconBg: 'rgba(35,197,94,0.14)', iconBorder: 'rgba(35,197,94,0.48)' },
   codex: { label: 'Codex CLI', iconColor: '#10a37f', iconBg: 'rgba(16,163,127,0.14)', iconBorder: 'rgba(16,163,127,0.48)' },
   claude_code: { label: 'Claude Code', iconColor: '#d97745', iconBg: 'rgba(217,119,69,0.14)', iconBorder: 'rgba(217,119,69,0.48)' },
-  gemini_cli: { label: 'Gemini CLI', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
+  antigravity_cli: { label: 'Antigravity CLI', iconColor: '#8ab4f8', iconBg: 'rgba(138,180,248,0.14)', iconBorder: 'rgba(138,180,248,0.48)' },
 };
 const CHAT_LOCAL_LLM_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const CHAT_CLI_PROVIDERS = {
   codex: { label: 'Codex CLI', command: 'codex' },
   claude_code: { label: 'Claude Code', command: 'claude' },
-  gemini_cli: { label: 'Gemini CLI', command: 'gemini' },
+  antigravity_cli: { label: 'Antigravity CLI', command: 'agy' },
 };
 const CHAT_MODELS_CACHE_TTL = 24 * 60 * 60 * 1000;
-const CHAT_MODELS_CACHE_VERSION = 5;
+const CHAT_MODELS_CACHE_VERSION = 6;
 const CHAT_COST_TABLE_PER_MILLION = {
   gemini: {
     default: { input: 0.30, output: 2.50 },

@@ -383,21 +383,38 @@
     return { ok: true };
   }
 
+  // デスクトップ版（配布物）と同じ「はじめから入っているフォルダ」の閲覧専用扱い。
+  // Meldex.part01.part01.py の BUILTIN_LOCKED_HOME_FOLDERS と同じ内容を保つこと。
+  // クラウド版はここが空のままだったため、マニュアルが編集可能な状態になり、
+  // 起動直後に自動で開くクイックスタートが無編集のまま保存を試みて失敗し、
+  // 未保存ドラフトと競合エラーが毎回出ていた。
+  const BUILTIN_LOCKED_HOME_FOLDER_NAMES = ['マニュアル', 'サンプル'];
+
+  function _builtinHomeLocks(homePath) {
+    const base = _normalizeFolderPath(homePath);
+    if (!base) return { locked_folders: [], locked_paths: [] };
+    const folders = BUILTIN_LOCKED_HOME_FOLDER_NAMES.map(name => ({ name, path: _joinPath(base, name) }));
+    return { locked_folders: folders, locked_paths: folders.map(item => item.path) };
+  }
+
   async function _pwaHomeFolder() {
     const provider = await _pwaProvider();
     const stored = _safeReadJson(PWA_HOME_KEY, null);
     if (stored?.path) {
+      // 保存済みの値には古い（空の）ロック一覧が残っていることがあるため、
+      // ロックは常にその場で組み立て直す。
+      const locks = _builtinHomeLocks(stored.path);
       try {
         if (provider) await provider.getDirectoryHandle(stored.path, false);
-        return { ...stored, exists: true };
+        return { ...stored, ...locks, exists: true };
       } catch {
-        return { ...stored, exists: false };
+        return { ...stored, ...locks, exists: false };
       }
     }
     try {
       if (provider) {
         await provider.getDirectoryHandle('MeldexHome', false);
-        return { path: 'MeldexHome', name: 'MeldexHome', exists: true, locked_folders: [], locked_paths: [] };
+        return { path: 'MeldexHome', name: 'MeldexHome', exists: true, ..._builtinHomeLocks('MeldexHome') };
       }
     } catch {}
     return { path: '', name: '', exists: false, locked_folders: [], locked_paths: [] };

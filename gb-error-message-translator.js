@@ -3,6 +3,9 @@
 
   if (window.MeldexErrorMessages) return;
 
+  // 保存競合として扱うHTTPステータス（409=競合 / 412=事前条件不一致 / 428=版指定必須）
+  const CONFLICT_STATUSES = new Set([409, 412, 428]);
+
   const RULES = [
     {
       test: info => info.status === 409 && /file_exists|既に存在|同名|already exists/i.test(info.raw),
@@ -11,7 +14,16 @@
       action: '別の名前で作成するか、既存の項目を確認してください。',
     },
     {
-      test: info => /conflict|競合|if[_-]?match|etag_conflict|他のタブ|別プロセス/i.test(info.raw),
+      // 「競合」「conflict」という語が本文に含まれるだけで一致させない。取り消し・
+      // 一覧取得など保存以外の失敗まで「ほかの変更とぶつかりました」と誤表示され、
+      // 何もしていない起動直後にこの通知が出る原因になっていた。
+      // 実際の保存競合として扱うのは、競合を表すステータスか、保存経路が付ける
+      // 競合コード（gb-save-safety.js / gb-storage-adapter の etag_conflict）がある場合だけ。
+      test: (info) => {
+        if (!/conflict|競合|if[_-]?match|etag_conflict|他のタブ|別プロセス/i.test(info.raw)) return false;
+        if (String(info.code || '') === 'etag_conflict') return true;
+        return CONFLICT_STATUSES.has(info.status);
+      },
       title: 'ほかの変更とぶつかりました',
       message: '同じファイルが別のタブまたは別の端末で更新されています。',
       action: '最新の状態を読み込み、必要な内容だけ保存し直してください。',
@@ -53,7 +65,9 @@
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
     },
     {
-      test: info => info.status === 501 || /not implemented|cloud_route_unwired/i.test(info.raw),
+      test: info => info.status === 501
+        || String(info.code || '') === 'cloud_route_unwired'
+        || /not implemented|cloud_route_unwired/i.test(info.raw),
       title: '操作を完了できませんでした',
       message: '画面の操作とクラウド保存先の接続に問題があります。',
       action: '画面を更新してもう一度試し、繰り返す場合はサポートに送信してください。',
@@ -85,9 +99,14 @@
     return match ? Number(match[1]) : 0;
   }
 
+  function _code(error) {
+    if (error == null || typeof error === 'string') return '';
+    return String(error.meldexCode || error.code || error.payload?.code || error.detail?.code || '');
+  }
+
   function translate(error, context) {
     const raw = _rawMessage(error);
-    const info = { raw, status: _status(error), context: context || {} };
+    const info = { raw, status: _status(error), code: _code(error), context: context || {} };
     const rule = RULES.find(item => {
       try { return item.test(info); } catch (_) { return false; }
     });

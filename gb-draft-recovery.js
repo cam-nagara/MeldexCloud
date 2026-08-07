@@ -159,13 +159,23 @@
     }).catch(() => {});
   }
 
-  async function clearDraft(path) {
+  // storageKey は listDrafts() が返す「実際に保存されているキー」。渡された場合は
+  // それを消す。キーは作業フォルダの解決状況を含むため（_draftScope 参照）、
+  // 一覧を出した時点とボタンを押した時点でキーの組み立て結果が変わることがあり、
+  // その場で作り直すと別キーを消して無言で失敗する（破棄しても毎回再表示される
+  // 原因になっていた）。
+  async function clearDraft(path, storageKey) {
     const safePath = String(path || '').trim();
     if (!safePath) return;
     const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
     timers.delete(key);
-    await _store('readwrite', (store) => store.delete(_draftStorageKey(safePath))).catch(() => {});
+    const targets = new Set([_draftStorageKey(safePath)]);
+    const explicit = String(storageKey || '').trim();
+    if (explicit) targets.add(explicit);
+    await _store('readwrite', (store) => {
+      targets.forEach(target => store.delete(target));
+    }).catch(() => {});
   }
 
   function markSynced(path) {
@@ -188,7 +198,7 @@
   async function _overwriteDraft(item) {
     if (typeof apiPut !== 'function') return;
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
-    await clearDraft(item.path);
+    await clearDraft(item.path, item.storageKey);
     if (typeof openPage === 'function') {
       await openPage(_fileLabel(item.path).replace(/\.md$/i, ''), item.path);
       const pc = document.getElementById('page-content');
@@ -226,7 +236,7 @@
       content: item.content || '',
       ...(exists ? { force_overwrite: true } : { create_only: true }),
     });
-    await clearDraft(item.path);
+    await clearDraft(item.path, item.storageKey);
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
     return true;
   }
@@ -239,8 +249,18 @@
     return false;
   }
 
+  // 編集ロック中（マニュアル等のシステム保護を含む）のパスに残っているドラフトを消す。
+  // _isPathLocked() は新規の積み増しを防ぐだけで、すでに入っているレコードは残るため、
+  // ロックされる前に一度でも保存へ失敗していると、本体保存が必ず弾かれる＝同期済みに
+  // ならず、起動のたびに「未保存の編集があります」が出続けていた。
+  async function _pruneLockedDrafts(drafts) {
+    const locked = (drafts || []).filter(item => _isPathLocked(item.path));
+    for (const item of locked) await clearDraft(item.path, item.storageKey);
+    return (drafts || []).filter(item => !locked.includes(item));
+  }
+
   async function showRecoveryDialog() {
-    const drafts = await listDrafts();
+    const drafts = await _pruneLockedDrafts(await listDrafts());
     if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
     if (_hasBlockingStartupDialog()) {
       _scheduleRecoveryRetry();
@@ -295,7 +315,7 @@
         if (saved) overlay.remove();
       } else if (action === 'discard') {
         if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
-        await clearDraft(item.path);
+        await clearDraft(item.path, item.storageKey);
         button.closest('[data-draft-row]')?.remove();
         if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
       }

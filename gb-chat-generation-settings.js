@@ -51,10 +51,11 @@ function _chatGenerationCurrentProvider() {
 }
 
 // 思考の深さ（reasoning）はサーバ実装（meldex_chat_stream_support.py / meldex_api_cli_chat.py）で
-// anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex（CLI経由、--effort注入）
-// でも生成オプションへ反映される。local_llm、およびgemini_cli（CLIに思考深度の指定手段が無い）は
-// 未対応のまま。
-const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex']);
+// anthropic/openai/gemini の3プロバイダ（API経由）に加え、claude_code/codex/antigravity_cli
+// （CLI経由、--effort注入）でも生成オプションへ反映される。local_llm は未対応のまま。
+// antigravity_cli は low/medium/high の3段階のみ受け付けるため、それ以上はhighへ丸める
+// （meldex_cli_chat_model_args.py の _cli_chat_reasoning_effort_for_antigravity 参照）。
+const CHAT_REASONING_SUPPORTED_PROVIDERS = new Set(['anthropic', 'openai', 'gemini', 'claude_code', 'codex', 'antigravity_cli']);
 
 function _chatGenerationReasoningSupported(provider) {
   return CHAT_REASONING_SUPPORTED_PROVIDERS.has(String(provider || '').trim().toLowerCase());

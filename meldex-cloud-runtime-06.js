@@ -128,7 +128,7 @@
 (function(global) {
   'use strict';
 
-  const CLI_PRIORITY = ['codex', 'claude_code', 'gemini_cli'];
+  const CLI_PRIORITY = ['codex', 'claude_code', 'antigravity_cli'];
   let _applying = null;
 
   function _storedProvider() {

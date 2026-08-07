@@ -706,6 +706,15 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
 .chat-message-bubble-team .chat-markdown a.chat-md-link {
   color: inherit;
 }
+/* チャットの `パス#見出し名` リンクで開いた直後、飛び先の見出しを一瞬だけ強調する */
+.chat-link-heading-flash {
+  animation: chat-link-heading-flash 1.6s ease-out;
+  border-radius: 4px;
+}
+@keyframes chat-link-heading-flash {
+  0% { background: color-mix(in srgb, var(--accent) 32%, transparent); }
+  100% { background: transparent; }
+}
 .chat-markdown .chat-md-image {
   display: block;
   max-width: min(100%, 360px);

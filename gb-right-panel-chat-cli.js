@@ -6,12 +6,12 @@
   const CLI_TRANSCRIPT_PROVIDERS = [
     { key: 'claude_code', label: 'Claude Code', watchPath: '~/.claude/projects', enabled: true },
     { key: 'codex', label: 'Codex', watchPath: '~/.codex/sessions', enabled: false },
-    { key: 'gemini_cli', label: 'Gemini CLI', watchPath: '~/.gemini', enabled: false },
+    { key: 'gemini_cli', label: 'Gemini CLI（過去ログ）', watchPath: '~/.gemini', enabled: false },
   ];
   const CLI_CHAT_PROVIDERS = [
     { key: 'codex', label: 'Codex CLI', model: 'Codex CLI', command: 'codex' },
     { key: 'claude_code', label: 'Claude Code', model: 'Claude Code', command: 'claude' },
-    { key: 'gemini_cli', label: 'Gemini CLI', model: 'Gemini CLI', command: 'gemini' },
+    { key: 'antigravity_cli', label: 'Antigravity CLI', model: 'Antigravity CLI', command: 'agy' },
   ];
   const CLI_CHAT_OUTPUT_IDLE_TIMEOUT_MS = 0;
   const CLI_CHAT_AUTO_CONTINUE_MAX = 6;
@@ -19,7 +19,7 @@
   const CLI_CHAT_SESSION_CONTINUITY_KEY = 'chat-cli-session-continuity';
   const CLI_CHAT_SESSION_STATE_PREFIX = 'chat-cli-session-state:v1:';
   const CLI_CHAT_PROVIDER_KEYS = new Set(CLI_CHAT_PROVIDERS.map(provider => provider.key));
-  const CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS = new Set(['codex', 'claude_code']);
+  const CLI_CHAT_SESSION_CONTINUITY_SUPPORTED_KEYS = new Set(['codex', 'claude_code', 'antigravity_cli']);
   let cliChatConfig = null;
   let originalChatSend = null;
   let activeCliChatStream = null;
@@ -886,7 +886,7 @@
   }
 
   function cliChatErrorAllowsContinuation(error) {
-    if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
+    if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(error?.errorCode)) {
       return false;
     }
     const message = String(error?.message || error || '');
@@ -1266,6 +1266,15 @@
             ensureAssistantVisible(fullText);
             ensureActivityVisible();
             scrollStreamContainer();
+          } else if (data.type === 'text_replace') {
+            // 途中送信で文字が壊れていた場合、CLIが最後に返す完成テキストで本文を差し替える。
+            const finalText = data.content == null ? '' : String(data.content);
+            if (!finalText) continue;
+            fullText = finalText;
+            markCliOutput(true);
+            if (!streamVisibleInCurrentChat()) assistantDiv = null;
+            ensureAssistantVisible(fullText);
+            scrollStreamContainer();
           } else if (data.type === 'cli_stderr') {
             const chunk = data.content == null ? '' : String(data.content);
             stderrText += chunk;
@@ -1289,7 +1298,7 @@
             streamError.errorCode = String(data.error_code || 'cli_exit_nonzero');
             streamError.detail = detail;
             streamError.action = String(data.action || '');
-            if (['cli_auth_required', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
+            if (['cli_auth_required', 'cli_plan_ineligible', 'cli_update_required', 'model_not_supported', 'cli_config_incompatible', 'cli_empty_response'].includes(streamError.errorCode)) {
               resetSessionContinuityForCurrentChat({ provider, sessionId: streamSessionId, silent: true });
             }
             throw streamError;

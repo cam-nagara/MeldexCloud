@@ -3263,6 +3263,19 @@
       });
     }
 
+    // フォルダの存在確認・作成のように「そのフォルダ自身の情報だけが変わりうる」
+    // 操作用の軽い無効化。_forgetMeta() は配下の版情報(rev)まで巻き添えで消すため、
+    // ensureDirectory() から呼ぶと、直前に読み込んだ「これから書くファイル」の rev
+    // まで失われ、uploadBytes() が既存ファイルを新規作成(add)として送ってしまい
+    // Dropbox 側で必ず競合になっていた（起動しただけで競合コピーが生成される真因）。
+    // フォルダを作る操作は配下ファイルの rev を変えないので、配下は保持してよい。
+    _forgetMetaSelf(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      this._metaCache.delete(normalized);
+      this._forgetFileCache(normalized);
+      this._forgetListCache(normalized);
+    }
+
     async restoreWorkspace() {
       if (!_runtime()?.isDropboxMode?.()) return null;
       const appKey = _auth()?.getAppKey?.();
@@ -3575,11 +3588,11 @@
             autorename: false,
           }, location);
         } catch (err) {
-          this._forgetMeta(current);
+          this._forgetMetaSelf(current);
           const existing = await this.statPath(current);
           if (!existing || existing.kind !== 'directory') throw err;
         }
-        this._forgetMeta(current);
+        this._forgetMetaSelf(current);
       }
       return new DropboxDirectoryHandle(this, normalized);
     }
@@ -3805,11 +3818,26 @@
       return latestMeta;
     }
 
+    // 書き込み直前の版情報(rev)を確定する。キャッシュに「このパスの項目そのものが
+    // 無い」場合は、存在するかどうかを確かめずに 'add'（新規作成）へ落ちると、
+    // 既存ファイルに対して strict_conflict の衝突を必ず起こす。値が null で
+    // 記録されている場合は「存在しないと確認済み」なので追加問い合わせをしない。
+    async _resolveUploadMeta(normalizedPath) {
+      if (this._metaCache.has(normalizedPath)) return this._metaCache.get(normalizedPath);
+      try {
+        return await this.getMetadata(normalizedPath);
+      } catch (_) {
+        // 版情報を取得できない場合は従来どおりの挙動（新規作成として送る）に倒す。
+        // 競合時は既存の退避・再取得経路が受け止める。
+        return null;
+      }
+    }
+
     async uploadBytes(relativePath, bytes) {
       const normalized = _normalizeRelativePath(relativePath);
       const parent = _dirname(normalized);
       if (parent) await this.ensureDirectory(parent);
-      const cachedMeta = this._metaCache.has(normalized) ? this._metaCache.get(normalized) : null;
+      const cachedMeta = await this._resolveUploadMeta(normalized);
       const mode = cachedMeta?.rev ? { '.tag': 'update', update: cachedMeta.rev } : 'add';
       try {
         const result = await this._uploadBytesWithMode(normalized, bytes, mode);
@@ -6753,21 +6781,38 @@
     return { ok: true };
   }
 
+  // デスクトップ版（配布物）と同じ「はじめから入っているフォルダ」の閲覧専用扱い。
+  // Meldex.part01.part01.py の BUILTIN_LOCKED_HOME_FOLDERS と同じ内容を保つこと。
+  // クラウド版はここが空のままだったため、マニュアルが編集可能な状態になり、
+  // 起動直後に自動で開くクイックスタートが無編集のまま保存を試みて失敗し、
+  // 未保存ドラフトと競合エラーが毎回出ていた。
+  const BUILTIN_LOCKED_HOME_FOLDER_NAMES = ['マニュアル', 'サンプル'];
+
+  function _builtinHomeLocks(homePath) {
+    const base = _normalizeFolderPath(homePath);
+    if (!base) return { locked_folders: [], locked_paths: [] };
+    const folders = BUILTIN_LOCKED_HOME_FOLDER_NAMES.map(name => ({ name, path: _joinPath(base, name) }));
+    return { locked_folders: folders, locked_paths: folders.map(item => item.path) };
+  }
+
   async function _pwaHomeFolder() {
     const provider = await _pwaProvider();
     const stored = _safeReadJson(PWA_HOME_KEY, null);
     if (stored?.path) {
+      // 保存済みの値には古い（空の）ロック一覧が残っていることがあるため、
+      // ロックは常にその場で組み立て直す。
+      const locks = _builtinHomeLocks(stored.path);
       try {
         if (provider) await provider.getDirectoryHandle(stored.path, false);
-        return { ...stored, exists: true };
+        return { ...stored, ...locks, exists: true };
       } catch {
-        return { ...stored, exists: false };
+        return { ...stored, ...locks, exists: false };
       }
     }
     try {
       if (provider) {
         await provider.getDirectoryHandle('MeldexHome', false);
-        return { path: 'MeldexHome', name: 'MeldexHome', exists: true, locked_folders: [], locked_paths: [] };
+        return { path: 'MeldexHome', name: 'MeldexHome', exists: true, ..._builtinHomeLocks('MeldexHome') };
       }
     } catch {}
     return { path: '', name: '', exists: false, locked_folders: [], locked_paths: [] };
@@ -17127,7 +17172,7 @@
   const PROVIDER_LABELS = {
     codex: 'Codex CLI',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
+    antigravity_cli: 'Antigravity CLI',
   };
   const ADMIN_ROLES = new Set(['owner', 'admin']);
 
@@ -17327,7 +17372,7 @@
   const PROVIDERS = [
     { key: 'codex', label: 'Codex CLI' },
     { key: 'claude_code', label: 'Claude Code' },
-    { key: 'gemini_cli', label: 'Gemini CLI' },
+    { key: 'antigravity_cli', label: 'Antigravity CLI' },
   ];
   const ADMIN_ROLES = new Set(['owner', 'admin']);
 
@@ -19902,13 +19947,41 @@
     return _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), dbPath);
   }
 
+  // 「保管ファイルが本当に無い」ことを確かめる。_readSheetStoreMaybe() は
+  // 「無い」と「読み取りに失敗した」を同じ null に潰すため、一時的な失敗の直後に
+  // 空の保管ファイルを作ってしまうと、同じフォルダにある実データ（物理.md）を
+  // 覆い隠してシートが0件表示になる（Xブックマーク等で実際に発生した）。
+  // 存在確認ができない場合は作らずに投げ、呼び出し元の再試行へ委ねる。
+  async function _assertSheetStoreMissing(provider, dbPath) {
+    if (typeof provider?.statPath !== 'function') return;
+    const stat = await provider.statPath(_sheetStorePath(dbPath));
+    if (stat) throw new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
+  }
+
+  const _sheetStoreEnsureInFlight = new Map();
+
   async function _ensureSheetStore(provider, dbPath) {
-    const existing = await _readSheetStoreMaybe(provider, dbPath);
-    if (existing) return existing;
-    const store = _emptySheetStore(dbPath);
-    await _directoryHandle(provider, _normalizeFolderPath(dbPath), true);
-    await provider.writeJson(_sheetStorePath(dbPath), store);
-    return store;
+    const key = _normalizeFolderPath(dbPath);
+    // 同一フォルダに対する同時作成を1本にまとめる。まとめないと、同じ保管ファイルを
+    // 二重に新規作成しようとして片方が必ず競合し、書き込み競合の退避ファイルが
+    // 溜まり続ける（自動タグ辞書で5秒差の二重作成を実測）。
+    const running = _sheetStoreEnsureInFlight.get(key);
+    if (running) return running;
+    const task = (async () => {
+      const existing = await _readSheetStoreMaybe(provider, key);
+      if (existing) return existing;
+      await _assertSheetStoreMissing(provider, key);
+      const store = _emptySheetStore(key);
+      await _directoryHandle(provider, key, true);
+      await provider.writeJson(_sheetStorePath(key), store);
+      return store;
+    })();
+    _sheetStoreEnsureInFlight.set(key, task);
+    try {
+      return await task;
+    } finally {
+      _sheetStoreEnsureInFlight.delete(key);
+    }
   }
 
   async function _writeSheetStore(provider, dbPath, store) {
@@ -42890,13 +42963,23 @@ if (typeof window !== 'undefined') {
     }).catch(() => {});
   }
 
-  async function clearDraft(path) {
+  // storageKey は listDrafts() が返す「実際に保存されているキー」。渡された場合は
+  // それを消す。キーは作業フォルダの解決状況を含むため（_draftScope 参照）、
+  // 一覧を出した時点とボタンを押した時点でキーの組み立て結果が変わることがあり、
+  // その場で作り直すと別キーを消して無言で失敗する（破棄しても毎回再表示される
+  // 原因になっていた）。
+  async function clearDraft(path, storageKey) {
     const safePath = String(path || '').trim();
     if (!safePath) return;
     const key = _draftTimerKey(safePath);
     clearTimeout(timers.get(key));
     timers.delete(key);
-    await _store('readwrite', (store) => store.delete(_draftStorageKey(safePath))).catch(() => {});
+    const targets = new Set([_draftStorageKey(safePath)]);
+    const explicit = String(storageKey || '').trim();
+    if (explicit) targets.add(explicit);
+    await _store('readwrite', (store) => {
+      targets.forEach(target => store.delete(target));
+    }).catch(() => {});
   }
 
   function markSynced(path) {
@@ -42919,7 +43002,7 @@ if (typeof window !== 'undefined') {
   async function _overwriteDraft(item) {
     if (typeof apiPut !== 'function') return;
     const res = await apiPut('/file?path=' + encodeURIComponent(item.path), { content: item.content || '', force_overwrite: true });
-    await clearDraft(item.path);
+    await clearDraft(item.path, item.storageKey);
     if (typeof openPage === 'function') {
       await openPage(_fileLabel(item.path).replace(/\.md$/i, ''), item.path);
       const pc = document.getElementById('page-content');
@@ -42957,7 +43040,7 @@ if (typeof window !== 'undefined') {
       content: item.content || '',
       ...(exists ? { force_overwrite: true } : { create_only: true }),
     });
-    await clearDraft(item.path);
+    await clearDraft(item.path, item.storageKey);
     if (typeof showStatus === 'function') showStatus('未保存ドラフトを別名保存しました');
     return true;
   }
@@ -42970,8 +43053,18 @@ if (typeof window !== 'undefined') {
     return false;
   }
 
+  // 編集ロック中（マニュアル等のシステム保護を含む）のパスに残っているドラフトを消す。
+  // _isPathLocked() は新規の積み増しを防ぐだけで、すでに入っているレコードは残るため、
+  // ロックされる前に一度でも保存へ失敗していると、本体保存が必ず弾かれる＝同期済みに
+  // ならず、起動のたびに「未保存の編集があります」が出続けていた。
+  async function _pruneLockedDrafts(drafts) {
+    const locked = (drafts || []).filter(item => _isPathLocked(item.path));
+    for (const item of locked) await clearDraft(item.path, item.storageKey);
+    return (drafts || []).filter(item => !locked.includes(item));
+  }
+
   async function showRecoveryDialog() {
-    const drafts = await listDrafts();
+    const drafts = await _pruneLockedDrafts(await listDrafts());
     if (!drafts.length || document.querySelector('[data-draft-recovery-dialog="1"]')) return;
     if (_hasBlockingStartupDialog()) {
       _scheduleRecoveryRetry();
@@ -43026,7 +43119,7 @@ if (typeof window !== 'undefined') {
         if (saved) overlay.remove();
       } else if (action === 'discard') {
         if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
-        await clearDraft(item.path);
+        await clearDraft(item.path, item.storageKey);
         button.closest('[data-draft-row]')?.remove();
         if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
       }
@@ -47036,6 +47129,9 @@ if (typeof window !== 'undefined') {
 
   if (window.MeldexErrorMessages) return;
 
+  // 保存競合として扱うHTTPステータス（409=競合 / 412=事前条件不一致 / 428=版指定必須）
+  const CONFLICT_STATUSES = new Set([409, 412, 428]);
+
   const RULES = [
     {
       test: info => info.status === 409 && /file_exists|既に存在|同名|already exists/i.test(info.raw),
@@ -47044,7 +47140,16 @@ if (typeof window !== 'undefined') {
       action: '別の名前で作成するか、既存の項目を確認してください。',
     },
     {
-      test: info => /conflict|競合|if[_-]?match|etag_conflict|他のタブ|別プロセス/i.test(info.raw),
+      // 「競合」「conflict」という語が本文に含まれるだけで一致させない。取り消し・
+      // 一覧取得など保存以外の失敗まで「ほかの変更とぶつかりました」と誤表示され、
+      // 何もしていない起動直後にこの通知が出る原因になっていた。
+      // 実際の保存競合として扱うのは、競合を表すステータスか、保存経路が付ける
+      // 競合コード（gb-save-safety.js / gb-storage-adapter の etag_conflict）がある場合だけ。
+      test: (info) => {
+        if (!/conflict|競合|if[_-]?match|etag_conflict|他のタブ|別プロセス/i.test(info.raw)) return false;
+        if (String(info.code || '') === 'etag_conflict') return true;
+        return CONFLICT_STATUSES.has(info.status);
+      },
       title: 'ほかの変更とぶつかりました',
       message: '同じファイルが別のタブまたは別の端末で更新されています。',
       action: '最新の状態を読み込み、必要な内容だけ保存し直してください。',
@@ -47086,7 +47191,9 @@ if (typeof window !== 'undefined') {
       action: 'ネットワークとMeldexの起動状態を確認してから再試行してください。',
     },
     {
-      test: info => info.status === 501 || /not implemented|cloud_route_unwired/i.test(info.raw),
+      test: info => info.status === 501
+        || String(info.code || '') === 'cloud_route_unwired'
+        || /not implemented|cloud_route_unwired/i.test(info.raw),
       title: '操作を完了できませんでした',
       message: '画面の操作とクラウド保存先の接続に問題があります。',
       action: '画面を更新してもう一度試し、繰り返す場合はサポートに送信してください。',
@@ -47118,9 +47225,14 @@ if (typeof window !== 'undefined') {
     return match ? Number(match[1]) : 0;
   }
 
+  function _code(error) {
+    if (error == null || typeof error === 'string') return '';
+    return String(error.meldexCode || error.code || error.payload?.code || error.detail?.code || '');
+  }
+
   function translate(error, context) {
     const raw = _rawMessage(error);
-    const info = { raw, status: _status(error), context: context || {} };
+    const info = { raw, status: _status(error), code: _code(error), context: context || {} };
     const rule = RULES.find(item => {
       try { return item.test(info); } catch (_) { return false; }
     });

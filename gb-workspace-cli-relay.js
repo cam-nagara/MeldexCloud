@@ -18,7 +18,7 @@
   const PROVIDER_LABELS = {
     codex: 'Codex CLI',
     claude_code: 'Claude Code',
-    gemini_cli: 'Gemini CLI',
+    antigravity_cli: 'Antigravity CLI',
   };
   const ADMIN_ROLES = new Set(['owner', 'admin']);
 
@@ -218,7 +218,7 @@
   const PROVIDERS = [
     { key: 'codex', label: 'Codex CLI' },
     { key: 'claude_code', label: 'Claude Code' },
-    { key: 'gemini_cli', label: 'Gemini CLI' },
+    { key: 'antigravity_cli', label: 'Antigravity CLI' },
   ];
   const ADMIN_ROLES = new Set(['owner', 'admin']);
 

@@ -378,7 +378,7 @@
   function _fillExecutionProviderSelect(select) {
     const options = [
       ['codex', 'Codex CLI'],
-      ['gemini_cli', 'Gemini CLI'],
+      ['antigravity_cli', 'Antigravity CLI'],
       ['claude_code', 'Claude Code'],
       ['gemini', 'Gemini API'],
       ['openai', 'OpenAI API'],

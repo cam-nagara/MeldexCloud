@@ -13,6 +13,10 @@
  *   使うかをその場で選ばせる。どちらを選んでも以後は同じ1つの共有プロフィールに
  *   統合される。「この端末の設定」は、ローカルの名前・アイコンを選んだ共有
  *   プロフィールへ保存し、クラウド版・他端末にも反映する。
+ *   候補が1件しか無い場合は「候補を選ぶ」段階に選択の意味が無い（唯一の候補しか
+ *   選べず、この端末側の選択肢が無いように見えてしまう）ため、その中間画面は
+ *   省略し、最初からこの2択を直接表示する（この場合「戻る」は出さず、代わりに
+ *   分離登録ボタンをこの画面に出す）。
  * - 自己同定ラダー経由でリンク済み（OAuth接続済みを除く）の場合は「別のプロフィールに
  *   切り替える」を出す。押すと記憶（rememberedキー）を消し、直近に把握している候補
  *   一覧をその場で描画する。自動再解決に任せると表示名一致で即座に元の相手へ
@@ -35,7 +39,8 @@
   const TEXT_UNAVAILABLE = 'この名前とアイコンは今のところこの端末だけの設定です。';
   const TEXT_UNAVAILABLE_HELP = '保存先にDropboxのフォルダを使うと、他の端末やクラウド版と共通になります。';
   const TEXT_AMBIGUOUS = 'クラウド版で設定したプロフィールが見つかりました。この端末で使う名前とアイコンを選んでください。';
-  const TEXT_REGISTER_NEW = '今の設定のまま新しく登録する';
+  const TEXT_REGISTER_NEW = '別人として新しいプロフィールを登録する';
+  const TEXT_REGISTER_NEW_HELP = '候補とは統合されず、この端末専用の新しいプロフィールになります。';
   const TEXT_SWITCH_PROFILE = '別のプロフィールに切り替える';
   const TEXT_DIRECTION = 'どちらの名前とアイコンを使いますか？';
   const TEXT_DIRECTION_HELP = 'どちらを選んでも、以後この端末とクラウド版・他の端末は同じ1つのプロフィールになります。「この端末の設定」を選ぶと、今の名前とアイコンがクラウド版・他の端末にも反映されます。';
@@ -51,6 +56,12 @@
     return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
   }
 
+  // 候補行のchevronアイコン用。fieldHelpと同じ理由で、Lucideが未読込の
+  // Node手作りテストハーネスでも落ちないようtypeofガードする。
+  function _icon(name, size) {
+    return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+  }
+
   function _injectStyles() {
     if (document.getElementById('msal-styles')) return;
     const style = document.createElement('style');
@@ -64,6 +75,8 @@
       .msal-candidate-avatar img{width:100%;height:100%;object-fit:cover;}
       .msal-candidate-name{font-size:13px;color:var(--fg);}
       .msal-candidate-suffix{font-size:12px;color:var(--fg2);}
+      .msal-candidate-hint{margin-left:auto;padding-left:8px;display:inline-flex;align-items:center;color:var(--fg2);flex-shrink:0;}
+      .msal-candidate-hint-text{font-size:12px;}
       .msal-register-new-row{margin-top:8px;justify-content:flex-start;}
       .msal-switch-row{margin-top:8px;justify-content:flex-start;}
     `;
@@ -175,6 +188,22 @@
     return av;
   }
 
+  // 候補行がクリックできることを見た目で示す右端のヒント（chevronアイコン、
+  // 未読込環境では文字ラベルにフォールバック）。
+  function _candidateHintNode() {
+    const hint = document.createElement('span');
+    hint.setAttribute('aria-hidden', 'true');
+    const glyph = _icon('chevronRight', 14);
+    if (glyph) {
+      hint.className = 'msal-candidate-hint';
+      hint.innerHTML = glyph;
+    } else {
+      hint.className = 'msal-candidate-hint msal-candidate-hint-text';
+      hint.textContent = '選ぶ';
+    }
+    return hint;
+  }
+
   // マイプロフィール節の表示（ユーザー名入力欄・アバタープレビュー）を、
   // 直近に反映されたローカル値（localStorage）へ再同期する。
   // 共有プロフィール適用自体（_applyProfileToLocal）はヘッダーアイコン等の
@@ -249,9 +278,17 @@
     await renderStatusLine(container);
   }
 
-  // 候補を選んだ直後の「どちらの名前とアイコンを使いますか？」の2択をインラインで
-  // 描画する。どちらを選んでも同じ1つの共有プロフィールへ統合される。
-  function _renderDirectionChoice(container, candidate, state) {
+  // 候補を選んだ直後（または候補が1件で中間の候補選択画面を省略した直後）の
+  // 「どちらの名前とアイコンを使いますか？」の2択をインラインで描画する。
+  // どちらを選んでも同じ1つの共有プロフィールへ統合される。
+  //
+  // options.showBack: 中間の候補選択画面（_renderAmbiguous）を経由してここへ来た
+  //   場合はtrue（既定）で「戻る」を出す。候補が1件でその中間画面自体を省略した
+  //   場合はfalseを渡す。戻る先が無いため「戻る」は出さず、代わりに「今の設定の
+  //   まま新しく登録する」相当のボタンをこの画面に出す（省略すると、そのボタンへ
+  //   到達する手段がなくなるため）。
+  function _renderDirectionChoice(container, candidate, state, options) {
+    const showBack = !options || options.showBack !== false;
     const wrap = _statusLineWrap(container);
     wrap.appendChild(_descNode(TEXT_DIRECTION, TEXT_DIRECTION_HELP));
 
@@ -267,10 +304,11 @@
       name.className = 'msal-candidate-name';
       name.textContent = profileLike?.displayName || '（表示名未設定）';
       row.appendChild(name);
-      const hint = document.createElement('span');
-      hint.className = 'msal-candidate-suffix';
-      hint.textContent = suffix;
-      row.appendChild(hint);
+      const suffixEl = document.createElement('span');
+      suffixEl.className = 'msal-candidate-suffix';
+      suffixEl.textContent = suffix;
+      row.appendChild(suffixEl);
+      row.appendChild(_candidateHintNode());
       row.addEventListener('click', onClick);
       return row;
     };
@@ -288,15 +326,19 @@
 
     wrap.appendChild(list);
 
-    const backRow = document.createElement('div');
-    backRow.className = 'gb-field-row msal-switch-row';
-    const backBtn = document.createElement('button');
-    backBtn.type = 'button';
-    backBtn.className = 'gb-btn gb-btn-sm';
-    backBtn.textContent = TEXT_BACK;
-    backBtn.addEventListener('click', () => _renderAmbiguous(container, state));
-    backRow.appendChild(backBtn);
-    wrap.appendChild(backRow);
+    if (showBack) {
+      const backRow = document.createElement('div');
+      backRow.className = 'gb-field-row msal-switch-row';
+      const backBtn = document.createElement('button');
+      backBtn.type = 'button';
+      backBtn.className = 'gb-btn gb-btn-sm';
+      backBtn.textContent = TEXT_BACK;
+      backBtn.addEventListener('click', () => _renderAmbiguous(container, state));
+      backRow.appendChild(backBtn);
+      wrap.appendChild(backRow);
+    } else {
+      wrap.appendChild(_buildRegisterNewRow(container));
+    }
   }
 
   async function _registerAsNew(container, btn) {
@@ -321,13 +363,45 @@
     }
   }
 
+  // 「別人として新しいプロフィールを登録する」ボタン行を組み立てる。統合せず
+  // 分離登録する操作であることをツールチップで補足する（基本UIに長文を
+  // 直接置かないため）。候補一覧画面（_renderAmbiguous）と、候補1件で中間画面を
+  // 省略した場合の2択画面（_renderDirectionChoice）の両方から使う共通部品。
+  function _buildRegisterNewRow(container) {
+    const registerRow = document.createElement('div');
+    registerRow.className = 'gb-field-row msal-register-new-row';
+    const registerBtn = document.createElement('button');
+    registerBtn.type = 'button';
+    registerBtn.className = 'gb-btn gb-btn-sm';
+    registerBtn.textContent = TEXT_REGISTER_NEW;
+    registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
+    registerRow.appendChild(registerBtn);
+    const help = _accountLinkHelp(TEXT_REGISTER_NEW_HELP);
+    if (help) {
+      const helpWrap = document.createElement('span');
+      helpWrap.innerHTML = help;
+      registerRow.appendChild(helpWrap);
+    }
+    return registerRow;
+  }
+
   function _renderAmbiguous(container, state) {
+    const candidates = Array.isArray(state?.candidates) ? state.candidates : [];
+    // 候補が1件だけの場合、「候補を選ぶ」という分岐自体に選択の意味が無い
+    // （唯一の候補ボタンしか押せず、他に選べる相手がいないように見えてしまう。
+    // 実際のユーザー報告: この端末側の選択肢が無いように見える）。中間の候補
+    // 選択画面を省略し、最初から「どちらの名前とアイコンを使いますか？」の
+    // 2択を表示する。候補が2件以上のときだけ従来どおり2段階にする。
+    if (candidates.length === 1) {
+      _renderDirectionChoice(container, candidates[0], state, { showBack: false });
+      return;
+    }
+
     const wrap = _statusLineWrap(container);
     wrap.appendChild(_descNode(TEXT_AMBIGUOUS));
 
     const list = document.createElement('div');
     list.className = 'msal-candidate-list';
-    const candidates = Array.isArray(state?.candidates) ? state.candidates : [];
     candidates.forEach((candidate) => {
       const row = document.createElement('button');
       row.type = 'button';
@@ -337,6 +411,7 @@
       name.className = 'msal-candidate-name';
       name.textContent = candidate?.displayName || candidate?.key || '（表示名未設定）';
       row.appendChild(name);
+      row.appendChild(_candidateHintNode());
       // 即統合せず、どちらの名前・アイコンを使うかの2択（_renderDirectionChoice）を
       // 先に出す。キーの無い異常データはここで弾く（従来は _selectCandidate 内のガード）。
       row.addEventListener('click', () => {
@@ -347,15 +422,7 @@
     });
     wrap.appendChild(list);
 
-    const registerRow = document.createElement('div');
-    registerRow.className = 'gb-field-row msal-register-new-row';
-    const registerBtn = document.createElement('button');
-    registerBtn.type = 'button';
-    registerBtn.className = 'gb-btn gb-btn-sm';
-    registerBtn.textContent = TEXT_REGISTER_NEW;
-    registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
-    registerRow.appendChild(registerBtn);
-    wrap.appendChild(registerRow);
+    wrap.appendChild(_buildRegisterNewRow(container));
   }
 
   async function renderStatusLine(container) {

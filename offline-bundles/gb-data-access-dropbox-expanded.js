@@ -378,13 +378,41 @@
     return _normalizeSheetStore(await _readJsonSafe(provider, storePath, null), dbPath);
   }
 
+  // 「保管ファイルが本当に無い」ことを確かめる。_readSheetStoreMaybe() は
+  // 「無い」と「読み取りに失敗した」を同じ null に潰すため、一時的な失敗の直後に
+  // 空の保管ファイルを作ってしまうと、同じフォルダにある実データ（物理.md）を
+  // 覆い隠してシートが0件表示になる（Xブックマーク等で実際に発生した）。
+  // 存在確認ができない場合は作らずに投げ、呼び出し元の再試行へ委ねる。
+  async function _assertSheetStoreMissing(provider, dbPath) {
+    if (typeof provider?.statPath !== 'function') return;
+    const stat = await provider.statPath(_sheetStorePath(dbPath));
+    if (stat) throw new Error('シートの保管ファイルを読み取れませんでした。時間をおいてもう一度お試しください');
+  }
+
+  const _sheetStoreEnsureInFlight = new Map();
+
   async function _ensureSheetStore(provider, dbPath) {
-    const existing = await _readSheetStoreMaybe(provider, dbPath);
-    if (existing) return existing;
-    const store = _emptySheetStore(dbPath);
-    await _directoryHandle(provider, _normalizeFolderPath(dbPath), true);
-    await provider.writeJson(_sheetStorePath(dbPath), store);
-    return store;
+    const key = _normalizeFolderPath(dbPath);
+    // 同一フォルダに対する同時作成を1本にまとめる。まとめないと、同じ保管ファイルを
+    // 二重に新規作成しようとして片方が必ず競合し、書き込み競合の退避ファイルが
+    // 溜まり続ける（自動タグ辞書で5秒差の二重作成を実測）。
+    const running = _sheetStoreEnsureInFlight.get(key);
+    if (running) return running;
+    const task = (async () => {
+      const existing = await _readSheetStoreMaybe(provider, key);
+      if (existing) return existing;
+      await _assertSheetStoreMissing(provider, key);
+      const store = _emptySheetStore(key);
+      await _directoryHandle(provider, key, true);
+      await provider.writeJson(_sheetStorePath(key), store);
+      return store;
+    })();
+    _sheetStoreEnsureInFlight.set(key, task);
+    try {
+      return await task;
+    } finally {
+      _sheetStoreEnsureInFlight.delete(key);
+    }
   }
 
   async function _writeSheetStore(provider, dbPath, store) {

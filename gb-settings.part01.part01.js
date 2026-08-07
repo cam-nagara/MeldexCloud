@@ -504,7 +504,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Gemini CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
+        <div class="gb-section-title">${lucide('terminal',14)} CLIチャット ${fieldHelp('PCに入っている Codex CLI / Claude Code / Antigravity CLI を、Meldexのチャットから呼び出します。ターミナルで使えるのに未検出の場合は、Meldexを再起動してください')}</div>
         <div id="settings-cli-chat-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
