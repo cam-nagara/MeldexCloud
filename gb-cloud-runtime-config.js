@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.166",
+    "semver": "0.7.167",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -13,13 +13,20 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.166"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.167"
   },
   "desktop": {
-    "currentVersion": "0.7.166",
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/Meldex-v0.7.166.zip",
-    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.166",
+    "currentVersion": "0.7.167",
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/Meldex-v0.7.167.zip",
+    "releasesUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.167",
     "versions": [
+      {
+        "publishedAt": "2026-08-07",
+        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.167",
+        "assetName": "Meldex-v0.7.167.zip",
+        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/Meldex-v0.7.167.zip",
+        "version": "0.7.167"
+      },
       {
         "publishedAt": "2026-08-07",
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.166",
@@ -91,36 +98,36 @@
     "note": {
       "cloudUrl": "apps/note/",
       "windowsAsset": "MeldexNote.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexNote.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexNote.zip"
     },
     "scenario": {
       "cloudUrl": "apps/scenario/",
       "windowsAsset": "MeldexScenario.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexScenario.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexScenario.zip"
     },
     "board": {
       "cloudUrl": "apps/board/",
       "windowsAsset": "MeldexBoard.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexBoard.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexBoard.zip"
     },
     "sheet": {
       "cloudUrl": "apps/sheet/",
       "windowsAsset": "MeldexSheet.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexSheet.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexSheet.zip"
     },
     "timer": {
       "cloudUrl": "apps/timer/",
       "windowsAsset": "MeldexTimer.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexTimer.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexTimer.zip"
     },
     "quick-memo": {
       "cloudUrl": "apps/quick-memo/",
       "windowsAsset": "MeldexQuickMemo.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexQuickMemo.zip"
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexQuickMemo.zip"
     }
   },
   "samples": {
-    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.166/MeldexSamples.zip"
+    "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.167/MeldexSamples.zip"
   },
   "dropbox": {
     "developerAppKey": "ovxy3vacegzu7nu"

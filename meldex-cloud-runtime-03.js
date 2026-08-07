@@ -30762,6 +30762,13 @@ async function _undeleteFileVersion(provider, path, token) {
       }
       return jsonResponse(data);
     } catch (err) {
+      // 中断（タイムアウト・画面切替・重複要求の取り消し）は「失敗」ではない。
+      // ここで 501 のレスポンスに変換すると、呼び出し側（apiFetch）の
+      // 「GETの中断はトーストを出さない」判定を素通りしてしまい、ユーザーが
+      // 何もしていないのに「操作を完了できませんでした」が出続ける
+      // （実機の診断情報で "HTTP 501: 操作が中断されました" として確認）。
+      // 本物の fetch と同じく reject させ、中断は中断として扱わせる。
+      if (err?.name === 'AbortError' || err?.code === 20) throw err;
       const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 501) || 501));
       const detail = {
         message: err?.message || String(err),
@@ -47470,8 +47477,26 @@ if (typeof window !== 'undefined') {
     return _redactDiagnosticText(value);
   }
 
+  // API のルート名（/db-metadata など）はアプリ固定の値でユーザーデータを含まない。
+  // クエリ（?path=... にファイル名が入る）は _safeEndpoint が既に落としている。
+  // ここまで伏せると診断情報が「GET [redacted-path] HTTP 500」だけになり、
+  // どの処理が失敗したのか誰も分からなくなる（実際に調査が行き詰まった）。
+  // 念のため、ドライブ文字・バックスラッシュ・拡張子を含むものは従来どおり伏せる。
+  function _safeApiRoute(value) {
+    const text = String(value || '').split('?')[0].trim();
+    if (!text || !text.startsWith('/')) return null;
+    if (text.length > 120) return null;
+    if (/[\\]|^[A-Za-z]:/.test(text)) return null;
+    if (/\.(?:md|json|png|jpe?g|gif|webp|pdf|csv|xlsx?|txt|html?|css|js|py)$/i.test(text)) return null;
+    return text;
+  }
+
   function _redact(value, key) {
     const lower = String(key || '').toLowerCase();
+    if (lower === 'endpoint' || lower === 'route') {
+      const route = _safeApiRoute(value);
+      if (route) return route;
+    }
     if (/key|token|secret|password|authorization|content|body|prompt|title|name|path|file/.test(lower)) {
       if (value == null || value === '') return value;
       return '[redacted]';
@@ -47585,6 +47610,8 @@ if (typeof window !== 'undefined') {
     const entry = rememberError(error, {
       kind: 'api',
       path,
+      // path はクエリごと伏せられるため、ルート名だけを別に残す（診断で必須）
+      endpoint: _safeEndpoint(path),
       method: opts?.method || 'GET',
       status: error?.status || error?.httpStatus || 0,
     });
@@ -47875,7 +47902,7 @@ if (typeof window !== 'undefined') {
       lines.push('recent api errors:');
       api.forEach(item => {
         const context = item.context || {};
-        lines.push(`- ${context.method || 'GET'} ${context.path || '[redacted]'} ${context.status || ''}`);
+        lines.push(`- ${context.method || 'GET'} ${context.endpoint || context.path || '[redacted]'} ${context.status || ''}`);
       });
     }
     return lines.filter(Boolean).join('\n') || remembered?.message || '';

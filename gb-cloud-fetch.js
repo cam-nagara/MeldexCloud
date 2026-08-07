@@ -388,6 +388,13 @@
       }
       return jsonResponse(data);
     } catch (err) {
+      // 中断（タイムアウト・画面切替・重複要求の取り消し）は「失敗」ではない。
+      // ここで 501 のレスポンスに変換すると、呼び出し側（apiFetch）の
+      // 「GETの中断はトーストを出さない」判定を素通りしてしまい、ユーザーが
+      // 何もしていないのに「操作を完了できませんでした」が出続ける
+      // （実機の診断情報で "HTTP 501: 操作が中断されました" として確認）。
+      // 本物の fetch と同じく reject させ、中断は中断として扱わせる。
+      if (err?.name === 'AbortError' || err?.code === 20) throw err;
       const status = Math.max(400, Math.min(599, Number(err?.status || err?.status_code || 501) || 501));
       const detail = {
         message: err?.message || String(err),
