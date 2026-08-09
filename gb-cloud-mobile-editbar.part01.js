@@ -115,9 +115,9 @@
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [
-    { id: 'pen', label: 'ペン', icon: 'pencil', tool: 'pen' },
-    { id: 'marker', label: 'マーカー', icon: 'highlighter', tool: 'marker' },
-    { id: 'lasso', label: '投げ縄', icon: 'lasso', tool: 'lasso' },
+    { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
+    { id: 'line', label: 'ライン', icon: 'spline', group: 'line' },
+    { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
     { id: 'width-down', label: '細く', icon: 'minus', action: () => _stepAnnotationWidth(-1) },
@@ -769,6 +769,11 @@
   }
 
   function _setAnnotationTool(tool) {
+    if (typeof _annotationSelectTool === 'function') {
+      _annotationSelectTool(tool);
+      _syncAnnotationBarState();
+      return true;
+    }
     const button = Array.from(document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]'))
       .find(el => el.dataset.tool === tool);
     if (button) {
@@ -780,6 +785,28 @@
     }
     _syncAnnotationBarState();
     return true;
+  }
+
+  function _openAnnotationMobileToolMenu(anchor, group) {
+    const fallback = {
+      stroke: [{ tool: 'pen', label: 'ペン' }, { tool: 'marker', label: 'マーカー' }],
+      line: [{ tool: 'polyline', label: '折れ線' }, { tool: 'ellipse-line', label: '円形' }, { tool: 'rect-line', label: '矩形' }],
+      fill: [{ tool: 'lasso', label: '囲い塗り' }, { tool: 'ellipse-fill', label: '円形塗り' }, { tool: 'rect', label: '矩形塗り' }],
+    };
+    const items = (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || fallback[group] || [];
+    document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ann-tool-popup'; menu.setAttribute('role', 'menu');
+    items.forEach(item => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'ann-tool-popup-item';
+      option.dataset.annSelectTool = item.tool; option.textContent = item.label;
+      option.addEventListener('click', () => { _setAnnotationTool(item.tool); menu.remove(); });
+      menu.appendChild(option);
+    });
+    document.body.appendChild(menu);
+    positionPopup(menu, anchor.getBoundingClientRect(), { prefer: 'above', gap: 6 });
+    menu.querySelector('button')?.focus();
   }
 
   function _annotationWidthInput() {
@@ -828,6 +855,12 @@
     const tool = _currentAnnotationTool();
     _annotationBar.querySelectorAll('[data-ann-mobile-tool]').forEach((button) => {
       button.classList.toggle('active', button.dataset.annMobileTool === tool);
+    });
+    _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
+      const group = button.dataset.annMobileGroup;
+      const members = group === 'stroke' ? ['pen', 'marker']
+        : (group === 'line' ? ['polyline', 'ellipse-line', 'rect-line'] : ['lasso', 'ellipse-fill', 'rect']);
+      button.classList.toggle('active', members.includes(tool));
     });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
@@ -1268,8 +1301,9 @@
     const row = document.createElement('div');
     row.className = 'cloud-mobile-annotationbar-row';
     ANNOTATION_ITEMS.forEach((item) => {
-      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.tool
-        ? () => _setAnnotationTool(item.tool)
-        : item.action);
+      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.group
+        ? (event) => _openAnnotationMobileToolMenu(event.currentTarget, item.group)
+        : (item.tool ? () => _setAnnotationTool(item.tool) : item.action));
       if (item.id) button.dataset.e2eId = 'cloud-mobile-annotationbar-' + item.id;
       if (item.tool) button.dataset.annMobileTool = item.tool;
+      if (item.group) button.dataset.annMobileGroup = item.group;

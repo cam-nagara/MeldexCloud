@@ -1225,7 +1225,11 @@
           cli_session_scope: cliSessionContinuity.scopeKey || '',
           active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
+          user_agent: navigator.userAgent || '',
           theme_context: typeof window.chatThemeContextSettings === 'function' ? window.chatThemeContextSettings() : {},
+          // 通常チャットと同じカスタムインストラクションを渡す。これが無いと
+          // 設定画面で入力した内容がCLIチャットでは無視される。
+          ...(typeof chatCustomInstructionSettings === 'function' ? chatCustomInstructionSettings() : {}),
         }),
       });
       if (!response.ok) {

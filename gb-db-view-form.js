@@ -474,13 +474,22 @@ async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
       for (const file of Array.from(input.files || [])) {
         const fd = new FormData();
         fd.append('file', file);
-        const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
+        // 添付先シートを渡すと、シートフォルダ内の添付フォルダへ元の名前で保存される。
+        // 開いているシート自身の編集ロックに当たるため、自分のロックの識別子も添える。
+        if (options.dbPath) fd.append('sheet_path', options.dbPath);
+        const res = await fetch(API_BASE + '/media/upload', {
+          method: 'POST',
+          body: fd,
+          headers: (typeof _attachmentUploadHeaders === 'function' ? _attachmentUploadHeaders() : undefined),
+        });
         if (!res.ok) throw new Error('画像アップロード失敗: HTTP ' + res.status);
         const meta = await res.json();
         uploaded.push({
           id: (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'img_' + Date.now()),
           content_hash: meta.content_hash || meta.hash,
           filename: meta.filename || file.name,
+          path: meta.path || '',
+          kind: meta.kind || '',
           src: meta.src,
           thumb: meta.thumb,
           url: meta.url,
@@ -526,7 +535,7 @@ function _customInstructionRelayErrorMessage(result) {
 async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) {
   const msg = form.querySelector('.gb-form-submit-message');
   try {
-    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly });
+    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
     if (cfg.betaFeedbackRelay && !fields['送信日']) {
       fields['送信日'] = new Date().toISOString().slice(0, 10);
     }

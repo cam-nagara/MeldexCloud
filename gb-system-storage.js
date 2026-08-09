@@ -56,6 +56,9 @@
     IMPORT_CHECKPOINTS: 'import-checkpoints',
     ASSET_RECOVERY: 'asset-recovery',
     DIAGNOSTICS: 'diagnostics',
+    // テーマなど、同じ人がどの環境で開いても同じであってほしい見た目の設定。
+    // 個人管理領域だけで使用する(共有ワークスペースへ置くと他メンバーへ漏れる)。
+    USER_PREFERENCES: 'user-preferences',
     // Phase 5(既存付随物の自動移行)専用。meldex_system_storage.py と対称。
     MIGRATION_LEDGER: 'migration-ledger',
     MIGRATION_BACKUPS: 'migration-backups',
@@ -206,6 +209,7 @@
     [SystemStorageKind.IMPORT_CHECKPOINTS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.ASSET_RECOVERY]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.DIAGNOSTICS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.USER_PREFERENCES]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_LEDGER]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
   });

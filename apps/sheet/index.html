@@ -26,6 +26,8 @@
   <link rel="stylesheet" href="gb-db-tree-view.css">
   <link rel="stylesheet" href="gb-format-popup.css">
   <link rel="stylesheet" href="standalone-shell.css">
+<link rel="stylesheet" href="gb-shortcut-registry.css">
+<link rel="stylesheet" href="gb-file-metadata.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="sheet-standalone.css">
@@ -166,7 +168,9 @@
   <script src="meldex-app-capabilities.js"></script>
   <script src="gb-pane-context.js"></script>
   <script src="offline-bundles/gb-history.js"></script>
-  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-shortcut-registry.js"></script>
+<script src="gb-file-metadata.js"></script>
+<script src="offline-bundles/gb-detail-panel.js"></script><script src="gb-detail-shortcuts-tab.js"></script>
   <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
@@ -244,6 +248,19 @@
   <script src="standalone-offline-outbox.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
+  <script src="standalone-always-on-top.js"></script>
+  <script>
+    // 「常に最前面」は Windows デスクトップ版だけで有効。非対応環境ではボタンを出さない。
+    document.addEventListener("DOMContentLoaded", () => {
+      const before = document.getElementById("sheet-option-panel-button");
+      window.MeldexAlwaysOnTop?.install({
+        appId: "sheet",
+        host: before?.parentElement,
+        buttonClass: "sa-icon-btn",
+        before,
+      });
+    });
+  </script>
   <script src="sheet-standalone-app.js"></script>
 </body>
 </html>

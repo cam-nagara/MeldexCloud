@@ -256,7 +256,13 @@ function _dbViewSurfaceEl(ctx, selector, id) {
 
 function _galleryImageSrcFromValue(rawValue, dbPath, entityName) {
   const items = typeof parseImagePropertyValue === 'function' ? parseImagePropertyValue(rawValue) : [];
-  if (items.length && typeof _imageSrc === 'function') return _imageSrc(items[0], true);
+  if (items.length && typeof _imageSrc === 'function') {
+    // 動画・PDFはカバー画像にできないので、画像の添付があればそれを使う
+    const cover = typeof _attachmentKind === 'function'
+      ? items.find(item => _attachmentKind(item) === 'image')
+      : items[0];
+    return cover ? _imageSrc(cover, true) : '';
+  }
   const text = String(rawValue || '').trim();
   if (!text || !/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(text)) return '';
   if (/^(https?:|data:|blob:|\/)/.test(text)) return text;
@@ -285,13 +291,18 @@ function _appendDbCardImagePreview(root, items, options = {}) {
   wrap.style.setProperty('--db-card-thumb-columns', String(thumbColumns));
   let appended = 0;
   items.slice(0, thumbCount).forEach((item, idx) => {
-    const mediaKind = String(item?.asset_kind || item?.media_type || '').toLowerCase();
-    const hasPreview = !!(item?.thumb_url || item?.thumb || item?.preview_url || item?.preview_src || item?.preview_image_url);
-    if (mediaKind === 'video' && !hasPreview) {
+    const mediaKind = typeof _attachmentKind === 'function'
+      ? _attachmentKind(item)
+      : String(item?.asset_kind || item?.media_type || '').toLowerCase();
+    // thumb_url は新方式では動画にも入る（生ファイル）ので、本物の縮小画像だけを preview として扱う
+    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url);
+    if (mediaKind !== 'image' && !hasPreview) {
       const placeholder = document.createElement('div');
       placeholder.className = 'db-card-media-placeholder';
       placeholder.dataset.imageIndex = String(idx);
-      placeholder.innerHTML = (typeof lucide === 'function' ? lucide('video', 16) : '') + '<span>動画</span>';
+      const icon = mediaKind === 'video' ? 'video' : 'fileText';
+      const caption = mediaKind === 'video' ? '動画' : (mediaKind === 'pdf' ? 'PDF' : 'ファイル');
+      placeholder.innerHTML = (typeof lucide === 'function' ? lucide(icon, 16) : '') + `<span>${caption}</span>`;
       placeholder.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();

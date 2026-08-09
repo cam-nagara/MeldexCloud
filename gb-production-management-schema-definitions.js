@@ -14,7 +14,7 @@
   });
 
   const PRIORITY_OPTIONS = ['低', '通常', '高', '最優先'];
-  const GRANULARITY_OPTIONS = ['階層単位', 'ページ単位', 'コマ単位'];
+  const GRANULARITY_OPTIONS = ['階層単位', '見開き単位', 'ページ単位', 'コマ単位'];
   const PRESET_OPTIONS = ['汎用', 'マンガ'];
   const SCHEDULE_TYPE_OPTIONS = ['シフト', '休み', '作業予定'];
   const TASK_GENERATION_OPTIONS = ['未作成', '作成中', '作成済み', '失敗'];

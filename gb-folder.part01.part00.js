@@ -11,6 +11,39 @@ const FOLDER_PANEL_RENDER_CHUNK_SIZE = 80;
 const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 let _folderPath = '';
 let _folderItems = [];
+let _folderUnifiedSearchPaths = new Set();
+let _folderUnifiedSearchSeq = 0;
+let _folderUnifiedSearchTimer = 0;
+
+function _refreshFolderUnifiedSearch(query) {
+  const text = String(query || '').trim();
+  const seq = ++_folderUnifiedSearchSeq;
+  _folderUnifiedSearchPaths = new Set();
+  if (!text || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
+  const scopes = window.MeldexUnifiedSearch.active();
+  if (!scopes.some(scope => scope !== 'name')) return Promise.resolve();
+  return window.MeldexUnifiedSearch.search(text, { path: _folderPath || '', limit: 100 })
+    .then(data => {
+      if (seq !== _folderUnifiedSearchSeq) return;
+      _folderUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
+      if (typeof renderFolderGrid === 'function') renderFolderGrid();
+    })
+    .catch(() => {});
+}
+
+function _scheduleFolderUnifiedSearch(query) {
+  clearTimeout(_folderUnifiedSearchTimer);
+  _folderUnifiedSearchTimer = setTimeout(() => {
+    _folderUnifiedSearchTimer = 0;
+    _refreshFolderUnifiedSearch(query);
+  }, 240);
+}
+
+window.addEventListener('meldex:search-scopes-changed', () => {
+  const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
+  const query = String(cfg.filterText || '');
+  if (query.trim()) _scheduleFolderUnifiedSearch(query);
+});
 let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
 let _folderLayout = localStorage.getItem('folder-layout') || 'waterfall';
@@ -35,6 +68,44 @@ function _folderPanelRenderChunkSize(total) {
 
 function _normalizeFolderPathForCompare(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _folderDndPathKey(path) {
+  const value = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
+  const prefix = value.startsWith('/') ? '/' : '';
+  const segments = [];
+  value.split('/').forEach(segment => {
+    if (!segment || segment === '.') return;
+    if (segment === '..') {
+      if (segments.length && segments[segments.length - 1] !== '..') segments.pop();
+      else if (!prefix) segments.push(segment);
+      return;
+    }
+    segments.push(segment);
+  });
+  return (prefix + segments.join('/')).replace(/\/+$/, '').toLowerCase();
+}
+
+function _folderDndPathIsAncestor(parentPath, childPath) {
+  const parentKey = _folderDndPathKey(parentPath);
+  const childKey = _folderDndPathKey(childPath);
+  return !!parentKey && !!childKey && parentKey !== childKey && childKey.startsWith(parentKey + '/');
+}
+
+function _folderDragItemsForStart(primaryItem, selectedItems) {
+  const primaryKey = _folderDndPathKey(primaryItem?.path);
+  const candidates = (selectedItems || []).filter(item => item?.path);
+  const withoutPrimaryAncestors = candidates.filter(item => {
+    const key = _folderDndPathKey(item.path);
+    return key === primaryKey || !_folderDndPathIsAncestor(item.path, primaryItem?.path);
+  });
+  const seen = new Set();
+  return withoutPrimaryAncestors.filter(item => {
+    const key = _folderDndPathKey(item.path);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return !withoutPrimaryAncestors.some(parent => parent !== item && _folderDndPathIsAncestor(parent.path, item.path));
+  });
 }
 
 function _isHomeFolderPath(path) {
@@ -405,11 +476,13 @@ function _folderMembershipFolderLabel(folder) {
   return name === normalized ? normalized : `${name} - ${normalized}`;
 }
 
-function _folderDragPayloadItemsFromEvent(event) {
-  let payload = null;
+function _folderDragPayloadItemsFromEvent(event, payloadOverride) {
+  let payload = payloadOverride || null;
   try {
-    const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
-    payload = raw ? JSON.parse(raw) : null;
+    if (!payload) {
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
+      payload = raw ? JSON.parse(raw) : null;
+    }
   } catch {
     payload = null;
   }
@@ -417,11 +490,13 @@ function _folderDragPayloadItemsFromEvent(event) {
     payload = window._gbOutlinerDragPayload || window._gbFolderViewDragPayload || null;
   }
   const rows = Array.isArray(payload?.items) ? payload.items : (payload?.path ? [payload] : []);
+  const sourceSurface = payload?.sourceSurface || '';
   const seen = new Set();
   return rows.map(row => ({
     name: row?.name || '',
     path: row?.path || '',
     type: row?.type || 'file',
+    sourceSurface: row?.sourceSurface || sourceSurface || 'main',
   })).filter(row => {
     const key = _folderMembershipKey(row.path);
     if (!key || seen.has(key)) return false;
@@ -435,17 +510,18 @@ function _folderCanAcceptLinkDrop(event, targetItem) {
   if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;
   if (typeof isItemLocked === 'function' && isItemLocked(targetItem.path)) return false;
   const types = Array.from(event?.dataTransfer?.types || []);
-  return types.includes('application/x-meldex-node');
+  return types.includes('application/x-meldex-node')
+    || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(event, 'node'));
 }
 
-async function _folderCreateLinksFromDrop(event, targetItem) {
+async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
   const targetPath = targetItem?.path || '';
   const targetKey = _folderMembershipKey(targetPath);
-  const items = _folderDragPayloadItemsFromEvent(event)
+  const items = _folderDragPayloadItemsFromEvent(event, payloadOverride)
     .filter(row => _folderMembershipKey(row.path) !== targetKey);
   if (!targetPath || items.length === 0) {
     showStatus('リンク登録できる項目がありません', true);
-    return;
+    return 0;
   }
   let ok = 0;
   let failed = 0;
@@ -467,4 +543,190 @@ async function _folderCreateLinksFromDrop(event, targetItem) {
   }
   const suffix = failed > 0 ? `（${failed} 件失敗）` : '';
   showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にリンク登録しました${suffix}` : 'リンク登録に失敗しました', failed > 0 && ok === 0);
+  return ok;
+}
+
+function _folderCanAcceptMoveDrop(event, targetItem) {
+  if (!event || event.altKey || !targetItem?.path) return false;
+  if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;
+  if (typeof isItemLocked === 'function' && isItemLocked(targetItem.path)) return false;
+  return Array.from(event.dataTransfer?.types || []).includes('application/x-meldex-node')
+    || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(event, 'node'));
+}
+
+async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
+  const targetPath = targetItem?.path || '';
+  const targetKey = _folderMembershipKey(targetPath);
+  const items = _folderDragPayloadItemsFromEvent(event, payloadOverride).filter(source => {
+    const sourceKey = _folderMembershipKey(source.path);
+    return sourceKey && sourceKey !== targetKey && !targetKey.startsWith(sourceKey + '/');
+  });
+  if (!targetPath || items.length === 0) {
+    showStatus('移動できる項目がありません', true);
+    return 0;
+  }
+  const progress = window.MeldexImportProgress;
+  progress?.beginOperation?.('ファイルを移動中', items.length);
+  let ok = 0;
+  const failures = [];
+  try {
+    for (const source of items) {
+      try {
+        const oldPath = source.path;
+        const copySource = source.sourceSurface === 'sheet-image';
+        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+          path: oldPath,
+          dest_folder: targetPath,
+        } : {
+          path: oldPath,
+          dest_folder: targetPath,
+          conflict_policy: 'error',
+        });
+        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
+          renameAppPathReferences(oldPath, res.new_path, {
+            label: res.new_name || source.name,
+            fileId: res.file_id,
+            type: source.type || 'file',
+          });
+        }
+        ok += 1;
+      } catch (error) {
+        failures.push({ name: source.name || source.path, error });
+      }
+      progress?.updateOperation?.(ok + failures.length);
+    }
+  } finally {
+    progress?.finishOperation?.();
+  }
+  if (typeof loadOutliner === 'function') {
+    await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
+  }
+  if (_folderPath && typeof openFolder === 'function') {
+    const label = document.getElementById('folder-title')?.textContent || _folderPath;
+    await openFolder(label, _folderPath, {
+      silent: true,
+      skipShowView: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    });
+  }
+  if (failures.length) {
+    const first = failures[0];
+    const reason = String(first.error?.userMessage || first.error?.message || '');
+    showStatus(`${ok}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
+  } else {
+    showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
+  }
+  return ok;
+}
+
+function _folderDirectParentKey(path) {
+  const normalized = _normalizeFolderPathForCompare(path);
+  const slash = normalized.lastIndexOf('/');
+  return slash >= 0 ? normalized.slice(0, slash) : '';
+}
+
+function _folderManualDropIntent(event, targetElement, targetItem) {
+  if (!event || !targetElement || !targetItem?.path || event.altKey) return null;
+  if (typeof getSortForFolder !== 'function' || getSortForFolder(_folderPath || '').sort !== 'manual') return null;
+  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
+  const sources = _folderDragPayloadItemsFromEvent(event).filter(source => (
+    _folderDirectParentKey(source.path) === currentKey && source.path !== targetItem.path
+  ));
+  if (!sources.length || _folderDirectParentKey(targetItem.path) !== currentKey) return null;
+  const rect = targetElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  let position;
+  if (_folderLayout === 'list') {
+    const ratio = (event.clientY - rect.top) / rect.height;
+    if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
+    position = ratio < 0.5 ? 'before' : 'after';
+  } else {
+    const ratio = (event.clientX - rect.left) / rect.width;
+    if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
+    position = ratio < 0.5 ? 'before' : 'after';
+  }
+  return { position, sources };
+}
+
+function _folderClearManualDropIndicators() {
+  document.querySelectorAll('.fv-item.fv-manual-before,.fv-item.fv-manual-after').forEach(element => {
+    element.classList.remove('fv-manual-before', 'fv-manual-after');
+  });
+}
+
+function _folderApplyManualDrop(intent, targetItem) {
+  if (!intent || !targetItem?.name) return false;
+  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
+  const directItems = (_folderItems || []).filter(item => _folderDirectParentKey(item?.path) === currentKey);
+  const ordered = typeof _sortItemsByManualOrder === 'function'
+    ? _sortItemsByManualOrder([...directItems], _folderPath || '')
+    : [...directItems];
+  const sourceNames = new Set(intent.sources.map(source => source.name).filter(Boolean));
+  const movedNames = ordered.filter(item => sourceNames.has(item?.name)).map(item => item.name);
+  const remaining = ordered.map(item => item?.name).filter(name => name && !sourceNames.has(name));
+  const targetIndex = remaining.indexOf(targetItem.name);
+  if (!movedNames.length || targetIndex < 0) return false;
+  const insertIndex = targetIndex + (intent.position === 'after' ? 1 : 0);
+  remaining.splice(insertIndex, 0, ...movedNames);
+  const historyKeys = [
+    typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort',
+    typeof MANUAL_ORDER_KEY !== 'undefined' ? MANUAL_ORDER_KEY : 'outliner-manual-order',
+  ];
+  const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
+  setSortSetting(_folderPath || '', 'manual', 'asc');
+  setManualOrder(_folderPath || '', remaining);
+  if (typeof pushOutlinerSettingsHistory === 'function') {
+    pushOutlinerSettingsHistory('フォルダ: マニュアル並び替え', before, targetItem.name, historyKeys);
+  }
+  const selectedPaths = (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
+  renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  showStatus('並び順を変更しました');
+  return true;
+}
+
+const FOLDER_SUBFOLDER_CONTENTS_KEY = 'gb:folder-include-subfolders';
+
+function isFolderSubfolderContentsEnabled() {
+  try { return localStorage.getItem(FOLDER_SUBFOLDER_CONTENTS_KEY) === '1'; } catch { return false; }
+}
+
+function setFolderSubfolderContentsEnabled(enabled) {
+  try { localStorage.setItem(FOLDER_SUBFOLDER_CONTENTS_KEY, enabled ? '1' : '0'); } catch {}
+  if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
+}
+
+async function _folderFetchBrowseItems(path) {
+  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+  if (!isFolderSubfolderContentsEnabled()) return direct;
+  const result = [...direct];
+  const seenItems = new Set(direct.map(item => _normalizeFolderPathForCompare(item?.path)).filter(Boolean));
+  const queue = direct.filter(item => item?.type === 'folder' && item.path).map(item => item.path);
+  const visited = new Set([_normalizeFolderPathForCompare(path)]);
+  while (queue.length && visited.size < 5000) {
+    const folderPath = queue.shift();
+    const key = _normalizeFolderPathForCompare(folderPath);
+    if (!key || visited.has(key)) continue;
+    visited.add(key);
+    try {
+      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      children.forEach(child => {
+        if (child?.type === 'folder' && child.path) queue.push(child.path);
+        else if (child?.path) {
+          const childKey = _normalizeFolderPathForCompare(child.path);
+          if (!seenItems.has(childKey)) {
+            seenItems.add(childKey);
+            result.push({ ...child, _subfolderContent: true, _subfolderParentPath: folderPath });
+          }
+        }
+      });
+    } catch (error) {
+      console.warn('サブフォルダの読み込みに失敗しました', folderPath, error);
+    }
+  }
+  return result;
 }

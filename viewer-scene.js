@@ -883,10 +883,10 @@
   // 2026-08-04「2. カーソル位置中心のホイールズーム」）。PDFはcanvasのbacking storeだけ更新、
   // 画像/動画はstyle.width/heightだけ再計算する。clientX/Yを渡すとカーソル位置を中心にズームする
   // （渡さない場合は#display中心を基準にする）。
-  function zoomAt(clientX, clientY, dir) {
+  function setZoomAt(clientX, clientY, requestedZoom) {
     if (items.length === 0) return;
     const oldZoom = zoom;
-    const targetZoom = dir === 'out' ? Math.max(0.2, oldZoom / 1.2) : Math.min(5, oldZoom * 1.2);
+    const targetZoom = Math.max(0.2, Math.min(5, Number(requestedZoom) || 1));
     if (Math.abs(targetZoom - oldZoom) < 0.0005) return;
     const display = document.getElementById('display');
     const rect = display ? display.getBoundingClientRect() : null;
@@ -909,8 +909,22 @@
     updateViewerPositionControls();
     updateHud();
   }
+  function zoomAt(clientX, clientY, dir) {
+    setZoomAt(clientX, clientY, dir === 'out' ? zoom / 1.2 : zoom * 1.2);
+  }
   function zoomIn() { zoomAt(null, null, 'in'); }
   function zoomOut() { zoomAt(null, null, 'out'); }
+
+  // ダブルクリック／ダブルタップは、現在のフィット方式を壊さず倍率とパンだけを初期値へ戻す。
+  // setOriginal() は fitMode 自体を none に変えるため、ズームリセット用途には使わない。
+  function resetZoom() {
+    if (items.length === 0) return;
+    if (isPdf) applyPdfZoomInPlace(1);
+    else { zoom = 1; reapplyMediaFitStyle(); }
+    resetPan();
+    updateViewerPositionControls();
+    updateHud();
+  }
 
   function toggleBg() {
     bgBlur = !bgBlur;
@@ -956,6 +970,12 @@
     rotateDeg = (rotateDeg + 90) % 360;
     applyViewerTransform();
   }
+  function setRotateDeg(value) {
+    const next = Number(value);
+    if (!Number.isFinite(next)) return;
+    rotateDeg = ((next % 360) + 360) % 360;
+    applyViewerTransform();
+  }
   function setOriginal() {
     fitMode = 'none'; zoom = 1; renderCache.clear(); applyFit(); setFitUI(); showGroup(idx);
   }
@@ -979,6 +999,12 @@
     if (layer) layer.style.transform = `translate(${panX}px, ${panY}px)`;
   }
   function resetPan() { panX = 0; panY = 0; document.getElementById('layerA').style.transform = ''; document.getElementById('layerB').style.transform = ''; }
+  function panBy(deltaX, deltaY) {
+    panX += Number(deltaX) || 0;
+    panY += Number(deltaY) || 0;
+    clampPan();
+    applyPan();
+  }
 
   // パンの可動範囲（はみ出し量）を現在の表示コンテンツの実寸から計算する。
   // 実メディア要素（img/video/canvas）の矩形の合成（見開きは2枚の合算）を使うこと。
@@ -1186,6 +1212,8 @@
     prevGroup, nextGroup, shiftBackward, shiftForward, goToIndex, prevFolder, nextFolder,
     // 表示状態の参照
     getGroup, currentDisplayOrder, itemAnnotationPath,
+    // 単独ビューワーの右サイドバー「情報」タブが、表示中のファイルを知るために使う
+    currentPath: currentViewerPathForFolderNavigation,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
     getFitMode: () => fitMode, getZoom: () => zoom, getFlipH: () => flipH, getFlipV: () => flipV,
@@ -1193,7 +1221,8 @@
     getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing,
     isSheetContext: () => !!sheetContextId,
     // 表示状態の変更・その他
-    setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setOriginal, toggleFlipH, toggleFlipV, rotate,
+    setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,
+    panBy, setOriginal, toggleFlipH, toggleFlipV, rotate, setRotateDeg,
     toggleBg, toggleHud, toggleFullscreen, setSpeed, setFadeMs, flashStatus, notifyResize,
     // iframe再利用（項目7。プロトコルはviewer-open-request.jsが担当し、本APIは判定/実行のみ）
     canReopenWithUrl: Utils.canReopenWithUrl, reopenWithUrl,

@@ -2,6 +2,11 @@
   'use strict';
 
   const rootId = 'external-import-settings-container';
+
+  function isCloudStaticImportSurface() {
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
+  }
   const runningSetIds = new Set();
   const _scheduleWidgets = {};   // setId → widget
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
@@ -673,6 +678,15 @@
   function renderExternalImportSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
+    // OAuth中継、ローカル保管庫走査、定期ジョブを持たないDropbox直結の
+    // Cloud静的版では、押しても成立しないデスクトップ専用操作を表示しない。
+    if (isCloudStaticImportSurface()) {
+      container.hidden = true;
+      container.dataset.cloudDesktopOnlyHidden = '1';
+      return;
+    }
+    container.hidden = false;
+    delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
       refresh();
       // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら

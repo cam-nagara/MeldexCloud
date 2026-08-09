@@ -2,6 +2,63 @@
 /* Source chunks: gb-outliner.part01.js, gb-outliner.part02.js, gb-outliner.part03.js */
 
 /* === gb-outliner.part01.js === */
+/* フォルダツリーとフォルダパネルで共有する並び替え契約。 */
+const FOLDER_SORT_OPTIONS = Object.freeze([
+  { label: 'マニュアル', sort: 'manual', order: 'asc' },
+  { label: '名前 ↑', sort: 'name', order: 'asc' },
+  { label: '名前 ↓', sort: 'name', order: 'desc' },
+  { label: '種類 ↑', sort: 'type', order: 'asc' },
+  { label: '種類 ↓', sort: 'type', order: 'desc' },
+  { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
+  { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
+  { label: '作成日時 ↑', sort: 'created', order: 'asc' },
+  { label: '作成日時 ↓', sort: 'created', order: 'desc' },
+  { label: 'サイズ ↑', sort: 'size', order: 'asc' },
+  { label: 'サイズ ↓', sort: 'size', order: 'desc' },
+]);
+const FOLDER_SORT_COLLATOR = new Intl.Collator('ja', {
+  numeric: true,
+  sensitivity: 'base',
+  ignorePunctuation: true,
+});
+
+function getFolderSortOptions() {
+  return FOLDER_SORT_OPTIONS.map(option => ({ ...option }));
+}
+
+function _folderSortDateValue(item, key) {
+  const raw = key === 'created'
+    ? (item?.created || item?.created_at || item?.modified || item?.mtime || '')
+    : (item?.modified || item?.mtime || item?.created || item?.created_at || '');
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareItemsForFolderSort(a, b, sort = 'name', order = 'asc') {
+  const folderRank = item => (item?.type === 'folder' || item?.type === 'database' ? 0 : 1);
+  const rankDiff = folderRank(a) - folderRank(b);
+  if (rankDiff) return rankDiff;
+  let result = 0;
+  if (sort === 'created' || sort === 'modified') {
+    result = _folderSortDateValue(a, sort) - _folderSortDateValue(b, sort);
+  } else if (sort === 'size') {
+    result = Number(a?.size || 0) - Number(b?.size || 0);
+  } else if (sort === 'type') {
+    result = FOLDER_SORT_COLLATOR.compare(String(a?.type || a?.ext || ''), String(b?.type || b?.ext || ''));
+  } else if (sort === 'createdBy' || sort === 'modifiedBy') {
+    const fallbackKey = sort === 'createdBy' ? 'created_by' : 'modified_by';
+    result = FOLDER_SORT_COLLATOR.compare(
+      String(a?.[sort] || a?.[fallbackKey] || ''),
+      String(b?.[sort] || b?.[fallbackKey] || ''),
+    );
+  } else {
+    result = FOLDER_SORT_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''));
+  }
+  if (result && order === 'desc') result *= -1;
+  return result
+    || FOLDER_SORT_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''))
+    || FOLDER_SORT_COLLATOR.compare(String(a?.path || ''), String(b?.path || ''));
+}
 /**
  * Meldex Outliner
  * フォルダツリー、検索、フィルタ、お気に入り、サイドバー
@@ -640,6 +697,7 @@ function renderOutlinerLegacy(items) {
   const fragment = document.createDocumentFragment();
   visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
   applyManualSort(el, '_root');
 }
@@ -676,6 +734,7 @@ function renderOutlinerMultiRoot(roots) {
     fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
   }
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元
   applyManualSort(el, '_root');
 }
@@ -815,86 +874,27 @@ const treeSelection = {
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
 
-function _treeDragPayload(primaryItem) {
-  const items = treeSelection.getNodeData()
-    .filter(item => item && item.path && !item._isRoot)
-    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '' }));
-  const fallback = primaryItem && primaryItem.path && !primaryItem._isRoot
-    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '' }]
-    : [];
-  const normalizedItems = items.length ? items : fallback;
-  const primary = normalizedItems[0] || { name: primaryItem?.name || '', path: primaryItem?.path || '', type: primaryItem?.type || '' };
-  return {
-    name: primary.name || '',
-    path: primary.path || '',
-    type: primary.type || '',
-    items: normalizedItems,
+function _treeNodeIsAncestor(parentNode, childNode) {
+  if (!parentNode || !childNode || parentNode === childNode) return false;
+  const normalize = path => {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/').forEach(segment => {
+      if (!segment || segment === '.') return;
+      if (segment === '..') { if (segments.length) segments.pop(); return; }
+      segments.push(segment);
+    });
+    return segments.join('/').toLowerCase();
   };
+  const parentKey = normalize(parentNode._nodeData?.path);
+  const childKey = normalize(childNode._nodeData?.path);
+  return !!parentKey && !!childKey && childKey.startsWith(parentKey + '/');
 }
 
-// ノードの色情報（localStorage で永続化）
-// フォルダごとのソート設定
-const SORT_SETTINGS_KEY = 'outliner-sort';
-function getSortSettings() {
-  try { return JSON.parse(localStorage.getItem(SORT_SETTINGS_KEY)) || {}; } catch { return {}; }
-}
-function setSortSetting(folderPath, sort, order) {
-  const s = getSortSettings();
-  const key = _pathToFileId(folderPath) || folderPath;
-  if (sort === 'name' && order === 'asc') delete s[key]; // デフォルトなら削除
-  else s[key] = { sort, order };
-  try { localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(s)); } catch {}
-}
-function getSortForFolder(folderPath) {
-  const s = getSortSettings();
-  const fid = _pathToFileId(folderPath);
-  return (fid && s[fid]) || s[folderPath] || { sort: 'name', order: 'asc' };
-}
-// マニュアルソート順の保存/読込
-const MANUAL_ORDER_KEY = 'outliner-manual-order';
-function getManualOrder(folderPath) {
+function _outlinerExternalDragItems(event, payloadOverride) {
+  let payload = payloadOverride || null;
   try {
-    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
-    const fid = _pathToFileId(folderPath);
-    return (fid && all[fid]) || all[folderPath] || [];
-  } catch { return []; }
-}
-function setManualOrder(folderPath, names) {
-  try {
-    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
-    const key = _pathToFileId(folderPath) || folderPath;
-    all[key] = names;
-    localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
-  } catch {}
-}
-// 保存済みの手動並び順を破棄する。ルート直下（folderPath='_root'）はマニュアル順が
-// 設定側（ソースフォルダの並べ替え）より優先されるため、設定側で並べ替えを保存した際に
-// 呼び出して古い手動順を無効化する（呼び出さないと設定側の新しい順序がツリーへ反映されない）。
-function clearManualOrder(folderPath) {
-  try {
-    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
-    const key = _pathToFileId(folderPath) || folderPath;
-    if (key in all) {
-      delete all[key];
-      localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
+    if (!payload) {
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
+      payload = raw ? JSON.parse(raw) : null;
     }
-  } catch {}
-}
-function applyManualSort(container, folderPath) {
-  const order = getManualOrder(folderPath);
-  if (order.length === 0) return;
-  const nodes = [...container.querySelectorAll(':scope > .tree-node')];
-  const map = new Map(nodes.map(n => [n._nodeData?.name, n]));
-  // 保存順にソート、未知のアイテムは末尾
-  const sorted = [];
-  order.forEach(name => { const n = map.get(name); if (n) { sorted.push(n); map.delete(name); } });
-  map.forEach(n => sorted.push(n));
-  sorted.forEach(n => container.appendChild(n));
-}
-function saveManualOrderFromDOM(container, folderPath) {
-  const names = [...container.querySelectorAll(':scope > .tree-node')].map(n => n._nodeData?.name).filter(Boolean);
-  setManualOrder(folderPath, names);
-}
-
-// 配列そのものを保存済み手動順で並べ替える（仮想化コンテナはDOM順ではなく配列順が正なので、
-// DOM追加前にこちらで確定させる。非仮想コンテナでも同じ結果になるため共通で使ってよい）。
+  } catch {

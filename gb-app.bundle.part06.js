@@ -1,201 +1,12 @@
-const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-
-function _gbClampModalValue(value, min, max) {
-  if (max < min) return min;
-  return Math.max(min, Math.min(max, value));
 }
 
-function _gbModalMinSize(modal) {
-  const cs = getComputedStyle(modal);
-  const minWidth = Math.max(240, parseFloat(cs.minWidth) || 0);
-  const minHeight = Math.max(160, parseFloat(cs.minHeight) || 0);
-  return { minWidth, minHeight };
-}
+// ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み
 
-function _gbIsMobileDialogSheetModal(modal) {
-  if (!modal) return false;
-  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
-  return overlay?.dataset?.mobileDialogSheetActive === '1'
-    || modal.dataset.mobileDialogSheet === '1'
-    || modal.classList?.contains('gb-mobile-dialog-sheet');
-}
+// replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
 
-function _gbClampModalForNarrowViewport(modal) {
-  if (!modal || window.innerWidth > 768) return;
-  const gap = 8;
-  const zoom = Math.max(0.1, (typeof _getZoom === 'function'
-    ? Number(_getZoom())
-    : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
-  const viewportWidth = window.innerWidth / zoom;
-  const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
-  modal.style.minWidth = '0';
-  modal.style.width = Math.max(240, viewportWidth - gap * 2) + 'px';
-  modal.style.maxWidth = Math.max(240, viewportWidth - gap * 2) + 'px';
-  modal.style.maxHeight = Math.max(160, viewportHeight - gap * 2) + 'px';
-}
-
-function _gbClearResizableModalState(modal) {
-  if (!modal) return;
-  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
-  modal.classList?.remove('gb-modal-resizable');
-  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-}
-
-function _gbStartModalResize(event, modal, direction) {
-  if (!modal || (event.button != null && event.button !== 0)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const handle = event.currentTarget;
-  try { handle?.setPointerCapture?.(event.pointerId); } catch (_) {}
-
-  const rect = modal.getBoundingClientRect();
-  const start = {
-    x: event.clientX,
-    y: event.clientY,
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-    width: rect.width,
-    height: rect.height,
-  };
-  const { minWidth, minHeight } = _gbModalMinSize(modal);
-  const gap = 8;
-  document.body.classList.add('gb-modal-resizing');
-
-  function onMove(moveEvent) {
-    moveEvent.preventDefault();
-    const dx = moveEvent.clientX - start.x;
-    const dy = moveEvent.clientY - start.y;
-    const viewportW = window.innerWidth;
-    const viewportH = window.innerHeight;
-    let left = start.left;
-    let top = start.top;
-    let right = start.right;
-    let bottom = start.bottom;
-
-    if (direction.includes('e')) {
-      right = _gbClampModalValue(start.right + dx, start.left + minWidth, viewportW - gap);
-    }
-    if (direction.includes('w')) {
-      left = _gbClampModalValue(start.left + dx, gap, start.right - minWidth);
-    }
-    if (direction.includes('s')) {
-      bottom = _gbClampModalValue(start.bottom + dy, start.top + minHeight, viewportH - gap);
-    }
-    if (direction.includes('n')) {
-      top = _gbClampModalValue(start.top + dy, gap, start.bottom - minHeight);
-    }
-
-    modal.style.left = left + 'px';
-    modal.style.top = top + 'px';
-    modal.style.width = Math.max(minWidth, right - left) + 'px';
-    modal.style.height = Math.max(minHeight, bottom - top) + 'px';
-  }
-
-  function onUp() {
-    try { handle?.releasePointerCapture?.(event.pointerId); } catch (_) {}
-    document.removeEventListener('pointermove', onMove, true);
-    document.removeEventListener('pointerup', onUp, true);
-    document.removeEventListener('pointercancel', onUp, true);
-    document.body.classList.remove('gb-modal-resizing');
-  }
-
-  document.addEventListener('pointermove', onMove, true);
-  document.addEventListener('pointerup', onUp, true);
-  document.addEventListener('pointercancel', onUp, true);
-}
-
-function _gbInstallModalResizeEdges(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  modal.dataset.gbResizableModal = '1';
-  modal.classList.add('gb-modal-resizable');
-  modal.style.boxSizing = 'border-box';
-  modal.style.position = 'absolute';
-  modal.style.right = 'auto';
-  modal.style.bottom = 'auto';
-  modal.style.margin = '0';
-  modal.style.transform = 'none';
-  modal.style.maxWidth = 'calc(100vw - 16px)';
-  modal.style.maxHeight = 'calc(100vh - 16px)';
-  _gbClampModalForNarrowViewport(modal);
-
-  _GB_MODAL_RESIZE_DIRECTIONS.forEach(direction => {
-    const edge = document.createElement('div');
-    edge.className = `gb-modal-shell-edge gb-modal-shell-edge-${direction}`;
-    edge.dataset.modalResize = direction;
-    edge.addEventListener('pointerdown', event => _gbStartModalResize(event, modal, direction));
-    modal.appendChild(edge);
-  });
-}
-
-function _gbPrepareResizableModal(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
-      if (_gbIsMobileDialogSheetModal(modal)) {
-        _gbClearResizableModalState(modal);
-        return;
-      }
-      _gbClampModalForNarrowViewport(modal);
-      const rect = modal.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      const gap = 8;
-      const width = Math.min(rect.width, window.innerWidth - gap * 2);
-      const height = Math.min(rect.height, window.innerHeight - gap * 2);
-      const left = _gbClampModalValue(rect.left, gap, window.innerWidth - width - gap);
-      const top = _gbClampModalValue(rect.top, gap, window.innerHeight - height - gap);
-      modal.style.left = left + 'px';
-      modal.style.top = top + 'px';
-      modal.style.width = width + 'px';
-      modal.style.height = height + 'px';
-      _gbInstallModalResizeEdges(modal);
-    });
-  });
-}
-
-function _gbFindResizableModals(node) {
-  const result = [];
-  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
-  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
-    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
-  });
-  return result;
-}
-
-// モーダル表示後にサイズを固定し、4辺+4隅でリサイズできるようにする
-function _gbResizableModalMutationFilter(mutation) {
-  return Array.from(mutation.addedNodes || []).some(node => {
-    if (node?.nodeType !== 1) return false;
-    return node.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) || !!node.querySelector?.(_GB_RESIZABLE_MODAL_SELECTOR);
-  });
-}
-function _gbResizableModalMutationCallback(mutations) {
-  for (const m of mutations) {
-    for (const node of m.addedNodes) {
-      if (node.nodeType !== 1) continue;
-      _gbFindResizableModals(node).forEach(_gbPrepareResizableModal);
-    }
-  }
-}
-if (window.GBMutationBus) {
-  window.GBMutationBus.subscribe('gb-app-resizable-modals', {
-    filter: _gbResizableModalMutationFilter,
-    callback: _gbResizableModalMutationCallback,
-    throttle: 30,
-  });
-} else {
-  new MutationObserver(_gbResizableModalMutationCallback).observe(document.body, { childList: true, subtree: true });
-}
+// ダイアログのリサイズは gb-modal-shell.js の1系統に統合した（2026-08-07）。
+// 以前はここにも独自のリサイズ機構があり、表示サイズ（拡大率）を考慮しない座標計算と
+// max-width/max-height の上書きで、共通側と互いに打ち消し合っていた。
 /* ==============================
    起動
    ============================== */
@@ -289,34 +100,20 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // ノート縦書き復元
-if (localStorage.getItem('note-vertical') === '1') {
-  document.getElementById('page-content')?.classList.add('vertical-writing');
-  const btn = document.getElementById('btn-note-vertical');
-  if (btn) {
-    // 上の replaceIcons() は既に実行済みなので、ここで lucide() を直接呼んで SVG を埋め込む
-    btn.innerHTML = (typeof lucide === 'function') ? lucide('textAlignStart', 16) : '<span class="ico ico-textAlignStart"></span>';
-    btn.title = '横書きに戻す';
-    btn.classList.add('active');
-  }
-}
+// 復元も切替も MeldexNoteWritingMode.applyState() へ集約する（組方向へ追従するUIの配線が
+// 1箇所に集まるため、目次レイアウトやセパレータのARIAが復元時だけ取り残されない）。
+// 上の replaceIcons() は既に実行済みなので、ボタンのアイコンは applyState() が lucide() で埋め直す。
+if (typeof MeldexNoteWritingMode !== 'undefined') MeldexNoteWritingMode.restoreFromStorage();
 // ノート余白復元
 if (typeof applyNoteMargin === 'function') applyNoteMargin();
 if (typeof applyNoteContentMaxWidth === 'function') applyNoteContentMaxWidth();
 // UIスケール復元
 document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリングをクリア
-{
-  const saved = localStorage.getItem('ui-scale');
-  if (saved !== null) {
-    // ユーザーが手動設定済み（または前回の自動設定値） → そのまま適用
-    const s = parseInt(saved, 10) || 100;
-    applyUIScale(s);
-  } else {
-    // 初回起動: 画面サイズから最適スケールを自動決定
-    const autoScale = _detectOptimalScale();
-    applyUIScale(autoScale);
-    localStorage.setItem('ui-scale', String(autoScale));
-  }
-}
+// 表示サイズの決め方（初回の自動判定・手動値の保全・過去の自動値の付け直し）は
+// gb-ui-scale.js が一手に引き受ける。ここでは決まった値を適用するだけにする。
+applyUIScale(window.MeldexUIScale
+  ? window.MeldexUIScale.resolveStartupScale()
+  : (parseInt(localStorage.getItem('ui-scale'), 10) || 100));
 
 // ステータスバー表示状態復元
 try {
@@ -324,21 +121,6 @@ try {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
   }
 } catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
-
-function _detectOptimalScale() {
-  const w = window.screen.width;
-  const dpr = window.devicePixelRatio || 1;
-  const isTouch = navigator.maxTouchPoints > 0;
-
-  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
-  if (w <= 768) return 100;
-  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
-  if (w <= 1366 && isTouch) return 110;
-  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
-  if (w >= 2560 && dpr <= 1.5) return 125;
-  // 通常デスクトップ
-  return 100;
-}
 
 // Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
 document.addEventListener('wheel', (e) => {
@@ -360,7 +142,8 @@ document.addEventListener('wheel', (e) => {
     newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
   }
   if (steps[newIdx] !== cur) {
-    const applied = applyUIScale(steps[newIdx]);
+    // Ctrl+ホイールは常にユーザー自身の操作なので「手動」として記録する
+    const applied = applyUIScale(steps[newIdx], { source: 'manual' });
     if (applied !== cur) showStatus('表示サイズ: ' + applied + '%');
   }
 }, { passive: false });
@@ -663,7 +446,9 @@ function trackIframeLoading(iframe, msg, opts) {
 let _heartbeatTimer = null;
 
 function _isHeartbeatCloudMode() {
-  return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+  return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    || document.body?.dataset?.cloudMode === 'dropbox'
+    || document.body?.dataset?.cloudMode === 'browser';
 }
 
 function _sendHeartbeat() {

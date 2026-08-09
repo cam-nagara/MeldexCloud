@@ -19,8 +19,8 @@
   const _syncClientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   function _isCloudMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _nowMs() {

@@ -935,11 +935,30 @@
     await _iterateWorkspaceFiles(provider, async (path) => {
       const normalized = _normalizeFolderPath(path);
       if (_isWorkspaceScanExcluded(normalized)) return;
-      if (_basename(normalized) === SHEET_CLOUD_STORE_FILE) {
-        const store = _normalizeSheetStore(await _readJsonSafe(provider, normalized, null), _dirname(normalized));
-        searchSheetStoreOnce(_dirname(normalized), store);
+      const baseName = _basename(normalized);
+      // 大規模シート対策（Phase 3）で単一JSON→マニフェスト+複数シャードへ
+      // 分割されたシートは、しきい値超過を境に SHEET_CLOUD_STORE_FILE
+      // （_meldex_sheet.cloud.json）が行を持たないスタブへ置き換わる。
+      // ここを従来どおり素通しで検索すると分割済みシートが検索から
+      // 消え、代わりに下のシャード本体が生JSONの「ページ」として
+      // 誤ってヒットする（独立レビューで発見）。マニフェスト・スタブの
+      // どちらを踏んでも _readSheetStoreMaybe が透過的に統合済みの行を
+      // 返すので、対象dbPathにつき1回だけシート検索へ回す。シャード本体
+      // ファイルはここでは何もしない（マニフェスト経由で既に検索済みに
+      // なる。生JSONとして個別にヒットさせない）。
+      if (baseName === SHEET_CLOUD_STORE_FILE || baseName === SHEET_CLOUD_MANIFEST_FILE) {
+        // 分割済みシートは単一JSON（互換性ミラー）とマニフェストの両方が
+        // 同じフォルダに存在するため、先に読んでしまうとどちらを先に踏むかで
+        // 毎回2回分（全シャード分）読むことになる。dedup判定を読み込みより
+        // 先に行い、既に検索済みのdbPathなら読まずに抜ける（独立レビューで
+        // 指摘・性能上の指摘であり正しさには影響しないが、Phase 3が対象と
+        // する大規模シートでの無駄な二重読み込みを避ける）。
+        if (searchedSheetStores.has(_normalizeFolderPath(_dirname(normalized)))) return;
+        const store = await _readSheetStoreMaybe(provider, _dirname(normalized)).catch(() => null);
+        if (store) searchSheetStoreOnce(_dirname(normalized), store);
         return;
       }
+      if (_isSheetCloudShardFileName(baseName)) return;
       const lower = normalized.toLowerCase();
       if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return;
       if (lower.endsWith('.md')) {
@@ -959,6 +978,139 @@
       } catch {}
     }, root);
     return { results, total: results.reduce((sum, item) => sum + (item.matches?.length || 0), 0) };
+  }
+
+  const CLOUD_UNIFIED_SEARCH_SCOPES = new Set(['name', 'content', 'clip', 'tags', 'memo']);
+
+  function _cloudUnifiedSearchType(path, fallback) {
+    if (fallback) return fallback;
+    const lower = String(path || '').toLowerCase();
+    if (/\.(?:png|jpe?g|gif|webp|bmp|tiff?)$/.test(lower)) return 'image';
+    if (/\.(?:mel-scenario|scriptnote\.json|scenario\.json)$/.test(lower)) return 'scriptnote';
+    if (/\.(?:mel-board|board\.md)$/.test(lower)) return 'board';
+    return 'page';
+  }
+
+  function _cloudUnifiedPathMatches(path, root) {
+    const normalized = _normalizeFolderPath(path).toLowerCase();
+    const prefix = _normalizeFolderPath(root).toLowerCase();
+    return !prefix || normalized === prefix || normalized.startsWith(prefix + '/');
+  }
+
+  function _cloudUnifiedAdd(merged, sourceCounts, row, source) {
+    const path = _normalizeFolderPath(row?.path || '');
+    if (!path) return;
+    const key = path.toLowerCase();
+    let current = merged.get(key);
+    if (!current) {
+      current = {
+        path,
+        name: String(row?.name || _basename(path)),
+        type: _cloudUnifiedSearchType(path, row?.type),
+        asset_id: String(row?.asset_id || ''),
+        portable_uid: String(row?.portable_uid || ''),
+        score: Number.isFinite(Number(row?.score)) ? Number(row.score) : null,
+        matches: [],
+        source,
+        sources: [],
+      };
+      merged.set(key, current);
+    }
+    if (!current.sources.includes(source)) current.sources.push(source);
+    if (Array.isArray(row?.matches)) current.matches.push(...row.matches);
+    if (Number.isFinite(Number(row?.score))) {
+      current.score = current.score == null ? Number(row.score) : Math.max(current.score, Number(row.score));
+    }
+    sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+  }
+
+  async function _cloudUnifiedSearch(provider, url) {
+    const query = String(url.searchParams.get('q') || '').trim();
+    const requested = String(url.searchParams.get('scopes') || '')
+      .split(',').map(value => value.trim().toLowerCase()).filter(value => CLOUD_UNIFIED_SEARCH_SCOPES.has(value));
+    const scopes = requested.length ? [...new Set(requested)] : ['name', 'content'];
+    const root = _normalizeFolderPath(url.searchParams.get('path') || '');
+    const parsedLimit = Number(url.searchParams.get('limit') || 50);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(100, Math.floor(parsedLimit))) : 50;
+    if (!query) return { results: [], total: 0, limit, scopes, source_counts: {}, unavailable: [], partial: false };
+
+    const needle = query.toLowerCase();
+    const merged = new Map();
+    const sourceCounts = {};
+    const unavailable = [];
+
+    for (const source of scopes) {
+      try {
+        if (source === 'clip') {
+          // CLIPのテキスト埋め込み生成にはデスクトップ側のローカルモデルが必要。
+          // Cloud静的版で見せかけの文字列検索へ落とさず、部分結果として明示する。
+          unavailable.push({ source, message: '画像の内容検索はデスクトップ版のCLIPモデルで利用できます' });
+          sourceCounts[source] = 0;
+          continue;
+        }
+        if (source === 'name') {
+          const index = await _globalIndex(provider);
+          (index.files || []).forEach((item) => {
+            const name = String(item?.name || _basename(item?.path || ''));
+            if (!name.toLowerCase().includes(needle) || !_cloudUnifiedPathMatches(item?.path, root)) return;
+            _cloudUnifiedAdd(merged, sourceCounts, {
+              ...item,
+              matches: [{ line: 1, field: '名前', text: name, col: Math.max(0, name.toLowerCase().indexOf(needle)) }],
+            }, source);
+          });
+          continue;
+        }
+        if (source === 'content') {
+          const searchUrl = new URL(url.toString());
+          searchUrl.pathname = '/search';
+          searchUrl.search = '';
+          searchUrl.searchParams.set('q', query);
+          if (root) searchUrl.searchParams.set('path', root);
+          const payload = await _cloudSearch(provider, searchUrl);
+          (payload.results || []).forEach(row => _cloudUnifiedAdd(merged, sourceCounts, row, source));
+          continue;
+        }
+        if (source === 'tags') {
+          const payload = await window.MeldexDataAccess.requestJson(
+            '/global-tags/search?tag=' + encodeURIComponent(query),
+            { method: 'GET' },
+          );
+          (payload?.results || []).forEach((row) => {
+            if (!_cloudUnifiedPathMatches(row?.path, root)) return;
+            const text = (row.tags || []).map(tag => tag?.name || tag?.label || '').filter(Boolean).join(', ');
+            _cloudUnifiedAdd(merged, sourceCounts, {
+              ...row,
+              matches: [{ line: 1, field: 'タグ', text: text || query, col: 0 }],
+            }, source);
+          });
+          continue;
+        }
+        const rows = await window.MeldexDataAccess.requestJson('/annotations?limit=0', { method: 'GET' });
+        (Array.isArray(rows) ? rows : []).forEach((row) => {
+          const path = _normalizeFolderPath(row?.target_path || '');
+          if (!path || !_cloudUnifiedPathMatches(path, root)) return;
+          const text = [row?.body, row?.text, row?.data].filter(Boolean).join('\n');
+          const col = text.toLowerCase().indexOf(needle);
+          if (col < 0) return;
+          _cloudUnifiedAdd(merged, sourceCounts, {
+            path,
+            name: _basename(path),
+            matches: [{ line: 1, field: 'メモ', text: text.slice(0, 200), col }],
+          }, source);
+        });
+      } catch (error) {
+        sourceCounts[source] = sourceCounts[source] || 0;
+        unavailable.push({ source, message: String(error?.userMessage || error?.message || error) });
+      }
+    }
+
+    const results = [...merged.values()];
+    results.sort((a, b) => (Number(b.score ?? -1) - Number(a.score ?? -1))
+      || String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+    return {
+      results: results.slice(0, limit), total: results.length, limit, scopes,
+      source_counts: sourceCounts, unavailable, partial: unavailable.length > 0,
+    };
   }
 
   function _replaceStringValue(value, pattern, replacement, state) {
@@ -1064,7 +1216,8 @@
     const base = _normalizeFolderPath(dbPath);
     const store = await _sheetStoreForRead(provider, base).catch(() => null);
     if (store) {
-      return Object.values(store.rows || {}).map(row => ({
+      // tombstone行（deleted:true）は削除済みのため、リンク辞書候補から除く。
+      return Object.values(store.rows || {}).filter(row => !row?.deleted).map(row => ({
         name: _sheetStoreEntityName(row?.name || row?.file_name || row?.path),
         path: row?.path || _joinPath(base, _sheetStoreFileName(row?.name || row?.file_name)),
         properties: row?.frontmatter?.properties || {},
@@ -1135,6 +1288,28 @@
     }
     entries.sort((a, b) => b.text.length - a.text.length);
     return { entries };
+  }
+
+  async function _cloudRubyReading(provider, url) {
+    const query = String(url.searchParams.get('text') || '').trim();
+    if (!query) return { ruby: null, candidates: [] };
+    const work = url.searchParams.get('work') || '';
+    const dictUrl = new URL('http://x/link-dict');
+    if (work) dictUrl.searchParams.set('work', work);
+    const dict = await _cloudLinkDict(provider, dictUrl).catch(() => ({ entries: [] }));
+    const folded = query.toLowerCase();
+    const exact = [];
+    const loose = [];
+    (dict.entries || []).forEach((entry) => {
+      const text = String(entry.text || '').trim();
+      const ruby = String(entry.ruby || '').trim();
+      if (!text || !ruby) return;
+      const candidate = { text, ruby, path: entry.path || '' };
+      if (text === query) exact.push(candidate);
+      else if (text.toLowerCase() === folded) loose.push(candidate);
+    });
+    const candidates = exact.concat(loose);
+    return { ruby: candidates.length ? candidates[0].ruby : null, candidates };
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
@@ -1320,9 +1495,13 @@
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
+    if (pathname === '/search-unified' && method === 'GET') return _cloudUnifiedSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
+    // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
+    // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
+    if (pathname === '/ruby' && method === 'GET') return _cloudRubyReading(await _requirePwaProvider('read'), url);
 
     if (pathname === '/version/read-db' && method === 'GET') {
       return _readDbVersionSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('version') || '');

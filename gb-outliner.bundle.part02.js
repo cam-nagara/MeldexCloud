@@ -1,3 +1,168 @@
+    payload = null;
+  }
+  if (!payload) payload = window._gbFolderViewDragPayload || null;
+  const rows = Array.isArray(payload?.items) ? payload.items : (payload?.path ? [payload] : []);
+  const sourceSurface = payload?.sourceSurface || '';
+  const seen = new Set();
+  return rows.map(row => ({
+    name: row?.name || '',
+    path: row?.path || '',
+    type: row?.type || 'file',
+    sourceSurface: row?.sourceSurface || sourceSurface || 'main',
+  })).filter(row => {
+    const key = String(row.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
+  const targetPath = targetItem?.path || '';
+  if (!targetPath || !Array.isArray(items) || items.length === 0) return;
+  const progress = window.MeldexImportProgress;
+  progress?.beginOperation?.('ファイルを移動中', items.length);
+  let processed = 0;
+  let succeeded = 0;
+  const failures = [];
+  try {
+    for (const source of items) {
+      try {
+        const copySource = source.sourceSurface === 'sheet-image';
+        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+          path: source.path,
+          dest_folder: targetPath,
+        } : {
+          path: source.path,
+          dest_folder: targetPath,
+          conflict_policy: 'error',
+        });
+        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
+          renameAppPathReferences(source.path, res.new_path, {
+            label: res.new_name || source.name,
+            fileId: res.file_id,
+            type: source.type || 'file',
+          });
+        }
+        succeeded += 1;
+      } catch (error) {
+        failures.push({ source, error });
+      }
+      processed += 1;
+      progress?.updateOperation?.(processed);
+    }
+  } finally {
+    progress?.finishOperation?.();
+  }
+  await loadOutliner({ force: true, reason: 'external-drop-move' });
+  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+    const label = document.getElementById('folder-title')?.textContent || _folderPath;
+    await openFolder(label, _folderPath, {
+      silent: true,
+      skipShowView: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    });
+  }
+  if (failures.length) {
+    const reason = String(failures[0].error?.userMessage || failures[0].error?.message || '');
+    showStatus(`${succeeded}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
+  } else {
+    showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
+  }
+  return succeeded;
+}
+
+function _treeDragPayload(primaryItem, actualNodes) {
+  const sourceItems = Array.isArray(actualNodes)
+    ? actualNodes.map(node => node?._nodeData).filter(Boolean)
+    : treeSelection.getNodeData();
+  const items = sourceItems
+    .filter(item => item && item.path && !item._isRoot)
+    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '', sourceSurface: 'folder-tree' }));
+  const fallback = primaryItem && primaryItem.path && !primaryItem._isRoot
+    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '', sourceSurface: 'folder-tree' }]
+    : [];
+  const normalizedItems = items.length ? items : fallback;
+  const primary = normalizedItems[0] || { name: primaryItem?.name || '', path: primaryItem?.path || '', type: primaryItem?.type || '' };
+  return {
+    name: primary.name || '',
+    path: primary.path || '',
+    type: primary.type || '',
+    items: normalizedItems,
+    sourceSurface: 'folder-tree',
+  };
+}
+
+// ノードの色情報（localStorage で永続化）
+// フォルダごとのソート設定
+const SORT_SETTINGS_KEY = 'outliner-sort';
+function getSortSettings() {
+  try { return JSON.parse(localStorage.getItem(SORT_SETTINGS_KEY)) || {}; } catch { return {}; }
+}
+function setSortSetting(folderPath, sort, order) {
+  const s = getSortSettings();
+  const key = _pathToFileId(folderPath) || folderPath;
+  if (sort === 'name' && order === 'asc') delete s[key]; // デフォルトなら削除
+  else s[key] = { sort, order };
+  try { localStorage.setItem(SORT_SETTINGS_KEY, JSON.stringify(s)); } catch {}
+}
+function getSortForFolder(folderPath) {
+  const s = getSortSettings();
+  const fid = _pathToFileId(folderPath);
+  return (fid && s[fid]) || s[folderPath] || { sort: 'name', order: 'asc' };
+}
+// マニュアルソート順の保存/読込
+const MANUAL_ORDER_KEY = 'outliner-manual-order';
+function getManualOrder(folderPath) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
+    const fid = _pathToFileId(folderPath);
+    return (fid && all[fid]) || all[folderPath] || [];
+  } catch { return []; }
+}
+function setManualOrder(folderPath, names) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
+    const key = _pathToFileId(folderPath) || folderPath;
+    all[key] = names;
+    localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
+  } catch {}
+}
+// 保存済みの手動並び順を破棄する。ルート直下（folderPath='_root'）はマニュアル順が
+// 設定側（ソースフォルダの並べ替え）より優先されるため、設定側で並べ替えを保存した際に
+// 呼び出して古い手動順を無効化する（呼び出さないと設定側の新しい順序がツリーへ反映されない）。
+function clearManualOrder(folderPath) {
+  try {
+    const all = JSON.parse(localStorage.getItem(MANUAL_ORDER_KEY) || '{}');
+    const key = _pathToFileId(folderPath) || folderPath;
+    if (key in all) {
+      delete all[key];
+      localStorage.setItem(MANUAL_ORDER_KEY, JSON.stringify(all));
+    }
+  } catch {}
+}
+function applyManualSort(container, folderPath) {
+  const order = getManualOrder(folderPath);
+  if (order.length === 0) return;
+  const nodes = [...container.querySelectorAll(':scope > .tree-node')];
+  const map = new Map(nodes.map(n => [n._nodeData?.name, n]));
+  // 保存順にソート、未知のアイテムは末尾
+  const sorted = [];
+  order.forEach(name => { const n = map.get(name); if (n) { sorted.push(n); map.delete(name); } });
+  map.forEach(n => sorted.push(n));
+  sorted.forEach(n => container.appendChild(n));
+}
+function saveManualOrderFromDOM(container, folderPath) {
+  const names = [...container.querySelectorAll(':scope > .tree-node')].map(n => n._nodeData?.name).filter(Boolean);
+  setManualOrder(folderPath, names);
+}
+
+// 配列そのものを保存済み手動順で並べ替える（仮想化コンテナはDOM順ではなく配列順が正なので、
+// DOM追加前にこちらで確定させる。非仮想コンテナでも同じ結果になるため共通で使ってよい）。
 function _sortItemsByManualOrder(items, folderPath) {
   const order = getManualOrder(folderPath);
   if (!Array.isArray(items) || !items.length || !order.length) return items;
@@ -7,6 +172,7 @@ function _sortItemsByManualOrder(items, folderPath) {
   map.forEach(it => sorted.push(it));
   return sorted;
 }
+
 
 // 編集ロック
 const LOCKED_ITEMS_KEY = 'outliner-locked-items';
@@ -731,170 +897,4 @@ function createTreeNodeFromBrowse(item, rootPath) {
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
-            await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
-          } else if (currentIsFolder) {
-            const sortCfg = getSortForFolder(item.path);
-            const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
-            const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
-            const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + '&all_files=true');
-            let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
-            registerFileTypes(visibleChildren);
-            // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
-            // （renderGlobalFilterUI自体はクリック時点で常に最新一覧を取り直すため必須ではないが、
-            // 一覧の見た目を早めに追従させておく）。
-            if (typeof renderGlobalFilterUI === 'function') renderGlobalFilterUI();
-            _registerOutlinerConflictPaths(visibleChildren);
-            visibleChildren.forEach(child => {
-              if (item.sourceId && !child.sourceId) child.sourceId = item.sourceId;
-            });
-            // マニュアルソートは配列側で確定してから追加する（仮想化コンテナはDOM順を持たないため）
-            if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
-            await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
-          }
-          delete childrenDiv.dataset.loadError;
-          childrenDiv.dataset.loaded = 'true';
-          // グローバルフィルタを新規読み込みノードに適用（常時）
-          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
-            const d = node._nodeData;
-            if (!d || d._isRoot) return;
-            if (d.type === 'folder') return; // フォルダは_hideEmptyFilteredFoldersで処理
-            if (d.type === 'database') { node.style.display = _showDatabaseByGlobalFilter() ? '' : 'none'; return; }
-            if (d.type === 'entity') { node.style.display = _showEntityByGlobalFilter() ? '' : 'none'; return; }
-            node.style.display = _showRegularNodeByGlobalFilter(d) ? '' : 'none';
-          });
-          // 空フォルダの非表示（新規読み込み分を含む）
-          _hideEmptyFilteredFolders();
-          _snapshotBaseTreeVisibility();
-          // 検索中なら新ノードに検索フィルタも適用
-          if (_treeSearchQuery) {
-            const q = _treeSearchQuery;
-            const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
-              ? _getTreeSearchIncludeEntities()
-              : localStorage.getItem('tree-search-include-entities') === 'true';
-            childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
-              const d = node._nodeData;
-              if (!d) return;
-              let match = false;
-              if (d.type === 'entity') match = includeEntities && d.name && d.name.toLowerCase().includes(q);
-              else match = d.name && d.name.toLowerCase().includes(q);
-              if (!match && d.type !== 'folder' && d.type !== 'database' && !d._isRoot) {
-                node.style.display = 'none';
-              }
-            });
-          }
-          childrenDiv.dataset.loaded = 'true';
-          // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
-          // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
-          // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。
-          if (childrenDiv._outlinerPendingArrowRightFocusNode === div) {
-            delete childrenDiv._outlinerPendingArrowRightFocusNode;
-            if (div.isConnected && toggle.dataset.expanded === 'true' && treeSelection.lastClicked === div
-                && typeof _outlinerKeyboardFirstChildNode === 'function' && typeof _outlinerKeyboardSelectNode === 'function') {
-              const pendingFirstChild = _outlinerKeyboardFirstChildNode(div);
-              if (pendingFirstChild) _outlinerKeyboardSelectNode(pendingFirstChild);
-            }
-          }
-        } catch (e) {
-          // 握りつぶさず理由を表示する。部分的に追加済みの子ノードを取り除き、
-          // 折りたたみ直して再クリックすればリロードが走る状態に戻す
-          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
-          childrenDiv.dataset.loadError = reason || '不明なエラー';
-          console.error('[フォルダツリー] 子項目の読み込みに失敗:', item.path, e);
-          showStatus(`「${item.name}」の読み込みに失敗` + (reason ? `（${reason}）` : ''), true);
-          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(n => {
-            if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
-            n.remove();
-          });
-          toggle.classList.remove('expanded');
-          toggle.dataset.expanded = 'false';
-          childrenDiv.classList.add('collapsed');
-          saveExpandedState(item.path, false);
-          // 失敗時は子が存在しないため、予約されていたフォーカス移動も破棄する
-          delete childrenDiv._outlinerPendingArrowRightFocusNode;
-        }
-        finally {
-          delete childrenDiv.dataset.loading;
-          spinner.remove();
-        }
-      }
-    } else {
-      toggle.classList.remove('expanded');
-      toggle.dataset.expanded = 'false';
-      childrenDiv.classList.add('collapsed');
-      saveExpandedState(item.path, false);
-      if (parentVirtualContainer) {
-        window.GBOutlinerVirtualRender?.collapseNested(parentVirtualContainer, item.path);
-      }
-      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
-      // 作品フォルダ動的アイコン切替（折畳み時）
-      if (currentIsFolder) {
-        const iconEl = row.querySelector('.tree-icon');
-        if (iconEl) {
-          const isWork = item.path === getWorkFolder();
-          iconEl.innerHTML = lucide(isWork ? 'folderDot' : 'folder', 18);
-          if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
-        }
-      }
-    }
-  });
-
-  // 前回展開されていたら自動展開
-  if (!item._gbVirtualExpansionManaged) _queueSavedOutlinerExpansion(item, toggle);
-
-  // Row click: 選択のみ（メインパネルの切替・展開／折りたたみは行わない。§2.4）
-  row.addEventListener('click', (e) => {
-    try { row.focus({ preventScroll: true }); } catch {}
-    if (e.shiftKey) {
-      // Shift+クリック: 範囲選択（開かない）
-      e.preventDefault();
-      treeSelection.rangeTo(div);
-      treeSelection.lastClicked = div;
-      return;
-    }
-    if (e.ctrlKey || e.metaKey) {
-      // Ctrl+クリック: トグル選択（開かない）
-      treeSelection.toggle(div);
-      treeSelection.lastClicked = div;
-      return;
-    }
-
-    // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
-    window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
-
-    // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
-    _treeScrollGuardRestore();
-
-    // 設定「クリックで開く」が単クリックの場合: 選択に続けてそのまま開く。
-    // フォルダも含め全項目種別に一貫して適用する（フォルダだけ例外にすると
-    // 「なぜこれだけ2回押さないと開かないのか」という不整合が生じるため）。
-    // activateNode はフォルダなら開く+展開、ファイルなら対応するビューを開く。
-    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
-      window.GBOutlinerActivation.activateNode(div);
-    }
-  });
-
-  // --- ダブルクリック: 共通アクティベーション（一度だけ開く）。名前変更はF2/メニューへ移動 ---
-  row.ondblclick = (e) => {
-    e.stopPropagation();
-    // 単クリックで開く設定の時は、直前の2回のclickで既にactivateNodeが呼ばれているため
-    // ここでの追加呼び出しは行わない（3重起動防止）。
-    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) return;
-    window.GBOutlinerActivation?.activateNode(div);
-  };
-
-  // --- 右クリックメニュー ＋ 長押しで同メニュー（タッチ/ペン） ---
-  const _openTreeRowCtxMenu = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // 右クリックしたノードが選択に含まれていなければ、単一選択に切り替え
-    if (!treeSelection.has(div)) {
-      treeSelection.clear();
-      treeSelection.add(div);
-      treeSelection.lastClicked = div;
-    }
-    const z = parseFloat(document.documentElement.style.zoom) || 1;
-    showTreeContextMenu(e.clientX / z, e.clientY / z, div, item, label);
-  };
-  row.addEventListener('contextmenu', _openTreeRowCtxMenu);
-  if (typeof addLongPressHandler === 'function') {
+            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。

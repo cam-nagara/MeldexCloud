@@ -29,13 +29,6 @@
     }
   }
 
-  function formatDuration(seconds) {
-    const value = Math.max(0, Number(seconds) || 0);
-    if (value < 60) return Math.ceil(value) + '秒';
-    if (value < 3600) return Math.ceil(value / 60) + '分';
-    if (value < 86400) return (value / 3600).toFixed(value < 36000 ? 1 : 0) + '時間';
-    return (value / 86400).toFixed(1) + '日';
-  }
 
   function progressText(job) {
     const progress = job.progress || {};
@@ -88,7 +81,7 @@
       ? [
         `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`,
         progress.rate ? `${Number(progress.rate).toFixed(1)}件/秒` : '',
-        progress.eta_seconds ? `残り約${formatDuration(progress.eta_seconds)}` : '',
+        progress.eta_seconds ? `残り約${window.formatJobEta(progress.eta_seconds)}` : '',
       ].filter(Boolean).join('・')
       : '';
     const failureSamples = Array.isArray(job.result?.failure_samples)

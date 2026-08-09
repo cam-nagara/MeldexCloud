@@ -53,7 +53,7 @@ const GBSubPanel = (() => {
 
   function _tabIcon(type) {
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function') return GBTabs.tabIcon(type);
-    return 'panelRight';
+    return 'panelRightDashed';
   }
 
   function _isMobileDrawerEnabled() {
@@ -311,6 +311,33 @@ const GBSubPanel = (() => {
     return false;
   }
 
+  function _isIsolatedViewerEntry(entry) {
+    if (!entry) return false;
+    if (entry.type === 'media') return (entry.state?.mediaType || 'image') !== 'audio';
+    return entry.type === 'html' && !entry.external;
+  }
+
+  function _isolatedViewerUrl(entry) {
+    if (entry.state?.viewerUrl) return entry.state.viewerUrl;
+    if (entry.type === 'html' && entry.state?.urlExternal) return entry.path;
+    const mediaType = entry.state?.mediaType || '';
+    return mediaType === 'pdf' || /\.pdf$/i.test(entry.path)
+      ? '/viewer?pdf=' + encodeURIComponent(entry.path)
+      : '/viewer?file=' + encodeURIComponent(entry.path);
+  }
+
+  function _mountIsolatedViewer(entry) {
+    const frame = document.createElement('iframe');
+    frame.className = 'gb-subpanel-viewer-frame';
+    frame.dataset.testid = 'gb-subpanel-viewer-frame';
+    frame.title = entry.label || _basename(entry.path) || 'ビューワー';
+    frame.setAttribute('allow', 'fullscreen');
+    const logicalUrl = _isolatedViewerUrl(entry);
+    frame.src = window.MeldexResourceUrl?.rewriteInternalUrl?.(logicalUrl) || logicalUrl;
+    _contentEl.appendChild(frame);
+    return true;
+  }
+
   function _stopLoadFailureObserver() {
     _loadFailureObserver?.disconnect?.();
     _loadFailureObserver = null;
@@ -368,11 +395,23 @@ const GBSubPanel = (() => {
       _watchForLoadFailure(entry);
       return;
     }
+    // ビューワーは #html-view をメインパネルと共有しない。共有DOMをサブパネルへ
+    // 移動すると、その後のメイン側 openViewer() もサブパネル内iframeを更新してしまう。
+    if (_isIsolatedViewerEntry(entry)) {
+      _mountIsolatedViewer(entry);
+      _current = entry;
+      return;
+    }
     const mounted = _mountVirtualEntry(entry);
     _current = entry;
     if (!mounted) {
       _renderErrorState(entry, '読み込みに失敗しました');
       return;
+    }
+    if (window.MeldexSetupEditableDropHandler) {
+      _contentEl.querySelectorAll('#page-content, #entity-freetext, [contenteditable="true"]').forEach(el => {
+        window.MeldexSetupEditableDropHandler(el);
+      });
     }
     _watchForLoadFailure(entry);
   }
@@ -387,7 +426,7 @@ const GBSubPanel = (() => {
     empty.textContent = EMPTY_MESSAGE;
     _contentEl.appendChild(empty);
     if (_titleTextEl) _titleTextEl.textContent = 'サブパネル';
-    if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRight', 16) : '';
+    if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
     if (_pathBarEl) _pathBarEl.style.display = 'none';
@@ -416,6 +455,9 @@ const GBSubPanel = (() => {
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
     title.append(_titleIconEl, _titleTextEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
+      MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
+    }
 
     const actions = document.createElement('div');
     actions.className = 'gb-subpanel-actions';
@@ -484,6 +526,12 @@ const GBSubPanel = (() => {
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
     root.append(titlebar, _pathBarEl, _contentEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
+      MeldexDnD.installSurfaceDropTarget(root, item => {
+        const target = MeldexDnD.normalizeOpenTarget?.(item) || item;
+        return open(target);
+      });
+    }
     _root = root;
     _showEmptyState();
     if (typeof replaceIcons === 'function') replaceIcons();

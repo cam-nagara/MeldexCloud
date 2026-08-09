@@ -201,6 +201,32 @@ function applyFileStyleToPanel(style, panelId) {
   }
 }
 
+function clearFileStyleFromElement(el) {
+  if (!el) return;
+  const raw = el.dataset?.[_FILE_STYLE_APPLIED_DATASET_KEY] || '';
+  raw.split(',').map(v => v.trim()).filter(Boolean).forEach(key => el.style.removeProperty(key));
+  if (el.dataset) delete el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY];
+}
+
+function applyFileStyleToElement(style, el, panelId) {
+  if (!el) return;
+  clearFileStyleFromElement(el);
+  if (!style || typeof style !== 'object') return;
+  const vars = _expandFileStyleVars(style, panelId);
+  const applied = [];
+  for (const [key, value] of Object.entries(vars)) {
+    if (!key.startsWith('--')) continue;
+    el.style.setProperty(key, value);
+    applied.push(key);
+  }
+  if (applied.length && el.dataset) el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY] = applied.join(',');
+}
+
+function applyPageTitleStyleToElement(style, titleEl) {
+  if (!titleEl) return;
+  applyFileStyleToElement(style, titleEl, 'page-content');
+}
+
 function clearFileStyle() {
   // 全パネル横断クリア。他ペインで開いている別ツールのファイルスタイルも巻き込むため、
   // 新規コードでは clearFileStyleForPanel(panelId) を優先すること。
@@ -786,17 +812,38 @@ function _noteTableNewCellForRow(row, rowIndex) {
   return document.createElement(rowIndex === 0 && row?.querySelector?.('th') ? 'th' : 'td');
 }
 
+// 表の組方向。表自体は本文の組方向を継承する。
+function _noteTableAxis(cell) {
+  const wm = window.MeldexNoteWritingMode;
+  const host = cell && cell.closest ? cell.closest('[contenteditable]') : null;
+  return (wm && typeof wm.axis === 'function') ? wm.axis(host) : null;
+}
+
+// 列＝行の中でセルが並ぶ向き（インライン軸）、行＝行同士が積み重なる向き（ブロック軸）。
+// 縦書き(vertical-rl)では列は上下、行は右→左に並ぶので、掴む辺は
+// 列＝セルの下辺、行＝セルの左辺になる（横書きの右辺／下辺の鏡映し）。
 function _noteTableCellAtResizeEdge(event) {
   const cell = _noteTableCellFromTarget(event.target);
   if (!cell) return null;
   const rect = cell.getBoundingClientRect();
   const edge = 6;
-  const nearRight = Math.abs(event.clientX - rect.right) <= edge && event.clientY >= rect.top && event.clientY <= rect.bottom;
-  const nearBottom = Math.abs(event.clientY - rect.bottom) <= edge && event.clientX >= rect.left && event.clientX <= rect.right;
-  if (!nearRight && !nearBottom) return null;
-  if (nearRight && (!nearBottom || Math.abs(event.clientX - rect.right) <= Math.abs(event.clientY - rect.bottom))) {
-    return { cell, axis: 'col' };
-  }
+  const ax = _noteTableAxis(cell);
+  const vertical = !!(ax && ax.vertical);
+  const pt = { x: event.clientX, y: event.clientY };
+  // インライン軸の終端辺（横書き=右 / 縦書き=下）
+  const inlineEnd = vertical ? rect.bottom : rect.right;
+  const inlineCoord = vertical ? pt.y : pt.x;
+  const inlineCross = vertical ? (pt.x >= rect.left && pt.x <= rect.right) : (pt.y >= rect.top && pt.y <= rect.bottom);
+  // ブロック軸の終端辺（横書き=下 / 縦書き=左）
+  const blockEnd = vertical ? rect.left : rect.bottom;
+  const blockCoord = vertical ? pt.x : pt.y;
+  const blockCross = vertical ? (pt.y >= rect.top && pt.y <= rect.bottom) : (pt.x >= rect.left && pt.x <= rect.right);
+  const dInline = Math.abs(inlineCoord - inlineEnd);
+  const dBlock = Math.abs(blockCoord - blockEnd);
+  const nearCol = dInline <= edge && inlineCross;
+  const nearRow = dBlock <= edge && blockCross;
+  if (!nearCol && !nearRow) return null;
+  if (nearCol && (!nearRow || dInline <= dBlock)) return { cell, axis: 'col' };
   return { cell, axis: 'row' };
 }
 
@@ -813,7 +860,14 @@ function _noteTableSetResizeHover(target) {
   }
   if (_noteTableResizeHoverCell && _noteTableResizeHoverCell !== target.cell) _noteTableResizeHoverCell.style.cursor = '';
   _noteTableResizeHoverCell = target.cell;
-  target.cell.style.cursor = target.axis === 'col' ? 'col-resize' : 'row-resize';
+  const vertical = !!_noteTableAxis(target.cell)?.vertical;
+  target.cell.style.cursor = _noteTableResizeCursor(target.axis, vertical);
+}
+
+// 掴む辺の向きに合わせたカーソル。縦書きでは列＝上下、行＝左右になる。
+function _noteTableResizeCursor(axis, vertical) {
+  if (vertical) return axis === 'col' ? 'row-resize' : 'col-resize';
+  return axis === 'col' ? 'col-resize' : 'row-resize';
 }
 
 function _noteTableEnsureColgroup(table, colCount) {
@@ -834,6 +888,8 @@ function _noteTableApplyColumnWidth(table, colIndex, width) {
   table.style.tableLayout = 'fixed';
   table.dataset.noteTableResized = '1';
   const col = _noteTableEnsureColgroup(table, colCount).children[colIndex];
+  // <col>/<td> の寸法は表レイアウト内部の値で、論理プロパティでは Chrome が拾わない
+  // （inline-size にすると列幅が一切変わらなくなる）。ここは物理プロパティのまま扱う。
   col.style.width = Math.max(40, Math.round(width)) + 'px';
   rows.forEach(row => {
     if (row.cells[colIndex]) row.cells[colIndex].style.width = col.style.width;
@@ -880,15 +936,20 @@ function _noteTableStartResize(event) {
     beforeHtml: editable.innerHTML,
     startX: event.clientX,
     startY: event.clientY,
-    startWidth: target.cell.getBoundingClientRect().width / z,
-    startHeight: row.getBoundingClientRect().height / z,
+    vertical: !!_noteTableAxis(target.cell)?.vertical,
+    startWidth: (_noteTableAxis(target.cell)?.vertical
+      ? target.cell.getBoundingClientRect().height
+      : target.cell.getBoundingClientRect().width) / z,
+    startHeight: (_noteTableAxis(target.cell)?.vertical
+      ? row.getBoundingClientRect().width
+      : row.getBoundingClientRect().height) / z,
     pointerTarget: target.cell,
     pointerId: event.pointerId,
     undoPushed: false,
     changed: false,
   };
   document.body.classList.add('note-table-resizing');
-  document.body.style.cursor = target.axis === 'col' ? 'col-resize' : 'row-resize';
+  document.body.style.cursor = _noteTableResizeCursor(target.axis, !!_noteTableAxis(target.cell)?.vertical);
   _noteTableBindResizeFinishGuards();
   event.preventDefault();
   event.stopPropagation();
@@ -899,7 +960,9 @@ function _noteTableResizeMove(event) {
   const state = _noteTableResizeState;
   if (!state) return;
   const z = _noteTableUiZoom();
-  const delta = state.axis === 'col' ? (event.clientX - state.startX) / z : (event.clientY - state.startY) / z;
+  const delta = state.vertical
+    ? (state.axis === 'col' ? (event.clientY - state.startY) : -(event.clientX - state.startX)) / z
+    : (state.axis === 'col' ? (event.clientX - state.startX) : (event.clientY - state.startY)) / z;
   if (Math.abs(delta) < 0.5) return;
   if (!state.undoPushed) state.undoPushed = _noteTablePushCustomUndo(state.editable);
   if (state.axis === 'col') {
@@ -1242,32 +1305,6 @@ function _expandFileStyleVars(style, panelId) {
   return vars;
 }
 
-function clearFileStyleFromElement(el) {
-  if (!el) return;
-  const raw = el.dataset?.[_FILE_STYLE_APPLIED_DATASET_KEY] || '';
-  raw.split(',').map(v => v.trim()).filter(Boolean).forEach(key => el.style.removeProperty(key));
-  if (el.dataset) delete el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY];
-}
-
-function applyFileStyleToElement(style, el, panelId) {
-  if (!el) return;
-  clearFileStyleFromElement(el);
-  if (!style || typeof style !== 'object') return;
-  const vars = _expandFileStyleVars(style, panelId);
-  const applied = [];
-  for (const [key, value] of Object.entries(vars)) {
-    if (!key.startsWith('--')) continue;
-    el.style.setProperty(key, value);
-    applied.push(key);
-  }
-  if (applied.length && el.dataset) el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY] = applied.join(',');
-}
-
-function applyPageTitleStyleToElement(style, titleEl) {
-  if (!titleEl) return;
-  applyFileStyleToElement(style, titleEl, 'page-content');
-}
-
 // ============================================================
 // 6. テーブル操作（セル編集・行列追加・右クリック削除）
 // ============================================================
@@ -1276,11 +1313,19 @@ function _ensureTableRowDragHandle() {
   if (handle) return handle;
   handle = document.createElement('div');
   handle.id = 'table-row-drag-handle';
-  handle.textContent = '⠿';
+  // 縦書きではグリップだけを回せるよう内側の span へ入れる。
+  handle.innerHTML = '<span class="block-drag-handle-glyph">⠿</span>';
   handle.draggable = true;
   handle.setAttribute('contenteditable', 'false');
   handle.style.cssText = 'position:fixed;left:0;top:0;width:18px;height:18px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--page-table-control-fg,var(--fg2));font-size:15px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;background:var(--page-table-control-bg,var(--bg2));border:var(--page-table-control-border-width,1px) solid var(--page-table-control-border,var(--border));border-radius:4px;';
   document.body.appendChild(handle);
+
+  const axisOf = (el) => {
+    const wm = window.MeldexNoteWritingMode;
+    const host = el && el.closest ? el.closest('[contenteditable]') : null;
+    return (wm && typeof wm.axis === 'function') ? wm.axis(host) : null;
+  };
+  const isVertical = (el) => !!axisOf(el)?.vertical;
 
   const rowSelector = '#page-content table tr, #entity-freetext table tr';
   let dropRow = null;
@@ -1292,6 +1337,13 @@ function _ensureTableRowDragHandle() {
   const positionHandle = (row) => {
     const rect = row.getBoundingClientRect();
     const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+    const vertical = isVertical(row);
+    handle.classList.toggle('is-note-vertical', vertical);
+    if (vertical) {
+      handle.style.left = ((rect.left + Math.max(0, (rect.width - 18) / 2)) / z) + 'px';
+      handle.style.top = ((rect.top - 22) / z) + 'px';
+      return;
+    }
     handle.style.top = ((rect.top + Math.max(0, (rect.height - 18) / 2)) / z) + 'px';
     handle.style.left = ((rect.left - 22) / z) + 'px';
   };
@@ -1304,21 +1356,36 @@ function _ensureTableRowDragHandle() {
     dropBefore = false;
     if (!handle.matches(':hover')) handle.style.opacity = '0';
   };
-  const rowAtClientY = (clientY, table) => {
+  const rowAtPoint = (point, table) => {
     if (!table) return null;
+    const ax = axisOf(table);
+    const vertical = !!ax?.vertical;
+    const coord = vertical ? point.x : point.y;
+    const lo = (r) => vertical ? r.left : r.top;
+    const hi = (r) => vertical ? r.right : r.bottom;
     let nearest = null;
     let nearestDistance = Infinity;
     for (const row of Array.from(table.querySelectorAll('tr'))) {
       const rect = row.getBoundingClientRect();
-      if (clientY >= rect.top && clientY <= rect.bottom) return row;
-      const distance = Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
+      if (coord >= lo(rect) && coord <= hi(rect)) return row;
+      const distance = Math.min(Math.abs(coord - lo(rect)), Math.abs(coord - hi(rect)));
       if (distance < nearestDistance) {
         nearest = row;
         nearestDistance = distance;
       }
     }
     const rect = table.getBoundingClientRect();
-    return clientY >= rect.top && clientY <= rect.bottom ? nearest : null;
+    return coord >= lo(rect) && coord <= hi(rect) ? nearest : null;
+  };
+  const isDropBefore = (target, e) => {
+    const rect = target.getBoundingClientRect(); // vertical-rl は右側が文書順の先頭。
+    return isVertical(target) ? e.clientX > rect.left + rect.width / 2 : e.clientY < rect.top + rect.height / 2;
+  };
+  const dropMarkerShadow = (target, before) => {
+    const w = 'var(--page-drag-guide-width, 2px)';
+    const c = 'var(--page-drag-guide-color, var(--accent))';
+    if (isVertical(target)) return before ? `inset calc(-1 * ${w}) 0 0 ${c}` : `inset ${w} 0 0 ${c}`;
+    return before ? `inset 0 ${w} 0 ${c}` : `inset 0 calc(-1 * ${w}) 0 ${c}`;
   };
   const rowFromDragEvent = (e, dragRow) => {
     let target = e.target?.closest?.(rowSelector) || null;
@@ -1331,7 +1398,7 @@ function _ensureTableRowDragHandle() {
         handle.style.pointerEvents = prevPointerEvents;
       }
     }
-    return target || rowAtClientY(e.clientY, dragRow?.closest?.('table'));
+    return target || rowAtPoint({ x: e.clientX, y: e.clientY }, dragRow?.closest?.('table'));
   };
 
   document.addEventListener('mousemove', (e) => {
@@ -1370,13 +1437,10 @@ function _ensureTableRowDragHandle() {
       clearDropMarker();
       return;
     }
-    const rect = target.getBoundingClientRect();
-    dropBefore = e.clientY < rect.top + rect.height / 2;
+    dropBefore = isDropBefore(target, e);
     if (dropRow && dropRow !== target) dropRow.style.boxShadow = '';
     dropRow = target;
-    dropRow.style.boxShadow = dropBefore
-      ? 'inset 0 var(--page-drag-guide-width, 2px) 0 var(--page-drag-guide-color, var(--accent))'
-      : 'inset 0 calc(-1 * var(--page-drag-guide-width, 2px)) 0 var(--page-drag-guide-color, var(--accent))';
+    dropRow.style.boxShadow = dropMarkerShadow(target, dropBefore);
   }, true);
 
   document.addEventListener('drop', (e) => {
@@ -1393,8 +1457,7 @@ function _ensureTableRowDragHandle() {
     const pc = dragRow.closest('#page-content, #entity-freetext');
     const beforeHtml = pc ? pc.innerHTML : '';
     _noteTablePushCustomUndo(pc);
-    const rect = target.getBoundingClientRect();
-    const shouldDropBefore = e.clientY < rect.top + rect.height / 2;
+    const shouldDropBefore = isDropBefore(target, e);
     if (shouldDropBefore) target.before(dragRow);
     else target.after(dragRow);
     _noteTableDispatchInput(pc, beforeHtml);
@@ -1714,7 +1777,8 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
 
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
-    positionPopup(menu, { left: x, right: x, top: y, bottom: y });
+    const prefer = window.MeldexNoteWritingMode ? window.MeldexNoteWritingMode.popupPrefer(editable) : 'below';
+    positionPopup(menu, { left: x, right: x, top: y, bottom: y }, { prefer });
   } else {
     const z = _noteTableUiZoom();
     menu.style.left = (x / z) + 'px';

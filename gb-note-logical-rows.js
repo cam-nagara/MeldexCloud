@@ -119,14 +119,39 @@
   // ============================================================
   // 3. ヒットテスト（ハンドル・ハイライト用）
   // ============================================================
+  // 組方向の軸オラクル。未読込環境（旧HTML等）では横書き固定で動く。
+  function _axis(editable) {
+    const wm = (typeof window !== 'undefined' ? window : globalThis).MeldexNoteWritingMode;
+    if (wm && typeof wm.axis === 'function') return wm.axis(editable);
+    return {
+      vertical: false,
+      blockCoord: (pt) => pt.y, blockStart: (r) => r.top, blockEnd: (r) => r.bottom, blockSign: 1,
+      toPoint: (input) => (typeof input === 'number' ? { x: NaN, y: input } : { x: input?.clientX ?? input?.x, y: input?.clientY ?? input?.y }),
+      containsBlock(r, input) {
+        const c = this.toPoint(input).y;
+        return Number.isFinite(c) && c >= r.top && c < Math.max(r.bottom, r.top + 1);
+      },
+    };
+  }
+
   // §2.3: 深いリストでは、子リストを除いた項目自身の矩形を算出する。
-  function rowOwnRect(el) {
+  // 切り落とす辺は組方向で変わる（横書き=下辺 / 縦書きrl=左辺）。
+  function rowOwnRect(el, editable) {
     if (!el || typeof el.getBoundingClientRect !== 'function') return null;
     const full = el.getBoundingClientRect();
     if (el.tagName !== 'LI') return full;
     const nestedList = Array.from(el.children).find((c) => LIST_TAG_RE.test(c.tagName));
     if (!nestedList) return full;
     const nestedRect = nestedList.getBoundingClientRect();
+    const ax = _axis(editable || el.closest?.('[contenteditable]'));
+    if (ax.vertical) {
+      // 縦書き: 行は右→左に進むので、子リストの右端で自分の左端を切る
+      const left = Math.min(full.right, Math.max(full.left, nestedRect.right));
+      return {
+        top: full.top, bottom: full.bottom, right: full.right, left,
+        height: full.height, width: Math.max(0, full.right - left),
+      };
+    }
     const bottom = Math.max(full.top, Math.min(full.bottom, nestedRect.top));
     return {
       top: full.top, left: full.left, right: full.right, bottom,
@@ -155,16 +180,18 @@
     return null;
   }
 
-  // Y座標（clientY）から対象行を解決する（ガター／余白ホバー用）。
+  // 座標から対象行を解決する（ガター／余白ホバー用）。
   // ownRect を使うため、深いリストでも重ならず最深行が自然に選ばれる。
-  function rowAtPoint(editable, clientY, excludeEl) {
+  // point は {x, y} / イベント / 数値（旧シグネチャの clientY 互換）を受け取る。
+  // 比較する軸は組方向で変わる（横書き=縦位置 / 縦書きrl=横位置）。
+  function rowAtPoint(editable, point, excludeEl) {
+    const ax = _axis(editable);
     const rows = listRows(editable);
     for (const el of rows) {
       if (excludeEl && (el === excludeEl || excludeEl.contains(el))) continue;
-      const r = rowOwnRect(el);
+      const r = rowOwnRect(el, editable);
       if (!r) continue;
-      const bottom = Math.max(r.bottom, r.top + 1);
-      if (clientY >= r.top && clientY < bottom) return el;
+      if (ax.containsBlock(r, point)) return el;
     }
     return null;
   }

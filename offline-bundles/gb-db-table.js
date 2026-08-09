@@ -558,6 +558,13 @@ function _handleRelationLinkClick(link, ctx) {
     } },
     { label: 'ビューワーでプレビュー', icon: 'tvMinimal', action: () => { if (typeof _updateLinkedPreview === 'function' && relPath) _updateLinkedPreview(relPath); } },
   ];
+  if (relPath) {
+    items.push({ label: 'パスをコピー', icon: 'copy', action: async () => {
+      const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+      const copied = await window.GBPathUtils?.copyToClipboard?.(relPath, basePath);
+      if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+    } });
+  }
   if (relPath && typeof window.revealPathInFolderTree === 'function') {
     items.push({ label: 'フォルダツリーに表示', icon: 'folderTree', action: () => window.revealPathInFolderTree(relPath) });
   }
@@ -992,13 +999,15 @@ function _handleTbodyDragstart(e) {
       const payloadNames = [...sel];
       e.dataTransfer.setData('text/plain', payloadNames.join('\n'));
       e.dataTransfer.setData('text/x-meldex-rows', JSON.stringify(payloadNames));
-      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+      const nodePayload = {
         items: payloadNames.map(name => ({
           name,
           path: _entityPath(ctx.dbPath, name, ctx.pivotData),
           type: 'entity',
         })),
-      }));
+      };
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(nodePayload));
+      if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, nodePayload, 'node');
     } else {
       if (window.MeldexBoardTransfer?.setEntityDragData) {
         window.MeldexBoardTransfer.setEntityDragData(e.dataTransfer, ctx.dbPath, entityName, ep);
@@ -1892,8 +1901,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
     container.appendChild(span);
   } else {
     // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。
-    const _forceStatusDot = values.length > 1;
+    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。1セル1値で運用する
+    // シート（制作管理）は対象外。ただしそのシートで「ステータス機能」をオンにした場合は
+    // 従来どおり出す（hidesCandidateStatusUi）。
+    const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+    const _forceStatusDot = values.length > 1 && !_hideStatusUi;
     values.forEach(val => {
       container.appendChild(
         ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
@@ -1905,7 +1917,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
     // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転）。
     // button/formula/rollup 等の非値型は上の分岐で処理されここには来ないが、防御的に除外する。
     const _nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-    const _allowAdd = !ptc || !_nonValueTypes.includes(ptc.type);
+    const _allowAdd = (!ptc || !_nonValueTypes.includes(ptc.type)) && !_hideStatusUi;
     if (_allowAdd) {
       const addBtn = document.createElement('span');
       addBtn.className = 'cell-add-btn';
@@ -2404,16 +2416,17 @@ function _dbAlignPinnedColumnSeams(table) {
       : null;
   }).filter(Boolean);
   if (!entries.length) return;
+  const controlsHeader = headers.find(header => header.classList.contains('col-row-controls-header'));
 
   // 前回の補正を外した同一レイアウトから再計測する。ここから補正の再適用までは
   // 同じフレーム内なので、中間状態が画面へ描画されることはない。
   entries.forEach(entry => _dbSetPinnedColumnShift(table, entry, 0));
-  let targetLeft = null;
+  let targetLeft = controlsHeader?.getBoundingClientRect?.().right ?? null;
   entries.forEach((entry, index) => {
     const rect = entry.header.getBoundingClientRect();
     // 先頭の固定列は既存の sticky left を基準にする。狭幅時には行コントロール列自体も
     // テーブル右端制約を受けるため、その描画位置を基準にすると固定列群全体が左へずれる。
-    if (index === 0) {
+    if (index === 0 && !Number.isFinite(targetLeft)) {
       targetLeft = rect.right;
       return;
     }
@@ -2825,7 +2838,10 @@ function renderPivot(ctx) {
   thControls.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'row-controls');
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
-  thControls.setAttribute('aria-label', '行操作');
+  thControls.setAttribute('aria-label', '行操作とエントリ選択');
+  if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
+    thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
+  }
   headerRow.appendChild(thControls);
 
   // 列D&D並べ替え（エントリ名列・プロパティ列で共通）
@@ -3159,6 +3175,7 @@ function renderPivot(ctx) {
 
   thead.innerHTML = '';
   thead.appendChild(headerRow);
+  if (typeof _syncPaneRowSelectHeader === 'function') _syncPaneRowSelectHeader(ctx);
 
   // リンク切れ（参照先シート欠落）の列見出し警告アイコンを反映（既知欠落を即時、
   // 未判明分は先読み完了後に selectDatabase から再度この関数が呼ばれて反映される）。

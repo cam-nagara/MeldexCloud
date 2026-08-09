@@ -169,13 +169,21 @@
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
+            const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+            if (attachmentFolder) {
+              entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+            }
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
           } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
-            const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
+            const serverSorts = new Set(['name', 'modified', 'created']);
+            const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+            const needsClientSort = sortCfg.sort === 'manual' || !serverSorts.has(sortCfg.sort);
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + '&all_files=true');
+            const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
             let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
             // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
@@ -188,6 +196,7 @@
             });
             // マニュアルソートは配列側で確定してから追加する（仮想化コンテナはDOM順を持たないため）
             if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
+            else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
           }
           delete childrenDiv.dataset.loadError;
@@ -357,9 +366,13 @@
     // DOM順でソート（上から下の順序を維持）
     const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')];
     const selectedNodes = [...treeSelection.items].sort((a, b) => allTreeNodes.indexOf(a) - allTreeNodes.indexOf(b));
-    draggedNodes = selectedNodes.filter(n => !selectedNodes.some(parent => parent !== n && parent.contains(n)));
+    // 開始行の祖先フォルダが古い選択に残っていても、画像等の子行を
+    // ドラッグした操作で親フォルダごと昇格させない。その後、通常の
+    // 親子de-dupを行い、同じ選択を2回移動しない。
+    const withoutDragAncestors = selectedNodes.filter(n => n === div || !_treeNodeIsAncestor(n, div));
+    draggedNodes = withoutDragAncestors.filter(n => !withoutDragAncestors.some(parent => _treeNodeIsAncestor(parent, n)));
     draggedNodes.forEach(n => n.querySelector('.tree-node-row')?.classList.add('dragging'));
-    const payload = _treeDragPayload(item);
+    const payload = _treeDragPayload(item, draggedNodes);
     e.dataTransfer.effectAllowed = 'copyMove';
     // text/uri-list を入れておくと OS シェル（窓外）が「URL のドラッグ」として
     // 認識し、赤い禁止カーソルが出にくくなる
@@ -372,6 +385,8 @@
     } catch {}
     e.dataTransfer.setData('text/plain', (payload.items || []).map(entry => entry.name).filter(Boolean).join(', ') || item.name || '');
     e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    window._gbOutlinerDragNonce = typeof MeldexDnD !== 'undefined'
+      ? MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node') : '';
     // 窓外ドロップ時の popout 用に payload を保持
     window._gbOutlinerDragPayload = payload;
     // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度にする
@@ -380,7 +395,7 @@
     }
   });
 
-  row.addEventListener('dragend', (e) => {
+  row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
@@ -389,19 +404,38 @@
     document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
       .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-    if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
+    const shouldPopout = typeof shouldOpenDragPopout === 'function'
+      ? await shouldOpenDragPopout(e, window._gbOutlinerDragNonce)
+      : (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e));
+    if (shouldPopout) {
       const payload = window._gbOutlinerDragPayload;
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
     }
+    if (window._gbOutlinerDragNonce && typeof MeldexDnD !== 'undefined') {
+      MeldexDnD.cancelCrossWindowDrag(window._gbOutlinerDragNonce);
+    }
     window._gbOutlinerDragPayload = null;
+    window._gbOutlinerDragNonce = '';
     draggedNode = null;
     draggedNodes = null;
   });
 
   row.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (!draggedNode) return;
+    if (!draggedNode) {
+      const externalItems = _outlinerExternalDragItems(e);
+      const bridgeCandidate = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+      if ((!externalItems.length && !bridgeCandidate) || !(isFolder || isDB) || item._isRoot && !item.path
+          || externalItems.some(source => source.type === 'entity') || isItemLocked(item.path)) {
+        e.dataTransfer.dropEffect = 'none';
+        return;
+      }
+      e.dataTransfer.dropEffect = 'move';
+      clearDragIndicators();
+      row.classList.add('drag-over-inside');
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       e.dataTransfer.dropEffect = 'none';
       clearDragIndicators();
@@ -432,8 +466,26 @@
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
 
-  row.addEventListener('drop', (e) => {
+  row.addEventListener('drop', async (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    if (!draggedNode) {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
+        const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const targetPath = String(item.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        return source.type !== 'entity' && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
+      });
+      clearDragIndicators();
+      if (!(isFolder || isDB) || isItemLocked(item.path) || externalItems.length === 0) {
+        if (resolved) MeldexDnD.failDrop(resolved);
+        return;
+      }
+      const completed = await _moveExternalItemsIntoOutlinerFolder(externalItems, item);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       clearDragIndicators();
       showStatus('シートのエントリはフォルダツリー内へ移動できません');
@@ -443,7 +495,7 @@
     if (e.ctrlKey) { clearDragIndicators(); return; }
     if (!draggedNode || draggedNode === div) return;
     const nodes = (draggedNodes || [draggedNode])
-      .filter(n => n !== div && !n.contains(div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
+      .filter(n => n !== div && !_treeNodeIsAncestor(n, div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
     if (nodes.length === 0) return;
     const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
     // 移動元コンテナが仮想化されていた場合、DOM移動だけでは配列側に残留するため
@@ -515,15 +567,31 @@
     (async () => {
       const moved = [];
       let movedAcrossFolders = false;
+      let processed = 0;
+      window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
       for (const n of nodes) {
         const dragData = n._nodeData;
-        if (!dragData || !dragData.path) { moved.push(n); continue; }
+        if (!dragData || !dragData.path) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
-        if (destFolder === srcFolder) { moved.push(n); continue; }
+        if (destFolder === srcFolder) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         movedAcrossFolders = true;
         try {
           const oldPath = dragData.path;
-          const res = await apiPost('/outliner/move', { path: dragData.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: dragData.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           if (res.new_path) {
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
@@ -544,8 +612,12 @@
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
+        } finally {
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
         }
       }
+      window.MeldexImportProgress?.finishOperation?.();
       if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から

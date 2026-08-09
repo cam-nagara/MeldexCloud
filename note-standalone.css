@@ -71,10 +71,11 @@
 }
 
 .note-editor {
-  min-height: 100%;
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 32px max(28px, 5vw) 120px;
+  min-block-size: 100%;
+  max-inline-size: 960px;
+  margin-inline: auto;
+  padding-block: 32px 120px;
+  padding-inline: max(28px, 5vw);
   color: var(--fg, var(--sa-fg));
   line-height: 1.72;
   font-size: 16px;
@@ -100,23 +101,23 @@
 
 .note-editor img,
 .note-editor video {
-  max-width: 100%;
-  height: auto;
+  max-inline-size: 100%;
+  block-size: auto;
 }
 
-.note-editor.vertical-writing {
-  writing-mode: vertical-rl;
-  max-width: none;
-  width: max-content;
-  min-width: 100%;
-  padding: 32px 80px;
+#page-content.note-editor.vertical-writing {
+  /* 横書き用の行長上限（960px）を解除する。組方向・スクロール方向は gb-tools 側が持つ。 */
+  max-inline-size: none;
+  padding-inline: 32px;
+  padding-block: 80px;
 }
 
 .embed-media {
   position: relative;
   display: block;
-  max-width: 100%;
-  margin: 12px auto;
+  max-inline-size: 100%;
+  margin-block: 12px;
+  margin-inline: auto;
 }
 
 .note-media-controls {
@@ -196,8 +197,15 @@
     height: 24px;
   }
 
+
   #page-rt-toolbar .tb-icon-btn,
   #page-rt-toolbar .tb-select {
     min-height: 44px;
   }
 }
+
+/* リサイズハンドルは四隅に出る。隅ごとに斜めカーソルの向きを変える。 */
+.note-media-resize[data-media-resize-corner="nw"],
+.note-media-resize[data-media-resize-corner="se"] { cursor: nwse-resize; }
+.note-media-resize[data-media-resize-corner="ne"],
+.note-media-resize[data-media-resize-corner="sw"] { cursor: nesw-resize; }

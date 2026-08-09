@@ -23,7 +23,9 @@
   const _mobileCollapsedColumns = new Map();
 
   function _isDropboxMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser';
   }
 
   function _isLocalMobileUiAllowed() {
@@ -787,11 +789,12 @@
     const dropboxMode = _isDropboxMode();
     const localMobileMode = !dropboxMode && _isLocalMobileUiAllowed();
     const mobile = (dropboxMode || localMobileMode) && _isMobileViewport() && !_isSingleWindow();
+    const browserLocalMode = !!window.MeldexRuntimeAdapter?.isBrowserMode?.();
     const editingUiEnabled = isMobileEditingUiEnabled();
     _setDatasetFlag('cloudMobile', mobile);
     _setDatasetFlag('cloudMobileEditingUi', editingUiEnabled);
     _setDatasetFlag('mobileUi', mobile);
-    _setDatasetFlag('mobileUiLocal', mobile && localMobileMode);
+    _setDatasetFlag('mobileUiLocal', mobile && (localMobileMode || browserLocalMode));
     _setDatasetFlag('mobileEditingUi', editingUiEnabled);
     _ensurePaneTreeBackButtons();
     _syncPaneSafeTopBars();
@@ -811,6 +814,7 @@
       keyboardGap,
       singleWindow: _isSingleWindow(),
       dropboxMode,
+      browserLocalMode,
       localMobileMode,
     };
     window.MeldexCloudMobileState = detail;

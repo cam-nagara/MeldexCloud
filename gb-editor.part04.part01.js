@@ -246,10 +246,12 @@ function _editorEventAnchorRect(e, fallbackEl) {
   return _editorPointRect(x, y);
 }
 
-function _positionEditorPopup(popup, anchorRect) {
+function _positionEditorPopup(popup, anchorRect, options) {
   if (!popup) return;
   if (typeof positionPopup === 'function') {
-    positionPopup(popup, anchorRect);
+    // 縦書きでは下に開くと本文の続きを隠すため、行の進行方向と直交する側（左）へ寄せる
+    const prefer = (typeof MeldexNoteWritingMode !== 'undefined') ? MeldexNoteWritingMode.popupPrefer() : 'below';
+    positionPopup(popup, anchorRect, Object.assign({ prefer }, options || {}));
     return;
   }
   const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
@@ -288,199 +290,15 @@ function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
   if (!popup) return;
   if (popup.isConnected) popup.remove();
   cleanup?.();
-  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') restoreFocusEl.focus();
-}
-
-function _pageTitleRubyHandler(e) {
-  const editable = e.target.closest('[contenteditable="true"]');
-  if (!editable) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
-  // 念のため: 万一ノート編集 editable に届いた場合はノートメニューに任せる
-  if (editable.id === 'entity-freetext' || editable.id === 'page-content' || editable.id === 'dp-editable') return;
-
-  e.preventDefault();
-  const selectedText = sel.toString().trim();
-
-  // 既存のルビメニューを閉じる
-  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-
-  // 選択範囲を保存
-  const savedRange = sel.getRangeAt(0).cloneRange();
-  const savedEditable = editable;
-
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu note-ruby-popup page-title-ruby-popup';
-  menu.setAttribute('role', 'dialog');
-  menu.setAttribute('aria-label', 'ページタイトルにルビを設定');
-  // mousedownでフォーカスを奪わない
-  menu.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${selectedText.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.id = 'ruby-input';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ページタイトルのルビ');
-  input.dataset.e2eId = 'page-title-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.id = 'ruby-apply-btn';
-  applyButton.dataset.e2eId = 'page-title-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  menu.append(label, row);
-  document.body.appendChild(menu);
-  _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
-  // blurで再描画されないよう一時的に無効化
-  const origBlur = savedEditable.onblur;
-  savedEditable.onblur = null;
-  input.focus();
-  // メニューが閉じたらblurを復元
-  const restoreBlur = () => { savedEditable.onblur = origBlur; };
-  window._rubyRestoreBlur = restoreBlur;
-  let outsideCloser = null;
-  let keyCloser = null;
-  const cleanupRubyPopup = () => {
-    if (outsideCloser) document.removeEventListener('pointerdown', outsideCloser, true);
-    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
-    outsideCloser = null;
-    keyCloser = null;
-    if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
-  };
-
-  function doApply() {
-    const ruby = input.value.trim();
-    _closeEditorPopup(menu, cleanupRubyPopup);
-    if (!ruby) return;
-
-    const path = savedEditable.dataset?.path || savedEditable.dataset?.entityPath;
-    const ep = savedEditable.dataset.entityPath || '';
-    const isNewFormatFreetext = savedEditable.id === 'entity-freetext' && ep.endsWith('.md');
-    const savePath = savedEditable.id === 'entity-freetext'
-      ? (isNewFormatFreetext ? ep : ep + '/_freetext.md')
-      : (path || '');
-    if (!savePath) return;
-
-    // --- ルビ適用 ---
-    // 自動保存タイマーをキャンセル（normalize()でRangeが無効化されるのを防止）
-    clearTimeout(window._noteAutoSaveTimer);
-
-    savedEditable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(savedRange);
-
-    // カスタムアンドゥ用にスナップショットを保存
-    _pushCustomUndo(savedEditable);
-
-    // 既存のルビspan全体を選択している場合はルビ値を上書き
-    const existingRuby = savedRange.startContainer.parentElement?.closest('[data-ruby]');
-    if (existingRuby && savedRange.toString().trim() === existingRuby.textContent.trim()) {
-      existingRuby.dataset.ruby = ruby;
-    } else {
-      // 選択範囲をruby spanで囲む（DOM直接操作）
-      const span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      try {
-        savedRange.surroundContents(span);
-      } catch (e) {
-        const fragment = savedRange.extractContents();
-        span.appendChild(fragment);
-        savedRange.insertNode(span);
-      }
-    }
-
-    // ペンディング中の自動保存をキャンセルし、即時保存
-    clearTimeout(window._noteAutoSaveTimer);
-    savedEditable.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-    savedEditable.normalize();
-    let md = htmlToMd(savedEditable.innerHTML);
-    if (!md.trim()) return;
-    const fm = savedEditable.dataset.frontmatter || '';
-    if (fm) md = fm + md;
-
-    const isEntityFreetext = savedEditable.id === 'entity-freetext';
-    const savePromise = isEntityFreetext && typeof _saveEntityFreeText === 'function'
-      ? _saveEntityFreeText(savedEditable, ep, md, { reason: 'ruby' })
-      : (window.MeldexNoteSaveAdapter
-        ? window.MeldexNoteSaveAdapter.performSave(savedEditable, savePath, md, { reason: 'ruby' })
-        : apiPut('/file?path=' + encodeURIComponent(savePath), {
-            content: md,
-            if_match_etag: savedEditable.dataset.lastSavedEtag || '',
-            transport_revision: savedEditable.dataset.lastSavedTransportRevision || '',
-          }));
-    savePromise.then((saved) => {
-      if (saved === false || saved?.conflictPending) return;
-      // 保存後にDOM再描画（auto-link再適用のため）
-      const bodyMd = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const reHtml = mdToHtml(bodyMd);
-      savedEditable.innerHTML = applyAutoLinks(reHtml, savePath);
-      // ルビを設定したテキストの直後にカーソルを配置
-      savedEditable.focus();
-      const rubySpans = savedEditable.querySelectorAll('[data-ruby]');
-      for (const span of rubySpans) {
-        if (span.textContent.includes(selectedText)) {
-          const s = window.getSelection();
-          const r = document.createRange();
-          r.setStartAfter(span);
-          r.collapse(true);
-          s.removeAllRanges();
-          s.addRange(r);
-          span.scrollIntoView({ block: 'center' });
-          break;
-        }
-      }
-      showStatus('ルビを設定しました');
-    }).catch(() => {});
-  }
-
-  applyButton.addEventListener('click', doApply);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); doApply(); }
-    if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(menu, cleanupRubyPopup, savedEditable); }
-    ev.stopPropagation();
-  });
-
-  outsideCloser = function closer(ev) {
-    if (!menu.contains(ev.target)) {
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  keyCloser = function onKey(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(menu, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', outsideCloser, true);
-    document.addEventListener('keydown', keyCloser, true);
-  }, 0);
-}
-
-{
-  const _pageTitleEl = document.getElementById('page-title');
-  if (_pageTitleEl) {
-    _pageTitleEl.addEventListener('contextmenu', _pageTitleRubyHandler);
-    if (typeof addLongPressHandler === 'function') addLongPressHandler(_pageTitleEl, _pageTitleRubyHandler);
+  // preventScroll を付けないと、ポップアップを閉じた拍子に本文がスクロールする
+  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') {
+    try { restoreFocusEl.focus({ preventScroll: true }); } catch (_) { restoreFocusEl.focus(); }
   }
 }
+
+// ページタイトルへのルビ設定は削除した。適用処理が保存先パスを見つけられず必ず途中で
+// 止まっており（タイトルはファイル名そのものでルビの保存先が無い）、右クリックしても
+// 何も起きない項目になっていたため。本文のルビは gb-note-ruby.js が担当する。
 
 /* ==============================
    Notion風キーボードショートカット
@@ -573,110 +391,9 @@ function moveBlock(direction) {
   return MeldexNoteBlockReorder.moveBlock(direction);
 }
 
-// ノートエディタ用ルビ入力ポップアップ。
-// シナリオエディタの sn2-header-popup と同パターン（positionPopup + 範囲基準）。
-function showNoteRubyPopup(editable, range) {
-  if (!editable || !range) return;
-  document.querySelectorAll('.note-ruby-popup').forEach(el => el.remove());
-  const text = range.toString();
-  if (!text) return;
-  const popup = document.createElement('div');
-  popup.className = 'gb-context-menu note-ruby-popup';
-  popup.setAttribute('role', 'dialog');
-  popup.setAttribute('aria-label', 'ノート本文にルビを設定');
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${text.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ノート本文のルビ');
-  input.dataset.e2eId = 'note-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.dataset.e2eId = 'note-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  popup.append(label, row);
-  popup.addEventListener('mousedown', ev => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  document.body.appendChild(popup);
-  _positionEditorPopup(popup, range.getBoundingClientRect());
-  let closeHandler = null;
-  let keyHandler = null;
-  const cleanup = () => {
-    if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
-    if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
-    closeHandler = null;
-    keyHandler = null;
-  };
-  const apply = () => {
-    const ruby = input.value.trim();
-    _closeEditorPopup(popup, cleanup);
-    if (!ruby) return;
-    editable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    _pushCustomUndo(editable);
-    const rangeRoot = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer?.parentElement;
-    const existingRuby = rangeRoot?.closest?.('[data-ruby]');
-    let span = existingRuby && editable.contains(existingRuby) && range.toString().trim() === existingRuby.textContent.trim()
-      ? existingRuby
-      : null;
-    if (span) {
-      span.dataset.ruby = ruby;
-    } else {
-      span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      span.textContent = text;
-      range.deleteContents();
-      range.insertNode(span);
-    }
-    const r2 = document.createRange();
-    r2.setStartAfter(span);
-    r2.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r2);
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    showStatus('ルビを設定しました');
-  };
-  applyButton.addEventListener('click', apply);
-  input.addEventListener('keydown', ev => {
-    if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(popup, cleanup, editable); }
-    ev.stopPropagation();
-  });
-  closeHandler = function onPointerDown(ev) {
-    if (!popup.contains(ev.target)) _closeEditorPopup(popup, cleanup, editable);
-  };
-  keyHandler = function onKeyDown(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(popup, cleanup, editable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', closeHandler, true);
-    document.addEventListener('keydown', keyHandler, true);
-    input.focus();
-  }, 0);
-}
+// ノート本文のルビ入力ポップアップは gb-note-ruby.js（MeldexNoteRuby）へ移設した。
+// 通常は文字選択で出る書式設定ポップアップへ統合され、そこが使えない環境
+// （クラウドのスマホ編集UI等）だけ MeldexNoteRuby.showLegacyPopup が使われる。
 
 async function confirmNoteTableDelete(message) {
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
@@ -795,7 +512,8 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { type: 'sep' },
     { label: 'ルビを設定...', enabled: hasSelection, action: () => {
       if (!savedRange) return;
-      showNoteRubyPopup(editable, savedRange);
+      if (typeof MeldexNoteRuby === 'undefined') return;
+      MeldexNoteRuby.insertRuby(editable, savedRange);
     }},
     { label: 'リンクを挿入...', enabled: true, action: () => {
       restoreAndExec(() => {});

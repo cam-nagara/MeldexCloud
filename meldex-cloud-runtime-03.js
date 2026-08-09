@@ -144,8 +144,8 @@
   }
 
   function _isCloudMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _ensureIndicator() {
@@ -178,9 +178,11 @@
   }
 
   function offlineMessage() {
-    if (_isCloudMode()) {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox') {
       return 'オフライン中です。クラウド保存・検索・閲覧・LLM送信はネット接続後に再試行してください。';
     }
+    if (_isCloudMode()) return 'オフライン中です。端末内の編集・保存・検索・閲覧は使えますが、オンライン連携はネット接続後に再試行してください。';
     return 'オフライン中です。編集・保存・検索・閲覧は使えますが、LLM送信はネット接続後に再試行してください。';
   }
 
@@ -2395,6 +2397,153 @@
 
 ;
 
+/* === gb-workspace-folder-detect.js === */
+;
+/* gb-workspace-folder-detect.js — Dropbox上のフォルダが「共有ワークスペース」かどうかを判定する。
+ *
+ * 共有ワークスペースにすると、そのフォルダ直下に管理用の目印ファイルが作られる。
+ * この目印の有無だけが「Meldexで作られた共有ワークスペースである」ことの根拠になる。
+ * 参加先を選ぶ画面が目印を見ずに全フォルダを並べていたため、ワークスペースではない
+ * ただのフォルダにも「参加」できてしまっていた（2026-08-07 修正）。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexWorkspaceFolderDetect) return;
+
+  // 現行の目印。共有ワークスペース化のときに必ず書かれる。
+  const MARKER_PRIMARY = 'MeldexShare/system/v1/folder-associations/workspace-source-folders.json';
+  // 旧形式の目印。読み取り互換のためだけに見る（新規には作られない）。
+  const MARKER_LEGACY = 'MeldexShare/_meldex/source-folders.v1.json';
+  const MARKERS = [MARKER_PRIMARY, MARKER_LEGACY];
+
+  // 目印ファイルの名前（拡張子なし）。Dropboxのファイル名検索に使う。
+  const MARKER_QUERIES = ['workspace-source-folders', 'source-folders.v1'];
+
+  function _auth() {
+    return global.MeldexDropboxAuth;
+  }
+
+  function _normalizeNamespaceKind(value) {
+    return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  function _normalizePath(path) {
+    const raw = String(path || '').trim().replace(/\\/g, '/').replace(/\/+/g, '/');
+    if (!raw || raw === '/') return '/';
+    const trimmed = raw.replace(/\/$/, '');
+    return trimmed.startsWith('/') ? trimmed : '/' + trimmed;
+  }
+
+  function _joinPath(base, relative) {
+    const normalized = _normalizePath(base);
+    return normalized === '/' ? '/' + relative : normalized + '/' + relative;
+  }
+
+  function _isNotFound(err) {
+    return /not_found/i.test(err && err.message ? err.message : '');
+  }
+
+  /**
+   * 指定した1つのフォルダが共有ワークスペースかどうかを確かめる。
+   * 通信障害と「目印が無い」を取り違えないよう、確認できたかどうかも返す。
+   * @returns {Promise<{workspace: boolean, checked: boolean, error: Error|null}>}
+   */
+  async function isWorkspaceFolder(path, namespaceKind) {
+    const auth = _auth();
+    if (!auth || !auth.apiRpc) return { workspace: false, checked: false, error: new Error('Dropboxへ接続してください') };
+    const target = _normalizePath(path);
+    if (target === '/') return { workspace: false, checked: true, error: null };
+    const kind = _normalizeNamespaceKind(namespaceKind);
+    let lastError = null;
+    for (const marker of MARKERS) {
+      try {
+        await auth.apiRpc('files/get_metadata', { path: _joinPath(target, marker) }, { namespaceKind: kind });
+        return { workspace: true, checked: true, error: null };
+      } catch (err) {
+        // 目印が無いだけなら次の形式を試す。それ以外は確認できなかったものとして扱う。
+        if (!_isNotFound(err)) lastError = err;
+      }
+    }
+    return lastError
+      ? { workspace: false, checked: false, error: lastError }
+      : { workspace: false, checked: true, error: null };
+  }
+
+  function _matchFilePath(match) {
+    const outer = match && match.metadata;
+    const inner = outer && outer.metadata ? outer.metadata : outer;
+    if (!inner) return '';
+    return String(inner.path_display || inner.path_lower || '');
+  }
+
+  function _workspaceRootFromMarkerPath(markerPath) {
+    const normalized = _normalizePath(markerPath);
+    const lower = normalized.toLowerCase();
+    for (const marker of MARKERS) {
+      const suffix = '/' + marker.toLowerCase();
+      if (lower.endsWith(suffix)) return normalized.slice(0, normalized.length - suffix.length) || '/';
+    }
+    return '';
+  }
+
+  async function _searchMarker(query, basePath, namespaceKind) {
+    const auth = _auth();
+    const kind = _normalizeNamespaceKind(namespaceKind);
+    const scope = _normalizePath(basePath);
+    const roots = [];
+    let payload = await auth.apiRpc('files/search_v2', {
+      query,
+      options: {
+        path: scope === '/' ? '' : scope,
+        max_results: 1000,
+        file_status: 'active',
+        filename_only: true,
+      },
+    }, { namespaceKind: kind });
+    while (payload) {
+      (payload.matches || []).forEach((match) => {
+        const root = _workspaceRootFromMarkerPath(_matchFilePath(match));
+        if (root) roots.push(root);
+      });
+      if (!payload.has_more || !payload.cursor) break;
+      payload = await auth.apiRpc('files/search/continue_v2', { cursor: payload.cursor }, { namespaceKind: kind });
+    }
+    return roots;
+  }
+
+  /**
+   * 指定フォルダより下にある共有ワークスペースの位置をまとめて調べる。
+   * 検索の索引が追いつかず取りこぼす可能性があるため、これは一覧の絞り込み専用。
+   * 「このフォルダに参加してよいか」の最終判定には isWorkspaceFolder を使う。
+   * @returns {Promise<{roots: string[], searched: boolean, error: Error|null}>}
+   */
+  async function findWorkspaceRootsUnder(basePath, namespaceKind) {
+    const auth = _auth();
+    if (!auth || !auth.apiRpc) return { roots: [], searched: false, error: new Error('Dropboxへ接続してください') };
+    try {
+      const results = await Promise.all(
+        MARKER_QUERIES.map((query) => _searchMarker(query, basePath, namespaceKind))
+      );
+      const unique = new Set();
+      results.forEach((list) => list.forEach((root) => unique.add(root)));
+      return { roots: Array.from(unique), searched: true, error: null };
+    } catch (err) {
+      return { roots: [], searched: false, error: err };
+    }
+  }
+
+  global.MeldexWorkspaceFolderDetect = {
+    MARKERS,
+    MARKER_QUERIES,
+    isWorkspaceFolder,
+    findWorkspaceRootsUnder,
+    workspaceRootFromMarkerPath: _workspaceRootFromMarkerPath,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-dropbox-folder-picker.js === */
 ;
 (function () {
@@ -2438,6 +2587,34 @@
 
   function _normalizeNamespaceKind(value) {
     return value === 'team_root' ? 'team_root' : 'home';
+  }
+
+  function _detector() {
+    return window.MeldexWorkspaceFolderDetect;
+  }
+
+  // 共有ワークスペースへの参加先を選ぶときは、ワークスペースとして作られたフォルダだけを
+  // 並べる。中にワークスペースを含むだけのフォルダは、辿り着けなくならないよう「開くだけ」
+  // 残す。判定できなかった場合は黙って全部並べず、絞り込めなかったことを画面に出す。
+  async function _classifyWorkspaceFolders(folders, currentPath, namespaceKind) {
+    const detect = _detector();
+    if (!detect) return { folders, filtered: false, notice: '' };
+    const found = await detect.findWorkspaceRootsUnder(currentPath, namespaceKind);
+    if (!found.searched) {
+      return {
+        folders,
+        filtered: false,
+        notice: '共有ワークスペースだけに絞り込めませんでした。フォルダを選ぶと、参加する前に確認します。',
+      };
+    }
+    const roots = found.roots.map((root) => String(root).toLowerCase());
+    const classified = folders.map((folder) => {
+      const lower = String(folder.path || '').toLowerCase();
+      const isWorkspace = roots.includes(lower);
+      const hasWorkspaceInside = !isWorkspace && roots.some((root) => root.startsWith(lower + '/'));
+      return { ...folder, isWorkspace, hasWorkspaceInside };
+    }).filter((folder) => folder.isWorkspace || folder.hasWorkspaceInside);
+    return { folders: classified, filtered: true, notice: '' };
   }
 
   async function _listFolders(path, namespaceKind) {
@@ -2484,6 +2661,7 @@
 
   function pickFolder(options) {
     options = options || {};
+    const workspaceMode = options.mode === 'workspace';
     return new Promise((resolve) => {
       const pickerId = `meldex-dropbox-folder-picker-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const overlay = _el('div', {
@@ -2543,8 +2721,16 @@
       buttons.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border);';
       const newButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '新規フォルダ', title: '新規フォルダ', 'data-e2e-id': 'dropbox-folder-picker-new' });
       const cancelButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: 'キャンセル', 'data-e2e-id': 'dropbox-folder-picker-cancel' });
-      const selectButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm gb-btn-primary primary', text: 'このフォルダを追加', 'data-e2e-id': 'dropbox-folder-picker-select' });
-      buttons.append(newButton, cancelButton, selectButton);
+      const selectButton = _el('button', {
+        type: 'button',
+        class: 'gb-btn gb-btn-sm gb-btn-primary primary',
+        text: workspaceMode ? 'このワークスペースに参加' : 'このフォルダを追加',
+        'data-e2e-id': 'dropbox-folder-picker-select',
+      });
+      // 参加先を選ぶ画面では新しいフォルダを作っても意味がない（作った直後の空フォルダは
+      // 共有ワークスペースではないため）ので出さない
+      if (!workspaceMode) buttons.appendChild(newButton);
+      buttons.append(cancelButton, selectButton);
       body.append(namespacePicker, toolbar, list, status);
       dialog.append(title, body, buttons);
       overlay.appendChild(dialog);
@@ -2577,13 +2763,25 @@
         list.setAttribute('aria-busy', 'true');
         status.textContent = '読み込み中...';
         upButton.disabled = renderPath === '/';
+        if (workspaceMode) selectButton.disabled = true;
         try {
-          const folders = await _listFolders(renderPath, currentNamespaceKind);
+          let folders = await _listFolders(renderPath, currentNamespaceKind);
+          let notice = '';
+          if (workspaceMode) {
+            const classified = await _classifyWorkspaceFolders(folders, renderPath, currentNamespaceKind);
+            if (seq !== renderSeq) return;
+            folders = classified.folders;
+            notice = classified.notice;
+          }
           if (seq !== renderSeq) return;
           list.textContent = '';
           list.setAttribute('aria-busy', 'false');
           if (!folders.length) {
-            const empty = _el('div', { text: 'この階層にフォルダはありません' });
+            const empty = _el('div', {
+              text: workspaceMode
+                ? 'この場所に共有ワークスペースはありません'
+                : 'この階層にフォルダはありません',
+            });
             empty.style.cssText = 'padding:14px;color:var(--fg2);font-size:13px;';
             list.appendChild(empty);
           }
@@ -2591,21 +2789,40 @@
             const row = _el('button', {
               type: 'button',
               class: 'meldex-dropbox-folder-picker-row',
-              text: folder.name,
               title: folder.path,
               role: 'option',
-              'aria-label': `${folder.name}を開く`,
+              'aria-label': folder.isWorkspace ? `${folder.name}（共有ワークスペース）を選ぶ` : `${folder.name}を開く`,
               'data-dropbox-path': folder.path,
               'data-e2e-id': 'dropbox-folder-picker-row',
             });
+            if (workspaceMode) row.dataset.workspaceFolder = folder.isWorkspace ? '1' : '0';
             row.style.cssText = 'width:100%;display:flex;align-items:center;gap:8px;padding:10px 12px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--fg);text-align:left;cursor:pointer;';
+            row.appendChild(_el('span', { text: folder.name }));
+            if (folder.isWorkspace) {
+              const badge = _el('span', { text: '共有ワークスペース', 'data-e2e-id': 'dropbox-folder-picker-workspace-badge' });
+              badge.style.cssText = 'margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--fg2);border:1px solid var(--border);border-radius:999px;padding:1px 8px;';
+              row.appendChild(badge);
+            }
             row.addEventListener('click', () => {
               currentPath = folder.path;
               render();
             });
             list.appendChild(row);
           });
-          status.textContent = '現在表示しているフォルダをソースフォルダに追加できます。';
+          if (workspaceMode) {
+            const current = _detector()
+              ? await _detector().isWorkspaceFolder(renderPath, currentNamespaceKind)
+              : { workspace: false, checked: false };
+            if (seq !== renderSeq) return;
+            // 確認できなかったとき（通信不調など）はボタンを塞がない。参加の可否は
+            // 参加処理側でもう一度確かめるので、ここで行き止まりにしない。
+            selectButton.disabled = current.checked ? !current.workspace : false;
+            status.textContent = notice || (current.workspace
+              ? '表示中のフォルダに参加できます。'
+              : '参加できる共有ワークスペースを選んでください。');
+          } else {
+            status.textContent = '現在表示しているフォルダをソースフォルダに追加できます。';
+          }
         } catch (err) {
           if (seq !== renderSeq) return;
           list.textContent = '';
@@ -2867,6 +3084,10 @@
   const DROPBOX_FILE_CACHE_TTL_MS = 20 * 1000;
   const DROPBOX_FILE_CACHE_MAX_ENTRIES = 24;
   const DROPBOX_FILE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+  // Dropbox の単発アップロード上限は150MB。境界ぎりぎりを避けて分割へ切り替える。
+  const DROPBOX_SINGLE_UPLOAD_MAX_BYTES = 140 * 1024 * 1024;
+  // 分割送信の1回あたりのサイズ（Dropbox の推奨は4MBの倍数）。
+  const DROPBOX_UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
   const DROPBOX_LIST_CACHE_TTL_MS = 3500;
   const DROPBOX_LIST_CACHE_MAX_ENTRIES = 80;
 
@@ -3714,6 +3935,11 @@
     }
 
     async _uploadBytesWithMode(relativePath, bytes, mode) {
+      // Dropbox の単発アップロードは150MBまで。動画などはセッションへ切り替える
+      // （切り替えないと大きいファイルの保存が必ず失敗する）。
+      if (bytes && bytes.length > DROPBOX_SINGLE_UPLOAD_MAX_BYTES) {
+        return this._uploadLargeBytesWithMode(relativePath, bytes, mode);
+      }
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
       const response = await this._content('files/upload', {
@@ -3733,6 +3959,47 @@
         type: _mimeFromPath(normalized),
         lastModified: _jsonDate(meta.server_modified || meta.client_modified || ''),
       }), meta);
+      this._forgetListCache(_dirname(normalized));
+      return meta;
+    }
+
+    /** 150MBを超えるファイルを分割して送る（動画の添付などで使う）。 */
+    async _uploadLargeBytesWithMode(relativePath, bytes, mode) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const octet = { 'Content-Type': 'application/octet-stream' };
+      const total = bytes.length;
+      const first = bytes.subarray(0, Math.min(DROPBOX_UPLOAD_CHUNK_BYTES, total));
+      const started = await this._content('files/upload_session/start', { close: false }, {
+        method: 'POST', headers: octet, body: first,
+      }, location);
+      const session = await started.json();
+      let offset = first.length;
+      while (offset < total) {
+        const end = Math.min(offset + DROPBOX_UPLOAD_CHUNK_BYTES, total);
+        await this._content('files/upload_session/append_v2', {
+          cursor: { session_id: session.session_id, offset },
+          close: false,
+        }, {
+          method: 'POST', headers: octet, body: bytes.subarray(offset, end),
+        }, location);
+        offset = end;
+      }
+      const finished = await this._content('files/upload_session/finish', {
+        cursor: { session_id: session.session_id, offset: total },
+        commit: {
+          path: location.path,
+          mode,
+          autorename: false,
+          mute: false,
+          strict_conflict: true,
+        },
+      }, {
+        method: 'POST', headers: octet, body: new Uint8Array(0),
+      }, location);
+      const meta = await finished.json();
+      this._rememberMeta(normalized, meta);
+      // 大きいファイルは内容をメモリへ抱えない（_rememberDownloadedFile の上限判定にも掛かる）
       this._forgetListCache(_dirname(normalized));
       return meta;
     }
@@ -4111,8 +4378,16 @@
 
   const _providers = {
     dropbox: new DropboxStorageProvider(),
+    browser: null,
     legacy: null,
   };
+
+  function _getBrowserProvider() {
+    const ctor = window.MeldexStorageAdapter?.BrowserStorageProvider;
+    if (typeof ctor !== 'function') throw new Error('ブラウザ内ストレージが未読み込みです');
+    if (!_providers.browser || !(_providers.browser instanceof ctor)) _providers.browser = new ctor();
+    return _providers.browser;
+  }
 
   function _getLegacyProvider() {
     const ctor = window.MeldexStorageAdapter?.LocalFsStorageProvider;
@@ -4122,11 +4397,14 @@
   }
 
   function _activeProvider() {
-    return _runtime()?.isDropboxMode?.() ? _providers.dropbox : _getLegacyProvider();
+    if (_runtime()?.isDropboxMode?.()) return _providers.dropbox;
+    if (_runtime()?.isBrowserMode?.()) return _getBrowserProvider();
+    return _getLegacyProvider();
   }
 
   window.MeldexStorageAdapter = {
     DropboxStorageProvider,
+    BrowserStorageProvider: null,
     LocalFsStorageProvider: null,
     isSupported() {
       return _activeProvider().constructor.isSupported();
@@ -6690,9 +6968,12 @@
   }
 
   async function _managementAdapter(provider, kind) {
+    if (_runtime()?.isBrowserMode?.() && typeof provider?.getSystemStorageAdapter === 'function') {
+      return provider.getSystemStorageAdapter();
+    }
     const resolver = window.MeldexDropboxManagementRootResolver;
     if (!provider || !resolver?.resolveTypedAdapterForProvider) {
-      throw new Error('Dropboxの管理データ保存先を安全に判定できません');
+      throw new Error('管理データの保存先を安全に判定できません');
     }
     return resolver.resolveTypedAdapterForProvider(provider, kind);
   }
@@ -6728,7 +7009,7 @@
     const current = _runtime()?.getWorkspaceState?.() || {};
     _runtime()?.setWorkspaceState?.({
       ...current,
-      kind: 'dropbox',
+      kind: _runtime()?.isBrowserMode?.() ? 'browser' : 'dropbox',
       name: info.name || current.name || '',
       path: info.path || current.path || '',
       access: current.access || (info.permission === 'readonly' ? 'viewer' : 'editor'),
@@ -6917,19 +7198,19 @@
 
   async function _requirePwaProvider(mode) {
     const provider = await _pwaProvider();
-    if (!provider) throw new Error('Dropbox 共有フォルダが未接続です');
+    if (!provider) throw new Error('保存先を利用できません');
     assertCloudWriteAllowed(mode || 'read');
     const granted = await provider.ensureWorkspacePermission(mode || 'read');
     if (!granted && (mode || 'read') === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') {
       throw new Error('Dropbox 容量が95%を超えているため書き込みを停止しています。空き容量を確保してから再開してください');
     }
-    if (!granted) throw new Error((mode || 'read') === 'readwrite' ? '閲覧専用モードのため書き込めません' : 'Dropbox 共有フォルダの読み取り権限がありません');
+    if (!granted) throw new Error((mode || 'read') === 'readwrite' ? '閲覧専用モードのため書き込めません' : '保存先の読み取り権限がありません');
     return provider;
   }
 
   async function _workspaceHandle(provider) {
     const handle = provider ? await provider.restoreWorkspace() : null;
-    if (!handle) throw new Error('Dropbox 共有フォルダが未接続です');
+    if (!handle) throw new Error('保存先を利用できません');
     return handle;
   }
 
@@ -7795,7 +8076,7 @@
 
   async function _cloudCreateWorkspace(body) {
     const folder = _workspaceFolderPath(body?.folder || body?.path || '');
-    if (!folder) throw _httpError(400, 'ワークスペースにするDropboxフォルダを指定してください');
+    if (!folder) throw _httpError(400, 'ワークスペースにするフォルダを指定してください');
     let created = null;
     await _updateCloudWorkspaceStore(store => {
       if (store.workspaces.some(item => item.deleted !== true && _normalizeFolderPath(item.folder) === folder)) {
@@ -7898,14 +8179,75 @@
   async function _cloudPickWorkspaceFolder() {
     const picker = window.MeldexDropboxFolderPicker?.pickFolder || window.GBFolderPicker?.pickFolder;
     if (typeof picker === 'function') {
-      const picked = await picker({ title: 'ワークスペースにするDropboxフォルダを選択' });
+      const picked = await picker({ title: 'ワークスペースにするフォルダを選択' });
       const path = _workspaceFolderPath(window.GBFolderPicker?.toSourceRelativePath?.(picked) || picked?.path || picked?.relativePath || '');
       if (path) return { ok: true, path, name: _basename(path) || path };
     }
     return { ok: false, path: '', manual: true };
   }
 
-  async function _dropboxJsonRequest(path, opts) {
+  // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
+  // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
+  // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings']);
+
+  function _personalPreferenceKind() {
+    const contract = window.MeldexSystemStorage;
+    if (!contract) throw new Error('gb-system-storage.js が読み込まれていません');
+    return contract.SystemStorageKind.USER_PREFERENCES;
+  }
+
+  async function _personalPreferenceAdapter() {
+    if (_runtime()?.isBrowserMode?.()) {
+      const provider = await _requirePwaProvider('read');
+      return provider?.getSystemStorageAdapter?.() || null;
+    }
+    const factory = window.MeldexSystemStorageDropbox;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!factory || !resolver?.resolveAdapterForProvider) return null;
+    return resolver.resolveAdapterForProvider('dropbox', { personalOnly: true });
+  }
+
+  function _assertPersonalPreferenceName(name) {
+    const doc = String(name || '').trim();
+    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
+    return doc;
+  }
+
+  async function _readPersonalPreference(name) {
+    const doc = _assertPersonalPreferenceName(name);
+    let adapter = null;
+    try {
+      adapter = await _personalPreferenceAdapter();
+    } catch {
+      adapter = null;
+    }
+    if (!adapter) return { available: false, exists: false, payload: null, revision: null };
+    const record = await adapter.load(_personalPreferenceKind(), doc);
+    if (!record) return { available: true, exists: false, payload: null, revision: null };
+    return { available: true, exists: true, payload: record.payload, revision: record.revision };
+  }
+
+  async function _writePersonalPreference(name, body) {
+    const doc = _assertPersonalPreferenceName(name);
+    const payload = body?.payload;
+    if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    let adapter = null;
+    try {
+      adapter = await _personalPreferenceAdapter();
+    } catch {
+      adapter = null;
+    }
+    if (!adapter) return { available: false, ok: false, revision: null };
+    const options = {};
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      options.expectedRevision = body.expectedRevision || null;
+    }
+    const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
+    return { available: true, ok: true, revision: record?.revision || null };
+  }
+
+  async function _pwaJsonRequest(path, opts) {
     const method = String(opts?.method || 'GET').toUpperCase();
     const body = opts?.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : (opts?.body || {});
     const url = new URL('http://local' + String(path || ''));
@@ -7923,6 +8265,43 @@
     if (pathname === '/ui-config' && method === 'PUT') {
       _safeWriteJson(PWA_UI_CONFIG_KEY, body || {});
       return { ok: true };
+    }
+    if (pathname === '/beta/consent') {
+      const consentKey = 'meldex-beta-consent-v1';
+      if (method === 'GET') return { consent: _safeReadJson(consentKey, null) };
+      if (method === 'PUT') {
+        _safeWriteJson(consentKey, body?.consent || null);
+        return { ok: true, consent: body?.consent || null };
+      }
+      if (method === 'DELETE') {
+        try { localStorage.removeItem(consentKey); } catch {}
+        return { ok: true };
+      }
+    }
+    if (pathname === '/system-fonts' && method === 'GET') return { families: [] };
+    if (pathname === '/jobs' && method === 'GET') return { jobs: [] };
+    if (pathname === '/startup-ready' && method === 'POST') return { ok: true };
+    if (pathname === '/cli-chat/config' && method === 'GET') {
+      return { enabled: false, providers: {}, available: false };
+    }
+    if (pathname === '/settings-db/debug-report/exists' && method === 'GET') return { exists: false };
+    if (pathname === '/dropbox-link/status' && method === 'GET') {
+      return {
+        available: false,
+        detected: false,
+        activeSyncRoot: '',
+        roots: [],
+        unsharedLocalFolders: [],
+      };
+    }
+    if (pathname === '/settings-transfer/status' && method === 'GET') {
+      return {
+        user_data_dir: 'このブラウザの端末内ストレージ',
+        items: { config_file: { exists: false }, db_path: { exists: false } },
+      };
+    }
+    if (pathname === '/file-associations/status' && method === 'GET') {
+      return { ok: true, supported: false, apps: {} };
     }
     if (pathname === '/team' && method === 'GET') {
       const folder = url.searchParams.get('folder') || '';
@@ -7967,9 +8346,18 @@
     if (pathname === '/version' && method === 'GET') {
       const semver = String(window.MeldexCloudRuntimeConfig?.version?.semver || window.MeldexReleaseConfig?.fallbackSemver || '0.5.x').replace(/^v/i, '').split(/\s+/)[0] || '0.5.x';
       const betaLabel = String(window.MeldexReleaseConfig?.betaLabel || 'BETA');
-      return { version: `v${semver} ${betaLabel}`, semver, variant: 'dropbox', build: '', commit: '' };
+      const variant = _runtime()?.isBrowserMode?.() ? 'browser-local' : 'dropbox';
+      return { version: `v${semver} ${betaLabel}`, semver, variant, build: '', commit: '' };
     }
-    if (pathname === '/os-accent-color' && method === 'GET') return { color: '#569cd6' };
+    // ブラウザからはOSのアクセントカラーを読めない。以前は固定の青を返していたが、
+    // それは「OSの設定を反映した色」ではないため、デスクトップ版と見た目がずれる原因になる。
+    // 取得できないことを正直に返し、テーマ側はブラウザ標準のアクセント色へ委ねる。
+    if (pathname === '/os-accent-color' && method === 'GET') return { color: '', available: false };
+    if (pathname.startsWith('/personal-preferences/')) {
+      const name = pathname.slice('/personal-preferences/'.length);
+      if (method === 'GET') return _readPersonalPreference(name);
+      if (method === 'PUT') return _writePersonalPreference(name, body);
+    }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
       const result = await handler({ method, body, url, pathname, headers: opts?.headers });
@@ -7987,17 +8375,17 @@
       method: _requestMethod(requestOpts),
       payload: _summarizePayload(requestOpts.body),
     };
-    if (_runtime()?.isDropboxMode?.()) {
-      const localResult = await _dropboxJsonRequest(path, requestOpts);
+    if (_runtime()?.isBrowserDataMode?.()) {
+      const localResult = await _pwaJsonRequest(path, requestOpts);
       if (localResult === NOT_HANDLED) {
-        _logCompare({ ...logBase, adapter: 'dropbox-unhandled', durationMs: Math.round(performance.now() - started) });
+        _logCompare({ ...logBase, adapter: `${mode}-unhandled`, durationMs: Math.round(performance.now() - started) });
         const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
         err.status = 500;
         err.code = 'cloud_route_unwired';
         err.route = String(path || '');
         throw err;
       }
-      _logCompare({ ...logBase, adapter: 'dropbox', durationMs: Math.round(performance.now() - started) });
+      _logCompare({ ...logBase, adapter: mode, durationMs: Math.round(performance.now() - started) });
       return localResult;
     }
     const result = await _legacyJsonRequest(path, requestOpts);
@@ -8006,13 +8394,13 @@
   }
 
   function _teamAvatarUrl(name, query) {
-    if (!_runtime()?.isDropboxMode?.()) return _resource().teamAvatar(name, query);
+    if (!_runtime()?.isBrowserDataMode?.()) return _resource().teamAvatar(name, query);
     const folder = query?.folder ? _normalizeFolderPath(query.folder) : '';
     return _cachedTeamAvatar(name, folder) || _avatarFallbackUrl(name);
   }
 
   function _authAvatarUrl(name, query) {
-    if (!_runtime()?.isDropboxMode?.()) return _resource().authAvatar(name, query);
+    if (!_runtime()?.isBrowserDataMode?.()) return _resource().authAvatar(name, query);
     if (typeof getUsername === 'function' && getUsername() === name) return localStorage.getItem('meldex-avatar') || _avatarFallbackUrl(name);
     return _avatarFallbackUrl(name);
   }
@@ -8147,6 +8535,9 @@
     IMPORT_CHECKPOINTS: 'import-checkpoints',
     ASSET_RECOVERY: 'asset-recovery',
     DIAGNOSTICS: 'diagnostics',
+    // テーマなど、同じ人がどの環境で開いても同じであってほしい見た目の設定。
+    // 個人管理領域だけで使用する(共有ワークスペースへ置くと他メンバーへ漏れる)。
+    USER_PREFERENCES: 'user-preferences',
     // Phase 5(既存付随物の自動移行)専用。meldex_system_storage.py と対称。
     MIGRATION_LEDGER: 'migration-ledger',
     MIGRATION_BACKUPS: 'migration-backups',
@@ -8297,6 +8688,7 @@
     [SystemStorageKind.IMPORT_CHECKPOINTS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.ASSET_RECOVERY]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.DIAGNOSTICS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.USER_PREFERENCES]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_LEDGER]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
   });
@@ -16272,7 +16664,14 @@
   function _timestampMillis(value) {
     const text = _timestampText(value);
     if (!text) return null;
-    const ms = new Date(text).getTime();
+    // 旧デスクトップ版はオフセット無しのローカル時刻を保存していた。
+    // 実行端末のtimezoneへ委ねると、GitHub/海外端末では同じメッセージの
+    // since判定が変わるため、旧形式だけMeldexの基準時刻(JST)として固定する。
+    const hasOffset = /(Z|[+-]\d{2}:?\d{2})$/i.test(text);
+    const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text) && !hasOffset
+      ? text + '+09:00'
+      : text;
+    const ms = new Date(normalized).getTime();
     return Number.isFinite(ms) ? ms : null;
   }
 
@@ -19634,6 +20033,22 @@
   const WORKSPACE_SCAN_EXCLUDES = ['_chat/', '_calendar/', '_meldex/', '_trash/', '_versions/', '_backup/', '_meldex_pwa/', 'node_modules/'];
   const SHEET_CLOUD_STORE_FILE = '_meldex_sheet.cloud.json';
   const SHEET_CLOUD_STORE_KIND = 'meldex-cloud-sheet-store-v1';
+  // 大規模シート対策（Phase 3、恒久策）。設計・しきい値はPython側
+  // （meldex_sheet_cloud_sync.py/meldex_sheet_sqlite_store.py）と対称。
+  // app/docs/desktop-cloud-sheet-sync-phase3-plan-2026-08-08.md
+  const SHEET_CLOUD_MANIFEST_FILE = '_meldex_sheet.cloud.manifest.json';
+  const SHEET_CLOUD_MANIFEST_KIND = 'meldex-cloud-sheet-manifest-v1';
+  const SHEET_CLOUD_SHARD_KIND = 'meldex-cloud-sheet-shard-v1';
+  const SHEET_CLOUD_SHARD_FILE_PATTERN = /^_meldex_sheet\.cloud\.shard-\d+\.json$/i;
+  const SHEET_CLOUD_SHARD_MAX_ROWS = 150;
+  const SHEET_CLOUD_LARGE_ROW_THRESHOLD = 2000;
+  const SHEET_CLOUD_LARGE_SIZE_BYTES_THRESHOLD = 3 * 1024 * 1024;
+  // 互換性ミラー（独立レビューで指摘・2026-08-08追加）。デスクトップ側
+  // meldex_sheet_cloud_sync.LEGACY_MIRROR_REFRESH_INTERVAL_SECONDS と対称。
+  // マニフェスト方式を知らない旧版（更新前のデスクトップ版・更新前の
+  // クラウド版タブ）が単一JSONを直接読んだ時に「0件のシート」と誤読しない
+  // よう、単一JSONは空スタブにせず全行スナップショットとして維持する。
+  const SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
   async function _assetMutationWarnings(provider, event) {
     const tracker = window.MeldexDropboxAssetRecovery;
@@ -19889,6 +20304,93 @@
     return _joinPath(_normalizeFolderPath(dbPath), SHEET_CLOUD_STORE_FILE);
   }
 
+  function _sheetManifestPath(dbPath) {
+    return _joinPath(_normalizeFolderPath(dbPath), SHEET_CLOUD_MANIFEST_FILE);
+  }
+
+  function _sheetShardPath(dbPath, shardFileName) {
+    return _joinPath(_normalizeFolderPath(dbPath), shardFileName);
+  }
+
+  // マニフェストが「そもそも存在しない」（未分割シート、単一JSON方式として
+  // 扱ってよい）場合は null を返す。ファイルは存在するのに読めない・
+  // 壊れている場合は null で握りつぶさず例外を投げる（独立レビューで指摘:
+  // 読み側だけでなく書き込み側 `_writeSheetStore` もこの関数を通るため、
+  // ここで一元的に安全側へ倒せば両方が守られる。統一前は
+  // `_readSheetStoreMaybe` だけが独自にstatPathで確認していたため、
+  // 書き込み側は未保護の非対称な状態だった）。正常系（大多数の呼び出し）は
+  // `_readJsonSafe` だけで完結し追加のネットワーク往復は発生しない。
+  // 失敗した時だけ確認のためstatPathを呼ぶ。
+  async function _readSheetManifest(provider, dbPath) {
+    const data = await _readJsonSafe(provider, _sheetManifestPath(dbPath), null);
+    const valid = data && typeof data === 'object' && !Array.isArray(data)
+      && data.kind === SHEET_CLOUD_MANIFEST_KIND
+      && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
+    if (valid) return data;
+    if (typeof provider?.statPath === 'function') {
+      const stat = await provider.statPath(_sheetManifestPath(dbPath)).catch(() => undefined);
+      if (stat) {
+        throw new Error('シートの保管ファイル（マニフェスト）を読み取れませんでした。時間をおいてもう一度お試しください');
+      }
+    }
+    return null;
+  }
+
+  async function _readSheetShard(provider, dbPath, shardFileName) {
+    const data = await _readJsonSafe(provider, _sheetShardPath(dbPath, shardFileName), null);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (data.kind !== SHEET_CLOUD_SHARD_KIND) return null;
+    if (!data.rows || typeof data.rows !== 'object' || Array.isArray(data.rows)) return null;
+    return data;
+  }
+
+  // シャードが読めなかった場合、genuinely absent（Dropbox伝播待ち・
+  // tombstone整理後の未参照シャード等、正常に起こりうる）と「ファイルは
+  // 存在するのに読めない」（壊れている等、異常）を区別する。後者を無言で
+  // スキップして空扱いにすると、実在する行を欠落したまま一覧・取り込みが
+  // 進んでしまう（独立レビューで指摘。マニフェスト自体の存在確認と同じ
+  // 考え方をシャード1本ずつにも適用する）。失敗時だけ追加でstatPathを
+  // 呼ぶため、正常系（大多数の読み込み）の負荷は増えない。
+  async function _readShardedRawStore(provider, dbPath, manifest) {
+    const rows = {};
+    const seen = new Set();
+    for (const shardFileName of manifest.shards || []) {
+      if (typeof shardFileName !== 'string' || seen.has(shardFileName)) continue;
+      seen.add(shardFileName);
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      if (!shard) {
+        if (typeof provider?.statPath === 'function') {
+          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName)).catch(() => undefined);
+          if (stat) {
+            throw new Error(`シートの保管ファイル（シャード ${shardFileName}）を読み取れませんでした。時間をおいてもう一度お試しください`);
+          }
+        }
+        continue;
+      }
+      Object.entries(shard.rows || {}).forEach(([key, row]) => {
+        if (row && typeof row === 'object' && !Array.isArray(row)) rows[key] = row;
+      });
+    }
+    return {
+      kind: SHEET_CLOUD_STORE_KIND,
+      schema_version: Number(manifest.schema_version || 1) || 1,
+      db_path: String(manifest.db_path || ''),
+      created: String(manifest.created || ''),
+      modified: String(manifest.modified || ''),
+      rows,
+    };
+  }
+
+  // シャード本体（_meldex_sheet.cloud.shard-NNN.json）は行の生JSONを持つが、
+  // マニフェスト経由で既に統合済みの内容として扱われるため、ワークスペース
+  // 横断検索・全ファイル走査の類ではこのファイル単体を独立した「ページ」
+  // として拾ってはならない（独立レビューで発見: 拾うと生JSON片が壊れた
+  // パスの検索結果として混入する）。
+  function _isSheetCloudShardFileName(name) {
+    return SHEET_CLOUD_SHARD_FILE_PATTERN.test(String(name || ''));
+  }
+  internals._isSheetCloudShardFileName = _isSheetCloudShardFileName;
+
   function _sheetStoreFileName(value) {
     const raw = _basename(String(value || '').replace(/\\/g, '/'));
     const stem = raw.replace(/\.md$/i, '');
@@ -19926,6 +20428,19 @@
       if (!row || typeof row !== 'object' || Array.isArray(row)) return;
       const fileName = _sheetStoreFileName(row.file_name || row.path || key);
       const name = _sheetStoreEntityName(row.name || fileName);
+      // tombstone行（deleted:true）はframtmatterを持たない。デスクトップ版との
+      // 双方向同期（last-writer-wins）が updated/deleted/deletedAt を突き合わせる
+      // ため、正規化のたびに読み捨てず必ず保持する
+      // （app/docs/desktop-cloud-sheet-sync-plan-2026-08-07.md Phase 2）。
+      if (row.deleted) {
+        out.rows[fileName] = {
+          file_name: fileName,
+          deleted: true,
+          deletedAt: String(row.deletedAt || row.updated || ''),
+          updated: String(row.deletedAt || row.updated || ''),
+        };
+        return;
+      }
       const fm = row.frontmatter && typeof row.frontmatter === 'object' && !Array.isArray(row.frontmatter) ? { ...row.frontmatter } : {};
       if (!fm.type) fm.type = 'settings-entry';
       if (!fm.properties || typeof fm.properties !== 'object' || Array.isArray(fm.properties)) fm.properties = {};
@@ -19935,12 +20450,24 @@
         path: _joinPath(out.db_path, fileName),
         frontmatter: fm,
         body: String(row.body || ''),
+        updated: String(row.updated || ''),
       };
     });
     return out;
   }
 
   async function _readSheetStoreMaybe(provider, dbPath) {
+    // マニフェスト（分割方式）の存在確認・「存在するのに読めない」場合の
+    // 安全策は _readSheetManifest 側に一元化済み（読み側・書き込み側
+    // `_writeSheetStore` の両方がここを通るため）。ここを _readJsonSafe
+    // だけで済ませて「読めなければ無い扱い」にすると、移行後に残る
+    // 互換性ミラー（旧単一JSON、現在は全行スナップショットを保つが
+    // マニフェストより古い可能性がある）へ静かにフォールスルーしてしまう
+    // （物理.mdが覆い隠された既知の事故と同じ形）。
+    const manifest = await _readSheetManifest(provider, dbPath);
+    if (manifest) {
+      return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
+    }
     const storePath = _sheetStorePath(dbPath);
     const entry = await _resolveEntryHandle(provider, storePath).catch(() => null);
     if (!entry || entry.kind !== 'file') return null;
@@ -19984,10 +20511,181 @@
     }
   }
 
-  async function _writeSheetStore(provider, dbPath, store) {
+  async function _writeSheetShard(provider, dbPath, shardFileName, rows) {
+    await provider.writeJson(_sheetShardPath(dbPath, shardFileName), {
+      kind: SHEET_CLOUD_SHARD_KIND,
+      schema_version: 1,
+      rows,
+    });
+  }
+
+  async function _writeSheetManifest(provider, dbPath, manifest) {
+    const now = _nowIso();
+    const next = {
+      ...manifest,
+      kind: SHEET_CLOUD_MANIFEST_KIND,
+      schema_version: Number(manifest.schema_version || 1) || 1,
+      db_path: manifest.db_path || _normalizeFolderPath(dbPath),
+      created: manifest.created || now,
+      modified: now,
+    };
+    await provider.writeJson(_sheetManifestPath(dbPath), next);
+    return next;
+  }
+
+  function _isLargeSheetRows(rows) {
+    const count = Object.keys(rows || {}).length;
+    if (count >= SHEET_CLOUD_LARGE_ROW_THRESHOLD) return true;
+    try {
+      return JSON.stringify(rows || {}).length >= SHEET_CLOUD_LARGE_SIZE_BYTES_THRESHOLD;
+    } catch {
+      return false;
+    }
+  }
+
+  // 互換性ミラー: マニフェストを解さない旧版のためだけに、単一JSON方式と
+  // 同じ形で全行のスナップショットを書く。新版は _readSheetStoreMaybe で
+  // マニフェストが存在すればこのファイルを一切参照しない。
+  async function _writeLegacySheetStoreMirror(provider, dbPath, rows) {
+    await provider.writeJson(_sheetStorePath(dbPath), {
+      kind: SHEET_CLOUD_STORE_KIND,
+      schema_version: 1,
+      db_path: _normalizeFolderPath(dbPath),
+      modified: _nowIso(),
+      migrated_to_manifest: true,
+      rows,
+    });
+  }
+
+  async function _legacySheetStoreMirrorIsStale(provider, dbPath) {
+    if (typeof provider?.statPath !== 'function') return true;
+    const stat = await provider.statPath(_sheetStorePath(dbPath)).catch(() => null);
+    if (!stat || !stat.modifiedMs) return true;
+    return (Date.now() - stat.modifiedMs) >= SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS;
+  }
+
+  // 単一JSON方式で保持していた全行を、しきい値超過を機にマニフェスト+複数
+  // シャードへ一度だけ分割する（初回のみ発生する移行。デスクトップ版の
+  // meldex_sheet_cloud_sync._migrate_rows_to_sharded_store と対称）。
+  // 旧単一JSONは削除・空スタブ化せず、移行した瞬間の全行スナップショット
+  // のまま維持する（互換性ミラー。以後は
+  // SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS 間隔でしか更新しない。
+  // 独立レビューで指摘: 空スタブのままだと、マニフェスト方式を知らない
+  // 旧版が実データのあるシートを「0件」と誤読する）。
+  async function _migrateSheetRowsToShards(provider, dbPath, rows) {
+    const now = _nowIso();
+    const manifest = {
+      kind: SHEET_CLOUD_MANIFEST_KIND,
+      schema_version: 1,
+      db_path: _normalizeFolderPath(dbPath),
+      created: now,
+      modified: now,
+      shards: [],
+      row_shard: {},
+    };
+    const entries = Object.entries(rows || {});
+    if (!entries.length) {
+      const shardFileName = '_meldex_sheet.cloud.shard-000.json';
+      manifest.shards.push(shardFileName);
+      await _writeSheetShard(provider, dbPath, shardFileName, {});
+    } else {
+      for (let index = 0; index < entries.length; index += SHEET_CLOUD_SHARD_MAX_ROWS) {
+        const chunkEntries = entries.slice(index, index + SHEET_CLOUD_SHARD_MAX_ROWS);
+        const shardFileName = `_meldex_sheet.cloud.shard-${String(Math.floor(index / SHEET_CLOUD_SHARD_MAX_ROWS)).padStart(3, '0')}.json`;
+        manifest.shards.push(shardFileName);
+        const chunkRows = {};
+        chunkEntries.forEach(([fileName, row]) => {
+          manifest.row_shard[fileName] = shardFileName;
+          chunkRows[fileName] = row;
+        });
+        await _writeSheetShard(provider, dbPath, shardFileName, chunkRows);
+      }
+    }
+    await _writeSheetManifest(provider, dbPath, manifest);
+    await _writeLegacySheetStoreMirror(provider, dbPath, rows);
+    return manifest;
+  }
+
+  // 変更のあった行だけを、それぞれの所属シャードへ書き込む。複数の行が同じ
+  // シャードに属する場合はそのシャードを1回だけ読み書きする。
+  // `rows[fileName]` が undefined の場合（rename等で古いキーが store.rows から
+  // 消えた場合）は、tombstone化ではなく行自体をシャードから除去する。
+  async function _writeChangedRowsToShards(provider, dbPath, manifest, changedFileNames, rows) {
+    const rowShard = manifest.row_shard = manifest.row_shard || {};
+    const shards = manifest.shards = manifest.shards || [];
+    const counts = {};
+    for (const shardFileName of shards) {
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      counts[shardFileName] = shard ? Object.keys(shard.rows || {}).length : 0;
+    }
+    const upsertsByShard = {};
+    const removalsByShard = {};
+    changedFileNames.forEach((fileName) => {
+      const row = rows ? rows[fileName] : undefined;
+      const existingAssignment = rowShard[fileName];
+      const hasAssignment = !!existingAssignment && shards.includes(existingAssignment);
+      if (row === undefined) {
+        if (hasAssignment) {
+          (removalsByShard[existingAssignment] || (removalsByShard[existingAssignment] = [])).push(fileName);
+          delete rowShard[fileName];
+        }
+        return;
+      }
+      let shardFileName = hasAssignment ? existingAssignment : null;
+      if (!shardFileName) {
+        shardFileName = shards.find(name => (counts[name] || 0) < SHEET_CLOUD_SHARD_MAX_ROWS) || null;
+        if (!shardFileName) {
+          shardFileName = `_meldex_sheet.cloud.shard-${String(shards.length).padStart(3, '0')}.json`;
+          shards.push(shardFileName);
+          counts[shardFileName] = 0;
+        }
+        rowShard[fileName] = shardFileName;
+        counts[shardFileName] = (counts[shardFileName] || 0) + 1;
+      }
+      (upsertsByShard[shardFileName] || (upsertsByShard[shardFileName] = {}))[fileName] = row;
+    });
+    const touchedShards = new Set([...Object.keys(upsertsByShard), ...Object.keys(removalsByShard)]);
+    for (const shardFileName of touchedShards) {
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      const mergedRows = { ...(shard ? shard.rows : {}) };
+      (removalsByShard[shardFileName] || []).forEach((fileName) => { delete mergedRows[fileName]; });
+      Object.assign(mergedRows, upsertsByShard[shardFileName] || {});
+      await _writeSheetShard(provider, dbPath, shardFileName, mergedRows);
+    }
+    await _writeSheetManifest(provider, dbPath, manifest);
+  }
+
+  // options.changedFileNames を渡すと、その行が属するシャード（分割済みの
+  // 場合）だけを書き直す。渡さない呼び出し元（従来どおりstore.rows全体が
+  // 変更され得る前提）は、分割済みシートに対しては全体を作り直す
+  // （bulk操作向けのフォールバック。1行単位の呼び出し元は必ずヒントを渡す
+  // よう更新済み — _upsertSheetStoreEntry・削除・rename等）。
+  async function _writeSheetStore(provider, dbPath, store, options) {
     const normalized = _normalizeSheetStore(store, dbPath);
     normalized.modified = _nowIso();
     await _directoryHandle(provider, _normalizeFolderPath(dbPath), true);
+    const changedFileNames = options && Array.isArray(options.changedFileNames) ? options.changedFileNames : null;
+    const manifest = await _readSheetManifest(provider, dbPath);
+    if (manifest) {
+      if (changedFileNames) {
+        await _writeChangedRowsToShards(provider, dbPath, manifest, changedFileNames, normalized.rows);
+        // 互換性ミラー（旧単一JSON）は毎回ではなく、しばらく更新していない
+        // 時だけ全行スナップショットへ作り直す。normalized.rows は
+        // _normalizeSheetStore が呼び出し元から受け取った現時点の全行集合
+        // （呼び出し元は _sheetStoreForRead 等の分割対応読み込みを経由済み）
+        // なので、ここで追加の読み込みは不要。
+        if (await _legacySheetStoreMirrorIsStale(provider, dbPath)) {
+          await _writeLegacySheetStoreMirror(provider, dbPath, normalized.rows);
+        }
+      } else {
+        await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
+      }
+      return normalized;
+    }
+    if (_isLargeSheetRows(normalized.rows)) {
+      await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
+      return normalized;
+    }
     await provider.writeJson(_sheetStorePath(dbPath), normalized);
     return normalized;
   }
@@ -20007,7 +20705,7 @@
   async function _migrateMarkdownEntriesToSheetStore(provider, dbPath, store) {
     const base = _normalizeFolderPath(dbPath);
     let next = store || await _ensureSheetStore(provider, base);
-    let changed = false;
+    const addedFileNames = [];
     const entries = await _listDirectoryEntries(provider, base).catch(() => []);
     for (const item of entries) {
       if (item.handle.kind !== 'file' || !item.name.endsWith('.md') || item.name.startsWith('_') || item.name === _basename(base) + '.md') continue;
@@ -20021,10 +20719,14 @@
         path: filePath,
         frontmatter: { ...(parsed.frontmatter || {}) },
         body: String(parsed.body || ''),
+        // 物理.mdから今クラウドが初めて知った行として現在時刻を刻む。
+        // デスクトップ側のsqlite実体には同じfile_nameで別のupdated_utcが既に
+        // 存在し得るため、次回の突き合わせはそちらが優先されて構わない。
+        updated: _nowIso(),
       };
-      changed = true;
+      addedFileNames.push(item.name);
     }
-    if (changed) next = await _writeSheetStore(provider, base, next);
+    if (addedFileNames.length) next = await _writeSheetStore(provider, base, next, { changedFileNames: addedFileNames });
     return next;
   }
 
@@ -20043,7 +20745,10 @@
     if (!store) return null;
     const fileName = _sheetStoreFileName(path);
     const row = store.rows[fileName];
-    if (!row) return null;
+    // tombstone行（deleted:true）はfrontmatterを持たないため「無い」として扱う。
+    // ここを素通りさせると空のfrontmatterを持つ生存エントリとして読めてしまい、
+    // 直リンク経由の閲覧・編集で削除済み項目を誤って復活させてしまう。
+    if (!row || row.deleted) return null;
     return {
       dbPath,
       fileName,
@@ -20066,9 +20771,66 @@
       path: _joinPath(dbPath, fileName),
       frontmatter: fm,
       body: String(body || ''),
+      updated: _nowIso(),
     };
-    return _writeSheetStore(provider, dbPath, store);
+    return _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
   }
+
+  // クラウド版の削除は /outliner/delete という全種別共通の経路（フォルダツリー・
+  // ノート・ボード・シートすべてで共用）を通るため、シート専用の分岐をここに
+  // 閉じ込める。デスクトップ版の delete_sheet_entry_if_needed()
+  // （app/meldex_api_outliner.py）と対称の役割。呼び出し元
+  // （_deleteOutlinerPathToTrash）は物理ファイルの移動より必ず先にこれを呼び、
+  // tombstone（deleted:true）を書いてから物理を動かす。順序を逆にすると
+  // 「物理は消えたがtombstoneが無い＝デスクトップへ削除が伝わらない」という
+  // 既知の残作業（AGENT_INBOX.md 2026-08-08）と同じ状態を作ってしまう。
+  // 対象がシート保管ファイルの行でない場合（通常のノート・ボード・フォルダ等、
+  // または シート保管が未使用のフォルダ）は null を返し、呼び出し元は既存の
+  // 挙動のまま物理ファイルの削除だけを行う。
+  //
+  // 対象パスが既に `.md` で終わっている場合だけ判定する（`.md`を持たない
+  // フォルダ削除にまで拡張子を補って判定すると、たまたま同名のシート行
+  // `<フォルダ名>.md` が同じ親フォルダに存在した時、無関係な行を誤って
+  // tombstone化してしまう。フォルダにはそもそも拡張子が無いので、ここで
+  // 補完はしない）。
+  //
+  // シート保管の読み取り（`_sheetStoreForRead`）が例外を投げた場合はcatchで
+  // 握りつぶさず呼び出し元へ伝播させる。ここを握りつぶして null を返すと、
+  // 一時的なDropbox障害時に「シート保管の状態が確認できないまま物理だけ
+  // 消す」という、この関数が解消しようとしている元のバグをそのまま
+  // 再現してしまう（デスクトップ版の delete_sheet_entry_if_needed が
+  // strict=True で例外を上位へ投げるのと対称）。
+  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath) {
+    const path = _normalizeFolderPath(rawPath || '');
+    if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
+    const dbPath = _dirname(path);
+    if (_isProductionManagementSheetMetadataPath(dbPath)) return null;
+    const store = await _sheetStoreForRead(provider, dbPath);
+    if (!store) return null;
+    const fileName = _sheetStoreFileName(path);
+    const existing = store.rows[fileName];
+    if (!existing || existing.deleted) return null;
+    const previousRow = { ...existing };
+    const now = _nowIso();
+    store.rows[fileName] = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
+    return { ok: true, deleted_id: fileName, dbPath, fileName, previousRow };
+  }
+  internals._deleteSheetStoreEntryIfNeeded = _deleteSheetStoreEntryIfNeeded;
+
+  // _deleteSheetStoreEntryIfNeeded が書いたtombstoneを、その直後の物理ファイル
+  // 移動が失敗した時だけ元に戻す（デスクトップ側のロールバック
+  // sync_sheet_entry_if_needed(strict=True) と対称）。これが無いと、移動失敗時に
+  // 「シート上は削除済み表示・物理ファイルは元の場所に残ったまま」という
+  // 中途半端な状態が残る。
+  async function _restoreSheetStoreEntryAfterFailedDelete(provider, dbPath, fileName, previousRow) {
+    if (!dbPath || !fileName || !previousRow) return;
+    const store = await _ensureSheetStore(provider, dbPath).catch(() => null);
+    if (!store) return;
+    store.rows[fileName] = { ...previousRow, updated: _nowIso() };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] }).catch(() => {});
+  }
+  internals._restoreSheetStoreEntryAfterFailedDelete = _restoreSheetStoreEntryAfterFailedDelete;
 
   async function _uniqueSheetEntryStem(provider, dbPath, name) {
     const base = _safeFileStem(name, '無題');
@@ -20125,12 +20887,15 @@
       Object.keys(pivotRow).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
       entities[entityName] = pivotRow;
     });
-    return {
+    const result = {
       entities,
       properties: [...properties].sort((a, b) => a.localeCompare(b, 'ja')),
       new_format: true,
       cloud_sheet_store: true,
     };
+    const attachmentFolder = await _attachmentFolderForSheet(provider, base);
+    if (attachmentFolder) result.attachment_folder = attachmentFolder;
+    return result;
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
@@ -20161,6 +20926,22 @@
       if (rows.length) entity[propName] = rows;
     });
     return entity;
+  }
+
+  // 添付フォルダはシートの行ではないが、フォルダツリーからは実フォルダとして開けるようにする
+  // （デスクトップ版 registered_attachment_folder_name と同じく、記録がある名前だけを対象にする）。
+  async function _attachmentFolderForSheet(provider, folderPath) {
+    const attachments = window.MeldexSheetAttachments;
+    if (!attachments) return '';
+    try {
+      const note = await _folderFrontmatter(provider, folderPath);
+      const name = attachments.attachmentFolderNameFromFrontmatter(note?.frontmatter);
+      if (!name) return '';
+      const entry = await _resolveEntryHandle(provider, _joinPath(folderPath, name)).catch(() => null);
+      return entry?.kind === 'directory' ? name : '';
+    } catch (_) {
+      return '';
+    }
   }
 
   async function _readPivot(provider, dbPath, statusFilter) {
@@ -20206,12 +20987,15 @@
         entities[item.name.replace(/\.md$/i, '')] = row;
       }
     }
-    return {
+    const result = {
       entities,
       properties: [...properties].sort((a, b) => a.localeCompare(b, 'ja')),
       new_format: true,
       calendar_db: kind === 'calendar-db',
     };
+    const attachmentFolder = await _attachmentFolderForSheet(provider, base);
+    if (attachmentFolder) result.attachment_folder = attachmentFolder;
+    return result;
   }
 
   async function _listDatabases(provider) {
@@ -20544,15 +21328,20 @@
       if (dest !== stored.path && await _pathExists(provider, dest)) throw new Error(`既に存在: ${newName}`);
       const store = await _ensureSheetStore(provider, stored.dbPath);
       if (store.rows[destName] && destName !== stored.fileName) throw new Error(`既に存在: ${newName}`);
-      delete store.rows[stored.fileName];
+      const renamedFrom = stored.fileName;
+      delete store.rows[renamedFrom];
       store.rows[destName] = {
         file_name: destName,
         name: _sheetStoreEntityName(destName),
         path: dest,
         frontmatter: { ...(stored.frontmatter || {}), modified: _nowIso() },
         body: stored.body || '',
+        updated: _nowIso(),
       };
-      await _writeSheetStore(provider, stored.dbPath, store);
+      // renamedFrom は store.rows から削除済みなので undefined として渡り、
+      // シャード方式では tombstone 化ではなく行そのものを除去する
+      // （_writeChangedRowsToShards）。
+      await _writeSheetStore(provider, stored.dbPath, store, { changedFileNames: [renamedFrom, destName] });
       const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
       if (physical?.kind === 'file') {
         await _requireUnlocked(provider, stored.path, { action: 'rename-entity-source' });
@@ -20938,7 +21727,7 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage', 'computed_props',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props', 'attachment_folder',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });
@@ -22384,11 +23173,30 @@
     await _iterateWorkspaceFiles(provider, async (path) => {
       const normalized = _normalizeFolderPath(path);
       if (_isWorkspaceScanExcluded(normalized)) return;
-      if (_basename(normalized) === SHEET_CLOUD_STORE_FILE) {
-        const store = _normalizeSheetStore(await _readJsonSafe(provider, normalized, null), _dirname(normalized));
-        searchSheetStoreOnce(_dirname(normalized), store);
+      const baseName = _basename(normalized);
+      // 大規模シート対策（Phase 3）で単一JSON→マニフェスト+複数シャードへ
+      // 分割されたシートは、しきい値超過を境に SHEET_CLOUD_STORE_FILE
+      // （_meldex_sheet.cloud.json）が行を持たないスタブへ置き換わる。
+      // ここを従来どおり素通しで検索すると分割済みシートが検索から
+      // 消え、代わりに下のシャード本体が生JSONの「ページ」として
+      // 誤ってヒットする（独立レビューで発見）。マニフェスト・スタブの
+      // どちらを踏んでも _readSheetStoreMaybe が透過的に統合済みの行を
+      // 返すので、対象dbPathにつき1回だけシート検索へ回す。シャード本体
+      // ファイルはここでは何もしない（マニフェスト経由で既に検索済みに
+      // なる。生JSONとして個別にヒットさせない）。
+      if (baseName === SHEET_CLOUD_STORE_FILE || baseName === SHEET_CLOUD_MANIFEST_FILE) {
+        // 分割済みシートは単一JSON（互換性ミラー）とマニフェストの両方が
+        // 同じフォルダに存在するため、先に読んでしまうとどちらを先に踏むかで
+        // 毎回2回分（全シャード分）読むことになる。dedup判定を読み込みより
+        // 先に行い、既に検索済みのdbPathなら読まずに抜ける（独立レビューで
+        // 指摘・性能上の指摘であり正しさには影響しないが、Phase 3が対象と
+        // する大規模シートでの無駄な二重読み込みを避ける）。
+        if (searchedSheetStores.has(_normalizeFolderPath(_dirname(normalized)))) return;
+        const store = await _readSheetStoreMaybe(provider, _dirname(normalized)).catch(() => null);
+        if (store) searchSheetStoreOnce(_dirname(normalized), store);
         return;
       }
+      if (_isSheetCloudShardFileName(baseName)) return;
       const lower = normalized.toLowerCase();
       if (![...SEARCH_TEXT_EXTS].some(ext => lower.endsWith(ext))) return;
       if (lower.endsWith('.md')) {
@@ -22408,6 +23216,139 @@
       } catch {}
     }, root);
     return { results, total: results.reduce((sum, item) => sum + (item.matches?.length || 0), 0) };
+  }
+
+  const CLOUD_UNIFIED_SEARCH_SCOPES = new Set(['name', 'content', 'clip', 'tags', 'memo']);
+
+  function _cloudUnifiedSearchType(path, fallback) {
+    if (fallback) return fallback;
+    const lower = String(path || '').toLowerCase();
+    if (/\.(?:png|jpe?g|gif|webp|bmp|tiff?)$/.test(lower)) return 'image';
+    if (/\.(?:mel-scenario|scriptnote\.json|scenario\.json)$/.test(lower)) return 'scriptnote';
+    if (/\.(?:mel-board|board\.md)$/.test(lower)) return 'board';
+    return 'page';
+  }
+
+  function _cloudUnifiedPathMatches(path, root) {
+    const normalized = _normalizeFolderPath(path).toLowerCase();
+    const prefix = _normalizeFolderPath(root).toLowerCase();
+    return !prefix || normalized === prefix || normalized.startsWith(prefix + '/');
+  }
+
+  function _cloudUnifiedAdd(merged, sourceCounts, row, source) {
+    const path = _normalizeFolderPath(row?.path || '');
+    if (!path) return;
+    const key = path.toLowerCase();
+    let current = merged.get(key);
+    if (!current) {
+      current = {
+        path,
+        name: String(row?.name || _basename(path)),
+        type: _cloudUnifiedSearchType(path, row?.type),
+        asset_id: String(row?.asset_id || ''),
+        portable_uid: String(row?.portable_uid || ''),
+        score: Number.isFinite(Number(row?.score)) ? Number(row.score) : null,
+        matches: [],
+        source,
+        sources: [],
+      };
+      merged.set(key, current);
+    }
+    if (!current.sources.includes(source)) current.sources.push(source);
+    if (Array.isArray(row?.matches)) current.matches.push(...row.matches);
+    if (Number.isFinite(Number(row?.score))) {
+      current.score = current.score == null ? Number(row.score) : Math.max(current.score, Number(row.score));
+    }
+    sourceCounts[source] = (sourceCounts[source] || 0) + 1;
+  }
+
+  async function _cloudUnifiedSearch(provider, url) {
+    const query = String(url.searchParams.get('q') || '').trim();
+    const requested = String(url.searchParams.get('scopes') || '')
+      .split(',').map(value => value.trim().toLowerCase()).filter(value => CLOUD_UNIFIED_SEARCH_SCOPES.has(value));
+    const scopes = requested.length ? [...new Set(requested)] : ['name', 'content'];
+    const root = _normalizeFolderPath(url.searchParams.get('path') || '');
+    const parsedLimit = Number(url.searchParams.get('limit') || 50);
+    const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(100, Math.floor(parsedLimit))) : 50;
+    if (!query) return { results: [], total: 0, limit, scopes, source_counts: {}, unavailable: [], partial: false };
+
+    const needle = query.toLowerCase();
+    const merged = new Map();
+    const sourceCounts = {};
+    const unavailable = [];
+
+    for (const source of scopes) {
+      try {
+        if (source === 'clip') {
+          // CLIPのテキスト埋め込み生成にはデスクトップ側のローカルモデルが必要。
+          // Cloud静的版で見せかけの文字列検索へ落とさず、部分結果として明示する。
+          unavailable.push({ source, message: '画像の内容検索はデスクトップ版のCLIPモデルで利用できます' });
+          sourceCounts[source] = 0;
+          continue;
+        }
+        if (source === 'name') {
+          const index = await _globalIndex(provider);
+          (index.files || []).forEach((item) => {
+            const name = String(item?.name || _basename(item?.path || ''));
+            if (!name.toLowerCase().includes(needle) || !_cloudUnifiedPathMatches(item?.path, root)) return;
+            _cloudUnifiedAdd(merged, sourceCounts, {
+              ...item,
+              matches: [{ line: 1, field: '名前', text: name, col: Math.max(0, name.toLowerCase().indexOf(needle)) }],
+            }, source);
+          });
+          continue;
+        }
+        if (source === 'content') {
+          const searchUrl = new URL(url.toString());
+          searchUrl.pathname = '/search';
+          searchUrl.search = '';
+          searchUrl.searchParams.set('q', query);
+          if (root) searchUrl.searchParams.set('path', root);
+          const payload = await _cloudSearch(provider, searchUrl);
+          (payload.results || []).forEach(row => _cloudUnifiedAdd(merged, sourceCounts, row, source));
+          continue;
+        }
+        if (source === 'tags') {
+          const payload = await window.MeldexDataAccess.requestJson(
+            '/global-tags/search?tag=' + encodeURIComponent(query),
+            { method: 'GET' },
+          );
+          (payload?.results || []).forEach((row) => {
+            if (!_cloudUnifiedPathMatches(row?.path, root)) return;
+            const text = (row.tags || []).map(tag => tag?.name || tag?.label || '').filter(Boolean).join(', ');
+            _cloudUnifiedAdd(merged, sourceCounts, {
+              ...row,
+              matches: [{ line: 1, field: 'タグ', text: text || query, col: 0 }],
+            }, source);
+          });
+          continue;
+        }
+        const rows = await window.MeldexDataAccess.requestJson('/annotations?limit=0', { method: 'GET' });
+        (Array.isArray(rows) ? rows : []).forEach((row) => {
+          const path = _normalizeFolderPath(row?.target_path || '');
+          if (!path || !_cloudUnifiedPathMatches(path, root)) return;
+          const text = [row?.body, row?.text, row?.data].filter(Boolean).join('\n');
+          const col = text.toLowerCase().indexOf(needle);
+          if (col < 0) return;
+          _cloudUnifiedAdd(merged, sourceCounts, {
+            path,
+            name: _basename(path),
+            matches: [{ line: 1, field: 'メモ', text: text.slice(0, 200), col }],
+          }, source);
+        });
+      } catch (error) {
+        sourceCounts[source] = sourceCounts[source] || 0;
+        unavailable.push({ source, message: String(error?.userMessage || error?.message || error) });
+      }
+    }
+
+    const results = [...merged.values()];
+    results.sort((a, b) => (Number(b.score ?? -1) - Number(a.score ?? -1))
+      || String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
+    return {
+      results: results.slice(0, limit), total: results.length, limit, scopes,
+      source_counts: sourceCounts, unavailable, partial: unavailable.length > 0,
+    };
   }
 
   function _replaceStringValue(value, pattern, replacement, state) {
@@ -22513,7 +23454,8 @@
     const base = _normalizeFolderPath(dbPath);
     const store = await _sheetStoreForRead(provider, base).catch(() => null);
     if (store) {
-      return Object.values(store.rows || {}).map(row => ({
+      // tombstone行（deleted:true）は削除済みのため、リンク辞書候補から除く。
+      return Object.values(store.rows || {}).filter(row => !row?.deleted).map(row => ({
         name: _sheetStoreEntityName(row?.name || row?.file_name || row?.path),
         path: row?.path || _joinPath(base, _sheetStoreFileName(row?.name || row?.file_name)),
         properties: row?.frontmatter?.properties || {},
@@ -22584,6 +23526,28 @@
     }
     entries.sort((a, b) => b.text.length - a.text.length);
     return { entries };
+  }
+
+  async function _cloudRubyReading(provider, url) {
+    const query = String(url.searchParams.get('text') || '').trim();
+    if (!query) return { ruby: null, candidates: [] };
+    const work = url.searchParams.get('work') || '';
+    const dictUrl = new URL('http://x/link-dict');
+    if (work) dictUrl.searchParams.set('work', work);
+    const dict = await _cloudLinkDict(provider, dictUrl).catch(() => ({ entries: [] }));
+    const folded = query.toLowerCase();
+    const exact = [];
+    const loose = [];
+    (dict.entries || []).forEach((entry) => {
+      const text = String(entry.text || '').trim();
+      const ruby = String(entry.ruby || '').trim();
+      if (!text || !ruby) return;
+      const candidate = { text, ruby, path: entry.path || '' };
+      if (text === query) exact.push(candidate);
+      else if (text.toLowerCase() === folded) loose.push(candidate);
+    });
+    const candidates = exact.concat(loose);
+    return { ruby: candidates.length ? candidates[0].ruby : null, candidates };
   }
 
   async function _handleCalendar(provider, method, body, url, pathname) {
@@ -22769,9 +23733,13 @@
     if (pathname === '/db-property/rename' && method === 'PUT') return _renameDbProperty(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/smart-db' && method === 'GET') return _smartDb(await _requirePwaProvider('read'), url);
     if (pathname === '/global-index' && method === 'GET') return _globalIndex(await _requirePwaProvider('read'));
+    if (pathname === '/search-unified' && method === 'GET') return _cloudUnifiedSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/search' && method === 'GET') return _cloudSearch(await _requirePwaProvider('read'), url);
     if (pathname === '/replace' && method === 'PUT') return _cloudReplace(await _requirePwaProvider('readwrite'), body || {});
     if (pathname === '/link-dict' && method === 'GET') return _cloudLinkDict(await _requirePwaProvider('read'), url);
+    // ルビの読み取得。デスクトップ版の /api/ruby と同じく、リンク辞書が集めた
+    // 「ふりがな」系プロパティから引く（外部の日本語解析は使わない）。
+    if (pathname === '/ruby' && method === 'GET') return _cloudRubyReading(await _requirePwaProvider('read'), url);
 
     if (pathname === '/version/read-db' && method === 'GET') {
       return _readDbVersionSnapshot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('version') || '');
@@ -23488,6 +24456,12 @@
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     _rejectProductionStructureMutation(targetPath, '削除');
+    // シート保管ファイル（_meldex_sheet.cloud.json）の行を、物理ファイルを動かす前に
+    // 必ず確定させる。この行が「物理.mdを持たない仮想エントリ（sqlite専用取り込み
+    // 由来）はクラウド版から削除できない」「物理.mdありエントリのゴミ箱移動が
+    // シート表示に反映されない」という既知の残作業（AGENT_INBOX.md 2026-08-08、
+    // app/docs/desktop-cloud-sheet-sync-plan-2026-08-07.md）を解消する。
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
     const source = await _resolveEntryHandle(provider, targetPath);
     if (!source) return { ok: true };
     const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
@@ -23530,6 +24504,11 @@
         await _moveEntry(provider, csvSidecarTrashPath, csvSidecarPath).catch(() => {});
       }
       await provider.deletePath(metaPath).catch(() => {});
+      if (sheetTombstone) {
+        await internals._restoreSheetStoreEntryAfterFailedDelete?.(
+          provider, sheetTombstone.dbPath, sheetTombstone.fileName, sheetTombstone.previousRow
+        );
+      }
       throw error;
     }
     const warnings = [];
@@ -24986,7 +25965,6 @@ async function _undeleteFileVersion(provider, path, token) {
       }
       return items;
     }
-
     if (pathname === '/check-type' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -25402,7 +26380,8 @@ async function _undeleteFileVersion(provider, path, token) {
       const dataUrl = String(body?.data || '');
       if (!dataUrl) throw new Error('data は必須です');
       const ts = _versionTimestamp();
-      const targetPath = _joinPath('_screenshots', `screenshot_${ts}.png`);
+      const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
       await _writeBytes(provider, targetPath, _decodeUploadData(dataUrl));
       return { ok: true, path: targetPath };
     }
@@ -25837,7 +26816,10 @@ async function _undeleteFileVersion(provider, path, token) {
         ..._resultWarnings(warnings),
       };
     }
-
+/* gb-data-access-dropbox-fileops-trash-routes.js
+ * Dropbox static runtime: trash listing, restore, permanent delete, empty,
+ * and the terminal capability fallbacks. Continues the shared fileops IIFE.
+ */
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];
@@ -27018,7 +28000,6 @@ async function _undeleteFileVersion(provider, path, token) {
 /* Dropbox-static routes for the unified Meldex tag dictionary. */
 (function () {
   'use strict';
-
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   if (!internals || !Array.isArray(handlers)) return;
@@ -27045,7 +28026,6 @@ async function _undeleteFileVersion(provider, path, token) {
   if (!tagSafety) {
     throw new Error('gb-data-access-dropbox-tag-safety.js を先に読み込んでください');
   }
-
   const {
     NOT_HANDLED,
     _normalizeFolderPath,
@@ -27056,7 +28036,6 @@ async function _undeleteFileVersion(provider, path, token) {
     _listDirectoryEntries,
     _requireUnlockedPath,
   } = internals;
-
   function managedDocumentId(path) {
     const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
     let hash = 0x811c9dc5;
@@ -27213,7 +28192,6 @@ async function _undeleteFileVersion(provider, path, token) {
     sortIndex,
     stringList,
   } = catalogNormalizer;
-
   class AssignmentRollbackMarkerWriteError extends Error {
     constructor(message, recoveryPath, cause) {
       super(message);
@@ -27222,7 +28200,6 @@ async function _undeleteFileVersion(provider, path, token) {
       this.cause = cause;
     }
   }
-
   function catalogResponse(catalog) {
     const normalized = normalizeCatalog(catalog);
     const presetNames = [...new Set(normalized.tags.flatMap(tag => tag.presets || [DEFAULT_PRESET]))]
@@ -27243,7 +28220,6 @@ async function _undeleteFileVersion(provider, path, token) {
       recovery_path: normalized.recovery_path,
     };
   }
-
   async function pruneCatalogRecovery(provider) {
     await tagSafety.pruneRecoveryFiles(
       managedProvider(provider),
@@ -27253,7 +28229,6 @@ async function _undeleteFileVersion(provider, path, token) {
       12,
     );
   }
-
   async function readCatalog(provider) {
     const payload = await readManagedJson(provider, CATALOG_FILE, null);
     const catalog = normalizeCatalog(payload || { version: 1, tags: [], groups: [] });
@@ -27284,7 +28259,6 @@ async function _undeleteFileVersion(provider, path, token) {
     }
     return catalog;
   }
-
   async function findPendingAssignmentRollback(provider) {
     let entries;
     try {
@@ -27310,11 +28284,9 @@ async function _undeleteFileVersion(provider, path, token) {
     }
     return null;
   }
-
   function reverseCatalogPublish(current, before, published) {
     return tagSafety.reverseCatalogPublish(current, before, published, normalizeCatalog, nowIso);
   }
-
   async function writeCatalogRollbackRecovery(provider, before, published, current) {
     const path = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-rollback.json`;
     const payload = {
@@ -30370,6 +31342,209 @@ async function _undeleteFileVersion(provider, path, token) {
 
 ;
 
+/* === gb-sheet-attachments.js === */
+;
+/* gb-sheet-attachments.js:
+   シート添付ファイル（新方式）の命名・形式判定の共通規則。
+   デスクトップ版はサーバー側（meldex_sheet_attachments.py）が同じ規則で処理する。
+   クラウド版はサーバーを持たないため、この規則をブラウザ側で適用する。
+   **両者の規則がずれると、同じファイルを貼っても端末ごとに保存名が変わる**ので、
+   片方を変えたらもう片方も必ず合わせること。 */
+(function (global) {
+  'use strict';
+
+  // シートフォルダ内に作る添付フォルダの既定名（利用者に見える名前）
+  const ATTACHMENT_FOLDER_NAME = '添付ファイル';
+  // シートのフォルダノートへ記録するフィールド名。記録があるフォルダだけを
+  // 行（エントリ）の一覧から除外する。
+  const ATTACHMENT_FOLDER_FIELD = 'attachment_folder';
+
+  const IMAGE_EXTS = ['png', 'jpg', 'gif', 'webp'];
+  const VIDEO_EXTS = ['mp4', 'webm', 'mov'];
+  const DOCUMENT_EXTS = ['pdf'];
+
+  const KIND_BY_EXT = {};
+  IMAGE_EXTS.forEach(ext => { KIND_BY_EXT[ext] = 'image'; });
+  VIDEO_EXTS.forEach(ext => { KIND_BY_EXT[ext] = 'video'; });
+  DOCUMENT_EXTS.forEach(ext => { KIND_BY_EXT[ext] = 'pdf'; });
+
+  const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
+  const CONTROL_CHARS = /[\x00-\x1f\x7f]/g;
+  const RESERVED_STEMS = new Set(['CON', 'PRN', 'AUX', 'NUL']
+    .concat(Array.from({ length: 9 }, (_, i) => 'COM' + (i + 1)))
+    .concat(Array.from({ length: 9 }, (_, i) => 'LPT' + (i + 1))));
+  const MAX_STEM_LENGTH = 80;
+  const MAX_DUPLICATE_SUFFIX = 999;
+
+  class AttachmentError extends Error {}
+
+  function basename(rawName) {
+    return String(rawName || '').replace(/\\/g, '/').split('/').pop() || '';
+  }
+
+  // pathlib と同じ扱いにするため、先頭ドットは拡張子とみなさない
+  function splitExtension(rawName) {
+    const name = basename(rawName);
+    const dot = name.lastIndexOf('.');
+    if (dot <= 0) return [name, ''];
+    return [name.slice(0, dot), name.slice(dot + 1)];
+  }
+
+  function normalizeExt(ext) {
+    const normalized = String(ext || '').trim().toLowerCase().replace(/^\./, '');
+    if (normalized === 'jpeg') return 'jpg';
+    if (normalized === 'qt') return 'mov';
+    return normalized;
+  }
+
+  function mediaKindForExt(ext) {
+    return KIND_BY_EXT[normalizeExt(ext)] || 'file';
+  }
+
+  function _contentTypeMatches(contentType, ext) {
+    const type = String(contentType || '').toLowerCase();
+    if (ext === 'jpg') return type.includes('jpeg') || type.includes('jpg');
+    if (ext === 'mov') return type.includes('quicktime') || type.includes('mov');
+    if (ext === 'pdf') return type.includes('pdf');
+    return type.includes(ext);
+  }
+
+  function _startsWith(bytes, signature, offset) {
+    const start = offset || 0;
+    if (bytes.length < start + signature.length) return false;
+    for (let i = 0; i < signature.length; i++) {
+      if (bytes[start + i] !== signature[i]) return false;
+    }
+    return true;
+  }
+
+  /** 中身（マジックナンバー）から拡張子を決める。名前の拡張子と食い違えば拒否する。 */
+  function detectContentExt(bytes, filename, contentType) {
+    let detected = '';
+    if (_startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) detected = 'png';
+    else if (_startsWith(bytes, [0xff, 0xd8, 0xff])) detected = 'jpg';
+    else if (_startsWith(bytes, [0x47, 0x49, 0x46, 0x38])) detected = 'gif';
+    else if (_startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && _startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)) detected = 'webp';
+    else if (_startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) detected = 'pdf';
+    else if (_startsWith(bytes, [0x1a, 0x45, 0xdf, 0xa3])) detected = 'webm';
+    else if (_startsWith(bytes, [0x66, 0x74, 0x79, 0x70], 4)) {
+      const brand = String.fromCharCode(bytes[8] || 0, bytes[9] || 0).toLowerCase();
+      detected = brand === 'qt' ? 'mov' : 'mp4';
+    } else {
+      const head = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 512))).trimStart().toLowerCase();
+      if (head.startsWith('<svg') || (head.startsWith('<?xml') && head.includes('<svg'))) {
+        throw new AttachmentError('SVG画像はアップロードできません');
+      }
+    }
+    if (!detected) throw new AttachmentError('画像・動画・PDFファイルのみ添付できます');
+
+    const nameExt = normalizeExt(splitExtension(filename)[1]);
+    const known = Object.prototype.hasOwnProperty.call(KIND_BY_EXT, nameExt);
+    if (known && nameExt !== detected) {
+      throw new AttachmentError('ファイルの拡張子と内容が一致しません');
+    }
+    const declared = String(contentType || '').trim();
+    if (!known && declared && !_contentTypeMatches(declared, detected)) {
+      throw new AttachmentError('ファイルの種類を確認できません');
+    }
+    return detected;
+  }
+
+  /** 元のファイル名から、そのまま置ける安全な基本名（拡張子なし）を作る。 */
+  function sanitizeAttachmentStem(rawName) {
+    let stem = splitExtension(String(rawName || '').normalize('NFC'))[0];
+    stem = stem.replace(CONTROL_CHARS, '').replace(INVALID_FILENAME_CHARS, '_');
+    stem = stem.trim().replace(/^\.+|\.+$/g, '').trim();
+    if (!stem) return '';
+    if (RESERVED_STEMS.has(stem.toUpperCase())) stem = stem + '_';
+    if (stem.length > MAX_STEM_LENGTH) stem = stem.slice(0, MAX_STEM_LENGTH).trimEnd();
+    return stem;
+  }
+
+  function _pad(value, width) {
+    return String(value).padStart(width || 2, '0');
+  }
+
+  /** クリップボード貼り付けなど元の名前が無い場合の自動命名。 */
+  function fallbackAttachmentStem(kind, now) {
+    const date = now instanceof Date ? now : new Date();
+    const stamp = date.getFullYear() + '-' + _pad(date.getMonth() + 1) + '-' + _pad(date.getDate())
+      + ' ' + _pad(date.getHours()) + _pad(date.getMinutes()) + _pad(date.getSeconds());
+    const label = kind === 'video' ? '貼り付け動画' : (kind === 'pdf' ? '貼り付けPDF' : '貼り付け画像');
+    return label + ' ' + stamp;
+  }
+
+  function buildAttachmentFilename(rawName, ext, now) {
+    const normalizedExt = normalizeExt(ext);
+    const stem = sanitizeAttachmentStem(rawName) || fallbackAttachmentStem(mediaKindForExt(normalizedExt), now);
+    return stem + '.' + normalizedExt;
+  }
+
+  /**
+   * 同名衝突を避けた保存名を決める。
+   * `probe(name)` は `{exists, sameContent}` を返す関数（存在判定と内容一致判定）。
+   */
+  async function resolveAttachmentFilename(filename, probe) {
+    const [stem, ext] = splitExtension(filename);
+    const suffix = ext ? '.' + ext : '';
+    const first = await probe(filename);
+    if (!first || !first.exists) return { filename, reused: false };
+    if (first.sameContent) return { filename, reused: true };
+    for (let index = 2; index <= MAX_DUPLICATE_SUFFIX; index++) {
+      const candidate = stem + ' (' + index + ')' + suffix;
+      const found = await probe(candidate);
+      if (!found || !found.exists) return { filename: candidate, reused: false };
+      if (found.sameContent) return { filename: candidate, reused: true };
+    }
+    throw new AttachmentError('同じ名前のファイルが多すぎます。ファイル名を変えてから添付してください');
+  }
+
+  function attachmentFolderNameFromFrontmatter(frontmatter) {
+    if (!frontmatter || typeof frontmatter !== 'object') return '';
+    const raw = frontmatter[ATTACHMENT_FOLDER_FIELD];
+    if (typeof raw !== 'string') return '';
+    const name = basename(raw.trim());
+    if (!name || name === '.' || name === '..') return '';
+    return name;
+  }
+
+  function rawUrlForPath(path) {
+    return '/api/file-raw?path=' + encodeURIComponent(String(path || '').replace(/\\/g, '/'));
+  }
+
+  function thumbUrlForPath(path, size) {
+    const px = Math.max(64, Math.min(1024, parseInt(size, 10) || 256));
+    return '/api/thumbnail?path=' + encodeURIComponent(String(path || '').replace(/\\/g, '/')) + '&size=' + px;
+  }
+
+  async function sha256Hex(bytes) {
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(v => v.toString(16).padStart(2, '0')).join('');
+  }
+
+  global.MeldexSheetAttachments = {
+    ATTACHMENT_FOLDER_NAME,
+    ATTACHMENT_FOLDER_FIELD,
+    IMAGE_EXTS,
+    VIDEO_EXTS,
+    DOCUMENT_EXTS,
+    AttachmentError,
+    attachmentFolderNameFromFrontmatter,
+    buildAttachmentFilename,
+    detectContentExt,
+    fallbackAttachmentStem,
+    mediaKindForExt,
+    rawUrlForPath,
+    resolveAttachmentFilename,
+    sanitizeAttachmentStem,
+    sha256Hex,
+    splitExtension,
+    thumbUrlForPath,
+  };
+})(window);
+
+;
+
 /* === gb-cloud-fetch.js === */
 ;
 (function () {
@@ -30549,7 +31724,7 @@ async function _undeleteFileVersion(provider, path, token) {
 
   async function providerResponse(url) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    if (!provider) throw new Error('ブラウザの保存先が未初期化です');
     const relativePath = String(url.searchParams.get('path') || '').replace(/^\/+/, '');
     if (url.pathname.endsWith('/file-raw') || url.pathname.endsWith('/media/file')) {
       const file = await _downloadMediaFile(provider, relativePath);
@@ -30573,7 +31748,7 @@ async function _undeleteFileVersion(provider, path, token) {
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
         });
       } catch (error) {
-        console.warn('Dropboxファイルのサムネイルを生成できませんでした', error);
+        console.warn('保存先ファイルのサムネイルを生成できませんでした', error);
         return new Response('', { status: 404 });
       }
     }
@@ -30635,19 +31810,121 @@ async function _undeleteFileVersion(provider, path, token) {
     return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('');
   }
 
+  // 添付先シートの添付フォルダを決める（デスクトップ版 _resolve_attachment_dir と同じ規則）。
+  // フォルダノートへの記録が無ければ、あとで列設定と同じ経路（/db-metadata）で記録する。
+  async function _cloudAttachmentTarget(provider, sheetPath) {
+    const attachments = window.MeldexSheetAttachments;
+    const lite = window.MeldexCloudFrontmatterLite;
+    const base = _normalizeUploadPath(sheetPath).replace(/\/+$/, '');
+    if (!base || !attachments) return null;
+    let frontmatter = {};
+    if (lite?.readFrontmatter) {
+      const notePath = base + '/' + _basename(base) + '.md';
+      try {
+        const parsed = await lite.readFrontmatter(provider, notePath);
+        frontmatter = parsed?.frontmatter || {};
+      } catch (_) {
+        frontmatter = {};
+      }
+    }
+    const registered = attachments.attachmentFolderNameFromFrontmatter(frontmatter);
+    const folderName = registered || attachments.ATTACHMENT_FOLDER_NAME;
+    return { sheetPath: base, folderName, dir: base + '/' + folderName, registered: !!registered };
+  }
+
+  async function _registerCloudAttachmentFolder(target) {
+    if (!target || target.registered) return;
+    // 旧形式シートで添付フォルダが行として現れないよう、シート側へ名前を控える。
+    // 失敗しても添付そのものは成立するので、保存を止めない。
+    try {
+      if (typeof apiPost === 'function') {
+        await apiPost('/db-metadata?path=' + encodeURIComponent(target.sheetPath), {
+          attachment_folder: target.folderName,
+        });
+      }
+    } catch (error) {
+      console.warn('[sheet-attachment] 添付フォルダ名を控えられませんでした', error);
+    }
+  }
+
+  async function _cloudAttachmentProbe(provider, dir, hash, size) {
+    return async (candidate) => {
+      const path = dir + '/' + candidate;
+      const stat = await provider.statPath(path).catch(() => null);
+      if (!stat) return { exists: false, sameContent: false };
+      // 大きい動画で無駄なダウンロードをしないよう、まずサイズで振り分ける
+      if (Number(stat.size) !== Number(size)) return { exists: true, sameContent: false };
+      try {
+        const file = await provider.downloadAsFile(path);
+        const existing = new Uint8Array(await file.arrayBuffer());
+        const attachments = window.MeldexSheetAttachments;
+        return { exists: true, sameContent: (await attachments.sha256Hex(existing)) === hash };
+      } catch (_) {
+        return { exists: true, sameContent: false };
+      }
+    };
+  }
+
+  async function _imagePixelSize(bytes, kind) {
+    if (kind !== 'image' || typeof createImageBitmap !== 'function') return { width: null, height: null };
+    try {
+      const bitmap = await createImageBitmap(new Blob([bytes]));
+      const size = { width: bitmap.width, height: bitmap.height };
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return size;
+    } catch (_) {
+      return { width: null, height: null };
+    }
+  }
+
   async function mediaUploadResponse(body) {
     if (!(body instanceof FormData)) throw new Error('画像アップロードにはFormDataが必要です');
     const file = body.get('file');
     if (!(file instanceof File) && !(file instanceof Blob)) throw new Error('画像ファイルがありません');
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!bytes.length) throw new Error('空のファイルはアップロードできません');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.uploadBytes) throw new Error('ブラウザの保存先が未初期化です');
+
+    const attachments = window.MeldexSheetAttachments;
+    const sheetPath = String(body.get('sheet_path') || '').trim();
+    const target = sheetPath && attachments ? await _cloudAttachmentTarget(provider, sheetPath) : null;
+
+    // 添付先シートが分かる場合は、シートフォルダ内へ元のファイル名のまま保存する（新方式）
+    if (target) {
+      const ext = attachments.detectContentExt(bytes, file.name || '', file.type || '');
+      const kind = attachments.mediaKindForExt(ext);
+      const hash = await attachments.sha256Hex(bytes);
+      const desired = attachments.buildAttachmentFilename(file.name || '', ext);
+      const probe = await _cloudAttachmentProbe(provider, target.dir, hash, bytes.length);
+      const resolved = await attachments.resolveAttachmentFilename(desired, probe);
+      const path = target.dir + '/' + resolved.filename;
+      if (!resolved.reused) await provider.uploadBytes(path, bytes);
+      await _registerCloudAttachmentFolder(target);
+      const pixel = await _imagePixelSize(bytes, kind);
+      const thumbSize = parseInt(String(body.get('thumbnail_size') || '256'), 10) || 256;
+      return jsonResponse({
+        ok: true,
+        hash,
+        content_hash: hash,
+        filename: resolved.filename,
+        path,
+        src: path,
+        thumb: path,
+        url: attachments.rawUrlForPath(path),
+        thumb_url: kind === 'image' ? attachments.thumbUrlForPath(path, thumbSize) : attachments.rawUrlForPath(path),
+        kind,
+        width: pixel.width,
+        height: pixel.height,
+        size: bytes.length,
+      });
+    }
+
     const filename = _basename(file.name || 'image');
     const ext = _imageExtFromBytes(bytes, filename, file.type || '');
     const hash = await _sha256Hex(bytes);
     const shard = hash.slice(0, 2);
     const src = `_media/blobs/${shard}/${hash}.${ext}`;
-    const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider?.uploadBytes) throw new Error('Dropbox provider が未初期化です');
     await provider.uploadBytes(src, bytes);
     return jsonResponse({
       ok: true,
@@ -30724,7 +32001,7 @@ async function _undeleteFileVersion(provider, path, token) {
     if (window.MeldexRuntimeAdapter?.isServerMode?.() && isApiPath && (isSameOrigin || _isConfiguredServerApiUrl(url))) {
       return _serverFetch(input, init, url);
     }
-    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 
@@ -30823,7 +32100,7 @@ async function _undeleteFileVersion(provider, path, token) {
   }
 
   function _normalizeLocalPath(path) {
-    return _normalizePath(path, { preserveAbsolute: !_runtime()?.isDropboxMode?.() });
+    return _normalizePath(path, { preserveAbsolute: !_runtime()?.isBrowserDataMode?.() });
   }
 
   function _isAppRelativeUrl(raw) {
@@ -30992,7 +32269,7 @@ async function _undeleteFileVersion(provider, path, token) {
     const normalized = _extractRawPath(direct);
     if (!normalized) return { path: '', url: direct };
     if (_runtime()?.isServerMode?.()) return _serverRawUrl(normalized, opts);
-    if (!_runtime()?.isDropboxMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
+    if (!_runtime()?.isBrowserDataMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const file = await _getFileWithMediaFallback(provider, normalized);
@@ -31107,7 +32384,7 @@ async function _undeleteFileVersion(provider, path, token) {
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
-      if (isThumbnail && !(_runtime()?.isDropboxMode?.() || _runtime()?.isServerMode?.())) return;
+      if (isThumbnail && !(_runtime()?.isBrowserDataMode?.() || _runtime()?.isServerMode?.())) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }
@@ -31241,6 +32518,11 @@ async function _undeleteFileVersion(provider, path, token) {
   }
 
   async function _managementAdapter(provider) {
+    if (typeof provider?.getSystemStorageAdapter === 'function') {
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+      if (!kind) throw new Error('サンプル管理データの種別を判定できません');
+      return { adapter: provider.getSystemStorageAdapter(), kind };
+    }
     const resolver = window.MeldexDropboxManagementRootResolver;
     const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
     if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
@@ -31259,8 +32541,9 @@ async function _undeleteFileVersion(provider, path, token) {
     return provider?.readJson ? provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
   }
 
-  function _isDropboxMode() {
-    return _runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+  function _isCloudStorageMode() {
+    return _runtime()?.isBrowserDataMode?.()
+      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _normalizePath(path) {
@@ -31366,7 +32649,7 @@ async function _undeleteFileVersion(provider, path, token) {
   async function prepareHome(options) {
     if (_preparePromise) return _preparePromise;
     _preparePromise = (async () => {
-      if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+      if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
       const provider = _provider();
       if (!provider) return { ok: false, skipped: 'missing-provider' };
       const opts = options || {};
@@ -31390,7 +32673,7 @@ async function _undeleteFileVersion(provider, path, token) {
   }
 
   async function status() {
-    if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
     const provider = _provider();
     if (!provider) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();
@@ -31521,7 +32804,7 @@ async function _undeleteFileVersion(provider, path, token) {
   }
 
   async function _ensureNow() {
-    if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
     const provider = _provider();
     if (!provider?.uploadBytes) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();
@@ -31601,43 +32884,14 @@ async function _undeleteFileVersion(provider, path, token) {
   if (window.MeldexSampleInstaller) return;
 
   const DECISION_KEY_PREFIX = 'meldex-sample-install-decision-v1:';
-  let _promptVisible = false;
-  let _scheduled = false;
-  let _retryTimer = 0;
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
   }
 
-  function _isDropboxMode() {
-    return !!(_runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox');
-  }
-
-  function _isBypassMode() {
-    try {
-      const params = new URLSearchParams(window.location.search || '');
-      return params.has('smoke') || params.has('e2e') || params.get('single') === '1';
-    } catch {
-      return false;
-    }
-  }
-
-  function _hasStartupDialogBlockingPrompt() {
-    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, [data-draft-recovery-dialog="1"]');
-  }
-
-  function _retryPromptAfterStartupDialog(context) {
-    if (_retryTimer) return;
-    _retryTimer = setTimeout(() => {
-      _retryTimer = 0;
-      if (_hasStartupDialogBlockingPrompt()) {
-        _retryPromptAfterStartupDialog(context);
-        return;
-      }
-      maybePromptAfterSetup(context).catch((error) => {
-        console.warn('[MeldexSampleInstaller] delayed prompt failed', error);
-      });
-    }, 700);
+  function _isCloudStorageMode() {
+    return !!(_runtime()?.isBrowserDataMode?.()
+      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || ''));
   }
 
   function _normalizePath(path) {
@@ -31645,7 +32899,7 @@ async function _undeleteFileVersion(provider, path, token) {
   }
 
   function _workspaceId(context) {
-    const mode = _isDropboxMode() ? 'dropbox' : 'desktop';
+    const mode = _isCloudStorageMode() ? 'cloud' : 'desktop';
     const state = _runtime()?.getWorkspaceState?.() || {};
     let path = _normalizePath(context?.homePath || state.path || state.homePath || window._homeFolderPath || '');
     if (!path) {
@@ -31659,14 +32913,6 @@ async function _undeleteFileVersion(provider, path, token) {
 
   function _decisionKey(context) {
     return DECISION_KEY_PREFIX + _workspaceId(context);
-  }
-
-  function _readDecision(context) {
-    try {
-      return localStorage.getItem(_decisionKey(context)) || '';
-    } catch {
-      return '';
-    }
   }
 
   function _writeDecision(context, value) {
@@ -31683,17 +32929,6 @@ async function _undeleteFileVersion(provider, path, token) {
 
   function _showStatus(message, isError) {
     if (typeof showStatus === 'function') showStatus(message, !!isError);
-  }
-
-  async function _status(context) {
-    if (_isDropboxMode()) {
-      if (window.MeldexCloudSampleSeed?.status) {
-        return await window.MeldexCloudSampleSeed.status();
-      }
-      return { ok: true, installed: false };
-    }
-    if (typeof apiFetch !== 'function') return { ok: false, installed: false };
-    return await apiFetch('/samples/status', { silentError: true }).catch(() => ({ ok: false, installed: false }));
   }
 
   function _resultMessage(result) {
@@ -31715,129 +32950,45 @@ async function _undeleteFileVersion(provider, path, token) {
 
   async function installNow(context) {
     const ctx = context || {};
-    if (_isDropboxMode()) {
-      if (!window.MeldexCloudSampleSeed?.ensure) throw new Error('クラウド版サンプルの準備機能を読み込めませんでした');
-      const result = await window.MeldexCloudSampleSeed.ensure({ background: false });
+    try {
+      if (_isCloudStorageMode()) {
+        if (!window.MeldexCloudSampleSeed?.ensure) throw new Error('クラウド版サンプルの準備機能を読み込めませんでした');
+        const result = await window.MeldexCloudSampleSeed.ensure({ background: false });
+        if (result?.ok) _writeDecision(ctx, 'installed');
+        if (typeof refreshOutliner === 'function') refreshOutliner()?.catch?.(() => {});
+        _showStatus(_resultMessage(result), !result?.ok);
+        return result;
+      }
+      if (typeof apiPost !== 'function') throw new Error('サンプル追加APIを呼び出せませんでした');
+      const downloadUrl = _sampleDownloadUrl();
+      const body = downloadUrl ? { downloadUrl } : {};
+      const result = await apiPost('/samples/install', body, { silentError: true });
       if (result?.ok) _writeDecision(ctx, 'installed');
-      if (typeof refreshOutliner === 'function') refreshOutliner()?.catch?.(() => {});
+      if (typeof loadOutliner === 'function') loadOutliner()?.catch?.(() => {});
+      if (typeof renderHomeFolderTree === 'function') {
+        try { renderHomeFolderTree(); } catch {}
+      }
       _showStatus(_resultMessage(result), !result?.ok);
       return result;
+    } catch (error) {
+      const result = { ok: false, error: error?.message || String(error) };
+      _showStatus(_resultMessage(result), true);
+      return result;
     }
-    if (typeof apiPost !== 'function') throw new Error('サンプル追加APIを呼び出せませんでした');
-    const downloadUrl = _sampleDownloadUrl();
-    const body = downloadUrl ? { downloadUrl } : {};
-    const result = await apiPost('/samples/install', body, { silentError: true });
-    if (result?.ok) _writeDecision(ctx, 'installed');
-    if (typeof loadOutliner === 'function') loadOutliner()?.catch?.(() => {});
-    if (typeof renderHomeFolderTree === 'function') {
-      try { renderHomeFolderTree(); } catch {}
-    }
-    _showStatus(_resultMessage(result), !result?.ok);
-    return result;
   }
 
-  function _modalShell() {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay meldex-sample-install-overlay';
-    overlay.dataset.sampleInstallPrompt = '1';
-    overlay.style.zIndex = '100070';
-    const icon = typeof lucide === 'function' ? lucide('archive', 18) : '';
-    overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="meldex-sample-install-title" aria-describedby="meldex-sample-install-description" style="width:min(520px, calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;">
-      <h2 id="meldex-sample-install-title" style="display:flex;align-items:center;gap:8px;margin:0 0 10px;">${icon}<span>サンプルファイルを追加しますか？</span></h2>
-      <div id="meldex-sample-install-description">
-        <p style="line-height:1.7;color:var(--fg2);margin:0 0 12px;">ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
-        <p style="line-height:1.7;color:var(--fg2);margin:0 0 16px;">あとから設定の「サンプルデータ」でも追加できます。</p>
-      </div>
-      <div class="gb-section-desc" data-sample-install-status role="status" aria-live="polite" style="min-height:1.4em;margin-bottom:12px;"></div>
-      <div class="btn-row" style="justify-content:flex-end;">
-        <button type="button" data-sample-action="later" data-e2e-id="sample-install-later">あとで</button>
-        <button type="button" class="primary" data-sample-action="install" data-e2e-id="sample-install-confirm">はい、追加する</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    if (typeof replaceIcons === 'function') replaceIcons(overlay);
-    return overlay;
-  }
-
+  // 旧版の呼び出し元との互換性のため名前だけ残す。確認ダイアログは表示せず、
+  // ユーザーが「サンプルを追加」を押した時点で直ちに追加する。
   async function openPrompt(context) {
-    const ctx = context || {};
-    if (_promptVisible || (!ctx.force && _isBypassMode())) return { ok: false, skipped: 'busy-or-bypass' };
-    if (!ctx.force && _hasStartupDialogBlockingPrompt()) {
-      _retryPromptAfterStartupDialog(ctx);
-      return { ok: false, skipped: 'blocked-dialog' };
-    }
-    _promptVisible = true;
-    return new Promise((resolve) => {
-      const overlay = _modalShell();
-      const status = overlay.querySelector('[data-sample-install-status]');
-      const installButton = overlay.querySelector('[data-sample-action="install"]');
-      const laterButton = overlay.querySelector('[data-sample-action="later"]');
-      const decline = () => {
-        _writeDecision(ctx, 'declined');
-        close({ ok: true, declined: true });
-      };
-      const onKeydown = (ev) => {
-        if (ev.key !== 'Escape' || installButton.disabled) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        decline();
-      };
-      const close = (result) => {
-        _promptVisible = false;
-        document.removeEventListener('keydown', onKeydown, true);
-        overlay.remove();
-        resolve(result || { ok: true });
-      };
-      document.addEventListener('keydown', onKeydown, true);
-      laterButton.addEventListener('click', decline);
-      installButton.addEventListener('click', async () => {
-        installButton.disabled = true;
-        laterButton.disabled = true;
-        status.textContent = 'サンプルファイルを追加しています...';
-        try {
-          const result = await installNow(ctx);
-          status.textContent = _resultMessage(result);
-          if (result?.ok) {
-            setTimeout(() => close(result), 700);
-            return;
-          }
-          installButton.disabled = false;
-          laterButton.disabled = false;
-          _showStatus(status.textContent, true);
-        } catch (error) {
-          status.textContent = error?.message || String(error);
-          installButton.disabled = false;
-          laterButton.disabled = false;
-          _showStatus(status.textContent, true);
-        }
-      });
-      installButton.focus();
-    });
+    return installNow(context || {});
   }
 
   async function maybePromptAfterSetup(context) {
-    const ctx = context || {};
-    if (_isBypassMode()) return { ok: false, skipped: 'bypass' };
-    const decision = _readDecision(ctx);
-    if (decision === 'declined' || decision === 'installed') return { ok: false, skipped: decision };
-    const status = await _status(ctx);
-    if (status?.installed) {
-      _writeDecision(ctx, 'installed');
-      return { ok: true, skipped: 'already-installed' };
-    }
-    return openPrompt(ctx);
+    return { ok: false, skipped: 'automatic-prompt-disabled' };
   }
 
   function schedulePostSetupPrompt(context) {
-    if (_scheduled || _isBypassMode()) return;
-    _scheduled = true;
-    setTimeout(() => {
-      _scheduled = false;
-      maybePromptAfterSetup(context).catch((error) => {
-        console.warn('[MeldexSampleInstaller] prompt failed', error);
-      });
-    }, 600);
+    return { ok: false, skipped: 'automatic-prompt-disabled' };
   }
 
   function resetDecision(context) {
@@ -31884,12 +33035,20 @@ async function _undeleteFileVersion(provider, path, token) {
     return _runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
   }
 
+  function _isBrowserMode() {
+    return _runtime()?.isBrowserMode?.() || document.body?.dataset?.cloudMode === 'browser';
+  }
+
   function _isServerMode() {
     return _runtime()?.isServerMode?.() || document.body?.dataset?.cloudMode === 'server';
   }
 
+  function _localDataModeForPage() {
+    return _isHostedCloudPage() || _isBrowserMode() ? 'browser' : 'legacy';
+  }
+
   function _isLocalConflictMonitorHost() {
-    return !_isDropboxMode() && !_isServerMode() && _isLocalAppHost();
+    return !_isDropboxMode() && !_isBrowserMode() && !_isServerMode() && _isLocalAppHost();
   }
 
   function _phase1FeatureLabel(type) {
@@ -32441,13 +33600,14 @@ async function _undeleteFileVersion(provider, path, token) {
 
   function _showModeChooser() {
     _hideStartupSplashForBlockingCloudUi();
+    const localMode = _localDataModeForPage();
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay meldex-cloud-mode-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
       overlay.innerHTML = `<div class="meldex-cloud-mode-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-cloud-mode-title" style="width:calc(100vw - 16px);max-width:760px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div id="meldex-cloud-mode-title" style="font-size:22px;font-weight:700;margin-bottom:10px;">Meldexの保存先を選ぶ</div>
-        <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:18px;">複数端末で同じデータを使う場合はDropboxまたはMeldex共有サーバーを選んでください。この端末だけで使う場合はローカル保存で始められます。</div>
+        <div id="meldex-cloud-mode-title" style="font-size:22px;font-weight:700;margin-bottom:10px;">保存先を変更</div>
+        <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:18px;">現在のデータは自動で移動・削除されません。別の保存先へ切り替えた後も、元の保存先へ戻せます。</div>
         <div class="meldex-cloud-choice-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
           <button id="choose-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
@@ -32458,13 +33618,14 @@ async function _undeleteFileVersion(provider, path, token) {
             <div style="font-size:12px;line-height:1.6;color:#a8c8d7;">管理者PCまたはNAS上のMeldexサーバーに接続します。SQLiteとファイルはサーバー側だけが扱います。</div>
           </button>
           <button id="choose-legacy" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存して始める</div>
-            <div style="font-size:12px;line-height:1.6;color:#969696;">この端末内のフォルダだけを使います。共有が必要になったら設定から保存先を切り替えられます。</div>
+            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
+            <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
         <div style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
-          <div><strong>迷ったら:</strong> 個人で複数端末から使うならDropbox、管理者PC/NASに集約するならMeldex共有サーバー、今すぐこの端末で試すだけならこの端末に保存を選んでください。</div>
+          <div><strong>共有したい場合:</strong> 同じDropboxを使う端末間ではDropbox、管理者PCやNASへ集約する場合はMeldex共有サーバーを選べます。</div>
         </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="choose-cancel" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">キャンセル</button></div>
       </div>`;
       document.body.appendChild(overlay);
       overlay.querySelector('#choose-dropbox').addEventListener('click', () => {
@@ -32478,9 +33639,13 @@ async function _undeleteFileVersion(provider, path, token) {
         resolve('server');
       });
       overlay.querySelector('#choose-legacy').addEventListener('click', () => {
-        _runtime().setMode('legacy');
+        _runtime().setMode(localMode);
         overlay.remove();
-        resolve('legacy');
+        resolve(localMode);
+      });
+      overlay.querySelector('#choose-cancel').addEventListener('click', () => {
+        overlay.remove();
+        resolve(null);
       });
     });
   }
@@ -32530,7 +33695,8 @@ async function _undeleteFileVersion(provider, path, token) {
     _hideStartupSplashForBlockingCloudUi();
     const current = _runtime().getServerConnection?.();
     const initialUrl = current?.url || '';
-    const canSwitchLegacy = !_isHostedCloudPage();
+    const localMode = _localDataModeForPage();
+    const canSwitchLegacy = true;
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
       overlay.className = 'modal-overlay meldex-cloud-setup-overlay';
@@ -32588,7 +33754,7 @@ async function _undeleteFileVersion(provider, path, token) {
         }
       });
       overlay.querySelector('#shared-server-switch-legacy')?.addEventListener('click', () => {
-        _runtime().setMode('legacy');
+        _runtime().setMode(localMode);
         overlay.remove();
         resolve({ ok: false, switchToLegacy: true });
       });
@@ -32652,11 +33818,10 @@ async function _undeleteFileVersion(provider, path, token) {
     const session = await _auth().getSession();
     const pendingAuth = _auth().getPendingAuth?.();
     const showManualBox = !!pendingAuth?.manual;
-    const isLegacyMode = _runtime().getMode?.() !== 'dropbox';
-    const canSwitchLegacy = !_isHostedCloudPage();
-    const legacyButtonStyle = isLegacyMode
-      ? 'padding:8px 14px;border:1px solid #444;border-radius:6px;background:#222;color:#777;cursor:not-allowed;'
-      : 'padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;';
+    const localMode = _localDataModeForPage();
+    const isLegacyMode = _runtime().getMode?.() === localMode;
+    const canSwitchLegacy = true;
+    const legacyButtonStyle = 'padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;';
     const sessionLabel = session?.refreshToken
       ? `Dropbox接続済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}`
       : '未接続';
@@ -32668,7 +33833,7 @@ async function _undeleteFileVersion(provider, path, token) {
       overlay.className = 'modal-overlay meldex-cloud-setup-overlay';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:8px;box-sizing:border-box;';
       overlay.innerHTML = `<div class="meldex-cloud-setup-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-dropbox-setup-title" style="width:calc(100vw - 16px);max-width:780px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div id="meldex-dropbox-setup-title" style="font-size:22px;font-weight:700;margin-bottom:8px;">DropboxでMeldexを始める</div>
+        <div id="meldex-dropbox-setup-title" style="font-size:22px;font-weight:700;margin-bottom:8px;">Dropboxに接続</div>
         <div class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
           <div style="font-size:15px;font-weight:700;margin-bottom:8px;">同じデータを複数端末で使います</div>
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
@@ -32733,7 +33898,7 @@ async function _undeleteFileVersion(provider, path, token) {
         </details>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
         <div class="meldex-cloud-actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" type="button" class="gb-btn gb-btn-quiet" ${isLegacyMode ? 'disabled aria-disabled="true" title="現在はこの端末に保存しています"' : ''} style="${legacyButtonStyle}">${isLegacyMode ? 'この端末に保存中' : 'この端末に保存して使う'}</button>` : ''}
+          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" type="button" class="gb-btn gb-btn-quiet" style="${legacyButtonStyle}">${isLegacyMode ? 'キャンセル' : 'この端末に保存して使う'}</button>` : ''}
           <button id="cloud-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">この設定で開始</button>
         </div>
       </div>`;
@@ -32880,8 +34045,12 @@ async function _undeleteFileVersion(provider, path, token) {
       });
 
       overlay.querySelector('#cloud-switch-legacy')?.addEventListener('click', () => {
-        if (isLegacyMode) return;
-        _runtime().setMode('legacy');
+        if (isLegacyMode) {
+          overlay.remove();
+          resolve({ ok: false, cancelled: true });
+          return;
+        }
+        _runtime().setMode(localMode);
         overlay.remove();
         resolve({ ok: false, switchToLegacy: true });
       });
@@ -32910,6 +34079,20 @@ async function _undeleteFileVersion(provider, path, token) {
     return true;
   }
 
+  async function _enterBrowserMode() {
+    document.body.dataset.cloudMode = 'browser';
+    delete document.body.dataset.cloudReadonly;
+    delete document.body.dataset.cloudReadonlyReason;
+    const preflight = await window.MeldexStorageAdapter?.preflight?.();
+    if (!preflight?.ok) throw new Error(preflight?.message || 'この端末内の保存先を準備できませんでした');
+    await window.MeldexOfflineShell?.prepareFirstRunChoice?.();
+    return true;
+  }
+
+  function _enterLocalModeForPage() {
+    return _localDataModeForPage() === 'browser' ? _enterBrowserMode() : _enterLegacyMode();
+  }
+
   async function _enterServerMode(message) {
     document.body.dataset.cloudMode = 'server';
     delete document.body.dataset.cloudReadonly;
@@ -32917,7 +34100,7 @@ async function _undeleteFileVersion(provider, path, token) {
       const connection = _runtime().getServerConnection?.();
       if (!connection?.url) {
         const result = await _showSharedServerSetupModal(message || 'Meldex共有サーバーの接続先を設定してください。');
-        if (result?.switchToLegacy) return _enterLegacyMode();
+        if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
         continue;
       }
@@ -32932,7 +34115,7 @@ async function _undeleteFileVersion(provider, path, token) {
         return true;
       } catch (err) {
         const result = await _showSharedServerSetupModal(err?.message || String(err));
-        if (result?.switchToLegacy) return _enterLegacyMode();
+        if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
       }
     }
@@ -32995,10 +34178,11 @@ async function _undeleteFileVersion(provider, path, token) {
       hasExplicitMode = params.has('dataAccessMode') || params.get('safeMode') === '1';
     } catch {}
     const hasStoredMode = _runtime().hasStoredMode?.();
-    if (_isHostedCloudLaunch() && !hasExplicitMode && mode !== 'server') {
-      if (mode === 'legacy') _runtime().clearMode?.();
-      _runtime().setMode('dropbox');
-      mode = 'dropbox';
+    if (_isHostedCloudLaunch() && !hasExplicitMode) {
+      if (mode === 'legacy') {
+        _runtime().setMode('browser');
+        mode = 'browser';
+      }
     } else if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
       _runtime().setMode('legacy');
       mode = 'legacy';
@@ -33008,6 +34192,9 @@ async function _undeleteFileVersion(provider, path, token) {
     if (mode === 'server') {
       return _enterServerMode();
     }
+    if (mode === 'browser') {
+      return _enterBrowserMode();
+    }
     if (mode !== 'dropbox') {
       return _enterLegacyMode();
     }
@@ -33016,7 +34203,7 @@ async function _undeleteFileVersion(provider, path, token) {
       const session = await _auth().getSession();
       if (!_auth().getAppKey() || !_auth().getVaultPath() || !session?.refreshToken) {
         const result = await _showDropboxSetupModal(callback.handled && callback.ok ? 'Dropboxへの接続が完了しました。使うフォルダを確認して「この設定で開始」を押してください。' : '');
-        if (result?.switchToLegacy) return _enterLegacyMode();
+        if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
         continue;
       }
@@ -33036,7 +34223,7 @@ async function _undeleteFileVersion(provider, path, token) {
         const preflight = await window.MeldexStorageAdapter.preflight();
         if (!preflight.ok) {
           const result = await _showDropboxSetupModal(preflight.message);
-          if (result?.switchToLegacy) return _enterLegacyMode();
+          if (result?.switchToLegacy) return _enterLocalModeForPage();
           if (!result?.ok) return false;
           continue;
         }
@@ -33044,12 +34231,6 @@ async function _undeleteFileVersion(provider, path, token) {
           ? null
           : await _runSidecarMigrationOnce(provider);
         const compatibilityReadonly = !!(migrationLock?.locked || migrationLock?.unavailable);
-        if (!compatibilityReadonly) {
-          await window.MeldexCloudSampleSeed?.prepareHome?.({ preflight }).catch((err) => {
-          console.warn('[MeldexCloudBootstrap] sample home preparation failed', err);
-          });
-          window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'cloud-dropbox-ready' });
-        }
         _applyPhase1UiGuards({ readonly: preflight.access === 'viewer' || compatibilityReadonly });
         if (compatibilityReadonly) {
           _applyCompatibilityReadonly(migrationLock);
@@ -33071,7 +34252,7 @@ async function _undeleteFileVersion(provider, path, token) {
         return true;
       } catch (err) {
         const result = await _showDropboxSetupModal(err?.message || String(err));
-        if (result?.switchToLegacy) return _enterLegacyMode();
+        if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
       }
     }
@@ -33086,7 +34267,8 @@ async function _undeleteFileVersion(provider, path, token) {
       result = await _showSharedServerSetupModal(message || '');
     } else {
       const choice = await _showModeChooser();
-      if (choice === 'dropbox') result = await _showDropboxSetupModal(message || '');
+      if (!choice || choice === beforeMode) result = { cancelled: true };
+      else if (choice === 'dropbox') result = await _showDropboxSetupModal(message || '');
       else if (choice === 'server') result = await _showSharedServerSetupModal(message || '');
       else result = { switchToLegacy: true };
     }
@@ -33100,6 +34282,11 @@ async function _undeleteFileVersion(provider, path, token) {
   window.MeldexCloudBootstrap = {
     prepareLaunch,
     openSettingsFlow,
+    async connectDropbox(message) {
+      const result = await _showDropboxSetupModal(message || '');
+      if (result?.ok) window.location.reload();
+      return result;
+    },
     isPhase1UnsupportedType,
     isPhase1UnsupportedCreateType,
     filterPhase1CreateItems,
@@ -33308,7 +34495,9 @@ async function _undeleteFileVersion(provider, path, token) {
   const _mobileCollapsedColumns = new Map();
 
   function _isDropboxMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser';
   }
 
   function _isLocalMobileUiAllowed() {
@@ -34072,11 +35261,12 @@ async function _undeleteFileVersion(provider, path, token) {
     const dropboxMode = _isDropboxMode();
     const localMobileMode = !dropboxMode && _isLocalMobileUiAllowed();
     const mobile = (dropboxMode || localMobileMode) && _isMobileViewport() && !_isSingleWindow();
+    const browserLocalMode = !!window.MeldexRuntimeAdapter?.isBrowserMode?.();
     const editingUiEnabled = isMobileEditingUiEnabled();
     _setDatasetFlag('cloudMobile', mobile);
     _setDatasetFlag('cloudMobileEditingUi', editingUiEnabled);
     _setDatasetFlag('mobileUi', mobile);
-    _setDatasetFlag('mobileUiLocal', mobile && localMobileMode);
+    _setDatasetFlag('mobileUiLocal', mobile && (localMobileMode || browserLocalMode));
     _setDatasetFlag('mobileEditingUi', editingUiEnabled);
     _ensurePaneTreeBackButtons();
     _syncPaneSafeTopBars();
@@ -34096,6 +35286,7 @@ async function _undeleteFileVersion(provider, path, token) {
       keyboardGap,
       singleWindow: _isSingleWindow(),
       dropboxMode,
+      browserLocalMode,
       localMobileMode,
     };
     window.MeldexCloudMobileState = detail;
@@ -35279,6 +36470,17 @@ function isDragDroppedOutsideWindow(e) {
 }
 if (typeof window !== 'undefined') window.isDragDroppedOutsideWindow = isDragDroppedOutsideWindow;
 
+// 別の同一origin Meldex窓がdropをACKした場合は、従来の窓外popoutを抑止する。
+// ACKが無い（OS/WebView境界、キャンセル、TTL切れ）場合だけ現行判定へ戻す。
+async function shouldOpenDragPopout(e, nonce) {
+  if (!isDragDroppedOutsideWindow(e)) return false;
+  if (nonce && typeof MeldexDnD !== 'undefined' && MeldexDnD.waitForDropDisposition) {
+    if (await MeldexDnD.waitForDropDisposition(nonce, 180)) return false;
+  }
+  return true;
+}
+if (typeof window !== 'undefined') window.shouldOpenDragPopout = shouldOpenDragPopout;
+
 // 単一タブ窓として items を URL で開く共通ヘルパー（タブ/ツリー/folder-view 共用）。
 // items: [{ name, path, type }] 形式。type はURL復元側が処理できる名称に正規化する。
 // 単一窓モード（?single=1）で開くことで、新規窓ではサイドバー等が隠れ、
@@ -35860,7 +37062,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
-  subpanel: 'panelRight',
+  subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -35924,6 +37126,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    else if (cls.includes('ico-listCollapse')) name = 'listCollapse';
     // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
     else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
     else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';
@@ -37308,7 +38511,7 @@ function initIframeMarkup(scrollContainer) {
       const x = pt.x;
       const y = pt.y;
       // ヒットテスト
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
       const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
       for (const el of els) {
         if (_markupElementHit(el, x, y, tolerance)) {
@@ -37328,7 +38531,7 @@ function initIframeMarkup(scrollContainer) {
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
     const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
-    _ann.anchor = anchorHit?.data || null;
+    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
     _ann.path = [_ann.anchor
       ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
       : [pt.x, pt.y]];
@@ -37344,7 +38547,9 @@ function initIframeMarkup(scrollContainer) {
       : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
+    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
+    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
@@ -37357,8 +38562,10 @@ function initIframeMarkup(scrollContainer) {
         ? { ..._rectData(_ann.path), anchor: _ann.anchor }
         : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'rect') {
-      _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
+      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
+      data.lineWidth = _ann.widths?.pen;
+      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
       preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
@@ -37377,13 +38584,15 @@ function initIframeMarkup(scrollContainer) {
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) return;
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
-    if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect'
-      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
+    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    const savedEl = shapeTypes.has(type)
+      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
@@ -37581,6 +38790,37 @@ function initIframeMarkup(scrollContainer) {
     return el;
   }
 
+  function _ellipseData(points) {
+    const rect = _rectData(points);
+    return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+  }
+
+  function _applyMarkupShapeEl(el, type, data, color, opacity, preview) {
+    const outlined = type === 'rect-line' || type === 'ellipse-line';
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    if (type.startsWith('ellipse')) {
+      el.setAttribute('cx', Number(data?.cx) || 0); el.setAttribute('cy', Number(data?.cy) || 0);
+      el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0)); el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+    } else {
+      el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
+      el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+    }
+    el.setAttribute('fill', outlined ? 'none' : color);
+    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
+    el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+    return el;
+  }
+
+  function _renderMarkupShape(type, data, color, opacity, annId) {
+    if (type === 'rect') return _renderRect(data, color, opacity, annId);
+    const el = _applyMarkupShapeEl(document.createElementNS(_svgNS, type.startsWith('ellipse') ? 'ellipse' : 'rect'), type, data, color, opacity, false);
+    if (annId) el.dataset.annId = annId;
+    layer.appendChild(el);
+    return el;
+  }
+
   function _handleMessage(msg) {
     if (!msg || !msg.type) return;
     if (msg.type === 'ann-set-state') {
@@ -37632,8 +38872,8 @@ function initIframeMarkup(scrollContainer) {
           _renderNote(item, data || {});
         } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
           return;
-        } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
-          _renderRect(data, item.color, item.opacity, item.id);
+        } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
+          _renderMarkupShape(item.type, data, item.color, item.opacity, item.id);
         } else if (data?.points) {
           _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
@@ -37645,10 +38885,10 @@ function initIframeMarkup(scrollContainer) {
       // 親が保存したストロークにIDを付与
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
-      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id])');
+      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id]), ellipse:not([data-ann-id])');
       if (!targetEl && els.length > 0) targetEl = els[els.length - 1];
       if (targetEl && msg.annId) {
         targetEl.dataset.annId = msg.annId;
@@ -37658,7 +38898,7 @@ function initIframeMarkup(scrollContainer) {
     if (msg.type === 'ann-stroke-save-failed') {
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
       if (targetEl) targetEl.remove();
@@ -38440,7 +39680,10 @@ function positionPopup(popup, anchorRect, options = {}) {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
   const gap = options.gap ?? 4;
-  const preferDirection = options.prefer || 'below'; // 'below' | 'right'
+  // 'below' | 'right' | 'left'
+  // 'left' はノート縦書き用。縦書きでは本文の続きが下に伸びるため、下へ開くと
+  // 直後の文章を隠してしまう。'right' の鏡映しとして左側へ寄せる。
+  const preferDirection = options.prefer || 'below';
   // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
   const ar = _popupCssRect(anchorRect, z);
   const avoid = _popupCssRect(options.avoidRect, z);
@@ -38460,6 +39703,12 @@ function positionPopup(popup, anchorRect, options = {}) {
     left = ar.right + gap;
     if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
     if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
+    top = ar.top;
+  } else if (preferDirection === 'left') {
+    // 左に表示、収まらなければ右
+    left = ar.left - pw - gap;
+    if (left < gap) left = Math.min(vw - pw - gap, ar.right + gap);
+    if (left < gap) left = gap;
     top = ar.top;
   } else {
     // 下に表示
@@ -39367,10 +40616,14 @@ document.addEventListener('DOMContentLoaded', () => {
   let _resizeObserver = null;
   let _mutationObserver = null;
 
-  // ドライブレター（C:\ や C:/）・UNCパス（\\server\share）・先頭/（Dropbox仮想パス等）を絶対パスとみなす
+  // ドライブレター（C:\ や C:/）・UNCパス（\\server\share）・先頭/（Dropbox仮想パス等）・
+  // URL/URIを絶対パスとみなす。URLをvaultPathへ誤結合しないため、schemeもここで扱う。
   function isAbsolute(path) {
     const value = String(path || '');
-    return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
+    return /^[a-zA-Z]:[\\/]/.test(value)
+      || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)
+      || /^[/\\]{2}/.test(value)
+      || value.startsWith('/');
   }
 
   function join(base, rel) {
@@ -39399,10 +40652,36 @@ document.addEventListener('DOMContentLoaded', () => {
   function resolveForClipboard(path, basePath) {
     const value = String(path || '');
     if (!value) return value;
+    if (value.startsWith('#')) return value;
     const resolved = (!isAbsolute(value) && basePath && isAbsolute(String(basePath)))
       ? join(basePath, value)
       : value;
     return toNativeClipboard(resolved);
+  }
+
+  async function copyToClipboard(path, basePath) {
+    const value = resolveForClipboard(path, basePath);
+    if (!value) return false;
+    if (global.navigator?.clipboard?.writeText) {
+      try {
+        await global.navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {
+        // 非HTTPSの埋め込み面などではClipboard APIが拒否されるため、選択コピーへフォールバックする。
+      }
+    }
+    if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false;
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0;pointer-events:none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try { copied = document.execCommand('copy') === true; } catch (_) { copied = false; }
+    textarea.remove();
+    return copied;
   }
 
   // パス/URLの末尾セグメント（ファイル名相当）を返す。区切りは / と \ の両対応。
@@ -39670,6 +40949,7 @@ document.addEventListener('DOMContentLoaded', () => {
     join,
     toNativeClipboard,
     resolveForClipboard,
+    copyToClipboard,
     basename,
     ellipsizePath,
     fitToElement: _fitToElement,
@@ -40615,6 +41895,432 @@ window.NOTO_EMOJI = [{"code":"23","emoji":"#","name":""},{"code":"23-20E3","emoj
  * D&Dの共通処理を集約: ペイロード解析、リンクHTML生成、ファイル種別判定
  */
 const MeldexDnD = (() => {
+  const OFFER_TTL_MS = 10000;
+  const OFFER_MAX_ITEMS = 100;
+  const OFFER_MAX_CHARS = 262144;
+  const OFFER_MAX_CACHE_COUNT = 64;
+  const OFFER_MAX_CACHE_CHARS = 1048576;
+  const DND_QUERY_KEY = 'dnd';
+  const KIND_MIME = Object.freeze({
+    node: 'application/x-meldex-node',
+    text: 'application/x-meldex-text',
+    'board-nodes': 'application/x-meldex-board-nodes',
+  });
+  const receivedOffers = new Map();
+  const sourceOffers = new Map();
+  const acceptedOffers = new Map();
+  const consumedOffers = new Map();
+  const sourceClaims = new Map();
+  const claimResults = new Map();
+  const offerExpiryTimers = new Map();
+  let bridgeTransport = null;
+
+  function _transport() {
+    const candidate = globalThis.MeldexBroadcast || globalThis.GBBroadcast;
+    if (!candidate?.send || !candidate?.on) return null;
+    if (bridgeTransport === candidate) return candidate;
+    bridgeTransport = candidate;
+    candidate.on('dnd-offer', _receiveOffer);
+    candidate.on('dnd-request', _receiveRequest);
+    candidate.on('dnd-ack', _receiveAck);
+    candidate.on('dnd-cancel', _receiveCancel);
+    candidate.on('dnd-claim', _receiveClaim);
+    candidate.on('dnd-claim-result', _receiveClaimResult);
+    candidate.on('dnd-fail', _receiveFail);
+    return candidate;
+  }
+
+  function _now() { return Date.now(); }
+
+  function _validNonce(value) {
+    return typeof value === 'string' && /^[a-zA-Z0-9-]{16,80}$/.test(value);
+  }
+
+  function _validPayload(payload, kind) {
+    if (!payload || typeof payload !== 'object') return false;
+    try {
+      const encoded = JSON.stringify(payload);
+      if (!encoded || encoded.length > OFFER_MAX_CHARS) return false;
+    } catch { return false; }
+    const arrays = [payload.items, payload.nodes].filter(Array.isArray);
+    if (!arrays.every(rows => rows.length <= OFFER_MAX_ITEMS)) return false;
+    if (kind === 'node') {
+      const rows = Array.isArray(payload.items) ? payload.items : [payload];
+      return rows.length > 0 && rows.every(row => row && typeof row === 'object'
+        && typeof row.path === 'string' && row.path.trim().length > 0);
+    }
+    if (kind === 'text') return typeof payload.text === 'string' && payload.text.length > 0;
+    if (kind === 'board-nodes') {
+      return Array.isArray(payload.nodes) && payload.nodes.length > 0
+        && payload.nodes.every(node => node && typeof node === 'object');
+    }
+    return true;
+  }
+
+  function _validOffer(offer, senderWindowId) {
+    return !!offer
+      && offer.schema === 1
+      && _validNonce(offer.nonce)
+      && Object.hasOwn(KIND_MIME, offer.kind)
+      && offer.origin === location.origin
+      && typeof offer.sourceWindowId === 'string'
+      && (!senderWindowId || senderWindowId === offer.sourceWindowId)
+      && Number.isFinite(offer.createdAt)
+      && _now() - offer.createdAt >= -1000
+      && _now() - offer.createdAt <= OFFER_TTL_MS
+      && _validPayload(offer.payload, offer.kind);
+  }
+
+  function _receiveOffer(message) {
+    _purgeExpired();
+    if (!_validOffer(message?.offer, message?.windowId)) return;
+    if (consumedOffers.has(message.offer.nonce)) return;
+    receivedOffers.set(message.offer.nonce, message.offer);
+    _trimReceivedOffers();
+    _scheduleExpiry(message.offer.nonce);
+  }
+
+  function _receiveRequest(message) {
+    const nonce = message?.nonce;
+    const offer = sourceOffers.get(nonce);
+    if (!_validOffer(offer) || (message?.origin && message.origin !== location.origin)) return;
+    (_transport()?.sendDndOffer || ((payload) => _transport()?.send('dnd-offer', payload)))({ offer });
+  }
+
+  function _receiveAck(message) {
+    const nonce = message?.nonce;
+    if (!_validNonce(nonce) || message?.origin !== location.origin) return;
+    const offer = sourceOffers.get(nonce);
+    const claim = sourceClaims.get(nonce);
+    if (!offer || message?.targetWindowId !== offer.sourceWindowId
+        || (claim && claim.windowId !== message?.windowId)) return;
+    acceptedOffers.set(nonce, _now());
+    sourceClaims.delete(nonce);
+    sourceOffers.delete(nonce);
+  }
+
+  function _receiveClaim(message) {
+    const nonce = message?.nonce;
+    const offer = sourceOffers.get(nonce);
+    if (!_validOffer(offer) || message?.origin !== location.origin
+        || message?.claimantWindowId !== message?.windowId) return;
+    let claim = sourceClaims.get(nonce);
+    if (!claim) {
+      claim = { windowId: message.windowId, claimedAt: _now() };
+      sourceClaims.set(nonce, claim);
+    }
+    const transport = _transport();
+    if (transport) {
+      (transport.sendDndClaimResult || ((value) => transport.send('dnd-claim-result', value)))({
+        nonce,
+        origin: location.origin,
+        sourceWindowId: offer.sourceWindowId,
+        claimantWindowId: message.windowId,
+        granted: claim.windowId === message.windowId,
+      });
+    }
+  }
+
+  function _receiveClaimResult(message) {
+    const transport = _transport();
+    if (!_validNonce(message?.nonce) || message?.origin !== location.origin || !transport
+        || message?.claimantWindowId !== transport.windowId
+        || message?.sourceWindowId !== message?.windowId) return;
+    claimResults.set(message.nonce, {
+      granted: message.granted === true,
+      sourceWindowId: message.sourceWindowId,
+      receivedAt: _now(),
+    });
+  }
+
+  function _receiveFail(message) {
+    const nonce = message?.nonce;
+    const offer = sourceOffers.get(nonce);
+    const claim = sourceClaims.get(nonce);
+    if (!offer || !claim || message?.origin !== location.origin
+        || message?.targetWindowId !== offer.sourceWindowId
+        || message?.windowId !== claim.windowId) return;
+    sourceClaims.delete(nonce);
+    sourceOffers.delete(nonce);
+  }
+
+  function _receiveCancel(message) {
+    if (!_validNonce(message?.nonce) || message?.origin !== location.origin) return;
+    receivedOffers.delete(message.nonce);
+  }
+
+  function _purgeExpired() {
+    const now = _now();
+    for (const [nonce, offer] of receivedOffers) {
+      if (now - offer.createdAt > OFFER_TTL_MS) receivedOffers.delete(nonce);
+    }
+    for (const [nonce, offer] of sourceOffers) {
+      if (now - offer.createdAt > OFFER_TTL_MS) sourceOffers.delete(nonce);
+    }
+    for (const [nonce, acceptedAt] of acceptedOffers) {
+      if (now - acceptedAt > OFFER_TTL_MS) acceptedOffers.delete(nonce);
+    }
+    for (const [nonce, consumedAt] of consumedOffers) {
+      if (now - consumedAt > OFFER_TTL_MS) consumedOffers.delete(nonce);
+    }
+    for (const [nonce, claim] of sourceClaims) {
+      if (now - claim.claimedAt > OFFER_TTL_MS) sourceClaims.delete(nonce);
+    }
+    for (const [nonce, result] of claimResults) {
+      if (now - result.receivedAt > OFFER_TTL_MS) claimResults.delete(nonce);
+    }
+  }
+
+  function _trimReceivedOffers() {
+    const entries = [...receivedOffers.entries()];
+    let totalChars = entries.reduce((sum, [, offer]) => sum + JSON.stringify(offer).length, 0);
+    while (receivedOffers.size > OFFER_MAX_CACHE_COUNT || totalChars > OFFER_MAX_CACHE_CHARS) {
+      const oldest = [...receivedOffers.entries()]
+        .sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (!oldest) break;
+      totalChars -= JSON.stringify(oldest[1]).length;
+      receivedOffers.delete(oldest[0]);
+    }
+  }
+
+  function _scheduleExpiry(nonce) {
+    if (typeof setTimeout !== 'function') return;
+    const previous = offerExpiryTimers.get(nonce);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      receivedOffers.delete(nonce);
+      sourceOffers.delete(nonce);
+      sourceClaims.delete(nonce);
+      claimResults.delete(nonce);
+      offerExpiryTimers.delete(nonce);
+    }, OFFER_TTL_MS + 50);
+    timer?.unref?.();
+    offerExpiryTimers.set(nonce, timer);
+  }
+
+  function _uriWithNonce(dataTransfer, nonce) {
+    let urls = [];
+    try {
+      urls = String(dataTransfer.getData('text/uri-list') || '')
+        .split(/\r?\n/).map(value => value.trim()).filter(value => value && !value.startsWith('#'));
+    } catch {}
+    let url = null;
+    for (const value of urls) {
+      try {
+        const candidate = new URL(value, location.href);
+        if (candidate.origin === location.origin) { url = candidate; break; }
+      } catch {}
+    }
+    if (!url) url = new URL(location.href);
+    url.searchParams.set(DND_QUERY_KEY, nonce);
+    dataTransfer.setData('text/uri-list', url.toString());
+    return url.toString();
+  }
+
+  function _nonceFromTransfer(dataTransfer) {
+    let raw = '';
+    try { raw = String(dataTransfer?.getData?.('text/uri-list') || ''); } catch { return ''; }
+    for (const line of raw.split(/\r?\n/)) {
+      const value = line.trim();
+      if (!value || value.startsWith('#')) continue;
+      try {
+        const url = new URL(value, location.href);
+        const nonce = url.searchParams.get(DND_QUERY_KEY) || '';
+        if (url.origin === location.origin && _validNonce(nonce)) return nonce;
+      } catch {}
+    }
+    return '';
+  }
+
+  function beginCrossWindowDrag(dataTransfer, payload, kind) {
+    if (!dataTransfer || !globalThis.location?.origin
+        || !Object.hasOwn(KIND_MIME, kind) || !_validPayload(payload, kind)) return '';
+    _purgeExpired();
+    const transport = _transport();
+    const nonce = globalThis.crypto?.randomUUID?.()
+      || `${_now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+    const offer = {
+      schema: 1,
+      nonce,
+      kind,
+      payload: typeof structuredClone === 'function' ? structuredClone(payload) : JSON.parse(JSON.stringify(payload)),
+      origin: location.origin,
+      sourceWindowId: transport?.windowId || 'local-window',
+      createdAt: _now(),
+    };
+    sourceOffers.set(nonce, offer);
+    _scheduleExpiry(nonce);
+    _uriWithNonce(dataTransfer, nonce);
+    if (transport) (transport.sendDndOffer || ((value) => transport.send('dnd-offer', value)))({ offer });
+    return nonce;
+  }
+
+  function hasDropKind(eventOrTransfer, kind) {
+    const transfer = eventOrTransfer?.dataTransfer || eventOrTransfer;
+    const mime = KIND_MIME[kind];
+    if (!transfer || !mime) return false;
+    try {
+      if (Array.from(transfer.types || []).includes(mime)) return true;
+    } catch {}
+    const nonce = _nonceFromTransfer(transfer);
+    if (!nonce || consumedOffers.has(nonce)) return false;
+    _purgeExpired();
+    const knownOffer = receivedOffers.get(nonce) || sourceOffers.get(nonce);
+    return knownOffer ? _validOffer(knownOffer) && knownOffer.kind === kind : true;
+  }
+
+  function _parsePayload(raw, kind) {
+    try {
+      const payload = JSON.parse(raw);
+      return _validPayload(payload, kind) ? payload : null;
+    } catch { return null; }
+  }
+
+  async function _claimOffer(nonce) {
+    if (!nonce || consumedOffers.has(nonce)) return null;
+    const localOffer = sourceOffers.get(nonce);
+    const transport = _transport();
+    if (localOffer && transport) {
+      let claim = sourceClaims.get(nonce);
+      if (!claim) {
+        claim = { windowId: transport.windowId, claimedAt: _now() };
+        sourceClaims.set(nonce, claim);
+      }
+      return claim.windowId === transport.windowId
+        ? { granted: true, sourceWindowId: localOffer.sourceWindowId }
+        : null;
+    }
+    if (!transport) return null;
+    claimResults.delete(nonce);
+    (transport.claimDndOffer || ((value) => transport.send('dnd-claim', value)))({
+      nonce,
+      origin: location.origin,
+      claimantWindowId: transport.windowId,
+    });
+    const deadline = _now() + 120;
+    while (_now() < deadline && !claimResults.has(nonce)) {
+      await new Promise(resolve => setTimeout(resolve, 8));
+    }
+    const result = claimResults.get(nonce) || null;
+    claimResults.delete(nonce);
+    return result?.granted ? result : null;
+  }
+
+  async function resolveDropData(eventOrTransfer, kind) {
+    const transfer = eventOrTransfer?.dataTransfer || eventOrTransfer;
+    const mime = KIND_MIME[kind];
+    if (!transfer || !mime) return null;
+    const types = Array.from(transfer.types || []);
+    const nonce = _nonceFromTransfer(transfer);
+    // Chromium が native custom MIME を渡した場合は、bridge offer より必ず優先する。
+    if (types.includes(mime)) {
+      const payload = _parsePayload(transfer.getData(mime), kind);
+      if (payload) {
+        if (nonce && consumedOffers.has(nonce)) return null;
+        const claim = nonce ? await _claimOffer(nonce) : { granted: true, sourceWindowId: '' };
+        if (nonce && !claim) return null;
+        if (nonce) {
+          receivedOffers.delete(nonce);
+          consumedOffers.set(nonce, _now());
+        }
+        return { kind, payload, nonce, source: 'native', sourceWindowId: claim?.sourceWindowId || '' };
+      }
+      // custom MIME が空/不正でも、有効なURI offerがあれば下のfallbackへ進む。
+    }
+    if (!nonce) return null;
+    _purgeExpired();
+    let offer = receivedOffers.get(nonce);
+    if (!offer) {
+      const transport = _transport();
+      if (transport) (transport.requestDndOffer || ((value) => transport.send('dnd-request', value)))({ nonce, origin: location.origin });
+      await new Promise(resolve => setTimeout(resolve, 80));
+      offer = receivedOffers.get(nonce);
+    }
+    if (!_validOffer(offer) || offer.kind !== kind) return null;
+    const claim = await _claimOffer(nonce);
+    if (!claim) return null;
+    receivedOffers.delete(nonce); // replay は同一ウィンドウでも一回だけ
+    consumedOffers.set(nonce, _now());
+    return { kind, payload: offer.payload, nonce, source: 'bridge', sourceWindowId: claim.sourceWindowId };
+  }
+
+  function completeDrop(resolved) {
+    if (!resolved?.nonce) return false;
+    const transport = _transport();
+    if (!transport) return false;
+    if (resolved.sourceWindowId === transport.windowId && sourceOffers.has(resolved.nonce)) {
+      acceptedOffers.set(resolved.nonce, _now());
+      sourceClaims.delete(resolved.nonce);
+      sourceOffers.delete(resolved.nonce);
+      return true;
+    }
+    (transport.sendDndAck || ((value) => transport.send('dnd-ack', value)))({
+      nonce: resolved.nonce,
+      origin: location.origin,
+      targetWindowId: resolved.sourceWindowId || '',
+    });
+    return true;
+  }
+
+  function failDrop(resolved) {
+    if (!resolved?.nonce) return false;
+    const transport = _transport();
+    if (!transport) return false;
+    if (resolved.sourceWindowId === transport.windowId && sourceOffers.has(resolved.nonce)) {
+      sourceClaims.delete(resolved.nonce);
+      sourceOffers.delete(resolved.nonce);
+      return true;
+    }
+    (transport.sendDndFail || ((value) => transport.send('dnd-fail', value)))({
+      nonce: resolved.nonce,
+      origin: location.origin,
+      targetWindowId: resolved.sourceWindowId || '',
+    });
+    return true;
+  }
+
+  function dataTransferWithResolved(original, resolved) {
+    if (!resolved?.payload || !KIND_MIME[resolved.kind]) return original;
+    const mime = KIND_MIME[resolved.kind];
+    return {
+      types: Array.from(new Set([...(Array.from(original?.types || [])), mime])),
+      files: original?.files || [],
+      items: original?.items || [],
+      getData(type) {
+        if (type === mime) return JSON.stringify(resolved.payload);
+        try { return original?.getData?.(type) || ''; } catch { return ''; }
+      },
+    };
+  }
+
+  function cancelCrossWindowDrag(nonce) {
+    if (!_validNonce(nonce)) return;
+    if (sourceClaims.has(nonce)) return; // processing中は最終ACK/失敗通知までofferを保持
+    sourceOffers.delete(nonce);
+    const transport = _transport();
+    if (transport) (transport.sendDndCancel || ((value) => transport.send('dnd-cancel', value)))({ nonce, origin: location.origin });
+  }
+
+  async function waitForDropAck(nonce, waitMs) {
+    const deadline = _now() + Math.max(0, Math.min(Number(waitMs) || 160, 500));
+    while (_now() < deadline && !acceptedOffers.has(nonce)) {
+      await new Promise(resolve => setTimeout(resolve, 16));
+    }
+    const accepted = acceptedOffers.has(nonce);
+    if (accepted) acceptedOffers.delete(nonce);
+    return accepted;
+  }
+
+  async function waitForDropDisposition(nonce, waitMs) {
+    const deadline = _now() + Math.max(0, Math.min(Number(waitMs) || 180, 500));
+    while (_now() < deadline && !acceptedOffers.has(nonce) && !sourceClaims.has(nonce)) {
+      await new Promise(resolve => setTimeout(resolve, 8));
+    }
+    return acceptedOffers.has(nonce) || sourceClaims.has(nonce);
+  }
+
+  // gb-broadcast.js が後から読み込まれる構成でも listener を結線する。
+  if (typeof setTimeout === 'function') setTimeout(() => _transport(), 0);
   // --- パネル操作系D&Dタイプ判定 ---
   function isPanelDnD(types, ctrlKey) {
     if (types.includes('application/meldex-tool') ||
@@ -40641,6 +42347,69 @@ const MeldexDnD = (() => {
     } catch { return null; }
   }
 
+  function inferNodeType(path, explicitType) {
+    const declared = String(explicitType || '').trim().toLowerCase();
+    if (declared === 'media') return getMediaType((path || '').split('.').pop()) || 'file';
+    if (declared) return declared;
+    return getMediaType((path || '').split('.').pop()) || 'file';
+  }
+
+  function writeNodePayload(dataTransfer, item, surface) {
+    const path = String(item?.path || '').trim();
+    if (!dataTransfer || !path) return null;
+    const name = String(item?.name || item?.label || path.split(/[\\/]/).pop() || path);
+    const type = inferNodeType(path, item?.type || item?.toolType || item?.state?.mediaType);
+    const normalized = { name, path, type, sourceSurface: surface || 'main' };
+    const payload = { ...normalized, items: [normalized] };
+    dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    dataTransfer.setData('text/plain', path);
+    dataTransfer.effectAllowed = 'copyMove';
+    beginCrossWindowDrag(dataTransfer, payload, 'node');
+    return payload;
+  }
+
+  // 右サブパネル/フロートの表示対象を、ツリーと同じ共通payloadで
+  // メインパネルや他アプリへドラッグできるようにする。
+  function installSurfaceDragSource(root, handle, currentItem, surface) {
+    if (!root || !handle || typeof currentItem !== 'function') return;
+    handle.draggable = true;
+    handle.dataset.meldexDragSurface = surface || 'main';
+    handle.addEventListener('dragstart', e => {
+      const payload = writeNodePayload(e.dataTransfer, currentItem(), surface);
+      if (!payload) {
+        e.preventDefault();
+        return;
+      }
+      e.stopPropagation();
+      root.classList.add('meldex-surface-dragging');
+    });
+    handle.addEventListener('dragend', () => root.classList.remove('meldex-surface-dragging'));
+  }
+
+  function installSurfaceDropTarget(root, onNodeDrop) {
+    if (!root || typeof onNodeDrop !== 'function') return;
+    root.addEventListener('dragover', e => {
+      if (!hasDropKind(e, 'node')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = e.altKey ? 'link' : 'copy';
+    });
+    root.addEventListener('drop', async e => {
+      const resolved = await resolveDropData(e, 'node');
+      const parsed = resolved?.payload || null;
+      if (!parsed?.path) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        const outcome = await Promise.resolve(onNodeDrop(parsed, e));
+        if (outcome !== false) completeDrop(resolved);
+        else failDrop(resolved);
+      } catch (error) {
+        failDrop(resolved);
+        console.error('[MeldexDnD] surface drop failed:', error);
+      }
+    });
+  }
+
   // --- ファイル種別判定 ---
   const IMAGE_EXTS = ['png','jpg','jpeg','gif','bmp','webp','svg','ico','avif'];
   const VIDEO_EXTS = ['mp4','webm','ogv','mov','avi'];
@@ -40655,10 +42424,41 @@ const MeldexDnD = (() => {
   }
 
   function resolveOpenType(type, ext) {
-    if (type === 'database') return 'pivot';
-    if (type === 'board') return 'board';
-    if (type === 'scriptnote') return 'scriptnote';
-    return type || 'page';
+    const declared = String(type || '').trim().toLowerCase();
+    const extension = String(ext || '').trim().toLowerCase().replace(/^\./, '');
+    if (declared === 'image' || declared === 'video' || declared === 'audio' || declared === 'media') return 'media';
+    if (declared === 'pdf' || extension === 'pdf') return 'media';
+    if (declared === 'database') return 'pivot';
+    if (declared === 'board') return 'board';
+    if (declared === 'scriptnote') return 'scriptnote';
+    return declared || 'page';
+  }
+
+  function normalizeOpenTarget(item) {
+    const path = String(item?.path || '').trim();
+    if (!path) return null;
+    const ext = path.split('.').pop().toLowerCase();
+    const declared = String(item?.type || item?.toolType || '').trim().toLowerCase();
+    const label = String(item?.label || item?.name || path.split(/[\\/]/).pop() || path);
+    if (declared === 'document' && ext !== 'pdf'
+        && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.resolve === 'function') {
+      return GBLinkRouter.resolve({ path, label, type: declared });
+    }
+    const type = resolveOpenType(declared, ext);
+    const state = { ...(item?.state || {}) };
+    if (type === 'media') {
+      state.mediaType = declared === 'media'
+        ? (state.mediaType || item?.mediaType || getMediaType(ext) || (ext === 'pdf' ? 'pdf' : 'file'))
+        : (declared === 'pdf' || ext === 'pdf'
+          ? 'pdf'
+          : declared);
+    }
+    return {
+      type,
+      path,
+      label,
+      state,
+    };
   }
 
   // --- リンクHTML生成 ---
@@ -40686,8 +42486,39 @@ const MeldexDnD = (() => {
       return `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`;
     }
 
+    if (mediaType === 'video' || mediaType === 'audio') {
+      const mediaUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+      const tag = mediaType;
+      return `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><${tag} controls preload="metadata" src="${mediaUrl}"></${tag}></div>`;
+    }
+
     const icon = isMedia ? 'paperclip' : getIconForType(type);
     return `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `;
+  }
+
+  function insertNodeAtEditableRange(editable, item, preferredRange) {
+    if (!editable || !item?.path) return false;
+    let range = preferredRange?.cloneRange?.() || null;
+    const rangeNode = range?.commonAncestorContainer;
+    const rangeElement = rangeNode?.nodeType === Node.ELEMENT_NODE ? rangeNode : rangeNode?.parentElement;
+    if (!range || !rangeElement || !editable.contains(rangeElement)) {
+      range = document.createRange();
+      range.selectNodeContents(editable);
+      range.collapse(false);
+    }
+    const fragment = range.createContextualFragment(createAutoLinkHtml(item.name || '', item.path, item.type || 'file'));
+    const last = fragment.lastChild;
+    range.deleteContents();
+    range.insertNode(fragment);
+    if (last) {
+      range.setStartAfter(last);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges?.();
+      selection?.addRange?.(range);
+    }
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
   }
 
   // --- ドロップキャレット表示 ---
@@ -40703,11 +42534,22 @@ const MeldexDnD = (() => {
     if (range) {
       const rects = range.getClientRects();
       const elRect = editableEl.getBoundingClientRect();
-      if (rects.length > 0) {
-        caret.style.top = (rects[0].bottom - elRect.top + editableEl.scrollTop) + 'px';
+      // 挿入位置の線は行の終端側（横書き=行の下辺 / 縦書きrl=行の左辺）へ置く。
+      // CSS 側が inset-block-start / block-size / inset-inline を使うため、
+      // 縦書きでは同じ宣言のまま自動的に縦線になる。
+      const wm = window.MeldexNoteWritingMode;
+      const vertical = !!(wm && wm.isVertical(editableEl));
+      let offset;
+      if (vertical) {
+        // vertical-rl は右端が行の始まりで、進むほど左へ向かう。Chrome ではこの向きの
+        // 横スクロール量は 0 から負へ動くため、進んだ距離は -scrollLeft になる。
+        const base = rects.length > 0 ? rects[0].left : e.clientX;
+        offset = (elRect.right - base) - editableEl.scrollLeft;
       } else {
-        caret.style.top = (e.clientY - elRect.top + editableEl.scrollTop) + 'px';
+        const base = rects.length > 0 ? rects[0].bottom : e.clientY;
+        offset = (base - elRect.top) + editableEl.scrollTop;
       }
+      caret.style.insetBlockStart = offset + 'px';
       caret.style.display = '';
     }
   }
@@ -40729,11 +42571,26 @@ const MeldexDnD = (() => {
 
   return {
     isPanelDnD,
+    beginCrossWindowDrag,
+    hasDropKind,
+    resolveDropData,
+    completeDrop,
+    failDrop,
+    dataTransferWithResolved,
+    cancelCrossWindowDrag,
+    waitForDropAck,
+    waitForDropDisposition,
     parseMeldexNode,
+    inferNodeType,
+    writeNodePayload,
+    installSurfaceDragSource,
+    installSurfaceDropTarget,
     getMediaType,
     resolveOpenType,
+    normalizeOpenTarget,
     getIconForType,
     createAutoLinkHtml,
+    insertNodeAtEditableRange,
     showDropCaret,
     hideDropCaret,
     setCaretFromPoint
@@ -41613,6 +43470,30 @@ const MeldexBroadcast = (() => {
     send('transfer-accept', { targetWindowId: sourceWindowId });
   }
 
+  // D&D bridge は BroadcastChannel の同一 origin transport だけを使う。
+  // payload の検証・TTL・一回消費は gb-dnd.js 側に集約し、ここでは永続化しない。
+  function sendDndOffer(payload) {
+    send('dnd-offer', payload);
+  }
+  function sendDndAck(payload) {
+    send('dnd-ack', payload);
+  }
+  function sendDndCancel(payload) {
+    send('dnd-cancel', payload);
+  }
+  function requestDndOffer(payload) {
+    send('dnd-request', payload);
+  }
+  function claimDndOffer(payload) {
+    send('dnd-claim', payload);
+  }
+  function sendDndClaimResult(payload) {
+    send('dnd-claim-result', payload);
+  }
+  function sendDndFail(payload) {
+    send('dnd-fail', payload);
+  }
+
   // --- ファイル変更通知 ---
   function notifyFileChanged(path, action) {
     send('file-changed', { path, action: action || 'modified' });
@@ -41673,6 +43554,13 @@ const MeldexBroadcast = (() => {
     off,
     startTransfer,
     acceptTransfer,
+    sendDndOffer,
+    sendDndAck,
+    sendDndCancel,
+    requestDndOffer,
+    claimDndOffer,
+    sendDndClaimResult,
+    sendDndFail,
     notifyFileChanged,
     notifySubwindowReady,
     notifySubwindowOpened,
@@ -43656,6 +45544,7 @@ if (typeof window !== 'undefined') {
   // 「異なるtransportの比較を拒否する実行時ガード」を提供する。
   // ==========================================================
   const TRANSPORT_LOCAL_FS = 'local-etag';
+  const TRANSPORT_BROWSER = 'browser-local';
   const TRANSPORT_DROPBOX = 'dropbox-rev';
 
   // 現在の実行環境から transport 名を判定する。Cloud/スマートフォン
@@ -43665,6 +45554,7 @@ if (typeof window !== 'undefined') {
   function currentTransportName() {
     const runtime = window.MeldexRuntimeAdapter;
     if (runtime && typeof runtime.isDropboxMode === 'function' && runtime.isDropboxMode()) return TRANSPORT_DROPBOX;
+    if (runtime && typeof runtime.isBrowserMode === 'function' && runtime.isBrowserMode()) return TRANSPORT_BROWSER;
     if (typeof document !== 'undefined' && document?.documentElement?.hasAttribute?.('data-standalone-cloud')) return TRANSPORT_DROPBOX;
     return TRANSPORT_LOCAL_FS;
   }
@@ -43674,16 +45564,23 @@ if (typeof window !== 'undefined') {
   function wrapTransportRevision(transport, token) {
     const raw = String(token || '');
     if (!raw) return '';
-    if (raw.includes(':') && (raw.startsWith(TRANSPORT_LOCAL_FS + ':') || raw.startsWith(TRANSPORT_DROPBOX + ':'))) {
+    if (raw.includes(':') && (
+      raw.startsWith(TRANSPORT_LOCAL_FS + ':')
+      || raw.startsWith(TRANSPORT_BROWSER + ':')
+      || raw.startsWith(TRANSPORT_DROPBOX + ':')
+    )) {
       return raw;
     }
-    const ns = transport === TRANSPORT_DROPBOX ? TRANSPORT_DROPBOX : TRANSPORT_LOCAL_FS;
+    const ns = transport === TRANSPORT_DROPBOX
+      ? TRANSPORT_DROPBOX
+      : transport === TRANSPORT_BROWSER ? TRANSPORT_BROWSER : TRANSPORT_LOCAL_FS;
     return `${ns}:${raw}`;
   }
 
   function transportOfRevision(wrapped) {
     const raw = String(wrapped || '');
     if (raw.startsWith(TRANSPORT_DROPBOX + ':')) return TRANSPORT_DROPBOX;
+    if (raw.startsWith(TRANSPORT_BROWSER + ':')) return TRANSPORT_BROWSER;
     if (raw.startsWith(TRANSPORT_LOCAL_FS + ':')) return TRANSPORT_LOCAL_FS;
     return '';
   }
@@ -46346,7 +48243,7 @@ if (typeof window !== 'undefined') {
       warningCount: session.warningCount,
       performance: { ...session.performance },
       runtimeMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
-      cloudMode: !!window.MeldexRuntimeAdapter?.isDropboxMode?.(),
+      cloudMode: !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.(),
       userAgent: navigator.userAgent || '',
     };
   }
@@ -46599,7 +48496,7 @@ if (typeof window !== 'undefined') {
 
   async function _writeCloudUsageSummary(summary) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    if (!provider) throw new Error('保存先が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
     const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
     try { await provider.statPath(USAGE_DB_NOTE); }
@@ -46677,7 +48574,7 @@ if (typeof window !== 'undefined') {
   }
 
   async function ensureFeedbackSheet() {
-    const result = window.MeldexRuntimeAdapter?.isDropboxMode?.()
+    const result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       ? await _writeCloudFeedbackSheet()
       : await _postJson('/beta/feedback-template', {}, false);
     if (result?.ok === false) throw new Error(result.error || result.reason || 'フィードバック保管シートを準備できませんでした');
@@ -46689,14 +48586,14 @@ if (typeof window !== 'undefined') {
   }
 
   async function classifyFeedbackEntries() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return { ok: false, skipped: true, reason: 'cloud-classify-needs-desktop-server' };
     }
     return _postJson('/beta/feedback/classify', {}, false);
   }
 
   async function importGoogleFeedbackEntries(options) {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return { ok: false, skipped: true, reason: 'cloud-google-import-needs-desktop-server' };
     }
     const limit = Number(options?.limit || GOOGLE_IMPORT_DEFAULT_LIMIT) || GOOGLE_IMPORT_DEFAULT_LIMIT;
@@ -46831,7 +48728,7 @@ if (typeof window !== 'undefined') {
       else session.warningCount += 1;
     }
     if (!isCrashReportEnabled() || _isBypassMode()) return;
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       _writeCloudCrashReport(payload).catch(() => {});
     } else {
       _postJson('/beta/crash-report', payload, true).catch(() => {});
@@ -49311,7 +51208,7 @@ if (typeof window !== 'undefined') {
   regId('left-chrome-floating-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('btn-sidebar-toggle',  { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
   regId('btn-tb-annotation',   { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regId('btn-overlay-toggle',  { label: '注釈オーバーレイ', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regId('btn-overlay-toggle',  { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
   regId('btn-split-toggle',    { label: 'スプリット', desc: '画面を上下または左右に分割して2画面表示にします' });
   regId('btn-toc-toggle',      { label: '目次',       desc: 'ノートの見出しから生成した目次パネルを開閉します' });
   regId('btn-note-vertical',   { label: '縦書き / 横書き', desc: 'ノート本文の組方向を切り替えます' });
@@ -49342,7 +51239,7 @@ if (typeof window !== 'undefined') {
   regAction('showsettingsmodal',  { label: '設定',       desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regAction('togglesidebar',      { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
   regAction('toggleannotationtoolbar', { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regAction('toggleoverlayvisibility', { label: '注釈オーバーレイ', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regAction('toggleoverlayvisibility', { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
   regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
   regAction('togglerightpaneltab',{ label: '右サイドバータブ', desc: '指定した右サイドバーのタブを開閉します' });
 
@@ -50301,6 +52198,134 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === gb-ui-scale.js === */
+;
+/* gb-ui-scale.js — 表示サイズ（画面全体の拡大率）の決め方を1か所へ集約する。
+ *
+ * 表示サイズには2つの出どころがある:
+ *   - 自動: 初回起動時に端末の画面から決めた値
+ *   - 手動: ユーザーが設定ダイアログ / Ctrl+ホイールで選んだ値
+ *
+ * 自動値だけは判定ルールを見直したときに付け直す必要があり、手動値は絶対に触らない。
+ * この2つを区別する記録が無かったため、過去に自動で焼き付いた拡大率が永久に残り、
+ * デスクトップ版とクラウド版で同じ100%指定でも大きさが食い違っていた
+ * （表示サイズはブラウザのズームとは別レイヤーで掛け算されるため、ブラウザ側を
+ *   100%にしても打ち消せない）。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexUIScale) return;
+
+  const SCALE_KEY = 'ui-scale';
+  const SOURCE_KEY = 'ui-scale-source';
+  const RULE_KEY = 'ui-scale-auto-rule';
+
+  // 自動判定ルールの版番号。ルールを変えたらここを上げる。過去に自動で決まった値
+  // だけが、新しいルールで一度だけ付け直される（手動値は版番号に関係なく不変）。
+  const AUTO_RULE_VERSION = 2;
+
+  function _screenMetrics() {
+    return {
+      width: Number(global.screen && global.screen.width) || 0,
+      dpr: Number(global.devicePixelRatio) || 1,
+      touch: Number(global.navigator && global.navigator.maxTouchPoints) > 0,
+    };
+  }
+
+  // 版1（〜v0.7.166）: 4K相当を125%へ拡大していた。移行の判定にだけ使う。
+  function _autoScaleRule1(m) {
+    if (m.width <= 768) return 100;
+    if (m.width <= 1366 && m.touch) return 110;
+    if (m.width >= 2560 && m.dpr <= 1.5) return 125;
+    return 100;
+  }
+
+  // 版2（現行）: 4K相当でも拡大しない。デスクトップ版100%・ブラウザ100%と同じ
+  // 大きさで表示されるようにする。タッチ操作の端末だけは押しやすさのため少し広げる。
+  function _autoScaleRule2(m) {
+    if (m.width <= 768) return 100;
+    if (m.width <= 1366 && m.touch) return 110;
+    return 100;
+  }
+
+  function detectAutoScale(rule) {
+    const m = _screenMetrics();
+    return (Number(rule) || AUTO_RULE_VERSION) <= 1 ? _autoScaleRule1(m) : _autoScaleRule2(m);
+  }
+
+  function _read(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
+  function _write(key, value) {
+    // プライベートモード等で保存できない場合でも、表示自体は続行させる
+    try { localStorage.setItem(key, String(value)); } catch { /* 保存できなくても表示は継続 */ }
+  }
+
+  function markSource(source) {
+    if (source !== 'manual' && source !== 'auto') return;
+    _write(SOURCE_KEY, source);
+    if (source === 'auto') _write(RULE_KEY, AUTO_RULE_VERSION);
+  }
+
+  function getSource() {
+    const value = _read(SOURCE_KEY);
+    return (value === 'manual' || value === 'auto') ? value : '';
+  }
+
+  // 出どころが記録される前からある環境の分類。保存値が「当時のルールがこの端末へ
+  // 返す値」と完全に一致する場合だけ自動値とみなす。少しでも違えば、ユーザーが
+  // 自分で選んだ値として扱い一切触らない。
+  function classifyLegacyStoredScale(storedScale) {
+    return storedScale === _autoScaleRule1(_screenMetrics()) ? 'auto' : 'manual';
+  }
+
+  /**
+   * 起動時に適用すべき表示サイズを返す。必要なら保存値の付け直しも行う。
+   */
+  function resolveStartupScale() {
+    const stored = _read(SCALE_KEY);
+
+    if (stored === null) {
+      const auto = detectAutoScale(AUTO_RULE_VERSION);
+      _write(SCALE_KEY, auto);
+      markSource('auto');
+      return auto;
+    }
+
+    const storedScale = parseInt(stored, 10) || 100;
+    let source = getSource();
+    if (!source) {
+      source = classifyLegacyStoredScale(storedScale);
+      _write(SOURCE_KEY, source);
+    }
+    if (source === 'manual') return storedScale;
+
+    const appliedRule = parseInt(_read(RULE_KEY), 10) || 1;
+    if (appliedRule >= AUTO_RULE_VERSION) return storedScale;
+
+    const auto = detectAutoScale(AUTO_RULE_VERSION);
+    _write(SCALE_KEY, auto);
+    markSource('auto');
+    return auto;
+  }
+
+  global.MeldexUIScale = {
+    AUTO_RULE_VERSION,
+    SCALE_KEY,
+    SOURCE_KEY,
+    RULE_KEY,
+    detectAutoScale,
+    classifyLegacyStoredScale,
+    resolveStartupScale,
+    markSource,
+    getSource,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-modal-shell.js === */
 ;
 (function() {
@@ -50323,18 +52348,13 @@ if (typeof window !== 'undefined') {
     return Number.isFinite(z) && z > 0 ? z : 1;
   }
 
-  function _modalScale(modal) {
-    const fallback = _zoom();
-    if (!modal?.getBoundingClientRect) return fallback;
-    const rect = modal.getBoundingClientRect();
-    const styledWidth = _numericStyle(modal.style.width, 0);
-    if (styledWidth > 0 && rect.width > 0) return Math.max(0.1, rect.width / styledWidth);
-    if (modal.offsetWidth > 0 && rect.width > 0) return Math.max(0.1, rect.width / modal.offsetWidth);
-    return fallback;
-  }
-
+  // 2026-08-07: 以前はここで「実際に描画された幅 ÷ インラインで指定した幅」から表示サイズ
+  // （拡大率）を逆算していた。CSSの min-width や min()・!important でこの2つが一致しなくなると
+  // 倍率が誤値になり、ドラッグ中も毎回走る位置合わせが誤ったサイズへ縮めるため、リサイズが
+  // 押し戻される原因になっていた。表示サイズは _getZoom() が唯一の正しい出どころなので、
+  // 推定はやめて直接参照する。
   function _layoutViewport(modal) {
-    const z = _modalScale(modal);
+    const z = _zoom();
     const overlay = modal?.closest?.(OVERLAY_SELECTOR);
     const rect = overlay?.getBoundingClientRect?.();
     const originX = rect ? rect.left : 0;
@@ -50511,9 +52531,16 @@ if (typeof window !== 'undefined') {
           dialog.style.transform = 'translateY(0)';
         }
       };
-      requestAnimationFrame(() => openSheet(false));
-      setTimeout(() => openSheet(false), 40);
-      setTimeout(() => openSheet(true), 260);
+      const e2eMode = new URLSearchParams(window.location.search).get('smoke') === '1';
+      if (e2eMode) {
+        // 機能E2Eは開くアニメーション中の画面外位置ではなく、利用可能になった
+        // 最終状態を検証する。アニメーション自体は専用契約テストへ分離する。
+        openSheet(true);
+      } else {
+        requestAnimationFrame(() => openSheet(false));
+        setTimeout(() => openSheet(false), 40);
+        setTimeout(() => openSheet(true), 260);
+      }
     }
     _patchMobileSheetRemove(overlay);
   }
@@ -50661,19 +52688,26 @@ if (typeof window !== 'undefined') {
     return footer;
   }
 
+  // リサイズ用のつまみはダイアログ本体の直下に置く必要があるため、本文欄へ
+  // 移動させてはいけない。移動させると再構築のたびに古いつまみが本文の中へ
+  // 溜まり続け、反応しない不可視要素が増えていく。
+  function _isShellChrome(child) {
+    return !!child?.classList?.contains('gb-modal-shell-edge');
+  }
+
   function _ensureBody(modal, header, footer) {
     let body = modal.querySelector(':scope > .gb-modal-shell-body, :scope > .gb-modal-body, :scope > .modal-body');
     if (!body) {
       body = document.createElement('div');
       body.className = 'gb-modal-shell-body gb-modal-shell-body-generated';
-      const nodes = Array.from(modal.children).filter((child) => child !== header && child !== footer);
+      const nodes = Array.from(modal.children).filter((child) => child !== header && child !== footer && !_isShellChrome(child));
       const anchor = footer || null;
       nodes.forEach((child) => body.appendChild(child));
       modal.insertBefore(body, anchor);
       return body;
     }
     body.classList.add('gb-modal-shell-body');
-    const extras = Array.from(modal.children).filter((child) => child !== header && child !== footer && child !== body);
+    const extras = Array.from(modal.children).filter((child) => child !== header && child !== footer && child !== body && !_isShellChrome(child));
     extras.forEach((child) => body.appendChild(child));
     if (footer && body.nextElementSibling !== footer) {
       modal.insertBefore(body, footer);
@@ -50703,9 +52737,77 @@ if (typeof window !== 'undefined') {
     return Number.isFinite(parsed) ? parsed : fallback;
   }
 
+  // --- ダイアログの大きさ・位置の記憶 ------------------------------------------
+  // data-dialog-geometry-key を持つダイアログだけを対象にする（一時的に開くだけの
+  // 小さなダイアログまで記録して肥大化させないため）。値は表示サイズで割った論理px
+  // なので、拡大率を変えても同じ見た目の大きさで戻る。
+  const GEOMETRY_STORAGE_KEY = 'meldex-dialog-geometry-v1';
+
+  function _geometryKey(modal) {
+    const key = modal?.dataset?.dialogGeometryKey;
+    return typeof key === 'string' && key.trim() ? key.trim() : '';
+  }
+
+  function _readGeometryStore() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(GEOMETRY_STORAGE_KEY) || '{}');
+      return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function _readGeometry(key) {
+    if (!key) return null;
+    const entry = _readGeometryStore()[key];
+    if (!entry || typeof entry !== 'object') return null;
+    const w = Number(entry.w);
+    const h = Number(entry.h);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+    const x = Number(entry.x);
+    const y = Number(entry.y);
+    return {
+      w,
+      h,
+      x: Number.isFinite(x) ? x : null,
+      y: Number.isFinite(y) ? y : null,
+    };
+  }
+
+  function _saveGeometry(modal) {
+    const key = _geometryKey(modal);
+    if (!key) return;
+    const w = _numericStyle(modal.style.width, 0);
+    const h = _numericStyle(modal.style.height, 0);
+    if (w <= 0 || h <= 0) return;
+    const store = _readGeometryStore();
+    store[key] = {
+      w: Math.round(w),
+      h: Math.round(h),
+      x: Math.round(_numericStyle(modal.style.left, 0)),
+      y: Math.round(_numericStyle(modal.style.top, 0)),
+    };
+    try {
+      localStorage.setItem(GEOMETRY_STORAGE_KEY, JSON.stringify(store));
+    } catch { /* 保存できなくても操作は続行する */ }
+  }
+
+  function _restoreGeometry(modal) {
+    if (!modal || modal.dataset.modalShellGeometryRestored === '1') return false;
+    const stored = _readGeometry(_geometryKey(modal));
+    modal.dataset.modalShellGeometryRestored = '1';
+    if (!stored) return false;
+    modal.dataset.userSized = '1';
+    modal.style.width = stored.w + 'px';
+    modal.style.height = stored.h + 'px';
+    if (stored.x != null) modal.style.left = stored.x + 'px';
+    if (stored.y != null) modal.style.top = stored.y + 'px';
+    return true;
+  }
+
   function _modalSize(modal, header, footer) {
     const rect = modal.getBoundingClientRect();
-    const z = _modalScale(modal);
+    const z = _zoom();
     const width = Math.max(_numericStyle(modal.style.width, rect.width / z || modal.offsetWidth || 0), 0);
     const height = Math.max(_numericStyle(modal.style.height, rect.height / z || modal.offsetHeight || 0), 0);
     const minWidth = Math.max(_numericStyle(getComputedStyle(modal).minWidth, 320), 260);
@@ -50740,6 +52842,11 @@ if (typeof window !== 'undefined') {
     if (!modal) return;
     modal.style.position = 'absolute';
     modal.style.margin = '0';
+    // 保存済み寸法は描画待ちにせず適用する。バックグラウンドのウィンドウでは
+    // requestAnimationFrame が強く間引かれるため、ここまで遅延するとダイアログを
+    // 開いた直後に既定サイズが見え続けたり、復元完了を待つ処理がタイムアウトする。
+    // viewportへの収め直しだけは、実寸が確定する下の描画後処理で行う。
+    _restoreGeometry(modal);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!modal.isConnected) return;
@@ -50796,6 +52903,7 @@ if (typeof window !== 'undefined') {
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', stop);
         document.removeEventListener('pointercancel', stop);
+        _saveGeometry(modal);
       };
       document.addEventListener('pointermove', move);
       document.addEventListener('pointerup', stop);
@@ -50878,6 +52986,9 @@ if (typeof window !== 'undefined') {
           document.removeEventListener('pointerup', stop);
           document.removeEventListener('pointercancel', stop);
           if (overlay) overlay.dataset.modalShellSuppressClickUntil = String(Date.now() + RESIZE_CLICK_SUPPRESS_MS);
+          // ユーザーが自分で決めた大きさなので、以後は既定サイズで上書きしない
+          modal.dataset.userSized = '1';
+          _saveGeometry(modal);
         };
         document.addEventListener('pointermove', move);
         document.addEventListener('pointerup', stop);
@@ -50892,15 +53003,16 @@ if (typeof window !== 'undefined') {
 
   function _clearModalShellGeometryForSheet(modal) {
     modal.classList.remove('gb-modal-resizable');
-    // 旧リサイズ機構（gb-app.part03 の _gbInstallModalResizeEdges）は
-    // data-gb-resizable-modal="1" を「導入済み」ガードに使う。ここでエッジだけ
-    // 除去してフラグを残すと、シート解除後にどちらの機構も再導入せず
-    // リサイズ不能のまま固定される（導入とペアで必ず解除する）。
+    // 旧バージョンが残した「リサイズ導入済み」の印も一緒に消す。印だけ残ると、
+    // 下シート表示を解除したあとリサイズが再導入されず固定されてしまう。
     if (modal.dataset && modal.dataset.gbResizableModal) delete modal.dataset.gbResizableModal;
     modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-    ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
+    ['position', 'margin', 'left', 'top', 'width', 'height'].forEach(prop => {
       modal.style[prop] = '';
     });
+    // 下シートは画面幅いっぱいに固定される表示なので、その寸法を記憶へ持ち込まない
+    delete modal.dataset.userSized;
+    delete modal.dataset.modalShellGeometryRestored;
   }
 
   function _syncResizableShell(overlay, modal, header, footer) {
@@ -50908,6 +53020,7 @@ if (typeof window !== 'undefined') {
       _clearModalShellGeometryForSheet(modal);
       return false;
     }
+    modal.classList.add('gb-modal-resizable');
     _ensureResizeHandles(modal, header, footer);
     _bindDrag(header, modal, footer);
     _ensureGeometry(modal, header, footer);
@@ -51002,6 +53115,9 @@ if (typeof window !== 'undefined') {
     enhanceAll,
     clamp: _clampModal,
     cleanupStaleOverlays,
+    GEOMETRY_STORAGE_KEY,
+    readGeometry: _readGeometry,
+    saveGeometry: _saveGeometry,
   };
 
   _observeBody();
@@ -51568,6 +53684,23 @@ if (typeof window !== 'undefined') {
 }
 .gb-palette-slider-row label { font-size: 10px; color: var(--fg2); min-width: 0; text-align: right; }
 .gb-palette-slider-row input[type="range"] { width: 100%; min-width: 0; height: 14px; cursor: pointer; accent-color: var(--ui-range-fill-bg); }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-runnable-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-thumb {
+  margin-top: -4px; border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-progress { background: transparent; }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-thumb {
+  border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
 .gb-palette-slider-row .gb-slider-val {
   font-size: 10px; color: var(--fg); width: 100%; min-width: 0; box-sizing: border-box; text-align: right;
   background: var(--bg); border: 1px solid var(--border); border-radius: 2px;
@@ -52536,6 +54669,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness' }[labelText] || labelText).toString();
     const slider = document.createElement('input');
     slider.type = 'range'; slider.min = String(min); slider.max = String(max); slider.value = String(value);
+    slider.classList.add('gb-color-axis-range');
+    slider.dataset.colorAxis = sliderKey;
     slider.dataset.e2eId = `color-palette-${sliderKey}-range`;
     slider.setAttribute('aria-label', `${labelText}を調整`);
     const valInput = document.createElement('input');
@@ -52698,11 +54833,24 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row);
   palette.appendChild(sliderSection);
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSwatchHighlights(); applyLive(); }
+  function updateSliderVisuals() {
+    const hue = ((Number(hsb.h) % 360) + 360) % 360;
+    const saturation = Math.max(0, Math.min(100, Number(hsb.s) || 0));
+    const brightness = Math.max(0, Math.min(100, Number(hsb.b) || 0));
+    hSlider.slider.style.setProperty('--gb-color-axis-gradient', 'linear-gradient(to right, #f00 0%, #ff0 16.667%, #0f0 33.333%, #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%)');
+    hSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} 100% 50%)`);
+    sSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, hsl(${hue} 0% 50%), hsl(${hue} 100% 50%))`);
+    sSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} ${saturation}% 50%)`);
+    bSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, #000, ${_hsbToHex(hue, saturation, 100)})`);
+    bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
+  }
+
+  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
     bSlider.slider.value = hsb.b; bSlider.valInput.value = hsb.b;
+    updateSliderVisuals();
     globalThis.GBUI?.refreshRangeFills?.(sliderSection);
   }
 
@@ -52754,6 +54902,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     });
   }
 
+  updateSliderVisuals();
   updateSwatchHighlights();
   return palette;
 }
@@ -56279,6 +58428,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
     deleteCustomTheme,
     getBuiltinRainbowPalette,
     getRainbowPalette,
+    // テーマの状態を丸ごと持ち運ぶための入口（gb-theme-sync.js が使う）。
+    // 保存キーの一覧と、外から書き換えられたあとの再適用をここへ集約しておかないと、
+    // 持ち出し・同期のたびに対象キーの取りこぼしが起きる。
+    THEME_SETTINGS_KEYS: THEME_SETTINGS_HISTORY_KEYS,
+    refreshThemeSettingsAfterExternalChange: _refreshThemeSettingsAfterHistory,
   };
 
   global.MeldexThemeManager = api;
@@ -56290,6 +58444,258 @@ async function _applyImportedCustomColors(rawColors, mode) {
     applyDefaultTheme(getDefaultThemeId(), { silent: true, preserveStoredThemeUi: true, skipHistory: true });
   }
 })(window);
+
+;
+
+/* === gb-theme-sync.js === */
+;
+/* gb-theme-sync.js — テーマ（見た目）の設定をデスクトップ版とクラウド版で共有する。
+ *
+ * テーマの設定はブラウザの保存領域にしか無く、デスクトップ版（localhost）と
+ * クラウド版（公開URL）は別の保存領域だった。そのため片方で整えた色・パレット・
+ * フォントがもう片方へ渡る経路が存在せず、「クラウド版のテーマだけ少し違って見える」
+ * 状態になっていた（2026-08-07 修正）。
+ *
+ * ここでは、その人自身のDropbox個人管理領域に置いた1つの記録を正としてやり取りする。
+ * 端末側の保存領域は作業用の写しとして残し、開いたときに取り込み、変えたときに書き戻す。
+ * Dropboxへ接続していない環境では何もしない（従来どおり端末ごとの設定として動く）。
+ */
+(function (global) {
+  'use strict';
+
+  if (global.MeldexThemeSync) return;
+
+  const DOCUMENT_NAME = 'theme-settings';
+  const STATE_KEY = 'meldex-theme-sync-state';
+  const PUSH_DELAY_MS = 1200;
+
+  const CHANGE_EVENTS = [
+    'meldex-theme-change',
+    'meldex-theme-color-set-change',
+    'meldex-theme-os-accent-change',
+    'meldex-theme-ui-applications-change',
+    'meldex-theme-ui-auto-tone-change',
+  ];
+
+  let _pushTimer = null;
+  let _busy = false;
+  let _applyingRemote = false;
+
+  function _manager() {
+    return global.MeldexThemeManager;
+  }
+
+  function _themeKeys() {
+    const keys = _manager()?.THEME_SETTINGS_KEYS;
+    return Array.isArray(keys) ? keys.slice() : [];
+  }
+
+  function _readLocalValues() {
+    const values = {};
+    _themeKeys().forEach((key) => {
+      try {
+        values[key] = localStorage.getItem(key);
+      } catch {
+        values[key] = null;
+      }
+    });
+    return values;
+  }
+
+  // 値そのものの並びから作る短い指紋。「前回同期したときから変わったか」の判定に使う。
+  function _signature(values) {
+    const keys = Object.keys(values || {}).sort();
+    const text = keys.map((key) => `${key} ${values[key] == null ? '' : values[key]}`).join('');
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return String(hash);
+  }
+
+  function _readState() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STATE_KEY) || 'null');
+      return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function _writeState(state) {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    } catch { /* 保存できなくても表示は続行する */ }
+  }
+
+  function _get(path) {
+    if (typeof apiFetch !== 'function') return Promise.resolve(null);
+    return apiFetch(path, { silentError: true });
+  }
+
+  // 競合したら読み直す必要があるので、失敗は呼び出し元へ伝える。
+  // silentError はエラーの通知表示を出さないだけで、例外はそのまま返ってくる。
+  function _put(path, body) {
+    if (typeof apiFetch !== 'function') return Promise.resolve(null);
+    return apiFetch(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      silentError: true,
+    });
+  }
+
+  function _applyRemoteValues(values) {
+    const keys = _themeKeys();
+    const changed = [];
+    _applyingRemote = true;
+    try {
+      keys.forEach((key) => {
+        const next = Object.prototype.hasOwnProperty.call(values || {}, key) ? values[key] : null;
+        let current = null;
+        try { current = localStorage.getItem(key); } catch { current = null; }
+        if (current === next) return;
+        try {
+          if (next == null) localStorage.removeItem(key);
+          else localStorage.setItem(key, next);
+          changed.push(key);
+        } catch { /* 保存できないキーは飛ばす */ }
+      });
+      if (changed.length && typeof _manager()?.refreshThemeSettingsAfterExternalChange === 'function') {
+        _manager().refreshThemeSettingsAfterExternalChange(changed);
+      }
+    } finally {
+      _applyingRemote = false;
+    }
+    return changed;
+  }
+
+  async function pull() {
+    const response = await _get(`/personal-preferences/${DOCUMENT_NAME}`);
+    if (!response || response.available === false) return { applied: false, available: false };
+    if (!response.exists || !response.payload) return { applied: false, available: true, revision: null };
+
+    const remoteValues = response.payload.values;
+    if (!remoteValues || typeof remoteValues !== 'object') return { applied: false, available: true, revision: response.revision };
+
+    const localValues = _readLocalValues();
+    const localSignature = _signature(localValues);
+    const remoteSignature = _signature(remoteValues);
+    if (localSignature === remoteSignature) {
+      _writeState({ revision: response.revision, signature: remoteSignature, updatedAt: response.payload.updatedAt || '' });
+      return { applied: false, available: true, revision: response.revision };
+    }
+
+    const state = _readState();
+    const remoteUpdatedAt = String(response.payload.updatedAt || '');
+    const syncedUpdatedAt = String(state?.updatedAt || '');
+
+    // この端末で一度も同期していない場合は、どちらが新しいかを比べる材料が無い。
+    // 丸ごと取り込むと、まだ同期されていないこの端末の設定を別環境の既定値で
+    // 黙って消してしまう。すでにこの端末で決まっている項目は残し、まだ持って
+    // いない項目だけを取り込む（不足分を埋める形にして、消えないことを保証する）。
+    if (!state) {
+      const merged = {};
+      _themeKeys().forEach((key) => {
+        merged[key] = localValues[key] != null
+          ? localValues[key]
+          : (Object.prototype.hasOwnProperty.call(remoteValues, key) ? remoteValues[key] : null);
+      });
+      const mergedChanged = _applyRemoteValues(merged);
+      // 埋めた結果をまだ共有側へ書き戻していないので、「同期済み」の印は付けない
+      // （signature を空にしておくと、このあとの書き戻しが必ず実行される）。
+      _writeState({ revision: response.revision, signature: '', updatedAt: remoteUpdatedAt });
+      return { applied: mergedChanged.length > 0, available: true, revision: response.revision, changed: mergedChanged, merged: true };
+    }
+
+    // 2回目以降。共有側の内容が、この端末が前回やり取りした時点より新しくないなら
+    // 取り込まない（同じか古い内容で、この端末の今の見た目を巻き戻さないため）。
+    if (syncedUpdatedAt && remoteUpdatedAt <= syncedUpdatedAt) {
+      return { applied: false, available: true, revision: response.revision };
+    }
+    // 時刻を比べられない場合は、端末側だけが変わっているなら書き戻す側に任せる。
+    if (!syncedUpdatedAt && state.signature !== localSignature) {
+      return { applied: false, available: true, revision: response.revision };
+    }
+
+    const changed = _applyRemoteValues(remoteValues);
+    _writeState({ revision: response.revision, signature: _signature(_readLocalValues()), updatedAt: remoteUpdatedAt });
+    return { applied: changed.length > 0, available: true, revision: response.revision, changed };
+  }
+
+  async function push(options) {
+    const values = _readLocalValues();
+    const signature = _signature(values);
+    const state = _readState();
+    if (!options?.force && state && state.signature === signature) return { pushed: false, available: true };
+
+    const payload = { updatedAt: new Date().toISOString(), values };
+    let response = null;
+    try {
+      response = await _put(`/personal-preferences/${DOCUMENT_NAME}`, {
+        payload,
+        expectedRevision: state?.revision || null,
+      });
+    } catch (err) {
+      // 別の環境が先に書いていた場合は、こちらの内容で押し切らずに読み直す。
+      await pull().catch(() => null);
+      return { pushed: false, conflict: true, error: err };
+    }
+    if (!response || response.available === false) return { pushed: false, available: false };
+    _writeState({ revision: response.revision || '', signature, updatedAt: payload.updatedAt });
+    return { pushed: true, available: true, revision: response.revision || '' };
+  }
+
+  function schedulePush() {
+    if (_applyingRemote) return;
+    if (_pushTimer) clearTimeout(_pushTimer);
+    _pushTimer = setTimeout(() => {
+      _pushTimer = null;
+      if (_busy) return;
+      _busy = true;
+      push().catch(() => null).finally(() => { _busy = false; });
+    }, PUSH_DELAY_MS);
+  }
+
+  async function syncNow() {
+    if (_busy) return null;
+    _busy = true;
+    try {
+      const pulled = await pull();
+      if (pulled && pulled.available === false) return pulled;
+      const pushed = await push();
+      return { pulled, pushed };
+    } catch {
+      return null;
+    } finally {
+      _busy = false;
+    }
+  }
+
+  function start() {
+    if (!_manager()?.THEME_SETTINGS_KEYS) return;
+    CHANGE_EVENTS.forEach((name) => global.addEventListener(name, schedulePush));
+    // 別の環境で変えた見た目を、戻ってきたときに取り込む
+    global.addEventListener('focus', () => { syncNow(); });
+    syncNow();
+  }
+
+  global.MeldexThemeSync = {
+    DOCUMENT_NAME,
+    STATE_KEY,
+    pull,
+    push,
+    syncNow,
+    start,
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -57134,7 +59540,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
     "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
     "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
     "document.getElementById('settings-transfer-import-input')?.click()",
-    "window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })",
+    "window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })",
   ]);
 
   function parseAction(actionStr) {
@@ -57493,6 +59899,683 @@ async function _applyImportedCustomColors(rawColors, mode) {
   });
   document.addEventListener('pointerdown', () => _hideTip(true));
 
+})();
+
+;
+
+/* === gb-storage-adapter-browser.js === */
+;
+(function () {
+  'use strict';
+
+  const shared = window.__MeldexStorageAdapterInternals;
+  if (!shared) return;
+
+  const {
+    _runtime,
+    _normalizeRelativePath,
+    _joinPath,
+    _basename,
+    _dirname,
+    _mimeFromPath,
+    _normalizeHandleOptions,
+    _createFile,
+    _toUint8Array,
+  } = shared;
+
+  const STORAGE_ROOT_NAME = 'MeldexData';
+  const HOME_FOLDER_NAME = 'MeldexHome';
+  const HOME_STORAGE_KEY = 'meldex-cloud-home-folder';
+  const SYSTEM_ROOT = 'MeldexSettings/system/v1';
+
+  function _systemContract() {
+    return window.MeldexSystemStorage || null;
+  }
+
+  function _assertEntryName(name) {
+    const value = String(name || '').trim();
+    if (!value || value === '.' || value === '..' || value.includes('/') || value.includes('\\')) {
+      throw new Error('ファイル名またはフォルダ名が不正です');
+    }
+    return value;
+  }
+
+  function _systemSegment(value, label) {
+    const text = String(value || '').trim();
+    if (!text || !/^[A-Za-z0-9._-]+$/.test(text)) throw new Error(`${label}が不正です`);
+    return text;
+  }
+
+  function _revision() {
+    return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function _conflictError(expectedRevision, currentRevision) {
+    const error = new Error('管理データが別の画面で更新されています。再読み込みしてからやり直してください');
+    error.name = 'SystemStorageConflictError';
+    error.code = 'system_storage_conflict';
+    error.expectedRevision = expectedRevision;
+    error.currentRevision = currentRevision;
+    return error;
+  }
+
+  class BrowserFileHandle {
+    constructor(provider, relativePath, handle) {
+      this.provider = provider;
+      this.path = _normalizeRelativePath(relativePath);
+      this.name = _basename(this.path);
+      this.kind = 'file';
+      this._handle = handle;
+    }
+
+    async getFile() {
+      return this._handle.getFile();
+    }
+
+    async createWritable(options) {
+      return this._handle.createWritable(options);
+    }
+  }
+
+  class BrowserDirectoryHandle {
+    constructor(provider, relativePath, handle) {
+      this.provider = provider;
+      this.path = _normalizeRelativePath(relativePath);
+      this.name = this.path ? _basename(this.path) : STORAGE_ROOT_NAME;
+      this.kind = 'directory';
+      this._handle = handle;
+    }
+
+    async getDirectoryHandle(name, options) {
+      const entryName = _assertEntryName(name);
+      const handle = await this._handle.getDirectoryHandle(entryName, options || {});
+      return new BrowserDirectoryHandle(this.provider, _joinPath(this.path, entryName), handle);
+    }
+
+    async getFileHandle(name, options) {
+      const entryName = _assertEntryName(name);
+      const handle = await this._handle.getFileHandle(entryName, options || {});
+      return new BrowserFileHandle(this.provider, _joinPath(this.path, entryName), handle);
+    }
+
+    async *entries() {
+      for await (const [name, handle] of this._handle.entries()) {
+        const path = _joinPath(this.path, name);
+        yield [name, handle.kind === 'directory'
+          ? new BrowserDirectoryHandle(this.provider, path, handle)
+          : new BrowserFileHandle(this.provider, path, handle)];
+      }
+    }
+
+    async removeEntry(name, options) {
+      return this._handle.removeEntry(_assertEntryName(name), options || {});
+    }
+  }
+
+  class BrowserSystemStorageAdapter {
+    constructor(provider) {
+      this.provider = provider;
+    }
+
+    _path(kind, documentId) {
+      const contract = _systemContract();
+      if (contract?.documentRelativePath) return `${SYSTEM_ROOT}/${contract.documentRelativePath(kind, documentId)}`;
+      const safeKind = _systemSegment(kind, '管理データ種別');
+      const safeId = _systemSegment(documentId, '管理データID');
+      return `${SYSTEM_ROOT}/${safeKind}/${safeId}.json`;
+    }
+
+    async load(kind, documentId) {
+      const path = this._path(kind, documentId);
+      let text = '';
+      try {
+        text = await this.provider.readText(path);
+      } catch (error) {
+        if (error?.name === 'NotFoundError') return null;
+        throw error;
+      }
+      let record = null;
+      try {
+        record = JSON.parse(text);
+      } catch {
+        throw new Error(`管理データが破損しているため読み込めません: ${path}`);
+      }
+      if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+      const contract = _systemContract();
+      if (contract?.recordFromEnvelope && record.meldex_system_storage) {
+        return contract.recordFromEnvelope(record);
+      }
+      // 初期開発版で作成された封筒なしレコードの読込互換。
+      return record;
+    }
+
+    async save(kind, documentId, payload, options) {
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('payload はオブジェクトである必要があります');
+      const path = this._path(kind, documentId);
+      return this.provider._withWriteLock(path, async () => {
+        const current = await this.load(kind, documentId);
+        if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
+          const expected = options.expectedRevision || null;
+          const actual = current?.revision || null;
+          if (expected !== actual) throw _conflictError(expected, actual);
+        }
+        const contract = _systemContract();
+        const timestamp = new Date().toISOString();
+        const record = {
+          schemaVersion: contract?.CURRENT_SCHEMA_VERSION || 1,
+          kind,
+          documentId,
+          revision: _revision(),
+          createdAt: current?.createdAt || timestamp,
+          updatedAt: timestamp,
+          boundary: 'browser-local',
+          payload,
+        };
+        await this.provider.writeJson(path, contract?.recordToEnvelope ? contract.recordToEnvelope(record) : record);
+        return record;
+      });
+    }
+
+    async delete(kind, documentId, options) {
+      const path = this._path(kind, documentId);
+      return this.provider._withWriteLock(path, async () => {
+        const current = await this.load(kind, documentId);
+        if (!current) return false;
+        if (Object.prototype.hasOwnProperty.call(options || {}, 'expectedRevision')) {
+          const expected = options.expectedRevision || null;
+          const actual = current.revision || null;
+          if (expected !== actual) throw _conflictError(expected, actual);
+        }
+        await this.provider.deletePath(path);
+        return true;
+      });
+    }
+  }
+
+  class BrowserStorageProvider {
+    constructor() {
+      this.rootHandle = null;
+      this._nativeRoot = null;
+      this._writeLocks = new Map();
+      this._systemStorage = new BrowserSystemStorageAdapter(this);
+    }
+
+    static isSupported() {
+      return typeof navigator !== 'undefined' && typeof navigator.storage?.getDirectory === 'function';
+    }
+
+    getVaultName() {
+      return STORAGE_ROOT_NAME;
+    }
+
+    getVaultPath() {
+      return STORAGE_ROOT_NAME;
+    }
+
+    async _root() {
+      if (!BrowserStorageProvider.isSupported()) {
+        throw new Error('このブラウザは端末内保存に対応していません。OSとブラウザを最新版に更新してください');
+      }
+      if (!this._nativeRoot) {
+        const originRoot = await navigator.storage.getDirectory();
+        this._nativeRoot = await originRoot.getDirectoryHandle(STORAGE_ROOT_NAME, { create: true });
+      }
+      return this._nativeRoot;
+    }
+
+    _syncWorkspaceState() {
+      _runtime()?.setWorkspaceState?.({
+        kind: 'browser',
+        name: 'この端末',
+        path: STORAGE_ROOT_NAME,
+        access: 'editor',
+        shared: false,
+      });
+    }
+
+    async restoreWorkspace() {
+      if (!_runtime()?.isBrowserMode?.()) return null;
+      const nativeRoot = await this._root();
+      await nativeRoot.getDirectoryHandle(HOME_FOLDER_NAME, { create: true });
+      if (!this.rootHandle) this.rootHandle = new BrowserDirectoryHandle(this, '', nativeRoot);
+      try {
+        if (!localStorage.getItem(HOME_STORAGE_KEY)) {
+          localStorage.setItem(HOME_STORAGE_KEY, JSON.stringify({ path: HOME_FOLDER_NAME, name: HOME_FOLDER_NAME }));
+        }
+      } catch {}
+      this._syncWorkspaceState();
+      return this.rootHandle;
+    }
+
+    async clearWorkspace() {
+      this.rootHandle = null;
+      this._nativeRoot = null;
+      this._writeLocks.clear();
+      if (_runtime()?.isBrowserMode?.()) _runtime()?.clearWorkspaceState?.();
+    }
+
+    async ensureWorkspacePermission() {
+      return !!(await this.restoreWorkspace());
+    }
+
+    async getWorkspaceInfo() {
+      const root = await this.restoreWorkspace();
+      return {
+        supported: BrowserStorageProvider.isSupported(),
+        connected: !!root,
+        name: 'この端末',
+        path: STORAGE_ROOT_NAME,
+        permission: 'readwrite',
+        homePath: HOME_FOLDER_NAME,
+        homeName: HOME_FOLDER_NAME,
+      };
+    }
+
+    async _nativeDirectory(relativePath, create) {
+      let handle = await this._root();
+      const segments = _normalizeRelativePath(relativePath).split('/').filter(Boolean);
+      for (const segment of segments) handle = await handle.getDirectoryHandle(_assertEntryName(segment), { create: !!create });
+      return handle;
+    }
+
+    async getDirectoryHandle(relativePath, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) return this.restoreWorkspace();
+      const handleOptions = _normalizeHandleOptions(options);
+      const handle = await this._nativeDirectory(normalized, !!handleOptions.create);
+      return new BrowserDirectoryHandle(this, normalized, handle);
+    }
+
+    async getFileHandle(relativePath, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) throw new Error('ファイルパスが不正です');
+      const handleOptions = _normalizeHandleOptions(options);
+      const parent = await this._nativeDirectory(_dirname(normalized), !!handleOptions.create);
+      const handle = await parent.getFileHandle(_assertEntryName(_basename(normalized)), { create: !!handleOptions.create });
+      return new BrowserFileHandle(this, normalized, handle);
+    }
+
+    async statPath(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) return { kind: 'directory', name: STORAGE_ROOT_NAME, path: '', size: 0, modified: '', modifiedMs: 0 };
+      try {
+        const handle = await this.getFileHandle(normalized, { create: false });
+        const file = await handle.getFile();
+        return {
+          kind: 'file', name: handle.name, path: normalized, size: Number(file.size || 0),
+          modified: file.lastModified ? new Date(file.lastModified).toISOString() : '',
+          modifiedMs: Number(file.lastModified || 0),
+        };
+      } catch {}
+      try {
+        await this.getDirectoryHandle(normalized, { create: false });
+        return { kind: 'directory', name: _basename(normalized), path: normalized, size: 0, modified: '', modifiedMs: 0 };
+      } catch {
+        return null;
+      }
+    }
+
+    async assertDirectory(relativePath) {
+      const stat = await this.statPath(relativePath);
+      if (!stat || stat.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${relativePath}`);
+      return stat;
+    }
+
+    async assertFile(relativePath) {
+      const stat = await this.statPath(relativePath);
+      if (!stat || stat.kind !== 'file') throw new Error(`ファイルが見つかりません: ${relativePath}`);
+      return stat;
+    }
+
+    async ensureDirectory(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const handle = await this._nativeDirectory(normalized, true);
+      return new BrowserDirectoryHandle(this, normalized, handle);
+    }
+
+    async listEntries(relativePath) {
+      const directory = await this.getDirectoryHandle(relativePath, { create: false });
+      const entries = [];
+      for await (const [name, handle] of directory.entries()) {
+        const path = _joinPath(relativePath, name);
+        if (handle.kind === 'file') {
+          const file = await handle.getFile();
+          entries.push({ name, path, kind: 'file', size: file.size, modified: new Date(file.lastModified).toISOString() });
+        } else {
+          entries.push({ name, path, kind: 'directory', size: 0, modified: '' });
+        }
+      }
+      return entries.sort((a, b) => a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' }));
+    }
+
+    async downloadAsFile(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const source = await (await this.getFileHandle(normalized, { create: false })).getFile();
+      return _createFile(new Uint8Array(await source.arrayBuffer()), _basename(normalized), {
+        type: source.type || _mimeFromPath(normalized),
+        lastModified: source.lastModified,
+      });
+    }
+
+    async readText(relativePath) {
+      return (await this.downloadAsFile(relativePath)).text();
+    }
+
+    async readJson(relativePath, fallbackValue) {
+      try { return JSON.parse(await this.readText(relativePath)); } catch { return fallbackValue; }
+    }
+
+    async uploadBytes(relativePath, data) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const parent = _dirname(normalized);
+      if (parent) await this.ensureDirectory(parent);
+      const handle = await this.getFileHandle(normalized, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(await _toUint8Array(data));
+      await writable.close();
+      return this.statPath(normalized);
+    }
+
+    async overwriteBytes(relativePath, data) {
+      return this.uploadBytes(relativePath, data);
+    }
+
+    async writeText(relativePath, content) {
+      return this.uploadBytes(relativePath, new TextEncoder().encode(String(content ?? '')));
+    }
+
+    async writeJson(relativePath, data) {
+      return this.writeText(relativePath, JSON.stringify(data, null, 2));
+    }
+
+    async _withWriteLock(path, callback) {
+      if (globalThis.navigator?.locks?.request) return globalThis.navigator.locks.request(`meldex-browser:${path}`, callback);
+      const previous = this._writeLocks.get(path) || Promise.resolve();
+      const next = previous.catch(() => {}).then(callback);
+      this._writeLocks.set(path, next);
+      try { return await next; } finally { if (this._writeLocks.get(path) === next) this._writeLocks.delete(path); }
+    }
+
+    async writeJsonMerged(relativePath, updater, options) {
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const fallback = Object.prototype.hasOwnProperty.call(options || {}, 'fallbackValue') ? options.fallbackValue : {};
+        const current = await this.readJson(normalized, fallback);
+        const next = typeof updater === 'function' ? await updater(current, { attempt: 0, rev: '' }) : updater;
+        if (next === false) return { ok: true, skipped: true };
+        await this.writeJson(normalized, next === undefined ? current : next);
+        return { ok: true };
+      });
+    }
+
+    async deletePath(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) throw new Error('端末内保存のルートは削除できません');
+      const parent = await this._nativeDirectory(_dirname(normalized), false);
+      await parent.removeEntry(_basename(normalized), { recursive: true });
+      return true;
+    }
+
+    async _copyRecursive(sourcePath, targetPath) {
+      const stat = await this.statPath(sourcePath);
+      if (!stat) throw new Error(`見つかりません: ${sourcePath}`);
+      if (stat.kind === 'directory') {
+        await this.ensureDirectory(targetPath);
+        for (const child of await this.listEntries(sourcePath)) {
+          await this._copyRecursive(_joinPath(sourcePath, child.name), _joinPath(targetPath, child.name));
+        }
+        return;
+      }
+      let bytes = new Uint8Array(await (await this.downloadAsFile(sourcePath)).arrayBuffer());
+      const format = window.MeldexDocumentIdentity?.formatForPath?.(targetPath);
+      if (format) {
+        const regenerated = window.MeldexDocumentIdentity.regenerateDocumentId(new TextDecoder().decode(bytes), format);
+        if (regenerated?.changed) bytes = new TextEncoder().encode(regenerated.text);
+      }
+      await this.uploadBytes(targetPath, bytes);
+    }
+
+    async copyPath(oldRelativePath, newRelativePath) {
+      const source = _normalizeRelativePath(oldRelativePath);
+      const target = _normalizeRelativePath(newRelativePath);
+      if (!source || !target) throw new Error('コピー元またはコピー先が不正です');
+      if (target.startsWith(`${source}/`)) throw new Error('フォルダをそのフォルダ自身の配下へコピーできません');
+      if (await this.statPath(target)) throw new Error(`コピー先に既に存在します: ${target}`);
+      await this._copyRecursive(source, target);
+      return { ok: true, new_path: target };
+    }
+
+    async movePath(oldRelativePath, newRelativePath) {
+      const source = _normalizeRelativePath(oldRelativePath);
+      const target = _normalizeRelativePath(newRelativePath);
+      if (source === target) return { ok: true, new_path: target };
+      await this.copyPath(source, target);
+      await this.deletePath(source);
+      window.MeldexDocumentSaveCoordinator?.rebindDocumentPathPrefix?.(source, target);
+      return { ok: true, new_path: target };
+    }
+
+    async getTemporaryLink(relativePath) {
+      return URL.createObjectURL(await this.downloadAsFile(relativePath));
+    }
+
+    getSystemStorageAdapter() {
+      return this._systemStorage;
+    }
+
+    async preflight() {
+      const info = await this.getWorkspaceInfo();
+      return {
+        ok: !!info.connected,
+        mounted: !!info.connected,
+        access: info.connected ? 'editor' : 'none',
+        state: _runtime()?.getWorkspaceState?.() || null,
+        message: info.connected ? '' : 'このブラウザでは端末内保存を利用できません。',
+      };
+    }
+  }
+
+  if (window.MeldexStorageAdapter) {
+    window.MeldexStorageAdapter.BrowserStorageProvider = BrowserStorageProvider;
+  }
+})();
+
+;
+
+/* === gb-offline-shell.js === */
+;
+(function () {
+  'use strict';
+
+  if (window.MeldexOfflineShell) return;
+
+  const CHOICE_KEY = 'meldex-offline-shell-choice-v1';
+  const CHOICE_ENABLED = 'enabled';
+  const CHOICE_ONLINE = 'online';
+  const MESSAGE_TIMEOUT_MS = 180000;
+
+  function _runtime() {
+    return window.MeldexRuntimeAdapter;
+  }
+
+  function getChoice() {
+    try {
+      const value = localStorage.getItem(CHOICE_KEY);
+      return value === CHOICE_ENABLED || value === CHOICE_ONLINE ? value : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function _setChoice(value) {
+    try { localStorage.setItem(CHOICE_KEY, value); } catch {}
+  }
+
+  function _isBypassLaunch() {
+    try {
+      const params = new URLSearchParams(location.search);
+      return params.has('smoke') || params.has('e2e');
+    } catch {
+      return false;
+    }
+  }
+
+  async function _activeWorker() {
+    if (!('serviceWorker' in navigator)) throw new Error('このブラウザはオフライン利用に対応していません');
+    const registration = await navigator.serviceWorker.ready;
+    const worker = registration.active || registration.waiting || registration.installing;
+    if (!worker) throw new Error('オフライン用アプリの準備がまだ完了していません');
+    return worker;
+  }
+
+  async function _request(type) {
+    const worker = await _activeWorker();
+    return new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timer = setTimeout(() => reject(new Error('オフライン用アプリの準備がタイムアウトしました')), MESSAGE_TIMEOUT_MS);
+      channel.port1.onmessage = (event) => {
+        clearTimeout(timer);
+        const result = event.data || {};
+        if (result.ok === false) reject(new Error(result.message || 'オフライン設定を変更できませんでした'));
+        else resolve(result);
+      };
+      worker.postMessage({ type }, [channel.port2]);
+    });
+  }
+
+  async function enable() {
+    const result = await _request('MELDEX_OFFLINE_ENABLE');
+    _setChoice(CHOICE_ENABLED);
+    return result;
+  }
+
+  async function disable() {
+    const result = await _request('MELDEX_OFFLINE_DISABLE');
+    _setChoice(CHOICE_ONLINE);
+    return result;
+  }
+
+  async function status() {
+    try { return await _request('MELDEX_OFFLINE_STATUS'); }
+    catch (error) { return { ok: false, enabled: false, message: error?.message || String(error) }; }
+  }
+
+  function _showFirstRunDialog() {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay meldex-offline-choice-overlay';
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:10025;display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box;background:rgba(0,0,0,.58);';
+      overlay.innerHTML = `<div class="meldex-offline-choice-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-offline-choice-title" style="width:calc(100vw - 16px);max-width:620px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;padding:clamp(16px,4vw,24px);border:1px solid #3a3a3a;border-radius:12px;background:#1e1e1e;color:#d4d4d4;box-shadow:0 16px 48px rgba(0,0,0,.45);">
+        <h2 id="meldex-offline-choice-title" style="margin:0 0 8px;font-size:22px;">オフラインでも使いますか？</h2>
+        <p style="margin:0 0 16px;color:#bdbdbd;font-size:13px;line-height:1.7;">どちらを選んでも、データはこの端末内に自動保存されます。オフライン利用を選ぶと、Meldex本体もこの端末に保存します。あとから設定で変更できます。</p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));gap:10px;">
+          <button id="meldex-offline-enable" type="button" style="min-height:92px;padding:14px;text-align:left;border:1px solid #356b4d;border-radius:10px;background:#18261e;color:#e5e7eb;cursor:pointer;white-space:normal;">
+            <strong style="display:block;font-size:16px;margin-bottom:5px;">オフラインでも使えるようにする</strong>
+            <span style="display:block;font-size:12px;line-height:1.6;color:#a8c0b0;">通信できない時もMeldexを起動できます。最初にアプリ本体を保存します。</span>
+          </button>
+          <button id="meldex-offline-online" type="button" style="min-height:92px;padding:14px;text-align:left;border:1px solid #444;border-radius:10px;background:#252525;color:#e5e7eb;cursor:pointer;white-space:normal;">
+            <strong style="display:block;font-size:16px;margin-bottom:5px;">オンライン時だけ使う</strong>
+            <span style="display:block;font-size:12px;line-height:1.6;color:#aaa;">アプリ本体は保存せず、接続中に最新版を読み込みます。</span>
+          </button>
+        </div>
+        <div id="meldex-offline-choice-status" role="status" aria-live="polite" style="min-height:20px;margin-top:12px;color:#bdbdbd;font-size:12px;line-height:1.6;"></div>
+      </div>`;
+      document.body.appendChild(overlay);
+      const enableButton = overlay.querySelector('#meldex-offline-enable');
+      const onlineButton = overlay.querySelector('#meldex-offline-online');
+      const statusElement = overlay.querySelector('#meldex-offline-choice-status');
+      const setBusy = (busy) => {
+        enableButton.disabled = busy;
+        onlineButton.disabled = busy;
+        enableButton.style.opacity = busy ? '.65' : '1';
+        onlineButton.style.opacity = busy ? '.65' : '1';
+      };
+      enableButton.addEventListener('click', async () => {
+        setBusy(true);
+        statusElement.textContent = 'Meldex本体をこの端末に保存しています。画面を閉じずにお待ちください…';
+        try {
+          await enable();
+          overlay.remove();
+          resolve(CHOICE_ENABLED);
+        } catch (error) {
+          setBusy(false);
+          statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}　オンライン時だけ使うことはできます。`;
+          statusElement.style.color = '#f7b4c0';
+        }
+      });
+      onlineButton.addEventListener('click', () => {
+        _setChoice(CHOICE_ONLINE);
+        overlay.remove();
+        resolve(CHOICE_ONLINE);
+      });
+      enableButton.focus();
+    });
+  }
+
+  async function prepareFirstRunChoice() {
+    if (!_runtime()?.isBrowserMode?.() || _isBypassLaunch()) return getChoice();
+    const choice = getChoice();
+    if (choice === CHOICE_ENABLED) {
+      enable().catch((error) => console.warn('[MeldexOfflineShell] 更新確認に失敗しました', error));
+      return choice;
+    }
+    if (choice === CHOICE_ONLINE) return choice;
+    return _showFirstRunDialog();
+  }
+
+  function renderSettings(container) {
+    if (!container || !_runtime()?.isBrowserDataMode?.()) return;
+    const section = document.createElement('div');
+    section.className = 'meldex-offline-settings';
+    section.style.cssText = 'margin-top:12px;padding-top:12px;border-top:1px solid var(--border);';
+    section.innerHTML = `<div style="font-weight:700;font-size:13px;">オフライン利用</div>
+      <div data-offline-status class="gb-section-desc" role="status" aria-live="polite">状態を確認しています…</div>
+      <div class="gb-field-row" style="justify-content:flex-start;gap:8px;flex-wrap:wrap;margin-top:8px;">
+        <button type="button" class="gb-btn gb-btn-sm" data-offline-enable>オフラインでも使えるようにする</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-offline-disable>オンライン時だけ使う</button>
+      </div>
+      <div class="gb-section-desc">設定を変えても、この端末内のワークスペースやファイルは削除されません。</div>`;
+    container.appendChild(section);
+    const statusElement = section.querySelector('[data-offline-status]');
+    const enableButton = section.querySelector('[data-offline-enable]');
+    const disableButton = section.querySelector('[data-offline-disable]');
+    const setBusy = (busy) => {
+      enableButton.disabled = busy;
+      disableButton.disabled = busy;
+    };
+    const refresh = async () => {
+      const current = await status();
+      const enabled = current.ok === false ? getChoice() === CHOICE_ENABLED : current.enabled === true;
+      statusElement.textContent = current.ok === false
+        ? `現在の状態を確認できません: ${current.message || 'Service Workerに接続できません'}`
+        : enabled ? '現在: オフラインでも使用可能' : '現在: オンライン時だけ使用';
+      enableButton.disabled = enabled;
+      disableButton.disabled = !enabled;
+    };
+    enableButton.addEventListener('click', async () => {
+      setBusy(true);
+      statusElement.textContent = 'Meldex本体をこの端末に保存しています…';
+      try { await enable(); await refresh(); }
+      catch (error) { statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}`; setBusy(false); }
+    });
+    disableButton.addEventListener('click', async () => {
+      setBusy(true);
+      statusElement.textContent = 'オフライン用のアプリ本体だけを削除しています…';
+      try { await disable(); await refresh(); }
+      catch (error) { statusElement.textContent = `変更できませんでした: ${error?.message || String(error)}`; setBusy(false); }
+    });
+    refresh();
+  }
+
+  window.MeldexOfflineShell = {
+    CHOICE_KEY,
+    getChoice,
+    status,
+    enable,
+    disable,
+    prepareFirstRunChoice,
+    renderSettings,
+  };
 })();
 
 ;
@@ -58097,15 +61180,16 @@ async function _applyImportedCustomColors(rawColors, mode) {
     const classification = classify(capability);
     if (feature === 'file_info' && classification.status === 'available'
         && global.MeldexFileInfoPanel?.renderInto) {
+      // タグは本体のフォルダパネル→情報タブと同じく表示する（以前は単独アプリだけ
+      // 抑止していたため、同じ情報タブなのに内容が食い違っていた）。
       if (!path) {
-        await global.MeldexFileInfoPanel.renderInto(parts.panel, '', { showTags: false });
+        await global.MeldexFileInfoPanel.renderInto(parts.panel, '');
         return;
       }
       try {
         const metadata = await global.apiFetch?.('/file-meta?path=' + encodeURIComponent(path), { silentError: true });
         if (revision !== optionRevision) return;
         await global.MeldexFileInfoPanel.renderInto(parts.panel, path, {
-          showTags: false,
           preloadedMeta: { ...(metadata || {}), embedded: metadata?.embedded ?? null },
         });
         return;
@@ -58548,7 +61632,13 @@ async function _applyImportedCustomColors(rawColors, mode) {
     void _loadLocalApiFonts();
   }
 
-  global.MeldexFontCatalog = Object.freeze({ getFamilies: () => [..._families.values()], refresh: requestLocalFontAccess });
+  global.MeldexFontCatalog = Object.freeze({
+    // 選べるフォントの既定一覧はここが正本。同じ内容を他所へ書き写さないこと
+    // （写しが増えると環境ごとに選択肢がずれる）。
+    PRESET_FONTS,
+    getFamilies: () => [..._families.values()],
+    refresh: requestLocalFontAccess,
+  });
   global.getDetectedSystemFonts = getDetectedSystemFonts;
   global.getFontFamilyOptionItems = getFontFamilyOptionItems;
   global.getFontFamilyOptions = getFontFamilyOptions;

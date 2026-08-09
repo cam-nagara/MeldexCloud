@@ -28,6 +28,7 @@ const GBFloatPanel = (() => {
   let _backBtn = null;
   let _forwardBtn = null;
   let _openMainBtn = null;
+  let _openWindowBtn = null;
   let _pathBarEl = null;
   let _pane = null;
   let _current = null;
@@ -644,6 +645,8 @@ const GBFloatPanel = (() => {
 
   function _onTitlePointerDown(e) {
     if (e.button !== 0 || e.target.closest('button')) return;
+    // native D&D見出しではブラウザにdragstartを任せ、パネル移動を開始しない。
+    if (e.target.closest('[data-meldex-drag-surface]')) return;
     if (_panelState === 'maximized') return;
     _drag = {
       pointerId: e.pointerId,
@@ -827,13 +830,35 @@ const GBFloatPanel = (() => {
 
     const title = document.createElement('div');
     title.className = 'gb-float-panel-title';
+    const dragHandle = document.createElement('button');
+    dragHandle.type = 'button';
+    dragHandle.className = 'gb-float-panel-button gb-float-panel-target-drag-handle';
+    dragHandle.dataset.testid = 'gb-float-panel-target-drag-handle';
+    dragHandle.title = '表示対象をドラッグ';
+    dragHandle.setAttribute('aria-label', '表示対象をドラッグ');
+    const isCoarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches === true;
+    const dragHandleSize = isCoarsePointer ? '44px' : '26px';
+    dragHandle.style.width = dragHandleSize;
+    dragHandle.style.minWidth = dragHandleSize;
+    dragHandle.style.height = dragHandleSize;
+    dragHandle.style.cursor = 'grab';
+    if (isCoarsePointer) {
+      titlebar.style.height = '44px';
+      titlebar.style.flexBasis = '44px';
+    }
+    dragHandle.style.touchAction = 'none';
+    dragHandle.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 16) : '';
     _titleIconEl = document.createElement('span');
     _titleIconEl.className = 'gb-float-panel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.id = 'gb-float-panel-title-label';
     _titleTextEl.className = 'gb-float-panel-title-text';
+    title.appendChild(dragHandle);
     title.appendChild(_titleIconEl);
     title.appendChild(_titleTextEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
+      MeldexDnD.installSurfaceDragSource(panel, dragHandle, () => _current, 'float-panel');
+    }
 
     const actions = document.createElement('div');
     actions.className = 'gb-float-panel-actions';
@@ -879,6 +904,18 @@ const GBFloatPanel = (() => {
     _openMainBtn.appendChild(openMainLabel);
     _openMainBtn.addEventListener('click', () => { _openInMainPane(); });
 
+    // 「単独ウィンドウで開く」: フロートパネルはMeldexの画面の中の部品なので、
+    // それ自体をOSレベルで最前面に固定することはできない。実ウィンドウで開き直せば
+    // そのウィンドウ側の「常に最前面」で他のアプリより手前に置いておける。
+    _openWindowBtn = document.createElement('button');
+    _openWindowBtn.type = 'button';
+    _openWindowBtn.className = 'gb-float-panel-button';
+    _openWindowBtn.dataset.testid = 'gb-float-panel-open-window';
+    _openWindowBtn.title = '単独ウィンドウで開く';
+    _openWindowBtn.setAttribute('aria-label', '単独ウィンドウで開く');
+    _openWindowBtn.innerHTML = typeof lucide === 'function' ? lucide('externalLink', 16) : '↗';
+    _openWindowBtn.addEventListener('click', () => { _openInStandaloneWindow(); });
+
     _minimizeBtn = document.createElement('button');
     _minimizeBtn.type = 'button';
     _minimizeBtn.className = 'gb-float-panel-button';
@@ -895,6 +932,7 @@ const GBFloatPanel = (() => {
     actions.appendChild(_backBtn);
     actions.appendChild(_forwardBtn);
     actions.appendChild(_openMainBtn);
+    actions.appendChild(_openWindowBtn);
     actions.appendChild(_minimizeBtn);
     actions.appendChild(closeBtn);
 
@@ -904,6 +942,13 @@ const GBFloatPanel = (() => {
 
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
+      MeldexDnD.installSurfaceDropTarget(panel, item => {
+        const target = MeldexDnD.normalizeOpenTarget?.(item);
+        if (!target) return false;
+        return open(target.type, { path: target.path, label: target.label, state: target.state });
+      });
+    }
     _contentEl.className = 'gb-float-panel-content';
 
     titlebar.appendChild(title);
@@ -964,6 +1009,11 @@ const GBFloatPanel = (() => {
       label: _titleFromOptions(toolType, options),
       tabId: _pane.tabs?.[0]?.id || '',
     };
+    if (window.MeldexSetupEditableDropHandler) {
+      _contentEl.querySelectorAll('#page-content, #entity-freetext, [contenteditable="true"]').forEach(el => {
+        window.MeldexSetupEditableDropHandler(el);
+      });
+    }
   }
 
   // シート系ビュー（表・ツリー・ギャラリー・カンバン・タイムライン・チャート・グラフ・
@@ -1083,6 +1133,29 @@ const GBFloatPanel = (() => {
     return true;
   }
 
+  // 表示中の対象を実ウィンドウ（単独ウィンドウ）で開く。開いたウィンドウ側には
+  // 「常に最前面」ボタンがあるので、他のアプリより手前に置いたまま作業できる。
+  async function _openInStandaloneWindow() {
+    if (!_current) return false;
+    const path = _current.path || '';
+    const label = _current.label || _toolLabel(_current.toolType);
+    if (!path || typeof buildSingleTabWindowUrl !== 'function') {
+      if (typeof showStatus === 'function') showStatus('この内容は単独ウィンドウで開けません', true);
+      return false;
+    }
+    // 未保存の入力を確定させてから別ウィンドウへ渡す
+    const active = document.activeElement;
+    if (active && _contentEl && _contentEl.contains(active) && typeof active.blur === 'function') {
+      try { active.blur(); } catch (e) { /* ignore */ }
+    }
+    await _flushBeforeOpenMain(_current.toolType, path, _current.tabId || '');
+    const opened = (typeof openItemsAsSingleTabWindows === 'function')
+      ? openItemsAsSingleTabWindows([{ name: label, path, type: _current.toolType }])
+      : 0;
+    if (!opened && typeof showStatus === 'function') showStatus('単独ウィンドウを開けませんでした', true);
+    return opened > 0;
+  }
+
   async function _openInMainPane() {
     if (!_current) return false;
     const mainPaneId = _resolveMainPaneId();
@@ -1133,10 +1206,12 @@ const GBFloatPanel = (() => {
       if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
         GBLayout.setActivePane(actualPaneId);
       }
-      // メインパネルへ開き終えたら、同じ内容を残したままのフロートパネルを自動で閉じる
-      // （既存の close() を使い、位置保存(_saveRect)を含めた通常の後始末に乗せる）。
-      // 失敗した各分岐は上で早期returnしているため、ここに到達するのは成功時のみ。
-      close(toolType);
+      // 保存flushは上で完了済み。通常の close() は遷移ガードとして同じ対象を再度
+      // flushするため、ここでは位置だけ保存して直接後始末する。これにより、昇格時の
+      // 二重保存と、2回目だけ失敗して新タブとフロートが重複する状態を防ぐ。
+      _saveRect();
+      ++_opSeq;
+      _teardownPanel();
       return true;
     } finally {
       if (btn) btn.disabled = false;
@@ -1263,6 +1338,7 @@ const GBFloatPanel = (() => {
     navForward: _navForward,
     openEntityChat: _openEntityChat,
     openInMainPane: _openInMainPane,
+    openInStandaloneWindow: _openInStandaloneWindow,
     getCurrentTarget,
   };
 })();

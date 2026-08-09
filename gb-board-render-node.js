@@ -568,11 +568,19 @@ function bdAppendLinkBadge(div, node, showStatus) {
     const label = String(node.text || node.link).trim() || String(node.link).split(/[\\/]/).filter(Boolean).pop() || '';
     ev.dataTransfer.effectAllowed = 'copyMove';
     ev.dataTransfer.setData('text/plain', label);
-    ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+    const payload = {
       name: label,
       path: node.link,
       type: node.linkType || 'file',
-    }));
+    };
+    const selectedNodes = typeof bd !== 'undefined' && bd.selected?.has?.(node.id)
+      ? (bd.nodes || []).filter(candidate => bd.selected.has(candidate.id)) : [node];
+    if (selectedNodes.length > 1 && window.MeldexBoardTransfer?.setBoardNodesDragData) {
+      window.MeldexBoardTransfer.setBoardNodesDragData(ev.dataTransfer, selectedNodes);
+    } else {
+      ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+      window.MeldexDnD?.beginCrossWindowDrag?.(ev.dataTransfer, payload, 'node');
+    }
   });
   div.addEventListener('dragend', () => {
     if (typeof bdSuppressNodeClickAfterDrag === 'function') bdSuppressNodeClickAfterDrag([node.id]);

@@ -26,6 +26,7 @@
   let _container = null;
   let _pollTimer = null;
   let _lastRenderedJobId = null;
+  let _foregroundOperation = null;
 
   function _kindLabel(kind) {
     return KIND_LABELS[kind] || kind || 'インポート';
@@ -96,6 +97,20 @@
     const label = el.querySelector('.sb-import-progress-label');
     const fill = el.querySelector('.sb-import-progress-bar-fill');
     const queue = el.querySelector('.sb-import-progress-queue');
+    if (_foregroundOperation) {
+      const operation = _foregroundOperation;
+      const total = Math.max(1, Number(operation.total) || 1);
+      const processed = Math.max(0, Math.min(total, Number(operation.processed) || 0));
+      const percent = Math.round((processed / total) * 100);
+      el.style.display = '';
+      label.textContent = `${operation.label || '処理中'} ${percent}%`;
+      if (fill) {
+        fill.style.width = percent + '%';
+        fill.classList.remove('sb-import-progress-bar-indeterminate');
+      }
+      queue.textContent = `${processed}/${total}件`;
+      return;
+    }
     if (!job) {
       el.style.display = 'none';
       _lastRenderedJobId = null;
@@ -166,6 +181,27 @@
     }
   }
 
+  function beginOperation(label, total) {
+    _foregroundOperation = {
+      label: String(label || '処理中'),
+      total: Math.max(1, Number(total) || 1),
+      processed: 0,
+    };
+    _renderJob(null, 0);
+  }
+
+  function updateOperation(processed, label) {
+    if (!_foregroundOperation) return;
+    _foregroundOperation.processed = Math.max(0, Number(processed) || 0);
+    if (label) _foregroundOperation.label = String(label);
+    _renderJob(null, 0);
+  }
+
+  function finishOperation() {
+    _foregroundOperation = null;
+    _poll();
+  }
+
   function _injectCSS() {
     if (document.getElementById('gb-import-progress-css-fallback')) return;
     // 通常は gb-import-progress.css（Meldex-dev.html に登録済み）を使うが、
@@ -196,5 +232,12 @@
     _init();
   }
 
-  window.MeldexImportProgress = { start, stop, poll: _poll };
+  window.MeldexImportProgress = {
+    start,
+    stop,
+    poll: _poll,
+    beginOperation,
+    updateOperation,
+    finishOperation,
+  };
 })();

@@ -364,6 +364,12 @@
   async function _deleteOutlinerPathToTrash(provider, rawPath) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     _rejectProductionStructureMutation(targetPath, '削除');
+    // シート保管ファイル（_meldex_sheet.cloud.json）の行を、物理ファイルを動かす前に
+    // 必ず確定させる。この行が「物理.mdを持たない仮想エントリ（sqlite専用取り込み
+    // 由来）はクラウド版から削除できない」「物理.mdありエントリのゴミ箱移動が
+    // シート表示に反映されない」という既知の残作業（AGENT_INBOX.md 2026-08-08、
+    // app/docs/desktop-cloud-sheet-sync-plan-2026-08-07.md）を解消する。
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
     const source = await _resolveEntryHandle(provider, targetPath);
     if (!source) return { ok: true };
     const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
@@ -406,6 +412,11 @@
         await _moveEntry(provider, csvSidecarTrashPath, csvSidecarPath).catch(() => {});
       }
       await provider.deletePath(metaPath).catch(() => {});
+      if (sheetTombstone) {
+        await internals._restoreSheetStoreEntryAfterFailedDelete?.(
+          provider, sheetTombstone.dbPath, sheetTombstone.fileName, sheetTombstone.previousRow
+        );
+      }
       throw error;
     }
     const warnings = [];
@@ -1862,7 +1873,6 @@ async function _undeleteFileVersion(provider, path, token) {
       }
       return items;
     }
-
     if (pathname === '/check-type' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -2278,7 +2288,8 @@ async function _undeleteFileVersion(provider, path, token) {
       const dataUrl = String(body?.data || '');
       if (!dataUrl) throw new Error('data は必須です');
       const ts = _versionTimestamp();
-      const targetPath = _joinPath('_screenshots', `screenshot_${ts}.png`);
+      const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
       await _writeBytes(provider, targetPath, _decodeUploadData(dataUrl));
       return { ok: true, path: targetPath };
     }
@@ -2713,7 +2724,10 @@ async function _undeleteFileVersion(provider, path, token) {
         ..._resultWarnings(warnings),
       };
     }
-
+/* gb-data-access-dropbox-fileops-trash-routes.js
+ * Dropbox static runtime: trash listing, restore, permanent delete, empty,
+ * and the terminal capability fallbacks. Continues the shared fileops IIFE.
+ */
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];

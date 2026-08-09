@@ -178,7 +178,13 @@
     void _loadLocalApiFonts();
   }
 
-  global.MeldexFontCatalog = Object.freeze({ getFamilies: () => [..._families.values()], refresh: requestLocalFontAccess });
+  global.MeldexFontCatalog = Object.freeze({
+    // 選べるフォントの既定一覧はここが正本。同じ内容を他所へ書き写さないこと
+    // （写しが増えると環境ごとに選択肢がずれる）。
+    PRESET_FONTS,
+    getFamilies: () => [..._families.values()],
+    refresh: requestLocalFontAccess,
+  });
   global.getDetectedSystemFonts = getDetectedSystemFonts;
   global.getFontFamilyOptionItems = getFontFamilyOptionItems;
   global.getFontFamilyOptions = getFontFamilyOptions;

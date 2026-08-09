@@ -156,8 +156,18 @@
     return phase + '… ' + count;
   }
 
+  // 残り時間の見込みを短い日本語にする。ジョブ進捗を出す画面で共有する。
+  function formatJobEta(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value < 60) return Math.ceil(value) + '秒';
+    if (value < 3600) return Math.ceil(value / 60) + '分';
+    if (value < 86400) return (value / 3600).toFixed(value < 36000 ? 1 : 0) + '時間';
+    return (value / 86400).toFixed(1) + '日';
+  }
+
   window.runBackgroundJob = runBackgroundJob;
   window.formatJobProgress = formatJobProgress;
+  window.formatJobEta = formatJobEta;
 })();
 
 ;
@@ -171,8 +181,10 @@
   const ROOT_ID = 'x-account-posts-settings-container';
   const USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
   const ACTIVE_JOB_STORAGE_KEY = 'meldex.x-account-posts.active-job.v1';
+  const LEGACY_USERNAME_STORAGE_KEYS = ['meldex.x-account-posts.username.v1', 'x-account-posts-username'];
   let syncInFlight = false;
   let connected = false;
+  let accounts = [];
 
   function icon(name, size) {
     if (typeof lucide === 'function') return lucide(name, size || 14);
@@ -227,6 +239,7 @@
   function setBusy(active) {
     syncInFlight = !!active;
     updateControls();
+    renderAccountList();
   }
 
   function readActiveJob() {
@@ -278,6 +291,7 @@
       setText('x-account-posts-connection', 'X接続状態を取得できませんでした');
     }
     updateControls();
+    renderAccountList();
   }
 
   function resultSummary(data) {
@@ -400,9 +414,9 @@
     return window.confirm(message);
   }
 
-  async function syncAccountPosts() {
+  async function syncAccountPosts(usernameOverride) {
     if (syncInFlight || typeof apiPost !== 'function' || typeof runBackgroundJob !== 'function') return;
-    const raw = document.getElementById('x-account-posts-username')?.value || '';
+    const raw = usernameOverride || document.getElementById('x-account-posts-username')?.value || '';
     const username = normalizeUsername(raw);
     if (!username) {
       setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
@@ -411,6 +425,172 @@
     }
     if (!await confirmAccountPostsCost(username)) return;
     await runAccountPostsJob(username, '');
+  }
+
+  function accountUsername(entry) {
+    return normalizeUsername(entry?.target_ref?.username || '');
+  }
+
+  async function confirmDelete(username) {
+    const message = `@${username} を一覧から削除しますか？\n保存済みのポストは削除しません。`;
+    if (typeof cfConfirm === 'function') return !!await cfConfirm(message, {danger: true, okLabel: '削除'});
+    return window.confirm(message);
+  }
+
+  async function loadAccounts() {
+    if (typeof apiFetch !== 'function') return [];
+    const data = await apiFetch('/import-schedules?category=x-account-posts', {silentError: true});
+    const schedules = Array.isArray(data?.schedules) ? data.schedules : [];
+    return schedules
+      .filter((entry) => accountUsername(entry))
+      .sort((a, b) => (Number(a.target_ref?.order) || 0) - (Number(b.target_ref?.order) || 0));
+  }
+
+  async function persistOrder() {
+    for (let index = 0; index < accounts.length; index += 1) {
+      const entry = accounts[index];
+      await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
+        target_ref: {...entry.target_ref, username: accountUsername(entry), order: index + 1},
+      }, {method: 'PATCH', silentError: true});
+      entry.target_ref = {...entry.target_ref, order: index + 1};
+    }
+  }
+
+  function accountStatus(entry) {
+    if (entry.enabled) return entry.next_run_display ? `定期実行ON / 次回 ${entry.next_run_display}` : '定期実行ON';
+    return '定期実行OFF（手動のみ）';
+  }
+
+  function actionButton(label, action, username, extraClass) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `gb-btn gb-btn-sm ${extraClass || ''}`.trim();
+    button.textContent = label;
+    button.dataset.action = action;
+    button.dataset.username = username;
+    return button;
+  }
+
+  function renderAccountList() {
+    const list = document.getElementById('x-account-posts-list');
+    if (!list) return;
+    list.textContent = '';
+    if (!accounts.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-section-desc';
+      empty.textContent = '保存するXアカウントはまだありません。追加後も定期実行はOFFです。';
+      list.appendChild(empty);
+      return;
+    }
+    accounts.forEach((entry, index) => {
+      const username = accountUsername(entry);
+      const row = document.createElement('div');
+      row.className = 'gb-section gb-section--boxed';
+      row.style.cssText = 'margin-top:8px;padding:8px;';
+      row.dataset.e2eId = `x-account-posts-row-${username.toLowerCase()}`;
+      const title = document.createElement('div');
+      title.className = 'gb-section-title';
+      title.textContent = `@${username}`;
+      const status = document.createElement('div');
+      status.className = 'gb-section-desc';
+      status.textContent = accountStatus(entry);
+      const actions = document.createElement('div');
+      actions.className = 'gb-field-row';
+      actions.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;margin-top:6px;';
+      const up = actionButton('↑ 上へ', 'up', username);
+      const down = actionButton('↓ 下へ', 'down', username);
+      up.disabled = index === 0;
+      down.disabled = index === accounts.length - 1;
+      actions.append(
+        up,
+        down,
+        actionButton(entry.enabled ? '定期実行をOFF' : '定期実行をON', 'toggle', username),
+        actionButton('今すぐ取得', 'sync', username),
+        actionButton('ブラウザで開く', 'open', username),
+        actionButton('削除', 'delete', username, 'gb-btn-danger'),
+      );
+      row.append(title, status, actions);
+      const syncButton = actions.querySelector('[data-action="sync"]');
+      if (syncButton) syncButton.disabled = syncInFlight || !connected;
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshAccounts() {
+    try {
+      accounts = await loadAccounts();
+      renderAccountList();
+    } catch (error) {
+      setStatus('Xアカウント一覧を読み込めませんでした: ' + (error?.userMessage || error?.message || error), true);
+    }
+  }
+
+  async function addAccount() {
+    const input = document.getElementById('x-account-posts-username');
+    const username = normalizeUsername(input?.value || '');
+    if (!username) {
+      setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
+      input?.focus();
+      return;
+    }
+    if (accounts.some((entry) => accountUsername(entry).toLowerCase() === username.toLowerCase())) {
+      setStatus(`@${username} はすでに一覧にあります。`, true);
+      return;
+    }
+    await apiPost('/import-schedules', {
+      category: 'x-account-posts',
+      target_ref: {username, order: accounts.length + 1},
+      label: `@${username}`,
+      period: {type: 'off'},
+    }, {silentError: true});
+    try { localStorage.setItem(LEGACY_USERNAME_STORAGE_KEYS[0], username); } catch (_) {}
+    if (input) input.value = '';
+    updateSavePreview();
+    setStatus(`@${username} を追加しました。定期実行はOFFです。`, false);
+    await refreshAccounts();
+  }
+
+  async function handleAccountAction(event) {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const index = accounts.findIndex((entry) => accountUsername(entry) === button.dataset.username);
+    if (index < 0) return;
+    const entry = accounts[index];
+    const username = accountUsername(entry);
+    button.disabled = true;
+    try {
+      if (button.dataset.action === 'up' || button.dataset.action === 'down') {
+        const target = index + (button.dataset.action === 'up' ? -1 : 1);
+        [accounts[index], accounts[target]] = [accounts[target], accounts[index]];
+        await persistOrder();
+        renderAccountList();
+      } else if (button.dataset.action === 'toggle') {
+        let ack = false;
+        if (!entry.enabled) {
+          ack = await confirmAccountPostsCost(username);
+          if (!ack) return;
+        }
+        await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
+          period: entry.enabled ? {type: 'off'} : {type: 'daily', time: '09:00'},
+          ack_cost_notice: ack,
+        }, {method: 'PATCH', silentError: true});
+        await refreshAccounts();
+      } else if (button.dataset.action === 'sync') {
+        await syncAccountPosts(username);
+      } else if (button.dataset.action === 'open') {
+        window.open(`https://x.com/${encodeURIComponent(username)}`, '_blank', 'noopener,noreferrer');
+      } else if (button.dataset.action === 'delete' && await confirmDelete(username)) {
+        await apiFetch(`/import-schedules/${encodeURIComponent(entry.id)}`, {method: 'DELETE', silentError: true});
+        accounts.splice(index, 1);
+        await persistOrder();
+        renderAccountList();
+        setStatus(`@${username} を一覧から削除しました。`, false);
+      }
+    } catch (error) {
+      setStatus('操作を完了できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
   }
 
   async function resumeActiveJob() {
@@ -429,31 +609,47 @@
     if (!container) return;
     if (container.dataset.rendered === '1') {
       loadConnectionStatus();
+      refreshAccounts();
       resumeActiveJob();
       return;
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <div class="gb-section-desc">指定した閲覧可能なアカウントのポストを、返信・リポストを含めて画像つきのシートへ保存します。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
+      <div class="gb-section-desc">保存するXアカウントを一覧で管理します。アカウントごとに取得・定期実行・並べ替えができます。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
       <div class="gb-section-desc">最大3,200件・X APIの従量課金対象です。</div>
       <div id="x-account-posts-connection" class="gb-section-desc">X接続状態を確認中...</div>
       <label class="gb-field">
-        <span class="gb-label">保存するXアカウント</span>
+        <span class="gb-label">Xアカウントを追加</span>
         <input id="x-account-posts-username" class="gb-input" type="text" autocomplete="off" placeholder="例: XDevelopers または https://x.com/XDevelopers" data-e2e-id="x-account-posts-username">
       </label>
       <div id="x-account-posts-save-preview" class="gb-section-desc">保存先: ユーザー名を入力すると表示されます</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-        <button type="button" id="x-account-posts-sync" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-sync" disabled>${icon('archive', 14)} 取得できる全ポストを保存</button>
+        <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
+      <div id="x-account-posts-list" data-e2e-id="x-account-posts-list"></div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
     `;
     const input = container.querySelector('#x-account-posts-username');
     input?.addEventListener('input', updateSavePreview);
     input?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') syncAccountPosts();
+      if (event.key === 'Enter') addAccount();
     });
-    container.querySelector('#x-account-posts-sync')?.addEventListener('click', syncAccountPosts);
+    container.querySelector('#x-account-posts-add')?.addEventListener('click', addAccount);
+    container.querySelector('#x-account-posts-list')?.addEventListener('click', handleAccountAction);
     loadConnectionStatus();
+    refreshAccounts().then(async () => {
+      if (accounts.length) return;
+      const active = readActiveJob();
+      let legacy = active?.username || '';
+      if (!legacy) {
+        try { legacy = LEGACY_USERNAME_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean) || ''; } catch (_) {}
+      }
+      legacy = normalizeUsername(legacy);
+      if (legacy && input && !input.value) {
+        input.value = `@${legacy}`;
+        updateSavePreview();
+      }
+    });
     resumeActiveJob();
   }
 
@@ -614,6 +810,87 @@
     host.appendChild(built.wrapper);
   }
 
+  // === メモの自動保存 ===
+  // 画像ファイル本体へ書き込むため、打鍵ごとには保存せず入力が止まってから書き出す。
+  // 入力欄から離れた時・ファイルを切り替えた時・ウィンドウを閉じる時は即座に確定させる。
+  const MEMO_AUTOSAVE_DELAY_MS = 1200;
+  const pendingMemos = new Map();
+
+  function _memoStatus(el, text, isError) {
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('file-embedded-memo-status--error', !!isError);
+  }
+
+  async function _flushMemo(textarea) {
+    const state = pendingMemos.get(textarea);
+    if (!state) return;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    if (state.inflight) { try { await state.inflight; } catch { /* 直前の失敗はこの後で作り直す */ } }
+    // 保存中に追記された分も書き切る。失敗したらそこで打ち切り、無限に再送しない。
+    while (textarea.value !== state.savedValue) {
+      const value = textarea.value;
+      _memoStatus(state.statusEl, '保存中...');
+      state.inflight = update(state.path, { note: value });
+      try {
+        await state.inflight;
+        state.savedValue = value;
+        _memoStatus(state.statusEl, '保存しました');
+      } catch (error) {
+        _memoStatus(state.statusEl, '保存できませんでした', true);
+        if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
+        return;
+      } finally {
+        state.inflight = null;
+      }
+      if (!textarea.isConnected) return;
+    }
+  }
+
+  // パネル切り替え・ウィンドウを閉じる直前に呼ぶ。未確定のメモを全部書き出す。
+  async function flushPendingMemos() {
+    await Promise.all([...pendingMemos.keys()].map(textarea => _flushMemo(textarea)));
+    return true;
+  }
+
+  // パネルが作り直されると入力欄ごと差し替わる。取り残された未保存分は
+  // 書き出してから登録を捨てる（待たない。描画を止めないため）。
+  function _pruneDetachedMemos() {
+    for (const textarea of [...pendingMemos.keys()]) {
+      if (textarea.isConnected) continue;
+      const state = pendingMemos.get(textarea);
+      if (state && textarea.value !== state.savedValue) _flushMemo(textarea);
+      pendingMemos.delete(textarea);
+    }
+  }
+
+  function bindMemoAutosave(textarea, statusEl, path, initialValue) {
+    _pruneDetachedMemos();
+    pendingMemos.set(textarea, {
+      path,
+      statusEl,
+      savedValue: initialValue,
+      timer: null,
+      inflight: null,
+    });
+    textarea.addEventListener('input', () => {
+      const state = pendingMemos.get(textarea);
+      if (!state) return;
+      if (state.timer) clearTimeout(state.timer);
+      _memoStatus(state.statusEl, textarea.value === state.savedValue ? '' : '未保存');
+      state.timer = setTimeout(() => { _flushMemo(textarea); }, MEMO_AUTOSAVE_DELAY_MS);
+    });
+    textarea.addEventListener('blur', () => { _flushMemo(textarea); });
+    textarea.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        _flushMemo(textarea);
+      }
+    });
+  }
+
+  window.addEventListener('pagehide', () => { flushPendingMemos(); });
+
   function appendMetadataGroups(host, embedded) {
     const groups = Array.isArray(embedded?.groups) ? embedded.groups : [];
     if (!groups.length) return;
@@ -626,7 +903,8 @@
       if (!items.length) return;
       const details = document.createElement('details');
       details.className = 'file-embedded-group';
-      details.open = index === 0;
+      // 埋め込み情報のグループは既定で全部閉じる（一番上のタグだけ開いた状態にする）。
+      details.open = false;
       const summary = document.createElement('summary');
       summary.textContent = `${group.name || '情報'}（${items.length}）`;
       details.appendChild(summary);
@@ -642,6 +920,7 @@
 
   function renderEditor(host, path, meta) {
     if (!host) return;
+    _pruneDetachedMemos();
     host.replaceChildren();
     if (meta?._metadataLoadError) {
       const error = document.createElement('div');
@@ -688,46 +967,34 @@
     }
 
     if (embedded?.kind === 'image') {
+      const editable = embedded.editable === true;
       const memo = document.createElement('div');
       memo.className = 'file-embedded-memo';
       const label = document.createElement('label');
       label.textContent = webclip ? 'WebClipperメモ' : 'メモ';
+      // 「画像ファイル内へ保存します」の説明は基本UIから外し、ラベル横の
+      // ヘルプアイコンのツールチップへ集約する（UI共通ルール）。
+      if (editable && typeof fieldHelp === 'function') {
+        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます'));
+      }
       const textarea = document.createElement('textarea');
-      textarea.value = String(embedded.note || webclip?.note || '');
+      const initialNote = String(embedded.note || webclip?.note || '');
+      textarea.value = initialNote;
       textarea.placeholder = 'メモを入力';
-      textarea.disabled = embedded.editable !== true;
+      textarea.disabled = !editable;
+      textarea.dataset.e2eId = 'file-embedded-memo-input';
       const actions = document.createElement('div');
       actions.className = 'file-embedded-memo-actions';
-      const hint = document.createElement('span');
-      hint.textContent = embedded.editable === true
-        ? '画像ファイル内へ保存します'
-        : 'この形式のメモは閲覧のみです';
-      const save = document.createElement('button');
-      save.type = 'button';
-      save.textContent = 'メモを保存';
-      save.disabled = embedded.editable !== true;
-      save.addEventListener('click', async () => {
-        if (save.disabled) return;
-        save.disabled = true;
-        try {
-          const nextMeta = await update(path, { note: textarea.value });
-          textarea.value = String(embeddedOf(nextMeta)?.note || '');
-          if (typeof showStatus === 'function') showStatus('メモを画像ファイルへ保存しました');
-        } catch (error) {
-          if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
-        } finally {
-          save.disabled = embedded.editable !== true;
-        }
-      });
-      textarea.addEventListener('keydown', event => {
-        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-          event.preventDefault();
-          save.click();
-        }
-      });
-      actions.append(hint, save);
+      const status = document.createElement('span');
+      status.className = 'file-embedded-memo-status';
+      status.setAttribute('role', 'status');
+      status.dataset.e2eId = 'file-embedded-memo-status';
+      // 入力できない理由だけは可視のまま1行残す（条件付きの短い状態説明）。
+      if (!editable) status.textContent = 'この形式のメモは閲覧のみです';
+      actions.append(status);
       memo.append(label, textarea, actions);
       host.appendChild(memo);
+      if (editable) bindMemoAutosave(textarea, status, path, initialNote);
     }
     appendMetadataGroups(host, embedded);
   }
@@ -883,6 +1150,7 @@
     attachFolderCard,
     attachFolderTags,
     dimensionText,
+    flushPendingMemos,
     load,
     refreshFolderTags,
     renderEditor,
@@ -1313,14 +1581,14 @@
       || /(?:^|\/)quick-memo\.html$/i.test(location.pathname || '')
       || document.documentElement?.dataset?.standaloneApp;
     if (standalonePage) return false;
-    const dropboxMode = window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
     const serverMode = window.MeldexRuntimeAdapter?.isServerMode?.()
       || document.body?.dataset?.cloudMode === 'server';
     if (serverMode) return true;
     const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
       && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
-    return !dropboxMode && !cloudStatic;
+    return !cloudMode && !cloudStatic;
   }
 
   function isTagDictionaryEditingAvailable() {
@@ -2155,13 +2423,6 @@
     }
   }
 
-  function formatDuration(seconds) {
-    const value = Math.max(0, Number(seconds) || 0);
-    if (value < 60) return Math.ceil(value) + '秒';
-    if (value < 3600) return Math.ceil(value / 60) + '分';
-    if (value < 86400) return (value / 3600).toFixed(value < 36000 ? 1 : 0) + '時間';
-    return (value / 86400).toFixed(1) + '日';
-  }
 
   function progressText(job) {
     const progress = job.progress || {};
@@ -2214,7 +2475,7 @@
       ? [
         `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`,
         progress.rate ? `${Number(progress.rate).toFixed(1)}件/秒` : '',
-        progress.eta_seconds ? `残り約${formatDuration(progress.eta_seconds)}` : '',
+        progress.eta_seconds ? `残り約${window.formatJobEta(progress.eta_seconds)}` : '',
       ].filter(Boolean).join('・')
       : '';
     const failureSamples = Array.isArray(job.result?.failure_samples)
@@ -5481,11 +5742,26 @@
 
   const instances = new Map();
   const STORAGE_PREFIX = 'meldex-board-chrome-mode-v1:';
+  const LEGACY_STANDALONE_TOOLBAR_KEYS = {
+    top: 'meldex-board-toolbar-top-hidden',
+    bottom: 'meldex-board-toolbar-bottom-hidden',
+  };
   const CLOSE_DELAY = 520;
   let nextInstanceId = 0;
 
   function storageGet(key, fallback) {
     try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+  }
+
+  function storedMode(kind, edge) {
+    const current = storageGet(STORAGE_PREFIX + kind + ':' + edge, '');
+    if (current === 'auto' || current === 'pinned') return current;
+    if (kind === 'standalone' && LEGACY_STANDALONE_TOOLBAR_KEYS[edge]) {
+      const legacy = storageGet(LEGACY_STANDALONE_TOOLBAR_KEYS[edge], '');
+      if (legacy === '0') return 'pinned';
+      if (legacy === '1') return 'auto';
+    }
+    return 'auto';
   }
 
   function storageSet(key, value) {
@@ -5525,7 +5801,8 @@
       reveal(edge, true);
     });
     handle.addEventListener('focus', () => reveal(edge, true));
-    sensor.addEventListener('pointerenter', () => reveal(edge, true));
+    sensor.addEventListener('pointerenter', () => reveal(edge, true, 'sensor'));
+    sensor.addEventListener('pointerleave', () => reveal(edge, false, 'sensor'));
     sensor.appendChild(handle);
     return sensor;
   }
@@ -5554,13 +5831,7 @@
   }
 
   function addPins(instance) {
-    ['top', 'bottom'].forEach(edge => {
-      const toolbar = instance.root.querySelector(`[data-bd-role="toolbar-${edge}"]`);
-      if (toolbar && !toolbar.querySelector(`[data-chrome-edge="${edge}"]`)) {
-        toolbar.appendChild(createPin(edge, instance));
-      }
-    });
-    if (instance.rightPanel && !instance.rightPanel.querySelector('[data-chrome-edge="right"]')) {
+    if (instance.shell && instance.rightPanel && !instance.rightPanel.querySelector('[data-chrome-edge="right"]')) {
       const pin = createPin('right', instance);
       pin.style.position = 'absolute';
       pin.style.top = '5px';
@@ -5576,6 +5847,9 @@
   function setMode(instance, edge, mode) {
     instance.modes[edge] = mode === 'pinned' ? 'pinned' : 'auto';
     storageSet(STORAGE_PREFIX + instance.kind + ':' + edge, instance.modes[edge]);
+    if (instance.kind === 'standalone' && LEGACY_STANDALONE_TOOLBAR_KEYS[edge]) {
+      storageSet(LEGACY_STANDALONE_TOOLBAR_KEYS[edge], instance.modes[edge] === 'pinned' ? '0' : '1');
+    }
     apply(instance);
   }
 
@@ -5587,8 +5861,6 @@
       instance.shell.classList.toggle('bd-chrome-right-pinned', instance.modes.right === 'pinned');
       instance.shell.classList.remove('bsa-hide-top-toolbar', 'bsa-hide-bottom-toolbar');
       if (instance.modes.right === 'pinned') instance.shell.classList.remove('bsa-options-collapsed');
-    } else if (isActiveRoot(instance.root)) {
-      document.body.dataset.boardRightPinned = instance.modes.right === 'pinned' ? '1' : '0';
     }
     rootElement.querySelectorAll('[data-chrome-edge]').forEach(button => {
       syncPin(button, instance.modes[button.dataset.chromeEdge]);
@@ -5616,16 +5888,24 @@
       || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, [role="menu"][aria-expanded="true"]');
   }
 
-  function reveal(instance, edge, keep) {
+  function edgeHeld(instance, edge) {
+    const presence = instance.presence[edge];
+    return !!(presence?.sensor || presence?.panel || presence?.pointer);
+  }
+
+  function setEdgePresence(instance, edge, source, active) {
+    if (source && instance.presence[edge]) instance.presence[edge][source] = !!active;
+  }
+
+  function reveal(instance, edge, keep, source) {
     if (!isActiveRoot(instance.root)) return;
+    setEdgePresence(instance, edge, source, keep);
     clearTimeout(instance.timers[edge]);
     if (edge === 'top') instance.root.classList.add('bd-chrome-top-open');
     else if (edge === 'bottom') instance.root.classList.add('bd-chrome-bottom-open');
     else if (instance.shell) {
       instance.shell.classList.add('bd-chrome-right-open');
       instance.shell.classList.remove('bsa-options-collapsed');
-    } else {
-      document.body.dataset.boardRightOpen = '1';
     }
     if (!keep) scheduleClose(instance, edge);
   }
@@ -5641,20 +5921,22 @@
     else if (instance.shell) {
       instance.shell.classList.remove('bd-chrome-right-open');
       instance.shell.classList.add('bsa-options-collapsed');
-    } else {
-      document.body.dataset.boardRightOpen = '0';
     }
   }
 
   function scheduleClose(instance, edge) {
     clearTimeout(instance.timers[edge]);
+    if (edgeHeld(instance, edge)) return;
     instance.timers[edge] = setTimeout(() => hide(instance, edge), CLOSE_DELAY);
   }
 
   function bindPanelLifetime(instance, edge, element) {
     if (!element) return;
-    element.addEventListener('pointerenter', () => reveal(instance, edge, true));
-    element.addEventListener('pointerleave', () => scheduleClose(instance, edge));
+    element.addEventListener('pointerenter', () => reveal(instance, edge, true, 'panel'));
+    element.addEventListener('pointerleave', () => {
+      setEdgePresence(instance, edge, 'panel', false);
+      scheduleClose(instance, edge);
+    });
     element.addEventListener('focusin', () => reveal(instance, edge, true));
     element.addEventListener('focusout', () => scheduleClose(instance, edge));
   }
@@ -5662,9 +5944,17 @@
   function pointerMove(instance, event) {
     if (!isActiveRoot(instance.root) || event.pointerType === 'touch') return;
     const rect = instance.host.getBoundingClientRect();
-    if (event.clientY - rect.top <= 10) reveal(instance, 'top', false);
-    if (rect.bottom - event.clientY <= 10) reveal(instance, 'bottom', false);
-    if (rect.right - event.clientX <= 12) reveal(instance, 'right', false);
+    const near = {
+      top: event.clientY - rect.top <= 10,
+      bottom: rect.bottom - event.clientY <= 10,
+      right: !!instance.shell && rect.right - event.clientX <= 12,
+    };
+    ['top', 'bottom', 'right'].forEach(edge => {
+      const wasNear = !!instance.presence[edge].pointer;
+      setEdgePresence(instance, edge, 'pointer', near[edge]);
+      if (near[edge]) reveal(instance, edge, true);
+      else if (wasNear) scheduleClose(instance, edge);
+    });
   }
 
   function pointerDown(instance, event) {
@@ -5674,7 +5964,7 @@
       y: event.clientY,
       top: event.clientY - rect.top <= 22,
       bottom: rect.bottom - event.clientY <= 22,
-      right: rect.right - event.clientX <= 22,
+      right: !!instance.shell && rect.right - event.clientX <= 22,
     };
     if (event.target.closest?.('[role="separator"], input, textarea, [contenteditable="true"]')) {
       instance.locks.add(`pointer:${event.pointerId}`);
@@ -5683,7 +5973,7 @@
       const insideChrome = event.target.closest?.(
         '[data-bd-role="toolbar-top"], [data-bd-role="toolbar-bottom"], .bd-edge-sensor, #board-right-sidebar, #right-panel'
       );
-      if (!insideChrome) ['top', 'bottom', 'right'].forEach(edge => hide(instance, edge, true));
+      if (!insideChrome) ['top', 'bottom'].concat(instance.shell ? ['right'] : []).forEach(edge => hide(instance, edge, true));
     }
   }
 
@@ -5720,17 +6010,6 @@
   function activate(instance) {
     const active = isActiveRoot(instance.root);
     instance.host.classList.toggle('bd-board-active', active);
-    if (!instance.shell && active) {
-      document.body.dataset.boardViewActive = '1';
-      document.body.dataset.boardRightPinned = instance.modes.right === 'pinned' ? '1' : '0';
-    } else if (!instance.shell && document.body.dataset.boardViewActive === '1') {
-      const anyOther = Array.from(instances.values()).some(item => item !== instance && !item.shell && isActiveRoot(item.root));
-      if (!anyOther) {
-        delete document.body.dataset.boardViewActive;
-        delete document.body.dataset.boardRightOpen;
-        delete document.body.dataset.boardRightPinned;
-      }
-    }
     updateGuide(instance);
   }
 
@@ -5739,7 +6018,7 @@
     const standalone = boardRoot.id === 'board-canvas-root';
     const shell = standalone ? document.getElementById('board-standalone-shell') : null;
     const host = shell || boardRoot;
-    const rightPanel = standalone ? document.getElementById('board-right-sidebar') : document.getElementById('right-panel');
+    const rightPanel = standalone ? document.getElementById('board-right-sidebar') : null;
     const kind = standalone ? 'standalone' : 'main';
     const identity = boardRoot.id
       || boardRoot.closest('.gb-pane')?.dataset?.paneId
@@ -5752,11 +6031,16 @@
       kind,
       identity,
       modes: {
-        top: storageGet(STORAGE_PREFIX + kind + ':top', 'auto'),
-        bottom: storageGet(STORAGE_PREFIX + kind + ':bottom', 'auto'),
-        right: storageGet(STORAGE_PREFIX + kind + ':right', 'auto'),
+        top: storedMode(kind, 'top'),
+        bottom: storedMode(kind, 'bottom'),
+        right: storedMode(kind, 'right'),
       },
       timers: {},
+      presence: {
+        top: { sensor: false, panel: false, pointer: false },
+        bottom: { sensor: false, panel: false, pointer: false },
+        right: { sensor: false, panel: false, pointer: false },
+      },
       locks: new Set(),
       swipe: null,
       guide: null,
@@ -5764,8 +6048,8 @@
     instances.set(boardRoot, instance);
     boardRoot.classList.add('bd-immersive-root');
     shell?.classList.add('bd-immersive-shell');
-    ['top', 'bottom', 'right'].forEach(edge => {
-      const sensor = createSensor(edge, (target, keep) => reveal(instance, target, keep), identity);
+    ['top', 'bottom'].concat(shell ? ['right'] : []).forEach(edge => {
+      const sensor = createSensor(edge, (target, keep, source) => reveal(instance, target, keep, source), identity);
       host.appendChild(sensor);
     });
     const canvas = boardRoot.querySelector('[data-bd-role="canvas"]');
@@ -5776,9 +6060,11 @@
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);
-    boardRoot.querySelector('[data-bd-action="detail"]')?.addEventListener('click', () => {
-      setTimeout(() => reveal(instance, 'right', true), 0);
-    });
+    if (shell) {
+      boardRoot.querySelector('[data-bd-action="detail"]')?.addEventListener('click', () => {
+        setTimeout(() => reveal(instance, 'right', true), 0);
+      });
+    }
     bindPanelLifetime(instance, 'top', boardRoot.querySelector('[data-bd-role="toolbar-top"]'));
     bindPanelLifetime(instance, 'bottom', boardRoot.querySelector('[data-bd-role="toolbar-bottom"]'));
     bindPanelLifetime(instance, 'right', rightPanel);
@@ -13584,6 +13870,10 @@ ${spEsc(actionText)}</pre>
     return !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
   }
 
+  function _isBrowserMode() {
+    return !!window.MeldexRuntimeAdapter?.isBrowserMode?.();
+  }
+
   function _injectStyles() {
     if (document.getElementById('mscl-styles')) return;
     const style = document.createElement('style');
@@ -13632,6 +13922,8 @@ ${spEsc(actionText)}</pre>
     try {
       if (_isCloudMode()) {
         await _renderCloudStatusCard(container);
+      } else if (_isBrowserMode()) {
+        _renderBrowserStatusCard(container);
       } else {
         await _renderDesktopStatusCard(container);
       }
@@ -13662,9 +13954,39 @@ ${spEsc(actionText)}</pre>
     card.append(title, line1, line2);
 
     _appendWorkspaceJoinSection(card, container);
+    window.MeldexOfflineShell?.renderSettings?.(card);
 
     container.innerHTML = '';
     container.appendChild(card);
+  }
+
+  function _renderBrowserStatusCard(container) {
+    const card = document.createElement('section');
+    card.className = 'gb-section gb-section--boxed settings-section-wide mscl-status-card';
+    const title = document.createElement('div');
+    title.className = 'gb-section-title';
+    title.innerHTML = `${lucide('hardDrive', 14)} この端末内に保存`;
+    const line1 = document.createElement('div');
+    line1.className = 'gb-section-desc';
+    line1.textContent = 'アカウントなしで使用中です。ワークスペースとファイルは、このブラウザの端末内ストレージに保存されます。';
+    const line2 = document.createElement('div');
+    line2.className = 'gb-section-desc';
+    line2.textContent = 'Dropboxへ接続しても、現在の端末内データは自動で移動・削除されません。';
+    const row = document.createElement('div');
+    row.className = 'gb-field-row';
+    row.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;gap:8px;margin-top:8px;';
+    const connect = document.createElement('button');
+    connect.type = 'button';
+    connect.className = 'gb-btn gb-btn-sm';
+    connect.textContent = 'Dropboxに接続する';
+    connect.addEventListener('click', () => {
+      if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
+      window.MeldexCloudBootstrap?.connectDropbox?.();
+    });
+    row.appendChild(connect);
+    card.append(title, line1, line2, row);
+    window.MeldexOfflineShell?.renderSettings?.(card);
+    container.replaceChildren(card);
   }
 
   /* ==============================
@@ -13755,18 +14077,36 @@ ${spEsc(actionText)}</pre>
   async function _joinSharedWorkspace(container, btn) {
     const picker = _folderPicker();
     const ledgerIO = _workspaceLedgerIO();
-    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace) {
+    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace || !ledgerIO?.readWorkspaceLedgerStatus) {
       if (typeof showStatus === 'function') showStatus('参加できませんでした: この端末では利用できません', true);
       return;
     }
     if (btn) btn.disabled = true;
     try {
-      const picked = await picker.pickFolder({ title: '参加する共有ワークスペースフォルダを選択' });
+      const picked = await picker.pickFolder({ title: '参加する共有ワークスペースフォルダを選択', mode: 'workspace' });
       if (!picked || !picked.path) return;
       if (picked.path === '/') {
         if (typeof showStatus === 'function') showStatus('Dropbox全体は共有ワークスペースにできません。中のフォルダを選択してください', true);
         return;
       }
+
+      // 選択画面の絞り込みは検索結果に頼るため取りこぼしがあり得る。参加を記録する前に、
+      // そのフォルダが本当に共有ワークスペースかをここで必ず確かめる。読み取りに失敗した
+      // ときは「未登録」と決めつけず中断する（「共有ワークスペースにする」導線と同じ作法）。
+      let joinStatus = null;
+      try {
+        joinStatus = await ledgerIO.readWorkspaceLedgerStatus(picked.path, picked.namespaceKind);
+      } catch (e) {
+        if (typeof showStatus === 'function') showStatus('共有状態を確認できませんでした: ' + _errorText(e), true);
+        return;
+      }
+      if (!joinStatus?.exists) {
+        if (typeof showStatus === 'function') {
+          showStatus(`「${picked.name}」は共有ワークスペースではありません。共有ワークスペースとして作られたフォルダを選んでください`, true);
+        }
+        return;
+      }
+
       try {
         ledgerIO.addJoinedWorkspace({
           dropboxPath: picked.path,
@@ -14738,8 +15078,9 @@ ${spEsc(actionText)}</pre>
   // fieldHelp() を安全に呼び出すラッパー（この file 専用の手作りNode実行
   // テストハーネスが fieldHelp をスタブしていないため、未定義時は何も出さずに
   // 済ませる。実アプリでは meldex-core.js 経由で常に定義済み）。
-  function _accountLinkHelp(text) {
-    return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
+  function _accountLinkHelp(text, e2eId) {
+    if (typeof fieldHelp !== 'function') return '';
+    return fieldHelp(text, e2eId ? { e2eId } : undefined);
   }
 
   // 候補行のchevronアイコン用。fieldHelpと同じ理由で、Lucideが未読込の
@@ -14777,11 +15118,11 @@ ${spEsc(actionText)}</pre>
     return wrap;
   }
 
-  function _descNode(text, helpText) {
+  function _descNode(text, helpText, helpE2eId) {
     const desc = document.createElement('div');
     desc.className = 'gb-section-desc';
     if (helpText) {
-      desc.innerHTML = `${text} ${_accountLinkHelp(helpText)}`;
+      desc.innerHTML = `${text} ${_accountLinkHelp(helpText, helpE2eId)}`;
     } else {
       desc.textContent = text;
     }
@@ -14856,7 +15197,11 @@ ${spEsc(actionText)}</pre>
 
   function _renderUnavailable(container) {
     const wrap = _statusLineWrap(container);
-    wrap.appendChild(_descNode(TEXT_UNAVAILABLE, TEXT_UNAVAILABLE_HELP));
+    wrap.appendChild(_descNode(
+      TEXT_UNAVAILABLE,
+      TEXT_UNAVAILABLE_HELP,
+      'settings-account-link-unavailable-help',
+    ));
   }
 
   function _candidateAvatarNode(candidate) {
@@ -14976,7 +15321,11 @@ ${spEsc(actionText)}</pre>
   function _renderDirectionChoice(container, candidate, state, options) {
     const showBack = !options || options.showBack !== false;
     const wrap = _statusLineWrap(container);
-    wrap.appendChild(_descNode(TEXT_DIRECTION, TEXT_DIRECTION_HELP));
+    wrap.appendChild(_descNode(
+      TEXT_DIRECTION,
+      TEXT_DIRECTION_HELP,
+      'settings-account-link-direction-help',
+    ));
 
     const list = document.createElement('div');
     list.className = 'msal-candidate-list';
@@ -15062,7 +15411,10 @@ ${spEsc(actionText)}</pre>
     registerBtn.textContent = TEXT_REGISTER_NEW;
     registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
     registerRow.appendChild(registerBtn);
-    const help = _accountLinkHelp(TEXT_REGISTER_NEW_HELP);
+    const help = _accountLinkHelp(
+      TEXT_REGISTER_NEW_HELP,
+      'settings-account-link-register-new-help',
+    );
     if (help) {
       const helpWrap = document.createElement('span');
       helpWrap.innerHTML = help;
@@ -15995,6 +16347,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     pages: [
       { id: 'trash', label: 'ゴミ箱', panels: ['ゴミ箱'], view: 'trash' },
       { id: 'database', label: 'データ保守', panels: ['データベース'], view: 'database' },
+      { id: 'duplicates', label: '重複検出', panels: ['データベース'], view: 'duplicates' },
     ],
   },
   {
@@ -16059,15 +16412,15 @@ function _settingsAutoTagPageVisible() {
     return window.isAutoTagRuntimeAvailable();
   }
   const standalone = /(?:^|\/)[^/?#]*-standalone\.html$/i.test(location.pathname || '');
-  const dropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.()
-    || document.body?.dataset?.cloudMode === 'dropbox';
+  const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
+    || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   const server = window.MeldexRuntimeAdapter?.isServerMode?.()
     || document.body?.dataset?.cloudMode === 'server';
   if (standalone) return false;
   if (server) return true;
   const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
     && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
-  return !dropbox && !cloudStatic;
+  return !cloudMode && !cloudStatic;
 }
 
 function _settingsNavigationRuntimeTabs() {
@@ -16163,7 +16516,7 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 0 ソースフォルダ
     'storage',   // 1 #settings-cloud-link-card（Dropbox 状態カード）
     'storage',   // 2 ホームフォルダ
-    'connect',   // 3 スマホ・タブレットからの接続
+    'connect',   // 3 スマホ・タブレットからの接続（接続タブへ移設）
     'connect',   // 4 保存の仕組み・共有サーバー
     'setup',     // 5 ファイルを開くアプリ
     'setup',     // 6 サンプルデータ
@@ -16202,6 +16555,11 @@ function _tagSettingsNavigationSections(root = document) {
     'web-clipper',
     'notion-sync',
     'extensions',
+  ]);
+  _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="データベース"]'), [
+    'database',
+    'database',
+    'duplicates',
   ]);
 }
 
@@ -16242,6 +16600,7 @@ const MELDEX_DEFAULT_APPS_GUIDE_PATH = 'MeldexHome/マニュアル/04_サポー�
 
 function _settingsStorageLabel() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
+  if (mode === 'browser') return 'この端末内に保存';
   if (mode === 'dropbox') return 'Dropboxと接続中';
   if (mode === 'server') return 'Meldex共有サーバーに接続中';
   return 'このPCに保存';
@@ -16278,7 +16637,7 @@ function _setSettingsAvatarPreview(el, avatar) {
 
 function openMeldexSampleGuide() {
   closeSettingsModalRestoringTheme();
-  if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+  if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
     openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
     return;
   }
@@ -16319,17 +16678,26 @@ function _settingsModalViewportLimit(axis, margin, fallback) {
   return Math.max(fallback, Math.floor((viewport - margin) / zoom));
 }
 
+// 既定の大きさ。画面を占有しすぎない控えめな寸法にしてある（2026-08-07 に
+// 980×720 / 560×600 から縮小）。ユーザーがフチをドラッグして変えた大きさは
+// gb-modal-shell.js が記憶し、次に開いたときはそちらが優先される。
+const SETTINGS_MODAL_BASE_WIDTH = 880;
+const SETTINGS_MODAL_BASE_HEIGHT = 620;
+const SETTINGS_MODAL_BASE_WIDTH_MOBILE = 560;
+const SETTINGS_MODAL_BASE_HEIGHT_MOBILE = 560;
+
 function _settingsModalViewportStyle(isMobile) {
   const widthLimit = _settingsModalViewportLimit('width', isMobile ? 16 : 72, isMobile ? 240 : 320);
   const heightLimit = _settingsModalViewportLimit('height', isMobile ? 16 : 72, isMobile ? 240 : 320);
-  const baseWidth = isMobile ? 560 : 980;
-  const baseHeight = isMobile ? 600 : 720;
+  const baseWidth = isMobile ? SETTINGS_MODAL_BASE_WIDTH_MOBILE : SETTINGS_MODAL_BASE_WIDTH;
+  const baseHeight = isMobile ? SETTINGS_MODAL_BASE_HEIGHT_MOBILE : SETTINGS_MODAL_BASE_HEIGHT;
+  // max-width / max-height はここで指定しない。指定すると共通ダイアログ層
+  // （gb-modal-shell.js）が画面内へ収める処理より強く効いてしまい、フチをドラッグして
+  // 広げても途中で止まる。画面外へはみ出さないための上限は共通層が一手に引き受ける。
   return [
     'box-sizing:border-box',
     `width:min(${baseWidth}px, ${widthLimit}px)`,
-    `max-width:${widthLimit}px`,
     `height:min(${baseHeight}px, ${heightLimit}px)`,
-    `max-height:${heightLimit}px`,
   ].join(';') + ';';
 }
 
@@ -16422,7 +16790,7 @@ async function showSettingsModal(opts) {
   o.dataset.settingsModal = '1';
   const _isMobile = _shouldUseSettingsMobileLayout();
   const _settingsModalStyle = _settingsModalViewportStyle(_isMobile);
-  o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
+  o.innerHTML = `<div class="modal settings-modal" data-dialog-geometry-key="settings" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
       ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
@@ -16498,6 +16866,13 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
+        <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
+        <div class="gb-field-row" style="flex-wrap:nowrap;">
+          <input id="modal-screenshot-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(localStorage.getItem('meldex-screenshot-folder') || ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット'))}" readonly>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="changeScreenshotFolder()">変更</button>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続 ${fieldHelp('このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください')}</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
@@ -16507,7 +16882,7 @@ async function showSettingsModal(opts) {
         <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます')}</div>
+        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます', { e2eId: 'settings-storage-mode-help' })}</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
@@ -16515,7 +16890,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
-        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます')}</div>
+        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-note" data-action="setMeldexDefaultApp" data-args='["note"]'>${lucide('fileText',14)} MarkdownをMeldex Noteにする</button>
@@ -16527,9 +16902,9 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません')}</div>
+        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません', { e2eId: 'settings-sample-data-help' })}</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>
       </section>
@@ -16606,6 +16981,10 @@ async function showSettingsModal(opts) {
             <option value="nav" ${_viewerWheelMode === 'nav' ? 'selected' : ''}>前後のファイルへ移動</option>
           </select>
         </label>
+        <div class="gb-field-row" style="margin-top:6px;justify-content:flex-start;">
+          <button type="button" class="gb-btn gb-btn-sm" data-action="showShellVerbSettings()">${lucide('mousePointerClick',14)} OS右クリックメニューを整理</button>
+          ${fieldHelp('検出済みのOSコマンドから、フォルダツリーとフォルダパネルのメニュー上部に表示する項目を選べます')}
+        </div>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">表示サイズ</div>
@@ -16661,7 +17040,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます')}</div>
+        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます', { e2eId: 'settings-reset-all-help' })}</div>
         <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
       </section>
     </div>
@@ -16904,6 +17283,12 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <div id="settings-tag-maintenance"></div>
+      <div id="settings-duplicate-detection">
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">${lucide('copy',14)} 重複ファイルの検出</div>
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </section>
+      </div>
     </div>
     <!-- フィードバック -->
     <div class="settings-panel" data-panel="フィードバック" hidden>
@@ -17756,8 +18141,28 @@ async function _changeHomeFolder() {
     if (homeInput) homeInput.value = path;
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     showStatus('ホームフォルダを変更しました');
-    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
   }
+}
+
+async function changeScreenshotFolder() {
+  if (!window.GBFolderPicker?.pickFolder) {
+    showStatus('フォルダ選択を利用できません', true);
+    return false;
+  }
+  const fallback = ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット');
+  const current = localStorage.getItem('meldex-screenshot-folder') || fallback;
+  const selected = await window.GBFolderPicker.pickFolder({
+    title: 'スクリーンショット保存先を選択',
+    confirmLabel: 'このフォルダを選択',
+    revealPath: current,
+    initialPath: current,
+  });
+  if (!selected?.path) return false;
+  localStorage.setItem('meldex-screenshot-folder', selected.path);
+  const input = document.getElementById('modal-screenshot-folder');
+  if (input) input.value = selected.path;
+  showStatus('スクリーンショット保存先を変更しました');
+  return true;
 }
 
 async function _promptFolderPath() {
@@ -18062,53 +18467,23 @@ function pushOutlinerRootsSettingsHistory(label, beforeSnapshot, afterSnapshot, 
 /* ==============================
    テーマプリセット
    ============================== */
-const THEME_PRESETS = {
-  'OSに合わせる': null, // 特殊テーマ: OS設定に応じてダーク/ライトを自動切替
-  'ダーク': {
-    '--bg':'#1e1e1e','--bg2':'#252525','--bg3':'#2d2d2d','--bg4':'#3e3e3e',
-    '--fg':'#d4d4d4','--fg2':'#969696','--accent':'#569cd6','--accent2':'#4ec9b0',
-    '--red':'#f44747','--green':'#6a9955','--orange':'#ce9178','--blue':'#6fa8dc',
-    '--border':'#333333','--selection':'#264f78',
-    '--db-th-fg':'#969696','--db-th-bg':'#2d2d2d','--db-entity-fg':'#d4d4d4','--db-entity-bg':'#1e1e1e',
-    '--db-cell-fg':'#d4d4d4','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#d4d4d4','--page-h1-fg':'#569cd6','--page-h2-fg':'#569cd6','--page-h3-fg':'#d4d4d4',
-    '--page-text-fg':'#d4d4d4','--page-text-bg':'#252525','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#969696','--page-quote-border':'var(--border)',
-  },
-  'ライト': {
-    '--bg':'#ffffff','--bg2':'#f5f5f5','--bg3':'#ebebeb','--bg4':'#d4d4d4',
-    '--fg':'#1e1e1e','--fg2':'#555555','--accent':'#0055aa','--accent2':'#007050',
-    '--red':'#c62828','--green':'#2e7d32','--orange':'#d84315','--blue':'#1565c0',
-    '--border':'#c0c0c0','--selection':'#bbdefb',
-    '--db-th-fg':'#555555','--db-th-bg':'#ebebeb','--db-entity-fg':'#1e1e1e','--db-entity-bg':'#ffffff',
-    '--db-cell-fg':'#1e1e1e','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#1e1e1e','--page-h1-fg':'#0055aa','--page-h2-fg':'#0055aa','--page-h3-fg':'#1e1e1e',
-    '--page-text-fg':'#1e1e1e','--page-text-bg':'#f5f5f5','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#555555','--page-quote-border':'var(--border)',
-  },
-  'パステル': {
-    '--bg':'#fdf9f6','--bg2':'#f5f0ff','--bg3':'#e8f4f0','--bg4':'#fce8ec',
-    '--fg':'#4a4458','--fg2':'#7a7090','--accent':'#9b59b6','--accent2':'#1abc9c',
-    '--red':'#e74c8b','--green':'#2ecc71','--orange':'#f39c12','--blue':'#3498db',
-    '--border':'#e0c8f0','--selection':'#d5e8ff',
-    '--db-th-fg':'#6a5090','--db-th-bg':'#e8f0d8','--db-entity-fg':'#5a4870','--db-entity-bg':'#fdf6f0',
-    '--db-cell-fg':'#4a4458','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#5a4870','--page-h1-fg':'#e74c8b','--page-h2-fg':'#3498db','--page-h3-fg':'#2ecc71',
-    '--page-text-fg':'#4a4458','--page-text-bg':'#fff8f0','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#9b59b6','--page-quote-border':'var(--border)',
-  },
-  'アースカラー': {
-    '--bg':'#1a1a14','--bg2':'#22221a','--bg3':'#2e2c22','--bg4':'#3e3a2e',
-    '--fg':'#d4c8a8','--fg2':'#b0a488','--accent':'#d4a030','--accent2':'#7aa030',
-    '--red':'#d06050','--green':'#90b870','--orange':'#d07830','--blue':'#6898b0',
-    '--border':'#3a3628','--selection':'#4a4228',
-    '--db-th-fg':'#b0a488','--db-th-bg':'#2e2c22','--db-entity-fg':'#d4c8a8','--db-entity-bg':'#1a1a14',
-    '--db-cell-fg':'#d4c8a8','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#d4c8a8','--page-h1-fg':'#d4a030','--page-h2-fg':'#d4a030','--page-h3-fg':'#d4c8a8',
-    '--page-text-fg':'#d4c8a8','--page-text-bg':'#22221a','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#b0a488','--page-quote-border':'var(--border)',
-  },
-};
+// テーマ管理（gb-theme-manager.js）が持つ現行の定義から組み立てる。
+// 以前はここに同じ名前の色一式を別途書き写しており、パステルの背景やライトの橙などが
+// 現行定義とわずかに食い違っていた。テーマ管理が使えない状況でこちらへ落ちると、
+// 同じ名前なのに少し違う色になる（クラウド版だけ見た目が違う、の再現経路）。
+// 写しを持たず、常に現行定義から導くことで食い違いを構造的に無くす。
+const THEME_PRESETS = (function () {
+  const presets = { 'OSに合わせる': null }; // 特殊テーマ: OS設定に応じてダーク/ライトを自動切替
+  try {
+    const builtIns = window.MeldexThemeManager?.getBuiltInThemes?.() || [];
+    builtIns.forEach((themeDef) => {
+      const name = String(themeDef?.name || '').trim();
+      const vars = themeDef?.ui?.cssVars;
+      if (name && vars && typeof vars === 'object') presets[name] = { ...vars };
+    });
+  } catch { /* テーマ管理が無い環境では「OSに合わせる」だけになる */ }
+  return presets;
+})();
 
 // 現在のテーマ名を推定（CSS変数の値で判定）
 function detectCurrentTheme() {
@@ -18127,13 +18502,11 @@ function detectCurrentTheme() {
 }
 
 // 現在のCSS変数のスナップショットを取得（キャンセル時の復元用）
-const UI_PRESET_FONTS = [
+// 既定のフォント一覧は gb-font-catalog.js を正本にする（写しを持つと環境ごとに
+// 選択肢がずれる）。読み込まれていない場合だけ同梱フォントの1件へ落とす。
+const UI_PRESET_FONTS = (globalThis.MeldexFontCatalog?.PRESET_FONTS || [
   { name: 'Noto Sans JP（デフォルト・同梱）', family: '' },
-  { name: 'Segoe UI', family: "'Segoe UI', sans-serif" },
-  { name: 'Yu Gothic UI', family: "'Yu Gothic UI', sans-serif" },
-  { name: 'Meiryo', family: "'Meiryo', sans-serif" },
-  { name: 'Noto Sans JP', family: "'Noto Sans JP', sans-serif" },
-];
+]).map(item => ({ ...item }));
 
 // OS にインストールされていそうな代表的フォントの候補。
 // 実際にインストールされているかは canvas 計測で判定し、インストール済みのものだけドロップダウンに追加する。
@@ -18330,20 +18703,21 @@ window.addEventListener('meldex:font-catalog-updated', () => {
 // v0.5.130: Google Fonts 動的ロードを廃止。プリセットはローカル同梱フォントとシステムフォントのみ。
 function loadGoogleFontForUI(_family) { /* no-op: retained as stub for backward-compat callers */ }
 
-function _noteContentHorizontalPaddingCss() {
-  return 'max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2))';
-}
-
 function _clampNoteContentMaxWidth(value) {
   let px = parseFloat(value);
   if (!Number.isFinite(px)) px = 1200;
   return Math.max(480, Math.min(3200, px));
 }
 
+// 本文の余白は gb-layout.part01.css（横書き）と gb-tools.part02.part02.css（縦書き）が
+// 論理プロパティで一元管理する。ここで物理プロパティ（paddingLeft/Right）を書き込むと
+// 縦書きで軸が入れ替わったときに横方向へ効き続けてしまうため、旧バージョンが書き込んだ
+// インライン値が残っていれば剥がすだけにする。--page-margin-x / --page-content-max-width の
+// 設定自体は applyNoteMargin() / applyNoteContentMaxWidth() が :root へ入れるので効く。
 function _applyNoteContentHorizontalPadding(pc) {
-  if (!pc) return;
-  const padding = _noteContentHorizontalPaddingCss();
-  pc.style.paddingLeft = pc.style.paddingRight = padding;
+  if (!pc || !pc.style) return;
+  pc.style.removeProperty('padding-left');
+  pc.style.removeProperty('padding-right');
 }
 
 function applyNoteMargin(px) {
@@ -18378,7 +18752,10 @@ function isDesktopInteractionRecoveryMode() {
   return false;
 }
 
-function applyUIScale(pct) {
+// options.source に 'manual' / 'auto' を渡すと、その表示サイズが「ユーザー自身が
+// 選んだ値」なのか「端末に合わせて自動で決めた値」なのかを記録する（gb-ui-scale.js）。
+// 省略時は出どころの記録を変更しない。
+function applyUIScale(pct, options) {
   let next = parseInt(pct, 10) || 100;
   next = Math.max(67, Math.min(200, next));
   const rootStyle = document.documentElement?.style;
@@ -18391,6 +18768,9 @@ function applyUIScale(pct) {
   if (rootStyle) rootStyle.fontSize = ''; // font-sizeスケーリングの残骸をクリア
   if (typeof updateMeldexViewportSize === 'function') updateMeldexViewportSize();
   localStorage.setItem('ui-scale', String(next));
+  if (options && options.source && window.MeldexUIScale) {
+    window.MeldexUIScale.markSource(options.source);
+  }
   return next;
 }
 
@@ -21638,6 +22018,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === 'データベース') {
       if (typeof renderDatabaseMaintenanceSettings === 'function') renderDatabaseMaintenanceSettings(modal);
       window.MeldexTagMaintenanceSettings?.render?.(modal);
+      window.MeldexDuplicateMonitor?.renderSettings?.(modal);
       return;
     }
   };
@@ -21962,7 +22343,7 @@ if (typeof window !== 'undefined') {
 // 判定できない場合（クラウド版、通信失敗など）は false を返し、追加の確認は出さない。
 async function _settingsResetHasSharedSourceFolders() {
   try {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return false;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
     if (typeof apiFetch !== 'function') return false;
     const status = await apiFetch('/dropbox-link/status', { silentError: true });
     const roots = Array.isArray(status?.roots) ? status.roots : [];
@@ -22034,7 +22415,13 @@ async function submitSettings() {
   // 表示サイズ（zoom）
   try {
     const uiScale = document.getElementById('modal-ui-scale')?.value;
-    if (uiScale) applyUIScale(parseInt(uiScale) || 100);
+    if (uiScale) {
+      const nextScale = parseInt(uiScale) || 100;
+      const currentScale = parseInt(localStorage.getItem('ui-scale') || '100', 10) || 100;
+      // ユーザーが表示サイズを選び直したときだけ「手動」として記録する。設定を開いて
+      // 別の項目だけ保存したときに、自動で決まった値を手動値へ格上げしないため。
+      applyUIScale(nextScale, nextScale === currentScale ? undefined : { source: 'manual' });
+    }
   } catch (e) { console.warn('UIスケール適用失敗:', e); }
 
   const filterSharedCb = document.getElementById('modal-outliner-filter-shared');
@@ -23026,7 +23413,7 @@ if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSiz
 // UI設定のサーバー永続保存（localStorageの主要設定をサーバーにバックアップ）
 const _UI_CONFIG_KEYS = [
   // UI設定
-  'editor-theme', 'editor-theme-name', 'ui-scale', 'meldex-user', 'meldex-statusbar-hidden',
+  'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden',
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
@@ -23036,6 +23423,10 @@ const _UI_CONFIG_KEYS = [
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',
+  // テーマの正本キー。ここから漏れていたため、設定の書き出し／読み込みでテーマだけが
+  // 持ち運べず、環境を移ると見た目が既定へ戻っていた（2026-08-07 追加）。
+  'meldex-default-theme-id', 'meldex-custom-themes', 'meldex-promoted-initial-theme-sources',
+  'meldex-theme-color-extra-slot-settings', 'meldex-theme-use-os-accent', 'meldex-custom-theme-cleanup-version',
   'file-theme-presets', 'gb:hidden-shell-verbs',
 ];
 
@@ -23131,12 +23522,23 @@ async function _restoreUiConfigFromServer() {
     const config = await apiFetch('/ui-config', { silentError: true });
     if (!config || typeof config !== 'object') return;
     let restored = false;
+    // 表示サイズだけは「localStorageが空のときだけ復元」では永久に復元されない。
+    // 起動処理が応答を待たずに自動判定値を同期的に書き込むため、ここへ来る頃には
+    // 必ず値が入っているからである。サーバー側がユーザー自身の選んだ値を持っていて、
+    // この端末側がまだ自動判定値のままなら、そちらを優先して上書きする。
+    const overwriteKeys = new Set();
+    if (String(config['ui-scale-source'] || '') === 'manual'
+      && String(localStorage.getItem('ui-scale-source') || '') !== 'manual'
+      && config['ui-scale'] != null) {
+      overwriteKeys.add('ui-scale');
+      overwriteKeys.add('ui-scale-source');
+    }
     for (const [key, val] of Object.entries(config)) {
       if (key === 'folder-files-hidden') continue;
-      if (localStorage.getItem(key) == null && val != null) {
-        localStorage.setItem(key, val);
-        restored = true;
-      }
+      if (val == null) continue;
+      if (localStorage.getItem(key) != null && !overwriteKeys.has(key)) continue;
+      localStorage.setItem(key, val);
+      restored = true;
     }
     if (restored) {
       // 復元した設定を適用
@@ -23154,6 +23556,135 @@ if (typeof applyThumbnailSize === 'function') applyThumbnailSize(resolveThumbnai
 _restoreUiConfigFromServer();
 
 /* showNotionSyncModal / saveNotionToken / doNotionSync 等は gb-notion-sync.js に移動 */
+/* gb-settings-cli-usage.js: truthful local CLI plan and remaining-limit UI */
+(function () {
+  'use strict';
+
+  const PROVIDER_LABELS = { codex: 'Codex CLI', claude_code: 'Claude Code', antigravity_cli: 'Antigravity CLI' };
+  const PLAN_LABELS = { pro: 'Pro', plus: 'Plus', team: 'Team', max: 'Max' };
+
+  function isDesktopCliSurface() {
+    return !(window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || ''));
+  }
+
+  function planLabel(value) {
+    const raw = String(value || '').trim();
+    return PLAN_LABELS[raw.toLowerCase()] || raw || '取得不可';
+  }
+  function windowLabel(info) {
+    const minutes = Number(info?.window_minutes || 0);
+    if (minutes === 10080) return '7日間';
+    if (minutes === 300) return '5時間';
+    if (minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440}日間`;
+    if (minutes > 0 && minutes % 60 === 0) return `${minutes / 60}時間`;
+    return info?.name || '利用上限';
+  }
+  function resetLabel(timestamp) {
+    const value = Number(timestamp || 0);
+    if (!value) return '';
+    try { return new Date(value * 1000).toLocaleString('ja-JP'); } catch { return ''; }
+  }
+  function usageRowHtml(key, usage) {
+    const label = PROVIDER_LABELS[key] || key;
+    const windows = Array.isArray(usage?.windows) ? usage.windows : [];
+    const bars = windows.length ? windows.map(item => {
+      const remaining = Math.max(0, Math.min(100, Number(item?.remaining_percent || 0)));
+      const reset = resetLabel(item?.resets_at);
+      const shown = remaining.toFixed(remaining % 1 ? 1 : 0);
+      return `<div style="margin-top:6px;"><div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--fg2);"><span>${_settingsCliEsc(windowLabel(item))}</span><span>残り ${_settingsCliEsc(shown)}%${reset ? `／${_settingsCliEsc(reset)}に更新` : ''}</span></div><div role="progressbar" aria-label="${_settingsCliEsc(label)} ${_settingsCliEsc(windowLabel(item))}の残り使用量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${_settingsCliEsc(remaining)}" style="height:7px;margin-top:3px;background:var(--bg3);border:1px solid var(--border);border-radius:999px;overflow:hidden;"><span style="display:block;width:${_settingsCliEsc(remaining)}%;height:100%;background:var(--accent);"></span></div></div>`;
+    }).join('') : `<div aria-label="${_settingsCliEsc(label)}の残り使用量は取得できません" style="height:7px;margin-top:7px;background:repeating-linear-gradient(135deg,var(--bg3),var(--bg3) 6px,var(--border) 6px,var(--border) 8px);border:1px solid var(--border);border-radius:999px;"></div>`;
+    return `<section data-cli-usage-provider="${_settingsCliEsc(key)}" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;"><strong style="font-size:12px;">${_settingsCliEsc(label)}</strong><span style="font-size:11px;color:var(--fg2);">プラン: ${_settingsCliEsc(planLabel(usage?.plan))}</span></div>${bars}${usage?.message ? `<div style="margin-top:6px;font-size:11px;color:var(--fg2);">${_settingsCliEsc(usage.message)}</div>` : ''}</section>`;
+  }
+  function usagePanelHtml(payload, compact = false) {
+    const providers = payload?.providers || {};
+    return `<div class="meldex-cli-usage-list" style="display:grid;gap:${compact ? 6 : 8}px;">${['codex', 'claude_code', 'antigravity_cli'].map(key => usageRowHtml(key, providers[key] || {})).join('')}</div>`;
+  }
+  async function fetchUsage() {
+    if (!isDesktopCliSurface()) throw new Error('CLIはデスクトップ版で設定してください。');
+    return apiFetch('/cli-chat/usage', { silentError: true });
+  }
+  async function renderSettingsUsage(root) {
+    const scope = root?.querySelector ? root : document;
+    const host = scope.querySelector('#settings-cli-usage-status');
+    if (!host) return;
+    host.innerHTML = '<div class="gb-section-desc">プランと残り使用量を確認中...</div>';
+    try { host.innerHTML = usagePanelHtml(await fetchUsage()); }
+    catch (error) { host.innerHTML = `<div class="gb-section-desc" style="color:var(--fg2);">この環境ではCLIの利用量を確認できません。${_settingsCliEsc(error?.message || '')}</div>`; }
+  }
+  function extendSettingsRenderer() {
+    if (typeof _renderCliChatSettingsContainer !== 'function' || _renderCliChatSettingsContainer.__usageExtended) return;
+    const original = _renderCliChatSettingsContainer;
+    const extended = function (container, config) {
+      original(container, config);
+      container.querySelector('#settings-cli-usage-status')?.remove();
+      if (!isDesktopCliSurface()) return;
+      const relay = container.querySelector('#settings-workspace-cli-relay-container');
+      const section = document.createElement('section');
+      section.id = 'settings-cli-usage-status';
+      section.setAttribute('aria-label', 'CLIのプランと残り使用量');
+      section.style.marginTop = '12px';
+      section.innerHTML = '<div class="gb-section-desc">プランと残り使用量を確認中...</div>';
+      container.insertBefore(section, relay || null);
+      renderSettingsUsage(container.closest('.modal-overlay') || document);
+    };
+    extended.__usageExtended = true;
+    _renderCliChatSettingsContainer = extended;
+  }
+
+  let popup = null;
+  async function showCliUsagePopup(event) {
+    event?.preventDefault?.(); event?.stopPropagation?.();
+    if (popup) { popup.remove(); popup = null; return; }
+    const button = event?.currentTarget || document.getElementById('chat-cli-usage-btn');
+    if (!button) return;
+    popup = document.createElement('div');
+    popup.className = 'gb-context-menu chat-cli-usage-popup';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-label', '残り使用量');
+    popup.style.cssText = 'position:fixed;z-index:10080;width:min(360px,calc(100vw - 16px));max-height:min(520px,calc(100vh - 16px));overflow:auto;padding:10px;box-sizing:border-box;';
+    popup.innerHTML = '<div class="gb-section-desc">プランと残り使用量を確認中...</div>';
+    document.body.appendChild(popup);
+    const rect = button.getBoundingClientRect();
+    if (typeof positionPopup === 'function') positionPopup(popup, rect, { prefer: 'top', gap: 4 });
+    else { popup.style.left = `${Math.max(8, rect.left)}px`; popup.style.bottom = `${Math.max(8, innerHeight - rect.top + 4)}px`; }
+    const close = pointerEvent => {
+      if (popup && !popup.contains(pointerEvent.target) && pointerEvent.target !== button) {
+        popup.remove(); popup = null; document.removeEventListener('pointerdown', close, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
+    try { if (popup) popup.innerHTML = usagePanelHtml(await fetchUsage(), true); }
+    catch (error) { if (popup) popup.textContent = `この環境ではCLIの利用量を確認できません。${error?.message || ''}`; }
+  }
+  function installChatControls() {
+    if (!isDesktopCliSurface()) {
+      document.getElementById('chat-cli-usage-btn')?.remove();
+      if (popup) { popup.remove(); popup = null; }
+      return;
+    }
+    const controls = document.querySelector('#chat-composer .chat-composer-controls');
+    if (!controls || document.getElementById('chat-cli-usage-btn')) return;
+    const button = document.createElement('button');
+    button.id = 'chat-cli-usage-btn'; button.type = 'button'; button.title = '残り使用量';
+    button.setAttribute('aria-label', '残り使用量');
+    button.style.cssText = 'padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;justify-content:center;';
+    button.innerHTML = typeof lucide === 'function' ? lucide('chartNoAxesCombined', 14) : '残量';
+    button.addEventListener('click', showCliUsagePopup);
+    controls.appendChild(button);
+  }
+
+  extendSettingsRenderer(); installChatControls();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', installChatControls, { once: true });
+  if (document.body && typeof MutationObserver === 'function') {
+    new MutationObserver(installChatControls).observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-cloud-mode'],
+    });
+  }
+  window.showCliUsagePopup = showCliUsagePopup;
+  window.MeldexCliUsageUi = { fetchUsage, renderSettingsUsage, showCliUsagePopup, isDesktopCliSurface };
+})();
 /* gb-settings.part05.js: appearance tab theme editor integration */
 
 function _settingsThemeAction(iconName, fallback, label, action, danger) {
@@ -23384,7 +23915,7 @@ function _renderSettingsThemeNoteLayoutRows() {
   const margin = _settingsThemePxValue('--page-margin-x', '50px');
   const maxWidth = _settingsThemePxValue('--page-content-max-width', '1200px');
   return _settingsThemeSubsection('レイアウト', `<label class="gb-field-row settings-theme-note-layout-row">
-    <span class="gb-label">左右余白</span>
+    <span class="gb-label">余白 ${fieldHelp('本文の行の左右に空ける余白です。横書きでは左右、縦書きでは上下に効きます', { e2eId: 'settings-theme-note-padding-help' })}</span>
     <input id="settings-note-margin-x" type="number" min="0" max="300" step="1" class="gb-input-sm settings-theme-note-margin-input" value="${esc(margin)}" data-onchange="settingsThemeNoteMarginChanged(this.value)">
     <span class="gb-label">px</span>
   </label>
@@ -24917,7 +25448,7 @@ async function showMeldexChangelogDialog() {
   function _openSampleGuide() {
     _setOnboardingActive(false);
     document.getElementById('meldex-onboarding-overlay')?.remove();
-    if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+    if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
       openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
       return;
     }
@@ -25064,7 +25595,6 @@ async function showMeldexChangelogDialog() {
     } catch {}
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     if (typeof showStatus === 'function') showStatus('ホームフォルダを変更しました');
-    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
     return path;
   }
 
@@ -25106,7 +25636,7 @@ async function showMeldexChangelogDialog() {
       return;
     }
     else if (action === 'sample-download') { _openSampleDownload(); return; }
-    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'onboarding-samples', homePath: _homePath() }); return; }
+    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.installNow?.({ trigger: 'onboarding-samples', homePath: _homePath() }); return; }
     else if (action === 'sample-guide') { _openSampleGuide(); return; }
     else if (action === 'consent') { _showConsentFromOnboarding(); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }
@@ -25165,6 +25695,7 @@ async function showMeldexChangelogDialog() {
 
   function _runtimeMode() {
     if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return 'dropbox';
+    if (window.MeldexRuntimeAdapter?.isBrowserMode?.()) return 'browser';
     return 'legacy';
   }
 
@@ -25191,6 +25722,13 @@ async function showMeldexChangelogDialog() {
         id: touch ? 'mobile-dropbox' : 'dropbox',
         label: touch ? 'タッチ表示（Dropbox）' : 'Dropboxに保存',
         detail: workspace?.path || workspace?.accountName || 'Dropboxと接続中',
+      };
+    }
+    if (runtime === 'browser') {
+      return {
+        id: touch ? 'mobile-browser' : 'browser',
+        label: touch ? 'タッチ表示（この端末）' : 'この端末内に保存',
+        detail: workspace?.path || 'この端末内に保存',
       };
     }
     const source = _localWorkspaceSource();
@@ -27758,8 +28296,8 @@ function resetLayoutToDefault() {
   const _syncClientId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   function _isCloudMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _nowMs() {
@@ -29048,6 +29586,11 @@ function resetLayoutToDefault() {
   'use strict';
 
   const rootId = 'external-import-settings-container';
+
+  function isCloudStaticImportSurface() {
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
+  }
   const runningSetIds = new Set();
   const _scheduleWidgets = {};   // setId → widget
   const ENEX_WARN_BYTES = 8 * 1024 * 1024;
@@ -29719,6 +30262,15 @@ function resetLayoutToDefault() {
   function renderExternalImportSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
+    // OAuth中継、ローカル保管庫走査、定期ジョブを持たないDropbox直結の
+    // Cloud静的版では、押しても成立しないデスクトップ専用操作を表示しない。
+    if (isCloudStaticImportSurface()) {
+      container.hidden = true;
+      container.dataset.cloudDesktopOnlyHidden = '1';
+      return;
+    }
+    container.hidden = false;
+    delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
       refresh();
       // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら
@@ -29818,6 +30370,11 @@ function resetLayoutToDefault() {
 
   function apiReady() {
     return typeof apiFetch === 'function' && typeof apiPost === 'function';
+  }
+
+  function isCloudStaticScheduleSurface() {
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   async function confirmAction(message) {
@@ -29976,16 +30533,6 @@ function resetLayoutToDefault() {
     usernameInput.dataset.e2eId = 'import-schedule-x-account-username';
     row.appendChild(usernameInput);
 
-    const ackLabel = document.createElement('label');
-    ackLabel.className = 'gb-check-help-row';
-    ackLabel.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const ackInput = document.createElement('input');
-    ackInput.type = 'checkbox';
-    ackInput.dataset.e2eId = 'import-schedule-x-account-ack';
-    ackLabel.appendChild(ackInput);
-    ackLabel.appendChild(document.createTextNode('料金についての注意事項を確認しました'));
-    row.appendChild(ackLabel);
-
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'gb-btn gb-btn-sm';
@@ -30003,8 +30550,10 @@ function resetLayoutToDefault() {
         message.textContent = 'ユーザー名を入力してください。';
         return;
       }
-      if (!ackInput.checked) {
-        message.textContent = '料金についての確認が必要です。';
+      const existing = await loadSchedules();
+      if (existing.some((entry) => entry.category === 'x-account-posts'
+        && String(entry.target_ref?.username || '').toLowerCase() === username.toLowerCase())) {
+        message.textContent = `@${username} はすでに一覧にあります。`;
         return;
       }
       addBtn.disabled = true;
@@ -30013,12 +30562,10 @@ function resetLayoutToDefault() {
           category: 'x-account-posts',
           target_ref: { username },
           label: `@${username}`,
-          period: { type: 'daily', time: '09:00' },
-          ack_cost_notice: true,
+          period: { type: 'off' },
         }, { silentError: true });
         usernameInput.value = '';
-        ackInput.checked = false;
-        message.textContent = '追加しました。';
+        message.textContent = '追加しました。定期実行はOFFです。';
         onAdded();
       } catch (err) {
         message.textContent = '追加できませんでした: ' + (err.userMessage || err.message || err);
@@ -30059,6 +30606,11 @@ function resetLayoutToDefault() {
   // 「カードが描画され終わっているか」を確実に待てるようにするため）。
   function render(container) {
     if (!container) return Promise.resolve();
+    if (isCloudStaticScheduleSurface()) {
+      container.querySelector('[data-e2e-id="import-schedule-settings-root"]')?.remove();
+      delete container.dataset.importScheduleMounted;
+      return Promise.resolve();
+    }
     if (container.dataset.importScheduleMounted === '1') {
       const existing = container.querySelector('[data-e2e-id="import-schedule-settings-root"]');
       return existing ? refresh(existing) : Promise.resolve();
@@ -30091,7 +30643,7 @@ function resetLayoutToDefault() {
     return host ? render(host) : Promise.resolve();
   }
 
-  window.MeldexImportScheduleSettings = { render, mount, refresh };
+  window.MeldexImportScheduleSettings = { render, mount, refresh, isCloudStaticScheduleSurface };
 })();
 
 ;
@@ -30126,6 +30678,7 @@ function resetLayoutToDefault() {
   let _container = null;
   let _pollTimer = null;
   let _lastRenderedJobId = null;
+  let _foregroundOperation = null;
 
   function _kindLabel(kind) {
     return KIND_LABELS[kind] || kind || 'インポート';
@@ -30196,6 +30749,20 @@ function resetLayoutToDefault() {
     const label = el.querySelector('.sb-import-progress-label');
     const fill = el.querySelector('.sb-import-progress-bar-fill');
     const queue = el.querySelector('.sb-import-progress-queue');
+    if (_foregroundOperation) {
+      const operation = _foregroundOperation;
+      const total = Math.max(1, Number(operation.total) || 1);
+      const processed = Math.max(0, Math.min(total, Number(operation.processed) || 0));
+      const percent = Math.round((processed / total) * 100);
+      el.style.display = '';
+      label.textContent = `${operation.label || '処理中'} ${percent}%`;
+      if (fill) {
+        fill.style.width = percent + '%';
+        fill.classList.remove('sb-import-progress-bar-indeterminate');
+      }
+      queue.textContent = `${processed}/${total}件`;
+      return;
+    }
     if (!job) {
       el.style.display = 'none';
       _lastRenderedJobId = null;
@@ -30266,6 +30833,27 @@ function resetLayoutToDefault() {
     }
   }
 
+  function beginOperation(label, total) {
+    _foregroundOperation = {
+      label: String(label || '処理中'),
+      total: Math.max(1, Number(total) || 1),
+      processed: 0,
+    };
+    _renderJob(null, 0);
+  }
+
+  function updateOperation(processed, label) {
+    if (!_foregroundOperation) return;
+    _foregroundOperation.processed = Math.max(0, Number(processed) || 0);
+    if (label) _foregroundOperation.label = String(label);
+    _renderJob(null, 0);
+  }
+
+  function finishOperation() {
+    _foregroundOperation = null;
+    _poll();
+  }
+
   function _injectCSS() {
     if (document.getElementById('gb-import-progress-css-fallback')) return;
     // 通常は gb-import-progress.css（Meldex-dev.html に登録済み）を使うが、
@@ -30296,7 +30884,14 @@ function resetLayoutToDefault() {
     _init();
   }
 
-  window.MeldexImportProgress = { start, stop, poll: _poll };
+  window.MeldexImportProgress = {
+    start,
+    stop,
+    poll: _poll,
+    beginOperation,
+    updateOperation,
+    finishOperation,
+  };
 })();
 
 ;
@@ -33844,6 +34439,508 @@ const MeldexAutoLink = (() => {
 
 ;
 
+/* === gb-note-writing-mode.js === */
+;
+/* gb-note-writing-mode.js — ノート本文の組方向（縦書き/横書き）の正本。
+ *
+ * 目的:
+ *  1. 「今が縦書きかどうか」と「縦書きのときブロック軸/インライン軸がどの物理方向か」を
+ *     この1ファイルに集約する。ノート側で座標比較・矩形比較を書くときは必ず axis() を経由する。
+ *     横書きでは blockCoord=pt.y / blockStart=rect.top / blockEnd=rect.bottom / blockSign=+1 に
+ *     なるため、既存の物理座標ベースの式と数値が完全に一致する（横書きの挙動は不変）。
+ *  2. 組方向を切り替えるときに触るUI（本文クラス、目次レイアウト、ツールバーボタン、
+ *     セパレータのARIA、保存）を applyState() 1箇所へまとめる。新しく組方向へ追従したいUIが
+ *     増えても、ここか meldex:note-writing-mode-changed の購読側に足すだけで済む。
+ *
+ * 本体（Meldex.html）とクラウド単独ノートアプリ（note-standalone.html）の両方から読み込む。
+ * どちらも本文は <... id="page-content"> なので同じ実装で動く。
+ */
+(function (global) {
+  'use strict';
+
+  var VERTICAL_CLASS = 'vertical-writing';
+  var BODY_VERTICAL_CLASS = 'is-note-vertical';
+  var STORAGE_KEY = 'note-vertical';
+  var INLINE_SIZE_VAR = '--note-avail-inline';
+  var CHANGE_EVENT = 'meldex:note-writing-mode-changed';
+
+  function _pageContent() {
+    return document.getElementById('page-content');
+  }
+
+  function isVertical(editable) {
+    var el = editable || _pageContent();
+    return !!(el && el.classList && el.classList.contains(VERTICAL_CLASS));
+  }
+
+  function isActive() {
+    return isVertical(null);
+  }
+
+  /* ---------------- 軸オラクル ---------------- */
+
+  // block軸 = 行が積み重なる方向 / inline軸 = 行が伸びる方向
+  // 横書き(horizontal-tb): block=上→下（+Y）、inline=左→右（+X）
+  // 縦書き(vertical-rl):   block=右→左（-X）、inline=上→下（+Y）
+  var _AXIS_BASE = {
+    horizontal: {
+      vertical: false,
+      blockCoord: function (pt) { return pt.y; },
+      blockStart: function (r) { return r.top; },
+      blockEnd: function (r) { return r.bottom; },
+      blockSize: function (r) { return r.height; },
+      blockSign: 1,
+      inlineCoord: function (pt) { return pt.x; },
+      inlineStart: function (r) { return r.left; },
+      inlineEnd: function (r) { return r.right; },
+      inlineSize: function (r) { return r.width; },
+      inlineSign: 1,
+    },
+    vertical: {
+      vertical: true,
+      blockCoord: function (pt) { return pt.x; },
+      blockStart: function (r) { return r.right; },
+      blockEnd: function (r) { return r.left; },
+      blockSize: function (r) { return r.width; },
+      blockSign: -1,
+      inlineCoord: function (pt) { return pt.y; },
+      inlineStart: function (r) { return r.top; },
+      inlineEnd: function (r) { return r.bottom; },
+      inlineSize: function (r) { return r.height; },
+      inlineSign: 1,
+    },
+  };
+
+  // 座標入力の正規化。数値は旧シグネチャ（clientY）との後方互換で、横書きの block 座標として扱う。
+  function toPoint(input) {
+    if (input == null) return { x: NaN, y: NaN };
+    if (typeof input === 'number') return { x: NaN, y: input };
+    var x = (input.clientX != null) ? input.clientX : input.x;
+    var y = (input.clientY != null) ? input.clientY : input.y;
+    return { x: Number(x), y: Number(y) };
+  }
+
+  function _buildAxis(base) {
+    var axis = Object.create(null);
+    for (var key in base) {
+      if (Object.prototype.hasOwnProperty.call(base, key)) axis[key] = base[key];
+    }
+    axis.toPoint = toPoint;
+    // pt が rect の「文書順で前半」にあるか（横書き=中点より上 / 縦書きrl=中点より右）
+    axis.isBefore = function (rect, input) {
+      var pt = toPoint(input);
+      var mid = (base.blockStart(rect) + base.blockEnd(rect)) / 2;
+      var c = base.blockCoord(pt);
+      return base.blockSign > 0 ? c < mid : c > mid;
+    };
+    // block軸上での rect と pt の距離（内側なら0）
+    axis.distanceTo = function (rect, input) {
+      var pt = toPoint(input);
+      var c = base.blockCoord(pt);
+      var a = base.blockStart(rect);
+      var b = base.blockEnd(rect);
+      var lo = Math.min(a, b);
+      var hi = Math.max(a, b);
+      if (!isFinite(c)) return Infinity;
+      if (c < lo) return lo - c;
+      if (c > hi) return c - hi;
+      return 0;
+    };
+    // pt が rect の block 範囲に入っているか
+    axis.containsBlock = function (rect, input) {
+      var pt = toPoint(input);
+      var c = base.blockCoord(pt);
+      if (!isFinite(c)) return false;
+      var a = base.blockStart(rect);
+      var b = base.blockEnd(rect);
+      var lo = Math.min(a, b);
+      var hi = Math.max(lo + 1, Math.max(a, b));
+      return c >= lo && c < hi;
+    };
+    return axis;
+  }
+
+  var HORIZONTAL_AXIS = _buildAxis(_AXIS_BASE.horizontal);
+  var VERTICAL_AXIS = _buildAxis(_AXIS_BASE.vertical);
+
+  function axis(editable) {
+    return isVertical(editable) ? VERTICAL_AXIS : HORIZONTAL_AXIS;
+  }
+
+  /* ---------------- 縦書き時の利用可能インラインサイズ ---------------- */
+  // 縦書きでは padding のパーセンテージが「親の横幅」に解決されてしまうため、
+  // 内容最大幅によるセンタリング（--page-content-max-width）が誤った軸で効く。
+  // border-box のインラインサイズ（縦書きでは高さ）を CSS 変数へ流し、縦書きCSSがそれを使う。
+  // border-box を観測するのでパディング変化には反応せず、観測ループにならない。
+  var _inlineSizeObserver = null;
+  var _observedEl = null;
+
+  function _writeInlineSize(el, size) {
+    if (!el || !isFinite(size) || size <= 0) return;
+    el.style.setProperty(INLINE_SIZE_VAR, Math.round(size) + 'px');
+  }
+
+  function observeInlineSize(el) {
+    var target = el || _pageContent();
+    if (!target || typeof ResizeObserver !== 'function') return;
+    if (_observedEl === target && _inlineSizeObserver) return;
+    unobserveInlineSize();
+    _observedEl = target;
+    _inlineSizeObserver = new ResizeObserver(function (entries) {
+      var entry = entries && entries[0];
+      if (!entry) return;
+      var box = entry.borderBoxSize && entry.borderBoxSize[0];
+      // borderBoxSize は観測要素の writing-mode 基準なので、縦書きでは inlineSize = 高さ。
+      var size = box ? box.inlineSize : (entry.contentRect ? entry.contentRect.height : 0);
+      _writeInlineSize(target, size);
+    });
+    _inlineSizeObserver.observe(target);
+    // 初回は同期的にも入れておく（ResizeObserver の初回通知を待たない）
+    var rect = target.getBoundingClientRect();
+    _writeInlineSize(target, rect.height);
+  }
+
+  function unobserveInlineSize() {
+    if (_inlineSizeObserver) {
+      try { _inlineSizeObserver.disconnect(); } catch (_) { /* 破棄済み */ }
+    }
+    _inlineSizeObserver = null;
+    if (_observedEl) _observedEl.style.removeProperty(INLINE_SIZE_VAR);
+    _observedEl = null;
+  }
+
+  /* ---------------- 状態遷移（唯一の入口） ---------------- */
+
+  function _syncToolbarButton(vertical) {
+    var btn = document.getElementById('btn-note-vertical');
+    if (!btn) return;
+    // アイコンは「クリック後の動作」を示す: 横書き中→kanban（縦書きにする）、縦書き中→textAlignStart（横書きに戻す）
+    var iconName = vertical ? 'textAlignStart' : 'kanban';
+    btn.innerHTML = (typeof lucide === 'function')
+      ? lucide(iconName, 16)
+      : '<span class="ico ico-' + iconName + '"></span>';
+    btn.title = vertical ? '横書きに戻す' : '縦書きにする';
+    btn.classList.toggle('active', vertical);
+  }
+
+  function _syncTocSeparator(vertical) {
+    var handle = document.getElementById('note-toc-resize');
+    if (!handle) return;
+    // 横書き側の文字列は既存契約（E2E が厳密一致で検証）なので変更しない
+    handle.setAttribute('aria-orientation', vertical ? 'horizontal' : 'vertical');
+    handle.setAttribute('aria-label', vertical ? '目次の高さを調整' : '目次幅を調整');
+    handle.title = vertical ? '目次の高さを調整' : '目次幅を調整';
+  }
+
+  function applyState(vertical, options) {
+    var opts = options || {};
+    var persist = opts.persist !== false;
+    var v = !!vertical;
+    var pc = opts.editable || _pageContent();
+    if (pc) {
+      pc.classList.toggle(VERTICAL_CLASS, v);
+      var body = pc.closest ? pc.closest('.note-editor-body') : null;
+      if (body) body.classList.toggle(BODY_VERTICAL_CLASS, v);
+      if (v) observeInlineSize(pc);
+      else unobserveInlineSize();
+    }
+    _syncToolbarButton(v);
+    _syncTocSeparator(v);
+    if (typeof global.syncNoteTocLayout === 'function') global.syncNoteTocLayout();
+    if (persist) {
+      try { localStorage.setItem(STORAGE_KEY, v ? '1' : ''); } catch (_) { /* 保存不可環境 */ }
+    }
+    try {
+      document.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: { vertical: v } }));
+    } catch (_) { /* CustomEvent 非対応環境 */ }
+    return v;
+  }
+
+  function toggle(options) {
+    return applyState(!isActive(), options);
+  }
+
+  function restoreFromStorage() {
+    var saved = '';
+    try { saved = localStorage.getItem(STORAGE_KEY) || ''; } catch (_) { saved = ''; }
+    return applyState(saved === '1', { persist: false });
+  }
+
+  /* ---------------- ポップアップの出る向き ---------------- */
+  // 縦書きでは「下」に出すと続きの本文を隠すため、行の進行方向と直交する側（左）へ寄せる。
+  function popupPrefer(editable) {
+    return isVertical(editable) ? 'left' : 'below';
+  }
+
+  global.MeldexNoteWritingMode = {
+    VERTICAL_CLASS: VERTICAL_CLASS,
+    BODY_VERTICAL_CLASS: BODY_VERTICAL_CLASS,
+    STORAGE_KEY: STORAGE_KEY,
+    CHANGE_EVENT: CHANGE_EVENT,
+    isVertical: isVertical,
+    isActive: isActive,
+    axis: axis,
+    toPoint: toPoint,
+    applyState: applyState,
+    toggle: toggle,
+    restoreFromStorage: restoreFromStorage,
+    popupPrefer: popupPrefer,
+    observeInlineSize: observeInlineSize,
+    unobserveInlineSize: unobserveInlineSize,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-ruby-boundary.js === */
+;
+/* gb-ruby-boundary.js — ルビを振った文字列の「境界」を守る共通処理（ノート／シナリオ共用）。
+ *
+ * 直したい挙動:
+ *   ルビ span の直前・直後にキャレットがある状態で文字を打つ・貼り付ける・変換すると、
+ *   入力した文字までルビの対象文字列に取り込まれてしまう。
+ *
+ * 原因:
+ *   キャレットを span の外側（親ノード内のインデックス位置）に置いても、ブラウザは
+ *   「最も深い等価位置」＝span の内側の端へ正規化する。span の隣に通常のテキストノードが
+ *   無いとき（ブロックの先頭/末尾、インライン要素どうしが隣り合う場合）に起きる。
+ *
+ * 方針:
+ *   beforeinput を主軸に、入力を span の外側へ逃がす。日本語入力（IME）は beforeinput を
+ *   止められないため、変換開始の時点で span の外側へ一時的な置き場（ゼロ幅スペース）を作って
+ *   キャレットを移し、変換確定でその置き場をたたむ。
+ *   ゼロ幅スペースを常設する方式は採らない（本文のテキストに混ざり、検索・置換や
+ *   目次・注釈の位置計算へ波及するため）。
+ */
+(function (global) {
+  'use strict';
+
+  var ZWSP = '​';
+  var INSERT_TYPES = {
+    insertText: true,
+    insertFromPaste: true,
+    insertFromPasteAsQuotation: true,
+    insertFromDrop: true,
+    insertFromYank: true,
+    insertReplacementText: true,
+  };
+
+  function _currentRange() {
+    var sel = (global.getSelection && global.getSelection()) || null;
+    if (!sel || !sel.rangeCount) return null;
+    return sel.getRangeAt(0);
+  }
+
+  function _rubyAncestor(node) {
+    var el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+    return el && el.closest ? el.closest('[data-ruby]') : null;
+  }
+
+  function _firstTextIn(el) {
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    return walker.nextNode();
+  }
+
+  function _lastTextIn(el) {
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    var last = null, n;
+    while ((n = walker.nextNode())) last = n;
+    return last;
+  }
+
+  // 折り畳みキャレットがルビ span の端にあるかを返す。
+  //   { span, side: 'start' | 'end' } | null
+  function edgeAt(range) {
+    var r = range || _currentRange();
+    if (!r || !r.collapsed) return null;
+    var c = r.startContainer;
+    var o = r.startOffset;
+    if (!c) return null;
+
+    if (c.nodeType === 3) {
+      var span = _rubyAncestor(c);
+      if (!span) return null;
+      if (o === 0 && _firstTextIn(span) === c) return { span: span, side: 'start' };
+      if (o === c.length && _lastTextIn(span) === c) return { span: span, side: 'end' };
+      return null;
+    }
+
+    if (c.nodeType === 1) {
+      var inner = c.closest ? c.closest('[data-ruby]') : null;
+      if (inner) {
+        if (o === 0) return { span: inner, side: 'start' };
+        if (o === c.childNodes.length) return { span: inner, side: 'end' };
+        return null;
+      }
+      var before = c.childNodes[o - 1];
+      var after = c.childNodes[o];
+      if (before && before.nodeType === 1 && before.matches && before.matches('[data-ruby]')) {
+        return { span: before, side: 'end' };
+      }
+      if (after && after.nodeType === 1 && after.matches && after.matches('[data-ruby]')) {
+        return { span: after, side: 'start' };
+      }
+    }
+    return null;
+  }
+
+  function _setCaret(node, offset) {
+    var sel = global.getSelection && global.getSelection();
+    if (!sel) return;
+    var r = document.createRange();
+    r.setStart(node, Math.max(0, Math.min(offset, node.length != null ? node.length : node.childNodes.length)));
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  // span の外側にキャレットを置く（隣にテキストノードが無ければ作る）。
+  function rangeOutside(span, side) {
+    var parent = span && span.parentNode;
+    if (!parent) return null;
+    var node;
+    if (side === 'end') {
+      node = span.nextSibling;
+      if (!node || node.nodeType !== 3) {
+        node = document.createTextNode('');
+        parent.insertBefore(node, span.nextSibling);
+      }
+      _setCaret(node, 0);
+    } else {
+      node = span.previousSibling;
+      if (!node || node.nodeType !== 3) {
+        node = document.createTextNode('');
+        parent.insertBefore(node, span);
+      }
+      _setCaret(node, node.length);
+    }
+    return _currentRange();
+  }
+
+  // span の外側へ文字列を挿入し、その直後へキャレットを置く。
+  // 隣のテキストノードがあればそこへ足す（ノードを分けるとキャレット計算が壊れやすいため）。
+  function insertTextOutside(span, side, text) {
+    var parent = span && span.parentNode;
+    if (!parent || !text) return false;
+    var node, offset;
+    if (side === 'end') {
+      var next = span.nextSibling;
+      if (next && next.nodeType === 3) { next.insertData(0, text); node = next; offset = text.length; }
+      else { node = document.createTextNode(text); parent.insertBefore(node, span.nextSibling); offset = text.length; }
+    } else {
+      var prev = span.previousSibling;
+      if (prev && prev.nodeType === 3) { var at = prev.length; prev.insertData(at, text); node = prev; offset = at + text.length; }
+      else { node = document.createTextNode(text); parent.insertBefore(node, span); offset = text.length; }
+    }
+    _setCaret(node, offset);
+    return true;
+  }
+
+  function _insertedTextOf(e) {
+    if (typeof e.data === 'string' && e.data) return e.data;
+    var dt = e.dataTransfer || (e.clipboardData || null);
+    if (dt && typeof dt.getData === 'function') {
+      try { return dt.getData('text/plain') || ''; } catch (_) { return ''; }
+    }
+    return '';
+  }
+
+  // 変換中の一時的な置き場を span の外側へ作る（IME 用）
+  function _openCompositionAnchor(host) {
+    var edge = edgeAt(null);
+    if (!edge) return;
+    var parent = edge.span.parentNode;
+    if (!parent) return;
+    var anchor = document.createTextNode(ZWSP);
+    if (edge.side === 'end') {
+      parent.insertBefore(anchor, edge.span.nextSibling);
+      _setCaret(anchor, 1);
+    } else {
+      parent.insertBefore(anchor, edge.span);
+      _setCaret(anchor, 0);
+    }
+    host._gbRubyAnchor = anchor;
+  }
+
+  function _closeCompositionAnchor(host) {
+    var anchor = host._gbRubyAnchor;
+    host._gbRubyAnchor = null;
+    if (!anchor || !anchor.isConnected) return;
+    var idx = anchor.data.indexOf(ZWSP);
+    if (idx >= 0) {
+      var r = _currentRange();
+      var caretHere = r && r.startContainer === anchor;
+      var caretOffset = caretHere ? r.startOffset : -1;
+      anchor.deleteData(idx, 1);
+      if (caretHere) _setCaret(anchor, caretOffset > idx ? caretOffset - 1 : caretOffset);
+    }
+    if (!anchor.data.length) anchor.remove();
+  }
+
+  // 残ってしまったゼロ幅スペースを掃除する（blur・保存前の保険）。
+  function cleanup(host) {
+    if (!host || !host.querySelectorAll) return;
+    host._gbRubyAnchor = null;
+    var walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    var targets = [];
+    var n;
+    while ((n = walker.nextNode())) {
+      if (n.data.indexOf(ZWSP) >= 0) targets.push(n);
+    }
+    targets.forEach(function (node) {
+      node.data = node.data.split(ZWSP).join('');
+      if (!node.data.length && node.parentNode) node.parentNode.removeChild(node);
+    });
+  }
+
+  /**
+   * 編集ホストへ境界処理を登録する（冪等）。
+   * options.pushUndo(host)    … 取り消し用のスナップショットを取る。
+   *   beforeinput を preventDefault するとブラウザ標準の取り消しが切れるため、
+   *   各アプリが持つ取り消し機構へ載せ替える。
+   * options.dispatchInput(host) … 自動保存等のために input を発火させる。
+   */
+  function attach(host, options) {
+    if (!host || host._gbRubyBoundaryAttached) return;
+    host._gbRubyBoundaryAttached = true;
+    var opts = options || {};
+
+    host.addEventListener('beforeinput', function (e) {
+      if (e.isComposing) return;
+      if (!e.cancelable) return;
+      if (!INSERT_TYPES[e.inputType]) return;
+      var edge = edgeAt(null);
+      if (!edge) return;
+      var text = _insertedTextOf(e);
+      if (!text) {
+        // 改行など文字を伴わない挿入は、キャレットだけ外へ逃がして既定動作に任せる
+        rangeOutside(edge.span, edge.side);
+        return;
+      }
+      e.preventDefault();
+      if (typeof opts.pushUndo === 'function') { try { opts.pushUndo(host); } catch (_) { /* 取り消し記録は任意 */ } }
+      insertTextOutside(edge.span, edge.side, text);
+      if (typeof opts.dispatchInput === 'function') opts.dispatchInput(host);
+      else host.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    host.addEventListener('compositionstart', function () { _openCompositionAnchor(host); });
+    host.addEventListener('compositionend', function () { _closeCompositionAnchor(host); });
+    host.addEventListener('blur', function () { cleanup(host); });
+  }
+
+  global.MeldexRubyBoundary = {
+    ZWSP: ZWSP,
+    edgeAt: edgeAt,
+    rangeOutside: rangeOutside,
+    insertTextOutside: insertTextOutside,
+    attach: attach,
+    cleanup: cleanup,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-editor.js === */
 ;
 /* gb-file-info-panel.js: フォルダとボードで共有するファイル情報パネル */
@@ -33946,8 +35043,14 @@ const MeldexAutoLink = (() => {
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
       + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
-      + `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}"></div>`
-      + `${tagsHtml}</div>`;
+      + '</table>'
+      // タグは埋め込み情報の一番上。以前は埋め込み情報の外・下に置いていた。
+      // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
+      // 描画先を [data-file-embedded-body] に分けている。
+      + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
+      + tagsHtml
+      + '<div data-file-embedded-body></div>'
+      + '</div></div>';
   }
 
   function findPanel(root, filePath) {
@@ -33976,8 +35079,9 @@ const MeldexAutoLink = (() => {
     if (!panel) return false;
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
     if (rows) rows.innerHTML = metadataRowsHtml(meta);
-    const embeddedHost = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
+    const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+    const embeddedHost = embeddedPanel?.querySelector('[data-file-embedded-body]') || embeddedPanel;
     global.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
     return true;
   }
@@ -34104,7 +35208,7 @@ function initPageTitle() {
     }
   });
   // ドラッグ&ドロップ等、paste以外の経路で書式付き要素が紛れ込んだ場合の保険。
-  // ルビ表示用の [data-ruby] 要素（_pageTitleRubyHandler 参照）は対象外。
+  // ルビ表示用の [data-ruby] 要素は、本文からコピーされて紛れ込むことがあるため対象外にする。
   el.addEventListener('input', () => {
     if (!el.querySelector('*:not(br):not([data-ruby])')) return;
     const text = el.textContent;
@@ -34799,8 +35903,18 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
   const run = () => {
     if (isStalePageLoad?.()) return;
     if (document.activeElement === pc) return;
+    // 書式設定・ルビのポップアップを操作している間は本文を作り直さない。
+    // 作り直すと保存しておいた選択範囲が無効になり、ルビの適用が黙って失敗する。
+    if (document.querySelector('.gb-text-selection-fmt, .note-ruby-popup')) {
+      if (typeof layers?.scheduleIdle === 'function') layers.scheduleIdle(run, 900);
+      else setTimeout(run, 900);
+      return;
+    }
     if (autoLinksEnabled && pc.innerHTML === initialHtml) {
+      // 本文の総入れ替えでスクロール位置が飛ばないようにする
+      const scroll = window.MeldexNoteRuby?.captureScroll?.(pc);
       pc.innerHTML = applyAutoLinks(html, path, { force: true });
+      window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
     if (commentsEnabled && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshNote(path, pc, { force: true }); } catch {}
@@ -35098,21 +36212,45 @@ async function openPage(label, path, opts) {
 }
 
 // ノート縦書き/横書き切替
+// 実体は gb-note-writing-mode.js（組方向の正本）。ここはツールバーの data-action 契約を
+// 保つための薄いラッパで、状態遷移の中身は MeldexNoteWritingMode.applyState() に集約する。
 function toggleNoteVertical() {
-  const pc = document.getElementById('page-content');
-  const btn = document.getElementById('btn-note-vertical');
-  const isV = pc.classList.toggle('vertical-writing');
-  // アイコンは「クリック後の動作」を示す: 横書き中→kanban（縦書きにする）、縦書き中→textAlignStart（横書きに戻す）
-  if (btn) {
-    const iconName = isV ? 'textAlignStart' : 'kanban';
-    btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '<span class="ico ico-' + iconName + '"></span>';
-    btn.title = isV ? '横書きに戻す' : '縦書きにする';
-    btn.classList.toggle('active', isV);
-  }
-  localStorage.setItem('note-vertical', isV ? '1' : '');
+  if (typeof MeldexNoteWritingMode === 'undefined') return;
+  return MeldexNoteWritingMode.toggle();
 }
 
 const NOTE_TOC_WIDTH_KEY = 'note-toc-width';
+// 縦書きでは目次を本文の上に出すため、調整するのは幅ではなく高さになる。
+// 200px は幅として妥当でも高さとしては大きすぎるので、保存先を分けて
+// 組方向を切り替えるたびに片方が壊れないようにする（横書き側は既存のまま）。
+const NOTE_TOC_HEIGHT_KEY = 'note-toc-height';
+const NOTE_TOC_SIZE_LIMITS = {
+  horizontal: { key: NOTE_TOC_WIDTH_KEY, def: 200, min: 140, max: 420 },
+  vertical: { key: NOTE_TOC_HEIGHT_KEY, def: 160, min: 80, max: 360 },
+};
+
+function _noteTocIsVertical() {
+  return typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isActive();
+}
+
+function _noteTocSizeSpec() {
+  return _noteTocIsVertical() ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+}
+
+function _noteTocSavedSize(spec) {
+  return parseInt(localStorage.getItem(spec.key) || String(spec.def), 10) || spec.def;
+}
+
+function _applyNoteTocSize(toc, size, vertical) {
+  if (vertical) {
+    toc.style.width = '';
+    toc.style.height = size + 'px';
+  } else {
+    toc.style.height = '';
+    toc.style.width = size + 'px';
+  }
+  toc.style.flexBasis = size + 'px';
+}
 
 function syncNoteTocLayout() {
   const toc = document.getElementById('note-toc');
@@ -35121,9 +36259,9 @@ function syncNoteTocLayout() {
   const visible = toc.style.display !== 'none';
   handle.style.display = visible ? '' : 'none';
   if (!visible) return;
-  const savedWidth = parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '200', 10) || 200;
-  toc.style.width = savedWidth + 'px';
-  toc.style.flexBasis = savedWidth + 'px';
+  const vertical = _noteTocIsVertical();
+  const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+  _applyNoteTocSize(toc, _noteTocSavedSize(spec), vertical);
 }
 
 function initNoteTocResize() {
@@ -35133,32 +36271,46 @@ function initNoteTocResize() {
   const handle = document.getElementById('note-toc-resize');
   if (!toc || !handle) return;
   handle.setAttribute('role', 'separator');
+  // 縦書き時の向き・ラベルは MeldexNoteWritingMode.applyState() が付け替える
   handle.setAttribute('aria-orientation', 'vertical');
   handle.setAttribute('aria-label', '目次幅を調整');
   handle.dataset.e2eId = handle.dataset.e2eId || 'note-toc-resize';
   if (!handle.hasAttribute('tabindex')) handle.tabIndex = 0;
-  const applyWidth = (width) => {
-    const next = Math.max(140, Math.min(420, Math.round(width)));
-    toc.style.width = next + 'px';
-    toc.style.flexBasis = next + 'px';
-    localStorage.setItem(NOTE_TOC_WIDTH_KEY, String(next));
+  const applySize = (size) => {
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const next = Math.max(spec.min, Math.min(spec.max, Math.round(size)));
+    _applyNoteTocSize(toc, next, vertical);
+    localStorage.setItem(spec.key, String(next));
     return next;
   };
-  const currentWidth = () => parseFloat(toc.style.width || '') || toc.getBoundingClientRect().width || parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '200', 10) || 200;
+  const currentSize = () => {
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const inline = parseFloat((vertical ? toc.style.height : toc.style.width) || '');
+    if (inline) return inline;
+    const rect = toc.getBoundingClientRect();
+    const z = _getZoom();
+    const measured = (vertical ? rect.height : rect.width) / z;
+    return measured || _noteTocSavedSize(spec);
+  };
   handle.addEventListener('pointerdown', (e) => {
     if (toc.style.display === 'none') return;
     e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = currentWidth();
-    document.body.style.cursor = 'col-resize';
+    const vertical = _noteTocIsVertical();
+    const start = vertical ? e.clientY : e.clientX;
+    const startSize = currentSize();
+    const z = _getZoom();
+    document.body.style.cursor = vertical ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
     const onMove = (ev) => {
-      applyWidth(startWidth + (ev.clientX - startX));
+      const now = vertical ? ev.clientY : ev.clientX;
+      applySize(startSize + (now - start) / z);
     };
     const onUp = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      applyWidth(currentWidth());
+      applySize(currentSize());
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
     };
@@ -35167,15 +36319,19 @@ function initNoteTocResize() {
   });
   handle.addEventListener('keydown', (e) => {
     if (toc.style.display === 'none') return;
-    const current = currentWidth();
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const decreaseKey = vertical ? 'ArrowUp' : 'ArrowLeft';
+    const increaseKey = vertical ? 'ArrowDown' : 'ArrowRight';
+    const current = currentSize();
     let next = current;
-    if (e.key === 'ArrowLeft') next = current - 16;
-    else if (e.key === 'ArrowRight') next = current + 16;
-    else if (e.key === 'Home') next = 140;
-    else if (e.key === 'End') next = 420;
+    if (e.key === decreaseKey) next = current - 16;
+    else if (e.key === increaseKey) next = current + 16;
+    else if (e.key === 'Home') next = spec.min;
+    else if (e.key === 'End') next = spec.max;
     else return;
     e.preventDefault();
-    applyWidth(next);
+    applySize(next);
   });
 }
 
@@ -35188,6 +36344,25 @@ document.getElementById('page-content').addEventListener('wheel', function(e) {
     this.scrollLeft -= e.deltaY;
   }
 }, { passive: false });
+
+// 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
+// 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
+// シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
+// と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
+// カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
+document.getElementById('page-content').addEventListener('keydown', function(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
+    if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
+    e.preventDefault();
+    if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
+    e.preventDefault();
+  }
+});
 
 // Ctrl+K: リンク挿入モーダル
 document.getElementById('page-content').addEventListener('keydown', function(e) {
@@ -35309,6 +36484,71 @@ function _insertHtmlAtEditableRange(el, range, html) {
   return _captureEditableSelection(el) || range;
 }
 
+// 貼り付け・ドロップした画像/動画の初期サイズの上限。
+// 「正方形に収めたときの一辺」が本文の行幅のこの割合に収まるようにする。
+// 幅だけを基準にすると、同じ面積でも縦長の絵が横長の絵よりずっと大きく見えてしまう。
+const NOTE_MEDIA_INITIAL_SIZE_RATIO = 0.6;
+
+// 本文の「行が伸びる方向」の内寸。横書きなら内容の幅、縦書きなら内容の高さ。
+function _noteEditorInlineSize(editable) {
+  if (!editable || typeof editable.getBoundingClientRect !== 'function') return 0;
+  const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(editable));
+  let cs = null;
+  try { cs = getComputedStyle(editable); } catch (_) { /* 計測不能時はパディング0扱い */ }
+  const rect = editable.getBoundingClientRect();
+  const z = _getZoom();
+  const pad = (a, b) => (cs ? (parseFloat(cs[a]) || 0) + (parseFloat(cs[b]) || 0) : 0);
+  return vertical
+    ? Math.max(0, rect.height / z - pad('paddingTop', 'paddingBottom'))
+    : Math.max(0, rect.width / z - pad('paddingLeft', 'paddingRight'));
+}
+
+// 挿入直後の埋め込みメディアへ初期サイズを与える。拡大はしない（元が小さい絵はそのまま）。
+function _applyInitialEmbeddedMediaSize(editable, media) {
+  const el = media && media.querySelector ? media.querySelector('img, video') : null;
+  if (!el || el.style.width) return; // 既に幅が決まっているもの（保存値の復元等）は触らない
+  const apply = () => {
+    if (!el.isConnected || el.style.width) return;
+    const natW = el.naturalWidth || el.videoWidth || 0;
+    const natH = el.naturalHeight || el.videoHeight || 0;
+    if (!natW || !natH) return;
+    const avail = _noteEditorInlineSize(editable);
+    if (!avail) return;
+    const cap = avail * NOTE_MEDIA_INITIAL_SIZE_RATIO;
+    const longest = Math.max(natW, natH);
+    const width = longest > cap ? natW * (cap / longest) : natW;
+    el.style.width = Math.max(1, Math.round(width)) + 'px';
+    el.style.height = 'auto';
+    // 幅は ![alt|w=NNN](...) として保存される（保存経路は既存のまま）
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  if (el.tagName === 'VIDEO') {
+    if (el.readyState >= 1) apply();
+    else el.addEventListener('loadedmetadata', apply, { once: true });
+  } else if (el.complete && el.naturalWidth) {
+    apply();
+  } else {
+    el.addEventListener('load', apply, { once: true });
+  }
+}
+
+// 埋め込みメディアのHTMLを挿入し、読み込み完了後に初期サイズを与える。
+// insertHTML は挿入ノードを返さないため、目印属性を付けてから拾う。
+function _insertEmbeddedMediaHtml(el, range, innerHtml, attrs) {
+  const html = `<div class="embed-media" contenteditable="false" ${attrs} data-media-init="1">${innerHtml}</div>`;
+  const nextRange = _insertHtmlAtEditableRange(el, range, html);
+  el.querySelectorAll('.embed-media[data-media-init]').forEach((media) => {
+    delete media.dataset.mediaInit;
+    _applyInitialEmbeddedMediaSize(el, media);
+  });
+  return nextRange;
+}
+
+function _embeddedMediaHtmlForFile(fileName, linkUrl, kind) {
+  if (kind === 'video') return `<video src="${esc(linkUrl)}" controls></video>`;
+  return `<img src="${esc(linkUrl)}" alt="${esc(fileName)}">`;
+}
+
 async function _insertDroppedFileAtRange(el, range, file, dir) {
   const dataUrl = await _readFileAsDataURL(file);
   const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
@@ -35319,13 +36559,12 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
   if (!res.ok) return range;
   const rawPath = res.path || file.name;
   const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(rawPath);
+  const attrs = `data-path="${esc(rawPath)}" data-name="${esc(file.name)}"`;
   if (file.type.startsWith('image/')) {
-    return _insertHtmlAtEditableRange(el, range,
-      `<div class="embed-media" contenteditable="false" data-path="${esc(rawPath)}" data-name="${esc(file.name)}"><img src="${esc(linkUrl)}" alt="${esc(file.name)}"></div>`);
+    return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'image'), attrs);
   }
   if (file.type.startsWith('video/')) {
-    return _insertHtmlAtEditableRange(el, range,
-      `<div class="embed-media" contenteditable="false" data-path="${esc(rawPath)}" data-name="${esc(file.name)}"><video src="${esc(linkUrl)}" controls style="max-width:100%;"></video></div>`);
+    return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'video'), `${attrs} data-type="video"`);
   }
   return _insertHtmlAtEditableRange(el, range, `<a href="${esc(linkUrl)}">${esc(file.name)}</a> `);
 }
@@ -35336,11 +36575,13 @@ document.getElementById('page-content').addEventListener('paste', async function
   const cd = e.clipboardData;
   if (!cd) return;
 
-  // 画像が含まれている場合 → アップロードして埋め込み
-  const imageFile = [...cd.files].find(f => f.type.startsWith('image/'));
-  if (imageFile) {
+  // 画像・動画が含まれている場合 → アップロードして埋め込み
+  // （旧実装は画像だけを見ており、動画の貼り付けはドロップと挙動が食い違っていた）
+  const mediaFile = [...cd.files].find(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+  if (mediaFile) {
     e.preventDefault();
     const editor = this;
+    const isVideo = mediaFile.type.startsWith('video/');
     const pasteRange = _captureEditableSelection(editor);
     const currentPath = editor.dataset.path || state.currentPagePath;
     if (!currentPath) return;
@@ -35348,7 +36589,7 @@ document.getElementById('page-content').addEventListener('paste', async function
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const fname = imageFile.name || ('paste-' + Date.now() + '.png');
+        const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
         const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -35356,12 +36597,13 @@ document.getElementById('page-content').addEventListener('paste', async function
         });
         if (res.ok && res.path) {
           const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-          _insertHtmlAtEditableRange(editor, pasteRange,
-            `<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(fname)}"><img src="${esc(linkUrl)}" alt="${esc(fname)}"></div>`);
+          const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
+          _insertEmbeddedMediaHtml(editor, pasteRange,
+            _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
         }
-      } catch (err) { showStatus('画像の貼り付けに失敗', true); }
+      } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
     };
-    reader.readAsDataURL(imageFile);
+    reader.readAsDataURL(mediaFile);
     return;
   }
 
@@ -35406,8 +36648,26 @@ function _prepareEmbeddedMediaControls(root) {
   const resizeHandle = document.getElementById('media-resize-handle');
   if (!controls || !resizeHandle) return;
 
+  // リサイズハンドルは旧実装では右下の1個だけだった。既存の要素はそのまま右下(se)として
+  // 残し（IDと「右下をドラッグすると幅が変わる」既存契約を維持するため）、残り3隅を
+  // 同じクラス名で複製する。クラスをコピーするので本体版・単独アプリ版どちらの見た目にも追従する。
+  const MEDIA_RESIZE_CORNERS = ['nw', 'ne', 'sw', 'se'];
+  resizeHandle.dataset.mediaResizeCorner = 'se';
+  const resizeHandles = { se: resizeHandle };
+  for (const corner of ['nw', 'ne', 'sw']) {
+    const h = document.createElement('div');
+    h.id = 'media-resize-handle-' + corner;
+    h.className = resizeHandle.className;
+    h.dataset.mediaResizeCorner = corner;
+    h.dataset.e2eId = 'note-media-resize-' + corner;
+    h.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(h);
+    resizeHandles[corner] = h;
+  }
+  const eachResizeHandle = (fn) => MEDIA_RESIZE_CORNERS.forEach((c) => fn(resizeHandles[c], c));
+
   controls.setAttribute('aria-hidden', 'true');
-  resizeHandle.setAttribute('aria-hidden', 'true');
+  eachResizeHandle((h) => h.setAttribute('aria-hidden', 'true'));
   controls.querySelectorAll('[data-media-icon]').forEach(btn => {
     const icon = btn.dataset.mediaIcon;
     if (icon && typeof lucide === 'function') btn.innerHTML = lucide(icon, 14);
@@ -35423,9 +36683,8 @@ function _prepareEmbeddedMediaControls(root) {
   function _hideMediaControls(options = {}) {
     const restoreTarget = options.restoreFocus ? _activeMedia : null;
     controls.classList.remove('visible');
-    resizeHandle.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
-    resizeHandle.setAttribute('aria-hidden', 'true');
+    eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
     if (_activeMedia) delete _activeMedia.dataset.mediaControlsActive;
     _activeMedia = null;
     if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
@@ -35448,7 +36707,7 @@ function _prepareEmbeddedMediaControls(root) {
     _activeMedia.dataset.mediaControlsActive = '1';
     _positionMediaControls(media);
     controls.setAttribute('aria-hidden', 'false');
-    resizeHandle.setAttribute('aria-hidden', 'false');
+    eachResizeHandle((h) => h.setAttribute('aria-hidden', 'false'));
     if (options.focusControls) {
       const target = controls.querySelector('.active') || controls.querySelector('button');
       try { target?.focus?.({ preventScroll: true }); } catch (_) { target?.focus?.(); }
@@ -35456,7 +36715,7 @@ function _prepareEmbeddedMediaControls(root) {
   }
 
   function _isMediaControlTarget(target) {
-    return !!(target?.closest?.('#media-float-controls') || target?.id === 'media-resize-handle');
+    return !!(target?.closest?.('#media-float-controls') || target?.dataset?.mediaResizeCorner);
   }
 
   document.addEventListener('mouseover', (e) => {
@@ -35521,7 +36780,7 @@ function _prepareEmbeddedMediaControls(root) {
     }
   });
   controls.addEventListener('mouseenter', _cancelHideMedia);
-  resizeHandle.addEventListener('mouseenter', _cancelHideMedia);
+  eachResizeHandle((h) => h.addEventListener('mouseenter', _cancelHideMedia));
   controls.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -35544,9 +36803,12 @@ function _prepareEmbeddedMediaControls(root) {
       const align = btn.dataset.align;
       controls.querySelectorAll('[data-align]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      if (align === 'left') { _activeMedia.style.marginLeft = '0'; _activeMedia.style.marginRight = 'auto'; }
-      else if (align === 'right') { _activeMedia.style.marginLeft = 'auto'; _activeMedia.style.marginRight = '0'; }
-      else { _activeMedia.style.marginLeft = 'auto'; _activeMedia.style.marginRight = 'auto'; }
+      // 論理プロパティで寄せる。縦書きでは「行の先頭寄せ＝上寄せ」になる。
+      _activeMedia.style.marginLeft = '';
+      _activeMedia.style.marginRight = '';
+      if (align === 'left') { _activeMedia.style.marginInlineStart = '0'; _activeMedia.style.marginInlineEnd = 'auto'; }
+      else if (align === 'right') { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = '0'; }
+      else { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = 'auto'; }
       const pc = document.getElementById('page-content');
       if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
     });
@@ -35557,9 +36819,8 @@ function _prepareEmbeddedMediaControls(root) {
     const media = _activeMedia;
     if (!media) return;
     controls.classList.remove('visible');
-    resizeHandle.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
-    resizeHandle.setAttribute('aria-hidden', 'true');
+    eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
     const ok = typeof cfConfirm === 'function'
       ? await cfConfirm('この埋め込みメディアを削除しますか？', { danger: true, okLabel: '削除' })
       : confirm('この埋め込みメディアを削除しますか？');
@@ -35577,34 +36838,59 @@ function _prepareEmbeddedMediaControls(root) {
     if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
-  // リサイズハンドル
-  resizeHandle.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    if (!_activeMedia) return;
-    const img = _activeMedia.querySelector('img, video');
-    if (!img) return;
-    const startX = e.clientX, startW = img.offsetWidth;
-    function onMove(ev) {
-      const newW = Math.max(50, startW + (ev.clientX - startX));
-      img.style.width = newW + 'px';
-      img.style.height = 'auto';
-      _positionMediaControls(_activeMedia);
-    }
-    function onUp() {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      // リサイズ完了 → 自動保存トリガー
-      const pc = document.getElementById('page-content');
-      if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
+  // リサイズハンドル（四隅共通）
+  // 隅ごとに符号を変えるので、どの角からでも「外へ引けば拡大／内へ引けば縮小」になる。
+  eachResizeHandle((handleEl, corner) => {
+    handleEl.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (!_activeMedia) return;
+      const img = _activeMedia.querySelector('img, video');
+      if (!img) return;
+      const signX = corner.includes('e') ? 1 : -1;
+      const signY = corner.includes('s') ? 1 : -1;
+      // getBoundingClientRect / clientX は表示倍率が掛かった物理値、offsetWidth は論理値。
+      // 旧実装は論理値へ物理差分をそのまま足しており、倍率100%以外でずれていた。
+      const z = _getZoom();
+      const startX = e.clientX, startY = e.clientY;
+      const startW = img.offsetWidth, startH = img.offsetHeight;
+      const aspect = startH > 0 ? startW / startH : 1;
+      function onMove(ev) {
+        const dx = signX * (ev.clientX - startX) / z;
+        const dy = signY * (ev.clientY - startY) / z;
+        // 縦横比を保ったまま、動きの大きい方の軸を採用する
+        const delta = Math.abs(dx) >= Math.abs(dy * aspect) ? dx : dy * aspect;
+        img.style.width = Math.max(50, startW + delta) + 'px';
+        img.style.height = 'auto';
+        _positionMediaControls(_activeMedia);
+      }
+      function onUp() {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        // リサイズ完了 → 自動保存トリガー
+        const pc = document.getElementById('page-content');
+        if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
   });
+
+  // メニューやポップアップが開いたらメディア操作を隠す。重なり順を下げるだけでは、
+  // 将来 z-index が増えたときに同じ問題（ハンドルがメニューを突き抜ける）が再発する。
+  const MEDIA_OVERLAY_SELECTOR = '.gb-context-menu, .gb-fmt-popup, .note-block-menu, .modal-overlay';
+  document.addEventListener('pointerdown', (e) => {
+    if (!_activeMedia) return;
+    if (e.target?.closest?.(MEDIA_OVERLAY_SELECTOR)) _hideMediaControls();
+  }, true);
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(() => {
+      if (_activeMedia && document.querySelector(MEDIA_OVERLAY_SELECTOR)) _hideMediaControls();
+    }).observe(document.body, { childList: true });
+  }
 })();
 
 function _positionMediaControls(media) {
   const controls = document.getElementById('media-float-controls');
-  const resizeHandle = document.getElementById('media-resize-handle');
   if (!controls || !media) return;
   const rect = media.getBoundingClientRect();
   const z = _getZoom();
@@ -35613,15 +36899,33 @@ function _positionMediaControls(media) {
   controls.style.left = (rect.right / z - controlsWidth - 4) + 'px';
   controls.style.top = (rect.top / z + 4) + 'px';
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(controls);
-  resizeHandle.style.left = (rect.right / z - 7) + 'px';
-  resizeHandle.style.top = (rect.bottom / z - 7) + 'px';
-  resizeHandle.classList.add('visible');
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(resizeHandle);
-  // 現在のアラインメントを反映
-  const ml = media.style.marginLeft, mr = media.style.marginRight;
+  // 四隅のハンドル。メディアの外接矩形は組方向に関係なく物理矩形なので、
+  // 四隅へ置くこと自体が縦書き対応を兼ねる（追加の分岐は要らない）。
+  const corners = {
+    nw: [rect.left, rect.top],
+    ne: [rect.right, rect.top],
+    sw: [rect.left, rect.bottom],
+    se: [rect.right, rect.bottom],
+  };
+  Object.entries(corners).forEach(([corner, [x, y]]) => {
+    const h = corner === 'se'
+      ? document.getElementById('media-resize-handle')
+      : document.getElementById('media-resize-handle-' + corner);
+    if (!h) return;
+    const half = (h.offsetWidth || 14) / 2;
+    h.style.left = (x / z - half) + 'px';
+    h.style.top = (y / z - half) + 'px';
+    h.classList.add('visible');
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(h);
+  });
+  // 現在のアラインメントを反映（旧ノートの物理マージンも読めるようにする）
+  const ms = media.style;
+  const start = ms.marginInlineStart || ms.marginLeft;
+  const end = ms.marginInlineEnd || ms.marginRight;
+  const isZero = (v) => v === '0px' || v === '0';
   controls.querySelectorAll('[data-align]').forEach(b => b.classList.remove('active'));
-  if (ml === '0px' || ml === '0') controls.querySelector('[data-align="left"]')?.classList.add('active');
-  else if (mr === '0px' || mr === '0') controls.querySelector('[data-align="right"]')?.classList.add('active');
+  if (isZero(start)) controls.querySelector('[data-align="left"]')?.classList.add('active');
+  else if (isZero(end)) controls.querySelector('[data-align="right"]')?.classList.add('active');
   else controls.querySelector('[data-align="center"]')?.classList.add('active');
 }
 
@@ -35644,6 +36948,8 @@ document.addEventListener('dblclick', (e) => {
 });
 
 function setupEditableDropHandler(el) {
+  if (!el || el.dataset.meldexDropHandlerInstalled === '1') return;
+  el.dataset.meldexDropHandlerInstalled = '1';
   el.addEventListener('dragover', (e) => {
     const types = e.dataTransfer.types;
     // パネル操作系のD&Dはスキップ（パネルハンドラに委ねる）
@@ -35656,18 +36962,10 @@ function setupEditableDropHandler(el) {
     e.preventDefault();
     e.stopPropagation();
     // キャレット位置にドロップラインを表示
-    let caret = el.querySelector('.drop-caret');
-    if (!caret) { caret = document.createElement('div'); caret.className = 'drop-caret'; el.style.position = 'relative'; el.appendChild(caret); }
-    const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
-    if (range) {
-      const rects = range.getClientRects();
-      const elRect = el.getBoundingClientRect();
-      if (rects.length > 0) {
-        caret.style.top = (rects[0].bottom - elRect.top + el.scrollTop) + 'px';
-      } else {
-        caret.style.top = (e.clientY - elRect.top + el.scrollTop) + 'px';
-      }
-      caret.style.display = '';
+    // 挿入位置の線は共通実装（gb-dnd.js）へ委譲する。旧実装はここに同じ計算を
+    // 複製しており、縦書き対応のような修正が片方だけに入る温床になっていた。
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.showDropCaret) {
+      MeldexDnD.showDropCaret(el, e);
     }
   });
   el.addEventListener('dragleave', (e) => {
@@ -35718,10 +37016,20 @@ function setupEditableDropHandler(el) {
     }
 
     // フォルダツリーからのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    const nodeResolved = typeof MeldexDnD !== 'undefined'
+      ? await MeldexDnD.resolveDropData(e, 'node') : null;
+    const cfData = nodeResolved
+      ? JSON.stringify(nodeResolved.payload)
+      : e.dataTransfer.getData('application/x-meldex-node');
     if (cfData) {
       try {
         const { name, path, type } = JSON.parse(cfData);
+        if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
+            && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
+          draggedNode = null;
+          MeldexDnD.completeDrop(nodeResolved);
+          return;
+        }
         if (type === 'image' || type === 'video' || type === 'audio') {
           // 画像/動画/音声: メディア埋め込みを挿入
           const ext = (path || '').split('.').pop().toLowerCase();
@@ -35730,8 +37038,16 @@ function setupEditableDropHandler(el) {
             const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
               `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`);
+          } else if (type === 'video' || ['mp4','m4v','mov','webm','ogv','avi','mkv','wmv','mpg','mpeg'].includes(ext)) {
+            const videoUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><video controls preload="metadata" src="${videoUrl}"></video></div>`);
+          } else if (type === 'audio') {
+            const audioUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><audio controls preload="metadata" src="${audioUrl}"></audio></div>`);
           } else {
-            // 動画/音声: リンクとして挿入
+            // 未知の媒体はパスリンクとして挿入
             document.execCommand('insertHTML', false,
               `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide('paperclip',12)} ${esc(name)}</span> `);
           }
@@ -35741,7 +37057,11 @@ function setupEditableDropHandler(el) {
           document.execCommand('insertHTML', false,
             `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `);
         }
-      } catch(err) {}
+        if (nodeResolved) MeldexDnD.completeDrop(nodeResolved);
+      } catch(err) {
+        if (nodeResolved) MeldexDnD.failDrop(nodeResolved);
+        if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
+      }
       draggedNode = null;
       return;
     }
@@ -35767,6 +37087,7 @@ function setupEditableDropHandler(el) {
     }
   });
 }
+window.MeldexSetupEditableDropHandler = setupEditableDropHandler;
 // page-content と entity-freetext にドロップハンドラを設定
 setupEditableDropHandler(document.getElementById('page-content'));
 setupEditableDropHandler(document.getElementById('entity-freetext'));
@@ -35779,9 +37100,9 @@ function setupEditableDragSource(el) {
     const text = sel ? sel.toString() : '';
     if (!text) return;
     e.dataTransfer.setData('text/plain', text);
-    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify({
-      text, sourcePath: el.dataset.path || ''
-    }));
+    const payload = { text, sourcePath: el.dataset.path || '' };
+    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
     e.dataTransfer.effectAllowed = 'copyMove';
   });
 }
@@ -35825,22 +37146,25 @@ function updateNoteToc() {
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
   if (headings.length === 0) {
-    toc.innerHTML = '<div style="color:var(--fg2);padding:4px;">見出しがありません</div>';
+    toc.innerHTML = '<div class="note-toc-empty">見出しがありません</div>';
     return;
   }
 
   let html = '';
   headings.forEach((h, i) => {
     const level = parseInt(h.tagName[1]);
-    const indent = (level - 1) * 12;
     const text = h.textContent.trim() || '(無題)';
-    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}" style="display:block;width:100%;padding:2px 4px 2px ${indent}px;cursor:pointer;border:0;background:transparent;text-align:left;font:inherit;border-radius:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${level===1?'var(--accent)':'var(--fg)'};"
-      title="${esc(text)}">${esc(text)}</button>`;
+    // 見た目（インデント・色・省略）とホバーは gb-tools.part01.part02.css の
+    // .note-toc-item / .note-toc-level-N に持たせる。インラインstyleでハイライトすると、
+    // ポインタが乗ったまま目次を作り直したときに mouseleave が来ず消えなくなる。
+    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}"`
+      + ` data-e2e-id="note-toc-item-${i}" title="${esc(text)}">${esc(text)}</button>`;
   });
   toc.innerHTML = html;
+  // 目次はDOMごと差し替わるため、テーマの適用対象マークを付け直す。
+  // これを省くとテーマ側のホバー色だけが失効する。
+  try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
   toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
-    item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
-    item.addEventListener('mouseleave', () => { item.style.background = ''; });
     item.addEventListener('click', () => {
       const index = Number(item.dataset.noteTocIndex);
       const target = document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[index];
@@ -36150,8 +37474,12 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       valuesEl.appendChild(hideBtn);
     }
     // ロールアップ/数式型は計算結果であり候補値を追加できないため、＋ボタンは出さない
-    // （シート表側の _nonValueTypes 除外と同じ扱い）。
-    if (!isComputedProp) {
+    // （シート表側の _nonValueTypes 除外と同じ扱い）。1セル1値で運用するシート（制作管理）
+    // も同様に出さない — 押しても _showEntryPropInlineAdd が拒否する空振りボタンになり、
+    // シート表側と見た目が食い違うため（シート表: gb-db-table.part02.js の _allowAdd）。
+    const _hideAddButton = parentDb && typeof hidesCandidateStatusUi === 'function'
+      && hidesCandidateStatusUi(parentDb);
+    if (!isComputedProp && !_hideAddButton) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
@@ -36680,23 +38008,28 @@ document.addEventListener('keydown', function(e) {
   // Ctrl+Z: カスタムアンドゥ（直前がカスタム操作の場合のみ）
   if (e.key === 'z' && !e.shiftKey && editable._lastCustomOp && editable._customUndoStack && editable._customUndoStack.length > 0) {
     e.preventDefault();
+    // innerHTML の総入れ替えはスクロール位置を捨てるため、前後で退避・復元する
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customRedoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customUndoStack.pop();
     editable._lastCustomOp = editable._customUndoStack.length > 0;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
   // Ctrl+Y / Ctrl+Shift+Z: カスタムリドゥ
   if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && editable._customRedoStack && editable._customRedoStack.length > 0) {
     e.preventDefault();
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customUndoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customRedoStack.pop();
     editable._lastCustomOp = true;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
 }, true); // captureフェーズで先に処理
@@ -38349,6 +39682,16 @@ function _linkContextItemId(label) {
     .replace(/^-+|-+$/g, '');
 }
 
+async function _copyLinkContextPath(linkTarget) {
+  const path = String(linkTarget?.path || '').trim();
+  if (!path) return;
+  const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+  const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
+  if (typeof showStatus === 'function') {
+    showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+  }
+}
+
 function _showLinkContextMenu(e, linkTarget) {
   if (!linkTarget?.path) return;
   removeTooltip();
@@ -38391,6 +39734,7 @@ function _showLinkContextMenu(e, linkTarget) {
     if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
     else openLink(linkTarget.path, linkTarget.label);
   });
+  addItem('copy', 'パスをコピー', () => _copyLinkContextPath(linkTarget));
   const browserUrl = String(linkTarget.path || '').trim();
   const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
   if (isExternalContextUrl) {
@@ -39258,10 +40602,12 @@ function _editorEventAnchorRect(e, fallbackEl) {
   return _editorPointRect(x, y);
 }
 
-function _positionEditorPopup(popup, anchorRect) {
+function _positionEditorPopup(popup, anchorRect, options) {
   if (!popup) return;
   if (typeof positionPopup === 'function') {
-    positionPopup(popup, anchorRect);
+    // 縦書きでは下に開くと本文の続きを隠すため、行の進行方向と直交する側（左）へ寄せる
+    const prefer = (typeof MeldexNoteWritingMode !== 'undefined') ? MeldexNoteWritingMode.popupPrefer() : 'below';
+    positionPopup(popup, anchorRect, Object.assign({ prefer }, options || {}));
     return;
   }
   const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
@@ -39300,199 +40646,15 @@ function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
   if (!popup) return;
   if (popup.isConnected) popup.remove();
   cleanup?.();
-  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') restoreFocusEl.focus();
-}
-
-function _pageTitleRubyHandler(e) {
-  const editable = e.target.closest('[contenteditable="true"]');
-  if (!editable) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
-  // 念のため: 万一ノート編集 editable に届いた場合はノートメニューに任せる
-  if (editable.id === 'entity-freetext' || editable.id === 'page-content' || editable.id === 'dp-editable') return;
-
-  e.preventDefault();
-  const selectedText = sel.toString().trim();
-
-  // 既存のルビメニューを閉じる
-  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-
-  // 選択範囲を保存
-  const savedRange = sel.getRangeAt(0).cloneRange();
-  const savedEditable = editable;
-
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu note-ruby-popup page-title-ruby-popup';
-  menu.setAttribute('role', 'dialog');
-  menu.setAttribute('aria-label', 'ページタイトルにルビを設定');
-  // mousedownでフォーカスを奪わない
-  menu.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${selectedText.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.id = 'ruby-input';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ページタイトルのルビ');
-  input.dataset.e2eId = 'page-title-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.id = 'ruby-apply-btn';
-  applyButton.dataset.e2eId = 'page-title-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  menu.append(label, row);
-  document.body.appendChild(menu);
-  _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
-  // blurで再描画されないよう一時的に無効化
-  const origBlur = savedEditable.onblur;
-  savedEditable.onblur = null;
-  input.focus();
-  // メニューが閉じたらblurを復元
-  const restoreBlur = () => { savedEditable.onblur = origBlur; };
-  window._rubyRestoreBlur = restoreBlur;
-  let outsideCloser = null;
-  let keyCloser = null;
-  const cleanupRubyPopup = () => {
-    if (outsideCloser) document.removeEventListener('pointerdown', outsideCloser, true);
-    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
-    outsideCloser = null;
-    keyCloser = null;
-    if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
-  };
-
-  function doApply() {
-    const ruby = input.value.trim();
-    _closeEditorPopup(menu, cleanupRubyPopup);
-    if (!ruby) return;
-
-    const path = savedEditable.dataset?.path || savedEditable.dataset?.entityPath;
-    const ep = savedEditable.dataset.entityPath || '';
-    const isNewFormatFreetext = savedEditable.id === 'entity-freetext' && ep.endsWith('.md');
-    const savePath = savedEditable.id === 'entity-freetext'
-      ? (isNewFormatFreetext ? ep : ep + '/_freetext.md')
-      : (path || '');
-    if (!savePath) return;
-
-    // --- ルビ適用 ---
-    // 自動保存タイマーをキャンセル（normalize()でRangeが無効化されるのを防止）
-    clearTimeout(window._noteAutoSaveTimer);
-
-    savedEditable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(savedRange);
-
-    // カスタムアンドゥ用にスナップショットを保存
-    _pushCustomUndo(savedEditable);
-
-    // 既存のルビspan全体を選択している場合はルビ値を上書き
-    const existingRuby = savedRange.startContainer.parentElement?.closest('[data-ruby]');
-    if (existingRuby && savedRange.toString().trim() === existingRuby.textContent.trim()) {
-      existingRuby.dataset.ruby = ruby;
-    } else {
-      // 選択範囲をruby spanで囲む（DOM直接操作）
-      const span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      try {
-        savedRange.surroundContents(span);
-      } catch (e) {
-        const fragment = savedRange.extractContents();
-        span.appendChild(fragment);
-        savedRange.insertNode(span);
-      }
-    }
-
-    // ペンディング中の自動保存をキャンセルし、即時保存
-    clearTimeout(window._noteAutoSaveTimer);
-    savedEditable.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-    savedEditable.normalize();
-    let md = htmlToMd(savedEditable.innerHTML);
-    if (!md.trim()) return;
-    const fm = savedEditable.dataset.frontmatter || '';
-    if (fm) md = fm + md;
-
-    const isEntityFreetext = savedEditable.id === 'entity-freetext';
-    const savePromise = isEntityFreetext && typeof _saveEntityFreeText === 'function'
-      ? _saveEntityFreeText(savedEditable, ep, md, { reason: 'ruby' })
-      : (window.MeldexNoteSaveAdapter
-        ? window.MeldexNoteSaveAdapter.performSave(savedEditable, savePath, md, { reason: 'ruby' })
-        : apiPut('/file?path=' + encodeURIComponent(savePath), {
-            content: md,
-            if_match_etag: savedEditable.dataset.lastSavedEtag || '',
-            transport_revision: savedEditable.dataset.lastSavedTransportRevision || '',
-          }));
-    savePromise.then((saved) => {
-      if (saved === false || saved?.conflictPending) return;
-      // 保存後にDOM再描画（auto-link再適用のため）
-      const bodyMd = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const reHtml = mdToHtml(bodyMd);
-      savedEditable.innerHTML = applyAutoLinks(reHtml, savePath);
-      // ルビを設定したテキストの直後にカーソルを配置
-      savedEditable.focus();
-      const rubySpans = savedEditable.querySelectorAll('[data-ruby]');
-      for (const span of rubySpans) {
-        if (span.textContent.includes(selectedText)) {
-          const s = window.getSelection();
-          const r = document.createRange();
-          r.setStartAfter(span);
-          r.collapse(true);
-          s.removeAllRanges();
-          s.addRange(r);
-          span.scrollIntoView({ block: 'center' });
-          break;
-        }
-      }
-      showStatus('ルビを設定しました');
-    }).catch(() => {});
-  }
-
-  applyButton.addEventListener('click', doApply);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); doApply(); }
-    if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(menu, cleanupRubyPopup, savedEditable); }
-    ev.stopPropagation();
-  });
-
-  outsideCloser = function closer(ev) {
-    if (!menu.contains(ev.target)) {
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  keyCloser = function onKey(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(menu, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', outsideCloser, true);
-    document.addEventListener('keydown', keyCloser, true);
-  }, 0);
-}
-
-{
-  const _pageTitleEl = document.getElementById('page-title');
-  if (_pageTitleEl) {
-    _pageTitleEl.addEventListener('contextmenu', _pageTitleRubyHandler);
-    if (typeof addLongPressHandler === 'function') addLongPressHandler(_pageTitleEl, _pageTitleRubyHandler);
+  // preventScroll を付けないと、ポップアップを閉じた拍子に本文がスクロールする
+  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') {
+    try { restoreFocusEl.focus({ preventScroll: true }); } catch (_) { restoreFocusEl.focus(); }
   }
 }
+
+// ページタイトルへのルビ設定は削除した。適用処理が保存先パスを見つけられず必ず途中で
+// 止まっており（タイトルはファイル名そのものでルビの保存先が無い）、右クリックしても
+// 何も起きない項目になっていたため。本文のルビは gb-note-ruby.js が担当する。
 
 /* ==============================
    Notion風キーボードショートカット
@@ -39585,110 +40747,9 @@ function moveBlock(direction) {
   return MeldexNoteBlockReorder.moveBlock(direction);
 }
 
-// ノートエディタ用ルビ入力ポップアップ。
-// シナリオエディタの sn2-header-popup と同パターン（positionPopup + 範囲基準）。
-function showNoteRubyPopup(editable, range) {
-  if (!editable || !range) return;
-  document.querySelectorAll('.note-ruby-popup').forEach(el => el.remove());
-  const text = range.toString();
-  if (!text) return;
-  const popup = document.createElement('div');
-  popup.className = 'gb-context-menu note-ruby-popup';
-  popup.setAttribute('role', 'dialog');
-  popup.setAttribute('aria-label', 'ノート本文にルビを設定');
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${text.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ノート本文のルビ');
-  input.dataset.e2eId = 'note-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.dataset.e2eId = 'note-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  popup.append(label, row);
-  popup.addEventListener('mousedown', ev => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  document.body.appendChild(popup);
-  _positionEditorPopup(popup, range.getBoundingClientRect());
-  let closeHandler = null;
-  let keyHandler = null;
-  const cleanup = () => {
-    if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
-    if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
-    closeHandler = null;
-    keyHandler = null;
-  };
-  const apply = () => {
-    const ruby = input.value.trim();
-    _closeEditorPopup(popup, cleanup);
-    if (!ruby) return;
-    editable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    _pushCustomUndo(editable);
-    const rangeRoot = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer?.parentElement;
-    const existingRuby = rangeRoot?.closest?.('[data-ruby]');
-    let span = existingRuby && editable.contains(existingRuby) && range.toString().trim() === existingRuby.textContent.trim()
-      ? existingRuby
-      : null;
-    if (span) {
-      span.dataset.ruby = ruby;
-    } else {
-      span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      span.textContent = text;
-      range.deleteContents();
-      range.insertNode(span);
-    }
-    const r2 = document.createRange();
-    r2.setStartAfter(span);
-    r2.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r2);
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    showStatus('ルビを設定しました');
-  };
-  applyButton.addEventListener('click', apply);
-  input.addEventListener('keydown', ev => {
-    if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(popup, cleanup, editable); }
-    ev.stopPropagation();
-  });
-  closeHandler = function onPointerDown(ev) {
-    if (!popup.contains(ev.target)) _closeEditorPopup(popup, cleanup, editable);
-  };
-  keyHandler = function onKeyDown(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(popup, cleanup, editable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', closeHandler, true);
-    document.addEventListener('keydown', keyHandler, true);
-    input.focus();
-  }, 0);
-}
+// ノート本文のルビ入力ポップアップは gb-note-ruby.js（MeldexNoteRuby）へ移設した。
+// 通常は文字選択で出る書式設定ポップアップへ統合され、そこが使えない環境
+// （クラウドのスマホ編集UI等）だけ MeldexNoteRuby.showLegacyPopup が使われる。
 
 async function confirmNoteTableDelete(message) {
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
@@ -39807,7 +40868,8 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { type: 'sep' },
     { label: 'ルビを設定...', enabled: hasSelection, action: () => {
       if (!savedRange) return;
-      showNoteRubyPopup(editable, savedRange);
+      if (typeof MeldexNoteRuby === 'undefined') return;
+      MeldexNoteRuby.insertRuby(editable, savedRange);
     }},
     { label: 'リンクを挿入...', enabled: true, action: () => {
       restoreAndExec(() => {});
@@ -40127,6 +41189,283 @@ document.addEventListener('click', (e) => {
   const editable = td.closest('[contenteditable="true"]');
   if (table && editable) _showTableToolbar(table, editable);
 });
+
+;
+
+/* === gb-note-ruby.js === */
+;
+/* gb-note-ruby.js — ノート本文のルビ機能。
+ *
+ * 旧実装はシナリオと別系統で、
+ *   - 文字を選ぶと出る書式設定ポップアップ（シナリオと共通）にはルビ欄が生えない
+ *   - 右クリック/Alt+↓ でだけ開く専用ポップアップが別にある
+ *   - ルビ適用のあとスクロールが動く（focus にスクロール抑止が無い）
+ *   - ルビ span の端で入力すると、その文字までルビ対象へ取り込まれる
+ * という状態だった。ここに適用処理と入口をまとめ、書式設定ポップアップ側
+ * （gb-text-selection-format.js）からも同じ関数を呼べるようにする。
+ *
+ * 境界の制御は gb-ruby-boundary.js（シナリオと共通）へ委譲する。
+ */
+(function (global) {
+  'use strict';
+
+  // ルビを扱う編集ホスト（本文・エントリの自由記述・詳細パネル内ノート・ボードのノート）
+  var NOTE_RUBY_EDITABLES = '#page-content, #entity-freetext, #dp-editable, #board-note-editable';
+
+  // ルビ記法 {親文字|ルビ} で往復できる文字かどうか。
+  // 読み込み側（mdToHtml）はルビ部分の文字種を絞っており、書き出し側は絞っていないため、
+  // 対象外の文字を許すと「保存 → 再読込でルビが消え、{...} が本文に出てしまう」片道の欠落になる。
+  // 文字クラスは gb-editor.part03.part01.js の mdToHtml 側と同一（ひらがな・カタカナ・
+  // 漢字・英数字・長音・々〆〇・空白）。片方だけ変えると往復できなくなるため揃えて保つ。
+  var RUBY_READING_RE = /^[぀-ゟ゠-ヿ一-鿿㐀-䶿a-zA-Z0-9ー々〆〇\s]+$/;
+
+  function canRoundTrip(baseText, rubyText) {
+    var base = String(baseText == null ? '' : baseText);
+    var ruby = String(rubyText == null ? '' : rubyText);
+    if (!ruby) return { ok: false, reason: 'ルビが空です' };
+    if (!RUBY_READING_RE.test(ruby)) {
+      return { ok: false, reason: 'ルビにはひらがな・カタカナ・漢字・英数字だけ使えます' };
+    }
+    if (/[{}|]/.test(base)) {
+      return { ok: false, reason: '{ } | を含む文字列にはルビを振れません' };
+    }
+    return { ok: true };
+  }
+
+  // --- スクロール位置の退避・復元 -------------------------------------------
+  // 本文を作り直す処理（取り消し・リンクの再適用・保存後の再描画）で位置が飛ばないようにする。
+  // 縦書きの単独アプリでは実際にスクロールするのが編集ホストの外側になるため、祖先まで見る。
+  function captureScroll(el) {
+    var list = [];
+    for (var n = el; n && n !== document.body && n.nodeType === 1; n = n.parentElement) {
+      if (n.scrollHeight > n.clientHeight || n.scrollWidth > n.clientWidth) {
+        list.push({ el: n, top: n.scrollTop, left: n.scrollLeft });
+      }
+    }
+    return list;
+  }
+
+  function restoreScroll(list) {
+    (list || []).forEach(function (s) {
+      if (!s.el || !s.el.isConnected) return;
+      s.el.scrollTop = s.top;
+      s.el.scrollLeft = s.left;
+    });
+  }
+
+  function focusWithoutScroll(el) {
+    if (!el || typeof el.focus !== 'function') return;
+    try { el.focus({ preventScroll: true }); } catch (_) { try { el.focus(); } catch (__) { /* 失われたノード */ } }
+  }
+
+  // --- ルビの適用 -----------------------------------------------------------
+  // シナリオの _applyRubyToSelection と同じく、本文を作り直さず DOM を直接書き換える。
+  // 再描画を挟まないのでスクロール位置もキャレットも動かない。
+  function applyToSelection(range, editable, ruby) {
+    if (!range || !editable) return false;
+    var text = range.toString();
+    if (!text) return false;
+    var reading = String(ruby || '').trim();
+    var check = canRoundTrip(text, reading);
+    if (!check.ok) {
+      if (typeof global.showStatus === 'function') global.showStatus(check.reason, true);
+      return false;
+    }
+
+    var scroll = captureScroll(editable);
+    focusWithoutScroll(editable);
+    var sel = global.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    if (typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
+
+    var rangeRoot = range.commonAncestorContainer && range.commonAncestorContainer.nodeType === 1
+      ? range.commonAncestorContainer
+      : (range.commonAncestorContainer && range.commonAncestorContainer.parentElement);
+    var existing = rangeRoot && rangeRoot.closest ? rangeRoot.closest('[data-ruby]') : null;
+    var span = (existing && editable.contains(existing) && text.trim() === existing.textContent.trim())
+      ? existing
+      : null;
+
+    if (span) {
+      span.dataset.ruby = reading;
+    } else {
+      span = document.createElement('span');
+      span.dataset.ruby = reading;
+      span.style.position = 'relative';
+      span.textContent = text;
+      range.deleteContents();
+      range.insertNode(span);
+    }
+    // 前後に空テキストノードが分かれたままだとキャレットが span 内へ吸われやすい
+    if (span.parentNode && span.parentNode.normalize) span.parentNode.normalize();
+
+    // キャレットは span の外側（直後）へ。境界処理（gb-ruby-boundary.js）と組で
+    // 「直後に打った文字がルビに含まれない」状態にする。
+    var boundary = global.MeldexRubyBoundary;
+    if (boundary && typeof boundary.rangeOutside === 'function') {
+      boundary.rangeOutside(span, 'end');
+    } else {
+      var r2 = document.createRange();
+      r2.setStartAfter(span);
+      r2.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r2);
+    }
+
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    restoreScroll(scroll);
+    if (typeof global.showStatus === 'function') global.showStatus('ルビを設定しました');
+    return true;
+  }
+
+  // --- 入口 -----------------------------------------------------------------
+  // シナリオの _insertRuby と同じ形。統合ポップアップを優先し、使えない環境
+  // （クラウドのスマホ編集UIなど。書式設定ポップアップ自体が抑止される）だけ
+  // 専用ポップアップへ落とす。
+  function insertRuby(editable, range) {
+    if (!editable || !range) return;
+    var gts = global.GBTextSelectionFormat;
+    if (gts && typeof gts.openForSelection === 'function') {
+      focusWithoutScroll(editable);
+      var sel = global.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range.cloneRange());
+      gts.openForSelection({ focusRuby: true, force: true });
+      if (document.querySelector('.gb-text-selection-fmt [data-e2e-id="sn2-ruby-row"]')) return;
+    }
+    showLegacyPopup(editable, range);
+  }
+
+  // 統合ポップアップが使えない環境向けの専用ポップアップ（旧 showNoteRubyPopup）。
+  function showLegacyPopup(editable, range) {
+    if (!editable || !range) return;
+    document.querySelectorAll('.note-ruby-popup').forEach(function (el) { el.remove(); });
+    var text = range.toString();
+    if (!text) return;
+    var esc = global.esc || function (s) { return String(s == null ? '' : s); };
+    var popup = document.createElement('div');
+    popup.className = 'gb-context-menu note-ruby-popup';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-label', 'ノート本文にルビを設定');
+    var label = document.createElement('div');
+    label.className = 'note-ruby-popup-label';
+    label.textContent = '「' + text.slice(0, 20) + '」にルビを設定';
+    var row = document.createElement('div');
+    row.className = 'note-ruby-popup-row';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'gb-input note-ruby-input';
+    input.placeholder = 'ルビを入力...';
+    input.setAttribute('aria-label', 'ノート本文のルビ');
+    input.dataset.e2eId = 'note-ruby-input';
+    // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
+    input.setAttribute('data-gb-tooltip-disabled', 'true');
+    var applyButton = document.createElement('button');
+    applyButton.type = 'button';
+    applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
+    applyButton.dataset.e2eId = 'note-ruby-apply';
+    applyButton.textContent = '設定';
+    row.append(input, applyButton);
+    popup.append(label, row);
+    popup.addEventListener('mousedown', function (ev) { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
+    document.body.appendChild(popup);
+    if (typeof global._positionEditorPopup === 'function') {
+      global._positionEditorPopup(popup, range.getBoundingClientRect());
+    }
+    var closeHandler = null;
+    var keyHandler = null;
+    var cleanup = function () {
+      if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
+      if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
+      closeHandler = null;
+      keyHandler = null;
+    };
+    var closePopup = function (restoreFocusEl) {
+      if (typeof global._closeEditorPopup === 'function') global._closeEditorPopup(popup, cleanup, restoreFocusEl);
+      else { cleanup(); popup.remove(); }
+    };
+    var apply = function () {
+      var ruby = input.value.trim();
+      closePopup();
+      if (!ruby) return;
+      applyToSelection(range, editable, ruby);
+    };
+    applyButton.addEventListener('click', apply);
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closePopup(editable); }
+      ev.stopPropagation();
+    });
+    closeHandler = function onPointerDown(ev) {
+      if (!popup.contains(ev.target)) closePopup(editable);
+    };
+    keyHandler = function onKeyDown(ev) {
+      // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
+      if (ev.key === 'Tab') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof global.gbCyclePopupFocus === 'function') global.gbCyclePopupFocus(popup, ev.shiftKey);
+        return;
+      }
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closePopup(editable);
+      }
+    };
+    setTimeout(function () {
+      document.addEventListener('pointerdown', closeHandler, true);
+      document.addEventListener('keydown', keyHandler, true);
+      try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); }
+    }, 0);
+  }
+
+  // --- 境界処理の配線 -------------------------------------------------------
+  function attachBoundary(host) {
+    var boundary = global.MeldexRubyBoundary;
+    if (!boundary || !host) return;
+    boundary.attach(host, {
+      pushUndo: function (el) {
+        if (typeof global._pushCustomUndo === 'function') global._pushCustomUndo(el);
+      },
+    });
+  }
+
+  function attachBoundaryToAll(root) {
+    var scope = root || document;
+    if (!scope.querySelectorAll) return;
+    scope.querySelectorAll(NOTE_RUBY_EDITABLES).forEach(attachBoundary);
+  }
+
+  function init() {
+    attachBoundaryToAll(document);
+    // 詳細パネル内ノートやクラウドのスマホ編集UIは後から作られる。DOM全体を監視すると
+    // 入力のたびに走って重いので、編集ホストがフォーカスを受けた時に一度だけ配線する
+    // （attach 側が二重登録を弾く）。
+    document.addEventListener('focusin', function (e) {
+      var host = e.target && e.target.closest ? e.target.closest(NOTE_RUBY_EDITABLES) : null;
+      if (host) attachBoundary(host);
+    }, true);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+
+  global.MeldexNoteRuby = {
+    NOTE_RUBY_EDITABLES: NOTE_RUBY_EDITABLES,
+    canRoundTrip: canRoundTrip,
+    applyToSelection: applyToSelection,
+    insertRuby: insertRuby,
+    showLegacyPopup: showLegacyPopup,
+    captureScroll: captureScroll,
+    restoreScroll: restoreScroll,
+    focusWithoutScroll: focusWithoutScroll,
+    attachBoundary: attachBoundary,
+  };
+
+  // 後方互換: 既存の呼び出し（右クリックメニュー等）が直接この名前を呼んでいる
+  global.showNoteRubyPopup = showLegacyPopup;
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -41318,6 +42657,32 @@ function applyFileStyleToPanel(style, panelId) {
   }
 }
 
+function clearFileStyleFromElement(el) {
+  if (!el) return;
+  const raw = el.dataset?.[_FILE_STYLE_APPLIED_DATASET_KEY] || '';
+  raw.split(',').map(v => v.trim()).filter(Boolean).forEach(key => el.style.removeProperty(key));
+  if (el.dataset) delete el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY];
+}
+
+function applyFileStyleToElement(style, el, panelId) {
+  if (!el) return;
+  clearFileStyleFromElement(el);
+  if (!style || typeof style !== 'object') return;
+  const vars = _expandFileStyleVars(style, panelId);
+  const applied = [];
+  for (const [key, value] of Object.entries(vars)) {
+    if (!key.startsWith('--')) continue;
+    el.style.setProperty(key, value);
+    applied.push(key);
+  }
+  if (applied.length && el.dataset) el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY] = applied.join(',');
+}
+
+function applyPageTitleStyleToElement(style, titleEl) {
+  if (!titleEl) return;
+  applyFileStyleToElement(style, titleEl, 'page-content');
+}
+
 function clearFileStyle() {
   // 全パネル横断クリア。他ペインで開いている別ツールのファイルスタイルも巻き込むため、
   // 新規コードでは clearFileStyleForPanel(panelId) を優先すること。
@@ -41903,17 +43268,38 @@ function _noteTableNewCellForRow(row, rowIndex) {
   return document.createElement(rowIndex === 0 && row?.querySelector?.('th') ? 'th' : 'td');
 }
 
+// 表の組方向。表自体は本文の組方向を継承する。
+function _noteTableAxis(cell) {
+  const wm = window.MeldexNoteWritingMode;
+  const host = cell && cell.closest ? cell.closest('[contenteditable]') : null;
+  return (wm && typeof wm.axis === 'function') ? wm.axis(host) : null;
+}
+
+// 列＝行の中でセルが並ぶ向き（インライン軸）、行＝行同士が積み重なる向き（ブロック軸）。
+// 縦書き(vertical-rl)では列は上下、行は右→左に並ぶので、掴む辺は
+// 列＝セルの下辺、行＝セルの左辺になる（横書きの右辺／下辺の鏡映し）。
 function _noteTableCellAtResizeEdge(event) {
   const cell = _noteTableCellFromTarget(event.target);
   if (!cell) return null;
   const rect = cell.getBoundingClientRect();
   const edge = 6;
-  const nearRight = Math.abs(event.clientX - rect.right) <= edge && event.clientY >= rect.top && event.clientY <= rect.bottom;
-  const nearBottom = Math.abs(event.clientY - rect.bottom) <= edge && event.clientX >= rect.left && event.clientX <= rect.right;
-  if (!nearRight && !nearBottom) return null;
-  if (nearRight && (!nearBottom || Math.abs(event.clientX - rect.right) <= Math.abs(event.clientY - rect.bottom))) {
-    return { cell, axis: 'col' };
-  }
+  const ax = _noteTableAxis(cell);
+  const vertical = !!(ax && ax.vertical);
+  const pt = { x: event.clientX, y: event.clientY };
+  // インライン軸の終端辺（横書き=右 / 縦書き=下）
+  const inlineEnd = vertical ? rect.bottom : rect.right;
+  const inlineCoord = vertical ? pt.y : pt.x;
+  const inlineCross = vertical ? (pt.x >= rect.left && pt.x <= rect.right) : (pt.y >= rect.top && pt.y <= rect.bottom);
+  // ブロック軸の終端辺（横書き=下 / 縦書き=左）
+  const blockEnd = vertical ? rect.left : rect.bottom;
+  const blockCoord = vertical ? pt.x : pt.y;
+  const blockCross = vertical ? (pt.y >= rect.top && pt.y <= rect.bottom) : (pt.x >= rect.left && pt.x <= rect.right);
+  const dInline = Math.abs(inlineCoord - inlineEnd);
+  const dBlock = Math.abs(blockCoord - blockEnd);
+  const nearCol = dInline <= edge && inlineCross;
+  const nearRow = dBlock <= edge && blockCross;
+  if (!nearCol && !nearRow) return null;
+  if (nearCol && (!nearRow || dInline <= dBlock)) return { cell, axis: 'col' };
   return { cell, axis: 'row' };
 }
 
@@ -41930,7 +43316,14 @@ function _noteTableSetResizeHover(target) {
   }
   if (_noteTableResizeHoverCell && _noteTableResizeHoverCell !== target.cell) _noteTableResizeHoverCell.style.cursor = '';
   _noteTableResizeHoverCell = target.cell;
-  target.cell.style.cursor = target.axis === 'col' ? 'col-resize' : 'row-resize';
+  const vertical = !!_noteTableAxis(target.cell)?.vertical;
+  target.cell.style.cursor = _noteTableResizeCursor(target.axis, vertical);
+}
+
+// 掴む辺の向きに合わせたカーソル。縦書きでは列＝上下、行＝左右になる。
+function _noteTableResizeCursor(axis, vertical) {
+  if (vertical) return axis === 'col' ? 'row-resize' : 'col-resize';
+  return axis === 'col' ? 'col-resize' : 'row-resize';
 }
 
 function _noteTableEnsureColgroup(table, colCount) {
@@ -41951,6 +43344,8 @@ function _noteTableApplyColumnWidth(table, colIndex, width) {
   table.style.tableLayout = 'fixed';
   table.dataset.noteTableResized = '1';
   const col = _noteTableEnsureColgroup(table, colCount).children[colIndex];
+  // <col>/<td> の寸法は表レイアウト内部の値で、論理プロパティでは Chrome が拾わない
+  // （inline-size にすると列幅が一切変わらなくなる）。ここは物理プロパティのまま扱う。
   col.style.width = Math.max(40, Math.round(width)) + 'px';
   rows.forEach(row => {
     if (row.cells[colIndex]) row.cells[colIndex].style.width = col.style.width;
@@ -41997,15 +43392,20 @@ function _noteTableStartResize(event) {
     beforeHtml: editable.innerHTML,
     startX: event.clientX,
     startY: event.clientY,
-    startWidth: target.cell.getBoundingClientRect().width / z,
-    startHeight: row.getBoundingClientRect().height / z,
+    vertical: !!_noteTableAxis(target.cell)?.vertical,
+    startWidth: (_noteTableAxis(target.cell)?.vertical
+      ? target.cell.getBoundingClientRect().height
+      : target.cell.getBoundingClientRect().width) / z,
+    startHeight: (_noteTableAxis(target.cell)?.vertical
+      ? row.getBoundingClientRect().width
+      : row.getBoundingClientRect().height) / z,
     pointerTarget: target.cell,
     pointerId: event.pointerId,
     undoPushed: false,
     changed: false,
   };
   document.body.classList.add('note-table-resizing');
-  document.body.style.cursor = target.axis === 'col' ? 'col-resize' : 'row-resize';
+  document.body.style.cursor = _noteTableResizeCursor(target.axis, !!_noteTableAxis(target.cell)?.vertical);
   _noteTableBindResizeFinishGuards();
   event.preventDefault();
   event.stopPropagation();
@@ -42016,7 +43416,9 @@ function _noteTableResizeMove(event) {
   const state = _noteTableResizeState;
   if (!state) return;
   const z = _noteTableUiZoom();
-  const delta = state.axis === 'col' ? (event.clientX - state.startX) / z : (event.clientY - state.startY) / z;
+  const delta = state.vertical
+    ? (state.axis === 'col' ? (event.clientY - state.startY) : -(event.clientX - state.startX)) / z
+    : (state.axis === 'col' ? (event.clientX - state.startX) : (event.clientY - state.startY)) / z;
   if (Math.abs(delta) < 0.5) return;
   if (!state.undoPushed) state.undoPushed = _noteTablePushCustomUndo(state.editable);
   if (state.axis === 'col') {
@@ -42359,32 +43761,6 @@ function _expandFileStyleVars(style, panelId) {
   return vars;
 }
 
-function clearFileStyleFromElement(el) {
-  if (!el) return;
-  const raw = el.dataset?.[_FILE_STYLE_APPLIED_DATASET_KEY] || '';
-  raw.split(',').map(v => v.trim()).filter(Boolean).forEach(key => el.style.removeProperty(key));
-  if (el.dataset) delete el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY];
-}
-
-function applyFileStyleToElement(style, el, panelId) {
-  if (!el) return;
-  clearFileStyleFromElement(el);
-  if (!style || typeof style !== 'object') return;
-  const vars = _expandFileStyleVars(style, panelId);
-  const applied = [];
-  for (const [key, value] of Object.entries(vars)) {
-    if (!key.startsWith('--')) continue;
-    el.style.setProperty(key, value);
-    applied.push(key);
-  }
-  if (applied.length && el.dataset) el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY] = applied.join(',');
-}
-
-function applyPageTitleStyleToElement(style, titleEl) {
-  if (!titleEl) return;
-  applyFileStyleToElement(style, titleEl, 'page-content');
-}
-
 // ============================================================
 // 6. テーブル操作（セル編集・行列追加・右クリック削除）
 // ============================================================
@@ -42393,11 +43769,19 @@ function _ensureTableRowDragHandle() {
   if (handle) return handle;
   handle = document.createElement('div');
   handle.id = 'table-row-drag-handle';
-  handle.textContent = '⠿';
+  // 縦書きではグリップだけを回せるよう内側の span へ入れる。
+  handle.innerHTML = '<span class="block-drag-handle-glyph">⠿</span>';
   handle.draggable = true;
   handle.setAttribute('contenteditable', 'false');
   handle.style.cssText = 'position:fixed;left:0;top:0;width:18px;height:18px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--page-table-control-fg,var(--fg2));font-size:15px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;background:var(--page-table-control-bg,var(--bg2));border:var(--page-table-control-border-width,1px) solid var(--page-table-control-border,var(--border));border-radius:4px;';
   document.body.appendChild(handle);
+
+  const axisOf = (el) => {
+    const wm = window.MeldexNoteWritingMode;
+    const host = el && el.closest ? el.closest('[contenteditable]') : null;
+    return (wm && typeof wm.axis === 'function') ? wm.axis(host) : null;
+  };
+  const isVertical = (el) => !!axisOf(el)?.vertical;
 
   const rowSelector = '#page-content table tr, #entity-freetext table tr';
   let dropRow = null;
@@ -42409,6 +43793,13 @@ function _ensureTableRowDragHandle() {
   const positionHandle = (row) => {
     const rect = row.getBoundingClientRect();
     const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
+    const vertical = isVertical(row);
+    handle.classList.toggle('is-note-vertical', vertical);
+    if (vertical) {
+      handle.style.left = ((rect.left + Math.max(0, (rect.width - 18) / 2)) / z) + 'px';
+      handle.style.top = ((rect.top - 22) / z) + 'px';
+      return;
+    }
     handle.style.top = ((rect.top + Math.max(0, (rect.height - 18) / 2)) / z) + 'px';
     handle.style.left = ((rect.left - 22) / z) + 'px';
   };
@@ -42421,21 +43812,36 @@ function _ensureTableRowDragHandle() {
     dropBefore = false;
     if (!handle.matches(':hover')) handle.style.opacity = '0';
   };
-  const rowAtClientY = (clientY, table) => {
+  const rowAtPoint = (point, table) => {
     if (!table) return null;
+    const ax = axisOf(table);
+    const vertical = !!ax?.vertical;
+    const coord = vertical ? point.x : point.y;
+    const lo = (r) => vertical ? r.left : r.top;
+    const hi = (r) => vertical ? r.right : r.bottom;
     let nearest = null;
     let nearestDistance = Infinity;
     for (const row of Array.from(table.querySelectorAll('tr'))) {
       const rect = row.getBoundingClientRect();
-      if (clientY >= rect.top && clientY <= rect.bottom) return row;
-      const distance = Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
+      if (coord >= lo(rect) && coord <= hi(rect)) return row;
+      const distance = Math.min(Math.abs(coord - lo(rect)), Math.abs(coord - hi(rect)));
       if (distance < nearestDistance) {
         nearest = row;
         nearestDistance = distance;
       }
     }
     const rect = table.getBoundingClientRect();
-    return clientY >= rect.top && clientY <= rect.bottom ? nearest : null;
+    return coord >= lo(rect) && coord <= hi(rect) ? nearest : null;
+  };
+  const isDropBefore = (target, e) => {
+    const rect = target.getBoundingClientRect(); // vertical-rl は右側が文書順の先頭。
+    return isVertical(target) ? e.clientX > rect.left + rect.width / 2 : e.clientY < rect.top + rect.height / 2;
+  };
+  const dropMarkerShadow = (target, before) => {
+    const w = 'var(--page-drag-guide-width, 2px)';
+    const c = 'var(--page-drag-guide-color, var(--accent))';
+    if (isVertical(target)) return before ? `inset calc(-1 * ${w}) 0 0 ${c}` : `inset ${w} 0 0 ${c}`;
+    return before ? `inset 0 ${w} 0 ${c}` : `inset 0 calc(-1 * ${w}) 0 ${c}`;
   };
   const rowFromDragEvent = (e, dragRow) => {
     let target = e.target?.closest?.(rowSelector) || null;
@@ -42448,7 +43854,7 @@ function _ensureTableRowDragHandle() {
         handle.style.pointerEvents = prevPointerEvents;
       }
     }
-    return target || rowAtClientY(e.clientY, dragRow?.closest?.('table'));
+    return target || rowAtPoint({ x: e.clientX, y: e.clientY }, dragRow?.closest?.('table'));
   };
 
   document.addEventListener('mousemove', (e) => {
@@ -42487,13 +43893,10 @@ function _ensureTableRowDragHandle() {
       clearDropMarker();
       return;
     }
-    const rect = target.getBoundingClientRect();
-    dropBefore = e.clientY < rect.top + rect.height / 2;
+    dropBefore = isDropBefore(target, e);
     if (dropRow && dropRow !== target) dropRow.style.boxShadow = '';
     dropRow = target;
-    dropRow.style.boxShadow = dropBefore
-      ? 'inset 0 var(--page-drag-guide-width, 2px) 0 var(--page-drag-guide-color, var(--accent))'
-      : 'inset 0 calc(-1 * var(--page-drag-guide-width, 2px)) 0 var(--page-drag-guide-color, var(--accent))';
+    dropRow.style.boxShadow = dropMarkerShadow(target, dropBefore);
   }, true);
 
   document.addEventListener('drop', (e) => {
@@ -42510,8 +43913,7 @@ function _ensureTableRowDragHandle() {
     const pc = dragRow.closest('#page-content, #entity-freetext');
     const beforeHtml = pc ? pc.innerHTML : '';
     _noteTablePushCustomUndo(pc);
-    const rect = target.getBoundingClientRect();
-    const shouldDropBefore = e.clientY < rect.top + rect.height / 2;
+    const shouldDropBefore = isDropBefore(target, e);
     if (shouldDropBefore) target.before(dragRow);
     else target.after(dragRow);
     _noteTableDispatchInput(pc, beforeHtml);
@@ -42831,7 +44233,8 @@ function _showNoteTableCellMenu(cell, x, y, options = {}) {
 
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
-    positionPopup(menu, { left: x, right: x, top: y, bottom: y });
+    const prefer = window.MeldexNoteWritingMode ? window.MeldexNoteWritingMode.popupPrefer(editable) : 'below';
+    positionPopup(menu, { left: x, right: x, top: y, bottom: y }, { prefer });
   } else {
     const z = _noteTableUiZoom();
     menu.style.left = (x / z) + 'px';
@@ -44228,7 +45631,12 @@ document.addEventListener('input', _onSlashInput);
     menu.style.display = '';
     _render();
     if (typeof positionPopup === 'function') {
-      positionPopup(menu, opts.anchorRect, { gap: 4, prefer: opts.prefer || 'below' });
+      // 指定が無いときはノートの組方向に合わせる（縦書きは左へ開く）。
+      // サブメニューの 'right' など明示指定は従来どおり優先する。
+      const autoPrefer = (typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isVertical(opts.editable))
+        ? MeldexNoteWritingMode.popupPrefer(opts.editable)
+        : 'below';
+      positionPopup(menu, opts.anchorRect, { gap: 4, prefer: opts.prefer || autoPrefer });
     } else {
       const z = typeof _getZoom === 'function' ? _getZoom() : 1;
       menu.style.top = (opts.anchorRect.bottom / z + 4) + 'px';
@@ -44386,14 +45794,39 @@ document.addEventListener('input', _onSlashInput);
   // ============================================================
   // 3. ヒットテスト（ハンドル・ハイライト用）
   // ============================================================
+  // 組方向の軸オラクル。未読込環境（旧HTML等）では横書き固定で動く。
+  function _axis(editable) {
+    const wm = (typeof window !== 'undefined' ? window : globalThis).MeldexNoteWritingMode;
+    if (wm && typeof wm.axis === 'function') return wm.axis(editable);
+    return {
+      vertical: false,
+      blockCoord: (pt) => pt.y, blockStart: (r) => r.top, blockEnd: (r) => r.bottom, blockSign: 1,
+      toPoint: (input) => (typeof input === 'number' ? { x: NaN, y: input } : { x: input?.clientX ?? input?.x, y: input?.clientY ?? input?.y }),
+      containsBlock(r, input) {
+        const c = this.toPoint(input).y;
+        return Number.isFinite(c) && c >= r.top && c < Math.max(r.bottom, r.top + 1);
+      },
+    };
+  }
+
   // §2.3: 深いリストでは、子リストを除いた項目自身の矩形を算出する。
-  function rowOwnRect(el) {
+  // 切り落とす辺は組方向で変わる（横書き=下辺 / 縦書きrl=左辺）。
+  function rowOwnRect(el, editable) {
     if (!el || typeof el.getBoundingClientRect !== 'function') return null;
     const full = el.getBoundingClientRect();
     if (el.tagName !== 'LI') return full;
     const nestedList = Array.from(el.children).find((c) => LIST_TAG_RE.test(c.tagName));
     if (!nestedList) return full;
     const nestedRect = nestedList.getBoundingClientRect();
+    const ax = _axis(editable || el.closest?.('[contenteditable]'));
+    if (ax.vertical) {
+      // 縦書き: 行は右→左に進むので、子リストの右端で自分の左端を切る
+      const left = Math.min(full.right, Math.max(full.left, nestedRect.right));
+      return {
+        top: full.top, bottom: full.bottom, right: full.right, left,
+        height: full.height, width: Math.max(0, full.right - left),
+      };
+    }
     const bottom = Math.max(full.top, Math.min(full.bottom, nestedRect.top));
     return {
       top: full.top, left: full.left, right: full.right, bottom,
@@ -44422,16 +45855,18 @@ document.addEventListener('input', _onSlashInput);
     return null;
   }
 
-  // Y座標（clientY）から対象行を解決する（ガター／余白ホバー用）。
+  // 座標から対象行を解決する（ガター／余白ホバー用）。
   // ownRect を使うため、深いリストでも重ならず最深行が自然に選ばれる。
-  function rowAtPoint(editable, clientY, excludeEl) {
+  // point は {x, y} / イベント / 数値（旧シグネチャの clientY 互換）を受け取る。
+  // 比較する軸は組方向で変わる（横書き=縦位置 / 縦書きrl=横位置）。
+  function rowAtPoint(editable, point, excludeEl) {
+    const ax = _axis(editable);
     const rows = listRows(editable);
     for (const el of rows) {
       if (excludeEl && (el === excludeEl || excludeEl.contains(el))) continue;
-      const r = rowOwnRect(el);
+      const r = rowOwnRect(el, editable);
       if (!r) continue;
-      const bottom = Math.max(r.bottom, r.top + 1);
-      if (clientY >= r.top && clientY < bottom) return el;
+      if (ax.containsBlock(r, point)) return el;
     }
     return null;
   }
@@ -44872,6 +46307,33 @@ document.addEventListener('input', _onSlashInput);
   // （_endDrag）は placeRowRelative に委譲し、実際の配置規則（同一リスト内
   // 入れ替え・一段昇格・同種リスト合流・通常行との相互変換）は
   // gb-note-logical-rows.js 側の1段階プリミティブと共有する。
+  // 組方向の軸オラクル。未読込環境では横書き固定にフォールバックする。
+  function _axis(editable) {
+    const wm = global.MeldexNoteWritingMode;
+    if (wm && typeof wm.axis === 'function') return wm.axis(editable);
+    return {
+      vertical: false,
+      blockCoord: (pt) => pt.y, blockStart: (r) => r.top, blockEnd: (r) => r.bottom, blockSign: 1,
+      toPoint: (input) => (typeof input === 'number' ? { x: NaN, y: input } : { x: input?.clientX ?? input?.x, y: input?.clientY ?? input?.y }),
+      isBefore(r, input) { return this.toPoint(input).y < (r.top + r.bottom) / 2; },
+      distanceTo(r, input) {
+        const c = this.toPoint(input).y;
+        if (!Number.isFinite(c)) return Infinity;
+        if (c < r.top) return r.top - c;
+        if (c > r.bottom) return c - r.bottom;
+        return 0;
+      },
+      containsBlock(r, input) {
+        const c = this.toPoint(input).y;
+        return Number.isFinite(c) && c >= r.top && c <= r.bottom;
+      },
+    };
+  }
+
+  function _pointOf(e) {
+    return { x: e.clientX, y: e.clientY };
+  }
+
   function _dragCandidates(editable, draggedInfo) {
     const lr = LR();
     if (!lr) return [];
@@ -44879,18 +46341,28 @@ document.addEventListener('input', _onSlashInput);
     return lr.listRows(editable).filter((el) => el !== draggedEl && !draggedEl.contains(el) && !el.contains(draggedEl));
   }
 
-  function _nearestCandidate(candidates, draggedEl, clientY) {
+  // 「before」は文書順で前（横書き=中点より上 / 縦書きrl=中点より右）を意味する。
+  function _nearestCandidate(candidates, draggedEl, point, editable) {
     const lr = LR();
+    const ax = _axis(editable);
     let nearest = null;
     let nearestDist = Infinity;
     for (const cand of candidates) {
       if (cand === draggedEl || cand.contains(draggedEl) || draggedEl.contains(cand)) continue;
-      const rect = (lr && lr.rowOwnRect(cand)) || cand.getBoundingClientRect();
-      if (clientY >= rect.top && clientY <= rect.bottom) {
-        return { el: cand, before: clientY < rect.top + rect.height / 2 };
+      const rect = (lr && lr.rowOwnRect(cand, editable)) || cand.getBoundingClientRect();
+      if (ax.containsBlock(rect, point)) {
+        return { el: cand, before: ax.isBefore(rect, point) };
       }
-      const dist = Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
-      if (dist < nearestDist) { nearestDist = dist; nearest = { el: cand, before: clientY < rect.top }; }
+      const dist = ax.distanceTo(rect, point);
+      if (dist < nearestDist) {
+        // 矩形の外側にいる場合は、行の開始側にいるかどうかで前後を決める
+        const pt = ax.toPoint(point);
+        const beforeStart = ax.blockSign > 0
+          ? ax.blockCoord(pt) < ax.blockStart(rect)
+          : ax.blockCoord(pt) > ax.blockStart(rect);
+        nearestDist = dist;
+        nearest = { el: cand, before: beforeStart };
+      }
     }
     return nearest;
   }
@@ -44930,7 +46402,9 @@ document.addEventListener('input', _onSlashInput);
       padLeft = parseFloat(cs.paddingLeft) || 0;
       padTop = parseFloat(cs.paddingTop) || 0;
     } catch (_) { /* 計測不能時は0扱い */ }
-    if (editable.classList && editable.classList.contains('vertical-writing')) {
+    const vertical = _axis(editable).vertical;
+    _handle.classList.toggle('is-note-vertical', vertical);
+    if (vertical) {
       const contentTop = er.top + padTop * z;
       _handle.style.top = (Math.max(2, contentTop - 22) / z) + 'px';
       _handle.style.left = (blockRect.left / z) + 'px';
@@ -44966,7 +46440,7 @@ document.addEventListener('input', _onSlashInput);
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) { _hideHandle(); return; } // 工程7-8: viewer/ロック中は出さない
     // 修正1: 直接ブロック上でない場合（ガター/余白）は、Y座標から対応する行を探す。
-    const block = _blockUnderNode(editable, e.target) || (lr && lr.rowAtPoint(editable, e.clientY));
+    const block = _blockUnderNode(editable, e.target) || (lr && lr.rowAtPoint(editable, _pointOf(e)));
     if (!block) return; // ブロック外（余白等）: 現状維持
     const handle = _ensureHandle();
     // ユーザー指示(2026-08-05): 行テキスト・空行へのホバーではハイライト枠を出さない
@@ -44974,7 +46448,7 @@ document.addEventListener('input', _onSlashInput);
     // マウスYに依存しないため、対象行が変わらなくてもスクロール等のズレを
     // 吸収するよう毎回再配置する。
     _setTouchMode(false);
-    const rect = (lr && lr.rowOwnRect(block)) || block.getBoundingClientRect();
+    const rect = (lr && lr.rowOwnRect(block, editable)) || block.getBoundingClientRect();
     _positionHandle(editable, rect);
     _hoverTargetBlock = block;
     _hoverEditable = editable;
@@ -44989,11 +46463,11 @@ document.addEventListener('input', _onSlashInput);
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) return;
     const t = e.touches && e.touches[0];
-    const block = _blockUnderNode(editable, e.target) || (t && lr ? lr.rowAtPoint(editable, t.clientY) : null);
+    const block = _blockUnderNode(editable, e.target) || (t && lr ? lr.rowAtPoint(editable, _pointOf(t)) : null);
     if (!block) return;
     const handle = _ensureHandle();
     _setTouchMode(true);
-    const rect = (lr && lr.rowOwnRect(block)) || block.getBoundingClientRect();
+    const rect = (lr && lr.rowOwnRect(block, editable)) || block.getBoundingClientRect();
     _positionHandle(editable, rect);
     // ハイライトはハンドル操作（pointerdown）時に表示する（マウスのホバーと同じ規則）。
     _hoverTargetBlock = block;
@@ -45010,9 +46484,9 @@ document.addEventListener('input', _onSlashInput);
     });
   }
 
-  function _updateDropIndicator(drag, clientY) {
+  function _updateDropIndicator(drag, point) {
     _clearDropIndicators(drag.editable);
-    const nearest = _nearestCandidate(drag.candidates, drag.blockEl, clientY);
+    const nearest = _nearestCandidate(drag.candidates, drag.blockEl, point, drag.editable);
     drag.dropTarget = nearest;
     // 工程7-7: 移動候補が1つも無い（他に動かせるブロックが無い）場合は
     // 「これ以上移動できない」ことを視覚的に示す。
@@ -45029,8 +46503,8 @@ document.addEventListener('input', _onSlashInput);
   function _onAncestorScrollDuringDrag() {
     if (LR()) LR().refreshRowHighlight(); // ハイライト表示中ならスクロール追従させる
     const drag = _activeDrag;
-    if (!drag || !drag.dragging || drag.lastClientY == null) return;
-    _updateDropIndicator(drag, drag.lastClientY);
+    if (!drag || !drag.dragging || !drag.lastPoint) return;
+    _updateDropIndicator(drag, drag.lastPoint);
   }
   document.addEventListener('scroll', _onAncestorScrollDuringDrag, true);
 
@@ -45090,7 +46564,8 @@ document.addEventListener('input', _onSlashInput);
 
     document.body.appendChild(menu);
     if (typeof global.positionPopup === 'function') {
-      global.positionPopup(menu, anchorRect, { gap: 4 });
+      const prefer = global.MeldexNoteWritingMode ? global.MeldexNoteWritingMode.popupPrefer(editable) : 'below';
+      global.positionPopup(menu, anchorRect, { gap: 4, prefer });
     } else {
       menu.style.position = 'fixed';
       menu.style.top = anchorRect.bottom + 'px';
@@ -45226,10 +46701,13 @@ document.addEventListener('input', _onSlashInput);
       if (typeof global.MeldexDragAutoScroll !== 'undefined') global.MeldexDragAutoScroll.beginPointerSession(e.clientX, e.clientY);
     }
     e.preventDefault();
-    drag.lastClientY = e.clientY; // 修正3: 自動スクロール中の再評価（_onAncestorScrollDuringDrag）用
+    // 修正3: 自動スクロール中の再評価（_onAncestorScrollDuringDrag）用。
+    // 縦書きでは横位置で判定するため、片方の座標だけでなく点として保持する。
+    drag.lastPoint = _pointOf(e);
+    drag.lastClientY = e.clientY; // 後方互換（外部から参照している箇所がある場合のため）
     // 工程7-6: 端での自動スクロール（gb-dnd-autoscroll.js の共通基盤へ委譲）
     if (typeof global.MeldexDragAutoScroll !== 'undefined') global.MeldexDragAutoScroll.updatePointer(e.clientX, e.clientY);
-    _updateDropIndicator(drag, e.clientY);
+    _updateDropIndicator(drag, drag.lastPoint);
   }
 
   function _onHandlePointerUp(e) {
@@ -45299,7 +46777,9 @@ document.addEventListener('input', _onSlashInput);
     if (_handle && _handle.isConnected) return _handle;
     const handle = document.createElement('div');
     handle.id = HANDLE_ID;
-    handle.innerHTML = '⠿';
+    // グリップ記号は2列×3行の点。縦書き（行が横に並ぶ）では90度回す必要があるが、
+    // ホスト側の transform は境界シェイクのアニメーションが使うため内側の span を回す。
+    handle.innerHTML = '<span class="block-drag-handle-glyph">⠿</span>';
     handle.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:20px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--fg2);font-size:16px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;touch-action:none;';
     handle.setAttribute('contenteditable', 'false');
     handle.setAttribute('role', 'button');
@@ -47395,7 +48875,9 @@ let _annViewLockCleanupDone = false;
 
 function _removeDetachedViewLockIcons() {
   document.querySelectorAll('.vl-lock-icon').forEach(el => {
-    if (el.id !== 'ann-view-lock-btn') el.remove();
+    // 注釈ツールバー内のスクリーンショット・表示切替・全削除は、表示ロックと
+    // 同じ外観を共有する正規ボタン。ツールバー外に残った旧ロックだけを除去する。
+    if (el.id !== 'ann-view-lock-btn' && !el.closest('#ann-toolbar')) el.remove();
   });
 }
 
@@ -47647,7 +49129,8 @@ function toggleOverlayVisibility() {
   if (btn) {
     btn.classList.toggle('active', _overlayVisible);
     btn.innerHTML = lucide(_overlayVisible ? 'eye' : 'eyeOff', 18);
-    btn.title = _overlayVisible ? 'オーバーレイ表示中' : 'オーバーレイ非表示';
+    btn.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
+    btn.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
   }
   _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-visibility', visible: _overlayVisible });
 }
@@ -47907,14 +49390,14 @@ function _toContentCoords(clientX, clientY) {
    アノテーションエンジン
    ============================== */
 const _ANN_WIDTH_LIMITS = {
-  pen: { min: 1, max: 16, fallback: 3 },
-  marker: { min: 4, max: 40, fallback: 12 },
-  eraser: { min: 4, max: 48, fallback: 14 },
+  pen: { min: 1, max: 48, fallback: 3 },
+  marker: { min: 1, max: 48, fallback: 3 },
+  eraser: { min: 1, max: 48, fallback: 3 },
 };
 
 const ann = {
   active: false,
-  tool: 'pen', // pen, marker, lasso, rect, eraser, sticky, balloon
+  tool: 'pen', // pen, marker, polyline, ellipse-line, rect-line, lasso, ellipse-fill, rect, eraser, sticky
   color: '#ffeb3b',
   opacity: 1.0,
   widths: _loadAnnotationToolWidths(),
@@ -48101,13 +49584,14 @@ async function _putAnnotationWithHistory(annId, body, label, detail) {
 }
 
 function _loadAnnotationToolWidths() {
-  const defaults = { pen: 3, marker: 12, eraser: 14 };
+  const defaults = { pen: 3, marker: 3, eraser: 3 };
   try {
     const saved = JSON.parse(localStorage.getItem('meldex-ann-tool-widths') || '{}');
+    const shared = _clampAnnotationToolWidth('pen', saved.pen ?? saved.marker ?? saved.eraser ?? defaults.pen);
     return {
-      pen: _clampAnnotationToolWidth('pen', saved.pen ?? defaults.pen),
-      marker: _clampAnnotationToolWidth('marker', saved.marker ?? defaults.marker),
-      eraser: _clampAnnotationToolWidth('eraser', saved.eraser ?? defaults.eraser),
+      pen: shared,
+      marker: shared,
+      eraser: shared,
     };
   } catch {
     return defaults;
@@ -48136,24 +49620,31 @@ function _annotationDrawWidth(tool, pressures, baseWidth) {
 }
 
 function _bindAnnotationWidthControls() {
-  document.querySelectorAll('[data-ann-width-tool]').forEach(input => {
-    const tool = input.dataset.annWidthTool;
-    if (!tool || !ann.widths || !(tool in ann.widths)) return;
-    const current = _clampAnnotationToolWidth(tool, ann.widths[tool]);
-    input.value = String(current);
-    globalThis.GBUI?.refreshRangeFill?.(input);
-    const label = document.getElementById('ann-width-' + tool + '-label');
-    if (label) label.textContent = String(current);
-    input.addEventListener('input', () => {
-      const next = _clampAnnotationToolWidth(tool, input.value);
-      ann.widths[tool] = next;
-      input.value = String(next);
-      globalThis.GBUI?.refreshRangeFill?.(input);
-      const nextLabel = document.getElementById('ann-width-' + tool + '-label');
-      if (nextLabel) nextLabel.textContent = String(next);
-      _saveAnnotationToolWidths();
-      _syncAnnStateToIframe();
-    });
+  const inputs = [...document.querySelectorAll('[data-ann-width-tool]')];
+  const sharedInput = document.getElementById('ann-width-pen');
+  if (!sharedInput) return;
+  inputs.forEach(input => {
+    if (input !== sharedInput) input.closest('.ann-width-control')?.setAttribute('hidden', '');
+  });
+  const host = sharedInput.closest('.ann-width-control');
+  host?.setAttribute('title', '太さ');
+  sharedInput.setAttribute('aria-label', '太さ');
+  sharedInput.min = '1'; sharedInput.max = '48'; sharedInput.step = '1';
+  const current = _clampAnnotationToolWidth('pen', ann.widths.pen);
+  sharedInput.value = String(current);
+  const label = document.getElementById('ann-width-pen-label');
+  if (label) label.textContent = String(current);
+  globalThis.GBUI?.refreshRangeFill?.(sharedInput);
+  sharedInput.addEventListener('input', () => {
+    const next = _clampAnnotationToolWidth('pen', sharedInput.value);
+    ann.widths.pen = next; ann.widths.marker = next; ann.widths.eraser = next;
+    inputs.forEach(input => { input.value = String(next); });
+    sharedInput.value = String(next);
+    if (label) label.textContent = String(next);
+    globalThis.GBUI?.refreshRangeFill?.(sharedInput);
+    _saveAnnotationToolWidths();
+    _syncAnnStateToIframe();
+    _updateAnnotationBrushCursor();
   });
 }
 
@@ -48206,13 +49697,118 @@ function toggleAnnotation() {
 }
 
 // ツール選択（アノテーションツールバー内）
+const _ANN_TOOL_GROUPS = {
+  stroke: [
+    { tool: 'pen', label: 'ペン', icon: 'pencil' },
+    { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
+  ],
+  line: [
+    { tool: 'polyline', label: '折れ線', icon: 'spline' },
+    { tool: 'ellipse-line', label: '円形', icon: 'circle' },
+    { tool: 'rect-line', label: '矩形', icon: 'square' },
+  ],
+  fill: [
+    { tool: 'lasso', label: '囲い塗り', icon: 'lasso' },
+    { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' },
+    { tool: 'rect', label: '矩形塗り', icon: 'square' },
+  ],
+};
+
+function _annotationSelectTool(tool, sourceButton) {
+  ann.tool = tool;
+  document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
+    const group = button.dataset.annToolGroup;
+    const members = group ? (_ANN_TOOL_GROUPS[group] || []).map(item => item.tool) : [button.dataset.tool];
+    button.classList.toggle('active', members.includes(tool));
+    if (members.includes(tool)) button.dataset.tool = tool;
+  });
+  document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+  _updateAnnotationBrushCursor();
+  _syncAnnStateToIframe();
+  sourceButton?.focus?.();
+}
+
+function _openAnnotationToolPopup(button, group) {
+  document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+  const items = _ANN_TOOL_GROUPS[group] || [];
+  const menu = document.createElement('div');
+  menu.className = 'ann-tool-popup';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', button.getAttribute('aria-label') || '注釈ツール');
+  items.forEach(item => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'ann-tool-popup-item';
+    option.dataset.annSelectTool = item.tool;
+    option.setAttribute('role', 'menuitemradio');
+    option.setAttribute('aria-checked', String(ann.tool === item.tool));
+    option.innerHTML = `${typeof lucide === 'function' ? lucide(item.icon, 14) : ''}<span>${item.label}</span>`;
+    option.addEventListener('click', () => _annotationSelectTool(item.tool, button));
+    menu.appendChild(option);
+  });
+  document.body.appendChild(menu);
+  const rect = button.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(innerWidth - menu.offsetWidth - 4, rect.left)) + 'px';
+  menu.style.top = Math.max(4, rect.top - menu.offsetHeight - 4) + 'px';
+  const close = event => {
+    if (!menu.contains(event.target) && event.target !== button) {
+      menu.remove();
+      document.removeEventListener('pointerdown', close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
+  menu.querySelector('button')?.focus();
+}
+
+function _initAnnotationToolGroups() {
+  const toolbar = document.getElementById('ann-toolbar');
+  const pen = toolbar?.querySelector('[data-tool="pen"]');
+  const marker = toolbar?.querySelector('[data-tool="marker"]');
+  const fill = toolbar?.querySelector('[data-tool="lasso"]');
+  const rectFill = toolbar?.querySelector('[data-tool="rect"]');
+  if (!toolbar || !pen || !fill) return;
+  pen.dataset.annToolGroup = 'stroke';
+  pen.title = 'ストローク'; pen.setAttribute('aria-label', 'ストローク');
+  marker?.remove();
+  const line = document.createElement('button');
+  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = 'polyline'; line.dataset.annToolGroup = 'line';
+  line.title = 'ライン'; line.setAttribute('aria-label', 'ライン');
+  line.innerHTML = typeof lucide === 'function' ? lucide('spline', 14) : '⌁';
+  fill.before(line);
+  fill.dataset.annToolGroup = 'fill'; fill.title = '塗りつぶし'; fill.setAttribute('aria-label', '塗りつぶし');
+  rectFill?.remove();
+}
+
+function _styleAnnotationUtilityButtons() {
+  const toolbar = document.getElementById('ann-toolbar');
+  const screenshotButton = toolbar?.querySelector('button[title="スクリーンショット撮影"], button[aria-label="スクリーンショット撮影"]');
+  const overlayButton = document.getElementById('btn-overlay-toggle');
+  const clearButton = toolbar?.querySelector('button[title="全削除"], button[aria-label="全削除"]');
+  [screenshotButton, overlayButton, clearButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+}
+
+function _updateAnnotationBrushCursor() {
+  const overlay = document.getElementById('ann-overlay');
+  if (!overlay) return;
+  if (ann.tool === 'sticky') { overlay.style.cursor = 'cell'; return; }
+  const lineTools = new Set(['polyline', 'ellipse-line', 'rect-line']);
+  if (!['pen', 'marker', 'eraser'].includes(ann.tool) && !lineTools.has(ann.tool)) { overlay.style.cursor = 'crosshair'; return; }
+  const widthKey = lineTools.has(ann.tool) ? 'pen' : ann.tool;
+  const width = Math.max(4, Math.min(48, Number(ann.widths?.[widthKey]) || 3));
+  const size = Math.ceil(width + 6);
+  const shape = ann.tool === 'marker'
+    ? `<rect x="3" y="3" width="${width}" height="${width}" fill="rgba(255,255,255,.18)" stroke="white"/><rect x="2" y="2" width="${width + 2}" height="${width + 2}" fill="none" stroke="black"/>`
+    : `<circle cx="${size / 2}" cy="${size / 2}" r="${width / 2}" fill="rgba(255,255,255,.12)" stroke="white"/><circle cx="${size / 2}" cy="${size / 2}" r="${width / 2 + 1}" fill="none" stroke="black"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${shape}</svg>`;
+  overlay.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${Math.floor(size / 2)} ${Math.floor(size / 2)}, crosshair`;
+}
+_initAnnotationToolGroups();
+_styleAnnotationUtilityButtons();
 document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(btn => {
   btn.addEventListener('click', () => {
-    ann.tool = btn.dataset.tool;
-    document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(b => b.classList.toggle('active', b === btn));
-    const overlay = document.getElementById('ann-overlay');
-    overlay.style.cursor = ann.tool === 'eraser' ? 'not-allowed' : ann.tool === 'sticky' ? 'cell' : 'crosshair';
-    _syncAnnStateToIframe();
+    const group = btn.dataset.annToolGroup;
+    if (group) _openAnnotationToolPopup(btn, group);
+    else _annotationSelectTool(btn.dataset.tool, btn);
   });
 });
 
@@ -48242,6 +49838,17 @@ function _bindAnnotationColorControl() {
 }
 _bindAnnotationColorControl();
 _bindAnnotationWidthControls();
+// 注釈ツールバーから右サイドバーを開く導線は重複するため撤去する。HTML生成物を
+// 直接編集せず、正本スクリプトの初期化時に既存ボタンだけを除去する。
+document.querySelector('#ann-toolbar [data-action="openRightPanelTab(\'annotation\')"]')?.remove();
+{
+  const overlayButton = document.getElementById('btn-overlay-toggle');
+  _styleAnnotationUtilityButtons();
+  if (overlayButton) {
+    overlayButton.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
+    overlayButton.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
+  }
+}
 document.getElementById('ann-opacity').oninput = function() {
   ann.opacity = _normalizeAnnotationOpacity(parseFloat(this.value), 1);
   document.getElementById('ann-opacity-label').textContent = Math.round(ann.opacity * 100) + '%';
@@ -48257,9 +49864,13 @@ const _annSvgNS = 'http://www.w3.org/2000/svg';
 function _pointsToSvgPath(points, pressures, isPen) {
   if (points.length < 2) return '';
   let d = `M ${points[0][0]} ${points[0][1]}`;
-  for (let i = 1; i < points.length; i++) {
-    d += ` L ${points[i][0]} ${points[i][1]}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const midX = (points[i][0] + points[i + 1][0]) / 2;
+    const midY = (points[i][1] + points[i + 1][1]) / 2;
+    d += ` Q ${points[i][0]} ${points[i][1]} ${midX} ${midY}`;
   }
+  const last = points[points.length - 1];
+  d += ` L ${last[0]} ${last[1]}`;
   return d;
 }
 
@@ -48269,7 +49880,7 @@ function _createStrokeEl(pathD, color, opacity, pressures, isPen, width) {
   path.setAttribute('fill', 'none');
   path.setAttribute('stroke', color);
   path.setAttribute('stroke-opacity', opacity);
-  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linecap', isPen ? 'round' : 'butt');
   path.setAttribute('stroke-linejoin', 'round');
   path.setAttribute('stroke-width', _annotationDrawWidth(isPen ? 'pen' : 'marker', pressures, width));
   if (!isPen) path.setAttribute('stroke-opacity', Math.min(opacity, 0.5)); // マーカーは半透明
@@ -48362,15 +49973,31 @@ function _appendAnnotationStrokePointFromEvent(e) {
   return true;
 }
 
+function _appendAnnotationCoalescedStrokePoints(e) {
+  const samples = typeof e?.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+  const ordered = samples?.length ? samples : [e];
+  let appended = false;
+  for (const sample of ordered) appended = _appendAnnotationStrokePointFromEvent(sample) || appended;
+  // 一部ブラウザはcoalesced配列へ現在イベントを含めないため、末尾を必ず補完する。
+  appended = _appendAnnotationStrokePointFromEvent(e) || appended;
+  return appended;
+}
+
 function _renderAnnotationPreview() {
   if (!ann.drawing || !ann.strokeReady || ann.currentPath.length < 2) return;
-  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ann.tool === 'rect' ? 'rect' : 'path');
+  const ellipseTool = ann.tool === 'ellipse-line' || ann.tool === 'ellipse-fill';
+  const rectTool = ann.tool === 'rect' || ann.tool === 'rect-line';
+  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
   let preview = annOverlay.querySelector('.ann-preview');
   if (!preview || preview.tagName.toLowerCase() !== previewTag) {
     preview?.remove(); preview = document.createElementNS(_annSvgNS, previewTag); preview.classList.add('ann-preview');
     (document.getElementById('ann-layer') || annOverlay).appendChild(preview);
   }
-  if (ann.tool === 'rect') _updateRectFillEl(preview, _annotationRectDataFromPoints(ann.currentPath), ann.color, ann.opacity, true);
+  if (ellipseTool || rectTool) {
+    const data = ellipseTool ? _annotationEllipseDataFromPoints(ann.currentPath) : _annotationRectDataFromPoints(ann.currentPath);
+    data.lineWidth = ann.widths?.pen;
+    _updateAnnotationShapeEl(preview, ann.tool, data, ann.color, ann.opacity, true);
+  }
   else if (ann.tool === 'lasso') {
     preview.setAttribute('points', ann.currentPath.map(p => p.join(',')).join(' '));
     preview.setAttribute('fill', ann.color);
@@ -48385,7 +50012,8 @@ function _renderAnnotationPreview() {
     preview.setAttribute('stroke', ann.color);
     preview.setAttribute('stroke-width', _annotationDrawWidth(ann.tool, ann.currentPressures, ann.widths?.[ann.tool]));
     preview.setAttribute('stroke-opacity', ann.tool === 'marker' ? 0.5 : ann.opacity);
-    preview.setAttribute('stroke-linecap', 'round');
+    preview.setAttribute('stroke-linecap', ann.tool === 'marker' ? 'butt' : 'round');
+    preview.setAttribute('stroke-linejoin', ann.tool === 'polyline' ? 'miter' : 'round');
   }
 }
 
@@ -48401,10 +50029,14 @@ async function _finishAnnotationStroke() {
   _resetAnnotationStrokeState();
   if (pathPoints.length < 2 || !targetPath) return;
 
-  const type = tool === 'rect' ? 'rect' : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : 'stroke'));
-  const strokeData = type === 'rect' ? _annotationRectDataFromPoints(pathPoints) : { points: pathPoints, pressures };
-  if (type !== 'lasso' && type !== 'rect') strokeData.width = width;
-  const el = type === 'rect' ? _createRectFillEl(strokeData, color, opacity)
+  const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+  const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
+  const strokeData = type.startsWith('ellipse') ? _annotationEllipseDataFromPoints(pathPoints)
+    : shapeTypes.has(type) ? _annotationRectDataFromPoints(pathPoints)
+      : { points: pathPoints, pressures };
+  if (shapeTypes.has(type)) strokeData.lineWidth = width;
+  else if (type !== 'lasso') strokeData.width = width;
+  const el = shapeTypes.has(type) ? _createAnnotationShapeEl(type, strokeData, color, opacity)
     : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity)
       : _createStrokeEl(_pointsToSvgPath(pathPoints, pressures, tool === 'pen'), color, opacity, pressures, tool === 'pen', strokeData.width);
   el.dataset.annPending = '1';
@@ -48544,6 +50176,39 @@ function _createRectFillEl(data, color, opacity, preview) {
   return _updateRectFillEl(document.createElementNS(_annSvgNS, 'rect'), data, color, opacity, preview);
 }
 
+function _annotationEllipseDataFromPoints(points) {
+  const rect = _annotationRectDataFromPoints(points);
+  return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+}
+
+function _updateAnnotationShapeEl(el, type, data, color, opacity, preview) {
+  const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
+  const outlined = type === 'rect-line' || type === 'ellipse-line';
+  if (type.startsWith('ellipse')) {
+    el.setAttribute('cx', Number(data?.cx) || 0);
+    el.setAttribute('cy', Number(data?.cy) || 0);
+    el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0));
+    el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+  } else {
+    el.setAttribute('x', Number(data?.x) || 0);
+    el.setAttribute('y', Number(data?.y) || 0);
+    el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
+    el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+  }
+  el.setAttribute('fill', outlined ? 'none' : color);
+  el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  el.setAttribute('stroke', color);
+  el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || ann.widths?.pen || 3)));
+  el.setAttribute('stroke-opacity', String(normalizedOpacity));
+  if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+  return el;
+}
+
+function _createAnnotationShapeEl(type, data, color, opacity, preview) {
+  const tag = type.startsWith('ellipse') ? 'ellipse' : 'rect';
+  return _updateAnnotationShapeEl(document.createElementNS(_annSvgNS, tag), type, data, color, opacity, preview);
+}
+
 annOverlay?.addEventListener('wheel', _routeAnnotationWheelToScrollContainer, { passive: false });
 
 annOverlay.addEventListener('pointerdown', async (e) => {
@@ -48592,7 +50257,7 @@ annOverlay.addEventListener('pointermove', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   _renderAnnotationPreview();
 });
 
@@ -48600,7 +50265,7 @@ annOverlay.addEventListener('pointerup', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   ann.strokeEndRequested = true;
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   if (ann.strokeReady) _finishAnnotationStroke();
@@ -49549,9 +51214,13 @@ async function loadAnnotations() {
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }
-      } else if (item.type === 'rect') {
+      } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
         if (data && data.width != null && data.height != null) {
-          const el = _createRectFillEl(data, item.color, item.opacity);
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
+          el.dataset.annId = item.id;
+          layer.appendChild(el);
+        } else if (data && data.rx != null && data.ry != null) {
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }
@@ -49711,6 +51380,7 @@ function jumpToAnnotation(targetPath) {
     'sn2-ruby',
     'sn2-rowset',
     'backlinks',
+    'shortcuts',
   ];
   let _draggedTabId = '';
 
@@ -49892,6 +51562,7 @@ function _normalizeDetailTab(tab) {
     'sn2-ruby',
     'sn2-rowset',
     'file-style',
+    'shortcuts',
   ]);
   return validTabs.has(tab) ? tab : null;
 }
@@ -49900,6 +51571,8 @@ function _normalizeDetailTab(tab) {
 // 対象タイプの主要タブ) を保持する。互換性が無い場合のみ defaultTab にフォールバック。
 function _resolveDetailTabForType(type, defaultTab) {
   const cur = (typeof _currentDetailTab !== 'undefined') ? _currentDetailTab : null;
+  // ショートカットキーはどのアプリでも同じ内容なので、対象が変わっても開いたままにする
+  if (cur === 'shortcuts') return cur;
   if (cur === 'file-style') return cur;
   const backlinksTypes = new Set(['page', 'database', 'board']);
   if (cur === 'backlinks' && backlinksTypes.has(type)) return cur;
@@ -49941,7 +51614,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -49951,6 +51624,12 @@ function switchDetailTab(tab) {
     // 旧経路の style.display 残留をクリア
     el.style.display = '';
   });
+  // 単独アプリが後から足すタブ（ファイル情報・公開・バックリンク等）の中身も畳む。
+  // これらは standalone-parity-adapter.js が独自に開閉しており、本体のタブへ
+  // 切り替えた時に両方見えたままになるため。
+  if (tab) {
+    document.querySelectorAll('[id^="detail-tab-standalone-"]').forEach(el => { el.hidden = true; });
+  }
   // 空状態プレースホルダー: どのタブもアクティブでない場合のみ表示
   const emptyEl = document.getElementById('detail-tab-empty');
   if (emptyEl) emptyEl.hidden = !!tab;
@@ -49968,6 +51647,7 @@ function switchDetailTab(tab) {
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
   }
+  if (tab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   try {
     document.dispatchEvent(new CustomEvent('meldex:detail-tab-switched', { detail: { tab } }));
   } catch {}
@@ -50011,6 +51691,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
       ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
       ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
+      ${_detailTabButtonHtml('shortcuts', 'detail-tab-shortcuts', 'ショートカットキー')}
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
@@ -50030,19 +51711,45 @@ function _detailTabShellHtml() {
     <div id="detail-tab-file-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-backlinks" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-publish" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-shortcuts" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-empty" class="gb-empty-placeholder">選択中の項目がありません</div>`;
 }
+
+// ショートカットキータブの中身は gb-detail-shortcuts-tab.js（showShortcutsDetailTab /
+// renderShortcutsDetailTab を公開）が担当する。読み込まれていない環境でも
+// タブ表示だけで落ちないよう、呼び出し側は typeof で確認する。
 
 function _ensureDetailTabShell(el) {
   if (!el || el.id !== 'rp-detail') return;
   const existingBar = el.querySelector('#detail-tab-bar');
   if (existingBar) {
     if (window.GBDetailTabDnd?.bind) window.GBDetailTabDnd.bind(existingBar);
+    _bindDetailTabBarClicks(existingBar);
+    if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
     return;
   }
   el.innerHTML = _detailTabShellHtml();
   const bar = el.querySelector('#detail-tab-bar');
   if (window.GBDetailTabDnd?.bind) window.GBDetailTabDnd.bind(bar);
+  _bindDetailTabBarClicks(bar);
+  if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
+}
+
+// タブの data-action は gb-events.js の共通ディスパッチャに依存するが、
+// 単独アプリの一部（シナリオ・タイマー）はそれを読み込んでいない。
+// 新設のショートカットキータブはどのアプリでも動く必要があるため、
+// ボタン自身にも直接クリックを結びつける（既存タブの結線には手を入れない）。
+function _bindDetailTabBarClicks(bar) {
+  if (!bar) return;
+  bar.querySelectorAll('[data-detail-tab="shortcuts"]').forEach(button => {
+    if (button.dataset.shortcutTabBound === '1') return;
+    button.dataset.shortcutTabBound = '1';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      switchDetailTab('shortcuts');
+    });
+  });
 }
 
 function _openDetailRightPanel() {
@@ -50357,7 +52064,7 @@ const _FS_FIELDS = {
   },
   page: {
     display: [
-      { key: '--page-margin-x', label: '左右余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
+      { key: '--page-margin-x', label: '余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
       { key: '--page-content-max-width', label: '内容最大幅', type: 'rangeNumber', unit: 'px', min: 480, max: 3200, step: 10, fallback: '1200px' },
       // タイトル
       { key: '--page-title-fg',     label: 'タイトル 色',     type: 'color' },
@@ -51496,7 +53203,7 @@ function _fsResolveSections(ctx, spec) {
       {
         title: 'レイアウト',
         rows: [
-          { label: '左右余白', fields: pick(['--page-margin-x']), preview: false },
+          { label: '余白', fields: pick(['--page-margin-x']), preview: false },
           { label: '内容最大幅', fields: pick(['--page-content-max-width']), preview: false },
         ],
       },
@@ -52391,6 +54098,9 @@ async function _syncDetailPanel(label, path, type, opts) {
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
+  // ショートカットキータブは常に出し、開いている間は対象アプリに合わせて絞り込みを更新する
+  if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
+  if (_currentDetailTab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
   // ファイルテーマタブは編集可能な主要タイプで共通表示
   const styleTypes = new Set(['folder', 'page', 'database', 'board', 'scriptnote']);
@@ -52420,9 +54130,11 @@ async function _syncDetailPanel(label, path, type, opts) {
       <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
       <div>パス: ${esc(path)}</div>
       <div data-global-tags-target-path="${esc(path)}"></div>
+      <div data-duplicate-folder-setting data-path="${esc(path)}"></div>
     </div>`);
     if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
+    window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
     await _showDatabaseInfoInDetailPanel(label, path);
   }
@@ -52871,6 +54583,11 @@ async function _dpSave(el) {
 
 // 未保存内容があれば保存してからパネルを切り替え
 async function _dpSavePending() {
+  // 埋め込み情報のメモは自動保存（入力が止まってから書き出す）なので、
+  // パネルを切り替える前に未確定分を確定させる。
+  if (typeof window.MeldexEmbeddedMetadata?.flushPendingMemos === 'function') {
+    await window.MeldexEmbeddedMetadata.flushPendingMemos();
+  }
   const el = document.getElementById('dp-editable');
   if (!el || !_splitDirty) return true;
   return _dpSave(el);
@@ -53144,6 +54861,81 @@ function hideBoardNoteTab() {
   }
   finalizeHide();
 }
+
+;
+
+/* === gb-detail-shortcuts-tab.js === */
+;
+/* gb-detail-shortcuts-tab.js
+ * オプションパネルの「ショートカットキー」タブ。
+ *
+ * 一覧・検索・変更・リセットの中身は gb-shortcut-registry.js（設定ダイアログと共通）が持つ。
+ * ここは「どのアプリの分を最初に見せるか」を決めて描画を頼むだけ。
+ *
+ * 初期表示は、いまメインパネルで開いているアプリのショートカットキーだけに絞る。
+ * 単独アプリはメインパネルのアプリが固定なので、起動時に
+ * window.__meldexAppShortcutScope でスコープを宣言する。
+ */
+(function (global) {
+  'use strict';
+
+  // GBLayout / GBPaneDefaultLayout / state はスクリプト直下の const 宣言なので
+  // window のプロパティにはならない。bare 参照を typeof で確認して読む。
+  function _layoutApi() {
+    return typeof GBLayout !== 'undefined' ? GBLayout : null;
+  }
+
+  function _mainPaneActiveTabType() {
+    try {
+      const layout = _layoutApi();
+      if (!layout) return '';
+      const defaultLayout = typeof GBPaneDefaultLayout !== 'undefined' ? GBPaneDefaultLayout : null;
+      const paneId = defaultLayout?.resolveMainPaneId?.() || layout.activePane || '';
+      const pane = paneId ? layout.findNode?.(layout.root, paneId)?.node : null;
+      const tab = pane?.tabs?.[pane.activeTabIndex];
+      return tab?.type || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function _currentViewName() {
+    try {
+      return (typeof state === 'object' && state) ? String(state.view || '') : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function currentShortcutScope() {
+    const registry = global.MeldexShortcutRegistry;
+    if (!registry) return '';
+    if (global.__meldexAppShortcutScope) return String(global.__meldexAppShortcutScope);
+    const fromPane = registry.scopeForType(_mainPaneActiveTabType());
+    if (fromPane) return fromPane;
+    // メインパネルから決められない場合は、画面全体の表示種別で補う
+    return registry.scopeForType(_currentViewName()) || '';
+  }
+
+  // このタブはどのアプリでも常に出す（他のタブと違い選択中の対象に依存しない）
+  function showShortcutsDetailTab() {
+    document.querySelectorAll('.detail-tab-shortcuts').forEach(tab => { tab.hidden = false; });
+  }
+
+  function renderShortcutsDetailTab() {
+    const container = document.getElementById('detail-tab-shortcuts');
+    if (!container) return;
+    if (!global.MeldexShortcutRegistry) {
+      container.innerHTML = '<div class="gb-empty-placeholder">ショートカットキーを読み込めませんでした</div>';
+      return;
+    }
+    global.MeldexShortcutRegistry.renderSettings(container, { scope: currentShortcutScope() });
+  }
+
+  global.showShortcutsDetailTab = showShortcutsDetailTab;
+  global.renderShortcutsDetailTab = renderShortcutsDetailTab;
+  global.currentShortcutScope = currentShortcutScope;
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -58445,7 +60237,7 @@ function hideBoardNoteTab() {
           await deps.syncTaskEvent(provider, internals, path, fm);
           applied += 1;
         } else if (row.status === 'unassigned') {
-          const fm = await writeTaskUnassigned(provider, path, row.reason || '割当再計算で割り当て先が見つかりません');
+          const fm = await writeTaskUnassigned(provider, path, row.reason || '自動割り当てで割り当て先が見つかりません');
           await deps.syncTaskEvent(provider, internals, path, fm);
           unassigned += 1;
         }
@@ -59012,7 +60804,7 @@ function hideBoardNoteTab() {
   });
 
   const PRIORITY_OPTIONS = ['低', '通常', '高', '最優先'];
-  const GRANULARITY_OPTIONS = ['階層単位', 'ページ単位', 'コマ単位'];
+  const GRANULARITY_OPTIONS = ['階層単位', '見開き単位', 'ページ単位', 'コマ単位'];
   const PRESET_OPTIONS = ['汎用', 'マンガ'];
   const SCHEDULE_TYPE_OPTIONS = ['シフト', '休み', '作業予定'];
   const TASK_GENERATION_OPTIONS = ['未作成', '作成中', '作成済み', '失敗'];
@@ -59218,6 +61010,7 @@ function hideBoardNoteTab() {
   const LEFT = '左ページ';
   const RIGHT = '右ページ';
   const FALLBACK_COUNT = 99;
+  const SPREAD_GRANULARITY = '見開き単位';
 
   function positiveCount(value, fallback = FALLBACK_COUNT) {
     if (value === undefined || value === null || value === '') return fallback;
@@ -59292,6 +61085,11 @@ function hideBoardNoteTab() {
     return result;
   }
 
+  function positiveSavedCount(value, fallback = 1) {
+    const number = Number(String(value == null ? '' : value).trim());
+    return Number.isInteger(number) && number >= 1 ? number : fallback;
+  }
+
   function plainProperty(frontmatter, name) {
     const values = frontmatter?.properties?.[name];
     const listValues = Array.isArray(values) ? values : values == null ? [] : [values];
@@ -59320,6 +61118,18 @@ function hideBoardNoteTab() {
     const normalized = normalizeSpreads(spreads, count, startSide);
     const explicitGranularity = source.granularity || source['作業作成粒度'] || '';
     const granularity = explicitGranularity || saved['作業作成粒度'] || 'ページ単位';
+    // 保存済みの見開きページは、どの粒度でも先に検証する。見開き単位は合成した見開きを
+    // pageUnits() へ渡すため、そのままだと保存値の検証を素通りし、範囲外になった見開きが
+    // 黙って捨てられたうえで作品へ書き戻され、ユーザーの設定を無警告で削除してしまう。
+    // Python 側 prepare_task_body と同じ扱い。
+    if (normalized.invalid.length) {
+      throw new Error(`見開きページに現在のページ数・開始ページ位置では使えない値があります: ${normalized.invalid.join('、')}`);
+    }
+    // 見開き単位は「全ページを2ページずつ組にする」指定。作品に保存済みの見開き設定では
+    // なく、そのページ数・開始ページ位置で成立する見開きすべてを使って単位を作る。
+    // ただし作品側の 見開きページ 設定は書き換えない（_spread_pages には検証済みの保存値を
+    // そのまま残す）。今回の作成にだけ効く。
+    const unitSpreads = granularity === SPREAD_GRANULARITY ? spreadOptions(count, startSide) : normalized.valid;
     const defaultHierarchyCount = granularity === 'コマ単位' ? 2 : 1;
     const hierarchyCount = source.hierarchy_count || source['階層数']
       || (explicitGranularity ? defaultHierarchyCount : saved['階層数'] || defaultHierarchyCount);
@@ -59333,9 +61143,12 @@ function hideBoardNoteTab() {
       granularity,
       hierarchy_count: hierarchyCount,
       hierarchy_labels: hierarchyLabels,
-      panel_count: source.panel_count || source['コマ数'] || saved['生成コマ数'] || 1,
+      // 作品の 生成コマ数 は、ページ単位・見開き単位で作ると "0" が保存される（階層が1段
+      // なので第2階層が0件）。あとで粒度をコマ単位へ戻したとき "0" が不正値として400に
+      // なるため、正の整数でなければ未設定として扱う（Python 側 _positive_saved_count と同じ）。
+      panel_count: source.panel_count || source['コマ数'] || positiveSavedCount(saved['生成コマ数']),
       page_count: count,
-      pages: pageUnits(count, spreads, startSide),
+      pages: pageUnits(count, unitSpreads, startSide),
       _physical_page_count: count,
       _page_start_side: startSide,
       _spread_pages: normalized.valid,
@@ -59344,7 +61157,7 @@ function hideBoardNoteTab() {
   }
 
   window.MeldexProductionPageStructure = {
-    LEFT, RIGHT, FALLBACK_COUNT, page, pageOptions, spreadOptions,
+    LEFT, RIGHT, FALLBACK_COUNT, SPREAD_GRANULARITY, page, pageOptions, spreadOptions,
     parseSpread, normalizeSpreads, pageUnits, plainProperty, prepare,
   };
 })();
@@ -61040,7 +62853,6 @@ function hideBoardNoteTab() {
 })(window);
 (function () {
   'use strict';
-
   const PM_ROOT = '制作管理';
   // 「スタッフリスト」シート（制作管理ルートごとのスタッフ一覧）は
   // アカウント一元管理 計画書 Phase 4 で廃止し、全体で1枚の正本
@@ -61071,11 +62883,9 @@ function hideBoardNoteTab() {
   const PM_NAME_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
-
   function _pmCloudMigrationAlreadyDone(rootSet, providerFallback, migrationRootKey, provider) {
     return migrationRootKey ? rootSet.has(migrationRootKey) : providerFallback.has(provider);
   }
-
   function _pmCloudMarkMigrationDone(rootSet, providerFallback, migrationRootKey, provider) {
     if (migrationRootKey) rootSet.add(migrationRootKey);
     else providerFallback.add(provider);
@@ -61461,7 +63271,7 @@ function hideBoardNoteTab() {
     if (from) params.set('date_from', from);
     if (to) params.set('date_to', to);
     const apiUrl = `/api/production-management/export?${params}`;
-    if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexExportSave?.saveUrl) {
+    if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexExportSave?.saveUrl) {
       await MeldexExportSave.saveUrl(apiUrl, { filename: `production_${kind}.${format}`, mime: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv;charset=utf-8' });
       return;
     }
@@ -62170,7 +63980,7 @@ function hideBoardNoteTab() {
       const lockSpan = document.createElement('span');
       lockSpan.className = 'pm-schedule-cell-protection-icon';
       lockSpan.textContent = '🔒';
-      lockSpan.title = '再計算ロック: 割当再計算で動きません';
+      lockSpan.title = '再計算ロック: 自動割り当てで動きません';
       lockSpan.setAttribute('aria-label', '再計算ロック中');
       container.appendChild(lockSpan);
     }
@@ -62181,7 +63991,7 @@ function hideBoardNoteTab() {
       const pinSpan = document.createElement('span');
       pinSpan.className = 'pm-schedule-cell-protection-icon';
       pinSpan.textContent = '📌';
-      pinSpan.title = `${pinLabel}: 割当再計算で動きません`;
+      pinSpan.title = `${pinLabel}: 自動割り当てで動きません`;
       pinSpan.setAttribute('aria-label', `${pinLabel}中`);
       container.appendChild(pinSpan);
     }
@@ -64706,9 +66516,10 @@ function hideBoardNoteTab() {
   function openProductionRecalculate(options = {}) {
     // 制作管理UX改善計画（2026-08-04）§6-1: 旧「担当者と時間を割り当て」（確認なし即実行）と
     // 旧「再計算」ダイアログを1本へ統合した（旧称「予定を組み直す」→ 2026-08-05 に
-    // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。表記のみの変更で、
-    // e2eId・エンドポイントは互換のため変更しない。
-    const { body, close } = _pmModal('割当再計算', '760px', {
+    // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。その後、2026-08-08 に
+    // ユーザー判断で表示名のみ「自動割り当て」へ差し戻した（挙動・e2eId・エンドポイントは
+    // 変更しない）。
+    const { body, close } = _pmModal('自動割り当て', '760px', {
       trigger: options?.trigger,
       e2eId: 'production-recalculate-dialog-overlay',
       dialogE2eId: 'production-recalculate-dialog',
@@ -64931,7 +66742,7 @@ function hideBoardNoteTab() {
         // 渡す: サーバー側の陳腐化検知は同一bodyでプレビューを再計算して比較するため、
         // スコープや条件が変わると誤って409になる。
         const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows, allow_overtime: lastAllowOvertime, unassigned_only: lastUnassignedOnly, current_user: (typeof getUsername === 'function' ? String(getUsername() || '').trim() : ''), ...lastScope });
-        _pmStatus(`割当再計算を適用しました: ${result.applied || 0}件`);
+        _pmStatus(`自動割り当てを適用しました: ${result.applied || 0}件`);
         _pmRefreshCalendars();
         // 埋め込みタスクリスト(あれば)にも反映する。
         document.dispatchEvent(new CustomEvent('meldex:production-task-updated', { detail: { reason: 'recalculate' } }));
@@ -65086,7 +66897,7 @@ function hideBoardNoteTab() {
   async function toggleProductionTaskRecalcLock(taskPath, locked, eventId) {
     const result = await _pmRequest('/production-management/tasks/lock', { task_path: taskPath || '', event_id: eventId || '', locked: !!locked });
     if (result.ok) {
-      _pmStatus(locked ? '割当再計算で動かさないよう固定しました' : '割当再計算の固定を解除しました');
+      _pmStatus(locked ? '自動割り当てで動かさないよう固定しました' : '自動割り当ての固定を解除しました');
       _pmRefreshCalendars();
     } else {
       _pmStatus(result.message || '固定を変更できませんでした', true);
@@ -65095,16 +66906,16 @@ function hideBoardNoteTab() {
   }
 
   function _pmShowRecalcBanner() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return;
     document.querySelector('.gb-production-recalc-banner')?.remove();
     const banner = document.createElement('div');
     banner.className = 'gb-production-recalc-banner';
     banner.setAttribute('role', 'status');
-    banner.setAttribute('aria-label', '制作管理の割当再計算案内');
+    banner.setAttribute('aria-label', '制作管理の自動割り当て案内');
     const text = document.createElement('span');
     text.className = 'gb-production-recalc-banner-text';
-    text.textContent = 'メンバーを追加しました。割当再計算しますか？';
-    const open = _pmButton('割当再計算を確認', true);
+    text.textContent = 'メンバーを追加しました。自動割り当てしますか？';
+    const open = _pmButton('自動割り当てを確認', true);
     open.dataset.e2eId = 'production-recalc-banner-open';
     const close = _pmButton('閉じる');
     close.dataset.e2eId = 'production-recalc-banner-close';
@@ -65155,7 +66966,7 @@ function hideBoardNoteTab() {
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-production-lock-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '制作管理の割当再計算固定メニュー');
+    menu.setAttribute('aria-label', '制作管理の自動割り当て固定メニュー');
     menu.dataset.e2eId = 'production-lock-menu';
     const closeMenu = (restore = true) => {
       document.removeEventListener('pointerdown', onPointerDown, true);
@@ -65178,7 +66989,7 @@ function hideBoardNoteTab() {
       });
       return item;
     };
-    const lock = makeItem('割当再計算で固定', true);
+    const lock = makeItem('自動割り当てで固定', true);
     const unlock = makeItem('固定を解除', false);
     menu.append(lock, unlock);
     document.body.appendChild(menu);
@@ -65266,7 +67077,7 @@ function hideBoardNoteTab() {
     { label: 'シフトを取り込む', icon: 'fileInput', fn: 'openProductionShiftImport', group: 'schedule' },
     // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
     // improvement-plan-2026-08-04.md §4-1）。desktopOnlyフラグは撤去した。
-    { label: '割当再計算', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
+    { label: '自動割り当て', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
     { label: 'スタッフ管理シートを開く', icon: 'userPlus', fn: 'openProductionStaffRegistrySheet', group: 'data' },
     // Google送信はCloud（Dropboxモード）にも移植済み（production-management-ux-improvement-
     // plan-2026-08-04.md §4-4）。CalDAV送信はDesktop限定のままだが、ボタン自体は両方で表示し、
@@ -65575,7 +67386,7 @@ function hideBoardNoteTab() {
       {
         // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
         // improvement-plan-2026-08-04.md §4-1）。dropboxModeでも無効化しない。
-        id: 'production-recalculate', label: '割当再計算', icon: 'calculator',
+        id: 'production-recalculate', label: '自動割り当て', icon: 'calculator',
         action: () => _pmRunCalendarToolbarAction(component, 'recalculate'),
       },
       {
@@ -66600,7 +68411,8 @@ function hideBoardNoteTab() {
     if (!_savedRange || !_savedRoot?.isConnected) return false;
     const sel = window.getSelection();
     if (!sel) return false;
-    _savedRoot.focus?.();
+    // preventScroll を付けないと、選択を戻すたびに本文がスクロールしてしまう
+    try { _savedRoot.focus?.({ preventScroll: true }); } catch { _savedRoot.focus?.(); }
     sel.removeAllRanges();
     sel.addRange(_savedRange.cloneRange());
     return true;
@@ -66802,6 +68614,31 @@ function hideBoardNoteTab() {
     return ed;
   }
 
+  // 選択範囲のルートに対応する「ルビの適用先」を返す。
+  // 旧実装はシナリオのテキストセルだけを通しており、ノート本文ではルビ欄が生えなかった。
+  // シナリオ側の判定はそのまま先に評価するので、シナリオの挙動は変わらない。
+  //   { kind, supportsAutoRule, apply(range, root, ruby, opts) -> bool }
+  function _rubyTargetFor(root) {
+    const ed = _scriptnoteRubyEditor(root);
+    if (ed) {
+      return {
+        kind: 'scriptnote',
+        supportsAutoRule: true,
+        apply: (range, r, ruby, opts) => ed._applyRubyToSelection(range, r, ruby, !!opts?.addRule),
+      };
+    }
+    const note = window.MeldexNoteRuby;
+    if (note && root?.matches?.(note.NOTE_RUBY_EDITABLES) && root.getAttribute('contenteditable') !== 'false') {
+      return {
+        kind: 'note',
+        // ノートには自動ルビルールの保存先が無いのでチェックボックスを出さない
+        supportsAutoRule: false,
+        apply: (range, r, ruby) => note.applyToSelection(range, r, ruby),
+      };
+    }
+    return null;
+  }
+
   function _focusSavedRoot() {
     const root = _savedRoot;
     if (!root?.isConnected) return;
@@ -66815,13 +68652,18 @@ function hideBoardNoteTab() {
     requestAnimationFrame(doFocus);
   }
 
-  // ルビ入力行（シナリオのテキストセル選択時のみ書式設定ポップアップへ表示）
+  // ルビ入力行（シナリオのテキストセル／ノート本文の選択時に書式設定ポップアップへ表示）
   // 1行目: ラベル+入力欄+追加 / 2行目: 読み取得+自動ルビルール（追加ボタンの後で改行する）
+  // data-e2e-id は 'sn2-ruby-*' のまま維持する（自動フォーカス・Tab循環・シナリオの
+  // フォールバック判定・既存E2E契約がこのIDに依存しているため）。対象の種別は
+  // data-ruby-target で見分ける。
   function _selectionRubyRow(root) {
-    if (!_scriptnoteRubyEditor(root)) return null;
+    const target = _rubyTargetFor(root);
+    if (!target) return null;
     const row = document.createElement('div');
     row.className = 'gb-text-selection-ruby-row';
     row.dataset.e2eId = 'sn2-ruby-row';
+    row.dataset.rubyTarget = target.kind;
     const label = document.createElement('span');
     label.className = 'gb-fmt-label';
     label.textContent = 'ルビ';
@@ -66856,12 +68698,12 @@ function hideBoardNoteTab() {
     addRuleLabel.append(addRuleInput, addRuleText);
     const applyRuby = () => {
       const ruby = input.value.trim();
-      const ed = _scriptnoteRubyEditor(root);
+      const currentTarget = _rubyTargetFor(root);
       _suppressUntil = Date.now() + 400;
-      if (ruby && ed && _restoreSelection()) {
+      if (ruby && currentTarget && _restoreSelection()) {
         const sel = window.getSelection();
         if (sel?.rangeCount && !sel.isCollapsed) {
-          ed._applyRubyToSelection(sel.getRangeAt(0), root, ruby, addRuleInput.checked);
+          currentTarget.apply(sel.getRangeAt(0), root, ruby, { addRule: !!addRuleInput?.checked });
         }
       }
       _closeSelectionPopup();
@@ -66887,7 +68729,7 @@ function hideBoardNoteTab() {
       try {
         const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
         if (res?.ruby) input.value = res.ruby;
-        else if (typeof showStatus === 'function') showStatus('自動ルビの取得に失敗しました', true);
+        else if (typeof showStatus === 'function') showStatus('この語の読みは設定に登録されていません', true);
       } catch (err) {
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }
@@ -66897,7 +68739,9 @@ function hideBoardNoteTab() {
     mainLine.append(label, input, okButton);
     const optionLine = document.createElement('div');
     optionLine.className = 'gb-text-selection-ruby-line';
-    optionLine.append(autoButton, addRuleLabel);
+    // 自動ルビルールはシナリオ固有（ノートには保存先が無い）
+    if (target.supportsAutoRule) optionLine.append(autoButton, addRuleLabel);
+    else optionLine.append(autoButton);
     row.append(mainLine, optionLine);
     return row;
   }
@@ -66966,6 +68810,9 @@ function hideBoardNoteTab() {
     _savedRange = range.cloneRange();
     const anchor = { getBoundingClientRect: () => rect };
     const rubyRow = _selectionRubyRow(root);
+    // 縦書きでは「水平/垂直」の読み替え（gb-format-popup.js の ALIGN_*_VERTICAL）を有効にし、
+    // ポップアップも下ではなく左へ開く（下だと本文の続きを隠すため）。
+    const verticalWriting = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(root));
     const popup = openFormatPopup(anchor, {
       fields: FIELDS,
       values: _computedValues(range),
@@ -66973,6 +68820,8 @@ function hideBoardNoteTab() {
       closeOnOutside: true,
       avoidRect: _rangeAvoidRect(range),
       focusTarget: root,
+      verticalWriting,
+      prefer: verticalWriting ? 'left' : undefined,
       extraRowTop: [rubyRow].filter(Boolean),
       // 計画書2026-08-04版§2.4: コピー/切り取り/貼り付け/閉じるは共通の footerActions
       // へ統合する（専用のクリップボード行は作らない）。閉じるは既存のEscapeハンドラと
@@ -67390,9 +69239,9 @@ function hideBoardNoteTab() {
     { id: 'settings', label: '設定', icon: 'slidersHorizontal', action: () => _boardOpenDetail() },
   ];
   const ANNOTATION_ITEMS = [
-    { id: 'pen', label: 'ペン', icon: 'pencil', tool: 'pen' },
-    { id: 'marker', label: 'マーカー', icon: 'highlighter', tool: 'marker' },
-    { id: 'lasso', label: '投げ縄', icon: 'lasso', tool: 'lasso' },
+    { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
+    { id: 'line', label: 'ライン', icon: 'spline', group: 'line' },
+    { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
     { id: 'width-down', label: '細く', icon: 'minus', action: () => _stepAnnotationWidth(-1) },
@@ -68044,6 +69893,11 @@ function hideBoardNoteTab() {
   }
 
   function _setAnnotationTool(tool) {
+    if (typeof _annotationSelectTool === 'function') {
+      _annotationSelectTool(tool);
+      _syncAnnotationBarState();
+      return true;
+    }
     const button = Array.from(document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]'))
       .find(el => el.dataset.tool === tool);
     if (button) {
@@ -68055,6 +69909,28 @@ function hideBoardNoteTab() {
     }
     _syncAnnotationBarState();
     return true;
+  }
+
+  function _openAnnotationMobileToolMenu(anchor, group) {
+    const fallback = {
+      stroke: [{ tool: 'pen', label: 'ペン' }, { tool: 'marker', label: 'マーカー' }],
+      line: [{ tool: 'polyline', label: '折れ線' }, { tool: 'ellipse-line', label: '円形' }, { tool: 'rect-line', label: '矩形' }],
+      fill: [{ tool: 'lasso', label: '囲い塗り' }, { tool: 'ellipse-fill', label: '円形塗り' }, { tool: 'rect', label: '矩形塗り' }],
+    };
+    const items = (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || fallback[group] || [];
+    document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+    const menu = document.createElement('div');
+    menu.className = 'ann-tool-popup'; menu.setAttribute('role', 'menu');
+    items.forEach(item => {
+      const option = document.createElement('button');
+      option.type = 'button'; option.className = 'ann-tool-popup-item';
+      option.dataset.annSelectTool = item.tool; option.textContent = item.label;
+      option.addEventListener('click', () => { _setAnnotationTool(item.tool); menu.remove(); });
+      menu.appendChild(option);
+    });
+    document.body.appendChild(menu);
+    positionPopup(menu, anchor.getBoundingClientRect(), { prefer: 'above', gap: 6 });
+    menu.querySelector('button')?.focus();
   }
 
   function _annotationWidthInput() {
@@ -68103,6 +69979,12 @@ function hideBoardNoteTab() {
     const tool = _currentAnnotationTool();
     _annotationBar.querySelectorAll('[data-ann-mobile-tool]').forEach((button) => {
       button.classList.toggle('active', button.dataset.annMobileTool === tool);
+    });
+    _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
+      const group = button.dataset.annMobileGroup;
+      const members = group === 'stroke' ? ['pen', 'marker']
+        : (group === 'line' ? ['polyline', 'ellipse-line', 'rect-line'] : ['lasso', 'ellipse-fill', 'rect']);
+      button.classList.toggle('active', members.includes(tool));
     });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
@@ -68543,11 +70425,12 @@ function hideBoardNoteTab() {
     const row = document.createElement('div');
     row.className = 'cloud-mobile-annotationbar-row';
     ANNOTATION_ITEMS.forEach((item) => {
-      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.tool
-        ? () => _setAnnotationTool(item.tool)
-        : item.action);
+      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.group
+        ? (event) => _openAnnotationMobileToolMenu(event.currentTarget, item.group)
+        : (item.tool ? () => _setAnnotationTool(item.tool) : item.action));
       if (item.id) button.dataset.e2eId = 'cloud-mobile-annotationbar-' + item.id;
       if (item.tool) button.dataset.annMobileTool = item.tool;
+      if (item.group) button.dataset.annMobileGroup = item.group;
       if (item.id === 'visibility') button.dataset.annMobileVisibility = '1';
       row.appendChild(button);
     });
@@ -71568,7 +73451,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
         <input id="dbcfg-calmap-enabled" type="checkbox" data-e2e-id="dbcfg-calmap-enabled" aria-controls="dbcfg-calendar-mapping-fields" aria-expanded="${current?.startProp ? 'true' : 'false'}" ${current?.startProp ? 'checked' : ''} ${dateProps.length === 0 ? 'disabled' : ''}>
         <span>任意シートをカレンダー表示に連携する</span>
       </label>
-      ${fieldHelp('連携すると、このシートの既存イベントは日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーシート側で行います。')}
+      ${fieldHelp('連携すると、このシートの既存イベントは日時だけカレンダー上で編集できます。新規作成・削除・外部同期はカレンダーシート側で行います。', { e2eId: 'db-calendar-mapping-help' })}
     </div>
     <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
       ${rowSelect('dbcfg-calmap-start', '開始列', dateProps, current?.startProp || '', '(必須)')}
@@ -72237,6 +74120,32 @@ function isProductionManagementSheetPath(path) {
   return parts[sheetIndex] === '制作管理'
     && parts[sheetIndex + 1] === 'シート'
     && !!parts[sheetIndex + 2];
+}
+
+// 1セル1値で運用するシートかどうか。true のシートでは、候補値の追加（＋ボタン）と
+// ステータスマークを出さない。
+//
+// 通常のシートでは、値のある列に常に＋を出し、候補値が2つ以上あるセルにはステータス機能
+// オフでもマークを出す（ユーザー判断・案A 2026-07-25）。ただし制作管理のシートは機械が
+// 維持する1セル1値の運用で、リレーション列（作品タイトル・タスクリスト・作業対象リスト
+// など）が多いため、リレーションを無条件でステータス編集可能にしている扱いと合わさって
+// 「ステータス機能が常にオン」に見えていた（ユーザー報告 2026-08-08）。制作管理シートに
+// 限ってこれらを出さず、シート設定の「ステータス機能」に従わせる。
+// 制作管理スキーマにロールアップ列は無いため、リレーションの採用/ボツで参照可否を切り替える
+// 必要も無い（gb-db-value-editors.part02.js のリレーション特例の理由はここには当てはまらない）。
+function isSingleValueSheetPath(path) {
+  return isProductionManagementSheetPath(path);
+}
+
+// 候補値追加の「＋」とステータスマークを出さないシートか。
+//
+// 1セル1値運用のシートでは既定で出さないが、シート設定の「ステータス機能」を明示的に
+// オンにした場合は従来どおり出す。無条件に殺すと「設定をオンにしても何も変わらない」＝
+// 設定が壊れて見える状態になり、誤判定でこの扱いになったシート（末尾3階層が
+// 制作管理/シート/… と一致するユーザー作成フォルダ）から抜け出す手段も無くなる。
+function hidesCandidateStatusUi(dbPath) {
+  if (!isSingleValueSheetPath(dbPath)) return false;
+  return typeof getStatusEnabled !== 'function' || !getStatusEnabled(dbPath);
 }
 
 // スタッフ管理シート（正本）の列保護レベルを判定する。
@@ -75587,7 +77496,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     } }] : []),
     { type: 'sep' },
     ...(hasDeps ? [{ icon: 'gitBranch', label: '依存エントリを作成', action: () => _createDependentEntry(targetDbPath, entityName, undefined, ctx) }] : []),
-    ...(propName && typeof startCellInlineAdd === 'function' ? [{ icon: 'plus', label: '候補値を追加', action: () => {
+    // 1セル1値で運用するシート（制作管理）では候補値を追加できないため項目を出さない
+    // （シート表・エントリ詳細パネルの＋ボタンと同じ扱い）。
+    ...(propName && typeof startCellInlineAdd === 'function'
+      && !(typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(targetDbPath))
+      ? [{ icon: 'plus', label: '候補値を追加', action: () => {
       const paneRoot = e?.target?.closest?.('.gb-pane') || document.body;
       const row = paneRoot.querySelector('tr[data-entity-name="' + CSS.escape(entityName) + '"]');
       const td = row?.querySelector('td[data-prop-name="' + CSS.escape(propName) + '"]');
@@ -77076,7 +78989,7 @@ function _ufRefreshTarget(ctx, dbPath, options = {}) {
     { type: 'date', label: '日時', icon: 'calendar' },
     { type: 'url', label: 'URL', icon: 'globe' },
     { type: 'link', label: 'リンク', icon: 'paperclip' },
-    { type: 'image', label: '画像', icon: 'image' },
+    { type: 'image', label: '画像・ファイル', icon: 'image' },
     { type: 'relation', label: 'リレーション', icon: 'link2' },
     { type: 'multi-relation', label: 'リレーション（複数）', icon: 'link2' },
     { type: 'rollup', label: 'ロールアップ', icon: 'workflow' },
@@ -80879,14 +82792,17 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   container.innerHTML = '';
   // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
   // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25。gb-db-table.part02.js と同期）。
-  const forceStatusDot = values.length > 1;
+  // 1セル1値で運用するシート（制作管理）は対象外。ただしそのシートで「ステータス機能」を
+  // オンにした場合は従来どおり出す（hidesCandidateStatusUi）。
+  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+  const forceStatusDot = values.length > 1 && !hideStatusUi;
   values.forEach(cellVal => {
     container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
   });
   // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
   // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転。gb-db-table.part02.js と同期）。
   const nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-  if (!ptc || !nonValueTypes.includes(ptc.type)) {
+  if ((!ptc || !nonValueTypes.includes(ptc.type)) && !hideStatusUi) {
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
     addBtn.innerHTML = lucide('plus', 14);
@@ -81921,7 +83837,8 @@ function _dbLinkDndAcceptable(e) {
   const types = e?.dataTransfer?.types;
   if (!types) return false;
   const list = Array.from(types);
-  if (!list.includes('application/x-meldex-node')) return false;
+  if (!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'))
+      && !list.includes('application/x-meldex-node')) return false;
   if (list.includes('text/x-meldex-rows')) return false; // 行並べ替えD&Dとは分離
   return true;
 }
@@ -81983,7 +83900,7 @@ async function _dbLinkCommitValue(args) {
   if (existing?.file) {
     if (oldValue === newPath) {
       if (typeof closeInlineEditorShell === 'function') closeInlineEditorShell();
-      return;
+      return true;
     }
     try {
       if (typeof closeInlineEditorShell === 'function') closeInlineEditorShell();
@@ -82023,8 +83940,9 @@ async function _dbLinkCommitValue(args) {
       }
       if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
+      return false;
     }
-    return;
+    return true;
   }
 
   // 既存値なし → 新規作成
@@ -82075,9 +83993,11 @@ async function _dbLinkCommitValue(args) {
       );
     }
     if (typeof showStatus === 'function') showStatus('リンクを設定しました');
+    return true;
   } catch (e) {
     if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
     if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+    return false;
   }
 }
 
@@ -82185,16 +84105,23 @@ function decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath) {
     e.preventDefault();
     e.stopPropagation();
     highlightOff();
-    const node = typeof MeldexDnD !== 'undefined' ? MeldexDnD.parseMeldexNode(e) : null;
+    const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+    const node = resolved?.payload || (typeof MeldexDnD !== 'undefined' ? MeldexDnD.parseMeldexNode(e) : null);
     const newPath = _dbLinkPathFromDndNode(node);
-    if (!newPath) return;
+    if (!newPath) { if (resolved) MeldexDnD.failDrop(resolved); return; }
     const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
-    if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg); return; }
+    if (lockMsg) {
+      if (typeof showStatus === 'function') showStatus(lockMsg);
+      if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     const existing = _dbLinkExistingValueFor(ctx, dbPath, entityName, propName);
     const entityPath = typeof _entityPath === 'function'
       ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || (typeof state !== 'undefined' ? state.pivotData : null))
       : (_dbLinkNormalizeSlashes(dbPath) + '/' + entityName + '.md');
-    await _dbLinkCommitValue({ entityPath, propName, dbPath, ctx, existing, newPath, td });
+    const saved = await _dbLinkCommitValue({ entityPath, propName, dbPath, ctx, existing, newPath, td });
+    if (resolved && saved) MeldexDnD.completeDrop(resolved);
+    else if (resolved) MeldexDnD.failDrop(resolved);
   });
 }
 
@@ -82654,9 +84581,14 @@ function restoreActiveCellByEntityName(entityName, ctxOverride) {
 // D-6: セル位置を {entityName, propName} で保持 (rowIdx/colIdx ではない)
 function _cellPos(td) {
   const tr = td.closest('tr');
+  const paneCtx = (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(td)
+    : null) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   return {
     entityName: tr?.dataset?.entityName || '',
     propName: td.dataset?.propName || '',
+    __paneCtx: paneCtx,
+    __dbPath: paneCtx?.dbPath || '',
     __sourceCell: td,
     __sourceSeq: Number(td?.dataset?.dbActiveSeq || dbActiveCellSeq || 0),
   };
@@ -82701,7 +84633,11 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
     const sourceSeq = Number(pos?.__sourceSeq || 0);
     if (currentActive?.isConnected && sourceCell?.isConnected && currentActive !== sourceCell && currentSeq >= sourceSeq) return;
     if (!currentActive?.isConnected && sourceCell?.isConnected && sourceSeq > 0 && !sourceCell.classList.contains('active-cell')) return;
-    const ctx = _currentPaneState();
+    // 保存完了時点のグローバル active pane ではなく、編集開始セルを所有していた
+    // pane-local context へ戻す。別paneをクリックした直後に古い保存応答が完了しても、
+    // そのpaneの同座標セルへactive枠を奪わない。
+    const ctx = pos?.__paneCtx;
+    if (!ctx || ctx.destroyed || (pos.__dbPath && ctx.dbPath !== pos.__dbPath)) return;
     const tblId = (ctx && ctx.tableId) || 'pivot-table';
     const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
     if (!tbody) return;
@@ -86693,9 +88629,9 @@ function _ensureCellValueDragDelegate() {
     const label = propName + ': ' + value;
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', value);
-    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
-      name: label, path: entityPath, type: 'entity'
-    }));
+    const payload = { name: label, path: entityPath, type: 'entity' };
+    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node');
     row.classList.add('dragging');
   });
   document.addEventListener('dragend', (e) => {
@@ -86939,6 +88875,21 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           navigateToEntity(name || idOrName, relDb, currentCtx);
         });
         sub.appendChild(openItem);
+        const copyItem = document.createElement('div');
+        copyItem.className = 'gb-context-menu-item';
+        copyItem.innerHTML = lucide('copy', 14) + ' パスをコピー';
+        copyItem.addEventListener('click', async () => {
+          menu.remove();
+          let name = idOrName;
+          if (typeof _resolveRelationName === 'function' && relDb) {
+            name = await _resolveRelationName(idOrName, relDb);
+          }
+          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+          const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
+          if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+        });
+        sub.appendChild(copyItem);
         const rightItem = document.createElement('div');
         rightItem.className = 'gb-context-menu-item';
         rightItem.innerHTML = lucide('layers-2', 14) + ' フロートパネルで開く';
@@ -88077,7 +90028,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
 
   // リレーションはロールアップの参照可否にも使うため、常にステータスを変更できるようにする。
   // その他の型は、採用状況フィルタ使用時または候補値が複数ある場合だけ表示する。
-  const relationStatusEditable = type === 'relation' || type === 'multi-relation';
+  // ただし1セル1値で運用するシート（制作管理）ではリレーション特例を適用しない。適用すると
+  // リレーション列だらけのシートで「ステータス機能」の設定に関係なくマークが出続ける。
+  // そのシートで「ステータス機能」をオンにした場合は従来どおり出す（hidesCandidateStatusUi）。
+  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+  const relationStatusEditable = !hideStatusUi && (type === 'relation' || type === 'multi-relation');
   if (relationStatusEditable || (filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';
@@ -89979,11 +91934,16 @@ function stringifyImagePropertyValue(items) {
   return JSON.stringify(Array.isArray(items) ? items : []);
 }
 
+// 画像列は画像に加えて動画・PDFも受け付ける（列側で accept を指定した場合はその設定を優先）
+const ATTACHMENT_VIDEO_EXTS = ['mp4', 'webm', 'mov'];
+const ATTACHMENT_DOCUMENT_EXTS = ['pdf'];
+const ATTACHMENT_DEFAULT_ACCEPT = ['png', 'jpg', 'jpeg', 'gif', 'webp'].concat(ATTACHMENT_VIDEO_EXTS, ATTACHMENT_DOCUMENT_EXTS);
+
 function _imagePropOptions(ptc) {
   const opts = ptc?.options || {};
   const accept = Array.isArray(opts.accept) && opts.accept.length
     ? opts.accept.map(s => String(s).toLowerCase().replace(/^\./, ''))
-    : ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+    : ATTACHMENT_DEFAULT_ACCEPT.slice();
   const thumbSize = Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256));
   return {
     maxCount: opts.max_count == null || opts.max_count === '' ? 100 : Math.max(1, parseInt(opts.max_count, 10) || 100),
@@ -90000,7 +91960,23 @@ function _imagePropCellSize(ptc) {
   return Math.max(32, Math.min(320, parseInt(raw, 10) || Math.min(96, thumbSize)));
 }
 
-function _imageSrc(item, preferThumb) {
+// 新方式（シートフォルダ内の添付フォルダ）の実ファイルパスから表示URLを組み立てる。
+// 縮小表示は共通のサムネイル生成、原寸・再生は生ファイル配信を使う。
+function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
+  const clean = String(path || '').replace(/\\/g, '/');
+  if (!clean) return '';
+  if (!preferThumb) return '/api/file-raw?path=' + encodeURIComponent(clean);
+  const size = Math.max(64, Math.min(1024, parseInt(thumbSize, 10) || 256));
+  return '/api/thumbnail?path=' + encodeURIComponent(clean) + '&size=' + size;
+}
+
+function _imageSrc(item, preferThumb, thumbSize) {
+  // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
+  // 動画・PDFは縮小版を作らないため、常に生ファイルを返す。
+  if (item && item.path) {
+    const wantThumb = !!preferThumb && (!item.kind || item.kind === 'image');
+    return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
+  }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
     || item.thumb_url || item.url || item.src || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
   if (!rel) return '';
@@ -90009,12 +91985,88 @@ function _imageSrc(item, preferThumb) {
   return '/api/media/file?path=' + encodeURIComponent(rel);
 }
 
-function _isAcceptedImageFile(file, accept) {
+// 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
+// 旧データや外部由来の値には無いので拡張子から補う。
+function _attachmentKind(item) {
+  const declared = String(item?.kind || '').toLowerCase();
+  if (declared === 'image' || declared === 'video' || declared === 'pdf') return declared;
+  const source = String(item?.path || item?.src || item?.filename || item?.url || '');
+  const ext = (source.split('?')[0].split('.').pop() || '').toLowerCase();
+  if (ATTACHMENT_VIDEO_EXTS.includes(ext)) return 'video';
+  if (ATTACHMENT_DOCUMENT_EXTS.includes(ext)) return 'pdf';
+  return 'image';
+}
+
+function _isAcceptedAttachmentFile(file, accept) {
   if (!file) return false;
-  const type = String(file.type || '').toLowerCase();
-  if (type && !type.startsWith('image/')) return false;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
-  return accept.includes(ext) || (ext === 'jpg' && accept.includes('jpeg')) || (ext === 'jpeg' && accept.includes('jpg'));
+  const type = String(file.type || '').toLowerCase();
+  const allowed = accept.includes(ext)
+    || (ext === 'jpg' && accept.includes('jpeg'))
+    || (ext === 'jpeg' && accept.includes('jpg'));
+  if (!allowed) return false;
+  if (!type) return true;
+  if (ATTACHMENT_VIDEO_EXTS.includes(ext)) return type.startsWith('video/');
+  if (ATTACHMENT_DOCUMENT_EXTS.includes(ext)) return type.includes('pdf');
+  return type.startsWith('image/');
+}
+
+// 動画・PDFは縮小画像を作らないため、種別アイコンとファイル名のタイルで表す。
+// クリック位置の判定は .gb-image-thumb を使うので、画像と同じクラスを付ける。
+function _createAttachmentThumb(item, index) {
+  const kind = _attachmentKind(item);
+  const label = item?.caption || item?.filename || '';
+  if (kind === 'image') {
+    const img = document.createElement('img');
+    img.className = 'gb-image-thumb';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
+    img.src = _imageSrc(item, true);
+    img.alt = label;
+    if (index != null) img.dataset.imageIndex = String(index);
+    return _setupAttachmentThumbDrag(img, item);
+  }
+  const tile = document.createElement('div');
+  tile.className = 'gb-image-thumb gb-attachment-tile';
+  tile.dataset.kind = kind;
+  if (index != null) tile.dataset.imageIndex = String(index);
+  tile.title = label;
+  if (typeof lucide === 'function') tile.innerHTML = lucide(kind === 'video' ? 'film' : 'fileText', 20) || '';
+  const caption = document.createElement('span');
+  caption.textContent = label;
+  tile.appendChild(caption);
+  return _setupAttachmentThumbDrag(tile, item);
+}
+
+function _setupAttachmentThumbDrag(element, item) {
+  const path = _imagePropOpenPath(item);
+  if (!element || !path) return element;
+  element.draggable = true;
+  element.dataset.attachmentPath = path;
+  element.addEventListener('dragstart', e => {
+    // セル本体にも委譲 dragstart があるため、ここで止めないとサムネイル固有の
+    // 添付path/typeがセル側payloadで上書きされる。
+    e.stopPropagation();
+    const type = _attachmentKind(item);
+    const name = item?.caption || item?.filename || path.split(/[\\/]/).pop() || path;
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.writeNodePayload) {
+      MeldexDnD.writeNodePayload(e.dataTransfer, { name, path, type }, 'sheet-image');
+    }
+  });
+  return element;
+}
+
+// 添付アップロードは共通のAPI経路（apiFetch）を通らないため、編集ロックの識別子を自前で付ける。
+function _attachmentUploadHeaders() {
+  const locks = window.MeldexActiveLocks;
+  if (!locks || !locks.header || typeof locks.token !== 'function') return undefined;
+  try {
+    const value = locks.token();
+    return value ? { [locks.header]: value } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function _imagePropDbPathForEntity(entityPath) {
@@ -90030,20 +92082,30 @@ function _imagePropLockMessage(entityPath, propName) {
 async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   const options = _imagePropOptions(ptc);
   const current = parseImagePropertyValue(val?.value);
-  const accepted = Array.from(files || []).filter(file => _isAcceptedImageFile(file, options.accept));
-  if (!accepted.length) { showStatus('画像ファイルがありません', true); return current; }
+  const accepted = Array.from(files || []).filter(file => _isAcceptedAttachmentFile(file, options.accept));
+  if (!accepted.length) { showStatus('添付できるファイルがありません', true); return current; }
   const room = Math.max(0, options.maxCount - current.length);
   if (room <= 0) { showStatus('画像数の上限に達しています', true); return current; }
   const targetFiles = accepted.slice(0, room);
   if (accepted.length > room) showStatus('画像数の上限を超えた分は追加しませんでした');
   let added = 0;
   let failed = 0;
+  // 添付先シートを渡すと、そのシートフォルダ内の添付フォルダへ元のファイル名のまま保存される。
+  // 渡せない場合はサーバー側が従来の保存先へ退避する（後方互換）。
+  const sheetPath = _imagePropDbPathForEntity(entityPath) || '';
   for (const file of targetFiles) {
     try {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('thumbnail_size', String(options.thumbSize));
-      const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
+      if (sheetPath) fd.append('sheet_path', sheetPath);
+      // 添付はシートフォルダの中へ保存するため、開いているシート自身の編集ロックに当たる。
+      // 自分のロックであることを示す識別子を付けないと、自分で開いたシートへ貼れなくなる。
+      const res = await fetch(API_BASE + '/media/upload', {
+        method: 'POST',
+        body: fd,
+        headers: _attachmentUploadHeaders(),
+      });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const meta = await res.json();
       current.push({
@@ -90052,6 +92114,8 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
           : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
         content_hash: meta.content_hash || meta.hash,
         filename: meta.filename || file.name,
+        path: meta.path || '',
+        kind: meta.kind || '',
         src: meta.src,
         thumb: meta.thumb,
         url: meta.url,
@@ -90109,7 +92173,8 @@ function _imagePropCloneItems(items) {
 }
 
 function _imagePropOpenPath(item) {
-  const candidates = [item?.url, item?.src, item?.path, item?.file, item?.thumb_url, item?.thumb];
+  // 新方式は path が実ファイルの場所そのものなので最優先で使う
+  const candidates = [item?.path, item?.url, item?.src, item?.file, item?.thumb_url, item?.thumb];
   for (const raw of candidates) {
     const value = String(raw || '').trim();
     if (!value || /^(?:data:|blob:|https?:)/i.test(value)) continue;
@@ -90142,7 +92207,7 @@ function openImagePropertyItemInViewer(item, options = {}) {
     const ext = (imagePath.split('.').pop() || '').toLowerCase();
     const mediaType = (typeof MeldexDnD !== 'undefined' && typeof MeldexDnD.getMediaType === 'function'
       ? MeldexDnD.getMediaType(ext)
-      : null) || (ext === 'pdf' ? 'pdf' : 'image');
+      : null) || _attachmentKind(item);
     // シートの表示状態（スクロール位置・表示中のビュー）を戻る履歴へ積んでから画像を開く。
     // DB行ダブルクリック（_handleTbodyDblclick）と同一パターン（②タブ別ナビ履歴、2026-07-21）。
     // _navPushWithViewState の既定フォールバック（_currentPaneState()）は旧split専用の
@@ -90199,15 +92264,7 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     const stack = document.createElement('div');
     stack.className = 'gb-image-thumb-stack';
     for (let i = 0; i < previewCount; i++) {
-      const img = document.createElement('img');
-      img.className = 'gb-image-thumb';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.fetchPriority = 'low';
-      img.src = _imageSrc(items[i], true);
-      img.alt = items[i].caption || items[i].filename || '';
-      img.dataset.imageIndex = String(i);
-      stack.appendChild(img);
+      stack.appendChild(_createAttachmentThumb(items[i], i));
     }
     if (items.length > previewCount) {
       const more = document.createElement('span');
@@ -90258,7 +92315,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
   overlay.innerHTML = `<div class="modal gb-image-gallery-modal">
     <h3>${typeof lucide === 'function' ? lucide('images', 16) : ''} ${esc(propName)}</h3>
     <div class="gb-image-gallery-toolbar">
-      <label class="gb-btn gb-btn-sm">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="image/*" hidden></label>
+      <label class="gb-btn gb-btn-sm">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="${esc(options.accept.map(ext => '.' + ext).join(','))}" hidden></label>
       <span class="gb-section-desc">${items.length} / ${options.maxCount}</span>
     </div>
     <div id="gb-img-gallery-list" class="gb-image-gallery-list"></div>
@@ -90282,12 +92339,9 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
     items.forEach((item, idx) => {
       const card = document.createElement('div');
       card.className = 'gb-image-gallery-card';
-      const img = document.createElement('img');
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.src = _imageSrc(item, true);
-      img.alt = item.filename || '';
-      card.appendChild(img);
+      const thumb = _createAttachmentThumb(item, idx);
+      thumb.classList.remove('gb-image-thumb');
+      card.appendChild(thumb);
       const meta = document.createElement('div');
       meta.className = 'gb-image-gallery-meta';
       const cap = document.createElement('input');
@@ -91637,6 +93691,13 @@ function _handleRelationLinkClick(link, ctx) {
     } },
     { label: 'ビューワーでプレビュー', icon: 'tvMinimal', action: () => { if (typeof _updateLinkedPreview === 'function' && relPath) _updateLinkedPreview(relPath); } },
   ];
+  if (relPath) {
+    items.push({ label: 'パスをコピー', icon: 'copy', action: async () => {
+      const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+      const copied = await window.GBPathUtils?.copyToClipboard?.(relPath, basePath);
+      if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+    } });
+  }
   if (relPath && typeof window.revealPathInFolderTree === 'function') {
     items.push({ label: 'フォルダツリーに表示', icon: 'folderTree', action: () => window.revealPathInFolderTree(relPath) });
   }
@@ -92071,13 +94132,15 @@ function _handleTbodyDragstart(e) {
       const payloadNames = [...sel];
       e.dataTransfer.setData('text/plain', payloadNames.join('\n'));
       e.dataTransfer.setData('text/x-meldex-rows', JSON.stringify(payloadNames));
-      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+      const nodePayload = {
         items: payloadNames.map(name => ({
           name,
           path: _entityPath(ctx.dbPath, name, ctx.pivotData),
           type: 'entity',
         })),
-      }));
+      };
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(nodePayload));
+      if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, nodePayload, 'node');
     } else {
       if (window.MeldexBoardTransfer?.setEntityDragData) {
         window.MeldexBoardTransfer.setEntityDragData(e.dataTransfer, ctx.dbPath, entityName, ep);
@@ -92971,8 +95034,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
     container.appendChild(span);
   } else {
     // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。
-    const _forceStatusDot = values.length > 1;
+    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。1セル1値で運用する
+    // シート（制作管理）は対象外。ただしそのシートで「ステータス機能」をオンにした場合は
+    // 従来どおり出す（hidesCandidateStatusUi）。
+    const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+    const _forceStatusDot = values.length > 1 && !_hideStatusUi;
     values.forEach(val => {
       container.appendChild(
         ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
@@ -92984,7 +95050,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
     // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転）。
     // button/formula/rollup 等の非値型は上の分岐で処理されここには来ないが、防御的に除外する。
     const _nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-    const _allowAdd = !ptc || !_nonValueTypes.includes(ptc.type);
+    const _allowAdd = (!ptc || !_nonValueTypes.includes(ptc.type)) && !_hideStatusUi;
     if (_allowAdd) {
       const addBtn = document.createElement('span');
       addBtn.className = 'cell-add-btn';
@@ -93483,16 +95549,17 @@ function _dbAlignPinnedColumnSeams(table) {
       : null;
   }).filter(Boolean);
   if (!entries.length) return;
+  const controlsHeader = headers.find(header => header.classList.contains('col-row-controls-header'));
 
   // 前回の補正を外した同一レイアウトから再計測する。ここから補正の再適用までは
   // 同じフレーム内なので、中間状態が画面へ描画されることはない。
   entries.forEach(entry => _dbSetPinnedColumnShift(table, entry, 0));
-  let targetLeft = null;
+  let targetLeft = controlsHeader?.getBoundingClientRect?.().right ?? null;
   entries.forEach((entry, index) => {
     const rect = entry.header.getBoundingClientRect();
     // 先頭の固定列は既存の sticky left を基準にする。狭幅時には行コントロール列自体も
     // テーブル右端制約を受けるため、その描画位置を基準にすると固定列群全体が左へずれる。
-    if (index === 0) {
+    if (index === 0 && !Number.isFinite(targetLeft)) {
       targetLeft = rect.right;
       return;
     }
@@ -93904,7 +95971,10 @@ function renderPivot(ctx) {
   thControls.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'row-controls');
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
-  thControls.setAttribute('aria-label', '行操作');
+  thControls.setAttribute('aria-label', '行操作とエントリ選択');
+  if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
+    thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
+  }
   headerRow.appendChild(thControls);
 
   // 列D&D並べ替え（エントリ名列・プロパティ列で共通）
@@ -94238,6 +96308,7 @@ function renderPivot(ctx) {
 
   thead.innerHTML = '';
   thead.appendChild(headerRow);
+  if (typeof _syncPaneRowSelectHeader === 'function') _syncPaneRowSelectHeader(ctx);
 
   // リンク切れ（参照先シート欠落）の列見出し警告アイコンを反映（既知欠落を即時、
   // 未判明分は先読み完了後に selectDatabase から再度この関数が呼ばれて反映される）。
@@ -94731,7 +96802,7 @@ function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
   const explicitCtx = !!ctx;
   if (explicitCtx && ctx.embedded
-    && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) {
+    && (ctx.destroyed || !ctx.containerEl)) {
     return null;
   }
   if (explicitCtx && ctx.embedded) {
@@ -94770,7 +96841,10 @@ function _dbPaneHasPivotTable(ctx) {
 
 function _normalizeDbRenderContext(ctx) {
   const candidate = ctx || _currentPaneState();
-  if (ctx?.embedded && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) return null;
+  // 埋め込みシートはカレンダー面などへ切り替えている間、一時的に document から
+  // detach される。その間も明示的に渡された専用 ctx と専用 table が生存していれば
+  // detached DOM へ描画してよい。destroy() は destroyed=true と table の破棄で判定する。
+  if (ctx?.embedded && (ctx.destroyed || !ctx.containerEl)) return null;
   if (ctx?.embedded && !_dbPaneHasPivotTable(ctx)) return null;
   if (candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     return ctx ? null : _globalPaneState();
@@ -95978,8 +98052,46 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
   paneRoot._pendingShiftAnchor = null;
   paneRoot._dragSelectState = null;
   c._dragSelectState = null;
+  _syncPaneRowSelectHeader(c);
   _updateBulkEditBar(c);
   return true;
+}
+
+function _syncPaneRowSelectHeader(ctx) {
+  const c = ctx || _currentPaneState();
+  if (!c) return;
+  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const checkbox = table?.querySelector?.('.row-select-all-cb');
+  if (!checkbox) return;
+  const visibleNames = Array.isArray(c._lastEntityNames) ? c._lastEntityNames.filter(Boolean) : [];
+  const selected = _ensureSelectedEntities(c);
+  const selectedVisibleCount = selected
+    ? visibleNames.reduce((count, name) => count + (selected.has(name) ? 1 : 0), 0)
+    : 0;
+  const allSelected = visibleNames.length > 0 && selectedVisibleCount === visibleNames.length;
+  const mixed = selectedVisibleCount > 0 && !allSelected;
+  checkbox.checked = allSelected;
+  checkbox.indeterminate = mixed;
+  checkbox.setAttribute('aria-checked', mixed ? 'mixed' : (allSelected ? 'true' : 'false'));
+  checkbox.setAttribute('aria-label', allSelected
+    ? '表示中のすべてのエントリを選択解除'
+    : '表示中のすべてのエントリを選択');
+  checkbox.title = checkbox.getAttribute('aria-label');
+}
+
+function _createPaneRowSelectHeaderCheckbox(ctx) {
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'row-select-all-cb';
+  checkbox.dataset.e2eId = _dbE2eId(ctx, 'row-select-all', 'header');
+  checkbox.addEventListener('click', event => {
+    event.stopPropagation();
+    _setPaneAllRowsSelected(ctx, checkbox.checked);
+  });
+  checkbox.setAttribute('aria-checked', 'false');
+  checkbox.setAttribute('aria-label', '表示中のすべてのエントリを選択');
+  checkbox.title = checkbox.getAttribute('aria-label');
+  return checkbox;
 }
 
 function _selectAllPaneRows(ctx) {
@@ -96058,6 +98170,7 @@ function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
+  _syncPaneRowSelectHeader(c);
   const table = _paneEl(c, '#' + ((c && c.tableId) || 'pivot-table'));
   const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);
@@ -100679,13 +102792,22 @@ async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
       for (const file of Array.from(input.files || [])) {
         const fd = new FormData();
         fd.append('file', file);
-        const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
+        // 添付先シートを渡すと、シートフォルダ内の添付フォルダへ元の名前で保存される。
+        // 開いているシート自身の編集ロックに当たるため、自分のロックの識別子も添える。
+        if (options.dbPath) fd.append('sheet_path', options.dbPath);
+        const res = await fetch(API_BASE + '/media/upload', {
+          method: 'POST',
+          body: fd,
+          headers: (typeof _attachmentUploadHeaders === 'function' ? _attachmentUploadHeaders() : undefined),
+        });
         if (!res.ok) throw new Error('画像アップロード失敗: HTTP ' + res.status);
         const meta = await res.json();
         uploaded.push({
           id: (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'img_' + Date.now()),
           content_hash: meta.content_hash || meta.hash,
           filename: meta.filename || file.name,
+          path: meta.path || '',
+          kind: meta.kind || '',
           src: meta.src,
           thumb: meta.thumb,
           url: meta.url,
@@ -100731,7 +102853,7 @@ function _customInstructionRelayErrorMessage(result) {
 async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) {
   const msg = form.querySelector('.gb-form-submit-message');
   try {
-    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly });
+    const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
     if (cfg.betaFeedbackRelay && !fields['送信日']) {
       fields['送信日'] = new Date().toISOString().slice(0, 10);
     }
@@ -101253,7 +103375,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     <h3>シート設定</h3>
     <div class="modal-body db-config-modal-body">
       <div class="field">
-        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`)}</label>
+        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
         <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
       </div>
       <div class="field" style="margin-top:8px;">
@@ -101273,7 +103395,7 @@ async function _showDbConfigModal(dbPath, ctx) {
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
           </label>
-          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します')}
+          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
             <select id="dbcfg-default-panel">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="float"${defaultPanel === 'float' ? ' selected' : ''}>フロートパネル</option>
@@ -101290,6 +103412,12 @@ async function _showDbConfigModal(dbPath, ctx) {
         <label>依存エントリ作成時のコピー対象</label>
         <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
       </div>
+      <div class="field" style="margin-top:8px;">
+        <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
+        <div class="dbcfg-display-actions">
+          <button type="button" id="dbcfg-attachments">添付ファイルを整理...</button>
+        </div>
+      </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>
     </div>
     <div class="btn-row" style="justify-content:space-between;">
@@ -101301,6 +103429,14 @@ async function _showDbConfigModal(dbPath, ctx) {
     </div>
   </div>`;
   document.body.appendChild(o);
+
+  // 添付ファイルの整理
+  const attachBtn = o.querySelector('#dbcfg-attachments');
+  if (attachBtn && typeof showSheetAttachmentCleanupModal === 'function') {
+    attachBtn.addEventListener('click', () => { o.remove(); showSheetAttachmentCleanupModal(dbPath); });
+  } else if (attachBtn) {
+    attachBtn.style.display = 'none';
+  }
 
   // テンプレートボタン
   const tmplBtn = o.querySelector('#dbcfg-template');
@@ -102094,7 +104230,13 @@ function _dbViewSurfaceEl(ctx, selector, id) {
 
 function _galleryImageSrcFromValue(rawValue, dbPath, entityName) {
   const items = typeof parseImagePropertyValue === 'function' ? parseImagePropertyValue(rawValue) : [];
-  if (items.length && typeof _imageSrc === 'function') return _imageSrc(items[0], true);
+  if (items.length && typeof _imageSrc === 'function') {
+    // 動画・PDFはカバー画像にできないので、画像の添付があればそれを使う
+    const cover = typeof _attachmentKind === 'function'
+      ? items.find(item => _attachmentKind(item) === 'image')
+      : items[0];
+    return cover ? _imageSrc(cover, true) : '';
+  }
   const text = String(rawValue || '').trim();
   if (!text || !/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(text)) return '';
   if (/^(https?:|data:|blob:|\/)/.test(text)) return text;
@@ -102123,13 +104265,18 @@ function _appendDbCardImagePreview(root, items, options = {}) {
   wrap.style.setProperty('--db-card-thumb-columns', String(thumbColumns));
   let appended = 0;
   items.slice(0, thumbCount).forEach((item, idx) => {
-    const mediaKind = String(item?.asset_kind || item?.media_type || '').toLowerCase();
-    const hasPreview = !!(item?.thumb_url || item?.thumb || item?.preview_url || item?.preview_src || item?.preview_image_url);
-    if (mediaKind === 'video' && !hasPreview) {
+    const mediaKind = typeof _attachmentKind === 'function'
+      ? _attachmentKind(item)
+      : String(item?.asset_kind || item?.media_type || '').toLowerCase();
+    // thumb_url は新方式では動画にも入る（生ファイル）ので、本物の縮小画像だけを preview として扱う
+    const hasPreview = !!(item?.preview_url || item?.preview_src || item?.preview_image_url);
+    if (mediaKind !== 'image' && !hasPreview) {
       const placeholder = document.createElement('div');
       placeholder.className = 'db-card-media-placeholder';
       placeholder.dataset.imageIndex = String(idx);
-      placeholder.innerHTML = (typeof lucide === 'function' ? lucide('video', 16) : '') + '<span>動画</span>';
+      const icon = mediaKind === 'video' ? 'video' : 'fileText';
+      const caption = mediaKind === 'video' ? '動画' : (mediaKind === 'pdf' ? 'PDF' : 'ファイル');
+      placeholder.innerHTML = (typeof lucide === 'function' ? lucide(icon, 16) : '') + `<span>${caption}</span>`;
       placeholder.addEventListener('click', (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
@@ -102991,6 +105138,201 @@ function renderKanban(ctx) {
 /* ==============================
    タイムラインビュー
    ============================== */
+
+;
+
+/* === gb-sheet-attachment-cleanup.js === */
+;
+/* gb-sheet-attachment-cleanup.js:
+   シートの添付ファイルを一覧して、どこからも使われていないものを整理する画面。
+   セルから外しても実ファイルは残す仕様のため、ここが唯一の削除導線になる。
+   削除はゴミ箱へ移動する通常の削除経路（/outliner/delete-batch）を通すので、
+   参照が残っているファイルには既存の削除前警告がそのまま効く。 */
+(function () {
+  'use strict';
+
+  function _formatSize(bytes) {
+    const size = Number(bytes || 0);
+    if (size < 1024) return size + ' B';
+    if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
+    if (size < 1024 * 1024 * 1024) return (size / (1024 * 1024)).toFixed(1) + ' MB';
+    return (size / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  }
+
+  function _iconFor(kind) {
+    if (typeof lucide !== 'function') return '';
+    if (kind === 'video') return lucide('film', 15);
+    if (kind === 'pdf') return lucide('fileText', 15);
+    if (kind === 'image') return lucide('image', 15);
+    return lucide('file', 15);
+  }
+
+  function _sheetName(dbPath) {
+    return String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || 'シート';
+  }
+
+  async function showSheetAttachmentCleanupModal(dbPath) {
+    const path = String(dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '') || '');
+    if (!path) {
+      if (typeof showStatus === 'function') showStatus('シートが開かれていません', true);
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `<div class="modal gb-attachment-cleanup-modal">
+      <h3>${typeof lucide === 'function' ? lucide('paperclip', 16) : ''} 添付ファイルの整理</h3>
+      <div class="modal-body gb-attachment-cleanup-body">
+        <div class="gb-attachment-cleanup-toolbar">
+          <label class="gb-attachment-cleanup-filter">
+            <input id="gb-attach-unused-only" type="checkbox" checked> 使われていないものだけ表示
+          </label>
+          <span id="gb-attach-summary" class="gb-section-desc"></span>
+        </div>
+        <div id="gb-attach-list" class="gb-attachment-cleanup-list"></div>
+      </div>
+      <div class="btn-row" style="justify-content:space-between;">
+        <button type="button" id="gb-attach-open-folder">保存先のフォルダを開く</button>
+        <div style="display:flex;gap:8px;">
+          <button data-action="this.closest('.modal-overlay').remove()">閉じる</button>
+          <button class="primary" id="gb-attach-delete" disabled>選択したものを削除</button>
+        </div>
+      </div>
+    </div>`;
+    document.body.appendChild(overlay);
+
+    const listEl = overlay.querySelector('#gb-attach-list');
+    const summaryEl = overlay.querySelector('#gb-attach-summary');
+    const unusedOnlyEl = overlay.querySelector('#gb-attach-unused-only');
+    const deleteBtn = overlay.querySelector('#gb-attach-delete');
+    const openFolderBtn = overlay.querySelector('#gb-attach-open-folder');
+    const selected = new Set();
+    let payload = { items: [], unused_count: 0, folder: '', total_size: 0 };
+
+    function _syncDeleteButton() {
+      deleteBtn.disabled = selected.size === 0;
+      deleteBtn.textContent = selected.size ? `選択した${selected.size}件を削除` : '選択したものを削除';
+    }
+
+    function _render() {
+      const unusedOnly = !!unusedOnlyEl.checked;
+      const items = payload.items.filter(item => (unusedOnly ? !item.used : true));
+      listEl.replaceChildren();
+      if (!payload.items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'gb-attachment-cleanup-empty';
+        empty.textContent = 'このシートに添付ファイルはありません';
+        listEl.appendChild(empty);
+        return;
+      }
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'gb-attachment-cleanup-empty';
+        empty.textContent = '使われていない添付ファイルはありません';
+        listEl.appendChild(empty);
+        return;
+      }
+      items.forEach((item) => {
+        const row = document.createElement('label');
+        row.className = 'gb-attachment-cleanup-row' + (item.used ? ' is-used' : '');
+        const check = document.createElement('input');
+        check.type = 'checkbox';
+        check.checked = selected.has(item.path);
+        check.addEventListener('change', () => {
+          if (check.checked) selected.add(item.path);
+          else selected.delete(item.path);
+          _syncDeleteButton();
+        });
+        row.appendChild(check);
+
+        const icon = document.createElement('span');
+        icon.className = 'gb-attachment-cleanup-icon';
+        icon.innerHTML = _iconFor(item.kind);
+        row.appendChild(icon);
+
+        const name = document.createElement('span');
+        name.className = 'gb-attachment-cleanup-name';
+        name.textContent = item.name;
+        name.title = item.path;
+        row.appendChild(name);
+
+        const meta = document.createElement('span');
+        meta.className = 'gb-attachment-cleanup-meta';
+        meta.textContent = _formatSize(item.size);
+        row.appendChild(meta);
+
+        const state = document.createElement('span');
+        state.className = 'gb-attachment-cleanup-state';
+        state.textContent = item.used ? '使用中' : '未使用';
+        row.appendChild(state);
+        listEl.appendChild(row);
+      });
+    }
+
+    async function _reload() {
+      listEl.replaceChildren();
+      const loading = document.createElement('div');
+      loading.className = 'gb-attachment-cleanup-empty';
+      loading.textContent = '読み込み中...';
+      listEl.appendChild(loading);
+      try {
+        payload = await apiFetch('/sheet-attachments?path=' + encodeURIComponent(path)) || { items: [] };
+      } catch (error) {
+        payload = { items: [], unused_count: 0 };
+        if (typeof showStatus === 'function') {
+          showStatus(error?.userMessage || error?.message || '添付ファイルを読み込めませんでした', true);
+        }
+      }
+      payload.items = Array.isArray(payload.items) ? payload.items : [];
+      selected.clear();
+      _syncDeleteButton();
+      summaryEl.textContent = `${_sheetName(path)}: 全${payload.items.length}件 / 未使用${payload.unused_count || 0}件 / ${_formatSize(payload.total_size)}`;
+      _render();
+    }
+
+    unusedOnlyEl.addEventListener('change', _render);
+
+    openFolderBtn.addEventListener('click', () => {
+      if (!payload.folder) {
+        if (typeof showStatus === 'function') showStatus('添付フォルダはまだありません');
+        return;
+      }
+      overlay.remove();
+      if (typeof revealPathInFolderTree === 'function') revealPathInFolderTree(payload.folder);
+      else if (typeof showStatus === 'function') showStatus(payload.folder);
+    });
+
+    deleteBtn.addEventListener('click', async () => {
+      if (!selected.size) return;
+      const targets = payload.items.filter(item => selected.has(item.path));
+      const usedCount = targets.filter(item => item.used).length;
+      const lines = [`添付ファイル${targets.length}件をゴミ箱へ移動します。`];
+      if (usedCount) lines.push(`このうち${usedCount}件は現在シートで使われています。削除すると表示できなくなります。`);
+      if (!confirm(lines.join('\n'))) return;
+      deleteBtn.disabled = true;
+      try {
+        const result = await apiPost('/outliner/delete-batch', {
+          items: targets.map(item => ({ path: item.path })),
+        });
+        const failed = Array.isArray(result?.failed) ? result.failed : [];
+        if (failed.length) {
+          if (typeof showStatus === 'function') showStatus(`${failed.length}件を削除できませんでした`, true);
+        } else if (typeof showStatus === 'function') {
+          showStatus(`添付ファイル${targets.length}件をゴミ箱へ移動しました`);
+        }
+      } catch (error) {
+        if (typeof showStatus === 'function') {
+          showStatus(error?.userMessage || error?.message || '削除に失敗しました', true);
+        }
+      }
+      await _reload();
+    });
+
+    await _reload();
+  }
+
+  window.showSheetAttachmentCleanupModal = showSheetAttachmentCleanupModal;
+})();
 
 ;
 
@@ -118437,6 +120779,7 @@ function switchRightTab(tabName, source) {
     if (!restoring && !(typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.isRestoreSuspended === 'function' && GBChatRestore.isRestoreSuspended())) {
       switchChatMode(localStorage.getItem('chat-mode') || _chatMode || 'team');
     }
+    if (typeof _chatRevealLatest === 'function') _chatRevealLatest(_chatMode);
     apiFetch('/chat/config').then(async cfg => {
       const p = _chatState.provider;
       const info = cfg.providers?.[p];
@@ -119822,12 +122165,19 @@ function openCalendar() {
     return wrap;
   }
 
+  function _markdownLinkLabel(label, fallback) {
+    const value = String(label || fallback || '');
+    const trimmed = value.trim();
+    const wrappedCode = trimmed.match(/^(`+)([\s\S]*?)\1$/);
+    return wrappedCode ? wrappedCode[2] : value;
+  }
+
   function _makeLink(label, target, options) {
     const normalized = _normalizeMarkdownTarget(target);
     const a = document.createElement('a');
     a.className = 'chat-md-link';
     a.href = _isWebUrl(normalized) ? normalized : '#';
-    a.textContent = label || _linkLabel(normalized);
+    a.textContent = _markdownLinkLabel(label, _linkLabel(normalized));
     a.dataset.chatLinkTarget = normalized;
     a.dataset.gbTooltipDisabled = 'true';
     // 裸書き（本文にそのまま書かれたパス）由来のリンクだけ、描画後に実在確認して
@@ -120832,6 +123182,20 @@ function _chatScrollToBottomIf(container, shouldScroll) {
   if (shouldScroll) _chatScrollToBottom(container);
 }
 
+function _chatRevealLatest(mode = _chatMode) {
+  const container = mode === 'team'
+    ? _chatLiveElement('team-messages')
+    : mode === 'llm' ? _chatLiveMessagesContainer() : null;
+  if (!container) return false;
+  const scroll = () => _chatScrollToBottom(container);
+  scroll();
+  requestAnimationFrame(() => {
+    scroll();
+    requestAnimationFrame(scroll);
+  });
+  return true;
+}
+
 function _chatCopyIconHtml(size = 12) {
   return typeof lucide === 'function' ? lucide('copy', size) : 'Copy';
 }
@@ -121662,6 +124026,11 @@ async function chatCommitSessionTitle(showSavedStatus = true) {
 (function _bindChatSessionTitleInput() {
   const el = document.getElementById('chat-session-title');
   if (!el) return;
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('aria-autocomplete', 'none');
+  el.setAttribute('data-lpignore', 'true');
+  el.setAttribute('data-1p-ignore', 'true');
+  el.setAttribute('data-form-type', 'other');
   el.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -121706,6 +124075,7 @@ function switchChatMode(mode) {
   if (mode === 'llm') {
     _syncChatSessionTitleInput();
     if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+    _chatRevealLatest('llm');
   }
   if (mode === 'history') {
     const historyView = requestedMode === 'cli'
@@ -122357,11 +124727,11 @@ async function loadTeamMessages() {
       container.appendChild(_buildTeamMessageRow(m, me));
       _teamLastTimestamp = m.timestamp || _teamLastTimestamp;
     });
-    container.scrollTop = container.scrollHeight;
+    _chatRevealLatest('team');
   } catch(e) {}
 }
 
-async function pollTeamMessages() {
+async function pollTeamMessages(options = {}) {
   // v5.0: ペインシステムではright-panel.openクラスは使わない。
   // rp-chatがペインにマウントされているか（表示中か）を確認する。
   const rpChat = document.getElementById('rp-chat');
@@ -122379,13 +124749,14 @@ async function pollTeamMessages() {
     if (list.length === 0) return;
     const container = document.getElementById('team-messages');
     if (!container) return;
+    const shouldStickToLatest = _chatShouldStickToBottom(container, options.forceLatest === true);
     const me = getUsername();
     list.forEach(m => {
       if (!_teamMarkMessageRendered(m)) return;
       container.appendChild(_buildTeamMessageRow(m, me));
       _teamLastTimestamp = m.timestamp || _teamLastTimestamp;
     });
-    container.scrollTop = container.scrollHeight;
+    _chatScrollToBottomIf(container, shouldStickToLatest);
   } catch(e) {
   } finally {
     _teamPollInFlight = false;
@@ -122431,7 +124802,7 @@ async function teamSend() {
   try {
     await apiPost(_chatApiPath('/collab/send'), _chatPostPayload({ room: roomPath, text: finalText, from: getUsername() }));
     if (typeof _chatCommitDraftUploadsForText === 'function') _chatCommitDraftUploadsForText('team-input', text);
-    if (_teamCurrentRoom === roomPath) await pollTeamMessages();
+    if (_teamCurrentRoom === roomPath) await pollTeamMessages({ forceLatest: true });
   } catch(e) {
     if (_teamCurrentRoom === roomPath) {
       input.value = text;
@@ -125371,6 +127742,7 @@ async function openFileChat(targetPath) {
 
   if (!restoreStillCurrent()) return false;
   _showChatTargetBadge(targetPath);
+  _chatRevealLatest('llm');
   return true;
   } finally {
     if (showOpenLoading) hideLoading();
@@ -125610,6 +127982,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
   if (anchor) _chatScrollToMessage(anchor);
+  else _chatRevealLatest('llm');
   return true;
   } finally {
     if (showOpenLoading) hideLoading();
@@ -129374,6 +131747,49 @@ function _chatGenerationSamplingParamsNoteHtml() {
   return `<div data-chat-sampling-params-note style="font-size:11px;color:var(--fg2);margin-top:6px;">${fieldHelp('一部の新しいモデルではこの詳細指定は使われません')}</div>`;
 }
 
+// CLIチャット（Antigravity CLI / Claude Code / Codex CLI）では、Web検索・自動要約・
+// コード実行・応答プリセット・詳細パラメータは各CLI側の設定で決まり、Meldexからは
+// 一切渡していない。押しても何も起きない項目を並べないよう、CLI選択中は出さない
+// （app/AGENTS.md「機能しないなら表示しない」）。
+function _chatGenerationIsCliProvider() {
+  return !!window.GBChatCli?.isCliChatProvider?.(_chatGenerationCurrentProvider());
+}
+
+function _chatGenerationApiOnlyControlsHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `
+    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-web-search" type="checkbox" ${localStorage.getItem('chat-allow-web-search') !== '0' ? 'checked' : ''}><span>Web検索を許可</span></label>
+    <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
+  `;
+}
+
+function _chatGenerationCodeExecutionControlHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `<label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>`;
+}
+
+function _chatGenerationResponseTuningHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `
+    ${_chatGenerationSettingsRow('応答プリセット', `<select id="chat-menu-param-preset" class="gb-input" style="max-width:130px;">
+      ${[
+        ['creative', '創作'],
+        ['standard', '標準'],
+        ['strict', '厳密'],
+      ].map(([v, label]) => `<option value="${v}" ${_chatGenerationSettingValue('chat-param-preset', 'standard') === v ? 'selected' : ''}>${label}</option>`).join('')}
+    </select>`)}
+    <details data-chat-generation-details style="font-size:12px;color:var(--fg2);">
+      <summary style="cursor:pointer;">詳細パラメータ</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
+        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
+        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
+        ${_chatGenerationSamplingParamsNoteHtml()}
+      </div>
+    </details>
+  `;
+}
+
 function _chatGenerationCliSessionControlsHtml() {
   const provider = _chatGenerationCurrentProvider();
   const cli = window.GBChatCli;
@@ -129460,29 +131876,13 @@ function showChatGenerationSettingsMenu(event) {
   menu.style.cssText = 'position:fixed;z-index:10090;min-width:280px;max-width:340px;padding:10px;display:flex;flex-direction:column;gap:10px;';
   menu.innerHTML = `
     <div style="font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">LLM設定</div>
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-web-search" type="checkbox" ${localStorage.getItem('chat-allow-web-search') !== '0' ? 'checked' : ''}><span>Web検索を許可</span></label>
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
+    ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>
+    ${_chatGenerationCodeExecutionControlHtml()}
     <label class="gb-check" style="margin:0;"><input id="chat-menu-show-recommendations" type="checkbox" ${localStorage.getItem('chat-recommendations-enabled') !== '0' ? 'checked' : ''}><span>「次にできること」の提案を表示</span></label>
     <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
     ${_chatGenerationReasoningRowHtml()}
-    ${_chatGenerationSettingsRow('応答プリセット', `<select id="chat-menu-param-preset" class="gb-input" style="max-width:130px;">
-      ${[
-        ['creative','創作'],
-        ['standard','標準'],
-        ['strict','厳密'],
-      ].map(([v, label]) => `<option value="${v}" ${_chatGenerationSettingValue('chat-param-preset', 'standard') === v ? 'selected' : ''}>${label}</option>`).join('')}
-    </select>`)}
-    <details data-chat-generation-details style="font-size:12px;color:var(--fg2);">
-      <summary style="cursor:pointer;">詳細パラメータ</summary>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
-        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
-        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
-        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
-        ${_chatGenerationSamplingParamsNoteHtml()}
-      </div>
-    </details>
+    ${_chatGenerationResponseTuningHtml()}
   `;
   menu.addEventListener('change', () => {
     _persistChatGenerationSettings(menu, { normalizeNumbers: true });
@@ -131815,7 +134215,11 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
           cli_session_scope: cliSessionContinuity.scopeKey || '',
           active_feature: typeof _chatActiveFeatureForTarget === 'function' ? _chatActiveFeatureForTarget(streamTargetPath) : '',
           user: typeof getUsername === 'function' ? getUsername() : '',
+          user_agent: navigator.userAgent || '',
           theme_context: typeof window.chatThemeContextSettings === 'function' ? window.chatThemeContextSettings() : {},
+          // 通常チャットと同じカスタムインストラクションを渡す。これが無いと
+          // 設定画面で入力した内容がCLIチャットでは無視される。
+          ...(typeof chatCustomInstructionSettings === 'function' ? chatCustomInstructionSettings() : {}),
         }),
       });
       if (!response.ok) {
@@ -132550,7 +134954,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       <section class="gb-section gb-section--boxed">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;">
           <div>
-            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール ${fieldHelp('有効なルールはチャットに自動で反映されます。')}</div>
+            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール ${fieldHelp('有効なルールはチャットに自動で反映されます。', { e2eId: 'chat-rules-help' })}</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-cr-action="add" data-e2e-id="chat-rules-add">${crIcon('plus', 14)} 追加</button>` : ''}
@@ -132560,7 +134964,7 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
       </section>
       <div data-cr-alert></div>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-desc">${crEsc(HEADER_TITLE)} ${fieldHelp(HEADER_HELP)}</div>
+        <div class="gb-section-desc">${crEsc(HEADER_TITLE)} ${fieldHelp(HEADER_HELP, { e2eId: 'chat-rules-priority-help' })}</div>
         <div data-cr-list class="chat-rules-list"></div>
       </section>
     `;
@@ -134223,6 +136627,39 @@ const FOLDER_PANEL_RENDER_CHUNK_SIZE = 80;
 const WEB_PREVIEWABLE_IMAGE = new Set(['image']);
 let _folderPath = '';
 let _folderItems = [];
+let _folderUnifiedSearchPaths = new Set();
+let _folderUnifiedSearchSeq = 0;
+let _folderUnifiedSearchTimer = 0;
+
+function _refreshFolderUnifiedSearch(query) {
+  const text = String(query || '').trim();
+  const seq = ++_folderUnifiedSearchSeq;
+  _folderUnifiedSearchPaths = new Set();
+  if (!text || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
+  const scopes = window.MeldexUnifiedSearch.active();
+  if (!scopes.some(scope => scope !== 'name')) return Promise.resolve();
+  return window.MeldexUnifiedSearch.search(text, { path: _folderPath || '', limit: 100 })
+    .then(data => {
+      if (seq !== _folderUnifiedSearchSeq) return;
+      _folderUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
+      if (typeof renderFolderGrid === 'function') renderFolderGrid();
+    })
+    .catch(() => {});
+}
+
+function _scheduleFolderUnifiedSearch(query) {
+  clearTimeout(_folderUnifiedSearchTimer);
+  _folderUnifiedSearchTimer = setTimeout(() => {
+    _folderUnifiedSearchTimer = 0;
+    _refreshFolderUnifiedSearch(query);
+  }, 240);
+}
+
+window.addEventListener('meldex:search-scopes-changed', () => {
+  const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
+  const query = String(cfg.filterText || '');
+  if (query.trim()) _scheduleFolderUnifiedSearch(query);
+});
 let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
 let _folderLayout = localStorage.getItem('folder-layout') || 'waterfall';
@@ -134247,6 +136684,44 @@ function _folderPanelRenderChunkSize(total) {
 
 function _normalizeFolderPathForCompare(path) {
   return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function _folderDndPathKey(path) {
+  const value = String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/');
+  const prefix = value.startsWith('/') ? '/' : '';
+  const segments = [];
+  value.split('/').forEach(segment => {
+    if (!segment || segment === '.') return;
+    if (segment === '..') {
+      if (segments.length && segments[segments.length - 1] !== '..') segments.pop();
+      else if (!prefix) segments.push(segment);
+      return;
+    }
+    segments.push(segment);
+  });
+  return (prefix + segments.join('/')).replace(/\/+$/, '').toLowerCase();
+}
+
+function _folderDndPathIsAncestor(parentPath, childPath) {
+  const parentKey = _folderDndPathKey(parentPath);
+  const childKey = _folderDndPathKey(childPath);
+  return !!parentKey && !!childKey && parentKey !== childKey && childKey.startsWith(parentKey + '/');
+}
+
+function _folderDragItemsForStart(primaryItem, selectedItems) {
+  const primaryKey = _folderDndPathKey(primaryItem?.path);
+  const candidates = (selectedItems || []).filter(item => item?.path);
+  const withoutPrimaryAncestors = candidates.filter(item => {
+    const key = _folderDndPathKey(item.path);
+    return key === primaryKey || !_folderDndPathIsAncestor(item.path, primaryItem?.path);
+  });
+  const seen = new Set();
+  return withoutPrimaryAncestors.filter(item => {
+    const key = _folderDndPathKey(item.path);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return !withoutPrimaryAncestors.some(parent => parent !== item && _folderDndPathIsAncestor(parent.path, item.path));
+  });
 }
 
 function _isHomeFolderPath(path) {
@@ -134617,11 +137092,13 @@ function _folderMembershipFolderLabel(folder) {
   return name === normalized ? normalized : `${name} - ${normalized}`;
 }
 
-function _folderDragPayloadItemsFromEvent(event) {
-  let payload = null;
+function _folderDragPayloadItemsFromEvent(event, payloadOverride) {
+  let payload = payloadOverride || null;
   try {
-    const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
-    payload = raw ? JSON.parse(raw) : null;
+    if (!payload) {
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
+      payload = raw ? JSON.parse(raw) : null;
+    }
   } catch {
     payload = null;
   }
@@ -134629,11 +137106,13 @@ function _folderDragPayloadItemsFromEvent(event) {
     payload = window._gbOutlinerDragPayload || window._gbFolderViewDragPayload || null;
   }
   const rows = Array.isArray(payload?.items) ? payload.items : (payload?.path ? [payload] : []);
+  const sourceSurface = payload?.sourceSurface || '';
   const seen = new Set();
   return rows.map(row => ({
     name: row?.name || '',
     path: row?.path || '',
     type: row?.type || 'file',
+    sourceSurface: row?.sourceSurface || sourceSurface || 'main',
   })).filter(row => {
     const key = _folderMembershipKey(row.path);
     if (!key || seen.has(key)) return false;
@@ -134647,17 +137126,18 @@ function _folderCanAcceptLinkDrop(event, targetItem) {
   if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;
   if (typeof isItemLocked === 'function' && isItemLocked(targetItem.path)) return false;
   const types = Array.from(event?.dataTransfer?.types || []);
-  return types.includes('application/x-meldex-node');
+  return types.includes('application/x-meldex-node')
+    || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(event, 'node'));
 }
 
-async function _folderCreateLinksFromDrop(event, targetItem) {
+async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
   const targetPath = targetItem?.path || '';
   const targetKey = _folderMembershipKey(targetPath);
-  const items = _folderDragPayloadItemsFromEvent(event)
+  const items = _folderDragPayloadItemsFromEvent(event, payloadOverride)
     .filter(row => _folderMembershipKey(row.path) !== targetKey);
   if (!targetPath || items.length === 0) {
     showStatus('リンク登録できる項目がありません', true);
-    return;
+    return 0;
   }
   let ok = 0;
   let failed = 0;
@@ -134679,6 +137159,192 @@ async function _folderCreateLinksFromDrop(event, targetItem) {
   }
   const suffix = failed > 0 ? `（${failed} 件失敗）` : '';
   showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にリンク登録しました${suffix}` : 'リンク登録に失敗しました', failed > 0 && ok === 0);
+  return ok;
+}
+
+function _folderCanAcceptMoveDrop(event, targetItem) {
+  if (!event || event.altKey || !targetItem?.path) return false;
+  if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;
+  if (typeof isItemLocked === 'function' && isItemLocked(targetItem.path)) return false;
+  return Array.from(event.dataTransfer?.types || []).includes('application/x-meldex-node')
+    || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(event, 'node'));
+}
+
+async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
+  const targetPath = targetItem?.path || '';
+  const targetKey = _folderMembershipKey(targetPath);
+  const items = _folderDragPayloadItemsFromEvent(event, payloadOverride).filter(source => {
+    const sourceKey = _folderMembershipKey(source.path);
+    return sourceKey && sourceKey !== targetKey && !targetKey.startsWith(sourceKey + '/');
+  });
+  if (!targetPath || items.length === 0) {
+    showStatus('移動できる項目がありません', true);
+    return 0;
+  }
+  const progress = window.MeldexImportProgress;
+  progress?.beginOperation?.('ファイルを移動中', items.length);
+  let ok = 0;
+  const failures = [];
+  try {
+    for (const source of items) {
+      try {
+        const oldPath = source.path;
+        const copySource = source.sourceSurface === 'sheet-image';
+        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+          path: oldPath,
+          dest_folder: targetPath,
+        } : {
+          path: oldPath,
+          dest_folder: targetPath,
+          conflict_policy: 'error',
+        });
+        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
+          renameAppPathReferences(oldPath, res.new_path, {
+            label: res.new_name || source.name,
+            fileId: res.file_id,
+            type: source.type || 'file',
+          });
+        }
+        ok += 1;
+      } catch (error) {
+        failures.push({ name: source.name || source.path, error });
+      }
+      progress?.updateOperation?.(ok + failures.length);
+    }
+  } finally {
+    progress?.finishOperation?.();
+  }
+  if (typeof loadOutliner === 'function') {
+    await loadOutliner({ force: true, reason: 'folder-panel-drop-move' });
+  }
+  if (_folderPath && typeof openFolder === 'function') {
+    const label = document.getElementById('folder-title')?.textContent || _folderPath;
+    await openFolder(label, _folderPath, {
+      silent: true,
+      skipShowView: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    });
+  }
+  if (failures.length) {
+    const first = failures[0];
+    const reason = String(first.error?.userMessage || first.error?.message || '');
+    showStatus(`${ok}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
+  } else {
+    showStatus(`${ok}件を「${targetItem.name || targetPath}」へ移動しました`);
+  }
+  return ok;
+}
+
+function _folderDirectParentKey(path) {
+  const normalized = _normalizeFolderPathForCompare(path);
+  const slash = normalized.lastIndexOf('/');
+  return slash >= 0 ? normalized.slice(0, slash) : '';
+}
+
+function _folderManualDropIntent(event, targetElement, targetItem) {
+  if (!event || !targetElement || !targetItem?.path || event.altKey) return null;
+  if (typeof getSortForFolder !== 'function' || getSortForFolder(_folderPath || '').sort !== 'manual') return null;
+  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
+  const sources = _folderDragPayloadItemsFromEvent(event).filter(source => (
+    _folderDirectParentKey(source.path) === currentKey && source.path !== targetItem.path
+  ));
+  if (!sources.length || _folderDirectParentKey(targetItem.path) !== currentKey) return null;
+  const rect = targetElement.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  let position;
+  if (_folderLayout === 'list') {
+    const ratio = (event.clientY - rect.top) / rect.height;
+    if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
+    position = ratio < 0.5 ? 'before' : 'after';
+  } else {
+    const ratio = (event.clientX - rect.left) / rect.width;
+    if ((targetItem.type === 'folder' || targetItem.type === 'database') && ratio > 0.28 && ratio < 0.72) return null;
+    position = ratio < 0.5 ? 'before' : 'after';
+  }
+  return { position, sources };
+}
+
+function _folderClearManualDropIndicators() {
+  document.querySelectorAll('.fv-item.fv-manual-before,.fv-item.fv-manual-after').forEach(element => {
+    element.classList.remove('fv-manual-before', 'fv-manual-after');
+  });
+}
+
+function _folderApplyManualDrop(intent, targetItem) {
+  if (!intent || !targetItem?.name) return false;
+  const currentKey = _normalizeFolderPathForCompare(_folderPath || '');
+  const directItems = (_folderItems || []).filter(item => _folderDirectParentKey(item?.path) === currentKey);
+  const ordered = typeof _sortItemsByManualOrder === 'function'
+    ? _sortItemsByManualOrder([...directItems], _folderPath || '')
+    : [...directItems];
+  const sourceNames = new Set(intent.sources.map(source => source.name).filter(Boolean));
+  const movedNames = ordered.filter(item => sourceNames.has(item?.name)).map(item => item.name);
+  const remaining = ordered.map(item => item?.name).filter(name => name && !sourceNames.has(name));
+  const targetIndex = remaining.indexOf(targetItem.name);
+  if (!movedNames.length || targetIndex < 0) return false;
+  const insertIndex = targetIndex + (intent.position === 'after' ? 1 : 0);
+  remaining.splice(insertIndex, 0, ...movedNames);
+  const historyKeys = [
+    typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort',
+    typeof MANUAL_ORDER_KEY !== 'undefined' ? MANUAL_ORDER_KEY : 'outliner-manual-order',
+  ];
+  const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
+  setSortSetting(_folderPath || '', 'manual', 'asc');
+  setManualOrder(_folderPath || '', remaining);
+  if (typeof pushOutlinerSettingsHistory === 'function') {
+    pushOutlinerSettingsHistory('フォルダ: マニュアル並び替え', before, targetItem.name, historyKeys);
+  }
+  const selectedPaths = (_folderSelectedItems || []).map(item => item?.path).filter(Boolean);
+  renderFolderGrid({ preserveSelectedPaths: selectedPaths });
+  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-manual-sort' });
+  showStatus('並び順を変更しました');
+  return true;
+}
+
+const FOLDER_SUBFOLDER_CONTENTS_KEY = 'gb:folder-include-subfolders';
+
+function isFolderSubfolderContentsEnabled() {
+  try { return localStorage.getItem(FOLDER_SUBFOLDER_CONTENTS_KEY) === '1'; } catch { return false; }
+}
+
+function setFolderSubfolderContentsEnabled(enabled) {
+  try { localStorage.setItem(FOLDER_SUBFOLDER_CONTENTS_KEY, enabled ? '1' : '0'); } catch {}
+  if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
+}
+
+async function _folderFetchBrowseItems(path) {
+  const direct = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+  if (!isFolderSubfolderContentsEnabled()) return direct;
+  const result = [...direct];
+  const seenItems = new Set(direct.map(item => _normalizeFolderPathForCompare(item?.path)).filter(Boolean));
+  const queue = direct.filter(item => item?.type === 'folder' && item.path).map(item => item.path);
+  const visited = new Set([_normalizeFolderPathForCompare(path)]);
+  while (queue.length && visited.size < 5000) {
+    const folderPath = queue.shift();
+    const key = _normalizeFolderPathForCompare(folderPath);
+    if (!key || visited.has(key)) continue;
+    visited.add(key);
+    try {
+      const children = await apiFetch('/browse?path=' + encodeURIComponent(folderPath) + '&detail=true&all_files=true');
+      children.forEach(child => {
+        if (child?.type === 'folder' && child.path) queue.push(child.path);
+        else if (child?.path) {
+          const childKey = _normalizeFolderPathForCompare(child.path);
+          if (!seenItems.has(childKey)) {
+            seenItems.add(childKey);
+            result.push({ ...child, _subfolderContent: true, _subfolderParentPath: folderPath });
+          }
+        }
+      });
+    } catch (error) {
+      console.warn('サブフォルダの読み込みに失敗しました', folderPath, error);
+    }
+  }
+  return result;
 }
 /**
  * Meldex Folder View
@@ -134752,7 +137418,9 @@ async function openFolder(label, path, opts) {
     }
     if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
-    let fetchedItems = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+    let fetchedItems = typeof _folderFetchBrowseItems === 'function'
+      ? await _folderFetchBrowseItems(path)
+      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
     }
@@ -135049,6 +137717,7 @@ function _folderHasActiveFilters(cfg) {
 function _getFolderFilteredItems() {
   const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
   const text = String(cfg.filterText || '').trim().toLowerCase();
+  const includeName = window.MeldexUnifiedSearch?.read?.().name !== false;
   const types = new Set(_folderFilterArray(cfg.filterTypes));
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   const folders = new Set(_folderFilterFolderKeys(cfg));
@@ -135057,7 +137726,8 @@ function _getFolderFilteredItems() {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
-      if (!haystack.includes(text)) return false;
+      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
+      if (!(includeName && haystack.includes(text)) && !unifiedMatch) return false;
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
@@ -135346,8 +138016,11 @@ function renderFolderGrid(opts) {
       const appendIconThumb = () => {
         const icon = document.createElement('span');
         icon.className = 'fv-icon';
-        icon.innerHTML = fileTypeIcon(item.type);
+        icon.innerHTML = typeof _outlinerIconMarkup === 'function'
+          ? _outlinerIconMarkup(item, 36)
+          : fileTypeIcon(item.type);
         thumb.appendChild(icon);
+        window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
       };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
@@ -135479,12 +138152,31 @@ function renderFolderGrid(opts) {
         return;
       }
       e.stopPropagation();
+      const draggedIsSelected = _folderSelectedItems.some(selected => selected?.path === item.path);
+      if (!draggedIsSelected) {
+        _folderSelected = item;
+        _folderSelectedItems = [item];
+        document.querySelectorAll('.fv-item.selected').forEach(selected => selected.classList.remove('selected'));
+        el.classList.add('selected');
+        _syncFolderCheckboxes();
+        _updateFolderBulkBar();
+      }
+      const dragItems = _folderDragItemsForStart(
+        item,
+        draggedIsSelected ? _folderSelectedItems : [item]
+      )
+        .map(selected => ({
+          name: selected.name || '',
+          path: selected.path,
+          type: selected.type || 'file',
+          sourceSurface: 'folder-panel',
+        }));
+      const primary = dragItems.find(selected => selected.path === item.path) || dragItems[0];
+      const payload = { ...primary, items: dragItems, sourceSurface: 'folder-panel' };
       el.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'copyMove';
-      e.dataTransfer.setData('text/plain', item.name || '');
-      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
-        name: item.name, path: item.path, type: item.type || 'file'
-      }));
+      e.dataTransfer.setData('text/plain', dragItems.map(selected => selected.name).filter(Boolean).join(', '));
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
       // text/uri-list を併用することで OS シェル側の赤い禁止カーソルを軽減
       try {
         if (item.path && typeof buildSingleTabWindowUrl === 'function') {
@@ -135495,39 +138187,61 @@ function renderFolderGrid(opts) {
           e.dataTransfer.setData('text/uri-list', uri);
         }
       } catch {}
-      // 窓外 popout 用に単一 item 分の payload を保持
-      window._gbFolderViewDragPayload = {
-        items: [{ name: item.name, path: item.path, type: item.type || 'file' }],
-      };
+      window._gbFolderViewDragNonce = typeof MeldexDnD !== 'undefined'
+        ? MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node') : '';
+      window._gbFolderViewDragPayload = payload;
       // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度 + カーソルから離す
       if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, el, 0.35);
     });
-    el.addEventListener('dragend', (e) => {
+    el.addEventListener('dragend', async (e) => {
       el.classList.remove('dragging');
       // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-      if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
+      const shouldPopout = typeof shouldOpenDragPopout === 'function'
+        ? await shouldOpenDragPopout(e, window._gbFolderViewDragNonce)
+        : (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e));
+      if (shouldPopout) {
         const payload = window._gbFolderViewDragPayload;
         const items = payload && Array.isArray(payload.items) ? payload.items : [];
         if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
       }
+      if (window._gbFolderViewDragNonce && typeof MeldexDnD !== 'undefined') {
+        MeldexDnD.cancelCrossWindowDrag(window._gbFolderViewDragNonce);
+      }
       window._gbFolderViewDragPayload = null;
+      window._gbFolderViewDragNonce = '';
     });
     el.addEventListener('dragover', (e) => {
-      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      const manualDrop = _folderManualDropIntent(e, el, item);
+      const linkDrop = _folderCanAcceptLinkDrop(e, item);
+      const moveDrop = _folderCanAcceptMoveDrop(e, item);
+      if (!manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'link';
-      el.classList.add('fv-link-drop');
+      e.dataTransfer.dropEffect = linkDrop ? 'link' : 'move';
+      _folderClearManualDropIndicators();
+      if (manualDrop) el.classList.add(manualDrop.position === 'before' ? 'fv-manual-before' : 'fv-manual-after');
+      else el.classList.add('fv-link-drop');
     });
     el.addEventListener('dragleave', () => {
       el.classList.remove('fv-link-drop');
+      el.classList.remove('fv-manual-before', 'fv-manual-after');
     });
     el.addEventListener('drop', async (e) => {
-      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      const manualDrop = _folderManualDropIntent(e, el, item);
+      const linkDrop = _folderCanAcceptLinkDrop(e, item);
+      const moveDrop = _folderCanAcceptMoveDrop(e, item);
+      if (!manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
       el.classList.remove('fv-link-drop');
-      await _folderCreateLinksFromDrop(e, item);
+      _folderClearManualDropIndicators();
+      if (manualDrop && _folderApplyManualDrop(manualDrop, item)) return;
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const completed = linkDrop
+        ? await _folderCreateLinksFromDrop(e, item, resolved?.payload)
+        : await _folderMoveItemsFromDrop(e, item, resolved?.payload);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
     });
 
     // 右クリックメニュー
@@ -135660,8 +138374,19 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
   const closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   function addItem(label, fn, cls, icon) {
+    if (typeof _outlinerAppendMenuItem === 'function') {
+      return _outlinerAppendMenuItem(menu, {
+        label,
+        icon,
+        danger: cls === 'red',
+        className: 'tree-ctx-item',
+        action: () => { closeMenu(); fn(); },
+      });
+    }
     const d = document.createElement('div');
     d.className = 'gb-context-menu-item';
     if (icon && typeof lucide === 'function') {
@@ -135673,8 +138398,26 @@ function showFolderItemContextMenu(e, item, options = {}) {
     d.addEventListener('click', () => { closeMenu(); fn(); });
     menu.appendChild(d);
   }
-  function addSep() { const d = document.createElement('div'); d.className = 'gb-context-menu-sep'; menu.appendChild(d); }
+  function addSep() {
+    if (typeof _outlinerAppendMenuSeparator === 'function') return _outlinerAppendMenuSeparator(menu);
+    const d = document.createElement('div'); d.className = 'gb-context-menu-sep'; menu.appendChild(d); return d;
+  }
   function addSub(label, icon) {
+    if (typeof _outlinerCreateSubmenu === 'function' && typeof _outlinerAppendSubmenu === 'function') {
+      const panel = _outlinerCreateSubmenu(label);
+      _outlinerAppendSubmenu(menu, label, icon, panel);
+      return {
+        item(l, fn, cls, itemIcon) {
+          return _outlinerAppendMenuItem(panel, {
+            label: l,
+            icon: itemIcon,
+            danger: cls === 'red',
+            className: 'tree-ctx-item',
+            action: () => { closeMenu(); fn(); },
+          });
+        },
+      };
+    }
     const wrap = document.createElement('div'); wrap.style.position = 'relative';
     const trigger = document.createElement('div'); trigger.className = 'gb-context-menu-item';
     trigger.innerHTML = (icon && typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' : '') + esc(label) + submenuArrow();
@@ -135733,19 +138476,42 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
 
   // --- 開く ---
-  if (!blankTarget) addItem('開く', () => openFolderItem(item), null, 'folderOpen');
-  if (item.type === 'image') {
-    const openSub = addSub('別の方法で開く');
-    openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)));
+  if (!blankTarget && item.path) {
+    const openSub = addSub('開く', 'folderOpen');
+    openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
+    openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
+    if (typeof openLinkedPathInFloatPanel === 'function') {
+      openSub.item('フロートパネルで開く', () => openLinkedPathInFloatPanel(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelsTopLeft');
+    }
     if (_canUseRightSidebar) {
       openSub.item('右サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
     }
-    openSub.item('ボードで開く', () => openImageInCanvas(item));
+    if (typeof openLinkedPathStandalone === 'function'
+        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(item.path, item.type))) {
+      openSub.item('単独アプリで開く', () => openLinkedPathStandalone(item.path, item.name, { linkType: item.type }), null, 'appWindow');
+    }
+    openSub.item('新しいウィンドウで開く', () => _folderOpenItemInNewWindow(item), null, 'monitor');
+    if (item.type !== 'folder') openSub.item('アプリで開く', () => openNative(item.path), null, 'externalLink');
+    if (item.type === 'image') {
+      openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)), null, 'image');
+      openSub.item('ボードで開く', () => openImageInCanvas(item), null, 'presentation');
+    }
+    if ((item.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
+      openSub.item('シナリオで開く', () => {
+        if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
+        showStatus('シナリオエディタを開けませんでした', true);
+      }, null, 'fileText');
+    } else if (item.type === 'scenario') {
+      openSub.item('シナリオへ取り込んで開く', () => {
+        if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
+        showStatus('シナリオエディタを開けませんでした', true);
+      }, null, 'fileText');
+    }
+    addSep();
   }
   if (_isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
-  if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
   if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
@@ -135848,22 +138614,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && ((item.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path)))) {
-    addSep();
-    addItem('シナリオで開く', () => {
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
-  if (item.type === 'scenario' && item.path && !(typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
-    addSep();
-    addItem('シナリオへインポートして開く', () => {
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
   if (item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
     addSep();
     addItem('比較...', () => showCompareModal(item.path), null, 'columns');
@@ -135872,8 +138622,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (!blankTarget && item.path) {
     addSep();
     addItem('リンクをコピー', () => _folderCopyMeldexLink(item), null, 'link');
-    addItem('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
-    addItem('新しいウィンドウで開く', () => _folderOpenItemInNewWindow(item), null, 'monitor');
   }
 
   if (!blankTarget && item.path && typeof getFavorites === 'function') {
@@ -135939,7 +138687,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (!blankTarget && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
     const curWork = getWorkFolder();
     const isWork = curWork === item.path;
-    const wfSub = addSub('作品フォルダ', 'folder');
+    const wfSub = addSub('作品フォルダ', 'folderDot');
     wfSub.item((isWork ? '✓ ' : '') + '設定する', async () => {
       setWorkFolder(item.path);
       showStatus(`「${item.name}」を作品フォルダに設定しました`);
@@ -135962,15 +138710,12 @@ function showFolderItemContextMenu(e, item, options = {}) {
     const sortSub = addSub('並び替え', 'arrowUpDown');
     const curSort = getSortForFolder(item.path);
     const sortSettingsKey = typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort';
-    [
+    const sortOptions = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
       { label: 'マニュアル', sort: 'manual', order: 'asc' },
       { label: '名前 ↑', sort: 'name', order: 'asc' },
       { label: '名前 ↓', sort: 'name', order: 'desc' },
-      { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
-      { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
-      { label: '作成日時 ↑', sort: 'created', order: 'asc' },
-      { label: '作成日時 ↓', sort: 'created', order: 'desc' },
-    ].forEach(option => {
+    ];
+    sortOptions.forEach(option => {
       const active = curSort.sort === option.sort && curSort.order === option.order;
       sortSub.item((active ? '✓ ' : '') + option.label, async () => {
         const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory([sortSettingsKey]) : null;
@@ -136106,6 +138851,13 @@ let _folderListSuppressClickUntil = 0;
 let _folderListResizeState = null;
 
 function _folderReadListSort() {
+  if (typeof getSortForFolder === 'function' && typeof _folderPath !== 'undefined') {
+    const shared = getSortForFolder(_folderPath || '');
+    const key = shared?.sort || 'name';
+    if (key === 'manual' || FOLDER_LIST_SORT_COLUMNS.some(col => col.key === key)) {
+      return { key, order: shared?.order === 'desc' ? 'desc' : 'asc' };
+    }
+  }
   try {
     const parsed = JSON.parse(localStorage.getItem(FOLDER_LIST_SORT_STORAGE_KEY) || '{}');
     const key = FOLDER_LIST_SORT_COLUMNS.some(col => col.key === parsed.key) ? parsed.key : 'name';
@@ -136118,6 +138870,9 @@ function _folderReadListSort() {
 
 function _folderWriteListSort(sort) {
   try { localStorage.setItem(FOLDER_LIST_SORT_STORAGE_KEY, JSON.stringify(sort)); } catch {}
+  if (typeof setSortSetting === 'function' && typeof _folderPath !== 'undefined') {
+    setSortSetting(_folderPath || '', sort?.key || 'name', sort?.order || 'asc');
+  }
 }
 
 function _folderToggleListSort(key) {
@@ -136129,6 +138884,7 @@ function _folderToggleListSort(key) {
   _folderWriteListSort({ key, order });
   const selectedPaths = _folderSelectedItems.map(item => item?.path).filter(Boolean);
   renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-sort' });
 }
 
 function _folderListDateValue(item, key) {
@@ -136185,8 +138941,13 @@ function _folderCompareListItems(a, b, key, order) {
 }
 
 function _folderSortVisibleItems(items) {
-  if (_folderLayout !== 'list') return items;
   const sort = _folderReadListSort();
+  if (sort.key === 'manual' && typeof _sortItemsByManualOrder === 'function') {
+    return _sortItemsByManualOrder([...items], _folderPath || '');
+  }
+  if (typeof compareItemsForFolderSort === 'function') {
+    return [...items].sort((a, b) => compareItemsForFolderSort(a, b, sort.key, sort.order));
+  }
   return [...items].sort((a, b) => _folderCompareListItems(a, b, sort.key, sort.order));
 }
 
@@ -137141,6 +139902,14 @@ function _renderDetailContent(item) {
     frag.appendChild(tagBox);
   }
 
+  if (item.type === 'folder' && item.path) {
+    const duplicateBox = document.createElement('div');
+    duplicateBox.dataset.duplicateFolderSetting = '';
+    duplicateBox.dataset.path = item.path;
+    frag.appendChild(duplicateBox);
+    setTimeout(() => window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(duplicateBox), 0);
+  }
+
   // 所属フォルダ
   if (item.path) {
     const sec = document.createElement('div');
@@ -137987,9 +140756,15 @@ function showFolderDisplaySettings(options) {
     cfg.filterText = searchInput.value;
     saveFolderDisplayConfig(cfg);
     renderFolderGrid();
+    _scheduleFolderUnifiedSearch(searchInput.value);
   });
   searchRow.appendChild(searchLabel);
-  searchRow.appendChild(searchInput);
+  const searchControls = document.createElement('div');
+  searchControls.style.cssText = 'display:flex;align-items:center;gap:4px;';
+  searchInput.style.flex = '1 1 auto';
+  searchControls.appendChild(searchInput);
+  window.MeldexUnifiedSearch?.button?.(searchControls, { e2eId: 'folder-panel-search-scope-trigger' });
+  searchRow.appendChild(searchControls);
   menu.appendChild(searchRow);
 
   const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);
@@ -138933,6 +141708,141 @@ function _installFolderBlankContextMenu(container) {
     _folderToolbarWrappedBulkBar = true;
   }
 
+  function _folderToolbarCloseExtraMenu() {
+    document.querySelectorAll('.folder-toolbar-sort-menu').forEach(menu => menu.remove());
+  }
+
+  function _folderToolbarMenuItem(menu, label, icon, action, active) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-context-menu-item tree-ctx-item';
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+    button.innerHTML = _folderToolbarIcon(icon || 'arrowUpDown', 14)
+      + '<span>' + (active ? '✓ ' : '') + (typeof esc === 'function' ? esc(label) : label) + '</span>';
+    button.addEventListener('click', async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarCloseExtraMenu();
+      await action();
+    });
+    menu.appendChild(button);
+  }
+
+  function showFolderToolbarSortMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    _folderToolbarCloseExtraMenu();
+    const folderPath = _folderToolbarCurrentPath();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu folder-toolbar-sort-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'フォルダの並び替え');
+    const current = typeof getSortForFolder === 'function' ? getSortForFolder(folderPath) : { sort: 'name', order: 'asc' };
+    const options = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
+      { label: 'マニュアル', sort: 'manual', order: 'asc' },
+      { label: '名前 ↑', sort: 'name', order: 'asc' },
+      { label: '名前 ↓', sort: 'name', order: 'desc' },
+    ];
+    options.forEach(option => {
+      const active = current.sort === option.sort && current.order === option.order;
+      _folderToolbarMenuItem(menu, option.label, option.sort === 'manual' ? 'gripVertical' : 'arrowUpDown', async () => {
+        const historyKeys = [
+          typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort',
+          typeof MANUAL_ORDER_KEY !== 'undefined' ? MANUAL_ORDER_KEY : 'outliner-manual-order',
+        ];
+        const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
+        setSortSetting(folderPath, option.sort, option.order);
+        if (typeof pushOutlinerSettingsHistory === 'function') {
+          pushOutlinerSettingsHistory('フォルダ: 並び替え設定', before, option.label, historyKeys);
+        }
+        const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+          ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
+        if (typeof renderFolderGrid === 'function') renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+        if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-toolbar-sort' });
+      }, active);
+    });
+    document.body.appendChild(menu);
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below', gap: 4 });
+    else {
+      menu.style.left = rect.left + 'px';
+      menu.style.top = rect.bottom + 4 + 'px';
+    }
+    setTimeout(() => document.addEventListener('pointerdown', function closer(pointerEvent) {
+      if (menu.contains(pointerEvent.target) || event.currentTarget.contains(pointerEvent.target)) return;
+      document.removeEventListener('pointerdown', closer, true);
+      menu.remove();
+    }, true), 0);
+  }
+
+  async function toggleFolderSubfolderContents() {
+    const enabled = !(typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled());
+    if (typeof setFolderSubfolderContentsEnabled === 'function') setFolderSubfolderContentsEnabled(enabled);
+    syncFolderSubfolderContentsButtons();
+    const folderPath = _folderToolbarCurrentPath();
+    if (folderPath && typeof openFolder === 'function') {
+      const label = document.getElementById('folder-title')?.textContent || folderPath;
+      await openFolder(label, folderPath, {
+        silent: true,
+        skipShowView: true,
+        skipNavPush: true,
+        skipSaveLastView: true,
+        skipHighlight: true,
+        skipGlobalUi: true,
+      });
+    }
+  }
+
+  function syncFolderSubfolderContentsButtons() {
+    const enabled = typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled();
+    document.querySelectorAll('[data-folder-subfolder-contents]').forEach(button => {
+      button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      button.classList.toggle('is-active', enabled);
+      button.title = enabled ? 'サブフォルダの内容を表示中' : 'サブフォルダの内容を表示';
+      button.setAttribute('aria-label', button.title);
+    });
+  }
+
+  function _folderToolbarInstallExtraControls() {
+    const layout = document.getElementById('folder-layout-select');
+    if (layout && !document.getElementById('folder-toolbar-sort')) {
+      const sortButton = document.createElement('button');
+      sortButton.id = 'folder-toolbar-sort';
+      sortButton.type = 'button';
+      sortButton.className = 'tb-icon-btn';
+      sortButton.title = '並び替え';
+      sortButton.setAttribute('aria-label', 'フォルダを並び替え');
+      sortButton.setAttribute('aria-haspopup', 'menu');
+      sortButton.dataset.e2eId = 'folder-toolbar-sort';
+      sortButton.innerHTML = _folderToolbarIcon('arrowUpDown', 16);
+      sortButton.addEventListener('click', showFolderToolbarSortMenu);
+      layout.parentElement.insertBefore(sortButton, layout);
+      const contentsButton = document.createElement('button');
+      contentsButton.id = 'folder-toolbar-subfolder-contents';
+      contentsButton.type = 'button';
+      contentsButton.className = 'tb-icon-btn';
+      contentsButton.dataset.folderSubfolderContents = '1';
+      contentsButton.dataset.e2eId = 'folder-toolbar-subfolder-contents';
+      contentsButton.innerHTML = _folderToolbarIcon('folderKanban', 16);
+      contentsButton.addEventListener('click', toggleFolderSubfolderContents);
+      layout.parentElement.insertBefore(contentsButton, layout);
+    }
+    const refresh = document.getElementById('btn-outliner-refresh');
+    if (refresh && !document.getElementById('tree-subfolder-contents')) {
+      const treeButton = document.createElement('button');
+      treeButton.id = 'tree-subfolder-contents';
+      treeButton.type = 'button';
+      treeButton.dataset.folderSubfolderContents = '1';
+      treeButton.dataset.e2eId = 'tree-subfolder-contents';
+      treeButton.style.cssText = 'width:24px;height:24px;padding:0;background:none;border:1px solid transparent;border-radius:4px;color:var(--fg2);cursor:pointer;flex-shrink:0;';
+      treeButton.innerHTML = _folderToolbarIcon('folderKanban', 14);
+      treeButton.addEventListener('click', toggleFolderSubfolderContents);
+      refresh.parentElement.insertBefore(treeButton, refresh);
+    }
+    syncFolderSubfolderContentsButtons();
+  }
+
   function initFolderToolbarActions() {
     const buttons = _folderToolbarButtons();
     if (!buttons.add) return;
@@ -138943,6 +141853,7 @@ function _installFolderBlankContextMenu(container) {
     _folderToolbarBindButton(buttons.delete, 'trash2', folderToolbarDeleteSelection);
     _folderToolbarBindButton(buttons.undo, 'undo2', folderToolbarUndo);
     _folderToolbarBindButton(buttons.redo, 'redo2', folderToolbarRedo);
+    _folderToolbarInstallExtraControls();
     _folderToolbarWrapBulkBarUpdate();
     const grid = document.getElementById('folder-grid');
     if (grid && grid.dataset.folderToolbarSelectionBound !== '1') {
@@ -138967,6 +141878,9 @@ function _installFolderBlankContextMenu(container) {
   global.folderToolbarCanPasteTo = folderToolbarCanPasteTo;
   global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
   global.appendFolderOperationButtons = appendFolderOperationButtons;
+  global.showFolderToolbarSortMenu = showFolderToolbarSortMenu;
+  global.toggleFolderSubfolderContents = toggleFolderSubfolderContents;
+  global.syncFolderSubfolderContentsButtons = syncFolderSubfolderContentsButtons;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initFolderToolbarActions, { once: true });
@@ -140073,6 +142987,7 @@ if (typeof window !== 'undefined') {
 
 const _shellVerbCache = {}; // path key -> [{name, raw}]
 const _HIDDEN_VERBS_KEY = 'gb:hidden-shell-verbs';
+const _PINNED_VERBS_KEY = 'gb:pinned-shell-verbs';
 
 function _shellVerbCacheKey(path) {
   return String(path || '').replace(/[\\/]+/g, '/').toLowerCase();
@@ -140222,6 +143137,31 @@ function toggleHiddenShellVerb(name) {
   setHiddenShellVerbs(hidden);
 }
 
+function getPinnedShellVerbs() {
+  try {
+    const raw = localStorage.getItem(_PINNED_VERBS_KEY);
+    return raw == null ? null : (JSON.parse(raw) || []);
+  } catch { return null; }
+}
+
+function setPinnedShellVerbs(list) {
+  localStorage.setItem(_PINNED_VERBS_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
+function _isDefaultPinnedShellVerb(verb) {
+  const text = _shellVerbText(verb);
+  return text.includes('dropbox')
+    || text.includes('圧縮')
+    || text.includes('解凍')
+    || text.includes('展開')
+    || /\b(compress|archive|extract|unzip|zip)\b/.test(text);
+}
+
+function isPinnedShellVerb(verb) {
+  const configured = getPinnedShellVerbs();
+  return configured == null ? _isDefaultPinnedShellVerb(verb) : configured.includes(verb?.name);
+}
+
 // --- メニューへの追加 ---
 
 async function appendShellVerbsToMenu(menu, path, options = {}) {
@@ -140262,21 +143202,31 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   const visibleVerbs = verbs.filter(v => (
     !hidden.includes(v.name) && !(editingLocked && _isEditMutationShellVerb(v))
   ));
+  const promotedVerbs = visibleVerbs.filter(isPinnedShellVerb);
+  promotedVerbs.forEach(v => {
+    _shellMenuAppendItem(menu, v.name, () => {
+      if (typeof closeTreeContextMenu === 'function') closeTreeContextMenu();
+      executeShellVerb(path, v.raw);
+    }, { className: 'tree-ctx-item gb-shell-menu-promoted' });
+  });
 
   // サブメニューとして表示
   const shellPanel = _shellMenuCreatePanel('OS メニュー');
   _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
 
-  if (visibleVerbs.length === 0) {
+  const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v));
+  if (submenuVerbs.length === 0) {
     _shellMenuAppendItem(
       shellPanel,
-      editingLocked ? '編集ロック中のため編集系操作は非表示です' : 'すべて非表示です',
+      visibleVerbs.length > 0
+        ? '選択したコマンドはトップに表示中です'
+        : (editingLocked ? '編集ロック中のため編集系操作は非表示です' : 'すべて非表示です'),
       null,
       { disabled: true },
     );
   }
 
-  visibleVerbs.forEach(v => {
+  submenuVerbs.forEach(v => {
     const item = _shellMenuAppendItem(shellPanel, v.name, () => {
       closeTreeContextMenu();
       executeShellVerb(path, v.raw);
@@ -140349,10 +143299,18 @@ function _showHideVerbPopup(x, y, verbName, parentMenu, path) {
 
 // --- カスタマイズモーダル ---
 
-function showShellVerbSettings() {
+async function showShellVerbSettings() {
   // 全キャッシュから動詞を集約
   const allVerbs = new Map(); // name -> raw
   for (const verbs of Object.values(_shellVerbCache)) {
+    verbs.forEach(v => { if (!allVerbs.has(v.name)) allVerbs.set(v.name, v.raw); });
+  }
+  const probePath = (typeof _folderPath !== 'undefined' && _folderPath)
+    || (typeof _homeFolderPath !== 'undefined' && _homeFolderPath)
+    || (typeof state !== 'undefined' && state?.vaultPath)
+    || '';
+  if (allVerbs.size === 0 && probePath) {
+    const verbs = await fetchShellVerbs(probePath);
     verbs.forEach(v => { if (!allVerbs.has(v.name)) allVerbs.set(v.name, v.raw); });
   }
   if (allVerbs.size === 0) {
@@ -140381,7 +143339,7 @@ function showShellVerbSettings() {
 
   const desc = document.createElement('div');
   desc.className = 'gb-section-desc shell-verb-settings-desc';
-  desc.textContent = 'チェックを外すとメニューから非表示になります。';
+  desc.textContent = '表示する項目と、OSメニューの外側（トップ）にも表示する項目を選べます。Dropbox・圧縮・解凍は初期状態でトップに表示されます。';
 
   const groupTitle = document.createElement('div');
   groupTitle.className = 'shell-verb-settings-group-title';
@@ -140391,9 +143349,12 @@ function showShellVerbSettings() {
   list.className = 'shell-verb-settings-list';
   list.setAttribute('role', 'group');
   list.setAttribute('aria-label', 'OS メニュー項目');
-  for (const [name] of allVerbs) {
+  const configuredPinned = getPinnedShellVerbs();
+  for (const [name, raw] of allVerbs) {
+    const row = document.createElement('div');
+    row.className = 'shell-verb-settings-row';
     const label = document.createElement('label');
-    label.className = 'shell-verb-settings-row';
+    label.className = 'shell-verb-settings-visibility';
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = !hidden.includes(name);
@@ -140403,7 +143364,23 @@ function showShellVerbSettings() {
     const text = document.createElement('span');
     text.textContent = name;
     label.append(input, text);
-    list.appendChild(label);
+    const pinLabel = document.createElement('label');
+    pinLabel.className = 'shell-verb-settings-pin';
+    const pinInput = document.createElement('input');
+    pinInput.type = 'checkbox';
+    pinInput.checked = configuredPinned == null
+      ? _isDefaultPinnedShellVerb({ name, raw })
+      : configuredPinned.includes(name);
+    pinInput.disabled = !input.checked;
+    pinInput.dataset.pinnedVerbName = name;
+    pinInput.setAttribute('aria-label', `${name}をトップにも表示`);
+    pinLabel.append(pinInput, document.createTextNode('トップにも表示'));
+    input.addEventListener('change', () => {
+      pinInput.disabled = !input.checked;
+      if (!input.checked) pinInput.checked = false;
+    });
+    row.append(label, pinLabel);
+    list.appendChild(row);
   }
   const footer = document.createElement('div');
   footer.className = 'btn-row shell-verb-settings-actions';
@@ -140444,6 +143421,9 @@ function showShellVerbSettings() {
       if (!cb.checked) newHidden.push(cb.dataset.verbName);
     });
     setHiddenShellVerbs([...new Set(newHidden)]);
+    const pinned = [...o.querySelectorAll('input[data-pinned-verb-name]:checked:not(:disabled)')]
+      .map(cb => cb.dataset.pinnedVerbName);
+    setPinnedShellVerbs([...new Set(pinned)]);
     close();
     showStatus('メニュー設定を保存しました');
   });
@@ -140466,6 +143446,9 @@ if (typeof window !== 'undefined') {
     },
     getHiddenShellVerbs,
     setHiddenShellVerbs,
+    getPinnedShellVerbs,
+    setPinnedShellVerbs,
+    isPinnedShellVerb,
   };
 }
 
@@ -140805,8 +143788,8 @@ if (typeof window !== 'undefined') {
         // OS関連付けアプリで開く形式（clip, 3d等）。Desktopでは「アプリで開く」と同じ
         // 安全な openNative 経路を既定の開く操作として使う（計画§2.4）。Cloud等、
         // openNative が実行不能な環境では、現行どおり理由と代替操作を案内する。
-        const isDropboxMode = !!(window.MeldexRuntimeAdapter?.isDropboxMode?.());
-        if (!isDropboxMode && typeof openNative === 'function') {
+        const isBrowserMode = !!(window.MeldexRuntimeAdapter?.isBrowserDataMode?.());
+        if (!isBrowserMode && typeof openNative === 'function') {
           openNative(item.path);
         } else if (typeof showStatus === 'function') {
           showStatus((item.name || item.path) + ' — 「…」または長押しメニューからアプリで開く');
@@ -140859,6 +143842,63 @@ if (typeof window !== 'undefined') {
 
 /* === gb-outliner.js === */
 ;
+/* フォルダツリーとフォルダパネルで共有する並び替え契約。 */
+const FOLDER_SORT_OPTIONS = Object.freeze([
+  { label: 'マニュアル', sort: 'manual', order: 'asc' },
+  { label: '名前 ↑', sort: 'name', order: 'asc' },
+  { label: '名前 ↓', sort: 'name', order: 'desc' },
+  { label: '種類 ↑', sort: 'type', order: 'asc' },
+  { label: '種類 ↓', sort: 'type', order: 'desc' },
+  { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
+  { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
+  { label: '作成日時 ↑', sort: 'created', order: 'asc' },
+  { label: '作成日時 ↓', sort: 'created', order: 'desc' },
+  { label: 'サイズ ↑', sort: 'size', order: 'asc' },
+  { label: 'サイズ ↓', sort: 'size', order: 'desc' },
+]);
+const FOLDER_SORT_COLLATOR = new Intl.Collator('ja', {
+  numeric: true,
+  sensitivity: 'base',
+  ignorePunctuation: true,
+});
+
+function getFolderSortOptions() {
+  return FOLDER_SORT_OPTIONS.map(option => ({ ...option }));
+}
+
+function _folderSortDateValue(item, key) {
+  const raw = key === 'created'
+    ? (item?.created || item?.created_at || item?.modified || item?.mtime || '')
+    : (item?.modified || item?.mtime || item?.created || item?.created_at || '');
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function compareItemsForFolderSort(a, b, sort = 'name', order = 'asc') {
+  const folderRank = item => (item?.type === 'folder' || item?.type === 'database' ? 0 : 1);
+  const rankDiff = folderRank(a) - folderRank(b);
+  if (rankDiff) return rankDiff;
+  let result = 0;
+  if (sort === 'created' || sort === 'modified') {
+    result = _folderSortDateValue(a, sort) - _folderSortDateValue(b, sort);
+  } else if (sort === 'size') {
+    result = Number(a?.size || 0) - Number(b?.size || 0);
+  } else if (sort === 'type') {
+    result = FOLDER_SORT_COLLATOR.compare(String(a?.type || a?.ext || ''), String(b?.type || b?.ext || ''));
+  } else if (sort === 'createdBy' || sort === 'modifiedBy') {
+    const fallbackKey = sort === 'createdBy' ? 'created_by' : 'modified_by';
+    result = FOLDER_SORT_COLLATOR.compare(
+      String(a?.[sort] || a?.[fallbackKey] || ''),
+      String(b?.[sort] || b?.[fallbackKey] || ''),
+    );
+  } else {
+    result = FOLDER_SORT_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''));
+  }
+  if (result && order === 'desc') result *= -1;
+  return result
+    || FOLDER_SORT_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''))
+    || FOLDER_SORT_COLLATOR.compare(String(a?.path || ''), String(b?.path || ''));
+}
 /**
  * Meldex Outliner
  * フォルダツリー、検索、フィルタ、お気に入り、サイドバー
@@ -141497,6 +144537,7 @@ function renderOutlinerLegacy(items) {
   const fragment = document.createDocumentFragment();
   visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
   applyManualSort(el, '_root');
 }
@@ -141533,6 +144574,7 @@ function renderOutlinerMultiRoot(roots) {
     fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
   }
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元
   applyManualSort(el, '_root');
 }
@@ -141672,12 +144714,117 @@ const treeSelection = {
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
 
-function _treeDragPayload(primaryItem) {
-  const items = treeSelection.getNodeData()
+function _treeNodeIsAncestor(parentNode, childNode) {
+  if (!parentNode || !childNode || parentNode === childNode) return false;
+  const normalize = path => {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/').forEach(segment => {
+      if (!segment || segment === '.') return;
+      if (segment === '..') { if (segments.length) segments.pop(); return; }
+      segments.push(segment);
+    });
+    return segments.join('/').toLowerCase();
+  };
+  const parentKey = normalize(parentNode._nodeData?.path);
+  const childKey = normalize(childNode._nodeData?.path);
+  return !!parentKey && !!childKey && childKey.startsWith(parentKey + '/');
+}
+
+function _outlinerExternalDragItems(event, payloadOverride) {
+  let payload = payloadOverride || null;
+  try {
+    if (!payload) {
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
+      payload = raw ? JSON.parse(raw) : null;
+    }
+  } catch {
+    payload = null;
+  }
+  if (!payload) payload = window._gbFolderViewDragPayload || null;
+  const rows = Array.isArray(payload?.items) ? payload.items : (payload?.path ? [payload] : []);
+  const sourceSurface = payload?.sourceSurface || '';
+  const seen = new Set();
+  return rows.map(row => ({
+    name: row?.name || '',
+    path: row?.path || '',
+    type: row?.type || 'file',
+    sourceSurface: row?.sourceSurface || sourceSurface || 'main',
+  })).filter(row => {
+    const key = String(row.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
+  const targetPath = targetItem?.path || '';
+  if (!targetPath || !Array.isArray(items) || items.length === 0) return;
+  const progress = window.MeldexImportProgress;
+  progress?.beginOperation?.('ファイルを移動中', items.length);
+  let processed = 0;
+  let succeeded = 0;
+  const failures = [];
+  try {
+    for (const source of items) {
+      try {
+        const copySource = source.sourceSurface === 'sheet-image';
+        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+          path: source.path,
+          dest_folder: targetPath,
+        } : {
+          path: source.path,
+          dest_folder: targetPath,
+          conflict_policy: 'error',
+        });
+        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
+          renameAppPathReferences(source.path, res.new_path, {
+            label: res.new_name || source.name,
+            fileId: res.file_id,
+            type: source.type || 'file',
+          });
+        }
+        succeeded += 1;
+      } catch (error) {
+        failures.push({ source, error });
+      }
+      processed += 1;
+      progress?.updateOperation?.(processed);
+    }
+  } finally {
+    progress?.finishOperation?.();
+  }
+  await loadOutliner({ force: true, reason: 'external-drop-move' });
+  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+    const label = document.getElementById('folder-title')?.textContent || _folderPath;
+    await openFolder(label, _folderPath, {
+      silent: true,
+      skipShowView: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    });
+  }
+  if (failures.length) {
+    const reason = String(failures[0].error?.userMessage || failures[0].error?.message || '');
+    showStatus(`${succeeded}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
+  } else {
+    showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
+  }
+  return succeeded;
+}
+
+function _treeDragPayload(primaryItem, actualNodes) {
+  const sourceItems = Array.isArray(actualNodes)
+    ? actualNodes.map(node => node?._nodeData).filter(Boolean)
+    : treeSelection.getNodeData();
+  const items = sourceItems
     .filter(item => item && item.path && !item._isRoot)
-    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '' }));
+    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '', sourceSurface: 'folder-tree' }));
   const fallback = primaryItem && primaryItem.path && !primaryItem._isRoot
-    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '' }]
+    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '', sourceSurface: 'folder-tree' }]
     : [];
   const normalizedItems = items.length ? items : fallback;
   const primary = normalizedItems[0] || { name: primaryItem?.name || '', path: primaryItem?.path || '', type: primaryItem?.type || '' };
@@ -141686,6 +144833,7 @@ function _treeDragPayload(primaryItem) {
     path: primary.path || '',
     type: primary.type || '',
     items: normalizedItems,
+    sourceSurface: 'folder-tree',
   };
 }
 
@@ -141764,6 +144912,7 @@ function _sortItemsByManualOrder(items, folderPath) {
   map.forEach(it => sorted.push(it));
   return sorted;
 }
+
 
 // 編集ロック
 const LOCKED_ITEMS_KEY = 'outliner-locked-items';
@@ -142488,13 +145637,21 @@ function createTreeNodeFromBrowse(item, rootPath) {
             // entities が undefined でも TypeError にならないようガード
             const entityNames = Object.keys(pivotData?.entities || {}).sort();
             const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
+            const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+            if (attachmentFolder) {
+              entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+            }
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
           } else if (currentIsFolder) {
             const sortCfg = getSortForFolder(item.path);
-            const apiSort = sortCfg.sort === 'manual' ? 'name' : sortCfg.sort;
+            const serverSorts = new Set(['name', 'modified', 'created']);
+            const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+            const needsClientSort = sortCfg.sort === 'manual' || !serverSorts.has(sortCfg.sort);
             const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
-            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + '&all_files=true');
+            const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
             let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
             // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
@@ -142507,6 +145664,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
             });
             // マニュアルソートは配列側で確定してから追加する（仮想化コンテナはDOM順を持たないため）
             if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
+            else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
             await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
           }
           delete childrenDiv.dataset.loadError;
@@ -142676,9 +145834,13 @@ function createTreeNodeFromBrowse(item, rootPath) {
     // DOM順でソート（上から下の順序を維持）
     const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')];
     const selectedNodes = [...treeSelection.items].sort((a, b) => allTreeNodes.indexOf(a) - allTreeNodes.indexOf(b));
-    draggedNodes = selectedNodes.filter(n => !selectedNodes.some(parent => parent !== n && parent.contains(n)));
+    // 開始行の祖先フォルダが古い選択に残っていても、画像等の子行を
+    // ドラッグした操作で親フォルダごと昇格させない。その後、通常の
+    // 親子de-dupを行い、同じ選択を2回移動しない。
+    const withoutDragAncestors = selectedNodes.filter(n => n === div || !_treeNodeIsAncestor(n, div));
+    draggedNodes = withoutDragAncestors.filter(n => !withoutDragAncestors.some(parent => _treeNodeIsAncestor(parent, n)));
     draggedNodes.forEach(n => n.querySelector('.tree-node-row')?.classList.add('dragging'));
-    const payload = _treeDragPayload(item);
+    const payload = _treeDragPayload(item, draggedNodes);
     e.dataTransfer.effectAllowed = 'copyMove';
     // text/uri-list を入れておくと OS シェル（窓外）が「URL のドラッグ」として
     // 認識し、赤い禁止カーソルが出にくくなる
@@ -142691,6 +145853,8 @@ function createTreeNodeFromBrowse(item, rootPath) {
     } catch {}
     e.dataTransfer.setData('text/plain', (payload.items || []).map(entry => entry.name).filter(Boolean).join(', ') || item.name || '');
     e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    window._gbOutlinerDragNonce = typeof MeldexDnD !== 'undefined'
+      ? MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node') : '';
     // 窓外ドロップ時の popout 用に payload を保持
     window._gbOutlinerDragPayload = payload;
     // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度にする
@@ -142699,7 +145863,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
     }
   });
 
-  row.addEventListener('dragend', (e) => {
+  row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
@@ -142708,19 +145872,38 @@ function createTreeNodeFromBrowse(item, rootPath) {
     document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
       .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-    if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
+    const shouldPopout = typeof shouldOpenDragPopout === 'function'
+      ? await shouldOpenDragPopout(e, window._gbOutlinerDragNonce)
+      : (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e));
+    if (shouldPopout) {
       const payload = window._gbOutlinerDragPayload;
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
     }
+    if (window._gbOutlinerDragNonce && typeof MeldexDnD !== 'undefined') {
+      MeldexDnD.cancelCrossWindowDrag(window._gbOutlinerDragNonce);
+    }
     window._gbOutlinerDragPayload = null;
+    window._gbOutlinerDragNonce = '';
     draggedNode = null;
     draggedNodes = null;
   });
 
   row.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (!draggedNode) return;
+    if (!draggedNode) {
+      const externalItems = _outlinerExternalDragItems(e);
+      const bridgeCandidate = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+      if ((!externalItems.length && !bridgeCandidate) || !(isFolder || isDB) || item._isRoot && !item.path
+          || externalItems.some(source => source.type === 'entity') || isItemLocked(item.path)) {
+        e.dataTransfer.dropEffect = 'none';
+        return;
+      }
+      e.dataTransfer.dropEffect = 'move';
+      clearDragIndicators();
+      row.classList.add('drag-over-inside');
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       e.dataTransfer.dropEffect = 'none';
       clearDragIndicators();
@@ -142751,8 +145934,26 @@ function createTreeNodeFromBrowse(item, rootPath) {
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
 
-  row.addEventListener('drop', (e) => {
+  row.addEventListener('drop', async (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    if (!draggedNode) {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
+        const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const targetPath = String(item.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        return source.type !== 'entity' && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
+      });
+      clearDragIndicators();
+      if (!(isFolder || isDB) || isItemLocked(item.path) || externalItems.length === 0) {
+        if (resolved) MeldexDnD.failDrop(resolved);
+        return;
+      }
+      const completed = await _moveExternalItemsIntoOutlinerFolder(externalItems, item);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       clearDragIndicators();
       showStatus('シートのエントリはフォルダツリー内へ移動できません');
@@ -142762,7 +145963,7 @@ function createTreeNodeFromBrowse(item, rootPath) {
     if (e.ctrlKey) { clearDragIndicators(); return; }
     if (!draggedNode || draggedNode === div) return;
     const nodes = (draggedNodes || [draggedNode])
-      .filter(n => n !== div && !n.contains(div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
+      .filter(n => n !== div && !_treeNodeIsAncestor(n, div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
     if (nodes.length === 0) return;
     const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
     // 移動元コンテナが仮想化されていた場合、DOM移動だけでは配列側に残留するため
@@ -142834,15 +146035,31 @@ function createTreeNodeFromBrowse(item, rootPath) {
     (async () => {
       const moved = [];
       let movedAcrossFolders = false;
+      let processed = 0;
+      window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
       for (const n of nodes) {
         const dragData = n._nodeData;
-        if (!dragData || !dragData.path) { moved.push(n); continue; }
+        if (!dragData || !dragData.path) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
-        if (destFolder === srcFolder) { moved.push(n); continue; }
+        if (destFolder === srcFolder) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         movedAcrossFolders = true;
         try {
           const oldPath = dragData.path;
-          const res = await apiPost('/outliner/move', { path: dragData.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: dragData.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           if (res.new_path) {
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
@@ -142863,8 +146080,12 @@ function createTreeNodeFromBrowse(item, rootPath) {
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
+        } finally {
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
         }
       }
+      window.MeldexImportProgress?.finishOperation?.();
       if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
@@ -143574,8 +146795,8 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   const isDB = nodeData.type === 'database';
   const isEntity = nodeData.type === 'entity';
 
-  function addMenuItem(text, onclick, cls, icon) {
-    return _outlinerAppendMenuItem(menu, {
+  function addMenuItem(text, onclick, cls, icon, targetMenu = menu) {
+    return _outlinerAppendMenuItem(targetMenu, {
       label: text,
       icon,
       danger: cls === 'danger',
@@ -143661,6 +146882,105 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
   }
   addSep();
+
+  // --- 開く系は利用頻度が高いため、上部の1つのサブメニューへ集約する ---
+  if (!isMulti && nodeData.path && !nodeData._isRoot) {
+    const openType = typeof _normalizeOpenTypeForNav === 'function'
+      ? _normalizeOpenTypeForNav(nodeData.type)
+      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
+    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
+    const canUseRightSidebar = typeof GBPaneBridge === 'undefined'
+      || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+      || typeof GBPaneBridge.surfaceOf !== 'function'
+      || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(nodeEl));
+    const openPanel = _outlinerCreateSubmenu('開く');
+    _outlinerAppendSubmenu(menu, '開く', 'folderOpen', openPanel);
+    _outlinerAppendMenuItem(openPanel, {
+      label: 'メインパネルで開く', icon: 'panelTop', action: () => {
+        closeTreeContextMenu();
+        window.GBOutlinerActivation?.activateNode(nodeEl);
+      },
+    });
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいタブで開く', icon: 'externalLink', action: () => {
+        closeTreeContextMenu();
+        _openInNewTab(nodeData.name || '', nodeData.path, openType);
+      },
+    });
+    if (typeof openLinkedPathInFloatPanel === 'function') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'フロートパネルで開く', icon: 'panelsTopLeft', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathInFloatPanel(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+        },
+      });
+    }
+    if (canUseRightSidebar && typeof openLinkedPathInRightPane === 'function') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathInRightPane(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+        },
+      });
+    }
+    if (typeof openLinkedPathStandalone === 'function'
+        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nodeData.path, nodeData.type))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '単独アプリで開く', icon: 'appWindow', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathStandalone(nodeData.path, nodeData.name, { linkType: nodeData.type });
+        },
+      });
+    }
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいウィンドウで開く', icon: 'monitor', action: () => {
+        closeTreeContextMenu();
+        if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
+        else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+      },
+    });
+    if (!isFolder && typeof openNative === 'function') {
+      const needsExternalApp = !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type));
+      addMenuItem('アプリで開く', () => {
+          closeTreeContextMenu();
+          openNative(nodeData.path);
+        }, null, needsExternalApp ? 'externalLink' : 'appWindow', openPanel);
+    }
+    if (nodeData.type === 'image') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'ビューワーで開く', icon: 'image', action: () => {
+          closeTreeContextMenu();
+          if (typeof openViewer === 'function') openViewer('/viewer?file=' + encodeURIComponent(nodeData.path));
+        },
+      });
+      if (typeof openImageInCanvas === 'function') {
+        _outlinerAppendMenuItem(openPanel, {
+          label: 'ボードで開く', icon: 'presentation', action: () => {
+            closeTreeContextMenu();
+            openImageInCanvas(nodeData);
+          },
+        });
+      }
+    }
+    if ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    } else if (nodeData.type === 'scenario') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオへ取り込んで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    }
+    addSep();
+  }
 
   // --- 編集ロック ---
   if (!isMulti && nodeData.path && !isEntity) {
@@ -143785,23 +147105,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     );
   }
 
-  // --- 台本で開く（シナリオのみ） ---
-  if (!isMulti && nodeData.path && ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path)))) {
-    addMenuItem('シナリオで開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
-  if (!isMulti && nodeData.type === 'scenario' && nodeData.path && !(typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
-    addMenuItem('シナリオへインポートして開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
   // --- ファイルのチャット（ファイル/DB/エントリのみ） ---
   if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot) {
     addMenuItem('チャットを開く', () => {
@@ -143810,32 +147113,12 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'messageSquare');
   }
 
-  if (!isMulti
-    && nodeData.path
-    && nodeData.type !== 'folder'
-    && !nodeData._isRoot
-    && typeof openNative === 'function'
-    && !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type))) {
-    addMenuItem('アプリで開く', () => {
-      closeTreeContextMenu();
-      openNative(nodeData.path);
-    }, null, 'externalLink');
-  }
-
   // --- 比較（ファイル全般） ---
   if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot && typeof showCompareModal === 'function') {
     addMenuItem('比較...', () => {
       closeTreeContextMenu();
       showCompareModal(nodeData.path);
     }, null, 'columns');
-  }
-
-  // --- 開く（ダブルクリック／Enterと同じ共通アクティベーション経路。§2.4） ---
-  if (!isMulti && nodeData.path && !nodeData._isRoot) {
-    addMenuItem('開く', () => {
-      closeTreeContextMenu();
-      window.GBOutlinerActivation?.activateNode(nodeEl);
-    }, null, 'squareArrowOutUpRight');
   }
 
   // --- この階層を閉じる（大量項目向けUI補助導線。§2.3） ---
@@ -143935,26 +147218,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         });
       }, null, 'clipboardList');
     }
-  }
-
-  // --- 新しいウィンドウ/タブで開く ---
-  if (!isMulti && nodeData.path) {
-    const openType = typeof _normalizeOpenTypeForNav === 'function'
-      ? _normalizeOpenTypeForNav(nodeData.type)
-      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
-    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
-    addMenuItem('新しいタブで開く', () => {
-      closeTreeContextMenu();
-      _openInNewTab(nodeData.name || '', nodeData.path, openType);
-    }, null, 'externalLink');
-    addMenuItem('新しいウィンドウで開く', () => {
-      closeTreeContextMenu();
-      // Chrome --app モードの独立ウィンドウとして開く（Meldex の UI チェーン全体が載る）
-      // 通常の window.open だとブラウザのタブバー等が付いて「UI が古く見える」問題になるため、
-      // バックエンド経由の _open_app_window_js を優先利用する。
-      if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
-      else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
-    }, null, 'monitor');
   }
 
   // --- お気に入り ---
@@ -144127,7 +147390,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     const curWork = getWorkFolder();
     const isWork = curWork === nodeData.path;
     const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
-    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folder', wfPanel);
+    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
     [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
       _outlinerAppendMenuItem(wfPanel, {
         html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
@@ -144156,14 +147419,10 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     // サブメニュー風: 1項目でクリック→展開
     const sortPanel = _outlinerCreateSubmenu('並び替え');
     _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
-    const sortOpts = [
+    const sortOpts = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
       { label: 'マニュアル', sort: 'manual', order: 'asc' },
       { label: '名前 ↑', sort: 'name', order: 'asc' },
       { label: '名前 ↓', sort: 'name', order: 'desc' },
-      { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
-      { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
-      { label: '作成日時 ↑', sort: 'created', order: 'asc' },
-      { label: '作成日時 ↓', sort: 'created', order: 'desc' },
     ];
     sortOpts.forEach(o => {
       const active = curSort.sort === o.sort && curSort.order === o.order;
@@ -144172,14 +147431,20 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         checked: active,
         action: async () => {
         closeTreeContextMenu();
-        const before = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY]);
+        const sortHistoryKeys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(sortHistoryKeys);
         setSortSetting(sortPath, o.sort, o.order);
         pushOutlinerSettingsHistory(
           'フォルダツリー: 並び替え設定',
           before,
           sortPath + ' / ' + o.label,
-          [SORT_SETTINGS_KEY]
+          sortHistoryKeys
         );
+        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
+          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
+          renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+        }
         const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
         if (childrenDiv) {
           if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(childrenDiv);
@@ -147419,7 +150684,112 @@ function _showDropdownMenu(e, items, btnSelector) {
 /* ==============================
    フォルダツリー ファイル名検索
    ============================== */
+const MeldexUnifiedSearch = (() => {
+  const STORAGE_KEY = 'meldex-search-scopes-v1';
+  const LEGACY_KEY = 'search-scopes';
+  const defaults = { name: true, content: true, clip: false, tags: false, memo: false };
+  const labels = { name: '名前', content: 'ファイル内文字列', clip: '画像の内容', tags: 'タグ', memo: 'メモ' };
+
+  function available(key) {
+    if (key !== 'clip') return true;
+    // Cloud静的版にはテキスト埋め込みを生成するローカルCLIPモデルがない。
+    // 設定値自体は端末間で壊さず保持し、Cloudでは操作を見せず検索要求から除く。
+    return !(window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser');
+  }
+
+  function read() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_KEY) || 'null'); } catch {}
+    const next = { ...defaults };
+    if (raw && typeof raw === 'object') Object.keys(next).forEach(key => { if (key in raw) next[key] = !!raw[key]; });
+    if (!Object.values(next).some(Boolean)) next.name = true;
+    return next;
+  }
+
+  function write(value) {
+    const next = { ...defaults, ...(value || {}) };
+    if (!Object.values(next).some(Boolean)) next.name = true;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent('meldex:search-scopes-changed', { detail: next }));
+    return next;
+  }
+
+  function active() { return Object.entries(read()).filter(([key, enabled]) => enabled && available(key)).map(([key]) => key); }
+
+  function request(path, options) {
+    const isBrowserCloud = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser';
+    if (isBrowserCloud && window.MeldexDataAccess?.requestJson) {
+      return window.MeldexDataAccess.requestJson(path, options || {});
+    }
+    if (typeof apiFetch === 'function') return apiFetch(path, options);
+    return Promise.resolve({ results: [], scopes: active(), unavailable: [] });
+  }
+
+  async function search(query, options = {}) {
+    const q = String(query || '').trim();
+    if (!q) return { results: [], scopes: active(), unavailable: [] };
+    const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
+    if (options.path) params.set('path', options.path);
+    return request('/search-unified?' + params.toString(), { silentError: true });
+  }
+
+  function show(anchor) {
+    document.querySelectorAll('.meldex-search-scope-popup').forEach(node => node._removeSearchScope?.() || node.remove());
+    const popup = document.createElement('div');
+    popup.className = 'meldex-search-scope-popup';
+    popup.dataset.e2eId = 'search-scope-popup';
+    popup.style.cssText = 'position:fixed;z-index:1300;min-width:210px;padding:8px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.24);';
+    const state = read();
+    Object.entries(labels).forEach(([key, label]) => {
+      if (!available(key)) return;
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;cursor:pointer;';
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.checked = state[key]; input.dataset.searchScope = key;
+      input.addEventListener('change', () => {
+        state[key] = input.checked;
+        const saved = write(state);
+        popup.querySelectorAll('[data-search-scope]').forEach(box => { box.checked = !!saved[box.dataset.searchScope]; });
+      });
+      row.append(input, document.createTextNode(label)); popup.appendChild(row);
+    });
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'gb-btn gb-btn-sm gb-btn-icon'; close.title = '閉じる';
+    close.setAttribute('aria-label', '検索対象設定を閉じる'); close.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
+    const remove = () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true); popup.remove(); };
+    popup._removeSearchScope = remove;
+    const outside = event => { if (!popup.contains(event.target) && event.target !== anchor) remove(); };
+    const escape = event => { if (event.key === 'Escape') remove(); };
+    close.style.cssText = 'display:block;margin:6px 4px 0 auto;'; close.addEventListener('click', remove);
+    popup.appendChild(close); document.body.appendChild(popup);
+    if (anchor?.getBoundingClientRect && typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
+    else if (anchor?.getBoundingClientRect) { const rect = anchor.getBoundingClientRect(); popup.style.left = rect.left + 'px'; popup.style.top = (rect.bottom + 4) + 'px'; }
+    setTimeout(() => { document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', escape, true); }, 0);
+    return popup;
+  }
+
+  function button(anchorParent, options = {}) {
+    if (!anchorParent || anchorParent.querySelector?.('[data-search-scope-trigger]')) return null;
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.dataset.searchScopeTrigger = 'true'; btn.dataset.e2eId = options.e2eId || 'search-scope-trigger';
+    btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon'; btn.title = '検索対象'; btn.setAttribute('aria-label', '検索対象を設定');
+    btn.innerHTML = typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '⚙';
+    btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); show(btn); });
+    anchorParent.appendChild(btn); return btn;
+  }
+
+  return { STORAGE_KEY, defaults, read, write, active, available, search, show, button };
+})();
+window.MeldexUnifiedSearch = MeldexUnifiedSearch;
+
 let _treeSearchQuery = '';
+let _treeUnifiedSearchPaths = new Set();
+let _treeUnifiedSearchSeq = 0;
+let _treeUnifiedSearchTimer = 0;
 
 function doTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
@@ -147427,7 +150797,24 @@ function doTreeNameSearch() {
   const clearBtn = document.getElementById('btn-tree-search-clear');
   if (clearBtn) clearBtn.style.display = q ? '' : 'none';
   _treeSearchQuery = q;
+  const seq = ++_treeUnifiedSearchSeq;
+  _treeUnifiedSearchPaths = new Set();
   applyTreeNameSearch();
+  const scopes = MeldexUnifiedSearch.active();
+  if (q && scopes.some(scope => scope !== 'name')) {
+    clearTimeout(_treeUnifiedSearchTimer);
+    _treeUnifiedSearchTimer = setTimeout(() => {
+      _treeUnifiedSearchTimer = 0;
+      MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+        if (seq !== _treeUnifiedSearchSeq) return;
+        _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
+        applyTreeNameSearch();
+      }).catch(() => {});
+    }, 240);
+  } else {
+    clearTimeout(_treeUnifiedSearchTimer);
+    _treeUnifiedSearchTimer = 0;
+  }
   if (typeof saveCurrentLayoutFilterState === 'function') saveCurrentLayoutFilterState();
 }
 
@@ -147435,6 +150822,8 @@ function clearTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = '';
   _treeSearchQuery = '';
+  _treeUnifiedSearchSeq++;
+  _treeUnifiedSearchPaths = new Set();
   const clearBtn = document.getElementById('btn-tree-search-clear');
   if (clearBtn) clearBtn.style.display = 'none';
   applyTreeNameSearch();
@@ -147443,6 +150832,7 @@ function clearTreeNameSearch() {
 
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
+  const includeName = MeldexUnifiedSearch.read().name;
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
@@ -147464,16 +150854,16 @@ function applyTreeNameSearch() {
     }
     // フォルダ/ルートは名前マッチのみ
     if (d.type === 'folder' || d._isRoot || d.type === 'database') {
-      node._searchMatch = d.name && d.name.toLowerCase().includes(q);
+      node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
       return;
     }
     // エントリ: 設定次第
     if (d.type === 'entity') {
-      node._searchMatch = includeEntities && d.name && d.name.toLowerCase().includes(q);
+      node._searchMatch = includeEntities && ((includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase()));
       return;
     }
     // ファイル: 名前マッチ
-    node._searchMatch = d.name && d.name.toLowerCase().includes(q);
+    node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
   });
 
   // パス2: マッチしたノードの祖先フォルダも表示
@@ -147518,6 +150908,16 @@ function applyTreeNameSearch() {
   });
   window.GBOutlinerVirtualRender?.refreshAllFilters();
 }
+
+function _installTreeSearchScopeTrigger() {
+  const input = document.getElementById('sidebar-search-input');
+  if (input?.parentElement) MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+}
+queueMicrotask(_installTreeSearchScopeTrigger);
+document.addEventListener('DOMContentLoaded', _installTreeSearchScopeTrigger, { once: true });
+window.addEventListener('meldex:search-scopes-changed', () => {
+  if (_treeSearchQuery) doTreeNameSearch();
+});
 
 const _vaultSearchPanelUi = {
   homeParent: null,
@@ -147951,20 +151351,20 @@ async function doVaultReplace(all) {
 (function () {
   'use strict';
 
-  // 既定の行高（px）。§4.1-5: 22px/50px/18px/64x44pxの変数化。
+  // 既定の行高（px）。§4.1-5: 22px/70px/18px/64x64pxの変数化。
   // 実際のCSS側は --tree-row-height（gb-tools.part02.part01.css）で管理し、
   // ここではNode単体テスト等DOM非依存の文脈でも参照できるよう定数として複製する。
   var ROW_HEIGHT_COMPACT = 22; // サムネイルOFF/対象外の通常行
-  var ROW_HEIGHT_THUMBNAIL = 50; // サムネイル表示行・サイズ「中」（既定）。後方互換のため残す単一値。
+  var ROW_HEIGHT_THUMBNAIL = 70; // サムネイル表示行・サイズ「中」（既定）。後方互換のため残す単一値。
   var ICON_SIZE_COMPACT = 18;
   var THUMBNAIL_WIDTH = 64; // サムネイル幅・サイズ「中」（既定）
-  var THUMBNAIL_HEIGHT = 44; // サムネイル高・サイズ「中」（既定）
+  var THUMBNAIL_HEIGHT = 64; // サムネイル高・サイズ「中」（既定）
 
   // サムネイルサイズ設定（小/中/大）ごとの行高・寸法。CSS側（gb-tools.part02.part01.css の
   // html.thumb-size-small / html.thumb-size-large）と値を一致させること（単一情報源はここ）。
-  var ROW_HEIGHT_THUMBNAIL_BY_SIZE = { small: 40, medium: ROW_HEIGHT_THUMBNAIL, large: 72 };
+  var ROW_HEIGHT_THUMBNAIL_BY_SIZE = { small: 54, medium: ROW_HEIGHT_THUMBNAIL, large: 102 };
   var THUMBNAIL_WIDTH_BY_SIZE = { small: 48, medium: THUMBNAIL_WIDTH, large: 96 };
-  var THUMBNAIL_HEIGHT_BY_SIZE = { small: 33, medium: THUMBNAIL_HEIGHT, large: 66 };
+  var THUMBNAIL_HEIGHT_BY_SIZE = { small: 48, medium: THUMBNAIL_HEIGHT, large: 96 };
 
   function _normalizeThumbnailSize(size) {
     return (size === 'small' || size === 'large') ? size : 'medium';
@@ -149999,6 +153399,24 @@ async function doVaultReplace(all) {
     }
   }
 
+  function attachFormatIcon(iconEl, item) {
+    if (!iconEl || !isFormatIconCandidate(item)) return false;
+    var ext = _extname(item && item.path);
+    if (!ext) return false;
+    var pathToken = String(item.path || '');
+    iconEl.dataset.formatIconPath = pathToken;
+    _formatIconCache.get(ext).then(function (url) {
+      if (!url || !iconEl.isConnected || iconEl.dataset.formatIconPath !== pathToken) return;
+      iconEl.innerHTML = '';
+      var img = document.createElement('img');
+      img.className = 'tree-format-icon-img fv-format-icon-img';
+      img.alt = '';
+      img.src = url;
+      iconEl.appendChild(img);
+    });
+    return true;
+  }
+
   function _resolveThumbnail(row, rec) {
     var path = rec.item && rec.item.path;
     if (!path) return;
@@ -150112,6 +153530,7 @@ async function doVaultReplace(all) {
     isAvailable: _hasNativeApiBackend,
     isThumbnailEligible: isThumbnailEligible,
     isFormatIconCandidate: isFormatIconCandidate,
+    attachFormatIcon: attachFormatIcon,
     NO_THUMBNAIL_EXTENSIONS: NO_THUMBNAIL_EXTENSIONS,
     NON_THUMBNAIL_TYPES: NON_THUMBNAIL_TYPES,
     createRequestQueue: createRequestQueue,
@@ -150246,11 +153665,13 @@ _bindClipSearchResultDelegation();
   let activeAlertModal = null;
   let alertPollTimer = null;
   let monitorStarted = false;
+  let settingsRenderSeq = 0;
+  const folderStateCache = new Map();
+  const FOLDER_STATE_CACHE_MS = 15000;
 
   function safeText(value) {
     return String(value == null ? '' : value);
   }
-
   function filePath(file) {
     return safeText(file?.rel_path || file?.path || file?.file_path);
   }
@@ -150259,11 +153680,38 @@ _bindClipSearchResultDelegation();
     const path = filePath(file).replace(/\\/g, '/');
     return safeText(file?.name || path.split('/').pop() || '名前なし');
   }
-
   function fileLocation(file) {
     const path = filePath(file).replace(/\\/g, '/');
     const slash = path.lastIndexOf('/');
     return safeText(file?.location || file?.folder || (slash >= 0 ? path.slice(0, slash) : 'ソースフォルダ'));
+  }
+
+  // 画面へ出すパスは、ドライブ名や共有名を落としてから扱う。保存先の登録内容に
+  // よっては絶対パスが返ってくるため、表示側で必ず均す。
+  function pathParts(value) {
+    const path = safeText(value)
+      .replace(/\\/g, '/')
+      .replace(/^[A-Za-z]:\/+/, '')
+      .replace(/^\/\/[^/]+\/[^/]+\/?/, '')
+      .replace(/^\/+/, '');
+    return path.split('/').filter(Boolean);
+  }
+
+  // 末尾 depth 階層までに詰める（切ったことが分かるよう先頭に … を付ける）。
+  function displayPath(value, depth) {
+    const parts = pathParts(value);
+    const limit = depth || 3;
+    return parts.length > limit ? '…/' + parts.slice(-limit).join('/') : parts.join('/');
+  }
+
+  function targetHtml(folderPath) {
+    const parts = pathParts(folderPath);
+    if (!parts.length) return '';
+    const shown = parts.slice(-3);
+    const name = shown[shown.length - 1];
+    const parent = (parts.length > 3 ? '…/' : '') + shown.slice(0, -1).join('/');
+    return `${lucide('folder', 12)}<span class="dup-progress-target-name">${esc(name)}</span>`
+      + (shown.length > 1 ? `<span class="dup-progress-target-parent">${esc(parent)}</span>` : '');
   }
 
   function isImage(file) {
@@ -150406,11 +153854,18 @@ _bindClipSearchResultDelegation();
       </header>
       <div class="gb-modal-body">
         <div class="dup-progress" data-dup-progress>
+          <div class="dup-progress-target" data-dup-target
+            data-e2e-id="duplicate-progress-target"${options.folderPath ? '' : ' hidden'}>${targetHtml(options.folderPath)}</div>
           <div class="dup-progress-row">
             <span class="gb-section-desc" data-dup-status aria-live="polite">${esc(options.status || '')}</span>
             <span class="dup-progress-count" data-dup-progress-count></span>
           </div>
           <progress max="100" value="0" data-dup-progress-bar aria-label="処理の進捗"></progress>
+          <div class="dup-progress-stats">
+            <span class="dup-progress-percent" data-dup-progress-percent></span>
+            <span class="dup-progress-eta" data-dup-progress-eta></span>
+          </div>
+          <div class="dup-progress-current" data-dup-progress-current hidden></div>
         </div>
         <div class="dup-results" data-dup-results></div>
       </div>
@@ -150437,11 +153892,32 @@ _bindClipSearchResultDelegation();
     const status = overlay.querySelector('[data-dup-status]');
     const count = overlay.querySelector('[data-dup-progress-count]');
     const bar = overlay.querySelector('[data-dup-progress-bar]');
+    const percentText = overlay.querySelector('[data-dup-progress-percent]');
+    const etaText = overlay.querySelector('[data-dup-progress-eta]');
+    const currentText = overlay.querySelector('[data-dup-progress-current]');
     const processed = Number(progress?.processed) || 0;
     const total = Number(progress?.total) || 0;
     const percent = total > 0 ? Math.max(0, Math.min(100, Math.round(processed * 100 / total))) : 0;
+    const rate = Number(progress?.rate) || 0;
+    const eta = Number(progress?.eta_seconds);
     if (status) status.textContent = progress?.message || progress?.phase || '重複ファイルを確認中…';
-    if (count) count.textContent = total > 0 ? `${processed}/${total}` : (processed > 0 ? `${processed}件` : '');
+    if (count) {
+      count.textContent = total > 0
+        ? `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`
+        : (processed > 0 ? `${processed.toLocaleString('ja-JP')}件` : '');
+    }
+    if (percentText) percentText.textContent = total > 0 ? `${percent}%` : '';
+    if (etaText) {
+      if (Number.isFinite(eta) && eta > 0) etaText.textContent = `残り約${window.formatJobEta(eta)}`;
+      else if (rate > 0) etaText.textContent = `${rate.toFixed(1)}件/秒`;
+      else etaText.textContent = '';
+    }
+    if (currentText) {
+      const current = displayPath(progress?.current);
+      currentText.textContent = current;
+      currentText.title = current;
+      currentText.hidden = !current;
+    }
     if (bar) {
       if (total > 0) {
         bar.value = percent;
@@ -150450,6 +153926,19 @@ _bindClipSearchResultDelegation();
         bar.removeAttribute('value');
         bar.dataset.indeterminate = '1';
       }
+    }
+  }
+
+  // 走査が終わったら、途中経過の数字を残さない（結果の行だけを見せる）。
+  function clearProgressDetails(overlay) {
+    const progress = overlay?.querySelector('[data-dup-progress]');
+    if (progress) progress.classList.add('dup-progress-complete');
+    const count = overlay?.querySelector('[data-dup-progress-count]');
+    if (count) count.textContent = '';
+    const current = overlay?.querySelector('[data-dup-progress-current]');
+    if (current) {
+      current.textContent = '';
+      current.hidden = true;
     }
   }
 
@@ -150462,6 +153951,7 @@ _bindClipSearchResultDelegation();
     const progress = overlay.querySelector('[data-dup-progress]');
     const keepAll = overlay.querySelector('[data-dup-keep-all]');
     if (progress) progress.classList.add('dup-progress-complete');
+    clearProgressDetails(overlay);
     if (!groups.length) {
       if (status) status.textContent = `${Number(payload?.total_files ?? payload?.total_images) || 0}件を確認しました`;
       if (results) results.innerHTML = '<div class="gb-empty-placeholder">重複ファイルは見つかりませんでした</div>';
@@ -150680,6 +154170,17 @@ _bindClipSearchResultDelegation();
     });
     bindOverlayChrome(overlay, { controller, finished: () => finished });
     try {
+      if (folderPath) {
+        try {
+          const state = await loadFolderState(folderPath, true);
+          if (state?.enabled === false) {
+            const status = overlay.querySelector('[data-dup-status]');
+            if (status) status.textContent = '自動処理の対象外です。今回は手動でこのフォルダだけ調べます…';
+          }
+        } catch (_) {
+          // 手動確認は設定情報を取得できない場合も続行する。
+        }
+      }
       const payload = await runBackgroundJob('/duplicate-scan', { path: folderPath, threshold: 10 }, {
         signal: controller.signal,
         onProgress: progress => setProgress(overlay, progress),
@@ -150694,6 +154195,7 @@ _bindClipSearchResultDelegation();
       if (!overlay.isConnected) return null;
       const cancel = overlay.querySelector('[data-dup-cancel]');
       if (cancel) cancel.remove();
+      clearProgressDetails(overlay);
       const status = overlay.querySelector('[data-dup-status]');
       if (error?.name === 'AbortError') {
         if (status) status.textContent = 'スキャンを中止しました';
@@ -150820,9 +154322,298 @@ _bindClipSearchResultDelegation();
     }
   }
 
+  async function loadFolderState(path, force) {
+    const key = safeText(path);
+    const cached = folderStateCache.get(key);
+    if (!force && cached && Date.now() - cached.at < FOLDER_STATE_CACHE_MS) return cached.value;
+    const value = await apiFetch('/duplicate-detection/folder-state?path=' + encodeURIComponent(key), {
+      silentError: true,
+    });
+    folderStateCache.set(key, { at: Date.now(), value });
+    return value;
+  }
+
+  function invalidateFolderStateCache() { folderStateCache.clear(); }
+  function notifyTargetChange(path) {
+    invalidateFolderStateCache();
+    const broadcast = (typeof MeldexBroadcast !== 'undefined' && MeldexBroadcast) || window.GBBroadcast || null;
+    broadcast?.send?.('duplicate-targets-changed', { path: safeText(path) });
+    window.dispatchEvent(new CustomEvent('meldex:duplicate-targets-changed', {
+      detail: { path: safeText(path) },
+    }));
+  }
+
+  function folderStateLabel(state) {
+    if (state?.automatic_available === false) return '自動処理の対象外（ネットワーク上のフォルダ）';
+    if (state?.reason) return safeText(state.reason);
+    return state?.enabled ? '重複を自動で確認します' : '重複の自動確認から除外しています';
+  }
+  async function saveFolderState(path, enabled) {
+    const response = await apiFetch('/duplicate-detection/folder-state', {
+      method: 'PUT',
+      body: JSON.stringify({ path, enabled }),
+    });
+    notifyTargetChange(path);
+    return response?.state || null;
+  }
+
+  function createFolderTargetRow(item, options) {
+    const row = document.createElement('div');
+    row.className = options?.compact ? 'dup-folder-target-row dup-folder-target-row-compact' : 'dup-folder-target-row';
+    row.dataset.path = safeText(item?.path);
+
+    const disclosure = document.createElement('button');
+    disclosure.type = 'button';
+    disclosure.className = 'dup-folder-disclosure';
+    disclosure.title = item?.has_children ? '子フォルダを表示' : '子フォルダはありません';
+    disclosure.setAttribute('aria-label', disclosure.title);
+    disclosure.disabled = !item?.has_children;
+    disclosure.classList.toggle('dup-folder-disclosure-empty', !item?.has_children);
+    disclosure.innerHTML = item?.has_children ? lucide('chevronRight', 14) : '';
+
+    const label = document.createElement('label');
+    label.className = 'dup-folder-target-check';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = item?.enabled === true;
+    checkbox.disabled = item?.automatic_available === false || options?.globalEnabled === false;
+    checkbox.setAttribute('aria-label', `${safeText(item?.name || item?.path)}を重複検出の対象にする`);
+    checkbox.dataset.e2eId = `duplicate-target-${safeText(item?.path)}`;
+    const name = document.createElement('span');
+    name.className = 'dup-folder-target-name';
+    name.textContent = safeText(item?.name || displayPath(item?.path, 2) || 'フォルダ');
+    label.append(checkbox, name);
+
+    let help = null;
+    if (options?.compact && typeof fieldHelp === 'function') {
+      const holder = document.createElement('span');
+      holder.innerHTML = fieldHelp('このフォルダを自動の重複確認へ含めます。オフでも「今回だけ調べる」は利用できます。');
+      help = holder.firstElementChild;
+      help.dataset.e2eId = `duplicate-target-help-${safeText(item?.path)}`;
+    }
+    const reason = document.createElement('span');
+    reason.className = 'dup-folder-target-reason';
+    const imageCount = Number(item?.indexed?.images);
+    const countLabel = Number.isFinite(imageCount) ? ` / 索引済み画像 ${imageCount.toLocaleString('ja-JP')}件` : '';
+    reason.textContent = folderStateLabel(item) + countLabel;
+    reason.title = reason.textContent;
+    row.append(disclosure, label);
+    if (help) row.appendChild(help);
+    row.appendChild(reason);
+    const children = document.createElement('div');
+    children.className = 'dup-folder-target-children';
+    children.hidden = true;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'dup-folder-target-node';
+    wrapper.append(row, children);
+
+    checkbox.addEventListener('change', async () => {
+      const requestedEnabled = checkbox.checked; checkbox.disabled = true;
+      try {
+        const state = await saveFolderState(item.path, requestedEnabled);
+        Object.assign(item, state || { enabled: requestedEnabled });
+        checkbox.checked = item.enabled === true;
+        reason.textContent = folderStateLabel(item);
+        showStatus(checkbox.checked ? '重複検出の対象にしました' : '重複検出の対象外にしました');
+      } catch (error) {
+        checkbox.checked = !requestedEnabled;
+        showStatus('フォルダの設定を変更できませんでした: ' + userError(error), true);
+      } finally {
+        checkbox.disabled = item?.automatic_available === false || options?.globalEnabled === false;
+      }
+    });
+
+    disclosure.addEventListener('click', async () => {
+      if (children.dataset.loaded === '1') {
+        children.hidden = !children.hidden;
+        disclosure.innerHTML = lucide(children.hidden ? 'chevronRight' : 'chevronDown', 14);
+        return;
+      }
+      disclosure.disabled = true;
+      try {
+        const payload = await apiFetch('/duplicate-detection/folders?path=' + encodeURIComponent(item.path));
+        renderFolderTargetTree(children, payload?.items || [], {
+          globalEnabled: payload?.settings_enabled !== false,
+        });
+        children.dataset.loaded = '1';
+        children.hidden = false;
+        disclosure.innerHTML = lucide('chevronDown', 14);
+      } catch (error) {
+        showStatus('子フォルダを読み込めませんでした: ' + userError(error), true);
+      } finally {
+        disclosure.disabled = false;
+      }
+    });
+    return wrapper;
+  }
+
+  function renderFolderTargetTree(host, items, options) {
+    host.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-section-desc';
+      empty.textContent = '対象にできるローカルフォルダはありません';
+      host.appendChild(empty);
+      return;
+    }
+    items.forEach(item => host.appendChild(createFolderTargetRow(item, options)));
+  }
+  async function renderSettings(root) {
+    const host = (root || document).querySelector?.('#settings-duplicate-detection');
+    if (!host) return;
+    const seq = ++settingsRenderSeq;
+    if (!isLocalDuplicateMode()) {
+      host.innerHTML = `<section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+        <div class="gb-section-desc">この設定はデスクトップ版のローカルフォルダで利用できます。</div>
+      </section>`;
+      return;
+    }
+    host.innerHTML = `<section class="gb-section gb-section--boxed">
+      <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+      <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
+      <div class="gb-section-desc" data-dup-settings-status>設定を読み込んでいます…</div>
+    </section>`;
+    try {
+      const payload = await apiFetch('/duplicate-detection/settings');
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      const settings = payload?.settings || {};
+      const watcherAvailable = payload?.watcher_available !== false;
+      host.innerHTML = `<section class="gb-section gb-section--boxed dup-settings-section">
+        <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+        <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
+        <div class="gb-check-help-row">
+          <label><input type="checkbox" data-dup-setting="enabled" ${settings.enabled !== false ? 'checked' : ''}> 重複を見張る</label>
+          ${typeof fieldHelp === 'function' ? fieldHelp('オフにしても手動の「重複を確認」は利用できます。既存ファイルの索引は保持されます。') : ''}
+        </div>
+        <label class="dup-settings-field"><span>全体を調べ直す間隔</span>
+          <select data-dup-setting="refresh_days">
+            <option value="0" ${Number(settings.refresh_days) === 0 ? 'selected' : ''}>自動では調べ直さない</option>
+            <option value="1" ${Number(settings.refresh_days) === 1 ? 'selected' : ''}>毎日</option>
+            <option value="7" ${Number(settings.refresh_days ?? 7) === 7 ? 'selected' : ''}>7日ごと</option>
+            <option value="30" ${Number(settings.refresh_days) === 30 ? 'selected' : ''}>30日ごと</option>
+          </select>
+        </label>
+        <div class="gb-check-help-row">
+          <label><input type="checkbox" data-dup-setting="watch_changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
+          ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
+        </div>
+        <div class="dup-settings-actions">
+          <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline>${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
+          <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed dup-settings-section">
+        <div class="gb-section-title">${lucide('folderTree', 14)} 対象フォルダ</div>
+        <div class="gb-section-desc">親フォルダの設定は子フォルダへ引き継がれます。必要な場所だけ個別に切り替えられます。</div>
+        <div class="dup-folder-target-tree" data-dup-folder-tree><div class="gb-section-desc">フォルダを読み込んでいます…</div></div>
+      </section>`;
+
+      const settingInputs = [...host.querySelectorAll('[data-dup-setting]')];
+      const saveSettings = async () => {
+        const body = {
+          enabled: host.querySelector('[data-dup-setting="enabled"]')?.checked !== false,
+          refresh_days: Number(host.querySelector('[data-dup-setting="refresh_days"]')?.value || 0),
+          watch_changes: host.querySelector('[data-dup-setting="watch_changes"]')?.checked === true,
+        };
+        settingInputs.forEach(input => { input.disabled = true; });
+        try {
+          await apiFetch('/duplicate-detection/settings', { method: 'PUT', body: JSON.stringify(body) });
+          notifyTargetChange('');
+          showStatus('重複検出の設定を保存しました');
+          await renderSettings(root);
+        } catch (error) {
+          showStatus('重複検出の設定を保存できませんでした: ' + userError(error), true);
+          settingInputs.forEach(input => { input.disabled = false; });
+        }
+      };
+      settingInputs.forEach(input => input.addEventListener('change', saveSettings));
+      host.querySelector('[data-dup-baseline]')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        const message = host.querySelector('[data-dup-settings-message]');
+        button.disabled = true;
+        if (message) message.textContent = '全体確認を開始しています…';
+        try {
+          const started = await apiPost('/duplicate-monitor/start', { force: true });
+          if (message) message.textContent = started?.status === 'disabled'
+            ? '「重複を見張る」をオンにすると全体確認を開始できます。'
+            : '全体確認を裏側で開始しました。重複が見つかると通知します。';
+        } catch (error) {
+          if (message) message.textContent = '開始できませんでした: ' + userError(error);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      const folders = await apiFetch('/duplicate-detection/folders');
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      renderFolderTargetTree(host.querySelector('[data-dup-folder-tree]'), folders?.items || [], {
+        globalEnabled: folders?.settings_enabled !== false,
+      });
+    } catch (error) {
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      const status = host.querySelector('[data-dup-settings-status]');
+      if (status) status.textContent = '設定を読み込めませんでした: ' + userError(error);
+    }
+  }
+  async function renderSingleFolderTarget(host) {
+    const path = safeText(host?.dataset?.path);
+    if (!path || !host?.isConnected) return;
+    host.innerHTML = '<div class="gb-section-desc">重複検出の設定を読み込んでいます…</div>';
+    try {
+      const state = await loadFolderState(path, false);
+      if (!host.isConnected || host.dataset.path !== path) return;
+      const item = { ...state, path, name: 'このフォルダを対象にする', has_children: false };
+      const section = document.createElement('section');
+      section.className = 'gb-section gb-section--boxed dup-folder-option';
+      const title = document.createElement('div');
+      title.className = 'gb-section-title';
+      title.innerHTML = lucide('copy', 14) + ' 重複検出';
+      const tree = document.createElement('div');
+      tree.appendChild(createFolderTargetRow(item, {
+        compact: true,
+        globalEnabled: state?.reason !== '重複を見張る設定がオフ',
+      }));
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'gb-btn gb-btn-sm';
+      action.dataset.e2eId = `duplicate-manual-scan-${path}`;
+      action.innerHTML = lucide('scanSearch', 14) + ' 今回だけ調べる';
+      action.addEventListener('click', () => openManualScan(path));
+      section.append(title, tree, action);
+      host.replaceChildren(section);
+    } catch (error) {
+      host.innerHTML = `<div class="gb-section-desc">重複検出の設定を読み込めませんでした: ${esc(userError(error))}</div>`;
+    }
+  }
+
+  function renderFolderTargetControls(root) {
+    (root || document).querySelectorAll?.('[data-duplicate-folder-setting][data-path]').forEach(host => {
+      renderSingleFolderTarget(host);
+    });
+  }
+  async function refreshOutlinerBadges(root) {
+    if (!isLocalDuplicateMode()) return;
+    const nodes = [...(root || document).querySelectorAll?.('.tree-node[data-path]') || []].slice(0, 100);
+    await Promise.allSettled(nodes.map(async node => {
+      if (node._nodeData?.type !== 'folder') return;
+      const row = node.querySelector(':scope > .tree-node-row');
+      if (!row || row.querySelector(':scope > .dup-folder-excluded-badge')) return;
+      const state = await loadFolderState(node.dataset.path, false);
+      if (!row.isConnected || state?.enabled !== false) return;
+      const badge = document.createElement('span');
+      badge.className = 'dup-folder-excluded-badge';
+      badge.textContent = '対象外';
+      badge.title = folderStateLabel(state);
+      row.appendChild(badge);
+    }));
+  }
+
   window.MeldexDuplicateMonitor = {
     openManualScan,
     pollNow: pollAlerts,
+    renderSettings,
+    renderFolderTargetControls,
+    refreshOutlinerBadges,
     start: startMonitor,
     _test: {
       normalizeGroups,
@@ -150838,7 +154629,25 @@ _bindClipSearchResultDelegation();
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('meldex:mode-changed', handleRuntimeModeChange);
-  window.addEventListener('load', () => setTimeout(startMonitor, 0), { once: true });
+  window.addEventListener('meldex:duplicate-targets-changed', () => {
+    const settingsHost = document.querySelector('#settings-duplicate-detection');
+    if (settingsHost?.isConnected && !settingsHost.closest('[hidden]')) renderSettings(document);
+    renderFolderTargetControls(document);
+    document.querySelectorAll('.dup-folder-excluded-badge').forEach(badge => badge.remove());
+    refreshOutlinerBadges(document);
+  });
+  window.addEventListener('meldex:outliner-rendered', () => refreshOutlinerBadges(document));
+  const duplicateBroadcast = (typeof MeldexBroadcast !== 'undefined' && MeldexBroadcast) || window.GBBroadcast || null;
+  duplicateBroadcast?.on?.('duplicate-targets-changed', message => {
+    invalidateFolderStateCache();
+    window.dispatchEvent(new CustomEvent('meldex:duplicate-targets-changed', {
+      detail: { path: safeText(message?.path), remote: true },
+    }));
+  });
+  window.addEventListener('load', () => setTimeout(() => {
+    startMonitor();
+    refreshOutlinerBadges(document);
+  }, 0), { once: true });
 })();
 
 ;
@@ -153842,7 +157651,7 @@ const GBPaneBridge = (() => {
         }
         const pane = paneInfo.node;
         let tabAddedByManager = false;
-        // フォルダは既存タブを再利用し、なければアクティブタブを置換。
+        // フォルダは必ず現在のアクティブタブを更新/置換する。
         // 履歴再生中（navBack/navForward/履歴ドロップダウン経由、navNavigating=true）は、
         // 同ペイン内の「別の」フォルダタブへ activeTabIndex を強制切替する
         // ハイジャックを行わない。戻る/進むでタブが絶対に切り替わらないことを保証するため、
@@ -153850,24 +157659,15 @@ const GBPaneBridge = (() => {
         // （副作用として、再生後に同ペイン内へフォルダタブが一時的に2枚並ぶことがあるが、
         // 既知の制限として許容する）。
         if (type === 'folder') {
-          const isReplaying = typeof navNavigating !== 'undefined' && navNavigating;
-          const folderTab = !isReplaying && pane.tabs.find(t => t.type === 'folder');
+          const activeTab = pane.tabs[pane.activeTabIndex] || null;
+          const folderTab = activeTab?.type === 'folder' ? activeTab : null;
           if (folderTab) {
-            const folderTabIsActive = pane.tabs[pane.activeTabIndex] === folderTab;
             folderTab.label = label;
             folderTab.path = path;
             folderTab.state = {};
-            const fi = pane.tabs.indexOf(folderTab);
-            if (folderTabIsActive) {
-              // 同じフォルダタブ内の移動ではペイン全体を再描画しない。
-              // full render はフォルダツリーDOMも一時退避・再配置するため、
-              // ツリー全体が縦に揺れる原因になる。
-              const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
-              if (tabEl) tabEl.textContent = label;
-            } else {
-              pane.activeTabIndex = fi;
-              GBLayout.render();
-            }
+            // 同じフォルダタブ内の移動ではペイン全体を再描画しない。
+            const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+            if (tabEl) tabEl.textContent = label;
             GBLayout.saveLayout({ immediate: true });
           } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
             const tab = pane.tabs[pane.activeTabIndex];
@@ -155157,6 +158957,7 @@ const GBFloatPanel = (() => {
   let _backBtn = null;
   let _forwardBtn = null;
   let _openMainBtn = null;
+  let _openWindowBtn = null;
   let _pathBarEl = null;
   let _pane = null;
   let _current = null;
@@ -155773,6 +159574,8 @@ const GBFloatPanel = (() => {
 
   function _onTitlePointerDown(e) {
     if (e.button !== 0 || e.target.closest('button')) return;
+    // native D&D見出しではブラウザにdragstartを任せ、パネル移動を開始しない。
+    if (e.target.closest('[data-meldex-drag-surface]')) return;
     if (_panelState === 'maximized') return;
     _drag = {
       pointerId: e.pointerId,
@@ -155956,13 +159759,35 @@ const GBFloatPanel = (() => {
 
     const title = document.createElement('div');
     title.className = 'gb-float-panel-title';
+    const dragHandle = document.createElement('button');
+    dragHandle.type = 'button';
+    dragHandle.className = 'gb-float-panel-button gb-float-panel-target-drag-handle';
+    dragHandle.dataset.testid = 'gb-float-panel-target-drag-handle';
+    dragHandle.title = '表示対象をドラッグ';
+    dragHandle.setAttribute('aria-label', '表示対象をドラッグ');
+    const isCoarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches === true;
+    const dragHandleSize = isCoarsePointer ? '44px' : '26px';
+    dragHandle.style.width = dragHandleSize;
+    dragHandle.style.minWidth = dragHandleSize;
+    dragHandle.style.height = dragHandleSize;
+    dragHandle.style.cursor = 'grab';
+    if (isCoarsePointer) {
+      titlebar.style.height = '44px';
+      titlebar.style.flexBasis = '44px';
+    }
+    dragHandle.style.touchAction = 'none';
+    dragHandle.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 16) : '';
     _titleIconEl = document.createElement('span');
     _titleIconEl.className = 'gb-float-panel-title-icon';
     _titleTextEl = document.createElement('span');
     _titleTextEl.id = 'gb-float-panel-title-label';
     _titleTextEl.className = 'gb-float-panel-title-text';
+    title.appendChild(dragHandle);
     title.appendChild(_titleIconEl);
     title.appendChild(_titleTextEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
+      MeldexDnD.installSurfaceDragSource(panel, dragHandle, () => _current, 'float-panel');
+    }
 
     const actions = document.createElement('div');
     actions.className = 'gb-float-panel-actions';
@@ -156008,6 +159833,18 @@ const GBFloatPanel = (() => {
     _openMainBtn.appendChild(openMainLabel);
     _openMainBtn.addEventListener('click', () => { _openInMainPane(); });
 
+    // 「単独ウィンドウで開く」: フロートパネルはMeldexの画面の中の部品なので、
+    // それ自体をOSレベルで最前面に固定することはできない。実ウィンドウで開き直せば
+    // そのウィンドウ側の「常に最前面」で他のアプリより手前に置いておける。
+    _openWindowBtn = document.createElement('button');
+    _openWindowBtn.type = 'button';
+    _openWindowBtn.className = 'gb-float-panel-button';
+    _openWindowBtn.dataset.testid = 'gb-float-panel-open-window';
+    _openWindowBtn.title = '単独ウィンドウで開く';
+    _openWindowBtn.setAttribute('aria-label', '単独ウィンドウで開く');
+    _openWindowBtn.innerHTML = typeof lucide === 'function' ? lucide('externalLink', 16) : '↗';
+    _openWindowBtn.addEventListener('click', () => { _openInStandaloneWindow(); });
+
     _minimizeBtn = document.createElement('button');
     _minimizeBtn.type = 'button';
     _minimizeBtn.className = 'gb-float-panel-button';
@@ -156024,6 +159861,7 @@ const GBFloatPanel = (() => {
     actions.appendChild(_backBtn);
     actions.appendChild(_forwardBtn);
     actions.appendChild(_openMainBtn);
+    actions.appendChild(_openWindowBtn);
     actions.appendChild(_minimizeBtn);
     actions.appendChild(closeBtn);
 
@@ -156033,6 +159871,13 @@ const GBFloatPanel = (() => {
 
     _contentEl = document.createElement('div');
     _contentEl.id = CONTENT_ID;
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
+      MeldexDnD.installSurfaceDropTarget(panel, item => {
+        const target = MeldexDnD.normalizeOpenTarget?.(item);
+        if (!target) return false;
+        return open(target.type, { path: target.path, label: target.label, state: target.state });
+      });
+    }
     _contentEl.className = 'gb-float-panel-content';
 
     titlebar.appendChild(title);
@@ -156093,6 +159938,11 @@ const GBFloatPanel = (() => {
       label: _titleFromOptions(toolType, options),
       tabId: _pane.tabs?.[0]?.id || '',
     };
+    if (window.MeldexSetupEditableDropHandler) {
+      _contentEl.querySelectorAll('#page-content, #entity-freetext, [contenteditable="true"]').forEach(el => {
+        window.MeldexSetupEditableDropHandler(el);
+      });
+    }
   }
 
   // シート系ビュー（表・ツリー・ギャラリー・カンバン・タイムライン・チャート・グラフ・
@@ -156212,6 +160062,29 @@ const GBFloatPanel = (() => {
     return true;
   }
 
+  // 表示中の対象を実ウィンドウ（単独ウィンドウ）で開く。開いたウィンドウ側には
+  // 「常に最前面」ボタンがあるので、他のアプリより手前に置いたまま作業できる。
+  async function _openInStandaloneWindow() {
+    if (!_current) return false;
+    const path = _current.path || '';
+    const label = _current.label || _toolLabel(_current.toolType);
+    if (!path || typeof buildSingleTabWindowUrl !== 'function') {
+      if (typeof showStatus === 'function') showStatus('この内容は単独ウィンドウで開けません', true);
+      return false;
+    }
+    // 未保存の入力を確定させてから別ウィンドウへ渡す
+    const active = document.activeElement;
+    if (active && _contentEl && _contentEl.contains(active) && typeof active.blur === 'function') {
+      try { active.blur(); } catch (e) { /* ignore */ }
+    }
+    await _flushBeforeOpenMain(_current.toolType, path, _current.tabId || '');
+    const opened = (typeof openItemsAsSingleTabWindows === 'function')
+      ? openItemsAsSingleTabWindows([{ name: label, path, type: _current.toolType }])
+      : 0;
+    if (!opened && typeof showStatus === 'function') showStatus('単独ウィンドウを開けませんでした', true);
+    return opened > 0;
+  }
+
   async function _openInMainPane() {
     if (!_current) return false;
     const mainPaneId = _resolveMainPaneId();
@@ -156262,10 +160135,12 @@ const GBFloatPanel = (() => {
       if (typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
         GBLayout.setActivePane(actualPaneId);
       }
-      // メインパネルへ開き終えたら、同じ内容を残したままのフロートパネルを自動で閉じる
-      // （既存の close() を使い、位置保存(_saveRect)を含めた通常の後始末に乗せる）。
-      // 失敗した各分岐は上で早期returnしているため、ここに到達するのは成功時のみ。
-      close(toolType);
+      // 保存flushは上で完了済み。通常の close() は遷移ガードとして同じ対象を再度
+      // flushするため、ここでは位置だけ保存して直接後始末する。これにより、昇格時の
+      // 二重保存と、2回目だけ失敗して新タブとフロートが重複する状態を防ぐ。
+      _saveRect();
+      ++_opSeq;
+      _teardownPanel();
       return true;
     } finally {
       if (btn) btn.disabled = false;
@@ -156392,6 +160267,7 @@ const GBFloatPanel = (() => {
     navForward: _navForward,
     openEntityChat: _openEntityChat,
     openInMainPane: _openInMainPane,
+    openInStandaloneWindow: _openInStandaloneWindow,
     getCurrentTarget,
   };
 })();
@@ -156457,7 +160333,7 @@ const GBSubPanel = (() => {
 
   function _tabIcon(type) {
     if (typeof GBTabs !== 'undefined' && typeof GBTabs.tabIcon === 'function') return GBTabs.tabIcon(type);
-    return 'panelRight';
+    return 'panelRightDashed';
   }
 
   function _isMobileDrawerEnabled() {
@@ -156715,6 +160591,33 @@ const GBSubPanel = (() => {
     return false;
   }
 
+  function _isIsolatedViewerEntry(entry) {
+    if (!entry) return false;
+    if (entry.type === 'media') return (entry.state?.mediaType || 'image') !== 'audio';
+    return entry.type === 'html' && !entry.external;
+  }
+
+  function _isolatedViewerUrl(entry) {
+    if (entry.state?.viewerUrl) return entry.state.viewerUrl;
+    if (entry.type === 'html' && entry.state?.urlExternal) return entry.path;
+    const mediaType = entry.state?.mediaType || '';
+    return mediaType === 'pdf' || /\.pdf$/i.test(entry.path)
+      ? '/viewer?pdf=' + encodeURIComponent(entry.path)
+      : '/viewer?file=' + encodeURIComponent(entry.path);
+  }
+
+  function _mountIsolatedViewer(entry) {
+    const frame = document.createElement('iframe');
+    frame.className = 'gb-subpanel-viewer-frame';
+    frame.dataset.testid = 'gb-subpanel-viewer-frame';
+    frame.title = entry.label || _basename(entry.path) || 'ビューワー';
+    frame.setAttribute('allow', 'fullscreen');
+    const logicalUrl = _isolatedViewerUrl(entry);
+    frame.src = window.MeldexResourceUrl?.rewriteInternalUrl?.(logicalUrl) || logicalUrl;
+    _contentEl.appendChild(frame);
+    return true;
+  }
+
   function _stopLoadFailureObserver() {
     _loadFailureObserver?.disconnect?.();
     _loadFailureObserver = null;
@@ -156772,11 +160675,23 @@ const GBSubPanel = (() => {
       _watchForLoadFailure(entry);
       return;
     }
+    // ビューワーは #html-view をメインパネルと共有しない。共有DOMをサブパネルへ
+    // 移動すると、その後のメイン側 openViewer() もサブパネル内iframeを更新してしまう。
+    if (_isIsolatedViewerEntry(entry)) {
+      _mountIsolatedViewer(entry);
+      _current = entry;
+      return;
+    }
     const mounted = _mountVirtualEntry(entry);
     _current = entry;
     if (!mounted) {
       _renderErrorState(entry, '読み込みに失敗しました');
       return;
+    }
+    if (window.MeldexSetupEditableDropHandler) {
+      _contentEl.querySelectorAll('#page-content, #entity-freetext, [contenteditable="true"]').forEach(el => {
+        window.MeldexSetupEditableDropHandler(el);
+      });
     }
     _watchForLoadFailure(entry);
   }
@@ -156791,7 +160706,7 @@ const GBSubPanel = (() => {
     empty.textContent = EMPTY_MESSAGE;
     _contentEl.appendChild(empty);
     if (_titleTextEl) _titleTextEl.textContent = 'サブパネル';
-    if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRight', 16) : '';
+    if (_titleIconEl) _titleIconEl.innerHTML = typeof lucide === 'function' ? lucide('panelRightDashed', 16) : '';
     if (_promoteBtn) _promoteBtn.hidden = true;
     if (_closeContentBtn) _closeContentBtn.hidden = true;
     if (_pathBarEl) _pathBarEl.style.display = 'none';
@@ -156820,6 +160735,9 @@ const GBSubPanel = (() => {
     _titleTextEl = document.createElement('span');
     _titleTextEl.className = 'gb-subpanel-title-text';
     title.append(_titleIconEl, _titleTextEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDragSource) {
+      MeldexDnD.installSurfaceDragSource(root, title, () => _current, 'right-subpanel');
+    }
 
     const actions = document.createElement('div');
     actions.className = 'gb-subpanel-actions';
@@ -156888,6 +160806,12 @@ const GBSubPanel = (() => {
     _contentEl.dataset.testid = 'gb-subpanel-content';
 
     root.append(titlebar, _pathBarEl, _contentEl);
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.installSurfaceDropTarget) {
+      MeldexDnD.installSurfaceDropTarget(root, item => {
+        const target = MeldexDnD.normalizeOpenTarget?.(item) || item;
+        return open(target);
+      });
+    }
     _root = root;
     _showEmptyState();
     if (typeof replaceIcons === 'function') replaceIcons();
@@ -157107,7 +161031,7 @@ function _sendLog(level, data) {
       window.MeldexBetaFeedback.recordLog(level, JSON.parse(payload));
     }
     if (window.MeldexBetaFeedback && !window.MeldexBetaFeedback.isCrashReportEnabled()) return;
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return;
     navigator.sendBeacon(API_BASE + '/debug-log',
       new Blob([payload], { type: 'text/plain' }));
   } catch {}
@@ -158636,14 +162560,26 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn) {
+  function addMI(label, fn, disabled = false) {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
     mi.setAttribute('role', 'menuitem');
     mi.textContent = label;
+    mi.disabled = !!disabled;
+    if (disabled) mi.setAttribute('aria-disabled', 'true');
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
+  }
+  function closeTabsOnSide(side) {
+    const targetIndex = _tabs.findIndex(item => item.id === tab.id);
+    if (targetIndex < 0) return;
+    const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
+    const activeWillClose = _tabs.some((item, index) => item.id === _activeTabId && shouldClose(item, index));
+    const remaining = _tabs.filter((item, index) => !shouldClose(item, index));
+    if (remaining.length === _tabs.length) return;
+    _tabs.splice(0, _tabs.length, ...remaining);
+    activateTab(activeWillClose ? tab.id : (_activeTabId || tab.id));
   }
   addMI('新しいウィンドウで開く', () => {
     const openType = _normalizeOpenTypeForNav(tab.type);
@@ -158654,6 +162590,8 @@ function _handleTabBarContextmenu(e) {
     });
   });
   addMI('タブを閉じる', () => closeTab(tab.id));
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);
@@ -159925,12 +163863,6 @@ async function init() {
       hasHome,
       homePath: homeRes?.path || '',
     });
-    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
-        trigger: 'desktop-home-ready',
-        homePath: homeRes?.path || '',
-      });
-    }
     if (!vault.path && !hasRoots && !hasHome) {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
@@ -160346,7 +164278,7 @@ function _screenshotModeIsRegion(mode) {
 }
 
 async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
-  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
   try {
     const res = await fetch(API_BASE + '/app-window-visibility', {
       method: 'POST',
@@ -160405,7 +164337,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     shell.tabIndex = -1;
     shell.setAttribute('role', 'dialog');
     shell.setAttribute('aria-modal', 'true');
-    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
+    shell.setAttribute('aria-label', 'スクリーンショット撮影対象を選択');
 
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
@@ -160445,7 +164377,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
     ok.dataset.e2eId = 'screenshot-region-save';
-    ok.textContent = '保存';
+    ok.textContent = 'スクリーンショット撮影';
 
     actions.append(cancel, ok);
     stage.append(preview, selection);
@@ -160591,13 +164523,12 @@ async function captureScreenshot(mode) {
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
     const b64 = outputCanvas.toDataURL('image/png');
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
+    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
+    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
+    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
+    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: screenshotFolder });
     if (res.path) {
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-      const viewerUrl = window.MeldexResourceUrl?.viewer
-        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
-        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
-      window.open(viewerUrl, '_blank');
     }
   } catch (e) {
     if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
@@ -161563,205 +165494,9 @@ function getUsername() {
 
 // replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
 
-const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';
-const _GB_MODAL_RESIZE_DIRECTIONS = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
-
-function _gbClampModalValue(value, min, max) {
-  if (max < min) return min;
-  return Math.max(min, Math.min(max, value));
-}
-
-function _gbModalMinSize(modal) {
-  const cs = getComputedStyle(modal);
-  const minWidth = Math.max(240, parseFloat(cs.minWidth) || 0);
-  const minHeight = Math.max(160, parseFloat(cs.minHeight) || 0);
-  return { minWidth, minHeight };
-}
-
-function _gbIsMobileDialogSheetModal(modal) {
-  if (!modal) return false;
-  const overlay = modal.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay');
-  return overlay?.dataset?.mobileDialogSheetActive === '1'
-    || modal.dataset.mobileDialogSheet === '1'
-    || modal.classList?.contains('gb-mobile-dialog-sheet');
-}
-
-function _gbClampModalForNarrowViewport(modal) {
-  if (!modal || window.innerWidth > 768) return;
-  const gap = 8;
-  const zoom = Math.max(0.1, (typeof _getZoom === 'function'
-    ? Number(_getZoom())
-    : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
-  const viewportWidth = window.innerWidth / zoom;
-  const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
-  modal.style.minWidth = '0';
-  modal.style.width = Math.max(240, viewportWidth - gap * 2) + 'px';
-  modal.style.maxWidth = Math.max(240, viewportWidth - gap * 2) + 'px';
-  modal.style.maxHeight = Math.max(160, viewportHeight - gap * 2) + 'px';
-}
-
-function _gbClearResizableModalState(modal) {
-  if (!modal) return;
-  if (modal.dataset?.gbResizableModal) delete modal.dataset.gbResizableModal;
-  modal.classList?.remove('gb-modal-resizable');
-  modal.querySelectorAll?.(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-}
-
-function _gbStartModalResize(event, modal, direction) {
-  if (!modal || (event.button != null && event.button !== 0)) return;
-  event.preventDefault();
-  event.stopPropagation();
-  const handle = event.currentTarget;
-  try { handle?.setPointerCapture?.(event.pointerId); } catch (_) {}
-
-  const rect = modal.getBoundingClientRect();
-  const start = {
-    x: event.clientX,
-    y: event.clientY,
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-    width: rect.width,
-    height: rect.height,
-  };
-  const { minWidth, minHeight } = _gbModalMinSize(modal);
-  const gap = 8;
-  document.body.classList.add('gb-modal-resizing');
-
-  function onMove(moveEvent) {
-    moveEvent.preventDefault();
-    const dx = moveEvent.clientX - start.x;
-    const dy = moveEvent.clientY - start.y;
-    const viewportW = window.innerWidth;
-    const viewportH = window.innerHeight;
-    let left = start.left;
-    let top = start.top;
-    let right = start.right;
-    let bottom = start.bottom;
-
-    if (direction.includes('e')) {
-      right = _gbClampModalValue(start.right + dx, start.left + minWidth, viewportW - gap);
-    }
-    if (direction.includes('w')) {
-      left = _gbClampModalValue(start.left + dx, gap, start.right - minWidth);
-    }
-    if (direction.includes('s')) {
-      bottom = _gbClampModalValue(start.bottom + dy, start.top + minHeight, viewportH - gap);
-    }
-    if (direction.includes('n')) {
-      top = _gbClampModalValue(start.top + dy, gap, start.bottom - minHeight);
-    }
-
-    modal.style.left = left + 'px';
-    modal.style.top = top + 'px';
-    modal.style.width = Math.max(minWidth, right - left) + 'px';
-    modal.style.height = Math.max(minHeight, bottom - top) + 'px';
-  }
-
-  function onUp() {
-    try { handle?.releasePointerCapture?.(event.pointerId); } catch (_) {}
-    document.removeEventListener('pointermove', onMove, true);
-    document.removeEventListener('pointerup', onUp, true);
-    document.removeEventListener('pointercancel', onUp, true);
-    document.body.classList.remove('gb-modal-resizing');
-  }
-
-  document.addEventListener('pointermove', onMove, true);
-  document.addEventListener('pointerup', onUp, true);
-  document.addEventListener('pointercancel', onUp, true);
-}
-
-function _gbInstallModalResizeEdges(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  modal.dataset.gbResizableModal = '1';
-  modal.classList.add('gb-modal-resizable');
-  modal.style.boxSizing = 'border-box';
-  modal.style.position = 'absolute';
-  modal.style.right = 'auto';
-  modal.style.bottom = 'auto';
-  modal.style.margin = '0';
-  modal.style.transform = 'none';
-  modal.style.maxWidth = 'calc(100vw - 16px)';
-  modal.style.maxHeight = 'calc(100vh - 16px)';
-  _gbClampModalForNarrowViewport(modal);
-
-  _GB_MODAL_RESIZE_DIRECTIONS.forEach(direction => {
-    const edge = document.createElement('div');
-    edge.className = `gb-modal-shell-edge gb-modal-shell-edge-${direction}`;
-    edge.dataset.modalResize = direction;
-    edge.addEventListener('pointerdown', event => _gbStartModalResize(event, modal, direction));
-    modal.appendChild(edge);
-  });
-}
-
-function _gbPrepareResizableModal(modal) {
-  if (!modal || modal.dataset.gbResizableModal === '1') return;
-  if (_gbIsMobileDialogSheetModal(modal)) {
-    _gbClearResizableModalState(modal);
-    return;
-  }
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      if (!modal.isConnected || modal.dataset.gbResizableModal === '1') return;
-      if (_gbIsMobileDialogSheetModal(modal)) {
-        _gbClearResizableModalState(modal);
-        return;
-      }
-      _gbClampModalForNarrowViewport(modal);
-      const rect = modal.getBoundingClientRect();
-      if (!rect.width || !rect.height) return;
-      const gap = 8;
-      const width = Math.min(rect.width, window.innerWidth - gap * 2);
-      const height = Math.min(rect.height, window.innerHeight - gap * 2);
-      const left = _gbClampModalValue(rect.left, gap, window.innerWidth - width - gap);
-      const top = _gbClampModalValue(rect.top, gap, window.innerHeight - height - gap);
-      modal.style.left = left + 'px';
-      modal.style.top = top + 'px';
-      modal.style.width = width + 'px';
-      modal.style.height = height + 'px';
-      _gbInstallModalResizeEdges(modal);
-    });
-  });
-}
-
-function _gbFindResizableModals(node) {
-  const result = [];
-  if (node?.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) && !_gbIsMobileDialogSheetModal(node)) result.push(node);
-  node?.querySelectorAll?.(_GB_RESIZABLE_MODAL_SELECTOR).forEach(modal => {
-    if (!_gbIsMobileDialogSheetModal(modal)) result.push(modal);
-  });
-  return result;
-}
-
-// モーダル表示後にサイズを固定し、4辺+4隅でリサイズできるようにする
-function _gbResizableModalMutationFilter(mutation) {
-  return Array.from(mutation.addedNodes || []).some(node => {
-    if (node?.nodeType !== 1) return false;
-    return node.matches?.(_GB_RESIZABLE_MODAL_SELECTOR) || !!node.querySelector?.(_GB_RESIZABLE_MODAL_SELECTOR);
-  });
-}
-function _gbResizableModalMutationCallback(mutations) {
-  for (const m of mutations) {
-    for (const node of m.addedNodes) {
-      if (node.nodeType !== 1) continue;
-      _gbFindResizableModals(node).forEach(_gbPrepareResizableModal);
-    }
-  }
-}
-if (window.GBMutationBus) {
-  window.GBMutationBus.subscribe('gb-app-resizable-modals', {
-    filter: _gbResizableModalMutationFilter,
-    callback: _gbResizableModalMutationCallback,
-    throttle: 30,
-  });
-} else {
-  new MutationObserver(_gbResizableModalMutationCallback).observe(document.body, { childList: true, subtree: true });
-}
+// ダイアログのリサイズは gb-modal-shell.js の1系統に統合した（2026-08-07）。
+// 以前はここにも独自のリサイズ機構があり、表示サイズ（拡大率）を考慮しない座標計算と
+// max-width/max-height の上書きで、共通側と互いに打ち消し合っていた。
 /* ==============================
    起動
    ============================== */
@@ -161855,34 +165590,20 @@ window.addEventListener('beforeunload', (e) => {
 });
 
 // ノート縦書き復元
-if (localStorage.getItem('note-vertical') === '1') {
-  document.getElementById('page-content')?.classList.add('vertical-writing');
-  const btn = document.getElementById('btn-note-vertical');
-  if (btn) {
-    // 上の replaceIcons() は既に実行済みなので、ここで lucide() を直接呼んで SVG を埋め込む
-    btn.innerHTML = (typeof lucide === 'function') ? lucide('textAlignStart', 16) : '<span class="ico ico-textAlignStart"></span>';
-    btn.title = '横書きに戻す';
-    btn.classList.add('active');
-  }
-}
+// 復元も切替も MeldexNoteWritingMode.applyState() へ集約する（組方向へ追従するUIの配線が
+// 1箇所に集まるため、目次レイアウトやセパレータのARIAが復元時だけ取り残されない）。
+// 上の replaceIcons() は既に実行済みなので、ボタンのアイコンは applyState() が lucide() で埋め直す。
+if (typeof MeldexNoteWritingMode !== 'undefined') MeldexNoteWritingMode.restoreFromStorage();
 // ノート余白復元
 if (typeof applyNoteMargin === 'function') applyNoteMargin();
 if (typeof applyNoteContentMaxWidth === 'function') applyNoteContentMaxWidth();
 // UIスケール復元
 document.documentElement.style.fontSize = ''; // 旧font-sizeスケーリングをクリア
-{
-  const saved = localStorage.getItem('ui-scale');
-  if (saved !== null) {
-    // ユーザーが手動設定済み（または前回の自動設定値） → そのまま適用
-    const s = parseInt(saved, 10) || 100;
-    applyUIScale(s);
-  } else {
-    // 初回起動: 画面サイズから最適スケールを自動決定
-    const autoScale = _detectOptimalScale();
-    applyUIScale(autoScale);
-    localStorage.setItem('ui-scale', String(autoScale));
-  }
-}
+// 表示サイズの決め方（初回の自動判定・手動値の保全・過去の自動値の付け直し）は
+// gb-ui-scale.js が一手に引き受ける。ここでは決まった値を適用するだけにする。
+applyUIScale(window.MeldexUIScale
+  ? window.MeldexUIScale.resolveStartupScale()
+  : (parseInt(localStorage.getItem('ui-scale'), 10) || 100));
 
 // ステータスバー表示状態復元
 try {
@@ -161890,21 +165611,6 @@ try {
     applyStatusbarHidden(localStorage.getItem('meldex-statusbar-hidden') === '1');
   }
 } catch (e) { console.warn('ステータスバー状態復元失敗:', e); }
-
-function _detectOptimalScale() {
-  const w = window.screen.width;
-  const dpr = window.devicePixelRatio || 1;
-  const isTouch = navigator.maxTouchPoints > 0;
-
-  // スマホ（幅768px以下）: 100%のまま（レスポンシブCSSに任せる）
-  if (w <= 768) return 100;
-  // タブレット + タッチデバイス（幅769〜1366px）: タッチ操作のためやや拡大
-  if (w <= 1366 && isTouch) return 110;
-  // 高解像度デスクトップ（4K等、OS側のスケーリングが低い場合）
-  if (w >= 2560 && dpr <= 1.5) return 125;
-  // 通常デスクトップ
-  return 100;
-}
 
 // Ctrl+ホイールでUIスケール変更（pywebviewではブラウザネイティブzoomが無効のため自前実装）
 document.addEventListener('wheel', (e) => {
@@ -161926,7 +165632,8 @@ document.addEventListener('wheel', (e) => {
     newIdx = e.deltaY < 0 ? Math.min(idx + 1, steps.length - 1) : Math.max(idx - 1, 0);
   }
   if (steps[newIdx] !== cur) {
-    const applied = applyUIScale(steps[newIdx]);
+    // Ctrl+ホイールは常にユーザー自身の操作なので「手動」として記録する
+    const applied = applyUIScale(steps[newIdx], { source: 'manual' });
     if (applied !== cur) showStatus('表示サイズ: ' + applied + '%');
   }
 }, { passive: false });
@@ -162229,7 +165936,9 @@ function trackIframeLoading(iframe, msg, opts) {
 let _heartbeatTimer = null;
 
 function _isHeartbeatCloudMode() {
-  return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+  return window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+    || document.body?.dataset?.cloudMode === 'dropbox'
+    || document.body?.dataset?.cloudMode === 'browser';
 }
 
 function _sendHeartbeat() {
@@ -162727,13 +166436,13 @@ ${bodyHtml}
   }
 
   // --- ノート ---
-  async function _exportNotePage() {
-    const pc = document.getElementById('page-content');
-    if (!pc) { showStatus('ノートが開かれていません', true); return null; }
-    return exportToHtml(pc, {
-      title: _getViewTitle('page'),
-      cssFiles: ['gb-tools.css', 'gb-ui.css'],
-      extraCss: `
+  // ノート本文の書き出し用スタイル。組方向を書き出し結果にも反映する。
+  // 旧実装では #page-content にHTMLのインラインstyleがあり、ここで指定した余白等が
+  // 実際には適用されていなかった（インラインstyleは外部CSSより優先されるため）。
+  // レイアウトを外部CSSへ移したので、ここの指定が初めて効くようになっている。
+  function noteExportCss(vertical) {
+    if (!vertical) {
+      return `
         #page-content, [id="page-content"] {
           padding: 16px 60px;
           line-height: 1.7;
@@ -162742,7 +166451,40 @@ ${bodyHtml}
         }
         ruby { ruby-position: over; }
         rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }
-      `,
+      `;
+    }
+    return `
+        #page-content, [id="page-content"] {
+          writing-mode: vertical-rl;
+          text-orientation: mixed;
+          font-feature-settings: "vert" 1, "vpal" 1;
+          padding-block: 16px;
+          padding-inline: 60px;
+          line-height: 2.0;
+          max-inline-size: 900px;
+          margin-inline: auto;
+          block-size: max-content;
+          inline-size: auto;
+          overflow: visible;
+        }
+        html, body { block-size: auto; }
+        /* コードは縦組みにしない */
+        #page-content pre, [id="page-content"] pre { writing-mode: horizontal-tb; }
+        /* 番号は縦中横で正立させる */
+        #page-content ol > li::marker, [id="page-content"] ol > li::marker { text-combine-upright: all; }
+        ruby { ruby-position: inter-character; }
+        rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }
+      `;
+  }
+
+  async function _exportNotePage() {
+    const pc = document.getElementById('page-content');
+    if (!pc) { showStatus('ノートが開かれていません', true); return null; }
+    const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(pc));
+    return exportToHtml(pc, {
+      title: _getViewTitle('page'),
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
+      extraCss: noteExportCss(vertical),
     });
   }
 
@@ -162925,6 +166667,7 @@ ${bodyHtml}
     publishCurrentView,
     cloneAndClean,
     convertDataRuby,
+    noteExportCss,
     collectCssVars,
     embedFont,
     embedImages,
@@ -163182,6 +166925,10 @@ const MeldexExportImage = (() => {
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }
     }
+    // ノートの縦書きも組み直しに時間がかかるため、同じく描画完了を待ってから撮影する
+    if (viewType === 'page' && window.MeldexNoteWritingMode?.isActive?.()) {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
 
     const el = getEl();
     if (!el) {
@@ -163254,7 +167001,11 @@ const MeldexExportImage = (() => {
       case 'page':
         return {
           cssFiles: ['gb-tools.css', 'gb-ui.css'],
-          extraCss: `
+          // 組方向を画像にも反映する。スタイルの本体は gb-export-html.js の
+          // noteExportCss と共有し、HTML出力と画像出力で見た目がずれないようにする。
+          extraCss: (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportCss)
+            ? MeldexExportHtml.noteExportCss(!!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isActive()))
+            : `
             #page-content, [id="page-content"] {
               padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto;
             }
@@ -164078,8 +167829,10 @@ function _buildExportOptions(path, type, format) {
   };
   const info = formatMap[type]?.[format];
   if (!info) return null;
+  // ノートが縦書き表示のときは、書き出し結果にも組方向を反映する（追加のみのパラメータ）
+  const verticalParam = (type === 'note' && window.MeldexNoteWritingMode?.isActive?.()) ? '&vertical=1' : '';
   return {
-    url: '/export/' + type + '?path=' + encodeURIComponent(path) + '&format=' + format,
+    url: '/export/' + type + '?path=' + encodeURIComponent(path) + '&format=' + format + verticalParam,
     filename: stem + info.ext,
     extension: info.ext,
     dialogTitle: `${info.label}として保存`,
@@ -165060,6 +168813,7 @@ async function _exportDictFile() {
     activeIndex: 0,
     query: '',
     seq: 0,
+    searchTimer: 0,
     mode: 'root',
     parentItem: null,
     globalIndexPromise: null,
@@ -165523,6 +169277,29 @@ async function _exportDictFile() {
     });
   }
 
+  function _unifiedFileCommands(rows, existingKeys) {
+    const out = [];
+    for (const file of rows || []) {
+      if (!file?.path) continue;
+      const type = _navTypeForEntry(file) || file.type || 'page';
+      const mediaType = _mediaTypeForEntry(file, type);
+      const displayType = _displayTypeForEntry(file, type, mediaType);
+      const label = file.name || file.path;
+      const key = _commandFileKey(file, type);
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      const sources = (file.sources || [file.source]).filter(Boolean).map(source => ({ name: '名前', content: '本文', clip: '画像', tags: 'タグ', memo: 'メモ' }[source] || source));
+      out.push(_command(
+        `search:${key}`, '検索結果', label,
+        `${sources.join('・') || '検索'} / ${file.path}`,
+        _iconForFileType(displayType),
+        () => _openFile({ ...file, type, label, mediaType }),
+        { keywords: [file.path, label], meta: file.score == null ? '開く' : Number(file.score).toFixed(3), fileKey: key },
+      ));
+    }
+    return out;
+  }
+
   function _panelCommands() {
     const commands = [];
     _getPanelSections().forEach((section) => {
@@ -165675,6 +169452,15 @@ async function _exportDictFile() {
     const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
     const fileItems = _globalFileCommands(files, state.query, existingKeys);
     items = _filterItems([...items, ...fileItems], state.query);
+    if (window.MeldexUnifiedSearch?.search) {
+      try {
+        const data = await window.MeldexUnifiedSearch.search(state.query, { limit: MAX_FILE_RESULTS });
+        if (seq !== state.seq) return;
+        items = [...items, ..._unifiedFileCommands(data.results, existingKeys)];
+      } catch (error) {
+        console.warn('[command-palette] unified search failed', error);
+      }
+    }
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
@@ -165797,6 +169583,9 @@ async function _exportDictFile() {
     closeButton.setAttribute('aria-label', 'コマンドパレットを閉じる');
     closeButton.innerHTML = _icon('x', 16);
     header.append(searchIcon, input, scope, closeButton);
+    if (window.MeldexUnifiedSearch?.button) {
+      window.MeldexUnifiedSearch.button(header, { e2eId: 'command-palette-search-scope-trigger', className: 'cmd-palette-close' });
+    }
 
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
@@ -165819,7 +169608,11 @@ async function _exportDictFile() {
     });
     input.addEventListener('input', () => {
       state.activeIndex = 0;
-      _refreshItems();
+      clearTimeout(state.searchTimer);
+      state.searchTimer = setTimeout(() => {
+        state.searchTimer = 0;
+        _refreshItems();
+      }, 220);
     });
     input.addEventListener('keydown', _onInputKeydown);
     closeButton.addEventListener('click', () => closeCommandPalette());
@@ -165871,6 +169664,8 @@ async function _exportDictFile() {
 
   function closeCommandPalette(options = {}) {
     if (!state.overlay) return;
+    clearTimeout(state.searchTimer);
+    state.searchTimer = 0;
     state.overlay.hidden = true;
     if (state.input) state.input.setAttribute('aria-expanded', 'false');
     document.body.classList.remove('gb-command-palette-open');
@@ -166081,6 +169876,13 @@ async function _exportDictFile() {
     window.addEventListener('storage', (event) => {
       if (['meldex-user', 'meldex-avatar', 'meldex-avatar-bg'].includes(event.key)) _syncLeftChromeUser();
     });
+    window.addEventListener('meldex:search-scopes-changed', () => {
+      if (!state.overlay || state.overlay.hidden) return;
+      clearTimeout(state.searchTimer);
+      state.searchTimer = 0;
+      state.activeIndex = 0;
+      _refreshItems();
+    });
     document.addEventListener('keydown', (event) => {
       if (!state.overlay || state.overlay.hidden || event.key !== 'Escape') return;
       event.preventDefault();
@@ -166112,6 +169914,473 @@ async function _exportDictFile() {
     _init();
   }
 })();
+
+;
+
+/* === gb-shortcut-registry.js === */
+;
+/* gb-shortcut-registry.js
+ * ショートカットキーの一覧・カスタム設定・設定UIを、キーの配送（中央ハンドラ）から
+ * 切り離して全アプリで共有するためのモジュール。
+ *
+ * - Meldex本体・ノート・シナリオ・シート・ボードは gb-shortcuts.js が全体の一覧を
+ *   ここへ登録し、配送も gb-shortcuts.js 側で行う。
+ * - ビューワー・クイックメモのように自前でキーを処理するアプリは、gb-shortcuts.js を
+ *   読み込まずに registerLocal() で自分のキーだけ登録し、matchEvent() で判定に使う。
+ *   これで「どのアプリでもオプションパネルからショートカットを確認・変更できる」状態に
+ *   しつつ、そのアプリに存在しない操作を一覧へ出さずに済む。
+ *
+ * カスタム値は localStorage の 'meldex-custom-shortcuts' に保存する（キーの上書きのみ）。
+ */
+(function (global) {
+  'use strict';
+
+  const STORAGE_KEY = 'meldex-custom-shortcuts';
+  const MODIFIER_KEYS = new Set(['control', 'shift', 'alt', 'meta']);
+  // Shift+数字キーの記号→数字マッピング（US配列基準）
+  const SHIFT_DIGIT_MAP = { '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
+
+  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'quickmemo', 'timer', 'panelset'];
+  const SCOPE_LABELS = {
+    global: '全体',
+    note: 'ノート',
+    scenario: 'シナリオ',
+    database: 'シート',
+    board: 'ボード',
+    calendar: 'スケジュール',
+    csv: 'CSV',
+    folder: 'フォルダ',
+    viewer: 'ビューワー',
+    quickmemo: 'クイックメモ',
+    timer: 'タイマー',
+    panelset: 'パネルセット',
+  };
+
+  // メインパネルで開いているアプリの種類 → ショートカットのスコープ。
+  // オプションパネルのショートカットタブは、既定でこのスコープだけに絞って表示する。
+  const TYPE_TO_SCOPE = {
+    page: 'note',
+    entity: 'note',
+    note: 'note',
+    db: 'database',
+    database: 'database',
+    pivot: 'database',
+    tree: 'database',
+    gallery: 'database',
+    kanban: 'database',
+    timeline: 'database',
+    chart: 'database',
+    graph: 'database',
+    'smart-db': 'database',
+    scriptnote: 'scenario',
+    scenario: 'scenario',
+    board: 'board',
+    canvas: 'board',
+    calendar: 'calendar',
+    csv: 'csv',
+    folder: 'folder',
+    outliner: 'folder',
+    preview: 'viewer',
+    media: 'viewer',
+    viewer: 'viewer',
+    'quick-memo': 'quickmemo',
+    quickmemo: 'quickmemo',
+    timer: 'timer',
+  };
+
+  const definitions = {};
+
+  function _esc(value) {
+    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function register(defs, options) {
+    if (!defs || typeof defs !== 'object') return;
+    const local = options?.local === true;
+    for (const [id, def] of Object.entries(defs)) {
+      if (!def || typeof def !== 'object') continue;
+      definitions[id] = {
+        key: String(def.key || ''),
+        label: String(def.label || id),
+        scope: String(def.scope || 'global'),
+        local,
+      };
+    }
+  }
+
+  function registerLocal(defs) {
+    register(defs, { local: true });
+  }
+
+  function defaults() {
+    return JSON.parse(JSON.stringify(definitions));
+  }
+
+  function getCustom() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
+  }
+
+  // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
+  function _refreshOpenSettings() {
+    if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+    if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
+    document.querySelectorAll('[data-shortcut-settings-host]').forEach(host => {
+      renderSettings(host, { scope: host.dataset.shortcutSettingsScope || '', boxed: host.dataset.shortcutSettingsBoxed === '1' });
+    });
+  }
+
+  function saveCustom(custom, options) {
+    const before = (typeof global.captureLocalStorageSettings === 'function')
+      ? global.captureLocalStorageSettings([STORAGE_KEY])
+      : null;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(custom)); } catch { /* 保存できない環境では変更を持ち越さない */ }
+    if (typeof global.updateScriptnoteShortcutStatusbar === 'function') global.updateScriptnoteShortcutStatusbar();
+    if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
+    if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
+    if (before && options?.skipHistory !== true && typeof global.pushLocalStorageSettingsHistory === 'function') {
+      global.pushLocalStorageSettingsHistory(
+        options?.label || '設定: ショートカット変更',
+        before,
+        global.captureLocalStorageSettings([STORAGE_KEY]),
+        options?.detail || '',
+        _refreshOpenSettings
+      );
+    }
+  }
+
+  function effective() {
+    const custom = getCustom();
+    const result = defaults();
+    for (const [id, overrides] of Object.entries(custom)) {
+      if (result[id]) result[id].key = overrides.key;
+    }
+    return result;
+  }
+
+  function keyFor(id) {
+    const custom = getCustom();
+    if (custom[id]) return custom[id].key;
+    return definitions[id]?.key || '';
+  }
+
+  // === キー判定 ===
+
+  function normalizeKeyEvent(e) {
+    const rawKey = typeof e?.key === 'string' ? e.key : '';
+    if (!rawKey) return null;
+    const key = rawKey.toLowerCase();
+    if (MODIFIER_KEYS.has(key)) return null;
+    const mods = [];
+    if (e.altKey) mods.push('alt');
+    if (e.ctrlKey || e.metaKey) mods.push('ctrl');
+    if (e.shiftKey) mods.push('shift');
+    let mainKey = key;
+    if (mainKey === ' ') mainKey = 'space';
+    if (mainKey === '+') {
+      mainKey = '=';
+      const shiftIdx = mods.indexOf('shift');
+      if (shiftIdx >= 0) mods.splice(shiftIdx, 1);
+    }
+    if (e.shiftKey && e.code === 'Backquote') mainKey = '`';
+    // Shift+数字キー: e.keyは記号になるが、e.codeから元の数字を復元
+    if (e.shiftKey && e.code && e.code.startsWith('Digit')) mainKey = e.code.charAt(5);
+    // Shift+記号キーのフォールバック（e.codeが使えない場合）
+    if (e.shiftKey && SHIFT_DIGIT_MAP[mainKey]) mainKey = SHIFT_DIGIT_MAP[mainKey];
+    return [...mods, mainKey].join('+');
+  }
+
+  function normalizeKeyDef(keyDef) {
+    const parts = String(keyDef || '').toLowerCase().replace(/\s/g, '').split('+');
+    const mods = [];
+    let mainKey = '';
+    for (const part of parts) {
+      if (['ctrl', 'shift', 'alt', 'meta'].includes(part)) mods.push(part);
+      else mainKey = part;
+    }
+    mods.sort();
+    return [...mods, mainKey].join('+');
+  }
+
+  // 表示用: "ctrl+shift+a" → "Ctrl+Shift+A"
+  function formatKey(keyStr) {
+    if (!keyStr) return '';
+    return String(keyStr).split('+').map(part => {
+      if (part === 'ctrl') return 'Ctrl';
+      if (part === 'shift') return 'Shift';
+      if (part === 'alt') return 'Alt';
+      if (part === 'meta') return 'Meta';
+      if (part === 'arrowup') return '↑';
+      if (part === 'arrowdown') return '↓';
+      if (part === 'arrowleft') return '←';
+      if (part === 'arrowright') return '→';
+      if (part === 'browserback') return '戻るボタン';
+      if (part === 'browserforward') return '進むボタン';
+      if (part === 'escape') return 'Esc';
+      if (part === 'enter') return 'Enter';
+      if (part === 'delete') return 'Del';
+      if (part === 'backspace') return 'BS';
+      if (part === 'tab') return 'Tab';
+      if (part === 'space') return 'Space';
+      if (part.length === 1) return part.toUpperCase();
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    }).join('+');
+  }
+
+  function keyDisplay(keyStr) {
+    return keyStr ? formatKey(keyStr) : '未設定';
+  }
+
+  // 押されたキーに対応するショートカットIDを返す（自前でキーを処理するアプリ用）。
+  // scopes を渡すとその範囲だけを見る。
+  function matchEvent(e, scopes) {
+    const pressed = normalizeKeyEvent(e);
+    if (!pressed) return '';
+    const allowed = Array.isArray(scopes) && scopes.length ? scopes : null;
+    const shortcuts = effective();
+    for (const [id, def] of Object.entries(shortcuts)) {
+      if (!def.key) continue;
+      if (allowed && !allowed.includes(def.scope)) continue;
+      if (normalizeKeyDef(def.key) === pressed) return id;
+    }
+    return '';
+  }
+
+  function conflict(selfId, newKey) {
+    const shortcuts = effective();
+    const selfScope = shortcuts[selfId]?.scope;
+    for (const [id, def] of Object.entries(shortcuts)) {
+      if (id === selfId || !def.key) continue;
+      if (normalizeKeyDef(def.key) !== newKey) continue;
+      if (def.scope === selfScope || def.scope === 'global' || selfScope === 'global') return def;
+    }
+    return null;
+  }
+
+  function scopeLabel(scope) {
+    return SCOPE_LABELS[scope] || scope;
+  }
+
+  function scopeForType(type) {
+    return TYPE_TO_SCOPE[String(type || '').toLowerCase()] || '';
+  }
+
+  // === 設定UI ===
+  // 4階層規則（.gb-section → .gb-section-title → .gb-field-row → .gb-field-inline）に従う。
+  // 設定ダイアログでは枠付き（boxed）、オプションパネルでは枠なしで使う。
+
+  function _displayScope(id, def) {
+    if (id.startsWith('panelset.')) return 'panelset';
+    return def.scope || 'global';
+  }
+
+  function _groups(shortcuts, custom) {
+    const grouped = Object.fromEntries(SCOPE_ORDER.map(scope => [scope, []]));
+    for (const [id, def] of Object.entries(shortcuts)) {
+      const displayScope = _displayScope(id, def);
+      if (!grouped[displayScope]) grouped[displayScope] = [];
+      grouped[displayScope].push({ id, displayScope, ...def, isCustom: !!custom[id] });
+    }
+    return grouped;
+  }
+
+  function applyFilter(container) {
+    const query = (container.querySelector('[data-shortcut-search]')?.value || '').trim().toLowerCase();
+    const selectedScope = container.querySelector('[data-shortcut-scope-filter]')?.value || 'all';
+    container.querySelectorAll('.shortcut-row').forEach(row => {
+      const matchesScope = selectedScope === 'all' || row.dataset.scope === selectedScope;
+      const matchesSearch = !query || (row.dataset.search || '').includes(query);
+      row.hidden = !(matchesScope && matchesSearch);
+    });
+    container.querySelectorAll('.shortcut-group').forEach(group => {
+      const visibleCount = Array.from(group.querySelectorAll('.shortcut-row')).filter(row => !row.hidden).length;
+      group.hidden = visibleCount === 0;
+      const count = group.querySelector('.shortcut-group-count');
+      if (count) count.textContent = visibleCount + '件';
+    });
+    const empty = container.querySelector('[data-shortcut-empty]');
+    if (empty) empty.hidden = !!container.querySelector('.shortcut-group:not([hidden])');
+  }
+
+  function _scopeOptionsHtml(scopeOptions, previousScope) {
+    let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
+    for (const [scope, items] of scopeOptions) {
+      html += '<option value="' + _esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>'
+        + _esc(scopeLabel(scope)) + ' (' + items.length + ')</option>';
+    }
+    return html;
+  }
+
+  function _rowHtml(item) {
+    const status = item.isCustom ? 'カスタム' : '既定';
+    const label = scopeLabel(item.displayScope);
+    const searchText = [item.label, item.id, item.key, label].join(' ').toLowerCase();
+    let html = '<div class="shortcut-row gb-field-row" data-id="' + _esc(item.id) + '" data-scope="' + _esc(item.displayScope)
+      + '" data-search="' + _esc(searchText) + '">';
+    html += '<span class="shortcut-label gb-label" title="' + _esc(item.id) + '">' + _esc(item.label) + '</span>';
+    html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
+    html += '<kbd class="shortcut-key' + (item.isCustom ? ' is-custom' : '') + '" data-id="' + _esc(item.id)
+      + '" data-e2e-id="shortcut-key-' + _esc(item.id)
+      + '" tabindex="0" role="button" title="クリックして変更" aria-label="' + _esc(item.label) + 'のキーを変更">'
+      + _esc(keyDisplay(item.key)) + '</kbd>';
+    if (item.isCustom) {
+      html += '<button type="button" class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + _esc(item.id)
+        + '" data-e2e-id="shortcut-reset-' + _esc(item.id) + '" title="デフォルトに戻す" aria-label="'
+        + _esc(item.label) + 'をデフォルトに戻す">✕</button>';
+    } else {
+      html += '<span class="shortcut-reset-spacer"></span>';
+    }
+    return html + '</div>';
+  }
+
+  function _groupHtml(scope, items) {
+    let html = '<div class="shortcut-group" data-scope="' + _esc(scope) + '">';
+    html += '<div class="shortcut-group-head">';
+    html += '<span>' + _esc(scopeLabel(scope)) + '</span>';
+    html += '<span class="shortcut-group-count gb-section-desc">' + items.length + '件</span>';
+    html += '</div>';
+    html += items.map(_rowHtml).join('');
+    return html + '</div>';
+  }
+
+  function _startKeyCapture(kbd, container) {
+    const original = kbd.textContent;
+    kbd.textContent = 'キーを入力...';
+    kbd.classList.add('is-capturing');
+    const finish = (text) => {
+      kbd.textContent = text;
+      kbd.classList.remove('is-capturing');
+    };
+    const handler = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        document.removeEventListener('keydown', handler, true);
+        finish(keyDisplay(effective()[kbd.dataset.id]?.key || '') || original);
+        return;
+      }
+      const newKey = normalizeKeyEvent(event);
+      if (!newKey) return; // 修飾キー単体は無視（入力継続）
+      const id = kbd.dataset.id;
+      const hit = conflict(id, newKey);
+      if (hit) {
+        document.removeEventListener('keydown', handler, true);
+        kbd.textContent = '競合: ' + hit.label;
+        setTimeout(() => finish(keyDisplay(effective()[id]?.key || '')), 1500);
+        return;
+      }
+      const custom = getCustom();
+      // デフォルトと同じなら削除（カスタム扱いにしない）
+      if (normalizeKeyDef(definitions[id]?.key || '') === newKey) delete custom[id];
+      else custom[id] = { key: newKey };
+      saveCustom(custom);
+      document.removeEventListener('keydown', handler, true);
+      renderSettings(container, container._shortcutSettingsOptions || {});
+      if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+    };
+    document.addEventListener('keydown', handler, true);
+  }
+
+  // container に一覧を描画する。
+  // options.scope: 初期の絞り込みスコープ（'' なら すべて）
+  // options.boxed: 設定ダイアログ用の枠付き表示にするか
+  function renderSettings(container, options) {
+    if (!container) return;
+    const opts = options || {};
+    container._shortcutSettingsOptions = opts;
+    container.dataset.shortcutSettingsHost = '1';
+    container.dataset.shortcutSettingsScope = opts.scope || '';
+    container.dataset.shortcutSettingsBoxed = opts.boxed ? '1' : '0';
+
+    const shortcuts = effective();
+    const custom = getCustom();
+    const grouped = _groups(shortcuts, custom);
+    const scopeOptions = Object.entries(grouped).filter(([, items]) => items.length);
+    const previousSearch = container.querySelector('[data-shortcut-search]')?.value || '';
+    // 既定は「いま開いているアプリの分だけ」。ただしユーザーが絞り込みを自分で
+    // 変えた後は、アプリを切り替えてもその選択を尊重する。
+    const autoScope = (opts.scope && grouped[opts.scope]?.length) ? opts.scope : 'all';
+    const previousScope = container.dataset.shortcutScopeUserChoice === '1'
+      ? (container.querySelector('[data-shortcut-scope-filter]')?.value || autoScope)
+      : autoScope;
+
+    let html = '<section class="gb-section shortcut-settings-wrap'
+      + (opts.boxed ? ' gb-section--boxed' : ' gb-section--detail') + '">';
+    html += '<div class="gb-section-title">ショートカットキー</div>';
+    html += '<div class="gb-field-row shortcut-settings-filter">';
+    html += '<input class="gb-input" type="text" placeholder="検索" data-shortcut-search'
+      + (opts.boxed ? ' id="shortcut-search"' : '') + ' value="' + _esc(previousSearch) + '">';
+    html += '<select class="gb-select" data-shortcut-scope-filter' + (opts.boxed ? ' id="shortcut-scope-filter"' : '') + '>';
+    html += _scopeOptionsHtml(scopeOptions, previousScope);
+    html += '</select>';
+    html += '<button type="button" class="gb-btn gb-btn-sm" data-shortcut-reset-all'
+      + (opts.boxed ? ' id="shortcut-reset-all"' : '') + '>すべてリセット</button>';
+    html += '</div>';
+    html += scopeOptions.map(([scope, items]) => _groupHtml(scope, items)).join('');
+    html += '<div class="gb-section-desc" data-shortcut-empty' + (opts.boxed ? ' id="shortcut-empty"' : '')
+      + ' hidden>該当するショートカットがありません</div>';
+    html += '</section>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.shortcut-key').forEach(kbd => {
+      kbd.addEventListener('click', () => _startKeyCapture(kbd, container));
+      kbd.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        _startKeyCapture(kbd, container);
+      });
+    });
+
+    container.querySelectorAll('.shortcut-reset').forEach(button => {
+      button.addEventListener('click', () => {
+        const next = getCustom();
+        delete next[button.dataset.id];
+        saveCustom(next);
+        renderSettings(container, opts);
+        if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+      });
+    });
+
+    container.querySelector('[data-shortcut-reset-all]')?.addEventListener('click', async () => {
+      const confirmFn = typeof global.cfConfirm === 'function' ? global.cfConfirm : null;
+      if (confirmFn && !await confirmFn('すべてのショートカットをデフォルトに戻しますか？')) return;
+      saveCustom({});
+      renderSettings(container, opts);
+      if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
+    });
+
+    container.querySelector('[data-shortcut-search]')?.addEventListener('input', () => applyFilter(container));
+    container.querySelector('[data-shortcut-scope-filter]')?.addEventListener('change', () => {
+      container.dataset.shortcutScopeUserChoice = '1';
+      applyFilter(container);
+    });
+    applyFilter(container);
+  }
+
+  global.MeldexShortcutRegistry = Object.freeze({
+    register,
+    registerLocal,
+    defaults,
+    effective,
+    getCustom,
+    saveCustom,
+    keyFor,
+    normalizeKeyEvent,
+    normalizeKeyDef,
+    formatKey,
+    keyDisplay,
+    matchEvent,
+    conflict,
+    scopeLabel,
+    scopeForType,
+    renderSettings,
+    applyFilter,
+    SCOPE_LABELS,
+    SCOPE_ORDER,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -166293,6 +170562,14 @@ const GB_SHORTCUTS = {
 
 const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
 
+// 一覧・カスタム設定・設定UIは gb-shortcut-registry.js（キー配送を持たない共通モジュール）が持つ。
+// このファイルは「本体の全ショートカット表」と「実際の処理・配送」を担当する。
+// 単独ビューワーやクイックメモのように自前でキーを処理するアプリは、このファイルを読まずに
+// レジストリへ自分のキーだけ登録する。
+if (typeof window !== 'undefined' && window.MeldexShortcutRegistry) {
+  window.MeldexShortcutRegistry.register(GB_SHORTCUTS);
+}
+
 
 // === Part 1-2: スコープ解決 ===
 
@@ -166356,49 +170633,18 @@ function _resolveShortcutScope(e) {
 
 // === Part 1-3: キー判定ヘルパー ===
 
-const _MODIFIER_KEYS = new Set(['control', 'shift', 'alt', 'meta']);
-
-// Shift+数字キーの記号→数字マッピング（US配列基準）
-const _SHIFT_DIGIT_MAP = { '!':'1', '@':'2', '#':'3', '$':'4', '%':'5', '^':'6', '&':'7', '*':'8', '(':'9', ')':'0' };
+// キーの正規化・表示・保存の実装は gb-shortcut-registry.js に一本化した。
+// 既存の呼び出し箇所を変えずに済むよう、同名の薄いラッパーだけ残す。
+function _shortcutRegistry() {
+  return typeof window !== 'undefined' ? window.MeldexShortcutRegistry : null;
+}
 
 function _normalizeKeyEvent(e) {
-  const rawKey = typeof e?.key === 'string' ? e.key : '';
-  if (!rawKey) return null;
-  const key = rawKey.toLowerCase();
-  if (_MODIFIER_KEYS.has(key)) return null;
-  const mods = [];
-  if (e.altKey) mods.push('alt');
-  if (e.ctrlKey || e.metaKey) mods.push('ctrl');
-  if (e.shiftKey) mods.push('shift');
-  let mainKey = key;
-  if (mainKey === ' ') mainKey = 'space';
-  if (mainKey === '+') {
-    mainKey = '=';
-    const shiftIdx = mods.indexOf('shift');
-    if (shiftIdx >= 0) mods.splice(shiftIdx, 1);
-  }
-  if (e.shiftKey && e.code === 'Backquote') mainKey = '`';
-  // Shift+数字キー: e.keyは記号になるが、e.codeから元の数字を復元
-  if (e.shiftKey && e.code && e.code.startsWith('Digit')) {
-    mainKey = e.code.charAt(5); // 'Digit1' → '1'
-  }
-  // Shift+記号キーのフォールバック（e.codeが使えない場合）
-  if (e.shiftKey && _SHIFT_DIGIT_MAP[mainKey]) {
-    mainKey = _SHIFT_DIGIT_MAP[mainKey];
-  }
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyEvent(e) ?? null;
 }
 
 function _normalizeKeyDef(keyDef) {
-  const parts = keyDef.toLowerCase().replace(/\s/g, '').split('+');
-  const mods = [];
-  let mainKey = '';
-  for (const p of parts) {
-    if (['ctrl', 'shift', 'alt', 'meta'].includes(p)) mods.push(p);
-    else mainKey = p;
-  }
-  mods.sort();
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyDef(keyDef) ?? String(keyDef || '');
 }
 
 function _isNativeHardReloadShortcut(e) {
@@ -166460,84 +170706,31 @@ if (typeof window !== 'undefined') window.__meldexPerformHardReload = _performMe
 
 // 表示用: "ctrl+shift+a" → "Ctrl+Shift+A"
 function _formatKeyDisplay(keyStr) {
-  if (!keyStr) return '';
-  return keyStr.split('+').map(p => {
-    if (p === 'ctrl') return 'Ctrl';
-    if (p === 'shift') return 'Shift';
-    if (p === 'alt') return 'Alt';
-    if (p === 'meta') return 'Meta';
-    if (p === 'arrowup') return '↑';
-    if (p === 'arrowdown') return '↓';
-    if (p === 'arrowleft') return '←';
-    if (p === 'arrowright') return '→';
-    if (p === 'browserback') return '戻るボタン';
-    if (p === 'browserforward') return '進むボタン';
-    if (p === 'escape') return 'Esc';
-    if (p === 'enter') return 'Enter';
-    if (p === 'delete') return 'Del';
-    if (p === 'backspace') return 'BS';
-    if (p === 'tab') return 'Tab';
-    if (p === 'space') return 'Space';
-    if (p.length === 1) return p.toUpperCase();
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }).join('+');
+  return _shortcutRegistry()?.formatKey(keyStr) ?? String(keyStr || '');
 }
 
 
 // === Part 2-1: カスタム設定の保存 ===
 
-const _SHORTCUT_STORAGE_KEY = 'meldex-custom-shortcuts';
-
 function _getCustomShortcuts() {
-  try { return JSON.parse(localStorage.getItem(_SHORTCUT_STORAGE_KEY) || '{}'); } catch { return {}; }
+  return _shortcutRegistry()?.getCustom() ?? {};
 }
 
 function _shortcutKeyDisplay(keyStr) {
-  return keyStr ? _formatKeyDisplay(keyStr) : '未設定';
-}
-
-function _refreshShortcutSettingsAfterHistory() {
-  if (typeof _updateAllTooltips === 'function') _updateAllTooltips();
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  document.querySelectorAll('.shortcut-settings-wrap').forEach(wrap => {
-    const container = wrap.parentElement;
-    if (container && typeof renderShortcutSettings === 'function') renderShortcutSettings(container);
-  });
+  return _shortcutRegistry()?.keyDisplay(keyStr) ?? (keyStr || '未設定');
 }
 
 function _saveCustomShortcuts(custom, options) {
-  const before = (typeof captureLocalStorageSettings === 'function')
-    ? captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY])
-    : null;
-  localStorage.setItem(_SHORTCUT_STORAGE_KEY, JSON.stringify(custom));
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar();
-  if (typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar();
-  if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
-    pushLocalStorageSettingsHistory(
-      options?.label || '設定: ショートカット変更',
-      before,
-      captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY]),
-      options?.detail || '',
-      _refreshShortcutSettingsAfterHistory
-    );
-  }
+  _shortcutRegistry()?.saveCustom(custom, options);
 }
 
 function _getEffectiveShortcuts() {
-  const custom = _getCustomShortcuts();
-  const result = JSON.parse(JSON.stringify(GB_SHORTCUTS));
-  for (const [id, overrides] of Object.entries(custom)) {
-    if (result[id]) result[id].key = overrides.key;
-  }
-  return result;
+  return _shortcutRegistry()?.effective() ?? JSON.parse(JSON.stringify(GB_SHORTCUTS));
 }
 
 // 指定IDのショートカットの現在のキーを取得（ツールチップ用）
 function getShortcutKey(id) {
-  const custom = _getCustomShortcuts();
-  if (custom[id]) return custom[id].key;
-  return GB_SHORTCUTS[id]?.key || '';
+  return _shortcutRegistry()?.keyFor(id) ?? (GB_SHORTCUTS[id]?.key || '');
 }
 
 function _shortcutStatusItem(id, label) {
@@ -167059,8 +171252,8 @@ const _shortcutHandlers = {
     const edTarget = document.activeElement?.closest('[contenteditable="true"]');
     const sel = window.getSelection();
     if (!edTarget || !sel || sel.isCollapsed || !sel.toString().trim()) return false;
-    if (typeof showNoteRubyPopup !== 'function') return false;
-    showNoteRubyPopup(edTarget, sel.getRangeAt(0).cloneRange());
+    if (typeof MeldexNoteRuby === 'undefined') return false;
+    MeldexNoteRuby.insertRuby(edTarget, sel.getRangeAt(0).cloneRange());
   },
   'note.newParagraph': () => _insertParagraphAfterCurrentNoteBlock(),
 
@@ -167617,201 +171810,20 @@ function _updateAllTooltips() {
 
 // === Part 2-2: ショートカット設定タブ ===
 
-const GB_SHORTCUT_SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'panelset'];
-const GB_SHORTCUT_SCOPE_LABELS = {
-  global: '全体',
-  note: 'ノート',
-  scenario: 'シナリオ',
-  database: 'シート',
-  board: 'ボード',
-  calendar: 'スケジュール',
-  csv: 'CSV',
-  folder: 'フォルダ',
-  panelset: 'パネルセット',
-};
-
-function _shortcutDisplayScope(id, def) {
-  if (id.startsWith('panelset.')) return 'panelset';
-  return def.scope || 'global';
-}
-
-function _shortcutSettingsGroups(shortcuts, custom) {
-  const groups = Object.fromEntries(GB_SHORTCUT_SCOPE_ORDER.map(scope => [scope, []]));
-  for (const [id, def] of Object.entries(shortcuts)) {
-    const displayScope = _shortcutDisplayScope(id, def);
-    if (!groups[displayScope]) groups[displayScope] = [];
-    groups[displayScope].push({ id, displayScope, ...def, isCustom: !!custom[id] });
-  }
-  return groups;
+// 一覧の描画・キー変更・競合チェックは gb-shortcut-registry.js に一本化した
+// （設定ダイアログとオプションパネルのショートカットタブで同じ実装を使うため）。
+// ここは設定ダイアログ側の入口だけを残す。
+function renderShortcutSettings(container) {
+  // 設定ダイアログでは従来どおり枠付き・全スコープ表示
+  window.MeldexShortcutRegistry?.renderSettings(container, { boxed: true });
 }
 
 function _applyShortcutSettingsFilter(container) {
-  const q = (container.querySelector('#shortcut-search')?.value || '').trim().toLowerCase();
-  const selectedScope = container.querySelector('#shortcut-scope-filter')?.value || 'all';
-  container.querySelectorAll('.shortcut-row').forEach(row => {
-    const matchesScope = selectedScope === 'all' || row.dataset.scope === selectedScope;
-    const matchesSearch = !q || (row.dataset.search || '').includes(q);
-    row.hidden = !(matchesScope && matchesSearch);
-  });
-  container.querySelectorAll('.shortcut-group').forEach(group => {
-    const visibleCount = Array.from(group.querySelectorAll('.shortcut-row')).filter(row => !row.hidden).length;
-    group.hidden = visibleCount === 0;
-    const count = group.querySelector('.shortcut-group-count');
-    if (count) count.textContent = visibleCount + '件';
-  });
-  const empty = container.querySelector('#shortcut-empty');
-  if (empty) empty.hidden = !!container.querySelector('.shortcut-group:not([hidden])');
-}
-
-function _shortcutSettingsScopeOptionsHtml(scopeOptions, previousScope) {
-  let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
-  for (const [scope, items] of scopeOptions) {
-    html += '<option value="' + esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>' + esc(GB_SHORTCUT_SCOPE_LABELS[scope] || scope) + ' (' + items.length + ')</option>';
-  }
-  return html;
-}
-
-function _shortcutSettingsRowHtml(item) {
-  const customStyle = item.isCustom ? ' color:var(--accent);' : '';
-  const status = item.isCustom ? 'カスタム' : '既定';
-  const scopeLabel = GB_SHORTCUT_SCOPE_LABELS[item.displayScope] || item.displayScope;
-  const searchText = [item.label, item.id, item.key, scopeLabel].join(' ').toLowerCase();
-  let html = '<div class="shortcut-row" data-id="' + esc(item.id) + '" data-scope="' + esc(item.displayScope) + '" data-search="' + esc(searchText) + '" style="display:flex;align-items:center;padding:4px 0;gap:8px;">';
-  html += '<span style="flex:1;min-width:0;font-size:12px;" title="' + esc(item.id) + '">' + esc(item.label) + '</span>';
-  html += '<span class="shortcut-status" style="width:56px;text-align:center;font-size:11px;color:' + (item.isCustom ? 'var(--accent)' : 'var(--fg2)') + ';">' + status + '</span>';
-  html += '<kbd class="shortcut-key" data-id="' + esc(item.id) + '" style="min-width:120px;text-align:center;padding:2px 8px;font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;cursor:pointer;' + customStyle + '" title="クリックして変更">' + esc(_shortcutKeyDisplay(item.key)) + '</kbd>';
-  if (item.isCustom) {
-    html += '<button class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + esc(item.id) + '" data-e2e-id="shortcut-reset-' + esc(item.id) + '" style="width:28px;padding:1px 4px;" title="デフォルトに戻す" aria-label="' + esc(item.label) + 'をデフォルトに戻す">✕</button>';
-  } else {
-    html += '<span style="width:28px;"></span>';
-  }
-  return html + '</div>';
-}
-
-function _shortcutSettingsGroupHtml(scope, items) {
-  let html = '<div class="shortcut-group" data-scope="' + esc(scope) + '" style="margin-top:10px;">';
-  html += '<div style="display:flex;align-items:center;gap:8px;font-weight:bold;font-size:13px;padding:8px 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px;">';
-  html += '<span>' + esc(GB_SHORTCUT_SCOPE_LABELS[scope] || scope) + '</span>';
-  html += '<span class="shortcut-group-count gb-section-desc" style="margin-left:auto;margin-bottom:0;">' + items.length + '件</span>';
-  html += '</div>';
-  html += items.map(_shortcutSettingsRowHtml).join('');
-  return html + '</div>';
-}
-
-function renderShortcutSettings(container) {
-  const shortcuts = _getEffectiveShortcuts();
-  const custom = _getCustomShortcuts();
-  const groups = _shortcutSettingsGroups(shortcuts, custom);
-  const previousSearch = container.querySelector('#shortcut-search')?.value || '';
-  const previousScope = container.querySelector('#shortcut-scope-filter')?.value || 'all';
-  const scopeOptions = Object.entries(groups).filter(([, items]) => items.length);
-
-  let html = '<section class="gb-section gb-section--boxed shortcut-settings-wrap" style="max-height:500px;overflow-y:auto;">';
-  html += '<div class="gb-section-title">ショートカット</div>';
-  html += '<div style="margin-bottom:10px;display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,180px) auto;gap:8px;align-items:center;">';
-  html += '<input id="shortcut-search" class="gb-input" type="text" placeholder="検索" value="' + esc(previousSearch) + '">';
-  html += '<select id="shortcut-scope-filter" class="gb-select">';
-  html += _shortcutSettingsScopeOptionsHtml(scopeOptions, previousScope);
-  html += '</select>';
-  html += '<button id="shortcut-reset-all" class="gb-btn gb-btn-sm" style="white-space:nowrap;">すべてリセット</button>';
-  html += '</div>';
-  html += scopeOptions.map(([scope, items]) => _shortcutSettingsGroupHtml(scope, items)).join('');
-  html += '<div id="shortcut-empty" class="gb-section-desc" hidden style="padding:16px 0;">該当するショートカットがありません</div>';
-  html += '</section>';
-  container.innerHTML = html;
-
-  // --- イベントバインド ---
-
-  // キー変更
-  container.querySelectorAll('.shortcut-key').forEach(kbd => {
-    kbd.addEventListener('click', () => _startKeyCapture(kbd, container));
-  });
-
-  // 個別リセット
-  container.querySelectorAll('.shortcut-reset').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.id;
-      const custom = _getCustomShortcuts();
-      delete custom[id];
-      _saveCustomShortcuts(custom);
-      renderShortcutSettings(container);
-      _updateAllTooltips();
-    });
-  });
-
-  // 全リセット
-  container.querySelector('#shortcut-reset-all')?.addEventListener('click', async () => {
-    if (!await cfConfirm('すべてのショートカットをデフォルトに戻しますか？')) return;
-    _saveCustomShortcuts({});
-    renderShortcutSettings(container);
-    _updateAllTooltips();
-  });
-
-  container.querySelector('#shortcut-search')?.addEventListener('input', () => _applyShortcutSettingsFilter(container));
-  container.querySelector('#shortcut-scope-filter')?.addEventListener('change', () => _applyShortcutSettingsFilter(container));
-  _applyShortcutSettingsFilter(container);
-}
-
-function _startKeyCapture(kbd, settingsContainer) {
-  kbd.textContent = 'キーを入力...';
-  kbd.style.background = 'var(--accent)';
-  kbd.style.color = '#fff';
-
-  const handler = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.key === 'Escape') {
-      document.removeEventListener('keydown', handler, true);
-      const shortcuts = _getEffectiveShortcuts();
-      kbd.textContent = _shortcutKeyDisplay(shortcuts[kbd.dataset.id]?.key || '');
-      kbd.style.background = '';
-      kbd.style.color = '';
-      return;
-    }
-    const newKey = _normalizeKeyEvent(e);
-    if (!newKey) return; // 修飾キー単体は無視（入力継続）
-    const id = kbd.dataset.id;
-
-    const conflict = _checkKeyConflict(id, newKey);
-    if (conflict) {
-      kbd.textContent = '競合: ' + conflict.label;
-      setTimeout(() => {
-        kbd.textContent = _shortcutKeyDisplay(_getEffectiveShortcuts()[id]?.key || '');
-        kbd.style.background = '';
-        kbd.style.color = '';
-      }, 1500);
-      document.removeEventListener('keydown', handler, true);
-      return;
-    }
-
-    const custom = _getCustomShortcuts();
-    // デフォルトと同じなら削除（カスタム扱いにしない）
-    if (_normalizeKeyDef(GB_SHORTCUTS[id]?.key || '') === newKey) {
-      delete custom[id];
-    } else {
-      custom[id] = { key: newKey };
-    }
-    _saveCustomShortcuts(custom);
-    document.removeEventListener('keydown', handler, true);
-    renderShortcutSettings(settingsContainer);
-    _updateAllTooltips();
-  };
-  document.addEventListener('keydown', handler, true);
+  window.MeldexShortcutRegistry?.applyFilter(container);
 }
 
 function _checkKeyConflict(selfId, newKey) {
-  const shortcuts = _getEffectiveShortcuts();
-  const selfScope = shortcuts[selfId]?.scope;
-  for (const [id, def] of Object.entries(shortcuts)) {
-    if (id === selfId) continue;
-    if (!def.key) continue;
-    if (_normalizeKeyDef(def.key) === newKey) {
-      if (def.scope === selfScope || def.scope === 'global' || selfScope === 'global') {
-        return def;
-      }
-    }
-  }
-  return null;
+  return window.MeldexShortcutRegistry?.conflict(selfId, newKey) ?? null;
 }
 
 

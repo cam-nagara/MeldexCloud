@@ -450,9 +450,14 @@ function restoreActiveCellByEntityName(entityName, ctxOverride) {
 // D-6: セル位置を {entityName, propName} で保持 (rowIdx/colIdx ではない)
 function _cellPos(td) {
   const tr = td.closest('tr');
+  const paneCtx = (typeof _dbPaneContextFromEvent === 'function'
+    ? _dbPaneContextFromEvent(td)
+    : null) || (typeof _currentPaneState === 'function' ? _currentPaneState() : null);
   return {
     entityName: tr?.dataset?.entityName || '',
     propName: td.dataset?.propName || '',
+    __paneCtx: paneCtx,
+    __dbPath: paneCtx?.dbPath || '',
     __sourceCell: td,
     __sourceSeq: Number(td?.dataset?.dbActiveSeq || dbActiveCellSeq || 0),
   };
@@ -497,7 +502,11 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
     const sourceSeq = Number(pos?.__sourceSeq || 0);
     if (currentActive?.isConnected && sourceCell?.isConnected && currentActive !== sourceCell && currentSeq >= sourceSeq) return;
     if (!currentActive?.isConnected && sourceCell?.isConnected && sourceSeq > 0 && !sourceCell.classList.contains('active-cell')) return;
-    const ctx = _currentPaneState();
+    // 保存完了時点のグローバル active pane ではなく、編集開始セルを所有していた
+    // pane-local context へ戻す。別paneをクリックした直後に古い保存応答が完了しても、
+    // そのpaneの同座標セルへactive枠を奪わない。
+    const ctx = pos?.__paneCtx;
+    if (!ctx || ctx.destroyed || (pos.__dbPath && ctx.dbPath !== pos.__dbPath)) return;
     const tblId = (ctx && ctx.tableId) || 'pivot-table';
     const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
     if (!tbody) return;

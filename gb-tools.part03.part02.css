@@ -11,7 +11,7 @@
   color: var(--page-kbd-fg, var(--fg));
   background: var(--page-kbd-bg, var(--bg3));
   border: var(--page-kbd-border-width, 1px) solid var(--page-kbd-border, var(--border));
-  border-bottom-width: var(--page-kbd-border-bottom-width, 2px);
+  border-block-end-width: var(--page-kbd-border-bottom-width, 2px);
   border-radius: var(--page-kbd-radius, 4px);
   box-shadow: 0 1px 0 var(--page-kbd-shadow, var(--border));
   vertical-align: middle;
@@ -23,7 +23,7 @@
 #entity-freetext details,
 #dp-editable details,
 #board-note-editable details {
-  margin: 8px 0;
+  margin-block: 8px;
   border: var(--page-details-border-width, 1px) solid var(--page-details-border, var(--border));
   border-radius: var(--page-details-radius, 4px);
   overflow: hidden;
@@ -54,7 +54,7 @@
 #entity-freetext details[open] summary,
 #dp-editable details[open] summary,
 #board-note-editable details[open] summary {
-  border-bottom: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
+  border-block-end: var(--page-details-open-border-width, 1px) solid var(--page-details-open-border, var(--page-details-border, var(--border)));
 }
 #page-content details > :not(summary),
 #entity-freetext details > :not(summary),
@@ -143,10 +143,10 @@
   opacity: var(--page-dragging-opacity, 0.4);
 }
 #page-content .drag-guide-top, #entity-freetext .drag-guide-top, #dp-editable .drag-guide-top {
-  border-top: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
+  border-block-start: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
 #page-content .drag-guide-bottom, #entity-freetext .drag-guide-bottom, #dp-editable .drag-guide-bottom {
-  border-bottom: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
+  border-block-end: var(--page-drag-guide-width, 2px) solid var(--page-drag-guide-color, var(--accent)) !important;
 }
 /* 工程7-1: pointerdown直後〜pointerup/cancelまで対象ブロック全体を「捕捉中」として
    マークする状態クラス。
@@ -168,17 +168,31 @@
   25% { transform: translateX(-2px); }
   75% { transform: translateX(2px); }
 }
+/* 縦書きでは行が横に並ぶので、揺れる向きも縦にする（横書きの鏡映し）。 */
+#block-drag-handle.is-note-vertical.note-block-reorder-boundary { animation: note-block-reorder-shake-vertical 0.3s ease-in-out; }
+@keyframes note-block-reorder-shake-vertical {
+  0%, 100% { transform: translateY(0); }
+  25% { transform: translateY(-2px); }
+  75% { transform: translateY(2px); }
+}
+/* 行ハンドルのグリップ記号は2列×3行の点なので、縦書き（行が横に並ぶ）では90度回す。
+   ホスト側の transform は上の揺れアニメーションが使うため、内側の span を回す。 */
+#block-drag-handle .block-drag-handle-glyph,
+#table-row-drag-handle .block-drag-handle-glyph { display: block; line-height: 1; }
+#block-drag-handle.is-note-vertical .block-drag-handle-glyph,
+#table-row-drag-handle.is-note-vertical .block-drag-handle-glyph { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) {
-  #block-drag-handle.note-block-reorder-boundary { animation: none; }
+  #block-drag-handle.note-block-reorder-boundary,
+  #block-drag-handle.is-note-vertical.note-block-reorder-boundary { animation: none; }
 }
 
 /* === Note styling: heading indent sections === */
 .heading-section {
-  margin-left: 4px;
-  padding-left: 16px;
+  margin-inline-start: 4px;
+  padding-inline-start: 16px;
 }
 .heading-section.level-5,
-.heading-section.level-6 { padding-left: 12px; }
+.heading-section.level-6 { padding-inline-start: 12px; }
 /* 見出し自体はセクションのインデントから引き戻し、段落のみ深くする。#page-content h2等にpadding-leftがあるため、ID付きで上書きする */
 #page-content .heading-section > h1,
 #page-content .heading-section > h2,
@@ -188,13 +202,13 @@
 #entity-freetext .heading-section > h2,
 #entity-freetext .heading-section > h3,
 #entity-freetext .heading-section > h4 {
-  margin-left: -12px;
-  padding-left: 4px;
+  margin-inline-start: -12px;
+  padding-inline-start: 4px;
 }
 #page-content .heading-section > h5,
 #page-content .heading-section > h6,
 #entity-freetext .heading-section > h5,
 #entity-freetext .heading-section > h6 {
-  margin-left: -8px;
-  padding-left: 4px;
+  margin-inline-start: -8px;
+  padding-inline-start: 4px;
 }

@@ -44,7 +44,14 @@
   function _timestampMillis(value) {
     const text = _timestampText(value);
     if (!text) return null;
-    const ms = new Date(text).getTime();
+    // 旧デスクトップ版はオフセット無しのローカル時刻を保存していた。
+    // 実行端末のtimezoneへ委ねると、GitHub/海外端末では同じメッセージの
+    // since判定が変わるため、旧形式だけMeldexの基準時刻(JST)として固定する。
+    const hasOffset = /(Z|[+-]\d{2}:?\d{2})$/i.test(text);
+    const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text) && !hasOffset
+      ? text + '+09:00'
+      : text;
+    const ms = new Date(normalized).getTime();
     return Number.isFinite(ms) ? ms : null;
   }
 

@@ -566,7 +566,30 @@
     return internalCopy.writeFailed && Date.now() - internalCopy.capturedAt < 5000;
   }
 
+  function specsFromBoardNodes(raw) {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return (Array.isArray(parsed?.nodes) ? parsed.nodes : []).slice(0, MAX_ITEMS).map(node => {
+        const path = normalizePath(node?.link || node?.imageSourcePath || '');
+        if (path) return specFromMeldexItem({
+          path, name: node?.text || filename(path), type: node?.linkType || (node?.img ? 'image' : 'file'),
+        });
+        const text = String(node?.text || '').trim();
+        return text ? { kind: 'text', text, label: text } : null;
+      }).filter(Boolean);
+    } catch { return []; }
+  }
+
   async function processTransfer(transfer, point, options) {
+    const boardSpecs = specsFromBoardNodes(dataTransferText(transfer, BOARD_MIME));
+    if (boardSpecs.length) {
+      return {
+        handled: true,
+        ids: addCardSpecs(boardSpecs, point, { reason: 'paste-board-nodes' }),
+        kind: 'board',
+      };
+    }
     if (shouldPasteInternalBoard(transfer) && typeof bdPaste === 'function') {
       bdPaste();
       return { handled: true, ids: [...(bd.selected || [])], kind: 'board' };
@@ -739,6 +762,16 @@
     const payload = { name: String(entityName), path: normalizePath(path), type: 'entity' };
     transfer.setData('text/plain', payload.name);
     transfer.setData(NODE_MIME, JSON.stringify(payload));
+    global.MeldexDnD?.beginCrossWindowDrag?.(transfer, payload, 'node');
+    return payload;
+  }
+
+  function setBoardNodesDragData(transfer, nodes) {
+    const payload = { nodes: (Array.isArray(nodes) ? nodes : []).slice(0, MAX_ITEMS) };
+    if (!transfer || !payload.nodes.length) return null;
+    transfer.setData(BOARD_MIME, JSON.stringify(payload));
+    if (!dataTransferText(transfer, 'text/plain')) transfer.setData('text/plain', boardCopyPlainText(payload.nodes));
+    global.MeldexDnD?.beginCrossWindowDrag?.(transfer, payload, 'board-nodes');
     return payload;
   }
 
@@ -843,11 +876,13 @@
     processTransfer,
     requestPaste,
     setEntityDragData,
+    setBoardNodesDragData,
     _test: {
       parseMeldexNodes,
       specsFromHtml,
       specsFromPlainText,
       specFromMeldexItem,
+      specsFromBoardNodes,
     },
   };
 

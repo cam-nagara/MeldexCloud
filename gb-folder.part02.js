@@ -149,6 +149,14 @@ function _renderDetailContent(item) {
     frag.appendChild(tagBox);
   }
 
+  if (item.type === 'folder' && item.path) {
+    const duplicateBox = document.createElement('div');
+    duplicateBox.dataset.duplicateFolderSetting = '';
+    duplicateBox.dataset.path = item.path;
+    frag.appendChild(duplicateBox);
+    setTimeout(() => window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(duplicateBox), 0);
+  }
+
   // 所属フォルダ
   if (item.path) {
     const sec = document.createElement('div');
@@ -995,9 +1003,15 @@ function showFolderDisplaySettings(options) {
     cfg.filterText = searchInput.value;
     saveFolderDisplayConfig(cfg);
     renderFolderGrid();
+    _scheduleFolderUnifiedSearch(searchInput.value);
   });
   searchRow.appendChild(searchLabel);
-  searchRow.appendChild(searchInput);
+  const searchControls = document.createElement('div');
+  searchControls.style.cssText = 'display:flex;align-items:center;gap:4px;';
+  searchInput.style.flex = '1 1 auto';
+  searchControls.appendChild(searchInput);
+  window.MeldexUnifiedSearch?.button?.(searchControls, { e2eId: 'folder-panel-search-scope-trigger' });
+  searchRow.appendChild(searchControls);
   menu.appendChild(searchRow);
 
   const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);

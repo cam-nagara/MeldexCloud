@@ -412,6 +412,17 @@ function isDragDroppedOutsideWindow(e) {
 }
 if (typeof window !== 'undefined') window.isDragDroppedOutsideWindow = isDragDroppedOutsideWindow;
 
+// 別の同一origin Meldex窓がdropをACKした場合は、従来の窓外popoutを抑止する。
+// ACKが無い（OS/WebView境界、キャンセル、TTL切れ）場合だけ現行判定へ戻す。
+async function shouldOpenDragPopout(e, nonce) {
+  if (!isDragDroppedOutsideWindow(e)) return false;
+  if (nonce && typeof MeldexDnD !== 'undefined' && MeldexDnD.waitForDropDisposition) {
+    if (await MeldexDnD.waitForDropDisposition(nonce, 180)) return false;
+  }
+  return true;
+}
+if (typeof window !== 'undefined') window.shouldOpenDragPopout = shouldOpenDragPopout;
+
 // 単一タブ窓として items を URL で開く共通ヘルパー（タブ/ツリー/folder-view 共用）。
 // items: [{ name, path, type }] 形式。type はURL復元側が処理できる名称に正規化する。
 // 単一窓モード（?single=1）で開くことで、新規窓ではサイドバー等が隠れ、
@@ -887,14 +898,3 @@ const LUCIDE = {
   // v5.23: アイコン統一で追加
   settings2: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
   slidersHorizontal: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>',
-  messageCircle: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/>',
-  lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
-  unlock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
-  circleAlert: '<circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>',
-  circleX: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
-  chevronLeft: '<path d="m15 18-6-6 6-6"/>',
-  chevronDown: '<path d="m6 9 6 6 6-6"/>',
-  chevronUp: '<path d="m18 15-6-6-6 6"/>',
-  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
-  starOff: '<path d="M8.34 8.34 2 9.27l5 4.87L5.82 21 12 17.77 18.18 21l-.59-3.43"/><path d="M18.42 12.76 22 9.27l-6.91-1L12 2l-1.44 2.91"/><line x1="2" x2="22" y1="2" y2="22"/>',
-  gripVertical: '<circle cx="9" cy="12" r="1"/><circle cx="9" cy="5" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="19" r="1"/>',

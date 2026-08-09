@@ -147,7 +147,7 @@
   filter: none !important;
   border-color: color-mix(in srgb, var(--border) 70%, var(--fg) 20%) !important;
   background: color-mix(in srgb, var(--bg3) 82%, var(--fg) 8%) !important;
-  color: color-mix(in srgb, var(--fg) 76%, var(--fg2)) !important;
+  color: var(--fg2) !important;
 }
 
 .meldex-install-card {

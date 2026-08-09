@@ -167,7 +167,125 @@
       saveValue(widthKey, Math.round(width));
     });
     setOpen(readBool(storageKey(appId, 'open'), false), false);
-    return { button, panel, body: panel.querySelector('.sa-secondary-panel-body'), setOpen };
+    return { appId, button, panel, body: panel.querySelector('.sa-secondary-panel-body'), setOpen };
+  }
+
+  // 他のアプリのオプションパネルと同じ見た目・同じ操作にするためのタブ。
+  // 本体の gb-detail-panel.js（重い）を持ち込まず、共通トークン .gb-inner-tab で作る。
+  function setupTabs(shell, tabs) {
+    const bar = document.createElement('nav');
+    bar.className = 'gb-tabbar sa-secondary-tabbar';
+    bar.setAttribute('role', 'tablist');
+    bar.setAttribute('aria-label', 'オプションパネルのタブ');
+    const panels = new Map();
+    const activate = (id) => {
+      tabs.forEach(tab => {
+        const active = tab.id === id;
+        const button = bar.querySelector(`[data-secondary-tab="${tab.id}"]`);
+        button?.classList.toggle('gb-inner-tab-active', active);
+        button?.setAttribute('aria-selected', active ? 'true' : 'false');
+        const host = panels.get(tab.id);
+        if (host) host.hidden = !active;
+      });
+      saveValue(storageKey(shell.appId, 'tab'), id);
+      const activeTab = tabs.find(tab => tab.id === id);
+      activeTab?.onActivate?.(panels.get(id));
+    };
+    tabs.forEach(tab => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-inner-tab';
+      button.dataset.secondaryTab = tab.id;
+      button.dataset.e2eId = `secondary-tab-${tab.id}`;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', 'false');
+      button.textContent = tab.label;
+      button.addEventListener('click', () => activate(tab.id));
+      bar.appendChild(button);
+      const host = document.createElement('div');
+      host.className = 'sa-secondary-tabpanel';
+      host.dataset.secondaryTabPanel = tab.id;
+      host.hidden = true;
+      panels.set(tab.id, host);
+    });
+    shell.body.appendChild(bar);
+    tabs.forEach(tab => shell.body.appendChild(panels.get(tab.id)));
+    let stored = '';
+    try { stored = localStorage.getItem(storageKey(shell.appId, 'tab')) || ''; } catch { stored = ''; }
+    activate(tabs.some(tab => tab.id === stored) ? stored : tabs[0].id);
+    return { activate, panels };
+  }
+
+  // 「情報」タブに必要な部品は数が多い。ビューワーは本体のビューワーパネル内でも
+  // iframe として動くため、起動時に全部読むと画像を開くたびに重くなる。
+  // タブを最初に開いた時だけ読み込む。
+  const FILE_INFO_SCRIPTS = [
+    'gb-file-info-panel.js',
+    'gb-file-metadata.js',
+    'gb-auto-tag-settings.js',
+    'gb-global-tags.js',
+    'gb-tag-preset-management.js',
+    'gb-tag-panel-tabs.js',
+    'gb-tag-tree-runtime.js',
+    'gb-tag-management-overlays.js',
+    'gb-tag-catalog-suggestions.js',
+    'gb-tag-display-preferences.js',
+    'gb-tag-group-summary.js',
+    'gb-tag-tree-dnd.js',
+    'gb-tag-management.js',
+  ];
+  const FILE_INFO_STYLES = ['gb-file-metadata.css', 'standalone-tags.css'];
+  let fileInfoDepsPromise = null;
+
+  function loadScriptOnce(src) {
+    if (document.querySelector(`script[src="${src}"]`)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const element = document.createElement('script');
+      element.src = src;
+      element.addEventListener('load', () => resolve());
+      // 1つ足りなくても情報タブ全体を止めない（タグが出ない等の部分的な欠けに留める）
+      element.addEventListener('error', () => resolve());
+      document.head.appendChild(element);
+    });
+  }
+
+  function ensureFileInfoDeps() {
+    if (fileInfoDepsPromise) return fileInfoDepsPromise;
+    FILE_INFO_STYLES.forEach(href => {
+      if (document.querySelector(`link[href="${href}"]`)) return;
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = href;
+      document.head.appendChild(link);
+    });
+    fileInfoDepsPromise = (async () => {
+      for (const src of FILE_INFO_SCRIPTS) await loadScriptOnce(src);
+    })();
+    return fileInfoDepsPromise;
+  }
+
+  // 「情報」タブ: 本体のフォルダパネル→情報タブと同じ内容
+  async function renderFileInfoTab(host, getPath) {
+    if (!host) return;
+    if (!root.MeldexFileInfoPanel?.renderInto) {
+      host.innerHTML = '<div class="gb-empty-placeholder">読み込み中...</div>';
+      await ensureFileInfoDeps();
+    }
+    if (!root.MeldexFileInfoPanel?.renderInto) {
+      host.innerHTML = '<div class="gb-empty-placeholder">ファイル情報を読み込めませんでした</div>';
+      return;
+    }
+    await root.MeldexFileInfoPanel.renderInto(host, String(getPath?.() || '').trim());
+  }
+
+  // 「ショートカットキー」タブ: 設定と同じ一覧・変更機能
+  function renderShortcutsTab(host, scope) {
+    if (!host) return;
+    if (!root.MeldexShortcutRegistry) {
+      host.innerHTML = '<div class="gb-empty-placeholder">ショートカットキーを読み込めませんでした</div>';
+      return;
+    }
+    root.MeldexShortcutRegistry.renderSettings(host, { scope });
   }
 
   function setupQuickMemo() {
@@ -193,11 +311,22 @@
     if (modeSource) input.appendChild(row('モード', linkedSelect(modeSource, '入力方法')));
     const modeHint = statusElement('テキスト、ペン、音声の内容を同じ下書きへ保存します');
     input.appendChild(row('保存対象', modeHint));
-    shell.body.append(save, input);
+
+    root.__meldexAppShortcutScope = 'quickmemo';
+    const tabs = setupTabs(shell, [
+      { id: 'settings', label: 'クイックメモ' },
+      {
+        id: 'info',
+        label: '情報',
+        onActivate: host => renderFileInfoTab(host, () => root.MeldexQuickMemo?.currentPath?.() || ''),
+      },
+      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'quickmemo') },
+    ]);
+    tabs.panels.get('settings').append(save, input);
     return true;
   }
 
-  function setupViewer() {
+  function setupViewer(embedded) {
     const controls = document.getElementById('controls');
     // #controls は共通ツールバー（.gb-toolbar-viewer）。中に置くボタンも共通の .tb-icon-btn を使い、
     // デスクトップ32px帯・タッチ44px操作領域のトークンをそのまま適用する。
@@ -247,13 +376,40 @@
     // 公開注釈コントローラーへ直接発呼する（右クリックメニュー・Aキーと同じ入口）。
     metadataActions.appendChild(actionButton('注釈を開く', () => window.MeldexViewerAnnotations?.toggle?.()));
     metadata.appendChild(metadataActions);
-    shell.body.append(display, slideshow, metadata);
+
+    if (embedded) {
+      shell.body.append(display, slideshow, metadata);
+      return true;
+    }
+
+    root.__meldexAppShortcutScope = 'viewer';
+    const tabs = setupTabs(shell, [
+      { id: 'settings', label: 'ビューワー' },
+      {
+        id: 'info',
+        label: '情報',
+        onActivate: host => renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || ''),
+      },
+      { id: 'shortcuts', label: 'ショートカットキー', onActivate: host => renderShortcutsTab(host, 'viewer') },
+    ]);
+    tabs.panels.get('settings').append(display, slideshow, metadata);
+    // 表示中のファイルが変わったら「情報」タブを追従させる
+    if (infoSource) {
+      new MutationObserver(() => {
+        const host = tabs.panels.get('info');
+        if (host && !host.hidden) renderFileInfoTab(host, () => root.MeldexViewerScene?.currentPath?.() || '');
+      }).observe(infoSource, { childList: true, subtree: true, characterData: true });
+    }
     return true;
   }
 
   function install() {
+    // 本体のビューワーパネル内では viewer.html が iframe として動く。その場合は
+    // ファイル情報もショートカットも本体のオプションパネル側にあるので、タブを足さず
+    // 従来どおり表示設定だけを出す（右サイドバー自体は従来から出している）。
+    const embedded = !!(root.parent && root.parent !== root);
     if (document.getElementById('editorView') && document.querySelector('.qm-header-actions')) setupQuickMemo();
-    else if (document.getElementById('controls') && document.getElementById('display')) setupViewer();
+    else if (document.getElementById('controls') && document.getElementById('display')) setupViewer(embedded);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', install, { once: true });

@@ -12,6 +12,7 @@
   <link rel="manifest" href="quick-memo.webmanifest">
   <link rel="apple-touch-icon" href="MeldexQuickMemo_icon_256.png">
   <link rel="stylesheet" href="gb-fonts.css">
+  <link rel="stylesheet" href="gb-shortcut-registry.css">
   <link rel="stylesheet" href="gb-icon-assets.css">
   <link rel="stylesheet" href="gb-theme.css">
   <link rel="stylesheet" href="gb-ui.css">
@@ -145,6 +146,7 @@
   <script src="standalone-offline-outbox.js"></script>
   <script src="gb-tooltip.js"></script>
   <script src="gb-dialog-keyboard.js"></script>
+  <script src="gb-shortcut-registry.js"></script>
   <script src="standalone-secondary-panel.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
@@ -152,6 +154,16 @@
   <script src="quick-memo-drawing.js"></script>
   <script src="quick-memo-library.js"></script>
   <script src="gb-cloud-frontmatter-lite.js"></script>
+  <script src="standalone-always-on-top.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      window.MeldexAlwaysOnTop?.install({
+        appId: "quick-memo",
+        host: document.querySelector("#editorView .qm-header-actions"),
+        buttonClass: "qm-icon",
+      });
+    });
+  </script>
   <script src="quick-memo.js"></script>
   <!-- 共通カラーパレット（ビューワー残課題修正計画 2026-08-04「4. 共通カラーパレット」）。
        quick-memo-drawing.js は本タスクの編集対象外のため、色スウォッチボタンのクリック挙動を

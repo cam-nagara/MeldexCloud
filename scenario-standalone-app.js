@@ -404,6 +404,8 @@
   }
 
   function initOptionPanel() {
+    // 単独アプリはメインパネルのアプリが固定なので、ショートカット一覧の初期絞り込みを宣言する
+    window.__meldexAppShortcutScope = 'scenario';
     window.MeldexStandaloneOptionPanel?.init({
       storagePrefix: 'meldex-scenario',
       toggleButtonIds: ['scenario-option-panel-button'],

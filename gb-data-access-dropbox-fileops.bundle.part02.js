@@ -1,3 +1,14 @@
+    try {
+      await scope.adapter.delete(contract.SystemStorageKind.ANNOTATIONS, docId);
+    } catch (error) {
+      if (!deleteError) deleteError = error;
+    }
+  }
+  // 旧パスに実体が残っていると、_readAnnotationRecord のフォールバックが
+  // 削除済みの注釈を復活させてしまう(ゴースト化)。削除時だけは旧パスも消す。
+  await provider.deletePath(_annotationPath(docId)).catch(() => {});
+  if (deleteError) throw deleteError;
+}
 
 async function _listAnnotationRecords(provider) {
   const contract = window.MeldexSystemStorage;
@@ -887,13 +898,3 @@ async function _undeleteFileVersion(provider, path, token) {
       }
       const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
       if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
-      const originalEntry = await _resolveEntryHandle(provider, originalPath);
-      const backups = {};
-      const backupStamp = _conflictBackupStamp();
-
-      if (action === 'keep_original') {
-        if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
-        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
-        await provider.deletePath(conflictPath);
-        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
-      }

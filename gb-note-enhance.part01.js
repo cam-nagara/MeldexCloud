@@ -201,6 +201,32 @@ function applyFileStyleToPanel(style, panelId) {
   }
 }
 
+function clearFileStyleFromElement(el) {
+  if (!el) return;
+  const raw = el.dataset?.[_FILE_STYLE_APPLIED_DATASET_KEY] || '';
+  raw.split(',').map(v => v.trim()).filter(Boolean).forEach(key => el.style.removeProperty(key));
+  if (el.dataset) delete el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY];
+}
+
+function applyFileStyleToElement(style, el, panelId) {
+  if (!el) return;
+  clearFileStyleFromElement(el);
+  if (!style || typeof style !== 'object') return;
+  const vars = _expandFileStyleVars(style, panelId);
+  const applied = [];
+  for (const [key, value] of Object.entries(vars)) {
+    if (!key.startsWith('--')) continue;
+    el.style.setProperty(key, value);
+    applied.push(key);
+  }
+  if (applied.length && el.dataset) el.dataset[_FILE_STYLE_APPLIED_DATASET_KEY] = applied.join(',');
+}
+
+function applyPageTitleStyleToElement(style, titleEl) {
+  if (!titleEl) return;
+  applyFileStyleToElement(style, titleEl, 'page-content');
+}
+
 function clearFileStyle() {
   // 全パネル横断クリア。他ペインで開いている別ツールのファイルスタイルも巻き込むため、
   // 新規コードでは clearFileStyleForPanel(panelId) を優先すること。

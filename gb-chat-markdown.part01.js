@@ -285,12 +285,19 @@
     return wrap;
   }
 
+  function _markdownLinkLabel(label, fallback) {
+    const value = String(label || fallback || '');
+    const trimmed = value.trim();
+    const wrappedCode = trimmed.match(/^(`+)([\s\S]*?)\1$/);
+    return wrappedCode ? wrappedCode[2] : value;
+  }
+
   function _makeLink(label, target, options) {
     const normalized = _normalizeMarkdownTarget(target);
     const a = document.createElement('a');
     a.className = 'chat-md-link';
     a.href = _isWebUrl(normalized) ? normalized : '#';
-    a.textContent = label || _linkLabel(normalized);
+    a.textContent = _markdownLinkLabel(label, _linkLabel(normalized));
     a.dataset.chatLinkTarget = normalized;
     a.dataset.gbTooltipDisabled = 'true';
     // 裸書き（本文にそのまま書かれたパス）由来のリンクだけ、描画後に実在確認して

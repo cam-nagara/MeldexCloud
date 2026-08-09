@@ -408,6 +408,17 @@ function isDragDroppedOutsideWindow(e) {
 }
 if (typeof window !== 'undefined') window.isDragDroppedOutsideWindow = isDragDroppedOutsideWindow;
 
+// 別の同一origin Meldex窓がdropをACKした場合は、従来の窓外popoutを抑止する。
+// ACKが無い（OS/WebView境界、キャンセル、TTL切れ）場合だけ現行判定へ戻す。
+async function shouldOpenDragPopout(e, nonce) {
+  if (!isDragDroppedOutsideWindow(e)) return false;
+  if (nonce && typeof MeldexDnD !== 'undefined' && MeldexDnD.waitForDropDisposition) {
+    if (await MeldexDnD.waitForDropDisposition(nonce, 180)) return false;
+  }
+  return true;
+}
+if (typeof window !== 'undefined') window.shouldOpenDragPopout = shouldOpenDragPopout;
+
 // 単一タブ窓として items を URL で開く共通ヘルパー（タブ/ツリー/folder-view 共用）。
 // items: [{ name, path, type }] 形式。type はURL復元側が処理できる名称に正規化する。
 // 単一窓モード（?single=1）で開くことで、新規窓ではサイドバー等が隠れ、
@@ -989,7 +1000,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
-  subpanel: 'panelRight',
+  subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -1053,6 +1064,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    else if (cls.includes('ico-listCollapse')) name = 'listCollapse';
     // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
     else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
     else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';
@@ -2437,7 +2449,7 @@ function initIframeMarkup(scrollContainer) {
       const x = pt.x;
       const y = pt.y;
       // ヒットテスト
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
       const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
       for (const el of els) {
         if (_markupElementHit(el, x, y, tolerance)) {
@@ -2457,7 +2469,7 @@ function initIframeMarkup(scrollContainer) {
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
     const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
-    _ann.anchor = anchorHit?.data || null;
+    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
     _ann.path = [_ann.anchor
       ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
       : [pt.x, pt.y]];
@@ -2473,7 +2485,9 @@ function initIframeMarkup(scrollContainer) {
       : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
+    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
+    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
@@ -2486,8 +2500,10 @@ function initIframeMarkup(scrollContainer) {
         ? { ..._rectData(_ann.path), anchor: _ann.anchor }
         : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'rect') {
-      _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
+      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
+      data.lineWidth = _ann.widths?.pen;
+      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
       preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
@@ -2506,13 +2522,15 @@ function initIframeMarkup(scrollContainer) {
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) return;
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
-    if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect'
-      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
+    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    const savedEl = shapeTypes.has(type)
+      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
@@ -2710,6 +2728,37 @@ function initIframeMarkup(scrollContainer) {
     return el;
   }
 
+  function _ellipseData(points) {
+    const rect = _rectData(points);
+    return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+  }
+
+  function _applyMarkupShapeEl(el, type, data, color, opacity, preview) {
+    const outlined = type === 'rect-line' || type === 'ellipse-line';
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    if (type.startsWith('ellipse')) {
+      el.setAttribute('cx', Number(data?.cx) || 0); el.setAttribute('cy', Number(data?.cy) || 0);
+      el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0)); el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+    } else {
+      el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
+      el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+    }
+    el.setAttribute('fill', outlined ? 'none' : color);
+    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
+    el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+    return el;
+  }
+
+  function _renderMarkupShape(type, data, color, opacity, annId) {
+    if (type === 'rect') return _renderRect(data, color, opacity, annId);
+    const el = _applyMarkupShapeEl(document.createElementNS(_svgNS, type.startsWith('ellipse') ? 'ellipse' : 'rect'), type, data, color, opacity, false);
+    if (annId) el.dataset.annId = annId;
+    layer.appendChild(el);
+    return el;
+  }
+
   function _handleMessage(msg) {
     if (!msg || !msg.type) return;
     if (msg.type === 'ann-set-state') {
@@ -2761,8 +2810,8 @@ function initIframeMarkup(scrollContainer) {
           _renderNote(item, data || {});
         } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
           return;
-        } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
-          _renderRect(data, item.color, item.opacity, item.id);
+        } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
+          _renderMarkupShape(item.type, data, item.color, item.opacity, item.id);
         } else if (data?.points) {
           _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
@@ -2774,10 +2823,10 @@ function initIframeMarkup(scrollContainer) {
       // 親が保存したストロークにIDを付与
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
-      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id])');
+      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id]), ellipse:not([data-ann-id])');
       if (!targetEl && els.length > 0) targetEl = els[els.length - 1];
       if (targetEl && msg.annId) {
         targetEl.dataset.annId = msg.annId;
@@ -2787,7 +2836,7 @@ function initIframeMarkup(scrollContainer) {
     if (msg.type === 'ann-stroke-save-failed') {
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
       if (targetEl) targetEl.remove();
@@ -3569,7 +3618,10 @@ function positionPopup(popup, anchorRect, options = {}) {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
   const gap = options.gap ?? 4;
-  const preferDirection = options.prefer || 'below'; // 'below' | 'right'
+  // 'below' | 'right' | 'left'
+  // 'left' はノート縦書き用。縦書きでは本文の続きが下に伸びるため、下へ開くと
+  // 直後の文章を隠してしまう。'right' の鏡映しとして左側へ寄せる。
+  const preferDirection = options.prefer || 'below';
   // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
   const ar = _popupCssRect(anchorRect, z);
   const avoid = _popupCssRect(options.avoidRect, z);
@@ -3589,6 +3641,12 @@ function positionPopup(popup, anchorRect, options = {}) {
     left = ar.right + gap;
     if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
     if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
+    top = ar.top;
+  } else if (preferDirection === 'left') {
+    // 左に表示、収まらなければ右
+    left = ar.left - pw - gap;
+    if (left < gap) left = Math.min(vw - pw - gap, ar.right + gap);
+    if (left < gap) left = gap;
     top = ar.top;
   } else {
     // 下に表示

@@ -98,8 +98,14 @@
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
       + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
-      + `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}"></div>`
-      + `${tagsHtml}</div>`;
+      + '</table>'
+      // タグは埋め込み情報の一番上。以前は埋め込み情報の外・下に置いていた。
+      // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
+      // 描画先を [data-file-embedded-body] に分けている。
+      + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
+      + tagsHtml
+      + '<div data-file-embedded-body></div>'
+      + '</div></div>';
   }
 
   function findPanel(root, filePath) {
@@ -128,8 +134,9 @@
     if (!panel) return false;
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
     if (rows) rows.innerHTML = metadataRowsHtml(meta);
-    const embeddedHost = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
+    const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+    const embeddedHost = embeddedPanel?.querySelector('[data-file-embedded-body]') || embeddedPanel;
     global.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
     return true;
   }
@@ -256,7 +263,7 @@ function initPageTitle() {
     }
   });
   // ドラッグ&ドロップ等、paste以外の経路で書式付き要素が紛れ込んだ場合の保険。
-  // ルビ表示用の [data-ruby] 要素（_pageTitleRubyHandler 参照）は対象外。
+  // ルビ表示用の [data-ruby] 要素は、本文からコピーされて紛れ込むことがあるため対象外にする。
   el.addEventListener('input', () => {
     if (!el.querySelector('*:not(br):not([data-ruby])')) return;
     const text = el.textContent;
@@ -951,8 +958,18 @@ function _schedulePageDisplayLayers(path, pc, html, isStalePageLoad) {
   const run = () => {
     if (isStalePageLoad?.()) return;
     if (document.activeElement === pc) return;
+    // 書式設定・ルビのポップアップを操作している間は本文を作り直さない。
+    // 作り直すと保存しておいた選択範囲が無効になり、ルビの適用が黙って失敗する。
+    if (document.querySelector('.gb-text-selection-fmt, .note-ruby-popup')) {
+      if (typeof layers?.scheduleIdle === 'function') layers.scheduleIdle(run, 900);
+      else setTimeout(run, 900);
+      return;
+    }
     if (autoLinksEnabled && pc.innerHTML === initialHtml) {
+      // 本文の総入れ替えでスクロール位置が飛ばないようにする
+      const scroll = window.MeldexNoteRuby?.captureScroll?.(pc);
       pc.innerHTML = applyAutoLinks(html, path, { force: true });
+      window.MeldexNoteRuby?.restoreScroll?.(scroll);
     }
     if (commentsEnabled && typeof CommentBadges !== 'undefined') {
       try { CommentBadges.refreshNote(path, pc, { force: true }); } catch {}
@@ -1250,21 +1267,45 @@ async function openPage(label, path, opts) {
 }
 
 // ノート縦書き/横書き切替
+// 実体は gb-note-writing-mode.js（組方向の正本）。ここはツールバーの data-action 契約を
+// 保つための薄いラッパで、状態遷移の中身は MeldexNoteWritingMode.applyState() に集約する。
 function toggleNoteVertical() {
-  const pc = document.getElementById('page-content');
-  const btn = document.getElementById('btn-note-vertical');
-  const isV = pc.classList.toggle('vertical-writing');
-  // アイコンは「クリック後の動作」を示す: 横書き中→kanban（縦書きにする）、縦書き中→textAlignStart（横書きに戻す）
-  if (btn) {
-    const iconName = isV ? 'textAlignStart' : 'kanban';
-    btn.innerHTML = (typeof lucide === 'function') ? lucide(iconName, 16) : '<span class="ico ico-' + iconName + '"></span>';
-    btn.title = isV ? '横書きに戻す' : '縦書きにする';
-    btn.classList.toggle('active', isV);
-  }
-  localStorage.setItem('note-vertical', isV ? '1' : '');
+  if (typeof MeldexNoteWritingMode === 'undefined') return;
+  return MeldexNoteWritingMode.toggle();
 }
 
 const NOTE_TOC_WIDTH_KEY = 'note-toc-width';
+// 縦書きでは目次を本文の上に出すため、調整するのは幅ではなく高さになる。
+// 200px は幅として妥当でも高さとしては大きすぎるので、保存先を分けて
+// 組方向を切り替えるたびに片方が壊れないようにする（横書き側は既存のまま）。
+const NOTE_TOC_HEIGHT_KEY = 'note-toc-height';
+const NOTE_TOC_SIZE_LIMITS = {
+  horizontal: { key: NOTE_TOC_WIDTH_KEY, def: 200, min: 140, max: 420 },
+  vertical: { key: NOTE_TOC_HEIGHT_KEY, def: 160, min: 80, max: 360 },
+};
+
+function _noteTocIsVertical() {
+  return typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isActive();
+}
+
+function _noteTocSizeSpec() {
+  return _noteTocIsVertical() ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+}
+
+function _noteTocSavedSize(spec) {
+  return parseInt(localStorage.getItem(spec.key) || String(spec.def), 10) || spec.def;
+}
+
+function _applyNoteTocSize(toc, size, vertical) {
+  if (vertical) {
+    toc.style.width = '';
+    toc.style.height = size + 'px';
+  } else {
+    toc.style.height = '';
+    toc.style.width = size + 'px';
+  }
+  toc.style.flexBasis = size + 'px';
+}
 
 function syncNoteTocLayout() {
   const toc = document.getElementById('note-toc');
@@ -1273,9 +1314,9 @@ function syncNoteTocLayout() {
   const visible = toc.style.display !== 'none';
   handle.style.display = visible ? '' : 'none';
   if (!visible) return;
-  const savedWidth = parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '200', 10) || 200;
-  toc.style.width = savedWidth + 'px';
-  toc.style.flexBasis = savedWidth + 'px';
+  const vertical = _noteTocIsVertical();
+  const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+  _applyNoteTocSize(toc, _noteTocSavedSize(spec), vertical);
 }
 
 function initNoteTocResize() {
@@ -1285,32 +1326,46 @@ function initNoteTocResize() {
   const handle = document.getElementById('note-toc-resize');
   if (!toc || !handle) return;
   handle.setAttribute('role', 'separator');
+  // 縦書き時の向き・ラベルは MeldexNoteWritingMode.applyState() が付け替える
   handle.setAttribute('aria-orientation', 'vertical');
   handle.setAttribute('aria-label', '目次幅を調整');
   handle.dataset.e2eId = handle.dataset.e2eId || 'note-toc-resize';
   if (!handle.hasAttribute('tabindex')) handle.tabIndex = 0;
-  const applyWidth = (width) => {
-    const next = Math.max(140, Math.min(420, Math.round(width)));
-    toc.style.width = next + 'px';
-    toc.style.flexBasis = next + 'px';
-    localStorage.setItem(NOTE_TOC_WIDTH_KEY, String(next));
+  const applySize = (size) => {
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const next = Math.max(spec.min, Math.min(spec.max, Math.round(size)));
+    _applyNoteTocSize(toc, next, vertical);
+    localStorage.setItem(spec.key, String(next));
     return next;
   };
-  const currentWidth = () => parseFloat(toc.style.width || '') || toc.getBoundingClientRect().width || parseInt(localStorage.getItem(NOTE_TOC_WIDTH_KEY) || '200', 10) || 200;
+  const currentSize = () => {
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const inline = parseFloat((vertical ? toc.style.height : toc.style.width) || '');
+    if (inline) return inline;
+    const rect = toc.getBoundingClientRect();
+    const z = _getZoom();
+    const measured = (vertical ? rect.height : rect.width) / z;
+    return measured || _noteTocSavedSize(spec);
+  };
   handle.addEventListener('pointerdown', (e) => {
     if (toc.style.display === 'none') return;
     e.preventDefault();
-    const startX = e.clientX;
-    const startWidth = currentWidth();
-    document.body.style.cursor = 'col-resize';
+    const vertical = _noteTocIsVertical();
+    const start = vertical ? e.clientY : e.clientX;
+    const startSize = currentSize();
+    const z = _getZoom();
+    document.body.style.cursor = vertical ? 'row-resize' : 'col-resize';
     document.body.style.userSelect = 'none';
     const onMove = (ev) => {
-      applyWidth(startWidth + (ev.clientX - startX));
+      const now = vertical ? ev.clientY : ev.clientX;
+      applySize(startSize + (now - start) / z);
     };
     const onUp = () => {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      applyWidth(currentWidth());
+      applySize(currentSize());
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
     };
@@ -1319,15 +1374,19 @@ function initNoteTocResize() {
   });
   handle.addEventListener('keydown', (e) => {
     if (toc.style.display === 'none') return;
-    const current = currentWidth();
+    const vertical = _noteTocIsVertical();
+    const spec = vertical ? NOTE_TOC_SIZE_LIMITS.vertical : NOTE_TOC_SIZE_LIMITS.horizontal;
+    const decreaseKey = vertical ? 'ArrowUp' : 'ArrowLeft';
+    const increaseKey = vertical ? 'ArrowDown' : 'ArrowRight';
+    const current = currentSize();
     let next = current;
-    if (e.key === 'ArrowLeft') next = current - 16;
-    else if (e.key === 'ArrowRight') next = current + 16;
-    else if (e.key === 'Home') next = 140;
-    else if (e.key === 'End') next = 420;
+    if (e.key === decreaseKey) next = current - 16;
+    else if (e.key === increaseKey) next = current + 16;
+    else if (e.key === 'Home') next = spec.min;
+    else if (e.key === 'End') next = spec.max;
     else return;
     e.preventDefault();
-    applyWidth(next);
+    applySize(next);
   });
 }
 
@@ -1340,6 +1399,25 @@ document.getElementById('page-content').addEventListener('wheel', function(e) {
     this.scrollLeft -= e.deltaY;
   }
 }, { passive: false });
+
+// 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
+// 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
+// シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
+// と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
+// カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
+document.getElementById('page-content').addEventListener('keydown', function(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
+    if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
+    e.preventDefault();
+    if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
+  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
+    e.preventDefault();
+  }
+});
 
 // Ctrl+K: リンク挿入モーダル
 document.getElementById('page-content').addEventListener('keydown', function(e) {
@@ -1461,6 +1539,71 @@ function _insertHtmlAtEditableRange(el, range, html) {
   return _captureEditableSelection(el) || range;
 }
 
+// 貼り付け・ドロップした画像/動画の初期サイズの上限。
+// 「正方形に収めたときの一辺」が本文の行幅のこの割合に収まるようにする。
+// 幅だけを基準にすると、同じ面積でも縦長の絵が横長の絵よりずっと大きく見えてしまう。
+const NOTE_MEDIA_INITIAL_SIZE_RATIO = 0.6;
+
+// 本文の「行が伸びる方向」の内寸。横書きなら内容の幅、縦書きなら内容の高さ。
+function _noteEditorInlineSize(editable) {
+  if (!editable || typeof editable.getBoundingClientRect !== 'function') return 0;
+  const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(editable));
+  let cs = null;
+  try { cs = getComputedStyle(editable); } catch (_) { /* 計測不能時はパディング0扱い */ }
+  const rect = editable.getBoundingClientRect();
+  const z = _getZoom();
+  const pad = (a, b) => (cs ? (parseFloat(cs[a]) || 0) + (parseFloat(cs[b]) || 0) : 0);
+  return vertical
+    ? Math.max(0, rect.height / z - pad('paddingTop', 'paddingBottom'))
+    : Math.max(0, rect.width / z - pad('paddingLeft', 'paddingRight'));
+}
+
+// 挿入直後の埋め込みメディアへ初期サイズを与える。拡大はしない（元が小さい絵はそのまま）。
+function _applyInitialEmbeddedMediaSize(editable, media) {
+  const el = media && media.querySelector ? media.querySelector('img, video') : null;
+  if (!el || el.style.width) return; // 既に幅が決まっているもの（保存値の復元等）は触らない
+  const apply = () => {
+    if (!el.isConnected || el.style.width) return;
+    const natW = el.naturalWidth || el.videoWidth || 0;
+    const natH = el.naturalHeight || el.videoHeight || 0;
+    if (!natW || !natH) return;
+    const avail = _noteEditorInlineSize(editable);
+    if (!avail) return;
+    const cap = avail * NOTE_MEDIA_INITIAL_SIZE_RATIO;
+    const longest = Math.max(natW, natH);
+    const width = longest > cap ? natW * (cap / longest) : natW;
+    el.style.width = Math.max(1, Math.round(width)) + 'px';
+    el.style.height = 'auto';
+    // 幅は ![alt|w=NNN](...) として保存される（保存経路は既存のまま）
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  if (el.tagName === 'VIDEO') {
+    if (el.readyState >= 1) apply();
+    else el.addEventListener('loadedmetadata', apply, { once: true });
+  } else if (el.complete && el.naturalWidth) {
+    apply();
+  } else {
+    el.addEventListener('load', apply, { once: true });
+  }
+}
+
+// 埋め込みメディアのHTMLを挿入し、読み込み完了後に初期サイズを与える。
+// insertHTML は挿入ノードを返さないため、目印属性を付けてから拾う。
+function _insertEmbeddedMediaHtml(el, range, innerHtml, attrs) {
+  const html = `<div class="embed-media" contenteditable="false" ${attrs} data-media-init="1">${innerHtml}</div>`;
+  const nextRange = _insertHtmlAtEditableRange(el, range, html);
+  el.querySelectorAll('.embed-media[data-media-init]').forEach((media) => {
+    delete media.dataset.mediaInit;
+    _applyInitialEmbeddedMediaSize(el, media);
+  });
+  return nextRange;
+}
+
+function _embeddedMediaHtmlForFile(fileName, linkUrl, kind) {
+  if (kind === 'video') return `<video src="${esc(linkUrl)}" controls></video>`;
+  return `<img src="${esc(linkUrl)}" alt="${esc(fileName)}">`;
+}
+
 async function _insertDroppedFileAtRange(el, range, file, dir) {
   const dataUrl = await _readFileAsDataURL(file);
   const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
@@ -1471,13 +1614,12 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
   if (!res.ok) return range;
   const rawPath = res.path || file.name;
   const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(rawPath);
+  const attrs = `data-path="${esc(rawPath)}" data-name="${esc(file.name)}"`;
   if (file.type.startsWith('image/')) {
-    return _insertHtmlAtEditableRange(el, range,
-      `<div class="embed-media" contenteditable="false" data-path="${esc(rawPath)}" data-name="${esc(file.name)}"><img src="${esc(linkUrl)}" alt="${esc(file.name)}"></div>`);
+    return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'image'), attrs);
   }
   if (file.type.startsWith('video/')) {
-    return _insertHtmlAtEditableRange(el, range,
-      `<div class="embed-media" contenteditable="false" data-path="${esc(rawPath)}" data-name="${esc(file.name)}"><video src="${esc(linkUrl)}" controls style="max-width:100%;"></video></div>`);
+    return _insertEmbeddedMediaHtml(el, range, _embeddedMediaHtmlForFile(file.name, linkUrl, 'video'), `${attrs} data-type="video"`);
   }
   return _insertHtmlAtEditableRange(el, range, `<a href="${esc(linkUrl)}">${esc(file.name)}</a> `);
 }
@@ -1488,11 +1630,13 @@ document.getElementById('page-content').addEventListener('paste', async function
   const cd = e.clipboardData;
   if (!cd) return;
 
-  // 画像が含まれている場合 → アップロードして埋め込み
-  const imageFile = [...cd.files].find(f => f.type.startsWith('image/'));
-  if (imageFile) {
+  // 画像・動画が含まれている場合 → アップロードして埋め込み
+  // （旧実装は画像だけを見ており、動画の貼り付けはドロップと挙動が食い違っていた）
+  const mediaFile = [...cd.files].find(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+  if (mediaFile) {
     e.preventDefault();
     const editor = this;
+    const isVideo = mediaFile.type.startsWith('video/');
     const pasteRange = _captureEditableSelection(editor);
     const currentPath = editor.dataset.path || state.currentPagePath;
     if (!currentPath) return;
@@ -1500,7 +1644,7 @@ document.getElementById('page-content').addEventListener('paste', async function
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const fname = imageFile.name || ('paste-' + Date.now() + '.png');
+        const fname = mediaFile.name || ('paste-' + Date.now() + (isVideo ? '.mp4' : '.png'));
         const res = await apiFetch('/upload-file?path=' + encodeURIComponent(dir), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
@@ -1508,12 +1652,13 @@ document.getElementById('page-content').addEventListener('paste', async function
         });
         if (res.ok && res.path) {
           const linkUrl = API_BASE + '/file-raw?path=' + encodeURIComponent(res.path);
-          _insertHtmlAtEditableRange(editor, pasteRange,
-            `<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(fname)}"><img src="${esc(linkUrl)}" alt="${esc(fname)}"></div>`);
+          const attrs = `data-path="${esc(res.path)}" data-name="${esc(fname)}"` + (isVideo ? ' data-type="video"' : '');
+          _insertEmbeddedMediaHtml(editor, pasteRange,
+            _embeddedMediaHtmlForFile(fname, linkUrl, isVideo ? 'video' : 'image'), attrs);
         }
-      } catch (err) { showStatus('画像の貼り付けに失敗', true); }
+      } catch (err) { showStatus(isVideo ? '動画の貼り付けに失敗' : '画像の貼り付けに失敗', true); }
     };
-    reader.readAsDataURL(imageFile);
+    reader.readAsDataURL(mediaFile);
     return;
   }
 
@@ -1558,8 +1703,26 @@ function _prepareEmbeddedMediaControls(root) {
   const resizeHandle = document.getElementById('media-resize-handle');
   if (!controls || !resizeHandle) return;
 
+  // リサイズハンドルは旧実装では右下の1個だけだった。既存の要素はそのまま右下(se)として
+  // 残し（IDと「右下をドラッグすると幅が変わる」既存契約を維持するため）、残り3隅を
+  // 同じクラス名で複製する。クラスをコピーするので本体版・単独アプリ版どちらの見た目にも追従する。
+  const MEDIA_RESIZE_CORNERS = ['nw', 'ne', 'sw', 'se'];
+  resizeHandle.dataset.mediaResizeCorner = 'se';
+  const resizeHandles = { se: resizeHandle };
+  for (const corner of ['nw', 'ne', 'sw']) {
+    const h = document.createElement('div');
+    h.id = 'media-resize-handle-' + corner;
+    h.className = resizeHandle.className;
+    h.dataset.mediaResizeCorner = corner;
+    h.dataset.e2eId = 'note-media-resize-' + corner;
+    h.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(h);
+    resizeHandles[corner] = h;
+  }
+  const eachResizeHandle = (fn) => MEDIA_RESIZE_CORNERS.forEach((c) => fn(resizeHandles[c], c));
+
   controls.setAttribute('aria-hidden', 'true');
-  resizeHandle.setAttribute('aria-hidden', 'true');
+  eachResizeHandle((h) => h.setAttribute('aria-hidden', 'true'));
   controls.querySelectorAll('[data-media-icon]').forEach(btn => {
     const icon = btn.dataset.mediaIcon;
     if (icon && typeof lucide === 'function') btn.innerHTML = lucide(icon, 14);
@@ -1575,9 +1738,8 @@ function _prepareEmbeddedMediaControls(root) {
   function _hideMediaControls(options = {}) {
     const restoreTarget = options.restoreFocus ? _activeMedia : null;
     controls.classList.remove('visible');
-    resizeHandle.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
-    resizeHandle.setAttribute('aria-hidden', 'true');
+    eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
     if (_activeMedia) delete _activeMedia.dataset.mediaControlsActive;
     _activeMedia = null;
     if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
@@ -1600,7 +1762,7 @@ function _prepareEmbeddedMediaControls(root) {
     _activeMedia.dataset.mediaControlsActive = '1';
     _positionMediaControls(media);
     controls.setAttribute('aria-hidden', 'false');
-    resizeHandle.setAttribute('aria-hidden', 'false');
+    eachResizeHandle((h) => h.setAttribute('aria-hidden', 'false'));
     if (options.focusControls) {
       const target = controls.querySelector('.active') || controls.querySelector('button');
       try { target?.focus?.({ preventScroll: true }); } catch (_) { target?.focus?.(); }
@@ -1608,7 +1770,7 @@ function _prepareEmbeddedMediaControls(root) {
   }
 
   function _isMediaControlTarget(target) {
-    return !!(target?.closest?.('#media-float-controls') || target?.id === 'media-resize-handle');
+    return !!(target?.closest?.('#media-float-controls') || target?.dataset?.mediaResizeCorner);
   }
 
   document.addEventListener('mouseover', (e) => {
@@ -1673,7 +1835,7 @@ function _prepareEmbeddedMediaControls(root) {
     }
   });
   controls.addEventListener('mouseenter', _cancelHideMedia);
-  resizeHandle.addEventListener('mouseenter', _cancelHideMedia);
+  eachResizeHandle((h) => h.addEventListener('mouseenter', _cancelHideMedia));
   controls.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1696,9 +1858,12 @@ function _prepareEmbeddedMediaControls(root) {
       const align = btn.dataset.align;
       controls.querySelectorAll('[data-align]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      if (align === 'left') { _activeMedia.style.marginLeft = '0'; _activeMedia.style.marginRight = 'auto'; }
-      else if (align === 'right') { _activeMedia.style.marginLeft = 'auto'; _activeMedia.style.marginRight = '0'; }
-      else { _activeMedia.style.marginLeft = 'auto'; _activeMedia.style.marginRight = 'auto'; }
+      // 論理プロパティで寄せる。縦書きでは「行の先頭寄せ＝上寄せ」になる。
+      _activeMedia.style.marginLeft = '';
+      _activeMedia.style.marginRight = '';
+      if (align === 'left') { _activeMedia.style.marginInlineStart = '0'; _activeMedia.style.marginInlineEnd = 'auto'; }
+      else if (align === 'right') { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = '0'; }
+      else { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = 'auto'; }
       const pc = document.getElementById('page-content');
       if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
     });
@@ -1709,9 +1874,8 @@ function _prepareEmbeddedMediaControls(root) {
     const media = _activeMedia;
     if (!media) return;
     controls.classList.remove('visible');
-    resizeHandle.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
-    resizeHandle.setAttribute('aria-hidden', 'true');
+    eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
     const ok = typeof cfConfirm === 'function'
       ? await cfConfirm('この埋め込みメディアを削除しますか？', { danger: true, okLabel: '削除' })
       : confirm('この埋め込みメディアを削除しますか？');
@@ -1729,34 +1893,59 @@ function _prepareEmbeddedMediaControls(root) {
     if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
-  // リサイズハンドル
-  resizeHandle.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    if (!_activeMedia) return;
-    const img = _activeMedia.querySelector('img, video');
-    if (!img) return;
-    const startX = e.clientX, startW = img.offsetWidth;
-    function onMove(ev) {
-      const newW = Math.max(50, startW + (ev.clientX - startX));
-      img.style.width = newW + 'px';
-      img.style.height = 'auto';
-      _positionMediaControls(_activeMedia);
-    }
-    function onUp() {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      // リサイズ完了 → 自動保存トリガー
-      const pc = document.getElementById('page-content');
-      if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
+  // リサイズハンドル（四隅共通）
+  // 隅ごとに符号を変えるので、どの角からでも「外へ引けば拡大／内へ引けば縮小」になる。
+  eachResizeHandle((handleEl, corner) => {
+    handleEl.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      if (!_activeMedia) return;
+      const img = _activeMedia.querySelector('img, video');
+      if (!img) return;
+      const signX = corner.includes('e') ? 1 : -1;
+      const signY = corner.includes('s') ? 1 : -1;
+      // getBoundingClientRect / clientX は表示倍率が掛かった物理値、offsetWidth は論理値。
+      // 旧実装は論理値へ物理差分をそのまま足しており、倍率100%以外でずれていた。
+      const z = _getZoom();
+      const startX = e.clientX, startY = e.clientY;
+      const startW = img.offsetWidth, startH = img.offsetHeight;
+      const aspect = startH > 0 ? startW / startH : 1;
+      function onMove(ev) {
+        const dx = signX * (ev.clientX - startX) / z;
+        const dy = signY * (ev.clientY - startY) / z;
+        // 縦横比を保ったまま、動きの大きい方の軸を採用する
+        const delta = Math.abs(dx) >= Math.abs(dy * aspect) ? dx : dy * aspect;
+        img.style.width = Math.max(50, startW + delta) + 'px';
+        img.style.height = 'auto';
+        _positionMediaControls(_activeMedia);
+      }
+      function onUp() {
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        // リサイズ完了 → 自動保存トリガー
+        const pc = document.getElementById('page-content');
+        if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    });
   });
+
+  // メニューやポップアップが開いたらメディア操作を隠す。重なり順を下げるだけでは、
+  // 将来 z-index が増えたときに同じ問題（ハンドルがメニューを突き抜ける）が再発する。
+  const MEDIA_OVERLAY_SELECTOR = '.gb-context-menu, .gb-fmt-popup, .note-block-menu, .modal-overlay';
+  document.addEventListener('pointerdown', (e) => {
+    if (!_activeMedia) return;
+    if (e.target?.closest?.(MEDIA_OVERLAY_SELECTOR)) _hideMediaControls();
+  }, true);
+  if (typeof MutationObserver === 'function') {
+    new MutationObserver(() => {
+      if (_activeMedia && document.querySelector(MEDIA_OVERLAY_SELECTOR)) _hideMediaControls();
+    }).observe(document.body, { childList: true });
+  }
 })();
 
 function _positionMediaControls(media) {
   const controls = document.getElementById('media-float-controls');
-  const resizeHandle = document.getElementById('media-resize-handle');
   if (!controls || !media) return;
   const rect = media.getBoundingClientRect();
   const z = _getZoom();
@@ -1765,15 +1954,33 @@ function _positionMediaControls(media) {
   controls.style.left = (rect.right / z - controlsWidth - 4) + 'px';
   controls.style.top = (rect.top / z + 4) + 'px';
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(controls);
-  resizeHandle.style.left = (rect.right / z - 7) + 'px';
-  resizeHandle.style.top = (rect.bottom / z - 7) + 'px';
-  resizeHandle.classList.add('visible');
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(resizeHandle);
-  // 現在のアラインメントを反映
-  const ml = media.style.marginLeft, mr = media.style.marginRight;
+  // 四隅のハンドル。メディアの外接矩形は組方向に関係なく物理矩形なので、
+  // 四隅へ置くこと自体が縦書き対応を兼ねる（追加の分岐は要らない）。
+  const corners = {
+    nw: [rect.left, rect.top],
+    ne: [rect.right, rect.top],
+    sw: [rect.left, rect.bottom],
+    se: [rect.right, rect.bottom],
+  };
+  Object.entries(corners).forEach(([corner, [x, y]]) => {
+    const h = corner === 'se'
+      ? document.getElementById('media-resize-handle')
+      : document.getElementById('media-resize-handle-' + corner);
+    if (!h) return;
+    const half = (h.offsetWidth || 14) / 2;
+    h.style.left = (x / z - half) + 'px';
+    h.style.top = (y / z - half) + 'px';
+    h.classList.add('visible');
+    if (typeof clampPopupToViewport === 'function') clampPopupToViewport(h);
+  });
+  // 現在のアラインメントを反映（旧ノートの物理マージンも読めるようにする）
+  const ms = media.style;
+  const start = ms.marginInlineStart || ms.marginLeft;
+  const end = ms.marginInlineEnd || ms.marginRight;
+  const isZero = (v) => v === '0px' || v === '0';
   controls.querySelectorAll('[data-align]').forEach(b => b.classList.remove('active'));
-  if (ml === '0px' || ml === '0') controls.querySelector('[data-align="left"]')?.classList.add('active');
-  else if (mr === '0px' || mr === '0') controls.querySelector('[data-align="right"]')?.classList.add('active');
+  if (isZero(start)) controls.querySelector('[data-align="left"]')?.classList.add('active');
+  else if (isZero(end)) controls.querySelector('[data-align="right"]')?.classList.add('active');
   else controls.querySelector('[data-align="center"]')?.classList.add('active');
 }
 
@@ -1796,6 +2003,8 @@ document.addEventListener('dblclick', (e) => {
 });
 
 function setupEditableDropHandler(el) {
+  if (!el || el.dataset.meldexDropHandlerInstalled === '1') return;
+  el.dataset.meldexDropHandlerInstalled = '1';
   el.addEventListener('dragover', (e) => {
     const types = e.dataTransfer.types;
     // パネル操作系のD&Dはスキップ（パネルハンドラに委ねる）
@@ -1808,18 +2017,10 @@ function setupEditableDropHandler(el) {
     e.preventDefault();
     e.stopPropagation();
     // キャレット位置にドロップラインを表示
-    let caret = el.querySelector('.drop-caret');
-    if (!caret) { caret = document.createElement('div'); caret.className = 'drop-caret'; el.style.position = 'relative'; el.appendChild(caret); }
-    const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
-    if (range) {
-      const rects = range.getClientRects();
-      const elRect = el.getBoundingClientRect();
-      if (rects.length > 0) {
-        caret.style.top = (rects[0].bottom - elRect.top + el.scrollTop) + 'px';
-      } else {
-        caret.style.top = (e.clientY - elRect.top + el.scrollTop) + 'px';
-      }
-      caret.style.display = '';
+    // 挿入位置の線は共通実装（gb-dnd.js）へ委譲する。旧実装はここに同じ計算を
+    // 複製しており、縦書き対応のような修正が片方だけに入る温床になっていた。
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.showDropCaret) {
+      MeldexDnD.showDropCaret(el, e);
     }
   });
   el.addEventListener('dragleave', (e) => {
@@ -1870,10 +2071,20 @@ function setupEditableDropHandler(el) {
     }
 
     // フォルダツリーからのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    const nodeResolved = typeof MeldexDnD !== 'undefined'
+      ? await MeldexDnD.resolveDropData(e, 'node') : null;
+    const cfData = nodeResolved
+      ? JSON.stringify(nodeResolved.payload)
+      : e.dataTransfer.getData('application/x-meldex-node');
     if (cfData) {
       try {
         const { name, path, type } = JSON.parse(cfData);
+        if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
+            && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
+          draggedNode = null;
+          MeldexDnD.completeDrop(nodeResolved);
+          return;
+        }
         if (type === 'image' || type === 'video' || type === 'audio') {
           // 画像/動画/音声: メディア埋め込みを挿入
           const ext = (path || '').split('.').pop().toLowerCase();
@@ -1882,8 +2093,16 @@ function setupEditableDropHandler(el) {
             const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
               `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`);
+          } else if (type === 'video' || ['mp4','m4v','mov','webm','ogv','avi','mkv','wmv','mpg','mpeg'].includes(ext)) {
+            const videoUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><video controls preload="metadata" src="${videoUrl}"></video></div>`);
+          } else if (type === 'audio') {
+            const audioUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><audio controls preload="metadata" src="${audioUrl}"></audio></div>`);
           } else {
-            // 動画/音声: リンクとして挿入
+            // 未知の媒体はパスリンクとして挿入
             document.execCommand('insertHTML', false,
               `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide('paperclip',12)} ${esc(name)}</span> `);
           }
@@ -1893,7 +2112,11 @@ function setupEditableDropHandler(el) {
           document.execCommand('insertHTML', false,
             `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `);
         }
-      } catch(err) {}
+        if (nodeResolved) MeldexDnD.completeDrop(nodeResolved);
+      } catch(err) {
+        if (nodeResolved) MeldexDnD.failDrop(nodeResolved);
+        if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
+      }
       draggedNode = null;
       return;
     }
@@ -1919,6 +2142,7 @@ function setupEditableDropHandler(el) {
     }
   });
 }
+window.MeldexSetupEditableDropHandler = setupEditableDropHandler;
 // page-content と entity-freetext にドロップハンドラを設定
 setupEditableDropHandler(document.getElementById('page-content'));
 setupEditableDropHandler(document.getElementById('entity-freetext'));
@@ -1931,9 +2155,9 @@ function setupEditableDragSource(el) {
     const text = sel ? sel.toString() : '';
     if (!text) return;
     e.dataTransfer.setData('text/plain', text);
-    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify({
-      text, sourcePath: el.dataset.path || ''
-    }));
+    const payload = { text, sourcePath: el.dataset.path || '' };
+    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
     e.dataTransfer.effectAllowed = 'copyMove';
   });
 }
@@ -1977,22 +2201,25 @@ function updateNoteToc() {
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
   if (headings.length === 0) {
-    toc.innerHTML = '<div style="color:var(--fg2);padding:4px;">見出しがありません</div>';
+    toc.innerHTML = '<div class="note-toc-empty">見出しがありません</div>';
     return;
   }
 
   let html = '';
   headings.forEach((h, i) => {
     const level = parseInt(h.tagName[1]);
-    const indent = (level - 1) * 12;
     const text = h.textContent.trim() || '(無題)';
-    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}" style="display:block;width:100%;padding:2px 4px 2px ${indent}px;cursor:pointer;border:0;background:transparent;text-align:left;font:inherit;border-radius:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${level===1?'var(--accent)':'var(--fg)'};"
-      title="${esc(text)}">${esc(text)}</button>`;
+    // 見た目（インデント・色・省略）とホバーは gb-tools.part01.part02.css の
+    // .note-toc-item / .note-toc-level-N に持たせる。インラインstyleでハイライトすると、
+    // ポインタが乗ったまま目次を作り直したときに mouseleave が来ず消えなくなる。
+    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}"`
+      + ` data-e2e-id="note-toc-item-${i}" title="${esc(text)}">${esc(text)}</button>`;
   });
   toc.innerHTML = html;
+  // 目次はDOMごと差し替わるため、テーマの適用対象マークを付け直す。
+  // これを省くとテーマ側のホバー色だけが失効する。
+  try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
   toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
-    item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
-    item.addEventListener('mouseleave', () => { item.style.background = ''; });
     item.addEventListener('click', () => {
       const index = Number(item.dataset.noteTocIndex);
       const target = document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[index];
@@ -2302,8 +2529,12 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       valuesEl.appendChild(hideBtn);
     }
     // ロールアップ/数式型は計算結果であり候補値を追加できないため、＋ボタンは出さない
-    // （シート表側の _nonValueTypes 除外と同じ扱い）。
-    if (!isComputedProp) {
+    // （シート表側の _nonValueTypes 除外と同じ扱い）。1セル1値で運用するシート（制作管理）
+    // も同様に出さない — 押しても _showEntryPropInlineAdd が拒否する空振りボタンになり、
+    // シート表側と見た目が食い違うため（シート表: gb-db-table.part02.js の _allowAdd）。
+    const _hideAddButton = parentDb && typeof hidesCandidateStatusUi === 'function'
+      && hidesCandidateStatusUi(parentDb);
+    if (!isComputedProp && !_hideAddButton) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
@@ -2832,23 +3063,28 @@ document.addEventListener('keydown', function(e) {
   // Ctrl+Z: カスタムアンドゥ（直前がカスタム操作の場合のみ）
   if (e.key === 'z' && !e.shiftKey && editable._lastCustomOp && editable._customUndoStack && editable._customUndoStack.length > 0) {
     e.preventDefault();
+    // innerHTML の総入れ替えはスクロール位置を捨てるため、前後で退避・復元する
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customRedoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customUndoStack.pop();
     editable._lastCustomOp = editable._customUndoStack.length > 0;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
   // Ctrl+Y / Ctrl+Shift+Z: カスタムリドゥ
   if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && editable._customRedoStack && editable._customRedoStack.length > 0) {
     e.preventDefault();
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customUndoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customRedoStack.pop();
     editable._lastCustomOp = true;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
 }, true); // captureフェーズで先に処理
@@ -4501,6 +4737,16 @@ function _linkContextItemId(label) {
     .replace(/^-+|-+$/g, '');
 }
 
+async function _copyLinkContextPath(linkTarget) {
+  const path = String(linkTarget?.path || '').trim();
+  if (!path) return;
+  const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+  const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
+  if (typeof showStatus === 'function') {
+    showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+  }
+}
+
 function _showLinkContextMenu(e, linkTarget) {
   if (!linkTarget?.path) return;
   removeTooltip();
@@ -4543,6 +4789,7 @@ function _showLinkContextMenu(e, linkTarget) {
     if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
     else openLink(linkTarget.path, linkTarget.label);
   });
+  addItem('copy', 'パスをコピー', () => _copyLinkContextPath(linkTarget));
   const browserUrl = String(linkTarget.path || '').trim();
   const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
   if (isExternalContextUrl) {
@@ -5410,10 +5657,12 @@ function _editorEventAnchorRect(e, fallbackEl) {
   return _editorPointRect(x, y);
 }
 
-function _positionEditorPopup(popup, anchorRect) {
+function _positionEditorPopup(popup, anchorRect, options) {
   if (!popup) return;
   if (typeof positionPopup === 'function') {
-    positionPopup(popup, anchorRect);
+    // 縦書きでは下に開くと本文の続きを隠すため、行の進行方向と直交する側（左）へ寄せる
+    const prefer = (typeof MeldexNoteWritingMode !== 'undefined') ? MeldexNoteWritingMode.popupPrefer() : 'below';
+    positionPopup(popup, anchorRect, Object.assign({ prefer }, options || {}));
     return;
   }
   const z = typeof _getZoom === 'function' ? (_getZoom() || 1) : 1;
@@ -5452,199 +5701,15 @@ function _closeEditorPopup(popup, cleanup, restoreFocusEl) {
   if (!popup) return;
   if (popup.isConnected) popup.remove();
   cleanup?.();
-  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') restoreFocusEl.focus();
-}
-
-function _pageTitleRubyHandler(e) {
-  const editable = e.target.closest('[contenteditable="true"]');
-  if (!editable) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
-  // 念のため: 万一ノート編集 editable に届いた場合はノートメニューに任せる
-  if (editable.id === 'entity-freetext' || editable.id === 'page-content' || editable.id === 'dp-editable') return;
-
-  e.preventDefault();
-  const selectedText = sel.toString().trim();
-
-  // 既存のルビメニューを閉じる
-  document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-
-  // 選択範囲を保存
-  const savedRange = sel.getRangeAt(0).cloneRange();
-  const savedEditable = editable;
-
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu note-ruby-popup page-title-ruby-popup';
-  menu.setAttribute('role', 'dialog');
-  menu.setAttribute('aria-label', 'ページタイトルにルビを設定');
-  // mousedownでフォーカスを奪わない
-  menu.addEventListener('mousedown', (ev) => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${selectedText.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.id = 'ruby-input';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ページタイトルのルビ');
-  input.dataset.e2eId = 'page-title-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.id = 'ruby-apply-btn';
-  applyButton.dataset.e2eId = 'page-title-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  menu.append(label, row);
-  document.body.appendChild(menu);
-  _positionEditorPopup(menu, _editorEventAnchorRect(e, editable));
-  // blurで再描画されないよう一時的に無効化
-  const origBlur = savedEditable.onblur;
-  savedEditable.onblur = null;
-  input.focus();
-  // メニューが閉じたらblurを復元
-  const restoreBlur = () => { savedEditable.onblur = origBlur; };
-  window._rubyRestoreBlur = restoreBlur;
-  let outsideCloser = null;
-  let keyCloser = null;
-  const cleanupRubyPopup = () => {
-    if (outsideCloser) document.removeEventListener('pointerdown', outsideCloser, true);
-    if (keyCloser) document.removeEventListener('keydown', keyCloser, true);
-    outsideCloser = null;
-    keyCloser = null;
-    if (window._rubyRestoreBlur) { window._rubyRestoreBlur(); window._rubyRestoreBlur = null; }
-  };
-
-  function doApply() {
-    const ruby = input.value.trim();
-    _closeEditorPopup(menu, cleanupRubyPopup);
-    if (!ruby) return;
-
-    const path = savedEditable.dataset?.path || savedEditable.dataset?.entityPath;
-    const ep = savedEditable.dataset.entityPath || '';
-    const isNewFormatFreetext = savedEditable.id === 'entity-freetext' && ep.endsWith('.md');
-    const savePath = savedEditable.id === 'entity-freetext'
-      ? (isNewFormatFreetext ? ep : ep + '/_freetext.md')
-      : (path || '');
-    if (!savePath) return;
-
-    // --- ルビ適用 ---
-    // 自動保存タイマーをキャンセル（normalize()でRangeが無効化されるのを防止）
-    clearTimeout(window._noteAutoSaveTimer);
-
-    savedEditable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(savedRange);
-
-    // カスタムアンドゥ用にスナップショットを保存
-    _pushCustomUndo(savedEditable);
-
-    // 既存のルビspan全体を選択している場合はルビ値を上書き
-    const existingRuby = savedRange.startContainer.parentElement?.closest('[data-ruby]');
-    if (existingRuby && savedRange.toString().trim() === existingRuby.textContent.trim()) {
-      existingRuby.dataset.ruby = ruby;
-    } else {
-      // 選択範囲をruby spanで囲む（DOM直接操作）
-      const span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      try {
-        savedRange.surroundContents(span);
-      } catch (e) {
-        const fragment = savedRange.extractContents();
-        span.appendChild(fragment);
-        savedRange.insertNode(span);
-      }
-    }
-
-    // ペンディング中の自動保存をキャンセルし、即時保存
-    clearTimeout(window._noteAutoSaveTimer);
-    savedEditable.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-    savedEditable.normalize();
-    let md = htmlToMd(savedEditable.innerHTML);
-    if (!md.trim()) return;
-    const fm = savedEditable.dataset.frontmatter || '';
-    if (fm) md = fm + md;
-
-    const isEntityFreetext = savedEditable.id === 'entity-freetext';
-    const savePromise = isEntityFreetext && typeof _saveEntityFreeText === 'function'
-      ? _saveEntityFreeText(savedEditable, ep, md, { reason: 'ruby' })
-      : (window.MeldexNoteSaveAdapter
-        ? window.MeldexNoteSaveAdapter.performSave(savedEditable, savePath, md, { reason: 'ruby' })
-        : apiPut('/file?path=' + encodeURIComponent(savePath), {
-            content: md,
-            if_match_etag: savedEditable.dataset.lastSavedEtag || '',
-            transport_revision: savedEditable.dataset.lastSavedTransportRevision || '',
-          }));
-    savePromise.then((saved) => {
-      if (saved === false || saved?.conflictPending) return;
-      // 保存後にDOM再描画（auto-link再適用のため）
-      const bodyMd = md.replace(/^---\n[\s\S]*?\n---\n?/, '');
-      const reHtml = mdToHtml(bodyMd);
-      savedEditable.innerHTML = applyAutoLinks(reHtml, savePath);
-      // ルビを設定したテキストの直後にカーソルを配置
-      savedEditable.focus();
-      const rubySpans = savedEditable.querySelectorAll('[data-ruby]');
-      for (const span of rubySpans) {
-        if (span.textContent.includes(selectedText)) {
-          const s = window.getSelection();
-          const r = document.createRange();
-          r.setStartAfter(span);
-          r.collapse(true);
-          s.removeAllRanges();
-          s.addRange(r);
-          span.scrollIntoView({ block: 'center' });
-          break;
-        }
-      }
-      showStatus('ルビを設定しました');
-    }).catch(() => {});
-  }
-
-  applyButton.addEventListener('click', doApply);
-  input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter') { ev.preventDefault(); doApply(); }
-    if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(menu, cleanupRubyPopup, savedEditable); }
-    ev.stopPropagation();
-  });
-
-  outsideCloser = function closer(ev) {
-    if (!menu.contains(ev.target)) {
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  keyCloser = function onKey(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(menu, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(menu, cleanupRubyPopup, savedEditable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', outsideCloser, true);
-    document.addEventListener('keydown', keyCloser, true);
-  }, 0);
-}
-
-{
-  const _pageTitleEl = document.getElementById('page-title');
-  if (_pageTitleEl) {
-    _pageTitleEl.addEventListener('contextmenu', _pageTitleRubyHandler);
-    if (typeof addLongPressHandler === 'function') addLongPressHandler(_pageTitleEl, _pageTitleRubyHandler);
+  // preventScroll を付けないと、ポップアップを閉じた拍子に本文がスクロールする
+  if (restoreFocusEl?.isConnected && typeof restoreFocusEl.focus === 'function') {
+    try { restoreFocusEl.focus({ preventScroll: true }); } catch (_) { restoreFocusEl.focus(); }
   }
 }
+
+// ページタイトルへのルビ設定は削除した。適用処理が保存先パスを見つけられず必ず途中で
+// 止まっており（タイトルはファイル名そのものでルビの保存先が無い）、右クリックしても
+// 何も起きない項目になっていたため。本文のルビは gb-note-ruby.js が担当する。
 
 /* ==============================
    Notion風キーボードショートカット
@@ -5737,110 +5802,9 @@ function moveBlock(direction) {
   return MeldexNoteBlockReorder.moveBlock(direction);
 }
 
-// ノートエディタ用ルビ入力ポップアップ。
-// シナリオエディタの sn2-header-popup と同パターン（positionPopup + 範囲基準）。
-function showNoteRubyPopup(editable, range) {
-  if (!editable || !range) return;
-  document.querySelectorAll('.note-ruby-popup').forEach(el => el.remove());
-  const text = range.toString();
-  if (!text) return;
-  const popup = document.createElement('div');
-  popup.className = 'gb-context-menu note-ruby-popup';
-  popup.setAttribute('role', 'dialog');
-  popup.setAttribute('aria-label', 'ノート本文にルビを設定');
-  const label = document.createElement('div');
-  label.className = 'note-ruby-popup-label';
-  label.textContent = `「${text.slice(0, 20)}」にルビを設定`;
-  const row = document.createElement('div');
-  row.className = 'note-ruby-popup-row';
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.className = 'gb-input note-ruby-input';
-  input.placeholder = 'ルビを入力...';
-  input.setAttribute('aria-label', 'ノート本文のルビ');
-  input.dataset.e2eId = 'note-ruby-input';
-  // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
-  input.setAttribute('data-gb-tooltip-disabled', 'true');
-  const applyButton = document.createElement('button');
-  applyButton.type = 'button';
-  applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
-  applyButton.dataset.e2eId = 'note-ruby-apply';
-  applyButton.textContent = '設定';
-  row.append(input, applyButton);
-  popup.append(label, row);
-  popup.addEventListener('mousedown', ev => { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
-  document.body.appendChild(popup);
-  _positionEditorPopup(popup, range.getBoundingClientRect());
-  let closeHandler = null;
-  let keyHandler = null;
-  const cleanup = () => {
-    if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
-    if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
-    closeHandler = null;
-    keyHandler = null;
-  };
-  const apply = () => {
-    const ruby = input.value.trim();
-    _closeEditorPopup(popup, cleanup);
-    if (!ruby) return;
-    editable.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    _pushCustomUndo(editable);
-    const rangeRoot = range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer?.parentElement;
-    const existingRuby = rangeRoot?.closest?.('[data-ruby]');
-    let span = existingRuby && editable.contains(existingRuby) && range.toString().trim() === existingRuby.textContent.trim()
-      ? existingRuby
-      : null;
-    if (span) {
-      span.dataset.ruby = ruby;
-    } else {
-      span = document.createElement('span');
-      span.dataset.ruby = ruby;
-      span.style.position = 'relative';
-      span.textContent = text;
-      range.deleteContents();
-      range.insertNode(span);
-    }
-    const r2 = document.createRange();
-    r2.setStartAfter(span);
-    r2.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r2);
-    editable.dispatchEvent(new Event('input', { bubbles: true }));
-    showStatus('ルビを設定しました');
-  };
-  applyButton.addEventListener('click', apply);
-  input.addEventListener('keydown', ev => {
-    if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
-    else if (ev.key === 'Escape') { ev.preventDefault(); _closeEditorPopup(popup, cleanup, editable); }
-    ev.stopPropagation();
-  });
-  closeHandler = function onPointerDown(ev) {
-    if (!popup.contains(ev.target)) _closeEditorPopup(popup, cleanup, editable);
-  };
-  keyHandler = function onKeyDown(ev) {
-    // Tab / Shift+Tab はポップアップ内の項目切り替え（ルビ設定ポップアップ共通挙動）
-    if (ev.key === 'Tab') {
-      ev.preventDefault();
-      ev.stopPropagation();
-      if (typeof gbCyclePopupFocus === 'function') gbCyclePopupFocus(popup, ev.shiftKey);
-      return;
-    }
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      _closeEditorPopup(popup, cleanup, editable);
-    }
-  };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', closeHandler, true);
-    document.addEventListener('keydown', keyHandler, true);
-    input.focus();
-  }, 0);
-}
+// ノート本文のルビ入力ポップアップは gb-note-ruby.js（MeldexNoteRuby）へ移設した。
+// 通常は文字選択で出る書式設定ポップアップへ統合され、そこが使えない環境
+// （クラウドのスマホ編集UI等）だけ MeldexNoteRuby.showLegacyPopup が使われる。
 
 async function confirmNoteTableDelete(message) {
   if (typeof cfConfirm === 'function') return !!(await cfConfirm(message));
@@ -5959,7 +5923,8 @@ function _noteCtxMenuHandler(e, contextOverride) {
     { type: 'sep' },
     { label: 'ルビを設定...', enabled: hasSelection, action: () => {
       if (!savedRange) return;
-      showNoteRubyPopup(editable, savedRange);
+      if (typeof MeldexNoteRuby === 'undefined') return;
+      MeldexNoteRuby.insertRuby(editable, savedRange);
     }},
     { label: 'リンクを挿入...', enabled: true, action: () => {
       restoreAndExec(() => {});

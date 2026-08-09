@@ -167,7 +167,9 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-02.js?v=ea9927957ec9cd90"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-03.js?v=0f882d8227e8f7d7"></script>
+</script><script src="meldex-cloud-runtime-02.js?v=45578a2551e5de98"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-03.js?v=221eb5e83edae21a"></script>
+
+
 
 
 
@@ -214,6 +216,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-detail-tab-dnd.css">
 <link rel="stylesheet" href="gb-file-lock-badge.css">
 <link rel="stylesheet" href="gb-file-metadata.css">
+<link rel="stylesheet" href="gb-shortcut-registry.css">
 <link rel="stylesheet" href="gb-folder-multi-info.css">
 <link rel="stylesheet" href="gb-chat-cli-auth.css">
 <link rel="stylesheet" href="gb-auto-tag-settings.css">
@@ -471,7 +474,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <button type="button" class="tb-icon-btn" title="フォルダツリーで表示" aria-label="フォルダツリーで表示" data-action="revealCurrentInFolderTree('page', event)"><span class="ico ico-folderTree"></span></button>
         <div id="page-title" class="tb-file-title tb-file-title--input" contenteditable="true"></div>
         <div class="sep"></div>
-        <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-panelLeft"></span></button>
+        <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-action="toggleNoteToc()"><span class="ico ico-listCollapse"></span></button>
         <button type="button" class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" aria-label="縦書きにする" data-action="toggleNoteVertical()"><span class="ico ico-kanban"></span></button>
         <button type="button" class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" aria-label="見出しインデント表示" data-action="toggleHeadingIndent()"><span class="ico ico-indentIncrease"></span></button>
         <button type="button" class="tb-icon-btn" data-display-layer="autoLinks" aria-pressed="false" title="自動リンク: オフ" aria-label="自動リンク表示" data-action="MeldexDisplayLayers.toggleLayer('autoLinks')"><span class="ico ico-externalLink"></span></button>
@@ -498,10 +501,10 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('page')"><span class="ico ico-search"></span></button>
         <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" data-action="toggleOptionPanel()"><span class="ico ico-slidersHorizontal"></span></button>
       </div>
-      <div class="note-editor-body" style="display:flex;flex:1;min-height:0;overflow:hidden;">
-        <div id="note-toc" style="display:none;width:200px;flex-shrink:0;overflow-y:auto;overscroll-behavior:contain;padding:8px;border-right:1px solid var(--border);background:var(--bg2);font-size:12px;"></div>
-        <div id="note-toc-resize" title="目次幅を調整" role="separator" aria-orientation="vertical" aria-label="目次幅を調整" tabindex="0" data-e2e-id="note-toc-resize" style="display:none;width:var(--note-toc-resize-hit, 8px);min-width:var(--note-toc-resize-hit, 8px);flex-shrink:0;cursor:col-resize;background:transparent;border-right:1px solid var(--border);touch-action:none;"></div>
-        <div id="page-content" contenteditable="true" style="flex:1;padding:16px max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2));overflow-y:auto;overscroll-behavior:contain;line-height:1.7;white-space:normal;outline:none;min-height:200px;"></div>
+      <div class="note-editor-body">
+        <div id="note-toc" style="display:none;"></div>
+        <div id="note-toc-resize" title="目次幅を調整" role="separator" aria-orientation="vertical" aria-label="目次幅を調整" tabindex="0" data-e2e-id="note-toc-resize" style="display:none;"></div>
+        <div id="page-content" contenteditable="true"></div>
       </div>
       <svg id="ann-overlay" style="position:absolute;left:0;top:0;width:100%;height:100%;z-index:50;pointer-events:none;overflow:visible;"><rect width="100%" height="100%" fill="transparent"/><g id="ann-layer"></g></svg>
       <button id="btn-tb-annotation" class="annotation-fab" type="button" title="注釈 (Alt+A)" aria-label="注釈" data-action="toggleAnnotationToolbar()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg></button>
@@ -789,7 +792,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-06.js?v=152214ee2fb1ddbd"></script>
+<script src="meldex-cloud-runtime-06.js?v=0ea2f3e8d96a1838"></script>
 
 
 
@@ -797,7 +800,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-07.js?v=3586afd43cb0bf24"></script>
+<script src="meldex-cloud-runtime-07.js?v=f3cb759dcc52ae87"></script>
 
 
 
@@ -856,7 +859,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-08.js?v=f963dec9f1bc2e00"></script>
+<script src="meldex-cloud-runtime-08.js?v=9710ab42d69b4af6"></script>
 
 
 

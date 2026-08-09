@@ -1,3 +1,14 @@
+          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
+          file_id: _fnvFileId(sourcePath),
+          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
+        };
+      }
+      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
+      await _moveEntry(provider, sourcePath, conflict.path);
+      const warnings = [];
+      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
+      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
+        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
       ));
       await _runPostMutationStep(warnings, 'stored-paths', () => (
         typeof _rewriteStoredPathsForProvider === 'function'
@@ -20,6 +31,11 @@
       };
     }
 
+/* === gb-data-access-dropbox-fileops-trash-routes.js === */
+/* gb-data-access-dropbox-fileops-trash-routes.js
+ * Dropbox static runtime: trash listing, restore, permanent delete, empty,
+ * and the terminal capability fallbacks. Continues the shared fileops IIFE.
+ */
     if (pathname === '/trash' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const items = [];

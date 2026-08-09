@@ -292,9 +292,12 @@
   }
 
   async function _managementAdapter(provider, kind) {
+    if (_runtime()?.isBrowserMode?.() && typeof provider?.getSystemStorageAdapter === 'function') {
+      return provider.getSystemStorageAdapter();
+    }
     const resolver = window.MeldexDropboxManagementRootResolver;
     if (!provider || !resolver?.resolveTypedAdapterForProvider) {
-      throw new Error('Dropboxの管理データ保存先を安全に判定できません');
+      throw new Error('管理データの保存先を安全に判定できません');
     }
     return resolver.resolveTypedAdapterForProvider(provider, kind);
   }
@@ -330,7 +333,7 @@
     const current = _runtime()?.getWorkspaceState?.() || {};
     _runtime()?.setWorkspaceState?.({
       ...current,
-      kind: 'dropbox',
+      kind: _runtime()?.isBrowserMode?.() ? 'browser' : 'dropbox',
       name: info.name || current.name || '',
       path: info.path || current.path || '',
       access: current.access || (info.permission === 'readonly' ? 'viewer' : 'editor'),
@@ -519,19 +522,19 @@
 
   async function _requirePwaProvider(mode) {
     const provider = await _pwaProvider();
-    if (!provider) throw new Error('Dropbox 共有フォルダが未接続です');
+    if (!provider) throw new Error('保存先を利用できません');
     assertCloudWriteAllowed(mode || 'read');
     const granted = await provider.ensureWorkspacePermission(mode || 'read');
     if (!granted && (mode || 'read') === 'readwrite' && document.body?.dataset?.cloudQuotaBlocked === '1') {
       throw new Error('Dropbox 容量が95%を超えているため書き込みを停止しています。空き容量を確保してから再開してください');
     }
-    if (!granted) throw new Error((mode || 'read') === 'readwrite' ? '閲覧専用モードのため書き込めません' : 'Dropbox 共有フォルダの読み取り権限がありません');
+    if (!granted) throw new Error((mode || 'read') === 'readwrite' ? '閲覧専用モードのため書き込めません' : '保存先の読み取り権限がありません');
     return provider;
   }
 
   async function _workspaceHandle(provider) {
     const handle = provider ? await provider.restoreWorkspace() : null;
-    if (!handle) throw new Error('Dropbox 共有フォルダが未接続です');
+    if (!handle) throw new Error('保存先を利用できません');
     return handle;
   }
 

@@ -405,6 +405,11 @@ async function _dpSave(el) {
 
 // 未保存内容があれば保存してからパネルを切り替え
 async function _dpSavePending() {
+  // 埋め込み情報のメモは自動保存（入力が止まってから書き出す）なので、
+  // パネルを切り替える前に未確定分を確定させる。
+  if (typeof window.MeldexEmbeddedMetadata?.flushPendingMemos === 'function') {
+    await window.MeldexEmbeddedMetadata.flushPendingMemos();
+  }
   const el = document.getElementById('dp-editable');
   if (!el || !_splitDirty) return true;
   return _dpSave(el);

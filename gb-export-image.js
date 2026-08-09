@@ -216,6 +216,10 @@ const MeldexExportImage = (() => {
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }
     }
+    // ノートの縦書きも組み直しに時間がかかるため、同じく描画完了を待ってから撮影する
+    if (viewType === 'page' && window.MeldexNoteWritingMode?.isActive?.()) {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
 
     const el = getEl();
     if (!el) {
@@ -288,7 +292,11 @@ const MeldexExportImage = (() => {
       case 'page':
         return {
           cssFiles: ['gb-tools.css', 'gb-ui.css'],
-          extraCss: `
+          // 組方向を画像にも反映する。スタイルの本体は gb-export-html.js の
+          // noteExportCss と共有し、HTML出力と画像出力で見た目がずれないようにする。
+          extraCss: (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportCss)
+            ? MeldexExportHtml.noteExportCss(!!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isActive()))
+            : `
             #page-content, [id="page-content"] {
               padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto;
             }

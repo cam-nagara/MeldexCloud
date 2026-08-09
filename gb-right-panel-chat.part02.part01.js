@@ -695,6 +695,7 @@ async function openFileChat(targetPath) {
 
   if (!restoreStillCurrent()) return false;
   _showChatTargetBadge(targetPath);
+  _chatRevealLatest('llm');
   return true;
   } finally {
     if (showOpenLoading) hideLoading();
@@ -934,6 +935,7 @@ async function openSavedChat(path, anchor = '', sourceFolder) {
     else chatAddMessage('assistant', m.content, _chatMessageRenderOptions(m, index));
   });
   if (anchor) _chatScrollToMessage(anchor);
+  else _chatRevealLatest('llm');
   return true;
   } finally {
     if (showOpenLoading) hideLoading();

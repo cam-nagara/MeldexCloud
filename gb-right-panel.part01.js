@@ -169,6 +169,7 @@ function switchRightTab(tabName, source) {
     if (!restoring && !(typeof GBChatRestore !== 'undefined' && typeof GBChatRestore.isRestoreSuspended === 'function' && GBChatRestore.isRestoreSuspended())) {
       switchChatMode(localStorage.getItem('chat-mode') || _chatMode || 'team');
     }
+    if (typeof _chatRevealLatest === 'function') _chatRevealLatest(_chatMode);
     apiFetch('/chat/config').then(async cfg => {
       const p = _chatState.provider;
       const info = cfg.providers?.[p];

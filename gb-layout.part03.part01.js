@@ -75,6 +75,10 @@
     //  1 件なら自動解体、0 件なら親から除去を再帰）
     _detachNodeById(paneId);
 
+    // 右レールの既定パネルが欠けたまま保存されると、次回起動まで
+    // アイコンが戻らない。除去のたびに補填する。
+    ensureFixedRailDefaults();
+
     if (_activePane === paneId) {
       const firstPane = findFirstPane(_root);
       if (firstPane) setActivePane(firstPane.id);
@@ -870,21 +874,50 @@
     menu.setAttribute('aria-label', 'タブ操作');
     menu.style.cssText = 'position:fixed;z-index:10000;';
     const isLocked = () => isPaneLocked(paneId);
+    // 左右サイドバーのパネルは閉じるとレールのアイコンごと消えるため、
+    // 閉じる系の項目自体を出さない（closeTab 側でも入口を塞いでいる）。
+    const isFixedRail = isFixedRailPane(paneId);
     const showLockedStatus = () => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
     };
     let closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-    function addItem(label, fn, icon) {
+    function addItem(label, fn, icon, disabled = false) {
       const mi = _createLayoutContextMenuItem(label, icon);
+      mi.disabled = !!disabled;
+      if (disabled) mi.setAttribute('aria-disabled', 'true');
       mi.addEventListener('click', () => { closeMenu(false); fn(); });
       menu.appendChild(mi);
+    }
+    function closeTabsOnSide(side) {
+      if (isLocked()) { showLockedStatus(); return; }
+      const paneInfo = findNode(_root, paneId);
+      if (!paneInfo) return;
+      const pane = paneInfo.node;
+      const targetIndex = pane.tabs.findIndex(item => item.id === tab.id);
+      if (targetIndex < 0) return;
+      const activeId = pane.tabs[pane.activeTabIndex]?.id || tab.id;
+      const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
+      const activeWillClose = pane.tabs.some((item, index) => item.id === activeId && shouldClose(item, index));
+      const closedTabs = pane.tabs.filter(shouldClose);
+      if (!closedTabs.length) return;
+      const before = captureLayoutSnapshot();
+      closedTabs.forEach(item => {
+        if (typeof removeComponentInstance === 'function') removeComponentInstance(item.id);
+      });
+      pane.tabs = pane.tabs.filter((item, index) => !shouldClose(item, index));
+      const nextActiveId = activeWillClose ? tab.id : activeId;
+      pane.activeTabIndex = Math.max(0, pane.tabs.findIndex(item => item.id === nextActiveId));
+      render();
+      saveLayout();
+      const directionLabel = side === 'left' ? '左' : '右';
+      pushLayoutHistory(`レイアウト: ${directionLabel}のタブを閉じる`, before, captureLayoutSnapshot(), tab.label || tab.path || '');
     }
     // 新しいウィンドウで開く
     addItem('新しいウィンドウで開く', () => {
       if (isLocked()) { showLockedStatus(); return; }
       const t = tab.type === 'database' ? 'pivot' : (tab.type || 'page');
       const url = '/?open=' + encodeURIComponent(t) + '&path=' + encodeURIComponent(tab.path || '') + '&label=' + encodeURIComponent(tab.label || '');
-      const closeSourceTab = () => GBTabs.closeTab(paneId, tab.id);
+      const closeSourceTab = () => { if (!isFixedRail) GBTabs.closeTab(paneId, tab.id); };
       if (typeof _open_app_window_js === 'function') {
         Promise.resolve(_open_app_window_js(url)).then((ok) => {
           if (ok) closeSourceTab();
@@ -898,11 +931,17 @@
       if (opened) closeSourceTab();
       else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
     }, 'monitor');
-    addItem('タブを閉じる', () => {
+    if (!isFixedRail) addItem('タブを閉じる', () => {
       if (isLocked()) { showLockedStatus(); return; }
       GBTabs.closeTab(paneId, tab.id);
     }, 'x');
-    addItem('他のタブをすべて閉じる', () => {
+    if (!isFixedRail) {
+      const pane = findNode(_root, paneId)?.node;
+      const tabIndex = pane?.tabs?.findIndex(item => item.id === tab.id) ?? -1;
+      addItem('左のタブを閉じる', () => closeTabsOnSide('left'), 'panelLeftClose', tabIndex <= 0);
+      addItem('右のタブを閉じる', () => closeTabsOnSide('right'), 'panelRightClose', tabIndex < 0 || tabIndex >= (pane?.tabs?.length || 0) - 1);
+    }
+    if (!isFixedRail) addItem('他のタブをすべて閉じる', () => {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;

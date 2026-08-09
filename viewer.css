@@ -26,7 +26,7 @@ body { position: relative; }
 .bg-layer.show { opacity: 1; }
 
 /* 表示エリア */
-#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; z-index: 1; }
+#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; z-index: 1; touch-action: none; }
 .viewer-loading-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 12; pointer-events: none; color: var(--fg2); font-size: 13px; }
 .viewer-loading-state.hidden { display: none; }
 .viewer-loading-card { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(10,14,20,0.82); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
@@ -100,11 +100,8 @@ body { position: relative; }
   transition: opacity 0.25s ease;
 }
 #controls.gb-toolbar-viewer.controls-active { opacity: 1; pointer-events: auto; }
-/* pointer:coarse（タッチ）では近接検知でボタンに届かないため常時表示する。
-   JS側（viewer-controls.js）でも同条件でcontrols-activeを固定付与する（CSSと二重の保険）。 */
-@media (pointer: coarse) {
-  #controls.gb-toolbar-viewer { opacity: 1; pointer-events: auto; }
-}
+/* pointer:coarseでも一定時間後は隠し、上スワイプで再表示する。表示中の44px操作対象は下の
+   タッチ用media queryで維持する。 */
 #controls label { flex-shrink: 1; min-width: 0; }
 #controls .zoom-label, #controls .speed-label { min-width: 28px; }
 #controls input[type=range] { accent-color: var(--accent); }

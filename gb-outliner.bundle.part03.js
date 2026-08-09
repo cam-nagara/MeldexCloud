@@ -1,3 +1,178 @@
+            const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
+            if (attachmentFolder) {
+              entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
+            }
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, entityItems, rootPath, { folderItem: item, folderNode: div, kind: 'database' });
+          } else if (currentIsFolder) {
+            const sortCfg = getSortForFolder(item.path);
+            const serverSorts = new Set(['name', 'modified', 'created']);
+            const apiSort = serverSorts.has(sortCfg.sort) ? sortCfg.sort : 'name';
+            const needsClientSort = sortCfg.sort === 'manual' || !serverSorts.has(sortCfg.sort);
+            const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
+            const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
+            const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
+            const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
+            let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
+            registerFileTypes(visibleChildren);
+            // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
+            // （renderGlobalFilterUI自体はクリック時点で常に最新一覧を取り直すため必須ではないが、
+            // 一覧の見た目を早めに追従させておく）。
+            if (typeof renderGlobalFilterUI === 'function') renderGlobalFilterUI();
+            _registerOutlinerConflictPaths(visibleChildren);
+            visibleChildren.forEach(child => {
+              if (item.sourceId && !child.sourceId) child.sourceId = item.sourceId;
+            });
+            // マニュアルソートは配列側で確定してから追加する（仮想化コンテナはDOM順を持たないため）
+            if (sortCfg.sort === 'manual') visibleChildren = _sortItemsByManualOrder(visibleChildren, item.path);
+            else if (needsClientSort) visibleChildren = [...visibleChildren].sort((a, b) => compareItemsForFolderSort(a, b, sortCfg.sort, sortCfg.order));
+            await _appendOrVirtualizeOutlinerChildren(childrenDiv, visibleChildren, rootPath, { folderItem: item, folderNode: div, kind: 'folder' });
+          }
+          delete childrenDiv.dataset.loadError;
+          childrenDiv.dataset.loaded = 'true';
+          // グローバルフィルタを新規読み込みノードに適用（常時）
+          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
+            const d = node._nodeData;
+            if (!d || d._isRoot) return;
+            if (d.type === 'folder') return; // フォルダは_hideEmptyFilteredFoldersで処理
+            if (d.type === 'database') { node.style.display = _showDatabaseByGlobalFilter() ? '' : 'none'; return; }
+            if (d.type === 'entity') { node.style.display = _showEntityByGlobalFilter() ? '' : 'none'; return; }
+            node.style.display = _showRegularNodeByGlobalFilter(d) ? '' : 'none';
+          });
+          // 空フォルダの非表示（新規読み込み分を含む）
+          _hideEmptyFilteredFolders();
+          _snapshotBaseTreeVisibility();
+          // 検索中なら新ノードに検索フィルタも適用
+          if (_treeSearchQuery) {
+            const q = _treeSearchQuery;
+            const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
+              ? _getTreeSearchIncludeEntities()
+              : localStorage.getItem('tree-search-include-entities') === 'true';
+            childrenDiv.querySelectorAll(':scope > .tree-node').forEach(node => {
+              const d = node._nodeData;
+              if (!d) return;
+              let match = false;
+              if (d.type === 'entity') match = includeEntities && d.name && d.name.toLowerCase().includes(q);
+              else match = d.name && d.name.toLowerCase().includes(q);
+              if (!match && d.type !== 'folder' && d.type !== 'database' && !d._isRoot) {
+                node.style.display = 'none';
+              }
+            });
+          }
+          childrenDiv.dataset.loaded = 'true';
+          // 読み込み中にArrowRightの2打目が押されていた場合、最初の子へフォーカス
+          // 移動する予約を消化する。フォーカスが別ノードへ移っていたら（選択が
+          // このノード以外になっていたら）予約は破棄し、勝手にフォーカスを飛ばさない。
+          if (childrenDiv._outlinerPendingArrowRightFocusNode === div) {
+            delete childrenDiv._outlinerPendingArrowRightFocusNode;
+            if (div.isConnected && toggle.dataset.expanded === 'true' && treeSelection.lastClicked === div
+                && typeof _outlinerKeyboardFirstChildNode === 'function' && typeof _outlinerKeyboardSelectNode === 'function') {
+              const pendingFirstChild = _outlinerKeyboardFirstChildNode(div);
+              if (pendingFirstChild) _outlinerKeyboardSelectNode(pendingFirstChild);
+            }
+          }
+        } catch (e) {
+          // 握りつぶさず理由を表示する。部分的に追加済みの子ノードを取り除き、
+          // 折りたたみ直して再クリックすればリロードが走る状態に戻す
+          const reason = (e && (e.userMessage || e.message)) ? String(e.userMessage || e.message) : '';
+          childrenDiv.dataset.loadError = reason || '不明なエラー';
+          console.error('[フォルダツリー] 子項目の読み込みに失敗:', item.path, e);
+          showStatus(`「${item.name}」の読み込みに失敗` + (reason ? `（${reason}）` : ''), true);
+          childrenDiv.querySelectorAll(':scope > .tree-node').forEach(n => {
+            if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(n);
+            n.remove();
+          });
+          toggle.classList.remove('expanded');
+          toggle.dataset.expanded = 'false';
+          childrenDiv.classList.add('collapsed');
+          saveExpandedState(item.path, false);
+          // 失敗時は子が存在しないため、予約されていたフォーカス移動も破棄する
+          delete childrenDiv._outlinerPendingArrowRightFocusNode;
+        }
+        finally {
+          delete childrenDiv.dataset.loading;
+          spinner.remove();
+        }
+      }
+    } else {
+      toggle.classList.remove('expanded');
+      toggle.dataset.expanded = 'false';
+      childrenDiv.classList.add('collapsed');
+      saveExpandedState(item.path, false);
+      if (parentVirtualContainer) {
+        window.GBOutlinerVirtualRender?.collapseNested(parentVirtualContainer, item.path);
+      }
+      window.GBOutlinerVirtualRender?.syncMountForVisibility(childrenDiv);
+      // 作品フォルダ動的アイコン切替（折畳み時）
+      if (currentIsFolder) {
+        const iconEl = row.querySelector('.tree-icon');
+        if (iconEl) {
+          const isWork = item.path === getWorkFolder();
+          iconEl.innerHTML = lucide(isWork ? 'folderDot' : 'folder', 18);
+          if (item.linked) iconEl.innerHTML += '<span style="position:relative;top:-4px;left:-2px;">' + lucide('externalLink', 8) + '</span>';
+        }
+      }
+    }
+  });
+
+  // 前回展開されていたら自動展開
+  if (!item._gbVirtualExpansionManaged) _queueSavedOutlinerExpansion(item, toggle);
+
+  // Row click: 選択のみ（メインパネルの切替・展開／折りたたみは行わない。§2.4）
+  row.addEventListener('click', (e) => {
+    try { row.focus({ preventScroll: true }); } catch {}
+    if (e.shiftKey) {
+      // Shift+クリック: 範囲選択（開かない）
+      e.preventDefault();
+      treeSelection.rangeTo(div);
+      treeSelection.lastClicked = div;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+クリック: トグル選択（開かない）
+      treeSelection.toggle(div);
+      treeSelection.lastClicked = div;
+      return;
+    }
+
+    // 通常クリック: 選択・フォーカス・オプションパネル対象の更新のみ
+    window.GBOutlinerActivation?.selectNodeOnly(div, { focus: false });
+
+    // open* 呼び出しが無くなったため、スクロール位置保護（pointerdown起点のガード）を念押し復元
+    _treeScrollGuardRestore();
+
+    // 設定「クリックで開く」が単クリックの場合: 選択に続けてそのまま開く。
+    // フォルダも含め全項目種別に一貫して適用する（フォルダだけ例外にすると
+    // 「なぜこれだけ2回押さないと開かないのか」という不整合が生じるため）。
+    // activateNode はフォルダなら開く+展開、ファイルなら対応するビューを開く。
+    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) {
+      window.GBOutlinerActivation.activateNode(div);
+    }
+  });
+
+  // --- ダブルクリック: 共通アクティベーション（一度だけ開く）。名前変更はF2/メニューへ移動 ---
+  row.ondblclick = (e) => {
+    e.stopPropagation();
+    // 単クリックで開く設定の時は、直前の2回のclickで既にactivateNodeが呼ばれているため
+    // ここでの追加呼び出しは行わない（3重起動防止）。
+    if (window.GBOutlinerActivation?.singleClickOpensItems?.()) return;
+    window.GBOutlinerActivation?.activateNode(div);
+  };
+
+  // --- 右クリックメニュー ＋ 長押しで同メニュー（タッチ/ペン） ---
+  const _openTreeRowCtxMenu = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // 右クリックしたノードが選択に含まれていなければ、単一選択に切り替え
+    if (!treeSelection.has(div)) {
+      treeSelection.clear();
+      treeSelection.add(div);
+      treeSelection.lastClicked = div;
+    }
+    const z = parseFloat(document.documentElement.style.zoom) || 1;
+    showTreeContextMenu(e.clientX / z, e.clientY / z, div, item, label);
+  };
+  row.addEventListener('contextmenu', _openTreeRowCtxMenu);
+  if (typeof addLongPressHandler === 'function') {
     addLongPressHandler(row, _openTreeRowCtxMenu);
   }
 
@@ -19,9 +194,13 @@
     // DOM順でソート（上から下の順序を維持）
     const allTreeNodes = [...document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node')];
     const selectedNodes = [...treeSelection.items].sort((a, b) => allTreeNodes.indexOf(a) - allTreeNodes.indexOf(b));
-    draggedNodes = selectedNodes.filter(n => !selectedNodes.some(parent => parent !== n && parent.contains(n)));
+    // 開始行の祖先フォルダが古い選択に残っていても、画像等の子行を
+    // ドラッグした操作で親フォルダごと昇格させない。その後、通常の
+    // 親子de-dupを行い、同じ選択を2回移動しない。
+    const withoutDragAncestors = selectedNodes.filter(n => n === div || !_treeNodeIsAncestor(n, div));
+    draggedNodes = withoutDragAncestors.filter(n => !withoutDragAncestors.some(parent => _treeNodeIsAncestor(parent, n)));
     draggedNodes.forEach(n => n.querySelector('.tree-node-row')?.classList.add('dragging'));
-    const payload = _treeDragPayload(item);
+    const payload = _treeDragPayload(item, draggedNodes);
     e.dataTransfer.effectAllowed = 'copyMove';
     // text/uri-list を入れておくと OS シェル（窓外）が「URL のドラッグ」として
     // 認識し、赤い禁止カーソルが出にくくなる
@@ -34,6 +213,8 @@
     } catch {}
     e.dataTransfer.setData('text/plain', (payload.items || []).map(entry => entry.name).filter(Boolean).join(', ') || item.name || '');
     e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    window._gbOutlinerDragNonce = typeof MeldexDnD !== 'undefined'
+      ? MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node') : '';
     // 窓外ドロップ時の popout 用に payload を保持
     window._gbOutlinerDragPayload = payload;
     // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度にする
@@ -42,7 +223,7 @@
     }
   });
 
-  row.addEventListener('dragend', (e) => {
+  row.addEventListener('dragend', async (e) => {
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
@@ -51,19 +232,38 @@
     document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
       .forEach(t => t.classList.remove('gb-tab-drop-before', 'gb-tab-drop-after'));
     // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-    if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
+    const shouldPopout = typeof shouldOpenDragPopout === 'function'
+      ? await shouldOpenDragPopout(e, window._gbOutlinerDragNonce)
+      : (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e));
+    if (shouldPopout) {
       const payload = window._gbOutlinerDragPayload;
       const items = payload && Array.isArray(payload.items) ? payload.items : [];
       if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
     }
+    if (window._gbOutlinerDragNonce && typeof MeldexDnD !== 'undefined') {
+      MeldexDnD.cancelCrossWindowDrag(window._gbOutlinerDragNonce);
+    }
     window._gbOutlinerDragPayload = null;
+    window._gbOutlinerDragNonce = '';
     draggedNode = null;
     draggedNodes = null;
   });
 
   row.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (!draggedNode) return;
+    if (!draggedNode) {
+      const externalItems = _outlinerExternalDragItems(e);
+      const bridgeCandidate = typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node');
+      if ((!externalItems.length && !bridgeCandidate) || !(isFolder || isDB) || item._isRoot && !item.path
+          || externalItems.some(source => source.type === 'entity') || isItemLocked(item.path)) {
+        e.dataTransfer.dropEffect = 'none';
+        return;
+      }
+      e.dataTransfer.dropEffect = 'move';
+      clearDragIndicators();
+      row.classList.add('drag-over-inside');
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       e.dataTransfer.dropEffect = 'none';
       clearDragIndicators();
@@ -94,8 +294,26 @@
     row.classList.remove('drag-over-above', 'drag-over-below', 'drag-over-inside');
   });
 
-  row.addEventListener('drop', (e) => {
+  row.addEventListener('drop', async (e) => {
     e.preventDefault();
+    e.stopPropagation();
+    if (!draggedNode) {
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
+        const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        const targetPath = String(item.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        return source.type !== 'entity' && sourcePath !== targetPath && !targetPath.startsWith(sourcePath + '/');
+      });
+      clearDragIndicators();
+      if (!(isFolder || isDB) || isItemLocked(item.path) || externalItems.length === 0) {
+        if (resolved) MeldexDnD.failDrop(resolved);
+        return;
+      }
+      const completed = await _moveExternalItemsIntoOutlinerFolder(externalItems, item);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       clearDragIndicators();
       showStatus('シートのエントリはフォルダツリー内へ移動できません');
@@ -105,7 +323,7 @@
     if (e.ctrlKey) { clearDragIndicators(); return; }
     if (!draggedNode || draggedNode === div) return;
     const nodes = (draggedNodes || [draggedNode])
-      .filter(n => n !== div && !n.contains(div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
+      .filter(n => n !== div && !_treeNodeIsAncestor(n, div) && !n._nodeData?._isRoot && !(n._nodeData?.path && isItemLocked(n._nodeData.path)));
     if (nodes.length === 0) return;
     const orderBefore = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY, MANUAL_ORDER_KEY]);
     // 移動元コンテナが仮想化されていた場合、DOM移動だけでは配列側に残留するため
@@ -177,15 +395,31 @@
     (async () => {
       const moved = [];
       let movedAcrossFolders = false;
+      let processed = 0;
+      window.MeldexImportProgress?.beginOperation?.('ファイルを移動中', nodes.length);
       for (const n of nodes) {
         const dragData = n._nodeData;
-        if (!dragData || !dragData.path) { moved.push(n); continue; }
+        if (!dragData || !dragData.path) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         const srcFolder = dragData.path.includes('/') ? dragData.path.substring(0, dragData.path.lastIndexOf('/')) : '';
-        if (destFolder === srcFolder) { moved.push(n); continue; }
+        if (destFolder === srcFolder) {
+          moved.push(n);
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
+          continue;
+        }
         movedAcrossFolders = true;
         try {
           const oldPath = dragData.path;
-          const res = await apiPost('/outliner/move', { path: dragData.path, dest_folder: destFolder });
+          const res = await apiPost('/outliner/move', {
+            path: dragData.path,
+            dest_folder: destFolder,
+            conflict_policy: 'error',
+          });
           if (res.new_path) {
             if (typeof _renameTreeNode === 'function') {
               _renameTreeNode(oldPath, res.new_path, res.new_name || dragData.name, res.file_id);
@@ -206,8 +440,12 @@
           // 失敗理由（移動先が無い・使用中・ロック中等）を握りつぶさず表示する
           const reason = (err && (err.userMessage || err.message)) ? String(err.userMessage || err.message) : '';
           showStatus(`${dragData.name} の移動に失敗` + (reason ? `（${reason}）` : ''), true);
+        } finally {
+          processed += 1;
+          window.MeldexImportProgress?.updateOperation?.(processed);
         }
       }
+      window.MeldexImportProgress?.finishOperation?.();
       if (moved.length === 0) return;
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
@@ -659,242 +897,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
 
   return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
 }
-
-const MAIN_CALENDAR_SETTINGS_KEYS = ['main-calendar-path', 'main-calendar-id'];
-
-function _refreshMainCalendarSettingAfterHistory() {
-  if (typeof loadOutliner === 'function') loadOutliner();
-  if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-}
-
-function _captureMainCalendarSettingsHistory() {
-  if (typeof captureLocalStorageSettings !== 'function') return null;
-  if (typeof isLocalStorageSettingsHistorySuppressed === 'function'
-    && isLocalStorageSettingsHistorySuppressed()) return null;
-  return captureLocalStorageSettings(MAIN_CALENDAR_SETTINGS_KEYS);
-}
-
-function _pushMainCalendarSettingsHistory(label, beforeSnapshot, detail) {
-  if (!beforeSnapshot || typeof historyPush !== 'function'
-    || typeof captureLocalStorageSettings !== 'function'
-    || typeof restoreLocalStorageSettings !== 'function'
-    || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
-  const snapshots = _normalizeLocalStorageSettingsSnapshots(
-    beforeSnapshot,
-    captureLocalStorageSettings(MAIN_CALENDAR_SETTINGS_KEYS)
-  );
-  let beforeKey = '';
-  let afterKey = '';
-  try {
-    beforeKey = JSON.stringify(snapshots.before);
-    afterKey = JSON.stringify(snapshots.after);
-  } catch {}
-  if (beforeKey && beforeKey === afterKey) return false;
-  historyPush(
-    label || 'カレンダー: メインカレンダー設定',
-    () => restoreLocalStorageSettings(snapshots.before, _refreshMainCalendarSettingAfterHistory),
-    () => restoreLocalStorageSettings(snapshots.after, _refreshMainCalendarSettingAfterHistory),
-    'calendar:settings',
-    detail || ''
-  );
-  return true;
-}
-
-// --- ホバー追加メニュー ---
-function _cloudPhase1CreateItems(items) {
-  return window.MeldexCloudBootstrap?.filterPhase1CreateItems?.(items) || items;
-}
-
-function _isCloudPhase1BlockedCreateType(type) {
-  return !!window.MeldexCloudBootstrap?.isPhase1UnsupportedCreateType?.(type);
-}
-
-function _showCloudPhase1BlockedCreate(type) {
-  if (window.MeldexCloudBootstrap?.showPhase1Unsupported) return window.MeldexCloudBootstrap.showPhase1Unsupported(type);
-  showStatus('ブラウザ版Meldexではまだ未対応の作成タイプです', true);
-  return false;
-}
-
-const _outlinerContextMenuCleanups = new Set();
-
-function _outlinerEscHtml(value) {
-  if (typeof esc === 'function') return esc(value);
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[ch]));
-}
-
-function _outlinerMenuIconHtml(icon, size = 14) {
-  if (!icon || typeof lucide !== 'function') return '';
-  return '<span class="menu-icon">' + lucide(icon, size) + '</span>';
-}
-
-function _outlinerCreateContextMenu(label, x, y) {
-  const menu = document.createElement('div');
-  menu.className = 'gb-context-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-label', label);
-  menu.style.left = x + 'px';
-  menu.style.top = y + 'px';
-  return menu;
-}
-
-function _outlinerCreateSubmenu(label) {
-  const panel = document.createElement('div');
-  panel.className = 'gb-context-menu';
-  panel.setAttribute('role', 'menu');
-  panel.setAttribute('aria-label', label);
-  panel.style.cssText = 'display:none;min-width:140px;';
-  return panel;
-}
-
-function _outlinerAppendMenuItem(menu, options) {
-  const item = document.createElement('button');
-  item.type = 'button';
-  item.className = 'gb-context-menu-item' + (options?.danger ? ' danger' : '') + (options?.className ? ' ' + options.className : '');
-  item.setAttribute('role', options?.role || 'menuitem');
-  if (options?.disabled) {
-    item.disabled = true;
-    item.classList.add('disabled');
-  }
-  if (options?.title) {
-    item.title = options.title;
-    item.dataset.gbTooltip = options.title;
-  }
-  if (options?.checked) {
-    item.classList.add('active');
-    item.setAttribute('aria-checked', 'true');
-  }
-  if (options?.html != null) {
-    item.innerHTML = options.html;
-  } else {
-    item.innerHTML = _outlinerMenuIconHtml(options?.icon) + '<span>' + _outlinerEscHtml(options?.label || '') + '</span>';
-  }
-  if (options?.hasSubmenu) {
-    item.classList.add('has-submenu');
-    item.setAttribute('aria-haspopup', 'menu');
-    item.setAttribute('aria-expanded', 'false');
-  }
-  item.addEventListener('click', (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (item.disabled) return;
-    if (typeof options?.action === 'function') options.action(event);
-  });
-  menu.appendChild(item);
-  return item;
-}
-
-function _outlinerAppendMenuSeparator(menu) {
-  const separator = document.createElement('div');
-  separator.className = 'gb-context-menu-sep cm-sep';
-  separator.setAttribute('role', 'separator');
-  menu.appendChild(separator);
-  return separator;
-}
-
-function _outlinerAppendSubmenu(menu, label, icon, panel) {
-  const trigger = _outlinerAppendMenuItem(menu, { label, icon, hasSubmenu: true, className: 'tree-ctx-item' });
-  const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  trigger.addEventListener('mouseenter', () => setExpanded(true));
-  trigger.addEventListener('mouseleave', () => setTimeout(() => {
-    if (panel.style.display === 'none') setExpanded(false);
-  }, 220));
-  trigger.addEventListener('click', () => {
-    trigger.dispatchEvent(new MouseEvent('mouseenter', { cancelable: true }));
-    setExpanded(true);
-  });
-  panel.addEventListener('mouseenter', () => setExpanded(true));
-  panel.addEventListener('mouseleave', () => setExpanded(false));
-  attachHoverSubmenu(trigger, panel);
-  return trigger;
-}
-
-function _outlinerPlaceContextMenu(menu) {
-  document.body.appendChild(menu);
-  const rect = menu.getBoundingClientRect();
-  const z = _getZoom();
-  if (rect.right > window.innerWidth) menu.style.left = ((window.innerWidth - rect.width - 4) / z) + 'px';
-  if (rect.bottom > window.innerHeight) menu.style.top = ((window.innerHeight - rect.height - 4) / z) + 'px';
-  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
-  const first = menu.querySelector('button.gb-context-menu-item:not(:disabled)');
-  first?.focus?.({ preventScroll: true });
-  _outlinerBindContextMenuClose(menu);
-}
-
-function _outlinerBindContextMenuClose(menu) {
-  let removed = false;
-  let pointerArmed = false;
-  const cleanup = () => {
-    if (removed) return;
-    removed = true;
-    document.removeEventListener('keydown', keyHandler, true);
-    if (pointerArmed) document.removeEventListener('pointerdown', pointerHandler, true);
-    _outlinerContextMenuCleanups.delete(cleanup);
-  };
-  const keyHandler = (event) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeTreeContextMenu();
-  };
-  const pointerHandler = (event) => {
-    const inAnyMenu = [...document.querySelectorAll('.gb-context-menu')].some(m => m.contains(event.target));
-    if (!inAnyMenu) closeTreeContextMenu();
-  };
-  _outlinerContextMenuCleanups.add(cleanup);
-  document.addEventListener('keydown', keyHandler, true);
-  pointerArmed = true;
-  document.addEventListener('pointerdown', pointerHandler, true);
-}
-
-function _showTreeAddMenu(x, y, nodeEl, nodeData) {
-  closeTreeContextMenu();
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
-  const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
-  _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
-    _outlinerAppendMenuItem(menu, {
-      label,
-      icon,
-      action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
-    });
-  });
-  _outlinerPlaceContextMenu(menu);
-}
-
-// --- 右クリックメニュー ---
-function closeTreeContextMenu() {
-  _outlinerContextMenuCleanups.forEach(cleanup => {
-    try { cleanup(); } catch {}
-  });
-  _outlinerContextMenuCleanups.clear();
-  document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
-}
-
-// gb-path-utils.js（window.GBPathUtils）へ委譲。未ロード時は同等ロジックへフォールバックする。
-function _outlinerPathIsAbsolute(path) {
-  if (window.GBPathUtils?.isAbsolute) return window.GBPathUtils.isAbsolute(path);
-  const value = String(path || '');
-  return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
-}
-
-function _outlinerJoinPath(base, rel) {
-  if (window.GBPathUtils?.join) return window.GBPathUtils.join(base, rel);
-  const left = String(base || '').replace(/[\\/]+$/, '');
-  const right = String(rel || '').replace(/^[\\/]+/, '');
-  if (!left) return right;
-  if (!right) return left;
-  return left + '/' + right;
-}
-
-function _outlinerNativeClipboardPath(path) {
-  if (window.GBPathUtils?.toNativeClipboard) return window.GBPathUtils.toNativeClipboard(path);
-  const value = String(path || '');
-  if (/^[a-zA-Z]:[\\/]/.test(value)) return value.replace(/\//g, '\\');
-  if (/^[/\\]{2}/.test(value)) return '\\\\' + value.replace(/^[/\\]+/, '').replace(/\//g, '\\');
-  return value;
-}
-
-function _outlinerLocalCopyPath(nodeEl, nodeData) {
-  let path = String(nodeData?.path || '');
-  if (!path) return '';

@@ -150,14 +150,26 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn) {
+  function addMI(label, fn, disabled = false) {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
     mi.setAttribute('role', 'menuitem');
     mi.textContent = label;
+    mi.disabled = !!disabled;
+    if (disabled) mi.setAttribute('aria-disabled', 'true');
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
+  }
+  function closeTabsOnSide(side) {
+    const targetIndex = _tabs.findIndex(item => item.id === tab.id);
+    if (targetIndex < 0) return;
+    const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
+    const activeWillClose = _tabs.some((item, index) => item.id === _activeTabId && shouldClose(item, index));
+    const remaining = _tabs.filter((item, index) => !shouldClose(item, index));
+    if (remaining.length === _tabs.length) return;
+    _tabs.splice(0, _tabs.length, ...remaining);
+    activateTab(activeWillClose ? tab.id : (_activeTabId || tab.id));
   }
   addMI('新しいウィンドウで開く', () => {
     const openType = _normalizeOpenTypeForNav(tab.type);

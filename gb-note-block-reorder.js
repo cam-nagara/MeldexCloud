@@ -212,6 +212,33 @@
   // （_endDrag）は placeRowRelative に委譲し、実際の配置規則（同一リスト内
   // 入れ替え・一段昇格・同種リスト合流・通常行との相互変換）は
   // gb-note-logical-rows.js 側の1段階プリミティブと共有する。
+  // 組方向の軸オラクル。未読込環境では横書き固定にフォールバックする。
+  function _axis(editable) {
+    const wm = global.MeldexNoteWritingMode;
+    if (wm && typeof wm.axis === 'function') return wm.axis(editable);
+    return {
+      vertical: false,
+      blockCoord: (pt) => pt.y, blockStart: (r) => r.top, blockEnd: (r) => r.bottom, blockSign: 1,
+      toPoint: (input) => (typeof input === 'number' ? { x: NaN, y: input } : { x: input?.clientX ?? input?.x, y: input?.clientY ?? input?.y }),
+      isBefore(r, input) { return this.toPoint(input).y < (r.top + r.bottom) / 2; },
+      distanceTo(r, input) {
+        const c = this.toPoint(input).y;
+        if (!Number.isFinite(c)) return Infinity;
+        if (c < r.top) return r.top - c;
+        if (c > r.bottom) return c - r.bottom;
+        return 0;
+      },
+      containsBlock(r, input) {
+        const c = this.toPoint(input).y;
+        return Number.isFinite(c) && c >= r.top && c <= r.bottom;
+      },
+    };
+  }
+
+  function _pointOf(e) {
+    return { x: e.clientX, y: e.clientY };
+  }
+
   function _dragCandidates(editable, draggedInfo) {
     const lr = LR();
     if (!lr) return [];
@@ -219,18 +246,28 @@
     return lr.listRows(editable).filter((el) => el !== draggedEl && !draggedEl.contains(el) && !el.contains(draggedEl));
   }
 
-  function _nearestCandidate(candidates, draggedEl, clientY) {
+  // 「before」は文書順で前（横書き=中点より上 / 縦書きrl=中点より右）を意味する。
+  function _nearestCandidate(candidates, draggedEl, point, editable) {
     const lr = LR();
+    const ax = _axis(editable);
     let nearest = null;
     let nearestDist = Infinity;
     for (const cand of candidates) {
       if (cand === draggedEl || cand.contains(draggedEl) || draggedEl.contains(cand)) continue;
-      const rect = (lr && lr.rowOwnRect(cand)) || cand.getBoundingClientRect();
-      if (clientY >= rect.top && clientY <= rect.bottom) {
-        return { el: cand, before: clientY < rect.top + rect.height / 2 };
+      const rect = (lr && lr.rowOwnRect(cand, editable)) || cand.getBoundingClientRect();
+      if (ax.containsBlock(rect, point)) {
+        return { el: cand, before: ax.isBefore(rect, point) };
       }
-      const dist = Math.min(Math.abs(clientY - rect.top), Math.abs(clientY - rect.bottom));
-      if (dist < nearestDist) { nearestDist = dist; nearest = { el: cand, before: clientY < rect.top }; }
+      const dist = ax.distanceTo(rect, point);
+      if (dist < nearestDist) {
+        // 矩形の外側にいる場合は、行の開始側にいるかどうかで前後を決める
+        const pt = ax.toPoint(point);
+        const beforeStart = ax.blockSign > 0
+          ? ax.blockCoord(pt) < ax.blockStart(rect)
+          : ax.blockCoord(pt) > ax.blockStart(rect);
+        nearestDist = dist;
+        nearest = { el: cand, before: beforeStart };
+      }
     }
     return nearest;
   }
@@ -270,7 +307,9 @@
       padLeft = parseFloat(cs.paddingLeft) || 0;
       padTop = parseFloat(cs.paddingTop) || 0;
     } catch (_) { /* 計測不能時は0扱い */ }
-    if (editable.classList && editable.classList.contains('vertical-writing')) {
+    const vertical = _axis(editable).vertical;
+    _handle.classList.toggle('is-note-vertical', vertical);
+    if (vertical) {
       const contentTop = er.top + padTop * z;
       _handle.style.top = (Math.max(2, contentTop - 22) / z) + 'px';
       _handle.style.left = (blockRect.left / z) + 'px';
@@ -306,7 +345,7 @@
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) { _hideHandle(); return; } // 工程7-8: viewer/ロック中は出さない
     // 修正1: 直接ブロック上でない場合（ガター/余白）は、Y座標から対応する行を探す。
-    const block = _blockUnderNode(editable, e.target) || (lr && lr.rowAtPoint(editable, e.clientY));
+    const block = _blockUnderNode(editable, e.target) || (lr && lr.rowAtPoint(editable, _pointOf(e)));
     if (!block) return; // ブロック外（余白等）: 現状維持
     const handle = _ensureHandle();
     // ユーザー指示(2026-08-05): 行テキスト・空行へのホバーではハイライト枠を出さない
@@ -314,7 +353,7 @@
     // マウスYに依存しないため、対象行が変わらなくてもスクロール等のズレを
     // 吸収するよう毎回再配置する。
     _setTouchMode(false);
-    const rect = (lr && lr.rowOwnRect(block)) || block.getBoundingClientRect();
+    const rect = (lr && lr.rowOwnRect(block, editable)) || block.getBoundingClientRect();
     _positionHandle(editable, rect);
     _hoverTargetBlock = block;
     _hoverEditable = editable;
@@ -329,11 +368,11 @@
     const editable = e.target && e.target.closest ? e.target.closest(nbt.EDITABLE_SELECTOR) : null;
     if (!editable || !nbt.isEditableWritable(editable)) return;
     const t = e.touches && e.touches[0];
-    const block = _blockUnderNode(editable, e.target) || (t && lr ? lr.rowAtPoint(editable, t.clientY) : null);
+    const block = _blockUnderNode(editable, e.target) || (t && lr ? lr.rowAtPoint(editable, _pointOf(t)) : null);
     if (!block) return;
     const handle = _ensureHandle();
     _setTouchMode(true);
-    const rect = (lr && lr.rowOwnRect(block)) || block.getBoundingClientRect();
+    const rect = (lr && lr.rowOwnRect(block, editable)) || block.getBoundingClientRect();
     _positionHandle(editable, rect);
     // ハイライトはハンドル操作（pointerdown）時に表示する（マウスのホバーと同じ規則）。
     _hoverTargetBlock = block;
@@ -350,9 +389,9 @@
     });
   }
 
-  function _updateDropIndicator(drag, clientY) {
+  function _updateDropIndicator(drag, point) {
     _clearDropIndicators(drag.editable);
-    const nearest = _nearestCandidate(drag.candidates, drag.blockEl, clientY);
+    const nearest = _nearestCandidate(drag.candidates, drag.blockEl, point, drag.editable);
     drag.dropTarget = nearest;
     // 工程7-7: 移動候補が1つも無い（他に動かせるブロックが無い）場合は
     // 「これ以上移動できない」ことを視覚的に示す。
@@ -369,8 +408,8 @@
   function _onAncestorScrollDuringDrag() {
     if (LR()) LR().refreshRowHighlight(); // ハイライト表示中ならスクロール追従させる
     const drag = _activeDrag;
-    if (!drag || !drag.dragging || drag.lastClientY == null) return;
-    _updateDropIndicator(drag, drag.lastClientY);
+    if (!drag || !drag.dragging || !drag.lastPoint) return;
+    _updateDropIndicator(drag, drag.lastPoint);
   }
   document.addEventListener('scroll', _onAncestorScrollDuringDrag, true);
 
@@ -430,7 +469,8 @@
 
     document.body.appendChild(menu);
     if (typeof global.positionPopup === 'function') {
-      global.positionPopup(menu, anchorRect, { gap: 4 });
+      const prefer = global.MeldexNoteWritingMode ? global.MeldexNoteWritingMode.popupPrefer(editable) : 'below';
+      global.positionPopup(menu, anchorRect, { gap: 4, prefer });
     } else {
       menu.style.position = 'fixed';
       menu.style.top = anchorRect.bottom + 'px';
@@ -566,10 +606,13 @@
       if (typeof global.MeldexDragAutoScroll !== 'undefined') global.MeldexDragAutoScroll.beginPointerSession(e.clientX, e.clientY);
     }
     e.preventDefault();
-    drag.lastClientY = e.clientY; // 修正3: 自動スクロール中の再評価（_onAncestorScrollDuringDrag）用
+    // 修正3: 自動スクロール中の再評価（_onAncestorScrollDuringDrag）用。
+    // 縦書きでは横位置で判定するため、片方の座標だけでなく点として保持する。
+    drag.lastPoint = _pointOf(e);
+    drag.lastClientY = e.clientY; // 後方互換（外部から参照している箇所がある場合のため）
     // 工程7-6: 端での自動スクロール（gb-dnd-autoscroll.js の共通基盤へ委譲）
     if (typeof global.MeldexDragAutoScroll !== 'undefined') global.MeldexDragAutoScroll.updatePointer(e.clientX, e.clientY);
-    _updateDropIndicator(drag, e.clientY);
+    _updateDropIndicator(drag, drag.lastPoint);
   }
 
   function _onHandlePointerUp(e) {
@@ -639,7 +682,9 @@
     if (_handle && _handle.isConnected) return _handle;
     const handle = document.createElement('div');
     handle.id = HANDLE_ID;
-    handle.innerHTML = '⠿';
+    // グリップ記号は2列×3行の点。縦書き（行が横に並ぶ）では90度回す必要があるが、
+    // ホスト側の transform は境界シェイクのアニメーションが使うため内側の span を回す。
+    handle.innerHTML = '<span class="block-drag-handle-glyph">⠿</span>';
     handle.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:20px;cursor:grab;opacity:0;transition:opacity 0.15s;color:var(--fg2);font-size:16px;display:flex;align-items:center;justify-content:center;z-index:10000;user-select:none;pointer-events:auto;touch-action:none;';
     handle.setAttribute('contenteditable', 'false');
     handle.setAttribute('role', 'button');

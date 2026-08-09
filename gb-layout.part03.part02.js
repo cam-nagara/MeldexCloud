@@ -270,6 +270,8 @@
     getAllPanes,
     isPaneVisible,
     isPaneLocked,
+    isFixedRailPane,
+    ensureFixedRailDefaults,
     hasLockedPane,
     findFirstUnlockedPane,
     revealPane,

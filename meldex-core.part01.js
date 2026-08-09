@@ -408,6 +408,17 @@ function isDragDroppedOutsideWindow(e) {
 }
 if (typeof window !== 'undefined') window.isDragDroppedOutsideWindow = isDragDroppedOutsideWindow;
 
+// 別の同一origin Meldex窓がdropをACKした場合は、従来の窓外popoutを抑止する。
+// ACKが無い（OS/WebView境界、キャンセル、TTL切れ）場合だけ現行判定へ戻す。
+async function shouldOpenDragPopout(e, nonce) {
+  if (!isDragDroppedOutsideWindow(e)) return false;
+  if (nonce && typeof MeldexDnD !== 'undefined' && MeldexDnD.waitForDropDisposition) {
+    if (await MeldexDnD.waitForDropDisposition(nonce, 180)) return false;
+  }
+  return true;
+}
+if (typeof window !== 'undefined') window.shouldOpenDragPopout = shouldOpenDragPopout;
+
 // 単一タブ窓として items を URL で開く共通ヘルパー（タブ/ツリー/folder-view 共用）。
 // items: [{ name, path, type }] 形式。type はURL復元側が処理できる名称に正規化する。
 // 単一窓モード（?single=1）で開くことで、新規窓ではサイドバー等が隠れ、
@@ -989,7 +1000,7 @@ const UI_TYPE_ICONS = {
   calendar: 'calendar',
   'smart-db': 'databaseSearch',
   preview: 'tvMinimal',
-  subpanel: 'panelRight',
+  subpanel: 'panelRightDashed',
   detail: 'slidersHorizontal',
   info: 'info',
   chat: 'messagesSquare',
@@ -1053,6 +1064,7 @@ function replaceIcons(root) {
     else if (cls.includes('ico-sync')) name = 'sync';
     else if (cls.includes('ico-panelRight')) name = 'panelRight';
     else if (cls.includes('ico-panelLeft')) name = 'panelLeft';
+    else if (cls.includes('ico-listCollapse')) name = 'listCollapse';
     // ビューワー残課題修正計画 2026-08-04: 反転2種・回転（ビューワーの左右反転/上下反転/回転ボタン）
     else if (cls.includes('ico-flipHorizontal2')) name = 'flipHorizontal2';
     else if (cls.includes('ico-flipVertical2')) name = 'flipVertical2';

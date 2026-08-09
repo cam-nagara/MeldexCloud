@@ -450,14 +450,17 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   container.innerHTML = '';
   // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
   // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25。gb-db-table.part02.js と同期）。
-  const forceStatusDot = values.length > 1;
+  // 1セル1値で運用するシート（制作管理）は対象外。ただしそのシートで「ステータス機能」を
+  // オンにした場合は従来どおり出す（hidesCandidateStatusUi）。
+  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+  const forceStatusDot = values.length > 1 && !hideStatusUi;
   values.forEach(cellVal => {
     container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
   });
   // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
   // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転。gb-db-table.part02.js と同期）。
   const nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-  if (!ptc || !nonValueTypes.includes(ptc.type)) {
+  if ((!ptc || !nonValueTypes.includes(ptc.type)) && !hideStatusUi) {
     const addBtn = document.createElement('span');
     addBtn.className = 'cell-add-btn';
     addBtn.innerHTML = lucide('plus', 14);

@@ -52,8 +52,9 @@
   // fieldHelp() を安全に呼び出すラッパー（この file 専用の手作りNode実行
   // テストハーネスが fieldHelp をスタブしていないため、未定義時は何も出さずに
   // 済ませる。実アプリでは meldex-core.js 経由で常に定義済み）。
-  function _accountLinkHelp(text) {
-    return typeof fieldHelp === 'function' ? fieldHelp(text) : '';
+  function _accountLinkHelp(text, e2eId) {
+    if (typeof fieldHelp !== 'function') return '';
+    return fieldHelp(text, e2eId ? { e2eId } : undefined);
   }
 
   // 候補行のchevronアイコン用。fieldHelpと同じ理由で、Lucideが未読込の
@@ -91,11 +92,11 @@
     return wrap;
   }
 
-  function _descNode(text, helpText) {
+  function _descNode(text, helpText, helpE2eId) {
     const desc = document.createElement('div');
     desc.className = 'gb-section-desc';
     if (helpText) {
-      desc.innerHTML = `${text} ${_accountLinkHelp(helpText)}`;
+      desc.innerHTML = `${text} ${_accountLinkHelp(helpText, helpE2eId)}`;
     } else {
       desc.textContent = text;
     }
@@ -170,7 +171,11 @@
 
   function _renderUnavailable(container) {
     const wrap = _statusLineWrap(container);
-    wrap.appendChild(_descNode(TEXT_UNAVAILABLE, TEXT_UNAVAILABLE_HELP));
+    wrap.appendChild(_descNode(
+      TEXT_UNAVAILABLE,
+      TEXT_UNAVAILABLE_HELP,
+      'settings-account-link-unavailable-help',
+    ));
   }
 
   function _candidateAvatarNode(candidate) {
@@ -290,7 +295,11 @@
   function _renderDirectionChoice(container, candidate, state, options) {
     const showBack = !options || options.showBack !== false;
     const wrap = _statusLineWrap(container);
-    wrap.appendChild(_descNode(TEXT_DIRECTION, TEXT_DIRECTION_HELP));
+    wrap.appendChild(_descNode(
+      TEXT_DIRECTION,
+      TEXT_DIRECTION_HELP,
+      'settings-account-link-direction-help',
+    ));
 
     const list = document.createElement('div');
     list.className = 'msal-candidate-list';
@@ -376,7 +385,10 @@
     registerBtn.textContent = TEXT_REGISTER_NEW;
     registerBtn.addEventListener('click', () => _registerAsNew(container, registerBtn));
     registerRow.appendChild(registerBtn);
-    const help = _accountLinkHelp(TEXT_REGISTER_NEW_HELP);
+    const help = _accountLinkHelp(
+      TEXT_REGISTER_NEW_HELP,
+      'settings-account-link-register-new-help',
+    );
     if (help) {
       const helpWrap = document.createElement('span');
       helpWrap.innerHTML = help;

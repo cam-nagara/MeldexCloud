@@ -18,18 +18,13 @@
     return Number.isFinite(z) && z > 0 ? z : 1;
   }
 
-  function _modalScale(modal) {
-    const fallback = _zoom();
-    if (!modal?.getBoundingClientRect) return fallback;
-    const rect = modal.getBoundingClientRect();
-    const styledWidth = _numericStyle(modal.style.width, 0);
-    if (styledWidth > 0 && rect.width > 0) return Math.max(0.1, rect.width / styledWidth);
-    if (modal.offsetWidth > 0 && rect.width > 0) return Math.max(0.1, rect.width / modal.offsetWidth);
-    return fallback;
-  }
-
+  // 2026-08-07: 以前はここで「実際に描画された幅 ÷ インラインで指定した幅」から表示サイズ
+  // （拡大率）を逆算していた。CSSの min-width や min()・!important でこの2つが一致しなくなると
+  // 倍率が誤値になり、ドラッグ中も毎回走る位置合わせが誤ったサイズへ縮めるため、リサイズが
+  // 押し戻される原因になっていた。表示サイズは _getZoom() が唯一の正しい出どころなので、
+  // 推定はやめて直接参照する。
   function _layoutViewport(modal) {
-    const z = _modalScale(modal);
+    const z = _zoom();
     const overlay = modal?.closest?.(OVERLAY_SELECTOR);
     const rect = overlay?.getBoundingClientRect?.();
     const originX = rect ? rect.left : 0;
@@ -206,9 +201,16 @@
           dialog.style.transform = 'translateY(0)';
         }
       };
-      requestAnimationFrame(() => openSheet(false));
-      setTimeout(() => openSheet(false), 40);
-      setTimeout(() => openSheet(true), 260);
+      const e2eMode = new URLSearchParams(window.location.search).get('smoke') === '1';
+      if (e2eMode) {
+        // 機能E2Eは開くアニメーション中の画面外位置ではなく、利用可能になった
+        // 最終状態を検証する。アニメーション自体は専用契約テストへ分離する。
+        openSheet(true);
+      } else {
+        requestAnimationFrame(() => openSheet(false));
+        setTimeout(() => openSheet(false), 40);
+        setTimeout(() => openSheet(true), 260);
+      }
     }
     _patchMobileSheetRemove(overlay);
   }
@@ -356,19 +358,26 @@
     return footer;
   }
 
+  // リサイズ用のつまみはダイアログ本体の直下に置く必要があるため、本文欄へ
+  // 移動させてはいけない。移動させると再構築のたびに古いつまみが本文の中へ
+  // 溜まり続け、反応しない不可視要素が増えていく。
+  function _isShellChrome(child) {
+    return !!child?.classList?.contains('gb-modal-shell-edge');
+  }
+
   function _ensureBody(modal, header, footer) {
     let body = modal.querySelector(':scope > .gb-modal-shell-body, :scope > .gb-modal-body, :scope > .modal-body');
     if (!body) {
       body = document.createElement('div');
       body.className = 'gb-modal-shell-body gb-modal-shell-body-generated';
-      const nodes = Array.from(modal.children).filter((child) => child !== header && child !== footer);
+      const nodes = Array.from(modal.children).filter((child) => child !== header && child !== footer && !_isShellChrome(child));
       const anchor = footer || null;
       nodes.forEach((child) => body.appendChild(child));
       modal.insertBefore(body, anchor);
       return body;
     }
     body.classList.add('gb-modal-shell-body');
-    const extras = Array.from(modal.children).filter((child) => child !== header && child !== footer && child !== body);
+    const extras = Array.from(modal.children).filter((child) => child !== header && child !== footer && child !== body && !_isShellChrome(child));
     extras.forEach((child) => body.appendChild(child));
     if (footer && body.nextElementSibling !== footer) {
       modal.insertBefore(body, footer);
@@ -398,9 +407,77 @@
     return Number.isFinite(parsed) ? parsed : fallback;
   }
 
+  // --- ダイアログの大きさ・位置の記憶 ------------------------------------------
+  // data-dialog-geometry-key を持つダイアログだけを対象にする（一時的に開くだけの
+  // 小さなダイアログまで記録して肥大化させないため）。値は表示サイズで割った論理px
+  // なので、拡大率を変えても同じ見た目の大きさで戻る。
+  const GEOMETRY_STORAGE_KEY = 'meldex-dialog-geometry-v1';
+
+  function _geometryKey(modal) {
+    const key = modal?.dataset?.dialogGeometryKey;
+    return typeof key === 'string' && key.trim() ? key.trim() : '';
+  }
+
+  function _readGeometryStore() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(GEOMETRY_STORAGE_KEY) || '{}');
+      return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function _readGeometry(key) {
+    if (!key) return null;
+    const entry = _readGeometryStore()[key];
+    if (!entry || typeof entry !== 'object') return null;
+    const w = Number(entry.w);
+    const h = Number(entry.h);
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+    const x = Number(entry.x);
+    const y = Number(entry.y);
+    return {
+      w,
+      h,
+      x: Number.isFinite(x) ? x : null,
+      y: Number.isFinite(y) ? y : null,
+    };
+  }
+
+  function _saveGeometry(modal) {
+    const key = _geometryKey(modal);
+    if (!key) return;
+    const w = _numericStyle(modal.style.width, 0);
+    const h = _numericStyle(modal.style.height, 0);
+    if (w <= 0 || h <= 0) return;
+    const store = _readGeometryStore();
+    store[key] = {
+      w: Math.round(w),
+      h: Math.round(h),
+      x: Math.round(_numericStyle(modal.style.left, 0)),
+      y: Math.round(_numericStyle(modal.style.top, 0)),
+    };
+    try {
+      localStorage.setItem(GEOMETRY_STORAGE_KEY, JSON.stringify(store));
+    } catch { /* 保存できなくても操作は続行する */ }
+  }
+
+  function _restoreGeometry(modal) {
+    if (!modal || modal.dataset.modalShellGeometryRestored === '1') return false;
+    const stored = _readGeometry(_geometryKey(modal));
+    modal.dataset.modalShellGeometryRestored = '1';
+    if (!stored) return false;
+    modal.dataset.userSized = '1';
+    modal.style.width = stored.w + 'px';
+    modal.style.height = stored.h + 'px';
+    if (stored.x != null) modal.style.left = stored.x + 'px';
+    if (stored.y != null) modal.style.top = stored.y + 'px';
+    return true;
+  }
+
   function _modalSize(modal, header, footer) {
     const rect = modal.getBoundingClientRect();
-    const z = _modalScale(modal);
+    const z = _zoom();
     const width = Math.max(_numericStyle(modal.style.width, rect.width / z || modal.offsetWidth || 0), 0);
     const height = Math.max(_numericStyle(modal.style.height, rect.height / z || modal.offsetHeight || 0), 0);
     const minWidth = Math.max(_numericStyle(getComputedStyle(modal).minWidth, 320), 260);
@@ -435,6 +512,11 @@
     if (!modal) return;
     modal.style.position = 'absolute';
     modal.style.margin = '0';
+    // 保存済み寸法は描画待ちにせず適用する。バックグラウンドのウィンドウでは
+    // requestAnimationFrame が強く間引かれるため、ここまで遅延するとダイアログを
+    // 開いた直後に既定サイズが見え続けたり、復元完了を待つ処理がタイムアウトする。
+    // viewportへの収め直しだけは、実寸が確定する下の描画後処理で行う。
+    _restoreGeometry(modal);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!modal.isConnected) return;
@@ -491,6 +573,7 @@
         document.removeEventListener('pointermove', move);
         document.removeEventListener('pointerup', stop);
         document.removeEventListener('pointercancel', stop);
+        _saveGeometry(modal);
       };
       document.addEventListener('pointermove', move);
       document.addEventListener('pointerup', stop);
@@ -573,6 +656,9 @@
           document.removeEventListener('pointerup', stop);
           document.removeEventListener('pointercancel', stop);
           if (overlay) overlay.dataset.modalShellSuppressClickUntil = String(Date.now() + RESIZE_CLICK_SUPPRESS_MS);
+          // ユーザーが自分で決めた大きさなので、以後は既定サイズで上書きしない
+          modal.dataset.userSized = '1';
+          _saveGeometry(modal);
         };
         document.addEventListener('pointermove', move);
         document.addEventListener('pointerup', stop);
@@ -587,15 +673,16 @@
 
   function _clearModalShellGeometryForSheet(modal) {
     modal.classList.remove('gb-modal-resizable');
-    // 旧リサイズ機構（gb-app.part03 の _gbInstallModalResizeEdges）は
-    // data-gb-resizable-modal="1" を「導入済み」ガードに使う。ここでエッジだけ
-    // 除去してフラグを残すと、シート解除後にどちらの機構も再導入せず
-    // リサイズ不能のまま固定される（導入とペアで必ず解除する）。
+    // 旧バージョンが残した「リサイズ導入済み」の印も一緒に消す。印だけ残ると、
+    // 下シート表示を解除したあとリサイズが再導入されず固定されてしまう。
     if (modal.dataset && modal.dataset.gbResizableModal) delete modal.dataset.gbResizableModal;
     modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
-    ['position', 'margin', 'left', 'top', 'height'].forEach(prop => {
+    ['position', 'margin', 'left', 'top', 'width', 'height'].forEach(prop => {
       modal.style[prop] = '';
     });
+    // 下シートは画面幅いっぱいに固定される表示なので、その寸法を記憶へ持ち込まない
+    delete modal.dataset.userSized;
+    delete modal.dataset.modalShellGeometryRestored;
   }
 
   function _syncResizableShell(overlay, modal, header, footer) {
@@ -603,6 +690,7 @@
       _clearModalShellGeometryForSheet(modal);
       return false;
     }
+    modal.classList.add('gb-modal-resizable');
     _ensureResizeHandles(modal, header, footer);
     _bindDrag(header, modal, footer);
     _ensureGeometry(modal, header, footer);
@@ -697,6 +785,9 @@
     enhanceAll,
     clamp: _clampModal,
     cleanupStaleOverlays,
+    GEOMETRY_STORAGE_KEY,
+    readGeometry: _readGeometry,
+    saveGeometry: _saveGeometry,
   };
 
   _observeBody();

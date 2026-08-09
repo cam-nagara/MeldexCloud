@@ -6,4 +6,5 @@ __loadSplitScript('gb-outliner.bundle.js', [
   'gb-outliner.bundle.part03.js',
   'gb-outliner.bundle.part04.js',
   'gb-outliner.bundle.part05.js',
+  'gb-outliner.bundle.part06.js',
 ]);

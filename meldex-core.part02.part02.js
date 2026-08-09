@@ -7,8 +7,10 @@
         ? { ..._rectData(_ann.path), anchor: _ann.anchor }
         : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'rect') {
-      _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
+      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
+      data.lineWidth = _ann.widths?.pen;
+      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
       preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
@@ -27,13 +29,15 @@
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) return;
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
-    if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect'
-      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
+    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    const savedEl = shapeTypes.has(type)
+      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
@@ -231,6 +235,37 @@
     return el;
   }
 
+  function _ellipseData(points) {
+    const rect = _rectData(points);
+    return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+  }
+
+  function _applyMarkupShapeEl(el, type, data, color, opacity, preview) {
+    const outlined = type === 'rect-line' || type === 'ellipse-line';
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    if (type.startsWith('ellipse')) {
+      el.setAttribute('cx', Number(data?.cx) || 0); el.setAttribute('cy', Number(data?.cy) || 0);
+      el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0)); el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+    } else {
+      el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
+      el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+    }
+    el.setAttribute('fill', outlined ? 'none' : color);
+    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
+    el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+    return el;
+  }
+
+  function _renderMarkupShape(type, data, color, opacity, annId) {
+    if (type === 'rect') return _renderRect(data, color, opacity, annId);
+    const el = _applyMarkupShapeEl(document.createElementNS(_svgNS, type.startsWith('ellipse') ? 'ellipse' : 'rect'), type, data, color, opacity, false);
+    if (annId) el.dataset.annId = annId;
+    layer.appendChild(el);
+    return el;
+  }
+
   function _handleMessage(msg) {
     if (!msg || !msg.type) return;
     if (msg.type === 'ann-set-state') {
@@ -282,8 +317,8 @@
           _renderNote(item, data || {});
         } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
           return;
-        } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
-          _renderRect(data, item.color, item.opacity, item.id);
+        } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
+          _renderMarkupShape(item.type, data, item.color, item.opacity, item.id);
         } else if (data?.points) {
           _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
@@ -295,10 +330,10 @@
       // 親が保存したストロークにIDを付与
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
-      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id])');
+      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id]), ellipse:not([data-ann-id])');
       if (!targetEl && els.length > 0) targetEl = els[els.length - 1];
       if (targetEl && msg.annId) {
         targetEl.dataset.annId = msg.annId;
@@ -308,7 +343,7 @@
     if (msg.type === 'ann-stroke-save-failed') {
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
       if (targetEl) targetEl.remove();

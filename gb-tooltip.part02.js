@@ -22,7 +22,7 @@
   regAction('showsettingsmodal',  { label: '設定',       desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regAction('togglesidebar',      { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
   regAction('toggleannotationtoolbar', { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regAction('toggleoverlayvisibility', { label: '注釈オーバーレイ', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regAction('toggleoverlayvisibility', { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
   regAction('toggleoptionpanel',  { label: 'オプションパネル', desc: '右サイドバーのオプション設定を開閉します' });
   regAction('togglerightpaneltab',{ label: '右サイドバータブ', desc: '指定した右サイドバーのタブを開閉します' });
 

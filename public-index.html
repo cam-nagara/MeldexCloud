@@ -20,11 +20,12 @@
   <link rel="stylesheet" href="public-index.css">
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="public-standalone-apps.js"></script>
+  <script src="public-beta-status.js"></script>
   <script>
     (function () {
       'use strict';
       var fallbackReleases = '';
-      var fallbackVersion = 'v0.7.167 BETA';
+      var fallbackVersion = 'v0.7.182 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -242,10 +243,13 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.167 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.182 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
+          <li><strong>ベータテスター登録数</strong><span id="beta-tester-count">更新確認中</span></li>
+          <li><strong>Dropbox接続枠（Development）</strong><span id="dropbox-development-count">更新確認中</span></li>
+          <li><strong>集計状態</strong><span id="beta-status-updated">集計値は更新確認中です</span></li>
           <li><strong>状態</strong><span>BETA。機能名、配置、挙動は変更される可能性があります。</span></li>
         </ul>
       </aside>
@@ -258,11 +262,11 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.167 BETA / 最新</option>
+              <option value="0">v0.7.182 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.167 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.182 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -276,7 +280,7 @@
         <div class="grid">
           <article class="item available">
             <h3>デスクトップ版</h3>
-            <p>Windows用ZIPをダウンロードし、展開して起動します。ソースフォルダはローカルにもDropbox上にも置けます。</p>
+            <p>Windowsダウンロード版では、Dropbox、Google Drive、OneDrive、iCloud Driveなど、デスクトップ同期アプリがPC上に作成する同期フォルダーを、ホームフォルダー、ワークスペースフォルダー、ソースフォルダーとして利用できます。Meldex側でサービスごとの接続設定は不要です。PC上に同期フォルダーを作成しないWeb専用サービスは対象外です。</p>
           </article>
           <article class="item limited">
             <h3>古いバージョン</h3>
@@ -292,31 +296,29 @@
     <section class="section" id="cloud">
       <div class="section-inner">
         <h2>クラウド版</h2>
-        <p>クラウド版は、インストールせずブラウザで <a href="Meldex.html">Meldex Cloud BETA</a> を開く利用形態です。利用にはDropboxアカウントが必要です。Dropbox認証後、ユーザー自身のDropbox上のデータを読み書きします。</p>
-        <p>Dropboxアカウントをまだ持っていない場合は、先にDropbox公式サイトで作成してください。無料のDropbox Basicでも利用できます。</p>
+        <p>Meldex Cloudはアカウントなしですぐに開始でき、初期状態ではこの端末内に保存します。Dropboxへの接続とオフライン利用は、起動後いつでも設定できます。</p>
+        <p>端末内保存はブラウザごとに独立しています。別の端末と同じデータを使う場合だけ、設定からDropboxへ接続してください。切り替えても端末内データを自動で移動・削除しません。</p>
         <div class="version-picker" aria-label="クラウド版を起動">
           <div class="version-meta">
             <span>起動する版: <strong>公開中の最新版</strong></span>
-            <span>保存先: <strong>ユーザー自身のDropbox</strong></span>
-            <span>必要なもの: <strong>Dropboxアカウント</strong></span>
+            <span>初期保存先: <strong>この端末内</strong></span>
+            <span>必要なアカウント: <strong>なし</strong></span>
           </div>
           <div class="mode-actions">
             <a class="button primary" href="Meldex.html">クラウド版を起動</a>
-            <a class="button subtle" href="https://www.dropbox.com/register" target="_blank" rel="noopener">Dropboxアカウントを作成</a>
-            <a class="button subtle" href="https://www.dropbox.com/basic" target="_blank" rel="noopener">Dropbox Basicを確認</a>
           </div>
         </div>
         <div class="grid">
           <article class="item available">
             <h3>すぐ開ける</h3>
-            <p>PC以外に、iPad、タブレット、スマホでも使えます。軽い確認や外出先の追記に向いています。</p>
+            <p>iPad、iPhone、Android、Windows、Macなどの最新ブラウザで、アカウントを作らずに開始できます。</p>
             <div class="mode-actions">
               <a class="button" href="Meldex.html">クラウド版を起動</a>
             </div>
           </article>
           <article class="item limited">
-            <h3>常に最新版</h3>
-            <p>このページの「クラウド版を起動」は、公開中の最新版を開きます。更新があると、次回起動時も最新版が使われます。</p>
+            <h3>オンライン / オフラインを選べる</h3>
+            <p>初回起動時に、オンライン時だけ使うか、Meldex本体を端末へ保存してオフラインでも使うかを選べます。設定から後で変更できます。</p>
           </article>
           <article class="item available">
             <h3>ホーム画面に追加</h3>
@@ -330,13 +332,17 @@
             <h3>クラウド版のバージョン</h3>
             <p>クラウド版は最新版のみ提供しています。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
           </article>
+          <article class="item limited">
+            <h3>正式版でのオンラインストレージ対応</h3>
+            <p>将来の正式版では、Apple App Store / Google Play向けのネイティブアプリを公開し、OSのファイル選択機能を通じてiCloud Drive、Google Drive、OneDriveなどのフォルダーを扱えるようにする見込みです。ストア審査と実機検証が必要なため、開発版では今後の実装予定です。</p>
+          </article>
         </div>
       </div>
     </section>
     <section class="section" id="standalone-apps">
       <div class="section-inner">
         <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。クラウド版はMeldex Cloudと同じDropbox上の保存先を使います。</p>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
         <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
         <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
         <ul class="notes">
@@ -349,11 +355,11 @@
     <section class="section" id="samples">
       <div class="section-inner">
         <h2>サンプルデータ</h2>
-        <p>サンプル作品は、デスクトップ版でもクラウド版でもMeldex内の確認ダイアログからホームフォルダへ追加できます。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
+        <p>サンプル作品は、デスクトップ版でもクラウド版でも、Meldex内の「サンプルを追加」を明示的に押した場合だけホームフォルダへ追加されます。確認ダイアログは表示されません。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
         <div class="version-picker" aria-label="サンプルデータを追加">
           <div class="version-meta">
-            <span>デスクトップ版: <strong>ホームフォルダ準備後に確認</strong></span>
-            <span>クラウド版: <strong>Dropbox接続後に確認</strong></span>
+            <span>デスクトップ版: <strong>設定から明示的に追加</strong></span>
+            <span>クラウド版: <strong>端末内保存またはDropbox接続後、設定から明示的に追加</strong></span>
           </div>
           <div class="mode-actions">
             <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
@@ -361,8 +367,8 @@
           </div>
         </div>
         <ul class="notes">
-          <li>デスクトップ版では、ホームフォルダの準備後に「サンプルファイルを追加しますか？」と表示されます。</li>
-          <li>クラウド版では、Dropbox接続後に同じ確認が表示されます。</li>
+          <li>初回起動、Dropbox接続、ホームフォルダ変更、設定復帰の際に、サンプル追加の確認を自動表示しません。</li>
+          <li>「サンプルを追加」を押すと、別の確認を挟まず追加を開始します。</li>
           <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
           <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
         </ul>
@@ -426,7 +432,7 @@
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>スケジュール</h3>
             <ul>
             <li>イベント・ToDoリスト・勤怠をカレンダー形式で管理します。</li>
-            <li>制作管理の「割当再計算」で、タスクの担当者と作業予定を期間内へ自動で割り振れます。</li>
+            <li>制作管理の「自動割り当て」で、タスクの担当者と作業予定を期間内へ自動で割り振れます。</li>
             <li>Google ToDo / CalDAV など外部サービスとの同期に対応します。</li>
             </ul>
           </article>
@@ -555,42 +561,42 @@
             </ul>
           </article>
           <article class="mode-card">
-            <h3>デスクトップ版（ソースフォルダ：Dropbox上）</h3>
-            <p>Windows上でMeldexを起動し、Dropbox同期フォルダ内のソースフォルダをローカルファイルとして開きます。</p>
+            <h3>デスクトップ版（ソースフォルダ：同期フォルダー内）</h3>
+            <p>Windows上でMeldexを起動し、Dropbox、Google Drive、OneDrive、iCloud DriveなどがPC上に作る同期フォルダー内のソースフォルダーを、ローカルファイルとして開きます。</p>
             <ul class="mode-list">
               <li>PC連携やローカルファイル操作を使える</li>
               <li>読み書きはローカルファイルなのでCloud版より速い</li>
-              <li>Dropbox同期で複数PCやCloud版とデータを共有できる</li>
+              <li>利用中のオンラインストレージを通じて複数PCとデータを共有できる</li>
             </ul>
             <ul class="mode-list cons">
-              <li>Dropbox同期が終わる前に別端末で開くと競合しやすい</li>
+              <li>同期が終わる前に別端末で開くと競合しやすい</li>
               <li>大量ファイルの初回同期には時間がかかる</li>
-              <li>Dropbox容量と同期状態の管理が必要</li>
+              <li>オンラインストレージの容量と同期状態の管理が必要</li>
             </ul>
           </article>
           <article class="mode-card">
             <h3>クラウド版</h3>
-            <p>ブラウザでMeldexを開き、Dropboxに保存します。</p>
+            <p>ブラウザでMeldexを開き、初期状態ではこの端末内に保存します。必要になった時だけDropboxへ接続できます。</p>
             <ul class="mode-list">
               <li>iPad、スマホ、Macでも使いやすい</li>
               <li>インストール不要で使える</li>
-              <li>端末を替えてもDropbox認証で続きから使える</li>
+              <li>Dropboxへ接続すれば、同じDropboxを使う端末で続きから使える</li>
             </ul>
             <ul class="mode-list cons">
-              <li>Dropboxアカウントが必要</li>
-              <li>通信速度とDropboxの応答待ちの影響を受ける</li>
+              <li>端末内保存だけでは別端末へ自動共有されない</li>
+              <li>Dropbox接続時は通信速度とDropboxの応答待ちの影響を受ける</li>
               <li>PC内のコマンドラインツールやOS連携は使えない</li>
-              <li>オフライン作業には向かない</li>
+              <li>オフライン利用を選べば、通信できない時もMeldex本体と端末内データを使える</li>
             </ul>
           </article>
         </div>
-        <p>デスクトップ版をDropboxに接続しても、このPCだけで使うローカルフォルダは引き続きソースフォルダにできます。ただし、そのフォルダはクラウド版や他端末からは開けません。他端末でも使いたいソースフォルダはDropbox内に置いてください。</p>
+        <p>デスクトップ版では、各オンラインストレージのデスクトップ同期アプリがPC上に作ったフォルダーをそのまま使えます。ブラウザ版からオンラインストレージへ直接接続する機能は現在Dropboxのみで、その他のサービスは正式版のネイティブアプリで対応する予定です。</p>
       </div>
     </section>
     <section class="section" id="speed">
       <div class="section-inner">
         <h2>速度比較</h2>
-        <p>実測値ではなく、同じデータ量を扱ったときの一般的な体感目安です。端末性能、回線、Dropbox同期状態、ファイル数で変わります。</p>
+        <p>実測値ではなく、同じデータ量を扱ったときの一般的な体感目安です。端末性能、回線、オンラインストレージの同期状態、ファイル数で変わります。</p>
         <div class="table-wrap">
           <table class="compare-table">
             <thead>
@@ -609,22 +615,22 @@
                 <td>大きいボード、長いノート、大量シート編集、長時間の執筆。</td>
               </tr>
               <tr>
-                <td>デスクトップ版（ソースフォルダ：Dropbox上）</td>
+                <td>デスクトップ版（ソースフォルダ：同期フォルダー内）</td>
                 <td><span class="speed-rank mid">速い</span></td>
-                <td>アプリはローカルDropboxフォルダを読み書きし、同期はDropboxクライアントが後追いします。</td>
+                <td>アプリはPC上の同期フォルダーを読み書きし、同期は各オンラインストレージのデスクトップアプリが後追いします。</td>
                 <td>Windows PCで編集し、他端末やクラウド版でも確認したい場合。</td>
               </tr>
               <tr>
                 <td>クラウド版</td>
                 <td><span class="speed-rank low">中〜遅い</span></td>
-                <td>読み込み/保存ごとにDropboxと通信します。回線やDropboxの応答待ちの影響を受けます。</td>
-                <td>iPad/スマホでの確認、軽い編集、外出先の追記。</td>
+                <td>端末内保存は通信待ちなしです。Dropbox接続時は回線とDropboxの応答待ちの影響を受けます。</td>
+                <td>iPad/スマホを含む各端末での確認、編集、外出先の追記。</td>
               </tr>
             </tbody>
           </table>
         </div>
         <ul class="notes">
-          <li>速度重視は「デスクトップ版（ソースフォルダ：ローカル）」、共有重視は「デスクトップ版（ソースフォルダ：Dropbox上）」、端末自由度重視は「クラウド版」が目安です。</li>
+          <li>速度重視は「デスクトップ版（ソースフォルダ：ローカル）」、PC間共有重視は「デスクトップ版（ソースフォルダ：同期フォルダー内）」、端末自由度重視は「クラウド版」が目安です。</li>
           <li>クラウド版とDropbox上のデスクトップ版を併用する場合は、保存直後に別端末で開く前に同期完了を確認してください。</li>
         </ul>
       </div>
@@ -668,7 +674,7 @@
         </div>
         <ul class="notes">
           <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
-          <li>クラウド版はブラウザとDropboxを使うため、端末性能、ブラウザ、回線状態で体感が変わります。</li>
+          <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
         </ul>
         <div class="grid">
           <article class="item available">

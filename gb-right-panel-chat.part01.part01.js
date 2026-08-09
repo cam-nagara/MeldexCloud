@@ -66,6 +66,20 @@ function _chatScrollToBottomIf(container, shouldScroll) {
   if (shouldScroll) _chatScrollToBottom(container);
 }
 
+function _chatRevealLatest(mode = _chatMode) {
+  const container = mode === 'team'
+    ? _chatLiveElement('team-messages')
+    : mode === 'llm' ? _chatLiveMessagesContainer() : null;
+  if (!container) return false;
+  const scroll = () => _chatScrollToBottom(container);
+  scroll();
+  requestAnimationFrame(() => {
+    scroll();
+    requestAnimationFrame(scroll);
+  });
+  return true;
+}
+
 function _chatCopyIconHtml(size = 12) {
   return typeof lucide === 'function' ? lucide('copy', size) : 'Copy';
 }
@@ -896,6 +910,11 @@ async function chatCommitSessionTitle(showSavedStatus = true) {
 (function _bindChatSessionTitleInput() {
   const el = document.getElementById('chat-session-title');
   if (!el) return;
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('aria-autocomplete', 'none');
+  el.setAttribute('data-lpignore', 'true');
+  el.setAttribute('data-1p-ignore', 'true');
+  el.setAttribute('data-form-type', 'other');
   el.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -940,6 +959,7 @@ function switchChatMode(mode) {
   if (mode === 'llm') {
     _syncChatSessionTitleInput();
     if (typeof _chatSyncStreamingControls === 'function') _chatSyncStreamingControls();
+    _chatRevealLatest('llm');
   }
   if (mode === 'history') {
     const historyView = requestedMode === 'cli'

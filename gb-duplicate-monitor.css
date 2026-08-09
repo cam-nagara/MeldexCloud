@@ -20,6 +20,15 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--ui-space-3);
+  min-width: 0;
+}
+
+/* グリッドの子は既定で min-width:auto のため、長いパスがダイアログ幅を押し広げる。 */
+.dup-progress-row [data-dup-status] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dup-progress-count {
@@ -28,13 +37,121 @@
   white-space: nowrap;
 }
 
+/* 確認の対象フォルダ。結果が出たあとも「どこを調べたか」の手がかりとして残す。 */
+.dup-progress-target {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+
+.dup-progress-target[hidden] {
+  display: none;
+}
+
+.dup-progress-target-name {
+  color: var(--fg);
+  font-weight: var(--ui-weight-medium);
+}
+
+.dup-progress-target-name,
+.dup-progress-target-parent {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dup-progress-stats {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  min-width: 0;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+
+.dup-progress-percent {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.dup-progress-eta {
+  white-space: nowrap;
+}
+
+.dup-progress-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+}
+
+.dup-progress-current[hidden] {
+  display: none;
+}
+
 .dup-progress progress {
   width: 100%;
   height: 8px;
   accent-color: var(--ui-accent);
 }
 
-.dup-progress-complete progress {
+/* 総数が未確定の間の表示。標準セレクタと ::-webkit- は分けて書く
+   （同じルールにまとめると WebKit 以外でルール全体が捨てられる）。 */
+.dup-progress progress[data-indeterminate] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background-color: var(--bg4);
+  background-image: linear-gradient(90deg,
+    transparent 0%, var(--ui-accent) 45%, var(--ui-accent) 55%, transparent 100%);
+  background-size: 44% 100%;
+  background-repeat: no-repeat;
+  background-position: -44% 0;
+  animation: dup-progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+.dup-progress progress[data-indeterminate]::-webkit-progress-bar {
+  border-radius: var(--ui-radius-sm);
+  background-color: var(--bg4);
+  background-image: linear-gradient(90deg,
+    transparent 0%, var(--ui-accent) 45%, var(--ui-accent) 55%, transparent 100%);
+  background-size: 44% 100%;
+  background-repeat: no-repeat;
+  background-position: -44% 0;
+  animation: dup-progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+.dup-progress progress[data-indeterminate]::-moz-progress-bar {
+  background: transparent;
+}
+
+@keyframes dup-progress-indeterminate {
+  from { background-position: -44% 0; }
+  to { background-position: 144% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dup-progress progress[data-indeterminate],
+  .dup-progress progress[data-indeterminate]::-webkit-progress-bar {
+    animation: none;
+  }
+
+  .dup-progress progress[data-indeterminate] {
+    background-position: 28% 0;
+  }
+}
+
+.dup-progress-complete progress,
+.dup-progress-complete .dup-progress-stats,
+.dup-progress-complete .dup-progress-current {
   display: none;
 }
 
@@ -107,5 +224,150 @@
 @media (max-width: 390px) {
   .dup-monitor-modal .dup-group-body {
     grid-template-columns: 1fr;
+  }
+}
+
+.dup-settings-section {
+  display: grid;
+  gap: var(--ui-space-3);
+}
+
+.dup-settings-field {
+  display: grid;
+  gap: var(--ui-space-2);
+  max-width: 320px;
+  font-size: var(--ui-font-12);
+}
+
+.dup-settings-field select {
+  min-height: 32px;
+}
+
+.dup-settings-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-3);
+}
+
+.dup-folder-target-tree,
+.dup-folder-target-children {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dup-folder-target-children {
+  padding-left: 20px;
+}
+
+.dup-folder-target-row {
+  display: grid;
+  grid-template-columns: 28px minmax(120px, 1fr) minmax(120px, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: 36px;
+  padding: 2px var(--ui-space-2);
+  border-radius: var(--ui-radius-sm);
+}
+
+.dup-folder-target-row:hover {
+  background: var(--bg3);
+}
+
+.dup-folder-disclosure {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  color: var(--fg2);
+  background: transparent;
+}
+
+.dup-folder-disclosure:not(:disabled):hover {
+  color: var(--fg);
+  background: var(--bg4);
+}
+
+.dup-folder-disclosure-empty {
+  visibility: hidden;
+}
+
+.dup-folder-target-check {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+.dup-folder-target-name,
+.dup-folder-target-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dup-folder-target-reason {
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-11);
+}
+
+.dup-folder-target-row-compact {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-inline: 0;
+}
+
+.dup-folder-target-row-compact .dup-folder-disclosure {
+  display: none;
+}
+
+.dup-folder-target-row-compact .dup-folder-target-reason {
+  grid-column: 1 / -1;
+  padding-left: 24px;
+}
+
+.dup-folder-option {
+  display: grid;
+  gap: var(--ui-space-3);
+  margin-top: var(--ui-space-4);
+  font-size: var(--ui-font-12);
+}
+
+.dup-folder-excluded-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 1px 5px;
+  border: 1px solid var(--ui-border);
+  border-radius: 999px;
+  color: var(--ui-fg-muted);
+  font-size: var(--ui-font-10);
+  line-height: 1.4;
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .dup-folder-target-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+    min-height: 44px;
+  }
+
+  .dup-folder-disclosure {
+    width: 44px;
+    height: 44px;
+  }
+
+  .dup-folder-target-reason {
+    grid-column: 2;
+  }
+
+  .dup-folder-target-row-compact {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .dup-settings-actions .gb-btn {
+    min-height: 44px;
   }
 }

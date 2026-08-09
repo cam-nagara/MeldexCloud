@@ -17,6 +17,11 @@
   }
 
   async function _managementAdapter(provider) {
+    if (typeof provider?.getSystemStorageAdapter === 'function') {
+      const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
+      if (!kind) throw new Error('サンプル管理データの種別を判定できません');
+      return { adapter: provider.getSystemStorageAdapter(), kind };
+    }
     const resolver = window.MeldexDropboxManagementRootResolver;
     const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
     if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
@@ -35,8 +40,9 @@
     return provider?.readJson ? provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
   }
 
-  function _isDropboxMode() {
-    return _runtime()?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
+  function _isCloudStorageMode() {
+    return _runtime()?.isBrowserDataMode?.()
+      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _normalizePath(path) {
@@ -142,7 +148,7 @@
   async function prepareHome(options) {
     if (_preparePromise) return _preparePromise;
     _preparePromise = (async () => {
-      if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+      if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
       const provider = _provider();
       if (!provider) return { ok: false, skipped: 'missing-provider' };
       const opts = options || {};
@@ -166,7 +172,7 @@
   }
 
   async function status() {
-    if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
     const provider = _provider();
     if (!provider) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();
@@ -297,7 +303,7 @@
   }
 
   async function _ensureNow() {
-    if (!_isDropboxMode()) return { ok: false, skipped: 'not-dropbox' };
+    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
     const provider = _provider();
     if (!provider?.uploadBytes) return { ok: false, skipped: 'missing-provider' };
     const manifest = await _readManifest();

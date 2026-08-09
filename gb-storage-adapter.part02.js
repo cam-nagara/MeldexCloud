@@ -67,8 +67,16 @@
 
   const _providers = {
     dropbox: new DropboxStorageProvider(),
+    browser: null,
     legacy: null,
   };
+
+  function _getBrowserProvider() {
+    const ctor = window.MeldexStorageAdapter?.BrowserStorageProvider;
+    if (typeof ctor !== 'function') throw new Error('ブラウザ内ストレージが未読み込みです');
+    if (!_providers.browser || !(_providers.browser instanceof ctor)) _providers.browser = new ctor();
+    return _providers.browser;
+  }
 
   function _getLegacyProvider() {
     const ctor = window.MeldexStorageAdapter?.LocalFsStorageProvider;
@@ -78,11 +86,14 @@
   }
 
   function _activeProvider() {
-    return _runtime()?.isDropboxMode?.() ? _providers.dropbox : _getLegacyProvider();
+    if (_runtime()?.isDropboxMode?.()) return _providers.dropbox;
+    if (_runtime()?.isBrowserMode?.()) return _getBrowserProvider();
+    return _getLegacyProvider();
   }
 
   window.MeldexStorageAdapter = {
     DropboxStorageProvider,
+    BrowserStorageProvider: null,
     LocalFsStorageProvider: null,
     isSupported() {
       return _activeProvider().constructor.isSupported();

@@ -14,11 +14,13 @@
   let activeAlertModal = null;
   let alertPollTimer = null;
   let monitorStarted = false;
+  let settingsRenderSeq = 0;
+  const folderStateCache = new Map();
+  const FOLDER_STATE_CACHE_MS = 15000;
 
   function safeText(value) {
     return String(value == null ? '' : value);
   }
-
   function filePath(file) {
     return safeText(file?.rel_path || file?.path || file?.file_path);
   }
@@ -27,11 +29,38 @@
     const path = filePath(file).replace(/\\/g, '/');
     return safeText(file?.name || path.split('/').pop() || '名前なし');
   }
-
   function fileLocation(file) {
     const path = filePath(file).replace(/\\/g, '/');
     const slash = path.lastIndexOf('/');
     return safeText(file?.location || file?.folder || (slash >= 0 ? path.slice(0, slash) : 'ソースフォルダ'));
+  }
+
+  // 画面へ出すパスは、ドライブ名や共有名を落としてから扱う。保存先の登録内容に
+  // よっては絶対パスが返ってくるため、表示側で必ず均す。
+  function pathParts(value) {
+    const path = safeText(value)
+      .replace(/\\/g, '/')
+      .replace(/^[A-Za-z]:\/+/, '')
+      .replace(/^\/\/[^/]+\/[^/]+\/?/, '')
+      .replace(/^\/+/, '');
+    return path.split('/').filter(Boolean);
+  }
+
+  // 末尾 depth 階層までに詰める（切ったことが分かるよう先頭に … を付ける）。
+  function displayPath(value, depth) {
+    const parts = pathParts(value);
+    const limit = depth || 3;
+    return parts.length > limit ? '…/' + parts.slice(-limit).join('/') : parts.join('/');
+  }
+
+  function targetHtml(folderPath) {
+    const parts = pathParts(folderPath);
+    if (!parts.length) return '';
+    const shown = parts.slice(-3);
+    const name = shown[shown.length - 1];
+    const parent = (parts.length > 3 ? '…/' : '') + shown.slice(0, -1).join('/');
+    return `${lucide('folder', 12)}<span class="dup-progress-target-name">${esc(name)}</span>`
+      + (shown.length > 1 ? `<span class="dup-progress-target-parent">${esc(parent)}</span>` : '');
   }
 
   function isImage(file) {
@@ -174,11 +203,18 @@
       </header>
       <div class="gb-modal-body">
         <div class="dup-progress" data-dup-progress>
+          <div class="dup-progress-target" data-dup-target
+            data-e2e-id="duplicate-progress-target"${options.folderPath ? '' : ' hidden'}>${targetHtml(options.folderPath)}</div>
           <div class="dup-progress-row">
             <span class="gb-section-desc" data-dup-status aria-live="polite">${esc(options.status || '')}</span>
             <span class="dup-progress-count" data-dup-progress-count></span>
           </div>
           <progress max="100" value="0" data-dup-progress-bar aria-label="処理の進捗"></progress>
+          <div class="dup-progress-stats">
+            <span class="dup-progress-percent" data-dup-progress-percent></span>
+            <span class="dup-progress-eta" data-dup-progress-eta></span>
+          </div>
+          <div class="dup-progress-current" data-dup-progress-current hidden></div>
         </div>
         <div class="dup-results" data-dup-results></div>
       </div>
@@ -205,11 +241,32 @@
     const status = overlay.querySelector('[data-dup-status]');
     const count = overlay.querySelector('[data-dup-progress-count]');
     const bar = overlay.querySelector('[data-dup-progress-bar]');
+    const percentText = overlay.querySelector('[data-dup-progress-percent]');
+    const etaText = overlay.querySelector('[data-dup-progress-eta]');
+    const currentText = overlay.querySelector('[data-dup-progress-current]');
     const processed = Number(progress?.processed) || 0;
     const total = Number(progress?.total) || 0;
     const percent = total > 0 ? Math.max(0, Math.min(100, Math.round(processed * 100 / total))) : 0;
+    const rate = Number(progress?.rate) || 0;
+    const eta = Number(progress?.eta_seconds);
     if (status) status.textContent = progress?.message || progress?.phase || '重複ファイルを確認中…';
-    if (count) count.textContent = total > 0 ? `${processed}/${total}` : (processed > 0 ? `${processed}件` : '');
+    if (count) {
+      count.textContent = total > 0
+        ? `${processed.toLocaleString('ja-JP')} / ${total.toLocaleString('ja-JP')}件`
+        : (processed > 0 ? `${processed.toLocaleString('ja-JP')}件` : '');
+    }
+    if (percentText) percentText.textContent = total > 0 ? `${percent}%` : '';
+    if (etaText) {
+      if (Number.isFinite(eta) && eta > 0) etaText.textContent = `残り約${window.formatJobEta(eta)}`;
+      else if (rate > 0) etaText.textContent = `${rate.toFixed(1)}件/秒`;
+      else etaText.textContent = '';
+    }
+    if (currentText) {
+      const current = displayPath(progress?.current);
+      currentText.textContent = current;
+      currentText.title = current;
+      currentText.hidden = !current;
+    }
     if (bar) {
       if (total > 0) {
         bar.value = percent;
@@ -218,6 +275,19 @@
         bar.removeAttribute('value');
         bar.dataset.indeterminate = '1';
       }
+    }
+  }
+
+  // 走査が終わったら、途中経過の数字を残さない（結果の行だけを見せる）。
+  function clearProgressDetails(overlay) {
+    const progress = overlay?.querySelector('[data-dup-progress]');
+    if (progress) progress.classList.add('dup-progress-complete');
+    const count = overlay?.querySelector('[data-dup-progress-count]');
+    if (count) count.textContent = '';
+    const current = overlay?.querySelector('[data-dup-progress-current]');
+    if (current) {
+      current.textContent = '';
+      current.hidden = true;
     }
   }
 
@@ -230,6 +300,7 @@
     const progress = overlay.querySelector('[data-dup-progress]');
     const keepAll = overlay.querySelector('[data-dup-keep-all]');
     if (progress) progress.classList.add('dup-progress-complete');
+    clearProgressDetails(overlay);
     if (!groups.length) {
       if (status) status.textContent = `${Number(payload?.total_files ?? payload?.total_images) || 0}件を確認しました`;
       if (results) results.innerHTML = '<div class="gb-empty-placeholder">重複ファイルは見つかりませんでした</div>';
@@ -448,6 +519,17 @@
     });
     bindOverlayChrome(overlay, { controller, finished: () => finished });
     try {
+      if (folderPath) {
+        try {
+          const state = await loadFolderState(folderPath, true);
+          if (state?.enabled === false) {
+            const status = overlay.querySelector('[data-dup-status]');
+            if (status) status.textContent = '自動処理の対象外です。今回は手動でこのフォルダだけ調べます…';
+          }
+        } catch (_) {
+          // 手動確認は設定情報を取得できない場合も続行する。
+        }
+      }
       const payload = await runBackgroundJob('/duplicate-scan', { path: folderPath, threshold: 10 }, {
         signal: controller.signal,
         onProgress: progress => setProgress(overlay, progress),
@@ -462,6 +544,7 @@
       if (!overlay.isConnected) return null;
       const cancel = overlay.querySelector('[data-dup-cancel]');
       if (cancel) cancel.remove();
+      clearProgressDetails(overlay);
       const status = overlay.querySelector('[data-dup-status]');
       if (error?.name === 'AbortError') {
         if (status) status.textContent = 'スキャンを中止しました';
@@ -588,9 +671,298 @@
     }
   }
 
+  async function loadFolderState(path, force) {
+    const key = safeText(path);
+    const cached = folderStateCache.get(key);
+    if (!force && cached && Date.now() - cached.at < FOLDER_STATE_CACHE_MS) return cached.value;
+    const value = await apiFetch('/duplicate-detection/folder-state?path=' + encodeURIComponent(key), {
+      silentError: true,
+    });
+    folderStateCache.set(key, { at: Date.now(), value });
+    return value;
+  }
+
+  function invalidateFolderStateCache() { folderStateCache.clear(); }
+  function notifyTargetChange(path) {
+    invalidateFolderStateCache();
+    const broadcast = (typeof MeldexBroadcast !== 'undefined' && MeldexBroadcast) || window.GBBroadcast || null;
+    broadcast?.send?.('duplicate-targets-changed', { path: safeText(path) });
+    window.dispatchEvent(new CustomEvent('meldex:duplicate-targets-changed', {
+      detail: { path: safeText(path) },
+    }));
+  }
+
+  function folderStateLabel(state) {
+    if (state?.automatic_available === false) return '自動処理の対象外（ネットワーク上のフォルダ）';
+    if (state?.reason) return safeText(state.reason);
+    return state?.enabled ? '重複を自動で確認します' : '重複の自動確認から除外しています';
+  }
+  async function saveFolderState(path, enabled) {
+    const response = await apiFetch('/duplicate-detection/folder-state', {
+      method: 'PUT',
+      body: JSON.stringify({ path, enabled }),
+    });
+    notifyTargetChange(path);
+    return response?.state || null;
+  }
+
+  function createFolderTargetRow(item, options) {
+    const row = document.createElement('div');
+    row.className = options?.compact ? 'dup-folder-target-row dup-folder-target-row-compact' : 'dup-folder-target-row';
+    row.dataset.path = safeText(item?.path);
+
+    const disclosure = document.createElement('button');
+    disclosure.type = 'button';
+    disclosure.className = 'dup-folder-disclosure';
+    disclosure.title = item?.has_children ? '子フォルダを表示' : '子フォルダはありません';
+    disclosure.setAttribute('aria-label', disclosure.title);
+    disclosure.disabled = !item?.has_children;
+    disclosure.classList.toggle('dup-folder-disclosure-empty', !item?.has_children);
+    disclosure.innerHTML = item?.has_children ? lucide('chevronRight', 14) : '';
+
+    const label = document.createElement('label');
+    label.className = 'dup-folder-target-check';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = item?.enabled === true;
+    checkbox.disabled = item?.automatic_available === false || options?.globalEnabled === false;
+    checkbox.setAttribute('aria-label', `${safeText(item?.name || item?.path)}を重複検出の対象にする`);
+    checkbox.dataset.e2eId = `duplicate-target-${safeText(item?.path)}`;
+    const name = document.createElement('span');
+    name.className = 'dup-folder-target-name';
+    name.textContent = safeText(item?.name || displayPath(item?.path, 2) || 'フォルダ');
+    label.append(checkbox, name);
+
+    let help = null;
+    if (options?.compact && typeof fieldHelp === 'function') {
+      const holder = document.createElement('span');
+      holder.innerHTML = fieldHelp('このフォルダを自動の重複確認へ含めます。オフでも「今回だけ調べる」は利用できます。');
+      help = holder.firstElementChild;
+      help.dataset.e2eId = `duplicate-target-help-${safeText(item?.path)}`;
+    }
+    const reason = document.createElement('span');
+    reason.className = 'dup-folder-target-reason';
+    const imageCount = Number(item?.indexed?.images);
+    const countLabel = Number.isFinite(imageCount) ? ` / 索引済み画像 ${imageCount.toLocaleString('ja-JP')}件` : '';
+    reason.textContent = folderStateLabel(item) + countLabel;
+    reason.title = reason.textContent;
+    row.append(disclosure, label);
+    if (help) row.appendChild(help);
+    row.appendChild(reason);
+    const children = document.createElement('div');
+    children.className = 'dup-folder-target-children';
+    children.hidden = true;
+    const wrapper = document.createElement('div');
+    wrapper.className = 'dup-folder-target-node';
+    wrapper.append(row, children);
+
+    checkbox.addEventListener('change', async () => {
+      const requestedEnabled = checkbox.checked; checkbox.disabled = true;
+      try {
+        const state = await saveFolderState(item.path, requestedEnabled);
+        Object.assign(item, state || { enabled: requestedEnabled });
+        checkbox.checked = item.enabled === true;
+        reason.textContent = folderStateLabel(item);
+        showStatus(checkbox.checked ? '重複検出の対象にしました' : '重複検出の対象外にしました');
+      } catch (error) {
+        checkbox.checked = !requestedEnabled;
+        showStatus('フォルダの設定を変更できませんでした: ' + userError(error), true);
+      } finally {
+        checkbox.disabled = item?.automatic_available === false || options?.globalEnabled === false;
+      }
+    });
+
+    disclosure.addEventListener('click', async () => {
+      if (children.dataset.loaded === '1') {
+        children.hidden = !children.hidden;
+        disclosure.innerHTML = lucide(children.hidden ? 'chevronRight' : 'chevronDown', 14);
+        return;
+      }
+      disclosure.disabled = true;
+      try {
+        const payload = await apiFetch('/duplicate-detection/folders?path=' + encodeURIComponent(item.path));
+        renderFolderTargetTree(children, payload?.items || [], {
+          globalEnabled: payload?.settings_enabled !== false,
+        });
+        children.dataset.loaded = '1';
+        children.hidden = false;
+        disclosure.innerHTML = lucide('chevronDown', 14);
+      } catch (error) {
+        showStatus('子フォルダを読み込めませんでした: ' + userError(error), true);
+      } finally {
+        disclosure.disabled = false;
+      }
+    });
+    return wrapper;
+  }
+
+  function renderFolderTargetTree(host, items, options) {
+    host.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-section-desc';
+      empty.textContent = '対象にできるローカルフォルダはありません';
+      host.appendChild(empty);
+      return;
+    }
+    items.forEach(item => host.appendChild(createFolderTargetRow(item, options)));
+  }
+  async function renderSettings(root) {
+    const host = (root || document).querySelector?.('#settings-duplicate-detection');
+    if (!host) return;
+    const seq = ++settingsRenderSeq;
+    if (!isLocalDuplicateMode()) {
+      host.innerHTML = `<section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+        <div class="gb-section-desc">この設定はデスクトップ版のローカルフォルダで利用できます。</div>
+      </section>`;
+      return;
+    }
+    host.innerHTML = `<section class="gb-section gb-section--boxed">
+      <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+      <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
+      <div class="gb-section-desc" data-dup-settings-status>設定を読み込んでいます…</div>
+    </section>`;
+    try {
+      const payload = await apiFetch('/duplicate-detection/settings');
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      const settings = payload?.settings || {};
+      const watcherAvailable = payload?.watcher_available !== false;
+      host.innerHTML = `<section class="gb-section gb-section--boxed dup-settings-section">
+        <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
+        <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
+        <div class="gb-check-help-row">
+          <label><input type="checkbox" data-dup-setting="enabled" ${settings.enabled !== false ? 'checked' : ''}> 重複を見張る</label>
+          ${typeof fieldHelp === 'function' ? fieldHelp('オフにしても手動の「重複を確認」は利用できます。既存ファイルの索引は保持されます。') : ''}
+        </div>
+        <label class="dup-settings-field"><span>全体を調べ直す間隔</span>
+          <select data-dup-setting="refresh_days">
+            <option value="0" ${Number(settings.refresh_days) === 0 ? 'selected' : ''}>自動では調べ直さない</option>
+            <option value="1" ${Number(settings.refresh_days) === 1 ? 'selected' : ''}>毎日</option>
+            <option value="7" ${Number(settings.refresh_days ?? 7) === 7 ? 'selected' : ''}>7日ごと</option>
+            <option value="30" ${Number(settings.refresh_days) === 30 ? 'selected' : ''}>30日ごと</option>
+          </select>
+        </label>
+        <div class="gb-check-help-row">
+          <label><input type="checkbox" data-dup-setting="watch_changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
+          ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
+        </div>
+        <div class="dup-settings-actions">
+          <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline>${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
+          <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed dup-settings-section">
+        <div class="gb-section-title">${lucide('folderTree', 14)} 対象フォルダ</div>
+        <div class="gb-section-desc">親フォルダの設定は子フォルダへ引き継がれます。必要な場所だけ個別に切り替えられます。</div>
+        <div class="dup-folder-target-tree" data-dup-folder-tree><div class="gb-section-desc">フォルダを読み込んでいます…</div></div>
+      </section>`;
+
+      const settingInputs = [...host.querySelectorAll('[data-dup-setting]')];
+      const saveSettings = async () => {
+        const body = {
+          enabled: host.querySelector('[data-dup-setting="enabled"]')?.checked !== false,
+          refresh_days: Number(host.querySelector('[data-dup-setting="refresh_days"]')?.value || 0),
+          watch_changes: host.querySelector('[data-dup-setting="watch_changes"]')?.checked === true,
+        };
+        settingInputs.forEach(input => { input.disabled = true; });
+        try {
+          await apiFetch('/duplicate-detection/settings', { method: 'PUT', body: JSON.stringify(body) });
+          notifyTargetChange('');
+          showStatus('重複検出の設定を保存しました');
+          await renderSettings(root);
+        } catch (error) {
+          showStatus('重複検出の設定を保存できませんでした: ' + userError(error), true);
+          settingInputs.forEach(input => { input.disabled = false; });
+        }
+      };
+      settingInputs.forEach(input => input.addEventListener('change', saveSettings));
+      host.querySelector('[data-dup-baseline]')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        const message = host.querySelector('[data-dup-settings-message]');
+        button.disabled = true;
+        if (message) message.textContent = '全体確認を開始しています…';
+        try {
+          const started = await apiPost('/duplicate-monitor/start', { force: true });
+          if (message) message.textContent = started?.status === 'disabled'
+            ? '「重複を見張る」をオンにすると全体確認を開始できます。'
+            : '全体確認を裏側で開始しました。重複が見つかると通知します。';
+        } catch (error) {
+          if (message) message.textContent = '開始できませんでした: ' + userError(error);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      const folders = await apiFetch('/duplicate-detection/folders');
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      renderFolderTargetTree(host.querySelector('[data-dup-folder-tree]'), folders?.items || [], {
+        globalEnabled: folders?.settings_enabled !== false,
+      });
+    } catch (error) {
+      if (seq !== settingsRenderSeq || !host.isConnected) return;
+      const status = host.querySelector('[data-dup-settings-status]');
+      if (status) status.textContent = '設定を読み込めませんでした: ' + userError(error);
+    }
+  }
+  async function renderSingleFolderTarget(host) {
+    const path = safeText(host?.dataset?.path);
+    if (!path || !host?.isConnected) return;
+    host.innerHTML = '<div class="gb-section-desc">重複検出の設定を読み込んでいます…</div>';
+    try {
+      const state = await loadFolderState(path, false);
+      if (!host.isConnected || host.dataset.path !== path) return;
+      const item = { ...state, path, name: 'このフォルダを対象にする', has_children: false };
+      const section = document.createElement('section');
+      section.className = 'gb-section gb-section--boxed dup-folder-option';
+      const title = document.createElement('div');
+      title.className = 'gb-section-title';
+      title.innerHTML = lucide('copy', 14) + ' 重複検出';
+      const tree = document.createElement('div');
+      tree.appendChild(createFolderTargetRow(item, {
+        compact: true,
+        globalEnabled: state?.reason !== '重複を見張る設定がオフ',
+      }));
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = 'gb-btn gb-btn-sm';
+      action.dataset.e2eId = `duplicate-manual-scan-${path}`;
+      action.innerHTML = lucide('scanSearch', 14) + ' 今回だけ調べる';
+      action.addEventListener('click', () => openManualScan(path));
+      section.append(title, tree, action);
+      host.replaceChildren(section);
+    } catch (error) {
+      host.innerHTML = `<div class="gb-section-desc">重複検出の設定を読み込めませんでした: ${esc(userError(error))}</div>`;
+    }
+  }
+
+  function renderFolderTargetControls(root) {
+    (root || document).querySelectorAll?.('[data-duplicate-folder-setting][data-path]').forEach(host => {
+      renderSingleFolderTarget(host);
+    });
+  }
+  async function refreshOutlinerBadges(root) {
+    if (!isLocalDuplicateMode()) return;
+    const nodes = [...(root || document).querySelectorAll?.('.tree-node[data-path]') || []].slice(0, 100);
+    await Promise.allSettled(nodes.map(async node => {
+      if (node._nodeData?.type !== 'folder') return;
+      const row = node.querySelector(':scope > .tree-node-row');
+      if (!row || row.querySelector(':scope > .dup-folder-excluded-badge')) return;
+      const state = await loadFolderState(node.dataset.path, false);
+      if (!row.isConnected || state?.enabled !== false) return;
+      const badge = document.createElement('span');
+      badge.className = 'dup-folder-excluded-badge';
+      badge.textContent = '対象外';
+      badge.title = folderStateLabel(state);
+      row.appendChild(badge);
+    }));
+  }
+
   window.MeldexDuplicateMonitor = {
     openManualScan,
     pollNow: pollAlerts,
+    renderSettings,
+    renderFolderTargetControls,
+    refreshOutlinerBadges,
     start: startMonitor,
     _test: {
       normalizeGroups,
@@ -606,5 +978,23 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('meldex:mode-changed', handleRuntimeModeChange);
-  window.addEventListener('load', () => setTimeout(startMonitor, 0), { once: true });
+  window.addEventListener('meldex:duplicate-targets-changed', () => {
+    const settingsHost = document.querySelector('#settings-duplicate-detection');
+    if (settingsHost?.isConnected && !settingsHost.closest('[hidden]')) renderSettings(document);
+    renderFolderTargetControls(document);
+    document.querySelectorAll('.dup-folder-excluded-badge').forEach(badge => badge.remove());
+    refreshOutlinerBadges(document);
+  });
+  window.addEventListener('meldex:outliner-rendered', () => refreshOutlinerBadges(document));
+  const duplicateBroadcast = (typeof MeldexBroadcast !== 'undefined' && MeldexBroadcast) || window.GBBroadcast || null;
+  duplicateBroadcast?.on?.('duplicate-targets-changed', message => {
+    invalidateFolderStateCache();
+    window.dispatchEvent(new CustomEvent('meldex:duplicate-targets-changed', {
+      detail: { path: safeText(message?.path), remote: true },
+    }));
+  });
+  window.addEventListener('load', () => setTimeout(() => {
+    startMonitor();
+    refreshOutlinerBadges(document);
+  }, 0), { once: true });
 })();

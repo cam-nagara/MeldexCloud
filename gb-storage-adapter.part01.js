@@ -194,6 +194,10 @@
   const DROPBOX_FILE_CACHE_TTL_MS = 20 * 1000;
   const DROPBOX_FILE_CACHE_MAX_ENTRIES = 24;
   const DROPBOX_FILE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+  // Dropbox の単発アップロード上限は150MB。境界ぎりぎりを避けて分割へ切り替える。
+  const DROPBOX_SINGLE_UPLOAD_MAX_BYTES = 140 * 1024 * 1024;
+  // 分割送信の1回あたりのサイズ（Dropbox の推奨は4MBの倍数）。
+  const DROPBOX_UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024;
   const DROPBOX_LIST_CACHE_TTL_MS = 3500;
   const DROPBOX_LIST_CACHE_MAX_ENTRIES = 80;
 
@@ -1041,6 +1045,11 @@
     }
 
     async _uploadBytesWithMode(relativePath, bytes, mode) {
+      // Dropbox の単発アップロードは150MBまで。動画などはセッションへ切り替える
+      // （切り替えないと大きいファイルの保存が必ず失敗する）。
+      if (bytes && bytes.length > DROPBOX_SINGLE_UPLOAD_MAX_BYTES) {
+        return this._uploadLargeBytesWithMode(relativePath, bytes, mode);
+      }
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
       const response = await this._content('files/upload', {
@@ -1060,6 +1069,47 @@
         type: _mimeFromPath(normalized),
         lastModified: _jsonDate(meta.server_modified || meta.client_modified || ''),
       }), meta);
+      this._forgetListCache(_dirname(normalized));
+      return meta;
+    }
+
+    /** 150MBを超えるファイルを分割して送る（動画の添付などで使う）。 */
+    async _uploadLargeBytesWithMode(relativePath, bytes, mode) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const octet = { 'Content-Type': 'application/octet-stream' };
+      const total = bytes.length;
+      const first = bytes.subarray(0, Math.min(DROPBOX_UPLOAD_CHUNK_BYTES, total));
+      const started = await this._content('files/upload_session/start', { close: false }, {
+        method: 'POST', headers: octet, body: first,
+      }, location);
+      const session = await started.json();
+      let offset = first.length;
+      while (offset < total) {
+        const end = Math.min(offset + DROPBOX_UPLOAD_CHUNK_BYTES, total);
+        await this._content('files/upload_session/append_v2', {
+          cursor: { session_id: session.session_id, offset },
+          close: false,
+        }, {
+          method: 'POST', headers: octet, body: bytes.subarray(offset, end),
+        }, location);
+        offset = end;
+      }
+      const finished = await this._content('files/upload_session/finish', {
+        cursor: { session_id: session.session_id, offset: total },
+        commit: {
+          path: location.path,
+          mode,
+          autorename: false,
+          mute: false,
+          strict_conflict: true,
+        },
+      }, {
+        method: 'POST', headers: octet, body: new Uint8Array(0),
+      }, location);
+      const meta = await finished.json();
+      this._rememberMeta(normalized, meta);
+      // 大きいファイルは内容をメモリへ抱えない（_rememberDownloadedFile の上限判定にも掛かる）
       this._forgetListCache(_dirname(normalized));
       return meta;
     }

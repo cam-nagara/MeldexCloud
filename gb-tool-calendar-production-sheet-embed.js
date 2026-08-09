@@ -569,9 +569,9 @@
 
   function _setVisible(instance, visible) {
     if (!instance.containerEl) return;
-    // 非表示時も DOM から外さない（display:none のみ）。
-    // _resolveDatabasePaneContext() は containerEl が document から外れていると
-    // グローバル state へ静かにフォールバックするため、detach は禁止。
+    // このインスタンス単体の表示切替では DOM から外さない（display:none のみ）。
+    // 親のsurface切替ではworkspace全体が一時detachされ得るが、明示ctxと専用tableを
+    // 保持したまま描画を続け、再attach時に完成済みの表を表示する。
     instance.containerEl.style.display = visible ? 'flex' : 'none';
   }
 

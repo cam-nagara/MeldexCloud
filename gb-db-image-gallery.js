@@ -15,11 +15,16 @@ function stringifyImagePropertyValue(items) {
   return JSON.stringify(Array.isArray(items) ? items : []);
 }
 
+// 画像列は画像に加えて動画・PDFも受け付ける（列側で accept を指定した場合はその設定を優先）
+const ATTACHMENT_VIDEO_EXTS = ['mp4', 'webm', 'mov'];
+const ATTACHMENT_DOCUMENT_EXTS = ['pdf'];
+const ATTACHMENT_DEFAULT_ACCEPT = ['png', 'jpg', 'jpeg', 'gif', 'webp'].concat(ATTACHMENT_VIDEO_EXTS, ATTACHMENT_DOCUMENT_EXTS);
+
 function _imagePropOptions(ptc) {
   const opts = ptc?.options || {};
   const accept = Array.isArray(opts.accept) && opts.accept.length
     ? opts.accept.map(s => String(s).toLowerCase().replace(/^\./, ''))
-    : ['png', 'jpg', 'jpeg', 'gif', 'webp'];
+    : ATTACHMENT_DEFAULT_ACCEPT.slice();
   const thumbSize = Math.max(64, Math.min(1024, parseInt(opts.thumbnail_size, 10) || 256));
   return {
     maxCount: opts.max_count == null || opts.max_count === '' ? 100 : Math.max(1, parseInt(opts.max_count, 10) || 100),
@@ -36,7 +41,23 @@ function _imagePropCellSize(ptc) {
   return Math.max(32, Math.min(320, parseInt(raw, 10) || Math.min(96, thumbSize)));
 }
 
-function _imageSrc(item, preferThumb) {
+// 新方式（シートフォルダ内の添付フォルダ）の実ファイルパスから表示URLを組み立てる。
+// 縮小表示は共通のサムネイル生成、原寸・再生は生ファイル配信を使う。
+function _attachmentUrlFromPath(path, preferThumb, thumbSize) {
+  const clean = String(path || '').replace(/\\/g, '/');
+  if (!clean) return '';
+  if (!preferThumb) return '/api/file-raw?path=' + encodeURIComponent(clean);
+  const size = Math.max(64, Math.min(1024, parseInt(thumbSize, 10) || 256));
+  return '/api/thumbnail?path=' + encodeURIComponent(clean) + '&size=' + size;
+}
+
+function _imageSrc(item, preferThumb, thumbSize) {
+  // 新方式は縮小と原寸で配信先が別なので、preferThumb を厳密に守る。
+  // 動画・PDFは縮小版を作らないため、常に生ファイルを返す。
+  if (item && item.path) {
+    const wantThumb = !!preferThumb && (!item.kind || item.kind === 'image');
+    return _attachmentUrlFromPath(item.path, wantThumb, thumbSize);
+  }
   const rel = (preferThumb && (item.thumb_url || item.thumb || item.preview_url || item.preview_src || item.preview_image_url))
     || item.thumb_url || item.url || item.src || item.thumb || item.preview_url || item.preview_src || item.preview_image_url || '';
   if (!rel) return '';
@@ -45,12 +66,88 @@ function _imageSrc(item, preferThumb) {
   return '/api/media/file?path=' + encodeURIComponent(rel);
 }
 
-function _isAcceptedImageFile(file, accept) {
+// 添付の種別（image / video / pdf）。新方式は保存時に kind が付くが、
+// 旧データや外部由来の値には無いので拡張子から補う。
+function _attachmentKind(item) {
+  const declared = String(item?.kind || '').toLowerCase();
+  if (declared === 'image' || declared === 'video' || declared === 'pdf') return declared;
+  const source = String(item?.path || item?.src || item?.filename || item?.url || '');
+  const ext = (source.split('?')[0].split('.').pop() || '').toLowerCase();
+  if (ATTACHMENT_VIDEO_EXTS.includes(ext)) return 'video';
+  if (ATTACHMENT_DOCUMENT_EXTS.includes(ext)) return 'pdf';
+  return 'image';
+}
+
+function _isAcceptedAttachmentFile(file, accept) {
   if (!file) return false;
-  const type = String(file.type || '').toLowerCase();
-  if (type && !type.startsWith('image/')) return false;
   const ext = (file.name.split('.').pop() || '').toLowerCase();
-  return accept.includes(ext) || (ext === 'jpg' && accept.includes('jpeg')) || (ext === 'jpeg' && accept.includes('jpg'));
+  const type = String(file.type || '').toLowerCase();
+  const allowed = accept.includes(ext)
+    || (ext === 'jpg' && accept.includes('jpeg'))
+    || (ext === 'jpeg' && accept.includes('jpg'));
+  if (!allowed) return false;
+  if (!type) return true;
+  if (ATTACHMENT_VIDEO_EXTS.includes(ext)) return type.startsWith('video/');
+  if (ATTACHMENT_DOCUMENT_EXTS.includes(ext)) return type.includes('pdf');
+  return type.startsWith('image/');
+}
+
+// 動画・PDFは縮小画像を作らないため、種別アイコンとファイル名のタイルで表す。
+// クリック位置の判定は .gb-image-thumb を使うので、画像と同じクラスを付ける。
+function _createAttachmentThumb(item, index) {
+  const kind = _attachmentKind(item);
+  const label = item?.caption || item?.filename || '';
+  if (kind === 'image') {
+    const img = document.createElement('img');
+    img.className = 'gb-image-thumb';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.fetchPriority = 'low';
+    img.src = _imageSrc(item, true);
+    img.alt = label;
+    if (index != null) img.dataset.imageIndex = String(index);
+    return _setupAttachmentThumbDrag(img, item);
+  }
+  const tile = document.createElement('div');
+  tile.className = 'gb-image-thumb gb-attachment-tile';
+  tile.dataset.kind = kind;
+  if (index != null) tile.dataset.imageIndex = String(index);
+  tile.title = label;
+  if (typeof lucide === 'function') tile.innerHTML = lucide(kind === 'video' ? 'film' : 'fileText', 20) || '';
+  const caption = document.createElement('span');
+  caption.textContent = label;
+  tile.appendChild(caption);
+  return _setupAttachmentThumbDrag(tile, item);
+}
+
+function _setupAttachmentThumbDrag(element, item) {
+  const path = _imagePropOpenPath(item);
+  if (!element || !path) return element;
+  element.draggable = true;
+  element.dataset.attachmentPath = path;
+  element.addEventListener('dragstart', e => {
+    // セル本体にも委譲 dragstart があるため、ここで止めないとサムネイル固有の
+    // 添付path/typeがセル側payloadで上書きされる。
+    e.stopPropagation();
+    const type = _attachmentKind(item);
+    const name = item?.caption || item?.filename || path.split(/[\\/]/).pop() || path;
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.writeNodePayload) {
+      MeldexDnD.writeNodePayload(e.dataTransfer, { name, path, type }, 'sheet-image');
+    }
+  });
+  return element;
+}
+
+// 添付アップロードは共通のAPI経路（apiFetch）を通らないため、編集ロックの識別子を自前で付ける。
+function _attachmentUploadHeaders() {
+  const locks = window.MeldexActiveLocks;
+  if (!locks || !locks.header || typeof locks.token !== 'function') return undefined;
+  try {
+    const value = locks.token();
+    return value ? { [locks.header]: value } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function _imagePropDbPathForEntity(entityPath) {
@@ -66,20 +163,30 @@ function _imagePropLockMessage(entityPath, propName) {
 async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
   const options = _imagePropOptions(ptc);
   const current = parseImagePropertyValue(val?.value);
-  const accepted = Array.from(files || []).filter(file => _isAcceptedImageFile(file, options.accept));
-  if (!accepted.length) { showStatus('画像ファイルがありません', true); return current; }
+  const accepted = Array.from(files || []).filter(file => _isAcceptedAttachmentFile(file, options.accept));
+  if (!accepted.length) { showStatus('添付できるファイルがありません', true); return current; }
   const room = Math.max(0, options.maxCount - current.length);
   if (room <= 0) { showStatus('画像数の上限に達しています', true); return current; }
   const targetFiles = accepted.slice(0, room);
   if (accepted.length > room) showStatus('画像数の上限を超えた分は追加しませんでした');
   let added = 0;
   let failed = 0;
+  // 添付先シートを渡すと、そのシートフォルダ内の添付フォルダへ元のファイル名のまま保存される。
+  // 渡せない場合はサーバー側が従来の保存先へ退避する（後方互換）。
+  const sheetPath = _imagePropDbPathForEntity(entityPath) || '';
   for (const file of targetFiles) {
     try {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('thumbnail_size', String(options.thumbSize));
-      const res = await fetch(API_BASE + '/media/upload', { method: 'POST', body: fd });
+      if (sheetPath) fd.append('sheet_path', sheetPath);
+      // 添付はシートフォルダの中へ保存するため、開いているシート自身の編集ロックに当たる。
+      // 自分のロックであることを示す識別子を付けないと、自分で開いたシートへ貼れなくなる。
+      const res = await fetch(API_BASE + '/media/upload', {
+        method: 'POST',
+        body: fd,
+        headers: _attachmentUploadHeaders(),
+      });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const meta = await res.json();
       current.push({
@@ -88,6 +195,8 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
           : ('img_' + Date.now() + '_' + Math.random().toString(16).slice(2))),
         content_hash: meta.content_hash || meta.hash,
         filename: meta.filename || file.name,
+        path: meta.path || '',
+        kind: meta.kind || '',
         src: meta.src,
         thumb: meta.thumb,
         url: meta.url,
@@ -145,7 +254,8 @@ function _imagePropCloneItems(items) {
 }
 
 function _imagePropOpenPath(item) {
-  const candidates = [item?.url, item?.src, item?.path, item?.file, item?.thumb_url, item?.thumb];
+  // 新方式は path が実ファイルの場所そのものなので最優先で使う
+  const candidates = [item?.path, item?.url, item?.src, item?.file, item?.thumb_url, item?.thumb];
   for (const raw of candidates) {
     const value = String(raw || '').trim();
     if (!value || /^(?:data:|blob:|https?:)/i.test(value)) continue;
@@ -178,7 +288,7 @@ function openImagePropertyItemInViewer(item, options = {}) {
     const ext = (imagePath.split('.').pop() || '').toLowerCase();
     const mediaType = (typeof MeldexDnD !== 'undefined' && typeof MeldexDnD.getMediaType === 'function'
       ? MeldexDnD.getMediaType(ext)
-      : null) || (ext === 'pdf' ? 'pdf' : 'image');
+      : null) || _attachmentKind(item);
     // シートの表示状態（スクロール位置・表示中のビュー）を戻る履歴へ積んでから画像を開く。
     // DB行ダブルクリック（_handleTbodyDblclick）と同一パターン（②タブ別ナビ履歴、2026-07-21）。
     // _navPushWithViewState の既定フォールバック（_currentPaneState()）は旧split専用の
@@ -235,15 +345,7 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
     const stack = document.createElement('div');
     stack.className = 'gb-image-thumb-stack';
     for (let i = 0; i < previewCount; i++) {
-      const img = document.createElement('img');
-      img.className = 'gb-image-thumb';
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.fetchPriority = 'low';
-      img.src = _imageSrc(items[i], true);
-      img.alt = items[i].caption || items[i].filename || '';
-      img.dataset.imageIndex = String(i);
-      stack.appendChild(img);
+      stack.appendChild(_createAttachmentThumb(items[i], i));
     }
     if (items.length > previewCount) {
       const more = document.createElement('span');
@@ -294,7 +396,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
   overlay.innerHTML = `<div class="modal gb-image-gallery-modal">
     <h3>${typeof lucide === 'function' ? lucide('images', 16) : ''} ${esc(propName)}</h3>
     <div class="gb-image-gallery-toolbar">
-      <label class="gb-btn gb-btn-sm">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="image/*" hidden></label>
+      <label class="gb-btn gb-btn-sm">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="${esc(options.accept.map(ext => '.' + ext).join(','))}" hidden></label>
       <span class="gb-section-desc">${items.length} / ${options.maxCount}</span>
     </div>
     <div id="gb-img-gallery-list" class="gb-image-gallery-list"></div>
@@ -318,12 +420,9 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
     items.forEach((item, idx) => {
       const card = document.createElement('div');
       card.className = 'gb-image-gallery-card';
-      const img = document.createElement('img');
-      img.loading = 'lazy';
-      img.decoding = 'async';
-      img.src = _imageSrc(item, true);
-      img.alt = item.filename || '';
-      card.appendChild(img);
+      const thumb = _createAttachmentThumb(item, idx);
+      thumb.classList.remove('gb-image-thumb');
+      card.appendChild(thumb);
       const meta = document.createElement('div');
       meta.className = 'gb-image-gallery-meta';
       const cap = document.createElement('input');

@@ -5,8 +5,10 @@
   const ROOT_ID = 'x-account-posts-settings-container';
   const USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
   const ACTIVE_JOB_STORAGE_KEY = 'meldex.x-account-posts.active-job.v1';
+  const LEGACY_USERNAME_STORAGE_KEYS = ['meldex.x-account-posts.username.v1', 'x-account-posts-username'];
   let syncInFlight = false;
   let connected = false;
+  let accounts = [];
 
   function icon(name, size) {
     if (typeof lucide === 'function') return lucide(name, size || 14);
@@ -61,6 +63,7 @@
   function setBusy(active) {
     syncInFlight = !!active;
     updateControls();
+    renderAccountList();
   }
 
   function readActiveJob() {
@@ -112,6 +115,7 @@
       setText('x-account-posts-connection', 'X接続状態を取得できませんでした');
     }
     updateControls();
+    renderAccountList();
   }
 
   function resultSummary(data) {
@@ -234,9 +238,9 @@
     return window.confirm(message);
   }
 
-  async function syncAccountPosts() {
+  async function syncAccountPosts(usernameOverride) {
     if (syncInFlight || typeof apiPost !== 'function' || typeof runBackgroundJob !== 'function') return;
-    const raw = document.getElementById('x-account-posts-username')?.value || '';
+    const raw = usernameOverride || document.getElementById('x-account-posts-username')?.value || '';
     const username = normalizeUsername(raw);
     if (!username) {
       setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
@@ -245,6 +249,172 @@
     }
     if (!await confirmAccountPostsCost(username)) return;
     await runAccountPostsJob(username, '');
+  }
+
+  function accountUsername(entry) {
+    return normalizeUsername(entry?.target_ref?.username || '');
+  }
+
+  async function confirmDelete(username) {
+    const message = `@${username} を一覧から削除しますか？\n保存済みのポストは削除しません。`;
+    if (typeof cfConfirm === 'function') return !!await cfConfirm(message, {danger: true, okLabel: '削除'});
+    return window.confirm(message);
+  }
+
+  async function loadAccounts() {
+    if (typeof apiFetch !== 'function') return [];
+    const data = await apiFetch('/import-schedules?category=x-account-posts', {silentError: true});
+    const schedules = Array.isArray(data?.schedules) ? data.schedules : [];
+    return schedules
+      .filter((entry) => accountUsername(entry))
+      .sort((a, b) => (Number(a.target_ref?.order) || 0) - (Number(b.target_ref?.order) || 0));
+  }
+
+  async function persistOrder() {
+    for (let index = 0; index < accounts.length; index += 1) {
+      const entry = accounts[index];
+      await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
+        target_ref: {...entry.target_ref, username: accountUsername(entry), order: index + 1},
+      }, {method: 'PATCH', silentError: true});
+      entry.target_ref = {...entry.target_ref, order: index + 1};
+    }
+  }
+
+  function accountStatus(entry) {
+    if (entry.enabled) return entry.next_run_display ? `定期実行ON / 次回 ${entry.next_run_display}` : '定期実行ON';
+    return '定期実行OFF（手動のみ）';
+  }
+
+  function actionButton(label, action, username, extraClass) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `gb-btn gb-btn-sm ${extraClass || ''}`.trim();
+    button.textContent = label;
+    button.dataset.action = action;
+    button.dataset.username = username;
+    return button;
+  }
+
+  function renderAccountList() {
+    const list = document.getElementById('x-account-posts-list');
+    if (!list) return;
+    list.textContent = '';
+    if (!accounts.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-section-desc';
+      empty.textContent = '保存するXアカウントはまだありません。追加後も定期実行はOFFです。';
+      list.appendChild(empty);
+      return;
+    }
+    accounts.forEach((entry, index) => {
+      const username = accountUsername(entry);
+      const row = document.createElement('div');
+      row.className = 'gb-section gb-section--boxed';
+      row.style.cssText = 'margin-top:8px;padding:8px;';
+      row.dataset.e2eId = `x-account-posts-row-${username.toLowerCase()}`;
+      const title = document.createElement('div');
+      title.className = 'gb-section-title';
+      title.textContent = `@${username}`;
+      const status = document.createElement('div');
+      status.className = 'gb-section-desc';
+      status.textContent = accountStatus(entry);
+      const actions = document.createElement('div');
+      actions.className = 'gb-field-row';
+      actions.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;margin-top:6px;';
+      const up = actionButton('↑ 上へ', 'up', username);
+      const down = actionButton('↓ 下へ', 'down', username);
+      up.disabled = index === 0;
+      down.disabled = index === accounts.length - 1;
+      actions.append(
+        up,
+        down,
+        actionButton(entry.enabled ? '定期実行をOFF' : '定期実行をON', 'toggle', username),
+        actionButton('今すぐ取得', 'sync', username),
+        actionButton('ブラウザで開く', 'open', username),
+        actionButton('削除', 'delete', username, 'gb-btn-danger'),
+      );
+      row.append(title, status, actions);
+      const syncButton = actions.querySelector('[data-action="sync"]');
+      if (syncButton) syncButton.disabled = syncInFlight || !connected;
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshAccounts() {
+    try {
+      accounts = await loadAccounts();
+      renderAccountList();
+    } catch (error) {
+      setStatus('Xアカウント一覧を読み込めませんでした: ' + (error?.userMessage || error?.message || error), true);
+    }
+  }
+
+  async function addAccount() {
+    const input = document.getElementById('x-account-posts-username');
+    const username = normalizeUsername(input?.value || '');
+    if (!username) {
+      setStatus('Xのユーザー名（@なし）またはプロフィールURLを入力してください。', true);
+      input?.focus();
+      return;
+    }
+    if (accounts.some((entry) => accountUsername(entry).toLowerCase() === username.toLowerCase())) {
+      setStatus(`@${username} はすでに一覧にあります。`, true);
+      return;
+    }
+    await apiPost('/import-schedules', {
+      category: 'x-account-posts',
+      target_ref: {username, order: accounts.length + 1},
+      label: `@${username}`,
+      period: {type: 'off'},
+    }, {silentError: true});
+    try { localStorage.setItem(LEGACY_USERNAME_STORAGE_KEYS[0], username); } catch (_) {}
+    if (input) input.value = '';
+    updateSavePreview();
+    setStatus(`@${username} を追加しました。定期実行はOFFです。`, false);
+    await refreshAccounts();
+  }
+
+  async function handleAccountAction(event) {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const index = accounts.findIndex((entry) => accountUsername(entry) === button.dataset.username);
+    if (index < 0) return;
+    const entry = accounts[index];
+    const username = accountUsername(entry);
+    button.disabled = true;
+    try {
+      if (button.dataset.action === 'up' || button.dataset.action === 'down') {
+        const target = index + (button.dataset.action === 'up' ? -1 : 1);
+        [accounts[index], accounts[target]] = [accounts[target], accounts[index]];
+        await persistOrder();
+        renderAccountList();
+      } else if (button.dataset.action === 'toggle') {
+        let ack = false;
+        if (!entry.enabled) {
+          ack = await confirmAccountPostsCost(username);
+          if (!ack) return;
+        }
+        await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}`, {
+          period: entry.enabled ? {type: 'off'} : {type: 'daily', time: '09:00'},
+          ack_cost_notice: ack,
+        }, {method: 'PATCH', silentError: true});
+        await refreshAccounts();
+      } else if (button.dataset.action === 'sync') {
+        await syncAccountPosts(username);
+      } else if (button.dataset.action === 'open') {
+        window.open(`https://x.com/${encodeURIComponent(username)}`, '_blank', 'noopener,noreferrer');
+      } else if (button.dataset.action === 'delete' && await confirmDelete(username)) {
+        await apiFetch(`/import-schedules/${encodeURIComponent(entry.id)}`, {method: 'DELETE', silentError: true});
+        accounts.splice(index, 1);
+        await persistOrder();
+        renderAccountList();
+        setStatus(`@${username} を一覧から削除しました。`, false);
+      }
+    } catch (error) {
+      setStatus('操作を完了できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
   }
 
   async function resumeActiveJob() {
@@ -263,31 +433,47 @@
     if (!container) return;
     if (container.dataset.rendered === '1') {
       loadConnectionStatus();
+      refreshAccounts();
       resumeActiveJob();
       return;
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <div class="gb-section-desc">指定した閲覧可能なアカウントのポストを、返信・リポストを含めて画像つきのシートへ保存します。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
+      <div class="gb-section-desc">保存するXアカウントを一覧で管理します。アカウントごとに取得・定期実行・並べ替えができます。 ${fieldHelp('取得できるのは最新3,200件までです。X APIの従量課金対象で、料金は変更されることがあります。X Developer Consoleで残高と料金を確認してください。', { e2eId: 'x-account-posts-cost-help' })}</div>
       <div class="gb-section-desc">最大3,200件・X APIの従量課金対象です。</div>
       <div id="x-account-posts-connection" class="gb-section-desc">X接続状態を確認中...</div>
       <label class="gb-field">
-        <span class="gb-label">保存するXアカウント</span>
+        <span class="gb-label">Xアカウントを追加</span>
         <input id="x-account-posts-username" class="gb-input" type="text" autocomplete="off" placeholder="例: XDevelopers または https://x.com/XDevelopers" data-e2e-id="x-account-posts-username">
       </label>
       <div id="x-account-posts-save-preview" class="gb-section-desc">保存先: ユーザー名を入力すると表示されます</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-        <button type="button" id="x-account-posts-sync" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-sync" disabled>${icon('archive', 14)} 取得できる全ポストを保存</button>
+        <button type="button" id="x-account-posts-add" class="gb-btn gb-btn-sm" data-e2e-id="x-account-posts-add">${icon('plus', 14)} 一覧に追加</button>
       </div>
+      <div id="x-account-posts-list" data-e2e-id="x-account-posts-list"></div>
       <div id="x-account-posts-status" class="gb-section-desc" role="status" aria-live="polite"></div>
     `;
     const input = container.querySelector('#x-account-posts-username');
     input?.addEventListener('input', updateSavePreview);
     input?.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') syncAccountPosts();
+      if (event.key === 'Enter') addAccount();
     });
-    container.querySelector('#x-account-posts-sync')?.addEventListener('click', syncAccountPosts);
+    container.querySelector('#x-account-posts-add')?.addEventListener('click', addAccount);
+    container.querySelector('#x-account-posts-list')?.addEventListener('click', handleAccountAction);
     loadConnectionStatus();
+    refreshAccounts().then(async () => {
+      if (accounts.length) return;
+      const active = readActiveJob();
+      let legacy = active?.username || '';
+      if (!legacy) {
+        try { legacy = LEGACY_USERNAME_STORAGE_KEYS.map((key) => localStorage.getItem(key)).find(Boolean) || ''; } catch (_) {}
+      }
+      legacy = normalizeUsername(legacy);
+      if (legacy && input && !input.value) {
+        input.value = `@${legacy}`;
+        updateSavePreview();
+      }
+    });
     resumeActiveJob();
   }
 

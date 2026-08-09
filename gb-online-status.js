@@ -6,8 +6,8 @@
   }
 
   function _isCloudMode() {
-    return window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   }
 
   function _ensureIndicator() {
@@ -40,9 +40,11 @@
   }
 
   function offlineMessage() {
-    if (_isCloudMode()) {
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox') {
       return 'オフライン中です。クラウド保存・検索・閲覧・LLM送信はネット接続後に再試行してください。';
     }
+    if (_isCloudMode()) return 'オフライン中です。端末内の編集・保存・検索・閲覧は使えますが、オンライン連携はネット接続後に再試行してください。';
     return 'オフライン中です。編集・保存・検索・閲覧は使えますが、LLM送信はネット接続後に再試行してください。';
   }
 

@@ -475,7 +475,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     <h3>シート設定</h3>
     <div class="modal-body db-config-modal-body">
       <div class="field">
-        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`)}</label>
+        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
         <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
       </div>
       <div class="field" style="margin-top:8px;">
@@ -495,7 +495,7 @@ async function _showDbConfigModal(dbPath, ctx) {
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
           </label>
-          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します')}
+          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
             <select id="dbcfg-default-panel">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="float"${defaultPanel === 'float' ? ' selected' : ''}>フロートパネル</option>
@@ -512,6 +512,12 @@ async function _showDbConfigModal(dbPath, ctx) {
         <label>依存エントリ作成時のコピー対象</label>
         <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
       </div>
+      <div class="field" style="margin-top:8px;">
+        <label>添付ファイル ${fieldHelp('このシートに貼った画像・動画・PDFの置き場です。セルから外したファイルも残るため、ここで使われていないものを確認して削除できます', { e2eId: 'db-attachments-help' })}</label>
+        <div class="dbcfg-display-actions">
+          <button type="button" id="dbcfg-attachments">添付ファイルを整理...</button>
+        </div>
+      </div>
       <div id="dbcfg-calendar-mapping-anchor"></div>
     </div>
     <div class="btn-row" style="justify-content:space-between;">
@@ -523,6 +529,14 @@ async function _showDbConfigModal(dbPath, ctx) {
     </div>
   </div>`;
   document.body.appendChild(o);
+
+  // 添付ファイルの整理
+  const attachBtn = o.querySelector('#dbcfg-attachments');
+  if (attachBtn && typeof showSheetAttachmentCleanupModal === 'function') {
+    attachBtn.addEventListener('click', () => { o.remove(); showSheetAttachmentCleanupModal(dbPath); });
+  } else if (attachBtn) {
+    attachBtn.style.display = 'none';
+  }
 
   // テンプレートボタン
   const tmplBtn = o.querySelector('#dbcfg-template');

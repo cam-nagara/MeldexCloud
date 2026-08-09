@@ -39,15 +39,31 @@ function _appendAnnotationStrokePointFromEvent(e) {
   return true;
 }
 
+function _appendAnnotationCoalescedStrokePoints(e) {
+  const samples = typeof e?.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+  const ordered = samples?.length ? samples : [e];
+  let appended = false;
+  for (const sample of ordered) appended = _appendAnnotationStrokePointFromEvent(sample) || appended;
+  // 一部ブラウザはcoalesced配列へ現在イベントを含めないため、末尾を必ず補完する。
+  appended = _appendAnnotationStrokePointFromEvent(e) || appended;
+  return appended;
+}
+
 function _renderAnnotationPreview() {
   if (!ann.drawing || !ann.strokeReady || ann.currentPath.length < 2) return;
-  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ann.tool === 'rect' ? 'rect' : 'path');
+  const ellipseTool = ann.tool === 'ellipse-line' || ann.tool === 'ellipse-fill';
+  const rectTool = ann.tool === 'rect' || ann.tool === 'rect-line';
+  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
   let preview = annOverlay.querySelector('.ann-preview');
   if (!preview || preview.tagName.toLowerCase() !== previewTag) {
     preview?.remove(); preview = document.createElementNS(_annSvgNS, previewTag); preview.classList.add('ann-preview');
     (document.getElementById('ann-layer') || annOverlay).appendChild(preview);
   }
-  if (ann.tool === 'rect') _updateRectFillEl(preview, _annotationRectDataFromPoints(ann.currentPath), ann.color, ann.opacity, true);
+  if (ellipseTool || rectTool) {
+    const data = ellipseTool ? _annotationEllipseDataFromPoints(ann.currentPath) : _annotationRectDataFromPoints(ann.currentPath);
+    data.lineWidth = ann.widths?.pen;
+    _updateAnnotationShapeEl(preview, ann.tool, data, ann.color, ann.opacity, true);
+  }
   else if (ann.tool === 'lasso') {
     preview.setAttribute('points', ann.currentPath.map(p => p.join(',')).join(' '));
     preview.setAttribute('fill', ann.color);
@@ -62,7 +78,8 @@ function _renderAnnotationPreview() {
     preview.setAttribute('stroke', ann.color);
     preview.setAttribute('stroke-width', _annotationDrawWidth(ann.tool, ann.currentPressures, ann.widths?.[ann.tool]));
     preview.setAttribute('stroke-opacity', ann.tool === 'marker' ? 0.5 : ann.opacity);
-    preview.setAttribute('stroke-linecap', 'round');
+    preview.setAttribute('stroke-linecap', ann.tool === 'marker' ? 'butt' : 'round');
+    preview.setAttribute('stroke-linejoin', ann.tool === 'polyline' ? 'miter' : 'round');
   }
 }
 
@@ -78,10 +95,14 @@ async function _finishAnnotationStroke() {
   _resetAnnotationStrokeState();
   if (pathPoints.length < 2 || !targetPath) return;
 
-  const type = tool === 'rect' ? 'rect' : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : 'stroke'));
-  const strokeData = type === 'rect' ? _annotationRectDataFromPoints(pathPoints) : { points: pathPoints, pressures };
-  if (type !== 'lasso' && type !== 'rect') strokeData.width = width;
-  const el = type === 'rect' ? _createRectFillEl(strokeData, color, opacity)
+  const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+  const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
+  const strokeData = type.startsWith('ellipse') ? _annotationEllipseDataFromPoints(pathPoints)
+    : shapeTypes.has(type) ? _annotationRectDataFromPoints(pathPoints)
+      : { points: pathPoints, pressures };
+  if (shapeTypes.has(type)) strokeData.lineWidth = width;
+  else if (type !== 'lasso') strokeData.width = width;
+  const el = shapeTypes.has(type) ? _createAnnotationShapeEl(type, strokeData, color, opacity)
     : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity)
       : _createStrokeEl(_pointsToSvgPath(pathPoints, pressures, tool === 'pen'), color, opacity, pressures, tool === 'pen', strokeData.width);
   el.dataset.annPending = '1';

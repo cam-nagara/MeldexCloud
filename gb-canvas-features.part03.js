@@ -113,6 +113,19 @@ function bdContextMenu(e, nodeId) {
       panel,
     };
   }
+  function addToolbarVisibilityItems(target) {
+    const immersive = window.MeldexBoardImmersive;
+    if (!immersive?.getMode || !immersive?.setMode) return false;
+    [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
+      .forEach(([edge, label]) => {
+        const pinned = immersive.getMode(edge) === 'pinned';
+        target.item(label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
+          role: 'menuitemcheckbox',
+          checked: pinned,
+        });
+      });
+    return true;
+  }
 
   if (nodeId) _bdPrepareContextMenuSelection(nodeId);
   const multi = !!(nodeId && bd.selected instanceof Set && bd.selected.has(nodeId) && bd.selected.size > 1);
@@ -167,6 +180,7 @@ function bdContextMenu(e, nodeId) {
         && !(typeof _bdIsExternalBrowserUrl === 'function' && _bdIsExternalBrowserUrl(openTarget.path))) {
         item('フォルダツリーに表示', () => window.revealPathInFolderTree(openTarget.path));
       }
+      item('パスをコピー', () => MeldexBoardOpenTarget.copyPath(openTarget.path));
       if (isLinkCard) item('リンクをコピー', () => {
         const linkPath = nd.link;
         const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
@@ -415,6 +429,8 @@ function bdContextMenu(e, nodeId) {
       viewSub.sep();
       viewSub.item('前面に移動', () => bdMoveZ('front'));
       viewSub.item('背面に移動', () => bdMoveZ('back'));
+      viewSub.sep();
+      addToolbarVisibilityItems(viewSub);
     }
 
     // --- 構造サブメニュー（コンテナ・子ライン・構造タイプ・グループ） ---
@@ -671,6 +687,8 @@ function bdContextMenu(e, nodeId) {
     sep();
     item('検索と置換...', () => bdFindReplace());
     sep();
+    const displaySub = sub('表示');
+    addToolbarVisibilityItems(displaySub);
     // 2026-04-18: 「表示設定」→「ボード設定」にリネーム (カード側の「表示」サブと用語が衝突するため、§6.2)。
     // 「全体表示に戻る」→「ドリルダウン解除」に統一 (カード側「表示」サブと用語を揃える)。
     const boardSettingsSub = sub('ボード設定');

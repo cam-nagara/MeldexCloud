@@ -148,6 +148,87 @@
     host.appendChild(built.wrapper);
   }
 
+  // === メモの自動保存 ===
+  // 画像ファイル本体へ書き込むため、打鍵ごとには保存せず入力が止まってから書き出す。
+  // 入力欄から離れた時・ファイルを切り替えた時・ウィンドウを閉じる時は即座に確定させる。
+  const MEMO_AUTOSAVE_DELAY_MS = 1200;
+  const pendingMemos = new Map();
+
+  function _memoStatus(el, text, isError) {
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('file-embedded-memo-status--error', !!isError);
+  }
+
+  async function _flushMemo(textarea) {
+    const state = pendingMemos.get(textarea);
+    if (!state) return;
+    if (state.timer) { clearTimeout(state.timer); state.timer = null; }
+    if (state.inflight) { try { await state.inflight; } catch { /* 直前の失敗はこの後で作り直す */ } }
+    // 保存中に追記された分も書き切る。失敗したらそこで打ち切り、無限に再送しない。
+    while (textarea.value !== state.savedValue) {
+      const value = textarea.value;
+      _memoStatus(state.statusEl, '保存中...');
+      state.inflight = update(state.path, { note: value });
+      try {
+        await state.inflight;
+        state.savedValue = value;
+        _memoStatus(state.statusEl, '保存しました');
+      } catch (error) {
+        _memoStatus(state.statusEl, '保存できませんでした', true);
+        if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
+        return;
+      } finally {
+        state.inflight = null;
+      }
+      if (!textarea.isConnected) return;
+    }
+  }
+
+  // パネル切り替え・ウィンドウを閉じる直前に呼ぶ。未確定のメモを全部書き出す。
+  async function flushPendingMemos() {
+    await Promise.all([...pendingMemos.keys()].map(textarea => _flushMemo(textarea)));
+    return true;
+  }
+
+  // パネルが作り直されると入力欄ごと差し替わる。取り残された未保存分は
+  // 書き出してから登録を捨てる（待たない。描画を止めないため）。
+  function _pruneDetachedMemos() {
+    for (const textarea of [...pendingMemos.keys()]) {
+      if (textarea.isConnected) continue;
+      const state = pendingMemos.get(textarea);
+      if (state && textarea.value !== state.savedValue) _flushMemo(textarea);
+      pendingMemos.delete(textarea);
+    }
+  }
+
+  function bindMemoAutosave(textarea, statusEl, path, initialValue) {
+    _pruneDetachedMemos();
+    pendingMemos.set(textarea, {
+      path,
+      statusEl,
+      savedValue: initialValue,
+      timer: null,
+      inflight: null,
+    });
+    textarea.addEventListener('input', () => {
+      const state = pendingMemos.get(textarea);
+      if (!state) return;
+      if (state.timer) clearTimeout(state.timer);
+      _memoStatus(state.statusEl, textarea.value === state.savedValue ? '' : '未保存');
+      state.timer = setTimeout(() => { _flushMemo(textarea); }, MEMO_AUTOSAVE_DELAY_MS);
+    });
+    textarea.addEventListener('blur', () => { _flushMemo(textarea); });
+    textarea.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        _flushMemo(textarea);
+      }
+    });
+  }
+
+  window.addEventListener('pagehide', () => { flushPendingMemos(); });
+
   function appendMetadataGroups(host, embedded) {
     const groups = Array.isArray(embedded?.groups) ? embedded.groups : [];
     if (!groups.length) return;
@@ -160,7 +241,8 @@
       if (!items.length) return;
       const details = document.createElement('details');
       details.className = 'file-embedded-group';
-      details.open = index === 0;
+      // 埋め込み情報のグループは既定で全部閉じる（一番上のタグだけ開いた状態にする）。
+      details.open = false;
       const summary = document.createElement('summary');
       summary.textContent = `${group.name || '情報'}（${items.length}）`;
       details.appendChild(summary);
@@ -176,6 +258,7 @@
 
   function renderEditor(host, path, meta) {
     if (!host) return;
+    _pruneDetachedMemos();
     host.replaceChildren();
     if (meta?._metadataLoadError) {
       const error = document.createElement('div');
@@ -222,46 +305,34 @@
     }
 
     if (embedded?.kind === 'image') {
+      const editable = embedded.editable === true;
       const memo = document.createElement('div');
       memo.className = 'file-embedded-memo';
       const label = document.createElement('label');
       label.textContent = webclip ? 'WebClipperメモ' : 'メモ';
+      // 「画像ファイル内へ保存します」の説明は基本UIから外し、ラベル横の
+      // ヘルプアイコンのツールチップへ集約する（UI共通ルール）。
+      if (editable && typeof fieldHelp === 'function') {
+        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます'));
+      }
       const textarea = document.createElement('textarea');
-      textarea.value = String(embedded.note || webclip?.note || '');
+      const initialNote = String(embedded.note || webclip?.note || '');
+      textarea.value = initialNote;
       textarea.placeholder = 'メモを入力';
-      textarea.disabled = embedded.editable !== true;
+      textarea.disabled = !editable;
+      textarea.dataset.e2eId = 'file-embedded-memo-input';
       const actions = document.createElement('div');
       actions.className = 'file-embedded-memo-actions';
-      const hint = document.createElement('span');
-      hint.textContent = embedded.editable === true
-        ? '画像ファイル内へ保存します'
-        : 'この形式のメモは閲覧のみです';
-      const save = document.createElement('button');
-      save.type = 'button';
-      save.textContent = 'メモを保存';
-      save.disabled = embedded.editable !== true;
-      save.addEventListener('click', async () => {
-        if (save.disabled) return;
-        save.disabled = true;
-        try {
-          const nextMeta = await update(path, { note: textarea.value });
-          textarea.value = String(embeddedOf(nextMeta)?.note || '');
-          if (typeof showStatus === 'function') showStatus('メモを画像ファイルへ保存しました');
-        } catch (error) {
-          if (typeof showStatus === 'function') showStatus('メモを保存できませんでした: ' + (error?.message || error), true);
-        } finally {
-          save.disabled = embedded.editable !== true;
-        }
-      });
-      textarea.addEventListener('keydown', event => {
-        if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-          event.preventDefault();
-          save.click();
-        }
-      });
-      actions.append(hint, save);
+      const status = document.createElement('span');
+      status.className = 'file-embedded-memo-status';
+      status.setAttribute('role', 'status');
+      status.dataset.e2eId = 'file-embedded-memo-status';
+      // 入力できない理由だけは可視のまま1行残す（条件付きの短い状態説明）。
+      if (!editable) status.textContent = 'この形式のメモは閲覧のみです';
+      actions.append(status);
       memo.append(label, textarea, actions);
       host.appendChild(memo);
+      if (editable) bindMemoAutosave(textarea, status, path, initialNote);
     }
     appendMetadataGroups(host, embedded);
   }
@@ -417,6 +488,7 @@
     attachFolderCard,
     attachFolderTags,
     dimensionText,
+    flushPendingMemos,
     load,
     refreshFolderTags,
     renderEditor,

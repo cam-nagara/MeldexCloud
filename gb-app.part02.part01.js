@@ -1,4 +1,6 @@
   addMI('タブを閉じる', () => closeTab(tab.id));
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);

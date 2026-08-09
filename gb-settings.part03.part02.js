@@ -447,6 +447,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === 'データベース') {
       if (typeof renderDatabaseMaintenanceSettings === 'function') renderDatabaseMaintenanceSettings(modal);
       window.MeldexTagMaintenanceSettings?.render?.(modal);
+      window.MeldexDuplicateMonitor?.renderSettings?.(modal);
       return;
     }
   };
@@ -771,7 +772,7 @@ if (typeof window !== 'undefined') {
 // 判定できない場合（クラウド版、通信失敗など）は false を返し、追加の確認は出さない。
 async function _settingsResetHasSharedSourceFolders() {
   try {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return false;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
     if (typeof apiFetch !== 'function') return false;
     const status = await apiFetch('/dropbox-link/status', { silentError: true });
     const roots = Array.isArray(status?.roots) ? status.roots : [];

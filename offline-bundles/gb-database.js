@@ -11,7 +11,7 @@ function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
   const explicitCtx = !!ctx;
   if (explicitCtx && ctx.embedded
-    && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) {
+    && (ctx.destroyed || !ctx.containerEl)) {
     return null;
   }
   if (explicitCtx && ctx.embedded) {
@@ -50,7 +50,10 @@ function _dbPaneHasPivotTable(ctx) {
 
 function _normalizeDbRenderContext(ctx) {
   const candidate = ctx || _currentPaneState();
-  if (ctx?.embedded && (ctx.destroyed || !ctx.containerEl || !document.body.contains(ctx.containerEl))) return null;
+  // 埋め込みシートはカレンダー面などへ切り替えている間、一時的に document から
+  // detach される。その間も明示的に渡された専用 ctx と専用 table が生存していれば
+  // detached DOM へ描画してよい。destroy() は destroyed=true と table の破棄で判定する。
+  if (ctx?.embedded && (ctx.destroyed || !ctx.containerEl)) return null;
   if (ctx?.embedded && !_dbPaneHasPivotTable(ctx)) return null;
   if (candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     return ctx ? null : _globalPaneState();

@@ -105,6 +105,23 @@
 }
 .gb-palette-slider-row label { font-size: 10px; color: var(--fg2); min-width: 0; text-align: right; }
 .gb-palette-slider-row input[type="range"] { width: 100%; min-width: 0; height: 14px; cursor: pointer; accent-color: var(--ui-range-fill-bg); }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-runnable-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-thumb {
+  margin-top: -4px; border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-progress { background: transparent; }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-thumb {
+  border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
 .gb-palette-slider-row .gb-slider-val {
   font-size: 10px; color: var(--fg); width: 100%; min-width: 0; box-sizing: border-box; text-align: right;
   background: var(--bg); border: 1px solid var(--border); border-radius: 2px;
@@ -1073,6 +1090,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness' }[labelText] || labelText).toString();
     const slider = document.createElement('input');
     slider.type = 'range'; slider.min = String(min); slider.max = String(max); slider.value = String(value);
+    slider.classList.add('gb-color-axis-range');
+    slider.dataset.colorAxis = sliderKey;
     slider.dataset.e2eId = `color-palette-${sliderKey}-range`;
     slider.setAttribute('aria-label', `${labelText}を調整`);
     const valInput = document.createElement('input');

@@ -175,7 +175,7 @@
 
   async function providerResponse(url) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    if (!provider) throw new Error('ブラウザの保存先が未初期化です');
     const relativePath = String(url.searchParams.get('path') || '').replace(/^\/+/, '');
     if (url.pathname.endsWith('/file-raw') || url.pathname.endsWith('/media/file')) {
       const file = await _downloadMediaFile(provider, relativePath);
@@ -199,7 +199,7 @@
           headers: { 'Content-Type': file.type || 'application/octet-stream' },
         });
       } catch (error) {
-        console.warn('Dropboxファイルのサムネイルを生成できませんでした', error);
+        console.warn('保存先ファイルのサムネイルを生成できませんでした', error);
         return new Response('', { status: 404 });
       }
     }
@@ -261,19 +261,121 @@
     return Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('');
   }
 
+  // 添付先シートの添付フォルダを決める（デスクトップ版 _resolve_attachment_dir と同じ規則）。
+  // フォルダノートへの記録が無ければ、あとで列設定と同じ経路（/db-metadata）で記録する。
+  async function _cloudAttachmentTarget(provider, sheetPath) {
+    const attachments = window.MeldexSheetAttachments;
+    const lite = window.MeldexCloudFrontmatterLite;
+    const base = _normalizeUploadPath(sheetPath).replace(/\/+$/, '');
+    if (!base || !attachments) return null;
+    let frontmatter = {};
+    if (lite?.readFrontmatter) {
+      const notePath = base + '/' + _basename(base) + '.md';
+      try {
+        const parsed = await lite.readFrontmatter(provider, notePath);
+        frontmatter = parsed?.frontmatter || {};
+      } catch (_) {
+        frontmatter = {};
+      }
+    }
+    const registered = attachments.attachmentFolderNameFromFrontmatter(frontmatter);
+    const folderName = registered || attachments.ATTACHMENT_FOLDER_NAME;
+    return { sheetPath: base, folderName, dir: base + '/' + folderName, registered: !!registered };
+  }
+
+  async function _registerCloudAttachmentFolder(target) {
+    if (!target || target.registered) return;
+    // 旧形式シートで添付フォルダが行として現れないよう、シート側へ名前を控える。
+    // 失敗しても添付そのものは成立するので、保存を止めない。
+    try {
+      if (typeof apiPost === 'function') {
+        await apiPost('/db-metadata?path=' + encodeURIComponent(target.sheetPath), {
+          attachment_folder: target.folderName,
+        });
+      }
+    } catch (error) {
+      console.warn('[sheet-attachment] 添付フォルダ名を控えられませんでした', error);
+    }
+  }
+
+  async function _cloudAttachmentProbe(provider, dir, hash, size) {
+    return async (candidate) => {
+      const path = dir + '/' + candidate;
+      const stat = await provider.statPath(path).catch(() => null);
+      if (!stat) return { exists: false, sameContent: false };
+      // 大きい動画で無駄なダウンロードをしないよう、まずサイズで振り分ける
+      if (Number(stat.size) !== Number(size)) return { exists: true, sameContent: false };
+      try {
+        const file = await provider.downloadAsFile(path);
+        const existing = new Uint8Array(await file.arrayBuffer());
+        const attachments = window.MeldexSheetAttachments;
+        return { exists: true, sameContent: (await attachments.sha256Hex(existing)) === hash };
+      } catch (_) {
+        return { exists: true, sameContent: false };
+      }
+    };
+  }
+
+  async function _imagePixelSize(bytes, kind) {
+    if (kind !== 'image' || typeof createImageBitmap !== 'function') return { width: null, height: null };
+    try {
+      const bitmap = await createImageBitmap(new Blob([bytes]));
+      const size = { width: bitmap.width, height: bitmap.height };
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return size;
+    } catch (_) {
+      return { width: null, height: null };
+    }
+  }
+
   async function mediaUploadResponse(body) {
     if (!(body instanceof FormData)) throw new Error('画像アップロードにはFormDataが必要です');
     const file = body.get('file');
     if (!(file instanceof File) && !(file instanceof Blob)) throw new Error('画像ファイルがありません');
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!bytes.length) throw new Error('空のファイルはアップロードできません');
+    const provider = window.MeldexStorageAdapter?.getProvider?.();
+    if (!provider?.uploadBytes) throw new Error('ブラウザの保存先が未初期化です');
+
+    const attachments = window.MeldexSheetAttachments;
+    const sheetPath = String(body.get('sheet_path') || '').trim();
+    const target = sheetPath && attachments ? await _cloudAttachmentTarget(provider, sheetPath) : null;
+
+    // 添付先シートが分かる場合は、シートフォルダ内へ元のファイル名のまま保存する（新方式）
+    if (target) {
+      const ext = attachments.detectContentExt(bytes, file.name || '', file.type || '');
+      const kind = attachments.mediaKindForExt(ext);
+      const hash = await attachments.sha256Hex(bytes);
+      const desired = attachments.buildAttachmentFilename(file.name || '', ext);
+      const probe = await _cloudAttachmentProbe(provider, target.dir, hash, bytes.length);
+      const resolved = await attachments.resolveAttachmentFilename(desired, probe);
+      const path = target.dir + '/' + resolved.filename;
+      if (!resolved.reused) await provider.uploadBytes(path, bytes);
+      await _registerCloudAttachmentFolder(target);
+      const pixel = await _imagePixelSize(bytes, kind);
+      const thumbSize = parseInt(String(body.get('thumbnail_size') || '256'), 10) || 256;
+      return jsonResponse({
+        ok: true,
+        hash,
+        content_hash: hash,
+        filename: resolved.filename,
+        path,
+        src: path,
+        thumb: path,
+        url: attachments.rawUrlForPath(path),
+        thumb_url: kind === 'image' ? attachments.thumbUrlForPath(path, thumbSize) : attachments.rawUrlForPath(path),
+        kind,
+        width: pixel.width,
+        height: pixel.height,
+        size: bytes.length,
+      });
+    }
+
     const filename = _basename(file.name || 'image');
     const ext = _imageExtFromBytes(bytes, filename, file.type || '');
     const hash = await _sha256Hex(bytes);
     const shard = hash.slice(0, 2);
     const src = `_media/blobs/${shard}/${hash}.${ext}`;
-    const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider?.uploadBytes) throw new Error('Dropbox provider が未初期化です');
     await provider.uploadBytes(src, bytes);
     return jsonResponse({
       ok: true,
@@ -350,7 +452,7 @@
     if (window.MeldexRuntimeAdapter?.isServerMode?.() && isApiPath && (isSameOrigin || _isConfiguredServerApiUrl(url))) {
       return _serverFetch(input, init, url);
     }
-    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
 

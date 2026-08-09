@@ -7,7 +7,13 @@
   // 表示サイズ（zoom）
   try {
     const uiScale = document.getElementById('modal-ui-scale')?.value;
-    if (uiScale) applyUIScale(parseInt(uiScale) || 100);
+    if (uiScale) {
+      const nextScale = parseInt(uiScale) || 100;
+      const currentScale = parseInt(localStorage.getItem('ui-scale') || '100', 10) || 100;
+      // ユーザーが表示サイズを選び直したときだけ「手動」として記録する。設定を開いて
+      // 別の項目だけ保存したときに、自動で決まった値を手動値へ格上げしないため。
+      applyUIScale(nextScale, nextScale === currentScale ? undefined : { source: 'manual' });
+    }
   } catch (e) { console.warn('UIスケール適用失敗:', e); }
 
   const filterSharedCb = document.getElementById('modal-outliner-filter-shared');
@@ -999,7 +1005,7 @@ if (typeof window !== 'undefined') window.applyThumbnailSize = applyThumbnailSiz
 // UI設定のサーバー永続保存（localStorageの主要設定をサーバーにバックアップ）
 const _UI_CONFIG_KEYS = [
   // UI設定
-  'editor-theme', 'editor-theme-name', 'ui-scale', 'meldex-user', 'meldex-statusbar-hidden',
+  'editor-theme', 'editor-theme-name', 'ui-scale', 'ui-scale-source', 'ui-scale-auto-rule', 'meldex-user', 'meldex-statusbar-hidden',
   'meldex-a11y-high-contrast', 'meldex-a11y-reduced-motion', 'meldex-a11y-colorblind-safe', 'meldex-a11y-browser-warning-dismissed',
   'meldex-avatar', 'meldex-avatar-spec', 'meldex-avatar-bg',
   'note-vertical', 'note-heading-indent', 'note-toc-visible',
@@ -1009,6 +1015,10 @@ const _UI_CONFIG_KEYS = [
   'meldex-knowledge-automation-settings-v1',
   // カスタマイズ
   'meldex-custom-shortcuts', 'meldex-custom-colors', 'meldex-standard-palette-adjust', 'meldex-theme-color-set', 'meldex-theme-color-slot-settings', 'meldex-theme-ui-applications', 'meldex-theme-ui-auto-tone',
+  // テーマの正本キー。ここから漏れていたため、設定の書き出し／読み込みでテーマだけが
+  // 持ち運べず、環境を移ると見た目が既定へ戻っていた（2026-08-07 追加）。
+  'meldex-default-theme-id', 'meldex-custom-themes', 'meldex-promoted-initial-theme-sources',
+  'meldex-theme-color-extra-slot-settings', 'meldex-theme-use-os-accent', 'meldex-custom-theme-cleanup-version',
   'file-theme-presets', 'gb:hidden-shell-verbs',
 ];
 
@@ -1104,12 +1114,23 @@ async function _restoreUiConfigFromServer() {
     const config = await apiFetch('/ui-config', { silentError: true });
     if (!config || typeof config !== 'object') return;
     let restored = false;
+    // 表示サイズだけは「localStorageが空のときだけ復元」では永久に復元されない。
+    // 起動処理が応答を待たずに自動判定値を同期的に書き込むため、ここへ来る頃には
+    // 必ず値が入っているからである。サーバー側がユーザー自身の選んだ値を持っていて、
+    // この端末側がまだ自動判定値のままなら、そちらを優先して上書きする。
+    const overwriteKeys = new Set();
+    if (String(config['ui-scale-source'] || '') === 'manual'
+      && String(localStorage.getItem('ui-scale-source') || '') !== 'manual'
+      && config['ui-scale'] != null) {
+      overwriteKeys.add('ui-scale');
+      overwriteKeys.add('ui-scale-source');
+    }
     for (const [key, val] of Object.entries(config)) {
       if (key === 'folder-files-hidden') continue;
-      if (localStorage.getItem(key) == null && val != null) {
-        localStorage.setItem(key, val);
-        restored = true;
-      }
+      if (val == null) continue;
+      if (localStorage.getItem(key) != null && !overwriteKeys.has(key)) continue;
+      localStorage.setItem(key, val);
+      restored = true;
     }
     if (restored) {
       // 復元した設定を適用

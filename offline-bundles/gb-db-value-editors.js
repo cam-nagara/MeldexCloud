@@ -391,7 +391,11 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
 
   // リレーションはロールアップの参照可否にも使うため、常にステータスを変更できるようにする。
   // その他の型は、採用状況フィルタ使用時または候補値が複数ある場合だけ表示する。
-  const relationStatusEditable = type === 'relation' || type === 'multi-relation';
+  // ただし1セル1値で運用するシート（制作管理）ではリレーション特例を適用しない。適用すると
+  // リレーション列だらけのシートで「ステータス機能」の設定に関係なくマークが出続ける。
+  // そのシートで「ステータス機能」をオンにした場合は従来どおり出す（hidesCandidateStatusUi）。
+  const hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+  const relationStatusEditable = !hideStatusUi && (type === 'relation' || type === 'multi-relation');
   if (relationStatusEditable || (filterMode !== 'disabled' && getStatusEnabled(dbPath)) || options.forceStatusDot) {
     const dot = document.createElement('span');
     dot.className = 'status-dot';

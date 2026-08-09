@@ -57,7 +57,7 @@
   if (!blankTarget && item.type === 'folder' && item.path && typeof getWorkFolder === 'function' && typeof setWorkFolder === 'function') {
     const curWork = getWorkFolder();
     const isWork = curWork === item.path;
-    const wfSub = addSub('作品フォルダ', 'folder');
+    const wfSub = addSub('作品フォルダ', 'folderDot');
     wfSub.item((isWork ? '✓ ' : '') + '設定する', async () => {
       setWorkFolder(item.path);
       showStatus(`「${item.name}」を作品フォルダに設定しました`);
@@ -80,15 +80,12 @@
     const sortSub = addSub('並び替え', 'arrowUpDown');
     const curSort = getSortForFolder(item.path);
     const sortSettingsKey = typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort';
-    [
+    const sortOptions = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
       { label: 'マニュアル', sort: 'manual', order: 'asc' },
       { label: '名前 ↑', sort: 'name', order: 'asc' },
       { label: '名前 ↓', sort: 'name', order: 'desc' },
-      { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
-      { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
-      { label: '作成日時 ↑', sort: 'created', order: 'asc' },
-      { label: '作成日時 ↓', sort: 'created', order: 'desc' },
-    ].forEach(option => {
+    ];
+    sortOptions.forEach(option => {
       const active = curSort.sort === option.sort && curSort.order === option.order;
       sortSub.item((active ? '✓ ' : '') + option.label, async () => {
         const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory([sortSettingsKey]) : null;
@@ -224,6 +221,13 @@ let _folderListSuppressClickUntil = 0;
 let _folderListResizeState = null;
 
 function _folderReadListSort() {
+  if (typeof getSortForFolder === 'function' && typeof _folderPath !== 'undefined') {
+    const shared = getSortForFolder(_folderPath || '');
+    const key = shared?.sort || 'name';
+    if (key === 'manual' || FOLDER_LIST_SORT_COLUMNS.some(col => col.key === key)) {
+      return { key, order: shared?.order === 'desc' ? 'desc' : 'asc' };
+    }
+  }
   try {
     const parsed = JSON.parse(localStorage.getItem(FOLDER_LIST_SORT_STORAGE_KEY) || '{}');
     const key = FOLDER_LIST_SORT_COLUMNS.some(col => col.key === parsed.key) ? parsed.key : 'name';
@@ -236,6 +240,9 @@ function _folderReadListSort() {
 
 function _folderWriteListSort(sort) {
   try { localStorage.setItem(FOLDER_LIST_SORT_STORAGE_KEY, JSON.stringify(sort)); } catch {}
+  if (typeof setSortSetting === 'function' && typeof _folderPath !== 'undefined') {
+    setSortSetting(_folderPath || '', sort?.key || 'name', sort?.order || 'asc');
+  }
 }
 
 function _folderToggleListSort(key) {
@@ -247,6 +254,7 @@ function _folderToggleListSort(key) {
   _folderWriteListSort({ key, order });
   const selectedPaths = _folderSelectedItems.map(item => item?.path).filter(Boolean);
   renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+  if (typeof loadOutliner === 'function') void loadOutliner({ force: true, reason: 'folder-panel-sort' });
 }
 
 function _folderListDateValue(item, key) {
@@ -303,8 +311,13 @@ function _folderCompareListItems(a, b, key, order) {
 }
 
 function _folderSortVisibleItems(items) {
-  if (_folderLayout !== 'list') return items;
   const sort = _folderReadListSort();
+  if (sort.key === 'manual' && typeof _sortItemsByManualOrder === 'function') {
+    return _sortItemsByManualOrder([...items], _folderPath || '');
+  }
+  if (typeof compareItemsForFolderSort === 'function') {
+    return [...items].sort((a, b) => compareItemsForFolderSort(a, b, sort.key, sort.order));
+  }
   return [...items].sort((a, b) => _folderCompareListItems(a, b, sort.key, sort.order));
 }
 

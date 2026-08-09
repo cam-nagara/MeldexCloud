@@ -746,12 +746,33 @@ async function _bdOpenAtTarget(path, label, linkType, target, options) {
   return openLinkedPathInFloatPanel(path, label, opts);
 }
 
+async function copyBoardLinkedPath(path) {
+  const targetPath = String(path || '').trim();
+  if (!targetPath) {
+    if (typeof showStatus === 'function') showStatus('パスをコピーできませんでした', true);
+    return false;
+  }
+  const vaultPath = typeof state !== 'undefined' ? String(state?.vaultPath || '') : '';
+  const clipboardPath = window.GBPathUtils?.resolveForClipboard
+    ? window.GBPathUtils.resolveForClipboard(targetPath, vaultPath)
+    : targetPath;
+  try {
+    await navigator.clipboard.writeText(clipboardPath);
+    if (typeof showStatus === 'function') showStatus('パスをコピーしました');
+    return true;
+  } catch {
+    if (typeof showStatus === 'function') showStatus('パスをコピーできませんでした', true);
+    return false;
+  }
+}
+
 const MeldexBoardOpenTarget = Object.freeze({
   key: _BD_DEFAULT_OPEN_TARGET_KEY,
   getDefault: _bdGetDefaultOpenTarget,
   setDefault: _bdSetDefaultOpenTarget,
   getAvailableTargets: _bdAvailableOpenTargets,
   availableTargets: _bdAvailableOpenTargets,
+  copyPath: copyBoardLinkedPath,
   resolve(nodeOrPath, options) {
     return _bdResolveOpenInput(nodeOrPath, options);
   },
@@ -973,6 +994,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   if (typeof window.revealPathInFolderTree === 'function' && !_bdIsExternalBrowserUrl(targetPath)) {
     addItem('フォルダツリーに表示', 'folderTree', () => window.revealPathInFolderTree(targetPath));
   }
+  addItem('パスをコピー', 'clipboard', () => copyBoardLinkedPath(targetPath));
   document.body.appendChild(menu);
   if (e?.currentTarget && typeof positionPopup === 'function') {
     positionPopup(menu, e.currentTarget.getBoundingClientRect());

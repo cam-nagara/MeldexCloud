@@ -33,7 +33,7 @@ function _sendLog(level, data) {
       window.MeldexBetaFeedback.recordLog(level, JSON.parse(payload));
     }
     if (window.MeldexBetaFeedback && !window.MeldexBetaFeedback.isCrashReportEnabled()) return;
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return;
     navigator.sendBeacon(API_BASE + '/debug-log',
       new Blob([payload], { type: 'text/plain' }));
   } catch {}

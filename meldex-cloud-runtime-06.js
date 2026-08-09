@@ -972,6 +972,8 @@ const GBLayout = (() => {
   const SAVE_LAYOUT_DEBOUNCE_MS = 80;
   let _saveLayoutTimer = null;
   let _saveLayoutPending = false;
+  let _meldexNodeHoverTimer = null;
+  let _meldexNodeHoverTabId = '';
 
   function _showFreeLayoutUi() {
     return FREE_LAYOUT_UI_ENABLED;
@@ -1177,6 +1179,36 @@ const GBLayout = (() => {
       seen.add(type);
     });
     return node;
+  }
+
+  function _countFixedRailTabs(node) {
+    const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
+    if (!rightDock || !Array.isArray(rightDock.groups)) return 0;
+    let count = 0;
+    rightDock.groups.forEach(group => {
+      _collectFixedRailPanes(group?.root).forEach(pane => { count += (pane.tabs || []).length; });
+    });
+    return count;
+  }
+
+  // 固定レール（左右サイドバー）は「1パネル = 1タブ」構成のため、タブを1つ閉じると
+  // パネルごと消え、レールのアイコンも一緒に消える。欠損の補填は起動時とレイアウト
+  // 全差し替え時にしか走らないので、消えたまま次回起動まで戻らなかった。
+  // 閉じる操作を入口で止めるための判定。
+  function isFixedRailPane(paneId) {
+    if (!paneId || window._gbSingleWindow) return false;
+    const found = findNode(_root, paneId);
+    return !!found?.node && found.node.type === 'pane' && _isSidebarPaneNode(found.node);
+  }
+
+  // どの経路で右レールの既定パネルが欠けても補填し、恒久的な消失を防ぐ安全網。
+  // 追加が発生した場合だけ true を返す（呼び出し側で再描画するため）。
+  function ensureFixedRailDefaults() {
+    if (!_root || window._gbSingleWindow) return false;
+    if (!_hasFixedRailRoles(_root)) return false;
+    const before = _countFixedRailTabs(_root);
+    _ensureFixedRightRailDefaults(_root);
+    return _countFixedRailTabs(_root) !== before;
   }
 
   function _fixedRailPanelset(roots, role, activeIndex, popupWidth) {
@@ -1475,6 +1507,9 @@ const GBLayout = (() => {
         if (tab.type === 'detail') {
           if (tab.label === '詳細') tab.label = 'オプション';
           if (tab.icon === 'info' || tab.icon === 'panelRight') tab.icon = 'slidersHorizontal';
+        }
+        if (tab.type === 'subpanel' && (!tab.icon || tab.icon === 'panelRight')) {
+          tab.icon = 'panelRightDashed';
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
@@ -2063,6 +2098,31 @@ const GBLayout = (() => {
           GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
         });
 
+        // ファイルをドラッグしたまま既存タブにホバーすると、
+        // ドロップ先アプリを確認できるように切り替える。ドロップ自体は
+        // 切り替え後のノート/ボード/フォルダ等の既存ハンドラに委ねる。
+        tabEl.addEventListener('dragover', (e) => {
+          if (!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'))
+              && !Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node')) return;
+          if (node.tabs[node.activeTabIndex]?.id === tab.id) return;
+          e.preventDefault();
+          if (_meldexNodeHoverTabId === tab.id && _meldexNodeHoverTimer) return;
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTabId = tab.id;
+          _meldexNodeHoverTimer = setTimeout(() => {
+            _meldexNodeHoverTimer = null;
+            _meldexNodeHoverTabId = '';
+            GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
+          }, 450);
+        });
+        tabEl.addEventListener('dragleave', (e) => {
+          if (tabEl.contains(e.relatedTarget)) return;
+          if (_meldexNodeHoverTabId !== tab.id) return;
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTimer = null;
+          _meldexNodeHoverTabId = '';
+        });
+
         // 右クリックメニュー（デスクトップ）＋ 長押しで同メニュー（タッチ）
         tabEl.addEventListener('contextmenu', (e) => {
           e.preventDefault();
@@ -2114,6 +2174,9 @@ const GBLayout = (() => {
           window._gbTabDragSrcPaneId = node.id;
         });
         tabEl.addEventListener('dragend', (e) => {
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTimer = null;
+          _meldexNodeHoverTabId = '';
           tabEl.classList.remove('dragging');
           window._gbTabDragSrcPaneId = '';
           // 全 tab bar の drop マーカーを念のためクリア (Esc キャンセル等の漏れ対策)
@@ -2176,7 +2239,8 @@ const GBLayout = (() => {
       const types = e.dataTransfer.types;
       const isMainReorder = types.includes(MAIN_TAB_REORDER_MIME);
       const isTab = types.includes('application/x-gb-tab');
-      const isNode = types.includes('application/x-meldex-node');
+      const isNode = types.includes('application/x-meldex-node')
+        || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'));
       if (!isMainReorder && (!_showFreeLayoutUi() || (!isTab && !isNode))) return;
       if (isMainReorder) {
         if (!_canReorderMainPaneTabs(node) || window._gbTabDragSrcPaneId !== node.id) return;
@@ -2214,11 +2278,13 @@ const GBLayout = (() => {
       if (tabBar.contains(e.relatedTarget)) return;
       _clearDropMarkers();
     });
-    tabBar.addEventListener('drop', (e) => {
+    tabBar.addEventListener('drop', async (e) => {
       const mainReorderData = e.dataTransfer.getData(MAIN_TAB_REORDER_MIME);
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
-      const nodeData = e.dataTransfer.getData('application/x-meldex-node');
-      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !nodeData))) return;
+      const hasNode = typeof MeldexDnD !== 'undefined'
+        ? MeldexDnD.hasDropKind(e, 'node')
+        : !!e.dataTransfer.getData('application/x-meldex-node');
+      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !hasNode))) return;
       e.preventDefault();
       e.stopPropagation();
       _clearDropMarkers();
@@ -2271,12 +2337,16 @@ const GBLayout = (() => {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
         return;
       }
-      let payload;
-      try { payload = JSON.parse(nodeData); } catch (err) { return; }
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      let payload = resolved?.payload || null;
+      if (!payload) {
+        try { payload = JSON.parse(e.dataTransfer.getData('application/x-meldex-node')); } catch (err) { return; }
+      }
       const items = Array.isArray(payload?.items) && payload.items.length
         ? payload.items
         : [{ name: payload?.name, path: payload?.path, type: payload?.type }];
       let insertIndex = _resolveInsertIndex();
+      let openedFromDrop = 0;
       items.forEach((it) => {
         if (!it || !it.path) return;
         const openType = typeof _normalizeOpenTypeForNav === 'function'
@@ -2288,6 +2358,7 @@ const GBLayout = (() => {
         const lenBefore = node.tabs.length;
         const tabId = GBTabs.addTab(node.id, it.name || '', openType, it.path, null, { preferTargetPane: true });
         if (!tabId) return;
+        openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
           && node.tabs[node.tabs.length - 1]?.id === tabId;
         if (addedHere) {
@@ -2306,6 +2377,8 @@ const GBLayout = (() => {
           );
         }
       });
+      if (resolved && openedFromDrop > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
     });
 
     pane.appendChild(tabBar);
@@ -3616,6 +3689,10 @@ const GBLayout = (() => {
     //  1 件なら自動解体、0 件なら親から除去を再帰）
     _detachNodeById(paneId);
 
+    // 右レールの既定パネルが欠けたまま保存されると、次回起動まで
+    // アイコンが戻らない。除去のたびに補填する。
+    ensureFixedRailDefaults();
+
     if (_activePane === paneId) {
       const firstPane = findFirstPane(_root);
       if (firstPane) setActivePane(firstPane.id);
@@ -4411,21 +4488,50 @@ const GBLayout = (() => {
     menu.setAttribute('aria-label', 'タブ操作');
     menu.style.cssText = 'position:fixed;z-index:10000;';
     const isLocked = () => isPaneLocked(paneId);
+    // 左右サイドバーのパネルは閉じるとレールのアイコンごと消えるため、
+    // 閉じる系の項目自体を出さない（closeTab 側でも入口を塞いでいる）。
+    const isFixedRail = isFixedRailPane(paneId);
     const showLockedStatus = () => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
     };
     let closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-    function addItem(label, fn, icon) {
+    function addItem(label, fn, icon, disabled = false) {
       const mi = _createLayoutContextMenuItem(label, icon);
+      mi.disabled = !!disabled;
+      if (disabled) mi.setAttribute('aria-disabled', 'true');
       mi.addEventListener('click', () => { closeMenu(false); fn(); });
       menu.appendChild(mi);
+    }
+    function closeTabsOnSide(side) {
+      if (isLocked()) { showLockedStatus(); return; }
+      const paneInfo = findNode(_root, paneId);
+      if (!paneInfo) return;
+      const pane = paneInfo.node;
+      const targetIndex = pane.tabs.findIndex(item => item.id === tab.id);
+      if (targetIndex < 0) return;
+      const activeId = pane.tabs[pane.activeTabIndex]?.id || tab.id;
+      const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
+      const activeWillClose = pane.tabs.some((item, index) => item.id === activeId && shouldClose(item, index));
+      const closedTabs = pane.tabs.filter(shouldClose);
+      if (!closedTabs.length) return;
+      const before = captureLayoutSnapshot();
+      closedTabs.forEach(item => {
+        if (typeof removeComponentInstance === 'function') removeComponentInstance(item.id);
+      });
+      pane.tabs = pane.tabs.filter((item, index) => !shouldClose(item, index));
+      const nextActiveId = activeWillClose ? tab.id : activeId;
+      pane.activeTabIndex = Math.max(0, pane.tabs.findIndex(item => item.id === nextActiveId));
+      render();
+      saveLayout();
+      const directionLabel = side === 'left' ? '左' : '右';
+      pushLayoutHistory(`レイアウト: ${directionLabel}のタブを閉じる`, before, captureLayoutSnapshot(), tab.label || tab.path || '');
     }
     // 新しいウィンドウで開く
     addItem('新しいウィンドウで開く', () => {
       if (isLocked()) { showLockedStatus(); return; }
       const t = tab.type === 'database' ? 'pivot' : (tab.type || 'page');
       const url = '/?open=' + encodeURIComponent(t) + '&path=' + encodeURIComponent(tab.path || '') + '&label=' + encodeURIComponent(tab.label || '');
-      const closeSourceTab = () => GBTabs.closeTab(paneId, tab.id);
+      const closeSourceTab = () => { if (!isFixedRail) GBTabs.closeTab(paneId, tab.id); };
       if (typeof _open_app_window_js === 'function') {
         Promise.resolve(_open_app_window_js(url)).then((ok) => {
           if (ok) closeSourceTab();
@@ -4439,11 +4545,17 @@ const GBLayout = (() => {
       if (opened) closeSourceTab();
       else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
     }, 'monitor');
-    addItem('タブを閉じる', () => {
+    if (!isFixedRail) addItem('タブを閉じる', () => {
       if (isLocked()) { showLockedStatus(); return; }
       GBTabs.closeTab(paneId, tab.id);
     }, 'x');
-    addItem('他のタブをすべて閉じる', () => {
+    if (!isFixedRail) {
+      const pane = findNode(_root, paneId)?.node;
+      const tabIndex = pane?.tabs?.findIndex(item => item.id === tab.id) ?? -1;
+      addItem('左のタブを閉じる', () => closeTabsOnSide('left'), 'panelLeftClose', tabIndex <= 0);
+      addItem('右のタブを閉じる', () => closeTabsOnSide('right'), 'panelRightClose', tabIndex < 0 || tabIndex >= (pane?.tabs?.length || 0) - 1);
+    }
+    if (!isFixedRail) addItem('他のタブをすべて閉じる', () => {
       if (isLocked()) { showLockedStatus(); return; }
       const paneInfo = findNode(_root, paneId);
       if (!paneInfo) return;
@@ -4896,6 +5008,8 @@ const GBLayout = (() => {
     getAllPanes,
     isPaneVisible,
     isPaneLocked,
+    isFixedRailPane,
+    ensureFixedRailDefaults,
     hasLockedPane,
     findFirstUnlockedPane,
     revealPane,
@@ -5877,7 +5991,10 @@ const GBLayout = (() => {
     col.style.flexDirection = 'row';
     col.style.width = '100%';
     col.style.height = '100%';
-    col.style.minWidth = '0';
+    // 固定レールのカラムだけは minWidth を 0 にしない。0 にすると分割比率や
+    // ウィンドウ縮小でカラムがレール幅を下回り、レールの右端が親の
+    // overflow:hidden に切られる。CSS 側の下限（--gb-rail-width）に任せる。
+    col.style.minWidth = fixedSide ? '' : '0';
     col.style.minHeight = '0';
 
     // ==== 単一グループ判定 ====
@@ -6516,6 +6633,14 @@ const GBTabs = (() => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
       return;
     }
+    // 左右サイドバー（固定レール）のパネルは 1 パネル = 1 タブ 構成のため、
+    // タブを閉じるとパネルごと消えてレールのアイコンも失われる。
+    // タブ操作メニュー・ショートカット・窓外ドロップのどの経路でも
+    // ここで止める（サイドバー自体はレール先頭のボタンで開閉する）。
+    if (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId)) {
+      if (typeof showStatus === 'function') showStatus('サイドバーのパネルは閉じられません（レールのボタンで開閉できます）', true);
+      return;
+    }
     const pane = paneInfo.node;
 
     const idx = pane.tabs.findIndex(t => t.id === tabId);
@@ -6771,8 +6896,10 @@ const GBTabs = (() => {
   const DEFAULT_LEFT_DOCK_WIDTH_PX = 260;
   const DEFAULT_RIGHT_DOCK_WIDTH_PX = 360;
   const DEFAULT_MIN_WORK_WIDTH_PX = 400;
+  // 右レールの既定パネル一覧（gb-layout.js の FIXED_RAIL_RIGHT_DEFAULTS と同じ並び）。
+  // 片方だけに項目を足すと、初期レイアウトと欠損補填で並びがずれる。
   const UTILITY_PANE_TYPES = new Set([
-    'outliner', 'detail', 'preview', 'chat', 'timer',
+    'outliner', 'detail', 'preview', 'subpanel', 'chat', 'timer',
     'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
@@ -6917,6 +7044,7 @@ const GBTabs = (() => {
     const rightPanes = [
       _pane([_tab('オプション', 'detail')]),
       _pane([_tab('ビューワー', 'preview')]),
+      _pane([_tab('サブパネル', 'subpanel')]),
       _pane([_tab('バージョン管理', 'version')]),
       _pane([_tab('チャット', 'chat')]),
       _pane([_tab('タイマー', 'timer')]),
@@ -10985,7 +11113,7 @@ class CalendarComponent extends ToolComponent {
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetSort" data-e2e-id="gb-production-sheet-sort" title="並び替え" aria-label="並び替え" aria-haspopup="menu"><span class="ico ico-arrowUpDown"></span></button>
     <div class="sep gb-cal-production-control"></div>
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="bulkCreateTasks" data-e2e-id="gb-production-bulk-create-open" data-production-write-action="1" title="タスクを一括作成" aria-label="タスクを一括作成">${lucide('listPlus', 16)}</button>
-    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="割当再計算" aria-label="割当再計算">${lucide('calculator', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="自動割り当て" aria-label="自動割り当て">${lucide('calculator', 16)}</button>
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="productionManagement" data-e2e-id="gb-production-management-open" title="管理操作" aria-label="管理操作">${lucide('settings2', 16)}</button>
     <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート" data-e2e-id="gb-production-open-templates">${lucide('layoutTemplate', 16)}</button>
     <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>
@@ -23451,7 +23579,30 @@ function _bdMinimapBounds() {
     return internalCopy.writeFailed && Date.now() - internalCopy.capturedAt < 5000;
   }
 
+  function specsFromBoardNodes(raw) {
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return (Array.isArray(parsed?.nodes) ? parsed.nodes : []).slice(0, MAX_ITEMS).map(node => {
+        const path = normalizePath(node?.link || node?.imageSourcePath || '');
+        if (path) return specFromMeldexItem({
+          path, name: node?.text || filename(path), type: node?.linkType || (node?.img ? 'image' : 'file'),
+        });
+        const text = String(node?.text || '').trim();
+        return text ? { kind: 'text', text, label: text } : null;
+      }).filter(Boolean);
+    } catch { return []; }
+  }
+
   async function processTransfer(transfer, point, options) {
+    const boardSpecs = specsFromBoardNodes(dataTransferText(transfer, BOARD_MIME));
+    if (boardSpecs.length) {
+      return {
+        handled: true,
+        ids: addCardSpecs(boardSpecs, point, { reason: 'paste-board-nodes' }),
+        kind: 'board',
+      };
+    }
     if (shouldPasteInternalBoard(transfer) && typeof bdPaste === 'function') {
       bdPaste();
       return { handled: true, ids: [...(bd.selected || [])], kind: 'board' };
@@ -23624,6 +23775,16 @@ function _bdMinimapBounds() {
     const payload = { name: String(entityName), path: normalizePath(path), type: 'entity' };
     transfer.setData('text/plain', payload.name);
     transfer.setData(NODE_MIME, JSON.stringify(payload));
+    global.MeldexDnD?.beginCrossWindowDrag?.(transfer, payload, 'node');
+    return payload;
+  }
+
+  function setBoardNodesDragData(transfer, nodes) {
+    const payload = { nodes: (Array.isArray(nodes) ? nodes : []).slice(0, MAX_ITEMS) };
+    if (!transfer || !payload.nodes.length) return null;
+    transfer.setData(BOARD_MIME, JSON.stringify(payload));
+    if (!dataTransferText(transfer, 'text/plain')) transfer.setData('text/plain', boardCopyPlainText(payload.nodes));
+    global.MeldexDnD?.beginCrossWindowDrag?.(transfer, payload, 'board-nodes');
     return payload;
   }
 
@@ -23728,11 +23889,13 @@ function _bdMinimapBounds() {
     processTransfer,
     requestPaste,
     setEntityDragData,
+    setBoardNodesDragData,
     _test: {
       parseMeldexNodes,
       specsFromHtml,
       specsFromPlainText,
       specFromMeldexItem,
+      specsFromBoardNodes,
     },
   };
 
@@ -26473,6 +26636,19 @@ function bdContextMenu(e, nodeId) {
       panel,
     };
   }
+  function addToolbarVisibilityItems(target) {
+    const immersive = window.MeldexBoardImmersive;
+    if (!immersive?.getMode || !immersive?.setMode) return false;
+    [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
+      .forEach(([edge, label]) => {
+        const pinned = immersive.getMode(edge) === 'pinned';
+        target.item(label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
+          role: 'menuitemcheckbox',
+          checked: pinned,
+        });
+      });
+    return true;
+  }
 
   if (nodeId) _bdPrepareContextMenuSelection(nodeId);
   const multi = !!(nodeId && bd.selected instanceof Set && bd.selected.has(nodeId) && bd.selected.size > 1);
@@ -26527,6 +26703,7 @@ function bdContextMenu(e, nodeId) {
         && !(typeof _bdIsExternalBrowserUrl === 'function' && _bdIsExternalBrowserUrl(openTarget.path))) {
         item('フォルダツリーに表示', () => window.revealPathInFolderTree(openTarget.path));
       }
+      item('パスをコピー', () => MeldexBoardOpenTarget.copyPath(openTarget.path));
       if (isLinkCard) item('リンクをコピー', () => {
         const linkPath = nd.link;
         const linkName = nd.text || linkPath.split(/[/\\]/).pop() || linkPath;
@@ -26775,6 +26952,8 @@ function bdContextMenu(e, nodeId) {
       viewSub.sep();
       viewSub.item('前面に移動', () => bdMoveZ('front'));
       viewSub.item('背面に移動', () => bdMoveZ('back'));
+      viewSub.sep();
+      addToolbarVisibilityItems(viewSub);
     }
 
     // --- 構造サブメニュー（コンテナ・子ライン・構造タイプ・グループ） ---
@@ -27031,6 +27210,8 @@ function bdContextMenu(e, nodeId) {
     sep();
     item('検索と置換...', () => bdFindReplace());
     sep();
+    const displaySub = sub('表示');
+    addToolbarVisibilityItems(displaySub);
     // 2026-04-18: 「表示設定」→「ボード設定」にリネーム (カード側の「表示」サブと用語が衝突するため、§6.2)。
     // 「全体表示に戻る」→「ドリルダウン解除」に統一 (カード側「表示」サブと用語を揃える)。
     const boardSettingsSub = sub('ボード設定');
@@ -29184,7 +29365,7 @@ function bdInitInteraction(root) {
   }
 
   // --- drop on canvas ---
-  function onCanvasDrop(e) {
+  async function onCanvasDrop(e) {
     // パネル/タブ操作系の D&D はキャンバスではなくペイン側で処理させる
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
     if (!bdEnsureInteractiveCanvas(canvas)) return;
@@ -29192,14 +29373,34 @@ function bdInitInteraction(root) {
     const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
 
     // フォルダツリーからのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    const meldexTextData = e.dataTransfer.getData('application/x-meldex-text');
-    if ((cfData || meldexTextData) && window.MeldexBoardTransfer?.processTransfer) {
-      window.MeldexBoardTransfer.processTransfer(e.dataTransfer, { x: wx, y: wy }, {})
+    const bridgeResolved = typeof MeldexDnD !== 'undefined'
+      ? (await MeldexDnD.resolveDropData(e, 'node')
+        || await MeldexDnD.resolveDropData(e, 'text')
+        || await MeldexDnD.resolveDropData(e, 'board-nodes'))
+      : null;
+    const transfer = bridgeResolved && typeof MeldexDnD !== 'undefined'
+      ? MeldexDnD.dataTransferWithResolved(e.dataTransfer, bridgeResolved) : e.dataTransfer;
+    const cfData = transfer.getData('application/x-meldex-node');
+    const meldexTextData = transfer.getData('application/x-meldex-text');
+    const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
+    if ((cfData || meldexTextData || boardNodesData) && window.MeldexBoardTransfer?.processTransfer) {
+      window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
+        .then(result => {
+          if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);
+          else if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
+        })
         .catch(err => {
+          if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
           console.error('[board] common transfer drop failed:', err);
           if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
         });
+      return;
+    }
+    // 窓間payloadはsource側で一回だけclaim済み。共通transferが利用できない状態で
+    // 旧fallbackへ流すと、成功/失敗をsourceへ返せずclaimが残るため安全に失敗通知する。
+    if (bridgeResolved) {
+      MeldexDnD.failDrop(bridgeResolved);
+      if (typeof showStatus === 'function') showStatus('ドロップ処理を開始できませんでした', true);
       return;
     }
     if (cfData) {
@@ -31539,12 +31740,33 @@ async function _bdOpenAtTarget(path, label, linkType, target, options) {
   return openLinkedPathInFloatPanel(path, label, opts);
 }
 
+async function copyBoardLinkedPath(path) {
+  const targetPath = String(path || '').trim();
+  if (!targetPath) {
+    if (typeof showStatus === 'function') showStatus('パスをコピーできませんでした', true);
+    return false;
+  }
+  const vaultPath = typeof state !== 'undefined' ? String(state?.vaultPath || '') : '';
+  const clipboardPath = window.GBPathUtils?.resolveForClipboard
+    ? window.GBPathUtils.resolveForClipboard(targetPath, vaultPath)
+    : targetPath;
+  try {
+    await navigator.clipboard.writeText(clipboardPath);
+    if (typeof showStatus === 'function') showStatus('パスをコピーしました');
+    return true;
+  } catch {
+    if (typeof showStatus === 'function') showStatus('パスをコピーできませんでした', true);
+    return false;
+  }
+}
+
 const MeldexBoardOpenTarget = Object.freeze({
   key: _BD_DEFAULT_OPEN_TARGET_KEY,
   getDefault: _bdGetDefaultOpenTarget,
   setDefault: _bdSetDefaultOpenTarget,
   getAvailableTargets: _bdAvailableOpenTargets,
   availableTargets: _bdAvailableOpenTargets,
+  copyPath: copyBoardLinkedPath,
   resolve(nodeOrPath, options) {
     return _bdResolveOpenInput(nodeOrPath, options);
   },
@@ -31766,6 +31988,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   if (typeof window.revealPathInFolderTree === 'function' && !_bdIsExternalBrowserUrl(targetPath)) {
     addItem('フォルダツリーに表示', 'folderTree', () => window.revealPathInFolderTree(targetPath));
   }
+  addItem('パスをコピー', 'clipboard', () => copyBoardLinkedPath(targetPath));
   document.body.appendChild(menu);
   if (e?.currentTarget && typeof positionPopup === 'function') {
     positionPopup(menu, e.currentTarget.getBoundingClientRect());
@@ -36408,11 +36631,19 @@ function bdAppendLinkBadge(div, node, showStatus) {
     const label = String(node.text || node.link).trim() || String(node.link).split(/[\\/]/).filter(Boolean).pop() || '';
     ev.dataTransfer.effectAllowed = 'copyMove';
     ev.dataTransfer.setData('text/plain', label);
-    ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+    const payload = {
       name: label,
       path: node.link,
       type: node.linkType || 'file',
-    }));
+    };
+    const selectedNodes = typeof bd !== 'undefined' && bd.selected?.has?.(node.id)
+      ? (bd.nodes || []).filter(candidate => bd.selected.has(candidate.id)) : [node];
+    if (selectedNodes.length > 1 && window.MeldexBoardTransfer?.setBoardNodesDragData) {
+      window.MeldexBoardTransfer.setBoardNodesDragData(ev.dataTransfer, selectedNodes);
+    } else {
+      ev.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+      window.MeldexDnD?.beginCrossWindowDrag?.(ev.dataTransfer, payload, 'node');
+    }
   });
   div.addEventListener('dragend', () => {
     if (typeof bdSuppressNodeClickAfterDrag === 'function') bdSuppressNodeClickAfterDrag([node.id]);
@@ -40660,14 +40891,21 @@ const MeldexPublicRuntime = (() => {
       const el = viewType === 'entity'
         ? document.getElementById('entity-view')
         : document.getElementById('page-content');
+      // ノート本文の組方向は公開HTMLにも反映する。スタイル本体は gb-export-html.js の
+      // noteExportCss と共有して、書き出し・画像・公開で見た目がずれないようにする。
+      const noteVertical = viewType === 'page'
+        && !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(el));
+      const noteCss = (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportCss)
+        ? MeldexExportHtml.noteExportCss(noteVertical)
+        : '#page-content, [id="page-content"] { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
+          + 'ruby { ruby-position: over; }\n'
+          + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n';
       return {
         el,
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss:
-          '#page-content, [id="page-content"], #entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
-          + '#entity-view { box-sizing: border-box; }\n'
-          + 'ruby { ruby-position: over; }\n'
-          + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n',
+          noteCss + '\n'
+          + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
         notFound: 'ノートが開かれていません',
       };
     }
@@ -44986,6 +45224,17 @@ class ScriptNoteEditor {
       if (typeof this._beginTextInputUndo === 'function') this._beginTextInputUndo('編集');
     });
 
+    // ルビを振った文字列の直前・直後で打った文字がルビへ取り込まれないようにする
+    // （ノートと共通の gb-ruby-boundary.js）。取り消しの記録は上の beforeinput が
+    // 先に済ませているので、ここでは重ねて積まない。既定動作を止める分だけ
+    // input を明示的に発火させて、保存予約（下の input ハンドラ）へつなぐ。
+    if (window.MeldexRubyBoundary) {
+      window.MeldexRubyBoundary.attach(host, {
+        pushUndo: () => {},
+        dispatchInput: (el) => el.dispatchEvent(new Event('input', { bubbles: true })),
+      });
+    }
+
     host.addEventListener('input', (e) => {
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;
@@ -46963,7 +47212,7 @@ class ScriptNoteEditor {
       try {
         const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
         if (res?.ruby) input.value = res.ruby;
-        else if (typeof showStatus === 'function') showStatus('自動ルビの取得に失敗しました', true);
+        else if (typeof showStatus === 'function') showStatus('この語の読みは設定に登録されていません', true);
       } catch (err) {
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }

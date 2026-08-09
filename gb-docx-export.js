@@ -25,7 +25,7 @@
     return `<w:p>${styleXml}<w:r><w:t xml:space="preserve">${xml(text)}</w:t></w:r></w:p>`;
   }
 
-  function documentXml(title, markdown) {
+  function documentXml(title, markdown, options) {
     const blocks = [];
     if (title) blocks.push(paragraph(title, 'Title'));
     const body = String(markdown || '')
@@ -35,9 +35,14 @@
       const heading = /^(#{1,6})\s+(.+)$/.exec(line);
       blocks.push(heading ? paragraph(heading[2], `Heading${heading[1].length}`) : paragraph(line));
     });
+    // 縦書きのノートは、用紙を横向きにして文字方向を縦（tbRl）にする
+    const vertical = !!(options && options.vertical);
+    const pageSize = vertical
+      ? '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:textDirection w:val="tbRl"/>'
+      : '<w:pgSz w:w="11906" w:h="16838"/>';
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
       + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-      + `<w:body>${blocks.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>`
+      + `<w:body>${blocks.join('')}<w:sectPr>${pageSize}`
       + '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>';
   }
 
@@ -127,7 +132,7 @@
     );
   }
 
-  function create(title, markdown) {
+  function create(title, markdown, options) {
     const entries = {
       '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?>'
         + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -144,7 +149,7 @@
         + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
         + '</Relationships>',
-      'word/document.xml': documentXml(title, markdown),
+      'word/document.xml': documentXml(title, markdown, options),
       'word/styles.xml': '<?xml version="1.0" encoding="UTF-8"?>'
         + '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
         + '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'

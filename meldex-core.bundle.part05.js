@@ -1,3 +1,61 @@
+      ? Math.max(gap, avoid.top - Math.min(ph, vertical.space) - gap)
+      : avoid.bottom + gap;
+    return { left, top, maxHeight: Math.max(72, vertical.space) };
+  }
+
+  const horizontal = candidates
+    .filter(c => c.side === 'right' || c.side === 'left')
+    .filter(c => c.space >= 72)
+    .sort((a, b) => b.space - a.space)[0];
+  if (horizontal) {
+    const left = horizontal.side === 'left'
+      ? Math.max(gap, avoid.left - Math.min(pw, horizontal.space) - gap)
+      : avoid.right + gap;
+    const top = _popupClampValue(horizontal.top, gap, maxTop);
+    return { left, top, maxWidth: Math.max(72, horizontal.space) };
+  }
+
+  return {
+    left: _popupClampValue(baseLeft, gap, maxLeft),
+    top: _popupClampValue(baseTop, gap, maxTop),
+  };
+}
+
+function positionPopup(popup, anchorRect, options = {}) {
+  const z = _getZoom();
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+  const gap = options.gap ?? 4;
+  // 'below' | 'right' | 'left'
+  // 'left' はノート縦書き用。縦書きでは本文の続きが下に伸びるため、下へ開くと
+  // 直後の文章を隠してしまう。'right' の鏡映しとして左側へ寄せる。
+  const preferDirection = options.prefer || 'below';
+  // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
+  const ar = _popupCssRect(anchorRect, z);
+  const avoid = _popupCssRect(options.avoidRect, z);
+  if (!ar) return;
+  // 非表示でDOMに追加して測定
+  popup.style.maxHeight = '';
+  popup.style.maxWidth = '';
+  popup.style.overflowY = '';
+  popup.style.overflowX = '';
+  popup.style.visibility = 'hidden';
+  if (!popup.parentNode) document.body.appendChild(popup);
+  const pw = popup.offsetWidth;
+  const ph = popup.offsetHeight;
+  let left, top;
+  if (preferDirection === 'right') {
+    // 右に表示、収まらなければ左
+    left = ar.right + gap;
+    if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
+    if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
+    top = ar.top;
+  } else if (preferDirection === 'left') {
+    // 左に表示、収まらなければ右
+    left = ar.left - pw - gap;
+    if (left < gap) left = Math.min(vw - pw - gap, ar.right + gap);
+    if (left < gap) left = gap;
+    top = ar.top;
   } else {
     // 下に表示
     left = ar.left;

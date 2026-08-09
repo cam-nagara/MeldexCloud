@@ -296,7 +296,9 @@
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
         ? 'ワークスペースにするDropbox内フォルダ'
-        : 'ワークスペースにするフォルダの絶対パス';
+        : window.MeldexRuntimeAdapter?.isBrowserMode?.()
+          ? 'ワークスペースにする端末内フォルダ'
+          : 'ワークスペースにするフォルダの絶対パス';
       path = window.prompt(promptLabel, '');
       if (path == null) return;
       path = String(path || '').trim();
@@ -458,7 +460,9 @@
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
         ? 'ワークスペースにするDropbox内フォルダ'
-        : 'ワークスペースにするフォルダの絶対パス';
+        : window.MeldexRuntimeAdapter?.isBrowserMode?.()
+          ? 'ワークスペースにする端末内フォルダ'
+          : 'ワークスペースにするフォルダの絶対パス';
       path = window.prompt(promptLabel, '');
       if (path == null) return;
       path = String(path || '').trim();
@@ -636,8 +640,9 @@
       body: { ...payload, sheet: 'タスクテンプレート' },
     }),
     fromTemplate: (payload) => request('/production-management/tasks/from-template', { method: 'POST', body: payload }),
-    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload }),
-    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload }),
+    // 一括作成の直後に続けて走らせるため、1000件規模でも既定60秒で切れないようにする。
+    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload, timeoutMs: 120000 }),
   };
 })();
 
@@ -655,6 +660,14 @@
   const MAX_TASKS = 5000;
   const DEFAULT_PAGE_COUNT = 19;
   const DEFAULT_PANEL_COUNT = 5;
+  const UNIT_SPREAD = '見開き単位';
+  const UNIT_PAGE = 'ページ単位';
+  const UNIT_PANEL = 'コマ単位';
+  const UNIT_OPTIONS = [UNIT_SPREAD, UNIT_PAGE, UNIT_PANEL];
+  // 従来この画面は常にコマ単位で作成していた。作品側に粒度の保存が無い場合は同じ挙動を保つ。
+  const DEFAULT_UNIT = UNIT_PANEL;
+  // 割り当てをどこまで先の日付へ入れるか（自動割り当て画面の既定と揃える）。
+  const AUTO_ASSIGN_DAYS = 30;
   let activeCatalogLoad = null;
 
   function api() {
@@ -666,12 +679,9 @@
     return String(row?.properties?.[propName] ?? '').trim();
   }
 
-  function unique(values) {
-    return [...new Set((values || []).map(item => String(item || '').trim()).filter(Boolean))];
-  }
-
   function sorted(values) {
-    return unique(values).sort((left, right) => left.localeCompare(right, 'ja', { numeric: true }));
+    return [...new Set((values || []).map(item => String(item || '').trim()).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right, 'ja', { numeric: true }));
   }
 
   function notify(message, error = false) {
@@ -738,16 +748,12 @@
   async function requestCatalog() {
     let works;
     let contents;
-    let targets;
-    let scales;
     let sheets;
     if (typeof api().taskCreateCatalog === 'function') {
       try {
         const snapshot = await api().taskCreateCatalog();
         works = snapshot?.works;
         contents = snapshot?.contents;
-        targets = snapshot?.targets;
-        scales = snapshot?.scales;
         sheets = { sheets: snapshot?.task_sheets || [] };
       } catch (_error) {
         // Older Cloud providers do not know this combined read yet.  Keep the
@@ -755,12 +761,10 @@
         // even when one optional catalog cannot be read.
       }
     }
-    if (!works || !contents || !targets || !scales || !sheets) {
-      [works, contents, targets, scales, sheets] = await Promise.all([
+    if (!works || !contents || !sheets) {
+      [works, contents, sheets] = await Promise.all([
         api().list('作品リスト', { limit: 1000 }),
         api().list('作業内容リスト', { limit: 1000 }),
-        api().list('作業対象リスト', { limit: 1000 }),
-        api().list('作業規模リスト', { limit: 1000 }),
         api().taskSheets(),
       ]);
     }
@@ -773,6 +777,11 @@
         pageCount: Number(value(row, 'ページ数')) || 0,
         panelCount: Number(value(row, '生成コマ数')) || 0,
         preset: value(row, 'プリセット種別'),
+        // 件数見積りをサーバー側の生成数と一致させるために必要（保存済みの見開きは
+        // 2ページで1単位になるため、単純な「ページ数×コマ数」では合わない）。
+        startSide: value(row, '開始ページの位置'),
+        spreads: value(row, '見開きページ'),
+        granularity: value(row, '作業作成粒度'),
       });
     });
     const sheetRows = sheets?.sheets || [];
@@ -781,16 +790,25 @@
     workMeta.forEach((meta, name) => {
       const sheet = sheetMeta.get(name);
       meta.panelCount = meta.panelCount || Number(sheet?.panel_count) || 0;
+      // 既にタスクがある作品で単位を変えると、旧単位のタスクが残ったまま新しく作られる
+      // （作成キーに単位が入るため重複扱いにならない）。事前に知らせるために件数を持つ。
+      meta.taskCount = Number(sheet?.count) || 0;
     });
     sheetWorks.forEach(name => {
-      if (!workMeta.has(name)) workMeta.set(name, { pageCount: 0, panelCount: Number(sheetMeta.get(name)?.panel_count) || 0, preset: '' });
+      if (!workMeta.has(name)) {
+        const sheet = sheetMeta.get(name);
+        workMeta.set(name, {
+          pageCount: 0,
+          panelCount: Number(sheet?.panel_count) || 0,
+          preset: '',
+          taskCount: Number(sheet?.count) || 0,
+        });
+      }
     });
     return {
       works: sorted([...workMeta.keys(), ...sheetWorks]),
       workMeta,
       contents: sorted(rowCatalog(contents, '')),
-      targets: sorted(rowCatalog(targets, '')),
-      scales: sorted(rowCatalog(scales, '')),
     };
   }
 
@@ -799,6 +817,79 @@
     const pending = requestCatalog();
     activeCatalogLoad = pending.finally(() => { activeCatalogLoad = null; });
     return activeCatalogLoad;
+  }
+
+  function assignDateText(offsetDays) {
+    const date = new Date();
+    date.setDate(date.getDate() + offsetDays);
+    const pad = number => String(number).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  }
+
+  /* 一括作成の直後に、その作品の未割当タスクへ続けて自動で割り当てる。
+   *
+   * 既に日時が入っているタスクは動かさない（unassigned_only）。他作品へ波及させないため
+   * work_titles で今作った作品だけに絞る。適用はプレビューと同一の条件＋受け取った rows を
+   * そのまま渡す必要がある（サーバーが同じ条件で再計算して突き合わせるため。条件がずれると
+   * 409になる）。戻り値は {message, error} で、呼び出し元がトーストの種類を分ける。
+   */
+  async function autoAssign(workTitle) {
+    // work_titles が空集合だとサーバーは「絞り込みなし＝全作品」として扱う。作品名が空の
+    // まま呼ぶと他作品まで巻き込むため、ここで止める。
+    const title = String(workTitle || '').trim();
+    if (!title) return null;
+    const request = {
+      date_from: assignDateText(0),
+      date_to: assignDateText(AUTO_ASSIGN_DAYS),
+      // 「シフト時間内に収める」をオンにする（ユーザー判断 2026-08-08）。画面のチェックが
+      // オン＝残業させない、なので allow_overtime は false。確認なしで走る自動実行では、
+      // 勤務時間外へ勝手に予定を入れない側を既定にする。
+      allow_overtime: false,
+      unassigned_only: true,
+      work_titles: [title],
+      current_user: typeof getUsername === 'function' ? String(getUsername() || '').trim() : '',
+    };
+    try {
+      const provider = api();
+      const preview = await provider.recalculatePreview(request);
+      const rows = Array.isArray(preview?.rows) ? preview.rows : [];
+      const applied = rows.length
+        ? Number((await provider.recalculateApply({ ...request, rows }))?.applied || 0)
+        : 0;
+      // 割り当てられない理由は「担当できる人がいない」「空き時間が足りない」「前工程が
+      // 未割り当て」の3つがあり得る。期間を広げれば直る、と決めつけない。
+      // 0件のときは何も書き換わっていないので一覧の再読み込みもしない（作成直後の読み込みと
+      // 合わせて2回になり、無駄な往復が増える）。
+      if (!applied) return { message: 'タスクは作成しましたが、割り当てはできませんでした。自動割り当てで内容を確認できます。' };
+      // 割り当てた予定を一覧・カレンダーへ反映する（自動割り当て画面の適用後と同じ通知）。
+      document.dispatchEvent(new CustomEvent('meldex:production-task-updated', {
+        detail: { workTitle: title, reason: 'recalculate' },
+      }));
+      const leftover = Number(preview?.summary?.unassigned || 0);
+      return {
+        message: `${applied.toLocaleString('ja-JP')}件を割り当てました`
+          + (leftover ? `（${leftover.toLocaleString('ja-JP')}件は割り当てられませんでした。自動割り当てで理由を確認できます）` : ''),
+      };
+    } catch (error) {
+      // タスクは既に保存済み。割り当てだけの失敗で作成全体を失敗扱いにしない。
+      console.error('[MeldexProductionTaskCreate] 自動割り当てに失敗しました', error);
+      return { message: 'タスクは作成しましたが、割り当てはできませんでした。自動割り当てからやり直せます。', error: true };
+    }
+  }
+
+  /* autoAssign を投げっぱなしで実行する（ダイアログを閉じてから結果を知らせる）。
+   *
+   * 割り当ては保存より時間がかかるため待たせない。作成が0件（全件が重複でスキップ）でも
+   * 走らせる: 前回の実行が一覧更新の失敗などで割り当てまで届かなかった場合、ここで
+   * 打ち切ると未割当のまま二度と自動で割り当てられなくなる。未割当のタスクが無ければ
+   * プレビューが空で返るだけで実害はない。
+   */
+  function runAutoAssign(workTitle) {
+    autoAssign(workTitle).then(result => {
+      if (result?.message) notify(result.message, !!result.error);
+    }).catch(error => {
+      console.error('[MeldexProductionTaskCreate] 自動割り当ての通知に失敗しました', error);
+    });
   }
 
   function focusableElements(modal) {
@@ -820,12 +911,6 @@
       try { source.focus({ preventScroll: true }); } catch (_error) { source.focus?.(); }
     };
     window.setTimeout?.(attempt, 0);
-  }
-
-  function setOptions(select, values, preferred) {
-    select.replaceChildren();
-    sorted(values).forEach(name => select.appendChild(option(name)));
-    if (preferred && [...select.options].some(item => item.value === preferred)) select.value = preferred;
   }
 
   function activeCalendarComponent() {
@@ -897,29 +982,26 @@
     panelCount.inputMode = 'numeric';
     panelCount.dataset.e2eId = 'production-bulk-panels';
 
-    const target = document.createElement('select');
-    target.required = true;
-    target.dataset.e2eId = 'production-bulk-target';
-    setOptions(target, ['全体'], '全体');
-    const scale = document.createElement('select');
-    scale.required = true;
-    scale.dataset.e2eId = 'production-bulk-scale';
-    setOptions(scale, ['ページ全体'], 'ページ全体');
+    const unit = document.createElement('select');
+    unit.required = true;
+    unit.dataset.e2eId = 'production-bulk-unit';
+    UNIT_OPTIONS.forEach(name => unit.appendChild(option(name)));
+    unit.value = DEFAULT_UNIT;
 
+    const panelField = makeField('1ページのコマ数', panelCount);
     const fields = document.createElement('div');
     fields.className = 'gb-production-bulk-fields';
     fields.append(
       makeField('作品', work),
       makeField('ページ数', pageCount),
-      makeField('1ページのコマ数', panelCount),
-      makeField('作業対象', target),
-      makeField('作業規模', scale),
+      makeField('作成単位', unit),
+      panelField,
     );
 
     const contentFieldset = document.createElement('fieldset');
     contentFieldset.className = 'gb-production-bulk-contents';
     const legend = document.createElement('legend');
-    legend.innerHTML = '作業内容 ' + fieldHelp('同じ作品・ページ・コマ・作業対象・作業内容・作業規模の組み合わせは重複作成しません。未登録の標準作業内容は自動で追加します。');
+    legend.innerHTML = '作業内容 ' + fieldHelp('同じ作品・ページ・コマ・作業内容の組み合わせは重複作成しません。未登録の標準作業内容は自動で追加します。作業対象と作業規模は初期値で作成するので、あとから一覧で変更できます。');
     const contentGrid = document.createElement('div');
     contentGrid.className = 'gb-production-bulk-content-grid';
     contentGrid.dataset.e2eId = 'production-bulk-contents';
@@ -948,7 +1030,7 @@
     submit.type = 'submit';
     submit.dataset.e2eId = 'production-bulk-submit';
     submit.setAttribute('form', form.id);
-    [work, pageCount, panelCount, target, scale, ...contentGrid.querySelectorAll('input')]
+    [work, pageCount, panelCount, unit, ...contentGrid.querySelectorAll('input')]
       .forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     window.MeldexProductionUiAvailability?.markWriteControl?.(submit);
     window.MeldexProductionUiAvailability?.markWriteForm?.(form);
@@ -958,9 +1040,10 @@
     let closed = false;
     let catalogReady = false;
     let catalogFailed = false;
-    let catalog = { works: [], workMeta: new Map(), contents: [], targets: ['全体'], scales: ['ページ全体'] };
+    let catalog = { works: [], workMeta: new Map(), contents: [] };
     let pageTouched = false;
     let panelTouched = false;
+    let unitTouched = false;
     let headerClose = null;
 
     const close = force => {
@@ -968,29 +1051,82 @@
       dialog?.close?.();
     };
     const integer = input => Number.isInteger(Number(input.value)) ? Number(input.value) : 0;
-    const taskCount = () => integer(pageCount) * integer(panelCount) * selectedContents(contentGrid).length;
+    const workMeta = () => catalog.workMeta.get(work.value.trim());
+    // サーバーは「ページ数」ではなくページ単位の並び（見開きは2ページで1単位）でタスクを
+    // 刻む。見積りが実際の生成数とずれないよう、生成側と同じ共通ロジックで数える。
+    // 作品側の見開き設定が今のページ数で成立しない場合の説明文。空なら問題なし。
+    let structureError = '';
+    const unitCount = () => {
+      structureError = '';
+      const pages = integer(pageCount);
+      if (pages < 1) return 0;
+      const structure = window.MeldexProductionPageStructure;
+      if (!structure) return pages;
+      const meta = workMeta();
+      const side = String(meta?.startSide || '');
+      const saved = String(meta?.spreads || '');
+      // 保存済みの見開きページが今のページ数で成立しないと、サーバーはどの単位でも作成を
+      // 拒否する。同じ判定をここでして、押しても必ず失敗するボタンを出さない（この画面に
+      // 見開きページの欄は無いため、気づかないと抜け出せない行き止まりになる）。
+      const invalid = saved ? (structure.normalizeSpreads(saved, pages, side).invalid || []) : [];
+      if (invalid.length) {
+        structureError = `この作品の見開きページ「${invalid.join('、')}」は、ページ数${pages}では使えません。`
+          + '「作品設定」で見開きページを直すか、ページ数を戻してください。';
+        return 0;
+      }
+      try {
+        const spreads = unit.value === UNIT_SPREAD ? structure.spreadOptions(pages, side) : saved;
+        return structure.pageUnits(pages, spreads, side).length;
+      } catch (error) {
+        structureError = error?.message || '見開きページの設定を読み取れませんでした。「作品設定」を確認してください。';
+        return 0;
+      }
+    };
+    const perUnitCount = () => (unit.value === UNIT_PANEL ? integer(panelCount) : 1);
+    const taskCount = () => unitCount() * perUnitCount() * selectedContents(contentGrid).length;
+    const unitLabel = () => (unit.value === UNIT_SPREAD ? '見開き' : 'ページ');
     const sync = () => {
       const pages = integer(pageCount);
       const panels = integer(panelCount);
+      const usesPanels = unit.value === UNIT_PANEL;
+      panelField.hidden = !usesPanels;
       const contents = selectedContents(contentGrid);
-      const count = taskCount();
-      const invalidCount = pages < 1 || pages > 999 || panels < 1 || panels > 99 || !contents.length || count > MAX_TASKS;
+      const units = unitCount();
+      const count = units * perUnitCount() * contents.length;
+      const invalidPanels = usesPanels && (panels < 1 || panels > 99);
+      const invalidCount = pages < 1 || pages > 999 || invalidPanels || !contents.length
+        || count > MAX_TASKS || !!structureError;
       const invalidWork = !work.value.trim();
       submit.disabled = busy || !catalogReady || catalogFailed || invalidCount || invalidWork;
-      summary.classList.toggle('is-error', count > MAX_TASKS);
-      summary.textContent = count > MAX_TASKS
-        ? `${pages}ページ × ${panels}コマ × ${contents.length}工程 = ${count.toLocaleString('ja-JP')}件（上限${MAX_TASKS.toLocaleString('ja-JP')}件）`
-        : `${pages}ページ × ${panels}コマ × ${contents.length}工程 = 最大${count.toLocaleString('ja-JP')}件`;
+      summary.classList.toggle('is-error', count > MAX_TASKS || !!structureError);
+      const breakdown = usesPanels
+        ? `${units}${unitLabel()} × ${panels}コマ × ${contents.length}工程`
+        : `${units}${unitLabel()} × ${contents.length}工程`;
+      if (structureError) summary.textContent = structureError;
+      else summary.textContent = count > MAX_TASKS
+        ? `${breakdown} = ${count.toLocaleString('ja-JP')}件（上限${MAX_TASKS.toLocaleString('ja-JP')}件）`
+        : `${breakdown} = 最大${count.toLocaleString('ja-JP')}件`;
       const meta = catalog.workMeta.get(work.value.trim());
-      warning.hidden = !meta || !meta.preset || meta.preset === 'マンガ';
-      warning.textContent = warning.hidden ? '' : 'この作品の既存設定を、ページ・コマ構成のマンガ設定へ更新します（既存タスクは削除しません）。';
+      // 既にタスクがある作品で単位を変えると、旧単位のタスクは残ったまま新しい単位のタスクが
+      // 追加される（作成キーに単位が含まれるため重複扱いにならない）。気づかないと同じ作業が
+      // 二重に並ぶので、作る前に知らせる。
+      const savedUnit = UNIT_OPTIONS.includes(meta?.granularity) ? meta.granularity : '';
+      const unitChanged = !!savedUnit && savedUnit !== unit.value && Number(meta?.taskCount) > 0;
+      if (unitChanged) {
+        warning.hidden = false;
+        warning.textContent = `この作品には${Number(meta.taskCount).toLocaleString('ja-JP')}件のタスクが「${savedUnit}」で作られています。`
+          + `「${unit.value}」で作ると、既存のタスクは残ったまま別に追加されます。`;
+      } else {
+        warning.hidden = !meta || !meta.preset || meta.preset === 'マンガ';
+        warning.textContent = warning.hidden ? '' : 'この作品の既存設定を、ページ・コマ構成のマンガ設定へ更新します（既存タスクは削除しません）。';
+      }
       form.setAttribute('aria-busy', catalogReady || catalogFailed ? 'false' : 'true');
       dialog?.modal?.toggleAttribute('data-catalog-ready', catalogReady);
     };
     const setBusy = value => {
       busy = !!value;
       dialog?.modal?.setAttribute('aria-busy', busy ? 'true' : 'false');
-      [work, pageCount, panelCount, target, scale, ...contentGrid.querySelectorAll('input')].forEach(control => { control.disabled = busy; });
+      [work, pageCount, panelCount, unit, ...contentGrid.querySelectorAll('input')].forEach(control => { control.disabled = busy; });
       cancel.disabled = busy;
       if (headerClose) headerClose.disabled = busy;
       submit.replaceChildren();
@@ -1063,6 +1199,9 @@
           ? Math.min(99, savedPanels)
           : DEFAULT_PANEL_COUNT);
       }
+      if (!unitTouched) {
+        unit.value = UNIT_OPTIONS.includes(meta?.granularity) ? meta.granularity : DEFAULT_UNIT;
+      }
     };
     work.addEventListener('input', () => {
       applyWorkStructure();
@@ -1070,9 +1209,8 @@
     });
     pageCount.addEventListener('input', () => { pageTouched = true; onInput(); });
     panelCount.addEventListener('input', () => { panelTouched = true; onInput(); });
+    unit.addEventListener('change', () => { unitTouched = true; onInput(); });
     contentGrid.addEventListener('change', onInput);
-    target.addEventListener('change', onInput);
-    scale.addEventListener('change', onInput);
 
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1088,17 +1226,18 @@
       result.textContent = '';
       const workTitle = work.value.trim();
       try {
+        const usesPanels = unit.value === UNIT_PANEL;
+        // 作業対象・作業規模はこの画面から外した。キーごと送らないことでサーバー既定
+        // （全体 / ページ全体）が使われる。空配列を送るとエラーになるので付けない。
         const data = await api().createTasks({
           work_title: workTitle,
           preset: 'マンガ',
-          hierarchy_count: 2,
-          hierarchy_labels: ['ページ', 'コマ'],
-          granularity: 'コマ単位',
+          hierarchy_count: usesPanels ? 2 : 1,
+          hierarchy_labels: usesPanels ? ['ページ', 'コマ'] : ['ページ'],
+          granularity: unit.value,
           page_count: integer(pageCount),
-          panel_count: integer(panelCount),
-          target_names: [target.value],
+          ...(usesPanels ? { panel_count: integer(panelCount) } : {}),
           content_names: selectedContents(contentGrid),
-          scale_names: [scale.value],
         });
         const created = Number(data?.created || 0);
         const skipped = Number(data?.skipped || 0);
@@ -1116,14 +1255,19 @@
         document.dispatchEvent(new CustomEvent('meldex:production-task-updated', {
           detail: { workTitle, created, skipped, sourceComponent: component },
         }));
+        // 一覧の更新に失敗しても、タスク自体は保存済みなので割り当ては続ける。ここで
+        // 打ち切ると、案内どおり同じ条件で再実行しても全件が重複扱いになり、割り当てが
+        // 二度と走らない行き止まりになる。
         if (shown === false) {
           result.textContent = 'タスクの保存は完了しましたが、一覧を更新できませんでした。同じ条件でもう一度実行すると、作成済み分は重複せず表示を再試行できます。';
           notify(result.textContent, true);
           setBusy(false);
+          runAutoAssign(workTitle);
           return;
         }
         notify(`${created.toLocaleString('ja-JP')}件を追加しました${skipped ? `（${skipped.toLocaleString('ja-JP')}件は作成済み）` : ''}`);
         close(true);
+        runAutoAssign(workTitle);
       } catch (error) {
         const message = error?.message || 'タスクを作成できませんでした。入力内容を確認してください。';
         const resume = '保存途中で止まった場合も、同じ条件でもう一度実行すると不足分だけを再開できます。';
@@ -1146,8 +1290,6 @@
       if (closed) return;
       catalog = data;
       workList.replaceChildren(...data.works.map(name => option(name)));
-      setOptions(target, unique(['全体', ...data.targets]), '全体');
-      setOptions(scale, unique(['ページ全体', ...data.scales]), 'ページ全体');
       const extraContents = data.contents.filter(name => !STANDARD_CONTENTS.includes(name));
       extraContents.forEach(name => contentGrid.appendChild(contentOption(name, false)));
       applyWorkStructure();
@@ -2277,9 +2419,9 @@
     buildField('備考', '備考', 'textarea');
     // 保護トグル（再計算ロック/担当者固定/シフト固定）。カレンダー上のドラッグ移動・
     // リサイズ（§6-4）は書き戻し時に「シフト固定」を自動付与する。
-    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは割当再計算で動かなくなります');
-    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、割当再計算でも担当者が変わりません');
-    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は割当再計算で動かなくなります');
+    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは自動割り当てで動かなくなります');
+    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、自動割り当てでも担当者が変わりません');
+    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は自動割り当てで動かなくなります');
     fieldControls.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     const initialValues = new Map(Array.from(controls, ([name, item]) => [name, String(item.value() ?? '')]));
     managedSelectQueue.forEach(({ item, managedKey }) => {
@@ -2770,17 +2912,19 @@
     });
   }
 
-  // 旧「かんたん割当／自動割り当て」ボタンは廃止し、割当再計算へ一本化した（2026-08-05
-  // ユーザー判断）。ここでは割当再計算ボタンの状態だけを同期する。
+  // 旧「かんたん割当」（等分配・equal_until_deadline方式の簡易割当ボタン）は廃止し、
+  // フル再計算エンジンへ一本化した（2026-08-05 ユーザー判断。当時の表示名は「割当再計算」）。
+  // 2026-08-08 にユーザー判断で表示名のみ「自動割り当て」へ差し戻した。ここでは
+  // その自動割り当てボタンの状態だけを同期する。
   function syncQuickPlanToolbar(component, state) {
-    // フル再計算エンジン（割当再計算）はCloud（Dropboxモード）にも移植済み
+    // フル再計算エンジン（自動割り当て）はCloud（Dropboxモード）にも移植済み
     // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
     // dropboxMode による無効化は撤去し、Desktop/Cloud両対応にする。
     const recalculateButton = component.el?.querySelector?.('[data-e2e-id="gb-production-task-recalculate"]');
     if (recalculateButton) {
       recalculateButton.disabled = false;
-      recalculateButton.title = '割当再計算';
-      recalculateButton.setAttribute('aria-label', '割当再計算');
+      recalculateButton.title = '自動割り当て';
+      recalculateButton.setAttribute('aria-label', '自動割り当て');
     }
   }
 
@@ -3337,7 +3481,7 @@
         notify(
           `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
           + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
-          + '必要に応じて「割当再計算」を実行してください。',
+          + '必要に応じて「自動割り当て」を実行してください。',
         );
         busy = false;
         dialog.close?.();
@@ -3527,7 +3671,7 @@
     // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
     // improvement-plan-2026-08-04.md §4-1）。Desktop限定ガードは撤去した。
     if (typeof window.openProductionRecalculate !== 'function') {
-      notify('割当再計算画面を初期化できませんでした', true);
+      notify('自動割り当て画面を初期化できませんでした', true);
       return;
     }
     const state = stateFor(this);
@@ -4290,9 +4434,9 @@
 
   function _setVisible(instance, visible) {
     if (!instance.containerEl) return;
-    // 非表示時も DOM から外さない（display:none のみ）。
-    // _resolveDatabasePaneContext() は containerEl が document から外れていると
-    // グローバル state へ静かにフォールバックするため、detach は禁止。
+    // このインスタンス単体の表示切替では DOM から外さない（display:none のみ）。
+    // 親のsurface切替ではworkspace全体が一時detachされ得るが、明示ctxと専用tableを
+    // 保持したまま描画を続け、再attach時に完成済みの表を表示する。
     instance.containerEl.style.display = visible ? 'flex' : 'none';
   }
 

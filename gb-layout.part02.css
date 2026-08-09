@@ -727,12 +727,18 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
    ドックバー / ドックポップアップ / サブウィンドウモード
    ========================================================================= */
 
-/* ドックバー本体: 各 panelset ノードの右端に常設される 32px 幅の縦バー（単独ペインのカラムでは非表示） */
+/* 固定レールの幅。ドックバー本体・ドラッグハンドル・group 間スペーサーが
+   同じ値を参照する（以前は 38px が3箇所にベタ書きされていた）。 */
+:root {
+  --gb-rail-width: 38px;
+}
+
+/* ドックバー本体: 各 panelset ノードの端に常設される縦バー（単独ペインのカラムでは非表示） */
 .gb-dock-bar {
-  width: 38px;
-  min-width: 38px;
-  max-width: 38px;
-  flex: 0 0 38px;
+  width: var(--gb-rail-width, 38px);
+  min-width: var(--gb-rail-width, 38px);
+  max-width: var(--gb-rail-width, 38px);
+  flex: 0 0 var(--gb-rail-width, 38px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -743,7 +749,13 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
   overflow-y: auto;
   overflow-x: hidden;
   user-select: none;
+  /* スクロールバーを実体で出すと内容幅が 10px 削られ、アイコン（34px）が
+     横にはみ出して overflow-x:hidden で切られる。アイコン数がウィンドウ高を
+     超えた時だけ「右端が見切れる」のはこれが原因。.gb-pane-tabs-scroll と
+     同じ方式でスクロールバーを隠し、ホイールでのスクロールだけ残す。 */
+  scrollbar-width: none;
 }
+.gb-dock-bar::-webkit-scrollbar { display: none; }
 .gb-dock-fixed-left .gb-dock-bar {
   border-right: 1px solid var(--border);
   border-left: 0;
@@ -751,6 +763,17 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 .gb-dock-fixed-right .gb-dock-bar {
   border-left: 1px solid var(--border);
   border-right: 0;
+}
+/* 固定レールのカラムは、分割比率やウィンドウ縮小でレール幅を下回らせない。
+   .gb-split-child は overflow:hidden / min-width:0 なので、下限が無いと
+   レールが親からはみ出して右端が切れる。境界線 1px 分を足して確保する。 */
+.gb-dock-fixed-left,
+.gb-dock-fixed-right {
+  min-width: calc(var(--gb-rail-width, 38px) + 1px);
+}
+.gb-split-child:has(> .gb-dock-fixed-left),
+.gb-split-child:has(> .gb-dock-fixed-right) {
+  min-width: calc(var(--gb-rail-width, 38px) + 1px);
 }
 .gb-dock-bar-fixed {
   background: var(--ui-dockbar-bg, var(--bg2));
@@ -791,7 +814,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 
 /* ドラッグハンドル: ドックを別位置へ移動するためのつまみ */
 .gb-dock-bar-handle {
-  width: 38px;
+  width: var(--gb-rail-width, 38px);
   height: 18px;
   display: flex;
   align-items: center;
@@ -807,7 +830,7 @@ body[data-mobile-ui-local="1"] .dp-detail-header .gb-btn-icon {
 
 /* ドックタブスペーサー: group 間の視覚的な隙間（クリック操作はなし、純粋な余白）*/
 .gb-dock-tab-spacer {
-  width: 38px;
+  width: var(--gb-rail-width, 38px);
   height: 12px;
   min-height: 12px;
   flex: 0 0 12px;
@@ -853,10 +876,13 @@ html[data-meldex-theme-id="builtin-pastel"] .gb-dock-bar-fixed .gb-dock-icon[dat
 html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data-theme-rail-icon="palette"] {
   color: var(--gb-rail-icon-color, var(--ui-fg-default));
 }
+/* アクティブ表示の縦バー。right を負値にするとアイコンの外側へ出るが、
+   レールの左右余白は 1.5px しかないため overflow-x:hidden で必ず切られる。
+   アイコン内の右端に収める。 */
 .gb-dock-icon.active::before {
   content: '';
   position: absolute;
-  right: -3px;
+  right: 0;
   top: 4px;
   bottom: 4px;
   width: 2px;

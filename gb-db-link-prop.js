@@ -75,7 +75,8 @@ function _dbLinkDndAcceptable(e) {
   const types = e?.dataTransfer?.types;
   if (!types) return false;
   const list = Array.from(types);
-  if (!list.includes('application/x-meldex-node')) return false;
+  if (!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'))
+      && !list.includes('application/x-meldex-node')) return false;
   if (list.includes('text/x-meldex-rows')) return false; // 行並べ替えD&Dとは分離
   return true;
 }
@@ -137,7 +138,7 @@ async function _dbLinkCommitValue(args) {
   if (existing?.file) {
     if (oldValue === newPath) {
       if (typeof closeInlineEditorShell === 'function') closeInlineEditorShell();
-      return;
+      return true;
     }
     try {
       if (typeof closeInlineEditorShell === 'function') closeInlineEditorShell();
@@ -177,8 +178,9 @@ async function _dbLinkCommitValue(args) {
       }
       if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
       if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
+      return false;
     }
-    return;
+    return true;
   }
 
   // 既存値なし → 新規作成
@@ -229,9 +231,11 @@ async function _dbLinkCommitValue(args) {
       );
     }
     if (typeof showStatus === 'function') showStatus('リンクを設定しました');
+    return true;
   } catch (e) {
     if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (e?.message || e), true);
     if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(anchor, entityPath, propName);
+    return false;
   }
 }
 
@@ -339,15 +343,22 @@ function decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath) {
     e.preventDefault();
     e.stopPropagation();
     highlightOff();
-    const node = typeof MeldexDnD !== 'undefined' ? MeldexDnD.parseMeldexNode(e) : null;
+    const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+    const node = resolved?.payload || (typeof MeldexDnD !== 'undefined' ? MeldexDnD.parseMeldexNode(e) : null);
     const newPath = _dbLinkPathFromDndNode(node);
-    if (!newPath) return;
+    if (!newPath) { if (resolved) MeldexDnD.failDrop(resolved); return; }
     const lockMsg = typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
-    if (lockMsg) { if (typeof showStatus === 'function') showStatus(lockMsg); return; }
+    if (lockMsg) {
+      if (typeof showStatus === 'function') showStatus(lockMsg);
+      if (resolved) MeldexDnD.failDrop(resolved);
+      return;
+    }
     const existing = _dbLinkExistingValueFor(ctx, dbPath, entityName, propName);
     const entityPath = typeof _entityPath === 'function'
       ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || (typeof state !== 'undefined' ? state.pivotData : null))
       : (_dbLinkNormalizeSlashes(dbPath) + '/' + entityName + '.md');
-    await _dbLinkCommitValue({ entityPath, propName, dbPath, ctx, existing, newPath, td });
+    const saved = await _dbLinkCommitValue({ entityPath, propName, dbPath, ctx, existing, newPath, td });
+    if (resolved && saved) MeldexDnD.completeDrop(resolved);
+    else if (resolved) MeldexDnD.failDrop(resolved);
   });
 }

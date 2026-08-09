@@ -88,11 +88,24 @@
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row);
   palette.appendChild(sliderSection);
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSwatchHighlights(); applyLive(); }
+  function updateSliderVisuals() {
+    const hue = ((Number(hsb.h) % 360) + 360) % 360;
+    const saturation = Math.max(0, Math.min(100, Number(hsb.s) || 0));
+    const brightness = Math.max(0, Math.min(100, Number(hsb.b) || 0));
+    hSlider.slider.style.setProperty('--gb-color-axis-gradient', 'linear-gradient(to right, #f00 0%, #ff0 16.667%, #0f0 33.333%, #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%)');
+    hSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} 100% 50%)`);
+    sSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, hsl(${hue} 0% 50%), hsl(${hue} 100% 50%))`);
+    sSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} ${saturation}% 50%)`);
+    bSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, #000, ${_hsbToHex(hue, saturation, 100)})`);
+    bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
+  }
+
+  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
     bSlider.slider.value = hsb.b; bSlider.valInput.value = hsb.b;
+    updateSliderVisuals();
     globalThis.GBUI?.refreshRangeFills?.(sliderSection);
   }
 
@@ -144,6 +157,7 @@
     });
   }
 
+  updateSliderVisuals();
   updateSwatchHighlights();
   return palette;
 }

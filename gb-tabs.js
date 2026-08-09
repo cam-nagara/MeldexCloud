@@ -333,6 +333,14 @@ const GBTabs = (() => {
       if (typeof showStatus === 'function') showStatus('ロック中のパネルではタブを閉じられません', true);
       return;
     }
+    // 左右サイドバー（固定レール）のパネルは 1 パネル = 1 タブ 構成のため、
+    // タブを閉じるとパネルごと消えてレールのアイコンも失われる。
+    // タブ操作メニュー・ショートカット・窓外ドロップのどの経路でも
+    // ここで止める（サイドバー自体はレール先頭のボタンで開閉する）。
+    if (typeof GBLayout.isFixedRailPane === 'function' && GBLayout.isFixedRailPane(paneId)) {
+      if (typeof showStatus === 'function') showStatus('サイドバーのパネルは閉じられません（レールのボタンで開閉できます）', true);
+      return;
+    }
     const pane = paneInfo.node;
 
     const idx = pane.tabs.findIndex(t => t.id === tabId);

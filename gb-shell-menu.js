@@ -5,6 +5,7 @@
 
 const _shellVerbCache = {}; // path key -> [{name, raw}]
 const _HIDDEN_VERBS_KEY = 'gb:hidden-shell-verbs';
+const _PINNED_VERBS_KEY = 'gb:pinned-shell-verbs';
 
 function _shellVerbCacheKey(path) {
   return String(path || '').replace(/[\\/]+/g, '/').toLowerCase();
@@ -154,6 +155,31 @@ function toggleHiddenShellVerb(name) {
   setHiddenShellVerbs(hidden);
 }
 
+function getPinnedShellVerbs() {
+  try {
+    const raw = localStorage.getItem(_PINNED_VERBS_KEY);
+    return raw == null ? null : (JSON.parse(raw) || []);
+  } catch { return null; }
+}
+
+function setPinnedShellVerbs(list) {
+  localStorage.setItem(_PINNED_VERBS_KEY, JSON.stringify(Array.isArray(list) ? list : []));
+}
+
+function _isDefaultPinnedShellVerb(verb) {
+  const text = _shellVerbText(verb);
+  return text.includes('dropbox')
+    || text.includes('圧縮')
+    || text.includes('解凍')
+    || text.includes('展開')
+    || /\b(compress|archive|extract|unzip|zip)\b/.test(text);
+}
+
+function isPinnedShellVerb(verb) {
+  const configured = getPinnedShellVerbs();
+  return configured == null ? _isDefaultPinnedShellVerb(verb) : configured.includes(verb?.name);
+}
+
 // --- メニューへの追加 ---
 
 async function appendShellVerbsToMenu(menu, path, options = {}) {
@@ -194,21 +220,31 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   const visibleVerbs = verbs.filter(v => (
     !hidden.includes(v.name) && !(editingLocked && _isEditMutationShellVerb(v))
   ));
+  const promotedVerbs = visibleVerbs.filter(isPinnedShellVerb);
+  promotedVerbs.forEach(v => {
+    _shellMenuAppendItem(menu, v.name, () => {
+      if (typeof closeTreeContextMenu === 'function') closeTreeContextMenu();
+      executeShellVerb(path, v.raw);
+    }, { className: 'tree-ctx-item gb-shell-menu-promoted' });
+  });
 
   // サブメニューとして表示
   const shellPanel = _shellMenuCreatePanel('OS メニュー');
   _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
 
-  if (visibleVerbs.length === 0) {
+  const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v));
+  if (submenuVerbs.length === 0) {
     _shellMenuAppendItem(
       shellPanel,
-      editingLocked ? '編集ロック中のため編集系操作は非表示です' : 'すべて非表示です',
+      visibleVerbs.length > 0
+        ? '選択したコマンドはトップに表示中です'
+        : (editingLocked ? '編集ロック中のため編集系操作は非表示です' : 'すべて非表示です'),
       null,
       { disabled: true },
     );
   }
 
-  visibleVerbs.forEach(v => {
+  submenuVerbs.forEach(v => {
     const item = _shellMenuAppendItem(shellPanel, v.name, () => {
       closeTreeContextMenu();
       executeShellVerb(path, v.raw);
@@ -281,10 +317,18 @@ function _showHideVerbPopup(x, y, verbName, parentMenu, path) {
 
 // --- カスタマイズモーダル ---
 
-function showShellVerbSettings() {
+async function showShellVerbSettings() {
   // 全キャッシュから動詞を集約
   const allVerbs = new Map(); // name -> raw
   for (const verbs of Object.values(_shellVerbCache)) {
+    verbs.forEach(v => { if (!allVerbs.has(v.name)) allVerbs.set(v.name, v.raw); });
+  }
+  const probePath = (typeof _folderPath !== 'undefined' && _folderPath)
+    || (typeof _homeFolderPath !== 'undefined' && _homeFolderPath)
+    || (typeof state !== 'undefined' && state?.vaultPath)
+    || '';
+  if (allVerbs.size === 0 && probePath) {
+    const verbs = await fetchShellVerbs(probePath);
     verbs.forEach(v => { if (!allVerbs.has(v.name)) allVerbs.set(v.name, v.raw); });
   }
   if (allVerbs.size === 0) {
@@ -313,7 +357,7 @@ function showShellVerbSettings() {
 
   const desc = document.createElement('div');
   desc.className = 'gb-section-desc shell-verb-settings-desc';
-  desc.textContent = 'チェックを外すとメニューから非表示になります。';
+  desc.textContent = '表示する項目と、OSメニューの外側（トップ）にも表示する項目を選べます。Dropbox・圧縮・解凍は初期状態でトップに表示されます。';
 
   const groupTitle = document.createElement('div');
   groupTitle.className = 'shell-verb-settings-group-title';
@@ -323,9 +367,12 @@ function showShellVerbSettings() {
   list.className = 'shell-verb-settings-list';
   list.setAttribute('role', 'group');
   list.setAttribute('aria-label', 'OS メニュー項目');
-  for (const [name] of allVerbs) {
+  const configuredPinned = getPinnedShellVerbs();
+  for (const [name, raw] of allVerbs) {
+    const row = document.createElement('div');
+    row.className = 'shell-verb-settings-row';
     const label = document.createElement('label');
-    label.className = 'shell-verb-settings-row';
+    label.className = 'shell-verb-settings-visibility';
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = !hidden.includes(name);
@@ -335,7 +382,23 @@ function showShellVerbSettings() {
     const text = document.createElement('span');
     text.textContent = name;
     label.append(input, text);
-    list.appendChild(label);
+    const pinLabel = document.createElement('label');
+    pinLabel.className = 'shell-verb-settings-pin';
+    const pinInput = document.createElement('input');
+    pinInput.type = 'checkbox';
+    pinInput.checked = configuredPinned == null
+      ? _isDefaultPinnedShellVerb({ name, raw })
+      : configuredPinned.includes(name);
+    pinInput.disabled = !input.checked;
+    pinInput.dataset.pinnedVerbName = name;
+    pinInput.setAttribute('aria-label', `${name}をトップにも表示`);
+    pinLabel.append(pinInput, document.createTextNode('トップにも表示'));
+    input.addEventListener('change', () => {
+      pinInput.disabled = !input.checked;
+      if (!input.checked) pinInput.checked = false;
+    });
+    row.append(label, pinLabel);
+    list.appendChild(row);
   }
   const footer = document.createElement('div');
   footer.className = 'btn-row shell-verb-settings-actions';
@@ -376,6 +439,9 @@ function showShellVerbSettings() {
       if (!cb.checked) newHidden.push(cb.dataset.verbName);
     });
     setHiddenShellVerbs([...new Set(newHidden)]);
+    const pinned = [...o.querySelectorAll('input[data-pinned-verb-name]:checked:not(:disabled)')]
+      .map(cb => cb.dataset.pinnedVerbName);
+    setPinnedShellVerbs([...new Set(pinned)]);
     close();
     showStatus('メニュー設定を保存しました');
   });
@@ -398,5 +464,8 @@ if (typeof window !== 'undefined') {
     },
     getHiddenShellVerbs,
     setHiddenShellVerbs,
+    getPinnedShellVerbs,
+    setPinnedShellVerbs,
+    isPinnedShellVerb,
   };
 }

@@ -25,6 +25,8 @@
   <link rel="stylesheet" href="gb-scriptnote-editor.css">
   <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
   <link rel="stylesheet" href="standalone-shell.css">
+<link rel="stylesheet" href="gb-shortcut-registry.css">
+<link rel="stylesheet" href="gb-file-metadata.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="scenario-standalone.css">
@@ -119,11 +121,14 @@
   <script src="gb-dialog-keyboard.js"></script>
   <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="gb-format-popup.js"></script>
+  <script src="gb-ruby-boundary.js"></script>
   <script src="gb-link-modal.js"></script>
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
   <script src="meldex-app-capabilities.js"></script>
-  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-shortcut-registry.js"></script>
+<script src="gb-file-metadata.js"></script>
+<script src="offline-bundles/gb-detail-panel.js"></script><script src="gb-detail-shortcuts-tab.js"></script>
   <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
@@ -181,6 +186,19 @@
   <script src="offline-bundles/gb-tooltip.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
+  <script src="standalone-always-on-top.js"></script>
+  <script>
+    // 「常に最前面」は Windows デスクトップ版だけで有効。非対応環境ではボタンを出さない。
+    document.addEventListener("DOMContentLoaded", () => {
+      const before = document.getElementById("scenario-option-panel-button");
+      window.MeldexAlwaysOnTop?.install({
+        appId: "scenario",
+        host: before?.parentElement,
+        buttonClass: "sa-icon-btn",
+        before,
+      });
+    });
+  </script>
   <script src="scenario-standalone-app.js"></script>
 </body>
 </html>

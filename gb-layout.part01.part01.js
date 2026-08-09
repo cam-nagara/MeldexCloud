@@ -23,6 +23,8 @@ const GBLayout = (() => {
   const SAVE_LAYOUT_DEBOUNCE_MS = 80;
   let _saveLayoutTimer = null;
   let _saveLayoutPending = false;
+  let _meldexNodeHoverTimer = null;
+  let _meldexNodeHoverTabId = '';
 
   function _showFreeLayoutUi() {
     return FREE_LAYOUT_UI_ENABLED;
@@ -228,6 +230,36 @@ const GBLayout = (() => {
       seen.add(type);
     });
     return node;
+  }
+
+  function _countFixedRailTabs(node) {
+    const rightDock = _findFixedRailPanelset(node, 'right-sidebar');
+    if (!rightDock || !Array.isArray(rightDock.groups)) return 0;
+    let count = 0;
+    rightDock.groups.forEach(group => {
+      _collectFixedRailPanes(group?.root).forEach(pane => { count += (pane.tabs || []).length; });
+    });
+    return count;
+  }
+
+  // 固定レール（左右サイドバー）は「1パネル = 1タブ」構成のため、タブを1つ閉じると
+  // パネルごと消え、レールのアイコンも一緒に消える。欠損の補填は起動時とレイアウト
+  // 全差し替え時にしか走らないので、消えたまま次回起動まで戻らなかった。
+  // 閉じる操作を入口で止めるための判定。
+  function isFixedRailPane(paneId) {
+    if (!paneId || window._gbSingleWindow) return false;
+    const found = findNode(_root, paneId);
+    return !!found?.node && found.node.type === 'pane' && _isSidebarPaneNode(found.node);
+  }
+
+  // どの経路で右レールの既定パネルが欠けても補填し、恒久的な消失を防ぐ安全網。
+  // 追加が発生した場合だけ true を返す（呼び出し側で再描画するため）。
+  function ensureFixedRailDefaults() {
+    if (!_root || window._gbSingleWindow) return false;
+    if (!_hasFixedRailRoles(_root)) return false;
+    const before = _countFixedRailTabs(_root);
+    _ensureFixedRightRailDefaults(_root);
+    return _countFixedRailTabs(_root) !== before;
   }
 
   function _fixedRailPanelset(roots, role, activeIndex, popupWidth) {
@@ -526,6 +558,9 @@ const GBLayout = (() => {
         if (tab.type === 'detail') {
           if (tab.label === '詳細') tab.label = 'オプション';
           if (tab.icon === 'info' || tab.icon === 'panelRight') tab.icon = 'slidersHorizontal';
+        }
+        if (tab.type === 'subpanel' && (!tab.icon || tab.icon === 'panelRight')) {
+          tab.icon = 'panelRightDashed';
         }
         // タブピン留め機能は廃止されたため、既存レイアウト JSON の pinned プロパティを除去
         if ('pinned' in tab) delete tab.pinned;
@@ -1114,6 +1149,31 @@ const GBLayout = (() => {
           GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
         });
 
+        // ファイルをドラッグしたまま既存タブにホバーすると、
+        // ドロップ先アプリを確認できるように切り替える。ドロップ自体は
+        // 切り替え後のノート/ボード/フォルダ等の既存ハンドラに委ねる。
+        tabEl.addEventListener('dragover', (e) => {
+          if (!(typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'))
+              && !Array.from(e.dataTransfer?.types || []).includes('application/x-meldex-node')) return;
+          if (node.tabs[node.activeTabIndex]?.id === tab.id) return;
+          e.preventDefault();
+          if (_meldexNodeHoverTabId === tab.id && _meldexNodeHoverTimer) return;
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTabId = tab.id;
+          _meldexNodeHoverTimer = setTimeout(() => {
+            _meldexNodeHoverTimer = null;
+            _meldexNodeHoverTabId = '';
+            GBTabs.activateTab(node.id, tab.id, { preserveActivePane: _isPassivePaneTab(tab, node) });
+          }, 450);
+        });
+        tabEl.addEventListener('dragleave', (e) => {
+          if (tabEl.contains(e.relatedTarget)) return;
+          if (_meldexNodeHoverTabId !== tab.id) return;
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTimer = null;
+          _meldexNodeHoverTabId = '';
+        });
+
         // 右クリックメニュー（デスクトップ）＋ 長押しで同メニュー（タッチ）
         tabEl.addEventListener('contextmenu', (e) => {
           e.preventDefault();
@@ -1165,6 +1225,9 @@ const GBLayout = (() => {
           window._gbTabDragSrcPaneId = node.id;
         });
         tabEl.addEventListener('dragend', (e) => {
+          if (_meldexNodeHoverTimer) clearTimeout(_meldexNodeHoverTimer);
+          _meldexNodeHoverTimer = null;
+          _meldexNodeHoverTabId = '';
           tabEl.classList.remove('dragging');
           window._gbTabDragSrcPaneId = '';
           // 全 tab bar の drop マーカーを念のためクリア (Esc キャンセル等の漏れ対策)
@@ -1227,7 +1290,8 @@ const GBLayout = (() => {
       const types = e.dataTransfer.types;
       const isMainReorder = types.includes(MAIN_TAB_REORDER_MIME);
       const isTab = types.includes('application/x-gb-tab');
-      const isNode = types.includes('application/x-meldex-node');
+      const isNode = types.includes('application/x-meldex-node')
+        || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'));
       if (!isMainReorder && (!_showFreeLayoutUi() || (!isTab && !isNode))) return;
       if (isMainReorder) {
         if (!_canReorderMainPaneTabs(node) || window._gbTabDragSrcPaneId !== node.id) return;
@@ -1265,11 +1329,13 @@ const GBLayout = (() => {
       if (tabBar.contains(e.relatedTarget)) return;
       _clearDropMarkers();
     });
-    tabBar.addEventListener('drop', (e) => {
+    tabBar.addEventListener('drop', async (e) => {
       const mainReorderData = e.dataTransfer.getData(MAIN_TAB_REORDER_MIME);
       const tabData = e.dataTransfer.getData('application/x-gb-tab');
-      const nodeData = e.dataTransfer.getData('application/x-meldex-node');
-      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !nodeData))) return;
+      const hasNode = typeof MeldexDnD !== 'undefined'
+        ? MeldexDnD.hasDropKind(e, 'node')
+        : !!e.dataTransfer.getData('application/x-meldex-node');
+      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !hasNode))) return;
       e.preventDefault();
       e.stopPropagation();
       _clearDropMarkers();
@@ -1322,12 +1388,16 @@ const GBLayout = (() => {
         if (typeof showStatus === 'function') showStatus('ロック中のパネルには新しいタブを追加できません', true);
         return;
       }
-      let payload;
-      try { payload = JSON.parse(nodeData); } catch (err) { return; }
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      let payload = resolved?.payload || null;
+      if (!payload) {
+        try { payload = JSON.parse(e.dataTransfer.getData('application/x-meldex-node')); } catch (err) { return; }
+      }
       const items = Array.isArray(payload?.items) && payload.items.length
         ? payload.items
         : [{ name: payload?.name, path: payload?.path, type: payload?.type }];
       let insertIndex = _resolveInsertIndex();
+      let openedFromDrop = 0;
       items.forEach((it) => {
         if (!it || !it.path) return;
         const openType = typeof _normalizeOpenTypeForNav === 'function'
@@ -1339,6 +1409,7 @@ const GBLayout = (() => {
         const lenBefore = node.tabs.length;
         const tabId = GBTabs.addTab(node.id, it.name || '', openType, it.path, null, { preferTargetPane: true });
         if (!tabId) return;
+        openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
           && node.tabs[node.tabs.length - 1]?.id === tabId;
         if (addedHere) {

@@ -254,13 +254,20 @@
       composing = false;
       scheduleCommit();
     });
+    // キーは共通のショートカットレジストリへ登録し、右サイドバーの
+    // 「ショートカットキー」タブから確認・変更できるようにする。
+    window.MeldexShortcutRegistry?.registerLocal({
+      'quickmemo.undo': { key: 'ctrl+z', label: '元に戻す', scope: 'quickmemo' },
+      'quickmemo.redo': { key: 'ctrl+y', label: 'やり直し', scope: 'quickmemo' },
+      'quickmemo.redoAlt': { key: 'ctrl+shift+z', label: 'やり直し（代替）', scope: 'quickmemo' },
+    });
     editor.addEventListener('keydown', (event) => {
-      if (composing || event.isComposing || !(event.ctrlKey || event.metaKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === 'z' && !event.shiftKey) {
+      if (composing || event.isComposing) return;
+      const id = window.MeldexShortcutRegistry?.matchEvent(event, ['quickmemo']) || '';
+      if (id === 'quickmemo.undo') {
         event.preventDefault();
         undo();
-      } else if ((key === 'z' && event.shiftKey) || key === 'y') {
+      } else if (id === 'quickmemo.redo' || id === 'quickmemo.redoAlt') {
         event.preventDefault();
         redo();
       }

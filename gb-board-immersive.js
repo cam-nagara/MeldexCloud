@@ -4,11 +4,26 @@
 
   const instances = new Map();
   const STORAGE_PREFIX = 'meldex-board-chrome-mode-v1:';
+  const LEGACY_STANDALONE_TOOLBAR_KEYS = {
+    top: 'meldex-board-toolbar-top-hidden',
+    bottom: 'meldex-board-toolbar-bottom-hidden',
+  };
   const CLOSE_DELAY = 520;
   let nextInstanceId = 0;
 
   function storageGet(key, fallback) {
     try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+  }
+
+  function storedMode(kind, edge) {
+    const current = storageGet(STORAGE_PREFIX + kind + ':' + edge, '');
+    if (current === 'auto' || current === 'pinned') return current;
+    if (kind === 'standalone' && LEGACY_STANDALONE_TOOLBAR_KEYS[edge]) {
+      const legacy = storageGet(LEGACY_STANDALONE_TOOLBAR_KEYS[edge], '');
+      if (legacy === '0') return 'pinned';
+      if (legacy === '1') return 'auto';
+    }
+    return 'auto';
   }
 
   function storageSet(key, value) {
@@ -48,7 +63,8 @@
       reveal(edge, true);
     });
     handle.addEventListener('focus', () => reveal(edge, true));
-    sensor.addEventListener('pointerenter', () => reveal(edge, true));
+    sensor.addEventListener('pointerenter', () => reveal(edge, true, 'sensor'));
+    sensor.addEventListener('pointerleave', () => reveal(edge, false, 'sensor'));
     sensor.appendChild(handle);
     return sensor;
   }
@@ -77,13 +93,7 @@
   }
 
   function addPins(instance) {
-    ['top', 'bottom'].forEach(edge => {
-      const toolbar = instance.root.querySelector(`[data-bd-role="toolbar-${edge}"]`);
-      if (toolbar && !toolbar.querySelector(`[data-chrome-edge="${edge}"]`)) {
-        toolbar.appendChild(createPin(edge, instance));
-      }
-    });
-    if (instance.rightPanel && !instance.rightPanel.querySelector('[data-chrome-edge="right"]')) {
+    if (instance.shell && instance.rightPanel && !instance.rightPanel.querySelector('[data-chrome-edge="right"]')) {
       const pin = createPin('right', instance);
       pin.style.position = 'absolute';
       pin.style.top = '5px';
@@ -99,6 +109,9 @@
   function setMode(instance, edge, mode) {
     instance.modes[edge] = mode === 'pinned' ? 'pinned' : 'auto';
     storageSet(STORAGE_PREFIX + instance.kind + ':' + edge, instance.modes[edge]);
+    if (instance.kind === 'standalone' && LEGACY_STANDALONE_TOOLBAR_KEYS[edge]) {
+      storageSet(LEGACY_STANDALONE_TOOLBAR_KEYS[edge], instance.modes[edge] === 'pinned' ? '0' : '1');
+    }
     apply(instance);
   }
 
@@ -110,8 +123,6 @@
       instance.shell.classList.toggle('bd-chrome-right-pinned', instance.modes.right === 'pinned');
       instance.shell.classList.remove('bsa-hide-top-toolbar', 'bsa-hide-bottom-toolbar');
       if (instance.modes.right === 'pinned') instance.shell.classList.remove('bsa-options-collapsed');
-    } else if (isActiveRoot(instance.root)) {
-      document.body.dataset.boardRightPinned = instance.modes.right === 'pinned' ? '1' : '0';
     }
     rootElement.querySelectorAll('[data-chrome-edge]').forEach(button => {
       syncPin(button, instance.modes[button.dataset.chromeEdge]);
@@ -139,16 +150,24 @@
       || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, [role="menu"][aria-expanded="true"]');
   }
 
-  function reveal(instance, edge, keep) {
+  function edgeHeld(instance, edge) {
+    const presence = instance.presence[edge];
+    return !!(presence?.sensor || presence?.panel || presence?.pointer);
+  }
+
+  function setEdgePresence(instance, edge, source, active) {
+    if (source && instance.presence[edge]) instance.presence[edge][source] = !!active;
+  }
+
+  function reveal(instance, edge, keep, source) {
     if (!isActiveRoot(instance.root)) return;
+    setEdgePresence(instance, edge, source, keep);
     clearTimeout(instance.timers[edge]);
     if (edge === 'top') instance.root.classList.add('bd-chrome-top-open');
     else if (edge === 'bottom') instance.root.classList.add('bd-chrome-bottom-open');
     else if (instance.shell) {
       instance.shell.classList.add('bd-chrome-right-open');
       instance.shell.classList.remove('bsa-options-collapsed');
-    } else {
-      document.body.dataset.boardRightOpen = '1';
     }
     if (!keep) scheduleClose(instance, edge);
   }
@@ -164,20 +183,22 @@
     else if (instance.shell) {
       instance.shell.classList.remove('bd-chrome-right-open');
       instance.shell.classList.add('bsa-options-collapsed');
-    } else {
-      document.body.dataset.boardRightOpen = '0';
     }
   }
 
   function scheduleClose(instance, edge) {
     clearTimeout(instance.timers[edge]);
+    if (edgeHeld(instance, edge)) return;
     instance.timers[edge] = setTimeout(() => hide(instance, edge), CLOSE_DELAY);
   }
 
   function bindPanelLifetime(instance, edge, element) {
     if (!element) return;
-    element.addEventListener('pointerenter', () => reveal(instance, edge, true));
-    element.addEventListener('pointerleave', () => scheduleClose(instance, edge));
+    element.addEventListener('pointerenter', () => reveal(instance, edge, true, 'panel'));
+    element.addEventListener('pointerleave', () => {
+      setEdgePresence(instance, edge, 'panel', false);
+      scheduleClose(instance, edge);
+    });
     element.addEventListener('focusin', () => reveal(instance, edge, true));
     element.addEventListener('focusout', () => scheduleClose(instance, edge));
   }
@@ -185,9 +206,17 @@
   function pointerMove(instance, event) {
     if (!isActiveRoot(instance.root) || event.pointerType === 'touch') return;
     const rect = instance.host.getBoundingClientRect();
-    if (event.clientY - rect.top <= 10) reveal(instance, 'top', false);
-    if (rect.bottom - event.clientY <= 10) reveal(instance, 'bottom', false);
-    if (rect.right - event.clientX <= 12) reveal(instance, 'right', false);
+    const near = {
+      top: event.clientY - rect.top <= 10,
+      bottom: rect.bottom - event.clientY <= 10,
+      right: !!instance.shell && rect.right - event.clientX <= 12,
+    };
+    ['top', 'bottom', 'right'].forEach(edge => {
+      const wasNear = !!instance.presence[edge].pointer;
+      setEdgePresence(instance, edge, 'pointer', near[edge]);
+      if (near[edge]) reveal(instance, edge, true);
+      else if (wasNear) scheduleClose(instance, edge);
+    });
   }
 
   function pointerDown(instance, event) {
@@ -197,7 +226,7 @@
       y: event.clientY,
       top: event.clientY - rect.top <= 22,
       bottom: rect.bottom - event.clientY <= 22,
-      right: rect.right - event.clientX <= 22,
+      right: !!instance.shell && rect.right - event.clientX <= 22,
     };
     if (event.target.closest?.('[role="separator"], input, textarea, [contenteditable="true"]')) {
       instance.locks.add(`pointer:${event.pointerId}`);
@@ -206,7 +235,7 @@
       const insideChrome = event.target.closest?.(
         '[data-bd-role="toolbar-top"], [data-bd-role="toolbar-bottom"], .bd-edge-sensor, #board-right-sidebar, #right-panel'
       );
-      if (!insideChrome) ['top', 'bottom', 'right'].forEach(edge => hide(instance, edge, true));
+      if (!insideChrome) ['top', 'bottom'].concat(instance.shell ? ['right'] : []).forEach(edge => hide(instance, edge, true));
     }
   }
 
@@ -243,17 +272,6 @@
   function activate(instance) {
     const active = isActiveRoot(instance.root);
     instance.host.classList.toggle('bd-board-active', active);
-    if (!instance.shell && active) {
-      document.body.dataset.boardViewActive = '1';
-      document.body.dataset.boardRightPinned = instance.modes.right === 'pinned' ? '1' : '0';
-    } else if (!instance.shell && document.body.dataset.boardViewActive === '1') {
-      const anyOther = Array.from(instances.values()).some(item => item !== instance && !item.shell && isActiveRoot(item.root));
-      if (!anyOther) {
-        delete document.body.dataset.boardViewActive;
-        delete document.body.dataset.boardRightOpen;
-        delete document.body.dataset.boardRightPinned;
-      }
-    }
     updateGuide(instance);
   }
 
@@ -262,7 +280,7 @@
     const standalone = boardRoot.id === 'board-canvas-root';
     const shell = standalone ? document.getElementById('board-standalone-shell') : null;
     const host = shell || boardRoot;
-    const rightPanel = standalone ? document.getElementById('board-right-sidebar') : document.getElementById('right-panel');
+    const rightPanel = standalone ? document.getElementById('board-right-sidebar') : null;
     const kind = standalone ? 'standalone' : 'main';
     const identity = boardRoot.id
       || boardRoot.closest('.gb-pane')?.dataset?.paneId
@@ -275,11 +293,16 @@
       kind,
       identity,
       modes: {
-        top: storageGet(STORAGE_PREFIX + kind + ':top', 'auto'),
-        bottom: storageGet(STORAGE_PREFIX + kind + ':bottom', 'auto'),
-        right: storageGet(STORAGE_PREFIX + kind + ':right', 'auto'),
+        top: storedMode(kind, 'top'),
+        bottom: storedMode(kind, 'bottom'),
+        right: storedMode(kind, 'right'),
       },
       timers: {},
+      presence: {
+        top: { sensor: false, panel: false, pointer: false },
+        bottom: { sensor: false, panel: false, pointer: false },
+        right: { sensor: false, panel: false, pointer: false },
+      },
       locks: new Set(),
       swipe: null,
       guide: null,
@@ -287,8 +310,8 @@
     instances.set(boardRoot, instance);
     boardRoot.classList.add('bd-immersive-root');
     shell?.classList.add('bd-immersive-shell');
-    ['top', 'bottom', 'right'].forEach(edge => {
-      const sensor = createSensor(edge, (target, keep) => reveal(instance, target, keep), identity);
+    ['top', 'bottom'].concat(shell ? ['right'] : []).forEach(edge => {
+      const sensor = createSensor(edge, (target, keep, source) => reveal(instance, target, keep, source), identity);
       host.appendChild(sensor);
     });
     const canvas = boardRoot.querySelector('[data-bd-role="canvas"]');
@@ -299,9 +322,11 @@
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);
-    boardRoot.querySelector('[data-bd-action="detail"]')?.addEventListener('click', () => {
-      setTimeout(() => reveal(instance, 'right', true), 0);
-    });
+    if (shell) {
+      boardRoot.querySelector('[data-bd-action="detail"]')?.addEventListener('click', () => {
+        setTimeout(() => reveal(instance, 'right', true), 0);
+      });
+    }
     bindPanelLifetime(instance, 'top', boardRoot.querySelector('[data-bd-role="toolbar-top"]'));
     bindPanelLifetime(instance, 'bottom', boardRoot.querySelector('[data-bd-role="toolbar-bottom"]'));
     bindPanelLifetime(instance, 'right', rightPanel);

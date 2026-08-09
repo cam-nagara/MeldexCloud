@@ -252,8 +252,8 @@
         // OS関連付けアプリで開く形式（clip, 3d等）。Desktopでは「アプリで開く」と同じ
         // 安全な openNative 経路を既定の開く操作として使う（計画§2.4）。Cloud等、
         // openNative が実行不能な環境では、現行どおり理由と代替操作を案内する。
-        const isDropboxMode = !!(window.MeldexRuntimeAdapter?.isDropboxMode?.());
-        if (!isDropboxMode && typeof openNative === 'function') {
+        const isBrowserMode = !!(window.MeldexRuntimeAdapter?.isBrowserDataMode?.());
+        if (!isBrowserMode && typeof openNative === 'function') {
           openNative(item.path);
         } else if (typeof showStatus === 'function') {
           showStatus((item.name || item.path) + ' — 「…」または長押しメニューからアプリで開く');

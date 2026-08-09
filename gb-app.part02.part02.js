@@ -282,12 +282,6 @@ async function init() {
       hasHome,
       homePath: homeRes?.path || '',
     });
-    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
-        trigger: 'desktop-home-ready',
-        homePath: homeRes?.path || '',
-      });
-    }
     if (!vault.path && !hasRoots && !hasHome) {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
@@ -703,7 +697,7 @@ function _screenshotModeIsRegion(mode) {
 }
 
 async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
-  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
   try {
     const res = await fetch(API_BASE + '/app-window-visibility', {
       method: 'POST',
@@ -762,7 +756,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     shell.tabIndex = -1;
     shell.setAttribute('role', 'dialog');
     shell.setAttribute('aria-modal', 'true');
-    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
+    shell.setAttribute('aria-label', 'スクリーンショット撮影対象を選択');
 
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
@@ -802,7 +796,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
     ok.dataset.e2eId = 'screenshot-region-save';
-    ok.textContent = '保存';
+    ok.textContent = 'スクリーンショット撮影';
 
     actions.append(cancel, ok);
     stage.append(preview, selection);
@@ -948,13 +942,12 @@ async function captureScreenshot(mode) {
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
     const b64 = outputCanvas.toDataURL('image/png');
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
+    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
+    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
+    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
+    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: screenshotFolder });
     if (res.path) {
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-      const viewerUrl = window.MeldexResourceUrl?.viewer
-        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
-        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
-      window.open(viewerUrl, '_blank');
     }
   } catch (e) {
     if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);

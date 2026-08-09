@@ -284,6 +284,11 @@
     deleteCustomTheme,
     getBuiltinRainbowPalette,
     getRainbowPalette,
+    // テーマの状態を丸ごと持ち運ぶための入口（gb-theme-sync.js が使う）。
+    // 保存キーの一覧と、外から書き換えられたあとの再適用をここへ集約しておかないと、
+    // 持ち出し・同期のたびに対象キーの取りこぼしが起きる。
+    THEME_SETTINGS_KEYS: THEME_SETTINGS_HISTORY_KEYS,
+    refreshThemeSettingsAfterExternalChange: _refreshThemeSettingsAfterHistory,
   };
 
   global.MeldexThemeManager = api;

@@ -69,7 +69,8 @@
       body: { ...payload, sheet: 'タスクテンプレート' },
     }),
     fromTemplate: (payload) => request('/production-management/tasks/from-template', { method: 'POST', body: payload }),
-    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload }),
-    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload }),
+    // 一括作成の直後に続けて走らせるため、1000件規模でも既定60秒で切れないようにする。
+    recalculatePreview: (payload) => request('/production-management/recalculate/preview', { method: 'POST', body: payload, timeoutMs: 120000 }),
+    recalculateApply: (payload) => request('/production-management/recalculate/apply', { method: 'POST', body: payload, timeoutMs: 120000 }),
   };
 })();

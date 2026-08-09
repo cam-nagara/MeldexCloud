@@ -938,7 +938,10 @@
     col.style.flexDirection = 'row';
     col.style.width = '100%';
     col.style.height = '100%';
-    col.style.minWidth = '0';
+    // 固定レールのカラムだけは minWidth を 0 にしない。0 にすると分割比率や
+    // ウィンドウ縮小でカラムがレール幅を下回り、レールの右端が親の
+    // overflow:hidden に切られる。CSS 側の下限（--gb-rail-width）に任せる。
+    col.style.minWidth = fixedSide ? '' : '0';
     col.style.minHeight = '0';
 
     // ==== 単一グループ判定 ====

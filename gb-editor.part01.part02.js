@@ -1,15 +1,7 @@
-    let caret = el.querySelector('.drop-caret');
-    if (!caret) { caret = document.createElement('div'); caret.className = 'drop-caret'; el.style.position = 'relative'; el.appendChild(caret); }
-    const range = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
-    if (range) {
-      const rects = range.getClientRects();
-      const elRect = el.getBoundingClientRect();
-      if (rects.length > 0) {
-        caret.style.top = (rects[0].bottom - elRect.top + el.scrollTop) + 'px';
-      } else {
-        caret.style.top = (e.clientY - elRect.top + el.scrollTop) + 'px';
-      }
-      caret.style.display = '';
+    // 挿入位置の線は共通実装（gb-dnd.js）へ委譲する。旧実装はここに同じ計算を
+    // 複製しており、縦書き対応のような修正が片方だけに入る温床になっていた。
+    if (typeof MeldexDnD !== 'undefined' && MeldexDnD.showDropCaret) {
+      MeldexDnD.showDropCaret(el, e);
     }
   });
   el.addEventListener('dragleave', (e) => {
@@ -60,10 +52,20 @@
     }
 
     // フォルダツリーからのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
+    const nodeResolved = typeof MeldexDnD !== 'undefined'
+      ? await MeldexDnD.resolveDropData(e, 'node') : null;
+    const cfData = nodeResolved
+      ? JSON.stringify(nodeResolved.payload)
+      : e.dataTransfer.getData('application/x-meldex-node');
     if (cfData) {
       try {
         const { name, path, type } = JSON.parse(cfData);
+        if (typeof MeldexDnD !== 'undefined' && MeldexDnD.insertNodeAtEditableRange
+            && MeldexDnD.insertNodeAtEditableRange(el, { name, path, type }, insertRange)) {
+          draggedNode = null;
+          MeldexDnD.completeDrop(nodeResolved);
+          return;
+        }
         if (type === 'image' || type === 'video' || type === 'audio') {
           // 画像/動画/音声: メディア埋め込みを挿入
           const ext = (path || '').split('.').pop().toLowerCase();
@@ -72,8 +74,16 @@
             const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
               `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`);
+          } else if (type === 'video' || ['mp4','m4v','mov','webm','ogv','avi','mkv','wmv','mpg','mpeg'].includes(ext)) {
+            const videoUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><video controls preload="metadata" src="${videoUrl}"></video></div>`);
+          } else if (type === 'audio') {
+            const audioUrl = '/api/file-raw?path=' + encodeURIComponent(path);
+            document.execCommand('insertHTML', false,
+              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><audio controls preload="metadata" src="${audioUrl}"></audio></div>`);
           } else {
-            // 動画/音声: リンクとして挿入
+            // 未知の媒体はパスリンクとして挿入
             document.execCommand('insertHTML', false,
               `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide('paperclip',12)} ${esc(name)}</span> `);
           }
@@ -83,7 +93,11 @@
           document.execCommand('insertHTML', false,
             `<span class="auto-link" data-path="${esc(path)}" style="color:var(--accent);text-decoration:underline;cursor:pointer;">${lucide(icon,12)} ${esc(name)}</span> `);
         }
-      } catch(err) {}
+        if (nodeResolved) MeldexDnD.completeDrop(nodeResolved);
+      } catch(err) {
+        if (nodeResolved) MeldexDnD.failDrop(nodeResolved);
+        if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
+      }
       draggedNode = null;
       return;
     }
@@ -109,6 +123,7 @@
     }
   });
 }
+window.MeldexSetupEditableDropHandler = setupEditableDropHandler;
 // page-content と entity-freetext にドロップハンドラを設定
 setupEditableDropHandler(document.getElementById('page-content'));
 setupEditableDropHandler(document.getElementById('entity-freetext'));
@@ -121,9 +136,9 @@ function setupEditableDragSource(el) {
     const text = sel ? sel.toString() : '';
     if (!text) return;
     e.dataTransfer.setData('text/plain', text);
-    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify({
-      text, sourcePath: el.dataset.path || ''
-    }));
+    const payload = { text, sourcePath: el.dataset.path || '' };
+    e.dataTransfer.setData('application/x-meldex-text', JSON.stringify(payload));
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'text');
     e.dataTransfer.effectAllowed = 'copyMove';
   });
 }

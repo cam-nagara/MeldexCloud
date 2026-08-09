@@ -140,7 +140,7 @@ function _fsResolveSections(ctx, spec) {
       {
         title: 'レイアウト',
         rows: [
-          { label: '左右余白', fields: pick(['--page-margin-x']), preview: false },
+          { label: '余白', fields: pick(['--page-margin-x']), preview: false },
           { label: '内容最大幅', fields: pick(['--page-content-max-width']), preview: false },
         ],
       },

@@ -1035,6 +1035,16 @@ function _linkContextItemId(label) {
     .replace(/^-+|-+$/g, '');
 }
 
+async function _copyLinkContextPath(linkTarget) {
+  const path = String(linkTarget?.path || '').trim();
+  if (!path) return;
+  const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+  const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
+  if (typeof showStatus === 'function') {
+    showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+  }
+}
+
 function _showLinkContextMenu(e, linkTarget) {
   if (!linkTarget?.path) return;
   removeTooltip();
@@ -1077,6 +1087,7 @@ function _showLinkContextMenu(e, linkTarget) {
     if (typeof linkTarget.openAction === 'function') linkTarget.openAction();
     else openLink(linkTarget.path, linkTarget.label);
   });
+  addItem('copy', 'パスをコピー', () => _copyLinkContextPath(linkTarget));
   const browserUrl = String(linkTarget.path || '').trim();
   const isExternalContextUrl = /^https?:\/\//i.test(browserUrl);
   if (isExternalContextUrl) {

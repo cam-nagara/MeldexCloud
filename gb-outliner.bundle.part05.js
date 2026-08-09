@@ -1,3 +1,285 @@
+          before,
+          sortPath + ' / ' + o.label,
+          sortHistoryKeys
+        );
+        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
+          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
+          renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+        }
+        const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
+        if (childrenDiv) {
+          if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(childrenDiv);
+          childrenDiv.innerHTML = '';
+          childrenDiv.dataset.loaded = 'false';
+        }
+        const toggle = nodeEl.querySelector('.tree-toggle');
+        if (toggle && toggle.dataset.expanded === 'true') {
+          toggle.dataset.expanded = 'false'; toggle.click();
+        }
+        },
+      });
+    });
+    addSep();
+  }
+
+  // --- 削除（エントリ以外、ロック中は無効） ---
+  if (!isEntity && !_locked && !nodeData._isRoot) {
+    addSep();
+    const delLabel = isMulti ? `削除（${selectedCount}件）` : '削除';
+    addMenuItem(delLabel, deleteContextItems, 'danger', 'trash2');
+  }
+
+  // --- スプリットビュー ---
+  if (!isMulti && isDB && nodeData.path && typeof isSplitActive === 'function' && _isOutlinerFreeLayoutUiEnabled()) {
+    addSep();
+    if (isSplitActive()) {
+      addMenuItem('別の作業領域で開く', () => { closeTreeContextMenu(); openDbInOtherPane(nodeData.path); }, null, 'columns');
+    } else {
+      addMenuItem('スプリットで開く', () => { closeTreeContextMenu(); openInNewSplit(nodeData.path); }, null, 'columns');
+    }
+  }
+
+  _outlinerPlaceContextMenu(menu);
+
+  // OSシェルメニュー項目を非同期追加
+  if (nodeData.path && typeof appendShellVerbsToMenu === 'function') {
+    appendShellVerbsToMenu(menu, nodeData.path, { editingLocked: _locked });
+  }
+}
+
+// 追加先の親パスを決定
+function getAddParentPath(nodeEl, nodeData, options = {}) {
+  const isContainer = nodeData.type === 'folder' || nodeData.type === 'database';
+  if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
+  if (nodeData._isRoot && nodeData.path) return nodeData.path;
+  if (isContainer) {
+    // フォルダ/DBが展開中ならその中、閉じているなら同階層
+    const toggle = nodeEl.querySelector('.tree-toggle');
+    if (toggle && toggle.dataset.expanded === 'true') return nodeData.path;
+  }
+  // ファイルやエントリ、閉じたフォルダ → 親フォルダのパス
+  const parentContainer = nodeEl.parentElement;
+  const parentNode = parentContainer?.closest('.tree-node');
+  if (parentNode && parentNode._nodeData) return parentNode._nodeData.path;
+  // ホーム内のルート直下ノード → ホームフォルダパスを返す
+  if (nodeEl.closest('#body-home') && _homeFolderPath) return _homeFolderPath;
+  return ''; // ソースフォルダルート
+}
+
+// 選択中の全ノードに色を適用
+function applyColorToSelection(color) {
+  const before = captureOutlinerSettingsHistory([NODE_COLORS_KEY]);
+  const detail = [...treeSelection.items]
+    .map(nodeEl => nodeEl._nodeData?.path || nodeEl._nodeData?.name || '')
+    .filter(Boolean)
+    .join(', ');
+  treeSelection.items.forEach(nodeEl => {
+    const data = nodeEl._nodeData;
+    if (!data) return;
+    const row = nodeEl.querySelector('.tree-node-row');
+    if (row) applyNodeColor(row, color);
+    if (data.path) setNodeColor(data.path, color);
+  });
+  pushOutlinerSettingsHistory(
+    color ? 'フォルダツリー: 色設定' : 'フォルダツリー: 色リセット',
+    before,
+    detail,
+    [NODE_COLORS_KEY]
+  );
+  showStatus(color ? '色を設定しました' : '色をリセットしました');
+}
+
+/* ==============================
+   タイムアウト事後確認（作成・リネーム共通）
+   ============================== */
+// APIタイムアウト時のポーリング間隔。合計30秒で打ち切る
+const OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS = [2000, 4000, 8000, 16000];
+// 同一キーの事後確認ポーリングが二重に走らないようにする
+const _outlinerPostTimeoutConfirmInFlight = new Set();
+
+// E2Eから待機時間を短縮できるようにする（通常はundefinedで既定値）
+function _outlinerPostTimeoutConfirmDelays() {
+  const o = window.__outlinerPostTimeoutConfirmDelaysForE2E;
+  return (Array.isArray(o) && o.length) ? o : OUTLINER_POST_TIMEOUT_CONFIRM_DELAYS_MS;
+}
+
+// 親フォルダの一覧をフロントキャッシュを避けて取得する（root/sourceIdはcontextNodeElの祖先から推定）
+async function _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl) {
+  const sourceId = contextNodeEl?._nodeData?.sourceId || '';
+  let rootPath = '';
+  let cur = contextNodeEl || null;
+  while (cur) {
+    if (cur._nodeData?._isRoot) { rootPath = cur._nodeData.path; break; }
+    cur = cur.parentElement ? cur.parentElement.closest('.tree-node') : null;
+  }
+  const rootParam = rootPath ? '&root=' + encodeURIComponent(rootPath) : '';
+  const sourceParam = sourceId ? '&sourceId=' + encodeURIComponent(sourceId) : '';
+  try {
+    return await apiFetch('/browse?path=' + encodeURIComponent(parentPath || '') + rootParam + sourceParam + '&all_files=true',
+      { skipBrowseCache: true, cache: 'reload' });
+  } catch {
+    return null;
+  }
+}
+
+// 一覧から旧名が消え新名が現れたことを確認する（リネームの事後確認用）。
+// oldDisplayName は拡張子を含まない表示名（/browse の name と同じ規約）を渡すこと
+function _outlinerFindRenamedItem(items, oldDisplayName, newName) {
+  if (!Array.isArray(items)) return null;
+  if (oldDisplayName && oldDisplayName !== newName && items.some(it => it && it.name === oldDisplayName)) return null;
+  return items.find(it => it && it.name === newName) || null;
+}
+
+function _resolveOutlinerCreateInsertTarget(parentPath, options) {
+  const expandUnloaded = options?.expandUnloaded !== false;
+  let container;
+  let deferTreeInsert = false;
+  if (parentPath) {
+    const parentNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(parentPath) : null;
+    if (parentNode) {
+      const childrenDiv = parentNode.querySelector(':scope > .tree-children');
+      if (childrenDiv) {
+        const toggle = parentNode.querySelector('.tree-toggle');
+        if (childrenDiv.dataset.loaded === 'false') {
+          deferTreeInsert = true;
+          if (expandUnloaded && toggle && toggle.dataset.expanded !== 'true') toggle.click();
+        } else {
+          childrenDiv.classList.remove('collapsed');
+          if (toggle) { toggle.classList.add('expanded'); toggle.dataset.expanded = 'true'; }
+          container = childrenDiv;
+        }
+      }
+    }
+    if (!container && _homeFolderPath && parentPath === _homeFolderPath) {
+      container = document.getElementById('body-home');
+    }
+    // 親ノードがDOM上に見つからず、ホームフォルダにも該当しない場合はルートへ誤挿入せず
+    // 「挿入先不明」を返す。呼び出し元は誤挿入せず全体再読込に委ねる
+    if (!container && !deferTreeInsert) return { container: null, deferTreeInsert: false };
+  }
+  if (!container && !deferTreeInsert) container = document.getElementById('outliner-tree');
+  return { container, deferTreeInsert };
+}
+
+function _insertOutlinerCreateNode(container, newNode) {
+  if (!container || !newNode) return;
+  const sel = treeSelection.lastClicked;
+  if (sel && sel._nodeData && sel.parentElement === container) {
+    const selType = sel._nodeData.type;
+    if (selType !== 'folder' && selType !== 'database') {
+      container.insertBefore(newNode, sel.nextSibling);
+      return;
+    }
+  }
+  container.appendChild(newNode);
+}
+
+function _selectOutlinerCreateNode(newNode) {
+  if (!newNode) return;
+  treeSelection.clear();
+  treeSelection.add(newNode);
+  treeSelection.lastClicked = newNode;
+  document.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+  newNode.querySelector('.tree-node-row')?.classList.add('active');
+}
+
+function _createOutlinerPendingCreateNode(type, label) {
+  const item = {
+    name: label || '無題',
+    type,
+    path: '__meldex_pending_create_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+    _pendingCreate: true,
+  };
+  const node = createTreeNodeFromBrowse(item);
+  node.classList.add('tree-node-pending-create');
+  const row = node.querySelector(':scope > .tree-node-row');
+  const labelEl = node.querySelector(':scope > .tree-node-row .tree-label');
+  if (row) {
+    row.draggable = false;
+    row.style.opacity = '0.62';
+    row.style.fontStyle = 'italic';
+  }
+  if (labelEl) labelEl.textContent = (label || '無題') + '（作成中）';
+  const block = (e) => { e.preventDefault(); e.stopPropagation(); };
+  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(eventName => {
+    node.addEventListener(eventName, block, true);
+  });
+  return node;
+}
+
+function _openOutlinerCreatedNode(nd, name) {
+  const _expOpts = { fromExplorer: true };
+  if (nd.type === 'page') openPage(name, nd.path, _expOpts);
+  else if (nd.type === 'board') openBoard(name, nd.path, _expOpts);
+  else if (nd.type === 'scriptnote' || (typeof isScriptNotePath === 'function' && isScriptNotePath(nd.path))) {
+    if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts);
+  }
+  else if (nd.type === 'scenario') { if (typeof openScenarioInScriptNote === 'function') openScenarioInScriptNote(nd.path, name, _expOpts); }
+  else if (nd.type === 'database') selectDatabase(nd.path, null, _expOpts);
+  else if (nd.type === 'smart-db') { if (typeof openSmartDbFile === 'function') openSmartDbFile(name, nd.path, _expOpts); }
+  else if (nd.type === 'calendar') { if (typeof openCalendarFile === 'function') openCalendarFile(name, nd.path, _expOpts); }
+}
+
+// 追加API呼び出し前の既存子ノード名（事後確認での新規判定に使用）
+function _outlinerSnapshotChildNames(container) {
+  const names = new Set();
+  container.querySelectorAll(':scope > .tree-node').forEach(node => {
+    const d = node._nodeData;
+    if (d && !d._pendingCreate && d.name) names.add(d.name);
+  });
+  return names;
+}
+
+// 一覧からタイプが一致し事前集合に無い項目を探す（作成の事後確認用）。
+// 事前集合が無い場合は新規判定ができないため常にnullを返す（誤検出防止）
+function _outlinerFindNewItemInListing(items, type, existingNames) {
+  if (!Array.isArray(items) || !(existingNames instanceof Set)) return null;
+  return items.find(it => it && it.type === type && it.name && !existingNames.has(it.name)) || null;
+}
+
+// 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
+function _outlinerApplyCreateSuccess(pendingNode, found) {
+  showStatus(`「${found.name}」を作成しました`);
+  if (!pendingNode || !pendingNode.parentNode) return;
+  const newNode = createTreeNodeFromBrowse(found);
+  pendingNode.replaceWith(newNode);
+  _selectOutlinerCreateNode(newNode);
+}
+
+// 挿入先が解決できない場合の後始末（誤挿入せず全体再読込に委ねる）
+async function _outlinerCreateFallbackToReload(pendingNode, nd, name) {
+  if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+  await loadOutliner();
+  _openOutlinerCreatedNode(nd, name);
+}
+
+// 作成APIタイムアウト時の事後確認: 親フォルダを再取得し、事前集合に無い同タイプの新項目を探す
+async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, existingNames) {
+  const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
+  if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
+  _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  try {
+    showStatus('作成に時間がかかっています。結果を確認中…');
+    const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
+    for (const delay of _outlinerPostTimeoutConfirmDelays()) {
+      await new Promise(r => setTimeout(r, delay));
+      const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+      const found = _outlinerFindNewItemInListing(items, type, existingNames);
+      if (found) { _outlinerApplyCreateSuccess(pendingNode, found); return; }
+    }
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+    const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
+    const found = _outlinerFindNewItemInListing(items, type, existingNames);
+    if (pendingNode && pendingNode.parentNode) pendingNode.remove();
+    if (found) showStatus(`「${found.name}」を作成しました`);
+    else showStatus('作成の結果を確認できませんでした。フォルダツリーをご確認ください', true);
+  } finally {
+    _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
+  }
+}
+
 // アイテムを指定パス配下に追加（部分更新、チラつき防止）
 async function addItemAt(parentPath, type) {
   if (_isCloudPhase1BlockedCreateType(type)) {
@@ -616,258 +898,3 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
   const scrollTargets = ['tree-scroll-container'];
   scrollTargets.forEach(id => {
     const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });
-})();
-
-(function initOutlinerLassoSelection() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  const LASSO_DRAG_THRESHOLD = 4;
-  let active = false;
-  let tracking = false;
-  let box = null;
-  let startX = 0;
-  let startY = 0;
-  let startClientX = 0;
-  let startClientY = 0;
-  let selectionMode = 'replace';
-  let selectionScope = '#outliner-tree,#body-home';
-  let baseSelection = [];
-  let pointerId = null;
-  let pointerCaptured = false;
-  let _savedScrollerPosition = null;
-
-  function _outlinerLassoMode(event) {
-    if (event.ctrlKey || event.metaKey) return 'toggle';
-    if (event.shiftKey) return 'add';
-    return 'replace';
-  }
-
-  function _outlinerLassoScopeFromTarget(target) {
-    if (target?.closest?.('#body-home')) return '#body-home';
-    if (target?.closest?.('#body-workspaces')) return '#body-workspaces';
-    if (target?.closest?.('#outliner-tree')) return '#outliner-tree';
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-home') return '#body-home';
-    if (section?.id === 'section-workspaces') return '#body-workspaces';
-    if (section?.id === 'section-roots') return '#outliner-tree';
-    return '#outliner-tree,#body-home';
-  }
-
-  // 空白ヒットテスト（§2.5・§4.1-2）: gb-outliner-input.js の共通入力判定モジュールへ委譲する。
-  // 「明示コントロール」「項目行」のいずれでもない場合だけ矩形選択の待機対象にする。
-  // 項目行（.tree-node-row）からの押下は、選択状態やmodifierキーに関わらず、
-  // 矩形選択に一切入らない（ネイティブHTML5ドラッグ = 項目移動に判定を委ねる）。
-  function _outlinerLassoIsBlankTarget(target) {
-    if (window.GBOutlinerInput?.classifyPointerTarget) {
-      return window.GBOutlinerInput.classifyPointerTarget(target) === 'blank';
-    }
-    // gb-outliner-input.js 未読込時のフォールバック（読み込み順に依存しないための保険）
-    if (target?.closest?.('.tree-hover-btn, .tree-toggle, .tree-node-row, .sidebar-section-header, .fav-item, input, textarea, button, select, [contenteditable="true"]')) return false;
-    if (target?.closest?.('#outliner-tree, #body-home, #body-workspaces')) return true;
-    const section = target?.closest?.('.sidebar-section');
-    if (section?.id === 'section-workspaces') return true;
-    return section?.id === 'section-roots' || section?.id === 'section-home';
-  }
-
-  function _outlinerLassoRectForEvent(event) {
-    const rect = scroller.getBoundingClientRect();
-    const currentX = event.clientX - rect.left + scroller.scrollLeft;
-    const currentY = event.clientY - rect.top + scroller.scrollTop;
-    const left = Math.min(startX, currentX);
-    const top = Math.min(startY, currentY);
-    const width = Math.abs(currentX - startX);
-    const height = Math.abs(currentY - startY);
-    return { left, top, right: left + width, bottom: top + height, width, height };
-  }
-
-  function _outlinerLassoRowRect(row) {
-    const rowRect = row.getBoundingClientRect();
-    const scrollerRect = scroller.getBoundingClientRect();
-    return {
-      left: rowRect.left - scrollerRect.left + scroller.scrollLeft,
-      top: rowRect.top - scrollerRect.top + scroller.scrollTop,
-      right: rowRect.left - scrollerRect.left + scroller.scrollLeft + rowRect.width,
-      bottom: rowRect.top - scrollerRect.top + scroller.scrollTop + rowRect.height,
-    };
-  }
-
-  function _outlinerRectsOverlap(a, b) {
-    return !(b.right < a.left || b.left > a.right || b.bottom < a.top || b.top > a.bottom);
-  }
-
-  const updateSelection = (lassoRect) => {
-    const base = new Set(baseSelection.filter(node => node?.isConnected));
-    const hitNodes = [];
-    treeSelection.clear();
-    base.forEach(node => treeSelection.add(node));
-    _getVisibleTreeNodes(selectionScope).forEach(nodeEl => {
-      const row = nodeEl.querySelector('.tree-node-row');
-      if (!row) return;
-      if (!_outlinerRectsOverlap(lassoRect, _outlinerLassoRowRect(row))) return;
-      hitNodes.push(nodeEl);
-      if (selectionMode === 'toggle' && base.has(nodeEl)) treeSelection.remove(nodeEl);
-      else treeSelection.add(nodeEl);
-    });
-    treeSelection.lastClicked = hitNodes[hitNodes.length - 1] || [...treeSelection.items].pop() || treeSelection.lastClicked;
-    if (treeSelection.items.size > 1) showStatus(treeSelection.items.size + ' 件選択中');
-    // 仮想化コンテナ（フォルダツリー改修Phase3）: 現在マウントされていない行も、
-    // 矩形の論理Y範囲から該当する表示モデルの行を求めて選択状態に反映する（§2.5）。
-    if (window.GBOutlinerVirtualRender?.applyLassoSelection) {
-      const basePaths = new Set([...base].map(node => node?._nodeData?.path).filter(Boolean));
-      window.GBOutlinerVirtualRender.applyLassoSelection({
-        lassoRect, scope: selectionScope, mode: selectionMode, basePaths,
-      });
-    }
-  };
-
-  const beginLasso = (event) => {
-    if (active) return;
-    active = true;
-    if (!pointerCaptured && pointerId != null && scroller.setPointerCapture) {
-      try {
-        scroller.setPointerCapture(pointerId);
-        pointerCaptured = true;
-      } catch {}
-    }
-    box = document.createElement('div');
-    box.className = 'outliner-lasso-box';
-    _savedScrollerPosition = scroller.style.position;
-    scroller.style.position = 'relative';
-    scroller.appendChild(box);
-    if (selectionMode === 'replace') treeSelection.clear();
-    updateSelection(_outlinerLassoRectForEvent(event));
-  };
-
-  const endLasso = () => {
-    if (!tracking && !active) return;
-    const wasActive = active;
-    active = false;
-    tracking = false;
-    removeDocumentPointerEndHandlers();
-    box?.remove();
-    box = null;
-    if (pointerCaptured && pointerId != null && scroller.releasePointerCapture) {
-      try { scroller.releasePointerCapture(pointerId); } catch {}
-    }
-    pointerId = null;
-    pointerCaptured = false;
-    // pointerdown で設定した inline position を元に戻す
-    if (_savedScrollerPosition !== null) {
-      scroller.style.position = _savedScrollerPosition;
-      _savedScrollerPosition = null;
-    }
-    // 矩形選択は空白からしか開始しない（§2.5）ため、項目行クリックとの競合は起こらず、
-    // 行クリック抑止のための暫定フラグ（フォルダツリー改修Phase 2で撤去済み）は不要になった。
-    if (!wasActive && selectionMode === 'replace') treeSelection.clear();
-  };
-
-  function addDocumentPointerEndHandlers() {
-    document.addEventListener('pointerup', endLasso, true);
-    document.addEventListener('pointercancel', endLasso, true);
-  }
-
-  function removeDocumentPointerEndHandlers() {
-    document.removeEventListener('pointerup', endLasso, true);
-    document.removeEventListener('pointercancel', endLasso, true);
-  }
-
-  scroller.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    if (e.pointerType && e.pointerType !== 'mouse') return;
-    // 空白ヒットテスト（§2.5）: 明示コントロール・項目行のいずれでもない場合だけ矩形選択を待機する。
-    // 項目行から始まるドラッグは、選択状態やmodifierキーに関わらず矩形選択に一切入らない
-    // （ネイティブHTML5ドラッグ = 項目移動にそのまま委ねる。行のdraggable属性を一時的に
-    //   書き換えて競合を避ける旧来の暫定機構は撤去済み）。
-    if (!_outlinerLassoIsBlankTarget(e.target)) return;
-    selectionMode = _outlinerLassoMode(e);
-    tracking = true;
-    active = false;
-    addDocumentPointerEndHandlers();
-    pointerId = e.pointerId;
-    pointerCaptured = false;
-    selectionScope = _outlinerLassoScopeFromTarget(e.target);
-    baseSelection = selectionMode === 'replace' ? [] : [...treeSelection.items];
-    const rect = scroller.getBoundingClientRect();
-    startX = e.clientX - rect.left + scroller.scrollLeft;
-    startY = e.clientY - rect.top + scroller.scrollTop;
-    startClientX = e.clientX;
-    startClientY = e.clientY;
-  });
-
-  scroller.addEventListener('pointermove', (e) => {
-    if (!tracking) return;
-    const distance = Math.max(Math.abs(e.clientX - startClientX), Math.abs(e.clientY - startClientY));
-    if (!active && distance < LASSO_DRAG_THRESHOLD) return;
-    beginLasso(e);
-    const rect = _outlinerLassoRectForEvent(e);
-    const { left, top, width, height } = rect;
-    box.style.left = left + 'px';
-    box.style.top = top + 'px';
-    box.style.width = width + 'px';
-    box.style.height = height + 'px';
-    updateSelection(rect);
-    e.preventDefault();
-  });
-  scroller.addEventListener('pointerup', endLasso);
-  scroller.addEventListener('pointercancel', endLasso);
-})();
-
-function _readOutlinerDroppedFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = ev => resolve(ev.target.result);
-    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
-    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function _uploadOutlinerDroppedFile(file, parentPath) {
-  try {
-    const data = await _readOutlinerDroppedFile(file);
-    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, filename: file.name }),
-    });
-    return { ok: true, name: file.name };
-  } catch (error) {
-    return {
-      ok: false,
-      name: file?.name || 'ファイル',
-      error: error?.message ? String(error.message) : '取り込みに失敗しました',
-    };
-  }
-}
-
-document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
-  e.preventDefault();
-  const files = Array.from(e.dataTransfer.files || []); if (!files.length) return;
-  let parentPath = '';
-  // ドロップ先のフォルダを検出
-  const nodeEl = e.target?.closest?.('.tree-node');
-  if (nodeEl && nodeEl._nodeData) {
-    const nd = nodeEl._nodeData;
-    if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
-    else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
-  }
-  showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await Promise.all(files.map(file => _uploadOutlinerDroppedFile(file, parentPath)));
-  await loadOutliner();
-  const succeeded = results.filter(result => result.ok);
-  const failed = results.filter(result => !result.ok);
-  if (failed.length) {
-    const names = failed.slice(0, 3).map(result => result.name).join('、');
-    const suffix = failed.length > 3 ? ` ほか${failed.length - 3}件` : '';
-    showStatus(`${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`, true);
-  } else {
-    showStatus(files.length + '個のファイルをインポートしました');
-  }
-});

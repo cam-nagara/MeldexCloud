@@ -52,7 +52,7 @@
   function _openSampleGuide() {
     _setOnboardingActive(false);
     document.getElementById('meldex-onboarding-overlay')?.remove();
-    if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+    if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
       openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
       return;
     }
@@ -199,7 +199,6 @@
     } catch {}
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     if (typeof showStatus === 'function') showStatus('ホームフォルダを変更しました');
-    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
     return path;
   }
 
@@ -241,7 +240,7 @@
       return;
     }
     else if (action === 'sample-download') { _openSampleDownload(); return; }
-    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'onboarding-samples', homePath: _homePath() }); return; }
+    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.installNow?.({ trigger: 'onboarding-samples', homePath: _homePath() }); return; }
     else if (action === 'sample-guide') { _openSampleGuide(); return; }
     else if (action === 'consent') { _showConsentFromOnboarding(); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }

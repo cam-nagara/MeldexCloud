@@ -108,6 +108,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     pages: [
       { id: 'trash', label: 'ゴミ箱', panels: ['ゴミ箱'], view: 'trash' },
       { id: 'database', label: 'データ保守', panels: ['データベース'], view: 'database' },
+      { id: 'duplicates', label: '重複検出', panels: ['データベース'], view: 'duplicates' },
     ],
   },
   {
@@ -172,15 +173,15 @@ function _settingsAutoTagPageVisible() {
     return window.isAutoTagRuntimeAvailable();
   }
   const standalone = /(?:^|\/)[^/?#]*-standalone\.html$/i.test(location.pathname || '');
-  const dropbox = window.MeldexRuntimeAdapter?.isDropboxMode?.()
-    || document.body?.dataset?.cloudMode === 'dropbox';
+  const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
+    || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
   const server = window.MeldexRuntimeAdapter?.isServerMode?.()
     || document.body?.dataset?.cloudMode === 'server';
   if (standalone) return false;
   if (server) return true;
   const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
     && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
-  return !dropbox && !cloudStatic;
+  return !cloudMode && !cloudStatic;
 }
 
 function _settingsNavigationRuntimeTabs() {
@@ -276,7 +277,7 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 0 ソースフォルダ
     'storage',   // 1 #settings-cloud-link-card（Dropbox 状態カード）
     'storage',   // 2 ホームフォルダ
-    'connect',   // 3 スマホ・タブレットからの接続
+    'connect',   // 3 スマホ・タブレットからの接続（接続タブへ移設）
     'connect',   // 4 保存の仕組み・共有サーバー
     'setup',     // 5 ファイルを開くアプリ
     'setup',     // 6 サンプルデータ
@@ -315,6 +316,11 @@ function _tagSettingsNavigationSections(root = document) {
     'web-clipper',
     'notion-sync',
     'extensions',
+  ]);
+  _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="データベース"]'), [
+    'database',
+    'database',
+    'duplicates',
   ]);
 }
 

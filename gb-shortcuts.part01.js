@@ -174,6 +174,14 @@ const GB_SHORTCUTS = {
 
 const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
 
+// 一覧・カスタム設定・設定UIは gb-shortcut-registry.js（キー配送を持たない共通モジュール）が持つ。
+// このファイルは「本体の全ショートカット表」と「実際の処理・配送」を担当する。
+// 単独ビューワーやクイックメモのように自前でキーを処理するアプリは、このファイルを読まずに
+// レジストリへ自分のキーだけ登録する。
+if (typeof window !== 'undefined' && window.MeldexShortcutRegistry) {
+  window.MeldexShortcutRegistry.register(GB_SHORTCUTS);
+}
+
 
 // === Part 1-2: スコープ解決 ===
 
@@ -237,49 +245,18 @@ function _resolveShortcutScope(e) {
 
 // === Part 1-3: キー判定ヘルパー ===
 
-const _MODIFIER_KEYS = new Set(['control', 'shift', 'alt', 'meta']);
-
-// Shift+数字キーの記号→数字マッピング（US配列基準）
-const _SHIFT_DIGIT_MAP = { '!':'1', '@':'2', '#':'3', '$':'4', '%':'5', '^':'6', '&':'7', '*':'8', '(':'9', ')':'0' };
+// キーの正規化・表示・保存の実装は gb-shortcut-registry.js に一本化した。
+// 既存の呼び出し箇所を変えずに済むよう、同名の薄いラッパーだけ残す。
+function _shortcutRegistry() {
+  return typeof window !== 'undefined' ? window.MeldexShortcutRegistry : null;
+}
 
 function _normalizeKeyEvent(e) {
-  const rawKey = typeof e?.key === 'string' ? e.key : '';
-  if (!rawKey) return null;
-  const key = rawKey.toLowerCase();
-  if (_MODIFIER_KEYS.has(key)) return null;
-  const mods = [];
-  if (e.altKey) mods.push('alt');
-  if (e.ctrlKey || e.metaKey) mods.push('ctrl');
-  if (e.shiftKey) mods.push('shift');
-  let mainKey = key;
-  if (mainKey === ' ') mainKey = 'space';
-  if (mainKey === '+') {
-    mainKey = '=';
-    const shiftIdx = mods.indexOf('shift');
-    if (shiftIdx >= 0) mods.splice(shiftIdx, 1);
-  }
-  if (e.shiftKey && e.code === 'Backquote') mainKey = '`';
-  // Shift+数字キー: e.keyは記号になるが、e.codeから元の数字を復元
-  if (e.shiftKey && e.code && e.code.startsWith('Digit')) {
-    mainKey = e.code.charAt(5); // 'Digit1' → '1'
-  }
-  // Shift+記号キーのフォールバック（e.codeが使えない場合）
-  if (e.shiftKey && _SHIFT_DIGIT_MAP[mainKey]) {
-    mainKey = _SHIFT_DIGIT_MAP[mainKey];
-  }
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyEvent(e) ?? null;
 }
 
 function _normalizeKeyDef(keyDef) {
-  const parts = keyDef.toLowerCase().replace(/\s/g, '').split('+');
-  const mods = [];
-  let mainKey = '';
-  for (const p of parts) {
-    if (['ctrl', 'shift', 'alt', 'meta'].includes(p)) mods.push(p);
-    else mainKey = p;
-  }
-  mods.sort();
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyDef(keyDef) ?? String(keyDef || '');
 }
 
 function _isNativeHardReloadShortcut(e) {
@@ -341,84 +318,31 @@ if (typeof window !== 'undefined') window.__meldexPerformHardReload = _performMe
 
 // 表示用: "ctrl+shift+a" → "Ctrl+Shift+A"
 function _formatKeyDisplay(keyStr) {
-  if (!keyStr) return '';
-  return keyStr.split('+').map(p => {
-    if (p === 'ctrl') return 'Ctrl';
-    if (p === 'shift') return 'Shift';
-    if (p === 'alt') return 'Alt';
-    if (p === 'meta') return 'Meta';
-    if (p === 'arrowup') return '↑';
-    if (p === 'arrowdown') return '↓';
-    if (p === 'arrowleft') return '←';
-    if (p === 'arrowright') return '→';
-    if (p === 'browserback') return '戻るボタン';
-    if (p === 'browserforward') return '進むボタン';
-    if (p === 'escape') return 'Esc';
-    if (p === 'enter') return 'Enter';
-    if (p === 'delete') return 'Del';
-    if (p === 'backspace') return 'BS';
-    if (p === 'tab') return 'Tab';
-    if (p === 'space') return 'Space';
-    if (p.length === 1) return p.toUpperCase();
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }).join('+');
+  return _shortcutRegistry()?.formatKey(keyStr) ?? String(keyStr || '');
 }
 
 
 // === Part 2-1: カスタム設定の保存 ===
 
-const _SHORTCUT_STORAGE_KEY = 'meldex-custom-shortcuts';
-
 function _getCustomShortcuts() {
-  try { return JSON.parse(localStorage.getItem(_SHORTCUT_STORAGE_KEY) || '{}'); } catch { return {}; }
+  return _shortcutRegistry()?.getCustom() ?? {};
 }
 
 function _shortcutKeyDisplay(keyStr) {
-  return keyStr ? _formatKeyDisplay(keyStr) : '未設定';
-}
-
-function _refreshShortcutSettingsAfterHistory() {
-  if (typeof _updateAllTooltips === 'function') _updateAllTooltips();
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  document.querySelectorAll('.shortcut-settings-wrap').forEach(wrap => {
-    const container = wrap.parentElement;
-    if (container && typeof renderShortcutSettings === 'function') renderShortcutSettings(container);
-  });
+  return _shortcutRegistry()?.keyDisplay(keyStr) ?? (keyStr || '未設定');
 }
 
 function _saveCustomShortcuts(custom, options) {
-  const before = (typeof captureLocalStorageSettings === 'function')
-    ? captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY])
-    : null;
-  localStorage.setItem(_SHORTCUT_STORAGE_KEY, JSON.stringify(custom));
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar();
-  if (typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar();
-  if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
-    pushLocalStorageSettingsHistory(
-      options?.label || '設定: ショートカット変更',
-      before,
-      captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY]),
-      options?.detail || '',
-      _refreshShortcutSettingsAfterHistory
-    );
-  }
+  _shortcutRegistry()?.saveCustom(custom, options);
 }
 
 function _getEffectiveShortcuts() {
-  const custom = _getCustomShortcuts();
-  const result = JSON.parse(JSON.stringify(GB_SHORTCUTS));
-  for (const [id, overrides] of Object.entries(custom)) {
-    if (result[id]) result[id].key = overrides.key;
-  }
-  return result;
+  return _shortcutRegistry()?.effective() ?? JSON.parse(JSON.stringify(GB_SHORTCUTS));
 }
 
 // 指定IDのショートカットの現在のキーを取得（ツールチップ用）
 function getShortcutKey(id) {
-  const custom = _getCustomShortcuts();
-  if (custom[id]) return custom[id].key;
-  return GB_SHORTCUTS[id]?.key || '';
+  return _shortcutRegistry()?.keyFor(id) ?? (GB_SHORTCUTS[id]?.key || '');
 }
 
 function _shortcutStatusItem(id, label) {
@@ -940,8 +864,8 @@ const _shortcutHandlers = {
     const edTarget = document.activeElement?.closest('[contenteditable="true"]');
     const sel = window.getSelection();
     if (!edTarget || !sel || sel.isCollapsed || !sel.toString().trim()) return false;
-    if (typeof showNoteRubyPopup !== 'function') return false;
-    showNoteRubyPopup(edTarget, sel.getRangeAt(0).cloneRange());
+    if (typeof MeldexNoteRuby === 'undefined') return false;
+    MeldexNoteRuby.insertRuby(edTarget, sel.getRangeAt(0).cloneRange());
   },
   'note.newParagraph': () => _insertParagraphAfterCurrentNoteBlock(),
 

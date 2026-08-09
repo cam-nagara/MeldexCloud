@@ -1,3 +1,21 @@
+  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    const data = sourceData || { points, pressures, width };
+    let el;
+    if (data.anchor) {
+      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
+      _applyAnchoredShape(el, type, data, color, opacity, false);
+    } else if (type === 'lasso') {
+      el = document.createElementNS(_svgNS, 'polygon');
+      el.setAttribute('points', points.map(p => p.join(',')).join(' '));
+      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
+      el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
+    } else {
+      el = document.createElementNS(_svgNS, 'path');
+      el.setAttribute('d', _pathD(points));
+      el.setAttribute('fill', 'none'); el.setAttribute('stroke', color);
+      el.setAttribute('stroke-width', _drawWidth(type, pressures, width));
+      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));
       el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
     }
     if (annId) el.dataset.annId = annId;
@@ -13,6 +31,37 @@
     if (annId) el.dataset.annId = annId;
     layer.appendChild(el);
     _trackAnchoredAnnotation(el, 'rect', data, color, opacity);
+    return el;
+  }
+
+  function _ellipseData(points) {
+    const rect = _rectData(points);
+    return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+  }
+
+  function _applyMarkupShapeEl(el, type, data, color, opacity, preview) {
+    const outlined = type === 'rect-line' || type === 'ellipse-line';
+    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
+    if (type.startsWith('ellipse')) {
+      el.setAttribute('cx', Number(data?.cx) || 0); el.setAttribute('cy', Number(data?.cy) || 0);
+      el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0)); el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+    } else {
+      el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
+      el.setAttribute('width', Math.max(1, Number(data?.width) || 0)); el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+    }
+    el.setAttribute('fill', outlined ? 'none' : color);
+    el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? .2 : .4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(normalizedOpacity));
+    el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || _ann.widths?.pen || 3)));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+    return el;
+  }
+
+  function _renderMarkupShape(type, data, color, opacity, annId) {
+    if (type === 'rect') return _renderRect(data, color, opacity, annId);
+    const el = _applyMarkupShapeEl(document.createElementNS(_svgNS, type.startsWith('ellipse') ? 'ellipse' : 'rect'), type, data, color, opacity, false);
+    if (annId) el.dataset.annId = annId;
+    layer.appendChild(el);
     return el;
   }
 
@@ -67,8 +116,8 @@
           _renderNote(item, data || {});
         } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
           return;
-        } else if (item.type === 'rect' && data?.width != null && data?.height != null) {
-          _renderRect(data, item.color, item.opacity, item.id);
+        } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
+          _renderMarkupShape(item.type, data, item.color, item.opacity, item.id);
         } else if (data?.points) {
           _renderStroke(item.type, data.points, data.pressures || [], item.color, item.opacity, item.id, data.width, data);
         }
@@ -80,10 +129,10 @@
       // 親が保存したストロークにIDを付与
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
-      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id])');
+      const els = layer.querySelectorAll('path:not([data-ann-id]), polygon:not([data-ann-id]), rect:not([data-ann-id]), ellipse:not([data-ann-id])');
       if (!targetEl && els.length > 0) targetEl = els[els.length - 1];
       if (targetEl && msg.annId) {
         targetEl.dataset.annId = msg.annId;
@@ -93,7 +142,7 @@
     if (msg.type === 'ann-stroke-save-failed') {
       let targetEl = null;
       if (msg.annClientId) {
-        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id]'))
+        targetEl = Array.from(layer.querySelectorAll('path[data-ann-client-id], polygon[data-ann-client-id], rect[data-ann-client-id], ellipse[data-ann-client-id]'))
           .find(el => el.dataset.annClientId === msg.annClientId) || null;
       }
       if (targetEl) targetEl.remove();
@@ -849,52 +898,3 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
   if (vertical) {
     const left = _popupClampValue(vertical.left, gap, maxLeft);
     const top = vertical.side === 'above'
-      ? Math.max(gap, avoid.top - Math.min(ph, vertical.space) - gap)
-      : avoid.bottom + gap;
-    return { left, top, maxHeight: Math.max(72, vertical.space) };
-  }
-
-  const horizontal = candidates
-    .filter(c => c.side === 'right' || c.side === 'left')
-    .filter(c => c.space >= 72)
-    .sort((a, b) => b.space - a.space)[0];
-  if (horizontal) {
-    const left = horizontal.side === 'left'
-      ? Math.max(gap, avoid.left - Math.min(pw, horizontal.space) - gap)
-      : avoid.right + gap;
-    const top = _popupClampValue(horizontal.top, gap, maxTop);
-    return { left, top, maxWidth: Math.max(72, horizontal.space) };
-  }
-
-  return {
-    left: _popupClampValue(baseLeft, gap, maxLeft),
-    top: _popupClampValue(baseTop, gap, maxTop),
-  };
-}
-
-function positionPopup(popup, anchorRect, options = {}) {
-  const z = _getZoom();
-  const vw = document.documentElement.clientWidth;
-  const vh = document.documentElement.clientHeight;
-  const gap = options.gap ?? 4;
-  const preferDirection = options.prefer || 'below'; // 'below' | 'right'
-  // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
-  const ar = _popupCssRect(anchorRect, z);
-  const avoid = _popupCssRect(options.avoidRect, z);
-  if (!ar) return;
-  // 非表示でDOMに追加して測定
-  popup.style.maxHeight = '';
-  popup.style.maxWidth = '';
-  popup.style.overflowY = '';
-  popup.style.overflowX = '';
-  popup.style.visibility = 'hidden';
-  if (!popup.parentNode) document.body.appendChild(popup);
-  const pw = popup.offsetWidth;
-  const ph = popup.offsetHeight;
-  let left, top;
-  if (preferDirection === 'right') {
-    // 右に表示、収まらなければ左
-    left = ar.right + gap;
-    if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
-    if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
-    top = ar.top;

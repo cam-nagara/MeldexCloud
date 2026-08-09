@@ -30,6 +30,8 @@
   <!-- ボード関連 CSS（本体と共有。ボードのスタイルは gb-tools.css に統合されている） -->
   <link rel="stylesheet" href="gb-tools.css">
   <link rel="stylesheet" href="gb-folder-multi-info.css">
+  <link rel="stylesheet" href="gb-file-metadata.css">
+  <link rel="stylesheet" href="gb-shortcut-registry.css">
 
   <!-- exe版の外周シェル -->
   <link rel="stylesheet" href="standalone-workspace-tree.css">
@@ -261,7 +263,9 @@
   <script src="standalone-app-bootstrap.js"></script>
   <script src="meldex-app-capabilities.js"></script>
   <script src="standalone-parity-adapter.js"></script>
-  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-shortcut-registry.js"></script>
+<script src="gb-file-metadata.js"></script>
+<script src="offline-bundles/gb-detail-panel.js"></script><script src="gb-detail-shortcuts-tab.js"></script>
 
   <!-- 3) ボードエンジン本体 -->
   <script src="gb-board-performance.js"></script>
@@ -318,6 +322,7 @@
   <script src="gb-board-immersive.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
+  <script src="standalone-always-on-top.js"></script>
   <script src="board-standalone-app.js"></script>
   <script src="offline-bundles/gb-shortcuts.js"></script>
 </body>

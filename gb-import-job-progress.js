@@ -152,6 +152,16 @@
     return phase + '… ' + count;
   }
 
+  // 残り時間の見込みを短い日本語にする。ジョブ進捗を出す画面で共有する。
+  function formatJobEta(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value < 60) return Math.ceil(value) + '秒';
+    if (value < 3600) return Math.ceil(value / 60) + '分';
+    if (value < 86400) return (value / 3600).toFixed(value < 36000 ? 1 : 0) + '時間';
+    return (value / 86400).toFixed(1) + '日';
+  }
+
   window.runBackgroundJob = runBackgroundJob;
   window.formatJobProgress = formatJobProgress;
+  window.formatJobEta = formatJobEta;
 })();

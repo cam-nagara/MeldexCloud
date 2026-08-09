@@ -245,8 +245,28 @@ async function _changeHomeFolder() {
     if (homeInput) homeInput.value = path;
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     showStatus('ホームフォルダを変更しました');
-    window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({ trigger: 'home-folder-changed', homePath: path });
   }
+}
+
+async function changeScreenshotFolder() {
+  if (!window.GBFolderPicker?.pickFolder) {
+    showStatus('フォルダ選択を利用できません', true);
+    return false;
+  }
+  const fallback = ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット');
+  const current = localStorage.getItem('meldex-screenshot-folder') || fallback;
+  const selected = await window.GBFolderPicker.pickFolder({
+    title: 'スクリーンショット保存先を選択',
+    confirmLabel: 'このフォルダを選択',
+    revealPath: current,
+    initialPath: current,
+  });
+  if (!selected?.path) return false;
+  localStorage.setItem('meldex-screenshot-folder', selected.path);
+  const input = document.getElementById('modal-screenshot-folder');
+  if (input) input.value = selected.path;
+  showStatus('スクリーンショット保存先を変更しました');
+  return true;
 }
 
 async function _promptFolderPath() {
@@ -551,53 +571,23 @@ function pushOutlinerRootsSettingsHistory(label, beforeSnapshot, afterSnapshot, 
 /* ==============================
    テーマプリセット
    ============================== */
-const THEME_PRESETS = {
-  'OSに合わせる': null, // 特殊テーマ: OS設定に応じてダーク/ライトを自動切替
-  'ダーク': {
-    '--bg':'#1e1e1e','--bg2':'#252525','--bg3':'#2d2d2d','--bg4':'#3e3e3e',
-    '--fg':'#d4d4d4','--fg2':'#969696','--accent':'#569cd6','--accent2':'#4ec9b0',
-    '--red':'#f44747','--green':'#6a9955','--orange':'#ce9178','--blue':'#6fa8dc',
-    '--border':'#333333','--selection':'#264f78',
-    '--db-th-fg':'#969696','--db-th-bg':'#2d2d2d','--db-entity-fg':'#d4d4d4','--db-entity-bg':'#1e1e1e',
-    '--db-cell-fg':'#d4d4d4','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#d4d4d4','--page-h1-fg':'#569cd6','--page-h2-fg':'#569cd6','--page-h3-fg':'#d4d4d4',
-    '--page-text-fg':'#d4d4d4','--page-text-bg':'#252525','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#969696','--page-quote-border':'var(--border)',
-  },
-  'ライト': {
-    '--bg':'#ffffff','--bg2':'#f5f5f5','--bg3':'#ebebeb','--bg4':'#d4d4d4',
-    '--fg':'#1e1e1e','--fg2':'#555555','--accent':'#0055aa','--accent2':'#007050',
-    '--red':'#c62828','--green':'#2e7d32','--orange':'#d84315','--blue':'#1565c0',
-    '--border':'#c0c0c0','--selection':'#bbdefb',
-    '--db-th-fg':'#555555','--db-th-bg':'#ebebeb','--db-entity-fg':'#1e1e1e','--db-entity-bg':'#ffffff',
-    '--db-cell-fg':'#1e1e1e','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#1e1e1e','--page-h1-fg':'#0055aa','--page-h2-fg':'#0055aa','--page-h3-fg':'#1e1e1e',
-    '--page-text-fg':'#1e1e1e','--page-text-bg':'#f5f5f5','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#555555','--page-quote-border':'var(--border)',
-  },
-  'パステル': {
-    '--bg':'#fdf9f6','--bg2':'#f5f0ff','--bg3':'#e8f4f0','--bg4':'#fce8ec',
-    '--fg':'#4a4458','--fg2':'#7a7090','--accent':'#9b59b6','--accent2':'#1abc9c',
-    '--red':'#e74c8b','--green':'#2ecc71','--orange':'#f39c12','--blue':'#3498db',
-    '--border':'#e0c8f0','--selection':'#d5e8ff',
-    '--db-th-fg':'#6a5090','--db-th-bg':'#e8f0d8','--db-entity-fg':'#5a4870','--db-entity-bg':'#fdf6f0',
-    '--db-cell-fg':'#4a4458','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#5a4870','--page-h1-fg':'#e74c8b','--page-h2-fg':'#3498db','--page-h3-fg':'#2ecc71',
-    '--page-text-fg':'#4a4458','--page-text-bg':'#fff8f0','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#9b59b6','--page-quote-border':'var(--border)',
-  },
-  'アースカラー': {
-    '--bg':'#1a1a14','--bg2':'#22221a','--bg3':'#2e2c22','--bg4':'#3e3a2e',
-    '--fg':'#d4c8a8','--fg2':'#b0a488','--accent':'#d4a030','--accent2':'#7aa030',
-    '--red':'#d06050','--green':'#90b870','--orange':'#d07830','--blue':'#6898b0',
-    '--border':'#3a3628','--selection':'#4a4228',
-    '--db-th-fg':'#b0a488','--db-th-bg':'#2e2c22','--db-entity-fg':'#d4c8a8','--db-entity-bg':'#1a1a14',
-    '--db-cell-fg':'#d4c8a8','--db-grid-border':'var(--border)','--db-active-color':'var(--editor-caret-color)',
-    '--page-title-fg':'#d4c8a8','--page-h1-fg':'#d4a030','--page-h2-fg':'#d4a030','--page-h3-fg':'#d4c8a8',
-    '--page-text-fg':'#d4c8a8','--page-text-bg':'#22221a','--page-link-fg':'var(--accent2)',
-    '--page-hr-color':'var(--border)','--page-quote-fg':'#b0a488','--page-quote-border':'var(--border)',
-  },
-};
+// テーマ管理（gb-theme-manager.js）が持つ現行の定義から組み立てる。
+// 以前はここに同じ名前の色一式を別途書き写しており、パステルの背景やライトの橙などが
+// 現行定義とわずかに食い違っていた。テーマ管理が使えない状況でこちらへ落ちると、
+// 同じ名前なのに少し違う色になる（クラウド版だけ見た目が違う、の再現経路）。
+// 写しを持たず、常に現行定義から導くことで食い違いを構造的に無くす。
+const THEME_PRESETS = (function () {
+  const presets = { 'OSに合わせる': null }; // 特殊テーマ: OS設定に応じてダーク/ライトを自動切替
+  try {
+    const builtIns = window.MeldexThemeManager?.getBuiltInThemes?.() || [];
+    builtIns.forEach((themeDef) => {
+      const name = String(themeDef?.name || '').trim();
+      const vars = themeDef?.ui?.cssVars;
+      if (name && vars && typeof vars === 'object') presets[name] = { ...vars };
+    });
+  } catch { /* テーマ管理が無い環境では「OSに合わせる」だけになる */ }
+  return presets;
+})();
 
 // 現在のテーマ名を推定（CSS変数の値で判定）
 function detectCurrentTheme() {
@@ -616,13 +606,11 @@ function detectCurrentTheme() {
 }
 
 // 現在のCSS変数のスナップショットを取得（キャンセル時の復元用）
-const UI_PRESET_FONTS = [
+// 既定のフォント一覧は gb-font-catalog.js を正本にする（写しを持つと環境ごとに
+// 選択肢がずれる）。読み込まれていない場合だけ同梱フォントの1件へ落とす。
+const UI_PRESET_FONTS = (globalThis.MeldexFontCatalog?.PRESET_FONTS || [
   { name: 'Noto Sans JP（デフォルト・同梱）', family: '' },
-  { name: 'Segoe UI', family: "'Segoe UI', sans-serif" },
-  { name: 'Yu Gothic UI', family: "'Yu Gothic UI', sans-serif" },
-  { name: 'Meiryo', family: "'Meiryo', sans-serif" },
-  { name: 'Noto Sans JP', family: "'Noto Sans JP', sans-serif" },
-];
+]).map(item => ({ ...item }));
 
 // OS にインストールされていそうな代表的フォントの候補。
 // 実際にインストールされているかは canvas 計測で判定し、インストール済みのものだけドロップダウンに追加する。
@@ -819,20 +807,21 @@ window.addEventListener('meldex:font-catalog-updated', () => {
 // v0.5.130: Google Fonts 動的ロードを廃止。プリセットはローカル同梱フォントとシステムフォントのみ。
 function loadGoogleFontForUI(_family) { /* no-op: retained as stub for backward-compat callers */ }
 
-function _noteContentHorizontalPaddingCss() {
-  return 'max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2))';
-}
-
 function _clampNoteContentMaxWidth(value) {
   let px = parseFloat(value);
   if (!Number.isFinite(px)) px = 1200;
   return Math.max(480, Math.min(3200, px));
 }
 
+// 本文の余白は gb-layout.part01.css（横書き）と gb-tools.part02.part02.css（縦書き）が
+// 論理プロパティで一元管理する。ここで物理プロパティ（paddingLeft/Right）を書き込むと
+// 縦書きで軸が入れ替わったときに横方向へ効き続けてしまうため、旧バージョンが書き込んだ
+// インライン値が残っていれば剥がすだけにする。--page-margin-x / --page-content-max-width の
+// 設定自体は applyNoteMargin() / applyNoteContentMaxWidth() が :root へ入れるので効く。
 function _applyNoteContentHorizontalPadding(pc) {
-  if (!pc) return;
-  const padding = _noteContentHorizontalPaddingCss();
-  pc.style.paddingLeft = pc.style.paddingRight = padding;
+  if (!pc || !pc.style) return;
+  pc.style.removeProperty('padding-left');
+  pc.style.removeProperty('padding-right');
 }
 
 function applyNoteMargin(px) {
@@ -867,7 +856,10 @@ function isDesktopInteractionRecoveryMode() {
   return false;
 }
 
-function applyUIScale(pct) {
+// options.source に 'manual' / 'auto' を渡すと、その表示サイズが「ユーザー自身が
+// 選んだ値」なのか「端末に合わせて自動で決めた値」なのかを記録する（gb-ui-scale.js）。
+// 省略時は出どころの記録を変更しない。
+function applyUIScale(pct, options) {
   let next = parseInt(pct, 10) || 100;
   next = Math.max(67, Math.min(200, next));
   const rootStyle = document.documentElement?.style;
@@ -880,6 +872,9 @@ function applyUIScale(pct) {
   if (rootStyle) rootStyle.fontSize = ''; // font-sizeスケーリングの残骸をクリア
   if (typeof updateMeldexViewportSize === 'function') updateMeldexViewportSize();
   localStorage.setItem('ui-scale', String(next));
+  if (options && options.source && window.MeldexUIScale) {
+    window.MeldexUIScale.markSource(options.source);
+  }
   return next;
 }
 

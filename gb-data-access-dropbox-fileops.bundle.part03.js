@@ -1,3 +1,14 @@
+      const originalEntry = await _resolveEntryHandle(provider, originalPath);
+      const backups = {};
+      const backupStamp = _conflictBackupStamp();
+
+      if (action === 'keep_original') {
+        if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
+        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
+        await provider.deletePath(conflictPath);
+        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+      }
+
       backups.conflict = await _backupConflictSide(provider, 'applied-conflict', conflictPath, backupStamp);
       if (originalEntry?.kind === 'file') {
         backups.original = await _backupConflictSide(provider, 'replaced-original', originalPath, backupStamp);
@@ -68,7 +79,6 @@
       }
       return items;
     }
-
     if (pathname === '/check-type' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -484,7 +494,8 @@
       const dataUrl = String(body?.data || '');
       if (!dataUrl) throw new Error('data は必須です');
       const ts = _versionTimestamp();
-      const targetPath = _joinPath('_screenshots', `screenshot_${ts}.png`);
+      const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
       await _writeBytes(provider, targetPath, _decodeUploadData(dataUrl));
       return { ok: true, path: targetPath };
     }
@@ -887,14 +898,3 @@
           ok: true,
           unchanged: true,
           new_path: sourcePath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
-          file_id: _fnvFileId(sourcePath),
-          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
-        };
-      }
-      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
-      await _moveEntry(provider, sourcePath, conflict.path);
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)

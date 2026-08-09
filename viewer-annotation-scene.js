@@ -64,6 +64,20 @@
 
   function ann() { return _ann; }
 
+  function annotationCursor(tool = _ann.tool) {
+    if (tool === 'sticky') return 'cell';
+    const lineTools = new Set(['polyline', 'ellipse-line', 'rect-line']);
+    if (!['pen', 'marker', 'eraser'].includes(tool) && !lineTools.has(tool)) return 'crosshair';
+    const widthKey = lineTools.has(tool) ? 'pen' : tool;
+    const width = Math.max(4, Math.min(48, Number(_ann.widths?.[widthKey]) || 3));
+    const size = Math.ceil(width + 6);
+    const shape = tool === 'marker'
+      ? `<rect x="3" y="3" width="${width}" height="${width}" fill="rgba(255,255,255,.18)" stroke="white"/><rect x="2" y="2" width="${width + 2}" height="${width + 2}" fill="none" stroke="black"/>`
+      : `<circle cx="${size / 2}" cy="${size / 2}" r="${width / 2}" fill="rgba(255,255,255,.12)" stroke="white"/><circle cx="${size / 2}" cy="${size / 2}" r="${width / 2 + 1}" fill="none" stroke="black"/>`;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${shape}</svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${Math.floor(size / 2)} ${Math.floor(size / 2)}, crosshair`;
+  }
+
   function getScenes() { return _scenes.slice(); }
 
   function findSceneByPath(path) {
@@ -106,7 +120,7 @@
     svg.classList.add('viewer-ann-scene-svg');
     svg.style.display = _ann.visible === false ? 'none' : '';
     svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-    svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : (_ann.tool === 'sticky' ? 'cell' : 'crosshair')) : '';
+    svg.style.cursor = _ann.active ? annotationCursor() : '';
     const strokesG = document.createElementNS(NS, 'g');
     strokesG.classList.add('viewer-ann-strokes');
     svg.appendChild(strokesG);
@@ -191,12 +205,23 @@
 
   function _pathD(pts) {
     if (pts.length < 2) return '';
-    return 'M ' + pts[0][0] + ' ' + pts[0][1] + pts.slice(1).map(p => ' L ' + p[0] + ' ' + p[1]).join('');
+    let d = 'M ' + pts[0][0] + ' ' + pts[0][1];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const midX = (pts[i][0] + pts[i + 1][0]) / 2;
+      const midY = (pts[i][1] + pts[i + 1][1]) / 2;
+      d += ` Q ${pts[i][0]} ${pts[i][1]} ${midX} ${midY}`;
+    }
+    const last = pts[pts.length - 1];
+    return d + ` L ${last[0]} ${last[1]}`;
   }
   function _rectData(pts) {
     const a = pts?.[0] || [0, 0], b = pts?.[pts.length - 1] || a;
     const x1 = Number(a[0]) || 0, y1 = Number(a[1]) || 0, x2 = Number(b[0]) || 0, y2 = Number(b[1]) || 0;
     return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+  }
+  function _ellipseData(pts) {
+    const rect = _rectData(pts);
+    return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
   }
   function _drawWidth(tool, widthOverride, fallback) {
     const w = Number(widthOverride);
@@ -238,7 +263,7 @@
       el.setAttribute('fill', 'none'); el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', String(_drawWidth(type, widthMedia, type === 'marker' ? 12 : 3)));
       el.setAttribute('stroke-opacity', type === 'marker' ? String(o * 0.5) : String(o));
-      el.setAttribute('stroke-linecap', 'round'); el.setAttribute('stroke-linejoin', 'round');
+      el.setAttribute('stroke-linecap', type === 'marker' ? 'butt' : 'round'); el.setAttribute('stroke-linejoin', 'round');
     }
     // pointer-eventsは個別指定しない（setState()が切り替える親svgの値をそのまま継承させる。
     // 徹底チェック2026-08-02: 個別にautoを指定すると、注釈OFF(svg側none)時でも子要素の
@@ -253,6 +278,29 @@
   function renderRect(scene, data, color, opacity, annId) {
     const el = _applyRectEl(document.createElementNS(NS, 'rect'), data, color, opacity, false);
     // renderStroke同様、pointer-eventsは親svgからの継承に一本化する（個別指定禁止）。
+    if (annId) el.dataset.annId = annId;
+    scene.strokesG.appendChild(el);
+    return el;
+  }
+
+  function renderShape(scene, type, data, color, opacity, annId, preview) {
+    if (type === 'rect') return renderRect(scene, data, color, opacity, annId);
+    const ellipse = type.startsWith('ellipse');
+    const el = document.createElementNS(NS, ellipse ? 'ellipse' : 'rect');
+    const outlined = type === 'ellipse-line' || type === 'rect-line';
+    if (ellipse) {
+      el.setAttribute('cx', Number(data?.cx) || 0); el.setAttribute('cy', Number(data?.cy) || 0);
+      el.setAttribute('rx', Math.max(.01, Number(data?.rx) || 0)); el.setAttribute('ry', Math.max(.01, Number(data?.ry) || 0));
+    } else {
+      el.setAttribute('x', Number(data?.x) || 0); el.setAttribute('y', Number(data?.y) || 0);
+      el.setAttribute('width', Math.max(.01, Number(data?.width) || 0)); el.setAttribute('height', Math.max(.01, Number(data?.height) || 0));
+    }
+    const o = _normalizeOpacity(opacity, 1);
+    el.setAttribute('fill', outlined ? 'none' : color);
+    el.setAttribute('fill-opacity', outlined ? '0' : String(o * (preview ? .2 : .4)));
+    el.setAttribute('stroke', color); el.setAttribute('stroke-opacity', String(o));
+    el.setAttribute('stroke-width', String(_drawWidth(type, data?.lineWidth, 1)));
+    if (preview) el.setAttribute('stroke-dasharray', '4,4');
     if (annId) el.dataset.annId = annId;
     scene.strokesG.appendChild(el);
     return el;
@@ -276,7 +324,9 @@
       if (!active) return;
       const local = clientToLocal(active.scene.svg, clientX, clientY);
       active.path.push([local.x, local.y]);
-      const tag = active.tool === 'lasso' ? 'polygon' : (active.tool === 'rect' ? 'rect' : 'path');
+      const ellipseTool = active.tool === 'ellipse-line' || active.tool === 'ellipse-fill';
+      const rectTool = active.tool === 'rect' || active.tool === 'rect-line';
+      const tag = active.tool === 'lasso' ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
       if (!active.previewEl || active.previewEl.tagName.toLowerCase() !== tag) {
         active.previewEl?.remove();
         active.previewEl = document.createElementNS(NS, tag);
@@ -284,8 +334,14 @@
         active.previewEl.style.pointerEvents = 'none';
         active.scene.strokesG.appendChild(active.previewEl);
       }
-      if (active.tool === 'rect') {
-        _applyRectEl(active.previewEl, _rectData(active.path), _ann.color, _ann.opacity, true);
+      if (ellipseTool || rectTool) {
+        const data = ellipseTool ? _ellipseData(active.path) : _rectData(active.path);
+        data.lineWidth = active.widthMedia;
+        const replacement = renderShape(active.scene, active.tool, data, _ann.color, _ann.opacity, null, true);
+        active.previewEl.remove();
+        active.previewEl = replacement;
+        active.previewEl.classList.add('viewer-ann-preview');
+        active.previewEl.style.pointerEvents = 'none';
       } else if (active.tool === 'lasso') {
         active.previewEl.setAttribute('points', active.path.map(p => p[0] + ',' + p[1]).join(' '));
         active.previewEl.setAttribute('fill', _ann.color); active.previewEl.setAttribute('fill-opacity', '0.2');
@@ -295,7 +351,7 @@
         active.previewEl.setAttribute('fill', 'none'); active.previewEl.setAttribute('stroke', _ann.color);
         active.previewEl.setAttribute('stroke-width', String(active.widthMedia));
         active.previewEl.setAttribute('stroke-opacity', active.tool === 'marker' ? String(_normalizeOpacity(_ann.opacity, 1) * 0.5) : String(_normalizeOpacity(_ann.opacity, 1)));
-        active.previewEl.setAttribute('stroke-linecap', 'round'); active.previewEl.setAttribute('stroke-linejoin', 'round');
+        active.previewEl.setAttribute('stroke-linecap', active.tool === 'marker' ? 'butt' : 'round'); active.previewEl.setAttribute('stroke-linejoin', 'round');
       }
     }
     async function end() {
@@ -305,13 +361,15 @@
       active = null;
       _ann.drawing = false;
       if (path.length < 2) return;
-      const type = tool === 'rect' ? 'rect' : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : 'stroke'));
-      const data = type === 'rect' ? _rectData(path) : { points: path, width: widthMedia };
+      const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+      const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
+      const data = type.startsWith('ellipse') ? _ellipseData(path) : (shapeTypes.has(type) ? _rectData(path) : { points: path, width: widthMedia });
+      if (shapeTypes.has(type)) data.lineWidth = widthMedia;
       data.coordinateSpace = COORD_SPACE;
       data.mediaWidth = scene.mediaWidth;
       data.mediaHeight = scene.mediaHeight;
       if (scene.isPdf && scene.pageIndex != null) data.pageIndex = scene.pageIndex;
-      const el = type === 'rect' ? renderRect(scene, data, _ann.color, _ann.opacity, null) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia);
+      const el = shapeTypes.has(type) ? renderShape(scene, type, data, _ann.color, _ann.opacity, null, false) : renderStroke(scene, type, path, _ann.color, _ann.opacity, null, widthMedia);
       try {
         const res = await window.apiPost('/annotations', {
           target_path: scene.path, type, data, color: _ann.color, opacity: _ann.opacity, user: viewerAnnotationUser(),
@@ -389,7 +447,9 @@
     });
     scene.svg.addEventListener('pointermove', (e) => {
       if (!_draw.isDrawing() || _draw.activeScene() !== scene) return;
-      _draw.move(e.clientX, e.clientY);
+      const samples = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+      for (const sample of samples?.length ? samples : [e]) _draw.move(sample.clientX, sample.clientY);
+      if (samples?.length) _draw.move(e.clientX, e.clientY);
     });
     scene.svg.addEventListener('pointerup', () => {
       if (!_draw.isDrawing() || _draw.activeScene() !== scene) return;
@@ -419,8 +479,8 @@
         }
         if (item.type === 'comment' || item.shape === 'sticky') {
           window.MeldexViewerAnnotationNotes?.render?.(sceneEntry, item, data);
-        } else if (item.type === 'rect') {
-          renderRect(sceneEntry, data, item.color, item.opacity, item.id);
+        } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
+          renderShape(sceneEntry, item.type, data, item.color, item.opacity, item.id, false);
         } else if (data.points) {
           renderStroke(sceneEntry, item.type, data.points, item.color, item.opacity, item.id, data.width);
         }
@@ -439,7 +499,7 @@
     _ann.active = !!active;
     _scenes.forEach(scene => {
       scene.svg.style.pointerEvents = _ann.active ? 'auto' : 'none';
-      scene.svg.style.cursor = _ann.active ? (_ann.tool === 'eraser' ? 'not-allowed' : (_ann.tool === 'sticky' ? 'cell' : 'crosshair')) : '';
+      scene.svg.style.cursor = _ann.active ? annotationCursor() : '';
     });
     window.MeldexViewerAnnotationNotes?.setInteractive?.(_ann.active);
     window.MeldexViewerAnnotationLegacy?.setState?.(_ann.active, _ann);
@@ -453,7 +513,7 @@
   function setTool(tool) {
     _ann.tool = tool;
     _scenes.forEach(scene => {
-      if (_ann.active) scene.svg.style.cursor = tool === 'eraser' ? 'not-allowed' : (tool === 'sticky' ? 'cell' : 'crosshair');
+      if (_ann.active) scene.svg.style.cursor = annotationCursor(tool);
     });
   }
   // 表示/非表示（active=描画・編集可否とは独立）。非表示中は消しゴム等の操作対象からも外れる
@@ -484,6 +544,7 @@
     localLengthForScreenPx,
     renderStroke,
     renderRect,
+    renderShape,
     ann,
     setState,
     toggle,

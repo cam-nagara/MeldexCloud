@@ -77,13 +77,15 @@ function _handleTbodyDragstart(e) {
       const payloadNames = [...sel];
       e.dataTransfer.setData('text/plain', payloadNames.join('\n'));
       e.dataTransfer.setData('text/x-meldex-rows', JSON.stringify(payloadNames));
-      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
+      const nodePayload = {
         items: payloadNames.map(name => ({
           name,
           path: _entityPath(ctx.dbPath, name, ctx.pivotData),
           type: 'entity',
         })),
-      }));
+      };
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(nodePayload));
+      if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, nodePayload, 'node');
     } else {
       if (window.MeldexBoardTransfer?.setEntityDragData) {
         window.MeldexBoardTransfer.setEntityDragData(e.dataTransfer, ctx.dbPath, entityName, ep);
@@ -977,8 +979,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
     container.appendChild(span);
   } else {
     // 候補値が2つ以上あるセルは、ステータス機能OFFでも採用/案/ボツを区別できるよう
-    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。
-    const _forceStatusDot = values.length > 1;
+    // ステータスマークを自動表示する（ユーザー判断・案A 2026-07-25）。1セル1値で運用する
+    // シート（制作管理）は対象外。ただしそのシートで「ステータス機能」をオンにした場合は
+    // 従来どおり出す（hidesCandidateStatusUi）。
+    const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
+    const _forceStatusDot = values.length > 1 && !_hideStatusUi;
     values.forEach(val => {
       container.appendChild(
         ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
@@ -990,7 +995,7 @@ function renderEntityCell(entityName, propName, ctx, options) {
     // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転）。
     // button/formula/rollup 等の非値型は上の分岐で処理されここには来ないが、防御的に除外する。
     const _nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-    const _allowAdd = !ptc || !_nonValueTypes.includes(ptc.type);
+    const _allowAdd = (!ptc || !_nonValueTypes.includes(ptc.type)) && !_hideStatusUi;
     if (_allowAdd) {
       const addBtn = document.createElement('span');
       addBtn.className = 'cell-add-btn';

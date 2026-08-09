@@ -117,7 +117,9 @@
     if (!path) {
       const promptLabel = window.MeldexRuntimeAdapter?.isDropboxMode?.()
         ? 'ワークスペースにするDropbox内フォルダ'
-        : 'ワークスペースにするフォルダの絶対パス';
+        : window.MeldexRuntimeAdapter?.isBrowserMode?.()
+          ? 'ワークスペースにする端末内フォルダ'
+          : 'ワークスペースにするフォルダの絶対パス';
       path = window.prompt(promptLabel, '');
       if (path == null) return;
       path = String(path || '').trim();

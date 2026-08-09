@@ -5,22 +5,25 @@ function updateNoteToc() {
 
   const headings = pc.querySelectorAll('h1, h2, h3, h4, h5, h6');
   if (headings.length === 0) {
-    toc.innerHTML = '<div style="color:var(--fg2);padding:4px;">見出しがありません</div>';
+    toc.innerHTML = '<div class="note-toc-empty">見出しがありません</div>';
     return;
   }
 
   let html = '';
   headings.forEach((h, i) => {
     const level = parseInt(h.tagName[1]);
-    const indent = (level - 1) * 12;
     const text = h.textContent.trim() || '(無題)';
-    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}" style="display:block;width:100%;padding:2px 4px 2px ${indent}px;cursor:pointer;border:0;background:transparent;text-align:left;font:inherit;border-radius:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${level===1?'var(--accent)':'var(--fg)'};"
-      title="${esc(text)}">${esc(text)}</button>`;
+    // 見た目（インデント・色・省略）とホバーは gb-tools.part01.part02.css の
+    // .note-toc-item / .note-toc-level-N に持たせる。インラインstyleでハイライトすると、
+    // ポインタが乗ったまま目次を作り直したときに mouseleave が来ず消えなくなる。
+    html += `<button type="button" class="note-toc-item note-toc-level-${level}" data-note-toc-level="${level}" data-note-toc-index="${i}"`
+      + ` data-e2e-id="note-toc-item-${i}" title="${esc(text)}">${esc(text)}</button>`;
   });
   toc.innerHTML = html;
+  // 目次はDOMごと差し替わるため、テーマの適用対象マークを付け直す。
+  // これを省くとテーマ側のホバー色だけが失効する。
+  try { window.MeldexThemeManager?.applyThemeUiApplications?.(null, { forceTargets: true }); } catch (_) { /* テーマ未初期化 */ }
   toc.querySelectorAll('[data-note-toc-index]').forEach(item => {
-    item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg4)'; });
-    item.addEventListener('mouseleave', () => { item.style.background = ''; });
     item.addEventListener('click', () => {
       const index = Number(item.dataset.noteTocIndex);
       const target = document.querySelectorAll('#page-content h1,#page-content h2,#page-content h3,#page-content h4,#page-content h5,#page-content h6')[index];
@@ -330,8 +333,12 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       valuesEl.appendChild(hideBtn);
     }
     // ロールアップ/数式型は計算結果であり候補値を追加できないため、＋ボタンは出さない
-    // （シート表側の _nonValueTypes 除外と同じ扱い）。
-    if (!isComputedProp) {
+    // （シート表側の _nonValueTypes 除外と同じ扱い）。1セル1値で運用するシート（制作管理）
+    // も同様に出さない — 押しても _showEntryPropInlineAdd が拒否する空振りボタンになり、
+    // シート表側と見た目が食い違うため（シート表: gb-db-table.part02.js の _allowAdd）。
+    const _hideAddButton = parentDb && typeof hidesCandidateStatusUi === 'function'
+      && hidesCandidateStatusUi(parentDb);
+    if (!isComputedProp && !_hideAddButton) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
@@ -860,23 +867,28 @@ document.addEventListener('keydown', function(e) {
   // Ctrl+Z: カスタムアンドゥ（直前がカスタム操作の場合のみ）
   if (e.key === 'z' && !e.shiftKey && editable._lastCustomOp && editable._customUndoStack && editable._customUndoStack.length > 0) {
     e.preventDefault();
+    // innerHTML の総入れ替えはスクロール位置を捨てるため、前後で退避・復元する
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customRedoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customUndoStack.pop();
     editable._lastCustomOp = editable._customUndoStack.length > 0;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
   // Ctrl+Y / Ctrl+Shift+Z: カスタムリドゥ
   if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && editable._customRedoStack && editable._customRedoStack.length > 0) {
     e.preventDefault();
+    const scroll = window.MeldexNoteRuby?.captureScroll?.(editable);
     editable._customUndoStack.push(editable.innerHTML);
     editable.innerHTML = editable._customRedoStack.pop();
     editable._lastCustomOp = true;
     _customUndoInProgress = true;
     editable.dispatchEvent(new Event('input', { bubbles: true }));
     _customUndoInProgress = false;
+    window.MeldexNoteRuby?.restoreScroll?.(scroll);
     return;
   }
 }, true); // captureフェーズで先に処理

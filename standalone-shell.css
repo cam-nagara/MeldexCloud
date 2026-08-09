@@ -512,3 +512,10 @@ body.sa-resizing-option-panel * {
     min-height: 44px;
   }
 }
+
+/* 「常に最前面」がオンの間はボタンを押した状態で見せる（sa-shell 系ツールバー用） */
+.sa-icon-btn[data-always-on-top].is-active {
+  border-color: var(--ui-accent, var(--accent));
+  color: var(--ui-accent, var(--accent));
+  background: var(--bg3, var(--sa-bg3));
+}

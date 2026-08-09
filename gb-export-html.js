@@ -456,13 +456,13 @@ ${bodyHtml}
   }
 
   // --- ノート ---
-  async function _exportNotePage() {
-    const pc = document.getElementById('page-content');
-    if (!pc) { showStatus('ノートが開かれていません', true); return null; }
-    return exportToHtml(pc, {
-      title: _getViewTitle('page'),
-      cssFiles: ['gb-tools.css', 'gb-ui.css'],
-      extraCss: `
+  // ノート本文の書き出し用スタイル。組方向を書き出し結果にも反映する。
+  // 旧実装では #page-content にHTMLのインラインstyleがあり、ここで指定した余白等が
+  // 実際には適用されていなかった（インラインstyleは外部CSSより優先されるため）。
+  // レイアウトを外部CSSへ移したので、ここの指定が初めて効くようになっている。
+  function noteExportCss(vertical) {
+    if (!vertical) {
+      return `
         #page-content, [id="page-content"] {
           padding: 16px 60px;
           line-height: 1.7;
@@ -471,7 +471,40 @@ ${bodyHtml}
         }
         ruby { ruby-position: over; }
         rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }
-      `,
+      `;
+    }
+    return `
+        #page-content, [id="page-content"] {
+          writing-mode: vertical-rl;
+          text-orientation: mixed;
+          font-feature-settings: "vert" 1, "vpal" 1;
+          padding-block: 16px;
+          padding-inline: 60px;
+          line-height: 2.0;
+          max-inline-size: 900px;
+          margin-inline: auto;
+          block-size: max-content;
+          inline-size: auto;
+          overflow: visible;
+        }
+        html, body { block-size: auto; }
+        /* コードは縦組みにしない */
+        #page-content pre, [id="page-content"] pre { writing-mode: horizontal-tb; }
+        /* 番号は縦中横で正立させる */
+        #page-content ol > li::marker, [id="page-content"] ol > li::marker { text-combine-upright: all; }
+        ruby { ruby-position: inter-character; }
+        rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }
+      `;
+  }
+
+  async function _exportNotePage() {
+    const pc = document.getElementById('page-content');
+    if (!pc) { showStatus('ノートが開かれていません', true); return null; }
+    const vertical = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(pc));
+    return exportToHtml(pc, {
+      title: _getViewTitle('page'),
+      cssFiles: ['gb-tools.css', 'gb-ui.css'],
+      extraCss: noteExportCss(vertical),
     });
   }
 
@@ -654,6 +687,7 @@ ${bodyHtml}
     publishCurrentView,
     cloneAndClean,
     convertDataRuby,
+    noteExportCss,
     collectCssVars,
     embedFont,
     embedImages,

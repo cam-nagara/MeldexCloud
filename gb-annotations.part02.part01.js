@@ -934,9 +934,13 @@ async function loadAnnotations() {
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }
-      } else if (item.type === 'rect') {
+      } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
         if (data && data.width != null && data.height != null) {
-          const el = _createRectFillEl(data, item.color, item.opacity);
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
+          el.dataset.annId = item.id;
+          layer.appendChild(el);
+        } else if (data && data.rx != null && data.ry != null) {
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }

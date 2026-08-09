@@ -38,43 +38,80 @@
   document.getElementById('btn-next-folder').onclick = Scene.nextFolder;
 
   // キーボード（Eagle互換）
+  // キーは共通のショートカットレジストリ（gb-shortcut-registry.js）へ登録し、
+  // 右サイドバーの「ショートカットキー」タブから確認・変更できるようにする。
+  // preventDefault の有無は従来どおり操作ごとに保つ（矢印・Space・ズームのみ抑止）。
+  const VIEWER_SHORTCUTS = {
+    'viewer.playPause':    { key: 'space',            label: '再生 / 一時停止',   scope: 'viewer' },
+    'viewer.prevFolder':   { key: 'arrowup',          label: '前のフォルダ',       scope: 'viewer' },
+    'viewer.nextFolder':   { key: 'arrowdown',        label: '次のフォルダ',       scope: 'viewer' },
+    'viewer.shiftForward': { key: 'shift+arrowright', label: '1枚ずらして進む',    scope: 'viewer' },
+    'viewer.shiftBackward':{ key: 'shift+arrowleft',  label: '1枚ずらして戻る',    scope: 'viewer' },
+    'viewer.next':         { key: 'arrowright',       label: '次へ',               scope: 'viewer' },
+    'viewer.prev':         { key: 'arrowleft',        label: '前へ',               scope: 'viewer' },
+    'viewer.toggleHud':    { key: 'h',                label: '情報表示の切替',     scope: 'viewer' },
+    'viewer.fullscreen':   { key: 'f',                label: '全画面表示',         scope: 'viewer' },
+    'viewer.reversePlay':  { key: 'r',                label: '逆再生の切替',       scope: 'viewer' },
+    'viewer.flipH':        { key: 'm',                label: '左右反転',           scope: 'viewer' },
+    'viewer.original':     { key: 'o',                label: '原寸表示',           scope: 'viewer' },
+    'viewer.rotate':       { key: 'q',                label: '回転',               scope: 'viewer' },
+    'viewer.zoomIn':       { key: '=',                label: '拡大',               scope: 'viewer' },
+    'viewer.zoomOut':      { key: '-',                label: '縮小',               scope: 'viewer' },
+    'viewer.fitContain':   { key: '1',                label: '画面に合わせる',     scope: 'viewer' },
+    'viewer.fitHeight':    { key: '2',                label: '高さに合わせる',     scope: 'viewer' },
+    'viewer.fitWidth':     { key: '3',                label: '幅に合わせる',       scope: 'viewer' },
+    'viewer.fitNone':      { key: '4',                label: 'フィットしない',     scope: 'viewer' },
+    'viewer.annotation':   { key: 'a',                label: '注釈の切替',         scope: 'viewer' },
+  };
+  window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
+
+  // [実行内容, 既定動作を抑止するか]
+  const VIEWER_ACTIONS = {
+    'viewer.playPause':     [() => Scene.togglePlay(), true],
+    'viewer.prevFolder':    [() => Scene.prevFolder(), true],
+    'viewer.nextFolder':    [() => Scene.nextFolder(), true],
+    'viewer.shiftForward':  [() => Scene.shiftForward(), true],
+    'viewer.shiftBackward': [() => Scene.shiftBackward(), true],
+    // マンガモードでも常に右=次、左=前。再生中は手動送りに合わせてスライドショーの
+    // 次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
+    'viewer.next':          [() => { Scene.nextGroup(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.prev':          [() => { Scene.prevGroup(); Scene.rescheduleSlideshow(); }, false],
+    'viewer.toggleHud':     [() => Scene.toggleHud(), false],
+    'viewer.fullscreen':    [() => Scene.toggleFullscreen(), false],
+    'viewer.reversePlay':   [() => Scene.toggleReversePlay(), false],
+    'viewer.flipH':         [() => { Scene.toggleFlipH(); Scene.flashStatus('左右反転: ' + (Scene.getFlipH() ? 'ON' : 'OFF')); }, false],
+    'viewer.original':      [() => { Scene.setOriginal(); Scene.flashStatus('原寸表示'); }, false],
+    'viewer.rotate':        [() => { Scene.rotate(); Scene.flashStatus('回転: ' + Scene.getRotateDeg() + '°'); }, false],
+    'viewer.zoomIn':        [() => Scene.zoomIn(), true],
+    'viewer.zoomOut':       [() => Scene.zoomOut(), true],
+    'viewer.fitContain':    [() => Scene.setFitMode('contain'), false],
+    'viewer.fitHeight':     [() => Scene.setFitMode('height'), false],
+    'viewer.fitWidth':      [() => Scene.setFitMode('width'), false],
+    'viewer.fitNone':       [() => Scene.setFitMode('none'), false],
+    'viewer.annotation':    [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false],
+  };
+
   document.addEventListener('keydown', e => {
     const target = e.target;
     if (target && (target.closest('input, textarea, select, button') || target.isContentEditable)) return;
-    if (e.code === 'Space') { e.preventDefault(); Scene.togglePlay(); }
-    // 上下矢印: フォルダ移動
-    else if (e.key === 'ArrowUp') { e.preventDefault(); Scene.prevFolder(); }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); Scene.nextFolder(); }
-    // Shift+矢印: 1枚ずつシフト
-    else if (e.key === 'ArrowRight' && e.shiftKey) { e.preventDefault(); Scene.shiftForward(); }
-    else if (e.key === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); Scene.shiftBackward(); }
-    // 矢印: グループ送り（マンガモードでも常に右=次、左=前）。再生中は手動送りに合わせて
-    // スライドショーの次送りタイマーを起点からやり直す（元コードの `if (playing) scheduleNext()` を維持）。
-    else if (e.key === 'ArrowRight') { Scene.nextGroup(); Scene.rescheduleSlideshow(); }
-    else if (e.key === 'ArrowLeft') { Scene.prevGroup(); Scene.rescheduleSlideshow(); }
-    // H: HUD表示トグル
-    else if (e.key === 'h' || e.key === 'H') { Scene.toggleHud(); }
-    // F: フルスクリーン
-    else if (e.key === 'f' || e.key === 'F') { Scene.toggleFullscreen(); }
-    // R: 逆再生トグル
-    else if (e.key === 'r' || e.key === 'R') { if (!e.shiftKey) Scene.toggleReversePlay(); }
-    else if (e.key === 'm' || e.key === 'M') { Scene.toggleFlipH(); Scene.flashStatus('左右反転: ' + (Scene.getFlipH() ? 'ON' : 'OFF')); }
-    else if (e.key === 'o' || e.key === 'O') { Scene.setOriginal(); Scene.flashStatus('原寸表示'); }
-    else if (e.key === 'q' || e.key === 'Q') { Scene.rotate(); Scene.flashStatus('回転: ' + Scene.getRotateDeg() + '°'); }
-    // +/-: ズーム
-    else if (e.key === '+' || e.key === '=') { e.preventDefault(); Scene.zoomIn(); }
-    else if (e.key === '-') { e.preventDefault(); Scene.zoomOut(); }
-    // 0-4: フィットモード切替
-    else if (e.key === '0' || e.key === '1') { Scene.setFitMode('contain'); }
-    else if (e.key === '2') { Scene.setFitMode('height'); }
-    else if (e.key === '3') { Scene.setFitMode('width'); }
-    else if (e.key === '4') { Scene.setFitMode('none'); }
-    // A: 注釈トグル（描画中は誤爆させない）。単独ビューワーの公開注釈コマンド入口の一つ。
-    else if (e.key === 'a' || e.key === 'A') { window.MeldexViewerAnnotations?.toggleFromShortcut?.(); }
-    else if (e.key === 'Escape') {
-      if (window.MeldexViewerAnnotations?.isActive?.()) { window.MeldexViewerAnnotations.toggle(); }
+    if (e.key === 'Escape') {
+      // Esc は「閉じる」の共通操作なので変更対象にしない
+      if (window.MeldexViewerAnnotations?.isActive?.()) window.MeldexViewerAnnotations.toggle();
       else if (document.fullscreenElement) document.exitFullscreen();
+      return;
     }
+    // 逆再生は Shift+R と区別する（従来どおり Shift 付きでは動かさない）
+    if ((e.key === 'r' || e.key === 'R') && e.shiftKey) return;
+    const id = window.MeldexShortcutRegistry?.matchEvent(e, ['viewer']) || '';
+    const entry = VIEWER_ACTIONS[id];
+    if (entry) {
+      if (entry[1]) e.preventDefault();
+      entry[0]();
+      return;
+    }
+    // 別名キー（0 は 1 と同じ、+ は = と同じ）。レジストリには片方だけ載せる。
+    if (e.key === '0') Scene.setFitMode('contain');
+    else if (e.key === '+') { e.preventDefault(); Scene.zoomIn(); }
   });
 
   // ホイール: 設定（gb:viewer-wheel-mode。'zoom'既定 | 'nav'）でズーム/前後移動を切替する
@@ -94,6 +131,105 @@
     }
     Scene.zoomAt(e.clientX, e.clientY, e.deltaY > 0 ? 'out' : 'in');
   }, {passive: false});
+
+  // 画像のダブルクリックは、フィット方式を維持したままズームとパンをリセットする。
+  document.getElementById('display').addEventListener('dblclick', e => {
+    if (e.target.closest('.nav-area, .sa-toolbar, .sa-note, button, input, select')) return;
+    e.preventDefault();
+    Scene.resetZoom();
+  });
+
+  // タッチ操作。2本指は同一ジェスチャー中にズーム・パン・回転を同時適用し、
+  // 1本指は短いスワイプ／ダブルタップだけに限定する（1本指パンとページ送りの競合を避ける）。
+  (function installTouchGestures() {
+    const display = document.getElementById('display');
+    if (!display || typeof PointerEvent === 'undefined') return;
+    const points = new Map();
+    let pair = null;
+    let singleStart = null;
+    let lastTap = null;
+
+    const snapshotPair = () => {
+      const values = [...points.values()];
+      if (values.length < 2) return null;
+      const a = values[0], b = values[1];
+      return {
+        centerX: (a.x + b.x) / 2,
+        centerY: (a.y + b.y) / 2,
+        distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+        angle: Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI,
+        zoom: Scene.getZoom(),
+        rotate: Scene.getRotateDeg(),
+      };
+    };
+    const isUi = target => !!target?.closest?.('.nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea');
+
+    display.addEventListener('pointerdown', e => {
+      if (e.pointerType !== 'touch' || isUi(e.target) || window.MeldexViewerAnnotations?.isActive?.()) return;
+      points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { display.setPointerCapture(e.pointerId); } catch {}
+      if (points.size === 1) singleStart = { x: e.clientX, y: e.clientY, time: performance.now(), pointerId: e.pointerId };
+      if (points.size === 2) { pair = snapshotPair(); singleStart = null; }
+    });
+    display.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'touch' || !points.has(e.pointerId)) return;
+      points.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (points.size < 2 || !pair) return;
+      e.preventDefault();
+      const next = snapshotPair();
+      if (!next) return;
+      Scene.setZoomAt(next.centerX, next.centerY, pair.zoom * (next.distance / pair.distance));
+      Scene.panBy(next.centerX - pair.centerX, next.centerY - pair.centerY);
+      // atan2 は +180°/-180° の境界で値が反転する。単純な差分だと指を数度
+      // 動かしただけで約360°回転するため、常に最短角の増分へ正規化する。
+      const angleDelta = ((next.angle - pair.angle + 540) % 360) - 180;
+      Scene.setRotateDeg(pair.rotate + angleDelta);
+      // 増分中心を更新しつつ、倍率・回転の基準値は現在値へ追随させる。
+      pair = { ...next, zoom: Scene.getZoom(), rotate: Scene.getRotateDeg() };
+    }, { passive: false });
+
+    function finishTouch(e, cancelled) {
+      if (!points.has(e.pointerId)) return;
+      const end = points.get(e.pointerId);
+      points.delete(e.pointerId);
+      if (points.size < 2) pair = null;
+      if (cancelled || !singleStart || singleStart.pointerId !== e.pointerId || !end) { singleStart = null; return; }
+      const dx = end.x - singleStart.x, dy = end.y - singleStart.y;
+      const elapsed = performance.now() - singleStart.time;
+      const distance = Math.hypot(dx, dy);
+      if (elapsed <= 500 && distance >= 64) {
+        if (Math.abs(dx) > Math.abs(dy) * 1.2) {
+          Scene.pause();
+          if (dx < 0) Scene.nextGroup(); else Scene.prevGroup();
+        } else if (dy < 0) {
+          window.showViewerToolbar?.();
+        } else {
+          returnToSourceFolder();
+        }
+        lastTap = null;
+      } else if (elapsed <= 350 && distance <= 18) {
+        const now = performance.now();
+        if (lastTap && now - lastTap.time <= 360 && Math.hypot(end.x - lastTap.x, end.y - lastTap.y) <= 28) {
+          Scene.getZoom() > 1.05 ? Scene.resetZoom() : Scene.setZoomAt(end.x, end.y, 2);
+          lastTap = null;
+        } else lastTap = { x: end.x, y: end.y, time: now };
+      }
+      singleStart = null;
+    }
+    display.addEventListener('pointerup', e => finishTouch(e, false));
+    display.addEventListener('pointercancel', e => finishTouch(e, true));
+
+    function returnToSourceFolder() {
+      try {
+        if (window.parent && window.parent !== window) {
+          if (typeof window.parent.navGoBack === 'function' && window.parent.navGoBack()) return;
+          const path = Scene.currentPath?.() || '';
+          const folder = String(path).replace(/\\/g, '/').replace(/\/[^/]*$/, '');
+          if (folder && typeof window.parent.openFolder === 'function') window.parent.openFolder(folder.split('/').pop() || folder, folder);
+        }
+      } catch {}
+    }
+  })();
 
   // マウスの戻る/進むボタン（XButton1/XButton2）で前後へ移動
   ['mousedown', 'mouseup', 'auxclick'].forEach(eventName => {
@@ -122,19 +258,33 @@
     let hideTimer = 0;
     let toolbarFocused = false;
 
+    function syncParentAnnotationButton(visible) {
+      try {
+        if (!window.parent || window.parent === window) return;
+        const button = window.parent.document.getElementById('btn-tb-annotation');
+        if (!button) return;
+        button.style.opacity = visible ? '' : '0';
+        button.style.pointerEvents = visible ? '' : 'none';
+        button.setAttribute('aria-hidden', visible ? 'false' : 'true');
+      } catch {}
+    }
     function show() {
       clearTimeout(hideTimer);
       controls.classList.add('controls-active');
+      syncParentAnnotationButton(true);
+      if (isCoarsePointer) hideTimer = setTimeout(hideNow, 2600);
+    }
+    function hideNow() {
+      if (toolbarFocused || controls.matches(':hover')) return;
+      controls.classList.remove('controls-active');
+      syncParentAnnotationButton(false);
     }
     function scheduleHide() {
-      if (isCoarsePointer) return;
       clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => {
-        if (toolbarFocused || controls.matches(':hover')) return;
-        controls.classList.remove('controls-active');
-      }, HIDE_DELAY_MS);
+      hideTimer = setTimeout(hideNow, isCoarsePointer ? 2600 : HIDE_DELAY_MS);
     }
 
+    window.showViewerToolbar = show;
     if (isCoarsePointer) { show(); return; }
 
     document.addEventListener('mousemove', (e) => {
@@ -147,6 +297,7 @@
     controls.addEventListener('mouseleave', scheduleHide);
     controls.addEventListener('focusin', () => { toolbarFocused = true; show(); });
     controls.addEventListener('focusout', () => { toolbarFocused = false; scheduleHide(); });
+    window.addEventListener('pagehide', () => syncParentAnnotationButton(true));
   })();
 
   // 親ウィンドウのテーマ色を継承（meldex-core.js提供）

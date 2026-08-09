@@ -403,7 +403,7 @@
   }
 
   // --- drop on canvas ---
-  function onCanvasDrop(e) {
+  async function onCanvasDrop(e) {
     // パネル/タブ操作系の D&D はキャンバスではなくペイン側で処理させる
     if (typeof MeldexDnD !== 'undefined' && MeldexDnD.isPanelDnD(e.dataTransfer.types, e.ctrlKey)) return;
     if (!bdEnsureInteractiveCanvas(canvas)) return;
@@ -411,14 +411,34 @@
     const {x: wx, y: wy} = bdScreenToWorld(e.clientX, e.clientY);
 
     // フォルダツリーからのドロップ
-    const cfData = e.dataTransfer.getData('application/x-meldex-node');
-    const meldexTextData = e.dataTransfer.getData('application/x-meldex-text');
-    if ((cfData || meldexTextData) && window.MeldexBoardTransfer?.processTransfer) {
-      window.MeldexBoardTransfer.processTransfer(e.dataTransfer, { x: wx, y: wy }, {})
+    const bridgeResolved = typeof MeldexDnD !== 'undefined'
+      ? (await MeldexDnD.resolveDropData(e, 'node')
+        || await MeldexDnD.resolveDropData(e, 'text')
+        || await MeldexDnD.resolveDropData(e, 'board-nodes'))
+      : null;
+    const transfer = bridgeResolved && typeof MeldexDnD !== 'undefined'
+      ? MeldexDnD.dataTransferWithResolved(e.dataTransfer, bridgeResolved) : e.dataTransfer;
+    const cfData = transfer.getData('application/x-meldex-node');
+    const meldexTextData = transfer.getData('application/x-meldex-text');
+    const boardNodesData = transfer.getData('application/x-meldex-board-nodes');
+    if ((cfData || meldexTextData || boardNodesData) && window.MeldexBoardTransfer?.processTransfer) {
+      window.MeldexBoardTransfer.processTransfer(transfer, { x: wx, y: wy }, {})
+        .then(result => {
+          if (result?.handled && bridgeResolved) MeldexDnD.completeDrop(bridgeResolved);
+          else if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
+        })
         .catch(err => {
+          if (bridgeResolved) MeldexDnD.failDrop(bridgeResolved);
           console.error('[board] common transfer drop failed:', err);
           if (typeof showStatus === 'function') showStatus('ドロップ処理に失敗しました', true);
         });
+      return;
+    }
+    // 窓間payloadはsource側で一回だけclaim済み。共通transferが利用できない状態で
+    // 旧fallbackへ流すと、成功/失敗をsourceへ返せずclaimが残るため安全に失敗通知する。
+    if (bridgeResolved) {
+      MeldexDnD.failDrop(bridgeResolved);
+      if (typeof showStatus === 'function') showStatus('ドロップ処理を開始できませんでした', true);
       return;
     }
     if (cfData) {

@@ -104,6 +104,9 @@ async function _syncDetailPanel(label, path, type, opts) {
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
+  // ショートカットキータブは常に出し、開いている間は対象アプリに合わせて絞り込みを更新する
+  if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
+  if (_currentDetailTab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   if (typeof showPublishDetailTab === 'function') showPublishDetailTab(publishTypes.has(type));
   // ファイルテーマタブは編集可能な主要タイプで共通表示
   const styleTypes = new Set(['folder', 'page', 'database', 'board', 'scriptnote']);
@@ -133,9 +136,11 @@ async function _syncDetailPanel(label, path, type, opts) {
       <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
       <div>パス: ${esc(path)}</div>
       <div data-global-tags-target-path="${esc(path)}"></div>
+      <div data-duplicate-folder-setting data-path="${esc(path)}"></div>
     </div>`);
     if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
+    window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
     await _showDatabaseInfoInDetailPanel(label, path);
   }

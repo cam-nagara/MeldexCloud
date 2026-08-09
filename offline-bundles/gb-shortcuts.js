@@ -174,6 +174,14 @@ const GB_SHORTCUTS = {
 
 const GB_SHORTCUTS_DEFAULT = JSON.parse(JSON.stringify(GB_SHORTCUTS));
 
+// 一覧・カスタム設定・設定UIは gb-shortcut-registry.js（キー配送を持たない共通モジュール）が持つ。
+// このファイルは「本体の全ショートカット表」と「実際の処理・配送」を担当する。
+// 単独ビューワーやクイックメモのように自前でキーを処理するアプリは、このファイルを読まずに
+// レジストリへ自分のキーだけ登録する。
+if (typeof window !== 'undefined' && window.MeldexShortcutRegistry) {
+  window.MeldexShortcutRegistry.register(GB_SHORTCUTS);
+}
+
 
 // === Part 1-2: スコープ解決 ===
 
@@ -237,49 +245,18 @@ function _resolveShortcutScope(e) {
 
 // === Part 1-3: キー判定ヘルパー ===
 
-const _MODIFIER_KEYS = new Set(['control', 'shift', 'alt', 'meta']);
-
-// Shift+数字キーの記号→数字マッピング（US配列基準）
-const _SHIFT_DIGIT_MAP = { '!':'1', '@':'2', '#':'3', '$':'4', '%':'5', '^':'6', '&':'7', '*':'8', '(':'9', ')':'0' };
+// キーの正規化・表示・保存の実装は gb-shortcut-registry.js に一本化した。
+// 既存の呼び出し箇所を変えずに済むよう、同名の薄いラッパーだけ残す。
+function _shortcutRegistry() {
+  return typeof window !== 'undefined' ? window.MeldexShortcutRegistry : null;
+}
 
 function _normalizeKeyEvent(e) {
-  const rawKey = typeof e?.key === 'string' ? e.key : '';
-  if (!rawKey) return null;
-  const key = rawKey.toLowerCase();
-  if (_MODIFIER_KEYS.has(key)) return null;
-  const mods = [];
-  if (e.altKey) mods.push('alt');
-  if (e.ctrlKey || e.metaKey) mods.push('ctrl');
-  if (e.shiftKey) mods.push('shift');
-  let mainKey = key;
-  if (mainKey === ' ') mainKey = 'space';
-  if (mainKey === '+') {
-    mainKey = '=';
-    const shiftIdx = mods.indexOf('shift');
-    if (shiftIdx >= 0) mods.splice(shiftIdx, 1);
-  }
-  if (e.shiftKey && e.code === 'Backquote') mainKey = '`';
-  // Shift+数字キー: e.keyは記号になるが、e.codeから元の数字を復元
-  if (e.shiftKey && e.code && e.code.startsWith('Digit')) {
-    mainKey = e.code.charAt(5); // 'Digit1' → '1'
-  }
-  // Shift+記号キーのフォールバック（e.codeが使えない場合）
-  if (e.shiftKey && _SHIFT_DIGIT_MAP[mainKey]) {
-    mainKey = _SHIFT_DIGIT_MAP[mainKey];
-  }
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyEvent(e) ?? null;
 }
 
 function _normalizeKeyDef(keyDef) {
-  const parts = keyDef.toLowerCase().replace(/\s/g, '').split('+');
-  const mods = [];
-  let mainKey = '';
-  for (const p of parts) {
-    if (['ctrl', 'shift', 'alt', 'meta'].includes(p)) mods.push(p);
-    else mainKey = p;
-  }
-  mods.sort();
-  return [...mods, mainKey].join('+');
+  return _shortcutRegistry()?.normalizeKeyDef(keyDef) ?? String(keyDef || '');
 }
 
 function _isNativeHardReloadShortcut(e) {
@@ -341,84 +318,31 @@ if (typeof window !== 'undefined') window.__meldexPerformHardReload = _performMe
 
 // 表示用: "ctrl+shift+a" → "Ctrl+Shift+A"
 function _formatKeyDisplay(keyStr) {
-  if (!keyStr) return '';
-  return keyStr.split('+').map(p => {
-    if (p === 'ctrl') return 'Ctrl';
-    if (p === 'shift') return 'Shift';
-    if (p === 'alt') return 'Alt';
-    if (p === 'meta') return 'Meta';
-    if (p === 'arrowup') return '↑';
-    if (p === 'arrowdown') return '↓';
-    if (p === 'arrowleft') return '←';
-    if (p === 'arrowright') return '→';
-    if (p === 'browserback') return '戻るボタン';
-    if (p === 'browserforward') return '進むボタン';
-    if (p === 'escape') return 'Esc';
-    if (p === 'enter') return 'Enter';
-    if (p === 'delete') return 'Del';
-    if (p === 'backspace') return 'BS';
-    if (p === 'tab') return 'Tab';
-    if (p === 'space') return 'Space';
-    if (p.length === 1) return p.toUpperCase();
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }).join('+');
+  return _shortcutRegistry()?.formatKey(keyStr) ?? String(keyStr || '');
 }
 
 
 // === Part 2-1: カスタム設定の保存 ===
 
-const _SHORTCUT_STORAGE_KEY = 'meldex-custom-shortcuts';
-
 function _getCustomShortcuts() {
-  try { return JSON.parse(localStorage.getItem(_SHORTCUT_STORAGE_KEY) || '{}'); } catch { return {}; }
+  return _shortcutRegistry()?.getCustom() ?? {};
 }
 
 function _shortcutKeyDisplay(keyStr) {
-  return keyStr ? _formatKeyDisplay(keyStr) : '未設定';
-}
-
-function _refreshShortcutSettingsAfterHistory() {
-  if (typeof _updateAllTooltips === 'function') _updateAllTooltips();
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  document.querySelectorAll('.shortcut-settings-wrap').forEach(wrap => {
-    const container = wrap.parentElement;
-    if (container && typeof renderShortcutSettings === 'function') renderShortcutSettings(container);
-  });
+  return _shortcutRegistry()?.keyDisplay(keyStr) ?? (keyStr || '未設定');
 }
 
 function _saveCustomShortcuts(custom, options) {
-  const before = (typeof captureLocalStorageSettings === 'function')
-    ? captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY])
-    : null;
-  localStorage.setItem(_SHORTCUT_STORAGE_KEY, JSON.stringify(custom));
-  if (typeof updateScriptnoteShortcutStatusbar === 'function') updateScriptnoteShortcutStatusbar();
-  if (typeof updateDatabaseShortcutStatusbar === 'function') updateDatabaseShortcutStatusbar();
-  if (typeof updateCsvShortcutStatusbar === 'function') updateCsvShortcutStatusbar();
-  if (before && options?.skipHistory !== true && typeof pushLocalStorageSettingsHistory === 'function') {
-    pushLocalStorageSettingsHistory(
-      options?.label || '設定: ショートカット変更',
-      before,
-      captureLocalStorageSettings([_SHORTCUT_STORAGE_KEY]),
-      options?.detail || '',
-      _refreshShortcutSettingsAfterHistory
-    );
-  }
+  _shortcutRegistry()?.saveCustom(custom, options);
 }
 
 function _getEffectiveShortcuts() {
-  const custom = _getCustomShortcuts();
-  const result = JSON.parse(JSON.stringify(GB_SHORTCUTS));
-  for (const [id, overrides] of Object.entries(custom)) {
-    if (result[id]) result[id].key = overrides.key;
-  }
-  return result;
+  return _shortcutRegistry()?.effective() ?? JSON.parse(JSON.stringify(GB_SHORTCUTS));
 }
 
 // 指定IDのショートカットの現在のキーを取得（ツールチップ用）
 function getShortcutKey(id) {
-  const custom = _getCustomShortcuts();
-  if (custom[id]) return custom[id].key;
-  return GB_SHORTCUTS[id]?.key || '';
+  return _shortcutRegistry()?.keyFor(id) ?? (GB_SHORTCUTS[id]?.key || '');
 }
 
 function _shortcutStatusItem(id, label) {
@@ -940,8 +864,8 @@ const _shortcutHandlers = {
     const edTarget = document.activeElement?.closest('[contenteditable="true"]');
     const sel = window.getSelection();
     if (!edTarget || !sel || sel.isCollapsed || !sel.toString().trim()) return false;
-    if (typeof showNoteRubyPopup !== 'function') return false;
-    showNoteRubyPopup(edTarget, sel.getRangeAt(0).cloneRange());
+    if (typeof MeldexNoteRuby === 'undefined') return false;
+    MeldexNoteRuby.insertRuby(edTarget, sel.getRangeAt(0).cloneRange());
   },
   'note.newParagraph': () => _insertParagraphAfterCurrentNoteBlock(),
 
@@ -1498,201 +1422,20 @@ function _updateAllTooltips() {
 
 // === Part 2-2: ショートカット設定タブ ===
 
-const GB_SHORTCUT_SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'panelset'];
-const GB_SHORTCUT_SCOPE_LABELS = {
-  global: '全体',
-  note: 'ノート',
-  scenario: 'シナリオ',
-  database: 'シート',
-  board: 'ボード',
-  calendar: 'スケジュール',
-  csv: 'CSV',
-  folder: 'フォルダ',
-  panelset: 'パネルセット',
-};
-
-function _shortcutDisplayScope(id, def) {
-  if (id.startsWith('panelset.')) return 'panelset';
-  return def.scope || 'global';
-}
-
-function _shortcutSettingsGroups(shortcuts, custom) {
-  const groups = Object.fromEntries(GB_SHORTCUT_SCOPE_ORDER.map(scope => [scope, []]));
-  for (const [id, def] of Object.entries(shortcuts)) {
-    const displayScope = _shortcutDisplayScope(id, def);
-    if (!groups[displayScope]) groups[displayScope] = [];
-    groups[displayScope].push({ id, displayScope, ...def, isCustom: !!custom[id] });
-  }
-  return groups;
+// 一覧の描画・キー変更・競合チェックは gb-shortcut-registry.js に一本化した
+// （設定ダイアログとオプションパネルのショートカットタブで同じ実装を使うため）。
+// ここは設定ダイアログ側の入口だけを残す。
+function renderShortcutSettings(container) {
+  // 設定ダイアログでは従来どおり枠付き・全スコープ表示
+  window.MeldexShortcutRegistry?.renderSettings(container, { boxed: true });
 }
 
 function _applyShortcutSettingsFilter(container) {
-  const q = (container.querySelector('#shortcut-search')?.value || '').trim().toLowerCase();
-  const selectedScope = container.querySelector('#shortcut-scope-filter')?.value || 'all';
-  container.querySelectorAll('.shortcut-row').forEach(row => {
-    const matchesScope = selectedScope === 'all' || row.dataset.scope === selectedScope;
-    const matchesSearch = !q || (row.dataset.search || '').includes(q);
-    row.hidden = !(matchesScope && matchesSearch);
-  });
-  container.querySelectorAll('.shortcut-group').forEach(group => {
-    const visibleCount = Array.from(group.querySelectorAll('.shortcut-row')).filter(row => !row.hidden).length;
-    group.hidden = visibleCount === 0;
-    const count = group.querySelector('.shortcut-group-count');
-    if (count) count.textContent = visibleCount + '件';
-  });
-  const empty = container.querySelector('#shortcut-empty');
-  if (empty) empty.hidden = !!container.querySelector('.shortcut-group:not([hidden])');
-}
-
-function _shortcutSettingsScopeOptionsHtml(scopeOptions, previousScope) {
-  let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
-  for (const [scope, items] of scopeOptions) {
-    html += '<option value="' + esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>' + esc(GB_SHORTCUT_SCOPE_LABELS[scope] || scope) + ' (' + items.length + ')</option>';
-  }
-  return html;
-}
-
-function _shortcutSettingsRowHtml(item) {
-  const customStyle = item.isCustom ? ' color:var(--accent);' : '';
-  const status = item.isCustom ? 'カスタム' : '既定';
-  const scopeLabel = GB_SHORTCUT_SCOPE_LABELS[item.displayScope] || item.displayScope;
-  const searchText = [item.label, item.id, item.key, scopeLabel].join(' ').toLowerCase();
-  let html = '<div class="shortcut-row" data-id="' + esc(item.id) + '" data-scope="' + esc(item.displayScope) + '" data-search="' + esc(searchText) + '" style="display:flex;align-items:center;padding:4px 0;gap:8px;">';
-  html += '<span style="flex:1;min-width:0;font-size:12px;" title="' + esc(item.id) + '">' + esc(item.label) + '</span>';
-  html += '<span class="shortcut-status" style="width:56px;text-align:center;font-size:11px;color:' + (item.isCustom ? 'var(--accent)' : 'var(--fg2)') + ';">' + status + '</span>';
-  html += '<kbd class="shortcut-key" data-id="' + esc(item.id) + '" style="min-width:120px;text-align:center;padding:2px 8px;font-size:12px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;cursor:pointer;' + customStyle + '" title="クリックして変更">' + esc(_shortcutKeyDisplay(item.key)) + '</kbd>';
-  if (item.isCustom) {
-    html += '<button class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + esc(item.id) + '" data-e2e-id="shortcut-reset-' + esc(item.id) + '" style="width:28px;padding:1px 4px;" title="デフォルトに戻す" aria-label="' + esc(item.label) + 'をデフォルトに戻す">✕</button>';
-  } else {
-    html += '<span style="width:28px;"></span>';
-  }
-  return html + '</div>';
-}
-
-function _shortcutSettingsGroupHtml(scope, items) {
-  let html = '<div class="shortcut-group" data-scope="' + esc(scope) + '" style="margin-top:10px;">';
-  html += '<div style="display:flex;align-items:center;gap:8px;font-weight:bold;font-size:13px;padding:8px 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px;">';
-  html += '<span>' + esc(GB_SHORTCUT_SCOPE_LABELS[scope] || scope) + '</span>';
-  html += '<span class="shortcut-group-count gb-section-desc" style="margin-left:auto;margin-bottom:0;">' + items.length + '件</span>';
-  html += '</div>';
-  html += items.map(_shortcutSettingsRowHtml).join('');
-  return html + '</div>';
-}
-
-function renderShortcutSettings(container) {
-  const shortcuts = _getEffectiveShortcuts();
-  const custom = _getCustomShortcuts();
-  const groups = _shortcutSettingsGroups(shortcuts, custom);
-  const previousSearch = container.querySelector('#shortcut-search')?.value || '';
-  const previousScope = container.querySelector('#shortcut-scope-filter')?.value || 'all';
-  const scopeOptions = Object.entries(groups).filter(([, items]) => items.length);
-
-  let html = '<section class="gb-section gb-section--boxed shortcut-settings-wrap" style="max-height:500px;overflow-y:auto;">';
-  html += '<div class="gb-section-title">ショートカット</div>';
-  html += '<div style="margin-bottom:10px;display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,180px) auto;gap:8px;align-items:center;">';
-  html += '<input id="shortcut-search" class="gb-input" type="text" placeholder="検索" value="' + esc(previousSearch) + '">';
-  html += '<select id="shortcut-scope-filter" class="gb-select">';
-  html += _shortcutSettingsScopeOptionsHtml(scopeOptions, previousScope);
-  html += '</select>';
-  html += '<button id="shortcut-reset-all" class="gb-btn gb-btn-sm" style="white-space:nowrap;">すべてリセット</button>';
-  html += '</div>';
-  html += scopeOptions.map(([scope, items]) => _shortcutSettingsGroupHtml(scope, items)).join('');
-  html += '<div id="shortcut-empty" class="gb-section-desc" hidden style="padding:16px 0;">該当するショートカットがありません</div>';
-  html += '</section>';
-  container.innerHTML = html;
-
-  // --- イベントバインド ---
-
-  // キー変更
-  container.querySelectorAll('.shortcut-key').forEach(kbd => {
-    kbd.addEventListener('click', () => _startKeyCapture(kbd, container));
-  });
-
-  // 個別リセット
-  container.querySelectorAll('.shortcut-reset').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.id;
-      const custom = _getCustomShortcuts();
-      delete custom[id];
-      _saveCustomShortcuts(custom);
-      renderShortcutSettings(container);
-      _updateAllTooltips();
-    });
-  });
-
-  // 全リセット
-  container.querySelector('#shortcut-reset-all')?.addEventListener('click', async () => {
-    if (!await cfConfirm('すべてのショートカットをデフォルトに戻しますか？')) return;
-    _saveCustomShortcuts({});
-    renderShortcutSettings(container);
-    _updateAllTooltips();
-  });
-
-  container.querySelector('#shortcut-search')?.addEventListener('input', () => _applyShortcutSettingsFilter(container));
-  container.querySelector('#shortcut-scope-filter')?.addEventListener('change', () => _applyShortcutSettingsFilter(container));
-  _applyShortcutSettingsFilter(container);
-}
-
-function _startKeyCapture(kbd, settingsContainer) {
-  kbd.textContent = 'キーを入力...';
-  kbd.style.background = 'var(--accent)';
-  kbd.style.color = '#fff';
-
-  const handler = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.key === 'Escape') {
-      document.removeEventListener('keydown', handler, true);
-      const shortcuts = _getEffectiveShortcuts();
-      kbd.textContent = _shortcutKeyDisplay(shortcuts[kbd.dataset.id]?.key || '');
-      kbd.style.background = '';
-      kbd.style.color = '';
-      return;
-    }
-    const newKey = _normalizeKeyEvent(e);
-    if (!newKey) return; // 修飾キー単体は無視（入力継続）
-    const id = kbd.dataset.id;
-
-    const conflict = _checkKeyConflict(id, newKey);
-    if (conflict) {
-      kbd.textContent = '競合: ' + conflict.label;
-      setTimeout(() => {
-        kbd.textContent = _shortcutKeyDisplay(_getEffectiveShortcuts()[id]?.key || '');
-        kbd.style.background = '';
-        kbd.style.color = '';
-      }, 1500);
-      document.removeEventListener('keydown', handler, true);
-      return;
-    }
-
-    const custom = _getCustomShortcuts();
-    // デフォルトと同じなら削除（カスタム扱いにしない）
-    if (_normalizeKeyDef(GB_SHORTCUTS[id]?.key || '') === newKey) {
-      delete custom[id];
-    } else {
-      custom[id] = { key: newKey };
-    }
-    _saveCustomShortcuts(custom);
-    document.removeEventListener('keydown', handler, true);
-    renderShortcutSettings(settingsContainer);
-    _updateAllTooltips();
-  };
-  document.addEventListener('keydown', handler, true);
+  window.MeldexShortcutRegistry?.applyFilter(container);
 }
 
 function _checkKeyConflict(selfId, newKey) {
-  const shortcuts = _getEffectiveShortcuts();
-  const selfScope = shortcuts[selfId]?.scope;
-  for (const [id, def] of Object.entries(shortcuts)) {
-    if (id === selfId) continue;
-    if (!def.key) continue;
-    if (_normalizeKeyDef(def.key) === newKey) {
-      if (def.scope === selfScope || def.scope === 'global' || selfScope === 'global') {
-        return def;
-      }
-    }
-  }
-  return null;
+  return window.MeldexShortcutRegistry?.conflict(selfId, newKey) ?? null;
 }
 
 

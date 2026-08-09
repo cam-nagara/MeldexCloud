@@ -590,7 +590,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   margin: 0.18em 0;
 }
 .chat-markdown blockquote {
-  margin: 0.55em 0;
+  margin: 0.55em 0 0.55em 1em;
   padding: 0.2em 0 0.2em 0.8em;
   border-left: 3px solid var(--accent);
   color: var(--fg2);
@@ -1580,4 +1580,56 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   .gb-pane-collapse, .gb-pane-maximize, .gb-pane-ctrls { display: none !important; }
   .gb-pane { border: none !important; }
   #gb-layout-root > .gb-pane { width: 100% !important; height: 100% !important; }
+}
+
+/* ===== ノートエディタ本体のレイアウト =====
+   旧実装では Meldex.html の style 属性に直接書かれていた。インラインstyleは外部CSSより
+   常に優先されるため、gb-tools.part02.part02.css の縦書き用スタイル（余白・行間・
+   スクロール方向）が一度も適用されていなかった。ここへ移し、かつ論理プロパティで
+   書くことで、同じ宣言が横書きでは左右、縦書きでは行の上下として効くようにする。
+
+   値と式は旧インラインstyleと完全に同一なので、横書きの見た目は変わらない
+   （padding-block:16px ≡ padding-top/bottom:16px、padding-inline:X ≡ padding-left/right:X）。
+
+   このファイルは gb-layout.css 経由で本体アプリだけが読み込む。クラウド単独ノート
+   アプリ（note-standalone.html）は gb-layout.css を読み込まず note-standalone.css の
+   .note-editor が自前のレイアウトを持つため、ここの値が単独アプリへ漏れることはない。 */
+.note-editor-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#note-toc {
+  width: 200px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px;
+  border-right: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+
+#note-toc-resize {
+  width: var(--note-toc-resize-hit, 8px);
+  min-width: var(--note-toc-resize-hit, 8px);
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  border-right: 1px solid var(--border);
+  touch-action: none;
+}
+
+#page-content {
+  flex: 1;
+  padding-block: 16px;
+  padding-inline: max(var(--page-margin-x, 50px), calc((100% - var(--page-content-max-width, 1200px)) / 2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  line-height: 1.7;
+  white-space: normal;
+  outline: none;
+  min-height: 200px;
 }

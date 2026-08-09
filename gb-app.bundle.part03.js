@@ -1,3 +1,17 @@
+  items.forEach(({ index, entry }) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'ab-dropdown-item';
+    item.setAttribute('role', 'menuitem');
+    item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
+    item.title = entry.path || '';
+    item.addEventListener('click', () => {
+      navState.index = index;
+      navNavigating = true;
+      try {
+        if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
+        _applyNavEntryToBoundTab(navState, entry);
+        _withNavFlag(navOpen(entry));
       } catch (e) {
         navNavigating = false;
         throw e;
@@ -884,16 +898,3 @@ function _refreshOutlinerAfterStartupReady() {
     const outlinerOptions = {
       coalesce: true,
       skipIfRecentlyLoaded: true,
-      reason: 'startup-ready',
-    };
-    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
-    const refreshJobs = [];
-    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
-    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
-    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
-    return Promise.allSettled(refreshJobs);
-  } catch (error) {
-    console.warn('[Meldex] startup outliner refresh failed:', error);
-    return Promise.resolve(null);
-  }
-}

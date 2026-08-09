@@ -1,3 +1,36 @@
+      if (typeof rtSavedSelection !== 'undefined') rtSavedSelection = _savedRange.cloneRange();
+    } catch (_err) {
+      // See _saveSelection().
+    }
+    return true;
+  }
+
+  function _dispatchInput() {
+    const editable = _activeEditable || _getActiveEditable();
+    editable?.dispatchEvent?.(new Event('input', { bubbles: true }));
+  }
+
+  function _isLegacyRichTextEditable(editable) {
+    return !!editable?.matches?.('#page-content, #entity-freetext, #dp-editable');
+  }
+
+  function _execTextCommand(command, value) {
+    _restoreSelection();
+    const editable = _activeEditable || _getActiveEditable();
+    if (_isLegacyRichTextEditable(editable) && typeof rtCmd === 'function') {
+      rtCmd(command, value);
+    } else {
+      document.execCommand(command, false, value || null);
+    }
+    _dispatchInput();
+    _saveSelection();
+  }
+
+  function _formatBlock(tag) {
+    _restoreSelection();
+    const editable = _activeEditable || _getActiveEditable();
+    if (_isLegacyRichTextEditable(editable) && typeof rtHeading === 'function' && tag !== 'P') rtHeading(tag);
+    else document.execCommand('formatBlock', false, tag);
     _dispatchInput();
     _saveSelection();
   }
@@ -372,11 +405,12 @@
     const row = document.createElement('div');
     row.className = 'cloud-mobile-annotationbar-row';
     ANNOTATION_ITEMS.forEach((item) => {
-      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.tool
-        ? () => _setAnnotationTool(item.tool)
-        : item.action);
+      const button = _button('cloud-mobile-annotationbar-btn', item.label, item.icon, item.group
+        ? (event) => _openAnnotationMobileToolMenu(event.currentTarget, item.group)
+        : (item.tool ? () => _setAnnotationTool(item.tool) : item.action));
       if (item.id) button.dataset.e2eId = 'cloud-mobile-annotationbar-' + item.id;
       if (item.tool) button.dataset.annMobileTool = item.tool;
+      if (item.group) button.dataset.annMobileGroup = item.group;
 
 /* === gb-cloud-mobile-editbar.part02.js === */
       if (item.id === 'visibility') button.dataset.annMobileVisibility = '1';

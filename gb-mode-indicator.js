@@ -7,6 +7,7 @@
 
   function _runtimeMode() {
     if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return 'dropbox';
+    if (window.MeldexRuntimeAdapter?.isBrowserMode?.()) return 'browser';
     return 'legacy';
   }
 
@@ -33,6 +34,13 @@
         id: touch ? 'mobile-dropbox' : 'dropbox',
         label: touch ? 'タッチ表示（Dropbox）' : 'Dropboxに保存',
         detail: workspace?.path || workspace?.accountName || 'Dropboxと接続中',
+      };
+    }
+    if (runtime === 'browser') {
+      return {
+        id: touch ? 'mobile-browser' : 'browser',
+        label: touch ? 'タッチ表示（この端末）' : 'この端末内に保存',
+        detail: workspace?.path || 'この端末内に保存',
       };
     }
     const source = _localWorkspaceSource();

@@ -33,7 +33,7 @@
     const curWork = getWorkFolder();
     const isWork = curWork === nodeData.path;
     const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
-    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folder', wfPanel);
+    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
     [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
       _outlinerAppendMenuItem(wfPanel, {
         html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
@@ -62,14 +62,10 @@
     // サブメニュー風: 1項目でクリック→展開
     const sortPanel = _outlinerCreateSubmenu('並び替え');
     _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
-    const sortOpts = [
+    const sortOpts = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
       { label: 'マニュアル', sort: 'manual', order: 'asc' },
       { label: '名前 ↑', sort: 'name', order: 'asc' },
       { label: '名前 ↓', sort: 'name', order: 'desc' },
-      { label: '更新日時 ↑', sort: 'modified', order: 'asc' },
-      { label: '更新日時 ↓', sort: 'modified', order: 'desc' },
-      { label: '作成日時 ↑', sort: 'created', order: 'asc' },
-      { label: '作成日時 ↓', sort: 'created', order: 'desc' },
     ];
     sortOpts.forEach(o => {
       const active = curSort.sort === o.sort && curSort.order === o.order;
@@ -78,14 +74,20 @@
         checked: active,
         action: async () => {
         closeTreeContextMenu();
-        const before = captureOutlinerSettingsHistory([SORT_SETTINGS_KEY]);
+        const sortHistoryKeys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(sortHistoryKeys);
         setSortSetting(sortPath, o.sort, o.order);
         pushOutlinerSettingsHistory(
           'フォルダツリー: 並び替え設定',
           before,
           sortPath + ' / ' + o.label,
-          [SORT_SETTINGS_KEY]
+          sortHistoryKeys
         );
+        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
+          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
+          renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+        }
         const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
         if (childrenDiv) {
           if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(childrenDiv);

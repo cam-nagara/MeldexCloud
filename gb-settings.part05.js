@@ -228,7 +228,7 @@ function _renderSettingsThemeNoteLayoutRows() {
   const margin = _settingsThemePxValue('--page-margin-x', '50px');
   const maxWidth = _settingsThemePxValue('--page-content-max-width', '1200px');
   return _settingsThemeSubsection('レイアウト', `<label class="gb-field-row settings-theme-note-layout-row">
-    <span class="gb-label">左右余白</span>
+    <span class="gb-label">余白 ${fieldHelp('本文の行の左右に空ける余白です。横書きでは左右、縦書きでは上下に効きます', { e2eId: 'settings-theme-note-padding-help' })}</span>
     <input id="settings-note-margin-x" type="number" min="0" max="300" step="1" class="gb-input-sm settings-theme-note-margin-input" value="${esc(margin)}" data-onchange="settingsThemeNoteMarginChanged(this.value)">
     <span class="gb-label">px</span>
   </label>

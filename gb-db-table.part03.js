@@ -190,16 +190,17 @@ function _dbAlignPinnedColumnSeams(table) {
       : null;
   }).filter(Boolean);
   if (!entries.length) return;
+  const controlsHeader = headers.find(header => header.classList.contains('col-row-controls-header'));
 
   // 前回の補正を外した同一レイアウトから再計測する。ここから補正の再適用までは
   // 同じフレーム内なので、中間状態が画面へ描画されることはない。
   entries.forEach(entry => _dbSetPinnedColumnShift(table, entry, 0));
-  let targetLeft = null;
+  let targetLeft = controlsHeader?.getBoundingClientRect?.().right ?? null;
   entries.forEach((entry, index) => {
     const rect = entry.header.getBoundingClientRect();
     // 先頭の固定列は既存の sticky left を基準にする。狭幅時には行コントロール列自体も
     // テーブル右端制約を受けるため、その描画位置を基準にすると固定列群全体が左へずれる。
-    if (index === 0) {
+    if (index === 0 && !Number.isFinite(targetLeft)) {
       targetLeft = rect.right;
       return;
     }
@@ -611,7 +612,10 @@ function renderPivot(ctx) {
   thControls.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'row-controls');
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
-  thControls.setAttribute('aria-label', '行操作');
+  thControls.setAttribute('aria-label', '行操作とエントリ選択');
+  if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
+    thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
+  }
   headerRow.appendChild(thControls);
 
   // 列D&D並べ替え（エントリ名列・プロパティ列で共通）
@@ -945,6 +949,7 @@ function renderPivot(ctx) {
 
   thead.innerHTML = '';
   thead.appendChild(headerRow);
+  if (typeof _syncPaneRowSelectHeader === 'function') _syncPaneRowSelectHeader(ctx);
 
   // リンク切れ（参照先シート欠落）の列見出し警告アイコンを反映（既知欠落を即時、
   // 未判明分は先読み完了後に selectDatabase から再度この関数が呼ばれて反映される）。

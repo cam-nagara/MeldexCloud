@@ -744,8 +744,10 @@ function _buildExportOptions(path, type, format) {
   };
   const info = formatMap[type]?.[format];
   if (!info) return null;
+  // ノートが縦書き表示のときは、書き出し結果にも組方向を反映する（追加のみのパラメータ）
+  const verticalParam = (type === 'note' && window.MeldexNoteWritingMode?.isActive?.()) ? '&vertical=1' : '';
   return {
-    url: '/export/' + type + '?path=' + encodeURIComponent(path) + '&format=' + format,
+    url: '/export/' + type + '?path=' + encodeURIComponent(path) + '&format=' + format + verticalParam,
     filename: stem + info.ext,
     extension: info.ext,
     dialogTitle: `${info.label}として保存`,

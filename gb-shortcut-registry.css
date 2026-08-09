@@ -1,0 +1,134 @@
+/* gb-shortcut-registry.css
+ * ショートカットキー一覧（設定ダイアログとオプションパネルで共用）。
+ * 共通UIルールの4階層規則（.gb-section → .gb-section-title → .gb-field-row）に乗せ、
+ * 行ごとのインラインstyleを持たせない。
+ */
+
+.shortcut-settings-wrap {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+/* オプションパネル内では枠を付けず、パネルの高さいっぱいまで使う */
+.shortcut-settings-wrap.gb-section--detail {
+  max-height: none;
+  overflow-y: visible;
+}
+
+/* 検索・絞り込み・リセットの行。オプションパネルは幅が狭い（既定360px）ので、
+   固定の3列グリッドにすると検索欄が潰れる。入りきらない分は折り返す。 */
+.shortcut-settings-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.shortcut-settings-filter .gb-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+}
+
+.shortcut-settings-filter .gb-select {
+  flex: 0 1 auto;
+  min-width: 110px;
+  max-width: 100%;
+}
+
+.shortcut-settings-filter .gb-btn {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.shortcut-group {
+  margin-top: 10px;
+}
+
+.shortcut-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 0 4px;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  margin-bottom: 2px;
+}
+
+.shortcut-group-count {
+  margin-left: auto;
+  margin-bottom: 0;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  flex-wrap: nowrap;
+}
+
+.shortcut-row .shortcut-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-status {
+  flex: 0 0 auto;
+  width: 52px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--ui-fg-muted, var(--fg2));
+}
+
+.shortcut-status.is-custom {
+  color: var(--ui-accent, var(--accent));
+}
+
+.shortcut-key {
+  flex: 0 0 auto;
+  min-width: 116px;
+  text-align: center;
+  padding: 2px 8px;
+  font-size: 12px;
+  background: var(--bg3);
+  border: 1px solid var(--ui-border, var(--border));
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.shortcut-key.is-custom {
+  color: var(--ui-accent, var(--accent));
+}
+
+.shortcut-key:focus-visible {
+  outline: 2px solid var(--ui-accent, var(--accent));
+  outline-offset: 1px;
+}
+
+.shortcut-key.is-capturing {
+  background: var(--ui-accent, var(--accent));
+  color: #fff;
+}
+
+.shortcut-row .shortcut-reset,
+.shortcut-reset-spacer {
+  flex: 0 0 auto;
+  width: 26px;
+}
+
+.shortcut-row .shortcut-reset {
+  padding: 1px 4px;
+}
+
+/* 行が狭いときは、キー欄を優先して残しつつ操作名を縮める */
+@media (max-width: 480px) {
+  .shortcut-key {
+    min-width: 96px;
+  }
+}

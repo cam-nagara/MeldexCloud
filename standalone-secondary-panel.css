@@ -162,3 +162,32 @@
     transition: none;
   }
 }
+
+/* オプションパネル内のタブ（情報 / ショートカットキー）。
+   本体のオプションパネルと同じ .gb-inner-tab トークンを使う。 */
+.sa-secondary-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  margin-bottom: 8px;
+}
+
+.sa-secondary-tabpanel {
+  display: block;
+  min-width: 0;
+}
+
+.sa-secondary-tabpanel[hidden] {
+  display: none;
+}
+
+/* 「常に最前面」がオンの間はボタンを押した状態で見せる */
+.tb-icon-btn[data-always-on-top].is-active,
+.sa-icon-btn[data-always-on-top].is-active,
+.qm-icon[data-always-on-top].is-active,
+.bd-toolbar-btn[data-always-on-top].is-active {
+  color: var(--ui-accent, var(--accent));
+  background: var(--ui-bg-control-hover, var(--bg3));
+}

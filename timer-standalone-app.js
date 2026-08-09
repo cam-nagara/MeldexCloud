@@ -135,8 +135,76 @@
     });
   }
 
-  function renderOptionPanel() {
+  // 本体・他の単独アプリと同じタブ付きオプションパネルを使う。
+  // 以前は #rp-detail を直接上書きしていたため、共通のタブ（情報 / ショートカットキー）が
+  // 消えてタイマーだけ別物の見た目になっていた。
+  function ensureTimerOptionTab() {
     const detail = qs('rp-detail');
+    if (!detail) return null;
+    // 実DOMが無い環境（テスト用の最小スタブ等）ではタブを組まず、そのまま返す
+    if (typeof detail.querySelector !== 'function' || typeof document.createElement !== 'function') return detail;
+    window._ensureDetailTabShell?.(detail);
+    const bar = document.getElementById('detail-tab-bar');
+    if (!bar || typeof bar.querySelector !== 'function') return detail;
+    let button = bar.querySelector('[data-detail-tab="standalone-timer"]');
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-inner-tab detail-tab detail-tab-standalone-timer';
+      button.dataset.detailTab = 'standalone-timer';
+      button.dataset.e2eId = 'detail-tab-standalone-timer';
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', 'false');
+      button.textContent = 'タイマー';
+      bar.insertBefore(button, bar.firstChild);
+    }
+    button.hidden = false;
+    let panel = document.getElementById('detail-tab-standalone-timer');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'detail-tab-standalone-timer';
+      panel.className = 'gb-panel-body-scroll';
+      panel.hidden = true;
+      detail.appendChild(panel);
+    }
+    if (button.dataset.timerTabBound !== '1') {
+      button.dataset.timerTabBound = '1';
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        activateTimerOptionTab();
+      });
+    }
+    return panel;
+  }
+
+  function activateTimerOptionTab() {
+    const detail = qs('rp-detail');
+    const panel = typeof document.getElementById === 'function' ? document.getElementById('detail-tab-standalone-timer') : null;
+    if (!detail || !panel || typeof detail.querySelectorAll !== 'function') return;
+    window.switchDetailTab?.(null);
+    detail.querySelectorAll(':scope > [id^="detail-tab-"]').forEach(el => { el.hidden = el !== panel; });
+    document.getElementById('detail-tab-bar')?.querySelectorAll('[data-detail-tab]').forEach(item => {
+      const active = item.dataset.detailTab === 'standalone-timer';
+      item.classList.toggle('gb-inner-tab-active', active);
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    panel.hidden = false;
+  }
+
+  // 共通の「情報」タブへ、本体のフォルダパネル→情報タブと同じ内容を出す
+  function renderTimerFileInfoTab() {
+    if (typeof document.querySelectorAll !== 'function') return;
+    const host = document.getElementById('detail-tab-note-editor');
+    if (!host) return;
+    document.querySelectorAll('.detail-tab-note-editor').forEach(t => { t.hidden = false; });
+    if (!window.MeldexFileInfoPanel?.renderInto) return;
+    window.MeldexFileInfoPanel.renderInto(host, app.path || '');
+  }
+
+  function renderOptionPanel() {
+    const detail = ensureTimerOptionTab();
     if (!detail || !app.component || typeof detail.querySelector !== 'function') return;
     const style = timerFileStyle();
     const background = timerColorValue(style['--timer-bg'], '#1e1e1e');
@@ -173,6 +241,7 @@
           <dt>強調</dt><dd><input type="color" aria-label="タイマーの強調色" data-timer-file-style="--accent" value="${accent}"></dd>
         </dl>
       </section>`;
+    renderTimerFileInfoTab();
     const advancedHost = detail.querySelector('[data-timer-advanced-host]');
     if (advancedHost && typeof app.component._timerAdvancedHtml === 'function') {
       advancedHost.innerHTML = app.component._timerAdvancedHtml();
@@ -401,7 +470,10 @@
       toggleButtonIds: ['timer-option-panel-button'],
       defaultWidth: 360,
     });
+    // 単独アプリはメインパネルのアプリが固定なので、ショートカット一覧の初期絞り込みを宣言する
+    window.__meldexAppShortcutScope = 'timer';
     renderOptionPanel();
+    activateTimerOptionTab();
   }
 
   function bindUi() {

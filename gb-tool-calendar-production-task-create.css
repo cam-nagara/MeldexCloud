@@ -53,6 +53,12 @@
   grid-column: 1 / -1;
 }
 
+/* display 指定があると hidden 属性が効かないため明示する（コマ単位以外では
+   「1ページのコマ数」を隠す）。 */
+.gb-production-bulk-field[hidden] {
+  display: none;
+}
+
 .gb-production-bulk-field-label,
 .gb-production-bulk-contents legend {
   color: var(--fg2, #b9b9b9);

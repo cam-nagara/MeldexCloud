@@ -4,7 +4,7 @@
   const SAFE_MODE_KEY = 'meldex-safe-mode-once';
   const WORKSPACE_STATE_KEY = 'meldex-cloud-workspace-state';
   const COMPARE_LOG_KEY = 'meldex-cloud-compare-log';
-  const MODES = new Set(['legacy', 'dropbox', 'server']);
+  const MODES = new Set(['legacy', 'browser', 'dropbox', 'server']);
   const MAX_COMPARE_LOGS = 100;
 
   function _baseUrl() {
@@ -114,7 +114,10 @@
       const requestedMode = params.get('dataAccessMode');
       if (MODES.has(requestedMode)) return requestedMode;
       if (params.get('safeMode') === '1') return 'legacy';
-      if (_isHostedCloudLaunch(params)) return storedMode === 'server' ? 'server' : 'dropbox';
+      if (_isHostedCloudLaunch(params)) {
+        if (storedMode === 'server' || storedMode === 'dropbox' || storedMode === 'browser') return storedMode;
+        return 'browser';
+      }
     } catch {}
     try {
       if (sessionStorage.getItem(SAFE_MODE_KEY) === '1') return 'legacy';
@@ -140,12 +143,20 @@
     return getMode() === 'dropbox';
   }
 
+  function isBrowserMode() {
+    return getMode() === 'browser';
+  }
+
+  function isBrowserDataMode() {
+    return isBrowserMode() || isDropboxMode();
+  }
+
   function isServerMode() {
     return getMode() === 'server';
   }
 
   function isPwaMode() {
-    return isDropboxMode() || isServerMode();
+    return isBrowserDataMode() || isServerMode();
   }
 
   function resolveAppUrl(path, query) {
@@ -281,6 +292,8 @@
     setMode,
     clearMode,
     isDropboxMode,
+    isBrowserMode,
+    isBrowserDataMode,
     isServerMode,
     isPwaMode,
     getBaseUrl,

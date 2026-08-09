@@ -28,7 +28,7 @@
   }
 
   function _normalizeLocalPath(path) {
-    return _normalizePath(path, { preserveAbsolute: !_runtime()?.isDropboxMode?.() });
+    return _normalizePath(path, { preserveAbsolute: !_runtime()?.isBrowserDataMode?.() });
   }
 
   function _isAppRelativeUrl(raw) {
@@ -197,7 +197,7 @@
     const normalized = _extractRawPath(direct);
     if (!normalized) return { path: '', url: direct };
     if (_runtime()?.isServerMode?.()) return _serverRawUrl(normalized, opts);
-    if (!_runtime()?.isDropboxMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
+    if (!_runtime()?.isBrowserDataMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const file = await _getFileWithMediaFallback(provider, normalized);
@@ -312,7 +312,7 @@
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
-      if (isThumbnail && !(_runtime()?.isDropboxMode?.() || _runtime()?.isServerMode?.())) return;
+      if (isThumbnail && !(_runtime()?.isBrowserDataMode?.() || _runtime()?.isServerMode?.())) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }

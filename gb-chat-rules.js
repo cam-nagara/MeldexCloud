@@ -107,7 +107,7 @@
       <section class="gb-section gb-section--boxed">
         <div class="gb-field-row" style="justify-content:space-between;gap:8px;">
           <div>
-            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール ${fieldHelp('有効なルールはチャットに自動で反映されます。')}</div>
+            <div class="gb-section-title">${crIcon('clipboardList', 14)} チャットルール ${fieldHelp('有効なルールはチャットに自動で反映されます。', { e2eId: 'chat-rules-help' })}</div>
           </div>
           <div style="display:flex;gap:6px;align-items:center;">
             ${writable ? `<button type="button" class="gb-btn gb-btn-sm" data-cr-action="add" data-e2e-id="chat-rules-add">${crIcon('plus', 14)} 追加</button>` : ''}
@@ -117,7 +117,7 @@
       </section>
       <div data-cr-alert></div>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-desc">${crEsc(HEADER_TITLE)} ${fieldHelp(HEADER_HELP)}</div>
+        <div class="gb-section-desc">${crEsc(HEADER_TITLE)} ${fieldHelp(HEADER_HELP, { e2eId: 'chat-rules-priority-help' })}</div>
         <div data-cr-list class="chat-rules-list"></div>
       </section>
     `;

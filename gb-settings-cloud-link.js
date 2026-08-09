@@ -35,6 +35,10 @@
     return !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
   }
 
+  function _isBrowserMode() {
+    return !!window.MeldexRuntimeAdapter?.isBrowserMode?.();
+  }
+
   function _injectStyles() {
     if (document.getElementById('mscl-styles')) return;
     const style = document.createElement('style');
@@ -83,6 +87,8 @@
     try {
       if (_isCloudMode()) {
         await _renderCloudStatusCard(container);
+      } else if (_isBrowserMode()) {
+        _renderBrowserStatusCard(container);
       } else {
         await _renderDesktopStatusCard(container);
       }
@@ -113,9 +119,39 @@
     card.append(title, line1, line2);
 
     _appendWorkspaceJoinSection(card, container);
+    window.MeldexOfflineShell?.renderSettings?.(card);
 
     container.innerHTML = '';
     container.appendChild(card);
+  }
+
+  function _renderBrowserStatusCard(container) {
+    const card = document.createElement('section');
+    card.className = 'gb-section gb-section--boxed settings-section-wide mscl-status-card';
+    const title = document.createElement('div');
+    title.className = 'gb-section-title';
+    title.innerHTML = `${lucide('hardDrive', 14)} この端末内に保存`;
+    const line1 = document.createElement('div');
+    line1.className = 'gb-section-desc';
+    line1.textContent = 'アカウントなしで使用中です。ワークスペースとファイルは、このブラウザの端末内ストレージに保存されます。';
+    const line2 = document.createElement('div');
+    line2.className = 'gb-section-desc';
+    line2.textContent = 'Dropboxへ接続しても、現在の端末内データは自動で移動・削除されません。';
+    const row = document.createElement('div');
+    row.className = 'gb-field-row';
+    row.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;gap:8px;margin-top:8px;';
+    const connect = document.createElement('button');
+    connect.type = 'button';
+    connect.className = 'gb-btn gb-btn-sm';
+    connect.textContent = 'Dropboxに接続する';
+    connect.addEventListener('click', () => {
+      if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
+      window.MeldexCloudBootstrap?.connectDropbox?.();
+    });
+    row.appendChild(connect);
+    card.append(title, line1, line2, row);
+    window.MeldexOfflineShell?.renderSettings?.(card);
+    container.replaceChildren(card);
   }
 
   /* ==============================
@@ -206,18 +242,36 @@
   async function _joinSharedWorkspace(container, btn) {
     const picker = _folderPicker();
     const ledgerIO = _workspaceLedgerIO();
-    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace) {
+    if (!picker?.pickFolder || !ledgerIO?.addJoinedWorkspace || !ledgerIO?.readWorkspaceLedgerStatus) {
       if (typeof showStatus === 'function') showStatus('参加できませんでした: この端末では利用できません', true);
       return;
     }
     if (btn) btn.disabled = true;
     try {
-      const picked = await picker.pickFolder({ title: '参加する共有ワークスペースフォルダを選択' });
+      const picked = await picker.pickFolder({ title: '参加する共有ワークスペースフォルダを選択', mode: 'workspace' });
       if (!picked || !picked.path) return;
       if (picked.path === '/') {
         if (typeof showStatus === 'function') showStatus('Dropbox全体は共有ワークスペースにできません。中のフォルダを選択してください', true);
         return;
       }
+
+      // 選択画面の絞り込みは検索結果に頼るため取りこぼしがあり得る。参加を記録する前に、
+      // そのフォルダが本当に共有ワークスペースかをここで必ず確かめる。読み取りに失敗した
+      // ときは「未登録」と決めつけず中断する（「共有ワークスペースにする」導線と同じ作法）。
+      let joinStatus = null;
+      try {
+        joinStatus = await ledgerIO.readWorkspaceLedgerStatus(picked.path, picked.namespaceKind);
+      } catch (e) {
+        if (typeof showStatus === 'function') showStatus('共有状態を確認できませんでした: ' + _errorText(e), true);
+        return;
+      }
+      if (!joinStatus?.exists) {
+        if (typeof showStatus === 'function') {
+          showStatus(`「${picked.name}」は共有ワークスペースではありません。共有ワークスペースとして作られたフォルダを選んでください`, true);
+        }
+        return;
+      }
+
       try {
         ledgerIO.addJoinedWorkspace({
           dropboxPath: picked.path,

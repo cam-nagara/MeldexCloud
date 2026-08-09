@@ -119,7 +119,7 @@ class CalendarComponent extends ToolComponent {
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="sheetSort" data-e2e-id="gb-production-sheet-sort" title="並び替え" aria-label="並び替え" aria-haspopup="menu"><span class="ico ico-arrowUpDown"></span></button>
     <div class="sep gb-cal-production-control"></div>
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="bulkCreateTasks" data-e2e-id="gb-production-bulk-create-open" data-production-write-action="1" title="タスクを一括作成" aria-label="タスクを一括作成">${lucide('listPlus', 16)}</button>
-    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="割当再計算" aria-label="割当再計算">${lucide('calculator', 16)}</button>
+    <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="recalculate" data-e2e-id="gb-production-task-recalculate" title="自動割り当て" aria-label="自動割り当て">${lucide('calculator', 16)}</button>
     <button type="button" class="tb-icon-btn gb-cal-production-control" data-cal-action="productionManagement" data-e2e-id="gb-production-management-open" title="管理操作" aria-label="管理操作">${lucide('settings2', 16)}</button>
     <button type="button" class="tb-icon-btn" data-cal-action="template" title="テンプレート" aria-label="テンプレート" data-e2e-id="gb-production-open-templates">${lucide('layoutTemplate', 16)}</button>
     <button type="button" class="tb-icon-btn gb-cal-calendar-control" data-cal-action="timer" title="タイマー" aria-label="タイマー">${lucide('timer', 16)}</button>

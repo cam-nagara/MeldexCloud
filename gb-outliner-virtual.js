@@ -24,20 +24,20 @@
 (function () {
   'use strict';
 
-  // 既定の行高（px）。§4.1-5: 22px/50px/18px/64x44pxの変数化。
+  // 既定の行高（px）。§4.1-5: 22px/70px/18px/64x64pxの変数化。
   // 実際のCSS側は --tree-row-height（gb-tools.part02.part01.css）で管理し、
   // ここではNode単体テスト等DOM非依存の文脈でも参照できるよう定数として複製する。
   var ROW_HEIGHT_COMPACT = 22; // サムネイルOFF/対象外の通常行
-  var ROW_HEIGHT_THUMBNAIL = 50; // サムネイル表示行・サイズ「中」（既定）。後方互換のため残す単一値。
+  var ROW_HEIGHT_THUMBNAIL = 70; // サムネイル表示行・サイズ「中」（既定）。後方互換のため残す単一値。
   var ICON_SIZE_COMPACT = 18;
   var THUMBNAIL_WIDTH = 64; // サムネイル幅・サイズ「中」（既定）
-  var THUMBNAIL_HEIGHT = 44; // サムネイル高・サイズ「中」（既定）
+  var THUMBNAIL_HEIGHT = 64; // サムネイル高・サイズ「中」（既定）
 
   // サムネイルサイズ設定（小/中/大）ごとの行高・寸法。CSS側（gb-tools.part02.part01.css の
   // html.thumb-size-small / html.thumb-size-large）と値を一致させること（単一情報源はここ）。
-  var ROW_HEIGHT_THUMBNAIL_BY_SIZE = { small: 40, medium: ROW_HEIGHT_THUMBNAIL, large: 72 };
+  var ROW_HEIGHT_THUMBNAIL_BY_SIZE = { small: 54, medium: ROW_HEIGHT_THUMBNAIL, large: 102 };
   var THUMBNAIL_WIDTH_BY_SIZE = { small: 48, medium: THUMBNAIL_WIDTH, large: 96 };
-  var THUMBNAIL_HEIGHT_BY_SIZE = { small: 33, medium: THUMBNAIL_HEIGHT, large: 66 };
+  var THUMBNAIL_HEIGHT_BY_SIZE = { small: 48, medium: THUMBNAIL_HEIGHT, large: 96 };
 
   function _normalizeThumbnailSize(size) {
     return (size === 'small' || size === 'large') ? size : 'medium';

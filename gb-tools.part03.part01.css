@@ -967,8 +967,8 @@
 /* === Note styling: table === */
 #page-content table, #entity-freetext table, #dp-editable table, #board-note-editable table {
   border-collapse: collapse;
-  width: 100%;
-  margin: var(--page-table-margin-y, 8px) 0;
+  inline-size: 100%;
+  margin-block: var(--page-table-margin-y, 8px);
   font-size: var(--page-table-font-size, 13px);
 }
 #page-content th, #entity-freetext th, #dp-editable th, #board-note-editable th {
@@ -978,7 +978,7 @@
   font-style: var(--page-table-header-italic, normal);
   font-family: var(--page-table-header-font, inherit);
   font-size: var(--page-table-header-font-size, inherit);
-  text-align: left;
+  text-align: start;
 }
 #page-content td, #entity-freetext td, #dp-editable td, #board-note-editable td {
   background: var(--page-table-cell-bg, transparent) !important;
@@ -994,6 +994,8 @@
 #board-note-editable th, #board-note-editable td {
   padding: var(--page-table-cell-padding-y, 6px) var(--page-table-cell-padding-x, 10px) !important;
   border: var(--page-table-border-width, 1px) solid var(--page-table-border-color, var(--border)) !important;
+  /* セルの寸法は表レイアウト内部の値。JS側（gb-note-enhance.part03.js）も物理プロパティで
+     書き込むため、ここも物理のまま揃える（論理プロパティにすると列幅調整が効かなくなる）。 */
   min-width: 1em;
   height: calc(1em * var(--page-text-line-height, 1.6));
 }
@@ -1011,8 +1013,8 @@
 /* === Note styling: copy button === */
 .copy-btn {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  inset-block-start: 4px;
+  inset-inline-end: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1117,7 +1119,7 @@ td:has(.cell-edit), th:has(.cell-edit) {
 /* === Note styling: blockquote citation === */
 blockquote .quote-cite {
   display: block;
-  margin-top: 8px;
+  margin-block-start: 8px;
   font-size: var(--page-quote-cite-font-size, 0.85em);
   font-family: var(--page-quote-cite-font, inherit);
   font-weight: var(--page-quote-cite-bold, normal);
@@ -1146,8 +1148,8 @@ blockquote .quote-cite a {
 /* === Note styling: horizontal rule === */
 #page-content hr, #entity-freetext hr, #dp-editable hr, #board-note-editable hr {
   border: none;
-  border-top: 1px solid var(--page-hr-color, var(--border));
-  margin: 20px 0;
+  border-block-start: 1px solid var(--page-hr-color, var(--border));
+  margin-block: 20px;
 }
 
 /* === Note styling: link hover === */

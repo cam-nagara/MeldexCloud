@@ -367,7 +367,7 @@
           await deps.syncTaskEvent(provider, internals, path, fm);
           applied += 1;
         } else if (row.status === 'unassigned') {
-          const fm = await writeTaskUnassigned(provider, path, row.reason || '割当再計算で割り当て先が見つかりません');
+          const fm = await writeTaskUnassigned(provider, path, row.reason || '自動割り当てで割り当て先が見つかりません');
           await deps.syncTaskEvent(provider, internals, path, fm);
           unassigned += 1;
         }

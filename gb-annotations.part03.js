@@ -107,6 +107,39 @@ function _createRectFillEl(data, color, opacity, preview) {
   return _updateRectFillEl(document.createElementNS(_annSvgNS, 'rect'), data, color, opacity, preview);
 }
 
+function _annotationEllipseDataFromPoints(points) {
+  const rect = _annotationRectDataFromPoints(points);
+  return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+}
+
+function _updateAnnotationShapeEl(el, type, data, color, opacity, preview) {
+  const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
+  const outlined = type === 'rect-line' || type === 'ellipse-line';
+  if (type.startsWith('ellipse')) {
+    el.setAttribute('cx', Number(data?.cx) || 0);
+    el.setAttribute('cy', Number(data?.cy) || 0);
+    el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0));
+    el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+  } else {
+    el.setAttribute('x', Number(data?.x) || 0);
+    el.setAttribute('y', Number(data?.y) || 0);
+    el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
+    el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+  }
+  el.setAttribute('fill', outlined ? 'none' : color);
+  el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  el.setAttribute('stroke', color);
+  el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || ann.widths?.pen || 3)));
+  el.setAttribute('stroke-opacity', String(normalizedOpacity));
+  if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+  return el;
+}
+
+function _createAnnotationShapeEl(type, data, color, opacity, preview) {
+  const tag = type.startsWith('ellipse') ? 'ellipse' : 'rect';
+  return _updateAnnotationShapeEl(document.createElementNS(_annSvgNS, tag), type, data, color, opacity, preview);
+}
+
 annOverlay?.addEventListener('wheel', _routeAnnotationWheelToScrollContainer, { passive: false });
 
 annOverlay.addEventListener('pointerdown', async (e) => {
@@ -155,7 +188,7 @@ annOverlay.addEventListener('pointermove', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   _renderAnnotationPreview();
 });
 
@@ -163,7 +196,7 @@ annOverlay.addEventListener('pointerup', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   ann.strokeEndRequested = true;
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   if (ann.strokeReady) _finishAnnotationStroke();

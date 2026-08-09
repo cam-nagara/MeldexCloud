@@ -5,8 +5,10 @@
   const DEFAULT_LEFT_DOCK_WIDTH_PX = 260;
   const DEFAULT_RIGHT_DOCK_WIDTH_PX = 360;
   const DEFAULT_MIN_WORK_WIDTH_PX = 400;
+  // 右レールの既定パネル一覧（gb-layout.js の FIXED_RAIL_RIGHT_DEFAULTS と同じ並び）。
+  // 片方だけに項目を足すと、初期レイアウトと欠損補填で並びがずれる。
   const UTILITY_PANE_TYPES = new Set([
-    'outliner', 'detail', 'preview', 'chat', 'timer',
+    'outliner', 'detail', 'preview', 'subpanel', 'chat', 'timer',
     'history', 'annotation', 'sticky', 'tags', 'search', 'version',
   ]);
 
@@ -151,6 +153,7 @@
     const rightPanes = [
       _pane([_tab('オプション', 'detail')]),
       _pane([_tab('ビューワー', 'preview')]),
+      _pane([_tab('サブパネル', 'subpanel')]),
       _pane([_tab('バージョン管理', 'version')]),
       _pane([_tab('チャット', 'chat')]),
       _pane([_tab('タイマー', 'timer')]),

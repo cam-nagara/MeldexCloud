@@ -1,3 +1,10 @@
+}
+
+// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
+// - ヘッダー / フッター分割なし (短い問いかけ専用)
+// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
+// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
+function _cfIsDeleteMessage(text) {
   // 破壊的操作を示唆するキーワード。
   // 「元に戻す」(= undo) は破壊的でないため「デフォルト.*戻」のみ (リセット系) を拾う。
   // 「を空に」は「ゴミ箱を空にする/します/しますか」を両活用形でカバーする。
@@ -891,10 +898,3 @@ function openHtmlFile(label, path, opts) {
 /* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
 function getUsername() {
   try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }
-}
-
-// ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み
-
-// replaceIcons() は meldex-core.js で定義済み（DOMContentLoaded内で呼び出し）
-
-const _GB_RESIZABLE_MODAL_SELECTOR = '.modal, .gb-modal, .link-modal, .gb-cal-modal';

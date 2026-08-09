@@ -865,6 +865,17 @@
       if (typeof this._beginTextInputUndo === 'function') this._beginTextInputUndo('編集');
     });
 
+    // ルビを振った文字列の直前・直後で打った文字がルビへ取り込まれないようにする
+    // （ノートと共通の gb-ruby-boundary.js）。取り消しの記録は上の beforeinput が
+    // 先に済ませているので、ここでは重ねて積まない。既定動作を止める分だけ
+    // input を明示的に発火させて、保存予約（下の input ハンドラ）へつなぐ。
+    if (window.MeldexRubyBoundary) {
+      window.MeldexRubyBoundary.attach(host, {
+        pushUndo: () => {},
+        dispatchInput: (el) => el.dispatchEvent(new Event('input', { bubbles: true })),
+      });
+    }
+
     host.addEventListener('input', (e) => {
       const text = e.target.closest?.('.sn2-text');
       if (!text) return;

@@ -171,17 +171,19 @@
     });
   }
 
-  // 旧「かんたん割当／自動割り当て」ボタンは廃止し、割当再計算へ一本化した（2026-08-05
-  // ユーザー判断）。ここでは割当再計算ボタンの状態だけを同期する。
+  // 旧「かんたん割当」（等分配・equal_until_deadline方式の簡易割当ボタン）は廃止し、
+  // フル再計算エンジンへ一本化した（2026-08-05 ユーザー判断。当時の表示名は「割当再計算」）。
+  // 2026-08-08 にユーザー判断で表示名のみ「自動割り当て」へ差し戻した。ここでは
+  // その自動割り当てボタンの状態だけを同期する。
   function syncQuickPlanToolbar(component, state) {
-    // フル再計算エンジン（割当再計算）はCloud（Dropboxモード）にも移植済み
+    // フル再計算エンジン（自動割り当て）はCloud（Dropboxモード）にも移植済み
     // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。
     // dropboxMode による無効化は撤去し、Desktop/Cloud両対応にする。
     const recalculateButton = component.el?.querySelector?.('[data-e2e-id="gb-production-task-recalculate"]');
     if (recalculateButton) {
       recalculateButton.disabled = false;
-      recalculateButton.title = '割当再計算';
-      recalculateButton.setAttribute('aria-label', '割当再計算');
+      recalculateButton.title = '自動割り当て';
+      recalculateButton.setAttribute('aria-label', '自動割り当て');
     }
   }
 

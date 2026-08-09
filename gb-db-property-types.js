@@ -13,7 +13,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     { type: 'date', label: '日時', icon: 'calendar' },
     { type: 'url', label: 'URL', icon: 'globe' },
     { type: 'link', label: 'リンク', icon: 'paperclip' },
-    { type: 'image', label: '画像', icon: 'image' },
+    { type: 'image', label: '画像・ファイル', icon: 'image' },
     { type: 'relation', label: 'リレーション', icon: 'link2' },
     { type: 'multi-relation', label: 'リレーション（複数）', icon: 'link2' },
     { type: 'rollup', label: 'ロールアップ', icon: 'workflow' },

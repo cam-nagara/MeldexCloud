@@ -749,6 +749,9 @@
   }
 
   let _layoutControlsInitialized = false;
+  // 単独アプリはメインパネルのアプリが固定なので、ショートカット一覧の初期絞り込みを宣言する
+  window.__meldexAppShortcutScope = 'board';
+
   function _initStandaloneLayoutControls() {
     if (_layoutControlsInitialized) return;
     const widthHandle = document.getElementById('board-sidebar-resizer');
@@ -834,12 +837,25 @@
     sep.className = 'bd-cm-sep gb-context-menu-sep';
     sep.setAttribute('role', 'separator');
     menu.appendChild(sep);
-    _appendContextMenuAction(menu, _isToolbarVisible('top') ? '上端ツールバーを非表示' : '上端ツールバーを表示', () => {
-      _setToolbarVisible('top', !_isToolbarVisible('top'));
-    });
-    _appendContextMenuAction(menu, _isToolbarVisible('bottom') ? '下端ツールバーを非表示' : '下端ツールバーを表示', () => {
-      _setToolbarVisible('bottom', !_isToolbarVisible('bottom'));
-    });
+    if (typeof _bdCreateContextSubmenu === 'function' && typeof _bdContextMenuItem === 'function') {
+      const displayMenu = _bdCreateContextSubmenu(menu, '表示', 190);
+      ['top', 'bottom'].forEach(position => {
+        const label = position === 'top' ? '上端ツールバーを常時表示' : '下端ツールバーを常時表示';
+        _bdContextMenuItem(displayMenu, label, () => {
+          _setToolbarVisible(position, !_isToolbarVisible(position));
+        }, {
+          role: 'menuitemcheckbox',
+          checked: _isToolbarVisible(position),
+        });
+      });
+    } else {
+      _appendContextMenuAction(menu, '上端ツールバーを常時表示', () => {
+        _setToolbarVisible('top', !_isToolbarVisible('top'));
+      });
+      _appendContextMenuAction(menu, '下端ツールバーを常時表示', () => {
+        _setToolbarVisible('bottom', !_isToolbarVisible('bottom'));
+      });
+    }
     _appendContextMenuAction(menu, _isOptionsPanelVisible() ? '右サイドバーを閉じる' : '右サイドバーを開く', () => {
       _toggleOptionsPanel();
     });
@@ -856,7 +872,20 @@
   // により幅に関係なく常時非表示（単独版は data-single-window を付与しない）。
   // 既に機能していないボタンのため優先リストへは含めない（右サイドバー開閉は
   // 標準メニューの「右サイドバーを開く/閉じる」から到達できる）。
+  // 「常に最前面」ボタン。Windowsデスクトップ版だけで有効で、非対応環境では出さない
+  // （standalone-always-on-top.js がサーバーの supported を見て判断する）。
+  function _initAlwaysOnTopButton(host) {
+    const toolbar = host.querySelector('[data-bd-role="toolbar-top"]');
+    if (!toolbar) return;
+    window.MeldexAlwaysOnTop?.install({
+      appId: 'board',
+      host: toolbar,
+      buttonClass: 'tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn',
+    });
+  }
+
   function _initMobileToolbar(host) {
+    _initAlwaysOnTopButton(host);
     const toolbar = host.querySelector('[data-bd-role="toolbar-top"]');
     if (!toolbar || !window.MeldexStandaloneMobileToolbar) return;
     window.MeldexStandaloneMobileToolbar.setup({

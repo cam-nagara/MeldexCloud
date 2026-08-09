@@ -224,7 +224,12 @@
     menu.style.display = '';
     _render();
     if (typeof positionPopup === 'function') {
-      positionPopup(menu, opts.anchorRect, { gap: 4, prefer: opts.prefer || 'below' });
+      // 指定が無いときはノートの組方向に合わせる（縦書きは左へ開く）。
+      // サブメニューの 'right' など明示指定は従来どおり優先する。
+      const autoPrefer = (typeof MeldexNoteWritingMode !== 'undefined' && MeldexNoteWritingMode.isVertical(opts.editable))
+        ? MeldexNoteWritingMode.popupPrefer(opts.editable)
+        : 'below';
+      positionPopup(menu, opts.anchorRect, { gap: 4, prefer: opts.prefer || autoPrefer });
     } else {
       const z = typeof _getZoom === 'function' ? _getZoom() : 1;
       menu.style.top = (opts.anchorRect.bottom / z + 4) + 'px';

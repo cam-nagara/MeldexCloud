@@ -26,6 +26,11 @@
     return typeof apiFetch === 'function' && typeof apiPost === 'function';
   }
 
+  function isCloudStaticScheduleSurface() {
+    return window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
+  }
+
   async function confirmAction(message) {
     if (typeof cfConfirm === 'function') return await cfConfirm(message, { danger: true, okLabel: '削除' });
     if (typeof window !== 'undefined' && typeof window.confirm === 'function') return window.confirm(message);
@@ -182,16 +187,6 @@
     usernameInput.dataset.e2eId = 'import-schedule-x-account-username';
     row.appendChild(usernameInput);
 
-    const ackLabel = document.createElement('label');
-    ackLabel.className = 'gb-check-help-row';
-    ackLabel.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const ackInput = document.createElement('input');
-    ackInput.type = 'checkbox';
-    ackInput.dataset.e2eId = 'import-schedule-x-account-ack';
-    ackLabel.appendChild(ackInput);
-    ackLabel.appendChild(document.createTextNode('料金についての注意事項を確認しました'));
-    row.appendChild(ackLabel);
-
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'gb-btn gb-btn-sm';
@@ -209,8 +204,10 @@
         message.textContent = 'ユーザー名を入力してください。';
         return;
       }
-      if (!ackInput.checked) {
-        message.textContent = '料金についての確認が必要です。';
+      const existing = await loadSchedules();
+      if (existing.some((entry) => entry.category === 'x-account-posts'
+        && String(entry.target_ref?.username || '').toLowerCase() === username.toLowerCase())) {
+        message.textContent = `@${username} はすでに一覧にあります。`;
         return;
       }
       addBtn.disabled = true;
@@ -219,12 +216,10 @@
           category: 'x-account-posts',
           target_ref: { username },
           label: `@${username}`,
-          period: { type: 'daily', time: '09:00' },
-          ack_cost_notice: true,
+          period: { type: 'off' },
         }, { silentError: true });
         usernameInput.value = '';
-        ackInput.checked = false;
-        message.textContent = '追加しました。';
+        message.textContent = '追加しました。定期実行はOFFです。';
         onAdded();
       } catch (err) {
         message.textContent = '追加できませんでした: ' + (err.userMessage || err.message || err);
@@ -265,6 +260,11 @@
   // 「カードが描画され終わっているか」を確実に待てるようにするため）。
   function render(container) {
     if (!container) return Promise.resolve();
+    if (isCloudStaticScheduleSurface()) {
+      container.querySelector('[data-e2e-id="import-schedule-settings-root"]')?.remove();
+      delete container.dataset.importScheduleMounted;
+      return Promise.resolve();
+    }
     if (container.dataset.importScheduleMounted === '1') {
       const existing = container.querySelector('[data-e2e-id="import-schedule-settings-root"]');
       return existing ? refresh(existing) : Promise.resolve();
@@ -297,5 +297,5 @@
     return host ? render(host) : Promise.resolve();
   }
 
-  window.MeldexImportScheduleSettings = { render, mount, refresh };
+  window.MeldexImportScheduleSettings = { render, mount, refresh, isCloudStaticScheduleSurface };
 })();

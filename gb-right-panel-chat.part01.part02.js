@@ -576,11 +576,11 @@ async function loadTeamMessages() {
       container.appendChild(_buildTeamMessageRow(m, me));
       _teamLastTimestamp = m.timestamp || _teamLastTimestamp;
     });
-    container.scrollTop = container.scrollHeight;
+    _chatRevealLatest('team');
   } catch(e) {}
 }
 
-async function pollTeamMessages() {
+async function pollTeamMessages(options = {}) {
   // v5.0: ペインシステムではright-panel.openクラスは使わない。
   // rp-chatがペインにマウントされているか（表示中か）を確認する。
   const rpChat = document.getElementById('rp-chat');
@@ -598,13 +598,14 @@ async function pollTeamMessages() {
     if (list.length === 0) return;
     const container = document.getElementById('team-messages');
     if (!container) return;
+    const shouldStickToLatest = _chatShouldStickToBottom(container, options.forceLatest === true);
     const me = getUsername();
     list.forEach(m => {
       if (!_teamMarkMessageRendered(m)) return;
       container.appendChild(_buildTeamMessageRow(m, me));
       _teamLastTimestamp = m.timestamp || _teamLastTimestamp;
     });
-    container.scrollTop = container.scrollHeight;
+    _chatScrollToBottomIf(container, shouldStickToLatest);
   } catch(e) {
   } finally {
     _teamPollInFlight = false;
@@ -650,7 +651,7 @@ async function teamSend() {
   try {
     await apiPost(_chatApiPath('/collab/send'), _chatPostPayload({ room: roomPath, text: finalText, from: getUsername() }));
     if (typeof _chatCommitDraftUploadsForText === 'function') _chatCommitDraftUploadsForText('team-input', text);
-    if (_teamCurrentRoom === roomPath) await pollTeamMessages();
+    if (_teamCurrentRoom === roomPath) await pollTeamMessages({ forceLatest: true });
   } catch(e) {
     if (_teamCurrentRoom === roomPath) {
       input.value = text;

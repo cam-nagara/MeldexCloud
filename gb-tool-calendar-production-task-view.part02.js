@@ -241,7 +241,7 @@
         notify(
           `${Number(result.created || 0).toLocaleString('ja-JP')}件を作成し、`
           + `${Number(result.archived || 0).toLocaleString('ja-JP')}件をアーカイブしました。`
-          + '必要に応じて「割当再計算」を実行してください。',
+          + '必要に応じて「自動割り当て」を実行してください。',
         );
         busy = false;
         dialog.close?.();

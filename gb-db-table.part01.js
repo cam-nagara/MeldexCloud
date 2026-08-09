@@ -558,6 +558,13 @@ function _handleRelationLinkClick(link, ctx) {
     } },
     { label: 'ビューワーでプレビュー', icon: 'tvMinimal', action: () => { if (typeof _updateLinkedPreview === 'function' && relPath) _updateLinkedPreview(relPath); } },
   ];
+  if (relPath) {
+    items.push({ label: 'パスをコピー', icon: 'copy', action: async () => {
+      const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+      const copied = await window.GBPathUtils?.copyToClipboard?.(relPath, basePath);
+      if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+    } });
+  }
   if (relPath && typeof window.revealPathInFolderTree === 'function') {
     items.push({ label: 'フォルダツリーに表示', icon: 'folderTree', action: () => window.revealPathInFolderTree(relPath) });
   }

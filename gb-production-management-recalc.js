@@ -190,9 +190,10 @@
   function openProductionRecalculate(options = {}) {
     // 制作管理UX改善計画（2026-08-04）§6-1: 旧「担当者と時間を割り当て」（確認なし即実行）と
     // 旧「再計算」ダイアログを1本へ統合した（旧称「予定を組み直す」→ 2026-08-05 に
-    // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。表記のみの変更で、
-    // e2eId・エンドポイントは互換のため変更しない。
-    const { body, close } = _pmModal('割当再計算', '760px', {
+    // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。その後、2026-08-08 に
+    // ユーザー判断で表示名のみ「自動割り当て」へ差し戻した（挙動・e2eId・エンドポイントは
+    // 変更しない）。
+    const { body, close } = _pmModal('自動割り当て', '760px', {
       trigger: options?.trigger,
       e2eId: 'production-recalculate-dialog-overlay',
       dialogE2eId: 'production-recalculate-dialog',
@@ -415,7 +416,7 @@
         // 渡す: サーバー側の陳腐化検知は同一bodyでプレビューを再計算して比較するため、
         // スコープや条件が変わると誤って409になる。
         const result = await _pmRequest('/production-management/recalculate/apply', { date_from: from.value, date_to: to.value, rows, allow_overtime: lastAllowOvertime, unassigned_only: lastUnassignedOnly, current_user: (typeof getUsername === 'function' ? String(getUsername() || '').trim() : ''), ...lastScope });
-        _pmStatus(`割当再計算を適用しました: ${result.applied || 0}件`);
+        _pmStatus(`自動割り当てを適用しました: ${result.applied || 0}件`);
         _pmRefreshCalendars();
         // 埋め込みタスクリスト(あれば)にも反映する。
         document.dispatchEvent(new CustomEvent('meldex:production-task-updated', { detail: { reason: 'recalculate' } }));
@@ -570,7 +571,7 @@
   async function toggleProductionTaskRecalcLock(taskPath, locked, eventId) {
     const result = await _pmRequest('/production-management/tasks/lock', { task_path: taskPath || '', event_id: eventId || '', locked: !!locked });
     if (result.ok) {
-      _pmStatus(locked ? '割当再計算で動かさないよう固定しました' : '割当再計算の固定を解除しました');
+      _pmStatus(locked ? '自動割り当てで動かさないよう固定しました' : '自動割り当ての固定を解除しました');
       _pmRefreshCalendars();
     } else {
       _pmStatus(result.message || '固定を変更できませんでした', true);
@@ -579,16 +580,16 @@
   }
 
   function _pmShowRecalcBanner() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return;
     document.querySelector('.gb-production-recalc-banner')?.remove();
     const banner = document.createElement('div');
     banner.className = 'gb-production-recalc-banner';
     banner.setAttribute('role', 'status');
-    banner.setAttribute('aria-label', '制作管理の割当再計算案内');
+    banner.setAttribute('aria-label', '制作管理の自動割り当て案内');
     const text = document.createElement('span');
     text.className = 'gb-production-recalc-banner-text';
-    text.textContent = 'メンバーを追加しました。割当再計算しますか？';
-    const open = _pmButton('割当再計算を確認', true);
+    text.textContent = 'メンバーを追加しました。自動割り当てしますか？';
+    const open = _pmButton('自動割り当てを確認', true);
     open.dataset.e2eId = 'production-recalc-banner-open';
     const close = _pmButton('閉じる');
     close.dataset.e2eId = 'production-recalc-banner-close';
@@ -639,7 +640,7 @@
     const menu = document.createElement('div');
     menu.className = 'gb-context-menu gb-production-lock-menu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', '制作管理の割当再計算固定メニュー');
+    menu.setAttribute('aria-label', '制作管理の自動割り当て固定メニュー');
     menu.dataset.e2eId = 'production-lock-menu';
     const closeMenu = (restore = true) => {
       document.removeEventListener('pointerdown', onPointerDown, true);
@@ -662,7 +663,7 @@
       });
       return item;
     };
-    const lock = makeItem('割当再計算で固定', true);
+    const lock = makeItem('自動割り当てで固定', true);
     const unlock = makeItem('固定を解除', false);
     menu.append(lock, unlock);
     document.body.appendChild(menu);

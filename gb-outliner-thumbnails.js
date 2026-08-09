@@ -442,6 +442,24 @@
     }
   }
 
+  function attachFormatIcon(iconEl, item) {
+    if (!iconEl || !isFormatIconCandidate(item)) return false;
+    var ext = _extname(item && item.path);
+    if (!ext) return false;
+    var pathToken = String(item.path || '');
+    iconEl.dataset.formatIconPath = pathToken;
+    _formatIconCache.get(ext).then(function (url) {
+      if (!url || !iconEl.isConnected || iconEl.dataset.formatIconPath !== pathToken) return;
+      iconEl.innerHTML = '';
+      var img = document.createElement('img');
+      img.className = 'tree-format-icon-img fv-format-icon-img';
+      img.alt = '';
+      img.src = url;
+      iconEl.appendChild(img);
+    });
+    return true;
+  }
+
   function _resolveThumbnail(row, rec) {
     var path = rec.item && rec.item.path;
     if (!path) return;
@@ -555,6 +573,7 @@
     isAvailable: _hasNativeApiBackend,
     isThumbnailEligible: isThumbnailEligible,
     isFormatIconCandidate: isFormatIconCandidate,
+    attachFormatIcon: attachFormatIcon,
     NO_THUMBNAIL_EXTENSIONS: NO_THUMBNAIL_EXTENSIONS,
     NON_THUMBNAIL_TYPES: NON_THUMBNAIL_TYPES,
     createRequestQueue: createRequestQueue,

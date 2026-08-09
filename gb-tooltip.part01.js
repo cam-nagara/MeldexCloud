@@ -1032,7 +1032,7 @@
   regId('left-chrome-floating-settings', { label: '設定', desc: 'アプリ全体の設定ダイアログを開きます', shortcutId: 'global.settings' });
   regId('btn-sidebar-toggle',  { label: 'フォルダツリー', desc: '左サイドバーのフォルダツリーを開閉します' });
   regId('btn-tb-annotation',   { label: '注釈ツール', desc: '手描き注釈ツールバーを開閉します', shortcutId: 'global.annotation' });
-  regId('btn-overlay-toggle',  { label: '注釈オーバーレイ', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
+  regId('btn-overlay-toggle',  { label: '注釈表示/非表示', desc: '描き込んだ注釈の表示/非表示を切り替えます' });
   regId('btn-split-toggle',    { label: 'スプリット', desc: '画面を上下または左右に分割して2画面表示にします' });
   regId('btn-toc-toggle',      { label: '目次',       desc: 'ノートの見出しから生成した目次パネルを開閉します' });
   regId('btn-note-vertical',   { label: '縦書き / 横書き', desc: 'ノート本文の組方向を切り替えます' });

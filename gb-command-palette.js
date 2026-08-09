@@ -19,6 +19,7 @@
     activeIndex: 0,
     query: '',
     seq: 0,
+    searchTimer: 0,
     mode: 'root',
     parentItem: null,
     globalIndexPromise: null,
@@ -482,6 +483,29 @@
     });
   }
 
+  function _unifiedFileCommands(rows, existingKeys) {
+    const out = [];
+    for (const file of rows || []) {
+      if (!file?.path) continue;
+      const type = _navTypeForEntry(file) || file.type || 'page';
+      const mediaType = _mediaTypeForEntry(file, type);
+      const displayType = _displayTypeForEntry(file, type, mediaType);
+      const label = file.name || file.path;
+      const key = _commandFileKey(file, type);
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      const sources = (file.sources || [file.source]).filter(Boolean).map(source => ({ name: '名前', content: '本文', clip: '画像', tags: 'タグ', memo: 'メモ' }[source] || source));
+      out.push(_command(
+        `search:${key}`, '検索結果', label,
+        `${sources.join('・') || '検索'} / ${file.path}`,
+        _iconForFileType(displayType),
+        () => _openFile({ ...file, type, label, mediaType }),
+        { keywords: [file.path, label], meta: file.score == null ? '開く' : Number(file.score).toFixed(3), fileKey: key },
+      ));
+    }
+    return out;
+  }
+
   function _panelCommands() {
     const commands = [];
     _getPanelSections().forEach((section) => {
@@ -634,6 +658,15 @@
     const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
     const fileItems = _globalFileCommands(files, state.query, existingKeys);
     items = _filterItems([...items, ...fileItems], state.query);
+    if (window.MeldexUnifiedSearch?.search) {
+      try {
+        const data = await window.MeldexUnifiedSearch.search(state.query, { limit: MAX_FILE_RESULTS });
+        if (seq !== state.seq) return;
+        items = [...items, ..._unifiedFileCommands(data.results, existingKeys)];
+      } catch (error) {
+        console.warn('[command-palette] unified search failed', error);
+      }
+    }
     state.items = items;
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
@@ -756,6 +789,9 @@
     closeButton.setAttribute('aria-label', 'コマンドパレットを閉じる');
     closeButton.innerHTML = _icon('x', 16);
     header.append(searchIcon, input, scope, closeButton);
+    if (window.MeldexUnifiedSearch?.button) {
+      window.MeldexUnifiedSearch.button(header, { e2eId: 'command-palette-search-scope-trigger', className: 'cmd-palette-close' });
+    }
 
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
@@ -778,7 +814,11 @@
     });
     input.addEventListener('input', () => {
       state.activeIndex = 0;
-      _refreshItems();
+      clearTimeout(state.searchTimer);
+      state.searchTimer = setTimeout(() => {
+        state.searchTimer = 0;
+        _refreshItems();
+      }, 220);
     });
     input.addEventListener('keydown', _onInputKeydown);
     closeButton.addEventListener('click', () => closeCommandPalette());
@@ -830,6 +870,8 @@
 
   function closeCommandPalette(options = {}) {
     if (!state.overlay) return;
+    clearTimeout(state.searchTimer);
+    state.searchTimer = 0;
     state.overlay.hidden = true;
     if (state.input) state.input.setAttribute('aria-expanded', 'false');
     document.body.classList.remove('gb-command-palette-open');
@@ -1039,6 +1081,13 @@
     });
     window.addEventListener('storage', (event) => {
       if (['meldex-user', 'meldex-avatar', 'meldex-avatar-bg'].includes(event.key)) _syncLeftChromeUser();
+    });
+    window.addEventListener('meldex:search-scopes-changed', () => {
+      if (!state.overlay || state.overlay.hidden) return;
+      clearTimeout(state.searchTimer);
+      state.searchTimer = 0;
+      state.activeIndex = 0;
+      _refreshItems();
     });
     document.addEventListener('keydown', (event) => {
       if (!state.overlay || state.overlay.hidden || event.key !== 'Escape') return;

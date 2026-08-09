@@ -1,3 +1,17 @@
+      reason: 'startup-ready',
+    };
+    if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
+    const refreshJobs = [];
+    if (typeof loadOutliner === 'function') refreshJobs.push(Promise.resolve().then(() => loadOutliner(outlinerOptions)));
+    if (typeof renderFavorites === 'function') refreshJobs.push(Promise.resolve().then(() => renderFavorites()));
+    if (typeof renderHomeFolderTree === 'function') refreshJobs.push(Promise.resolve().then(() => renderHomeFolderTree()));
+    return Promise.allSettled(refreshJobs);
+  } catch (error) {
+    console.warn('[Meldex] startup outliner refresh failed:', error);
+    return Promise.resolve(null);
+  }
+}
+
 function _highlightLastOutlinerNodeAfterStartup() {
   setTimeout(() => {
     const last = _readLastViewFromStorage();
@@ -157,12 +171,6 @@ async function init() {
       hasHome,
       homePath: homeRes?.path || '',
     });
-    if (hasHome && !window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
-      window.MeldexSampleInstaller?.schedulePostSetupPrompt?.({
-        trigger: 'desktop-home-ready',
-        homePath: homeRes?.path || '',
-      });
-    }
     if (!vault.path && !hasRoots && !hasHome) {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
@@ -578,7 +586,7 @@ function _screenshotModeIsRegion(mode) {
 }
 
 async function _setMeldexWindowVisibilityForScreenshot(action, hwnds) {
-  if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) return null;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return null;
   try {
     const res = await fetch(API_BASE + '/app-window-visibility', {
       method: 'POST',
@@ -637,7 +645,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     shell.tabIndex = -1;
     shell.setAttribute('role', 'dialog');
     shell.setAttribute('aria-modal', 'true');
-    shell.setAttribute('aria-label', 'スクリーンショット範囲選択');
+    shell.setAttribute('aria-label', 'スクリーンショット撮影対象を選択');
 
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
@@ -677,7 +685,7 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
     ok.dataset.e2eId = 'screenshot-region-save';
-    ok.textContent = '保存';
+    ok.textContent = 'スクリーンショット撮影';
 
     actions.append(cancel, ok);
     stage.append(preview, selection);
@@ -823,13 +831,12 @@ async function captureScreenshot(mode) {
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
     const b64 = outputCanvas.toDataURL('image/png');
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: '_screenshots' });
+    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
+    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
+    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
+    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: screenshotFolder });
     if (res.path) {
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-      const viewerUrl = window.MeldexResourceUrl?.viewer
-        ? window.MeldexResourceUrl.viewer({ file: res.path, markup: 1 })
-        : ('/viewer?file=' + encodeURIComponent(res.path) + '&markup=1');
-      window.open(viewerUrl, '_blank');
     }
   } catch (e) {
     if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
@@ -891,10 +898,3 @@ function _buildCfDialogBody(message) {
   if (title) html += `<div class="gb-confirm-message" style="font-weight:600;">${esc(title)}</div>`;
   if (body) html += `<div class="gb-confirm-message" style="color:var(--ui-fg-muted);">${esc(body)}</div>`;
   return html;
-}
-
-// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
-// - ヘッダー / フッター分割なし (短い問いかけ専用)
-// - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
-// - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
-function _cfIsDeleteMessage(text) {

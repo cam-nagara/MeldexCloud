@@ -334,7 +334,7 @@
       warningCount: session.warningCount,
       performance: { ...session.performance },
       runtimeMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
-      cloudMode: !!window.MeldexRuntimeAdapter?.isDropboxMode?.(),
+      cloudMode: !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.(),
       userAgent: navigator.userAgent || '',
     };
   }
@@ -587,7 +587,7 @@
 
   async function _writeCloudUsageSummary(summary) {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
-    if (!provider) throw new Error('Dropbox provider が未初期化です');
+    if (!provider) throw new Error('保存先が未初期化です');
     const sessionId = _safeFilePart(summary.sessionId || 'session', 'session');
     const diagnostic = await _appendCloudDiagnostic(provider, 'usage', summary);
     try { await provider.statPath(USAGE_DB_NOTE); }
@@ -665,7 +665,7 @@
   }
 
   async function ensureFeedbackSheet() {
-    const result = window.MeldexRuntimeAdapter?.isDropboxMode?.()
+    const result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       ? await _writeCloudFeedbackSheet()
       : await _postJson('/beta/feedback-template', {}, false);
     if (result?.ok === false) throw new Error(result.error || result.reason || 'フィードバック保管シートを準備できませんでした');
@@ -677,14 +677,14 @@
   }
 
   async function classifyFeedbackEntries() {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return { ok: false, skipped: true, reason: 'cloud-classify-needs-desktop-server' };
     }
     return _postJson('/beta/feedback/classify', {}, false);
   }
 
   async function importGoogleFeedbackEntries(options) {
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return { ok: false, skipped: true, reason: 'cloud-google-import-needs-desktop-server' };
     }
     const limit = Number(options?.limit || GOOGLE_IMPORT_DEFAULT_LIMIT) || GOOGLE_IMPORT_DEFAULT_LIMIT;
@@ -819,7 +819,7 @@
       else session.warningCount += 1;
     }
     if (!isCrashReportEnabled() || _isBypassMode()) return;
-    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       _writeCloudCrashReport(payload).catch(() => {});
     } else {
       _postJson('/beta/crash-report', payload, true).catch(() => {});

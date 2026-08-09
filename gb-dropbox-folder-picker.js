@@ -41,6 +41,34 @@
     return value === 'team_root' ? 'team_root' : 'home';
   }
 
+  function _detector() {
+    return window.MeldexWorkspaceFolderDetect;
+  }
+
+  // 共有ワークスペースへの参加先を選ぶときは、ワークスペースとして作られたフォルダだけを
+  // 並べる。中にワークスペースを含むだけのフォルダは、辿り着けなくならないよう「開くだけ」
+  // 残す。判定できなかった場合は黙って全部並べず、絞り込めなかったことを画面に出す。
+  async function _classifyWorkspaceFolders(folders, currentPath, namespaceKind) {
+    const detect = _detector();
+    if (!detect) return { folders, filtered: false, notice: '' };
+    const found = await detect.findWorkspaceRootsUnder(currentPath, namespaceKind);
+    if (!found.searched) {
+      return {
+        folders,
+        filtered: false,
+        notice: '共有ワークスペースだけに絞り込めませんでした。フォルダを選ぶと、参加する前に確認します。',
+      };
+    }
+    const roots = found.roots.map((root) => String(root).toLowerCase());
+    const classified = folders.map((folder) => {
+      const lower = String(folder.path || '').toLowerCase();
+      const isWorkspace = roots.includes(lower);
+      const hasWorkspaceInside = !isWorkspace && roots.some((root) => root.startsWith(lower + '/'));
+      return { ...folder, isWorkspace, hasWorkspaceInside };
+    }).filter((folder) => folder.isWorkspace || folder.hasWorkspaceInside);
+    return { folders: classified, filtered: true, notice: '' };
+  }
+
   async function _listFolders(path, namespaceKind) {
     const auth = _auth();
     if (!auth?.apiRpc) throw new Error('Dropboxへ接続してください');
@@ -85,6 +113,7 @@
 
   function pickFolder(options) {
     options = options || {};
+    const workspaceMode = options.mode === 'workspace';
     return new Promise((resolve) => {
       const pickerId = `meldex-dropbox-folder-picker-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
       const overlay = _el('div', {
@@ -144,8 +173,16 @@
       buttons.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border);';
       const newButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '新規フォルダ', title: '新規フォルダ', 'data-e2e-id': 'dropbox-folder-picker-new' });
       const cancelButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: 'キャンセル', 'data-e2e-id': 'dropbox-folder-picker-cancel' });
-      const selectButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm gb-btn-primary primary', text: 'このフォルダを追加', 'data-e2e-id': 'dropbox-folder-picker-select' });
-      buttons.append(newButton, cancelButton, selectButton);
+      const selectButton = _el('button', {
+        type: 'button',
+        class: 'gb-btn gb-btn-sm gb-btn-primary primary',
+        text: workspaceMode ? 'このワークスペースに参加' : 'このフォルダを追加',
+        'data-e2e-id': 'dropbox-folder-picker-select',
+      });
+      // 参加先を選ぶ画面では新しいフォルダを作っても意味がない（作った直後の空フォルダは
+      // 共有ワークスペースではないため）ので出さない
+      if (!workspaceMode) buttons.appendChild(newButton);
+      buttons.append(cancelButton, selectButton);
       body.append(namespacePicker, toolbar, list, status);
       dialog.append(title, body, buttons);
       overlay.appendChild(dialog);
@@ -178,13 +215,25 @@
         list.setAttribute('aria-busy', 'true');
         status.textContent = '読み込み中...';
         upButton.disabled = renderPath === '/';
+        if (workspaceMode) selectButton.disabled = true;
         try {
-          const folders = await _listFolders(renderPath, currentNamespaceKind);
+          let folders = await _listFolders(renderPath, currentNamespaceKind);
+          let notice = '';
+          if (workspaceMode) {
+            const classified = await _classifyWorkspaceFolders(folders, renderPath, currentNamespaceKind);
+            if (seq !== renderSeq) return;
+            folders = classified.folders;
+            notice = classified.notice;
+          }
           if (seq !== renderSeq) return;
           list.textContent = '';
           list.setAttribute('aria-busy', 'false');
           if (!folders.length) {
-            const empty = _el('div', { text: 'この階層にフォルダはありません' });
+            const empty = _el('div', {
+              text: workspaceMode
+                ? 'この場所に共有ワークスペースはありません'
+                : 'この階層にフォルダはありません',
+            });
             empty.style.cssText = 'padding:14px;color:var(--fg2);font-size:13px;';
             list.appendChild(empty);
           }
@@ -192,21 +241,40 @@
             const row = _el('button', {
               type: 'button',
               class: 'meldex-dropbox-folder-picker-row',
-              text: folder.name,
               title: folder.path,
               role: 'option',
-              'aria-label': `${folder.name}を開く`,
+              'aria-label': folder.isWorkspace ? `${folder.name}（共有ワークスペース）を選ぶ` : `${folder.name}を開く`,
               'data-dropbox-path': folder.path,
               'data-e2e-id': 'dropbox-folder-picker-row',
             });
+            if (workspaceMode) row.dataset.workspaceFolder = folder.isWorkspace ? '1' : '0';
             row.style.cssText = 'width:100%;display:flex;align-items:center;gap:8px;padding:10px 12px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--fg);text-align:left;cursor:pointer;';
+            row.appendChild(_el('span', { text: folder.name }));
+            if (folder.isWorkspace) {
+              const badge = _el('span', { text: '共有ワークスペース', 'data-e2e-id': 'dropbox-folder-picker-workspace-badge' });
+              badge.style.cssText = 'margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--fg2);border:1px solid var(--border);border-radius:999px;padding:1px 8px;';
+              row.appendChild(badge);
+            }
             row.addEventListener('click', () => {
               currentPath = folder.path;
               render();
             });
             list.appendChild(row);
           });
-          status.textContent = '現在表示しているフォルダをソースフォルダに追加できます。';
+          if (workspaceMode) {
+            const current = _detector()
+              ? await _detector().isWorkspaceFolder(renderPath, currentNamespaceKind)
+              : { workspace: false, checked: false };
+            if (seq !== renderSeq) return;
+            // 確認できなかったとき（通信不調など）はボタンを塞がない。参加の可否は
+            // 参加処理側でもう一度確かめるので、ここで行き止まりにしない。
+            selectButton.disabled = current.checked ? !current.workspace : false;
+            status.textContent = notice || (current.workspace
+              ? '表示中のフォルダに参加できます。'
+              : '参加できる共有ワークスペースを選んでください。');
+          } else {
+            status.textContent = '現在表示しているフォルダをソースフォルダに追加できます。';
+          }
         } catch (err) {
           if (seq !== renderSeq) return;
           list.textContent = '';

@@ -30,7 +30,14 @@
     installPrompt: null,
     textHistory: { canUndo: false, canRedo: false },
     drawingHistory: { canUndo: false, canRedo: false },
+    // 右サイドバーの「情報」タブが、いま開いているメモのファイルを知るために使う。
+    // 新規メモ（未保存）のときは空文字のまま。
+    currentPath: '',
   };
+  if (typeof window !== 'undefined') {
+    window.MeldexQuickMemo = window.MeldexQuickMemo || {};
+    window.MeldexQuickMemo.currentPath = () => state.currentPath || '';
+  }
   let editorController = null;
   let drawingController = null;
   let libraryController = null;
@@ -362,6 +369,7 @@
 
   async function openExistingMemo(memo) {
     _stopVoiceCapture();
+    state.currentPath = String(memo.server_path || memo.path || '');
     state.share = {
       source_url: memo.source_url || '',
       share_title: memo.share_title || '',

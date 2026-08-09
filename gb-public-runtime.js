@@ -155,14 +155,21 @@ const MeldexPublicRuntime = (() => {
       const el = viewType === 'entity'
         ? document.getElementById('entity-view')
         : document.getElementById('page-content');
+      // ノート本文の組方向は公開HTMLにも反映する。スタイル本体は gb-export-html.js の
+      // noteExportCss と共有して、書き出し・画像・公開で見た目がずれないようにする。
+      const noteVertical = viewType === 'page'
+        && !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(el));
+      const noteCss = (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.noteExportCss)
+        ? MeldexExportHtml.noteExportCss(noteVertical)
+        : '#page-content, [id="page-content"] { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
+          + 'ruby { ruby-position: over; }\n'
+          + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n';
       return {
         el,
         cssFiles: ['gb-tools.css', 'gb-ui.css'],
         extraCss:
-          '#page-content, [id="page-content"], #entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; }\n'
-          + '#entity-view { box-sizing: border-box; }\n'
-          + 'ruby { ruby-position: over; }\n'
-          + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n',
+          noteCss + '\n'
+          + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
         notFound: 'ノートが開かれていません',
       };
     }

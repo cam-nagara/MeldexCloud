@@ -450,6 +450,141 @@
     _folderToolbarWrappedBulkBar = true;
   }
 
+  function _folderToolbarCloseExtraMenu() {
+    document.querySelectorAll('.folder-toolbar-sort-menu').forEach(menu => menu.remove());
+  }
+
+  function _folderToolbarMenuItem(menu, label, icon, action, active) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-context-menu-item tree-ctx-item';
+    button.setAttribute('role', 'menuitemradio');
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+    button.innerHTML = _folderToolbarIcon(icon || 'arrowUpDown', 14)
+      + '<span>' + (active ? '✓ ' : '') + (typeof esc === 'function' ? esc(label) : label) + '</span>';
+    button.addEventListener('click', async event => {
+      event.preventDefault();
+      event.stopPropagation();
+      _folderToolbarCloseExtraMenu();
+      await action();
+    });
+    menu.appendChild(button);
+  }
+
+  function showFolderToolbarSortMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    _folderToolbarCloseExtraMenu();
+    const folderPath = _folderToolbarCurrentPath();
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu folder-toolbar-sort-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'フォルダの並び替え');
+    const current = typeof getSortForFolder === 'function' ? getSortForFolder(folderPath) : { sort: 'name', order: 'asc' };
+    const options = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
+      { label: 'マニュアル', sort: 'manual', order: 'asc' },
+      { label: '名前 ↑', sort: 'name', order: 'asc' },
+      { label: '名前 ↓', sort: 'name', order: 'desc' },
+    ];
+    options.forEach(option => {
+      const active = current.sort === option.sort && current.order === option.order;
+      _folderToolbarMenuItem(menu, option.label, option.sort === 'manual' ? 'gripVertical' : 'arrowUpDown', async () => {
+        const historyKeys = [
+          typeof SORT_SETTINGS_KEY !== 'undefined' ? SORT_SETTINGS_KEY : 'outliner-sort',
+          typeof MANUAL_ORDER_KEY !== 'undefined' ? MANUAL_ORDER_KEY : 'outliner-manual-order',
+        ];
+        const before = typeof captureOutlinerSettingsHistory === 'function' ? captureOutlinerSettingsHistory(historyKeys) : null;
+        setSortSetting(folderPath, option.sort, option.order);
+        if (typeof pushOutlinerSettingsHistory === 'function') {
+          pushOutlinerSettingsHistory('フォルダ: 並び替え設定', before, option.label, historyKeys);
+        }
+        const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+          ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
+        if (typeof renderFolderGrid === 'function') renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
+        if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-toolbar-sort' });
+      }, active);
+    });
+    document.body.appendChild(menu);
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (typeof positionPopup === 'function') positionPopup(menu, rect, { prefer: 'below', gap: 4 });
+    else {
+      menu.style.left = rect.left + 'px';
+      menu.style.top = rect.bottom + 4 + 'px';
+    }
+    setTimeout(() => document.addEventListener('pointerdown', function closer(pointerEvent) {
+      if (menu.contains(pointerEvent.target) || event.currentTarget.contains(pointerEvent.target)) return;
+      document.removeEventListener('pointerdown', closer, true);
+      menu.remove();
+    }, true), 0);
+  }
+
+  async function toggleFolderSubfolderContents() {
+    const enabled = !(typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled());
+    if (typeof setFolderSubfolderContentsEnabled === 'function') setFolderSubfolderContentsEnabled(enabled);
+    syncFolderSubfolderContentsButtons();
+    const folderPath = _folderToolbarCurrentPath();
+    if (folderPath && typeof openFolder === 'function') {
+      const label = document.getElementById('folder-title')?.textContent || folderPath;
+      await openFolder(label, folderPath, {
+        silent: true,
+        skipShowView: true,
+        skipNavPush: true,
+        skipSaveLastView: true,
+        skipHighlight: true,
+        skipGlobalUi: true,
+      });
+    }
+  }
+
+  function syncFolderSubfolderContentsButtons() {
+    const enabled = typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled();
+    document.querySelectorAll('[data-folder-subfolder-contents]').forEach(button => {
+      button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+      button.classList.toggle('is-active', enabled);
+      button.title = enabled ? 'サブフォルダの内容を表示中' : 'サブフォルダの内容を表示';
+      button.setAttribute('aria-label', button.title);
+    });
+  }
+
+  function _folderToolbarInstallExtraControls() {
+    const layout = document.getElementById('folder-layout-select');
+    if (layout && !document.getElementById('folder-toolbar-sort')) {
+      const sortButton = document.createElement('button');
+      sortButton.id = 'folder-toolbar-sort';
+      sortButton.type = 'button';
+      sortButton.className = 'tb-icon-btn';
+      sortButton.title = '並び替え';
+      sortButton.setAttribute('aria-label', 'フォルダを並び替え');
+      sortButton.setAttribute('aria-haspopup', 'menu');
+      sortButton.dataset.e2eId = 'folder-toolbar-sort';
+      sortButton.innerHTML = _folderToolbarIcon('arrowUpDown', 16);
+      sortButton.addEventListener('click', showFolderToolbarSortMenu);
+      layout.parentElement.insertBefore(sortButton, layout);
+      const contentsButton = document.createElement('button');
+      contentsButton.id = 'folder-toolbar-subfolder-contents';
+      contentsButton.type = 'button';
+      contentsButton.className = 'tb-icon-btn';
+      contentsButton.dataset.folderSubfolderContents = '1';
+      contentsButton.dataset.e2eId = 'folder-toolbar-subfolder-contents';
+      contentsButton.innerHTML = _folderToolbarIcon('folderKanban', 16);
+      contentsButton.addEventListener('click', toggleFolderSubfolderContents);
+      layout.parentElement.insertBefore(contentsButton, layout);
+    }
+    const refresh = document.getElementById('btn-outliner-refresh');
+    if (refresh && !document.getElementById('tree-subfolder-contents')) {
+      const treeButton = document.createElement('button');
+      treeButton.id = 'tree-subfolder-contents';
+      treeButton.type = 'button';
+      treeButton.dataset.folderSubfolderContents = '1';
+      treeButton.dataset.e2eId = 'tree-subfolder-contents';
+      treeButton.style.cssText = 'width:24px;height:24px;padding:0;background:none;border:1px solid transparent;border-radius:4px;color:var(--fg2);cursor:pointer;flex-shrink:0;';
+      treeButton.innerHTML = _folderToolbarIcon('folderKanban', 14);
+      treeButton.addEventListener('click', toggleFolderSubfolderContents);
+      refresh.parentElement.insertBefore(treeButton, refresh);
+    }
+    syncFolderSubfolderContentsButtons();
+  }
+
   function initFolderToolbarActions() {
     const buttons = _folderToolbarButtons();
     if (!buttons.add) return;
@@ -460,6 +595,7 @@
     _folderToolbarBindButton(buttons.delete, 'trash2', folderToolbarDeleteSelection);
     _folderToolbarBindButton(buttons.undo, 'undo2', folderToolbarUndo);
     _folderToolbarBindButton(buttons.redo, 'redo2', folderToolbarRedo);
+    _folderToolbarInstallExtraControls();
     _folderToolbarWrapBulkBarUpdate();
     const grid = document.getElementById('folder-grid');
     if (grid && grid.dataset.folderToolbarSelectionBound !== '1') {
@@ -484,6 +620,9 @@
   global.folderToolbarCanPasteTo = folderToolbarCanPasteTo;
   global.folderToolbarPasteToFolder = folderToolbarPasteToFolder;
   global.appendFolderOperationButtons = appendFolderOperationButtons;
+  global.showFolderToolbarSortMenu = showFolderToolbarSortMenu;
+  global.toggleFolderSubfolderContents = toggleFolderSubfolderContents;
+  global.syncFolderSubfolderContentsButtons = syncFolderSubfolderContentsButtons;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initFolderToolbarActions, { once: true });

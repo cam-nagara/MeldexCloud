@@ -601,8 +601,8 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
   const isDB = nodeData.type === 'database';
   const isEntity = nodeData.type === 'entity';
 
-  function addMenuItem(text, onclick, cls, icon) {
-    return _outlinerAppendMenuItem(menu, {
+  function addMenuItem(text, onclick, cls, icon, targetMenu = menu) {
+    return _outlinerAppendMenuItem(targetMenu, {
       label: text,
       icon,
       danger: cls === 'danger',
@@ -688,6 +688,105 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     });
   }
   addSep();
+
+  // --- 開く系は利用頻度が高いため、上部の1つのサブメニューへ集約する ---
+  if (!isMulti && nodeData.path && !nodeData._isRoot) {
+    const openType = typeof _normalizeOpenTypeForNav === 'function'
+      ? _normalizeOpenTypeForNav(nodeData.type)
+      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
+    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
+    const canUseRightSidebar = typeof GBPaneBridge === 'undefined'
+      || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
+      || typeof GBPaneBridge.surfaceOf !== 'function'
+      || GBPaneBridge.canUseRightSidebarTools(GBPaneBridge.surfaceOf(nodeEl));
+    const openPanel = _outlinerCreateSubmenu('開く');
+    _outlinerAppendSubmenu(menu, '開く', 'folderOpen', openPanel);
+    _outlinerAppendMenuItem(openPanel, {
+      label: 'メインパネルで開く', icon: 'panelTop', action: () => {
+        closeTreeContextMenu();
+        window.GBOutlinerActivation?.activateNode(nodeEl);
+      },
+    });
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいタブで開く', icon: 'externalLink', action: () => {
+        closeTreeContextMenu();
+        _openInNewTab(nodeData.name || '', nodeData.path, openType);
+      },
+    });
+    if (typeof openLinkedPathInFloatPanel === 'function') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'フロートパネルで開く', icon: 'panelsTopLeft', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathInFloatPanel(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+        },
+      });
+    }
+    if (canUseRightSidebar && typeof openLinkedPathInRightPane === 'function') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '右サイドバーで開く', icon: 'panelRight', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathInRightPane(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+        },
+      });
+    }
+    if (typeof openLinkedPathStandalone === 'function'
+        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(nodeData.path, nodeData.type))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: '単独アプリで開く', icon: 'appWindow', action: () => {
+          closeTreeContextMenu();
+          openLinkedPathStandalone(nodeData.path, nodeData.name, { linkType: nodeData.type });
+        },
+      });
+    }
+    _outlinerAppendMenuItem(openPanel, {
+      label: '新しいウィンドウで開く', icon: 'monitor', action: () => {
+        closeTreeContextMenu();
+        if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
+        else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
+      },
+    });
+    if (!isFolder && typeof openNative === 'function') {
+      const needsExternalApp = !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type));
+      addMenuItem('アプリで開く', () => {
+          closeTreeContextMenu();
+          openNative(nodeData.path);
+        }, null, needsExternalApp ? 'externalLink' : 'appWindow', openPanel);
+    }
+    if (nodeData.type === 'image') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'ビューワーで開く', icon: 'image', action: () => {
+          closeTreeContextMenu();
+          if (typeof openViewer === 'function') openViewer('/viewer?file=' + encodeURIComponent(nodeData.path));
+        },
+      });
+      if (typeof openImageInCanvas === 'function') {
+        _outlinerAppendMenuItem(openPanel, {
+          label: 'ボードで開く', icon: 'presentation', action: () => {
+            closeTreeContextMenu();
+            openImageInCanvas(nodeData);
+          },
+        });
+      }
+    }
+    if ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    } else if (nodeData.type === 'scenario') {
+      _outlinerAppendMenuItem(openPanel, {
+        label: 'シナリオへ取り込んで開く', icon: 'fileText', action: () => {
+          closeTreeContextMenu();
+          if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
+          showStatus('シナリオエディタを開けませんでした', true);
+        },
+      });
+    }
+    addSep();
+  }
 
   // --- 編集ロック ---
   if (!isMulti && nodeData.path && !isEntity) {
@@ -812,23 +911,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     );
   }
 
-  // --- 台本で開く（シナリオのみ） ---
-  if (!isMulti && nodeData.path && ((nodeData.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path)))) {
-    addMenuItem('シナリオで開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
-  if (!isMulti && nodeData.type === 'scenario' && nodeData.path && !(typeof isScriptNotePath === 'function' && isScriptNotePath(nodeData.path))) {
-    addMenuItem('シナリオへインポートして開く', () => {
-      closeTreeContextMenu();
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(nodeData.path, nodeData.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
   // --- ファイルのチャット（ファイル/DB/エントリのみ） ---
   if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot) {
     addMenuItem('チャットを開く', () => {
@@ -837,32 +919,12 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     }, null, 'messageSquare');
   }
 
-  if (!isMulti
-    && nodeData.path
-    && nodeData.type !== 'folder'
-    && !nodeData._isRoot
-    && typeof openNative === 'function'
-    && !(typeof NATIVE_TYPES !== 'undefined' && NATIVE_TYPES.has(nodeData.type))) {
-    addMenuItem('アプリで開く', () => {
-      closeTreeContextMenu();
-      openNative(nodeData.path);
-    }, null, 'externalLink');
-  }
-
   // --- 比較（ファイル全般） ---
   if (!isMulti && nodeData.path && nodeData.type !== 'folder' && !nodeData._isRoot && typeof showCompareModal === 'function') {
     addMenuItem('比較...', () => {
       closeTreeContextMenu();
       showCompareModal(nodeData.path);
     }, null, 'columns');
-  }
-
-  // --- 開く（ダブルクリック／Enterと同じ共通アクティベーション経路。§2.4） ---
-  if (!isMulti && nodeData.path && !nodeData._isRoot) {
-    addMenuItem('開く', () => {
-      closeTreeContextMenu();
-      window.GBOutlinerActivation?.activateNode(nodeEl);
-    }, null, 'squareArrowOutUpRight');
   }
 
   // --- この階層を閉じる（大量項目向けUI補助導線。§2.3） ---
@@ -962,26 +1024,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         });
       }, null, 'clipboardList');
     }
-  }
-
-  // --- 新しいウィンドウ/タブで開く ---
-  if (!isMulti && nodeData.path) {
-    const openType = typeof _normalizeOpenTypeForNav === 'function'
-      ? _normalizeOpenTypeForNav(nodeData.type)
-      : (nodeData.type === 'database' ? 'pivot' : (nodeData.type === 'scenario' ? 'scriptnote' : (nodeData.type || 'page')));
-    const openUrl = '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(nodeData.path) + '&label=' + encodeURIComponent(nodeData.name || '');
-    addMenuItem('新しいタブで開く', () => {
-      closeTreeContextMenu();
-      _openInNewTab(nodeData.name || '', nodeData.path, openType);
-    }, null, 'externalLink');
-    addMenuItem('新しいウィンドウで開く', () => {
-      closeTreeContextMenu();
-      // Chrome --app モードの独立ウィンドウとして開く（Meldex の UI チェーン全体が載る）
-      // 通常の window.open だとブラウザのタブバー等が付いて「UI が古く見える」問題になるため、
-      // バックエンド経由の _open_app_window_js を優先利用する。
-      if (typeof _open_app_window_js === 'function') _open_app_window_js(openUrl);
-      else window.open(openUrl, '_blank', 'width=1200,height=800,menubar=no,toolbar=no,location=no');
-    }, null, 'monitor');
   }
 
   // --- お気に入り ---

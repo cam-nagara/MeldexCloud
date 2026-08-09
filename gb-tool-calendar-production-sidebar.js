@@ -574,9 +574,9 @@
     buildField('備考', '備考', 'textarea');
     // 保護トグル（再計算ロック/担当者固定/シフト固定）。カレンダー上のドラッグ移動・
     // リサイズ（§6-4）は書き戻し時に「シフト固定」を自動付与する。
-    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは割当再計算で動かなくなります');
-    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、割当再計算でも担当者が変わりません');
-    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は割当再計算で動かなくなります');
+    buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは自動割り当てで動かなくなります');
+    buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、自動割り当てでも担当者が変わりません');
+    buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は自動割り当てで動かなくなります');
     fieldControls.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     const initialValues = new Map(Array.from(controls, ([name, item]) => [name, String(item.value() ?? '')]));
     managedSelectQueue.forEach(({ item, managedKey }) => {

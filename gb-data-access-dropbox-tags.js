@@ -1,7 +1,6 @@
 /* Dropbox-static routes for the unified Meldex tag dictionary. */
 (function () {
   'use strict';
-
   const internals = window.__MeldexPwaDataAccessInternals;
   const handlers = window.__MeldexPwaDataAccessExtensions;
   if (!internals || !Array.isArray(handlers)) return;
@@ -28,7 +27,6 @@
   if (!tagSafety) {
     throw new Error('gb-data-access-dropbox-tag-safety.js を先に読み込んでください');
   }
-
   const {
     NOT_HANDLED,
     _normalizeFolderPath,
@@ -39,7 +37,6 @@
     _listDirectoryEntries,
     _requireUnlockedPath,
   } = internals;
-
   function managedDocumentId(path) {
     const value = String(path || '').replaceAll('\\', '/').replace(/^\/+/, '');
     let hash = 0x811c9dc5;
@@ -196,7 +193,6 @@
     sortIndex,
     stringList,
   } = catalogNormalizer;
-
   class AssignmentRollbackMarkerWriteError extends Error {
     constructor(message, recoveryPath, cause) {
       super(message);
@@ -205,7 +201,6 @@
       this.cause = cause;
     }
   }
-
   function catalogResponse(catalog) {
     const normalized = normalizeCatalog(catalog);
     const presetNames = [...new Set(normalized.tags.flatMap(tag => tag.presets || [DEFAULT_PRESET]))]
@@ -226,7 +221,6 @@
       recovery_path: normalized.recovery_path,
     };
   }
-
   async function pruneCatalogRecovery(provider) {
     await tagSafety.pruneRecoveryFiles(
       managedProvider(provider),
@@ -236,7 +230,6 @@
       12,
     );
   }
-
   async function readCatalog(provider) {
     const payload = await readManagedJson(provider, CATALOG_FILE, null);
     const catalog = normalizeCatalog(payload || { version: 1, tags: [], groups: [] });
@@ -267,7 +260,6 @@
     }
     return catalog;
   }
-
   async function findPendingAssignmentRollback(provider) {
     let entries;
     try {
@@ -293,11 +285,9 @@
     }
     return null;
   }
-
   function reverseCatalogPublish(current, before, published) {
     return tagSafety.reverseCatalogPublish(current, before, published, normalizeCatalog, nowIso);
   }
-
   async function writeCatalogRollbackRecovery(provider, before, published, current) {
     const path = `${CATALOG_RECOVERY_DIR}/${Date.now()}-${randomId().slice(0, 12)}-rollback.json`;
     const payload = {

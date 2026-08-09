@@ -146,7 +146,7 @@
     // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
     // improvement-plan-2026-08-04.md §4-1）。Desktop限定ガードは撤去した。
     if (typeof window.openProductionRecalculate !== 'function') {
-      notify('割当再計算画面を初期化できませんでした', true);
+      notify('自動割り当て画面を初期化できませんでした', true);
       return;
     }
     const state = stateFor(this);

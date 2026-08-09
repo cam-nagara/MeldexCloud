@@ -22,8 +22,11 @@
   <link rel="stylesheet" href="gb-ui.css">
   <link rel="stylesheet" href="gb-tools.css">
   <link rel="stylesheet" href="gb-note-block-menu.css">
+  <link rel="stylesheet" href="gb-note-logical-rows.css">
   <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
   <link rel="stylesheet" href="standalone-shell.css">
+<link rel="stylesheet" href="gb-shortcut-registry.css">
+<link rel="stylesheet" href="gb-file-metadata.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
   <link rel="stylesheet" href="standalone-mobile-toolbar.css">
   <link rel="stylesheet" href="note-standalone.css">
@@ -60,7 +63,7 @@
       <button id="note-option-panel-button" class="sa-icon-btn" type="button" title="オプションを開く" aria-label="オプションを開く" aria-pressed="false" data-gb-tooltip-key="panel.right.toggle" data-e2e-id="note-option-panel-button"><span class="ico ico-panelRight"></span></button>
     </header>
     <div id="page-rt-toolbar" class="gb-toolbar">
-      <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-e2e-id="note-toc-toggle"><span class="ico ico-panelLeft"></span></button>
+      <button type="button" class="tb-icon-btn" id="btn-toc-toggle" title="目次の表示/非表示" aria-label="目次の表示/非表示" data-e2e-id="note-toc-toggle"><span class="ico ico-listCollapse"></span></button>
       <button type="button" class="tb-icon-btn" id="btn-note-vertical" title="縦書きにする" aria-label="縦書きにする" data-e2e-id="note-vertical-toggle"><span class="ico ico-kanban"></span></button>
       <button type="button" class="tb-icon-btn" id="btn-heading-indent" title="見出しインデント表示" aria-label="見出しインデント表示" data-e2e-id="note-heading-indent-toggle"><span class="ico ico-indentIncrease"></span></button>
       <div class="sep"></div>
@@ -186,7 +189,9 @@
   <script src="standalone-stubs.js"></script>
   <script src="standalone-app-bootstrap.js"></script>
   <script src="meldex-app-capabilities.js"></script>
-  <script src="offline-bundles/gb-detail-panel.js"></script>
+  <script src="gb-shortcut-registry.js"></script>
+<script src="gb-file-metadata.js"></script>
+<script src="offline-bundles/gb-detail-panel.js"></script><script src="gb-detail-shortcuts-tab.js"></script>
   <script src="gb-file-info-panel.js"></script>
   <script src="gb-format-style-ui.js"></script>
   <script src="standalone-option-panel.js"></script>
@@ -212,11 +217,17 @@
   <script src="standalone-workspace-tree.js"></script>
   <script src="gb-note-theme-style.js"></script>
   <script src="gb-editor-preview.js"></script>
+  <script src="gb-note-writing-mode.js"></script>
+  <script src="gb-ruby-boundary.js"></script>
   <script src="offline-bundles/gb-editor.js"></script>
+  <script src="gb-note-ruby.js"></script>
   <script src="gb-scriptnote-file-style-contract.js"></script>
   <script src="offline-bundles/gb-note-enhance.js"></script>
   <script src="gb-note-block-types.js"></script>
   <script src="gb-note-block-menu.js"></script>
+  <!-- gb-note-block-reorder.js は行の配置プリミティブを gb-note-logical-rows.js に依存する。
+       単独アプリでは読み込みが欠けており行ハイライト・行判定が無効だったため併せて追加した。 -->
+  <script src="gb-note-logical-rows.js"></script>
   <script src="gb-note-block-reorder.js"></script>
   <script src="gb-note-block-context-menu.js"></script>
   <script src="gb-note-toolbar-block-select.js"></script>
@@ -230,6 +241,19 @@
   <script src="standalone-offline-outbox.js"></script>
   <script src="standalone-close-guard.js"></script>
   <script src="standalone-save-queue.js"></script>
+  <script src="standalone-always-on-top.js"></script>
+  <script>
+    // 「常に最前面」は Windows デスクトップ版だけで有効。非対応環境ではボタンを出さない。
+    document.addEventListener("DOMContentLoaded", () => {
+      const before = document.getElementById("note-option-panel-button");
+      window.MeldexAlwaysOnTop?.install({
+        appId: "note",
+        host: before?.parentElement,
+        buttonClass: "sa-icon-btn",
+        before,
+      });
+    });
+  </script>
   <script src="note-standalone-app.js"></script>
 </body>
 </html>

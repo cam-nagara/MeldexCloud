@@ -1035,9 +1035,16 @@
     line-height: var(--cloud-mobile-ui-copy-line-height) !important;
   }
 
+  /* ノート本文はUI密度用の行間（1.28）ではなく本文の行間を保つ。旧実装では
+     Meldex.html のインラインstyle（line-height:1.7）が勝っていて、下の規則の行間は
+     #page-content には元から効いていなかった。レイアウトを外部CSSへ移すにあたり
+     当時の実効値を保つため、本文には文字サイズだけを適用する。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #page-content {
+    font-size: var(--cloud-mobile-ui-font-size);
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-pane-content,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #main-views,
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #page-content,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-view,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #folder-list,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #pivot-view,
@@ -1414,6 +1421,14 @@
 }
 
 @media (max-width: 640px) {
+  /* ステータストーストと右下のメニュー／注釈ボタンが同じ下端を使うため、
+     狭幅では操作レール分を右側に確保する。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #gb-mobile-status-toast {
+    right: max(76px, calc(env(safe-area-inset-right) + 68px));
+    max-width: none;
+    margin-right: 0;
+  }
+
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] #status-bar {
     display: none !important;
   }

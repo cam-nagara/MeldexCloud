@@ -170,7 +170,7 @@
         }
         const pane = paneInfo.node;
         let tabAddedByManager = false;
-        // フォルダは既存タブを再利用し、なければアクティブタブを置換。
+        // フォルダは必ず現在のアクティブタブを更新/置換する。
         // 履歴再生中（navBack/navForward/履歴ドロップダウン経由、navNavigating=true）は、
         // 同ペイン内の「別の」フォルダタブへ activeTabIndex を強制切替する
         // ハイジャックを行わない。戻る/進むでタブが絶対に切り替わらないことを保証するため、
@@ -178,24 +178,15 @@
         // （副作用として、再生後に同ペイン内へフォルダタブが一時的に2枚並ぶことがあるが、
         // 既知の制限として許容する）。
         if (type === 'folder') {
-          const isReplaying = typeof navNavigating !== 'undefined' && navNavigating;
-          const folderTab = !isReplaying && pane.tabs.find(t => t.type === 'folder');
+          const activeTab = pane.tabs[pane.activeTabIndex] || null;
+          const folderTab = activeTab?.type === 'folder' ? activeTab : null;
           if (folderTab) {
-            const folderTabIsActive = pane.tabs[pane.activeTabIndex] === folderTab;
             folderTab.label = label;
             folderTab.path = path;
             folderTab.state = {};
-            const fi = pane.tabs.indexOf(folderTab);
-            if (folderTabIsActive) {
-              // 同じフォルダタブ内の移動ではペイン全体を再描画しない。
-              // full render はフォルダツリーDOMも一時退避・再配置するため、
-              // ツリー全体が縦に揺れる原因になる。
-              const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
-              if (tabEl) tabEl.textContent = label;
-            } else {
-              pane.activeTabIndex = fi;
-              GBLayout.render();
-            }
+            // 同じフォルダタブ内の移動ではペイン全体を再描画しない。
+            const tabEl = GBLayout.paneMap[targetPaneId]?.el?.querySelector('.gb-tab.active .gb-tab-label');
+            if (tabEl) tabEl.textContent = label;
             GBLayout.saveLayout({ immediate: true });
           } else if (pane.tabs.length > 0 && pane.activeTabIndex >= 0) {
             const tab = pane.tabs[pane.activeTabIndex];

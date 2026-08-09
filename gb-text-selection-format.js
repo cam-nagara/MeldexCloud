@@ -86,7 +86,8 @@
     if (!_savedRange || !_savedRoot?.isConnected) return false;
     const sel = window.getSelection();
     if (!sel) return false;
-    _savedRoot.focus?.();
+    // preventScroll を付けないと、選択を戻すたびに本文がスクロールしてしまう
+    try { _savedRoot.focus?.({ preventScroll: true }); } catch { _savedRoot.focus?.(); }
     sel.removeAllRanges();
     sel.addRange(_savedRange.cloneRange());
     return true;
@@ -288,6 +289,31 @@
     return ed;
   }
 
+  // 選択範囲のルートに対応する「ルビの適用先」を返す。
+  // 旧実装はシナリオのテキストセルだけを通しており、ノート本文ではルビ欄が生えなかった。
+  // シナリオ側の判定はそのまま先に評価するので、シナリオの挙動は変わらない。
+  //   { kind, supportsAutoRule, apply(range, root, ruby, opts) -> bool }
+  function _rubyTargetFor(root) {
+    const ed = _scriptnoteRubyEditor(root);
+    if (ed) {
+      return {
+        kind: 'scriptnote',
+        supportsAutoRule: true,
+        apply: (range, r, ruby, opts) => ed._applyRubyToSelection(range, r, ruby, !!opts?.addRule),
+      };
+    }
+    const note = window.MeldexNoteRuby;
+    if (note && root?.matches?.(note.NOTE_RUBY_EDITABLES) && root.getAttribute('contenteditable') !== 'false') {
+      return {
+        kind: 'note',
+        // ノートには自動ルビルールの保存先が無いのでチェックボックスを出さない
+        supportsAutoRule: false,
+        apply: (range, r, ruby) => note.applyToSelection(range, r, ruby),
+      };
+    }
+    return null;
+  }
+
   function _focusSavedRoot() {
     const root = _savedRoot;
     if (!root?.isConnected) return;
@@ -301,13 +327,18 @@
     requestAnimationFrame(doFocus);
   }
 
-  // ルビ入力行（シナリオのテキストセル選択時のみ書式設定ポップアップへ表示）
+  // ルビ入力行（シナリオのテキストセル／ノート本文の選択時に書式設定ポップアップへ表示）
   // 1行目: ラベル+入力欄+追加 / 2行目: 読み取得+自動ルビルール（追加ボタンの後で改行する）
+  // data-e2e-id は 'sn2-ruby-*' のまま維持する（自動フォーカス・Tab循環・シナリオの
+  // フォールバック判定・既存E2E契約がこのIDに依存しているため）。対象の種別は
+  // data-ruby-target で見分ける。
   function _selectionRubyRow(root) {
-    if (!_scriptnoteRubyEditor(root)) return null;
+    const target = _rubyTargetFor(root);
+    if (!target) return null;
     const row = document.createElement('div');
     row.className = 'gb-text-selection-ruby-row';
     row.dataset.e2eId = 'sn2-ruby-row';
+    row.dataset.rubyTarget = target.kind;
     const label = document.createElement('span');
     label.className = 'gb-fmt-label';
     label.textContent = 'ルビ';
@@ -342,12 +373,12 @@
     addRuleLabel.append(addRuleInput, addRuleText);
     const applyRuby = () => {
       const ruby = input.value.trim();
-      const ed = _scriptnoteRubyEditor(root);
+      const currentTarget = _rubyTargetFor(root);
       _suppressUntil = Date.now() + 400;
-      if (ruby && ed && _restoreSelection()) {
+      if (ruby && currentTarget && _restoreSelection()) {
         const sel = window.getSelection();
         if (sel?.rangeCount && !sel.isCollapsed) {
-          ed._applyRubyToSelection(sel.getRangeAt(0), root, ruby, addRuleInput.checked);
+          currentTarget.apply(sel.getRangeAt(0), root, ruby, { addRule: !!addRuleInput?.checked });
         }
       }
       _closeSelectionPopup();
@@ -373,7 +404,7 @@
       try {
         const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
         if (res?.ruby) input.value = res.ruby;
-        else if (typeof showStatus === 'function') showStatus('自動ルビの取得に失敗しました', true);
+        else if (typeof showStatus === 'function') showStatus('この語の読みは設定に登録されていません', true);
       } catch (err) {
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }
@@ -383,7 +414,9 @@
     mainLine.append(label, input, okButton);
     const optionLine = document.createElement('div');
     optionLine.className = 'gb-text-selection-ruby-line';
-    optionLine.append(autoButton, addRuleLabel);
+    // 自動ルビルールはシナリオ固有（ノートには保存先が無い）
+    if (target.supportsAutoRule) optionLine.append(autoButton, addRuleLabel);
+    else optionLine.append(autoButton);
     row.append(mainLine, optionLine);
     return row;
   }
@@ -452,6 +485,9 @@
     _savedRange = range.cloneRange();
     const anchor = { getBoundingClientRect: () => rect };
     const rubyRow = _selectionRubyRow(root);
+    // 縦書きでは「水平/垂直」の読み替え（gb-format-popup.js の ALIGN_*_VERTICAL）を有効にし、
+    // ポップアップも下ではなく左へ開く（下だと本文の続きを隠すため）。
+    const verticalWriting = !!(window.MeldexNoteWritingMode && window.MeldexNoteWritingMode.isVertical(root));
     const popup = openFormatPopup(anchor, {
       fields: FIELDS,
       values: _computedValues(range),
@@ -459,6 +495,8 @@
       closeOnOutside: true,
       avoidRect: _rangeAvoidRect(range),
       focusTarget: root,
+      verticalWriting,
+      prefer: verticalWriting ? 'left' : undefined,
       extraRowTop: [rubyRow].filter(Boolean),
       // 計画書2026-08-04版§2.4: コピー/切り取り/貼り付け/閉じるは共通の footerActions
       // へ統合する（専用のクリップボード行は作らない）。閉じるは既存のEscapeハンドラと

@@ -70,7 +70,9 @@ async function openFolder(label, path, opts) {
     }
     if (!openOpts.skipHighlight) _syncFolderPanelPathToOutliner(path, { noScroll: !!openOpts.noScrollHighlight });
 
-    let fetchedItems = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
+    let fetchedItems = typeof _folderFetchBrowseItems === 'function'
+      ? await _folderFetchBrowseItems(path)
+      : await apiFetch('/browse?path=' + encodeURIComponent(path) + '&detail=true&all_files=true');
     if (typeof isOutlinerDeletePendingPath === 'function') {
       fetchedItems = fetchedItems.filter(item => !isOutlinerDeletePendingPath(item?.path));
     }
@@ -367,6 +369,7 @@ function _folderHasActiveFilters(cfg) {
 function _getFolderFilteredItems() {
   const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
   const text = String(cfg.filterText || '').trim().toLowerCase();
+  const includeName = window.MeldexUnifiedSearch?.read?.().name !== false;
   const types = new Set(_folderFilterArray(cfg.filterTypes));
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   const folders = new Set(_folderFilterFolderKeys(cfg));
@@ -375,7 +378,8 @@ function _getFolderFilteredItems() {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
-      if (!haystack.includes(text)) return false;
+      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
+      if (!(includeName && haystack.includes(text)) && !unifiedMatch) return false;
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
@@ -664,8 +668,11 @@ function renderFolderGrid(opts) {
       const appendIconThumb = () => {
         const icon = document.createElement('span');
         icon.className = 'fv-icon';
-        icon.innerHTML = fileTypeIcon(item.type);
+        icon.innerHTML = typeof _outlinerIconMarkup === 'function'
+          ? _outlinerIconMarkup(item, 36)
+          : fileTypeIcon(item.type);
         thumb.appendChild(icon);
+        window.GBOutlinerThumbnails?.attachFormatIcon?.(icon, item);
       };
       if (THUMB_TYPES.has(item.type)) {
         const img = document.createElement('img');
@@ -797,12 +804,31 @@ function renderFolderGrid(opts) {
         return;
       }
       e.stopPropagation();
+      const draggedIsSelected = _folderSelectedItems.some(selected => selected?.path === item.path);
+      if (!draggedIsSelected) {
+        _folderSelected = item;
+        _folderSelectedItems = [item];
+        document.querySelectorAll('.fv-item.selected').forEach(selected => selected.classList.remove('selected'));
+        el.classList.add('selected');
+        _syncFolderCheckboxes();
+        _updateFolderBulkBar();
+      }
+      const dragItems = _folderDragItemsForStart(
+        item,
+        draggedIsSelected ? _folderSelectedItems : [item]
+      )
+        .map(selected => ({
+          name: selected.name || '',
+          path: selected.path,
+          type: selected.type || 'file',
+          sourceSurface: 'folder-panel',
+        }));
+      const primary = dragItems.find(selected => selected.path === item.path) || dragItems[0];
+      const payload = { ...primary, items: dragItems, sourceSurface: 'folder-panel' };
       el.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'copyMove';
-      e.dataTransfer.setData('text/plain', item.name || '');
-      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
-        name: item.name, path: item.path, type: item.type || 'file'
-      }));
+      e.dataTransfer.setData('text/plain', dragItems.map(selected => selected.name).filter(Boolean).join(', '));
+      e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
       // text/uri-list を併用することで OS シェル側の赤い禁止カーソルを軽減
       try {
         if (item.path && typeof buildSingleTabWindowUrl === 'function') {
@@ -813,39 +839,61 @@ function renderFolderGrid(opts) {
           e.dataTransfer.setData('text/uri-list', uri);
         }
       } catch {}
-      // 窓外 popout 用に単一 item 分の payload を保持
-      window._gbFolderViewDragPayload = {
-        items: [{ name: item.name, path: item.path, type: item.type || 'file' }],
-      };
+      window._gbFolderViewDragNonce = typeof MeldexDnD !== 'undefined'
+        ? MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node') : '';
+      window._gbFolderViewDragPayload = payload;
       // ドロップインジケータが隠れないよう、プレビュー画像を低不透明度 + カーソルから離す
       if (typeof setLowOpacityDragImage === 'function') setLowOpacityDragImage(e, el, 0.35);
     });
-    el.addEventListener('dragend', (e) => {
+    el.addEventListener('dragend', async (e) => {
       el.classList.remove('dragging');
       // 窓外にドロップされた場合: 共通ヘルパーで単一窓として開く
-      if (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e)) {
+      const shouldPopout = typeof shouldOpenDragPopout === 'function'
+        ? await shouldOpenDragPopout(e, window._gbFolderViewDragNonce)
+        : (typeof isDragDroppedOutsideWindow === 'function' && isDragDroppedOutsideWindow(e));
+      if (shouldPopout) {
         const payload = window._gbFolderViewDragPayload;
         const items = payload && Array.isArray(payload.items) ? payload.items : [];
         if (typeof openItemsAsSingleTabWindows === 'function') openItemsAsSingleTabWindows(items);
       }
+      if (window._gbFolderViewDragNonce && typeof MeldexDnD !== 'undefined') {
+        MeldexDnD.cancelCrossWindowDrag(window._gbFolderViewDragNonce);
+      }
       window._gbFolderViewDragPayload = null;
+      window._gbFolderViewDragNonce = '';
     });
     el.addEventListener('dragover', (e) => {
-      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      const manualDrop = _folderManualDropIntent(e, el, item);
+      const linkDrop = _folderCanAcceptLinkDrop(e, item);
+      const moveDrop = _folderCanAcceptMoveDrop(e, item);
+      if (!manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = 'link';
-      el.classList.add('fv-link-drop');
+      e.dataTransfer.dropEffect = linkDrop ? 'link' : 'move';
+      _folderClearManualDropIndicators();
+      if (manualDrop) el.classList.add(manualDrop.position === 'before' ? 'fv-manual-before' : 'fv-manual-after');
+      else el.classList.add('fv-link-drop');
     });
     el.addEventListener('dragleave', () => {
       el.classList.remove('fv-link-drop');
+      el.classList.remove('fv-manual-before', 'fv-manual-after');
     });
     el.addEventListener('drop', async (e) => {
-      if (!_folderCanAcceptLinkDrop(e, item)) return;
+      const manualDrop = _folderManualDropIntent(e, el, item);
+      const linkDrop = _folderCanAcceptLinkDrop(e, item);
+      const moveDrop = _folderCanAcceptMoveDrop(e, item);
+      if (!manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
       el.classList.remove('fv-link-drop');
-      await _folderCreateLinksFromDrop(e, item);
+      _folderClearManualDropIndicators();
+      if (manualDrop && _folderApplyManualDrop(manualDrop, item)) return;
+      const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
+      const completed = linkDrop
+        ? await _folderCreateLinksFromDrop(e, item, resolved?.payload)
+        : await _folderMoveItemsFromDrop(e, item, resolved?.payload);
+      if (resolved && completed > 0) MeldexDnD.completeDrop(resolved);
+      else if (resolved) MeldexDnD.failDrop(resolved);
     });
 
     // 右クリックメニュー
@@ -978,8 +1026,19 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', blankTarget ? 'フォルダパネルメニュー' : `${item.name || '項目'}のメニュー`);
   const closeMenu = () => document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   function addItem(label, fn, cls, icon) {
+    if (typeof _outlinerAppendMenuItem === 'function') {
+      return _outlinerAppendMenuItem(menu, {
+        label,
+        icon,
+        danger: cls === 'red',
+        className: 'tree-ctx-item',
+        action: () => { closeMenu(); fn(); },
+      });
+    }
     const d = document.createElement('div');
     d.className = 'gb-context-menu-item';
     if (icon && typeof lucide === 'function') {
@@ -991,8 +1050,26 @@ function showFolderItemContextMenu(e, item, options = {}) {
     d.addEventListener('click', () => { closeMenu(); fn(); });
     menu.appendChild(d);
   }
-  function addSep() { const d = document.createElement('div'); d.className = 'gb-context-menu-sep'; menu.appendChild(d); }
+  function addSep() {
+    if (typeof _outlinerAppendMenuSeparator === 'function') return _outlinerAppendMenuSeparator(menu);
+    const d = document.createElement('div'); d.className = 'gb-context-menu-sep'; menu.appendChild(d); return d;
+  }
   function addSub(label, icon) {
+    if (typeof _outlinerCreateSubmenu === 'function' && typeof _outlinerAppendSubmenu === 'function') {
+      const panel = _outlinerCreateSubmenu(label);
+      _outlinerAppendSubmenu(menu, label, icon, panel);
+      return {
+        item(l, fn, cls, itemIcon) {
+          return _outlinerAppendMenuItem(panel, {
+            label: l,
+            icon: itemIcon,
+            danger: cls === 'red',
+            className: 'tree-ctx-item',
+            action: () => { closeMenu(); fn(); },
+          });
+        },
+      };
+    }
     const wrap = document.createElement('div'); wrap.style.position = 'relative';
     const trigger = document.createElement('div'); trigger.className = 'gb-context-menu-item';
     trigger.innerHTML = (icon && typeof lucide === 'function' ? '<span style="margin-right:6px;opacity:0.7;">' + lucide(icon, 14) + '</span>' : '') + esc(label) + submenuArrow();
@@ -1051,19 +1128,42 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
 
   // --- 開く ---
-  if (!blankTarget) addItem('開く', () => openFolderItem(item), null, 'folderOpen');
-  if (item.type === 'image') {
-    const openSub = addSub('別の方法で開く');
-    openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)));
+  if (!blankTarget && item.path) {
+    const openSub = addSub('開く', 'folderOpen');
+    openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
+    openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
+    if (typeof openLinkedPathInFloatPanel === 'function') {
+      openSub.item('フロートパネルで開く', () => openLinkedPathInFloatPanel(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelsTopLeft');
+    }
     if (_canUseRightSidebar) {
       openSub.item('右サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
     }
-    openSub.item('ボードで開く', () => openImageInCanvas(item));
+    if (typeof openLinkedPathStandalone === 'function'
+        && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(item.path, item.type))) {
+      openSub.item('単独アプリで開く', () => openLinkedPathStandalone(item.path, item.name, { linkType: item.type }), null, 'appWindow');
+    }
+    openSub.item('新しいウィンドウで開く', () => _folderOpenItemInNewWindow(item), null, 'monitor');
+    if (item.type !== 'folder') openSub.item('アプリで開く', () => openNative(item.path), null, 'externalLink');
+    if (item.type === 'image') {
+      openSub.item('ビューワーで開く', () => openViewer(_folderItemViewerUrl(item)), null, 'image');
+      openSub.item('ボードで開く', () => openImageInCanvas(item), null, 'presentation');
+    }
+    if ((item.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
+      openSub.item('シナリオで開く', () => {
+        if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
+        showStatus('シナリオエディタを開けませんでした', true);
+      }, null, 'fileText');
+    } else if (item.type === 'scenario') {
+      openSub.item('シナリオへ取り込んで開く', () => {
+        if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
+        showStatus('シナリオエディタを開けませんでした', true);
+      }, null, 'fileText');
+    }
+    addSep();
   }
   if (_isPureRefFolderItem(item)) {
     addItem('ボードファイルに変換', () => _convertPureRefFolderItemToBoard(item), null, 'presentation');
   }
-  if (item.type !== 'folder') addItem('アプリで開く', () => openNative(item.path), null, 'externalLink');
   if (item.type !== 'folder' && _canUseRightSidebar) addItem('チャットを開く', () => openFileChat(item.path), null, 'messageSquare');
   if (!blankTarget && item.path && window.isAutoTagRuntimeAvailable?.() === true) {
     addItem(item.type === 'folder' ? 'フォルダ内すべてを自動タグ付け' : '自動タグ付け', () => {
@@ -1166,22 +1266,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }
   }
 
-  if (item.path && ((item.type === 'scriptnote') || (typeof isScriptNotePath === 'function' && isScriptNotePath(item.path)))) {
-    addSep();
-    addItem('シナリオで開く', () => {
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
-  if (item.type === 'scenario' && item.path && !(typeof isScriptNotePath === 'function' && isScriptNotePath(item.path))) {
-    addSep();
-    addItem('シナリオへインポートして開く', () => {
-      if (typeof openScenarioInScriptNote === 'function' && openScenarioInScriptNote(item.path, item.name || '', { fromExplorer: true })) return;
-      showStatus('シナリオエディタを開けませんでした', true);
-    }, null, 'fileText');
-  }
-
   if (item.path && item.type !== 'folder' && typeof showCompareModal === 'function') {
     addSep();
     addItem('比較...', () => showCompareModal(item.path), null, 'columns');
@@ -1190,8 +1274,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
   if (!blankTarget && item.path) {
     addSep();
     addItem('リンクをコピー', () => _folderCopyMeldexLink(item), null, 'link');
-    addItem('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
-    addItem('新しいウィンドウで開く', () => _folderOpenItemInNewWindow(item), null, 'monitor');
   }
 
   if (!blankTarget && item.path && typeof getFavorites === 'function') {

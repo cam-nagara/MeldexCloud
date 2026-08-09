@@ -299,7 +299,7 @@
 
   async function _cloudCreateWorkspace(body) {
     const folder = _workspaceFolderPath(body?.folder || body?.path || '');
-    if (!folder) throw _httpError(400, 'ワークスペースにするDropboxフォルダを指定してください');
+    if (!folder) throw _httpError(400, 'ワークスペースにするフォルダを指定してください');
     let created = null;
     await _updateCloudWorkspaceStore(store => {
       if (store.workspaces.some(item => item.deleted !== true && _normalizeFolderPath(item.folder) === folder)) {
@@ -402,14 +402,75 @@
   async function _cloudPickWorkspaceFolder() {
     const picker = window.MeldexDropboxFolderPicker?.pickFolder || window.GBFolderPicker?.pickFolder;
     if (typeof picker === 'function') {
-      const picked = await picker({ title: 'ワークスペースにするDropboxフォルダを選択' });
+      const picked = await picker({ title: 'ワークスペースにするフォルダを選択' });
       const path = _workspaceFolderPath(window.GBFolderPicker?.toSourceRelativePath?.(picked) || picked?.path || picked?.relativePath || '');
       if (path) return { ok: true, path, name: _basename(path) || path };
     }
     return { ok: false, path: '', manual: true };
   }
 
-  async function _dropboxJsonRequest(path, opts) {
+  // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
+  // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
+  // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings']);
+
+  function _personalPreferenceKind() {
+    const contract = window.MeldexSystemStorage;
+    if (!contract) throw new Error('gb-system-storage.js が読み込まれていません');
+    return contract.SystemStorageKind.USER_PREFERENCES;
+  }
+
+  async function _personalPreferenceAdapter() {
+    if (_runtime()?.isBrowserMode?.()) {
+      const provider = await _requirePwaProvider('read');
+      return provider?.getSystemStorageAdapter?.() || null;
+    }
+    const factory = window.MeldexSystemStorageDropbox;
+    const resolver = window.MeldexDropboxManagementRootResolver;
+    if (!factory || !resolver?.resolveAdapterForProvider) return null;
+    return resolver.resolveAdapterForProvider('dropbox', { personalOnly: true });
+  }
+
+  function _assertPersonalPreferenceName(name) {
+    const doc = String(name || '').trim();
+    if (!PERSONAL_PREFERENCE_DOCUMENTS.has(doc)) throw _httpError(404, `未知の個人設定です: ${name}`);
+    return doc;
+  }
+
+  async function _readPersonalPreference(name) {
+    const doc = _assertPersonalPreferenceName(name);
+    let adapter = null;
+    try {
+      adapter = await _personalPreferenceAdapter();
+    } catch {
+      adapter = null;
+    }
+    if (!adapter) return { available: false, exists: false, payload: null, revision: null };
+    const record = await adapter.load(_personalPreferenceKind(), doc);
+    if (!record) return { available: true, exists: false, payload: null, revision: null };
+    return { available: true, exists: true, payload: record.payload, revision: record.revision };
+  }
+
+  async function _writePersonalPreference(name, body) {
+    const doc = _assertPersonalPreferenceName(name);
+    const payload = body?.payload;
+    if (!payload || typeof payload !== 'object') throw _httpError(400, 'payload はオブジェクトである必要があります');
+    let adapter = null;
+    try {
+      adapter = await _personalPreferenceAdapter();
+    } catch {
+      adapter = null;
+    }
+    if (!adapter) return { available: false, ok: false, revision: null };
+    const options = {};
+    if (Object.prototype.hasOwnProperty.call(body || {}, 'expectedRevision')) {
+      options.expectedRevision = body.expectedRevision || null;
+    }
+    const record = await adapter.save(_personalPreferenceKind(), doc, payload, options);
+    return { available: true, ok: true, revision: record?.revision || null };
+  }
+
+  async function _pwaJsonRequest(path, opts) {
     const method = String(opts?.method || 'GET').toUpperCase();
     const body = opts?.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : (opts?.body || {});
     const url = new URL('http://local' + String(path || ''));
@@ -427,6 +488,43 @@
     if (pathname === '/ui-config' && method === 'PUT') {
       _safeWriteJson(PWA_UI_CONFIG_KEY, body || {});
       return { ok: true };
+    }
+    if (pathname === '/beta/consent') {
+      const consentKey = 'meldex-beta-consent-v1';
+      if (method === 'GET') return { consent: _safeReadJson(consentKey, null) };
+      if (method === 'PUT') {
+        _safeWriteJson(consentKey, body?.consent || null);
+        return { ok: true, consent: body?.consent || null };
+      }
+      if (method === 'DELETE') {
+        try { localStorage.removeItem(consentKey); } catch {}
+        return { ok: true };
+      }
+    }
+    if (pathname === '/system-fonts' && method === 'GET') return { families: [] };
+    if (pathname === '/jobs' && method === 'GET') return { jobs: [] };
+    if (pathname === '/startup-ready' && method === 'POST') return { ok: true };
+    if (pathname === '/cli-chat/config' && method === 'GET') {
+      return { enabled: false, providers: {}, available: false };
+    }
+    if (pathname === '/settings-db/debug-report/exists' && method === 'GET') return { exists: false };
+    if (pathname === '/dropbox-link/status' && method === 'GET') {
+      return {
+        available: false,
+        detected: false,
+        activeSyncRoot: '',
+        roots: [],
+        unsharedLocalFolders: [],
+      };
+    }
+    if (pathname === '/settings-transfer/status' && method === 'GET') {
+      return {
+        user_data_dir: 'このブラウザの端末内ストレージ',
+        items: { config_file: { exists: false }, db_path: { exists: false } },
+      };
+    }
+    if (pathname === '/file-associations/status' && method === 'GET') {
+      return { ok: true, supported: false, apps: {} };
     }
     if (pathname === '/team' && method === 'GET') {
       const folder = url.searchParams.get('folder') || '';
@@ -471,9 +569,18 @@
     if (pathname === '/version' && method === 'GET') {
       const semver = String(window.MeldexCloudRuntimeConfig?.version?.semver || window.MeldexReleaseConfig?.fallbackSemver || '0.5.x').replace(/^v/i, '').split(/\s+/)[0] || '0.5.x';
       const betaLabel = String(window.MeldexReleaseConfig?.betaLabel || 'BETA');
-      return { version: `v${semver} ${betaLabel}`, semver, variant: 'dropbox', build: '', commit: '' };
+      const variant = _runtime()?.isBrowserMode?.() ? 'browser-local' : 'dropbox';
+      return { version: `v${semver} ${betaLabel}`, semver, variant, build: '', commit: '' };
     }
-    if (pathname === '/os-accent-color' && method === 'GET') return { color: '#569cd6' };
+    // ブラウザからはOSのアクセントカラーを読めない。以前は固定の青を返していたが、
+    // それは「OSの設定を反映した色」ではないため、デスクトップ版と見た目がずれる原因になる。
+    // 取得できないことを正直に返し、テーマ側はブラウザ標準のアクセント色へ委ねる。
+    if (pathname === '/os-accent-color' && method === 'GET') return { color: '', available: false };
+    if (pathname.startsWith('/personal-preferences/')) {
+      const name = pathname.slice('/personal-preferences/'.length);
+      if (method === 'GET') return _readPersonalPreference(name);
+      if (method === 'PUT') return _writePersonalPreference(name, body);
+    }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
       const result = await handler({ method, body, url, pathname, headers: opts?.headers });
@@ -491,17 +598,17 @@
       method: _requestMethod(requestOpts),
       payload: _summarizePayload(requestOpts.body),
     };
-    if (_runtime()?.isDropboxMode?.()) {
-      const localResult = await _dropboxJsonRequest(path, requestOpts);
+    if (_runtime()?.isBrowserDataMode?.()) {
+      const localResult = await _pwaJsonRequest(path, requestOpts);
       if (localResult === NOT_HANDLED) {
-        _logCompare({ ...logBase, adapter: 'dropbox-unhandled', durationMs: Math.round(performance.now() - started) });
+        _logCompare({ ...logBase, adapter: `${mode}-unhandled`, durationMs: Math.round(performance.now() - started) });
         const err = new Error('この操作を完了できませんでした。画面を更新してもう一度試してください。');
         err.status = 500;
         err.code = 'cloud_route_unwired';
         err.route = String(path || '');
         throw err;
       }
-      _logCompare({ ...logBase, adapter: 'dropbox', durationMs: Math.round(performance.now() - started) });
+      _logCompare({ ...logBase, adapter: mode, durationMs: Math.round(performance.now() - started) });
       return localResult;
     }
     const result = await _legacyJsonRequest(path, requestOpts);
@@ -510,13 +617,13 @@
   }
 
   function _teamAvatarUrl(name, query) {
-    if (!_runtime()?.isDropboxMode?.()) return _resource().teamAvatar(name, query);
+    if (!_runtime()?.isBrowserDataMode?.()) return _resource().teamAvatar(name, query);
     const folder = query?.folder ? _normalizeFolderPath(query.folder) : '';
     return _cachedTeamAvatar(name, folder) || _avatarFallbackUrl(name);
   }
 
   function _authAvatarUrl(name, query) {
-    if (!_runtime()?.isDropboxMode?.()) return _resource().authAvatar(name, query);
+    if (!_runtime()?.isBrowserDataMode?.()) return _resource().authAvatar(name, query);
     if (typeof getUsername === 'function' && getUsername() === name) return localStorage.getItem('meldex-avatar') || _avatarFallbackUrl(name);
     return _avatarFallbackUrl(name);
   }

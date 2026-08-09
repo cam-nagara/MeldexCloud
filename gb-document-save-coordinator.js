@@ -365,6 +365,7 @@
   // 「異なるtransportの比較を拒否する実行時ガード」を提供する。
   // ==========================================================
   const TRANSPORT_LOCAL_FS = 'local-etag';
+  const TRANSPORT_BROWSER = 'browser-local';
   const TRANSPORT_DROPBOX = 'dropbox-rev';
 
   // 現在の実行環境から transport 名を判定する。Cloud/スマートフォン
@@ -374,6 +375,7 @@
   function currentTransportName() {
     const runtime = window.MeldexRuntimeAdapter;
     if (runtime && typeof runtime.isDropboxMode === 'function' && runtime.isDropboxMode()) return TRANSPORT_DROPBOX;
+    if (runtime && typeof runtime.isBrowserMode === 'function' && runtime.isBrowserMode()) return TRANSPORT_BROWSER;
     if (typeof document !== 'undefined' && document?.documentElement?.hasAttribute?.('data-standalone-cloud')) return TRANSPORT_DROPBOX;
     return TRANSPORT_LOCAL_FS;
   }
@@ -383,16 +385,23 @@
   function wrapTransportRevision(transport, token) {
     const raw = String(token || '');
     if (!raw) return '';
-    if (raw.includes(':') && (raw.startsWith(TRANSPORT_LOCAL_FS + ':') || raw.startsWith(TRANSPORT_DROPBOX + ':'))) {
+    if (raw.includes(':') && (
+      raw.startsWith(TRANSPORT_LOCAL_FS + ':')
+      || raw.startsWith(TRANSPORT_BROWSER + ':')
+      || raw.startsWith(TRANSPORT_DROPBOX + ':')
+    )) {
       return raw;
     }
-    const ns = transport === TRANSPORT_DROPBOX ? TRANSPORT_DROPBOX : TRANSPORT_LOCAL_FS;
+    const ns = transport === TRANSPORT_DROPBOX
+      ? TRANSPORT_DROPBOX
+      : transport === TRANSPORT_BROWSER ? TRANSPORT_BROWSER : TRANSPORT_LOCAL_FS;
     return `${ns}:${raw}`;
   }
 
   function transportOfRevision(wrapped) {
     const raw = String(wrapped || '');
     if (raw.startsWith(TRANSPORT_DROPBOX + ':')) return TRANSPORT_DROPBOX;
+    if (raw.startsWith(TRANSPORT_BROWSER + ':')) return TRANSPORT_BROWSER;
     if (raw.startsWith(TRANSPORT_LOCAL_FS + ':')) return TRANSPORT_LOCAL_FS;
     return '';
   }

@@ -98,8 +98,14 @@
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
       + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
-      + `</table><div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}"></div>`
-      + `${tagsHtml}</div>`;
+      + '</table>'
+      // タグは埋め込み情報の一番上。以前は埋め込み情報の外・下に置いていた。
+      // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
+      // 描画先を [data-file-embedded-body] に分けている。
+      + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
+      + tagsHtml
+      + '<div data-file-embedded-body></div>'
+      + '</div></div>';
   }
 
   function findPanel(root, filePath) {
@@ -128,8 +134,9 @@
     if (!panel) return false;
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
     if (rows) rows.innerHTML = metadataRowsHtml(meta);
-    const embeddedHost = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
+    const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
+    const embeddedHost = embeddedPanel?.querySelector('[data-file-embedded-body]') || embeddedPanel;
     global.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
     return true;
   }

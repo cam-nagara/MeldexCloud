@@ -1,0 +1,14 @@
+{
+  "type": "meldex-public-beta-status",
+  "schemaVersion": 1,
+  "status": "unverified",
+  "updatedAt": null,
+  "betaTesters": {
+    "registered": null
+  },
+  "dropboxDevelopment": {
+    "status": "unverified",
+    "connected": null,
+    "limit": 500
+  }
+}

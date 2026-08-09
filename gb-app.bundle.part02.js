@@ -666,14 +666,26 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn) {
+  function addMI(label, fn, disabled = false) {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
     mi.setAttribute('role', 'menuitem');
     mi.textContent = label;
+    mi.disabled = !!disabled;
+    if (disabled) mi.setAttribute('aria-disabled', 'true');
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
+  }
+  function closeTabsOnSide(side) {
+    const targetIndex = _tabs.findIndex(item => item.id === tab.id);
+    if (targetIndex < 0) return;
+    const shouldClose = (_, index) => side === 'left' ? index < targetIndex : index > targetIndex;
+    const activeWillClose = _tabs.some((item, index) => item.id === _activeTabId && shouldClose(item, index));
+    const remaining = _tabs.filter((item, index) => !shouldClose(item, index));
+    if (remaining.length === _tabs.length) return;
+    _tabs.splice(0, _tabs.length, ...remaining);
+    activateTab(activeWillClose ? tab.id : (_activeTabId || tab.id));
   }
   addMI('新しいウィンドウで開く', () => {
     const openType = _normalizeOpenTypeForNav(tab.type);
@@ -686,6 +698,8 @@ function _handleTabBarContextmenu(e) {
 
 /* === gb-app.part02.js === */
   addMI('タブを閉じる', () => closeTab(tab.id));
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);
@@ -884,17 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
   dd.setAttribute('role', 'menu');
   dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
-  items.forEach(({ index, entry }) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'ab-dropdown-item';
-    item.setAttribute('role', 'menuitem');
-    item.textContent = entry.label || entry.path?.split('/').pop() || '(不明)';
-    item.title = entry.path || '';
-    item.addEventListener('click', () => {
-      navState.index = index;
-      navNavigating = true;
-      try {
-        if (navState.paneId && typeof GBLayout !== 'undefined') GBLayout.setActivePane(navState.paneId, { sync: true });
-        _applyNavEntryToBoundTab(navState, entry);
-        _withNavFlag(navOpen(entry));

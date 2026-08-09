@@ -596,15 +596,16 @@
     const classification = classify(capability);
     if (feature === 'file_info' && classification.status === 'available'
         && global.MeldexFileInfoPanel?.renderInto) {
+      // タグは本体のフォルダパネル→情報タブと同じく表示する（以前は単独アプリだけ
+      // 抑止していたため、同じ情報タブなのに内容が食い違っていた）。
       if (!path) {
-        await global.MeldexFileInfoPanel.renderInto(parts.panel, '', { showTags: false });
+        await global.MeldexFileInfoPanel.renderInto(parts.panel, '');
         return;
       }
       try {
         const metadata = await global.apiFetch?.('/file-meta?path=' + encodeURIComponent(path), { silentError: true });
         if (revision !== optionRevision) return;
         await global.MeldexFileInfoPanel.renderInto(parts.panel, path, {
-          showTags: false,
           preloadedMeta: { ...(metadata || {}), embedded: metadata?.embedded ?? null },
         });
         return;

@@ -636,6 +636,7 @@ function renderOutlinerLegacy(items) {
   const fragment = document.createDocumentFragment();
   visibleItems.forEach(item => fragment.appendChild(createTreeNodeFromBrowse(item)));
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元（_root キーで保存される）
   applyManualSort(el, '_root');
 }
@@ -672,6 +673,7 @@ function renderOutlinerMultiRoot(roots) {
     fragment.appendChild(createTreeNodeFromBrowse(rootItem, root.path));
   }
   el.appendChild(fragment);
+  window.dispatchEvent(new CustomEvent('meldex:outliner-rendered'));
   // ルート直下のマニュアル並び順を復元
   applyManualSort(el, '_root');
 }
@@ -811,12 +813,117 @@ const treeSelection = {
   getNodeData() { return [...this.items].map(n => n._nodeData).filter(Boolean); },
 };
 
-function _treeDragPayload(primaryItem) {
-  const items = treeSelection.getNodeData()
+function _treeNodeIsAncestor(parentNode, childNode) {
+  if (!parentNode || !childNode || parentNode === childNode) return false;
+  const normalize = path => {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').split('/').forEach(segment => {
+      if (!segment || segment === '.') return;
+      if (segment === '..') { if (segments.length) segments.pop(); return; }
+      segments.push(segment);
+    });
+    return segments.join('/').toLowerCase();
+  };
+  const parentKey = normalize(parentNode._nodeData?.path);
+  const childKey = normalize(childNode._nodeData?.path);
+  return !!parentKey && !!childKey && childKey.startsWith(parentKey + '/');
+}
+
+function _outlinerExternalDragItems(event, payloadOverride) {
+  let payload = payloadOverride || null;
+  try {
+    if (!payload) {
+      const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
+      payload = raw ? JSON.parse(raw) : null;
+    }
+  } catch {
+    payload = null;
+  }
+  if (!payload) payload = window._gbFolderViewDragPayload || null;
+  const rows = Array.isArray(payload?.items) ? payload.items : (payload?.path ? [payload] : []);
+  const sourceSurface = payload?.sourceSurface || '';
+  const seen = new Set();
+  return rows.map(row => ({
+    name: row?.name || '',
+    path: row?.path || '',
+    type: row?.type || 'file',
+    sourceSurface: row?.sourceSurface || sourceSurface || 'main',
+  })).filter(row => {
+    const key = String(row.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function _moveExternalItemsIntoOutlinerFolder(items, targetItem) {
+  const targetPath = targetItem?.path || '';
+  if (!targetPath || !Array.isArray(items) || items.length === 0) return;
+  const progress = window.MeldexImportProgress;
+  progress?.beginOperation?.('ファイルを移動中', items.length);
+  let processed = 0;
+  let succeeded = 0;
+  const failures = [];
+  try {
+    for (const source of items) {
+      try {
+        const copySource = source.sourceSurface === 'sheet-image';
+        const res = await apiPost(copySource ? '/outliner/save-as' : '/outliner/move', copySource ? {
+          path: source.path,
+          dest_folder: targetPath,
+        } : {
+          path: source.path,
+          dest_folder: targetPath,
+          conflict_policy: 'error',
+        });
+        if (!copySource && typeof handleRelocateResponse === 'function') handleRelocateResponse(res);
+        if (!copySource && res?.new_path && typeof renameAppPathReferences === 'function') {
+          renameAppPathReferences(source.path, res.new_path, {
+            label: res.new_name || source.name,
+            fileId: res.file_id,
+            type: source.type || 'file',
+          });
+        }
+        succeeded += 1;
+      } catch (error) {
+        failures.push({ source, error });
+      }
+      processed += 1;
+      progress?.updateOperation?.(processed);
+    }
+  } finally {
+    progress?.finishOperation?.();
+  }
+  await loadOutliner({ force: true, reason: 'external-drop-move' });
+  if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
+    const label = document.getElementById('folder-title')?.textContent || _folderPath;
+    await openFolder(label, _folderPath, {
+      silent: true,
+      skipShowView: true,
+      skipNavPush: true,
+      skipSaveLastView: true,
+      skipHighlight: true,
+      skipGlobalUi: true,
+    });
+  }
+  if (failures.length) {
+    const reason = String(failures[0].error?.userMessage || failures[0].error?.message || '');
+    showStatus(`${succeeded}件を移動、${failures.length}件は失敗しました${reason ? `（${reason}）` : ''}`, true);
+  } else {
+    showStatus(`${succeeded}件を「${targetItem.name || targetPath}」へ移動しました`);
+  }
+  return succeeded;
+}
+
+function _treeDragPayload(primaryItem, actualNodes) {
+  const sourceItems = Array.isArray(actualNodes)
+    ? actualNodes.map(node => node?._nodeData).filter(Boolean)
+    : treeSelection.getNodeData();
+  const items = sourceItems
     .filter(item => item && item.path && !item._isRoot)
-    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '' }));
+    .map(item => ({ name: item.name || '', path: item.path || '', type: item.type || '', sourceSurface: 'folder-tree' }));
   const fallback = primaryItem && primaryItem.path && !primaryItem._isRoot
-    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '' }]
+    ? [{ name: primaryItem.name || '', path: primaryItem.path || '', type: primaryItem.type || '', sourceSurface: 'folder-tree' }]
     : [];
   const normalizedItems = items.length ? items : fallback;
   const primary = normalizedItems[0] || { name: primaryItem?.name || '', path: primaryItem?.path || '', type: primaryItem?.type || '' };
@@ -825,6 +932,7 @@ function _treeDragPayload(primaryItem) {
     path: primary.path || '',
     type: primary.type || '',
     items: normalizedItems,
+    sourceSurface: 'folder-tree',
   };
 }
 
@@ -903,6 +1011,7 @@ function _sortItemsByManualOrder(items, folderPath) {
   map.forEach(it => sorted.push(it));
   return sorted;
 }
+
 
 // 編集ロック
 const LOCKED_ITEMS_KEY = 'outliner-locked-items';

@@ -344,9 +344,9 @@ function _ensureCellValueDragDelegate() {
     const label = propName + ': ' + value;
     e.dataTransfer.effectAllowed = 'copyMove';
     e.dataTransfer.setData('text/plain', value);
-    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify({
-      name: label, path: entityPath, type: 'entity'
-    }));
+    const payload = { name: label, path: entityPath, type: 'entity' };
+    e.dataTransfer.setData('application/x-meldex-node', JSON.stringify(payload));
+    if (typeof MeldexDnD !== 'undefined') MeldexDnD.beginCrossWindowDrag(e.dataTransfer, payload, 'node');
     row.classList.add('dragging');
   });
   document.addEventListener('dragend', (e) => {
@@ -590,6 +590,21 @@ function _showValueContextMenu(e, val, entityPath, propName) {
           navigateToEntity(name || idOrName, relDb, currentCtx);
         });
         sub.appendChild(openItem);
+        const copyItem = document.createElement('div');
+        copyItem.className = 'gb-context-menu-item';
+        copyItem.innerHTML = lucide('copy', 14) + ' パスをコピー';
+        copyItem.addEventListener('click', async () => {
+          menu.remove();
+          let name = idOrName;
+          if (typeof _resolveRelationName === 'function' && relDb) {
+            name = await _resolveRelationName(idOrName, relDb);
+          }
+          const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
+          const basePath = typeof state !== 'undefined' ? (state.vaultPath || '') : '';
+          const copied = await window.GBPathUtils?.copyToClipboard?.(path, basePath);
+          if (typeof showStatus === 'function') showStatus(copied ? 'パスをコピーしました' : 'パスをコピーできませんでした', !copied);
+        });
+        sub.appendChild(copyItem);
         const rightItem = document.createElement('div');
         rightItem.className = 'gb-context-menu-item';
         rightItem.innerHTML = lucide('layers-2', 14) + ' フロートパネルで開く';

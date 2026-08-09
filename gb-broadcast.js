@@ -48,6 +48,30 @@ const MeldexBroadcast = (() => {
     send('transfer-accept', { targetWindowId: sourceWindowId });
   }
 
+  // D&D bridge は BroadcastChannel の同一 origin transport だけを使う。
+  // payload の検証・TTL・一回消費は gb-dnd.js 側に集約し、ここでは永続化しない。
+  function sendDndOffer(payload) {
+    send('dnd-offer', payload);
+  }
+  function sendDndAck(payload) {
+    send('dnd-ack', payload);
+  }
+  function sendDndCancel(payload) {
+    send('dnd-cancel', payload);
+  }
+  function requestDndOffer(payload) {
+    send('dnd-request', payload);
+  }
+  function claimDndOffer(payload) {
+    send('dnd-claim', payload);
+  }
+  function sendDndClaimResult(payload) {
+    send('dnd-claim-result', payload);
+  }
+  function sendDndFail(payload) {
+    send('dnd-fail', payload);
+  }
+
   // --- ファイル変更通知 ---
   function notifyFileChanged(path, action) {
     send('file-changed', { path, action: action || 'modified' });
@@ -108,6 +132,13 @@ const MeldexBroadcast = (() => {
     off,
     startTransfer,
     acceptTransfer,
+    sendDndOffer,
+    sendDndAck,
+    sendDndCancel,
+    requestDndOffer,
+    claimDndOffer,
+    sendDndClaimResult,
+    sendDndFail,
     notifyFileChanged,
     notifySubwindowReady,
     notifySubwindowOpened,

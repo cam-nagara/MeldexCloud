@@ -118,7 +118,9 @@ let _annViewLockCleanupDone = false;
 
 function _removeDetachedViewLockIcons() {
   document.querySelectorAll('.vl-lock-icon').forEach(el => {
-    if (el.id !== 'ann-view-lock-btn') el.remove();
+    // 注釈ツールバー内のスクリーンショット・表示切替・全削除は、表示ロックと
+    // 同じ外観を共有する正規ボタン。ツールバー外に残った旧ロックだけを除去する。
+    if (el.id !== 'ann-view-lock-btn' && !el.closest('#ann-toolbar')) el.remove();
   });
 }
 
@@ -370,7 +372,8 @@ function toggleOverlayVisibility() {
   if (btn) {
     btn.classList.toggle('active', _overlayVisible);
     btn.innerHTML = lucide(_overlayVisible ? 'eye' : 'eyeOff', 18);
-    btn.title = _overlayVisible ? 'オーバーレイ表示中' : 'オーバーレイ非表示';
+    btn.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
+    btn.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
   }
   _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-visibility', visible: _overlayVisible });
 }
@@ -630,14 +633,14 @@ function _toContentCoords(clientX, clientY) {
    アノテーションエンジン
    ============================== */
 const _ANN_WIDTH_LIMITS = {
-  pen: { min: 1, max: 16, fallback: 3 },
-  marker: { min: 4, max: 40, fallback: 12 },
-  eraser: { min: 4, max: 48, fallback: 14 },
+  pen: { min: 1, max: 48, fallback: 3 },
+  marker: { min: 1, max: 48, fallback: 3 },
+  eraser: { min: 1, max: 48, fallback: 3 },
 };
 
 const ann = {
   active: false,
-  tool: 'pen', // pen, marker, lasso, rect, eraser, sticky, balloon
+  tool: 'pen', // pen, marker, polyline, ellipse-line, rect-line, lasso, ellipse-fill, rect, eraser, sticky
   color: '#ffeb3b',
   opacity: 1.0,
   widths: _loadAnnotationToolWidths(),
@@ -824,13 +827,14 @@ async function _putAnnotationWithHistory(annId, body, label, detail) {
 }
 
 function _loadAnnotationToolWidths() {
-  const defaults = { pen: 3, marker: 12, eraser: 14 };
+  const defaults = { pen: 3, marker: 3, eraser: 3 };
   try {
     const saved = JSON.parse(localStorage.getItem('meldex-ann-tool-widths') || '{}');
+    const shared = _clampAnnotationToolWidth('pen', saved.pen ?? saved.marker ?? saved.eraser ?? defaults.pen);
     return {
-      pen: _clampAnnotationToolWidth('pen', saved.pen ?? defaults.pen),
-      marker: _clampAnnotationToolWidth('marker', saved.marker ?? defaults.marker),
-      eraser: _clampAnnotationToolWidth('eraser', saved.eraser ?? defaults.eraser),
+      pen: shared,
+      marker: shared,
+      eraser: shared,
     };
   } catch {
     return defaults;
@@ -859,24 +863,31 @@ function _annotationDrawWidth(tool, pressures, baseWidth) {
 }
 
 function _bindAnnotationWidthControls() {
-  document.querySelectorAll('[data-ann-width-tool]').forEach(input => {
-    const tool = input.dataset.annWidthTool;
-    if (!tool || !ann.widths || !(tool in ann.widths)) return;
-    const current = _clampAnnotationToolWidth(tool, ann.widths[tool]);
-    input.value = String(current);
-    globalThis.GBUI?.refreshRangeFill?.(input);
-    const label = document.getElementById('ann-width-' + tool + '-label');
-    if (label) label.textContent = String(current);
-    input.addEventListener('input', () => {
-      const next = _clampAnnotationToolWidth(tool, input.value);
-      ann.widths[tool] = next;
-      input.value = String(next);
-      globalThis.GBUI?.refreshRangeFill?.(input);
-      const nextLabel = document.getElementById('ann-width-' + tool + '-label');
-      if (nextLabel) nextLabel.textContent = String(next);
-      _saveAnnotationToolWidths();
-      _syncAnnStateToIframe();
-    });
+  const inputs = [...document.querySelectorAll('[data-ann-width-tool]')];
+  const sharedInput = document.getElementById('ann-width-pen');
+  if (!sharedInput) return;
+  inputs.forEach(input => {
+    if (input !== sharedInput) input.closest('.ann-width-control')?.setAttribute('hidden', '');
+  });
+  const host = sharedInput.closest('.ann-width-control');
+  host?.setAttribute('title', '太さ');
+  sharedInput.setAttribute('aria-label', '太さ');
+  sharedInput.min = '1'; sharedInput.max = '48'; sharedInput.step = '1';
+  const current = _clampAnnotationToolWidth('pen', ann.widths.pen);
+  sharedInput.value = String(current);
+  const label = document.getElementById('ann-width-pen-label');
+  if (label) label.textContent = String(current);
+  globalThis.GBUI?.refreshRangeFill?.(sharedInput);
+  sharedInput.addEventListener('input', () => {
+    const next = _clampAnnotationToolWidth('pen', sharedInput.value);
+    ann.widths.pen = next; ann.widths.marker = next; ann.widths.eraser = next;
+    inputs.forEach(input => { input.value = String(next); });
+    sharedInput.value = String(next);
+    if (label) label.textContent = String(next);
+    globalThis.GBUI?.refreshRangeFill?.(sharedInput);
+    _saveAnnotationToolWidths();
+    _syncAnnStateToIframe();
+    _updateAnnotationBrushCursor();
   });
 }
 
@@ -929,13 +940,118 @@ function toggleAnnotation() {
 }
 
 // ツール選択（アノテーションツールバー内）
+const _ANN_TOOL_GROUPS = {
+  stroke: [
+    { tool: 'pen', label: 'ペン', icon: 'pencil' },
+    { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
+  ],
+  line: [
+    { tool: 'polyline', label: '折れ線', icon: 'spline' },
+    { tool: 'ellipse-line', label: '円形', icon: 'circle' },
+    { tool: 'rect-line', label: '矩形', icon: 'square' },
+  ],
+  fill: [
+    { tool: 'lasso', label: '囲い塗り', icon: 'lasso' },
+    { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' },
+    { tool: 'rect', label: '矩形塗り', icon: 'square' },
+  ],
+};
+
+function _annotationSelectTool(tool, sourceButton) {
+  ann.tool = tool;
+  document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
+    const group = button.dataset.annToolGroup;
+    const members = group ? (_ANN_TOOL_GROUPS[group] || []).map(item => item.tool) : [button.dataset.tool];
+    button.classList.toggle('active', members.includes(tool));
+    if (members.includes(tool)) button.dataset.tool = tool;
+  });
+  document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+  _updateAnnotationBrushCursor();
+  _syncAnnStateToIframe();
+  sourceButton?.focus?.();
+}
+
+function _openAnnotationToolPopup(button, group) {
+  document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
+  const items = _ANN_TOOL_GROUPS[group] || [];
+  const menu = document.createElement('div');
+  menu.className = 'ann-tool-popup';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', button.getAttribute('aria-label') || '注釈ツール');
+  items.forEach(item => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'ann-tool-popup-item';
+    option.dataset.annSelectTool = item.tool;
+    option.setAttribute('role', 'menuitemradio');
+    option.setAttribute('aria-checked', String(ann.tool === item.tool));
+    option.innerHTML = `${typeof lucide === 'function' ? lucide(item.icon, 14) : ''}<span>${item.label}</span>`;
+    option.addEventListener('click', () => _annotationSelectTool(item.tool, button));
+    menu.appendChild(option);
+  });
+  document.body.appendChild(menu);
+  const rect = button.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(innerWidth - menu.offsetWidth - 4, rect.left)) + 'px';
+  menu.style.top = Math.max(4, rect.top - menu.offsetHeight - 4) + 'px';
+  const close = event => {
+    if (!menu.contains(event.target) && event.target !== button) {
+      menu.remove();
+      document.removeEventListener('pointerdown', close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
+  menu.querySelector('button')?.focus();
+}
+
+function _initAnnotationToolGroups() {
+  const toolbar = document.getElementById('ann-toolbar');
+  const pen = toolbar?.querySelector('[data-tool="pen"]');
+  const marker = toolbar?.querySelector('[data-tool="marker"]');
+  const fill = toolbar?.querySelector('[data-tool="lasso"]');
+  const rectFill = toolbar?.querySelector('[data-tool="rect"]');
+  if (!toolbar || !pen || !fill) return;
+  pen.dataset.annToolGroup = 'stroke';
+  pen.title = 'ストローク'; pen.setAttribute('aria-label', 'ストローク');
+  marker?.remove();
+  const line = document.createElement('button');
+  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = 'polyline'; line.dataset.annToolGroup = 'line';
+  line.title = 'ライン'; line.setAttribute('aria-label', 'ライン');
+  line.innerHTML = typeof lucide === 'function' ? lucide('spline', 14) : '⌁';
+  fill.before(line);
+  fill.dataset.annToolGroup = 'fill'; fill.title = '塗りつぶし'; fill.setAttribute('aria-label', '塗りつぶし');
+  rectFill?.remove();
+}
+
+function _styleAnnotationUtilityButtons() {
+  const toolbar = document.getElementById('ann-toolbar');
+  const screenshotButton = toolbar?.querySelector('button[title="スクリーンショット撮影"], button[aria-label="スクリーンショット撮影"]');
+  const overlayButton = document.getElementById('btn-overlay-toggle');
+  const clearButton = toolbar?.querySelector('button[title="全削除"], button[aria-label="全削除"]');
+  [screenshotButton, overlayButton, clearButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+}
+
+function _updateAnnotationBrushCursor() {
+  const overlay = document.getElementById('ann-overlay');
+  if (!overlay) return;
+  if (ann.tool === 'sticky') { overlay.style.cursor = 'cell'; return; }
+  const lineTools = new Set(['polyline', 'ellipse-line', 'rect-line']);
+  if (!['pen', 'marker', 'eraser'].includes(ann.tool) && !lineTools.has(ann.tool)) { overlay.style.cursor = 'crosshair'; return; }
+  const widthKey = lineTools.has(ann.tool) ? 'pen' : ann.tool;
+  const width = Math.max(4, Math.min(48, Number(ann.widths?.[widthKey]) || 3));
+  const size = Math.ceil(width + 6);
+  const shape = ann.tool === 'marker'
+    ? `<rect x="3" y="3" width="${width}" height="${width}" fill="rgba(255,255,255,.18)" stroke="white"/><rect x="2" y="2" width="${width + 2}" height="${width + 2}" fill="none" stroke="black"/>`
+    : `<circle cx="${size / 2}" cy="${size / 2}" r="${width / 2}" fill="rgba(255,255,255,.12)" stroke="white"/><circle cx="${size / 2}" cy="${size / 2}" r="${width / 2 + 1}" fill="none" stroke="black"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">${shape}</svg>`;
+  overlay.style.cursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${Math.floor(size / 2)} ${Math.floor(size / 2)}, crosshair`;
+}
+_initAnnotationToolGroups();
+_styleAnnotationUtilityButtons();
 document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(btn => {
   btn.addEventListener('click', () => {
-    ann.tool = btn.dataset.tool;
-    document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(b => b.classList.toggle('active', b === btn));
-    const overlay = document.getElementById('ann-overlay');
-    overlay.style.cursor = ann.tool === 'eraser' ? 'not-allowed' : ann.tool === 'sticky' ? 'cell' : 'crosshair';
-    _syncAnnStateToIframe();
+    const group = btn.dataset.annToolGroup;
+    if (group) _openAnnotationToolPopup(btn, group);
+    else _annotationSelectTool(btn.dataset.tool, btn);
   });
 });
 
@@ -965,6 +1081,17 @@ function _bindAnnotationColorControl() {
 }
 _bindAnnotationColorControl();
 _bindAnnotationWidthControls();
+// 注釈ツールバーから右サイドバーを開く導線は重複するため撤去する。HTML生成物を
+// 直接編集せず、正本スクリプトの初期化時に既存ボタンだけを除去する。
+document.querySelector('#ann-toolbar [data-action="openRightPanelTab(\'annotation\')"]')?.remove();
+{
+  const overlayButton = document.getElementById('btn-overlay-toggle');
+  _styleAnnotationUtilityButtons();
+  if (overlayButton) {
+    overlayButton.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
+    overlayButton.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
+  }
+}
 document.getElementById('ann-opacity').oninput = function() {
   ann.opacity = _normalizeAnnotationOpacity(parseFloat(this.value), 1);
   document.getElementById('ann-opacity-label').textContent = Math.round(ann.opacity * 100) + '%';
@@ -980,9 +1107,13 @@ const _annSvgNS = 'http://www.w3.org/2000/svg';
 function _pointsToSvgPath(points, pressures, isPen) {
   if (points.length < 2) return '';
   let d = `M ${points[0][0]} ${points[0][1]}`;
-  for (let i = 1; i < points.length; i++) {
-    d += ` L ${points[i][0]} ${points[i][1]}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const midX = (points[i][0] + points[i + 1][0]) / 2;
+    const midY = (points[i][1] + points[i + 1][1]) / 2;
+    d += ` Q ${points[i][0]} ${points[i][1]} ${midX} ${midY}`;
   }
+  const last = points[points.length - 1];
+  d += ` L ${last[0]} ${last[1]}`;
   return d;
 }
 
@@ -992,7 +1123,7 @@ function _createStrokeEl(pathD, color, opacity, pressures, isPen, width) {
   path.setAttribute('fill', 'none');
   path.setAttribute('stroke', color);
   path.setAttribute('stroke-opacity', opacity);
-  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linecap', isPen ? 'round' : 'butt');
   path.setAttribute('stroke-linejoin', 'round');
   path.setAttribute('stroke-width', _annotationDrawWidth(isPen ? 'pen' : 'marker', pressures, width));
   if (!isPen) path.setAttribute('stroke-opacity', Math.min(opacity, 0.5)); // マーカーは半透明
@@ -1085,15 +1216,31 @@ function _appendAnnotationStrokePointFromEvent(e) {
   return true;
 }
 
+function _appendAnnotationCoalescedStrokePoints(e) {
+  const samples = typeof e?.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+  const ordered = samples?.length ? samples : [e];
+  let appended = false;
+  for (const sample of ordered) appended = _appendAnnotationStrokePointFromEvent(sample) || appended;
+  // 一部ブラウザはcoalesced配列へ現在イベントを含めないため、末尾を必ず補完する。
+  appended = _appendAnnotationStrokePointFromEvent(e) || appended;
+  return appended;
+}
+
 function _renderAnnotationPreview() {
   if (!ann.drawing || !ann.strokeReady || ann.currentPath.length < 2) return;
-  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ann.tool === 'rect' ? 'rect' : 'path');
+  const ellipseTool = ann.tool === 'ellipse-line' || ann.tool === 'ellipse-fill';
+  const rectTool = ann.tool === 'rect' || ann.tool === 'rect-line';
+  const previewTag = ann.tool === 'lasso' ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
   let preview = annOverlay.querySelector('.ann-preview');
   if (!preview || preview.tagName.toLowerCase() !== previewTag) {
     preview?.remove(); preview = document.createElementNS(_annSvgNS, previewTag); preview.classList.add('ann-preview');
     (document.getElementById('ann-layer') || annOverlay).appendChild(preview);
   }
-  if (ann.tool === 'rect') _updateRectFillEl(preview, _annotationRectDataFromPoints(ann.currentPath), ann.color, ann.opacity, true);
+  if (ellipseTool || rectTool) {
+    const data = ellipseTool ? _annotationEllipseDataFromPoints(ann.currentPath) : _annotationRectDataFromPoints(ann.currentPath);
+    data.lineWidth = ann.widths?.pen;
+    _updateAnnotationShapeEl(preview, ann.tool, data, ann.color, ann.opacity, true);
+  }
   else if (ann.tool === 'lasso') {
     preview.setAttribute('points', ann.currentPath.map(p => p.join(',')).join(' '));
     preview.setAttribute('fill', ann.color);
@@ -1108,7 +1255,8 @@ function _renderAnnotationPreview() {
     preview.setAttribute('stroke', ann.color);
     preview.setAttribute('stroke-width', _annotationDrawWidth(ann.tool, ann.currentPressures, ann.widths?.[ann.tool]));
     preview.setAttribute('stroke-opacity', ann.tool === 'marker' ? 0.5 : ann.opacity);
-    preview.setAttribute('stroke-linecap', 'round');
+    preview.setAttribute('stroke-linecap', ann.tool === 'marker' ? 'butt' : 'round');
+    preview.setAttribute('stroke-linejoin', ann.tool === 'polyline' ? 'miter' : 'round');
   }
 }
 
@@ -1124,10 +1272,14 @@ async function _finishAnnotationStroke() {
   _resetAnnotationStrokeState();
   if (pathPoints.length < 2 || !targetPath) return;
 
-  const type = tool === 'rect' ? 'rect' : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : 'stroke'));
-  const strokeData = type === 'rect' ? _annotationRectDataFromPoints(pathPoints) : { points: pathPoints, pressures };
-  if (type !== 'lasso' && type !== 'rect') strokeData.width = width;
-  const el = type === 'rect' ? _createRectFillEl(strokeData, color, opacity)
+  const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+  const type = shapeTypes.has(tool) ? tool : (tool === 'lasso' ? 'lasso' : (tool === 'marker' ? 'marker' : (tool === 'polyline' ? 'polyline' : 'stroke')));
+  const strokeData = type.startsWith('ellipse') ? _annotationEllipseDataFromPoints(pathPoints)
+    : shapeTypes.has(type) ? _annotationRectDataFromPoints(pathPoints)
+      : { points: pathPoints, pressures };
+  if (shapeTypes.has(type)) strokeData.lineWidth = width;
+  else if (type !== 'lasso') strokeData.width = width;
+  const el = shapeTypes.has(type) ? _createAnnotationShapeEl(type, strokeData, color, opacity)
     : type === 'lasso' ? _createLassoEl(pathPoints, color, opacity)
       : _createStrokeEl(_pointsToSvgPath(pathPoints, pressures, tool === 'pen'), color, opacity, pressures, tool === 'pen', strokeData.width);
   el.dataset.annPending = '1';
@@ -1267,6 +1419,39 @@ function _createRectFillEl(data, color, opacity, preview) {
   return _updateRectFillEl(document.createElementNS(_annSvgNS, 'rect'), data, color, opacity, preview);
 }
 
+function _annotationEllipseDataFromPoints(points) {
+  const rect = _annotationRectDataFromPoints(points);
+  return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, rx: rect.width / 2, ry: rect.height / 2 };
+}
+
+function _updateAnnotationShapeEl(el, type, data, color, opacity, preview) {
+  const normalizedOpacity = _normalizeAnnotationOpacity(opacity, 1);
+  const outlined = type === 'rect-line' || type === 'ellipse-line';
+  if (type.startsWith('ellipse')) {
+    el.setAttribute('cx', Number(data?.cx) || 0);
+    el.setAttribute('cy', Number(data?.cy) || 0);
+    el.setAttribute('rx', Math.max(1, Number(data?.rx) || 0));
+    el.setAttribute('ry', Math.max(1, Number(data?.ry) || 0));
+  } else {
+    el.setAttribute('x', Number(data?.x) || 0);
+    el.setAttribute('y', Number(data?.y) || 0);
+    el.setAttribute('width', Math.max(1, Number(data?.width) || 0));
+    el.setAttribute('height', Math.max(1, Number(data?.height) || 0));
+  }
+  el.setAttribute('fill', outlined ? 'none' : color);
+  el.setAttribute('fill-opacity', outlined ? '0' : String(normalizedOpacity * (preview ? 0.2 : 0.4)));
+  el.setAttribute('stroke', color);
+  el.setAttribute('stroke-width', String(Math.max(1, Number(data?.lineWidth) || ann.widths?.pen || 3)));
+  el.setAttribute('stroke-opacity', String(normalizedOpacity));
+  if (preview) el.setAttribute('stroke-dasharray', '4,4'); else el.removeAttribute('stroke-dasharray');
+  return el;
+}
+
+function _createAnnotationShapeEl(type, data, color, opacity, preview) {
+  const tag = type.startsWith('ellipse') ? 'ellipse' : 'rect';
+  return _updateAnnotationShapeEl(document.createElementNS(_annSvgNS, tag), type, data, color, opacity, preview);
+}
+
 annOverlay?.addEventListener('wheel', _routeAnnotationWheelToScrollContainer, { passive: false });
 
 annOverlay.addEventListener('pointerdown', async (e) => {
@@ -1315,7 +1500,7 @@ annOverlay.addEventListener('pointermove', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   _renderAnnotationPreview();
 });
 
@@ -1323,7 +1508,7 @@ annOverlay.addEventListener('pointerup', (e) => {
   if (!ann.drawing) return;
   if (ann.currentPointerId !== e.pointerId) return;
   _preventAnnotationPointerDefault(e);
-  _appendAnnotationStrokePointFromEvent(e);
+  _appendAnnotationCoalescedStrokePoints(e);
   ann.strokeEndRequested = true;
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   if (ann.strokeReady) _finishAnnotationStroke();
@@ -2272,9 +2457,13 @@ async function loadAnnotations() {
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }
-      } else if (item.type === 'rect') {
+      } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(item.type)) {
         if (data && data.width != null && data.height != null) {
-          const el = _createRectFillEl(data, item.color, item.opacity);
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
+          el.dataset.annId = item.id;
+          layer.appendChild(el);
+        } else if (data && data.rx != null && data.ry != null) {
+          const el = _createAnnotationShapeEl(item.type, data, item.color, item.opacity);
           el.dataset.annId = item.id;
           layer.appendChild(el);
         }

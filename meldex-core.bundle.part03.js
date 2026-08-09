@@ -1,3 +1,15 @@
+      }
+    });
+    return editor;
+  }
+
+  let _noteSelectionPopupTimer = 0;
+
+  function _scheduleNoteSelectionPopup(editor, scheduleSave) {
+    clearTimeout(_noteSelectionPopupTimer);
+    _noteSelectionPopupTimer = window.setTimeout(() => _showNoteSelectionPopup(editor, scheduleSave), 40);
+  }
+
   function _noteSelectionRange(editor) {
     const selection = window.getSelection?.();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
@@ -643,7 +655,7 @@
       const x = pt.x;
       const y = pt.y;
       // ヒットテスト
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
       const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
       for (const el of els) {
         if (_markupElementHit(el, x, y, tolerance)) {
@@ -663,7 +675,7 @@
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
     const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
-    _ann.anchor = anchorHit?.data || null;
+    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
     _ann.path = [_ann.anchor
       ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
       : [pt.x, pt.y]];
@@ -679,7 +691,9 @@
       : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
+    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
+    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);
@@ -692,8 +706,10 @@
         ? { ..._rectData(_ann.path), anchor: _ann.anchor }
         : { points: _ann.path, pressures: _ann.pressures, width: _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'], anchor: _ann.anchor };
       _applyAnchoredShape(preview, previewType, previewData, _ann.color, _ann.opacity, true);
-    } else if (_ann.tool === 'rect') {
-      _applyRectEl(preview, _rectData(_ann.path), _ann.color, _ann.opacity, true);
+    } else if (['rect', 'rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool)) {
+      const data = _ann.tool.startsWith('ellipse') ? _ellipseData(_ann.path) : _rectData(_ann.path);
+      data.lineWidth = _ann.widths?.pen;
+      _applyMarkupShapeEl(preview, _ann.tool, data, _ann.color, _ann.opacity, true);
     } else if (_ann.tool === 'lasso') {
       preview.setAttribute('points', _ann.path.map(p => p.join(',')).join(' '));
       preview.setAttribute('fill', _ann.color); preview.setAttribute('fill-opacity', '0.2');
@@ -712,13 +728,15 @@
     _ann.drawing = false;
     layer.querySelector('.ann-preview')?.remove();
     if (_ann.path.length < 2) return;
-    const type = _ann.tool === 'rect' ? 'rect' : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : 'stroke'));
+    const shapeTypes = new Set(['rect', 'rect-line', 'ellipse-line', 'ellipse-fill']);
+    const type = shapeTypes.has(_ann.tool) ? _ann.tool : (_ann.tool === 'lasso' ? 'lasso' : (_ann.tool === 'marker' ? 'marker' : (_ann.tool === 'polyline' ? 'polyline' : 'stroke')));
     const annClientId = 'ann-client-' + Date.now() + '-' + Math.random().toString(36).slice(2);
-    const strokeData = type === 'rect' ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures };
+    const strokeData = type.startsWith('ellipse') ? _ellipseData(_ann.path) : (shapeTypes.has(type) ? _rectData(_ann.path) : { points: _ann.path, pressures: _ann.pressures });
     if (_ann.anchor) strokeData.anchor = { ..._ann.anchor };
-    if (type !== 'lasso' && type !== 'rect') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
-    const savedEl = type === 'rect'
-      ? _renderRect(strokeData, _ann.color, _ann.opacity, null)
+    if (shapeTypes.has(type)) strokeData.lineWidth = _ann.widths?.pen;
+    else if (type !== 'lasso') strokeData.width = _ann.widths?.[_ann.tool === 'marker' ? 'marker' : 'pen'];
+    const savedEl = shapeTypes.has(type)
+      ? _renderMarkupShape(type, strokeData, _ann.color, _ann.opacity, null)
       : _renderStroke(type, _ann.path, _ann.pressures, _ann.color, _ann.opacity, null, strokeData.width, strokeData);
     savedEl.dataset.annClientId = annClientId;
     if (_saveBoardAnnotation({
@@ -879,22 +897,3 @@
     if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
     _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
   }
-
-  function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
-    const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
-    const data = sourceData || { points, pressures, width };
-    let el;
-    if (data.anchor) {
-      el = document.createElementNS(_svgNS, type === 'lasso' ? 'polygon' : 'path');
-      _applyAnchoredShape(el, type, data, color, opacity, false);
-    } else if (type === 'lasso') {
-      el = document.createElementNS(_svgNS, 'polygon');
-      el.setAttribute('points', points.map(p => p.join(',')).join(' '));
-      el.setAttribute('fill', color); el.setAttribute('fill-opacity', normalizedOpacity * 0.4);
-      el.setAttribute('stroke', color); el.setAttribute('stroke-width', '1');
-    } else {
-      el = document.createElementNS(_svgNS, 'path');
-      el.setAttribute('d', _pathD(points));
-      el.setAttribute('fill', 'none'); el.setAttribute('stroke', color);
-      el.setAttribute('stroke-width', _drawWidth(type, pressures, width));
-      el.setAttribute('stroke-opacity', type === 'marker' ? String(normalizedOpacity * 0.5) : String(normalizedOpacity));

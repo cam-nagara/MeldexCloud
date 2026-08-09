@@ -100,6 +100,49 @@ function _chatGenerationSamplingParamsNoteHtml() {
   return `<div data-chat-sampling-params-note style="font-size:11px;color:var(--fg2);margin-top:6px;">${fieldHelp('一部の新しいモデルではこの詳細指定は使われません')}</div>`;
 }
 
+// CLIチャット（Antigravity CLI / Claude Code / Codex CLI）では、Web検索・自動要約・
+// コード実行・応答プリセット・詳細パラメータは各CLI側の設定で決まり、Meldexからは
+// 一切渡していない。押しても何も起きない項目を並べないよう、CLI選択中は出さない
+// （app/AGENTS.md「機能しないなら表示しない」）。
+function _chatGenerationIsCliProvider() {
+  return !!window.GBChatCli?.isCliChatProvider?.(_chatGenerationCurrentProvider());
+}
+
+function _chatGenerationApiOnlyControlsHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `
+    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-web-search" type="checkbox" ${localStorage.getItem('chat-allow-web-search') !== '0' ? 'checked' : ''}><span>Web検索を許可</span></label>
+    <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
+  `;
+}
+
+function _chatGenerationCodeExecutionControlHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `<label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>`;
+}
+
+function _chatGenerationResponseTuningHtml() {
+  if (_chatGenerationIsCliProvider()) return '';
+  return `
+    ${_chatGenerationSettingsRow('応答プリセット', `<select id="chat-menu-param-preset" class="gb-input" style="max-width:130px;">
+      ${[
+        ['creative', '創作'],
+        ['standard', '標準'],
+        ['strict', '厳密'],
+      ].map(([v, label]) => `<option value="${v}" ${_chatGenerationSettingValue('chat-param-preset', 'standard') === v ? 'selected' : ''}>${label}</option>`).join('')}
+    </select>`)}
+    <details data-chat-generation-details style="font-size:12px;color:var(--fg2);">
+      <summary style="cursor:pointer;">詳細パラメータ</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
+        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
+        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
+        ${_chatGenerationSamplingParamsNoteHtml()}
+      </div>
+    </details>
+  `;
+}
+
 function _chatGenerationCliSessionControlsHtml() {
   const provider = _chatGenerationCurrentProvider();
   const cli = window.GBChatCli;
@@ -186,29 +229,13 @@ function showChatGenerationSettingsMenu(event) {
   menu.style.cssText = 'position:fixed;z-index:10090;min-width:280px;max-width:340px;padding:10px;display:flex;flex-direction:column;gap:10px;';
   menu.innerHTML = `
     <div style="font-weight:600;font-size:13px;color:var(--fg);line-height:1.4;">LLM設定</div>
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-web-search" type="checkbox" ${localStorage.getItem('chat-allow-web-search') !== '0' ? 'checked' : ''}><span>Web検索を許可</span></label>
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-auto-compress" type="checkbox" ${localStorage.getItem('chat-auto-compress') === '1' ? 'checked' : ''}><span>長い会話を自動要約</span></label>
+    ${_chatGenerationApiOnlyControlsHtml()}
     ${_chatGenerationCliSessionControlsHtml()}
-    <label class="gb-check" style="margin:0;"><input id="chat-menu-allow-code-execution" type="checkbox" ${localStorage.getItem('chat-allow-code-execution') === '1' ? 'checked' : ''}><span>コード実行を許可</span></label>
+    ${_chatGenerationCodeExecutionControlHtml()}
     <label class="gb-check" style="margin:0;"><input id="chat-menu-show-recommendations" type="checkbox" ${localStorage.getItem('chat-recommendations-enabled') !== '0' ? 'checked' : ''}><span>「次にできること」の提案を表示</span></label>
     <div data-chat-generation-tuning-hint style="font-size:11px;color:var(--fg2);line-height:1.4;">${fieldHelp('応答の賢さは思考の深さとモデルで、速度は軽いモデルの選択で調整できます')}</div>
     ${_chatGenerationReasoningRowHtml()}
-    ${_chatGenerationSettingsRow('応答プリセット', `<select id="chat-menu-param-preset" class="gb-input" style="max-width:130px;">
-      ${[
-        ['creative','創作'],
-        ['standard','標準'],
-        ['strict','厳密'],
-      ].map(([v, label]) => `<option value="${v}" ${_chatGenerationSettingValue('chat-param-preset', 'standard') === v ? 'selected' : ''}>${label}</option>`).join('')}
-    </select>`)}
-    <details data-chat-generation-details style="font-size:12px;color:var(--fg2);">
-      <summary style="cursor:pointer;">詳細パラメータ</summary>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
-        ${_chatGenerationSettingsRow('temperature', `<input id="chat-menu-temperature" type="number" min="0" max="2" step="0.1" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('temperature'))}" placeholder="自動">`)}
-        ${_chatGenerationSettingsRow('max tokens', `<input id="chat-menu-max-tokens" type="number" min="1024" max="32768" step="512" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('max-tokens'))}" placeholder="8192">`)}
-        ${_chatGenerationSettingsRow('top_p', `<input id="chat-menu-top-p" type="number" min="0" max="1" step="0.05" class="gb-input" style="max-width:100px;" value="${esc(_chatGenerationStoredNumberValue('top-p'))}" placeholder="自動">`)}
-        ${_chatGenerationSamplingParamsNoteHtml()}
-      </div>
-    </details>
+    ${_chatGenerationResponseTuningHtml()}
   `;
   menu.addEventListener('change', () => {
     _persistChatGenerationSettings(menu, { normalizeNumbers: true });

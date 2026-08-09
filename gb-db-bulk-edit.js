@@ -49,8 +49,46 @@ function _setPaneAllRowsSelected(ctx, shouldSelect) {
   paneRoot._pendingShiftAnchor = null;
   paneRoot._dragSelectState = null;
   c._dragSelectState = null;
+  _syncPaneRowSelectHeader(c);
   _updateBulkEditBar(c);
   return true;
+}
+
+function _syncPaneRowSelectHeader(ctx) {
+  const c = ctx || _currentPaneState();
+  if (!c) return;
+  const table = _paneEl(c, '#' + (c.tableId || 'pivot-table'));
+  const checkbox = table?.querySelector?.('.row-select-all-cb');
+  if (!checkbox) return;
+  const visibleNames = Array.isArray(c._lastEntityNames) ? c._lastEntityNames.filter(Boolean) : [];
+  const selected = _ensureSelectedEntities(c);
+  const selectedVisibleCount = selected
+    ? visibleNames.reduce((count, name) => count + (selected.has(name) ? 1 : 0), 0)
+    : 0;
+  const allSelected = visibleNames.length > 0 && selectedVisibleCount === visibleNames.length;
+  const mixed = selectedVisibleCount > 0 && !allSelected;
+  checkbox.checked = allSelected;
+  checkbox.indeterminate = mixed;
+  checkbox.setAttribute('aria-checked', mixed ? 'mixed' : (allSelected ? 'true' : 'false'));
+  checkbox.setAttribute('aria-label', allSelected
+    ? '表示中のすべてのエントリを選択解除'
+    : '表示中のすべてのエントリを選択');
+  checkbox.title = checkbox.getAttribute('aria-label');
+}
+
+function _createPaneRowSelectHeaderCheckbox(ctx) {
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'row-select-all-cb';
+  checkbox.dataset.e2eId = _dbE2eId(ctx, 'row-select-all', 'header');
+  checkbox.addEventListener('click', event => {
+    event.stopPropagation();
+    _setPaneAllRowsSelected(ctx, checkbox.checked);
+  });
+  checkbox.setAttribute('aria-checked', 'false');
+  checkbox.setAttribute('aria-label', '表示中のすべてのエントリを選択');
+  checkbox.title = checkbox.getAttribute('aria-label');
+  return checkbox;
 }
 
 function _selectAllPaneRows(ctx) {
@@ -129,6 +167,7 @@ function _updateBulkEditBar(ctx) {
   const c = ctx || _currentPaneState();
   const paneId = (c && c.paneId) || 'main';
   const selected = _getSelectedEntities(c);
+  _syncPaneRowSelectHeader(c);
   const table = _paneEl(c, '#' + ((c && c.tableId) || 'pivot-table'));
   const host = c?.containerEl || table?.closest?.('.gb-pane-content,.pane-content,#pivot-view,#main-views') || document.getElementById('main-views') || document.body;
   let bar = document.querySelector(`.db-bulk-edit-bar[data-pane-id="${paneId}"]`);

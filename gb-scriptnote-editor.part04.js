@@ -783,7 +783,7 @@
       try {
         const res = await apiFetch('/ruby?text=' + encodeURIComponent(text));
         if (res?.ruby) input.value = res.ruby;
-        else if (typeof showStatus === 'function') showStatus('自動ルビの取得に失敗しました', true);
+        else if (typeof showStatus === 'function') showStatus('この語の読みは設定に登録されていません', true);
       } catch (err) {
         if (typeof showStatus === 'function') showStatus('自動ルビエラー: ' + err.message, true);
       }

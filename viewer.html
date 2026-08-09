@@ -7,6 +7,7 @@
 <title>Meldex ビューワー</title>
 <link rel="icon" href="MeldexViewer_icon_64.png" type="image/png">
 <link rel="stylesheet" href="gb-icon-assets.css">
+  <link rel="stylesheet" href="gb-shortcut-registry.css">
 <link rel="stylesheet" href="gb-tooltip.css">
 <link rel="stylesheet" href="standalone-secondary-panel.css">
 <!-- 共通UIトークン・共通ツールバー・共通コンテキストメニュー（.gb-toolbar / .tb-icon-btn / .gb-context-menu 系） -->
@@ -93,7 +94,8 @@
 <script src="vendor/lucide-icons.js"></script>
 <script src="gb-icon-assets.js"></script>
 <script src="gb-tooltip.js"></script>
-<script src="standalone-secondary-panel.js"></script>
+<script src="gb-shortcut-registry.js"></script>
+  <script src="standalone-secondary-panel.js"></script>
 <script src="standalone-local-drafts.js"></script>
 <script src="standalone-close-guard.js"></script>
 <script src="standalone-save-queue.js"></script>
@@ -103,6 +105,18 @@
 <script src="viewer-video.js"></script>
 <script src="viewer-scene.js"></script>
 <script src="viewer-open-request.js"></script>
+<script src="standalone-always-on-top.js"></script>
+<script>
+  // 本体のビューワーパネル内（iframe）では出さない。単独ウィンドウのときだけ。
+  document.addEventListener("DOMContentLoaded", () => {
+    if (window.parent && window.parent !== window) return;
+    window.MeldexAlwaysOnTop?.install({
+      appId: "viewer",
+      host: document.getElementById("controls"),
+      buttonClass: "tb-icon-btn",
+    });
+  });
+</script>
 <script src="viewer-controls.js"></script>
 <script src="viewer-annotation-scene.js"></script>
 <script src="viewer-annotation-notes.js"></script>

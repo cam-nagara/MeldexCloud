@@ -105,6 +105,23 @@
 }
 .gb-palette-slider-row label { font-size: 10px; color: var(--fg2); min-width: 0; text-align: right; }
 .gb-palette-slider-row input[type="range"] { width: 100%; min-width: 0; height: 14px; cursor: pointer; accent-color: var(--ui-range-fill-bg); }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-runnable-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-webkit-slider-thumb {
+  margin-top: -4px; border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-track {
+  height: 8px; border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--gb-color-axis-gradient); box-sizing: border-box;
+}
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-progress { background: transparent; }
+.gb-palette-slider-row input[type="range"].gb-color-axis-range::-moz-range-thumb {
+  border: 2px solid #fff; background: var(--gb-color-axis-thumb);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), 0 1px 3px rgba(0,0,0,.35);
+}
 .gb-palette-slider-row .gb-slider-val {
   font-size: 10px; color: var(--fg); width: 100%; min-width: 0; box-sizing: border-box; text-align: right;
   background: var(--bg); border: 1px solid var(--border); border-radius: 2px;
@@ -1073,6 +1090,8 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     const sliderKey = ({ '色相': 'hue', '彩度': 'saturation', '明度': 'brightness' }[labelText] || labelText).toString();
     const slider = document.createElement('input');
     slider.type = 'range'; slider.min = String(min); slider.max = String(max); slider.value = String(value);
+    slider.classList.add('gb-color-axis-range');
+    slider.dataset.colorAxis = sliderKey;
     slider.dataset.e2eId = `color-palette-${sliderKey}-range`;
     slider.setAttribute('aria-label', `${labelText}を調整`);
     const valInput = document.createElement('input');
@@ -1235,11 +1254,24 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
   sliderSection.append(hSlider.row, sSlider.row, bSlider.row);
   palette.appendChild(sliderSection);
 
-  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSwatchHighlights(); applyLive(); }
+  function updateSliderVisuals() {
+    const hue = ((Number(hsb.h) % 360) + 360) % 360;
+    const saturation = Math.max(0, Math.min(100, Number(hsb.s) || 0));
+    const brightness = Math.max(0, Math.min(100, Number(hsb.b) || 0));
+    hSlider.slider.style.setProperty('--gb-color-axis-gradient', 'linear-gradient(to right, #f00 0%, #ff0 16.667%, #0f0 33.333%, #0ff 50%, #00f 66.667%, #f0f 83.333%, #f00 100%)');
+    hSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} 100% 50%)`);
+    sSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, hsl(${hue} 0% 50%), hsl(${hue} 100% 50%))`);
+    sSlider.slider.style.setProperty('--gb-color-axis-thumb', `hsl(${hue} ${saturation}% 50%)`);
+    bSlider.slider.style.setProperty('--gb-color-axis-gradient', `linear-gradient(to right, #000, ${_hsbToHex(hue, saturation, 100)})`);
+    bSlider.slider.style.setProperty('--gb-color-axis-thumb', _hsbToHex(hue, saturation, brightness));
+  }
+
+  function onSliderChange() { selectedIsTransparent = false; selectedCustomIdx = -1; selectedPresetIdx = -1; selectedOsAccentTone = ''; updatePicker(); updateSliderVisuals(); updateSwatchHighlights(); applyLive(); }
   function updateSliders() {
     hSlider.slider.value = hsb.h; hSlider.valInput.value = hsb.h;
     sSlider.slider.value = hsb.s; sSlider.valInput.value = hsb.s;
     bSlider.slider.value = hsb.b; bSlider.valInput.value = hsb.b;
+    updateSliderVisuals();
     globalThis.GBUI?.refreshRangeFills?.(sliderSection);
   }
 
@@ -1291,6 +1323,7 @@ function _buildPaletteElement(currentColor, onChange, onClose) {
     });
   }
 
+  updateSliderVisuals();
   updateSwatchHighlights();
   return palette;
 }

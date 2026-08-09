@@ -14,6 +14,7 @@ const MELDEX_DEFAULT_APPS_GUIDE_PATH = 'MeldexHome/マニュアル/04_サポー�
 
 function _settingsStorageLabel() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
+  if (mode === 'browser') return 'この端末内に保存';
   if (mode === 'dropbox') return 'Dropboxと接続中';
   if (mode === 'server') return 'Meldex共有サーバーに接続中';
   return 'このPCに保存';
@@ -50,7 +51,7 @@ function _setSettingsAvatarPreview(el, avatar) {
 
 function openMeldexSampleGuide() {
   closeSettingsModalRestoringTheme();
-  if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && typeof openPage === 'function') {
+  if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
     openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
     return;
   }
@@ -91,17 +92,26 @@ function _settingsModalViewportLimit(axis, margin, fallback) {
   return Math.max(fallback, Math.floor((viewport - margin) / zoom));
 }
 
+// 既定の大きさ。画面を占有しすぎない控えめな寸法にしてある（2026-08-07 に
+// 980×720 / 560×600 から縮小）。ユーザーがフチをドラッグして変えた大きさは
+// gb-modal-shell.js が記憶し、次に開いたときはそちらが優先される。
+const SETTINGS_MODAL_BASE_WIDTH = 880;
+const SETTINGS_MODAL_BASE_HEIGHT = 620;
+const SETTINGS_MODAL_BASE_WIDTH_MOBILE = 560;
+const SETTINGS_MODAL_BASE_HEIGHT_MOBILE = 560;
+
 function _settingsModalViewportStyle(isMobile) {
   const widthLimit = _settingsModalViewportLimit('width', isMobile ? 16 : 72, isMobile ? 240 : 320);
   const heightLimit = _settingsModalViewportLimit('height', isMobile ? 16 : 72, isMobile ? 240 : 320);
-  const baseWidth = isMobile ? 560 : 980;
-  const baseHeight = isMobile ? 600 : 720;
+  const baseWidth = isMobile ? SETTINGS_MODAL_BASE_WIDTH_MOBILE : SETTINGS_MODAL_BASE_WIDTH;
+  const baseHeight = isMobile ? SETTINGS_MODAL_BASE_HEIGHT_MOBILE : SETTINGS_MODAL_BASE_HEIGHT;
+  // max-width / max-height はここで指定しない。指定すると共通ダイアログ層
+  // （gb-modal-shell.js）が画面内へ収める処理より強く効いてしまい、フチをドラッグして
+  // 広げても途中で止まる。画面外へはみ出さないための上限は共通層が一手に引き受ける。
   return [
     'box-sizing:border-box',
     `width:min(${baseWidth}px, ${widthLimit}px)`,
-    `max-width:${widthLimit}px`,
     `height:min(${baseHeight}px, ${heightLimit}px)`,
-    `max-height:${heightLimit}px`,
   ].join(';') + ';';
 }
 
@@ -194,7 +204,7 @@ async function showSettingsModal(opts) {
   o.dataset.settingsModal = '1';
   const _isMobile = _shouldUseSettingsMobileLayout();
   const _settingsModalStyle = _settingsModalViewportStyle(_isMobile);
-  o.innerHTML = `<div class="modal settings-modal" style="${_settingsModalStyle}">
+  o.innerHTML = `<div class="modal settings-modal" data-dialog-geometry-key="settings" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
       ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
@@ -270,6 +280,13 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
+        <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
+        <div class="gb-field-row" style="flex-wrap:nowrap;">
+          <input id="modal-screenshot-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(localStorage.getItem('meldex-screenshot-folder') || ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット'))}" readonly>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="changeScreenshotFolder()">変更</button>
+        </div>
+      </section>
+      <section class="gb-section gb-section--boxed settings-section-wide">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続 ${fieldHelp('このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください')}</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
@@ -279,7 +296,7 @@ async function showSettingsModal(opts) {
         <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます')}</div>
+        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます', { e2eId: 'settings-storage-mode-help' })}</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
@@ -287,7 +304,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
-        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます')}</div>
+        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-note" data-action="setMeldexDefaultApp" data-args='["note"]'>${lucide('fileText',14)} MarkdownをMeldex Noteにする</button>
@@ -299,9 +316,9 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません')}</div>
+        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません', { e2eId: 'settings-sample-data-help' })}</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.openPrompt?.({ force: true, trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>
       </section>
@@ -378,6 +395,10 @@ async function showSettingsModal(opts) {
             <option value="nav" ${_viewerWheelMode === 'nav' ? 'selected' : ''}>前後のファイルへ移動</option>
           </select>
         </label>
+        <div class="gb-field-row" style="margin-top:6px;justify-content:flex-start;">
+          <button type="button" class="gb-btn gb-btn-sm" data-action="showShellVerbSettings()">${lucide('mousePointerClick',14)} OS右クリックメニューを整理</button>
+          ${fieldHelp('検出済みのOSコマンドから、フォルダツリーとフォルダパネルのメニュー上部に表示する項目を選べます')}
+        </div>
       </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">表示サイズ</div>
@@ -433,7 +454,7 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide">
-        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます')}</div>
+        <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます', { e2eId: 'settings-reset-all-help' })}</div>
         <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
       </section>
     </div>
@@ -676,6 +697,12 @@ async function showSettingsModal(opts) {
         </section>
       </div>
       <div id="settings-tag-maintenance"></div>
+      <div id="settings-duplicate-detection">
+        <section class="gb-section gb-section--boxed">
+          <div class="gb-section-title">${lucide('copy',14)} 重複ファイルの検出</div>
+          <div class="gb-section-desc">表示時に読み込みます…</div>
+        </section>
+      </div>
     </div>
     <!-- フィードバック -->
     <div class="settings-panel" data-panel="フィードバック" hidden>

@@ -1,6 +1,5 @@
 (function () {
   'use strict';
-
   const PM_ROOT = '制作管理';
   // 「スタッフリスト」シート（制作管理ルートごとのスタッフ一覧）は
   // アカウント一元管理 計画書 Phase 4 で廃止し、全体で1枚の正本
@@ -31,11 +30,9 @@
   const PM_NAME_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
-
   function _pmCloudMigrationAlreadyDone(rootSet, providerFallback, migrationRootKey, provider) {
     return migrationRootKey ? rootSet.has(migrationRootKey) : providerFallback.has(provider);
   }
-
   function _pmCloudMarkMigrationDone(rootSet, providerFallback, migrationRootKey, provider) {
     if (migrationRootKey) rootSet.add(migrationRootKey);
     else providerFallback.add(provider);
@@ -421,7 +418,7 @@
     if (from) params.set('date_from', from);
     if (to) params.set('date_to', to);
     const apiUrl = `/api/production-management/export?${params}`;
-    if (!window.MeldexRuntimeAdapter?.isDropboxMode?.() && window.MeldexExportSave?.saveUrl) {
+    if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && window.MeldexExportSave?.saveUrl) {
       await MeldexExportSave.saveUrl(apiUrl, { filename: `production_${kind}.${format}`, mime: format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv;charset=utf-8' });
       return;
     }
@@ -1130,7 +1127,7 @@
       const lockSpan = document.createElement('span');
       lockSpan.className = 'pm-schedule-cell-protection-icon';
       lockSpan.textContent = '🔒';
-      lockSpan.title = '再計算ロック: 割当再計算で動きません';
+      lockSpan.title = '再計算ロック: 自動割り当てで動きません';
       lockSpan.setAttribute('aria-label', '再計算ロック中');
       container.appendChild(lockSpan);
     }
@@ -1141,7 +1138,7 @@
       const pinSpan = document.createElement('span');
       pinSpan.className = 'pm-schedule-cell-protection-icon';
       pinSpan.textContent = '📌';
-      pinSpan.title = `${pinLabel}: 割当再計算で動きません`;
+      pinSpan.title = `${pinLabel}: 自動割り当てで動きません`;
       pinSpan.setAttribute('aria-label', `${pinLabel}中`);
       container.appendChild(pinSpan);
     }

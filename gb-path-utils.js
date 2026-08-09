@@ -61,10 +61,14 @@
   let _resizeObserver = null;
   let _mutationObserver = null;
 
-  // ドライブレター（C:\ や C:/）・UNCパス（\\server\share）・先頭/（Dropbox仮想パス等）を絶対パスとみなす
+  // ドライブレター（C:\ や C:/）・UNCパス（\\server\share）・先頭/（Dropbox仮想パス等）・
+  // URL/URIを絶対パスとみなす。URLをvaultPathへ誤結合しないため、schemeもここで扱う。
   function isAbsolute(path) {
     const value = String(path || '');
-    return /^[a-zA-Z]:[\\/]/.test(value) || /^[/\\]{2}/.test(value) || value.startsWith('/');
+    return /^[a-zA-Z]:[\\/]/.test(value)
+      || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)
+      || /^[/\\]{2}/.test(value)
+      || value.startsWith('/');
   }
 
   function join(base, rel) {
@@ -93,10 +97,36 @@
   function resolveForClipboard(path, basePath) {
     const value = String(path || '');
     if (!value) return value;
+    if (value.startsWith('#')) return value;
     const resolved = (!isAbsolute(value) && basePath && isAbsolute(String(basePath)))
       ? join(basePath, value)
       : value;
     return toNativeClipboard(resolved);
+  }
+
+  async function copyToClipboard(path, basePath) {
+    const value = resolveForClipboard(path, basePath);
+    if (!value) return false;
+    if (global.navigator?.clipboard?.writeText) {
+      try {
+        await global.navigator.clipboard.writeText(value);
+        return true;
+      } catch (_) {
+        // 非HTTPSの埋め込み面などではClipboard APIが拒否されるため、選択コピーへフォールバックする。
+      }
+    }
+    if (typeof document === 'undefined' || typeof document.execCommand !== 'function') return false;
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.style.cssText = 'position:fixed;left:-10000px;top:0;opacity:0;pointer-events:none';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let copied = false;
+    try { copied = document.execCommand('copy') === true; } catch (_) { copied = false; }
+    textarea.remove();
+    return copied;
   }
 
   // パス/URLの末尾セグメント（ファイル名相当）を返す。区切りは / と \ の両対応。
@@ -364,6 +394,7 @@
     join,
     toNativeClipboard,
     resolveForClipboard,
+    copyToClipboard,
     basename,
     ellipsizePath,
     fitToElement: _fitToElement,

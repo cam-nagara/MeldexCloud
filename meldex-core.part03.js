@@ -622,7 +622,10 @@ function positionPopup(popup, anchorRect, options = {}) {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
   const gap = options.gap ?? 4;
-  const preferDirection = options.prefer || 'below'; // 'below' | 'right'
+  // 'below' | 'right' | 'left'
+  // 'left' はノート縦書き用。縦書きでは本文の続きが下に伸びるため、下へ開くと
+  // 直後の文章を隠してしまう。'right' の鏡映しとして左側へ寄せる。
+  const preferDirection = options.prefer || 'below';
   // anchorRectはgetBoundingClientRect()由来（viewport pixels）なのでCSS座標に変換
   const ar = _popupCssRect(anchorRect, z);
   const avoid = _popupCssRect(options.avoidRect, z);
@@ -642,6 +645,12 @@ function positionPopup(popup, anchorRect, options = {}) {
     left = ar.right + gap;
     if (left + pw > vw) left = Math.max(gap, ar.left - pw - gap);
     if (left + pw > vw) left = Math.max(gap, vw - pw - gap);
+    top = ar.top;
+  } else if (preferDirection === 'left') {
+    // 左に表示、収まらなければ右
+    left = ar.left - pw - gap;
+    if (left < gap) left = Math.min(vw - pw - gap, ar.right + gap);
+    if (left < gap) left = gap;
     top = ar.top;
   } else {
     // 下に表示

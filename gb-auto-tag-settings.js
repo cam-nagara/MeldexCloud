@@ -157,14 +157,14 @@
       || /(?:^|\/)quick-memo\.html$/i.test(location.pathname || '')
       || document.documentElement?.dataset?.standaloneApp;
     if (standalonePage) return false;
-    const dropboxMode = window.MeldexRuntimeAdapter?.isDropboxMode?.()
-      || document.body?.dataset?.cloudMode === 'dropbox';
+    const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
     const serverMode = window.MeldexRuntimeAdapter?.isServerMode?.()
       || document.body?.dataset?.cloudMode === 'server';
     if (serverMode) return true;
     const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
       && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
-    return !dropboxMode && !cloudStatic;
+    return !cloudMode && !cloudStatic;
   }
 
   function isTagDictionaryEditingAvailable() {

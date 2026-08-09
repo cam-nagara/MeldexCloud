@@ -1218,7 +1218,7 @@ function initIframeMarkup(scrollContainer) {
       const x = pt.x;
       const y = pt.y;
       // ヒットテスト
-      const els = Array.from(layer.querySelectorAll('path, polygon, rect')).reverse();
+      const els = Array.from(layer.querySelectorAll('path, polygon, rect, ellipse')).reverse();
       const tolerance = Math.max(8, _ann.widths?.eraser || _widthDefaults.eraser);
       for (const el of els) {
         if (_markupElementHit(el, x, y, tolerance)) {
@@ -1238,7 +1238,7 @@ function initIframeMarkup(scrollContainer) {
     _ann.drawing = true;
     const pt = _toLocalCoords(e.clientX, e.clientY);
     const anchorHit = _annotationAnchorAt(e.clientX, e.clientY, pt);
-    _ann.anchor = anchorHit?.data || null;
+    _ann.anchor = ['rect-line', 'ellipse-line', 'ellipse-fill'].includes(_ann.tool) ? null : (anchorHit?.data || null);
     _ann.path = [_ann.anchor
       ? _annotationPointToLocal(_ann.anchor, [pt.x, pt.y])
       : [pt.x, pt.y]];
@@ -1254,7 +1254,9 @@ function initIframeMarkup(scrollContainer) {
       : [pt.x, pt.y]);
     _ann.pressures.push(e.pressure || 0.5);
     let preview = layer.querySelector('.ann-preview');
-    const previewTag = (_ann.tool === 'lasso' || (_ann.tool === 'rect' && _ann.anchor)) ? 'polygon' : (_ann.tool === 'rect' ? 'rect' : 'path');
+    const ellipseTool = _ann.tool === 'ellipse-line' || _ann.tool === 'ellipse-fill';
+    const rectTool = _ann.tool === 'rect' || _ann.tool === 'rect-line';
+    const previewTag = (_ann.tool === 'lasso' || (rectTool && _ann.anchor)) ? 'polygon' : (ellipseTool ? 'ellipse' : (rectTool ? 'rect' : 'path'));
     if (!preview || preview.tagName.toLowerCase() !== previewTag) {
       preview?.remove();
       preview = document.createElementNS(_svgNS, previewTag);

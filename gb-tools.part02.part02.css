@@ -1,22 +1,93 @@
-/* ノート縦書き */
+/* ノート縦書き
+   本文の基本レイアウトは gb-layout.part01.css（本体アプリ）／note-standalone.css（単独アプリ）が
+   論理プロパティで持つ。ここは縦書きのときだけ差し替える分を書く。
+   padding-inline は「行の左右」＝縦書きでは上下の余白。設定「余白」(--page-margin-x) が
+   横書き・縦書きのどちらでも同じ意味（行の左右の余白）で効くようにするための要。 */
 #page-content.vertical-writing {
   writing-mode: vertical-rl; text-orientation: mixed;
   font-feature-settings: "vert" 1, "vpal" 1;
   overflow-y: hidden; overflow-x: auto;
-  padding: 16px 40px;
+  padding-block: 16px;
+  /* 内容最大幅による中央寄せ。縦書きではパーセンテージが親の「横幅」に解決されてしまうため、
+     利用可能なインラインサイズ（縦書きでは高さ）を gb-note-writing-mode.js が
+     --note-avail-inline へ流し込む。未設定環境では 100% にフォールバックする。 */
+  padding-inline: max(var(--page-margin-x, 50px),
+                      calc((var(--note-avail-inline, 100%) - var(--page-content-max-width, 1200px)) / 2));
   line-height: 2.0;
 }
-#page-content.vertical-writing h1, #page-content.vertical-writing h2,
-#page-content.vertical-writing h3, #page-content.vertical-writing h4,
-#page-content.vertical-writing h5, #page-content.vertical-writing h6 {
-  padding-left: 0; margin: 0 12px 0 0;
+
+/* 縦書きでは目次を左ではなく上に出す（縦書きは右上が読み始めなので、左の縦帯だと視線と逆）。
+   DOM順（目次 → 仕切り → 本文）のまま flex の方向だけ変えるので、フォーカス順や
+   パネル複製への影響が無い。
+   狭い画面では単独アプリが #note-toc を引き出し（position:fixed）へ切り替えるため、
+   flex の並びを変えるのは通常幅のときだけにする。 */
+@media (min-width: 821px) {
+  .note-editor-body.is-note-vertical { flex-direction: column; }
+  .note-editor-body.is-note-vertical > #note-toc {
+    width: auto;
+    max-width: none;
+    flex-basis: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .note-editor-body.is-note-vertical > #note-toc-resize {
+    width: auto;
+    min-width: 0;
+    height: var(--note-toc-resize-hit, 8px);
+    min-height: var(--note-toc-resize-hit, 8px);
+    cursor: row-resize;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  /* 仕切りのホバー線も横向きに */
+  .note-editor-body.is-note-vertical > #note-toc-resize::before {
+    top: 50%;
+    bottom: auto;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 1px;
+  }
 }
+
+/* 番号付きリストのマーカー。text-orientation:mixed を継承すると半角数字が横倒しになるが、
+   ::marker には text-orientation を適用できないため、縦組みの慣行どおり縦中横にする。 */
+#page-content.vertical-writing ol > li::marker { text-combine-upright: all; }
+
+/* コードは縦組みにしない（ソースコードが縦に流れると読めないため） */
+#page-content.vertical-writing pre {
+  writing-mode: horizontal-tb;
+  text-orientation: initial;
+  inline-size: auto;
+  max-inline-size: none;
+}
+#page-content.vertical-writing pre code { writing-mode: horizontal-tb; }
+
+/* チェックボックス・キー表示などの小さな部品は横組みのまま（記号の向きが崩れるため） */
+#page-content.vertical-writing input[type="checkbox"],
+#page-content.vertical-writing kbd { writing-mode: horizontal-tb; }
+
+/* 論理プロパティが無いもの（box-shadow によるアクセント線）は縦書き専用に鏡映しへ差し替える。
+   横書き側の宣言（gb-tools.part02.part01.css）は触らない。 */
+#page-content.vertical-writing {
+  box-shadow: 0 calc(-1 * var(--page-text-left-accent, 0px)) 0 0 var(--page-text-accent-color, var(--accent));
+}
+#page-content.vertical-writing h1 { box-shadow: 0 calc(-1 * var(--page-h1-left-accent, 0px)) 0 0 var(--page-h1-accent-color, var(--page-h1-fg)); }
+#page-content.vertical-writing h2 { box-shadow: 0 calc(-1 * var(--page-h2-left-accent, 0px)) 0 0 var(--page-h2-accent-color, var(--page-h2-fg)); }
+#page-content.vertical-writing h3 { box-shadow: 0 calc(-1 * var(--page-h3-left-accent, 0px)) 0 0 var(--page-h3-accent-color, var(--page-h3-fg)); }
+#page-content.vertical-writing h4 { box-shadow: 0 calc(-1 * var(--page-h4-left-accent, 0px)) 0 0 var(--page-h4-accent-color, var(--page-h4-fg)); }
+#page-content.vertical-writing h5 { box-shadow: 0 calc(-1 * var(--page-h5-left-accent, 0px)) 0 0 var(--page-h5-accent-color, var(--page-h5-fg)); }
+#page-content.vertical-writing h6 { box-shadow: 0 calc(-1 * var(--page-h6-left-accent, 0px)) 0 0 var(--page-h6-accent-color, var(--page-h6-fg)); }
+#page-content.vertical-writing blockquote { box-shadow: 0 calc(-1 * var(--page-quote-left-accent, 0px)) 0 0 var(--page-quote-accent-color, var(--page-quote-border)); }
 
 /* ルビ */
 /* ルビ: data-ruby属性でCSS疑似要素として表示（ContentEditable互換） */
+/* ルビが振ってあるだけの文字列に下線は付けない（リンクと見分けが付かなくなるため）。
+   リンクにもルビが付いている場合は .auto-link 側の下線設定がそのまま効く。 */
 [data-ruby] {
   position: relative;
-  text-decoration: underline dotted var(--fg2);
 }
 [data-ruby]::before {
   content: attr(data-ruby);

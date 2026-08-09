@@ -65,6 +65,22 @@
   const WORKSPACE_SCAN_EXCLUDES = ['_chat/', '_calendar/', '_meldex/', '_trash/', '_versions/', '_backup/', '_meldex_pwa/', 'node_modules/'];
   const SHEET_CLOUD_STORE_FILE = '_meldex_sheet.cloud.json';
   const SHEET_CLOUD_STORE_KIND = 'meldex-cloud-sheet-store-v1';
+  // 大規模シート対策（Phase 3、恒久策）。設計・しきい値はPython側
+  // （meldex_sheet_cloud_sync.py/meldex_sheet_sqlite_store.py）と対称。
+  // app/docs/desktop-cloud-sheet-sync-phase3-plan-2026-08-08.md
+  const SHEET_CLOUD_MANIFEST_FILE = '_meldex_sheet.cloud.manifest.json';
+  const SHEET_CLOUD_MANIFEST_KIND = 'meldex-cloud-sheet-manifest-v1';
+  const SHEET_CLOUD_SHARD_KIND = 'meldex-cloud-sheet-shard-v1';
+  const SHEET_CLOUD_SHARD_FILE_PATTERN = /^_meldex_sheet\.cloud\.shard-\d+\.json$/i;
+  const SHEET_CLOUD_SHARD_MAX_ROWS = 150;
+  const SHEET_CLOUD_LARGE_ROW_THRESHOLD = 2000;
+  const SHEET_CLOUD_LARGE_SIZE_BYTES_THRESHOLD = 3 * 1024 * 1024;
+  // 互換性ミラー（独立レビューで指摘・2026-08-08追加）。デスクトップ側
+  // meldex_sheet_cloud_sync.LEGACY_MIRROR_REFRESH_INTERVAL_SECONDS と対称。
+  // マニフェスト方式を知らない旧版（更新前のデスクトップ版・更新前の
+  // クラウド版タブ）が単一JSONを直接読んだ時に「0件のシート」と誤読しない
+  // よう、単一JSONは空スタブにせず全行スナップショットとして維持する。
+  const SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
   async function _assetMutationWarnings(provider, event) {
     const tracker = window.MeldexDropboxAssetRecovery;
@@ -320,6 +336,93 @@
     return _joinPath(_normalizeFolderPath(dbPath), SHEET_CLOUD_STORE_FILE);
   }
 
+  function _sheetManifestPath(dbPath) {
+    return _joinPath(_normalizeFolderPath(dbPath), SHEET_CLOUD_MANIFEST_FILE);
+  }
+
+  function _sheetShardPath(dbPath, shardFileName) {
+    return _joinPath(_normalizeFolderPath(dbPath), shardFileName);
+  }
+
+  // マニフェストが「そもそも存在しない」（未分割シート、単一JSON方式として
+  // 扱ってよい）場合は null を返す。ファイルは存在するのに読めない・
+  // 壊れている場合は null で握りつぶさず例外を投げる（独立レビューで指摘:
+  // 読み側だけでなく書き込み側 `_writeSheetStore` もこの関数を通るため、
+  // ここで一元的に安全側へ倒せば両方が守られる。統一前は
+  // `_readSheetStoreMaybe` だけが独自にstatPathで確認していたため、
+  // 書き込み側は未保護の非対称な状態だった）。正常系（大多数の呼び出し）は
+  // `_readJsonSafe` だけで完結し追加のネットワーク往復は発生しない。
+  // 失敗した時だけ確認のためstatPathを呼ぶ。
+  async function _readSheetManifest(provider, dbPath) {
+    const data = await _readJsonSafe(provider, _sheetManifestPath(dbPath), null);
+    const valid = data && typeof data === 'object' && !Array.isArray(data)
+      && data.kind === SHEET_CLOUD_MANIFEST_KIND
+      && Array.isArray(data.shards) && data.row_shard && typeof data.row_shard === 'object';
+    if (valid) return data;
+    if (typeof provider?.statPath === 'function') {
+      const stat = await provider.statPath(_sheetManifestPath(dbPath)).catch(() => undefined);
+      if (stat) {
+        throw new Error('シートの保管ファイル（マニフェスト）を読み取れませんでした。時間をおいてもう一度お試しください');
+      }
+    }
+    return null;
+  }
+
+  async function _readSheetShard(provider, dbPath, shardFileName) {
+    const data = await _readJsonSafe(provider, _sheetShardPath(dbPath, shardFileName), null);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    if (data.kind !== SHEET_CLOUD_SHARD_KIND) return null;
+    if (!data.rows || typeof data.rows !== 'object' || Array.isArray(data.rows)) return null;
+    return data;
+  }
+
+  // シャードが読めなかった場合、genuinely absent（Dropbox伝播待ち・
+  // tombstone整理後の未参照シャード等、正常に起こりうる）と「ファイルは
+  // 存在するのに読めない」（壊れている等、異常）を区別する。後者を無言で
+  // スキップして空扱いにすると、実在する行を欠落したまま一覧・取り込みが
+  // 進んでしまう（独立レビューで指摘。マニフェスト自体の存在確認と同じ
+  // 考え方をシャード1本ずつにも適用する）。失敗時だけ追加でstatPathを
+  // 呼ぶため、正常系（大多数の読み込み）の負荷は増えない。
+  async function _readShardedRawStore(provider, dbPath, manifest) {
+    const rows = {};
+    const seen = new Set();
+    for (const shardFileName of manifest.shards || []) {
+      if (typeof shardFileName !== 'string' || seen.has(shardFileName)) continue;
+      seen.add(shardFileName);
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      if (!shard) {
+        if (typeof provider?.statPath === 'function') {
+          const stat = await provider.statPath(_sheetShardPath(dbPath, shardFileName)).catch(() => undefined);
+          if (stat) {
+            throw new Error(`シートの保管ファイル（シャード ${shardFileName}）を読み取れませんでした。時間をおいてもう一度お試しください`);
+          }
+        }
+        continue;
+      }
+      Object.entries(shard.rows || {}).forEach(([key, row]) => {
+        if (row && typeof row === 'object' && !Array.isArray(row)) rows[key] = row;
+      });
+    }
+    return {
+      kind: SHEET_CLOUD_STORE_KIND,
+      schema_version: Number(manifest.schema_version || 1) || 1,
+      db_path: String(manifest.db_path || ''),
+      created: String(manifest.created || ''),
+      modified: String(manifest.modified || ''),
+      rows,
+    };
+  }
+
+  // シャード本体（_meldex_sheet.cloud.shard-NNN.json）は行の生JSONを持つが、
+  // マニフェスト経由で既に統合済みの内容として扱われるため、ワークスペース
+  // 横断検索・全ファイル走査の類ではこのファイル単体を独立した「ページ」
+  // として拾ってはならない（独立レビューで発見: 拾うと生JSON片が壊れた
+  // パスの検索結果として混入する）。
+  function _isSheetCloudShardFileName(name) {
+    return SHEET_CLOUD_SHARD_FILE_PATTERN.test(String(name || ''));
+  }
+  internals._isSheetCloudShardFileName = _isSheetCloudShardFileName;
+
   function _sheetStoreFileName(value) {
     const raw = _basename(String(value || '').replace(/\\/g, '/'));
     const stem = raw.replace(/\.md$/i, '');
@@ -357,6 +460,19 @@
       if (!row || typeof row !== 'object' || Array.isArray(row)) return;
       const fileName = _sheetStoreFileName(row.file_name || row.path || key);
       const name = _sheetStoreEntityName(row.name || fileName);
+      // tombstone行（deleted:true）はframtmatterを持たない。デスクトップ版との
+      // 双方向同期（last-writer-wins）が updated/deleted/deletedAt を突き合わせる
+      // ため、正規化のたびに読み捨てず必ず保持する
+      // （app/docs/desktop-cloud-sheet-sync-plan-2026-08-07.md Phase 2）。
+      if (row.deleted) {
+        out.rows[fileName] = {
+          file_name: fileName,
+          deleted: true,
+          deletedAt: String(row.deletedAt || row.updated || ''),
+          updated: String(row.deletedAt || row.updated || ''),
+        };
+        return;
+      }
       const fm = row.frontmatter && typeof row.frontmatter === 'object' && !Array.isArray(row.frontmatter) ? { ...row.frontmatter } : {};
       if (!fm.type) fm.type = 'settings-entry';
       if (!fm.properties || typeof fm.properties !== 'object' || Array.isArray(fm.properties)) fm.properties = {};
@@ -366,12 +482,24 @@
         path: _joinPath(out.db_path, fileName),
         frontmatter: fm,
         body: String(row.body || ''),
+        updated: String(row.updated || ''),
       };
     });
     return out;
   }
 
   async function _readSheetStoreMaybe(provider, dbPath) {
+    // マニフェスト（分割方式）の存在確認・「存在するのに読めない」場合の
+    // 安全策は _readSheetManifest 側に一元化済み（読み側・書き込み側
+    // `_writeSheetStore` の両方がここを通るため）。ここを _readJsonSafe
+    // だけで済ませて「読めなければ無い扱い」にすると、移行後に残る
+    // 互換性ミラー（旧単一JSON、現在は全行スナップショットを保つが
+    // マニフェストより古い可能性がある）へ静かにフォールスルーしてしまう
+    // （物理.mdが覆い隠された既知の事故と同じ形）。
+    const manifest = await _readSheetManifest(provider, dbPath);
+    if (manifest) {
+      return _normalizeSheetStore(await _readShardedRawStore(provider, dbPath, manifest), dbPath);
+    }
     const storePath = _sheetStorePath(dbPath);
     const entry = await _resolveEntryHandle(provider, storePath).catch(() => null);
     if (!entry || entry.kind !== 'file') return null;
@@ -415,10 +543,181 @@
     }
   }
 
-  async function _writeSheetStore(provider, dbPath, store) {
+  async function _writeSheetShard(provider, dbPath, shardFileName, rows) {
+    await provider.writeJson(_sheetShardPath(dbPath, shardFileName), {
+      kind: SHEET_CLOUD_SHARD_KIND,
+      schema_version: 1,
+      rows,
+    });
+  }
+
+  async function _writeSheetManifest(provider, dbPath, manifest) {
+    const now = _nowIso();
+    const next = {
+      ...manifest,
+      kind: SHEET_CLOUD_MANIFEST_KIND,
+      schema_version: Number(manifest.schema_version || 1) || 1,
+      db_path: manifest.db_path || _normalizeFolderPath(dbPath),
+      created: manifest.created || now,
+      modified: now,
+    };
+    await provider.writeJson(_sheetManifestPath(dbPath), next);
+    return next;
+  }
+
+  function _isLargeSheetRows(rows) {
+    const count = Object.keys(rows || {}).length;
+    if (count >= SHEET_CLOUD_LARGE_ROW_THRESHOLD) return true;
+    try {
+      return JSON.stringify(rows || {}).length >= SHEET_CLOUD_LARGE_SIZE_BYTES_THRESHOLD;
+    } catch {
+      return false;
+    }
+  }
+
+  // 互換性ミラー: マニフェストを解さない旧版のためだけに、単一JSON方式と
+  // 同じ形で全行のスナップショットを書く。新版は _readSheetStoreMaybe で
+  // マニフェストが存在すればこのファイルを一切参照しない。
+  async function _writeLegacySheetStoreMirror(provider, dbPath, rows) {
+    await provider.writeJson(_sheetStorePath(dbPath), {
+      kind: SHEET_CLOUD_STORE_KIND,
+      schema_version: 1,
+      db_path: _normalizeFolderPath(dbPath),
+      modified: _nowIso(),
+      migrated_to_manifest: true,
+      rows,
+    });
+  }
+
+  async function _legacySheetStoreMirrorIsStale(provider, dbPath) {
+    if (typeof provider?.statPath !== 'function') return true;
+    const stat = await provider.statPath(_sheetStorePath(dbPath)).catch(() => null);
+    if (!stat || !stat.modifiedMs) return true;
+    return (Date.now() - stat.modifiedMs) >= SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS;
+  }
+
+  // 単一JSON方式で保持していた全行を、しきい値超過を機にマニフェスト+複数
+  // シャードへ一度だけ分割する（初回のみ発生する移行。デスクトップ版の
+  // meldex_sheet_cloud_sync._migrate_rows_to_sharded_store と対称）。
+  // 旧単一JSONは削除・空スタブ化せず、移行した瞬間の全行スナップショット
+  // のまま維持する（互換性ミラー。以後は
+  // SHEET_CLOUD_LEGACY_MIRROR_REFRESH_INTERVAL_MS 間隔でしか更新しない。
+  // 独立レビューで指摘: 空スタブのままだと、マニフェスト方式を知らない
+  // 旧版が実データのあるシートを「0件」と誤読する）。
+  async function _migrateSheetRowsToShards(provider, dbPath, rows) {
+    const now = _nowIso();
+    const manifest = {
+      kind: SHEET_CLOUD_MANIFEST_KIND,
+      schema_version: 1,
+      db_path: _normalizeFolderPath(dbPath),
+      created: now,
+      modified: now,
+      shards: [],
+      row_shard: {},
+    };
+    const entries = Object.entries(rows || {});
+    if (!entries.length) {
+      const shardFileName = '_meldex_sheet.cloud.shard-000.json';
+      manifest.shards.push(shardFileName);
+      await _writeSheetShard(provider, dbPath, shardFileName, {});
+    } else {
+      for (let index = 0; index < entries.length; index += SHEET_CLOUD_SHARD_MAX_ROWS) {
+        const chunkEntries = entries.slice(index, index + SHEET_CLOUD_SHARD_MAX_ROWS);
+        const shardFileName = `_meldex_sheet.cloud.shard-${String(Math.floor(index / SHEET_CLOUD_SHARD_MAX_ROWS)).padStart(3, '0')}.json`;
+        manifest.shards.push(shardFileName);
+        const chunkRows = {};
+        chunkEntries.forEach(([fileName, row]) => {
+          manifest.row_shard[fileName] = shardFileName;
+          chunkRows[fileName] = row;
+        });
+        await _writeSheetShard(provider, dbPath, shardFileName, chunkRows);
+      }
+    }
+    await _writeSheetManifest(provider, dbPath, manifest);
+    await _writeLegacySheetStoreMirror(provider, dbPath, rows);
+    return manifest;
+  }
+
+  // 変更のあった行だけを、それぞれの所属シャードへ書き込む。複数の行が同じ
+  // シャードに属する場合はそのシャードを1回だけ読み書きする。
+  // `rows[fileName]` が undefined の場合（rename等で古いキーが store.rows から
+  // 消えた場合）は、tombstone化ではなく行自体をシャードから除去する。
+  async function _writeChangedRowsToShards(provider, dbPath, manifest, changedFileNames, rows) {
+    const rowShard = manifest.row_shard = manifest.row_shard || {};
+    const shards = manifest.shards = manifest.shards || [];
+    const counts = {};
+    for (const shardFileName of shards) {
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      counts[shardFileName] = shard ? Object.keys(shard.rows || {}).length : 0;
+    }
+    const upsertsByShard = {};
+    const removalsByShard = {};
+    changedFileNames.forEach((fileName) => {
+      const row = rows ? rows[fileName] : undefined;
+      const existingAssignment = rowShard[fileName];
+      const hasAssignment = !!existingAssignment && shards.includes(existingAssignment);
+      if (row === undefined) {
+        if (hasAssignment) {
+          (removalsByShard[existingAssignment] || (removalsByShard[existingAssignment] = [])).push(fileName);
+          delete rowShard[fileName];
+        }
+        return;
+      }
+      let shardFileName = hasAssignment ? existingAssignment : null;
+      if (!shardFileName) {
+        shardFileName = shards.find(name => (counts[name] || 0) < SHEET_CLOUD_SHARD_MAX_ROWS) || null;
+        if (!shardFileName) {
+          shardFileName = `_meldex_sheet.cloud.shard-${String(shards.length).padStart(3, '0')}.json`;
+          shards.push(shardFileName);
+          counts[shardFileName] = 0;
+        }
+        rowShard[fileName] = shardFileName;
+        counts[shardFileName] = (counts[shardFileName] || 0) + 1;
+      }
+      (upsertsByShard[shardFileName] || (upsertsByShard[shardFileName] = {}))[fileName] = row;
+    });
+    const touchedShards = new Set([...Object.keys(upsertsByShard), ...Object.keys(removalsByShard)]);
+    for (const shardFileName of touchedShards) {
+      const shard = await _readSheetShard(provider, dbPath, shardFileName);
+      const mergedRows = { ...(shard ? shard.rows : {}) };
+      (removalsByShard[shardFileName] || []).forEach((fileName) => { delete mergedRows[fileName]; });
+      Object.assign(mergedRows, upsertsByShard[shardFileName] || {});
+      await _writeSheetShard(provider, dbPath, shardFileName, mergedRows);
+    }
+    await _writeSheetManifest(provider, dbPath, manifest);
+  }
+
+  // options.changedFileNames を渡すと、その行が属するシャード（分割済みの
+  // 場合）だけを書き直す。渡さない呼び出し元（従来どおりstore.rows全体が
+  // 変更され得る前提）は、分割済みシートに対しては全体を作り直す
+  // （bulk操作向けのフォールバック。1行単位の呼び出し元は必ずヒントを渡す
+  // よう更新済み — _upsertSheetStoreEntry・削除・rename等）。
+  async function _writeSheetStore(provider, dbPath, store, options) {
     const normalized = _normalizeSheetStore(store, dbPath);
     normalized.modified = _nowIso();
     await _directoryHandle(provider, _normalizeFolderPath(dbPath), true);
+    const changedFileNames = options && Array.isArray(options.changedFileNames) ? options.changedFileNames : null;
+    const manifest = await _readSheetManifest(provider, dbPath);
+    if (manifest) {
+      if (changedFileNames) {
+        await _writeChangedRowsToShards(provider, dbPath, manifest, changedFileNames, normalized.rows);
+        // 互換性ミラー（旧単一JSON）は毎回ではなく、しばらく更新していない
+        // 時だけ全行スナップショットへ作り直す。normalized.rows は
+        // _normalizeSheetStore が呼び出し元から受け取った現時点の全行集合
+        // （呼び出し元は _sheetStoreForRead 等の分割対応読み込みを経由済み）
+        // なので、ここで追加の読み込みは不要。
+        if (await _legacySheetStoreMirrorIsStale(provider, dbPath)) {
+          await _writeLegacySheetStoreMirror(provider, dbPath, normalized.rows);
+        }
+      } else {
+        await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
+      }
+      return normalized;
+    }
+    if (_isLargeSheetRows(normalized.rows)) {
+      await _migrateSheetRowsToShards(provider, dbPath, normalized.rows);
+      return normalized;
+    }
     await provider.writeJson(_sheetStorePath(dbPath), normalized);
     return normalized;
   }
@@ -438,7 +737,7 @@
   async function _migrateMarkdownEntriesToSheetStore(provider, dbPath, store) {
     const base = _normalizeFolderPath(dbPath);
     let next = store || await _ensureSheetStore(provider, base);
-    let changed = false;
+    const addedFileNames = [];
     const entries = await _listDirectoryEntries(provider, base).catch(() => []);
     for (const item of entries) {
       if (item.handle.kind !== 'file' || !item.name.endsWith('.md') || item.name.startsWith('_') || item.name === _basename(base) + '.md') continue;
@@ -452,10 +751,14 @@
         path: filePath,
         frontmatter: { ...(parsed.frontmatter || {}) },
         body: String(parsed.body || ''),
+        // 物理.mdから今クラウドが初めて知った行として現在時刻を刻む。
+        // デスクトップ側のsqlite実体には同じfile_nameで別のupdated_utcが既に
+        // 存在し得るため、次回の突き合わせはそちらが優先されて構わない。
+        updated: _nowIso(),
       };
-      changed = true;
+      addedFileNames.push(item.name);
     }
-    if (changed) next = await _writeSheetStore(provider, base, next);
+    if (addedFileNames.length) next = await _writeSheetStore(provider, base, next, { changedFileNames: addedFileNames });
     return next;
   }
 
@@ -474,7 +777,10 @@
     if (!store) return null;
     const fileName = _sheetStoreFileName(path);
     const row = store.rows[fileName];
-    if (!row) return null;
+    // tombstone行（deleted:true）はfrontmatterを持たないため「無い」として扱う。
+    // ここを素通りさせると空のfrontmatterを持つ生存エントリとして読めてしまい、
+    // 直リンク経由の閲覧・編集で削除済み項目を誤って復活させてしまう。
+    if (!row || row.deleted) return null;
     return {
       dbPath,
       fileName,
@@ -497,9 +803,66 @@
       path: _joinPath(dbPath, fileName),
       frontmatter: fm,
       body: String(body || ''),
+      updated: _nowIso(),
     };
-    return _writeSheetStore(provider, dbPath, store);
+    return _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
   }
+
+  // クラウド版の削除は /outliner/delete という全種別共通の経路（フォルダツリー・
+  // ノート・ボード・シートすべてで共用）を通るため、シート専用の分岐をここに
+  // 閉じ込める。デスクトップ版の delete_sheet_entry_if_needed()
+  // （app/meldex_api_outliner.py）と対称の役割。呼び出し元
+  // （_deleteOutlinerPathToTrash）は物理ファイルの移動より必ず先にこれを呼び、
+  // tombstone（deleted:true）を書いてから物理を動かす。順序を逆にすると
+  // 「物理は消えたがtombstoneが無い＝デスクトップへ削除が伝わらない」という
+  // 既知の残作業（AGENT_INBOX.md 2026-08-08）と同じ状態を作ってしまう。
+  // 対象がシート保管ファイルの行でない場合（通常のノート・ボード・フォルダ等、
+  // または シート保管が未使用のフォルダ）は null を返し、呼び出し元は既存の
+  // 挙動のまま物理ファイルの削除だけを行う。
+  //
+  // 対象パスが既に `.md` で終わっている場合だけ判定する（`.md`を持たない
+  // フォルダ削除にまで拡張子を補って判定すると、たまたま同名のシート行
+  // `<フォルダ名>.md` が同じ親フォルダに存在した時、無関係な行を誤って
+  // tombstone化してしまう。フォルダにはそもそも拡張子が無いので、ここで
+  // 補完はしない）。
+  //
+  // シート保管の読み取り（`_sheetStoreForRead`）が例外を投げた場合はcatchで
+  // 握りつぶさず呼び出し元へ伝播させる。ここを握りつぶして null を返すと、
+  // 一時的なDropbox障害時に「シート保管の状態が確認できないまま物理だけ
+  // 消す」という、この関数が解消しようとしている元のバグをそのまま
+  // 再現してしまう（デスクトップ版の delete_sheet_entry_if_needed が
+  // strict=True で例外を上位へ投げるのと対称）。
+  async function _deleteSheetStoreEntryIfNeeded(provider, rawPath) {
+    const path = _normalizeFolderPath(rawPath || '');
+    if (!path || !/\.md$/i.test(path) || _basename(path).startsWith('_')) return null;
+    const dbPath = _dirname(path);
+    if (_isProductionManagementSheetMetadataPath(dbPath)) return null;
+    const store = await _sheetStoreForRead(provider, dbPath);
+    if (!store) return null;
+    const fileName = _sheetStoreFileName(path);
+    const existing = store.rows[fileName];
+    if (!existing || existing.deleted) return null;
+    const previousRow = { ...existing };
+    const now = _nowIso();
+    store.rows[fileName] = { file_name: fileName, deleted: true, deletedAt: now, updated: now };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] });
+    return { ok: true, deleted_id: fileName, dbPath, fileName, previousRow };
+  }
+  internals._deleteSheetStoreEntryIfNeeded = _deleteSheetStoreEntryIfNeeded;
+
+  // _deleteSheetStoreEntryIfNeeded が書いたtombstoneを、その直後の物理ファイル
+  // 移動が失敗した時だけ元に戻す（デスクトップ側のロールバック
+  // sync_sheet_entry_if_needed(strict=True) と対称）。これが無いと、移動失敗時に
+  // 「シート上は削除済み表示・物理ファイルは元の場所に残ったまま」という
+  // 中途半端な状態が残る。
+  async function _restoreSheetStoreEntryAfterFailedDelete(provider, dbPath, fileName, previousRow) {
+    if (!dbPath || !fileName || !previousRow) return;
+    const store = await _ensureSheetStore(provider, dbPath).catch(() => null);
+    if (!store) return;
+    store.rows[fileName] = { ...previousRow, updated: _nowIso() };
+    await _writeSheetStore(provider, dbPath, store, { changedFileNames: [fileName] }).catch(() => {});
+  }
+  internals._restoreSheetStoreEntryAfterFailedDelete = _restoreSheetStoreEntryAfterFailedDelete;
 
   async function _uniqueSheetEntryStem(provider, dbPath, name) {
     const base = _safeFileStem(name, '無題');
@@ -556,12 +919,15 @@
       Object.keys(pivotRow).filter(key => !key.startsWith('_')).forEach(key => properties.add(key));
       entities[entityName] = pivotRow;
     });
-    return {
+    const result = {
       entities,
       properties: [...properties].sort((a, b) => a.localeCompare(b, 'ja')),
       new_format: true,
       cloud_sheet_store: true,
     };
+    const attachmentFolder = await _attachmentFolderForSheet(provider, base);
+    if (attachmentFolder) result.attachment_folder = attachmentFolder;
+    return result;
   }
 
   function _entityRowFromEntry(entryPath, entityName, frontmatter, filters) {
@@ -592,6 +958,22 @@
       if (rows.length) entity[propName] = rows;
     });
     return entity;
+  }
+
+  // 添付フォルダはシートの行ではないが、フォルダツリーからは実フォルダとして開けるようにする
+  // （デスクトップ版 registered_attachment_folder_name と同じく、記録がある名前だけを対象にする）。
+  async function _attachmentFolderForSheet(provider, folderPath) {
+    const attachments = window.MeldexSheetAttachments;
+    if (!attachments) return '';
+    try {
+      const note = await _folderFrontmatter(provider, folderPath);
+      const name = attachments.attachmentFolderNameFromFrontmatter(note?.frontmatter);
+      if (!name) return '';
+      const entry = await _resolveEntryHandle(provider, _joinPath(folderPath, name)).catch(() => null);
+      return entry?.kind === 'directory' ? name : '';
+    } catch (_) {
+      return '';
+    }
   }
 
   async function _readPivot(provider, dbPath, statusFilter) {
@@ -637,12 +1019,15 @@
         entities[item.name.replace(/\.md$/i, '')] = row;
       }
     }
-    return {
+    const result = {
       entities,
       properties: [...properties].sort((a, b) => a.localeCompare(b, 'ja')),
       new_format: true,
       calendar_db: kind === 'calendar-db',
     };
+    const attachmentFolder = await _attachmentFolderForSheet(provider, base);
+    if (attachmentFolder) result.attachment_folder = attachmentFolder;
+    return result;
   }
 
   async function _listDatabases(provider) {
@@ -975,15 +1360,20 @@
       if (dest !== stored.path && await _pathExists(provider, dest)) throw new Error(`既に存在: ${newName}`);
       const store = await _ensureSheetStore(provider, stored.dbPath);
       if (store.rows[destName] && destName !== stored.fileName) throw new Error(`既に存在: ${newName}`);
-      delete store.rows[stored.fileName];
+      const renamedFrom = stored.fileName;
+      delete store.rows[renamedFrom];
       store.rows[destName] = {
         file_name: destName,
         name: _sheetStoreEntityName(destName),
         path: dest,
         frontmatter: { ...(stored.frontmatter || {}), modified: _nowIso() },
         body: stored.body || '',
+        updated: _nowIso(),
       };
-      await _writeSheetStore(provider, stored.dbPath, store);
+      // renamedFrom は store.rows から削除済みなので undefined として渡り、
+      // シャード方式では tombstone 化ではなく行そのものを除去する
+      // （_writeChangedRowsToShards）。
+      await _writeSheetStore(provider, stored.dbPath, store, { changedFileNames: [renamedFrom, destName] });
       const physical = await _resolveEntryHandle(provider, stored.path).catch(() => null);
       if (physical?.kind === 'file') {
         await _requireUnlocked(provider, stored.path, { action: 'rename-entity-source' });
@@ -1369,7 +1759,7 @@
       'type', 'category', 'roles', 'property_types', 'property_ids', 'property_layout',
       'property_layout_templates', 'publish', 'actions', 'backlinks',
       'style', 'theme', 'calendar_mapping', 'view_config', 'validation',
-      'validation_rules', 'storage', 'cloud_storage', 'computed_props',
+      'validation_rules', 'storage', 'cloud_storage', 'computed_props', 'attachment_folder',
     ].forEach((key) => {
       if (body && Object.prototype.hasOwnProperty.call(body, key)) fm[key] = body[key];
     });

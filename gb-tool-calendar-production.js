@@ -16,7 +16,7 @@
     { label: 'シフトを取り込む', icon: 'fileInput', fn: 'openProductionShiftImport', group: 'schedule' },
     // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
     // improvement-plan-2026-08-04.md §4-1）。desktopOnlyフラグは撤去した。
-    { label: '割当再計算', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
+    { label: '自動割り当て', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
     { label: 'スタッフ管理シートを開く', icon: 'userPlus', fn: 'openProductionStaffRegistrySheet', group: 'data' },
     // Google送信はCloud（Dropboxモード）にも移植済み（production-management-ux-improvement-
     // plan-2026-08-04.md §4-4）。CalDAV送信はDesktop限定のままだが、ボタン自体は両方で表示し、
@@ -325,7 +325,7 @@
       {
         // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
         // improvement-plan-2026-08-04.md §4-1）。dropboxModeでも無効化しない。
-        id: 'production-recalculate', label: '割当再計算', icon: 'calculator',
+        id: 'production-recalculate', label: '自動割り当て', icon: 'calculator',
         action: () => _pmRunCalendarToolbarAction(component, 'recalculate'),
       },
       {

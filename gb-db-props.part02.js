@@ -214,7 +214,11 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     } }] : []),
     { type: 'sep' },
     ...(hasDeps ? [{ icon: 'gitBranch', label: '依存エントリを作成', action: () => _createDependentEntry(targetDbPath, entityName, undefined, ctx) }] : []),
-    ...(propName && typeof startCellInlineAdd === 'function' ? [{ icon: 'plus', label: '候補値を追加', action: () => {
+    // 1セル1値で運用するシート（制作管理）では候補値を追加できないため項目を出さない
+    // （シート表・エントリ詳細パネルの＋ボタンと同じ扱い）。
+    ...(propName && typeof startCellInlineAdd === 'function'
+      && !(typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(targetDbPath))
+      ? [{ icon: 'plus', label: '候補値を追加', action: () => {
       const paneRoot = e?.target?.closest?.('.gb-pane') || document.body;
       const row = paneRoot.querySelector('tr[data-entity-name="' + CSS.escape(entityName) + '"]');
       const td = row?.querySelector('td[data-prop-name="' + CSS.escape(propName) + '"]');

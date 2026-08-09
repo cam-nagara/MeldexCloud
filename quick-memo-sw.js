@@ -1,4 +1,4 @@
-const QUICK_MEMO_CACHE = 'meldex-quick-memo-v5';
+const QUICK_MEMO_CACHE = 'meldex-quick-memo-v6';
 const QUICK_MEMO_CACHE_PREFIX = 'meldex-quick-memo-';
 const QUICK_MEMO_ASSETS = [
   'quick-memo.html',
@@ -15,8 +15,10 @@ const QUICK_MEMO_ASSETS = [
   'standalone-workspace-tree.css',
   'standalone-profile.css',
   'gb-tooltip.css',
+  'gb-shortcut-registry.css',
   'standalone-secondary-panel.css',
   'gb-split-loader.js',
+  'gb-shortcut-registry.js',
   'vendor/lucide-icons.js',
   'meldex-core.js',
   'meldex-core.bundle.js',
@@ -56,6 +58,9 @@ const QUICK_MEMO_ASSETS = [
   'gb-tooltip.part01.js',
   'gb-tooltip.part02.js',
   'standalone-secondary-panel.js',
+  'gb-file-info-panel.js',
+  'gb-file-metadata.js',
+  'gb-file-metadata.css',
   'standalone-close-guard.js',
   'standalone-save-queue.js',
   'quick-memo.webmanifest',

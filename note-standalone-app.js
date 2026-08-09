@@ -45,6 +45,11 @@
       if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|avif);base64,/i.test(raw)) return raw;
       return '';
     }
+    if (kind === 'video') {
+      if (scheme === 'http' || scheme === 'https') return raw;
+      if (/^data:video\/(?:mp4|webm|ogg|quicktime);base64,/i.test(raw)) return raw;
+      return '';
+    }
     return ['http', 'https', 'mailto', 'tel'].includes(scheme) ? raw : '';
   }
 
@@ -341,11 +346,19 @@
   }
 
   function toggleVertical() {
-    if (typeof toggleNoteVertical === 'function') {
+    if (typeof MeldexNoteWritingMode !== 'undefined') {
+      MeldexNoteWritingMode.toggle();
+    } else if (typeof toggleNoteVertical === 'function') {
       toggleNoteVertical();
     } else {
       editor().classList.toggle('vertical-writing');
     }
+  }
+
+  // 本体アプリと同じく、前回の組方向を起動時に復元する（単独アプリには復元処理が無かった）
+  function restoreWritingMode() {
+    if (typeof MeldexNoteWritingMode === 'undefined') return;
+    MeldexNoteWritingMode.restoreFromStorage();
   }
 
   function fileToDataUrl(file) {
@@ -372,14 +385,24 @@
     const res = await apiPost('/upload-file?path=' + encodeURIComponent(dir), { data: payload, filename: file.name || 'file' });
     if (!res?.path) return;
     const raw = '/api/file-raw?path=' + encodeURIComponent(res.path);
-    if ((file.type || '').startsWith('image/')) {
+    const isImage = (file.type || '').startsWith('image/');
+    const isVideo = (file.type || '').startsWith('video/');
+    if (isImage || isVideo) {
       let displayUrl = raw;
       if (document.documentElement.hasAttribute('data-standalone-cloud') && typeof MeldexStandaloneFS.readFileAsDataUrl === 'function') {
         displayUrl = await MeldexStandaloneFS.readFileAsDataUrl(res.path);
       }
-      if (!safeContentUrl(displayUrl, 'image')) throw new Error('表示できない画像形式です');
+      if (!safeContentUrl(displayUrl, isVideo ? 'video' : 'image')) throw new Error(isVideo ? '表示できない動画形式です' : '表示できない画像形式です');
       const sourceAttr = displayUrl === raw ? '' : ` data-meldex-source-src="${esc(raw)}"`;
-      insertHtml(`<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(file.name)}" data-type="image"><img src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}"></div><div><br></div>`);
+      const inner = isVideo
+        ? `<video src="${esc(displayUrl)}"${sourceAttr} controls></video>`
+        : `<img src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}">`;
+      insertHtml(`<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(file.name)}" data-type="${isVideo ? 'video' : 'image'}" data-media-init="1">${inner}</div><div><br></div>`);
+      // 本体アプリと同じ初期サイズ（正方形に収めた一辺が本文幅の約6割まで／拡大はしない）を与える
+      editor().querySelectorAll('.embed-media[data-media-init]').forEach((media) => {
+        delete media.dataset.mediaInit;
+        if (typeof _applyInitialEmbeddedMediaSize === 'function') _applyInitialEmbeddedMediaSize(editor(), media);
+      });
     } else {
       insertHtml(`<a href="${esc(raw)}">${esc(file.name || res.path)}</a> `);
     }
@@ -390,10 +413,10 @@
     pc.addEventListener('input', () => setDirty(true));
     pc.addEventListener('paste', async event => {
       const files = [...(event.clipboardData?.files || [])];
-      const image = files.find(file => (file.type || '').startsWith('image/'));
-      if (!image) return;
+      const media = files.find(file => (file.type || '').startsWith('image/') || (file.type || '').startsWith('video/'));
+      if (!media) return;
       event.preventDefault();
-      await insertFile(image);
+      await insertFile(media);
     });
     pc.addEventListener('dragover', event => {
       if ([...(event.dataTransfer?.types || [])].includes('Files')) {
@@ -521,7 +544,9 @@
       return;
     }
     const title = qs('note-title-input').value.trim() || titleFromPath(app.path);
-    const blob = MeldexDocxExport.create(title, collectMarkdown());
+    // 縦書き表示のときは書き出したWordも縦書きにする
+    const vertical = !!window.MeldexNoteWritingMode?.isVertical?.(editor());
+    const blob = MeldexDocxExport.create(title, collectMarkdown(), { vertical });
     await MeldexExportSave.saveBlob(blob, {
       title,
       extension: '.docx',
@@ -707,6 +732,8 @@
 
   function initOptionPanel() {
     ensureDetailPanelCfgVisible();
+    // 単独アプリはメインパネルのアプリが固定なので、ショートカット一覧の初期絞り込みを宣言する
+    window.__meldexAppShortcutScope = 'note';
     window.MeldexStandaloneOptionPanel?.init({
       storagePrefix: 'meldex-note',
       toggleButtonIds: ['note-option-panel-button'],
@@ -735,6 +762,7 @@
     initMobileToolbar();
     bindFileSearchBar();
     bindPathChanges();
+    restoreWritingMode();
   }
 
   async function initializeData() {

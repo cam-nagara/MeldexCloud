@@ -31,6 +31,7 @@ function _normalizeDetailTab(tab) {
     'sn2-ruby',
     'sn2-rowset',
     'file-style',
+    'shortcuts',
   ]);
   return validTabs.has(tab) ? tab : null;
 }
@@ -39,6 +40,8 @@ function _normalizeDetailTab(tab) {
 // 対象タイプの主要タブ) を保持する。互換性が無い場合のみ defaultTab にフォールバック。
 function _resolveDetailTabForType(type, defaultTab) {
   const cur = (typeof _currentDetailTab !== 'undefined') ? _currentDetailTab : null;
+  // ショートカットキーはどのアプリでも同じ内容なので、対象が変わっても開いたままにする
+  if (cur === 'shortcuts') return cur;
   if (cur === 'file-style') return cur;
   const backlinksTypes = new Set(['page', 'database', 'board']);
   if (cur === 'backlinks' && backlinksTypes.has(type)) return cur;
@@ -80,7 +83,7 @@ function switchDetailTab(tab) {
     t.style.color = '';
     t.style.fontWeight = '';
   });
-  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish'].forEach(id => {
+  ['note-editor', 'db-property-settings', 'db-tree', 'sn2-main', 'calendar-today', 'calendar-settings', 'calendar-production', 'board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'file-style', 'backlinks', 'publish', 'shortcuts'].forEach(id => {
     const el = document.getElementById('detail-tab-' + id);
     if (!el) return;
     // 台本タブ(sn2-*)は共通コンテナ detail-tab-sn2-main を使用
@@ -90,6 +93,12 @@ function switchDetailTab(tab) {
     // 旧経路の style.display 残留をクリア
     el.style.display = '';
   });
+  // 単独アプリが後から足すタブ（ファイル情報・公開・バックリンク等）の中身も畳む。
+  // これらは standalone-parity-adapter.js が独自に開閉しており、本体のタブへ
+  // 切り替えた時に両方見えたままになるため。
+  if (tab) {
+    document.querySelectorAll('[id^="detail-tab-standalone-"]').forEach(el => { el.hidden = true; });
+  }
   // 空状態プレースホルダー: どのタブもアクティブでない場合のみ表示
   const emptyEl = document.getElementById('detail-tab-empty');
   if (emptyEl) emptyEl.hidden = !!tab;
@@ -107,6 +116,7 @@ function switchDetailTab(tab) {
   if (tab === 'publish' && typeof renderPublishDetailTab === 'function') {
     renderPublishDetailTab();
   }
+  if (tab === 'shortcuts' && typeof renderShortcutsDetailTab === 'function') renderShortcutsDetailTab();
   try {
     document.dispatchEvent(new CustomEvent('meldex:detail-tab-switched', { detail: { tab } }));
   } catch {}
@@ -150,6 +160,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('board-line-style', 'detail-tab-board-style detail-tab-board-line-style', 'ラインスタイル')}
       ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
       ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
+      ${_detailTabButtonHtml('shortcuts', 'detail-tab-shortcuts', 'ショートカットキー')}
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
@@ -169,19 +180,45 @@ function _detailTabShellHtml() {
     <div id="detail-tab-file-style" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-backlinks" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-publish" class="gb-panel-body-scroll" hidden></div>
+    <div id="detail-tab-shortcuts" class="gb-panel-body-scroll" hidden></div>
     <div id="detail-tab-empty" class="gb-empty-placeholder">選択中の項目がありません</div>`;
 }
+
+// ショートカットキータブの中身は gb-detail-shortcuts-tab.js（showShortcutsDetailTab /
+// renderShortcutsDetailTab を公開）が担当する。読み込まれていない環境でも
+// タブ表示だけで落ちないよう、呼び出し側は typeof で確認する。
 
 function _ensureDetailTabShell(el) {
   if (!el || el.id !== 'rp-detail') return;
   const existingBar = el.querySelector('#detail-tab-bar');
   if (existingBar) {
     if (window.GBDetailTabDnd?.bind) window.GBDetailTabDnd.bind(existingBar);
+    _bindDetailTabBarClicks(existingBar);
+    if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
     return;
   }
   el.innerHTML = _detailTabShellHtml();
   const bar = el.querySelector('#detail-tab-bar');
   if (window.GBDetailTabDnd?.bind) window.GBDetailTabDnd.bind(bar);
+  _bindDetailTabBarClicks(bar);
+  if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
+}
+
+// タブの data-action は gb-events.js の共通ディスパッチャに依存するが、
+// 単独アプリの一部（シナリオ・タイマー）はそれを読み込んでいない。
+// 新設のショートカットキータブはどのアプリでも動く必要があるため、
+// ボタン自身にも直接クリックを結びつける（既存タブの結線には手を入れない）。
+function _bindDetailTabBarClicks(bar) {
+  if (!bar) return;
+  bar.querySelectorAll('[data-detail-tab="shortcuts"]').forEach(button => {
+    if (button.dataset.shortcutTabBound === '1') return;
+    button.dataset.shortcutTabBound = '1';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      switchDetailTab('shortcuts');
+    });
+  });
 }
 
 function _openDetailRightPanel() {
@@ -496,7 +533,7 @@ const _FS_FIELDS = {
   },
   page: {
     display: [
-      { key: '--page-margin-x', label: '左右余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
+      { key: '--page-margin-x', label: '余白', type: 'rangeNumber', unit: 'px', min: 0, max: 300, step: 1, fallback: '50px' },
       { key: '--page-content-max-width', label: '内容最大幅', type: 'rangeNumber', unit: 'px', min: 480, max: 3200, step: 10, fallback: '1200px' },
       // タイトル
       { key: '--page-title-fg',     label: 'タイトル 色',     type: 'color' },

@@ -234,7 +234,112 @@ function _showDropdownMenu(e, items, btnSelector) {
 /* ==============================
    フォルダツリー ファイル名検索
    ============================== */
+const MeldexUnifiedSearch = (() => {
+  const STORAGE_KEY = 'meldex-search-scopes-v1';
+  const LEGACY_KEY = 'search-scopes';
+  const defaults = { name: true, content: true, clip: false, tags: false, memo: false };
+  const labels = { name: '名前', content: 'ファイル内文字列', clip: '画像の内容', tags: 'タグ', memo: 'メモ' };
+
+  function available(key) {
+    if (key !== 'clip') return true;
+    // Cloud静的版にはテキスト埋め込みを生成するローカルCLIPモデルがない。
+    // 設定値自体は端末間で壊さず保持し、Cloudでは操作を見せず検索要求から除く。
+    return !(window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser');
+  }
+
+  function read() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_KEY) || 'null'); } catch {}
+    const next = { ...defaults };
+    if (raw && typeof raw === 'object') Object.keys(next).forEach(key => { if (key in raw) next[key] = !!raw[key]; });
+    if (!Object.values(next).some(Boolean)) next.name = true;
+    return next;
+  }
+
+  function write(value) {
+    const next = { ...defaults, ...(value || {}) };
+    if (!Object.values(next).some(Boolean)) next.name = true;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    window.dispatchEvent(new CustomEvent('meldex:search-scopes-changed', { detail: next }));
+    return next;
+  }
+
+  function active() { return Object.entries(read()).filter(([key, enabled]) => enabled && available(key)).map(([key]) => key); }
+
+  function request(path, options) {
+    const isBrowserCloud = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser';
+    if (isBrowserCloud && window.MeldexDataAccess?.requestJson) {
+      return window.MeldexDataAccess.requestJson(path, options || {});
+    }
+    if (typeof apiFetch === 'function') return apiFetch(path, options);
+    return Promise.resolve({ results: [], scopes: active(), unavailable: [] });
+  }
+
+  async function search(query, options = {}) {
+    const q = String(query || '').trim();
+    if (!q) return { results: [], scopes: active(), unavailable: [] };
+    const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
+    if (options.path) params.set('path', options.path);
+    return request('/search-unified?' + params.toString(), { silentError: true });
+  }
+
+  function show(anchor) {
+    document.querySelectorAll('.meldex-search-scope-popup').forEach(node => node._removeSearchScope?.() || node.remove());
+    const popup = document.createElement('div');
+    popup.className = 'meldex-search-scope-popup';
+    popup.dataset.e2eId = 'search-scope-popup';
+    popup.style.cssText = 'position:fixed;z-index:1300;min-width:210px;padding:8px;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.24);';
+    const state = read();
+    Object.entries(labels).forEach(([key, label]) => {
+      if (!available(key)) return;
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px;cursor:pointer;';
+      const input = document.createElement('input');
+      input.type = 'checkbox'; input.checked = state[key]; input.dataset.searchScope = key;
+      input.addEventListener('change', () => {
+        state[key] = input.checked;
+        const saved = write(state);
+        popup.querySelectorAll('[data-search-scope]').forEach(box => { box.checked = !!saved[box.dataset.searchScope]; });
+      });
+      row.append(input, document.createTextNode(label)); popup.appendChild(row);
+    });
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'gb-btn gb-btn-sm gb-btn-icon'; close.title = '閉じる';
+    close.setAttribute('aria-label', '検索対象設定を閉じる'); close.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '×';
+    const remove = () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true); popup.remove(); };
+    popup._removeSearchScope = remove;
+    const outside = event => { if (!popup.contains(event.target) && event.target !== anchor) remove(); };
+    const escape = event => { if (event.key === 'Escape') remove(); };
+    close.style.cssText = 'display:block;margin:6px 4px 0 auto;'; close.addEventListener('click', remove);
+    popup.appendChild(close); document.body.appendChild(popup);
+    if (anchor?.getBoundingClientRect && typeof positionPopup === 'function') positionPopup(popup, anchor.getBoundingClientRect());
+    else if (anchor?.getBoundingClientRect) { const rect = anchor.getBoundingClientRect(); popup.style.left = rect.left + 'px'; popup.style.top = (rect.bottom + 4) + 'px'; }
+    setTimeout(() => { document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', escape, true); }, 0);
+    return popup;
+  }
+
+  function button(anchorParent, options = {}) {
+    if (!anchorParent || anchorParent.querySelector?.('[data-search-scope-trigger]')) return null;
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.dataset.searchScopeTrigger = 'true'; btn.dataset.e2eId = options.e2eId || 'search-scope-trigger';
+    btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon'; btn.title = '検索対象'; btn.setAttribute('aria-label', '検索対象を設定');
+    btn.innerHTML = typeof lucide === 'function' ? lucide('slidersHorizontal', 14) : '⚙';
+    btn.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); show(btn); });
+    anchorParent.appendChild(btn); return btn;
+  }
+
+  return { STORAGE_KEY, defaults, read, write, active, available, search, show, button };
+})();
+window.MeldexUnifiedSearch = MeldexUnifiedSearch;
+
 let _treeSearchQuery = '';
+let _treeUnifiedSearchPaths = new Set();
+let _treeUnifiedSearchSeq = 0;
+let _treeUnifiedSearchTimer = 0;
 
 function doTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
@@ -242,7 +347,24 @@ function doTreeNameSearch() {
   const clearBtn = document.getElementById('btn-tree-search-clear');
   if (clearBtn) clearBtn.style.display = q ? '' : 'none';
   _treeSearchQuery = q;
+  const seq = ++_treeUnifiedSearchSeq;
+  _treeUnifiedSearchPaths = new Set();
   applyTreeNameSearch();
+  const scopes = MeldexUnifiedSearch.active();
+  if (q && scopes.some(scope => scope !== 'name')) {
+    clearTimeout(_treeUnifiedSearchTimer);
+    _treeUnifiedSearchTimer = setTimeout(() => {
+      _treeUnifiedSearchTimer = 0;
+      MeldexUnifiedSearch.search(q, { limit: 100 }).then(data => {
+        if (seq !== _treeUnifiedSearchSeq) return;
+        _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
+        applyTreeNameSearch();
+      }).catch(() => {});
+    }, 240);
+  } else {
+    clearTimeout(_treeUnifiedSearchTimer);
+    _treeUnifiedSearchTimer = 0;
+  }
   if (typeof saveCurrentLayoutFilterState === 'function') saveCurrentLayoutFilterState();
 }
 
@@ -250,6 +372,8 @@ function clearTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = '';
   _treeSearchQuery = '';
+  _treeUnifiedSearchSeq++;
+  _treeUnifiedSearchPaths = new Set();
   const clearBtn = document.getElementById('btn-tree-search-clear');
   if (clearBtn) clearBtn.style.display = 'none';
   applyTreeNameSearch();
@@ -258,6 +382,7 @@ function clearTreeNameSearch() {
 
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
+  const includeName = MeldexUnifiedSearch.read().name;
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
@@ -279,16 +404,16 @@ function applyTreeNameSearch() {
     }
     // フォルダ/ルートは名前マッチのみ
     if (d.type === 'folder' || d._isRoot || d.type === 'database') {
-      node._searchMatch = d.name && d.name.toLowerCase().includes(q);
+      node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
       return;
     }
     // エントリ: 設定次第
     if (d.type === 'entity') {
-      node._searchMatch = includeEntities && d.name && d.name.toLowerCase().includes(q);
+      node._searchMatch = includeEntities && ((includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase()));
       return;
     }
     // ファイル: 名前マッチ
-    node._searchMatch = d.name && d.name.toLowerCase().includes(q);
+    node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
   });
 
   // パス2: マッチしたノードの祖先フォルダも表示
@@ -333,6 +458,16 @@ function applyTreeNameSearch() {
   });
   window.GBOutlinerVirtualRender?.refreshAllFilters();
 }
+
+function _installTreeSearchScopeTrigger() {
+  const input = document.getElementById('sidebar-search-input');
+  if (input?.parentElement) MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+}
+queueMicrotask(_installTreeSearchScopeTrigger);
+document.addEventListener('DOMContentLoaded', _installTreeSearchScopeTrigger, { once: true });
+window.addEventListener('meldex:search-scopes-changed', () => {
+  if (_treeSearchQuery) doTreeNameSearch();
+});
 
 const _vaultSearchPanelUi = {
   homeParent: null,

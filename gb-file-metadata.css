@@ -112,19 +112,26 @@
 .file-embedded-memo-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   color: var(--fg3);
   font-size: 11px;
+  /* 保存状態の文字が出入りしても入力欄の位置が動かないよう高さを固定する */
+  min-height: 14px;
 }
 
-.file-embedded-memo-actions button {
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg3);
-  color: var(--fg);
-  cursor: pointer;
-  padding: 4px 8px;
+/* 自動保存の状態表示（未保存 / 保存中... / 保存しました） */
+.file-embedded-memo-status {
+  color: var(--fg3);
+}
+
+.file-embedded-memo-status--error {
+  color: var(--danger, #e5534b);
+}
+
+/* タグは埋め込み情報の一番上。下の情報群と少しだけ間隔を空ける */
+.file-embedded-panel > [data-global-tags-target-path] {
+  margin-bottom: 6px;
 }
 
 .file-embedded-heading {
