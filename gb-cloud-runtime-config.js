@@ -13,7 +13,7 @@
   },
   "updateCheck": {
     "url": "",
-    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.181"
+    "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.182"
   },
   "desktop": {
     "currentVersion": "0.7.182",
