@@ -3,7 +3,7 @@
   'use strict';
 
   const STORAGE_KEY = 'gb:board-default-open-target:v1';
-  const VALID_TARGETS = new Set(['float', 'main', 'sidebar']);
+  const VALID_TARGETS = new Set(['main', 'right-sidebar']);
   let renderRevision = 0;
   let scheduledHandle = null;
 
@@ -64,17 +64,18 @@
 
   function getDefaultTarget() {
     const routed = global.MeldexBoardOpenTarget?.getDefault?.();
+    if (routed === 'float' || routed === 'sidebar') return 'right-sidebar';
     if (VALID_TARGETS.has(routed)) return routed;
     try {
       const stored = global.localStorage?.getItem(STORAGE_KEY);
-      return VALID_TARGETS.has(stored) ? stored : 'float';
+      return stored === 'float' || stored === 'sidebar' ? 'right-sidebar' : (VALID_TARGETS.has(stored) ? stored : 'right-sidebar');
     } catch {
-      return 'float';
+      return 'right-sidebar';
     }
   }
 
   function setDefaultTarget(value) {
-    const target = VALID_TARGETS.has(value) ? value : 'float';
+    const target = value === 'float' || value === 'sidebar' ? 'right-sidebar' : (VALID_TARGETS.has(value) ? value : 'right-sidebar');
     if (global.MeldexBoardOpenTarget?.setDefault) {
       global.MeldexBoardOpenTarget.setDefault(target);
       return;
@@ -93,9 +94,8 @@
     return normalized.length
       ? normalized
       : [
-          { value: 'float', label: 'フロートパネル' },
           { value: 'main', label: 'メインパネル' },
-          { value: 'sidebar', label: '右サイドバー' },
+          { value: 'right-sidebar', label: '右サイドバー' },
         ];
   }
 
@@ -146,6 +146,11 @@
     return nodes;
   }
 
+  function currentBoardPath() {
+    const currentState = typeof state !== 'undefined' ? state : global.state;
+    return String(currentState?.currentBoardPath || '').trim();
+  }
+
   function cancelScheduled() {
     if (scheduledHandle == null) return;
     if (typeof global.cancelIdleCallback === 'function') global.cancelIdleCallback(scheduledHandle);
@@ -171,9 +176,10 @@
   function render(node) {
     const nodes = selectedNodes(node);
     const targets = nodes.map(resolveTarget).filter(Boolean);
+    const boardPath = currentBoardPath();
     const renderKey = targets.length
       ? targets.map(target => `${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
-      : 'empty';
+      : (boardPath ? `board:${boardPath}` : 'empty');
     const tabHost = global.document.getElementById('detail-tab-note-editor');
     if (tabHost?.dataset.bdBoardInfoKey === renderKey && tabHost.querySelector('[data-bd-board-file-info]')) {
       return targets.length > 0;
@@ -182,7 +188,16 @@
     const infoHost = ensureShell(renderKey);
     if (!infoHost) return false;
     if (!targets.length) {
-      infoHost.innerHTML = '<div class="gb-empty-placeholder">画像またはファイルのリンクを持つカードを選択すると、ここに情報を表示します。</div>';
+      if (boardPath && global.MeldexFileInfoPanel?.renderInto) {
+        void global.MeldexFileInfoPanel.renderInto(infoHost, boardPath, {
+          isCurrent: () => revision === renderRevision && infoHost.isConnected,
+          showTags: true,
+          type: 'board',
+          typeLabel: 'ボード',
+        });
+        return true;
+      }
+      infoHost.innerHTML = '<div class="gb-empty-placeholder">ボードの保存先情報を取得できませんでした。</div>';
       return false;
     }
     infoHost.innerHTML = '<div class="folder-multi-info-loading">ファイル情報を読み込んでいます...</div>';
@@ -211,7 +226,7 @@
   }
 
   function hasInformation(node) {
-    return !!resolveTarget(node);
+    return !!resolveTarget(node) || !!currentBoardPath();
   }
 
   function cancel() {

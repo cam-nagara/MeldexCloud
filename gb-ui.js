@@ -617,13 +617,53 @@
   // ============================================================
   // Modal
   // ============================================================
-  // opts: { title, body: Node|Node[], footer: Node|Node[], onClose, closeOnOverlay,
-  //         minWidth, extraClass }
-  // 戻り値: { overlay, modal, header, body, footer, close() }
+  const MODAL_VARIANTS = new Set(['standard', 'full-bleed', 'mobile-sheet']);
+  const MODAL_FOCUSABLE_SELECTOR = [
+    '[autofocus]', '[data-initial-focus]', 'button:not([disabled])',
+    'input:not([disabled])', 'select:not([disabled])', 'textarea:not([disabled])',
+    'a[href]', '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+
+  function _modalFocusTarget(spec, modal) {
+    let target = spec;
+    if (typeof target === 'function') target = target(modal);
+    if (typeof target === 'string') target = modal.querySelector(target);
+    if (target?.focus) return target;
+    return modal.querySelector(MODAL_FOCUSABLE_SELECTOR) || modal;
+  }
+
+  function _focusModalTarget(spec, modal) {
+    const target = _modalFocusTarget(spec, modal);
+    try { target?.focus?.({ preventScroll: true }); } catch { target?.focus?.(); }
+  }
+
+  function _modalCloseReason(value) {
+    return value && typeof value === 'object' && typeof value.preventDefault === 'function'
+      ? 'programmatic'
+      : (String(value || 'programmatic'));
+  }
+
+  function _isTopmostModal(modal) {
+    if (window.GBDialogKeyboard?.topmostDialog) {
+      const managedTop = window.GBDialogKeyboard.topmostDialog();
+      if (managedTop) return managedTop === modal;
+    }
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'))
+      .filter(node => node.isConnected && !node.hidden);
+    return !dialogs.length || dialogs[dialogs.length - 1] === modal;
+  }
+
+  // opts: { title, body: Node|Node[], footer: Node|Node[], variant,
+  //         initialFocus, returnFocus, closeButton, closeOnEsc, closeOnOverlay, resizable,
+  //         geometryKey, onBeforeClose, onClose, minWidth, extraClass }
+  // 戻り値: { overlay, modal, header, body, footer, open(), close(reason) }
   function createModal(opts) {
     opts = opts || {};
+    const variant = MODAL_VARIANTS.has(opts.variant) ? opts.variant : 'standard';
     const overlay = el('div', { cls: ['gb-modal-overlay'] });
+    overlay.dataset.dialogVariant = variant;
     const modalId = opts.id || ('gb-ui-modal-' + (++modalIdSeq));
+    overlay.dataset.dialogId = modalId;
     const titleId = opts.titleId || (modalId + '-title');
     const modal = el('div', {
       cls: ['gb-modal'],
@@ -634,6 +674,12 @@
         tabindex: '-1'
       }
     });
+    modal.classList.add('gb-modal-variant-' + variant);
+    modal.dataset.dialogId = modalId;
+    modal.dataset.dialogVariant = variant;
+    modal.dataset.dialogResizable = opts.resizable === false ? 'off' : 'on';
+    if (opts.geometryKey) modal.dataset.dialogGeometryKey = String(opts.geometryKey);
+    if (variant === 'mobile-sheet') modal.dataset.mobileDialogSheet = 'on';
     if (opts.extraClass) modal.classList.add(opts.extraClass);
     if (opts.minWidth) modal.style.minWidth = (typeof opts.minWidth === 'number' ? opts.minWidth + 'px' : opts.minWidth);
 
@@ -644,14 +690,17 @@
       text: opts.title || '',
       attrs: { id: titleId }
     }));
-    const closeBtn = el('button', {
-      cls: ['gb-modal-close'],
-      title: '閉じる',
-      attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
-    });
-    if (typeof lucide === 'function') closeBtn.innerHTML = lucide('x', 20);
-    else closeBtn.textContent = '\u00D7';
-    header.appendChild(closeBtn);
+    let closeBtn = null;
+    if (opts.closeButton !== false) {
+      closeBtn = el('button', {
+        cls: ['gb-modal-close'],
+        title: '閉じる',
+        attrs: { type: 'button', 'aria-label': opts.closeLabel || '閉じる' }
+      });
+      if (typeof lucide === 'function') closeBtn.innerHTML = lucide('x', 20);
+      else closeBtn.textContent = '\u00D7';
+      header.appendChild(closeBtn);
+    }
 
     // body
     const body = el('div', { cls: ['gb-modal-body'] });
@@ -675,28 +724,114 @@
     if (footer.childNodes.length) modal.appendChild(footer);
     overlay.appendChild(modal);
 
-    function close() {
-      if (typeof opts.onClose === 'function') opts.onClose();
-      if (opts.closeOnEsc !== false) document.removeEventListener('keydown', onEscKey);
+    let opener = opts.returnFocus === false ? null : document.activeElement;
+    let closeCheckPending = false;
+    let closed = false;
+    let activated = false;
+    let api = null;
+
+    function _restoreOpenerFocus() {
+      if (opts.returnFocus === false) return;
+      let target = opts.returnFocus;
+      if (typeof target === 'function') target = target();
+      if (!target?.focus) target = opener;
+      if (!target?.isConnected || !target?.focus) return;
+      const openDialogs = Array.from(document.querySelectorAll(
+        '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+      )).filter(dialog => dialog.isConnected && !dialog.hidden && dialog.getAttribute('aria-hidden') !== 'true');
+      const topDialog = openDialogs[openDialogs.length - 1];
+      // モバイルの閉じるアニメーション中に次のダイアログが開いた場合、旧画面の
+      // 遅延focus復帰で新しい入力を奪わない。復帰先が残っている親ダイアログ内なら
+      // ネストした子を閉じる通常契約なので、そのまま復帰させる。
+      if (topDialog && topDialog !== modal && !topDialog.contains(target)) return;
+      try { target.focus({ preventScroll: true }); } catch { target.focus(); }
+    }
+
+    function _finishClose(reason) {
+      if (closed) return false;
+      closed = true;
+      document.removeEventListener('keydown', onEscKey);
       if (overlay.parentNode) overlay.remove();
+      const restore = () => {
+        if (overlay.isConnected) {
+          setTimeout(restore, 40);
+          return;
+        }
+        _restoreOpenerFocus();
+      };
+      restore();
+      if (typeof opts.onClose === 'function') opts.onClose(reason, api);
+      return true;
+    }
+
+    function close(reasonValue) {
+      const reason = _modalCloseReason(reasonValue);
+      if (closed || closeCheckPending) return false;
+      let allowed = true;
+      if (typeof opts.onBeforeClose === 'function') {
+        try { allowed = opts.onBeforeClose(reason, api); } catch (error) {
+          console.error('ダイアログを閉じる前の確認に失敗しました:', error);
+          return false;
+        }
+      }
+      if (allowed && typeof allowed.then === 'function') {
+        closeCheckPending = true;
+        return Promise.resolve(allowed).then(result => {
+          closeCheckPending = false;
+          return result === false ? false : _finishClose(reason);
+        }, error => {
+          closeCheckPending = false;
+          console.error('ダイアログを閉じる前の確認に失敗しました:', error);
+          return false;
+        });
+      }
+      return allowed === false ? false : _finishClose(reason);
+    }
+
+    function _activate() {
+      if (activated || !overlay.isConnected) return;
+      activated = true;
+      window.GBModalShell?.enhanceOverlay?.(overlay);
+      const focusWhenCurrent = () => {
+        if (!overlay.isConnected || closed || !_isTopmostModal(modal)) return;
+        if (modal.contains(document.activeElement)) return;
+        _focusModalTarget(opts.initialFocus, modal);
+      };
+      // 背景タブやheadless環境ではrequestAnimationFrameが間引かれるため、接続直後にも
+      // 初期focusを確定する。描画後の補完は、利用者が既に別項目へ移動していない場合だけ行う。
+      focusWhenCurrent();
+      requestAnimationFrame(focusWhenCurrent);
+      setTimeout(focusWhenCurrent, 40);
+    }
+
+    function open(parent) {
+      if (closed) return api;
+      if (!overlay.isConnected) {
+        opener = opts.returnFocus === false ? null : document.activeElement;
+        (parent?.appendChild ? parent : document.body).appendChild(overlay);
+      }
+      _activate();
+      return api;
     }
     function onEscKey(ev) {
       if (ev.key !== 'Escape') return;
-      // 重ねたモーダルのうち最前面（= body 内で最後にアタッチされた overlay）のみ応答
-      const overlays = document.querySelectorAll('.gb-modal-overlay');
-      if (overlays.length && overlays[overlays.length - 1] !== overlay) return;
+      if (!_isTopmostModal(modal)) return;
       ev.stopPropagation();
-      close();
+      close('escape');
     }
-    closeBtn.addEventListener('click', close);
+    closeBtn?.addEventListener('click', () => close('close-button'));
     if (opts.closeOnOverlay !== false) {
-      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(); });
+      overlay.addEventListener('click', (ev) => { if (ev.target === overlay && _isTopmostModal(modal)) close('overlay'); });
     }
     if (opts.closeOnEsc !== false) {
       document.addEventListener('keydown', onEscKey);
     }
 
-    return { overlay, modal, header, body, footer, close };
+    api = { overlay, modal, header, body, footer, open, close, isOpen: () => overlay.isConnected && !closed };
+    // 従来どおり呼び出し側が overlay を直接appendする経路も、次のmicrotaskで
+    // 共通シェル適用と初期フォーカスを受けられるようにする。
+    queueMicrotask(_activate);
+    return api;
   }
 
   // ------------------------------------------------------------

@@ -207,10 +207,12 @@
       for (const candidate of _mediaPathCandidates(relativePath)) {
         const stat = await provider.statPath(candidate).catch(() => null);
         if (stat) {
+          const isFolder = stat.kind === 'directory' || stat.kind === 'folder' || stat.isDir;
           return jsonResponse({
             created: stat.modified,
             modified: stat.modified,
-            size: stat.size,
+            ...(isFolder ? {} : { size: stat.size }),
+            kind: isFolder ? 'folder' : 'file',
           });
         }
       }

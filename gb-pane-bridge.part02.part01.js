@@ -232,8 +232,8 @@
     const liveBinding = _legacyLiveBindings.get(containerId);
     const hasVisibleLiveOwner = !!(liveBinding?.paneId && _isPaneActuallyVisible(liveBinding.paneId));
     const isDockPopupMount = !!options?.dockPopup;
-    const isVirtualSurfaceMount = options?.surface === 'float' || options?.surface === 'subpanel'
-      || !!contentEl.closest?.('.gb-float-panel, .gb-subpanel');
+    const isVirtualSurfaceMount = options?.surface === 'subpanel'
+      || !!contentEl.closest?.('.gb-subpanel');
     const paneIsVisible = _isPaneActuallyVisible(pane.id);
     const preservesOtherLiveOwner = !!options?.preserveLiveOwner && hasVisibleLiveOwner
       && liveBinding.paneId !== pane.id;
@@ -368,7 +368,7 @@
   const _ANNOTATION_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
-    'board', 'scriptnote', 'calendar',
+    'board', 'scriptnote', 'calendar', 'chat',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
@@ -439,6 +439,10 @@
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || statePath('currentBoardPath');
     if (tabType === 'calendar') return 'calendar:panel';
+    if (tabType === 'chat') {
+      return tabPath('chatPath', 'historyPath')
+        || (tab?.state?.sessionId ? `chat:${tab.state.sessionId}` : '');
+    }
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       if (tabType === 'smart-db') {
         return tabPath('smartDbPath', 'dbPath') || statePath('currentSmartDb')?._filePath || statePath('currentDbPath');
@@ -466,6 +470,44 @@
     return !!_getAnnotationTargetForTab(info.activeTab);
   }
 
+  function _isAnnotationHostPaneInfo(info) {
+    return !!(info
+      && _isPaneActuallyVisible(info.paneId)
+      && _ANNOTATION_HOST_TYPES.has(info.activeTab?.type));
+  }
+
+  function _annotationAvailabilityForPane(info) {
+    if (!_isAnnotationHostPaneInfo(info)) {
+      return { enabled: false, target: '', reason: 'この画面では注釈を利用できません' };
+    }
+    const target = _getAnnotationTargetForTab(info.activeTab);
+    if (!target) {
+      return { enabled: false, target: '', reason: '保存すると注釈を利用できます' };
+    }
+    const tabState = info.activeTab?.state || {};
+    const readOnly = document.body?.dataset?.cloudReadonly === '1'
+      || document.body?.dataset?.cloudQuotaBlocked === '1'
+      || info.activeTab?.readOnly === true
+      || tabState.readOnly === true
+      || tabState.writeBlocked === true
+      || tabState.access === 'viewer';
+    if (readOnly) {
+      return { enabled: false, target, reason: '閲覧専用のため注釈を編集できません' };
+    }
+    return { enabled: true, target, reason: '' };
+  }
+
+  function _applyAnnotationFabAvailability(button, info) {
+    if (!button) return;
+    const availability = _annotationAvailabilityForPane(info);
+    button.disabled = !availability.enabled;
+    button.setAttribute('aria-disabled', availability.enabled ? 'false' : 'true');
+    button.dataset.annotationTarget = availability.target;
+    button.dataset.annotationUnavailableReason = availability.reason;
+    button.title = availability.enabled ? '注釈 (Alt+A)' : availability.reason;
+    button.setAttribute('aria-label', availability.enabled ? '注釈ツール' : `注釈ツール（${availability.reason}）`);
+  }
+
   function _rememberAnnotationPaneInfo(info) {
     if (info?.paneId) _lastAnnotationPaneId = info.paneId;
     return info || null;
@@ -477,7 +519,7 @@
     const infos = [];
     for (const pane of panes) {
       const info = _getPaneInfoById(pane?.id);
-      if (_isUsableAnnotationPaneInfo(info)) infos.push(info);
+      if (_isAnnotationHostPaneInfo(info)) infos.push(info);
     }
     return infos;
   }
@@ -485,7 +527,7 @@
   function _getAnnotationContentPaneInfo(preferredPaneId) {
     const pick = (paneId) => {
       const info = _getPaneInfoById(paneId);
-      return _isUsableAnnotationPaneInfo(info) ? info : null;
+      return _isAnnotationHostPaneInfo(info) ? info : null;
     };
     for (const paneId of [preferredPaneId, GBLayout.activePane, _getContentPane(GBLayout.activePane), _lastAnnotationPaneId]) {
       const info = pick(paneId);
@@ -534,6 +576,7 @@
       mirror.dataset.e2eId = `annotation-fab-${info.paneId}`;
       mirror.innerHTML = sourceButton?.innerHTML || '';
       mirror.classList.remove('active');
+      _applyAnnotationFabAvailability(mirror, info);
       mirror.style.display = '';
     }
     document.querySelectorAll('.annotation-fab-mirror[data-annotation-fab-pane]').forEach(mirror => {
@@ -545,7 +588,7 @@
 
   function _activateAnnotationFabForPane(paneId) {
     const paneInfo = _getAnnotationContentPaneInfo(paneId);
-    if (!paneInfo) return false;
+    if (!paneInfo || !_annotationAvailabilityForPane(paneInfo).enabled) return false;
     const toolbar = document.getElementById('ann-toolbar');
     const currentPaneId = document.getElementById('btn-tb-annotation')?.closest?.('.gb-pane')?.dataset?.paneId || '';
     if (toolbar?.classList?.contains('visible') && currentPaneId && currentPaneId !== paneInfo.paneId && typeof closeAnnotationToolbar === 'function') {
@@ -563,15 +606,15 @@
   }
 
   function _mountFloatingAnnotationUi(options = {}) {
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     const storage = document.getElementById('legacy-views');
     const overlay = document.getElementById('ann-overlay');
     const button = document.getElementById('btn-tb-annotation');
     const paneInfo = _getAnnotationContentPaneInfo(options?.paneId || options?.preferredPaneId || '');
     const paneTarget = _getAnnotationTargetForTab(paneInfo?.activeTab);
     const activeView = _normalizeDbPaneView(paneInfo?.activeTab?.type || state.view);
-    const nextTarget = paneTarget || ((typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '');
-    const hasUsableTarget = !!paneTarget;
-    const host = (paneInfo && _ANNOTATION_HOST_TYPES.has(paneInfo.activeTab.type) && hasUsableTarget)
+    const nextTarget = paneInfo ? paneTarget : ((typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '');
+    const host = (paneInfo && _ANNOTATION_HOST_TYPES.has(paneInfo.activeTab.type))
       ? paneInfo.contentEl
       : storage;
     if (!host) return;
@@ -592,6 +635,7 @@
       }
     });
     _syncAnnotationFabMirrors(host === storage ? '' : paneInfo?.paneId || '');
+    _applyAnnotationFabAvailability(button, host === storage ? null : paneInfo);
     if (host === storage) {
       document.querySelectorAll('.ann-note:not(.ann-note-embedded)').forEach(note => {
         if (note.parentNode !== host) host.appendChild(note);
@@ -792,7 +836,7 @@
   function _isPaneActuallyVisible(paneId) {
     if (!paneId) return false;
     const virtualEl = GBLayout?.paneMap?.[paneId]?.el || null;
-    if (virtualEl?.closest?.('.gb-float-panel, .gb-subpanel')) {
+    if (virtualEl?.closest?.('.gb-subpanel')) {
       const rect = virtualEl.getBoundingClientRect?.();
       return !virtualEl.hidden && !!rect && rect.width > 0 && rect.height > 0;
     }

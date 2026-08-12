@@ -1,3 +1,22 @@
+      return payload;
+    }
+
+    if (pathname === '/cloud/conflict-resolve' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const conflictPath = _normalizeFolderPath(body?.conflict_path || '');
+      const action = String(body?.action || '');
+      if (!conflictPath || !_isDropboxConflictName(_basename(conflictPath))) throw new Error('競合コピーのパスが不正です');
+      if (!['keep_original', 'keep_conflict'].includes(action)) throw new Error('競合解消アクションが不正です');
+      const originalPath = _originalPathForConflict(conflictPath);
+      if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
+      if (action === 'keep_conflict' && _isProductionFolderNotePath(originalPath)) {
+        throw new Error('制作管理の列定義へ競合コピーを適用できません');
+      }
+      if (action === 'keep_conflict' && _productionReservedEntryProperties(originalPath).length) {
+        _rejectProductionLegacyEntryContent(originalPath, await provider.readText(conflictPath));
+      }
+      const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
+      if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
       const backups = {};
       const backupStamp = _conflictBackupStamp();
@@ -321,12 +340,23 @@
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       const entry = await _resolveEntryHandle(provider, targetPath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${targetPath}`);
+      if (!entry) throw new Error(`ファイルまたはフォルダが見つかりません: ${targetPath}`);
+      if (entry.kind === 'directory') {
+        const directoryStats = typeof provider.statPath === 'function'
+          ? await provider.statPath(targetPath).catch(() => null)
+          : null;
+        return {
+          created: directoryStats?.created || directoryStats?.modified || '',
+          modified: directoryStats?.modified || '',
+          kind: 'folder',
+        };
+      }
       const stats = await _fileStats(entry.handle);
       return {
         created: stats.modified,
         modified: stats.modified,
         size: stats.size,
+        kind: 'file',
       };
     }
 
@@ -868,33 +898,3 @@
       await _runPostMutationStep(warnings, 'csv-sidecars', () => (
         _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
       ));
-      await _runPathMutationHooksSafe({
-        action: 'copy', oldPath: sourcePath, newPath: destPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      return {
-        ok: true,
-        new_path: destPath,
-        new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
-        ..._resultWarnings(warnings),
-      };
-    }
-
-    if (pathname === '/outliner/move' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
-      _rejectProductionStructureMutation(sourcePath, '移動');
-      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
-        throw new Error('制作管理の管理リストエントリの配置は変更できません');
-      }
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      const destEntry = await _resolveEntryHandle(provider, destFolder);
-      if (!source) throw new Error('見つかりません');
-      if (!destEntry || destEntry.kind !== 'directory') throw new Error(`移動先フォルダが見つかりません: ${destFolder}`);
-      if (source.kind === 'directory' && (destFolder === sourcePath || destFolder.startsWith(sourcePath + '/'))) throw new Error('フォルダ自身の中には移動できません');
-      if (destFolder === _dirname(sourcePath)) {
-        return {
-          ok: true,
-          unchanged: true,
-          new_path: sourcePath,

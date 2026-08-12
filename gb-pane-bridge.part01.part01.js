@@ -747,7 +747,7 @@ const GBPaneBridge = (() => {
     };
     _stopSnapshotInteraction(ev, true);
     const paneInfo = typeof GBLayout !== 'undefined' ? GBLayout.paneMap?.[paneId] : null;
-    const isVirtualSurface = paneInfo?.surface === 'float' || paneInfo?.surface === 'subpanel';
+    const isVirtualSurface = paneInfo?.surface === 'subpanel';
     if (!isVirtualSurface && typeof GBLayout !== 'undefined' && typeof GBLayout.setActivePane === 'function') {
       GBLayout.setActivePane(paneId, { sync: true });
     }

@@ -335,29 +335,44 @@
       this._timerAdvancedModal.querySelector('.gb-timer-settings-modal')?.focus?.();
       return;
     }
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay gb-timer-settings-overlay';
+    if (typeof window.GBUI?.createModal !== 'function') {
+      throw new Error('タイマー設定を初期化できませんでした。');
+    }
+    const body = document.createElement('div');
+    body.innerHTML = this._timerAdvancedHtml();
+    const modalApi = window.GBUI.createModal({
+      id: 'timer-settings',
+      title: 'タイマー設定',
+      body: [...body.childNodes],
+      variant: 'standard',
+      extraClass: 'gb-timer-settings-modal',
+      geometryKey: 'timer-settings',
+      minWidth: '0',
+      initialFocus: '[data-timer-setting], [data-timer-action]',
+      returnFocus: document.activeElement,
+      closeLabel: 'タイマー設定を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        this._timerAdvancedModal = null;
+      },
+    });
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay', 'gb-timer-settings-overlay');
     overlay.dataset.timerSettingsModal = '1';
     overlay.dataset.e2eId = 'timer-settings-overlay';
-    overlay.innerHTML = `
-      <div class="modal gb-timer-settings-modal" role="dialog" aria-modal="true" aria-labelledby="timer-settings-title" tabindex="-1" data-gb-tooltip-disabled="true" data-e2e-id="timer-settings-dialog">
-        <div class="gb-timer-settings-header">
-          <h3 id="timer-settings-title">${_timerIcon('settings', 18)} タイマー設定</h3>
-          <button class="tb-icon-btn" type="button" data-timer-settings-close data-e2e-id="timer-settings-close" aria-label="タイマー設定を閉じる" title="タイマー設定を閉じます">${_timerIcon('x', 14)}</button>
-        </div>
-        <div class="modal-body gb-timer-settings-body">
-          ${this._timerAdvancedHtml()}
-        </div>
-      </div>`;
-    overlay.addEventListener('click', e => {
-      if (e.target === overlay || e.target.closest('[data-timer-settings-close]')) {
-        this._timerAdvancedCloseSettingsDialog();
-      }
-    });
-    overlay.addEventListener('keydown', e => {
-      if (e.key === 'Escape') this._timerAdvancedCloseSettingsDialog();
-    });
-    document.body.appendChild(overlay);
+    overlay._timerSettingsModalApi = modalApi;
+    modalApi.modal.dataset.gbTooltipDisabled = 'true';
+    modalApi.modal.dataset.e2eId = 'timer-settings-dialog';
+    modalApi.header.classList.add('gb-timer-settings-header');
+    modalApi.body.classList.add('gb-timer-settings-body');
+    const closeButton = modalApi.header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.classList.add('tb-icon-btn');
+      closeButton.dataset.timerSettingsClose = '';
+      closeButton.dataset.e2eId = 'timer-settings-close';
+      closeButton.title = 'タイマー設定を閉じます';
+    }
     this._timerAdvancedModal = overlay;
     const panel = this._timerAdvancedPanelRoot();
     this._timerAdvancedBindEvents(panel);
@@ -366,12 +381,19 @@
     this._timerAdvancedSyncControls();
     this._timerAdvancedLoadCalendars();
     if (typeof replaceIcons === 'function') replaceIcons();
-    overlay.querySelector('.gb-timer-settings-modal')?.focus?.();
+    modalApi.open();
   };
 
   TimerComponent.prototype._timerAdvancedCloseSettingsDialog = function() {
-    this._timerAdvancedModal?.remove?.();
-    this._timerAdvancedModal = null;
+    const overlay = this._timerAdvancedModal;
+    if (!overlay) return false;
+    const closed = overlay._timerSettingsModalApi?.close?.('programmatic');
+    if (!overlay._timerSettingsModalApi) {
+      overlay.remove?.();
+      this._timerAdvancedModal = null;
+      return true;
+    }
+    return closed;
   };
 
   TimerComponent.prototype._timerAdvancedHtml = function() {

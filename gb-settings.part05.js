@@ -74,11 +74,366 @@ function _renderSettingsThemeDetailStyleGroups(groupId) {
   }).join('');
 }
 
+function _settingsThemeAccentState() {
+  const manager = typeof MeldexThemeManager !== 'undefined' ? MeldexThemeManager : null;
+  const theme = _settingsThemeCurrent();
+  const policy = manager?.getThemeAccentPolicy?.(theme) || { kind: 'theme-palette', defaultColor: '' };
+  const useOs = !!manager?.getUseOsAccentColor?.();
+  const palette = manager?.getThemeColorSet?.(theme, { ignoreOsAccent: true }) || [];
+  const fallback = policy.defaultColor || palette[0] || '#569cd6';
+  const current = (getCssVar('--ui-accent') || getCssVar('--accent') || fallback).trim();
+  const usesDefault = current.toLowerCase() === String(fallback).trim().toLowerCase();
+  return {
+    mode: useOs ? 'os' : (usesDefault ? 'default' : 'custom'),
+    color: current,
+    defaultColor: fallback,
+  };
+}
+
+function renderSettingsThemeAccentEditor() {
+  const state = _settingsThemeAccentState();
+  return `<div class="gb-field-row settings-theme-accent-row" data-settings-theme-accent="1">
+    <label class="gb-label" for="settings-theme-accent-mode">アクセントカラー</label>
+    <select id="settings-theme-accent-mode" class="gb-select" data-e2e-id="settings-theme-accent-mode" data-onchange="settingsThemeAccentModeChanged(this)">
+      <option value="os"${state.mode === 'os' ? ' selected' : ''}>OSアクセント</option>
+      <option value="default"${state.mode === 'default' ? ' selected' : ''}>既定のアクセント</option>
+      <option value="custom"${state.mode === 'custom' ? ' selected' : ''}>指定カラー</option>
+    </select>
+    <button type="button" class="gb-color-swatch settings-theme-accent-swatch" data-e2e-id="settings-theme-accent-swatch" data-settings-theme-accent-swatch style="background:${esc(state.color)}" title="共通カラーパレットから選択" data-action="settingsThemeChooseAccentColor(this)"></button>
+    ${fieldHelp('選択、フォーカス、タブ下線、左アクセントバーなどに共通で使います', { e2eId: 'settings-theme-accent-help' })}
+  </div>`;
+}
+
+function _settingsThemeApplyAccentColor(color) {
+  const value = String(color || '').trim();
+  if (!/^#[0-9a-f]{6}$/i.test(value)) return false;
+  const root = document.documentElement;
+  const keys = typeof MeldexThemeManager !== 'undefined'
+    ? MeldexThemeManager.THEME_OS_ACCENT_STYLE_KEYS || []
+    : ['--accent', '--accent2', '--blue', '--ui-accent'];
+  const textKeys = typeof MeldexThemeManager !== 'undefined'
+    ? MeldexThemeManager.THEME_OS_ACCENT_TEXT_STYLE_KEYS || []
+    : ['--ui-selection-fg', '--ui-accent-fg'];
+  const textColor = typeof MeldexThemeManager?.getAccentTextColor === 'function'
+    ? MeldexThemeManager.getAccentTextColor(value)
+    : '#ffffff';
+  keys.forEach(key => root.style.setProperty(key, value.toLowerCase()));
+  textKeys.forEach(key => root.style.setProperty(key, textColor));
+  root.style.setProperty('--ui-accent', value.toLowerCase());
+  if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
+  if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
+  document.querySelectorAll('[data-settings-theme-accent-swatch]').forEach(swatch => { swatch.style.background = value; });
+  return true;
+}
+
+function settingsThemeAccentModeChanged(select) {
+  if (!select || typeof MeldexThemeManager === 'undefined') return;
+  if (_settingsThemeIsReadonlyElement(select)) {
+    _settingsThemePromptDuplicateForEdit();
+    const state = _settingsThemeAccentState();
+    select.value = state.mode;
+    return;
+  }
+  const mode = select.value;
+  if (mode === 'os') {
+    MeldexThemeManager.setUseOsAccentColor(true);
+  } else {
+    MeldexThemeManager.setUseOsAccentColor(false);
+    const state = _settingsThemeAccentState();
+    if (mode === 'default') _settingsThemeApplyAccentColor(state.defaultColor);
+    else settingsThemeChooseAccentColor(select);
+  }
+  if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
+}
+
+function settingsThemeChooseAccentColor(anchor) {
+  if (!anchor || typeof openColorPalette !== 'function') return;
+  if (_settingsThemeIsReadonlyElement(anchor)) {
+    _settingsThemePromptDuplicateForEdit();
+    return;
+  }
+  const current = _settingsThemeAccentState().color;
+  openColorPalette(anchor, current, color => {
+    if (typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getUseOsAccentColor?.()) {
+      MeldexThemeManager.setUseOsAccentColor(false);
+    }
+    if (!_settingsThemeApplyAccentColor(color)) return;
+    const select = document.getElementById('settings-theme-accent-mode');
+    if (select) select.value = 'custom';
+  });
+}
+
+const SETTINGS_THEME_PREVIEW_APPS = Object.freeze([
+  ['folder', 'フォルダ'], ['note', 'ノート'], ['scriptnote', 'シナリオ'], ['sheet', 'シート'],
+  ['board', 'ボード'], ['calendar', 'スケジュール'], ['aux', '補助パネル'], ['popup', 'ポップアップ'],
+]);
+
+const SETTINGS_THEME_PREVIEW_SECTION_MAP = Object.freeze({
+  folder: Object.freeze(['フォルダ']),
+  note: Object.freeze(['ノート']),
+  scriptnote: Object.freeze(['シナリオ']),
+  sheet: Object.freeze(['シート']),
+  board: Object.freeze(['ボード']),
+  calendar: Object.freeze(['スケジュール']),
+  aux: Object.freeze(['フォルダツリー', 'ビューワー', 'オプション', 'チャット', 'タイマー', 'ヒストリー', '注釈', '検索', 'バージョン管理']),
+  popup: Object.freeze(['共通']),
+});
+
+const SETTINGS_THEME_PREVIEW_APP_SURFACES = Object.freeze({
+  folder: Object.freeze({ bg: '--fv-panel-bg', fg: '--fv-item-fg' }),
+  note: Object.freeze({ bg: '--page-text-bg', fg: '--page-text-fg' }),
+  scriptnote: Object.freeze({ bg: '--sn2-page-bg', fg: '--sn2-base-text-color' }),
+  sheet: Object.freeze({ bg: '--db-row-bg', fg: '--db-cell-fg' }),
+  board: Object.freeze({ bg: '--bd-bg', fg: '--bd-link-type-icon-color' }),
+  calendar: Object.freeze({ bg: '--cal-content-bg', fg: '--cal-fg' }),
+  aux: Object.freeze({ bg: '--preview-bg', fg: '--preview-fg' }),
+  popup: Object.freeze({ bg: '--ui-popup-bg', fg: '--fg' }),
+});
+
+const SETTINGS_THEME_STATE_KEYS = Object.freeze({
+  folder: Object.freeze({ bg: '--fv-item-bg', fg: '--fv-item-fg', border: '--fv-item-border', accent: '--fv-item-selected-border', hoverBg: '--fv-item-hover-bg', hoverFg: '--fv-item-hover-fg', selectedBg: '--fv-item-selected-bg', selectedFg: '--fv-item-selected-fg' }),
+  sheet: Object.freeze({ bg: '--db-row-bg', fg: '--db-cell-fg', border: '--db-grid-border', accent: '--db-active-color', hoverBg: '--db-cell-bg', hoverFg: '--db-th-fg', selectedBg: '--db-selection-color', selectedFg: '--db-selection-fg' }),
+  scriptnote: Object.freeze({ bg: '--sn2-page-bg', fg: '--sn2-base-text-color', border: '--sn2-border-color', accent: '--sn2-selection-color', hoverBg: '--sn2-hover-bg', hoverFg: '--sn2-base-text-color', selectedBg: '--sn2-selection-color', selectedFg: '--sn2-selection-fg' }),
+  note: Object.freeze({ bg: '--page-text-bg', fg: '--page-text-fg', border: '--page-table-border-color', accent: '--page-selection-color', hoverBg: '--page-table-row-hover-bg', hoverFg: '--page-table-row-hover-fg', selectedBg: '--page-selection-color', selectedFg: '--page-selection-fg' }),
+  board: Object.freeze({ bg: '--bd-bg', fg: '--bd-link-type-icon-color', border: '--bd-group-color', accent: '--bd-selection-color', hoverBg: '--bd-selection-color', hoverFg: '--bd-selection-fg', selectedBg: '--bd-selection-color', selectedFg: '--bd-selection-fg' }),
+  calendar: Object.freeze({ bg: '--cal-content-bg', fg: '--cal-fg', border: '--cal-grid-line', accent: '--cal-today-bg', hoverBg: '--cal-cell-hover-bg', hoverFg: '--cal-cell-hover-fg', selectedBg: '--cal-today-bg', selectedFg: '--cal-today-fg' }),
+  aux: Object.freeze({ bg: '--preview-bg', fg: '--preview-fg', border: '--preview-border', accent: '--preview-hover-bg', hoverBg: '--preview-hover-bg', hoverFg: '--preview-fg', selectedBg: '--preview-card-bg', selectedFg: '--preview-fg' }),
+  popup: Object.freeze({ bg: '--ui-popup-bg', fg: '--fg', border: '--ui-border', accent: '--ui-accent', hoverBg: '--ui-hover-bg', hoverFg: '--ui-hover-fg', selectedBg: '--bg3', selectedFg: '--ui-accent-fg' }),
+});
+
+const SETTINGS_THEME_STATE_SECTIONS = Object.freeze([
+  Object.freeze(['basic-surfaces', '基本の面']),
+  Object.freeze(['text', '文字']),
+  Object.freeze(['sequence-color', '連番配色']),
+  Object.freeze(['ornaments', '装飾']),
+  Object.freeze(['operation-states', '操作状態']),
+]);
+const SETTINGS_THEME_STATES = Object.freeze(['default', 'hover', 'focus', 'selected']);
+let _settingsThemePreviewAppId = 'note';
+
+function _settingsThemeStateKeys(config, section, state) {
+  if (state === 'focus') {
+    const normalKey = section === 'sequence-color' ? '--theme-palette-0'
+      : section === 'text' ? config.fg
+        : section === 'ornaments' ? config.border
+          : config.bg;
+    return { normalKey, key: config.accent, property: 'outlineColor' };
+  }
+  if (section === 'sequence-color') {
+    const paletteIndex = state === 'hover' ? 1 : state === 'selected' ? 3 : 0;
+    return { normalKey: '--theme-palette-0', key: `--theme-palette-${paletteIndex}`, property: 'backgroundColor' };
+  }
+  if (section === 'text') {
+    const key = state === 'hover' ? config.hoverFg : state === 'selected' ? config.selectedFg : config.fg;
+    return { normalKey: config.fg, key, property: 'color' };
+  }
+  if (section === 'ornaments') {
+    const key = state === 'hover' || state === 'selected' ? config.accent : config.border;
+    return { normalKey: config.border, key, property: 'borderBottomColor' };
+  }
+  const key = state === 'hover' ? config.hoverBg : state === 'selected' ? config.selectedBg : config.bg;
+  return { normalKey: config.bg, key, property: 'backgroundColor' };
+}
+
+function settingsThemeStateCoverageManifest() {
+  return SETTINGS_THEME_PREVIEW_APPS.flatMap(([appId, appLabel]) => {
+    const config = SETTINGS_THEME_STATE_KEYS[appId];
+    return SETTINGS_THEME_STATE_SECTIONS.flatMap(([coverageSection, sectionLabel]) =>
+      SETTINGS_THEME_STATES.map(state => {
+        const source = _settingsThemeStateKeys(config, coverageSection, state);
+        return {
+          id: `theme-state/${appId}/${coverageSection}/${state}`,
+          appId,
+          appLabel,
+          coverageSection,
+          sectionLabel,
+          state,
+          normalKey: source.normalKey,
+          key: source.key,
+          property: source.property,
+          effectKey: state === 'focus' ? config.accent : source.key,
+        };
+      })
+    );
+  });
+}
+
+function _settingsThemeStateTarget(entry) {
+  const config = SETTINGS_THEME_STATE_KEYS[entry.appId];
+  const label = { default: '通常', hover: 'ホバー', focus: '焦点', selected: '選択' }[entry.state];
+  const accessibleLabel = entry.state === 'focus' ? 'フォーカス' : label;
+  const style = [
+    `--theme-state-base-bg:var(${config.bg})`,
+    `--theme-state-base-fg:var(${config.fg})`,
+    `--theme-state-base-border:var(${config.border})`,
+    `--theme-state-normal-source:var(${entry.normalKey})`,
+    `--theme-state-source:var(${entry.key})`,
+    `--theme-state-focus:var(${config.accent})`,
+    `--a11y-focus-ring:var(${config.accent})`,
+  ].join(';');
+  return `<button type="button" class="settings-theme-state-sample" data-e2e-id="settings-${esc(entry.id)}" data-theme-state-id="${esc(entry.id)}" data-theme-state-section="${esc(entry.coverageSection)}" data-theme-state="${esc(entry.state)}" aria-label="${esc(accessibleLabel)}" title="${esc(accessibleLabel)}" aria-pressed="false" style="${esc(style)}">${esc(label)}</button>`;
+}
+
+function _settingsThemeStateMatrix(appId) {
+  const entries = settingsThemeStateCoverageManifest().filter(item => item.appId === appId);
+  const rows = SETTINGS_THEME_STATE_SECTIONS.map(([section, label]) => {
+    const targets = entries.filter(item => item.coverageSection === section).map(_settingsThemeStateTarget).join('');
+    return `<div class="settings-theme-state-row" data-theme-state-row="${esc(section)}"><span>${esc(label)}</span>${targets}</div>`;
+  }).join('');
+  return `<section class="settings-theme-preview-group settings-theme-state-matrix" data-theme-state-matrix="1"><h3>状態プレビュー</h3>${rows}</section>`;
+}
+
+function settingsThemePreviewManifest() {
+  return SETTINGS_THEME_PREVIEW_APPS.flatMap(([appId, appLabel]) =>
+    (SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || []).flatMap(section =>
+      (UI_STYLE_SECTIONS?.[section] || []).map((def, index) => {
+        const popupFields = typeof _settingsThemePreviewPopupFields === 'function'
+          ? _settingsThemePreviewPopupFields(def)
+          : [];
+        return {
+          id: `${appId}/${section}/${index}/${def.label}`,
+          appId,
+          appLabel,
+          section,
+          index,
+          label: def.label,
+          state: _settingsThemePreviewStateClass(def.label) || 'default',
+          popupFields,
+          configurableKeys: [
+            def.fg, def.bg, def.bold, def.italic, def.font, def.fontSize,
+            def.line, def.width, def.stroke, def.strokeWidth,
+            ...(Array.isArray(def.numbers) ? def.numbers.map(item => item?.key) : []),
+          ].filter(Boolean),
+        };
+      })
+    )
+  );
+}
+
+function _settingsThemePreviewTarget(section, label, text, className = '', manifestId = '') {
+  const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
+  const style = def ? _settingsThemePreviewStyle(def) : '';
+  const stableId = manifestId || `${section}/${label}`;
+  const e2eId = `settings-theme-preview-${stableId}`;
+  return `<button type="button" class="settings-theme-preview-target ${className}" data-e2e-id="${esc(e2eId)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}" data-action="openStylePreviewPopup(this)" style="${esc(style)}">${esc(text || label)}</button>`;
+}
+
+function _settingsThemePreviewStateClass(label) {
+  const value = String(label || '');
+  if (/ホバー/.test(value)) return 'is-hover';
+  if (/選択|今日|強調|実行中|保存\/復元|送信/.test(value)) return 'is-selected';
+  return '';
+}
+
+function _settingsThemePreviewMain(appId) {
+  const entries = settingsThemePreviewManifest().filter(item => item.appId === appId);
+  const sections = (SETTINGS_THEME_PREVIEW_SECTION_MAP[appId] || []).map(section => {
+    const targets = entries.filter(item => item.section === section).map(item => {
+      const def = UI_STYLE_SECTIONS[item.section][item.index];
+      return _settingsThemePreviewTarget(
+        item.section,
+        item.label,
+        def?.text || item.label,
+        _settingsThemePreviewStateClass(item.label),
+        item.id,
+      );
+    }).join('');
+    return `<section class="settings-theme-preview-group" data-style-preview-section="${esc(section)}"><h3>${esc(section)}</h3><div class="settings-theme-preview-list">${targets}</div></section>`;
+  }).join('');
+  const surface = SETTINGS_THEME_PREVIEW_APP_SURFACES[appId] || SETTINGS_THEME_PREVIEW_APP_SURFACES.note;
+  return `<div class="settings-theme-preview-all" data-style-preview-app="${esc(appId)}" data-style-preview-app-surface="1" style="background:var(${esc(surface.bg)});color:var(${esc(surface.fg)});">${_settingsThemeStateMatrix(appId)}${sections}</div>`;
+}
+
+function renderSettingsThemePreview(appId = 'note') {
+  const options = SETTINGS_THEME_PREVIEW_APPS.map(([id, label]) => `<option value="${id}"${id === appId ? ' selected' : ''}>${label}</option>`).join('');
+  return `<section class="gb-section gb-section--boxed settings-theme-preview" data-settings-theme-preview="1">
+    <div class="settings-theme-preview-toolbar"><div class="gb-section-title">プレビュー</div><select class="gb-select" data-e2e-id="settings-theme-preview-app" data-settings-theme-preview-select data-onchange="settingsThemePreviewAppChanged(this.value)">${options}</select></div>
+    <div class="settings-theme-preview-shell">
+      <aside class="settings-theme-preview-rail">${_settingsThemePreviewTarget('共通', 'アクセント', '◆', '', 'chrome-left/common/accent')}</aside>
+      <aside class="settings-theme-preview-tree">${_settingsThemePreviewTarget('フォルダ', 'カード', 'フォルダ', '', 'chrome-tree/folder/card')}<span>作品</span><span>資料</span></aside>
+      <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMain(appId)}</main>
+      <aside class="settings-theme-preview-side">${_settingsThemePreviewTarget('補助パネル', 'フォルダツリー', 'オプション', '', 'chrome-side/aux/folder-tree')}<span>プロパティ</span></aside>
+      <aside class="settings-theme-preview-rail">${_settingsThemePreviewTarget('共通', 'アクセント', '●', '', 'chrome-right/common/accent')}</aside>
+    </div>
+  </section>`;
+}
+
+function _activeSettingsThemePreviewRoot() {
+  const roots = [...document.querySelectorAll('[data-settings-theme-preview]')];
+  return roots.find(root => {
+    const panel = root.closest('.settings-panel[data-panel="テーマ"]');
+    return panel && !panel.hidden && getComputedStyle(panel).display !== 'none';
+  }) || roots[0] || null;
+}
+
+function settingsThemePreviewAppChanged(appId) {
+  const root = _activeSettingsThemePreviewRoot();
+  const main = root?.querySelector('[data-settings-theme-preview-main]');
+  if (!main) return;
+  _settingsThemePreviewAppId = appId;
+  const select = root.querySelector('[data-settings-theme-preview-select]');
+  if (select && [...select.options].some(option => option.value === appId)) select.value = appId;
+  main.innerHTML = _settingsThemePreviewMain(appId);
+  _bindSettingsThemeStateTargets(main);
+  root.dataset.settingsThemePreviewApp = appId;
+  const panel = root.closest('.settings-panel[data-panel="テーマ"]');
+  if (panel) panel.dataset.settingsThemePreviewApp = appId;
+}
+
+function refreshSettingsThemePreview() {
+  const root = _activeSettingsThemePreviewRoot();
+  if (!root) return;
+  const appId = root.querySelector('[data-settings-theme-preview-select]')?.value
+    || root.dataset.settingsThemePreviewApp
+    || _settingsThemePreviewAppId;
+  const main = root.querySelector('[data-settings-theme-preview-main]');
+  if (main) {
+    main.innerHTML = _settingsThemePreviewMain(appId);
+    _bindSettingsThemeStateTargets(main);
+  }
+  root.querySelectorAll('[data-style-section][data-style-label]').forEach(target => {
+    const section = target.dataset.styleSection;
+    const label = target.dataset.styleLabel;
+    const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
+    if (def) target.setAttribute('style', _settingsThemePreviewStyle(def));
+  });
+}
+
+function _bindSettingsThemeStateTargets(root) {
+  root?.querySelectorAll?.('[data-theme-state-id]').forEach(target => {
+    if (target.dataset.themeStateBound === '1') return;
+    target.dataset.themeStateBound = '1';
+    target.addEventListener('click', event => {
+      event.stopPropagation();
+      const preview = target.closest('[data-settings-theme-preview]');
+      const targetId = target.dataset.themeStateId;
+      if (!preview || !targetId || preview.dataset.themeStatePopupPending === targetId) return;
+      preview.dataset.themeStatePopupPending = targetId;
+      setTimeout(() => {
+        const currentTarget = [...preview.querySelectorAll('[data-theme-state-id]')]
+          .find(candidate => candidate.dataset.themeStateId === targetId);
+        delete preview.dataset.themeStatePopupPending;
+        if (preview.isConnected && currentTarget?.isConnected && !document.querySelector('.gb-fmt-popup')) {
+          window.openStylePreviewPopup?.(currentTarget);
+        }
+      }, 0);
+    });
+  });
+}
+
+function settingsThemeToggleDetails(button) {
+  const details = button?.closest?.('.settings-theme-workspace')?.querySelector?.('[data-settings-theme-details]');
+  if (!details) return;
+  details.hidden = !details.hidden;
+  button.setAttribute('aria-expanded', details.hidden ? 'false' : 'true');
+  button.textContent = details.hidden ? '詳細設定を開く' : '詳細設定を閉じる';
+}
+
 function renderSettingsAppearancePanel(currentTheme, options = {}) {
   const themeOptions = typeof MeldexThemeManager !== 'undefined'
     ? MeldexThemeManager.themeOptionsHtml(currentTheme)
     : Object.keys(THEME_PRESETS).map(n => '<option value="' + esc(n) + '"' + (n === currentTheme ? ' selected' : '') + '>' + esc(n) + '</option>').join('');
-  return `
+  return `<div class="settings-theme-workspace" data-settings-theme-workspace="1">
     <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-summary="1">
       <div class="gb-section-title">${lucide('palette', 14)} テーマ</div>
       <div class="gb-field-row" style="align-items:center;">
@@ -97,42 +452,47 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
         </span>
       </div>
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="color">
+    <section class="gb-section gb-section--boxed settings-theme-controls" data-settings-view="theme">
       <div class="gb-section-title">テーマカラー</div>
       ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor({ id: 'settings-theme-palette-editor' }) : renderThemeColorSetEditor(null, { hideLabel: true })}
+      ${renderSettingsThemeAccentEditor()}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="color" data-settings-theme-apply-editor="1">
+    <div class="settings-theme-detail-toggle-row"><button type="button" class="gb-btn" aria-expanded="false" data-action="settingsThemeToggleDetails(this)">詳細設定を開く</button></div>
+    <div class="settings-theme-details" data-settings-theme-details hidden>
+    <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
       <div class="gb-section-title">自動色の強さ</div>
       ${typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : ''}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="color" data-settings-theme-apply-editor="1">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
       <div class="gb-section-title">テーマカラーの自動適用設定</div>
       ${renderThemeUiApplicationEditor({ hideLabel: true })}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="color">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">基本の面</div>
       ${_renderSettingsThemeDetailStyleGroups('surface')}
     </section>
     ${_renderSettingsThemeCommonFontSection()}
-    <section class="gb-section gb-section--boxed" data-settings-view="font">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">文字</div>
       ${_renderSettingsThemeDetailStyleGroups('text')}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="state">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">操作状態</div>
       ${_renderSettingsThemeDetailStyleGroups('state')}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="state">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">装飾</div>
       ${_renderSettingsThemeDetailStyleGroups('ornament')}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="apps">
+    <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">アプリ別テーマ</div>
       ${renderSettingsThemeEditor(options.activeStyleTab, {
         deferStyleRows: options.deferStyleRows,
         renderedStyleTab: options.renderedStyleTab,
       })}
-    </section>`;
+    </section></div>
+    ${renderSettingsThemePreview(options.previewApp || 'note')}
+  </div>`;
 }
 
 function ensureSettingsThemePanel(panel, options = {}) {
@@ -141,6 +501,10 @@ function ensureSettingsThemePanel(panel, options = {}) {
     : panel?.querySelector?.('.settings-panel[data-panel="テーマ"]');
   if (!root) return;
   const selectedId = options.selectedId || root.dataset.settingsThemeSelectedId || _settingsThemeCurrentId();
+  const previewApp = options.previewApp
+    || root.dataset.settingsThemePreviewApp
+    || root.querySelector?.('[data-settings-theme-preview-select]')?.value
+    || _settingsThemePreviewAppId;
   const activeStyleTab = options.activeStyleTab || root.dataset.settingsThemeActiveStyleTab || _settingsThemeActiveStyleTab(root);
   const hasRenderedStyleTab = Object.prototype.hasOwnProperty.call(options, 'renderedStyleTab');
   const renderedStyleTab = hasRenderedStyleTab
@@ -154,10 +518,12 @@ function ensureSettingsThemePanel(panel, options = {}) {
     activeStyleTab,
     deferStyleRows,
     renderedStyleTab,
+    previewApp,
   });
   root.dataset.settingsThemeRendered = '1';
   root.dataset.settingsThemeSelectedId = selectedId || '';
   root.dataset.settingsThemeActiveStyleTab = activeStyleTab || '';
+  root.dataset.settingsThemePreviewApp = previewApp;
   bindSettingsThemePanel(root);
   if (typeof replaceIcons === 'function') replaceIcons(root);
   _settingsThemeReapplyNavigationView(root);
@@ -533,6 +899,7 @@ function bindSettingsThemePanel(root) {
   const panel = root || document;
   const editor = panel.querySelector?.('#settings-theme-editor');
   const activeStylePanel = editor?.querySelector?.('[data-settings-theme-style-panel]:not([hidden])');
+  _bindSettingsThemeStateTargets(panel);
   // 書式行（基本の面/文字/操作状態/装飾）がエディタ外にも並ぶため panel 全体を同期する
   syncCsSwatches(panel);
   syncThemeColorSetSwatches(panel);

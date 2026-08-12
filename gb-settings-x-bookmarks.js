@@ -272,44 +272,46 @@
     return reimportPost(_postIdFromEntity(data), saveDir);
   }
 
-  function _closeDuplicateModal() {
-    document.querySelector('[data-x-duplicates-modal]')?.remove();
+  let _duplicateDialog = null;
+
+  function _closeDuplicateModal(reason = 'programmatic') {
+    _duplicateDialog?.close?.(reason);
+    _duplicateDialog = null;
   }
 
-  async function showDuplicateRepair() {
+  async function showDuplicateRepair(options = {}) {
+    const returnFocus = options.returnFocus || document.activeElement;
     setStatus('重複を確認しています...', false);
     try {
       const saveDir = getInputValue('x-bookmarks-save-dir', 'Xブックマーク');
       const data = await apiFetch('/x-bookmarks/duplicates?save_dir=' + encodeURIComponent(saveDir), { silentError: true });
-      _closeDuplicateModal();
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.dataset.xDuplicatesModal = '1';
-      const modal = document.createElement('div');
-      modal.className = 'modal';
-      modal.style.cssText = 'width:min(760px,calc(100vw - 24px));max-height:min(82vh,760px);display:flex;flex-direction:column;';
-      const title = document.createElement('h3');
-      title.textContent = 'Xブックマークの重複を整理';
+      _closeDuplicateModal('superseded');
+      const body = document.createElement('div');
+      body.className = 'x-bookmarks-duplicates-body';
       const desc = document.createElement('p');
       desc.className = 'gb-section-desc';
+      desc.dataset.e2eId = 'x-bookmarks-duplicates-summary';
       desc.textContent = data.group_count
-        ? `${data.group_count}組、${data.duplicate_row_count}行の重複があります。最古の行を残し、最新のX情報と全行の追記・タグ・リレーションを統合します。`
+        ? `${data.group_count}組、${data.duplicate_row_count}行の重複があります。最古の行を残し、最新のX情報と全行の追記・タグ・リレーションを統合します。統合後の重複行はゴミ箱へ移します。`
         : '整理が必要な重複はありません。';
       const list = document.createElement('div');
-      list.style.cssText = 'overflow:auto;border:1px solid var(--border);border-radius:4px;';
-      (data.groups || []).forEach(group => {
+      list.className = 'x-bookmarks-duplicates-list';
+      list.dataset.e2eId = 'x-bookmarks-duplicates-list';
+      (data.groups || []).forEach((group, index) => {
         const row = document.createElement('label');
-        row.style.cssText = 'display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;padding:9px;border-bottom:1px solid var(--border);';
+        row.className = 'x-bookmarks-duplicate-row';
         const check = document.createElement('input');
         check.type = 'checkbox';
         check.checked = true;
         check.value = group.post_id;
         check.dataset.xDuplicatePostId = group.post_id;
+        check.dataset.e2eId = `x-bookmarks-duplicate-choice-${index}`;
         const body = document.createElement('span');
+        body.className = 'x-bookmarks-duplicate-copy';
         const primary = document.createElement('strong');
         primary.textContent = `ポスト ${group.post_id}（${group.row_count}行）`;
         const detail = document.createElement('span');
-        detail.style.cssText = 'display:block;color:var(--fg2);font-size:12px;margin-top:3px;overflow-wrap:anywhere;';
+        detail.className = 'x-bookmarks-duplicate-detail';
         detail.textContent = `採用: ${group.canonical_path} / 削除: ${(group.duplicate_paths || []).join(', ')}`;
         body.appendChild(primary);
         body.appendChild(detail);
@@ -317,47 +319,79 @@
         row.appendChild(body);
         list.appendChild(row);
       });
-      const actions = document.createElement('div');
-      actions.className = 'gb-field-row';
-      actions.style.cssText = 'justify-content:flex-end;margin-top:12px;';
+      const dialogStatus = document.createElement('div');
+      dialogStatus.className = 'gb-section-desc x-bookmarks-duplicates-status';
+      dialogStatus.dataset.e2eId = 'x-bookmarks-duplicates-status';
+      dialogStatus.setAttribute('aria-live', 'polite');
+      body.append(desc, list, dialogStatus);
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.className = 'gb-btn gb-btn-quiet';
+      cancel.dataset.e2eId = 'x-bookmarks-duplicates-close';
       cancel.textContent = '閉じる';
-      cancel.addEventListener('click', _closeDuplicateModal);
-      actions.appendChild(cancel);
+      let repair = null;
+      let busy = false;
+      let dialogApi = null;
+      const setBusy = value => {
+        busy = !!value;
+        dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
+        list.querySelectorAll('input').forEach(input => { input.disabled = busy; });
+        if (repair) repair.disabled = busy;
+        cancel.disabled = busy;
+      };
       if (data.group_count) {
-        const repair = document.createElement('button');
+        repair = document.createElement('button');
         repair.type = 'button';
-        repair.className = 'gb-btn';
+        repair.className = 'gb-btn gb-btn-primary';
+        repair.dataset.e2eId = 'x-bookmarks-duplicates-repair';
         repair.textContent = '選択した重複を統合';
         repair.addEventListener('click', async () => {
-          const postIds = Array.from(modal.querySelectorAll('[data-x-duplicate-post-id]:checked')).map(input => input.value);
-          if (!postIds.length) return;
-          repair.disabled = true;
+          const postIds = Array.from(list.querySelectorAll('[data-x-duplicate-post-id]:checked')).map(input => input.value);
+          if (!postIds.length) {
+            dialogStatus.textContent = '統合する重複を1件以上選択してください。';
+            return;
+          }
+          setBusy(true);
           repair.textContent = '統合しています...';
+          dialogStatus.textContent = '選択した重複を統合しています...';
           try {
             const result = await apiPost('/x-bookmarks/duplicates/repair', {
               save_dir: saveDir,
               post_ids: postIds,
             }, { silentError: true });
-            _closeDuplicateModal();
+            _closeDuplicateModal('complete');
             setStatus(`重複${result.group_count || 0}組を統合し、${result.trashed_count || 0}行をゴミ箱へ移しました。`, false);
             if (typeof reloadCurrentOpenFile === 'function') reloadCurrentOpenFile();
           } catch (error) {
-            repair.disabled = false;
+            setBusy(false);
             repair.textContent = '選択した重複を統合';
-            setStatus('重複を整理できませんでした: ' + (error.userMessage || error.message || error), true);
+            const message = '重複を整理できませんでした: ' + (error.userMessage || error.message || error);
+            dialogStatus.textContent = message;
+            setStatus(message, true);
           }
         });
-        actions.appendChild(repair);
       }
-      modal.append(title, desc, list, actions);
-      overlay.appendChild(modal);
-      overlay.addEventListener('pointerdown', event => {
-        if (event.target === overlay) _closeDuplicateModal();
+      dialogApi = window.GBUI.createModal({
+        id: 'x-bookmarks-duplicates-dialog',
+        title: 'Xブックマークの重複を整理',
+        body,
+        footer: repair ? [cancel, repair] : cancel,
+        variant: 'standard',
+        extraClass: 'x-bookmarks-duplicates-modal',
+        geometryKey: 'x-bookmarks-duplicates',
+        initialFocus: data.group_count ? '[data-e2e-id="x-bookmarks-duplicate-choice-0"]' : '[data-e2e-id="x-bookmarks-duplicates-close"]',
+        returnFocus,
+        onBeforeClose: reason => !busy || reason === 'complete' || reason === 'superseded',
+        onClose: () => {
+          if (_duplicateDialog === dialogApi) _duplicateDialog = null;
+        },
       });
-      document.body.appendChild(overlay);
+      _duplicateDialog = dialogApi;
+      dialogApi.overlay.classList.add('modal-overlay');
+      dialogApi.overlay.dataset.xDuplicatesModal = '1';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'x-bookmarks-duplicates-close-icon');
+      cancel.addEventListener('click', () => dialogApi.close('close-button'));
+      dialogApi.open();
       setStatus(data.group_count ? '統合内容を確認してください。' : '重複はありません。', false);
     } catch (error) {
       setStatus('重複を確認できませんでした: ' + (error.userMessage || error.message || error), true);
@@ -368,7 +402,8 @@
     document.getElementById('x-bookmarks-connect')?.addEventListener('click', connect);
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
-    document.getElementById('x-bookmarks-duplicates')?.addEventListener('click', showDuplicateRepair);
+    const duplicatesButton = document.getElementById('x-bookmarks-duplicates');
+    duplicatesButton?.addEventListener('click', () => showDuplicateRepair({ returnFocus: duplicatesButton }));
     document.getElementById('x-bookmarks-save-config')?.addEventListener('click', () => saveConfig({ showSuccess: true }));
     document.getElementById('x-bookmarks-save-dir')?.addEventListener('change', saveConfig);
     document.getElementById('x-bookmarks-max-results')?.addEventListener('change', saveConfig);

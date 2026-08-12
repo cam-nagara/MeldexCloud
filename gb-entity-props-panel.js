@@ -7,7 +7,7 @@
 
    状態は dbPath (エントリの親フォルダ) 単位で view_config へ保存する (getDbViewConfig/saveDbViewConfig
    は呼ぶだけで gb-app 側は編集しない)。renderEntityPropsGridInto はフルページ版(#entity-props-grid)・
-   フロートパネル版(.gb-float-panel-entity-props)・モバイルドロワーの3表示先すべてから共有で呼ばれるため、
+   サブパネル版・モバイルドロワーの3表示先すべてから共有で呼ばれるため、
    ここに実装すれば自動的に3箇所へ反映される。
    dbPath が解決できないエントリ (親フォルダがシートではない等) ではセッション内のみの
    フォールバック状態を使い、保存もエラーも出さない。 */

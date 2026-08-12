@@ -95,6 +95,15 @@
     if (!handle.getAttribute('aria-keyshortcuts')) handle.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End');
     _restoreHeight(handle, input, cfg);
 
+    const wheelTarget = _resizeTarget(input);
+    if (wheelTarget && wheelTarget.dataset.chatWheelBound !== '1') {
+      wheelTarget.dataset.chatWheelBound = '1';
+      wheelTarget.addEventListener('wheel', event => {
+        if (wheelTarget.scrollHeight <= wheelTarget.clientHeight + 1) return;
+        event.stopPropagation();
+      }, { passive: true });
+    }
+
     handle.addEventListener('pointerdown', event => {
       if (event.button !== 0) return;
       event.preventDefault();

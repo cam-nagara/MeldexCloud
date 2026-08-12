@@ -377,29 +377,12 @@
 
   function pickFolder(options = {}) {
     return new Promise(async resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.dataset.gbFolderPicker = '1';
-      overlay.dataset.modalShell = 'off';
-
-      const modal = document.createElement('div');
-      modal.className = 'modal gb-folder-picker-modal';
-      modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      modal.style.cssText = 'width:560px;height:620px;max-width:min(92vw,560px);max-height:86vh;display:flex;flex-direction:column;';
-      overlay.appendChild(modal);
-
-      const title = document.createElement('h3');
-      title.id = `gb-folder-picker-title-${++_dialogSeq}`;
-      title.style.cssText = 'display:flex;align-items:center;gap:8px;';
-      const titleIcon = document.createElement('span');
-      titleIcon.innerHTML = _icon('folderTree', 16);
-      title.appendChild(titleIcon);
-      title.appendChild(document.createTextNode(options.title || 'フォルダを選択'));
-      modal.setAttribute('aria-labelledby', title.id);
-      modal.appendChild(title);
+      const body = document.createElement('div');
+      body.className = 'gb-folder-picker-body';
 
       const currentRow = document.createElement('div');
+      currentRow.className = 'gb-folder-picker-current-row';
+      currentRow.dataset.e2eId = 'gb-folder-picker-current-row';
       currentRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg2);margin-bottom:8px;';
       const currentLabel = document.createElement('span');
       currentLabel.textContent = options.currentLabel || '選択中:';
@@ -409,22 +392,25 @@
       current.textContent = options.initialPath || '未選択';
       currentRow.appendChild(currentLabel);
       currentRow.appendChild(current);
-      modal.appendChild(currentRow);
+      body.appendChild(currentRow);
 
       let searchInput = null;
       if (typeof options.searchProvider === 'function') {
         searchInput = document.createElement('input');
         searchInput.type = 'text';
-        searchInput.className = 'gb-folder-picker-search';
+        searchInput.className = 'gb-input gb-folder-picker-search';
+        searchInput.dataset.e2eId = 'gb-folder-picker-search';
         searchInput.placeholder = options.searchPlaceholder || '検索...';
         searchInput.style.cssText = 'margin-bottom:8px;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--fg);font-size:12px;';
-        modal.appendChild(searchInput);
+        body.appendChild(searchInput);
       }
 
       const tree = document.createElement('div');
       tree.className = 'gb-folder-picker-tree';
+      tree.dataset.e2eId = 'gb-folder-picker-tree';
+      tree.setAttribute('role', 'tree');
       tree.style.cssText = 'flex:1;min-height:0;overflow:auto;border:1px solid var(--border);border-radius:4px;background:var(--bg);padding:4px;';
-      modal.appendChild(tree);
+      body.appendChild(tree);
 
       let searchResults = null;
       if (searchInput) {
@@ -432,34 +418,72 @@
         searchResults.className = 'gb-folder-picker-search-results';
         searchResults.style.cssText = tree.style.cssText;
         searchResults.style.display = 'none';
-        modal.appendChild(searchResults);
+        body.appendChild(searchResults);
       }
 
       const status = document.createElement('div');
+      status.className = 'gb-folder-picker-status';
+      status.dataset.e2eId = 'gb-folder-picker-status';
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
       status.style.cssText = 'min-height:18px;font-size:12px;color:var(--fg2);margin-top:6px;';
-      modal.appendChild(status);
+      body.appendChild(status);
 
-      const buttonRow = document.createElement('div');
-      buttonRow.className = 'btn-row';
       const cancel = document.createElement('button');
       cancel.type = 'button';
+      cancel.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+      cancel.dataset.e2eId = 'gb-folder-picker-cancel';
       cancel.textContent = 'キャンセル';
       const ok = document.createElement('button');
       ok.type = 'button';
-      ok.className = 'primary';
+      ok.className = 'gb-btn gb-btn-sm primary gb-btn-primary';
+      ok.dataset.e2eId = 'gb-folder-picker-select';
       ok.textContent = '選択';
       ok.disabled = true;
-      buttonRow.appendChild(cancel);
-      buttonRow.appendChild(ok);
-      modal.appendChild(buttonRow);
-
-      document.body.appendChild(overlay);
+      let closed = false;
+      let state = null;
+      let modalApi = null;
+      const close = value => {
+        if (closed) return;
+        closed = true;
+        document.removeEventListener('keydown', onKeyDown, true);
+        modalApi?.close(value ? 'submit' : 'cancel');
+        resolve(value || null);
+      };
+      const onKeyDown = event => {
+        if (event.key === 'Enter' && state?.selected) close(state.selected);
+      };
+      modalApi = window.GBUI.createModal({
+        id: `gb-folder-picker-${++_dialogSeq}`,
+        title: options.title || 'フォルダを選択',
+        body,
+        footer: [cancel, ok],
+        variant: 'mobile-sheet',
+        extraClass: 'gb-folder-picker-modal',
+        initialFocus: () => searchInput || tree,
+        closeLabel: 'フォルダ選択を閉じる',
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          document.removeEventListener('keydown', onKeyDown, true);
+          if (closed) return;
+          closed = true;
+          resolve(null);
+        },
+      });
+      const overlay = modalApi.overlay;
+      const modal = modalApi.modal;
+      overlay.dataset.gbFolderPicker = '1';
+      overlay.dataset.e2eId = 'gb-folder-picker-overlay';
+      modal.dataset.e2eId = 'gb-folder-picker-dialog';
+      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'gb-folder-picker-header-close');
+      modalApi.footer.classList.add('gb-folder-picker-actions');
+      modalApi.open();
       // DOM接続前は実効幅が取れないため、中略表示の適用はここ（appendChild後）で行う
       _setCurrentPathText(current, options.initialPath || '未選択');
       if (typeof replaceIcons === 'function') replaceIcons(overlay);
-      if (searchInput) searchInput.focus();
 
-      const state = {
+      state = {
         tree,
         current,
         ok,
@@ -473,22 +497,9 @@
         roots: null,
         close: value => close(value),
       };
-      let closed = false;
-      const close = value => {
-        if (closed) return;
-        closed = true;
-        document.removeEventListener('keydown', onKeyDown, true);
-        overlay.remove();
-        resolve(value || null);
-      };
-      const onKeyDown = event => {
-        if (event.key === 'Escape') close(null);
-        if (event.key === 'Enter' && state.selected) close(state.selected);
-      };
       document.addEventListener('keydown', onKeyDown, true);
       cancel.addEventListener('click', () => close(null));
       ok.addEventListener('click', () => close(state.selected));
-      overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
 
       let searchItemsCache = null;
       async function _ensureSearchItems() {

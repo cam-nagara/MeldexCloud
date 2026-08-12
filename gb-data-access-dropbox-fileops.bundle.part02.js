@@ -329,7 +329,14 @@ async function _saveFileVersion(provider, path, options) {
   const versionName = _fileVersionName(normalized, options || {});
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  const expectedRevision = String(options?.expectedRevision || '');
+  const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
+  const before = expectedRevision ? await provider.getMetadata(normalized) : null;
   const content = await provider.readText(normalized);
+  const after = expectedRevision ? await provider.getMetadata(normalized) : null;
+  if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
+    throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
+  }
   await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
     object_type: 'text-file',
     original_relative_path: normalized,
@@ -495,6 +502,11 @@ async function _undeleteFileVersion(provider, path, token) {
   );
   return { ok: true, version: record.payload.version_name };
 }
+
+window.MeldexFileVersionProviderOps = Object.freeze({
+  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
+  read: (provider, path, version) => _readFileVersion(provider, path, version),
+});
   /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
   function _relativeToFolder(folderPath, filePath) {
     const folder = _normalizeFolderPath(folderPath);
@@ -518,26 +530,28 @@ async function _undeleteFileVersion(provider, path, token) {
     return { content_base64: btoa(binary), byte_length: bytes.length };
   }
 
-  async function _collectFolderVersionFiles(provider, folderPath) {
+  async function _collectFolderVersionFiles(provider, folderPath, options = {}) {
     const base = _normalizeFolderPath(folderPath);
     const files = [];
     async function walk(current) {
       const entries = await _listDirectoryEntries(provider, current);
       for (const entry of entries) {
-        if (!entry.name || entry.name.startsWith('.')) continue;
+        if (!entry.name || (!options.includeAll && entry.name.startsWith('.'))) continue;
         const fullPath = _joinPath(current, entry.name);
         const relPath = _relativeToFolder(base, fullPath);
-        if (_skipFolderVersionRelPath(relPath)) continue;
+        if (!options.includeAll && _skipFolderVersionRelPath(relPath)) continue;
         if (entry.handle.kind === 'directory') {
+          files.push({ rel_path: relPath, entry_type: 'directory', size: 0, modified: '', content_base64: null });
           await walk(fullPath);
           continue;
         }
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
+        if (!options.includeAll && FOLDER_VERSION_EXCLUDE.has(ext)) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
         const encoded = await _versionFileBase64(provider, fullPath);
         files.push({
           rel_path: relPath,
+          entry_type: 'file',
           size: stats.size || encoded.byte_length,
           modified: stats.modified || '',
           content_base64: encoded.content_base64,
@@ -555,7 +569,7 @@ async function _undeleteFileVersion(provider, path, token) {
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
     const kind = options?.auto ? 'auto' : 'manual';
     const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const files = await _collectFolderVersionFiles(provider, normalized);
+    const files = await _collectFolderVersionFiles(provider, normalized, options || {});
     const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
     const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
     const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
@@ -757,6 +771,11 @@ async function _undeleteFileVersion(provider, path, token) {
     );
     return { ok: true, version: record.payload.version_name };
   }
+
+  window.MeldexFolderVersionProviderOps = Object.freeze({
+    save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
+    read: (provider, path, version) => _readFolderVersion(provider, path, version),
+  });
   async function _findDropboxConflictedCopies(provider, limit) {
     const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
     const maxFiles = 2500;
@@ -879,22 +898,3 @@ async function _undeleteFileVersion(provider, path, token) {
           payload.original.length = originalPreview.length;
         }
       }
-      return payload;
-    }
-
-    if (pathname === '/cloud/conflict-resolve' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const conflictPath = _normalizeFolderPath(body?.conflict_path || '');
-      const action = String(body?.action || '');
-      if (!conflictPath || !_isDropboxConflictName(_basename(conflictPath))) throw new Error('競合コピーのパスが不正です');
-      if (!['keep_original', 'keep_conflict'].includes(action)) throw new Error('競合解消アクションが不正です');
-      const originalPath = _originalPathForConflict(conflictPath);
-      if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
-      if (action === 'keep_conflict' && _isProductionFolderNotePath(originalPath)) {
-        throw new Error('制作管理の列定義へ競合コピーを適用できません');
-      }
-      if (action === 'keep_conflict' && _productionReservedEntryProperties(originalPath).length) {
-        _rejectProductionLegacyEntryContent(originalPath, await provider.readText(conflictPath));
-      }
-      const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
-      if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);

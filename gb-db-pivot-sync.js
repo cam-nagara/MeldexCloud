@@ -444,7 +444,8 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   const entityName = _getPivotEntityName(entityPath);
   const entityData = _getPivotEntityData(entityPath, ctx) || {};
   const thumbSize = getThumbnailSize(dbPath, { ctx });
-  let values = filterValues(entityData[propName] || [], undefined, ctx?.filter);
+  const rawValues = Array.isArray(entityData[propName]) ? entityData[propName] : [];
+  let values = filterValues(rawValues, undefined, ctx?.filter);
   const advFilters = getAdvancedFilters(dbPath, { ctx });
   if (advFilters.length > 0) values = applyAdvancedFilters(values, propName, advFilters);
   container.innerHTML = '';
@@ -457,14 +458,16 @@ function _refreshPivotRelationCell(targetEl, entityPath, propName, ptc, options 
   values.forEach(cellVal => {
     container.appendChild(createTypedValueElement(cellVal, entityPath, propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot }));
   });
-  // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
-  // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転。gb-db-table.part02.js と同期）。
-  const nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-  if ((!ptc || !nonValueTypes.includes(ptc.type)) && !hideStatusUi) {
-    const addBtn = document.createElement('span');
+  // 単独の「＋」は元データ0件だけ。フィルターで候補値が見えなくなっても生成しない。
+  if (typeof _cellUiShouldShowStandaloneAdd === 'function'
+      && _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx)) {
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
     addBtn.className = 'cell-add-btn';
+    addBtn.dataset.e2eId = `${td.dataset.e2eId || 'db-pivot-cell'}-add`;
     addBtn.innerHTML = lucide('plus', 14);
     addBtn.title = ptc?.type === 'select' ? '値を選択' : '候補値を追加';
+    addBtn.setAttribute('aria-label', addBtn.title);
     addBtn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();

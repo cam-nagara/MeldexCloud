@@ -261,7 +261,7 @@
     const label = activeTab.label || '';
     const path = activeTab.path || '';
     if (_DETAIL_DB_VIEW_TYPES.has(type)) {
-      if (typeof _syncDetailPanel === 'function') _syncDetailPanel(label, path, 'database');
+      if (typeof _syncDetailPanel === 'function') _syncDetailPanel(label, path, 'database', { fileInfoType: type });
     } else if (_DETAIL_GLOBAL_TYPES.has(type)) {
       if (typeof _syncDetailPanel === 'function') _syncDetailPanel(label, path, type);
     } else if (_DETAIL_FILE_INFO_TYPES.has(type) && path && typeof _showFileInfoInDetailPanel === 'function') {
@@ -380,6 +380,6 @@
     const layoutPaneIds = new Set(layoutPanes.map(pane => pane.id));
     const virtualPanes = Object.values(GBLayout.paneMap || {})
       .filter(info => info?.node?.id && !layoutPaneIds.has(info.node.id)
-        && (info.surface === 'float' || info.surface === 'subpanel'))
+        && info.surface === 'subpanel')
       .map(info => ({ pane: info.node, surface: info.surface }));
     const allPanes = layoutPanes.map(pane => ({ pane, surface: '' })).concat(virtualPanes).sort((a, b) => {

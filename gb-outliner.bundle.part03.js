@@ -447,6 +447,15 @@
       }
       window.MeldexImportProgress?.finishOperation?.();
       if (moved.length === 0) return;
+      // フォルダをまたぐ複数移動では、各API成功後のDOMを古い親要素へ順次
+      // 付け替えると、途中の再描画や親フォルダ自身の移動で表示が欠落する。
+      // サーバー上の確定状態を一度だけ読み直し、部分成功も含めてツリー全体を
+      // 同じスナップショットへ揃える。同一フォルダ内の並べ替えは下の局所更新を維持する。
+      if (movedAcrossFolders) {
+        if (position === 'inside' && (isFolder || isDB)) saveExpandedState(item.path, true);
+        await refreshOutliner({ force: true, reason: 'outliner-tree-drop-move' });
+        return;
+      }
       const vr = window.GBOutlinerVirtualRender;
       // 移動元が仮想化コンテナだった項目のDOM要素は、直接の再利用をやめて配列側から
       // 適切に後始末する（refresh()側の再マウントに新しい行要素の生成を任せる）。
@@ -889,11 +898,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
         }
         await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames });
         if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
-      },
-      options.scope || '',
-      detail
-    );
-  }
-
-  return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
-}

@@ -21,7 +21,11 @@
     return typeof global.lucide === 'function' ? global.lucide(name, size || 16) : '';
   }
 
-  function fileIcon(ext) {
+  function fileIcon(ext, kind, type) {
+    if (kind === 'folder') return 'folder';
+    if (type === 'board') return 'layoutDashboard';
+    if (type === 'database' || type === 'smart-db') return 'db';
+    if (type === 'scriptnote') return 'bookOpenText';
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'clapperboard';
     if (AUDIO_EXTS.has(ext)) return 'audio';
@@ -42,23 +46,44 @@
     return (value / 1073741824).toFixed(1) + ' GB';
   }
 
-  function contextForPath(filePath) {
+  function contextForPath(filePath, options) {
     const normalized = String(filePath || '').replace(/\\/g, '/');
     const fileName = normalized.split('/').pop() || normalized;
     const dotIndex = fileName.lastIndexOf('.');
     const ext = dotIndex >= 0 ? fileName.slice(dotIndex + 1).toLowerCase() : '';
     const folderPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
     const folderName = folderPath.split('/').pop() || folderPath;
-    const typeLabel = ext === 'md'
-      ? 'ノート'
-      : ext === 'json'
-        ? 'シナリオ／シート'
-        : ext === 'board' || ext === 'mel-board'
-          ? 'ボード'
-          : ext === 'html' || ext === 'htm'
-            ? 'HTML'
-            : ext || 'ファイル';
-    return { fileName, ext, folderPath, folderName, typeLabel };
+    const kind = options?.kind === 'folder' ? 'folder' : 'file';
+    const type = String(options?.type || '').trim();
+    const lowerName = fileName.toLowerCase();
+    const inferredTypeLabel = kind === 'folder'
+      ? 'フォルダ'
+      : type === 'database' || /(?:\.sheet|\.database)\.json$/.test(lowerName)
+        ? 'シート'
+        : type === 'smart-db' || /(?:\.smart|\.smart-db)\.json$/.test(lowerName)
+          ? 'スマートシート'
+          : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json')
+            ? 'シナリオ'
+            : type === 'calendar'
+              ? 'カレンダー'
+              : type === 'csv'
+                ? 'CSV'
+            : type === 'board' || /(?:\.board\.(?:json|md)|\.mel-board|\.board)$/.test(lowerName)
+              ? 'ボード'
+              : ext === 'md'
+                ? 'ノート'
+                : ext === 'html' || ext === 'htm'
+                  ? 'HTML'
+                  : ext || 'ファイル';
+    return {
+      fileName,
+      ext,
+      folderPath,
+      folderName,
+      kind,
+      type,
+      typeLabel: String(options?.typeLabel || inferredTypeLabel),
+    };
   }
 
   function metadataRowsHtml(meta) {
@@ -81,7 +106,10 @@
   }
 
   function panelHtml(filePath, preloadedMeta, options) {
-    const info = contextForPath(filePath);
+    const info = contextForPath(filePath, {
+      ...options,
+      kind: options?.kind || preloadedMeta?.kind,
+    });
     const tagsHtml = options?.showTags === false
       ? ''
       : `<div data-global-tags-target-path="${escapeHtml(filePath)}"></div>`;
@@ -90,7 +118,7 @@
       ? `<button type="button" class="auto-link" data-e2e-id="${escapeHtml(folderIdentity)}" data-path="${escapeHtml(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${escapeHtml(info.folderName)}</button>`
       : '—';
     return `<div style="padding:12px;" data-file-info-path="${escapeHtml(filePath)}">`
-      + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${iconHtml(fileIcon(info.ext), 16)} ${escapeHtml(info.fileName)}</div>`
+      + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${iconHtml(fileIcon(info.ext, info.kind, info.type), 16)} ${escapeHtml(info.fileName)}</div>`
       + '<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">'
       + '<tbody>'
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${escapeHtml(info.typeLabel)}</td></tr>`
@@ -105,7 +133,9 @@
       + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
       + tagsHtml
       + '<div data-file-embedded-body></div>'
-      + '</div></div>';
+      + '</div>'
+      + (info.kind === 'folder' ? `<div data-duplicate-folder-setting data-path="${escapeHtml(filePath)}"></div>` : '')
+      + '</div>';
   }
 
   function findPanel(root, filePath) {
@@ -685,37 +715,27 @@ function _showNoteConflictDialog(path, md, pc) {
   const conflictGeneration = window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path);
   const conflictDocumentKey = window.MeldexNoteSaveAdapter?.documentKeyForPath?.(path) || path;
   let actionBusy = false;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.noteConflictDialog = '1';
-  overlay.dataset.e2eId = 'note-conflict-dialog-overlay';
-  overlay.style.zIndex = '10090';
-  overlay.innerHTML = `<div class="gb-confirm note-conflict-dialog" role="dialog" aria-modal="true" aria-labelledby="note-conflict-title" aria-describedby="note-conflict-desc note-conflict-diff" data-e2e-id="note-conflict-dialog" style="min-width:min(920px,92vw);max-width:min(1000px,96vw);">
-    <div id="note-conflict-title" class="gb-confirm-message" style="font-weight:600;">他のタブ/パネルで変更されています</div>
-    <div id="note-conflict-desc" class="gb-confirm-message" style="color:var(--ui-fg-muted);">現在の編集は未保存ドラフトとして保持しています。どちらを残すか選んでください。</div>
-    <div id="note-conflict-diff" data-conflict-diff style="margin-top:8px;color:var(--ui-fg-muted);" aria-live="polite">ファイル側の最新版を取得しています...</div>
-    <div class="gb-confirm-actions" data-modal-footer>
-      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-e2e-id="note-conflict-overwrite" data-conflict-action="overwrite">自分の編集で上書き</button>
-      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-reload" data-conflict-action="reload">相手の変更を読み込む</button>
-      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-save-as" data-conflict-action="save-as">別名で保存</button>
-      <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="note-conflict-close" data-conflict-action="close">保留</button>
-    </div>
-  </div>`;
   // 工程2-B項目8: ダイアログを閉じた時はノート本文へ固定復帰せず、競合発生前に
   // ユーザーが移ろうとしていた要素（保存コーディネーターが記録したfocusTarget）へ
   // preventScroll付きで戻す。復帰先が削除済み・無効・不可視の場合だけpcへ
   // フォールバックする（項目9）。直接呼び出し（コーディネーターに競合記録が
   // 無い経路。既存の competed E2E 等）では常にpcへフォールバックする。
-  const restoreFocus = () => {
+  const restoreFocusTarget = () => {
     const recorded = window.MeldexNoteSaveAdapter?.getConflictFocusTarget?.(path);
-    const target = window.MeldexNoteSaveAdapter?.isElementUsableForFocus?.(recorded)
+    return window.MeldexNoteSaveAdapter?.isElementUsableForFocus?.(recorded)
       ? recorded : (pc?.isConnected ? pc : null);
+  };
+  const restoreFocus = () => {
+    // 前の競合ダイアログを閉じた直後にユーザーが再確認を開いた場合、前回分の
+    // 遅延focus復帰が新しいダイアログからfocusを奪わないようにする。
+    if (document.querySelector('[data-note-conflict-dialog="1"]')) return;
+    const target = restoreFocusTarget();
     target?.focus?.({ preventScroll: true });
   };
   // 工程2-A項目6: 「保留」とEscapeは同じconflict-pending遷移とし、ダイアログを
   // 閉じた後は「競合を保留中」の非モーダル表示だけを残す（実際に保存
   // コーディネーター側へ競合が記録されている場合のみ表示される）。
-  const closeDialog = () => {
+  const restoreConflictPending = () => {
     const coordinator = window.MeldexDocumentSaveCoordinator;
     const current = coordinator?.getConflict?.(conflictDocumentKey);
     // 「保留」は解決ではない。確認開始時の同じ競合がまだ残っている場合、
@@ -723,23 +743,100 @@ function _showNoteConflictDialog(path, md, pc) {
     if (current && current.generation === conflictGeneration) {
       coordinator.restoreConflict?.(conflictDocumentKey, current);
     }
-    overlay.remove();
     window.MeldexNoteSaveAdapter?.showConflictPendingBannerIfPending?.(path, pc);
-    restoreFocus();
     requestAnimationFrame(restoreFocus);
     setTimeout(restoreFocus, 260);
+  };
+  const description = document.createElement('div');
+  description.id = 'note-conflict-desc';
+  description.className = 'gb-section-desc';
+  description.textContent = '現在の編集は未保存ドラフトとして保持しています。どちらを残すか選んでください。';
+  const diffHost = document.createElement('div');
+  diffHost.id = 'note-conflict-diff';
+  diffHost.dataset.conflictDiff = '1';
+  diffHost.style.cssText = 'margin-top:8px;color:var(--ui-fg-muted);';
+  diffHost.setAttribute('aria-live', 'polite');
+  diffHost.textContent = 'ファイル側の最新版を取得しています...';
+  const makeActionButton = (action, e2eId, label, primary = false) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'gb-btn gb-btn-sm' + (primary ? ' gb-btn-primary' : '');
+    button.dataset.e2eId = e2eId;
+    button.dataset.conflictAction = action;
+    button.textContent = label;
+    return button;
+  };
+  const overwriteButton = makeActionButton('overwrite', 'note-conflict-overwrite', '自分の編集で上書き', true);
+  const reloadButton = makeActionButton('reload', 'note-conflict-reload', '相手の変更を読み込む');
+  const saveAsButton = makeActionButton('save-as', 'note-conflict-save-as', '別名で保存');
+  const deferButton = makeActionButton('close', 'note-conflict-close', '保留');
+  let modalApi;
+  modalApi = window.GBUI.createModal({
+    id: 'note-conflict-dialog',
+    titleId: 'note-conflict-title',
+    title: '他のタブ/パネルで変更されています',
+    body: [description, diffHost],
+    footer: [overwriteButton, reloadButton, saveAsButton, deferButton],
+    variant: 'standard',
+    extraClass: 'note-conflict-dialog',
+    geometryKey: 'note-conflict-dialog',
+    minWidth: '0',
+    initialFocus: overwriteButton,
+    returnFocus: restoreFocusTarget,
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !actionBusy || ['resolved', 'auto-resolved', 'test-cleanup'].includes(reason),
+    onClose: reason => {
+      if (reason !== 'test-cleanup' && reason !== 'resolved' && reason !== 'auto-resolved') {
+        restoreConflictPending();
+      }
+    },
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.noteConflictDialog = '1';
+  overlay.dataset.e2eId = 'note-conflict-dialog-overlay';
+  overlay.style.zIndex = '10090';
+  overlay._noteConflictModalApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'note-conflict-dialog';
+  modalApi.modal.setAttribute('aria-describedby', 'note-conflict-desc note-conflict-diff');
+  modalApi.modal.style.width = 'min(1000px, calc(100vw - 24px))';
+  modalApi.modal.style.minHeight = '360px';
+  modalApi.footer.dataset.modalFooter = '1';
+  const titleElement = modalApi.header.querySelector('.gb-modal-title');
+  if (titleElement) {
+    titleElement.style.setProperty('white-space', 'normal', 'important');
+    titleElement.style.setProperty('overflow', 'visible', 'important');
+    titleElement.style.setProperty('text-overflow', 'clip', 'important');
+    titleElement.style.setProperty('word-break', 'break-word', 'important');
+  }
+  modalApi.header.style.height = 'auto';
+  modalApi.header.style.minHeight = '48px';
+  modalApi.header.style.paddingTop = '8px';
+  modalApi.header.style.paddingBottom = '8px';
+  const headerCloseButton = modalApi.header.querySelector('.gb-modal-close');
+  if (headerCloseButton) headerCloseButton.dataset.e2eId = 'note-conflict-header-close';
+  const setActionBusy = next => {
+    actionBusy = !!next;
+    overlay.setAttribute('aria-busy', actionBusy ? 'true' : 'false');
+    overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = actionBusy; });
+    if (headerCloseButton) headerCloseButton.disabled = actionBusy;
+  };
+  const closeDialog = reason => modalApi.close(reason || 'defer');
+  const stabilizeInitialFocus = () => {
+    if (!overlay.isConnected || actionBusy || modalApi.modal.contains(document.activeElement)) return;
+    overwriteButton.focus({ preventScroll: true });
   };
   overlay.addEventListener('click', async (event) => {
     const actionButton = event.target?.closest?.('[data-conflict-action]');
     const action = actionButton?.dataset?.conflictAction;
     if (!action) return;
     if (action === 'close') {
-      closeDialog();
+      closeDialog('defer');
       return;
     }
     if (actionBusy) return;
-    actionBusy = true;
-    overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = true; });
+    setActionBusy(true);
     try {
       if (action === 'overwrite') {
         const res = await apiPut('/file?path=' + encodeURIComponent(path), _noteSavePayload(pc, md, { force_overwrite: true }));
@@ -849,30 +946,23 @@ function _showNoteConflictDialog(path, md, pc) {
         await window.MeldexDraftRecovery?.markSynced?.(path);
         showStatus('別名で保存しました');
       }
-      closeDialog();
+      closeDialog('resolved');
     } catch (error) {
       showStatus('競合処理に失敗しました: ' + (error.message || error), true);
     } finally {
-      actionBusy = false;
-      if (overlay.isConnected) {
-        overlay.querySelectorAll('[data-conflict-action]').forEach(button => { button.disabled = false; });
-      }
+      if (overlay.isConnected) setActionBusy(false);
     }
   });
-  overlay.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    closeDialog();
-  });
-  document.body.appendChild(overlay);
+  modalApi.open();
+  // ノート本文側の遅延focus処理と競合しても、開いたモーダルの外へfocusが
+  // 抜けた時だけ初期操作へ戻す。子プロンプト表示中（actionBusy）は介入しない。
+  requestAnimationFrame(stabilizeInitialFocus);
+  setTimeout(stabilizeInitialFocus, 60);
+  setTimeout(stabilizeInitialFocus, 320);
   // ダイアログ自体が「競合を保留中」の代わりとなる能動的なUIなので、
   // 開いている間は非モーダル表示を隠す（既存の直接呼び出し経路では
   // 対応する保留記録が無いため常に何もしない）。
   window.MeldexNoteSaveAdapter?.hideConflictPendingBanner?.(path);
-  const focusInitialAction = () => overlay.querySelector('[data-conflict-action="overwrite"]')?.focus?.({ preventScroll: true });
-  focusInitialAction();
-  requestAnimationFrame(focusInitialAction);
-  setTimeout(focusInitialAction, 60);
   apiFetch('/file?path=' + encodeURIComponent(path)).then(data => {
     // 「保留」または別の解決操作で閉じた後に届いた応答は無効。
     if (!overlay.isConnected || actionBusy) return;
@@ -894,7 +984,7 @@ function _showNoteConflictDialog(path, md, pc) {
         path, pc, remote, data?.etag, conflictGeneration,
       );
       if (resolved) {
-        closeDialog();
+        closeDialog('auto-resolved');
         showStatus('内容が一致していたため、競合を自動的に解決しました');
         return;
       }
@@ -4488,7 +4578,7 @@ async function openLink(filePath, name, options) {
   await _openLinkInCurrentTab(filePath, label);
 }
 
-async function openLinkInFloatPanel(filePath, name, options) {
+async function openLinkInRightSidebar(filePath, name, options) {
   if (!filePath) return;
   const noteAnchorId = _noteAnchorIdFromHref(filePath);
   if (noteAnchorId) {
@@ -4497,8 +4587,11 @@ async function openLinkInFloatPanel(filePath, name, options) {
   }
   const label = name || filePath.split(/[/\\]/).pop();
   if (typeof flushPendingEditorAutosave === 'function') await flushPendingEditorAutosave();
-  if (typeof openLinkedPathInFloatPanel === 'function') {
-    return openLinkedPathInFloatPanel(filePath, label, options || {});
+  if (typeof openLinkedPathInRightSidebar === 'function') {
+    return openLinkedPathInRightSidebar(filePath, label, options || {});
+  }
+  if (typeof openLinkedPathInRightPane === 'function') {
+    return openLinkedPathInRightPane(filePath, label, options || {});
   }
   return _openLinkInCurrentTab(filePath, label);
 }
@@ -4508,7 +4601,7 @@ function openLinkInRightPane(filePath, name, options) {
     const label = name || filePath.split(/[/\\]/).pop();
     return openLinkedPathInRightPane(filePath, label, options || {});
   }
-  return openLinkInFloatPanel(filePath, name, options);
+  return openLinkInRightSidebar(filePath, name, options);
 }
 
 function openLinkInMainPane(filePath, name, options) {
@@ -4586,7 +4679,7 @@ function onAutoLinkClick(el, e) {
     }
   }
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLinkInFloatPanel(filePath, name, {
+  openLinkInRightSidebar(filePath, name, {
     linkType: el.dataset.linkType || el.dataset.type || '',
     sourcePaneId: el.closest('.gb-pane')?.dataset?.paneId || '',
   });
@@ -4752,7 +4845,7 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -4824,10 +4917,6 @@ function _showLinkContextMenu(e, linkTarget) {
     });
   }
   if (!linkTarget.localAnchor) {
-    addItem('layers-2', 'フロートパネルで開く', () => openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
-      linkType: linkTarget.linkType || '',
-      sourcePaneId: linkTarget.sourcePaneId || '',
-    }));
     addItem('panelTop', 'メインパネルで開く', () => openLinkInMainPane(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
@@ -4954,13 +5043,13 @@ function _openContextLinkCurrent(linkTarget) {
   openLink(linkTarget.path, linkTarget.label);
 }
 
-function _openContextLinkFloatPanel(linkTarget) {
+function _openContextLinkRightSidebar(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
     linkTarget.openAction();
     return;
   }
-  openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
+  openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
   });
@@ -4990,7 +5079,7 @@ document.addEventListener('click', (e) => {
   clearTimeout(_linkActivationTimer);
   _linkActivationTimer = setTimeout(() => {
     if (token !== _linkActivationToken) return;
-    _openContextLinkFloatPanel(linkTarget);
+    _openContextLinkRightSidebar(linkTarget);
   }, 320);
 }, true);
 
@@ -5081,7 +5170,9 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
   // 呼ぶことで、キャッシュ済み描画をスキップする場合でも選択状態の追従は必ず起きる
   // （ファイル参照整合性計画 Phase 5: フォルダパネルの一般ファイル選択が古いノート等の
   // 対象でバックリンクを表示し続ける不具合の修正）。
-  if (multiFileTargets.length > 1) {
+  if (options?.updateTargetContext === false) {
+    // フォルダ等、バックリンク対象外の情報表示では既存対象を上書きしない。
+  } else if (multiFileTargets.length > 1) {
     window.GBOptionTargetContext?.set(
       multiFileTargets.map(item => ({ path: item.path, kind: 'file' })),
       'file-info-panel-multi'
@@ -5103,6 +5194,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
         isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
       })
     : window.MeldexFileInfoPanel?.showInDetailPanel(normalizedPath, {
+        ...(options || {}),
         preloadedMeta,
         isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
       });

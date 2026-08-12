@@ -546,6 +546,134 @@ async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
   return ok;
 }
 
+function _folderCanAcceptOsDrop(event, targetItem) {
+  if (!event?.dataTransfer || !targetItem?.path) return false;
+  if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;
+  if (typeof isItemLocked === 'function' && isItemLocked(targetItem.path)) return false;
+  const types = Array.from(event.dataTransfer.types || []);
+  return types.includes('Files') && !types.includes('application/x-meldex-node');
+}
+
+function _folderReadDroppedFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = event => resolve(event.target.result);
+    reader.onerror = () => reject(reader.error || new Error('ファイルを読み込めませんでした'));
+    reader.onabort = () => reject(new Error('ファイルの読み込みが中断されました'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function _folderUploadDroppedFile(file, parentPath) {
+  if (typeof _uploadOutlinerDroppedFile === 'function') return _uploadOutlinerDroppedFile(file, parentPath);
+  try {
+    const data = await _folderReadDroppedFile(file);
+    await apiFetch('/upload-file?path=' + encodeURIComponent(parentPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data, filename: file.name }),
+    });
+    return { ok: true, name: file.name };
+  } catch (error) {
+    return { ok: false, name: file?.name || 'ファイル', error: error?.userMessage || error?.message || String(error) };
+  }
+}
+
+function _folderReadFileEntry(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+async function _folderReadDirectoryEntries(entry) {
+  const reader = entry.createReader();
+  const rows = [];
+  while (true) {
+    const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+    if (!batch.length) return rows;
+    rows.push(...batch);
+  }
+}
+
+async function _folderReadOsDropNode(entry) {
+  if (entry.isFile) return { kind: 'file', name: entry.name, file: await _folderReadFileEntry(entry) };
+  if (!entry.isDirectory) return null;
+  const children = [];
+  for (const child of await _folderReadDirectoryEntries(entry)) {
+    const node = await _folderReadOsDropNode(child);
+    if (node) children.push(node);
+  }
+  return { kind: 'folder', name: entry.name, children };
+}
+
+async function _folderOsDropNodes(dataTransfer) {
+  const entries = Array.from(dataTransfer?.items || [])
+    .filter(item => item.kind === 'file')
+    .map(item => item.webkitGetAsEntry?.())
+    .filter(Boolean);
+  if (entries.length) {
+    const nodes = [];
+    for (const entry of entries) {
+      const node = await _folderReadOsDropNode(entry);
+      if (node) nodes.push(node);
+    }
+    return nodes;
+  }
+  return Array.from(dataTransfer?.files || []).map(file => ({ kind: 'file', name: file.name, file }));
+}
+
+function _folderCountOsDropFiles(nodes) {
+  return nodes.reduce((count, node) => count + (node.kind === 'file' ? 1 : _folderCountOsDropFiles(node.children || [])), 0);
+}
+
+async function _folderImportOsNode(node, parentPath, result, progress) {
+  if (node.kind === 'folder') {
+    try {
+      const created = await apiPost('/outliner/add', { type: 'folder', label: node.name, parent: parentPath });
+      const childParent = created?.node?.path || [parentPath, created?.node?.label || node.name].filter(Boolean).join('/');
+      for (const child of node.children || []) await _folderImportOsNode(child, childParent, result, progress);
+    } catch (error) {
+      const skipped = _folderCountOsDropFiles(node.children || []);
+      result.failed += Math.max(1, skipped);
+      result.failures.push({ name: node.name, error });
+      progress?.updateOperation?.(result.ok + result.failed);
+    }
+    return;
+  }
+  const uploaded = await _folderUploadDroppedFile(node.file, parentPath);
+  if (uploaded.ok) result.ok += 1;
+  else { result.failed += 1; result.failures.push(uploaded); }
+  progress?.updateOperation?.(result.ok + result.failed);
+}
+
+async function _folderImportOsDrop(event, targetItem) {
+  if (!_folderCanAcceptOsDrop(event, targetItem)) return 0;
+  const nodes = await _folderOsDropNodes(event.dataTransfer);
+  const total = _folderCountOsDropFiles(nodes);
+  if (!total && !nodes.some(node => node.kind === 'folder')) {
+    showStatus('取り込めるファイルまたはフォルダがありません', true);
+    return 0;
+  }
+  const progress = window.MeldexImportProgress;
+  const result = { ok: 0, failed: 0, failures: [] };
+  progress?.beginOperation?.('ファイルを取り込み中', Math.max(1, total));
+  try {
+    for (const node of nodes) await _folderImportOsNode(node, targetItem.path, result, progress);
+  } finally {
+    progress?.finishOperation?.();
+  }
+  if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'folder-panel-os-drop' });
+  if (_folderPath && typeof openFolder === 'function') {
+    await openFolder(document.getElementById('folder-title')?.textContent || _folderPath, _folderPath, {
+      silent: true, skipShowView: true, skipNavPush: true, skipSaveLastView: true, skipHighlight: true, skipGlobalUi: true,
+    });
+  }
+  const first = result.failures[0];
+  const reason = String(first?.error?.userMessage || first?.error?.message || first?.error || '');
+  showStatus(result.failed
+    ? `${result.ok}件を取り込み、${result.failed}件は失敗しました${reason ? `（${reason}）` : ''}`
+    : `${result.ok}件を「${targetItem.name || targetItem.path}」へ取り込みました`, result.failed > 0);
+  return result.ok;
+}
+
 function _folderCanAcceptMoveDrop(event, targetItem) {
   if (!event || event.altKey || !targetItem?.path) return false;
   if (targetItem.type !== 'folder' && targetItem.type !== 'database') return false;

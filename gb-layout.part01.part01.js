@@ -64,6 +64,12 @@ const GBLayout = (() => {
       && node.tabs.length > 1;
   }
 
+  // ファイルdropは自由レイアウト用のドッキング操作とは別契約。
+  // 固定レイアウトでも、利用者が日常的に使うメインタブ行は開く対象として受け入れる。
+  function _canAcceptNodeDropOnTabBar(node) {
+    return _showFreeLayoutUi() || _isMainPaneNode(node);
+  }
+
   function _isSidebarPaneNode(node) {
     const role = _paneRoleName(node);
     return role === 'left-sidebar' || role === 'right-sidebar';
@@ -1066,8 +1072,9 @@ const GBLayout = (() => {
     moreBtn.className = 'gb-pane-btn gb-pane-more';
     if (mobileMainTabActions) moreBtn.classList.add('gb-pane-mobile-tab-more');
     moreBtn.dataset.e2eId = `pane-${node.id}-actions`;
-    moreBtn.title = mobileMainTabActions ? 'タブ操作' : 'パネル操作';
-    moreBtn.setAttribute('aria-label', moreBtn.title);
+    const activeTabTitle = node.tabs?.[node.activeTabIndex]?.label || 'タブ';
+    moreBtn.title = mobileMainTabActions ? activeTabTitle : 'パネル操作';
+    moreBtn.setAttribute('aria-label', mobileMainTabActions ? `${activeTabTitle}のタブ操作` : moreBtn.title);
     moreBtn.setAttribute('aria-haspopup', 'menu');
     moreBtn.setAttribute('aria-expanded', 'false');
     moreBtn.innerHTML = lucide('moreHorizontal', 12);
@@ -1094,6 +1101,7 @@ const GBLayout = (() => {
         const tabEl = document.createElement('div');
         tabEl.className = 'gb-tab' + (i === node.activeTabIndex ? ' active' : '');
         tabEl.dataset.tabId = tab.id;
+        tabEl.dataset.tabTitle = tab.label || 'タブ';
         tabEl.dataset.e2eId = `pane-${node.id}-tab-${tab.id}`;
         const canReorderMainTab = _canReorderMainPaneTabs(node);
         tabEl.draggable = _showFreeLayoutUi() || canReorderMainTab;
@@ -1116,7 +1124,7 @@ const GBLayout = (() => {
           tabMoreBtn.type = 'button';
           tabMoreBtn.className = 'gb-tab-more';
           tabMoreBtn.dataset.e2eId = `pane-${node.id}-tab-${tab.id}-actions`;
-          tabMoreBtn.title = 'タブ操作';
+          tabMoreBtn.title = tab.label || 'タブ';
           tabMoreBtn.setAttribute('aria-label', `${tab.label || 'タブ'}のタブ操作`);
           tabMoreBtn.setAttribute('aria-haspopup', 'menu');
           tabMoreBtn.setAttribute('aria-expanded', 'false');
@@ -1292,7 +1300,7 @@ const GBLayout = (() => {
       const isTab = types.includes('application/x-gb-tab');
       const isNode = types.includes('application/x-meldex-node')
         || (typeof MeldexDnD !== 'undefined' && MeldexDnD.hasDropKind(e, 'node'));
-      if (!isMainReorder && (!_showFreeLayoutUi() || (!isTab && !isNode))) return;
+      if (!isMainReorder && ((!isTab || !_showFreeLayoutUi()) && (!isNode || !_canAcceptNodeDropOnTabBar(node)))) return;
       if (isMainReorder) {
         if (!_canReorderMainPaneTabs(node) || window._gbTabDragSrcPaneId !== node.id) return;
       }
@@ -1335,7 +1343,7 @@ const GBLayout = (() => {
       const hasNode = typeof MeldexDnD !== 'undefined'
         ? MeldexDnD.hasDropKind(e, 'node')
         : !!e.dataTransfer.getData('application/x-meldex-node');
-      if (!mainReorderData && (!_showFreeLayoutUi() || (!tabData && !hasNode))) return;
+      if (!mainReorderData && ((!tabData || !_showFreeLayoutUi()) && (!hasNode || !_canAcceptNodeDropOnTabBar(node)))) return;
       e.preventDefault();
       e.stopPropagation();
       _clearDropMarkers();
@@ -1400,14 +1408,19 @@ const GBLayout = (() => {
       let openedFromDrop = 0;
       items.forEach((it) => {
         if (!it || !it.path) return;
-        const openType = typeof _normalizeOpenTypeForNav === 'function'
+        const normalizedTarget = typeof MeldexDnD !== 'undefined'
+          ? MeldexDnD.normalizeOpenTarget?.(it)
+          : null;
+        const openType = normalizedTarget?.type || (typeof _normalizeOpenTypeForNav === 'function'
           ? _normalizeOpenTypeForNav(it.type)
-          : (it.type === 'database' ? 'pivot' : (it.type === 'scenario' ? 'scriptnote' : (it.type || 'page')));
+          : (it.type === 'database' ? 'pivot' : (it.type === 'scenario' ? 'scriptnote' : (it.type || 'page'))));
+        const openLabel = normalizedTarget?.label || it.name || '';
+        const openState = normalizedTarget?.state || null;
         // addTab は dedup / ロックフォールバックで「別ペインへ移譲」する場合がある。
         // そのケースを node.tabs.length の差分で検出し、このペインに新規追加された時だけ
         // 挿入位置補正と insertIndex 前進を行う。
         const lenBefore = node.tabs.length;
-        const tabId = GBTabs.addTab(node.id, it.name || '', openType, it.path, null, { preferTargetPane: true });
+        const tabId = GBTabs.addTab(node.id, openLabel, openType, it.path, openState, { preferTargetPane: true });
         if (!tabId) return;
         openedFromDrop += 1;
         const addedHere = node.tabs.length > lenBefore
@@ -1423,5 +1436,5 @@ const GBLayout = (() => {
           // skipAutoAppLayout は旧アプリ別レイアウト時代の互換オプション。
           // 現在は単一レイアウトなので、呼び出し側へ渡しても配置は変更しない。
           navOpen(
-            { type: openType, label: it.name || '', path: it.path },
+            normalizedTarget || { type: openType, label: openLabel, path: it.path, state: openState || {} },
             { skipAutoAppLayout: true }

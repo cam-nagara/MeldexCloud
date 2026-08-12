@@ -133,13 +133,62 @@
       } catch {
         throw new Error(`管理データが破損しているため読み込めません: ${path}`);
       }
-      if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
-      const contract = _systemContract();
-      if (contract?.recordFromEnvelope && record.meldex_system_storage) {
-        return contract.recordFromEnvelope(record);
+      if (!record || typeof record !== 'object' || Array.isArray(record)) {
+        throw new Error(`管理データの形式が不正です: ${path}`);
       }
+      const contract = _systemContract();
+      if (contract?.recordFromEnvelope && record.meldex_system_storage) record = contract.recordFromEnvelope(record);
       // 初期開発版で作成された封筒なしレコードの読込互換。
+      const validPayload = record.payload && typeof record.payload === 'object' && !Array.isArray(record.payload);
+      if (typeof record.kind !== 'string' || typeof record.documentId !== 'string' || !validPayload
+        || record.kind !== String(kind) || record.documentId !== String(documentId)) {
+        throw new Error(`管理データの識別情報が不正です: ${path}`);
+      }
       return record;
+    }
+
+    _audit(level, operation, kind, documentId, message) {
+      const detail = {
+        level, operation, kind, documentId, environment: 'browser-local', message: String(message || ''),
+      };
+      _systemContract()?.recordStorageAuditEvent?.(null, detail);
+      if (level === 'error') console.warn('[BrowserSystemStorage]', detail.message, { kind, documentId, operation });
+    }
+
+    async listDocuments(kind) {
+      const contract = _systemContract();
+      const segment = contract?.kindSubpathSegment
+        ? contract.kindSubpathSegment(kind)
+        : _systemSegment(kind, '管理データ種別');
+      const folderPath = `${SYSTEM_ROOT}/${segment}`;
+      let entries = [];
+      try {
+        // File System Access API の entries() はページで切られないため、
+        // provider.listEntries() が現在のワークスペース配下を最後まで列挙する。
+        entries = await this.provider.listEntries(folderPath);
+      } catch (error) {
+        if (error?.name === 'NotFoundError') return [];
+        throw error;
+      }
+      const records = [];
+      for (const entry of entries) {
+        if (entry?.kind !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        const documentId = String(entry.name).slice(0, -5);
+        try {
+          if (contract?.sanitizeDocumentId) contract.sanitizeDocumentId(documentId);
+          else _systemSegment(documentId, '管理データID');
+        } catch (error) {
+          this._audit('error', 'list_documents', kind, documentId, `不正な管理データ名をスキップしました: ${error?.message || error}`);
+          continue;
+        }
+        try {
+          const record = await this.load(kind, documentId);
+          if (record) records.push(record);
+        } catch (error) {
+          this._audit('error', 'list_documents', kind, documentId, `破損した管理データをスキップしました: ${error?.message || error}`);
+        }
+      }
+      return records.sort((left, right) => String(left.documentId || '').localeCompare(String(right.documentId || '')));
     }
 
     async save(kind, documentId, payload, options) {
@@ -164,7 +213,8 @@
           boundary: 'browser-local',
           payload,
         };
-        await this.provider.writeJson(path, contract?.recordToEnvelope ? contract.recordToEnvelope(record) : record);
+        await this.provider._uploadBytesUnlocked(path, new TextEncoder().encode(JSON.stringify(
+          contract?.recordToEnvelope ? contract.recordToEnvelope(record) : record, null, 2)));
         return record;
       });
     }
@@ -179,7 +229,7 @@
           const actual = current.revision || null;
           if (expected !== actual) throw _conflictError(expected, actual);
         }
-        await this.provider.deletePath(path);
+        await this.provider._deletePathUnlocked(path);
         return true;
       });
     }
@@ -245,6 +295,12 @@
       this._nativeRoot = null;
       this._writeLocks.clear();
       if (_runtime()?.isBrowserMode?.()) _runtime()?.clearWorkspaceState?.();
+    }
+
+    async reloadWorkspace() {
+      this.rootHandle = null;
+      this._nativeRoot = null;
+      return this.restoreWorkspace();
     }
 
     async ensureWorkspacePermission() {
@@ -320,10 +376,48 @@
       return stat;
     }
 
-    async ensureDirectory(relativePath) {
+    async _ensureDirectoryUnlocked(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const handle = await this._nativeDirectory(normalized, true);
       return new BrowserDirectoryHandle(this, normalized, handle);
+    }
+
+    async ensureDirectory(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, () => this._ensureDirectoryUnlocked(normalized));
+    }
+
+    async ensureDirectoryConditional(relativePath, marker = null) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        if (await this.statPath(normalized)) {
+          const error = new Error('端末内フォルダーが同時に作成されました');
+          error.status = 409; error.code = 'etag_conflict'; throw error;
+        }
+        let markerRevision = '';
+        let markerPath = '';
+        if (marker?.name) {
+          markerPath = _joinPath(`${SYSTEM_ROOT}/restore-ownership`, marker.name);
+          const existing = await this.statPath(markerPath);
+          if (!existing) await this._uploadBytesUnlocked(markerPath, marker.bytes || new Uint8Array());
+          else if (existing.kind !== 'file') {
+            const error = new Error('復元ownership markerが競合しています'); error.status = 409; throw error;
+          }
+          const markerFile = await this.downloadAsFile(markerPath);
+          const actual = new Uint8Array(await markerFile.arrayBuffer());
+          const expected = await _toUint8Array(marker.bytes || new Uint8Array());
+          if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+            const error = new Error('復元ownership markerが一致しません'); error.status = 409; throw error;
+          }
+          markerRevision = await _systemContract().computeRevision(Array.from(actual));
+        }
+        await this._ensureDirectoryUnlocked(normalized);
+        return { ok: true, created: true, markerPath, markerRevision };
+      });
     }
 
     async listEntries(relativePath) {
@@ -350,6 +444,36 @@
       });
     }
 
+    supportsStrictConditionalDelete() { return !!globalThis.navigator?.locks?.request; }
+    folderRestoreCapabilities() {
+      const strict = !!globalThis.navigator?.locks?.request;
+      return Object.freeze({ createFileCas: strict, updateFileCas: strict, createDirectoryCas: strict,
+        deleteFileCas: strict, deleteEmptyDirectoryCas: strict, freshRead: strict });
+    }
+
+    async getMetadata(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const file = await this.downloadAsFile(normalized);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      return {
+        path: normalized, name: _basename(normalized), size: bytes.byteLength,
+        revision: await _systemContract().computeRevision(Array.from(bytes)),
+      };
+    }
+
+    async readBytesFresh(relativePath) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const file = await this.downloadAsFile(normalized);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        return { bytes, revision: await _systemContract().computeRevision(Array.from(bytes)) };
+      });
+    }
+
     async readText(relativePath) {
       return (await this.downloadAsFile(relativePath)).text();
     }
@@ -358,15 +482,59 @@
       try { return JSON.parse(await this.readText(relativePath)); } catch { return fallbackValue; }
     }
 
-    async uploadBytes(relativePath, data) {
+    async _uploadBytesUnlocked(relativePath, data) {
       const normalized = _normalizeRelativePath(relativePath);
       const parent = _dirname(normalized);
-      if (parent) await this.ensureDirectory(parent);
+      if (parent) await this._ensureDirectoryUnlocked(parent);
       const handle = await this.getFileHandle(normalized, { create: true });
       const writable = await handle.createWritable();
       await writable.write(await _toUint8Array(data));
       await writable.close();
       return this.statPath(normalized);
+    }
+
+    async _ensureOwnershipMarkerUnlocked(targetPath, marker, requireExisting = false) {
+      if (!marker?.name) return { markerPath: '', markerRevision: '' };
+      const markerPath = _joinPath(`${SYSTEM_ROOT}/restore-ownership`, marker.name);
+      const existing = await this.statPath(markerPath);
+      if (!existing && requireExisting) throw Object.assign(new Error('復元ownership markerがありません'), { status: 409 });
+      if (!existing) await this._uploadBytesUnlocked(markerPath, marker.bytes || new Uint8Array());
+      else if (existing.kind !== 'file') {
+        const error = new Error('復元ownership markerが競合しています'); error.status = 409; throw error;
+      }
+      const markerFile = await this.downloadAsFile(markerPath);
+      const actual = new Uint8Array(await markerFile.arrayBuffer());
+      const expected = await _toUint8Array(marker.bytes || new Uint8Array());
+      if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+        const error = new Error('復元ownership markerが一致しません'); error.status = 409; throw error;
+      }
+      return { markerPath, markerRevision: await _systemContract().computeRevision(Array.from(actual)) };
+    }
+
+    async uploadBytes(relativePath, data) {
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, () => this._uploadBytesUnlocked(normalized, data));
+    }
+
+    async uploadBytesConditional(relativePath, data, expectedRevision, marker = null) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const stat = await this.statPath(normalized);
+        const current = stat?.kind === 'file' ? await this.getMetadata(normalized) : null;
+        const expected = expectedRevision == null ? null : String(expectedRevision);
+        if ((current?.revision || null) !== expected) {
+          const error = new Error('端末内ファイルが同時に変更されました');
+          error.status = 409; error.code = 'etag_conflict'; throw error;
+        }
+        const ownership = await this._ensureOwnershipMarkerUnlocked(normalized, marker);
+        const saved = await this._uploadBytesUnlocked(normalized, data);
+        const revision = (await this.getMetadata(normalized)).revision;
+        return { ...saved, revision, ...ownership };
+      });
     }
 
     async overwriteBytes(relativePath, data) {
@@ -381,12 +549,13 @@
       return this.writeText(relativePath, JSON.stringify(data, null, 2));
     }
 
-    async _withWriteLock(path, callback) {
-      if (globalThis.navigator?.locks?.request) return globalThis.navigator.locks.request(`meldex-browser:${path}`, callback);
-      const previous = this._writeLocks.get(path) || Promise.resolve();
+    async _withWriteLock(_path, callback) {
+      const lockName = `meldex-browser:provider-root:${STORAGE_ROOT_NAME}`;
+      if (globalThis.navigator?.locks?.request) return globalThis.navigator.locks.request(lockName, callback);
+      const previous = this._writeLocks.get(lockName) || Promise.resolve();
       const next = previous.catch(() => {}).then(callback);
-      this._writeLocks.set(path, next);
-      try { return await next; } finally { if (this._writeLocks.get(path) === next) this._writeLocks.delete(path); }
+      this._writeLocks.set(lockName, next);
+      try { return await next; } finally { if (this._writeLocks.get(lockName) === next) this._writeLocks.delete(lockName); }
     }
 
     async writeJsonMerged(relativePath, updater, options) {
@@ -396,17 +565,161 @@
         const current = await this.readJson(normalized, fallback);
         const next = typeof updater === 'function' ? await updater(current, { attempt: 0, rev: '' }) : updater;
         if (next === false) return { ok: true, skipped: true };
-        await this.writeJson(normalized, next === undefined ? current : next);
+        await this._uploadBytesUnlocked(normalized, new TextEncoder().encode(JSON.stringify(next === undefined ? current : next, null, 2)));
         return { ok: true };
       });
     }
 
-    async deletePath(relativePath) {
+    async _deletePathUnlocked(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       if (!normalized) throw new Error('端末内保存のルートは削除できません');
       const parent = await this._nativeDirectory(_dirname(normalized), false);
       await parent.removeEntry(_basename(normalized), { recursive: true });
       return true;
+    }
+
+    async deletePath(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, () => this._deletePathUnlocked(normalized));
+    }
+
+    async deletePathConditional(relativePath, expectedRevision, marker = null) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const current = await this.getMetadata(normalized);
+        if (!expectedRevision || current.revision !== String(expectedRevision)) {
+          const error = new Error('端末内ファイルが同時に変更されました');
+          error.status = 409; error.code = 'etag_conflict'; throw error;
+        }
+        const ownership = await this._ensureOwnershipMarkerUnlocked(normalized, marker);
+        await this._deletePathUnlocked(normalized);
+        return { ok: true, deletedRevision: current.revision, ...ownership };
+      });
+    }
+
+    async deleteEmptyDirectoryConditional(relativePath, marker = null) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      if (!normalized) throw new Error('端末内保存のルートは削除できません');
+      return this._withWriteLock(normalized, async () => {
+        let markerPath = '';
+        let markerRevision = '';
+        if (marker?.name) {
+          markerPath = _joinPath(`${SYSTEM_ROOT}/restore-ownership`, marker.name);
+          const existing = await this.statPath(markerPath);
+          if (!existing) await this._uploadBytesUnlocked(markerPath, marker.bytes || new Uint8Array());
+          else if (existing.kind !== 'file') {
+            const error = new Error('復元ownership markerが競合しています'); error.status = 409; throw error;
+          }
+          const markerFile = await this.downloadAsFile(markerPath);
+          const actual = new Uint8Array(await markerFile.arrayBuffer());
+          const expected = await _toUint8Array(marker.bytes || new Uint8Array());
+          if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+            const error = new Error('復元ownership markerが一致しません'); error.status = 409; throw error;
+          }
+          markerRevision = await _systemContract().computeRevision(Array.from(actual));
+        }
+        const directory = await this._nativeDirectory(normalized, false);
+        for await (const _entry of directory.entries()) {
+          const error = new Error('削除対象フォルダーが空ではありません');
+          error.status = 409; error.code = 'directory_not_empty'; throw error;
+        }
+        const parent = await this._nativeDirectory(_dirname(normalized), false);
+        await parent.removeEntry(_basename(normalized), { recursive: false });
+        return { ok: true, markerPath, markerRevision };
+      });
+    }
+
+    async rollbackDirectoryConditional(relativePath, mode, marker) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const markerPath = marker?.name ? _joinPath(`${SYSTEM_ROOT}/restore-ownership`, marker.name) : '';
+        const markerStat = markerPath ? await this.statPath(markerPath) : null;
+        if (!markerStat) {
+          const reconciled = await this.statPath(normalized);
+          if (mode === 'remove-created' && !reconciled) return { ok: true, reconciled: true };
+          if (mode === 'recreate-deleted' && reconciled?.kind === 'directory') {
+            const directory = await this._nativeDirectory(normalized, false);
+            for await (const _entry of directory.entries()) throw Object.assign(new Error('巻き戻し済みフォルダーが変更されました'), { status: 409 });
+            return { ok: true, reconciled: true };
+          }
+          throw Object.assign(new Error('復元ownership markerがありません'), { status: 409 });
+        }
+        const ownership = await this._ensureOwnershipMarkerUnlocked(normalized, marker, true);
+        if (!ownership.markerPath) throw new Error('復元ownership markerを確認できません');
+        const stat = await this.statPath(normalized);
+        if (mode === 'remove-created') {
+          if (stat) {
+            if (stat.kind !== 'directory') throw Object.assign(new Error('巻き戻し対象の種類が変更されました'), { status: 409 });
+            const directory = await this._nativeDirectory(normalized, false);
+            for await (const _entry of directory.entries()) throw Object.assign(new Error('巻き戻し対象フォルダーが変更されました'), { status: 409 });
+            const parent = await this._nativeDirectory(_dirname(normalized), false);
+            await parent.removeEntry(_basename(normalized), { recursive: false });
+          }
+        } else if (mode === 'recreate-deleted') {
+          if (stat) {
+            if (stat.kind !== 'directory') throw Object.assign(new Error('巻き戻し先フォルダーが再作成されました'), { status: 409 });
+            const directory = await this._nativeDirectory(normalized, false);
+            for await (const _entry of directory.entries()) throw Object.assign(new Error('巻き戻し先フォルダーが変更されました'), { status: 409 });
+          } else await this._ensureDirectoryUnlocked(normalized);
+        } else throw new Error('巻き戻し方法が不正です');
+        await this._deletePathUnlocked(ownership.markerPath);
+        return { ok: true };
+      });
+    }
+
+    async rollbackFileConditional(relativePath, mode, beforeBytes, expectedBeforeRevision, expectedAfterRevision, marker) {
+      if (!globalThis.navigator?.locks?.request) {
+        const error = new Error('このブラウザーは厳密な競合検出に対応していません');
+        error.status = 503; error.code = 'strict_cas_unavailable'; throw error;
+      }
+      const normalized = _normalizeRelativePath(relativePath);
+      return this._withWriteLock(normalized, async () => {
+        const markerPath = marker?.name ? _joinPath(`${SYSTEM_ROOT}/restore-ownership`, marker.name) : '';
+        const markerStat = markerPath ? await this.statPath(markerPath) : null;
+        if (!markerStat) {
+          const reconciled = await this.statPath(normalized);
+          if (beforeBytes == null && !reconciled) return { ok: true, reconciled: true };
+          if (beforeBytes != null && reconciled?.kind === 'file'
+            && (await this.getMetadata(normalized)).revision === String(expectedBeforeRevision || '')) return { ok: true, reconciled: true };
+          throw Object.assign(new Error('復元ownership markerがありません'), { status: 409 });
+        }
+        const ownership = await this._ensureOwnershipMarkerUnlocked(normalized, marker, true);
+        const stat = await this.statPath(normalized);
+        if (mode === 'restore-deleted') {
+          if (stat) {
+            if (stat.kind !== 'file' || (await this.getMetadata(normalized)).revision !== String(expectedBeforeRevision || '')) {
+              throw Object.assign(new Error('巻き戻し先ファイルが再作成されました'), { status: 409 });
+            }
+          } else await this._uploadBytesUnlocked(normalized, beforeBytes);
+        } else if (mode === 'restore-written') {
+          if (!stat && beforeBytes == null) {
+            await this._deletePathUnlocked(ownership.markerPath);
+            return { ok: true, reconciled: true };
+          }
+          if (!stat || stat.kind !== 'file') throw Object.assign(new Error('巻き戻し対象ファイルが変更されました'), { status: 409 });
+          const current = await this.getMetadata(normalized);
+          if (expectedBeforeRevision && current.revision === String(expectedBeforeRevision)) {
+            // Marker was durable before the file mutation; the original is intact.
+          } else if (!expectedAfterRevision || current.revision !== String(expectedAfterRevision)) {
+            throw Object.assign(new Error('巻き戻し対象ファイルが同時に変更されました'), { status: 409 });
+          } else if (beforeBytes == null) await this._deletePathUnlocked(normalized);
+          else await this._uploadBytesUnlocked(normalized, beforeBytes);
+        } else throw new Error('巻き戻し方法が不正です');
+        await this._deletePathUnlocked(ownership.markerPath);
+        return { ok: true };
+      });
     }
 
     async _copyRecursive(sourcePath, targetPath) {

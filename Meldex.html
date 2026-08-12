@@ -56,6 +56,7 @@ html[data-desktop-launch="1"] #gb-layout-root{
 <link rel="apple-touch-icon" sizes="120x120" href="Meldex_apple_touch_icon_120.png">
 <link rel="apple-touch-icon" href="Meldex_apple_touch_icon_180.png">
 <link rel="manifest" href="manifest.json">
+<script src="meldex-cloud-runtime-01.js?v=26425dba5549ce70"></script>
 <script>
 (function () {
   function isHardReloadShortcut(event) {
@@ -155,7 +156,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   });
 })();
 </script>
-<script src="meldex-cloud-runtime-01.js?v=aa03cb1e62028fe4"></script>
+<script src="meldex-cloud-runtime-02.js?v=aa03cb1e62028fe4"></script>
 <script>
 (function () {
   try {
@@ -167,7 +168,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-02.js?v=45578a2551e5de98"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-03.js?v=221eb5e83edae21a"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=08df30124f9ded3a"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=157e0992d300f8ce"></script>
 
 
 
@@ -182,23 +183,26 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-db-timeline.css">
 <link rel="stylesheet" href="gb-db-column-filter.css">
 <link rel="stylesheet" href="gb-db-tree-view.css">
-<link rel="stylesheet" href="gb-float-panel.css">
+<link rel="stylesheet" href="gb-mobile-tab-gesture-router.css">
 <link rel="stylesheet" href="gb-subpanel.css">
 <link rel="stylesheet" href="gb-entity-detail-surface.css">
 <link rel="stylesheet" href="gb-command-palette.css">
 <link rel="stylesheet" href="gb-cloud-mobile.css">
 <link rel="stylesheet" href="gb-cloud-mobile-explorer.css">
 <link rel="stylesheet" href="gb-cloud-conflict-resolver.css">
-<script src="meldex-cloud-runtime-04.js?v=2ba7338c9bb35dc8"></script>
+<script src="meldex-cloud-runtime-05.js?v=2ba7338c9bb35dc8"></script>
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-note-block-menu.css">
 <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-view.css">
 <link rel="stylesheet" href="gb-tool-calendar-production-task-create.css">
+<link rel="stylesheet" href="gb-scheduler-ui.css">
 <link rel="stylesheet" href="gb-ui.css">
 <link rel="stylesheet" href="gb-duplicate-monitor.css">
 <link rel="stylesheet" href="gb-sheet-mobile.css">
 <link rel="stylesheet" href="gb-sheet-view-switcher.css">
+<link rel="stylesheet" href="gb-sheet-archive.css">
+<link rel="stylesheet" href="gb-sheet-attachment-cleanup.css">
 <link rel="stylesheet" href="gb-beta-release.css">
 <link rel="stylesheet" href="gb-tooltip.css">
 <link rel="stylesheet" href="gb-csv-workbench.css">
@@ -221,7 +225,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-chat-cli-auth.css">
 <link rel="stylesheet" href="gb-auto-tag-settings.css">
 <link rel="stylesheet" href="gb-auto-tag-jobs.css">
-<script src="meldex-cloud-runtime-05.js?v=c1e14f4542352b8a"></script>
+<script src="meldex-cloud-runtime-06.js?v=c1e14f4542352b8a"></script>
 </head>
 <body>
 <div id="gb-splash" style="position:fixed;inset:0;z-index:9999;background:#1e1e1e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
@@ -792,7 +796,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-06.js?v=0ea2f3e8d96a1838"></script>
+<script src="meldex-cloud-runtime-07.js?v=d2d62bb2fe8aa4d1"></script>
 
 
 
@@ -800,7 +804,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-07.js?v=f3cb759dcc52ae87"></script>
+<script src="meldex-cloud-runtime-08.js?v=6fb6ca254de929f9"></script>
 
 
 
@@ -810,6 +814,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
   
   
+
 
 
 
@@ -843,6 +848,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     GBPaneBridge.init();
     if (typeof replaceIcons === 'function') replaceIcons();
     await init();
+    await window.MeldexSurfaceDeepLink?.applyFromLocation();
     if (window.GBSmoke?.enabled) window.GBSmoke.run();
   } catch (error) {
     console.error('[Meldex] boot failed:', error);
@@ -859,7 +865,20 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-08.js?v=9710ab42d69b4af6"></script>
+<script src="meldex-cloud-runtime-09.js?v=88df50dce3f9908a"></script>
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

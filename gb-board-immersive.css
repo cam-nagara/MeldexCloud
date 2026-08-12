@@ -1,5 +1,6 @@
 .gb-canvas-root.bd-immersive-root,
 #board-canvas-root.bd-immersive-root {
+  --bd-edge-sensor-size: 28px;
   position: relative;
   overflow: hidden;
 }
@@ -55,17 +56,17 @@
 
 .bd-edge-sensor[data-edge="top"] {
   inset: 0 18px auto 18px;
-  height: 10px;
+  height: var(--bd-edge-sensor-size);
 }
 
 .bd-edge-sensor[data-edge="bottom"] {
   inset: auto 18px 0 18px;
-  height: 10px;
+  height: var(--bd-edge-sensor-size);
 }
 
 .bd-edge-sensor[data-edge="right"] {
   inset: 18px 0 18px auto;
-  width: 12px;
+  width: var(--bd-edge-sensor-size);
 }
 
 .bd-edge-handle {

@@ -488,6 +488,10 @@
         <label>シフト勤務テンプレート</label>
         <div class="gb-cal-shift-template-list">${rows}</div>
         <button type="button" class="gb-cal-shift-template-add" data-cal-shift-template-new aria-label="シフト勤務テンプレートを追加" title="シフト勤務テンプレートを追加">${_stIcon('plus', 14)} テンプレート追加</button>`;
+      field.querySelectorAll('[data-cal-shift-template-new],[data-cal-shift-template-edit],[data-cal-shift-template-delete]').forEach(button => {
+        button.style.minHeight = '44px';
+        if (!button.hasAttribute('data-cal-shift-template-new')) button.style.minWidth = '44px';
+      });
       field.querySelector('[data-cal-shift-template-new]')?.addEventListener('click', () => this._showShiftTemplateEditor(null));
       field.querySelectorAll('[data-cal-shift-template-edit]').forEach(btn => {
         const template = templates.find(item => item.id === btn.dataset.calShiftTemplateEdit);
@@ -528,74 +532,143 @@
       const selected = value === String(entry.teamFolder || '') ? ' selected' : '';
       return `<option value="${_stEsc(value)}"${selected}>${_stEsc(team.label || value || 'ワークスペース')}</option>`;
     }).join('') : `<option value="">${teamLoadFailed ? 'ワークスペースを読み込めませんでした' : 'ワークスペースを設定してください'}</option>`;
-    const overlay = document.createElement('div');
-    overlay.className = 'gb-cal-modal-overlay';
-    overlay.innerHTML = `<div class="gb-cal-modal gb-cal-shift-template-modal" role="dialog" aria-modal="true" aria-labelledby="gb-cal-shift-template-title" style="${_stModalSizeStyle(520)}">
-      <h3 id="gb-cal-shift-template-title">${template?.id ? 'シフト勤務テンプレート編集' : 'シフト勤務テンプレート追加'}</h3>
+    const content = document.createElement('div');
+    content.innerHTML = `<div class="gb-cal-shift-template-form"><div role="status" aria-live="polite" data-cal-shift-template-status></div>
       <div class="field"><label>名前</label><input class="gb-input" data-cal-shift-template-name type="text" aria-label="シフト勤務テンプレート名" value="${_stEsc(template?.name || '標準勤務')}"></div>
       <div class="field"><label>ワークスペース</label><select class="gb-select" data-cal-shift-template-team aria-label="ワークスペース">${teamOptions}</select></div>
       ${teamLoadFailed ? '<div class="gb-section-desc">ワークスペース一覧を読み込めませんでした。保存済みのワークスペースは維持できます。</div>' : ''}
-      <div style="display:flex;gap:8px;">
-        <div class="field" style="flex:1;"><label>勤務開始</label>${_stTimeControlHtml('work-start', entry.workStart || '09:00', '勤務開始')}</div>
-        <div class="field" style="flex:1;"><label>勤務終了</label>${_stTimeControlHtml('work-end', entry.workEnd || '18:00', '勤務終了')}</div>
+      <div class="gb-cal-shift-work-grid">
+        <div class="field"><label>勤務開始</label>${_stTimeControlHtml('work-start', entry.workStart || '09:00', '勤務開始')}</div>
+        <div class="field"><label>勤務終了</label>${_stTimeControlHtml('work-end', entry.workEnd || '18:00', '勤務終了')}</div>
       </div>
       <div class="field">
         <label>休憩</label>
         <div class="gb-cal-shift-break-head"><span></span><span>開始</span><span>終了</span><span></span></div>
         <div class="gb-cal-shift-break-list" data-cal-shift-break-list>${_stBreakRowsHtml(breaks)}</div>
         <button type="button" data-cal-shift-break-add aria-label="休憩を追加" title="休憩を追加">${_stIcon('plus', 14)} 休憩追加</button>
-      </div>
-      <div class="btn-row"><button type="button" data-cal-shift-template-cancel>キャンセル</button><button type="button" class="primary" data-cal-shift-template-save>保存</button></div>
-    </div>`;
-    document.body.appendChild(overlay);
+      </div></div>`;
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'gb-btn gb-btn-sm';
+    cancelBtn.dataset.calShiftTemplateCancel = '';
+    cancelBtn.textContent = 'キャンセル';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+    saveBtn.dataset.calShiftTemplateSave = '';
+    saveBtn.textContent = '保存';
     let saving = false;
-    const closeEditor = () => {
-      _stCloseTimeMenus();
-      overlay.remove();
-      document.removeEventListener('keydown', closeOnEscape, true);
+    // GBUI共通controllerが role="dialog" aria-modal="true" aria-labelledby="gb-cal-shift-template-title" を付与する。
+    const modalApi = window.GBUI.createModal({
+      id: 'calendar-shift-template-editor',
+      title: template?.id ? 'シフト勤務テンプレート編集' : 'シフト勤務テンプレート追加',
+      titleId: 'gb-cal-shift-template-title',
+      body: [...content.childNodes],
+      footer: [cancelBtn, saveBtn],
+      variant: 'standard',
+      geometryKey: 'calendar-shift-template-editor',
+      minWidth: '0',
+      initialFocus: '[data-cal-shift-template-name]',
+      closeLabel: 'シフト勤務テンプレート編集を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: () => !saving,
+      onClose: () => _stCloseTimeMenus(),
+    });
+    const overlay = modalApi.overlay;
+    const panel = modalApi.modal;
+    modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+    modalApi.body.style.minWidth = '0';
+    modalApi.body.style.overflowWrap = 'anywhere';
+    overlay.dataset.e2eId = 'calendar-shift-template-editor-overlay';
+    overlay._calendarClose = modalApi.close;
+    panel.classList.add('gb-cal-shift-template-modal');
+    panel.dataset.e2eId = 'calendar-shift-template-editor-dialog';
+    panel.style.cssText = _stModalSizeStyle(520);
+    const applyEditorLayout = () => {
+      const form = panel.querySelector('.gb-cal-shift-template-form');
+      if (form) {
+        form.style.display = 'grid';
+        form.style.gap = '12px';
+        form.style.minWidth = '0';
+      }
+      panel.querySelectorAll('.field').forEach(field => {
+        field.style.display = 'grid';
+        field.style.gap = '6px';
+        field.style.minWidth = '0';
+        const label = field.querySelector(':scope > label');
+        if (label) label.style.display = 'block';
+      });
+      const workGrid = panel.querySelector('.gb-cal-shift-work-grid');
+      if (workGrid) {
+        workGrid.style.display = 'grid';
+        workGrid.style.gridTemplateColumns = window.innerWidth <= 640 ? 'minmax(0,1fr)' : 'repeat(2,minmax(0,1fr))';
+        workGrid.style.gap = '8px';
+        workGrid.style.minWidth = '0';
+      }
+      panel.querySelectorAll('.gb-cal-shift-break-head,[data-cal-shift-break-row]').forEach(row => {
+        row.style.display = 'grid';
+        row.style.gridTemplateColumns = 'minmax(52px,auto) minmax(0,1fr) minmax(0,1fr) 44px';
+        row.style.gap = '6px';
+        row.style.alignItems = 'center';
+        row.style.minWidth = '0';
+      });
+      panel.querySelectorAll('[data-cal-shift-time-control]').forEach(control => {
+        control.style.display = 'grid';
+        control.style.gridTemplateColumns = 'minmax(0,1fr) 44px';
+        control.style.minWidth = '0';
+      });
+      panel.querySelectorAll('input,select,textarea').forEach(control => {
+        control.style.width = '100%';
+        control.style.minWidth = '0';
+        control.style.maxWidth = '100%';
+        control.style.boxSizing = 'border-box';
+      });
+      panel.querySelectorAll('button').forEach(button => { button.style.minHeight = '44px'; });
+      panel.querySelectorAll('[data-cal-shift-time-menu],[data-cal-shift-break-remove]').forEach(button => {
+        button.style.width = '44px';
+        button.style.minWidth = '44px';
+        button.style.paddingInline = '0';
+      });
+      const addBreak = panel.querySelector('[data-cal-shift-break-add]');
+      if (addBreak) { addBreak.style.width = '100%'; addBreak.style.maxWidth = '100%'; }
     };
-    const closeOnEscape = event => {
-      if (event.key !== 'Escape' || saving) return;
-      event.preventDefault();
-      closeEditor();
-    };
-    document.addEventListener('keydown', closeOnEscape, true);
+    applyEditorLayout();
+    const status = panel.querySelector('[data-cal-shift-template-status]');
+    modalApi.open();
     const bindBreakDeletes = () => {
-      overlay.querySelectorAll('[data-cal-shift-break-remove]').forEach(btn => {
+      panel.querySelectorAll('[data-cal-shift-break-remove]').forEach(btn => {
         if (btn._calShiftBreakBound) return;
         btn._calShiftBreakBound = true;
         btn.addEventListener('click', () => {
           btn.closest('[data-cal-shift-break-row]')?.remove();
-          _stRenumberBreakRows(overlay);
+          _stRenumberBreakRows(panel);
         });
       });
     };
     bindBreakDeletes();
-    _stBindTimeControls(overlay);
-    overlay.querySelector('[data-cal-shift-break-add]')?.addEventListener('click', () => {
-      const list = overlay.querySelector('[data-cal-shift-break-list]');
+    _stBindTimeControls(panel);
+    panel.querySelector('[data-cal-shift-break-add]')?.addEventListener('click', () => {
+      const list = panel.querySelector('[data-cal-shift-break-list]');
       const index = list?.querySelectorAll('[data-cal-shift-break-row]').length || 0;
       list?.insertAdjacentHTML('beforeend', _stBreakRowHtml({}, index));
+      applyEditorLayout();
       bindBreakDeletes();
-      _stBindTimeControls(overlay);
-      _stRenumberBreakRows(overlay);
+      _stBindTimeControls(panel);
+      _stRenumberBreakRows(panel);
     });
-    overlay.querySelector('[data-cal-shift-template-cancel]')?.addEventListener('click', () => {
-      closeEditor();
-    });
-    overlay.querySelector('[data-cal-shift-template-save]')?.addEventListener('click', async () => {
+    cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+    saveBtn.addEventListener('click', async () => {
       if (saving) return;
-      const name = overlay.querySelector('[data-cal-shift-template-name]')?.value.trim() || '標準勤務';
-      const teamSelect = overlay.querySelector('[data-cal-shift-template-team]');
-      const saveBtn = overlay.querySelector('[data-cal-shift-template-save]');
-      const cancelBtn = overlay.querySelector('[data-cal-shift-template-cancel]');
-      const workStart = _stReadTime(overlay, 'work-start');
-      const workEnd = _stReadTime(overlay, 'work-end');
+      const name = panel.querySelector('[data-cal-shift-template-name]')?.value.trim() || '標準勤務';
+      const teamSelect = panel.querySelector('[data-cal-shift-template-team]');
+      const workStart = _stReadTime(panel, 'work-start');
+      const workEnd = _stReadTime(panel, 'work-end');
       if (!_stValidTime(workStart) || !_stValidTime(workEnd)) {
         this._showStatus?.('勤務時間を確認してください', true);
         return;
       }
-      const breakRows = [...overlay.querySelectorAll('[data-cal-shift-break-row]')].map(row => {
+      const breakRows = [...panel.querySelectorAll('[data-cal-shift-break-row]')].map(row => {
         const start = _stReadTimeState(row, 'break-start');
         const end = _stReadTimeState(row, 'break-end');
         return { start: start.value, end: end.value, partial: start.partial || end.partial };
@@ -611,8 +684,9 @@
         return;
       }
       saving = true;
-      overlay.setAttribute('aria-busy', 'true');
+      panel.setAttribute('aria-busy', 'true');
       overlay.classList.add('gb-cal-shift-template-saving');
+      if (status) status.textContent = '保存中...';
       if (saveBtn) {
         saveBtn.disabled = true;
         saveBtn.textContent = '保存中...';
@@ -639,20 +713,30 @@
       try {
         if (template?.id) await apiPut('/cal/schedule-templates/' + encodeURIComponent(template.id), payload);
         else await apiPost('/cal/schedule-templates', payload);
-        closeEditor();
-        this._renderShiftTemplateSettings?.(this._calendarSettingsBody);
-        this._showStatus?.('シフト勤務テンプレートを保存しました');
       } catch (error) {
         saving = false;
-        overlay.removeAttribute('aria-busy');
+        panel.setAttribute('aria-busy', 'false');
         overlay.classList.remove('gb-cal-shift-template-saving');
         if (saveBtn) {
           saveBtn.disabled = false;
           saveBtn.textContent = '保存';
         }
         if (cancelBtn) cancelBtn.disabled = false;
+        if (status) status.textContent = '保存に失敗しました。入力内容を保ったまま再試行できます。';
         this._showStatus?.('シフト勤務テンプレートの保存に失敗しました: ' + (error?.message || error), true);
+        return;
       }
+      saving = false;
+      panel.setAttribute('aria-busy', 'false');
+      overlay.classList.remove('gb-cal-shift-template-saving');
+      modalApi.close('saved');
+      let renderFailed = false;
+      try { this._renderShiftTemplateSettings?.(this._calendarSettingsBody); }
+      catch (error) {
+        renderFailed = true;
+        this._showStatus?.('テンプレートは保存しましたが、一覧を更新できませんでした。設定画面を開き直してください: ' + (error?.message || error), true);
+      }
+      if (!renderFailed) this._showStatus?.('シフト勤務テンプレートを保存しました');
     });
   };
 

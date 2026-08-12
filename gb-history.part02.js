@@ -41,6 +41,9 @@ async function _flushOpenAppVersionTarget(path, folderPath) {
   const smartPath = typeof state !== 'undefined' ? state.currentSmartDb?._filePath : '';
   if (smartPath && matches(smartPath) && typeof saveSmartDbDef === 'function') {
     await Promise.resolve(saveSmartDbDef(state.currentSmartDb));
+    if (typeof _runSmartDbBasePostCommitEffects === 'function') {
+      _runSmartDbBasePostCommitEffects(state.currentSmartDb);
+    }
     count++;
   }
   return count;

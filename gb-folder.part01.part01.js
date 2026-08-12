@@ -549,7 +549,7 @@ function renderFolderGrid(opts) {
 
   if (filteredItems.length === 0) {
     const empty = document.createElement('div');
-    empty.style.cssText = 'padding:40px;text-align:center;color:var(--fg2);';
+    empty.className = 'fv-empty-state';
     empty.textContent = _folderItems.length > 0 && _folderHasActiveFilters(dcfg) ? '条件に一致する項目がありません' : 'このフォルダは空です';
     container.appendChild(empty);
     return;
@@ -863,13 +863,14 @@ function renderFolderGrid(opts) {
       window._gbFolderViewDragNonce = '';
     });
     el.addEventListener('dragover', (e) => {
+      const osDrop = _folderCanAcceptOsDrop(e, item);
       const manualDrop = _folderManualDropIntent(e, el, item);
       const linkDrop = _folderCanAcceptLinkDrop(e, item);
       const moveDrop = _folderCanAcceptMoveDrop(e, item);
-      if (!manualDrop && !linkDrop && !moveDrop) return;
+      if (!osDrop && !manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
-      e.dataTransfer.dropEffect = linkDrop ? 'link' : 'move';
+      e.dataTransfer.dropEffect = osDrop ? 'copy' : linkDrop ? 'link' : 'move';
       _folderClearManualDropIndicators();
       if (manualDrop) el.classList.add(manualDrop.position === 'before' ? 'fv-manual-before' : 'fv-manual-after');
       else el.classList.add('fv-link-drop');
@@ -879,14 +880,16 @@ function renderFolderGrid(opts) {
       el.classList.remove('fv-manual-before', 'fv-manual-after');
     });
     el.addEventListener('drop', async (e) => {
+      const osDrop = _folderCanAcceptOsDrop(e, item);
       const manualDrop = _folderManualDropIntent(e, el, item);
       const linkDrop = _folderCanAcceptLinkDrop(e, item);
       const moveDrop = _folderCanAcceptMoveDrop(e, item);
-      if (!manualDrop && !linkDrop && !moveDrop) return;
+      if (!osDrop && !manualDrop && !linkDrop && !moveDrop) return;
       e.preventDefault();
       e.stopPropagation();
       el.classList.remove('fv-link-drop');
       _folderClearManualDropIndicators();
+      if (osDrop) { await _folderImportOsDrop(e, item); return; }
       if (manualDrop && _folderApplyManualDrop(manualDrop, item)) return;
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const completed = linkDrop
@@ -1005,7 +1008,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   closeColHeaderMenu();
   const itemEl = e?.currentTarget?.closest?.('.fv-item') || e?.target?.closest?.('.fv-item') || null;
-  // フロートパネル／サブパネル内では、右サイドバーで開く・バージョン管理等の
+  // サブパネル内では、右サイドバーで開く・バージョン管理等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1059,6 +1062,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
       const panel = _outlinerCreateSubmenu(label);
       _outlinerAppendSubmenu(menu, label, icon, panel);
       return {
+        panel,
         item(l, fn, cls, itemIcon) {
           return _outlinerAppendMenuItem(panel, {
             label: l,
@@ -1078,6 +1082,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
     attachHoverSubmenu(trigger, panel);
     wrap.appendChild(trigger); wrap.appendChild(panel); menu.appendChild(wrap);
     return {
+      panel,
       item(l, fn, cls, itemIcon) {
         const d = document.createElement('div');
         d.className = 'gb-context-menu-item';
@@ -1132,11 +1137,8 @@ function showFolderItemContextMenu(e, item, options = {}) {
     const openSub = addSub('開く', 'folderOpen');
     openSub.item('メインパネルで開く', () => openFolderItem(item), null, 'panelTop');
     openSub.item('新しいタブで開く', () => _folderOpenItemInNewTab(item), null, 'externalLink');
-    if (typeof openLinkedPathInFloatPanel === 'function') {
-      openSub.item('フロートパネルで開く', () => openLinkedPathInFloatPanel(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelsTopLeft');
-    }
-    if (_canUseRightSidebar) {
-      openSub.item('右サイドバーで開く', () => openLinkedPathInRightPane(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
+    if (_canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
+      openSub.item('右サイドバーで開く', () => openLinkedPathInRightSidebar(item.path, item.name, { linkType: item.type, sourceEl: itemEl || e?.target || null }), null, 'panelRight');
     }
     if (typeof openLinkedPathStandalone === 'function'
         && (typeof canOpenLinkedPathStandalone !== 'function' || canOpenLinkedPathStandalone(item.path, item.type))) {
@@ -1172,14 +1174,20 @@ function showFolderItemContextMenu(e, item, options = {}) {
   }
   if (!blankTarget && item.path) {
     const archiveTargets = _folderSelectedItems.length > 1 ? _folderSelectedItems : [item];
-    addItem(archiveTargets.length > 1 ? '選択項目を圧縮' : '圧縮', () => {
+    const extractTargets = archiveTargets.filter(target => (
+      typeof _folderCanExtractArchive === 'function' && _folderCanExtractArchive(target)
+    ));
+    const archiveSub = addSub('圧縮/解凍', 'archive');
+    archiveSub.panel.dataset.shellArchivePanel = '1';
+    archiveSub.item(archiveTargets.length > 1 ? '選択項目を圧縮' : '圧縮', () => {
       if (typeof compressFolderItems === 'function') compressFolderItems(archiveTargets);
     }, null, 'archive');
-  }
-  if (!blankTarget && item.path && typeof _folderCanExtractArchive === 'function' && _folderCanExtractArchive(item)) {
-    addItem('解凍', () => {
-      if (typeof extractArchiveItem === 'function') extractArchiveItem(item);
-    }, null, 'packageOpen');
+    if (extractTargets.length) {
+      archiveSub.item(extractTargets.length > 1 ? 'すべて展開' : '解凍', () => {
+        if (typeof extractArchiveItems === 'function') extractArchiveItems(extractTargets);
+        else if (typeof extractArchiveItem === 'function') extractArchiveItem(extractTargets[0]);
+      }, null, 'packageOpen');
+    }
   }
 
   if (item.type === 'calendar' && item.path) {
@@ -1244,12 +1252,6 @@ function showFolderItemContextMenu(e, item, options = {}) {
       }, null, 'image');
       addItem('ボードに並べる (' + imgItems.length + '枚)', () => openImagesInCanvas(imgItems), null, 'presentation');
     }
-  }
-
-  // --- Notion同期（フォルダのみ） ---
-  if (item.type === 'folder' && typeof addNotionSyncFolder === 'function') {
-    addSep();
-    addItem('Notion同期フォルダに追加', () => addNotionSyncFolder(item.path), null, 'sync');
   }
 
   // --- ツール ---

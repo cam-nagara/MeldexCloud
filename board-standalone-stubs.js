@@ -72,32 +72,24 @@
       const opts = options || {};
       const okLabel = opts.okLabel || '決定';
       const cancelLabel = opts.cancelLabel || 'キャンセル';
+      if (typeof window.GBUI?.createModal !== 'function') {
+        const nativeValue = typeof window.prompt === 'function'
+          ? window.prompt(String(message || ''), String(defaultValue ?? ''))
+          : null;
+        return Promise.resolve(nativeValue);
+      }
       return new Promise(resolve => {
         const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         const idBase = 'bsa-cf-prompt-' + (++promptSeq);
-        const overlay = document.createElement('div');
-        overlay.className = 'modal-overlay';
-        overlay.style.zIndex = '300';
-        overlay.dataset.e2eId = 'cf-prompt-overlay';
-        const dialog = document.createElement('div');
-        dialog.className = 'gb-confirm';
-        dialog.id = idBase + '-dialog';
-        dialog.dataset.e2eId = 'cf-prompt-dialog';
-        dialog.setAttribute('role', 'dialog');
-        dialog.setAttribute('aria-modal', 'true');
-        dialog.setAttribute('aria-label', '入力');
-        dialog.setAttribute('aria-describedby', idBase + '-message');
-        const body = document.createElement('div');
-        body.className = 'gb-confirm-message';
-        body.id = idBase + '-message';
-        body.textContent = String(message || '');
+        const messageNode = document.createElement('div');
+        messageNode.className = 'gb-confirm-message';
+        messageNode.id = idBase + '-message';
+        messageNode.textContent = String(message || '');
         const input = document.createElement('input');
         input.type = 'text';
         input.id = '_gb-prompt-input';
         input.className = 'gb-confirm-input';
         input.value = String(defaultValue ?? '');
-        const actions = document.createElement('div');
-        actions.className = 'gb-confirm-actions';
         const cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.id = '_gb-cancel';
@@ -108,44 +100,49 @@
         ok.id = '_gb-ok';
         ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
         ok.textContent = okLabel;
-        actions.append(cancel, ok);
-        dialog.append(body, input, actions);
-        overlay.appendChild(dialog);
-        document.body.appendChild(overlay);
-        let done = false;
-        const cleanup = value => {
-          if (done) return;
-          done = true;
-          overlay.remove();
-          document.removeEventListener('keydown', onDocumentKeydown, true);
-          const restoreFocus = () => {
-            if (restoreFocusTo?.isConnected && !overlay.contains(restoreFocusTo)) restoreFocusTo.focus?.();
-          };
-          restoreFocus();
-          setTimeout(restoreFocus, 0);
-          resolve(value);
+        let result = null;
+        const modalApi = window.GBUI.createModal({
+          id: idBase,
+          titleId: idBase + '-title',
+          title: '入力',
+          body: [messageNode, input],
+          footer: [cancel, ok],
+          variant: 'standard',
+          extraClass: 'gb-confirm',
+          geometryKey: 'board-standalone-prompt',
+          minWidth: '0',
+          initialFocus: () => input,
+          returnFocus: () => restoreFocusTo,
+          closeLabel: '入力をキャンセル',
+          closeOnEsc: true,
+          closeOnOverlay: true,
+          onClose: () => resolve(result),
+        });
+        modalApi.overlay.classList.add('modal-overlay', 'bsa-cf-prompt-overlay');
+        modalApi.overlay.dataset.e2eId = 'cf-prompt-overlay';
+        modalApi.modal.classList.add('bsa-cf-prompt-dialog');
+        modalApi.modal.dataset.e2eId = 'cf-prompt-dialog';
+        modalApi.modal.dataset.dialogType = 'cf-prompt';
+        modalApi.modal.setAttribute('aria-label', '入力');
+        modalApi.modal.setAttribute('aria-describedby', messageNode.id);
+        modalApi.footer.classList.add('gb-confirm-actions');
+        const finish = (value, reason) => {
+          result = value;
+          modalApi.close(reason);
         };
-        function onDocumentKeydown(event) {
-          if (event.key !== 'Escape') return;
-          event.preventDefault();
-          cleanup(null);
-        }
-        ok.addEventListener('click', () => cleanup(input.value));
-        cancel.addEventListener('click', () => cleanup(null));
-        overlay.addEventListener('click', event => { if (event.target === overlay) cleanup(null); });
+        ok.addEventListener('click', () => finish(input.value, 'submit'));
+        cancel.addEventListener('click', () => finish(null, 'cancel'));
         input.addEventListener('keydown', event => {
           if (event.key === 'Enter') {
             event.preventDefault();
-            cleanup(input.value);
-          }
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            cleanup(null);
+            finish(input.value, 'submit');
           }
         });
-        document.addEventListener('keydown', onDocumentKeydown, true);
-        input.focus();
-        input.select();
+        modalApi.open();
+        requestAnimationFrame(() => {
+          input.focus?.({ preventScroll: true });
+          input.select();
+        });
       });
     };
   }
@@ -556,42 +553,83 @@
       return false;
     }
     const parity = window.MeldexStandaloneParity;
-    if (typeof parity?.openTarget !== 'function') {
+    if (typeof parity?.openTarget !== 'function' || typeof window.GBUI?.createModal !== 'function') {
       window.showStatus?.('表示先を選択する機能を読み込めませんでした。アプリを再読み込みしてください', true);
       return false;
     }
-    document.querySelector('[data-e2e-id="board-standalone-link-destination-overlay"]')?.remove();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay standalone-parity-overlay';
-    overlay.dataset.e2eId = 'board-standalone-link-destination-overlay';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal standalone-parity-dialog';
-    dialog.dataset.e2eId = 'board-standalone-link-destination-dialog';
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', '表示先を選択');
-    dialog.tabIndex = -1;
-    const title = document.createElement('h2');
-    title.textContent = '表示先を選択';
+    const existing = document.querySelector('[data-e2e-id="board-standalone-link-destination-overlay"]');
+    if (existing?._boardStandaloneLinkDestinationApi?.isOpen?.()) {
+      existing._boardStandaloneLinkDestinationApi.modal.focus?.();
+      return true;
+    }
     const description = document.createElement('p');
+    description.className = 'bsa-link-destination-description';
     description.textContent = `${String(label || targetPath)} をどこに表示するか選んでください。`;
     const actions = document.createElement('div');
     actions.className = 'standalone-parity-actions';
-    actions.style.display = 'grid';
-    actions.style.gap = '8px';
     const reason = document.createElement('div');
+    reason.className = 'bsa-link-destination-reason';
     reason.dataset.e2eId = 'board-standalone-link-destination-reason';
     reason.setAttribute('role', 'status');
-    reason.style.minHeight = '20px';
+    reason.setAttribute('aria-live', 'polite');
+    const content = document.createElement('div');
+    content.className = 'bsa-link-destination-content';
+    content.append(description, actions, reason);
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'gb-btn';
+    back.dataset.e2eId = 'board-standalone-open-back';
+    back.textContent = '戻る';
     const focusReturn = document.activeElement;
-    const close = () => {
-      overlay.remove();
-      focusReturn?.focus?.({ preventScroll: true });
-    };
+    let openBusy = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'board-standalone-link-destination',
+      titleId: 'board-standalone-link-destination-title',
+      title: '表示先を選択',
+      body: content,
+      footer: back,
+      variant: 'standard',
+      extraClass: 'standalone-parity-dialog',
+      geometryKey: 'board-standalone-link-destination',
+      minWidth: '0',
+      initialFocus: () => actions.querySelector('button:not([disabled])') || back,
+      returnFocus: () => focusReturn,
+      closeLabel: '表示先の選択を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: closeReason => !openBusy || ['opened', 'test-cleanup'].includes(closeReason),
+    });
+    modalApi.overlay.classList.add('modal-overlay', 'standalone-parity-overlay', 'bsa-link-destination-overlay');
+    modalApi.overlay.dataset.e2eId = 'board-standalone-link-destination-overlay';
+    modalApi.overlay._boardStandaloneLinkDestinationApi = modalApi;
+    modalApi.modal.classList.add('bsa-link-destination-dialog');
+    modalApi.modal.dataset.e2eId = 'board-standalone-link-destination-dialog';
+    modalApi.modal.dataset.path = targetPath;
+    modalApi.header.querySelector('.gb-modal-close')?.setAttribute(
+      'data-e2e-id',
+      'board-standalone-link-destination-header-close',
+    );
     const target = {
       path: targetPath,
       label: String(label || ''),
       linkType: String(options?.linkType || options?.type || ''),
+    };
+    const destinationButtons = [];
+    const setReason = (message, error = false) => {
+      reason.textContent = message || '';
+      reason.classList.toggle('bsa-link-destination-reason-error', error);
+    };
+    const setBusy = busy => {
+      openBusy = busy;
+      destinationButtons.forEach(button => {
+        button.disabled = busy || button.dataset.capabilityDisabled === '1';
+      });
+      back.disabled = busy;
+      modalApi.modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+    };
+    const setCapabilityAvailable = (button, available) => {
+      button.dataset.capabilityDisabled = available ? '0' : '1';
+      button.disabled = openBusy || !available;
     };
     const addDestination = (destination, text, primary) => {
       const button = document.createElement('button');
@@ -602,64 +640,47 @@
       button.style.minWidth = '44px';
       button.style.minHeight = '44px';
       button.addEventListener('click', async () => {
-        button.disabled = true;
-        reason.textContent = '';
+        if (openBusy) return;
+        setBusy(true);
+        setReason(`${text}を開いています…`);
         try {
           const opened = await parity.openTarget(target, destination, {
             label: target.label,
             linkType: target.linkType,
           });
+          if (!modalApi.isOpen()) return;
           if (opened !== false) {
-            close();
+            modalApi.close('opened');
             return;
           }
-          reason.textContent = 'この表示先を利用できません。別の表示先を選んでください。';
+          setReason('この表示先を利用できません。別の表示先を選んでください。', true);
         } catch (error) {
-          reason.textContent = error?.message || 'リンク先を開けませんでした。';
+          if (modalApi.isOpen()) setReason(error?.message || 'リンク先を開けませんでした。', true);
         } finally {
-          if (button.isConnected) button.disabled = false;
+          if (modalApi.isOpen()) setBusy(false);
         }
       });
       actions.appendChild(button);
+      destinationButtons.push(button);
       return button;
     };
     addDestination('float', '現在の副画面で開く', true);
     const newButton = addDestination('new', '新規ウィンドウで開く', false);
     const mainButton = addDestination('main', 'Meldex本体で開く', false);
-    const back = document.createElement('button');
-    back.type = 'button';
-    back.className = 'gb-btn';
-    back.dataset.e2eId = 'board-standalone-open-back';
-    back.textContent = '戻る';
-    back.style.minWidth = '44px';
-    back.style.minHeight = '44px';
-    back.addEventListener('click', close);
-    actions.append(reason, back);
-    dialog.append(title, description, actions);
-    overlay.appendChild(dialog);
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) close();
-    });
-    overlay.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
-    });
-    document.body.appendChild(overlay);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    queueMicrotask(() => dialog.focus());
+    back.addEventListener('click', () => modalApi.close('back'));
+    modalApi.open();
 
     const nativeMode = new URLSearchParams(window.location?.search || '').get('native') === '1';
     if (nativeMode && typeof parity.capabilities !== 'function') {
-      newButton.disabled = true;
-      mainButton.disabled = true;
+      setCapabilityAvailable(newButton, false);
+      setCapabilityAvailable(mainButton, false);
       reason.textContent = 'アプリの起動可否を確認できません。Meldexを再起動してください。';
     } else if (nativeMode) {
-      newButton.disabled = true;
-      mainButton.disabled = true;
+      setCapabilityAvailable(newButton, false);
+      setCapabilityAvailable(mainButton, false);
       reason.textContent = '利用できるアプリを確認しています…';
       Promise.resolve(parity.capabilities()).then(capabilities => {
-        if (!overlay.isConnected) return;
+        if (!modalApi.isOpen()) return;
         const allowed = Array.isArray(capabilities?.allowedTargets) ? capabilities.allowedTargets : [];
         const resolvedType = String(parity.resolveTarget?.(targetPath, target)?.type || target.linkType || '');
         const targetApp = ({
@@ -685,8 +706,8 @@
         const targetAvailable = !!targetApp
           && capabilities?.targets?.[targetApp]?.available === true
           && allowed.includes(targetApp);
-        mainButton.disabled = !mainAvailable;
-        newButton.disabled = !targetAvailable;
+        setCapabilityAvailable(mainButton, mainAvailable);
+        setCapabilityAvailable(newButton, targetAvailable);
         reason.textContent = mainAvailable || !newButton.disabled
           ? ''
           : (capabilities?.targets?.[targetApp]?.reason
@@ -694,8 +715,8 @@
             || capabilities?.error?.message
             || `対応するアプリを利用できません${targetApp ? `（${targetApp}）` : ''}`);
       }).catch(error => {
-        if (!overlay.isConnected) return;
-        reason.textContent = error?.message || '利用できるアプリを確認できませんでした。';
+        if (!modalApi.isOpen()) return;
+        setReason(error?.message || '利用できるアプリを確認できませんでした。', true);
       });
     }
     return true;

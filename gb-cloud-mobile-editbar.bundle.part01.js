@@ -124,6 +124,7 @@
     { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
+    { id: 'comment', label: 'コメント', icon: 'messageSquareText', action: () => _openToolPanel('annotation') },
     { id: 'width-down', label: '細く', icon: 'minus', action: () => _stepAnnotationWidth(-1) },
     { id: 'width-up', label: '太く', icon: 'plus', action: () => _stepAnnotationWidth(1) },
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
@@ -897,4 +898,3 @@
     sel.removeAllRanges();
     sel.addRange(_savedRange.cloneRange());
     try {
-      if (typeof rtTarget !== 'undefined') rtTarget = editable;

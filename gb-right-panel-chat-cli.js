@@ -759,7 +759,7 @@
     header.appendChild(quote);
     const bubble = document.createElement('div');
     bubble.className = 'chat-copy-body chat-message-bubble chat-message-bubble-cli';
-    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--accent)' : 'var(--bg3)'};color:${isUser ? 'var(--ui-fg-strong)' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
+    bubble.style.cssText = `padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:${isUser ? 'var(--accent)' : 'var(--bg3)'};color:${isUser ? 'var(--ui-accent-fg, var(--ui-fg-strong))' : 'var(--fg)'};white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;`;
     bubble.textContent = messagePreview(message);
     row.append(header, bubble);
     return row;
@@ -1006,7 +1006,6 @@
       targetMessages.push(...deferredMessages);
       if (!detachedScope && typeof _chatRenderStoredMessages === 'function') _chatRenderStoredMessages();
     } else {
-      if (typeof _chatPromoteQueuedMessagesToHistory === 'function') _chatPromoteQueuedMessagesToHistory();
       const userTimestamp = typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString();
       const userContent = normalizeCliChatUserContent(textValue, attachments);
       if (attachments.length > 0) {
@@ -1063,6 +1062,19 @@
     _chatState.streamingProvider = provider;
     _chatState.streamingTargetPath = streamTargetPath;
     _chatState.lastImplicitTargetPath = streamTargetPath;
+    _chatState.activeExecution = {
+      messages: streamMessages,
+      sessionId: streamSessionId,
+      sessionTitle: streamSessionTitle,
+      targetPath: streamTargetPath,
+      sourceFolder: streamSourceFolder,
+      workspaceId: streamWorkspaceId,
+      provider,
+      model: streamModelLabel,
+      mode: streamMode,
+      controller: streamController,
+    };
+    window.MeldexChatListbox?.decorateHistory?.();
     cliChatSetSendButtonStreaming(true);
     if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
     const activity = createCliChatActivity(provider);
@@ -1211,7 +1223,7 @@
         body: JSON.stringify({
           provider,
           model: streamModelValue,
-          reasoning_level: typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off',
+          reasoning_level: options.generationSettings?.reasoning_level || (typeof chatGenerationSettings === 'function' ? chatGenerationSettings().reasoning_level : 'off'),
           messages: typeof _ensureChatMessageIds === 'function' ? _ensureChatMessageIds(streamMessages) : streamMessages,
           system_prompt: typeof _buildSystemPrompt === 'function' ? _buildSystemPrompt({ targetPath: streamTargetPath }) : '',
           session_id: streamSessionId,
@@ -1411,9 +1423,26 @@
         if (typeof _syncChatSourceFolderUi === 'function') _syncChatSourceFolderUi();
         if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
         if (input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-        if (autoContinueRequest) {
+        if (_chatState.interruptDraftId && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+          setTimeout(() => {
+            _chatSendQueuedMessagesAfterStream({
+              messages: streamMessages,
+              sessionId: streamSessionId,
+              sessionTitle: streamSessionTitle,
+              targetPath: streamTargetPath,
+              sourceFolder: streamSourceFolder,
+              workspaceId: streamWorkspaceId,
+              provider,
+              model: streamModelLabel,
+              mode: streamMode,
+            }).catch(() => {});
+          }, 0);
+        } else if (autoContinueRequest) {
           const continueMessage = {
             role: 'user',
+            origin: 'meldex-control',
+            controlKind: 'automatic-continuation',
+            presentation: 'MeldexからAIへの自動指示',
             content: buildCliContinuationInstruction(autoContinueRequest.reason, autoContinueRequest.count),
             timestamp: typeof _chatLocalTimestamp === 'function' ? _chatLocalTimestamp() : new Date().toISOString(),
           };
@@ -1446,6 +1475,8 @@
             }).catch(() => {});
           }, 0);
         }
+        if (_chatState.activeExecution?.controller === streamController) _chatState.activeExecution = null;
+        window.MeldexChatListbox?.decorateHistory?.();
       }
       if (!detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
     }

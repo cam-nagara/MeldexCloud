@@ -11,6 +11,7 @@
   let lastError = null;
   let userInteractedBeforeNotice = false;
   let supportDialogSeq = 0;
+  let supportDialogApi = null;
   // 同種の失敗が短時間に繰り返し起きても、右下トーストを積み増さないための重複抑制。
   // 「操作に失敗しました」トーストが頻発する不具合の対策（同一種類の失敗を1個の
   // トーストにまとめ、表示中は自動消去タイマーだけ延長する）。
@@ -501,6 +502,7 @@
     const remembered = rememberError(error || lastError, context || {});
     const friendly = remembered.friendly || window.MeldexErrorMessages?.translate?.(error, context) || {};
     const activitySummary = buildSupportActivitySummary();
+    if (supportDialogApi?.isOpen?.()) supportDialogApi.close('replace');
     document.querySelectorAll('.modal-overlay[data-support-dialog="1"]').forEach(existing => {
       existing.dispatchEvent(new CustomEvent('meldex-support-dialog-close'));
       if (existing.isConnected) existing.remove();
@@ -509,70 +511,71 @@
     const dialogSeq = ++supportDialogSeq;
     const titleId = `meldex-support-title-${dialogSeq}`;
     const descId = `meldex-support-desc-${dialogSeq}`;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const content = document.createElement('div');
+    content.innerHTML = `
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${esc(friendly.title || '操作に失敗しました')}</div>
+        <div class="gb-section-desc">${esc(friendly.message || '')}</div>
+        <div class="gb-section-desc">${esc(friendly.action || '')}</div>
+      </section>
+      <label class="gb-field meldex-support-field">
+        <span class="gb-label">直前の操作（自動入力）</span>
+        <textarea id="meldex-support-activity" class="gb-input meldex-support-textarea meldex-support-textarea--activity" rows="7" readonly aria-label="直前の操作（自動入力）">${esc(activitySummary)}</textarea>
+      </label>
+      <label class="gb-field meldex-support-field">
+        <span class="gb-label">補足コメント</span>
+        <textarea id="meldex-support-comment" class="gb-input meldex-support-textarea meldex-support-textarea--comment" rows="8" aria-label="補足コメント" placeholder="再現条件、発生頻度、補足事項など"></textarea>
+      </label>
+      <details class="meldex-support-details" data-e2e-id="meldex-support-technical-details">
+        <summary>技術的詳細</summary>
+        <pre class="meldex-support-technical">${esc(_supportTechnicalSummary(remembered))}</pre>
+      </details>
+      <div class="gb-inline-error" role="alert" data-support-error hidden></div>`;
+    const footerContent = document.createElement('div');
+    footerContent.innerHTML = `
+      <button type="button" class="gb-btn gb-btn-sm" data-support-action="export" data-e2e-id="meldex-support-export" aria-label="診断情報を保存">診断情報を保存</button>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-support-action="send" data-e2e-id="meldex-support-send" aria-label="サポート情報を送信または保存">送信 / 保存</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-support-action="close" data-e2e-id="meldex-support-close" aria-label="サポート送信を閉じる">閉じる</button>`;
+    const commentInput = content.querySelector('#meldex-support-comment');
+    let busy = false;
+    let dialogApi = null;
+    dialogApi = window.GBUI.createModal({
+      id: `meldex-support-dialog-${dialogSeq}`,
+      titleId,
+      title: 'サポートに送信',
+      body: Array.from(content.childNodes),
+      footer: Array.from(footerContent.childNodes),
+      variant: 'standard',
+      extraClass: 'meldex-support-dialog',
+      geometryKey: 'meldex-support-dialog',
+      initialFocus: commentInput,
+      returnFocus: opener,
+      onBeforeClose: () => !busy,
+      onClose: () => {
+        if (supportDialogApi === dialogApi) supportDialogApi = null;
+      },
+    });
+    supportDialogApi = dialogApi;
+    const { overlay, modal: dialog, header, body, footer } = dialogApi;
+    overlay.classList.add('modal-overlay');
     overlay.dataset.supportDialog = '1';
     overlay.style.zIndex = '100070';
-    overlay.innerHTML = `<div class="modal meldex-support-dialog" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="meldex-support-dialog">
-      <h3 id="${titleId}" class="meldex-support-dialog-title">${lucide('lifeBuoy',16)} サポートに送信</h3>
-      <div id="${descId}" class="meldex-support-dialog-body">
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${esc(friendly.title || '操作に失敗しました')}</div>
-          <div class="gb-section-desc">${esc(friendly.message || '')}</div>
-          <div class="gb-section-desc">${esc(friendly.action || '')}</div>
-        </section>
-        <label class="gb-field meldex-support-field">
-          <span class="gb-label">直前の操作（自動入力）</span>
-          <textarea id="meldex-support-activity" class="gb-input meldex-support-textarea meldex-support-textarea--activity" rows="7" readonly aria-label="直前の操作（自動入力）">${esc(activitySummary)}</textarea>
-        </label>
-        <label class="gb-field meldex-support-field">
-          <span class="gb-label">補足コメント</span>
-          <textarea id="meldex-support-comment" class="gb-input meldex-support-textarea meldex-support-textarea--comment" rows="8" aria-label="補足コメント" placeholder="再現条件、発生頻度、補足事項など"></textarea>
-        </label>
-        <details class="meldex-support-details" data-e2e-id="meldex-support-technical-details">
-          <summary>技術的詳細</summary>
-          <pre class="meldex-support-technical">${esc(_supportTechnicalSummary(remembered))}</pre>
-        </details>
-      </div>
-      <div class="btn-row meldex-support-actions" data-modal-footer>
-        <button type="button" class="gb-btn gb-btn-sm" data-support-action="export" data-e2e-id="meldex-support-export" aria-label="診断情報を保存">診断情報を保存</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-support-action="send" data-e2e-id="meldex-support-send" aria-label="サポート情報を送信または保存">送信 / 保存</button>
-        <button type="button" class="gb-btn gb-btn-sm" data-support-action="close" data-e2e-id="meldex-support-close" aria-label="サポート送信を閉じる">閉じる</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    replaceIcons(overlay);
-    const dialog = overlay.querySelector('.meldex-support-dialog');
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    if (dialog) {
-      window.GBModalShell?.clamp?.(
-        dialog,
-        dialog.querySelector(':scope > .gb-modal-shell-header, :scope > .gb-modal-header'),
-        dialog.querySelector(':scope > .gb-modal-shell-footer, :scope > .gb-modal-footer, :scope > .btn-row')
-      );
-    }
-    function closeDialog() {
-      document.removeEventListener('keydown', onKeydown, true);
-      overlay.removeEventListener('meldex-support-dialog-close', closeDialog);
-      overlay.remove();
-      if (opener?.isConnected && typeof opener.focus === 'function') {
-        try { opener.focus({ preventScroll: true }); } catch { opener.focus(); }
-      }
-    }
-    function onKeydown(event) {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeDialog();
-    }
+    dialog.classList.add('modal');
+    dialog.dataset.e2eId = 'meldex-support-dialog';
+    dialog.setAttribute('aria-describedby', descId);
+    const title = header.querySelector('.gb-modal-title');
+    title?.classList.add('meldex-support-dialog-title');
+    if (title && typeof lucide === 'function') title.insertAdjacentHTML('afterbegin', lucide('lifeBuoy', 16));
+    const headerClose = header.querySelector('.gb-modal-close');
+    if (headerClose) headerClose.dataset.e2eId = 'meldex-support-header-close';
+    body.id = descId;
+    body.classList.add('meldex-support-dialog-body');
+    footer.classList.add('btn-row', 'meldex-support-actions');
+    footer.setAttribute('data-modal-footer', '');
+    const closeDialog = () => dialogApi.close('external');
     overlay.addEventListener('meldex-support-dialog-close', closeDialog);
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) closeDialog();
-    });
-    document.addEventListener('keydown', onKeydown, true);
-    setTimeout(() => {
-      const focusTarget = overlay.querySelector('#meldex-support-comment') || overlay.querySelector('.meldex-support-dialog');
-      try { focusTarget?.focus?.({ preventScroll: true }); } catch { focusTarget?.focus?.(); }
-    }, 0);
+    dialogApi.open();
+    replaceIcons(overlay);
     const buildSupportPayload = () => {
       const comment = overlay.querySelector('#meldex-support-comment')?.value || '';
       const activity = overlay.querySelector('#meldex-support-activity')?.value || activitySummary;
@@ -586,21 +589,67 @@
         kind: 'support-report',
       };
     };
-    overlay.querySelector('[data-support-action="close"]')?.addEventListener('click', () => overlay.remove());
-    overlay.querySelector('[data-support-action="export"]')?.addEventListener('click', () => exportDiagnostics({ error: buildSupportPayload() }));
+    const setBusy = (nextBusy) => {
+      busy = !!nextBusy;
+      dialog.setAttribute('aria-busy', busy ? 'true' : 'false');
+      dialog.querySelectorAll('button, textarea:not([readonly])').forEach(control => { control.disabled = busy; });
+      header.querySelector('.gb-modal-close')?.toggleAttribute('disabled', busy);
+    };
+    const showSupportFailure = (failure) => {
+      const errorEl = dialog.querySelector('[data-support-error]');
+      if (!errorEl) return;
+      errorEl.textContent = `診断情報を保存できませんでした。もう一度お試しください。${failure?.message ? `（${_redactDiagnosticText(failure.message)}）` : ''}`;
+      errorEl.hidden = false;
+    };
+    const clearSupportFailure = () => {
+      const errorEl = dialog.querySelector('[data-support-error]');
+      if (!errorEl) return;
+      errorEl.hidden = true;
+      errorEl.textContent = '';
+    };
+    overlay.querySelector('[data-support-action="close"]')?.addEventListener('click', () => dialogApi.close('footer'));
+    overlay.querySelector('[data-support-action="export"]')?.addEventListener('click', async () => {
+      clearSupportFailure();
+      setBusy(true);
+      try {
+        await exportDiagnostics({ error: buildSupportPayload() });
+      } catch (failure) {
+        showSupportFailure(failure);
+      } finally {
+        setBusy(false);
+      }
+    });
     overlay.querySelector('[data-support-action="send"]')?.addEventListener('click', async () => {
+      clearSupportFailure();
+      setBusy(true);
       const payload = buildSupportPayload();
-      if (window.MeldexBetaFeedback?.sendGoogle && window.MeldexBetaFeedback?.isGoogleConfigured?.()) {
+      if (window.MeldexBetaFeedback?.sendDebuggerReport) {
         try {
-          await window.MeldexBetaFeedback.sendGoogle('crash', payload);
-          if (typeof showStatus === 'function') showStatus('サポート情報を送信しました');
-          closeDialog();
-          return;
+          const result = await window.MeldexBetaFeedback.sendDebuggerReport({
+            reportType: 'bug',
+            origin: 'support-dialog',
+            sections: [{ heading: 'サポート情報', body: '不具合の調査用に、この端末の状況をまとめて送信しました。' }],
+            details: payload,
+          });
+          if (result?.ok) {
+            if (typeof showStatus === 'function') {
+              showStatus(result.flush?.sent ? 'サポート情報を送信しました' : 'サポート情報を送信待ちに保存しました');
+            }
+            setBusy(false);
+            dialogApi.close('send-success');
+            return;
+          }
         } catch (_) {}
       }
-      await exportDiagnostics({ error: payload });
-      if (typeof showStatus === 'function') showStatus('送信先が未設定のため、診断情報を保存しました');
-      closeDialog();
+      try {
+        await exportDiagnostics({ error: payload });
+        if (typeof showStatus === 'function') showStatus('送信先が未設定のため、診断情報を保存しました');
+        setBusy(false);
+        dialogApi.close('export-fallback');
+      } catch (failure) {
+        setBusy(false);
+        showSupportFailure(failure);
+      }
     });
   }
 

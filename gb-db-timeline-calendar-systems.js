@@ -468,14 +468,13 @@ async function _timelineExportCalendarPreset(system) {
   const text = JSON.stringify(payload, null, 2);
   const filename = _timelineCalendarPresetFileName(normalized);
   if (typeof MeldexExportSave !== 'undefined' && typeof MeldexExportSave.saveText === 'function') {
-    await MeldexExportSave.saveText(text, {
+    return MeldexExportSave.saveText(text, {
       filename,
       extension: '.json',
       filetypes: [['JSONファイル', '*.json'], ['すべてのファイル', '*.*']],
       okMessage: '暦プリセットを出力しました',
       errorMessage: '暦プリセットを出力できませんでした',
     });
-    return;
   }
   const blob = new Blob([text], { type: 'application/json;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -490,6 +489,7 @@ async function _timelineExportCalendarPreset(system) {
     link.remove();
   }, 0);
   if (typeof showStatus === 'function') showStatus('暦プリセットを出力しました');
+  return true;
 }
 
 function _timelineDuplicateCalendarPreset(dbPath, cfg, ctx) {
@@ -694,16 +694,17 @@ function _timelineCalendarSystemFromModal(overlay, current) {
 }
 
 function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
-  document.querySelectorAll('.tl-calendar-modal-overlay').forEach(el => el.remove());
+  document.querySelectorAll('.tl-calendar-modal-overlay').forEach(el => {
+    if (typeof el._timelineCalendarClose === 'function') el._timelineCalendarClose('superseded');
+    else el.remove();
+  });
   const systems = _timelineCalendarSystems(cfg);
   const customSystems = _timelineCustomCalendarSystems(cfg);
   let selectedId = systems.some(system => system.id === cfg?.calendarSystemId) ? cfg.calendarSystemId : TL_CALENDAR_SYSTEM_DEFAULT_ID;
   let draft = systems.find(system => system.id === selectedId) || _timelineDefaultCalendarSystems()[0];
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay tl-calendar-modal-overlay';
-  overlay.innerHTML = `<div class="modal tl-calendar-modal" role="dialog" aria-modal="true" aria-label="暦体系を編集">
-    <h3>暦体系を編集</h3>
+  const content = document.createElement('div');
+  content.innerHTML = `<div role="status" aria-live="polite" data-tl-cal-status></div>
     <div class="tl-calendar-preset-row">
       <label>暦プリセット
         <span class="tl-calendar-preset-select-wrap">
@@ -763,12 +764,50 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
       </div>
       <div class="tl-calendar-list" data-tl-cal-list="weekdays"></div>
     </section>
-    </div>
-    <div class="tl-calendar-actions">
-      <button type="button" class="gb-btn gb-btn-sm" data-tl-cal-cancel>キャンセル</button>
-      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-tl-cal-save>保存して適用</button>
-    </div>
-  </div>`;
+    </div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.dataset.tlCalCancel = '';
+  cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary';
+  saveButton.dataset.tlCalSave = '';
+  saveButton.textContent = '保存して適用';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'sheet-timeline-calendar-system',
+    title: '暦体系を編集',
+    body: [...content.childNodes],
+    footer: [cancelButton, saveButton],
+    variant: 'standard',
+    geometryKey: 'sheet-timeline-calendar-system',
+    minWidth: '0',
+    initialFocus: '[data-tl-cal-field="name"]',
+    closeLabel: '暦体系編集を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: () => !busy,
+  });
+  const overlay = modalApi.overlay;
+  const panel = modalApi.modal;
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  modalApi.body.style.minWidth = '0';
+  modalApi.body.style.overflowWrap = 'anywhere';
+  overlay.classList.add('tl-calendar-modal-overlay');
+  overlay.dataset.e2eId = 'sheet-timeline-calendar-system-overlay';
+  overlay._timelineCalendarClose = modalApi.close;
+  panel.classList.add('tl-calendar-modal');
+  panel.dataset.e2eId = 'sheet-timeline-calendar-system-dialog';
+  const status = panel.querySelector('[data-tl-cal-status]');
+  const setBusy = (next, message = '') => {
+    busy = next;
+    panel.setAttribute('aria-busy', next ? 'true' : 'false');
+    panel.querySelectorAll('button').forEach(button => { button.disabled = next; });
+    if (status && message) status.textContent = message;
+    if (!next) updatePresetActionStates();
+  };
 
   const fill = (system) => {
     draft = _normalizeTimelineCalendarSystem(system || _timelineDefaultCustomCalendarSystem());
@@ -840,6 +879,7 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
     updatePresetActionStates();
   });
   const runPresetAction = async (action) => {
+    if (busy) return;
     if (action === 'new') {
       selectedId = '';
       setPresetSelectValue('');
@@ -857,9 +897,16 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
     }
     if (action === 'export') {
       const current = _timelineCalendarSystemFromModal(overlay, draft);
-      _timelineExportCalendarPreset(current).catch(err => {
+      setBusy(true, 'JSONファイルを出力中...');
+      try {
+        const exported = await _timelineExportCalendarPreset(current);
+        if (!exported && status) status.textContent = '暦プリセットを出力できませんでした。入力内容を保ったまま再試行できます。';
+      } catch (err) {
         if (typeof showStatus === 'function') showStatus('暦プリセットを出力できませんでした: ' + (err?.message || err), true);
-      });
+        if (status) status.textContent = '暦プリセットを出力できませんでした。入力内容を保ったまま再試行できます。';
+      } finally {
+        if (modalApi.isOpen()) setBusy(false);
+      }
       return;
     }
     if (action === 'delete') {
@@ -868,23 +915,47 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
         updatePresetActionStates();
         return;
       }
-      if (!await _timelineConfirmCalendarPresetDelete(deleteTarget)) return;
+      setBusy(true, '削除を確認中...');
+      let confirmed = false;
+      try {
+        confirmed = await _timelineConfirmCalendarPresetDelete(deleteTarget);
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus('削除確認を表示できませんでした: ' + (err?.message || err), true);
+      }
+      if (!confirmed) {
+        setBusy(false);
+        return;
+      }
+      if (status) status.textContent = '削除中...';
       const latestCfg = dbPath && typeof getTimelineConfig === 'function' ? getTimelineConfig(dbPath, { ctx }) : cfg;
       const nextSystems = _timelineCustomCalendarSystems(latestCfg).filter(system => system.id !== selectedId);
       const activeWasDeleted = String(latestCfg?.calendarSystemId || TL_CALENDAR_SYSTEM_DEFAULT_ID) === selectedId;
-      setTimelineConfig(dbPath, {
-        ...latestCfg,
-        calendarSystemId: activeWasDeleted ? TL_CALENDAR_SYSTEM_DEFAULT_ID : (latestCfg?.calendarSystemId || TL_CALENDAR_SYSTEM_DEFAULT_ID),
-        calendarSystems: nextSystems,
-        scale: activeWasDeleted ? 'day' : latestCfg?.scale,
-      }, {
-        label: 'シート表示: 暦体系',
-        detail: '削除: ' + deleteTarget.name,
-        ctx,
-      });
-      overlay.remove();
-      if (typeof renderTimeline === 'function') renderTimeline(ctx);
-      if (typeof showStatus === 'function') showStatus('暦プリセットを削除しました: ' + deleteTarget.name);
+      try {
+        setTimelineConfig(dbPath, {
+          ...latestCfg,
+          calendarSystemId: activeWasDeleted ? TL_CALENDAR_SYSTEM_DEFAULT_ID : (latestCfg?.calendarSystemId || TL_CALENDAR_SYSTEM_DEFAULT_ID),
+          calendarSystems: nextSystems,
+          scale: activeWasDeleted ? 'day' : latestCfg?.scale,
+        }, {
+          label: 'シート表示: 暦体系',
+          detail: '削除: ' + deleteTarget.name,
+          ctx,
+        });
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus('暦プリセットを削除できませんでした: ' + (err?.message || err), true);
+        if (status) status.textContent = '削除に失敗しました。入力内容を保ったまま再試行できます。';
+        if (modalApi.isOpen()) setBusy(false);
+        return;
+      }
+      setBusy(false);
+      modalApi.close('deleted');
+      let renderFailed = false;
+      try { if (typeof renderTimeline === 'function') renderTimeline(ctx); }
+      catch (err) {
+        renderFailed = true;
+        if (typeof showStatus === 'function') showStatus('暦プリセットは削除しましたが、表示を更新できませんでした。画面を再読み込みしてください: ' + (err?.message || err), true);
+      }
+      if (!renderFailed && typeof showStatus === 'function') showStatus('暦プリセットを削除しました: ' + deleteTarget.name);
     }
   };
   overlay.querySelectorAll('button[data-tl-cal-action]').forEach(button => {
@@ -894,11 +965,9 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
       });
     });
   });
-  overlay.querySelector('[data-tl-cal-cancel]')?.addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', ev => {
-    if (ev.target === overlay) overlay.remove();
-  });
-  overlay.querySelector('[data-tl-cal-save]')?.addEventListener('click', () => {
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  saveButton.addEventListener('click', () => {
+    if (busy) return;
     const current = _timelineCalendarSystemFromModal(overlay, draft);
     const nextSystems = customSystems.filter(system => system.id !== current.id);
     nextSystems.push(current);
@@ -908,17 +977,26 @@ function _showTimelineCalendarSystemModal(dbPath, cfg, ctx) {
       calendarSystems: nextSystems,
       scale: _timelineDefaultScaleForCalendarSystem(current),
     };
-    setTimelineConfig(dbPath, nextCfg, {
-      label: 'シート表示: 暦体系',
-      detail: current.name,
-      ctx,
-    });
-    overlay.remove();
-    renderTimeline(ctx);
+    setBusy(true, '保存中...');
+    try {
+      setTimelineConfig(dbPath, nextCfg, {
+        label: 'シート表示: 暦体系',
+        detail: current.name,
+        ctx,
+      });
+    } catch (err) {
+      if (typeof showStatus === 'function') showStatus('暦体系を保存できませんでした: ' + (err?.message || err), true);
+      if (status) status.textContent = '保存に失敗しました。入力内容を保ったまま再試行できます。';
+      if (modalApi.isOpen()) setBusy(false);
+      return;
+    }
+    setBusy(false);
+    modalApi.close('saved');
+    try { renderTimeline(ctx); }
+    catch (err) { if (typeof showStatus === 'function') showStatus('暦体系は保存しましたが、表示を更新できませんでした: ' + (err?.message || err), true); }
   });
 
-  document.body.appendChild(overlay);
   fill(draft);
   updatePresetActionStates();
-  overlay.querySelector('[data-tl-cal-field="name"]')?.focus();
+  modalApi.open();
 }

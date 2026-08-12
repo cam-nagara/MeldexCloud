@@ -30,6 +30,11 @@
   const STORE_DOCUMENT_ID = 'active-lock-store';
   const HEADER = 'X-Meldex-Active-Lock-Token';
   const LEASE_SECONDS = 300;
+  const READ_POST_ENDPOINTS = new Set([
+    '/production-management/tasks/query', '/production-management/tasks/preview',
+    '/production-management/tasks/structure/preview', '/production-management/recalculate/preview',
+    '/production-management/assign/preview',
+  ]);
   // 協調編集事故を減らす短期リース。アクセス権限はDropbox共有権限と既存の編集ロックで扱う。
   const SYSTEM_EXCLUDED = new Set(['_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash']);
 
@@ -675,6 +680,8 @@
       payload('db_path');
     } else if (pathname === '/public-form/submit') {
       payload('db_path');
+    } else if (pathname === '/production-management/entries') {
+      payload('path');
     } else if (pathname.startsWith('/calendar-db/events') || pathname.startsWith('/calendar-db/sync') || pathname.startsWith('/calendar-db/ical') || pathname.startsWith('/calendar-db/caldav')) {
       both('db_path');
     } else if (pathname === '/version/restore' || pathname === '/version/restore-db' || pathname === '/version/restore-folder' || pathname === '/version/delete-folder') {
@@ -685,6 +692,7 @@
 
   async function guardMutationRequest({ method, body, url, pathname, headers }) {
     if (method === 'GET') return;
+    if (method === 'POST' && READ_POST_ENDPOINTS.has(pathname)) return;
     if (pathname === '/active-lock' || pathname.startsWith('/active-lock/')) return;
     const provider = await internals._requirePwaProvider('readwrite');
     const candidates = await _candidatePaths({ pathname, url, body, provider });

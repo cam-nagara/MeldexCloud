@@ -120,6 +120,7 @@
     { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
+    { id: 'comment', label: 'コメント', icon: 'messageSquareText', action: () => _openToolPanel('annotation') },
     { id: 'width-down', label: '細く', icon: 'minus', action: () => _stepAnnotationWidth(-1) },
     { id: 'width-up', label: '太く', icon: 'plus', action: () => _stepAnnotationWidth(1) },
     { id: 'color', label: '色', icon: 'palette', action: () => _openAnnotationColor() },
@@ -1028,7 +1029,7 @@
       const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeMenuSheet();
         if (item.submenu) _openToolSubmenuSheet(item.label, item.submenu, `${sectionId || 'section'}-${itemId}`);
-        else item.action?.();
+        else item.action?.({ trigger: _mainButton?.isConnected ? _mainButton : null });
       });
       if (item.submenu) button.setAttribute('aria-haspopup', 'dialog');
       if (item.disabled) {

@@ -272,7 +272,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const ec = this._resolveCharaColors(chara, col.id);
       const cs = this._getColStyle(chara, col.id);
       const isText = col.id === '_text';
-      // 色: 列別スタイル → resolveCharaColors(autoColor対応) → ページ背景色
+      // 色: 列別スタイル → 旧共通色 → ページ背景色
       const rawBg = cs.bgColor || ec.bgColor || '';
       const bgIsTransparent = !rawBg || rawBg === 'transparent' || rawBg === 'rgba(0,0,0,0)';
       const bgDisplay = bgIsTransparent ? _pageBg : rawBg;
@@ -517,16 +517,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     return { getBoundingClientRect: () => anchorRect };
   },
 
-  _clearDetailAutoColorForManualColor(chara, prop) {
-    if (!chara?.autoColor || (prop !== 'bgColor' && prop !== 'textColor')) return;
-    const act = chara.autoColorTarget || 'bg';
-    const targets = typeof act === 'object' ? Object.values(act) : [act];
-    const hasBg = targets.some(v => v === 'bg' || v === 'both');
-    const hasText = targets.some(v => v === 'text' || v === 'both');
-    if (prop === 'bgColor' && hasBg) delete chara.autoColor;
-    if (prop === 'textColor' && hasText) delete chara.autoColor;
-  },
-
   _bulkColorChange(prop, panelContainer) {
     // 一括色変更のトリガー元ボタンを探す
     const toolbar = this._detailBulkBar;
@@ -538,7 +528,6 @@ Object.assign(ScriptNoteEditor.prototype, {
           const chara = this.doc.characters[idx];
           if (chara) {
             chara[prop] = color;
-            this._clearDetailAutoColorForManualColor(chara, prop);
           }
         });
         this._refreshRowStyles();
@@ -558,7 +547,6 @@ Object.assign(ScriptNoteEditor.prototype, {
           const chara = this.doc.characters[idx];
           if (chara) {
             chara[prop] = input.value;
-            this._clearDetailAutoColorForManualColor(chara, prop);
           }
         });
         this._refreshRowStyles();
@@ -756,40 +744,55 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   // DB読み込みモーダル
   async _showDbImportModal(panelContainer) {
-    let overlay = null;
-    let closeModal = () => { if (overlay) overlay.remove(); };
-    try {
-      const roots = await apiFetch('/outliner-roots');
-      if (!Array.isArray(roots) || !roots.length) { showStatus('フォルダツリーがありません', true); return; }
-      overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.innerHTML = `<div class="modal sn2-db-import-modal">
-        <h3>DBからキャラ読み込み</h3>
-        <div class="modal-body sn2-db-import-body">
-          <div id="sn2-db-tree" class="sn2-db-import-tree"></div>
-        </div>
-        <div id="sn2-db-selected" class="sn2-db-import-selected">選択: 0件</div>
-        <div class="btn-row">
-          <button type="button" class="btn" id="sn2-db-cancel">キャンセル</button>
-          <button type="button" class="primary" id="sn2-db-ok">読み込み</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
-      window.GBModalShell?.enhanceOverlay?.(overlay);
-      let keyHandler = null;
-      closeModal = () => {
-        if (keyHandler) { document.removeEventListener('keydown', keyHandler, true); keyHandler = null; }
-        if (overlay?.isConnected) overlay.remove();
-      };
-      keyHandler = (ev) => {
-        if (ev.key !== 'Escape') return;
-        ev.preventDefault();
-        closeModal();
-      };
-      document.addEventListener('keydown', keyHandler, true);
-      const treeHost = overlay.querySelector('#sn2-db-tree');
-      const selectedNames = new Set();
-      const isCharacterDbFolder = (item) => /キャラ|キャラクター|登場人物|人物|character|chara|cast/i.test(String(item?.name || item?.path || ''));
+    if (!globalThis.GBUI?.createModal) return;
+    const owner = document.activeElement;
+    const body = document.createElement('div');
+    body.className = 'sn2-db-import-content';
+    body.innerHTML = `<div id="sn2-db-status" class="sn2-db-import-status" role="status" aria-live="polite"></div>
+      <button type="button" class="gb-btn gb-btn-sm sn2-db-import-retry" data-sn2-db-retry hidden>再試行</button>
+      <div id="sn2-db-tree" class="sn2-db-import-tree" tabindex="0"></div>
+      <div id="sn2-db-selected" class="sn2-db-import-selected">選択: 0件</div>`;
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button'; cancelButton.id = 'sn2-db-cancel'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
+    const importButton = document.createElement('button');
+    importButton.type = 'button'; importButton.id = 'sn2-db-ok'; importButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; importButton.textContent = '読み込み';
+    let busy = false;
+    const modalApi = globalThis.GBUI.createModal({
+      id: 'scriptnote-db-import', title: 'DBからキャラ読み込み', body, footer: [cancelButton, importButton],
+      variant: 'standard', geometryKey: 'scriptnote-db-import', minWidth: '0', initialFocus: '#sn2-db-tree',
+      returnFocus: owner, closeLabel: 'DBからキャラ読み込みを閉じる', closeOnEsc: true, closeOnOverlay: true,
+      onBeforeClose: () => !busy,
+    });
+    const overlay = modalApi.overlay;
+    const dialog = modalApi.modal;
+    overlay.dataset.sn2Dialog = 'db-import';
+    overlay.dataset.e2eId = 'scriptnote-db-import-overlay';
+    dialog.dataset.e2eId = 'scriptnote-db-import-dialog';
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
+    dialog.classList.add('sn2-db-import-modal');
+    modalApi.body.classList.add('sn2-db-import-body');
+    const treeHost = dialog.querySelector('#sn2-db-tree');
+    const status = dialog.querySelector('#sn2-db-status');
+    const selectedLabel = dialog.querySelector('#sn2-db-selected');
+    const retryButton = dialog.querySelector('[data-sn2-db-retry]');
+    const selectedNames = new Set();
+    const setBusy = (next) => {
+      busy = next;
+      dialog.setAttribute('aria-busy', next ? 'true' : 'false');
+      cancelButton.disabled = next;
+      importButton.disabled = next || selectedNames.size === 0;
+      retryButton.disabled = next;
+    };
+    const updateSelection = () => {
+      selectedLabel.textContent = `選択: ${selectedNames.size}件`;
+      importButton.disabled = busy || selectedNames.size === 0;
+    };
+    const isCharacterDbFolder = (item) => /キャラ|キャラクター|登場人物|人物|character|chara|cast/i.test(String(item?.name || item?.path || ''));
+    const loadTree = async () => {
+      setBusy(true);
+      status.textContent = 'フォルダツリーを読み込んでいます...';
+      retryButton.hidden = true;
+      treeHost.replaceChildren();
       const visited = new Set();
       const addPageGroup = (folder, pages) => {
         const groupEl = document.createElement('div');
@@ -803,9 +806,10 @@ Object.assign(ScriptNoteEditor.prototype, {
           label.className = 'sn2-db-import-item';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
+          cb.checked = selectedNames.has(p.name);
           cb.addEventListener('change', () => {
             if (cb.checked) selectedNames.add(p.name); else selectedNames.delete(p.name);
-            overlay.querySelector('#sn2-db-selected').textContent = `選択: ${selectedNames.size}件`;
+            updateSelection();
           });
           label.appendChild(cb);
           label.appendChild(document.createTextNode(p.name || p.path));
@@ -817,7 +821,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const path = String(folder?.path || '');
         if (!path || visited.has(path) || depth > 4) return;
         visited.add(path);
-        const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true').catch(() => []);
+        const entries = await apiFetch('/browse?path=' + encodeURIComponent(path) + '&all_files=true');
         if ((folder.type === 'database' || folder.type === 'folder') && isCharacterDbFolder(folder)) {
           const pages = (entries || []).filter(it => it.type === 'page' || it.type === 'entity');
           if (pages.length) addPageGroup(folder, pages);
@@ -825,35 +829,84 @@ Object.assign(ScriptNoteEditor.prototype, {
         const childFolders = (entries || []).filter(it => it.type === 'folder' || it.type === 'database');
         for (const child of childFolders) await scanFolder(child, depth + 1);
       };
-      // DBツリーを構築: ルート配下を再帰走査し、キャラ/登場人物系のシートだけを候補にする
-      for (const root of roots) {
-        const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true').catch(() => []);
-        const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
-        for (const folder of dbFolders) await scanFolder(folder, 0);
+      try {
+        const roots = await apiFetch('/outliner-roots');
+        if (!Array.isArray(roots) || !roots.length) throw new Error('フォルダツリーがありません');
+        for (const root of roots) {
+          const items = await apiFetch('/browse?path=' + encodeURIComponent(root.path) + '&all_files=true');
+          const dbFolders = (items || []).filter(it => it.type === 'folder' || it.type === 'database');
+          for (const folder of dbFolders) await scanFolder(folder, 0);
+        }
+        if (!treeHost.children.length) {
+          const empty = document.createElement('div');
+          empty.className = 'sn2-db-import-empty';
+          empty.textContent = 'キャラ用のシートが見つかりませんでした';
+          treeHost.appendChild(empty);
+        }
+        status.textContent = '';
+      } catch (error) {
+        console.error('DBからのキャラ読み込みに失敗しました:', error);
+        status.textContent = `読み込めませんでした。選択内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        retryButton.hidden = false;
+      } finally {
+        globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(dialog);
+        setBusy(false);
+        updateSelection();
       }
-      if (!treeHost.children.length) {
-        const empty = document.createElement('div');
-        empty.className = 'sn2-db-import-empty';
-        empty.textContent = 'キャラ用のシートが見つかりませんでした';
-        treeHost.appendChild(empty);
-      }
-      overlay.querySelector('#sn2-db-cancel').addEventListener('click', () => closeModal());
-      overlay.querySelector('#sn2-db-ok').addEventListener('click', () => {
+    };
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    retryButton.addEventListener('click', loadTree);
+    importButton.addEventListener('click', () => {
+      if (busy || selectedNames.size === 0) return;
+      let beforeSnapshot = '';
+      let beforeCharacters = null;
+      let beforeDirty = this._dirty;
+      let beforeLastPushedSnap = this._lastPushedSnap;
+      let beforeDetailSelection = null;
+      try {
+        if (typeof this._syncAllFromDom === 'function') this._syncAllFromDom();
+        beforeSnapshot = typeof this._takeSnapshot === 'function' ? this._takeSnapshot() : '';
+        beforeCharacters = JSON.parse(JSON.stringify(this.doc.characters || []));
+        beforeDirty = this._dirty;
+        beforeLastPushedSnap = this._lastPushedSnap;
+        beforeDetailSelection = this._detailCharacterSelection instanceof Set
+          ? new Set(this._detailCharacterSelection)
+          : null;
         const roleAdapter = this._roleManagementAdapter();
-        this._pushUndo('DBインポート');
         selectedNames.forEach(name => {
           if (!roleAdapter.characters.some(character => character.name === name)) roleAdapter.addCharacter(name);
         });
         this._detailCharacterSelection?.clear();
         roleAdapter.touch();
         this.renderDetailPanel(panelContainer);
-        closeModal();
-      });
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
-    } catch (err) {
-      closeModal();
-      if (typeof showStatus === 'function') showStatus('DB読み込みエラー: ' + err.message, true);
-    }
+        const afterSnapshot = typeof this._takeSnapshot === 'function' ? this._takeSnapshot() : '';
+        if (beforeSnapshot && afterSnapshot !== beforeSnapshot && this._lastPushedSnap !== beforeSnapshot) {
+          this._lastPushedSnap = beforeSnapshot;
+          if (typeof historyPush === 'function') {
+            const scope = typeof this._historyScope === 'function' ? this._historyScope() : '';
+            historyPush('DBインポート', () => { this._applySnapshot(beforeSnapshot); }, null, scope);
+          }
+        }
+        modalApi.close('submit');
+      } catch (error) {
+        if (beforeCharacters) this.doc.characters = beforeCharacters;
+        this._dirty = beforeDirty;
+        this._lastPushedSnap = beforeLastPushedSnap;
+        if (beforeDetailSelection) this._detailCharacterSelection = beforeDetailSelection;
+        this._calcCache = null;
+        try {
+          this._render();
+          this.renderDetailPanel(panelContainer);
+        } catch (renderError) {
+          console.error('DBからのキャラ取り込み失敗後の表示復元に失敗しました:', renderError);
+        }
+        console.warn('DBからのキャラ取り込みに失敗しました:', error);
+        status.textContent = `取り込めませんでした。選択内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+      }
+    });
+    modalApi.open();
+    updateSelection();
+    await loadTree();
   },
 
   _showColorPicker(anchorEl, chara, prop, panelContainer) {
@@ -872,8 +925,6 @@ Object.assign(ScriptNoteEditor.prototype, {
           delete chara[prop];
         } else {
           chara[prop] = color;
-          // 手動で色を変更した場合はautoColorをクリア（手動設定を優先）
-          this._clearDetailAutoColorForManualColor(chara, prop);
         }
         if (prop === 'bgColor') {
           if (chara[prop]) Object.assign(anchorEl.style, { background: chara[prop], backgroundSize: '', backgroundPosition: '' });
@@ -899,7 +950,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       input.addEventListener('input', () => {
         this._pushUndo('タイプ色変更');
         chara[prop] = input.value;
-        this._clearDetailAutoColorForManualColor(chara, prop);
         if (prop === 'bgColor') Object.assign(anchorEl.style, { background: input.value });
         if (prop === 'textColor') Object.assign(anchorEl.style, { color: input.value });
         this._refreshRowStyles();
@@ -1135,15 +1185,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       textValign: isTextCol ? (style.textValign || chara.textValign || '') : (style.textValign ?? ''),
       textOverflow: isTextCol ? (style.textOverflow || chara.textOverflow || '') : (style.textOverflow ?? ''),
     };
-    const clearAutoColorFor = (prop) => {
-      if (!isRoleCol || !chara.autoColor) return;
-      const act = chara.autoColorTarget || 'none';
-      const actValues = typeof act === 'object' ? Object.values(act) : [act];
-      const hasBg = actValues.some((v) => v === 'bg' || v === 'both');
-      const hasText = actValues.some((v) => v === 'text' || v === 'both');
-      if (prop === 'bgColor' && hasBg) delete chara.autoColor;
-      if (prop === 'textColor' && hasText) delete chara.autoColor;
-    };
     const UNDO_LABELS = {
       bgColor: 'タイプ色変更', textColor: 'タイプ色変更',
       fontWeight: 'タイプ書式変更', fontStyle: 'タイプ書式変更',
@@ -1173,7 +1214,6 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (prop === 'bgColor' || prop === 'textColor') {
           if (value === '' || value == null) delete style[prop];
           else style[prop] = value;
-          clearAutoColorFor(prop);
         } else if (prop === 'fontWeight' || prop === 'fontStyle') {
           if (!value) {
             delete style[prop];
@@ -1250,7 +1290,6 @@ Object.assign(ScriptNoteEditor.prototype, {
         if (needsLegacySync) {
           ['fontWeight', 'fontStyle', 'fontSize', 'fontFamily', 'textStrokeColor', 'textStrokeWidth'].forEach((p) => { delete chara[p]; });
         }
-        if (!chara.isDefault && isRoleCol) this._reapplyAutoColor(chara);
         this._refreshRowStyles();
         this._render();
         this._markDirty();
@@ -1298,16 +1337,18 @@ Object.assign(ScriptNoteEditor.prototype, {
     let applyAll = !!this.doc.editor.columnAllRules[colId];
     const rule0 = this.doc.editor.columnAllRules[colId] || {};
     const getTargets = () => {
-      if (applyAll) return this.doc.characters.map((_, i) => i);
-      return this._detailSelection?.size ? [...this._detailSelection] : this.doc.characters.map((_, i) => i);
+      const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
+      const selectedIds = this._detailTypeSelection || new Set();
+      const selected = types.filter(type => selectedIds.has(type.id));
+      return selected.length ? selected : types;
     };
     const applyChanges = (changes, opts = {}) => {
       this._pushUndo('タイプ一括変更');
       const targets = getTargets();
-      targets.forEach((i) => {
-        const c = this.doc.characters[i];
-        if (!c) return;
-        const s = this._getColStyle(c, colId);
+      if (applyAll && this.doc.editor?.defaultType) targets.push(this.doc.editor.defaultType);
+      targets.forEach((type) => {
+        if (!type) return;
+        const s = this._getColStyle(type, colId);
         Object.entries(changes).forEach(([prop, val]) => {
           if (val === '' || val === null || val === undefined) delete s[prop];
           else s[prop] = val;
@@ -1350,6 +1391,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     // 貼り付けで applyChanges → renderDetailPanel が走るとヘッダー要素が作り直されるため、
     // 開き直し用に現在のヘッダーセルを取り直す
     const freshHeaderAnchor = () => {
+      const managedHeader = panelContainer?.querySelector?.('.sn2-role-manage-format-header');
+      if (managedHeader) return managedHeader;
       const ids = ['_role', '_text', ...((this.doc.editor?.customColumns || []).map(c => c.id))];
       const i = ids.indexOf(colId);
       const ths = panelContainer?.querySelectorAll?.('.sn2-detail-th-col') || [];
@@ -1402,12 +1445,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       onReset: () => {
         this._pushUndo('一括書式リセット');
         const targets = getTargets();
-        targets.forEach((i) => {
-          const c = this.doc.characters[i];
-          if (!c) return;
-          const s = this._getColStyle(c, colId);
+        if (applyAll && this.doc.editor?.defaultType) targets.push(this.doc.editor.defaultType);
+        targets.forEach((type) => {
+          if (!type) return;
+          const s = this._getColStyle(type, colId);
           ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete s[p]);
-          this._reapplyAutoColor(c);
         });
         if (applyAll && this.doc.editor.columnAllRules?.[colId]) {
           delete this.doc.editor.columnAllRules[colId];
@@ -1693,7 +1735,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       out.customStyles = {};
       Object.entries(src.customStyles).forEach(([k, v]) => { out.customStyles[k] = { ...(v || {}) }; });
     }
-    if (src.autoColorTarget && typeof src.autoColorTarget === 'object') out.autoColorTarget = { ...src.autoColorTarget };
     return out;
   },
 
@@ -1725,61 +1766,6 @@ Object.assign(ScriptNoteEditor.prototype, {
         else style[prop] = val;
       });
     });
-  },
-
-  // リセット後に自動配色を再適用する
-  _getAutoColorPaletteRow() {
-    const raw = Number(this.doc?.editor?.autoColorPaletteRow);
-    return Number.isFinite(raw) ? Math.max(1, Math.min(4, Math.round(raw))) : 3;
-  },
-
-  _getAutoColorPalette() {
-    const row = this._getAutoColorPaletteRow();
-    if (typeof getStandardPaletteSwatches === 'function') {
-      const colors = getStandardPaletteSwatches(undefined, { themeSlots: true })
-        .filter(swatch => swatch && swatch.row === row && swatch.color && swatch.color !== 'transparent')
-        .map(swatch => swatch.color);
-      if (colors.length) return colors;
-    }
-    const fallback = typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : [];
-    const ranges = { 1: [0, 7], 2: [7, 15], 3: [15, 23], 4: [23, 31] };
-    const [start, end] = ranges[row] || ranges[3];
-    const colors = fallback.slice(start, end).filter(Boolean);
-    return colors.length ? colors : fallback.filter(Boolean);
-  },
-
-  _getAutoColorAppearanceTargets() {
-    if (Number(this.doc?.schema_version) >= 3 || Array.isArray(this.doc?.scenarioTypes)) {
-      const targets = [...(this.doc?.scenarioTypes || [])];
-      (this.doc?.characters || []).forEach(character => {
-        if (!character?.typeId && character?.legacyAppearance) targets.push(character.legacyAppearance);
-      });
-      return targets;
-    }
-    return (this.doc?.characters || []).filter(character => !character?.isDefault);
-  },
-
-  _resetAutoColorPaletteAssignments() {
-    const targets = this._getAutoColorAppearanceTargets();
-    targets.forEach(target => { delete target.autoColor; });
-    targets.forEach(target => this._reapplyAutoColor(target));
-  },
-
-  _reapplyAutoColor(chara) {
-    if (!chara) return;
-    const acRule = this.doc.editor?.autoColorRule || {};
-    const allNone = Object.values(acRule).every(v => !v || v === 'none');
-    if (allNone) { delete chara.autoColor; return; }
-    // autoColorが未設定なら再割り当て
-    if (!chara.autoColor) {
-      const colors = this._getAutoColorPalette();
-      if (colors.length) {
-        const existingCount = this._getAutoColorAppearanceTargets()
-          .filter(item => item !== chara && (item.autoColor || item.bgColor)).length;
-        chara.autoColor = colors[existingCount % colors.length];
-      }
-    }
-    chara.autoColorTarget = { ...acRule };
   },
 
   _refreshRowStyles() {
@@ -2295,83 +2281,6 @@ Object.assign(ScriptNoteEditor.prototype, {
         }
       });
     }
-
-    // 自動配色セクション（列ごとに 背景 / 文字 / 両方 / なし を切替）
-    const acSection = document.createElement('div');
-    acSection.className = 'sn2-detail-settings sn2-detail-theme-section--autocolor';
-    const acTitle = document.createElement('div');
-    acTitle.className = 'sn2-detail-ac-title';
-    acTitle.textContent = '自動配色';
-    acSection.appendChild(acTitle);
-    const colDefs = [
-      { id: '_gutter', label: '大区切り' },
-      { id: '_gutter2', label: '小区切り' },
-      { id: '_role', label: 'タイプ' },
-      { id: '_text', label: 'テキスト' },
-    ];
-    // ヘッダー行
-    const acHeader = document.createElement('div');
-    acHeader.className = 'sn2-detail-settings-row';
-    acHeader.innerHTML = colDefs.map(cd =>
-      `<span class="sn2-detail-settings-label sn2-detail-ac-settings-label">${cd.label}</span>`
-    ).join('');
-    const acSelOpt = (val, cur) => val === cur ? ' selected' : '';
-    const acRule = this.doc.editor?.autoColorRule || {};
-    const acPaletteRow = typeof this._getAutoColorPaletteRow === 'function' ? this._getAutoColorPaletteRow() : 3;
-    const acPaletteRowEl = document.createElement('div');
-    acPaletteRowEl.className = 'sn2-detail-settings-row';
-    acPaletteRowEl.innerHTML = `
-      <label class="sn2-detail-settings-label">テーマカラー</label>
-      <select class="sn2-detail-settings-select" data-ac-palette-row data-e2e-id="scriptnote-theme-auto-color-palette-row" title="自動配色で繰り返すテーマカラーの行">
-        <option value="1"${acSelOpt(1, acPaletteRow)}>1行目</option>
-        <option value="2"${acSelOpt(2, acPaletteRow)}>2行目</option>
-        <option value="3"${acSelOpt(3, acPaletteRow)}>3行目</option>
-        <option value="4"${acSelOpt(4, acPaletteRow)}>4行目</option>
-      </select>`;
-    acSection.appendChild(acPaletteRowEl);
-    acSection.appendChild(acHeader);
-    const acRow = document.createElement('div');
-    acRow.className = 'sn2-detail-settings-row';
-    acRow.innerHTML = colDefs.map(cd => {
-      const cur = acRule[cd.id] || 'none';
-      return `<select data-ac-col="${cd.id}" class="sn2-detail-settings-select sn2-detail-ac-select">
-        <option value="bg"${acSelOpt('bg', cur)}>背景</option>
-        <option value="text"${acSelOpt('text', cur)}>文字</option>
-        <option value="both"${acSelOpt('both', cur)}>両方</option>
-        <option value="none"${acSelOpt('none', cur)}>なし</option>
-      </select>`;
-    }).join('');
-    acSection.appendChild(acRow);
-    acSection.addEventListener('change', (ev) => {
-      const paletteRowSel = ev.target.closest('[data-ac-palette-row]');
-      if (paletteRowSel) {
-        this._pushUndo('自動配色変更');
-        const nextRow = Math.max(1, Math.min(4, parseInt(paletteRowSel.value, 10) || 3));
-        if (!this.doc.editor) this.doc.editor = {};
-        this.doc.editor.autoColorPaletteRow = nextRow;
-        this._resetAutoColorPaletteAssignments();
-        this._refreshRowStyles();
-        this._markDirty();
-        return;
-      }
-      const sel = ev.target.closest('[data-ac-col]');
-      if (!sel) return;
-      this._pushUndo('自動配色変更');
-      if (!this.doc.editor.autoColorRule) this.doc.editor.autoColorRule = {};
-      const colId = sel.dataset.acCol;
-      this.doc.editor.autoColorRule[colId] = sel.value;
-      const rule = {};
-      colDefs.forEach(cd => { rule[cd.id] = this.doc.editor.autoColorRule[cd.id] || 'none'; });
-      this.doc.editor.autoColorRule = { ...rule };
-      // すべての非デフォルトタイプに同じターゲットを適用
-      this._getAutoColorAppearanceTargets().forEach(appearance => {
-        appearance.autoColorTarget = { ...rule };
-        if (typeof this._reapplyAutoColor === 'function') this._reapplyAutoColor(appearance);
-      });
-      this._refreshRowStyles();
-      this._markDirty();
-    });
-    wrap.appendChild(acSection);
 
     container.appendChild(wrap);
   },

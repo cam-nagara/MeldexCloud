@@ -50,12 +50,12 @@ function _resolveDetailTabForType(type, defaultTab) {
   const compatible = {
     page: ['note-editor', 'publish'],
     folder: ['note-editor'],
-    database: ['db-property-settings', 'db-tree', 'publish'],
-    board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'],
-    calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish'],
-    csv: ['publish'],
-    'smart-db': ['publish'],
-    scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish'],
+    database: ['db-property-settings', 'db-tree', 'publish', 'note-editor'],
+    board: ['board-card', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style', 'note-editor'],
+    calendar: ['calendar-today', 'calendar-settings', 'calendar-production', 'publish', 'note-editor'],
+    csv: ['publish', 'note-editor'],
+    'smart-db': ['publish', 'note-editor'],
+    scriptnote: ['sn2-main', 'sn2-roles', 'sn2-theme', 'sn2-ruby', 'sn2-rowset', 'publish', 'note-editor'],
   };
   const valid = compatible[type] || [];
   if (valid.includes(cur)) return cur;
@@ -145,7 +145,6 @@ function _detailTabButtonHtml(tab, className, label) {
 function _detailTabShellHtml() {
   return `
     <nav id="detail-tab-bar" class="gb-tabbar" role="tablist" aria-label="オプションパネルのタブ">
-      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', '情報')}
       ${_detailTabButtonHtml('db-property-settings', 'detail-tab-db-property-settings', '列設定')}
       ${_detailTabButtonHtml('db-tree', 'detail-tab-db-tree', 'ツリー')}
       ${_detailTabButtonHtml('calendar-today', 'detail-tab-calendar', '今日')}
@@ -161,6 +160,7 @@ function _detailTabShellHtml() {
       ${_detailTabButtonHtml('board-depth-style', 'detail-tab-board-style detail-tab-board-depth-style', '階層別スタイル')}
       ${_detailTabButtonHtml('backlinks', 'detail-tab-backlinks', 'バックリンク')}
       ${_detailTabButtonHtml('shortcuts', 'detail-tab-shortcuts', 'ショートカットキー')}
+      ${_detailTabButtonHtml('note-editor', 'detail-tab-note-editor', '情報')}
     </nav>
     <div id="detail-tab-note-editor" class="gb-panel-body" hidden></div>
     <div id="detail-tab-db-property-settings" class="gb-panel-body-scroll" hidden></div>
@@ -236,21 +236,73 @@ function _openDetailRightPanel() {
 // v5.0: ペインシステムの#rp-detailを優先し、なければ旧detail-panelにフォールバック
 function _resolveDetailEl(opts) {
   if (opts && opts.modal) {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const content = document.createElement('div');
+    content.className = 'detail-legacy-modal-content';
+    let headerObserver = null;
+    let busy = false;
+    let modalApi = null;
+    modalApi = window.GBUI.createModal({
+      id: 'detail-legacy-modal',
+      title: 'オプション',
+      body: content,
+      variant: 'standard',
+      geometryKey: 'detail-legacy-modal',
+      minWidth: '0',
+      initialFocus: () => content.querySelector('input, select, textarea, button') || content,
+      closeLabel: '詳細パネルを閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      resizable: true,
+      onBeforeClose: () => !modalApi?.isBusy?.(),
+      onClose: () => headerObserver?.disconnect(),
+    });
+    const { overlay, modal } = modalApi;
+    overlay.classList.add('modal-overlay');
     overlay.dataset.e2eId = 'detail-legacy-modal-overlay';
-    const modal = document.createElement('div');
-    modal.className = 'modal';
+    overlay._detailLegacyModalApi = modalApi;
+    modal.classList.add('modal', 'detail-legacy-modal-dialog');
     modal.dataset.e2eId = 'detail-legacy-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.setAttribute('aria-label', 'オプション');
-    modal.tabIndex = -1;
-    modal.style.cssText = 'min-width:400px;max-height:80vh;overflow-y:auto;display:flex;flex-direction:column;';
-    overlay.appendChild(modal);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-    return modal;
+    modal._detailLegacyModalApi = modalApi;
+    modal.style.cssText = 'width:min(560px,calc(100vw - 24px));max-width:100%;max-height:min(80vh,720px);overflow:hidden;';
+    modalApi.body.style.cssText = 'min-width:0;overflow-x:hidden;';
+    content.dataset.e2eId = 'detail-legacy-modal-content';
+    content.tabIndex = -1;
+    content.style.cssText = 'min-width:0;min-height:0;max-width:100%;overflow-x:hidden;overflow-y:auto;display:flex;flex-direction:column;';
+    content._detailLegacyModalApi = modalApi;
+    const commonClose = modalApi.header.querySelector('.gb-modal-close');
+    if (commonClose) commonClose.dataset.e2eId = 'detail-panel-close';
+    modalApi.isBusy = () => busy;
+    modalApi.setBusy = (next) => {
+      busy = !!next;
+      const ariaBusy = busy ? 'true' : 'false';
+      modal.setAttribute('aria-busy', ariaBusy);
+      content.setAttribute('aria-busy', ariaBusy);
+      content.querySelectorAll('#dp-cal-save').forEach(button => { button.disabled = busy; });
+    };
+    // 既存のカレンダーイベントフォームは返却要素へ owner component を載せ、
+    // 保存時には closest('.modal') で外側を参照する。互換用の旧 .modal をbodyへ
+    // 二重適用せず、値だけ共通シェル本体へ透過させる。
+    Object.defineProperty(content, '_calComponent', {
+      configurable: true,
+      get: () => modal._calComponent || null,
+      set: value => { modal._calComponent = value; },
+    });
+    // カレンダーの実入口は従来の詳細パネル用ヘッダーをbodyへ後挿入する。
+    // 共通modalではタイトルと閉じる操作が既にあるため、タイトルだけouterへ同期し、
+    // 二重ヘッダーを表示しない。
+    headerObserver = new MutationObserver(() => {
+      const legacyHeader = content.querySelector(':scope > .dp-detail-header');
+      if (!legacyHeader) return;
+      const legacyTitle = legacyHeader.querySelector('.dp-detail-title')?.textContent?.trim();
+      const commonTitle = modal.querySelector(':scope > .gb-modal-header .gb-modal-title');
+      if (legacyTitle && commonTitle) commonTitle.textContent = legacyTitle;
+      legacyHeader.remove();
+      const eventForm = content.querySelector(':scope > .dp-event-form');
+      if (eventForm) eventForm.style.cssText += 'min-width:0;max-width:100%;overflow-x:hidden;';
+    });
+    headerObserver.observe(content, { childList: true });
+    modalApi.open();
+    return content;
   }
   const rpDetail = document.getElementById('rp-detail');
   if (rpDetail) _ensureDetailTabShell(rpDetail);
@@ -312,8 +364,12 @@ function _hideDetailPanel() {
   _saveDetailPanelCfg(cfg);
   ['top','bottom','left','right'].forEach(p => { const el = _detailPanelEl(p); if (el) el.style.display = 'none'; });
   // v5.0: モーダルオーバーレイで表示された場合はモーダルを閉じる
-  const modals = document.querySelectorAll('.modal-overlay');
-  modals.forEach(m => { if (m.querySelector('#dp-cal-title')) m.remove(); });
+  const modals = document.querySelectorAll('[data-e2e-id="detail-legacy-modal-overlay"]');
+  modals.forEach(overlay => {
+    if (!overlay.querySelector('#dp-cal-title')) return;
+    if (overlay._detailLegacyModalApi?.close) overlay._detailLegacyModalApi.close('detail-hidden');
+    else overlay.remove();
+  });
 }
 
 function toggleOptionPanel() {
@@ -360,20 +416,39 @@ function _clearBacklinksTabIfHidden() {
   if (!visible) switchDetailTab(null);
 }
 
+function showFileInfoTab(visible) {
+  const rpDetail = document.getElementById('rp-detail');
+  if (rpDetail) _ensureDetailTabShell(rpDetail);
+  document.querySelectorAll('.detail-tab-note-editor').forEach(t => {
+    t.hidden = !visible;
+  });
+  if (!visible && _currentDetailTab === 'note-editor') switchDetailTab(null);
+}
+
+function renderFileInfoDetailTab(filePath, preloadedMeta, options) {
+  const normalizedPath = String(filePath || '').trim();
+  if (!normalizedPath) return Promise.resolve(false);
+  const rpDetail = document.getElementById('rp-detail');
+  if (!rpDetail) return Promise.resolve(false);
+  _ensureDetailTabShell(rpDetail);
+  showFileInfoTab(true);
+  const host = rpDetail.querySelector('#detail-tab-note-editor');
+  if (!host || !window.MeldexFileInfoPanel?.renderInto) return Promise.resolve(false);
+  return window.MeldexFileInfoPanel.renderInto(host, normalizedPath, {
+    ...(options || {}),
+    preloadedMeta,
+  });
+}
+
 function showNoteTabs(visible) {
   const rpDetail = document.getElementById('rp-detail');
   if (rpDetail) _ensureDetailTabShell(rpDetail);
   const dbVisible = [...document.querySelectorAll('.detail-tab-db-property-settings')].some(t => !t.hidden);
-  document.querySelectorAll('.detail-tab-note-editor').forEach(t => {
-    t.hidden = !visible;
-  });
+  showFileInfoTab(visible);
   // バックリンクタブもノート/DB文脈で表示
   document.querySelectorAll('.detail-tab-backlinks').forEach(t => {
     t.hidden = !(visible || dbVisible);
   });
-  if (!visible && _currentDetailTab === 'note-editor') {
-    switchDetailTab(null);
-  }
   _clearBacklinksTabIfHidden();
   if (visible) _refreshBacklinksIfActive();
 }
@@ -2528,13 +2603,13 @@ async function _syncDetailPanel(label, path, type, opts) {
       GBPaneBridge.clearDetailPaneShell();
     }
     // ここは「開いているエントリに表示中の詳細を追従させる」ための同期処理。
-    // 開いていないフロートパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
-    // フロートパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
+    // 開いていないサブパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
+    // サブパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
     const drawerOpen = !!window.MeldexCloudMobileSideDrawer?.isOpen?.();
-    const floatPanelOpen = typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.isOpen === 'function'
-      ? GBFloatPanel.isOpen('entity')
+    const subPanelOpen = typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.isOpen === 'function'
+      ? GBSubPanel.isOpen()
       : false;
-    if (!drawerOpen && !floatPanelOpen) return false;
+    if (!drawerOpen && !subPanelOpen) return false;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。
@@ -2563,9 +2638,11 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'calendar' && typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   const noteEditorTypes = new Set(['page']);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
+  if (typeof showFileInfoTab === 'function') showFileInfoTab(fileInfoTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   // ショートカットキータブは常に出し、開いている間は対象アプリに合わせて絞り込みを更新する
   if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
@@ -2594,18 +2671,24 @@ async function _syncDetailPanel(label, path, type, opts) {
     // 対象から除外する」）。前の選択対象を残すと、フォルダ表示中にバックリンク
     // タブを開いた時に無関係な古い対象の結果が出てしまうため明示的に空にする。
     window.GBOptionTargetContext?.clear('folder-open');
-    // フォルダ選択時は詳細パネルにフォルダ情報を表示
-    await showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
-      <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
-      <div>パス: ${esc(path)}</div>
-      <div data-global-tags-target-path="${esc(path)}"></div>
-      <div data-duplicate-folder-setting data-path="${esc(path)}"></div>
-    </div>`);
+    // フォルダもファイルと同じ情報表示を使い、作成・更新日時を取得する。
+    await _showFileInfoInDetailPanel(path, opts?.fileMeta, {
+      kind: 'folder',
+      type: 'folder',
+      updateTargetContext: false,
+    });
     if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
+    const fileInfoType = opts?.fileInfoType === 'smart-db' ? 'smart-db' : 'database';
+    void renderFileInfoDetailTab(path, opts?.fileMeta, {
+      type: fileInfoType,
+      typeLabel: fileInfoType === 'smart-db' ? 'スマートシート' : 'シート',
+    });
     await _showDatabaseInfoInDetailPanel(label, path);
+  } else if (fileInfoTypes.has(type)) {
+    void renderFileInfoDetailTab(path, opts?.fileMeta, { type });
   }
 }
 
@@ -2767,31 +2850,59 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   setTimeout(() => body.querySelector('#dp-cal-title')?.focus(), 50);
 }
 
-async function _dpCalSave(editId) {
-  // Phase C: CalendarComponentに直接undo記録を依頼
-  const formRoot = document.getElementById('dp-cal-title')?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
+function _dpCalSave(editId) {
+  const titleInput = document.getElementById('dp-cal-title');
+  const formRoot = titleInput?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
+  if (formRoot?._dpCalSavePromise) return formRoot._dpCalSavePromise;
   const calComponent = formRoot?._calComponent || document.getElementById('rp-calendar')?._calComponent || null;
-  if (calComponent) calComponent.pushUndo(editId ? 'イベント編集' : 'イベント作成');
-  const data = {
-    title: document.getElementById('dp-cal-title')?.value || '',
-    start: document.getElementById('dp-cal-start')?.value || '',
-    end: document.getElementById('dp-cal-end')?.value || '',
-    all_day: document.getElementById('dp-cal-allday')?.checked ? 1 : 0,
-    color: getColorSwatchValue(document.getElementById('dp-cal-color'), ''),
-    location: document.getElementById('dp-cal-location')?.value || '',
-    url: document.getElementById('dp-cal-url')?.value || '',
-    description: document.getElementById('dp-cal-desc')?.value || '',
-    calendar_id: document.getElementById('dp-cal-calendar')?.value || '',
-    user: getUsername(),
+  const saveButton = formRoot?.querySelector('#dp-cal-save') || document.getElementById('dp-cal-save');
+  const modalApi = formRoot?._detailLegacyModalApi || titleInput?.closest('[data-e2e-id="detail-legacy-modal-content"]')?._detailLegacyModalApi || null;
+  const setBusy = (next) => {
+    const busy = !!next;
+    modalApi?.setBusy?.(busy);
+    if (formRoot) formRoot.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (saveButton) saveButton.disabled = busy;
   };
-  try {
-    if (editId) await apiPut('/cal/events/' + editId, data);
-    else await apiPost('/cal/events', data);
-    showStatus('イベントを保存しました');
-    // Phase C: CalendarComponentに直接リロードを通知
-    if (calComponent) calComponent.reload();
-    _hideDetailPanel();
-  } catch { showStatus('保存に失敗', true); }
+  const operation = (async () => {
+    setBusy(true);
+    try {
+      // Phase C: CalendarComponentに直接undo記録を依頼。同期例外も保存失敗として
+      // 扱い、finallyで必ず操作可能状態へ戻す。
+      if (calComponent) calComponent.pushUndo(editId ? 'イベント編集' : 'イベント作成');
+      const data = {
+        title: titleInput?.value || '',
+        start: document.getElementById('dp-cal-start')?.value || '',
+        end: document.getElementById('dp-cal-end')?.value || '',
+        all_day: document.getElementById('dp-cal-allday')?.checked ? 1 : 0,
+        color: getColorSwatchValue(document.getElementById('dp-cal-color'), ''),
+        location: document.getElementById('dp-cal-location')?.value || '',
+        url: document.getElementById('dp-cal-url')?.value || '',
+        description: document.getElementById('dp-cal-desc')?.value || '',
+        calendar_id: document.getElementById('dp-cal-calendar')?.value || '',
+        user: getUsername(),
+      };
+      if (editId) await apiPut('/cal/events/' + editId, data);
+      else await apiPost('/cal/events', data);
+      showStatus('イベントを保存しました');
+      // Phase C: CalendarComponentに直接リロードを通知
+      if (calComponent) calComponent.reload();
+      // 保存成功によるプログラム閉鎖だけはbusy解除後に通す。
+      setBusy(false);
+      _hideDetailPanel();
+      return true;
+    } catch {
+      showStatus('保存に失敗', true);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  })();
+  if (!formRoot) return operation;
+  const tracked = operation.finally(() => {
+    if (formRoot._dpCalSavePromise === tracked) formRoot._dpCalSavePromise = null;
+  });
+  formRoot._dpCalSavePromise = tracked;
+  return tracked;
 }
 
 async function _dpCalDelete(id) {
@@ -2923,8 +3034,9 @@ async function openEntityInSplit(entityPath, entityName) {
   _splitPath = entityPath;
   _splitDirty = false;
   if (window.MeldexCloudMobileSideDrawer?.openEntity?.(entityPath, name)) return true;
-  if (typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.open === 'function') {
-    return GBFloatPanel.open('entity', { path: entityPath, label: name });
+  if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
+    if (typeof openRightPanelTab === 'function') openRightPanelTab('subpanel');
+    return GBSubPanel.open({ type: 'entity', path: entityPath, label: name });
   }
   if (typeof selectEntity === 'function') {
     await selectEntity(entityPath);

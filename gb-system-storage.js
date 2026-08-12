@@ -59,9 +59,29 @@
     // テーマなど、同じ人がどの環境で開いても同じであってほしい見た目の設定。
     // 個人管理領域だけで使用する(共有ワークスペースへ置くと他メンバーへ漏れる)。
     USER_PREFERENCES: 'user-preferences',
+    // 自動割り当ての検討案は個人領域、採用済みベースライン・採用ジャーナル・
+    // 能力設定・テンプレート・プロジェクト設定は共有ワークスペース領域へ置く。
+    // Python 側 SystemStorageKind と同じ語彙・容量契約を使う。
+    SCHEDULE_PROPOSALS: 'schedule-proposals',
+    SCHEDULE_BASELINES: 'schedule-baselines',
+    SCHEDULE_JOURNALS: 'schedule-journals',
+    SCHEDULE_POLICIES: 'schedule-policies',
+    SCHEDULE_TEMPLATES: 'schedule-templates',
+    SCHEDULE_PROJECTS: 'schedule-projects',
     // Phase 5(既存付随物の自動移行)専用。meldex_system_storage.py と対称。
     MIGRATION_LEDGER: 'migration-ledger',
     MIGRATION_BACKUPS: 'migration-backups',
+    // 可搬ナレッジ索引(gb-portable-knowledge-runtime.js)。接続中フォルダに限らず
+    // 登録済み全ソースフォルダを横断するDropboxアカウント単位の機能のため、
+    // 常に個人管理領域だけで使用する(共有ワークスペースへは置かない。個人限定の
+    // ソースフォルダ内容が他メンバーへ漏れるのを防ぐため)。JS専用種別で、
+    // 対応するPython(PC本体)側の実装は無い(isAvailable()がbrowser/dropbox
+    // モード限定のため)。
+    // artifacts: 文書ごとの内容アドレス方式の抽出済み断片(revisionが変われば
+    // 別document_id。世代の掃除は現状未実装、従来動作のまま)。
+    PORTABLE_KNOWLEDGE_ARTIFACTS: 'portable-knowledge-artifacts',
+    // devices: 端末ごとの索引台帳(1端末=1文書。CASで安全に上書きする)。
+    PORTABLE_KNOWLEDGE_DEVICES: 'portable-knowledge-devices',
   });
 
   const ALL_SYSTEM_STORAGE_KINDS = Object.freeze(Object.values(SystemStorageKind));
@@ -210,8 +230,18 @@
     [SystemStorageKind.ASSET_RECOVERY]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.DIAGNOSTICS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.USER_PREFERENCES]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_PROPOSALS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: 1_000_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_BASELINES]: { maxDocumentBytes: 50_000_000, maxTotalBytes: 1_000_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_JOURNALS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_POLICIES]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 10_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_TEMPLATES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.SCHEDULE_PROJECTS]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_LEDGER]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.MIGRATION_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
+    // 断片は文書1件分のテキスト断片・構造(nodes/edges)を含むためANNOTATIONS等より
+    // 大きく見積もる。世代掃除は無し(現状の仕様どおり。将来のGC課題は別途)。
+    [SystemStorageKind.PORTABLE_KNOWLEDGE_ARTIFACTS]: { maxDocumentBytes: 8_000_000, maxTotalBytes: 2_000_000_000, maxGenerations: null, retentionDays: null },
+    [SystemStorageKind.PORTABLE_KNOWLEDGE_DEVICES]: { maxDocumentBytes: 5_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
   });
 
   function retentionPolicyFor(kind) {

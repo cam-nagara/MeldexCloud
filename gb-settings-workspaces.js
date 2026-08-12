@@ -91,7 +91,7 @@
       </div>
     </section>`).join('');
     container.innerHTML = `<section class="gb-section gb-section--boxed">
-      <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース ${fieldHelp('作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。')}</div>
+      <div class="gb-section-title">${_icon('usersRound', 14)} ワークスペース ${fieldHelp('作品・フォルダツリーのソースとは別に、チャットや共同作業で使う単位です。', { e2eId: 'workspace-scope-help' })}</div>
       <button type="button" class="gb-btn gb-btn-sm" data-settings-workspace-add data-e2e-id="settings-workspace-add">${_icon('plus', 14)} ワークスペースを追加</button>
     </section>${rowHtml}`;
     bindWorkspaceSettings(container);

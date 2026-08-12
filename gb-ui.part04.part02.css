@@ -1,14 +1,13 @@
 /* Support diagnostics dialog and error notice */
-/* 共通モーダル基盤（gb-modal-shell.js の _clampModal）は、まだ実寸が入っていないモーダルに対して
-   width/height ではなく min-width/min-height を採用して実寸を書き込む。min-width:0 のままだと
-   下限値（260x180）に潰されて上の width/height 指定が効かないため、min 側にも実サイズを書く。 */
+/* 共通 createModal controller がviewport内へ実寸を固定するため、旧controller用の760px最小高は
+   持たせない。狭い画面では本文だけをスクロールさせ、ヘッダーと操作を画面内に保つ。 */
 .meldex-support-dialog {
   width: min(440px, calc(100vw - 32px));
   min-width: min(440px, calc(100vw - 32px));
   max-width: 440px;
-  height: min(760px, calc(100vh - 32px));
-  min-height: min(760px, calc(100vh - 32px));
-  max-height: calc(100vh - 32px);
+  height: min(720px, calc(100vh - 48px));
+  min-height: min(520px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
 }
 .meldex-support-dialog-title {
   display: inline-flex;
@@ -380,10 +379,10 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   gap: var(--ui-space-3);
   flex: 0 0 auto;
 }
-.modal.gb-knowledge-integrity-dialog {
+.gb-modal.gb-knowledge-integrity-dialog {
   width: min(760px, 94vw);
   max-width: min(760px, 94vw);
-  height: min(620px, 88vh);
+  height: auto;
   max-height: min(620px, 88vh);
 }
 .gb-knowledge-integrity-header {
@@ -392,19 +391,32 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   justify-content: space-between;
   gap: var(--ui-space-4);
   flex: 0 0 auto;
-  margin-bottom: var(--ui-space-4);
+  margin-bottom: 0;
 }
-.modal.gb-knowledge-integrity-dialog .gb-knowledge-integrity-header h3 {
+.gb-modal.gb-knowledge-integrity-dialog .gb-knowledge-integrity-header .gb-modal-title {
   margin: 0;
 }
 .gb-knowledge-integrity-dialog-body {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
   gap: var(--ui-space-4);
-  margin-top: var(--ui-space-4);
+  min-height: 0;
+  margin-top: 0;
+}
+.gb-knowledge-integrity-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-4);
+  min-width: 0;
+  max-width: 100%;
 }
 .gb-knowledge-integrity-target {
   margin: 0;
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 .gb-knowledge-integrity-target-header {
   justify-content: space-between;
@@ -470,6 +482,11 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 .gb-owner-key-status,
 .gb-owner-key-recovery-status {
   min-height: 18px;
+  color: var(--ui-fg-muted);
+}
+.gb-owner-key-status.is-error,
+.gb-owner-key-recovery-status.is-error {
+  color: var(--ui-danger);
 }
 .modal.gb-owner-key-audit-dialog,
 .modal.gb-owner-key-recovery-dialog {
@@ -509,9 +526,16 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
 }
 .gb-owner-key-recovery-section {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.gb-owner-key-recovery-section > *:not(.gb-section-title) {
+  margin-left: 0;
 }
 .gb-owner-key-recovery-raw {
   width: 100%;
+  max-width: 100%;
   resize: vertical;
   box-sizing: border-box;
 }
@@ -573,4 +597,9 @@ body[data-mobile-ui-local="1"] .gb-owner-key-dialog-close {
   width: 44px;
   min-width: 44px;
   min-height: 44px;
+}
+body[data-cloud-mobile="1"] .gb-owner-key-recovery-body,
+body[data-mobile-ui="1"] .gb-owner-key-recovery-body,
+body[data-mobile-ui-local="1"] .gb-owner-key-recovery-body {
+  overflow-x: hidden;
 }

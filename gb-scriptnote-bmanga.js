@@ -6,6 +6,7 @@
   const VERSION = 1;
   const VERSION_V2 = 2;
   const DEFAULT_PORT = 47817;
+  let _bmangaSendPending = false;
   const RUBY_PRIORITY = Object.freeze({
     manual: 400,
     'shared-link-dictionary': 300,
@@ -409,9 +410,11 @@
 
   function _field(label, input) {
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin:10px 0;';
+    wrap.className = 'field gb-field sn2-bmanga-field';
     const text = document.createElement('span');
+    text.className = 'gb-label';
     text.textContent = label;
+    input.classList.add('gb-input');
     wrap.append(text, input);
     return wrap;
   }
@@ -433,17 +436,9 @@
 
   function _openDialog(doc, documentId, selectedRowIds) {
     return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.dataset.sn2Dialog = 'bmanga-send';
-      const modal = document.createElement('div');
-      modal.className = 'modal';
-      modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      modal.setAttribute('aria-label', 'B-MANGAへ送信');
-      modal.style.cssText = 'width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:20px;box-sizing:border-box;';
-      const title = document.createElement('h2');
-      title.textContent = 'B-MANGAへ送信';
+      const owner = document.activeElement;
+      const body = document.createElement('div');
+      body.className = 'sn2-bmanga-send-body';
 
       const totalCount = Array.isArray(doc?.rows) ? doc.rows.length : 0;
       const hasSelection = Array.isArray(selectedRowIds) && selectedRowIds.length > 0;
@@ -514,24 +509,12 @@
       const token = document.createElement('input');
       token.type = 'password'; token.autocomplete = 'off'; token.spellcheck = false;
       token.placeholder = 'B-MANGAに表示された接続トークン'; token.dataset.e2eId = 'bmanga-send-token';
-      const buttons = document.createElement('div');
-      buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:18px;';
       const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'キャンセル';
-      const send = document.createElement('button'); send.type = 'button'; send.textContent = '送信'; send.className = 'primary';
+      cancel.className = 'gb-btn gb-btn-sm cancel-btn';
+      const send = document.createElement('button'); send.type = 'button'; send.textContent = '送信';
+      send.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
       send.dataset.e2eId = 'bmanga-send-confirm';
-      const close = value => { token.value = ''; overlay.remove(); resolve(value); };
-      cancel.addEventListener('click', () => close(null));
-      send.addEventListener('click', () => {
-        let payload;
-        const options = currentOptions();
-        try { payload = buildPayload(doc, documentId, options); }
-        catch (error) { showStatus?.(error.message || String(error), true); return; }
-        close({ port: Number(port.value), token: token.value, payload, options });
-      });
-      overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
-      buttons.append(cancel, send);
-      modal.append(
-        title,
+      body.append(
         rangeField,
         affix.field,
         summaryField.field,
@@ -540,29 +523,66 @@
         countSummary,
         _field('B-MANGAのポート', port),
         _field('接続トークン', token),
-        buttons,
       );
-      overlay.appendChild(modal); document.body.appendChild(overlay);
-      // 配置は .modal-overlay の flex 中央寄せに任せる（クリスタ送信ダイアログと同方式）。
-      // positionPopup で手動配置すると中央寄せから外れ、縦に長いダイアログが画面外へはみ出す。
-      window.GBModalShell?.enhanceOverlay?.(overlay);
-      token.focus();
+      let pendingResult = null;
+      let settled = false;
+      let submitting = false;
+      const modalApi = window.GBUI.createModal({
+        id: 'scriptnote-bmanga-send', title: 'B-MANGAへ送信', body, footer: [cancel, send],
+        variant: 'standard', geometryKey: 'scriptnote-bmanga-send', minWidth: '0',
+        initialFocus: '[data-e2e-id="bmanga-send-token"]', returnFocus: owner,
+        closeLabel: 'B-MANGAへ送信を閉じる', closeOnEsc: true, closeOnOverlay: true,
+        onClose: () => {
+          token.value = '';
+          if (settled) return;
+          settled = true;
+          resolve(pendingResult);
+        },
+      });
+      modalApi.overlay.dataset.sn2Dialog = 'bmanga-send';
+      modalApi.overlay.dataset.e2eId = 'scriptnote-bmanga-send-overlay';
+      modalApi.modal.dataset.e2eId = 'scriptnote-bmanga-send-dialog';
+      modalApi.modal.classList.add('sn2-bmanga-send-modal');
+      globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modalApi.modal);
+      cancel.addEventListener('click', () => modalApi.close('cancel'));
+      send.addEventListener('click', () => {
+        if (submitting) return;
+        submitting = true;
+        let payload;
+        const options = currentOptions();
+        try { payload = buildPayload(doc, documentId, options); }
+        catch (error) {
+          submitting = false;
+          showStatus?.(error.message || String(error), true);
+          return;
+        }
+        pendingResult = { port: Number(port.value), token: token.value, payload, options };
+        modalApi.close('submit');
+      });
+      modalApi.open();
     });
   }
 
   async function sendActiveScenario() {
-    if (!isAvailable()) return;
+    if (!isAvailable() || _bmangaSendPending) return;
+    _bmangaSendPending = true;
     const editor = _activeEditor();
-    if (!editor?.doc) return showStatus?.('シナリオが開かれていません', true);
-    editor._syncAllFromDom?.();
-    const documentId = _documentId(editor);
-    try { buildPayload(editor.doc, documentId, {}); }
-    catch (error) { return showStatus?.(error.message || String(error), true); }
-    const selectedRowIds = _selectedRowIds(editor);
-    const result = await _openDialog(editor.doc, documentId, selectedRowIds);
-    if (!result) return;
-    showLoading?.('B-MANGAへ送信しています...');
     try {
+      if (!editor?.doc) {
+        showStatus?.('シナリオが開かれていません', true);
+        return;
+      }
+      editor._syncAllFromDom?.();
+      const documentId = _documentId(editor);
+      try { buildPayload(editor.doc, documentId, {}); }
+      catch (error) {
+        showStatus?.(error.message || String(error), true);
+        return;
+      }
+      const selectedRowIds = _selectedRowIds(editor);
+      const result = await _openDialog(editor.doc, documentId, selectedRowIds);
+      if (!result) return;
+      showLoading?.('B-MANGAへ送信しています...');
       let sendVersion = VERSION;
       try {
         const capabilityResponse = await fetch('/api/bmanga/scenario/capabilities', {
@@ -592,7 +612,10 @@
       return data;
     } catch (error) {
       showStatus?.(error.message || 'B-MANGAへの送信に失敗しました', true);
-    } finally { hideLoading?.(); }
+    } finally {
+      hideLoading?.();
+      _bmangaSendPending = false;
+    }
   }
 
   window.MeldexBManga = {

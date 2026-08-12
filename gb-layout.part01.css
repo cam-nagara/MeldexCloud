@@ -195,7 +195,7 @@ html:not([data-single-window="1"]) .gb-toolbar-option-panel-btn { display: none 
   border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
 }
 #app-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-#app-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-fg-strong); border-color: var(--ui-accent); }
+#app-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 #app-toolbar .sep { width: var(--ui-border-width); height: 20px; background: var(--ui-border); margin: 0 var(--ui-space-2); }
 .toolbar-group { display: flex; align-items: center; gap: var(--ui-space-2); }
 
@@ -1600,6 +1600,18 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   min-height: 0;
   overflow: hidden;
 }
+
+.meldex-chat-listbox { position: relative; flex: 1; min-width: 120px; }
+.meldex-chat-listbox-trigger { width: 100%; min-height: 28px; padding: 3px 26px 3px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.meldex-chat-listbox-popup { position: absolute; z-index: 10020; top: calc(100% + 4px); left: 0; right: 0; max-height: min(320px, 50vh); overflow: auto; padding: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+.meldex-chat-listbox-popup[hidden] { display: none; }
+.meldex-chat-listbox-popup [role="option"] { display: block; width: 100%; padding: 6px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; background: transparent; color: var(--fg); border: 0; border-radius: 4px; cursor: pointer; }
+.meldex-chat-listbox-popup [role="option"]:hover,
+.meldex-chat-listbox-popup [role="option"][aria-selected="true"] { background: var(--bg4); }
+.chat-waiting-undo-toast { position: sticky; bottom: 6px; align-self: center; z-index: 10; display: flex; gap: 10px; align-items: center; padding: 7px 10px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 5px 18px rgba(0,0,0,.25); font-size: 12px; }
+.chat-waiting-undo-toast button { padding: 3px 7px; color: var(--accent); background: transparent; border: 0; cursor: pointer; font-weight: 700; }
+.gb-chat-copy-popup { min-width: 88px; white-space: nowrap; }
+.chat-list-state-icons { margin-left: auto; color: var(--accent); font-size: 11px; white-space: nowrap; }
 
 #note-toc {
   width: 200px;

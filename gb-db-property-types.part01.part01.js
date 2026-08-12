@@ -7,10 +7,18 @@ function getPropertyTypes(dbPath, ctxOverride) {
   // バックエンド（フォルダノート）を優先: property_types キーが存在すればそれを使う
   if (targetMetadata && 'property_types' in targetMetadata && targetMetadata.property_types !== null) {
     const backendTypes = targetMetadata.property_types || {};
+    // 旧URL列は読込時だけリンクの別名として扱う。ここではメモリ上だけを
+    // 正規化し、通常の列設定保存が発生するまで既存ファイルを書き換えない。
+    Object.values(backendTypes).forEach(config => {
+      if (config && typeof config === 'object' && config.type === 'url') config.type = 'link';
+    });
     if (Object.keys(backendTypes).length > 0) return backendTypes;
     return Object.keys(localTypes).length > 0 ? localTypes : backendTypes;
   }
   // フォールバック: localStorage（後方互換、オフライン対応）
+  Object.values(localTypes).forEach(config => {
+    if (config && typeof config === 'object' && config.type === 'url') config.type = 'link';
+  });
   return localTypes;
 }
 
@@ -1048,12 +1056,13 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
     });
   }
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
+  if (!globalThis.GBUI?.createModal) throw new Error('列タイプ設定を初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="db-property-type-dialog"]');
+  if (existingDialog) { existingDialog.focus(); return existingDialog.closest('.gb-modal-overlay')?._dbPropertyTypeApi || null; }
   const scopeId = 'modal-' + Math.random().toString(36).slice(2, 8);
-  o.innerHTML = `<div class="modal pt-modal" data-pt-root>
-    <h3>列タイプの設定</h3>
-    <div class="modal-body">
+  const content = document.createElement('div');
+  content.setAttribute('data-pt-root', '');
+  content.innerHTML = `
       <div class="gb-section-desc">列: ${esc(propName)}</div>
       <div class="field"><label>型</label>
         <select id="pt-type" data-onchange="onPropertyTypeChange(this.closest('[data-pt-root]'))">
@@ -1061,22 +1070,49 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
         </select>
       </div>
       ${_renderPropertyMultiplicityControls(current.type, scopeId)}
-      <div id="pt-options"></div>
-    </div>
-    <div class="btn-row">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="modal-pt-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  const root = o.querySelector('[data-pt-root]');
-  // propName の ' や \ を保護するため直接バインド
-  root.querySelector('#modal-pt-apply').addEventListener('click', () => applyPropertyType(propName, root));
+      <div id="pt-options"></div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.id = 'modal-pt-apply'; applyButton.textContent = '適用';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-property-type', title: '列タイプの設定', body: content, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-property-type', minWidth: '0', initialFocus: '#pt-type',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: '列タイプ設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || !busy,
+  });
+  const o = modalApi.overlay;
+  o._dbPropertyTypeApi = modalApi;
+  o.dataset.e2eId = 'db-property-type-overlay';
+  modalApi.modal.dataset.e2eId = 'db-property-type-dialog';
+  modalApi.modal.classList.add('pt-modal');
+  modalApi.modal.style.width = 'min(760px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  const root = content;
+  root._ptModalApi = modalApi;
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  applyButton.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true; cancelButton.disabled = true; applyButton.disabled = true;
+    let saved = null;
+    try {
+      saved = await applyPropertyType(propName, root);
+    } catch (error) {
+      console.warn('列設定の保存に失敗:', error);
+      showStatus('列設定の保存に失敗しました: ' + (error?.message || error), true);
+    }
+    if (saved) { modalApi.close('saved'); return; }
+    busy = false; cancelButton.disabled = false; applyButton.disabled = false; applyButton.focus({ preventScroll: true });
+  });
 
   // 型別オプションを表示
   _ptSetState(root, current, [...existingValues], propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
   if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
+  modalApi.open();
+  return modalApi;
 }
 
 // DB一覧から選択するピッカー（relation参照先DB・MSRソース用）

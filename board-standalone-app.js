@@ -341,23 +341,6 @@
     if (await _renderFileList()) _showStatus('ボード一覧を更新しました');
   }
 
-  function _boardEntryRow(entry, onOpen) {
-    const row = document.createElement('button');
-    row.type = 'button';
-    row.className = 'bsa-file-row';
-    row.dataset.path = entry.path;
-    row.title = entry.path;
-    const name = document.createElement('span');
-    name.className = 'bsa-file-name';
-    name.textContent = entry.path.split('/').pop() || entry.path;
-    const meta = document.createElement('span');
-    meta.className = 'bsa-file-path';
-    meta.textContent = entry.path.includes('/') ? entry.path.replace(/\/[^/]*$/, '') : '保存場所直下';
-    row.append(name, meta);
-    row.addEventListener('click', () => onOpen(entry.path));
-    return row;
-  }
-
   async function _openBoardFromMenu() {
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (FS.isNativeMode?.() && typeof FS.openBoardFile === 'function') {
@@ -388,78 +371,18 @@
       _setRootUi(true);
       _initBoardShell();
     }
-    let entries = [];
-    try {
-      entries = await _loadBoardEntries();
-    } catch (e) {
-      _showError('ボード一覧を読み込めませんでした');
+    if (!window.BoardStandaloneOpenDialog?.open) {
+      _showError('ボードを開く画面を初期化できませんでした');
       return;
     }
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.e2eId = 'board-open-overlay';
-    const modal = document.createElement('div');
-    modal.className = 'modal bsa-open-modal';
-    modal.id = 'bsa-open-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.setAttribute('aria-labelledby', 'bsa-open-title');
-    const title = document.createElement('h3');
-    title.id = 'bsa-open-title';
-    title.textContent = 'ボードを開く';
-    const body = document.createElement('div');
-    body.className = 'modal-body';
-    if (!entries.length) {
-      const empty = document.createElement('div');
-      empty.className = 'bsa-empty';
-      empty.textContent = 'この保存先にボードファイルはありません。';
-      body.appendChild(empty);
-    } else {
-      const list = document.createElement('div');
-      list.className = 'bsa-open-list';
-      entries.forEach(entry => {
-        list.appendChild(_boardEntryRow(entry, async path => {
-          overlay.remove();
-          await _openBoard(path);
-        }));
-      });
-      body.appendChild(list);
-    }
-    const footer = document.createElement('div');
-    footer.className = 'modal-footer';
-    footer.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'btn';
-    close.textContent = '閉じる';
-    footer.appendChild(close);
-    modal.append(title, body, footer);
-    overlay.appendChild(modal);
-    let done = false;
-    const cleanup = () => {
-      if (done) return;
-      done = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKeydown, true);
-      const restoreFocus = () => {
-        if (restoreFocusTo?.isConnected && !overlay.contains(restoreFocusTo)) restoreFocusTo.focus?.();
-      };
-      restoreFocus();
-      setTimeout(restoreFocus, 0);
-    };
-    function onKeydown(event) {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      cleanup();
-    }
-    close.addEventListener('click', cleanup);
-    overlay.addEventListener('click', event => { if (event.target === overlay) cleanup(); });
-    document.addEventListener('keydown', onKeydown, true);
-    document.body.appendChild(overlay);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    requestAnimationFrame(() => {
-      const firstRow = overlay.querySelector('.bsa-open-list .bsa-file-row');
-      (firstRow || close).focus?.();
+    window.BoardStandaloneOpenDialog.open({
+      trigger: restoreFocusTo,
+      loadEntries: _loadBoardEntries,
+      onOpen: async path => {
+        if (!_confirmDiscardUnsavedBoard()) return { cancelled: true };
+        const opened = await _openBoard(path, { skipDiscardConfirm: true });
+        return { opened };
+      },
     });
   }
 
@@ -1045,6 +968,7 @@
     }
     items.push(
       _menuItem('', null, { separator: true }),
+      _menuItem('Meldexのチャットで続ける', () => window.open(new URL('/?continue=chat', window.location.origin).href, '_blank', 'noopener')),
       _menuItem('画像（PNG）として保存', () => _exportBoardPng(), { disabled: !hasPath }),
       _menuItem('HTMLとして保存...', () => _exportBoardHtml(), { disabled: !hasPath }),
       _menuItem('', null, { separator: true }),

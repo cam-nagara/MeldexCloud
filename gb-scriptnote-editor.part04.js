@@ -615,12 +615,11 @@
   _insertRuby() {
     const context = this._rubySelectionContext();
     if (!context) return;
-    // ルビ入力は文字列選択時の書式設定ポップアップへ統合済み。
-    // 書式設定ポップアップが使えない環境（単独シナリオアプリ、Cloudモバイル編集UI等）だけ
-    // 従来のルビ専用ポップアップを開く
-    if (window.GBTextSelectionFormat?.openForSelection) {
-      window.GBTextSelectionFormat.openForSelection({ focusRuby: true, force: true });
-      if (document.querySelector('.gb-text-selection-fmt [data-e2e-id="sn2-ruby-input"]')) return;
+    // 書式ポップアップの selectionchange 再表示を抑止し、ルビ専用UIだけを開く。
+    if (typeof window.GBTextSelectionFormat?.suppressFor === 'function') {
+      window.GBTextSelectionFormat.suppressFor(1200);
+    } else if (typeof window.GBTextSelectionFormat?.close === 'function') {
+      window.GBTextSelectionFormat.close();
     }
     this._openLegacyRubyPopup(context);
   }
@@ -637,6 +636,20 @@
     return { sel, range, text, textEl };
   }
 
+  _selectedRubySpan(range, textEl) {
+    if (!range || !textEl) return null;
+    const start = range.startContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer
+      : range.startContainer?.parentElement;
+    const end = range.endContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.endContainer
+      : range.endContainer?.parentElement;
+    const startSpan = start?.closest?.('[data-ruby]') || null;
+    const endSpan = end?.closest?.('[data-ruby]') || null;
+    if (!startSpan || startSpan !== endSpan || !textEl.contains(startSpan)) return null;
+    return range.toString().trim() === String(startSpan.textContent || '').trim() ? startSpan : null;
+  }
+
   // 選択範囲をルビスパンへ置き換えて保存・表示を更新する（レガシーポップアップと
   // 書式設定ポップアップ内ルビ入力の共通経路）。挿入できたら true
   _applyRubyToSelection(range, textEl, ruby, addRule) {
@@ -644,12 +657,17 @@
     const text = range.toString().trim();
     if (!text) return false;
     this._pushUndo('ルビ追加');
-    // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
-    range.deleteContents();
-    const rubyNode = document.createElement('span');
-    rubyNode.dataset.ruby = ruby;
-    rubyNode.textContent = text;
-    range.insertNode(rubyNode);
+    let rubyNode = this._selectedRubySpan(range, textEl);
+    if (rubyNode) {
+      rubyNode.dataset.ruby = ruby;
+    } else {
+      // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
+      range.deleteContents();
+      rubyNode = document.createElement('span');
+      rubyNode.dataset.ruby = ruby;
+      rubyNode.textContent = text;
+      range.insertNode(rubyNode);
+    }
     // insertNodeが作る空テキストノードを除去して改行を防止
     textEl.normalize();
     const sel = window.getSelection();
@@ -689,7 +707,8 @@
     title.id = 'sn2-ruby-label';
     title.className = 'sn2-ruby-popup-title';
     title.dataset.e2eId = 'sn2-ruby-label';
-    title.textContent = `「${text.slice(0, 20)}」にルビを追加`;
+    const existingRuby = this._selectedRubySpan(range, textEl);
+    title.textContent = `「${text.slice(0, 20)}」のルビを${existingRuby ? '編集' : '追加'}`;
 
     const mainRow = document.createElement('div');
     mainRow.className = 'sn2-ruby-popup-main';
@@ -699,6 +718,7 @@
     input.className = 'gb-input-sm sn2-ruby-popup-input';
     input.dataset.e2eId = 'sn2-ruby-input';
     input.placeholder = 'ルビを入力...';
+    input.value = existingRuby ? String(existingRuby.dataset.ruby || '') : '';
     input.setAttribute('aria-label', '選択文字のルビ');
     // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
     input.setAttribute('data-gb-tooltip-disabled', 'true');
@@ -707,7 +727,7 @@
     okButton.id = 'sn2-ruby-ok';
     okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary sn2-ruby-popup-ok';
     okButton.dataset.e2eId = 'sn2-ruby-ok';
-    okButton.textContent = '追加';
+    okButton.textContent = existingRuby ? '更新' : '追加';
     mainRow.append(input, okButton);
 
     const optionRow = document.createElement('div');
@@ -747,9 +767,12 @@
       catch { textEl.focus(); }
     };
     const closeRubyPopup = (options = {}) => {
+      if (typeof window.GBTextSelectionFormat?.suppressFor === 'function') {
+        window.GBTextSelectionFormat.suppressFor(800);
+      }
       popup.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler);
-      if (keyHandler) document.removeEventListener('keydown', keyHandler);
+      if (keyHandler) window.removeEventListener('keydown', keyHandler, true);
       if (this._rubyPopup === popup) {
         this._rubyPopup = null;
         this._closeRubyPopup = null;
@@ -768,6 +791,7 @@
     };
     okButton.addEventListener('click', () => apply(input.value.trim()));
     input.addEventListener('keydown', (ev) => {
+      if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'Enter') {
         ev.preventDefault();
         ev.stopPropagation();
@@ -802,7 +826,7 @@
       ev.stopPropagation();
       closeRubyPopup();
     };
-    document.addEventListener('keydown', keyHandler);
+    window.addEventListener('keydown', keyHandler, true);
     setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
   }
 

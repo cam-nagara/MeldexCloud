@@ -40,6 +40,10 @@ function _isTopDbTemplateOverlay(overlay) {
 
 function _closeDbTemplateOverlay(overlay, triggerEl = null, options = {}) {
   if (!overlay || !overlay.isConnected) return;
+  if (typeof overlay._dbTemplateClose === 'function') {
+    overlay._dbTemplateClose(options.reason || 'programmatic');
+    return;
+  }
   _cleanupDbTemplateOverlay(overlay);
   overlay.remove();
   if (options.restoreFocus === false) return;
@@ -128,12 +132,75 @@ function _setupDbTemplateButton(button, className, e2eId, ariaLabel = '') {
   return button;
 }
 
-async function _deleteDbCustomTemplateWithConfirm(tmpl, onDeleted) {
-  if (!await _confirmDbTemplate('カスタムテンプレート「' + tmpl.name + '」を削除しますか？')) return false;
-  const customs = getCustomTemplates().filter(c => c.id !== tmpl.id);
-  if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート削除', detail: tmpl.name })) return false;
-  if (typeof onDeleted === 'function') onDeleted();
-  return true;
+async function _deleteDbCustomTemplateWithConfirm(tmpl, onDeleted, actionButton = null) {
+  if (actionButton?.dataset.dbTemplateBusy === '1') return false;
+  if (actionButton) {
+    actionButton.dataset.dbTemplateBusy = '1';
+    actionButton.disabled = true;
+  }
+  try {
+    let confirmed = false;
+    try {
+      confirmed = await _confirmDbTemplate('カスタムテンプレート「' + tmpl.name + '」を削除しますか？');
+    } catch (error) {
+      showStatus('カスタムテンプレートの削除確認を表示できませんでした: ' + (error?.message || error), true);
+      return false;
+    }
+    if (!confirmed) return false;
+    const customs = getCustomTemplates().filter(c => c.id !== tmpl.id);
+    let saved = false;
+    try {
+      saved = await Promise.resolve(saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート削除', detail: tmpl.name }));
+    } catch (error) {
+      showStatus('カスタムテンプレートの削除に失敗しました: ' + (error?.message || error), true);
+      return false;
+    }
+    if (!saved) return false;
+    if (typeof onDeleted === 'function') {
+      try {
+        await Promise.resolve(onDeleted());
+      } catch (error) {
+        showStatus('カスタムテンプレートは削除しましたが、一覧を更新できませんでした。画面を再読み込みしてください: ' + (error?.message || error), true);
+      }
+    }
+    return true;
+  } finally {
+    if (actionButton?.isConnected) {
+      delete actionButton.dataset.dbTemplateBusy;
+      actionButton.disabled = false;
+    }
+  }
+}
+
+let _dbTemplateOverflowLockDepth = 0;
+let _dbTemplatePreviousRootOverflowX = '';
+let _dbTemplatePreviousBodyOverflowX = '';
+let _dbTemplateLockedScrollers = [];
+function _lockDbTemplateHorizontalOverflow() {
+  if (_dbTemplateOverflowLockDepth === 0) {
+    _dbTemplatePreviousRootOverflowX = document.documentElement.style.overflowX;
+    _dbTemplatePreviousBodyOverflowX = document.body.style.overflowX;
+    document.documentElement.style.overflowX = 'hidden';
+    document.body.style.overflowX = 'hidden';
+    _dbTemplateLockedScrollers = Array.from(document.querySelectorAll('#pivot-view, .pivot-view'))
+      .map(element => ({ element, overflowX: element.style.overflowX }));
+    _dbTemplateLockedScrollers.forEach(({ element }) => { element.style.overflowX = 'hidden'; });
+  }
+  _dbTemplateOverflowLockDepth += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    _dbTemplateOverflowLockDepth = Math.max(0, _dbTemplateOverflowLockDepth - 1);
+    if (_dbTemplateOverflowLockDepth === 0) {
+      document.documentElement.style.overflowX = _dbTemplatePreviousRootOverflowX;
+      document.body.style.overflowX = _dbTemplatePreviousBodyOverflowX;
+      _dbTemplateLockedScrollers.forEach(({ element, overflowX }) => {
+        if (element?.isConnected) element.style.overflowX = overflowX;
+      });
+      _dbTemplateLockedScrollers = [];
+    }
+  };
 }
 
 /* --- アイコン表示 --- */
@@ -339,7 +406,7 @@ function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
     delBtn.textContent = '削除';
     delBtn.addEventListener('click', async e => {
       e.stopPropagation();
-      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onChanged);
+      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onChanged, delBtn);
     });
     btnRow.appendChild(delBtn);
   }
@@ -426,7 +493,7 @@ function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
     _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-preview-pane-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
     delBtn.textContent = '削除';
     delBtn.addEventListener('click', async () => {
-      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onDeleted);
+      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onDeleted, delBtn);
     });
     actions.appendChild(delBtn);
   }
@@ -443,54 +510,31 @@ function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
 function showTemplateGalleryModal(dbPath, triggerEl = null) {
   const trigger = _dbTemplateTrigger(triggerEl);
   const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
-  const titleId = `db-template-gallery-title-${seq}`;
   const descId = `db-template-gallery-desc-${seq}`;
   const isMobile = _isDbTemplateMobileSheetMode();
+  const content = document.createElement('div');
+  content.className = 'db-template-modal-content';
+  content.style.cssText = 'display:flex;flex-direction:column;min-height:0;height:100%;';
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.dbTemplateModal = 'gallery';
-  overlay.style.zIndex = '120';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal db-template-modal db-template-gallery-modal';
-  modal.dataset.e2eId = 'db-template-gallery-dialog';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', titleId);
-  modal.setAttribute('aria-describedby', descId);
-  modal.tabIndex = -1;
-  _setDbTemplateModalSize(modal, { maxWidth: 1040, maxHeight: 820, heightRatio: 0.85, minHeight: 480 });
-
-  // ヘッダー: タイトル + 検索 + 閉じる
-  const header = document.createElement('div');
-  header.className = 'db-template-modal-header';
-  const h3 = document.createElement('h3');
-  h3.id = titleId;
-  h3.textContent = 'シートテンプレート';
-  header.appendChild(h3);
+  // 検索
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.className = 'gb-input db-template-search-input';
   searchInput.dataset.e2eId = 'db-template-search-input';
   searchInput.placeholder = 'テンプレートを検索';
   searchInput.setAttribute('aria-label', 'テンプレートを検索（名前・説明・列名）');
-  header.appendChild(searchInput);
+  searchInput.style.flex = '0 0 auto';
+  content.appendChild(searchInput);
   const desc = document.createElement('div');
   desc.id = descId;
   desc.className = 'gb-visually-hidden';
   desc.textContent = 'シートに適用するテンプレートを選ぶダイアログ';
-  header.appendChild(desc);
-  const closeBtn = document.createElement('button');
-  _setupDbTemplateButton(closeBtn, 'gb-btn tb-icon-btn db-template-close-btn', 'db-template-gallery-close', '閉じる');
-  closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '×';
-  closeBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
-  header.appendChild(closeBtn);
-  modal.appendChild(header);
+  content.appendChild(desc);
 
   // Tierチップ行（旧: 左サイドバー）
   const tierRow = document.createElement('div');
   tierRow.className = 'db-template-tier-row';
+  tierRow.style.flex = '0 0 auto';
   tierRow.setAttribute('role', 'group');
   tierRow.setAttribute('aria-label', 'テンプレート種別');
   let currentTier = 'all';
@@ -521,16 +565,18 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     });
     tierRow.appendChild(btn);
   });
-  modal.appendChild(tierRow);
+  content.appendChild(tierRow);
 
   // 本体: カードグリッド + プレビューペイン
   const body = document.createElement('div');
   body.className = 'db-template-body';
+  body.style.overflowX = 'hidden';
   const cardCol = document.createElement('div');
   cardCol.className = 'db-template-card-col';
   const grid = document.createElement('div');
   grid.className = 'template-grid';
   grid.dataset.e2eId = 'db-template-grid';
+  grid.style.overflowX = 'hidden';
   cardCol.appendChild(grid);
   body.appendChild(cardCol);
 
@@ -541,28 +587,58 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     previewPane.dataset.e2eId = 'db-template-preview-pane';
     body.appendChild(previewPane);
   }
-  modal.appendChild(body);
+  content.appendChild(body);
 
   // フッター: カスタムテンプレート作成
-  const footer = document.createElement('div');
-  footer.className = 'db-template-footer';
   const createBtn = document.createElement('button');
   _setupDbTemplateButton(createBtn, 'gb-btn gb-btn-sm', 'db-template-create-open');
   createBtn.textContent = '+ 現在のシートからテンプレート作成';
   createBtn.addEventListener('click', () => {
-    _closeDbTemplateOverlay(overlay, trigger, { restoreFocus: false });
+    _closeDbTemplateOverlay(overlay, trigger, { restoreFocus: false, reason: 'create' });
     showCreateTemplateModal(dbPath, trigger);
   });
-  footer.appendChild(createBtn);
   const cancelBtn = document.createElement('button');
   _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-gallery-cancel');
   cancelBtn.textContent = '閉じる';
-  cancelBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
-  footer.appendChild(cancelBtn);
-  modal.appendChild(footer);
-
-  overlay.appendChild(modal);
-  _showDbTemplateOverlay(overlay, modal, trigger, modal);
+  let busy = false;
+  const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
+  const modalApi = window.GBUI.createModal({
+    id: `db-template-gallery-${seq}`,
+    title: 'シートテンプレート',
+    body: content,
+    footer: [createBtn, cancelBtn],
+    variant: 'standard',
+    extraClass: 'db-template-gallery-modal',
+    geometryKey: 'db-template-gallery',
+    minWidth: '0',
+    initialFocus: dialog => dialog,
+    returnFocus: trigger || undefined,
+    closeLabel: 'シートテンプレートを閉じる',
+    onBeforeClose: reason => !busy || reason === 'applied' || reason === 'superseded',
+    onClose: releaseOverflowLock,
+  });
+  const overlay = modalApi.overlay;
+  const modal = modalApi.modal;
+  modal.classList.add('modal', 'db-template-modal');
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.dbTemplateModal = 'gallery';
+  overlay.style.zIndex = '120';
+  overlay._dbTemplateTrigger = trigger;
+  overlay._dbTemplateClose = modalApi.close;
+  overlay._dbTemplateSetBusy = (next) => {
+    busy = !!next;
+    modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+    modal.querySelectorAll('button, input').forEach(control => { control.disabled = busy; });
+  };
+  modal.dataset.e2eId = 'db-template-gallery-dialog';
+  modal.setAttribute('aria-describedby', descId);
+  modalApi.body.style.cssText = 'display:flex;flex-direction:column;min-height:0;overflow:hidden;';
+  modalApi.footer.classList.add('db-template-footer');
+  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+  if (closeBtn) closeBtn.dataset.e2eId = 'db-template-gallery-close';
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  _setDbTemplateModalSize(modal, { maxWidth: 1040, maxHeight: 820, heightRatio: 0.85, minHeight: 480 });
+  modalApi.open();
 
   let searchQuery = '';
   let selectedTemplateId = '';

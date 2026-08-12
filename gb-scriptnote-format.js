@@ -296,32 +296,8 @@ async function promptSaveCurrentScriptNoteAs() {
   const srcFolder = srcPath.includes('/') ? srcPath.substring(0, srcPath.lastIndexOf('/')) : '';
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.e2eId = 'save-scenario-format-modal-overlay';
-
-    const dialog = document.createElement('div');
-    dialog.className = 'modal sn2-save-as-modal';
-    dialog.dataset.e2eId = 'save-scenario-format-modal';
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'sn-save-title');
-
-    const header = document.createElement('div');
-    header.className = 'gb-modal-header';
-    const title = document.createElement('h3');
-    title.id = 'sn-save-title';
-    title.className = 'gb-modal-title';
-    title.textContent = 'シナリオ形式として保存';
-    const closeButton = document.createElement('button');
-    closeButton.type = 'button';
-    closeButton.className = 'gb-modal-close gb-btn gb-btn-sm gb-btn-icon gb-btn-ghost';
-    closeButton.setAttribute('aria-label', '閉じる');
-    closeButton.innerHTML = _sn2FormatIcon('x', 14);
-    header.append(title, closeButton);
-
     const body = document.createElement('div');
-    body.className = 'gb-modal-body sn2-save-as-body';
+    body.className = 'sn2-save-as-content';
 
     const nameField = document.createElement('div');
     nameField.className = 'field gb-field sn2-save-field';
@@ -369,10 +345,12 @@ async function promptSaveCurrentScriptNoteAs() {
     folderTree.setAttribute('role', 'tree');
     folderTree.hidden = true;
     folderField.append(folderFieldLabel, folderDisplay, folderTree);
-    body.append(nameField, folderField);
+    const saveStatus = document.createElement('div');
+    saveStatus.className = 'sn2-save-as-status';
+    saveStatus.setAttribute('role', 'status');
+    saveStatus.setAttribute('aria-live', 'polite');
+    body.append(nameField, folderField, saveStatus);
 
-    const footer = document.createElement('div');
-    footer.className = 'gb-modal-footer sn2-save-as-actions';
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
     cancelButton.id = 'sn-save-cancel';
@@ -383,26 +361,41 @@ async function promptSaveCurrentScriptNoteAs() {
     saveButton.id = 'sn-save-ok';
     saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary';
     saveButton.textContent = '保存';
-    footer.append(cancelButton, saveButton);
-    dialog.append(header, body, footer);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
     let selectedFolder = srcFolder;
     let finished = false;
     let saving = false;
+    let childOpen = false;
+    let pendingResult = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'scriptnote-save-as', title: 'シナリオ形式として保存', body, footer: [cancelButton, saveButton],
+      variant: 'standard', geometryKey: 'scriptnote-save-as', minWidth: '0', initialFocus: '#sn-save-name',
+      returnFocus: opener, closeLabel: 'シナリオ形式として保存を閉じる', closeOnEsc: true, closeOnOverlay: true,
+      onBeforeClose: (reason) => reason === 'submit' || (!saving && !childOpen),
+      onClose: () => {
+        if (finished) return;
+        finished = true;
+        resolve(pendingResult);
+      },
+    });
+    const overlay = modalApi.overlay;
+    const dialog = modalApi.modal;
+    overlay.dataset.e2eId = 'save-scenario-format-modal-overlay';
+    overlay.dataset.sn2Dialog = 'save-as';
+    dialog.dataset.e2eId = 'save-scenario-format-modal';
+    globalThis.GBScriptNoteDialogUI.applyCompactTargets(dialog);
+    dialog.classList.add('sn2-save-as-modal');
+    modalApi.body.classList.add('sn2-save-as-body');
+    modalApi.footer.classList.add('sn2-save-as-actions');
     const escCss = (value) => (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
     const setTreeOpen = (open) => {
       folderTree.hidden = !open;
       folderTree.classList.toggle('is-open', !!open);
       folderDisplay.setAttribute('aria-expanded', open ? 'true' : 'false');
     };
-    const close = (result) => {
-      if (finished) return;
-      finished = true;
-      overlay.remove();
-      _sn2RestoreFocus(opener);
-      resolve(result);
+    const close = (result, reason = 'cancel') => {
+      if (finished) return false;
+      pendingResult = result;
+      return modalApi.close(reason);
     };
     const selectFolder = (path, label) => {
       selectedFolder = path;
@@ -509,16 +502,33 @@ async function promptSaveCurrentScriptNoteAs() {
           folderTree.replaceChildren(error);
         }
       }
+      globalThis.GBScriptNoteDialogUI.applyCompactTargets(folderTree);
     };
     // フォルダツリー展開
     folderDisplay.addEventListener('click', async () => {
       if (window.GBFolderPicker?.pickFolder) {
-        const selected = await window.GBFolderPicker.pickFolder({
-          title: '保存先フォルダを選択',
-          initialPath: selectedFolder,
-        });
-        if (selected?.path !== undefined) {
-          selectFolder(selected.path, selected.label || selected.name || selected.path || '(ルート)');
+        if (childOpen) return;
+        childOpen = true;
+        const compactObserver = window.innerWidth <= 1024 ? new MutationObserver(() => {
+          document.querySelectorAll('.gb-modal').forEach(modal => globalThis.GBScriptNoteDialogUI.applyCompactTargets(modal));
+        }) : null;
+        compactObserver?.observe(document.body, { childList: true, subtree: true });
+        try {
+          const pickerPromise = window.GBFolderPicker.pickFolder({
+            title: '保存先フォルダを選択',
+            initialPath: selectedFolder,
+          });
+          document.querySelectorAll('.gb-modal').forEach(modal => globalThis.GBScriptNoteDialogUI.applyCompactTargets(modal));
+          const selected = await pickerPromise;
+          if (selected?.path !== undefined) {
+            selectFolder(selected.path, selected.label || selected.name || selected.path || '(ルート)');
+          }
+        } catch (error) {
+          saveStatus.textContent = `保存先を選択できませんでした。入力内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+        } finally {
+          compactObserver?.disconnect();
+          childOpen = false;
+          _sn2RestoreFocus(folderDisplay);
         }
         return;
       }
@@ -529,9 +539,12 @@ async function promptSaveCurrentScriptNoteAs() {
       loading.setAttribute('role', 'status');
       loading.textContent = '読み込み中...';
       folderTree.replaceChildren(loading);
-      folderTree.replaceChildren();
-      folderTree.appendChild(createRow('(ルート)', '', 0, 'home'));
-      await expandFolder('', 0);
+      try {
+        folderTree.replaceChildren(createRow('(ルート)', '', 0, 'home'));
+        await expandFolder('', 0);
+      } catch (error) {
+        saveStatus.textContent = `フォルダ一覧を読み込めませんでした。入力内容を保ったまま再試行できます。${error?.message ? ` ${error.message}` : ''}`;
+      }
     });
     folderDisplay.addEventListener('keydown', event => {
       if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -546,40 +559,47 @@ async function promptSaveCurrentScriptNoteAs() {
       const targetPath = _sn2JoinPath(selectedFolder, name);
       saving = true;
       saveButton.disabled = true;
+      dialog.setAttribute('aria-busy', 'true');
+      saveStatus.textContent = '保存しています...';
       try {
         const saved = await saveCurrentScriptNoteAs(targetPath);
-        if (!saved) return;
+        if (!saved) {
+          saveStatus.textContent = '保存できませんでした。入力内容を保ったまま再試行できます。';
+          return;
+        }
+        let lastViewWarning = '';
         if (typeof saveLastView === 'function') {
           const label = typeof getScriptNoteLabelFromPath === 'function'
             ? getScriptNoteLabelFromPath(targetPath)
             : targetPath.split('/').pop().replace(/\.scriptnote\.json$/i, '').replace(/\.\w+$/, '');
-          saveLastView({ type: 'scriptnote', label, path: targetPath });
+          try {
+            saveLastView({ type: 'scriptnote', label, path: targetPath });
+          } catch (error) {
+            console.warn('保存後の最近開いたビュー更新に失敗しました:', error);
+            lastViewWarning = 'シナリオは保存しましたが、最近開いたビューを更新できませんでした';
+          }
         }
-        close(true);
-        if (typeof showStatus === 'function') showStatus('シナリオ形式で保存しました', false, { showSaveDialog: true });
+        saveStatus.textContent = '';
+        close(true, 'submit');
+        if (typeof showStatus === 'function') {
+          if (lastViewWarning) showStatus(lastViewWarning, true);
+          else showStatus('シナリオ形式で保存しました', false, { showSaveDialog: true });
+        }
       } catch (err) {
+        saveStatus.textContent = `保存できませんでした。入力内容を保ったまま再試行できます。${err?.message ? ` ${err.message}` : ''}`;
         if (typeof showStatus === 'function') showStatus('保存に失敗: ' + (err?.message || err), true);
       } finally {
         saving = false;
+        dialog.setAttribute('aria-busy', 'false');
         if (overlay.isConnected) saveButton.disabled = false;
       }
     };
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target !== overlay) return;
-      event.preventDefault();
-      close(false);
-    });
-    overlay.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        close(false);
-      }
-    });
     saveButton.addEventListener('click', doSave);
-    cancelButton.addEventListener('click', () => close(false));
-    closeButton.addEventListener('click', () => close(false));
+    cancelButton.addEventListener('click', () => close(false, 'cancel'));
     nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSave(); } });
-    nameInput.focus(); nameInput.select();
+    globalThis.GBScriptNoteDialogUI.applyCompactTargets(dialog);
+    modalApi.open();
+    nameInput.select();
   });
 }
 
@@ -867,3 +887,30 @@ async function exportCurrentScriptNoteAsMarkdown() {
     });
   }
 }
+globalThis.GBScriptNoteDialogUI = globalThis.GBScriptNoteDialogUI || {
+  applyCompactTargets(root) {
+    if (!root) return;
+    const compact = window.innerWidth <= 1024;
+    const body = root.querySelector(':scope > .gb-modal-body');
+    root.style.setProperty('box-sizing', 'border-box');
+    root.style.setProperty('min-width', '0');
+    root.style.setProperty('max-width', '100%');
+    root.style.setProperty('overflow-x', 'hidden', 'important');
+    body?.style.setProperty('box-sizing', 'border-box');
+    body?.style.setProperty('min-width', '0');
+    body?.style.setProperty('max-width', '100%');
+    body?.style.setProperty('overflow-x', 'hidden', 'important');
+    if (compact) body?.style.setProperty('width', '100%');
+    root.querySelectorAll('button, input, select, textarea, [role="button"], [role="option"]').forEach(control => {
+      if (control.type === 'checkbox' || control.type === 'radio') {
+        const label = control.closest('label');
+        if (label) {
+          label.classList.add('sn2-dialog-touch-choice');
+        }
+        return;
+      }
+      control.classList.add('sn2-dialog-touch-target');
+      if (control.tagName === 'BUTTON') control.classList.add('sn2-dialog-touch-button');
+    });
+  },
+};

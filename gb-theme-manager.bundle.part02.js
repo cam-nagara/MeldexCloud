@@ -1,10 +1,41 @@
-    if (typeof fetch !== 'function') return Promise.resolve(null);
+  function getUseOsAccentColor() {
+    try { return localStorage.getItem(THEME_OS_ACCENT_KEY) === '1'; } catch { return false; }
+  }
+
+  function hasOsAccentRuntimeColor() {
+    return /^#[0-9a-f]{6}$/i.test(_osAccentRuntimeColor);
+  }
+
+  function supportsNativeOsAccentColor() {
+    try {
+      return typeof CSS !== 'undefined'
+        && typeof CSS.supports === 'function'
+        && CSS.supports('color', 'AccentColor')
+        && CSS.supports('color', 'AccentColorText');
+    } catch {
+      return false;
+    }
+  }
+
+  function refreshOsAccentColor() {
+    if (typeof fetch !== 'function') {
+      _osAccentRuntimeAvailable = false;
+      _osAccentRuntimeColor = '';
+      if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
+      return Promise.resolve(null);
+    }
     const apiBase = typeof API_BASE === 'string' ? API_BASE : '/api';
     return fetch(apiBase + '/os-accent-color', { cache: 'no-store' })
       .then(res => res.ok ? res.json() : null)
       .then(data => {
-        const color = /^#[0-9a-f]{6}$/i.test(String(data?.color || '')) ? data.color : '';
-        if (!color) return null;
+        const color = data?.available === true && /^#[0-9a-f]{6}$/i.test(String(data?.color || '')) ? data.color : '';
+        if (!color) {
+          _osAccentRuntimeAvailable = false;
+          _osAccentRuntimeColor = '';
+          if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
+          return null;
+        }
+        _osAccentRuntimeAvailable = true;
         _osAccentRuntimeColor = color.toLowerCase();
         if (getUseOsAccentColor()) {
           applyOsAccentColorSetting(true, { skipNativeRefresh: true });
@@ -13,7 +44,12 @@
         }
         return color;
       })
-      .catch(() => null);
+      .catch(() => {
+        _osAccentRuntimeAvailable = false;
+        _osAccentRuntimeColor = '';
+        if (getUseOsAccentColor()) applyOsAccentColorSetting(true, { skipNativeRefresh: true });
+        return null;
+      });
   }
 
   function getOsAccentColor() {
@@ -26,15 +62,35 @@
     const r = parseInt(color.slice(1, 3), 16);
     const g = parseInt(color.slice(3, 5), 16);
     const b = parseInt(color.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? '#000000' : '#ffffff';
+    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
   }
 
   function getOsAccentThemeColorSet() {
     return [hasOsAccentRuntimeColor() ? getOsAccentColor() : THEME_OS_ACCENT_CSS];
   }
 
-  function _effectiveThemeColorSet(colors, fallback) {
-    if (getUseOsAccentColor()) return getOsAccentThemeColorSet();
+  function getThemeAccentPolicy(themeOrId) {
+    const rawId = typeof themeOrId === 'string'
+      ? themeOrId
+      : (themeOrId?.id || getDefaultThemeId());
+    const resolvedId = resolveThemeId(rawId);
+    const preset = BUILTIN_ACCENT_POLICIES[resolvedId];
+    return preset ? { ...preset } : { kind: 'theme-palette', defaultColor: '' };
+  }
+
+  function getEffectiveThemeAccent(themeOrId, options = {}) {
+    const policy = getThemeAccentPolicy(themeOrId);
+    if (policy.kind !== 'system-or-default') return '';
+    if (options.ignoreOsAccent !== true && getUseOsAccentColor()) {
+      if (_osAccentRuntimeAvailable === false && !supportsNativeOsAccentColor()) return policy.defaultColor;
+      return hasOsAccentRuntimeColor() ? getOsAccentColor() : THEME_OS_ACCENT_CSS;
+    }
+    return policy.defaultColor;
+  }
+
+  function _effectiveThemeColorSet(colors, fallback, themeDef) {
+    const presetAccent = getEffectiveThemeAccent(themeDef);
+    if (presetAccent) return [presetAccent];
     return normalizeThemeColorSet(colors, fallback || RAINBOW_PALETTE);
   }
 
@@ -69,13 +125,29 @@
 
   function applyOsAccentColorSetting(enabled = getUseOsAccentColor(), options = {}) {
     const root = document.documentElement;
+    const themeDef = options.themeDef || getThemeById(getDefaultThemeId());
+    const policy = getThemeAccentPolicy(themeDef);
+    const useAvailableOsAccent = policy.kind === 'system-or-default'
+      && enabled
+      && (_osAccentRuntimeAvailable !== false || supportsNativeOsAccentColor());
+    const effectiveAccent = policy.kind === 'system-or-default'
+      ? getEffectiveThemeAccent(themeDef, { ignoreOsAccent: !enabled })
+      : '';
     if (enabled && options.skipNativeRefresh !== true) refreshOsAccentColor();
-    root.style.setProperty('--theme-os-accent', hasOsAccentRuntimeColor() ? getOsAccentColor() : 'AccentColor');
-    root.style.setProperty('--theme-os-accent-text', getOsAccentTextColor());
+    const shouldApplyAccent = useAvailableOsAccent || !!effectiveAccent;
+    const appliedAccent = useAvailableOsAccent
+      ? (hasOsAccentRuntimeColor() ? getOsAccentColor() : THEME_OS_ACCENT_CSS)
+      : effectiveAccent;
+    root.style.setProperty('--theme-os-accent', useAvailableOsAccent
+      ? (hasOsAccentRuntimeColor() ? getOsAccentColor() : 'AccentColor')
+      : (effectiveAccent || policy.defaultColor || 'AccentColor'));
+    root.style.setProperty('--theme-os-accent-text', useAvailableOsAccent
+      ? getOsAccentTextColor()
+      : getAccentTextColor(effectiveAccent));
     THEME_OS_ACCENT_STYLE_KEYS.forEach(key => {
-      if (enabled) {
+      if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
-        root.style.setProperty(key, THEME_OS_ACCENT_CSS);
+        root.style.setProperty(key, appliedAccent);
       } else if (options.restorePrevious === false) {
         _clearOsAccentStyleValue(root, key);
       } else {
@@ -83,23 +155,33 @@
       }
     });
     THEME_OS_ACCENT_TEXT_STYLE_KEYS.forEach(key => {
-      if (enabled) {
+      if (shouldApplyAccent) {
         _rememberBeforeOsAccent(root, key);
-        root.style.setProperty(key, THEME_OS_ACCENT_TEXT_CSS);
+        root.style.setProperty(key, useAvailableOsAccent ? THEME_OS_ACCENT_TEXT_CSS : getAccentTextColor(effectiveAccent));
       } else if (options.restorePrevious === false) {
         _clearOsAccentStyleValue(root, key);
       } else {
         _restoreBeforeOsAccent(root, key);
       }
     });
-    if (!enabled) _osAccentPreviousStyleValues.clear();
-    if (enabled) {
-      _activeThemeColorSet = paintThemeColorSet(getOsAccentThemeColorSet());
-      if (typeof global.syncThemeColorSetSwatches === 'function') global.syncThemeColorSetSwatches(document, getOsAccentThemeColorSet());
+    if (!shouldApplyAccent) _osAccentPreviousStyleValues.clear();
+    if (shouldApplyAccent) {
+      const accentSet = [appliedAccent];
+      _activeThemeColorSet = paintThemeColorSet(accentSet, { themeDef });
+      if (typeof global.syncThemeColorSetSwatches === 'function') global.syncThemeColorSetSwatches(document, accentSet);
     } else {
       _activeThemeColorSet = paintThemeColorSet(readStoredThemeColorSet() || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
     }
     applyThemeUiApplications(getThemeUiApplications(), { forceTargets: true });
+  }
+
+  function getAccentTextColor(color) {
+    if (!/^#[0-9a-f]{6}$/i.test(String(color || ''))) return THEME_OS_ACCENT_TEXT_CSS;
+    const value = String(color);
+    const r = parseInt(value.slice(1, 3), 16);
+    const g = parseInt(value.slice(3, 5), 16);
+    const b = parseInt(value.slice(5, 7), 16);
+    return (r * 0.299 + g * 0.587 + b * 0.114) > 140 ? '#000000' : '#ffffff';
   }
 
   function setUseOsAccentColor(enabled) {
@@ -153,7 +235,7 @@
   }
 
   const BUILT_IN_THEMES = [
-    theme('builtin-dark', 'ダーク', DARK_VARS, { bg: '#1e1e1e', node: '#3e3e3e', fg: '#d4d4d4', accent: '#569cd6', border: '#555555' }, DARK_THEME_COLOR_SET),
+    theme('builtin-dark', 'ダーク', DARK_VARS, { bg: '#0b0d10', node: '#242a32', fg: '#d4d4d4', accent: '#569cd6', border: '#3a424d' }, DARK_THEME_COLOR_SET),
     theme('builtin-light', 'ライト', LIGHT_VARS, { bg: '#ffffff', node: '#f0f0f0', fg: '#333333', accent: '#2563eb', border: '#c0c0c0' }, LIGHT_THEME_COLOR_SET, { standardPaletteAdjust: LIGHT_STANDARD_PALETTE_ADJUST }),
     theme('builtin-pastel', 'パステル', PASTEL_VARS, { bg: '#ffffff', node: '#f6f7f9', fg: '#2f3440', accent: '#9b59b6', border: '#d8dee8' }, PASTEL_THEME_COLOR_SET, { standardPaletteAdjust: PASTEL_STANDARD_PALETTE_ADJUST }),
     theme('builtin-earth', 'アースカラー', EARTH_VARS, { bg: '#0f1110', node: '#242824', fg: '#d9ddd8', accent: '#6fa85a', border: '#343a35' }, EARTH_THEME_COLOR_SET, { standardPaletteAdjust: EARTH_STANDARD_PALETTE_ADJUST }),
@@ -601,7 +683,7 @@
 
   function paintThemeColorSet(colors, options = {}) {
     ensurePaletteRuntimeStyle();
-    const palette = _effectiveThemeColorSet(colors, RAINBOW_PALETTE);
+    const palette = _effectiveThemeColorSet(colors, RAINBOW_PALETTE, options.themeDef);
     const root = document.documentElement;
     for (let i = 0; i < 10; i += 1) {
       const key = `--theme-palette-${i}`;
@@ -616,7 +698,7 @@
   function applyPaletteTargets(themeDef) {
     const themePalette = resolveThemeColorSet(themeDef);
     const storedPalette = readStoredThemeColorSet();
-    const palette = paintThemeColorSet(storedPalette || themePalette);
+    const palette = paintThemeColorSet(storedPalette || themePalette, { themeDef });
     _activeThemeColorSet = palette;
     if (storedPalette && themeColorSetsEqual(storedPalette, themePalette)) {
       try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
@@ -624,8 +706,9 @@
   }
 
   function getThemeColorSet(themeDef, options = {}) {
-    if (options.ignoreOsAccent !== true && getUseOsAccentColor()) return getOsAccentThemeColorSet().slice();
-    const activePalette = options.ignoreOsAccent === true && getUseOsAccentColor() ? null : _activeThemeColorSet;
+    const policy = getThemeAccentPolicy(themeDef);
+    if (policy.kind === 'system-or-default') return [getEffectiveThemeAccent(themeDef, options)];
+    const activePalette = _activeThemeColorSet;
     const palette = themeDef
       ? resolveThemeColorSet(themeDef)
       : (readStoredThemeColorSet() || activePalette || resolveThemeColorSet(getThemeById(getDefaultThemeId())));
@@ -796,105 +879,22 @@
     }
     const rules = [];
     const autoTone = getThemeUiAutoTone();
+    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
+    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
       _themeUiStatesForTarget(target).forEach(state => {
         const selector = _themeUiStateSelector(target.id, state.id);
         _themeUiPropsForTarget(target, state.id).forEach(prop => {
-          const colorCss = _themeUiColorCss(config[target.id]?.[state.id]?.[prop.id], autoTone, { rootVars: !!target?.vars });
+          const value = config[target.id]?.[state.id]?.[prop.id];
+          const backgroundValue = config[target.id]?.[state.id]?.bg;
+          const autoForegroundOnAccent = singleAccentPolicy
+            && prop.id === 'fg'
+            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
+            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
+          const colorCss = autoForegroundOnAccent
+            ? singleAccentText
+            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
         });
       });
-    });
-    const css = rules.join('\n');
-    if (_themeUiApplicationsCss !== css || style.textContent !== css) {
-      _themeUiApplicationsCss = css;
-      style.textContent = css;
-    }
-  }
-
-  function ensurePaletteRuntimeStyle() {
-    if (document.getElementById('meldex-theme-palette-style')) return;
-    const style = document.createElement('style');
-    style.id = 'meldex-theme-palette-style';
-    style.textContent = `
-[data-theme-palette-index="0"]{--theme-slot-color:var(--theme-palette-0)}
-[data-theme-palette-index="1"]{--theme-slot-color:var(--theme-palette-1)}
-[data-theme-palette-index="2"]{--theme-slot-color:var(--theme-palette-2)}
-[data-theme-palette-index="3"]{--theme-slot-color:var(--theme-palette-3)}
-[data-theme-palette-index="4"]{--theme-slot-color:var(--theme-palette-4)}
-[data-theme-palette-index="5"]{--theme-slot-color:var(--theme-palette-5)}
-[data-theme-palette-index="6"]{--theme-slot-color:var(--theme-palette-6)}
-[data-theme-palette-index="7"]{--theme-slot-color:var(--theme-palette-7)}
-[data-theme-palette-index="8"]{--theme-slot-color:var(--theme-palette-8)}
-[data-theme-palette-index="9"]{--theme-slot-color:var(--theme-palette-9)}
-`;
-    document.head.appendChild(style);
-  }
-
-  function getBoardState() {
-    try {
-      if (typeof bd !== 'undefined') return bd;
-    } catch {}
-    return global.bd || null;
-  }
-
-  function isBoardRenderReady(board) {
-    if (!board || !board.path || typeof document === 'undefined') return false;
-    const root = (typeof global.bdGetActiveBoardRoot === 'function') ? global.bdGetActiveBoardRoot() : null;
-    const canvas = (typeof global.bdGetBoardElement === 'function')
-      ? global.bdGetBoardElement('canvas', root)
-      : document.getElementById('bd-canvas');
-    const nodes = (typeof global.bdGetBoardElement === 'function')
-      ? global.bdGetBoardElement('nodes', root)
-      : document.getElementById('bd-nodes');
-    if (!canvas || !nodes || !canvas.isConnected || !nodes.isConnected) return false;
-    if (typeof getComputedStyle === 'function') {
-      let el = canvas;
-      let guard = 0;
-      while (el && el !== document.body && guard < 8) {
-        const style = getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        el = el.parentElement;
-        guard += 1;
-      }
-    }
-    return true;
-  }
-
-  function scheduleBoardRender() {
-    const board = getBoardState();
-    if (!isBoardRenderReady(board)) return;
-    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
-    if (typeof render !== 'function') return;
-    const token = ++_boardRenderToken;
-    const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
-    requestFrame(() => {
-      if (token !== _boardRenderToken) return;
-      if (!isBoardRenderReady(board)) return;
-      render();
-    });
-  }
-
-  function isThemeLight(themeDef) {
-    const bg = themeDef?.ui?.cssVars?.['--bg'] || themeDef?.board?.backgroundColor || '';
-    const hex = normalizeThemeColor(bg);
-    if (!hex) return themeDef?.id === 'builtin-light' || themeDef?.id === 'builtin-pastel';
-    const r = parseInt(hex.slice(1, 3), 16);
-    const g = parseInt(hex.slice(3, 5), 16);
-    const b = parseInt(hex.slice(5, 7), 16);
-    return (r * 0.299 + g * 0.587 + b * 0.114) > 150;
-  }
-
-  function normalizeThemeStyleVarValue(key, value) {
-    const raw = String(value == null ? '' : value).trim();
-    if (!raw) return raw;
-    const name = String(key || '');
-    if (/-left-accent$/i.test(name) && raw === '3px') return '6px';
-    if (/-underline$/i.test(name) && raw.toLowerCase() === 'underline') return '2px';
-    return raw;
-  }
-
-  function withDerivedUiStyleVars(vars) {
-    const next = { ...(vars || {}) };
-    Object.keys(next).forEach(key => { next[key] = normalizeThemeStyleVarValue(key, next[key]); });

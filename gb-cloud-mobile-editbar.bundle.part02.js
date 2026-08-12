@@ -1,3 +1,4 @@
+      if (typeof rtTarget !== 'undefined') rtTarget = editable;
       if (typeof rtSavedSelection !== 'undefined') rtSavedSelection = _savedRange.cloneRange();
     } catch (_err) {
       // See _saveSelection().
@@ -132,7 +133,7 @@
       const button = _button('cloud-mobile-menu-item', item.label, item.icon, () => {
         _closeMenuSheet();
         if (item.submenu) _openToolSubmenuSheet(item.label, item.submenu, `${sectionId || 'section'}-${itemId}`);
-        else item.action?.();
+        else item.action?.({ trigger: _mainButton?.isConnected ? _mainButton : null });
       });
       if (item.submenu) button.setAttribute('aria-haspopup', 'dialog');
       if (item.disabled) {

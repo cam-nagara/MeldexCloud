@@ -25,7 +25,7 @@ function _getTimelineAxisColorFromMap(map, value, kind = 'axis') {
   return { bg, fg: String(raw.fg || '#ffffff').trim() || '#ffffff' };
 }
 
-function _saveTimelineAxisColorMap(dbPath, nextMap, detail, ctx = null) {
+function _saveTimelineAxisColorMap(dbPath, nextMap, detail, ctx = null, options = {}) {
   const colors = { ...(typeof getConditionalColors === 'function' ? getConditionalColors(dbPath, { ctx }) : {}) };
   const clean = {};
   Object.entries(nextMap || {}).forEach(([key, value]) => {
@@ -40,15 +40,32 @@ function _saveTimelineAxisColorMap(dbPath, nextMap, detail, ctx = null) {
       label: 'シート表示: 条件付きカラー',
       detail: detail || 'タイムライン',
       ctx,
+      skipHistory: options.skipHistory === true,
     });
   }
 }
 
-function _setTimelineHeaderColor(dbPath, kind, value, color, ctx) {
+async function _setTimelineHeaderColor(dbPath, kind, value, color, ctx) {
+  const beforeMap = { ..._getTimelineAxisColorMap(dbPath, ctx) };
+  const beforeHistory = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
   const next = { ..._getTimelineAxisColorMap(dbPath, ctx) };
   next[_timelineColorKey(kind, value)] = color;
-  _saveTimelineAxisColorMap(dbPath, next, `タイムライン: ${value}`, ctx);
-  if (typeof renderTimeline === 'function') renderTimeline(ctx);
+  try {
+    _saveTimelineAxisColorMap(dbPath, next, `タイムライン: ${value}`, ctx, { skipHistory: true });
+    if (typeof renderTimeline === 'function') await Promise.resolve(renderTimeline(ctx));
+  } catch (error) {
+    try {
+      _saveTimelineAxisColorMap(dbPath, beforeMap, `タイムライン復元: ${value}`, ctx, { skipHistory: true });
+    } catch (restoreError) {
+      console.warn('タイムライン色保存失敗後の設定復元に失敗:', restoreError);
+    }
+    try { if (typeof renderTimeline === 'function') await Promise.resolve(renderTimeline(ctx)); }
+    catch (restoreError) { console.warn('タイムライン色保存失敗後の表示復元に失敗:', restoreError); }
+    throw error;
+  }
+  if (beforeHistory && typeof captureDbViewConfigHistory === 'function' && typeof pushDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: 条件付きカラー', beforeHistory, captureDbViewConfigHistory(dbPath), `タイムライン: ${value}`);
+  }
 }
 
 function _clearTimelineHeaderColor(dbPath, kind, value, ctx) {
@@ -363,29 +380,39 @@ function _showTimelineHeaderMenu(anchor, options = {}) {
 }
 
 function _showTimelineHeaderColorModal(dbPath, kind, value, currentColor, ctx) {
-  document.querySelectorAll('.tl-color-modal-overlay').forEach(el => el.remove());
+  document.querySelectorAll('.tl-color-modal-overlay').forEach(el => el._timelineColorApi?.close?.('superseded'));
+  if (!globalThis.GBUI?.createModal) throw new Error('タイムライン条件付きカラーを初期化できませんでした');
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay tl-color-modal-overlay';
-  overlay.dataset.e2eId = 'timeline-header-color-modal-overlay';
-  overlay.innerHTML = `<div class="modal tl-color-modal" role="dialog" aria-modal="true" aria-labelledby="tl-color-modal-title" data-e2e-id="timeline-header-color-modal">
-    <div class="gb-modal-header tl-color-header" data-modal-header>
-      <h3 id="tl-color-modal-title">タイムライン条件付きカラー</h3>
-      <button type="button" class="gb-modal-close tl-color-close" aria-label="閉じる" title="閉じる" data-e2e-id="timeline-color-close">${typeof lucide === 'function' ? lucide('x', 16) : '×'}</button>
-    </div>
+  const body = document.createElement('div');
+  body.innerHTML = `
     <div class="tl-color-body">
       <div class="field"><label>対象</label><div class="tl-color-target"></div></div>
       <div class="tl-color-row">
         <div class="field"><label>背景色</label><button type="button" class="gb-fmt-swatch-bg tl-color-bg" aria-label="背景色" title="背景色" data-e2e-id="timeline-color-bg"></button></div>
         <div class="field"><label>文字色</label><button type="button" class="gb-fmt-swatch-fg tl-color-fg" aria-label="文字色" title="文字色" data-e2e-id="timeline-color-fg"></button></div>
       </div>
-    </div>
-    <div class="btn-row gb-modal-footer" data-modal-footer>
-      <button type="button" class="gb-btn gb-btn-sm tl-color-cancel" data-e2e-id="timeline-color-cancel">キャンセル</button>
-      <button type="button" class="gb-btn gb-btn-sm primary tl-color-apply" data-e2e-id="timeline-color-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
+    </div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm tl-color-cancel'; cancelButton.dataset.e2eId = 'timeline-color-cancel'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary tl-color-apply'; applyButton.dataset.e2eId = 'timeline-color-apply'; applyButton.textContent = '適用';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'timeline-header-color', title: 'タイムライン条件付きカラー', body, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'timeline-header-color', minWidth: '0', initialFocus: '.tl-color-bg',
+    returnFocus: previousFocus || undefined, closeLabel: 'タイムライン条件付きカラーを閉じる',
+    closeOnEsc: true, closeOnOverlay: true, onBeforeClose: reason => reason === 'applied' || !busy,
+    onClose: () => { if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups(); },
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('tl-color-modal-overlay');
+  overlay._timelineColorApi = modalApi;
+  overlay.dataset.e2eId = 'timeline-header-color-modal-overlay';
+  modalApi.modal.classList.add('tl-color-modal');
+  modalApi.modal.dataset.e2eId = 'timeline-header-color-modal';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'timeline-color-close';
+  modalApi.modal.style.width = 'min(440px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
   overlay.querySelector('.tl-color-target').textContent = (kind === 'time' ? '時間: ' : '列/行: ') + String(value ?? '');
   const bg = overlay.querySelector('.tl-color-bg');
   const fg = overlay.querySelector('.tl-color-fg');
@@ -402,35 +429,24 @@ function _showTimelineHeaderColorModal(dbPath, kind, value, currentColor, ctx) {
     bindColorSwatch(bg, () => getColorSwatchValue(bg, initialBg), next => setColorSwatchValue(bg, next || initialBg));
     bindColorSwatch(fg, () => getColorSwatchValue(fg, initialFg), next => setColorSwatchValue(fg, next || initialFg));
   }
-  const close = (options = {}) => {
-    document.removeEventListener('keydown', onKeyDown);
-    if (typeof closeAllPalettePopups === 'function') closeAllPalettePopups();
-    overlay.remove();
-    if (options.restoreFocus !== false) previousFocus?.focus?.();
-  };
-  const onKeyDown = (ev) => {
-    if (ev.key !== 'Escape') return;
-    ev.preventDefault();
-    close();
-  };
-  overlay.addEventListener('pointerdown', ev => {
-    if (ev.target !== overlay) return;
-    ev.preventDefault();
-    close();
-  });
-  document.addEventListener('keydown', onKeyDown);
-  overlay.querySelector('.tl-color-close')?.addEventListener('click', () => close());
-  overlay.querySelector('.tl-color-cancel')?.addEventListener('click', () => close());
-  overlay.querySelector('.tl-color-apply')?.addEventListener('click', () => {
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  applyButton.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    cancelButton.disabled = true;
+    applyButton.disabled = true;
     const next = {
       bg: typeof getColorSwatchValue === 'function' ? getColorSwatchValue(bg, initialBg) : (bg.dataset.color || initialBg),
       fg: typeof getColorSwatchValue === 'function' ? getColorSwatchValue(fg, initialFg) : (fg.dataset.color || initialFg),
     };
-    close({ restoreFocus: false });
-    _setTimelineHeaderColor(dbPath, kind, value, next, ctx);
+    try { await Promise.resolve(_setTimelineHeaderColor(dbPath, kind, value, next, ctx)); }
+    catch (error) {
+      showStatus('条件付きカラーの保存に失敗しました: ' + (error?.message || error), true);
+      busy = false; cancelButton.disabled = false; applyButton.disabled = false; applyButton.focus({ preventScroll: true });
+      return;
+    }
+    modalApi.close('applied');
   });
-  if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-    window.GBModalShell.enhanceOverlay(overlay);
-  }
-  overlay.querySelector('.tl-color-bg')?.focus?.();
+  modalApi.open();
+  return modalApi;
 }

@@ -67,25 +67,42 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   document.querySelectorAll('.modal-overlay[data-e2e-id="db-entry-name-autogen-dialog"]').forEach(el => el.remove());
   const defaults = new Set(_getDefaultEntryNameAutoProperties(props));
   const scopeLabel = entryPath ? (entityName || '選択エントリ') : '列全体';
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'db-entry-name-autogen-dialog';
-  overlay.innerHTML = `
-    <div class="modal gbm-modal" style="max-width:520px">
-      <h3>エントリ名を自動生成</h3>
-      <div class="gbm-section">
-        <div class="gbm-section-label">対象</div>
-        <div class="muted" data-e2e-id="db-entry-name-autogen-scope">${esc(scopeLabel)}</div>
-      </div>
-      <div class="gbm-section">
-        <div class="gbm-section-label">名前に使う列</div>
-        <div class="gb-entry-name-autogen-list" data-e2e-id="db-entry-name-autogen-columns"></div>
-      </div>
-      <div class="btn-row">
-        <button type="button" data-action="cancel">キャンセル</button>
-        <button type="button" class="primary" data-action="run" data-e2e-id="db-entry-name-autogen-run">生成</button>
-      </div>
+  const body = document.createElement('div');
+  body.innerHTML = `
+    <div class="gbm-section">
+      <div class="gbm-section-label">対象</div>
+      <div class="muted" data-e2e-id="db-entry-name-autogen-scope">${esc(scopeLabel)}</div>
+    </div>
+    <div class="gbm-section">
+      <div class="gbm-section-label">名前に使う列</div>
+      <div class="gb-entry-name-autogen-list" data-e2e-id="db-entry-name-autogen-columns"></div>
     </div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'キャンセル';
+  cancelBtn.setAttribute('aria-label', 'エントリ名の自動生成をキャンセル');
+  const runBtn = document.createElement('button');
+  runBtn.type = 'button';
+  runBtn.className = 'primary';
+  runBtn.textContent = '生成';
+  runBtn.dataset.e2eId = 'db-entry-name-autogen-run';
+  const modalApi = window.GBUI.createModal({
+    id: 'db-entry-name-autogen-dialog',
+    title: 'エントリ名を自動生成',
+    body,
+    footer: [cancelBtn, runBtn],
+    variant: 'standard',
+    extraClass: 'gbm-modal',
+    geometryKey: 'db-entry-name-autogen',
+    initialFocus: '[data-e2e-id="db-entry-name-autogen-run"]',
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.e2eId = 'db-entry-name-autogen-dialog';
+  overlay._dbEntryNameAutoModalApi = modalApi;
+  modalApi.modal.classList.add('modal');
+  modalApi.modal.style.maxWidth = '520px';
+  modalApi.footer.classList.add('btn-row');
   const list = overlay.querySelector('.gb-entry-name-autogen-list');
   props.forEach(prop => {
     const label = document.createElement('label');
@@ -105,23 +122,23 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
     label.appendChild(span);
     list.appendChild(label);
   });
-  overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => overlay.remove());
-  overlay.querySelector('[data-action="run"]').addEventListener('click', async (ev) => {
-    const runBtn = ev.currentTarget;
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  runBtn.addEventListener('click', async (ev) => {
+    const actionButton = ev.currentTarget;
     const propertyNames = [...overlay.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value);
     if (!propertyNames.length) {
       showStatus('名前に使う列を選択してください', true);
       return;
     }
-    runBtn.disabled = true;
-    const oldText = runBtn.textContent;
-    runBtn.textContent = '生成中...';
+    actionButton.disabled = true;
+    const oldText = actionButton.textContent;
+    actionButton.textContent = '生成中...';
     try {
       const payload = { db_path: targetDbPath, property_names: propertyNames };
       if (entryPath) payload.entry_path = entryPath;
       const res = await apiPost('/entity/auto-name', payload);
       if (typeof applyDbAutoEntityRenameResponse === 'function') applyDbAutoEntityRenameResponse(res);
-      overlay.remove();
+      modalApi.close('generated');
       const count = Number(res?.renamed_count || 0);
       showStatus(count ? `エントリ名を自動生成しました: ${count}件` : '生成できるエントリ名がありませんでした');
       if (typeof selectDatabase === 'function') {
@@ -131,11 +148,11 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
       }
     } catch (err) {
       showStatus('エントリ名の自動生成に失敗: ' + (err?.message || err), true);
-      runBtn.disabled = false;
-      runBtn.textContent = oldText;
+      actionButton.disabled = false;
+      actionButton.textContent = oldText;
     }
   });
-  document.body.appendChild(overlay);
+  modalApi.open();
 }
 
 // エントリ列の右クリックメニュー
@@ -153,7 +170,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
   menu.className = 'gb-context-menu';
   const ep = _entityPath(targetDbPath, entityName, pivotData);
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
-  // フロートパネル／サブパネル内では、右サイドバーで開く・チャットを開く等の
+  // サブパネル内では、右サイドバーで開く・チャットを開く等の
   // 右サイドバー補助操作のUIを表示しない（計画書「右サイドバー操作の制限」節）。
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -187,10 +204,6 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
     } }] : []),
     { type: 'sep' },
-    { icon: 'layers-2', label: 'フロートパネルで開く', action: () => {
-      if (typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
-      else selectEntity(ep);
-    } },
     { icon: 'panelLeft', label: 'メインパネルで開く', action: () => {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
       else selectEntity(ep);
@@ -313,11 +326,8 @@ function showGridBorderModal(ctxOrDbPath) {
     `<option value="${o.value}"${o.value === current ? ' selected' : ''}>${o.label}</option>`
   ).join('');
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal gbm-modal">
-    <h3>枠線設定</h3>
-    <div class="gbm-sections">
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="gbm-sections">
       <div>
         <label class="gbm-section-label">横線</label>
         <div class="gbm-section-row">
@@ -347,13 +357,34 @@ function showGridBorderModal(ctxOrDbPath) {
           <tr><td class="gbm-preview-cell">A2</td><td class="gbm-preview-cell">B2</td><td class="gbm-preview-cell">C2</td></tr>
         </table>
       </div>
-    </div>
-    <div class="btn-row">
-      <button id="grid-border-cancel">閉じる</button>
-      <button class="primary" id="grid-border-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
+    </div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.id = 'grid-border-cancel';
+  closeBtn.textContent = '閉じる';
+  closeBtn.setAttribute('aria-label', '枠線設定を閉じる');
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'primary';
+  applyBtn.id = 'grid-border-apply';
+  applyBtn.textContent = '適用';
+  const modalApi = window.GBUI.createModal({
+    id: 'grid-border-dialog',
+    title: '枠線設定',
+    body,
+    footer: [closeBtn, applyBtn],
+    variant: 'standard',
+    extraClass: 'gbm-modal',
+    geometryKey: 'db-grid-border',
+    initialFocus: '#grid-h-width',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.dataset.e2eId = 'grid-border-dialog';
+  o._gridBorderModalApi = modalApi;
+  modalApi.modal.classList.add('modal');
+  modalApi.footer.classList.add('btn-row');
+  modalApi.open();
 
   const hWidthSel = o.querySelector('#grid-h-width');
   const hColorInp = o.querySelector('#grid-h-color');
@@ -388,15 +419,15 @@ function showGridBorderModal(ctxOrDbPath) {
   o.querySelector('#grid-h-color-reset').addEventListener('click', () => { setColorSwatchValue(hColorInp, '#333333'); updatePreview(); });
   o.querySelector('#grid-v-color-reset').addEventListener('click', () => { setColorSwatchValue(vColorInp, '#333333'); updatePreview(); });
 
-  o.querySelector('#grid-border-cancel').addEventListener('click', () => o.remove());
-  o.querySelector('#grid-border-apply').addEventListener('click', () => {
+  closeBtn.addEventListener('click', () => modalApi.close('close-button'));
+  applyBtn.addEventListener('click', () => {
     const c = getDbViewConfig(dbPath);
     const hColor = getColorSwatchValue(hColorInp, '#333333');
     const vColor = getColorSwatchValue(vColorInp, '#333333');
     c.gridH = { width: hWidthSel.value, color: hColor === '#333333' ? '' : hColor };
     c.gridV = { width: vWidthSel.value, color: vColor === '#333333' ? '' : vColor };
     saveDbViewConfig(dbPath, c, { historyLabel: 'シート表示: 枠線設定' });
-    o.remove();
+    modalApi.close('apply');
     renderPivot(ctx);
   });
 }
@@ -926,29 +957,45 @@ function showColumnDisplayOrderModal(ctxOrDbPath) {
   const productionWriteBlocked = typeof isProductionManagementWriteBlocked === 'function'
     && isProductionManagementWriteBlocked(dbPath, ctx);
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.e2eId = 'column-display-order-dialog';
-
-  o.innerHTML = `<div class="modal col-vis-modal">
-    <h3>列の表示と順序</h3>
-    <div class="col-vis-toolbar" ${productionWriteBlocked ? 'hidden' : ''}>
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="col-vis-toolbar" ${productionWriteBlocked ? 'hidden' : ''}>
       <label class="col-vis-new-label" for="col-vis-new-name">列名</label>
       <input id="col-vis-new-name" type="text" placeholder="新しい列名">
       <button type="button" id="col-vis-add">${typeof lucide === 'function' ? lucide('plus', 14) : ''} 追加</button>
     </div>
     <div class="col-vis-summary" id="col-vis-summary"></div>
-    <div class="col-vis-list" id="col-vis-list"></div>
-    <div class="btn-row">
-      <button type="button" id="col-vis-close">閉じる</button>
-      <button class="primary" id="col-vis-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
+    <div class="col-vis-list" id="col-vis-list"></div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.id = 'col-vis-close';
+  closeBtn.textContent = '閉じる';
+  closeBtn.setAttribute('aria-label', '列の表示と順序を閉じる');
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'primary';
+  applyBtn.id = 'col-vis-apply';
+  applyBtn.textContent = '適用';
+  const modalApi = window.GBUI.createModal({
+    id: 'column-display-order-dialog',
+    title: '列の表示と順序',
+    body,
+    footer: [closeBtn, applyBtn],
+    variant: 'standard',
+    extraClass: 'col-vis-modal',
+    geometryKey: 'db-column-display-order',
+    initialFocus: '#col-vis-new-name',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.dataset.e2eId = 'column-display-order-dialog';
+  o._columnDisplayOrderModalApi = modalApi;
+  modalApi.modal.classList.add('modal');
+  modalApi.footer.classList.add('btn-row');
+  modalApi.open();
   o._dbPath = dbPath;
   o._dbCtx = ctx || null;
   o._productionWriteBlocked = productionWriteBlocked;
-  o.querySelector('#col-vis-close')?.addEventListener('click', () => o.remove());
+  closeBtn.addEventListener('click', () => modalApi.close('close-button'));
   o.querySelector('#col-vis-apply')?.addEventListener('click', () => applyColVisibility(o));
   o.querySelector('#col-vis-add')?.addEventListener('click', async (ev) => {
     const btn = ev.currentTarget;
@@ -1033,7 +1080,9 @@ function showColVisibilityModal(ctxOrDbPath) {
 function applyColVisibility(root) {
   const saved = _saveColumnDisplayOrderState(root, 'シート表示: 列の表示と順序');
   if (!saved) return;
-  (root?.classList?.contains('modal-overlay') ? root : document.querySelector('.modal-overlay'))?.remove();
+  const overlay = root?.classList?.contains('modal-overlay') ? root : document.querySelector('.modal-overlay');
+  if (overlay?._columnDisplayOrderModalApi) overlay._columnDisplayOrderModalApi.close('apply');
+  else overlay?.remove();
   renderPivot(saved.ctx);
 }
 
@@ -1042,5 +1091,5 @@ function applyColVisibility(root) {
 /* ==============================
    プロパティ型システム
    ============================== */
-// 型定義: text(default), select, multi-select, number, date, checkbox, url
+// 型定義: text(default), select, multi-select, number, date, checkbox, link（旧urlは読込互換）
 /* プロパティ型・値エディタ → gb-db-property-types.js に分離 */

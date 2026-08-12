@@ -60,9 +60,16 @@ function _syncTeamRoomSelect(rooms) {
   const current = _teamCurrentRoom;
   const visibleRooms = (rooms || []).filter(room => !_isBuiltInGeneralRoom(room));
   select.innerHTML = '<option value="">ルームを選択</option>' + visibleRooms.map(room => {
-    const label = room.type === 'dm' ? 'DM: ' + _roomDisplayName(room) : _roomDisplayName(room);
+    const baseLabel = room.type === 'dm' ? 'DM: ' + _roomDisplayName(room) : _roomDisplayName(room);
+    const roomPath = String(room.path || '');
+    const modifiedMs = Date.parse(room.last?.timestamp || room.modified || '') || 0;
+    const readMs = Number(localStorage.getItem('meldex-team-room-read:' + encodeURIComponent(roomPath)) || 0);
+    const working = String(_chatState.activeExecution?.targetPath || '') === roomPath;
+    const unread = modifiedMs > readMs && roomPath !== current;
+    const label = `${baseLabel}${unread ? '  • 未読' : ''}${working ? '  ● 作業中' : ''}`;
     return `<option value="${esc(room.path)}" ${room.path===current?'selected':''}>${esc(label)}</option>`;
   }).join('');
+  window.MeldexChatListbox?.enhance?.(select);
 }
 
 async function loadTeamRooms() {
@@ -91,6 +98,8 @@ async function loadTeamRooms() {
     _renderTeamRoomTitle(_teamRoomByPath(_teamCurrentRoom));
     if (!list) return;
     list.style.display = 'none';
+    list.setAttribute('role', 'listbox');
+    list.setAttribute('aria-label', 'ワークスペースのルーム');
     list.innerHTML = rooms.map(r => {
       const active = r.path === _teamCurrentRoom;
       const lastBody = String(r.last?.text ?? '');
@@ -98,7 +107,7 @@ async function loadTeamRooms() {
       const lastText = r.last ? esc((lastFrom ? lastFrom + ': ' : '') + lastBody.substring(0, 30)) : '';
       const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('users',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
       const displayName = _roomDisplayName(r);
-      return `<div data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom" data-args="${esc(JSON.stringify([r.path]))}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
+      return `<div role="option" aria-selected="${active ? 'true' : 'false'}" data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom" data-args="${esc(JSON.stringify([r.path]))}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
         `<div>${typeIcon} <span class="team-room-name">${esc(displayName)}</span></div>` +
         (lastText ? `<div style="font-size:10px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${lastText}</div>` : '') +
         `</div>`;
@@ -381,12 +390,19 @@ async function selectTeamRoom(roomPath) {
   _renderTeamRoomTitle(room);
   await loadTeamRooms(); // ハイライト更新
   await loadTeamMessages();
+  localStorage.setItem('meldex-team-room-read:' + encodeURIComponent(roomPath), String(Date.now()));
+  _syncTeamRoomSelect(_teamRoomsCache);
   // ポーリング開始
   _restartTeamPolling();
 }
 
 async function showDirectMessageModal() {
   if (!_chatRequireSourceFolder()) return;
+  const existing = document.querySelector('.modal-overlay[data-chat-dm-modal="1"]');
+  if (existing?._chatDmModalApi?.isOpen?.()) {
+    existing._chatDmModalApi.modal.focus?.({ preventScroll: true });
+    return existing._chatDmModalApi;
+  }
   const me = getUsername();
   let users = [];
   const seen = new Set([me]);
@@ -423,29 +439,72 @@ async function showDirectMessageModal() {
     showStatus('DMできるユーザーが見つかりません', true);
     return;
   }
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.chatDmModal = '1';
-  overlay.innerHTML = `<div class="modal chat-dm-modal" role="dialog" aria-modal="true" aria-labelledby="team-dm-title" style="min-width:320px;">
-    <h3 id="team-dm-title">ダイレクトメッセージ</h3>
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('ダイレクトメッセージを初期化できませんでした。');
+  }
+  const content = document.createElement('div');
+  content.innerHTML = `
     <div class="field">
       <label>相手</label>
       <select id="team-dm-user" style="width:100%;padding:6px 8px;">
         ${users.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}
       </select>
     </div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button type="button" data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button type="button" class="primary" id="team-dm-open">開く</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.querySelector('#team-dm-open')?.addEventListener('click', async () => {
-    const openBtn = overlay.querySelector('#team-dm-open');
-    const targetUser = overlay.querySelector('#team-dm-user')?.value;
+    <div class="gb-dialog-inline-status" data-chat-dm-status role="status" aria-live="polite" hidden></div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.dataset.e2eId = 'chat-dm-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  openBtn.id = 'team-dm-open';
+  openBtn.textContent = '開く';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'team-dm-dialog',
+    titleId: 'team-dm-title',
+    title: 'ダイレクトメッセージ',
+    body: [...content.childNodes],
+    footer: [cancelBtn, openBtn],
+    variant: 'standard',
+    extraClass: 'chat-dm-modal',
+    geometryKey: 'team-dm-dialog',
+    minWidth: '0',
+    initialFocus: '#team-dm-user',
+    returnFocus: document.activeElement,
+    closeLabel: 'ダイレクトメッセージを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !busy || ['opened', 'test-cleanup'].includes(reason),
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.chatDmModal = '1';
+  overlay.dataset.e2eId = 'chat-dm-overlay';
+  overlay._chatDmModalApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'chat-dm-dialog';
+  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+  if (closeBtn) closeBtn.dataset.e2eId = 'chat-dm-close';
+  const setBusy = value => {
+    busy = !!value;
+    overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+    cancelBtn.disabled = busy;
+    openBtn.disabled = busy;
+    if (closeBtn) closeBtn.disabled = busy;
+    const select = modalApi.body.querySelector('#team-dm-user');
+    if (select) select.disabled = busy;
+  };
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  openBtn.addEventListener('click', async () => {
+    const targetUser = modalApi.body.querySelector('#team-dm-user')?.value;
     if (!targetUser) return;
-    if (openBtn) openBtn.disabled = true;
+    if (busy) return;
+    const status = modalApi.body.querySelector('[data-chat-dm-status]');
+    status.hidden = true;
+    status.textContent = '';
+    setBusy(true);
     try {
       const roomName = _canonicalDmRoomName(me, targetUser);
       let room = _teamRoomsCache.find(item => item.type === 'dm' && item.name === roomName);
@@ -453,14 +512,19 @@ async function showDirectMessageModal() {
         const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name: roomName, type: 'dm' }));
         room = { name: roomName, path: res?.path || ('dm/' + roomName), type: 'dm' };
       }
-      overlay.remove();
       await loadTeamRooms();
       await selectTeamRoom(room.path);
+      modalApi.close('opened');
     } catch (e) {
-      if (openBtn) openBtn.disabled = false;
+      status.hidden = false;
+      status.textContent = 'DMを開けませんでした。内容を確認して再試行してください。';
       showStatus('DMを開けませんでした: ' + (e.message || ''), true);
+    } finally {
+      if (modalApi.isOpen()) setBusy(false);
     }
   });
+  modalApi.open();
+  return modalApi;
 }
 
 document.getElementById('team-room-select')?.addEventListener('change', function() {
@@ -499,7 +563,7 @@ function _buildTeamMessageRow(m, me) {
   const div = document.createElement('div');
   div.className = 'chat-message-bubble chat-message-bubble-team';
   div.style.cssText = (isMine
-    ? 'background:var(--accent);color:var(--ui-fg-strong);padding:6px 10px;border-radius:10px 2px 10px 10px;'
+    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:6px 10px;border-radius:10px 2px 10px 10px;'
     : 'background:var(--bg3);color:var(--fg);padding:6px 10px;border-radius:2px 10px 10px 10px;')
     + 'font-size:13px;user-select:text;cursor:text;';
   // 名前（自分以外）

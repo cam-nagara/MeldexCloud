@@ -271,30 +271,58 @@ async function changeScreenshotFolder() {
 
 async function _promptFolderPath() {
   return new Promise(resolve => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;';
-    overlay.dataset.settingsFolderPathPrompt = '1';
-    overlay.innerHTML = `<div class="modal settings-folder-path-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-folder-title" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px;width:min(500px, calc(100vw - 24px));max-width:90vw;">
-      <div id="prompt-folder-title" class="gb-modal-header" style="font-size:14px;font-weight:bold;color:var(--fg);margin-bottom:12px;">フォルダのパスを入力</div>
-      <div class="gb-modal-body" style="padding:0;">
-        <input id="prompt-folder-path" class="gb-input" data-e2e-id="settings-home-folder-path-input" type="text" placeholder="D:\\..." style="width:100%;box-sizing:border-box;font-size:13px;min-height:44px;margin-bottom:12px;">
-      </div>
-      <div class="gb-modal-footer" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:0;">
-        <button id="prompt-folder-cancel" type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-home-folder-path-cancel" style="min-height:44px;">キャンセル</button>
-        <button id="prompt-folder-ok" type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="settings-home-folder-path-ok" style="min-height:44px;">OK</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    if (typeof window.GBModalShell?.enhanceAll === 'function') window.GBModalShell.enhanceAll();
-    const input = overlay.querySelector('#prompt-folder-path');
-    input.focus();
-    const close = v => { overlay.remove(); resolve(v); };
-    overlay.querySelector('#prompt-folder-cancel').addEventListener('click', () => close(null));
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(null); });
-    const submit = () => { const v = input.value.trim(); close(v || null); };
-    overlay.querySelector('#prompt-folder-ok').addEventListener('click', submit);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') close(null); });
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const input = document.createElement('input');
+    input.id = 'prompt-folder-path';
+    input.className = 'gb-input';
+    input.dataset.e2eId = 'settings-home-folder-path-input';
+    input.type = 'text';
+    input.placeholder = 'D:\\...';
+    input.style.cssText = 'width:100%;box-sizing:border-box;min-height:44px;';
+    const cancel = document.createElement('button');
+    cancel.id = 'prompt-folder-cancel';
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'settings-home-folder-path-cancel';
+    cancel.textContent = 'キャンセル';
+    const ok = document.createElement('button');
+    ok.id = 'prompt-folder-ok';
+    ok.type = 'button';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+    ok.dataset.e2eId = 'settings-home-folder-path-ok';
+    ok.textContent = 'OK';
+    let result = null;
+    const dialog = window.GBUI.createModal({
+      id: 'settings-home-folder-path-dialog',
+      titleId: 'prompt-folder-title',
+      title: 'フォルダのパスを入力',
+      body: input,
+      footer: [cancel, ok],
+      variant: 'standard',
+      extraClass: 'settings-folder-path-modal',
+      geometryKey: 'settings-home-folder-path-dialog',
+      minWidth: '0',
+      initialFocus: input,
+      returnFocus: opener,
+      onClose: () => resolve(result),
+    });
+    dialog.overlay.dataset.settingsFolderPathPrompt = '1';
+    dialog.overlay.dataset.e2eId = 'settings-home-folder-path-overlay';
+    dialog.modal.dataset.e2eId = 'settings-home-folder-path-dialog';
+    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    dialog.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'settings-home-folder-path-close');
+    const submit = () => {
+      result = input.value.trim() || null;
+      dialog.close('submit');
+    };
+    cancel.addEventListener('click', () => dialog.close('cancel'));
+    ok.addEventListener('click', submit);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      submit();
+    });
+    dialog.open();
   });
 }
 
@@ -326,44 +354,99 @@ async function addOutlinerRootFromSettings() {
 }
 
 async function _addOutlinerRootManual() {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10001;';
-  overlay.innerHTML = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:20px;width:500px;max-width:90vw;">
-    <div style="font-size:14px;font-weight:bold;color:var(--fg);margin-bottom:12px;">ソースフォルダのパスを入力</div>
-    <div style="font-size:12px;color:var(--fg2);margin-bottom:8px;">追加したいフォルダの絶対パスを入力してください（例: D:\\Documents\\MyProject）</div>
-    <input id="manual-root-path" type="text" placeholder="D:\\..." style="width:100%;box-sizing:border-box;font-size:13px;padding:6px 10px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;margin-bottom:12px;">
-    <div id="manual-root-error" style="font-size:11px;color:var(--red);margin-bottom:8px;display:none;"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button id="manual-root-cancel" style="font-size:12px;padding:4px 12px;">キャンセル</button>
-      <button id="manual-root-ok" class="primary" style="font-size:12px;padding:4px 12px;">追加</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  const input = overlay.querySelector('#manual-root-path');
-  const errEl = overlay.querySelector('#manual-root-error');
-  input.focus();
   return new Promise(resolve => {
-    const close = () => { overlay.remove(); resolve(); };
-    overlay.querySelector('#manual-root-cancel').addEventListener('click', close);
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const description = document.createElement('div');
+    description.className = 'gb-section-desc';
+    description.textContent = '追加したいフォルダの絶対パスを入力してください（例: D:\\Documents\\MyProject）';
+    const input = document.createElement('input');
+    input.id = 'manual-root-path';
+    input.className = 'gb-input';
+    input.dataset.e2eId = 'settings-source-folder-path-input';
+    input.type = 'text';
+    input.placeholder = 'D:\\...';
+    input.style.cssText = 'width:100%;box-sizing:border-box;min-height:44px;';
+    const errEl = document.createElement('div');
+    errEl.id = 'manual-root-error';
+    errEl.className = 'gb-inline-dialog-status';
+    errEl.dataset.e2eId = 'settings-source-folder-path-status';
+    errEl.setAttribute('role', 'status');
+    errEl.setAttribute('aria-live', 'polite');
+    errEl.hidden = true;
+    const cancel = document.createElement('button');
+    cancel.id = 'manual-root-cancel';
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'settings-source-folder-path-cancel';
+    cancel.textContent = 'キャンセル';
+    const submitButton = document.createElement('button');
+    submitButton.id = 'manual-root-ok';
+    submitButton.type = 'button';
+    submitButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+    submitButton.dataset.e2eId = 'settings-source-folder-path-submit';
+    submitButton.textContent = '追加';
+    let busy = false;
+    const dialog = window.GBUI.createModal({
+      id: 'settings-source-folder-path-dialog',
+      titleId: 'settings-source-folder-path-title',
+      title: 'ソースフォルダのパスを入力',
+      body: [description, input, errEl],
+      footer: [cancel, submitButton],
+      variant: 'standard',
+      extraClass: 'settings-source-folder-path-modal',
+      geometryKey: 'settings-source-folder-path-dialog',
+      minWidth: '0',
+      initialFocus: input,
+      returnFocus: opener,
+      onBeforeClose: reason => !busy || reason === 'complete',
+      onClose: () => resolve(),
+    });
+    dialog.overlay.dataset.settingsSourceFolderPathPrompt = '1';
+    dialog.overlay.dataset.e2eId = 'settings-source-folder-path-overlay';
+    dialog.modal.dataset.e2eId = 'settings-source-folder-path-dialog';
+    dialog.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    const closeButton = dialog.header.querySelector('.gb-modal-close');
+    if (closeButton) closeButton.dataset.e2eId = 'settings-source-folder-path-close';
+    const showMessage = (message, error = false) => {
+      errEl.textContent = String(message || '');
+      errEl.hidden = !errEl.textContent;
+      errEl.dataset.statusKind = error ? 'error' : 'info';
+    };
+    const setBusy = next => {
+      busy = !!next;
+      dialog.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      input.disabled = busy;
+      cancel.disabled = busy;
+      submitButton.disabled = busy;
+      if (closeButton) closeButton.disabled = busy;
+    };
     const submit = async () => {
       const raw = input.value.trim();
-      if (!raw) { errEl.textContent = 'パスを入力してください'; errEl.style.display = ''; return; }
+      if (!raw) { showMessage('パスを入力してください', true); input.focus(); return; }
+      setBusy(true);
+      showMessage('ソースフォルダを追加しています…');
       try {
         const res = await apiFetch('/add-outliner-root', { method: 'POST', body: JSON.stringify({ path: raw }) });
         if (res.ok && res.path) {
-          _addOutlinerRootEntry(res.path, res.name);
-          overlay.remove(); resolve();
+          await _addOutlinerRootEntry(res.path, res.name);
+          dialog.close('complete');
         } else {
-          errEl.textContent = res.error || 'フォルダが見つかりません'; errEl.style.display = '';
+          showMessage(res.error || 'フォルダが見つかりません', true);
         }
       } catch (e) {
-        errEl.textContent = e.message || 'エラーが発生しました'; errEl.style.display = '';
+        showMessage(e.message || 'エラーが発生しました', true);
+      } finally {
+        if (dialog.modal.isConnected) setBusy(false);
       }
     };
-    overlay.querySelector('#manual-root-ok').addEventListener('click', submit);
-    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') close(); });
+    cancel.addEventListener('click', () => dialog.close('cancel'));
+    submitButton.addEventListener('click', submit);
+    input.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      submit();
+    });
+    dialog.open();
   });
 }
 
@@ -923,26 +1006,30 @@ function _settingsThemeIsDirty() {
 function snapshotThemeVars() {
   const snap = {};
   // ベース変数 + getAllStyleKeys() の全変数をスナップショット（キャンセル時に完全復元するため）
-  const keys = new Set(['--bg','--bg2','--bg3','--bg4','--fg','--fg2','--accent','--accent2','--red','--green','--orange','--blue','--border','--selection','--ui-font','--ui-font-size','--page-hr-color']);
+  const keys = new Set(['--bg','--bg2','--bg3','--bg4','--fg','--fg2','--accent','--accent2','--red','--green','--orange','--blue','--border','--selection','--ui-font','--ui-font-size','--page-hr-color','--ui-accent-fg']);
   if (typeof getAllStyleKeys === 'function') getAllStyleKeys().forEach(k => keys.add(k));
   if (typeof COMMON_INTEGRATED_APP_STYLE_KEYS !== 'undefined') COMMON_INTEGRATED_APP_STYLE_KEYS.forEach(k => keys.add(k));
   keys.forEach(k => { snap[k] = getCssVar(k); });
   snap.__editorThemeName = localStorage.getItem('editor-theme-name');
   if (typeof MeldexThemeManager !== 'undefined') {
     const defaultKey = MeldexThemeManager.DEFAULT_THEME_KEY;
+    const customThemesKey = MeldexThemeManager.CUSTOM_THEMES_KEY;
     const colorSetKey = MeldexThemeManager.THEME_COLOR_SET_KEY;
     const uiAppsKey = MeldexThemeManager.THEME_UI_APPLICATIONS_KEY;
     const autoToneKey = MeldexThemeManager.THEME_UI_AUTO_TONE_KEY;
     const osAccentKey = MeldexThemeManager.THEME_OS_ACCENT_KEY;
+    const standardPaletteKey = MeldexThemeManager.STANDARD_PALETTE_ADJUST_STORAGE_KEY || 'meldex-standard-palette-adjust';
     const colorSlotKey = typeof THEME_COLOR_SLOT_SETTINGS_KEY !== 'undefined' ? THEME_COLOR_SLOT_SETTINGS_KEY : 'meldex-theme-color-slot-settings';
     const colorExtraSlotKey = typeof THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY !== 'undefined' ? THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY : 'meldex-theme-color-extra-slot-settings';
     snap.__defaultThemeId = defaultKey ? localStorage.getItem(defaultKey) : null;
+    snap.__customThemes = customThemesKey ? localStorage.getItem(customThemesKey) : null;
     snap.__themeColorSet = colorSetKey ? localStorage.getItem(colorSetKey) : null;
     snap.__themeColorSlots = localStorage.getItem(colorSlotKey);
     snap.__themeColorExtraSlots = localStorage.getItem(colorExtraSlotKey);
     snap.__themeUiApplications = uiAppsKey ? localStorage.getItem(uiAppsKey) : null;
     snap.__themeUiAutoTone = autoToneKey ? localStorage.getItem(autoToneKey) : null;
     snap.__themeOsAccent = osAccentKey ? localStorage.getItem(osAccentKey) : null;
+    snap.__standardPaletteAdjust = localStorage.getItem(standardPaletteKey);
   }
   return snap;
 }
@@ -951,12 +1038,18 @@ function restoreThemeSnapshot(snap) {
   if (!snap) return;
   if (typeof MeldexThemeManager !== 'undefined') {
     const defaultKey = MeldexThemeManager.DEFAULT_THEME_KEY;
+    const customThemesKey = MeldexThemeManager.CUSTOM_THEMES_KEY;
     const colorSetKey = MeldexThemeManager.THEME_COLOR_SET_KEY;
     const uiAppsKey = MeldexThemeManager.THEME_UI_APPLICATIONS_KEY;
     const autoToneKey = MeldexThemeManager.THEME_UI_AUTO_TONE_KEY;
     const osAccentKey = MeldexThemeManager.THEME_OS_ACCENT_KEY;
+    const standardPaletteKey = MeldexThemeManager.STANDARD_PALETTE_ADJUST_STORAGE_KEY || 'meldex-standard-palette-adjust';
     const colorSlotKey = typeof THEME_COLOR_SLOT_SETTINGS_KEY !== 'undefined' ? THEME_COLOR_SLOT_SETTINGS_KEY : 'meldex-theme-color-slot-settings';
     const colorExtraSlotKey = typeof THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY !== 'undefined' ? THEME_COLOR_EXTRA_SLOT_SETTINGS_KEY : 'meldex-theme-color-extra-slot-settings';
+    if (customThemesKey && Object.prototype.hasOwnProperty.call(snap, '__customThemes')) {
+      if (snap.__customThemes == null) localStorage.removeItem(customThemesKey);
+      else localStorage.setItem(customThemesKey, snap.__customThemes);
+    }
     if (defaultKey && Object.prototype.hasOwnProperty.call(snap, '__defaultThemeId')) {
       if (snap.__defaultThemeId == null) localStorage.removeItem(defaultKey);
       else localStorage.setItem(defaultKey, snap.__defaultThemeId);
@@ -984,6 +1077,10 @@ function restoreThemeSnapshot(snap) {
     if (osAccentKey && Object.prototype.hasOwnProperty.call(snap, '__themeOsAccent')) {
       if (snap.__themeOsAccent == null) localStorage.removeItem(osAccentKey);
       else localStorage.setItem(osAccentKey, snap.__themeOsAccent);
+    }
+    if (Object.prototype.hasOwnProperty.call(snap, '__standardPaletteAdjust')) {
+      if (snap.__standardPaletteAdjust == null) localStorage.removeItem(standardPaletteKey);
+      else localStorage.setItem(standardPaletteKey, snap.__standardPaletteAdjust);
     }
     const themeId = snap.__defaultThemeId || snap.__editorThemeName;
     if (themeId && typeof MeldexThemeManager.applyDefaultTheme === 'function') {
@@ -1040,6 +1137,7 @@ function _deriveUiStyleVarsFromBase(vars) {
     '--ui-toolbar-bg': src['--ui-toolbar-bg'] || src['--bg2'] || '#252525',
     '--ui-hover-fg': src['--ui-hover-fg'] || src['--fg'] || '#d4d4d4',
     '--ui-hover-bg': src['--ui-hover-bg'] || src['--bg4'] || '#3e3e3e',
+    '--ui-accent-fg': src['--ui-accent-fg'] || '#ffffff',
     '--ui-fg-strong': src['--ui-fg-strong'] || '#ffffff',
     '--ui-selection-fg': src['--ui-selection-fg'] || src['--fg'] || '#ffffff',
     '--ui-selection-bg': src['--ui-selection-bg'] || src['--selection'] || '#264f78',

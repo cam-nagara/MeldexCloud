@@ -261,7 +261,11 @@
         const cur = def.sortBy === col;
         def.sortBy = col;
         def.sortDir = cur ? (def.sortDir === 'asc' ? 'desc' : 'asc') : 'asc';
-        if (typeof saveSmartDbDef === 'function') saveSmartDbDef(def, { skipVersionDirty: true });
+        if (typeof saveSmartDbDef === 'function') {
+          saveSmartDbDef(def, { skipVersionDirty: true }).then(() => {
+            _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
+          }).catch(error => showStatus('並び順の保存に失敗しました: ' + error.message, true));
+        }
         renderGlobalIndexTable(def);
       };
       th.addEventListener('click', toggleSort);
@@ -331,9 +335,14 @@
     const restoreTarget = arguments.length > 1 ? arguments[1] : _globalIndexActiveElement();
     const def = (typeof _findSmartDbDefinition === 'function') ? _findSmartDbDefinition(smartDbId) : null;
     if (!def) return;
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.dataset.e2eId = 'global-index-filter-overlay';
+    if (!window.GBUI?.createModal) throw new Error('全件インデックスのフィルタ設定を初期化できませんでした');
+    const existingDialog = document.querySelector('[data-e2e-id="global-index-filter-dialog"]');
+    if (existingDialog) {
+      existingDialog.focus();
+      return existingDialog.closest('.gb-modal-overlay')?._globalIndexFilterApi || null;
+    }
+    const content = document.createElement('div');
+    content.className = 'cond-modal-body';
 
     function rowHtml(f, idx) {
       const col = f.column || 'category';
@@ -364,7 +373,7 @@
         <select class="gb-select global-index-filter-control" data-field="column" data-e2e-id="global-index-filter-${esc(rowId)}-column" aria-label="${esc(controlLabel)} 項目">${colOpts}</select>
         <select class="gb-select global-index-filter-control" data-field="operator" data-e2e-id="global-index-filter-${esc(rowId)}-operator" aria-label="${esc(controlLabel)} 演算子">${opOpts}</select>
         ${valField}
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-danger cond-del-btn global-index-filter-remove" data-global-index-action="remove-filter-row" data-e2e-id="global-index-filter-${esc(rowId)}-remove" aria-label="${esc(controlLabel)}を削除" title="${esc(controlLabel)}を削除">${lucide('x', 14)}</button>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-danger cond-del-btn global-index-filter-remove" data-global-index-action="remove-filter-row" data-e2e-id="global-index-filter-${esc(rowId)}-remove" aria-label="${esc(controlLabel)}を削除" title="${esc(controlLabel)}を削除" style="min-width:44px;">${lucide('x', 14)}</button>
       </div>`;
     }
 
@@ -381,37 +390,68 @@
     let filtersHtml = '';
     (def.filters || []).forEach((f, i) => { filtersHtml += rowHtml(f, i); });
 
-    o.innerHTML = `<div class="modal cond-modal global-index-filter-modal" role="dialog" aria-modal="true" aria-labelledby="gif-title" aria-describedby="gif-desc" data-e2e-id="global-index-filter-dialog">
-      <h3 id="gif-title" class="gb-modal-title">全件インデックス フィルタ設定</h3>
-      <div class="modal-body cond-modal-body">
-        <div class="field"><label for="gif-name">名前</label><input id="gif-name" class="gb-input" type="text" value="${esc(def.name)}" data-e2e-id="global-index-filter-name" aria-label="全件インデックス名"></div>
-        <div id="gif-desc" class="gb-section-desc global-index-filter-desc">フィルタ条件（AND: すべて一致）</div>
-        <div id="gif-filters" class="cond-list" role="list" aria-label="全件インデックスのフィルタ条件">${filtersHtml}</div>
-        <button type="button" id="gif-add-row" class="gb-btn gb-btn-sm cond-add-btn global-index-filter-add-row" data-global-index-action="add-filter-row" data-e2e-id="global-index-filter-add-row" aria-label="全件インデックスの条件を追加">${lucide('plus', 14)}<span>条件追加</span></button>
-      </div>
-      <div class="btn-row">
-        <button type="button" class="gb-btn gb-btn-sm" data-global-index-action="close-modal" data-e2e-id="global-index-filter-cancel">キャンセル</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" id="gif-save-btn" data-e2e-id="global-index-filter-save">保存</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(o, '#gif-filters');
-    const closeOverlay = _globalIndexAttachOverlayDismiss(o, restoreTarget);
-    const filtersHost = document.getElementById('gif-filters');
+    content.innerHTML = `<div class="field"><label for="gif-name">名前</label><input id="gif-name" class="gb-input" type="text" value="${esc(def.name)}" data-e2e-id="global-index-filter-name" aria-label="全件インデックス名"></div>
+      <div id="gif-desc" class="gb-section-desc global-index-filter-desc">フィルタ条件（AND: すべて一致）</div>
+      <div id="gif-filters" class="cond-list" role="list" aria-label="全件インデックスのフィルタ条件">${filtersHtml}</div>
+      <button type="button" class="gb-btn gb-btn-sm cond-add-btn global-index-filter-add-row" data-global-index-action="add-filter-row" data-e2e-id="global-index-filter-add-row" aria-label="全件インデックスの条件を追加">${lucide('plus', 14)}<span>条件追加</span></button>`;
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'gb-btn gb-btn-sm';
+    cancelButton.dataset.e2eId = 'global-index-filter-cancel';
+    cancelButton.textContent = 'キャンセル';
+    const saveButton = document.createElement('button');
+    saveButton.type = 'button';
+    saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+    saveButton.dataset.e2eId = 'global-index-filter-save';
+    saveButton.textContent = '保存';
+    const footer = document.createElement('div');
+    footer.className = 'btn-row';
+    footer.append(cancelButton, saveButton);
+    let saving = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'global-index-filter',
+      title: '全件インデックス フィルタ設定',
+      body: content,
+      footer,
+      variant: 'standard',
+      extraClass: 'global-index-filter-modal',
+      geometryKey: 'smart-db-global-index-filter',
+      minWidth: '0',
+      initialFocus: () => content.querySelector('[data-e2e-id="global-index-filter-name"]'),
+      returnFocus: restoreTarget || undefined,
+      closeLabel: '全件インデックスのフィルタ設定を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => reason === 'saved' || !saving,
+    });
+    modalApi.overlay.dataset.e2eId = 'global-index-filter-overlay';
+    modalApi.overlay._globalIndexFilterApi = modalApi;
+    modalApi.modal.dataset.e2eId = 'global-index-filter-dialog';
+    modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'global-index-filter-close';
+    modalApi.modal.classList.add('cond-modal');
+    modalApi.modal.setAttribute('aria-describedby', 'gif-desc');
+    modalApi.modal.style.width = 'min(720px, calc(100vw - 24px))';
+    modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+    if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(modalApi.overlay, '#gif-filters');
+    const filtersHost = content.querySelector('#gif-filters');
     filtersHost.addEventListener('change', (ev) => {
       if (ev.target?.matches?.('[data-field="column"]')) refreshRowForColumn(ev.target.closest('.sdf-row'));
     });
-    o.addEventListener('click', (ev) => {
+    content.addEventListener('click', (ev) => {
       const actionEl = ev.target?.closest?.('[data-global-index-action]');
-      if (!actionEl || !o.contains(actionEl)) return;
+      if (!actionEl || !content.contains(actionEl)) return;
       const action = actionEl.dataset.globalIndexAction;
       if (action === 'remove-filter-row') actionEl.closest('.sdf-row')?.remove();
-      else if (action === 'add-filter-row') document.getElementById('gif-filters')?.insertAdjacentHTML('beforeend', rowHtml({}, -1));
-      else if (action === 'close-modal') closeOverlay();
+      else if (action === 'add-filter-row') filtersHost.insertAdjacentHTML('beforeend', rowHtml({}, -1));
     });
-    document.getElementById('gif-save-btn').addEventListener('click', async () => {
-      const name = document.getElementById('gif-name').value.trim() || '無題';
-      const rows = document.querySelectorAll('#gif-filters .sdf-row');
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    saveButton.addEventListener('click', async () => {
+      if (saving) return;
+      saving = true;
+      saveButton.disabled = true;
+      cancelButton.disabled = true;
+      const name = content.querySelector('#gif-name').value.trim() || '無題';
+      const rows = filtersHost.querySelectorAll('.sdf-row');
       const filters = [];
       const before = (typeof _captureSmartDbHistorySnapshot === 'function')
         ? _captureSmartDbHistorySnapshot(def)
@@ -428,19 +468,53 @@
         : JSON.parse(JSON.stringify({ ...def, name, filters }));
       if (def._filePath) nextDef._filePath = def._filePath;
       if (def._fileId) nextDef._fileId = def._fileId;
-      if (typeof saveSmartDbDef === 'function') {
-        try { await saveSmartDbDef(nextDef); } catch (e) { showStatus('保存失敗: ' + e.message, true); return; }
+      let committed = false;
+      try {
+        if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(nextDef);
+        committed = true;
+        const baseErrors = _runSmartDbBasePostCommitEffects(nextDef, { skipListRender: true });
+        const applyError = _applySmartDbCommittedDefinition(def, nextDef);
+        if (applyError) baseErrors.push(applyError);
+        const steps = [
+          {
+            label: '履歴の更新',
+            run: () => {
+              if (typeof pushSmartDbDefinitionHistory === 'function') {
+                pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
+              }
+            },
+          },
+          {
+            label: '一覧の更新',
+            run: () => {
+              if (typeof renderSmartDbList === 'function') renderSmartDbList();
+            },
+          },
+        ];
+        if (state.currentSmartDb?.id === smartDbId && typeof selectSmartDb === 'function') {
+          steps.push({ label: '全件インデックスの再読み込み', run: () => selectSmartDb(smartDbId, nextDef) });
+        }
+        const postErrors = await _runSmartDbPostCommitSteps('フィルタ', steps, baseErrors);
+        if (!postErrors.length) showStatus('フィルタを保存しました');
+        modalApi.close('saved');
+      } catch (e) {
+        if (!committed) {
+          try { showStatus('保存失敗: ' + e.message, true); }
+          catch (statusError) { console.error('全件インデックスの保存失敗を表示できませんでした:', statusError); }
+        } else {
+          await _runSmartDbPostCommitSteps('フィルタ', [], [_smartDbPostCommitError('保存後の状態反映', e)]);
+          try { modalApi.close('saved'); }
+          catch (closeError) { console.error('保存済みの全件インデックス編集画面を閉じられませんでした:', closeError); }
+        }
+      } finally {
+        saving = false;
+        if (saveButton.isConnected) saveButton.disabled = false;
+        if (cancelButton.isConnected) cancelButton.disabled = false;
+        if (!committed && saveButton.isConnected) saveButton.focus({ preventScroll: true });
       }
-      Object.assign(def, nextDef);
-      if (typeof pushSmartDbDefinitionHistory === 'function') {
-        pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
-      }
-      if (typeof renderSmartDbList === 'function') renderSmartDbList();
-      showStatus('フィルタを保存しました');
-      closeOverlay();
-      if (state.currentSmartDb?.id === smartDbId && typeof selectSmartDb === 'function') selectSmartDb(smartDbId, def);
     });
-    _globalIndexFocusFirstDialogControl(o);
+    modalApi.open();
+    return modalApi;
   }
   window.showGlobalIndexFilterModal = showGlobalIndexFilterModal;
 })();

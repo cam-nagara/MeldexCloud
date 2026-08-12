@@ -465,6 +465,11 @@
 
 /* Right production sidebar */
 .gb-production-sidebar {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
   min-height: 0;
   height: 100%;
   display: flex;
@@ -505,9 +510,13 @@
 
 .gb-production-sidebar-content {
   flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 10px;
+  box-sizing: border-box;
 }
 
 .gb-production-task-list-sidebar-note {
@@ -628,11 +637,114 @@
 
 .gb-production-sidebar-detail-header strong { font-size: 13px; }
 .gb-production-sidebar-detail-header span { color: var(--cal-muted-fg, var(--fg2)); font-size: 10px; }
+.gb-production-sidebar-detail-header strong,
+.gb-production-sidebar-detail-header span {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 .gb-production-sidebar-form,
 .gb-production-template-editor {
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.gb-production-sidebar-form > *,
+.gb-production-sidebar-field,
+.gb-production-sidebar-field > *,
+.gb-production-sidebar-actions,
+.gb-production-task-hierarchy,
+.gb-production-task-hierarchy > *,
+.gb-production-checklist,
+.gb-production-checklist-item {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.gb-production-sidebar-field input,
+.gb-production-sidebar-field select,
+.gb-production-sidebar-field textarea,
+.gb-production-task-hierarchy input,
+.gb-production-task-hierarchy select,
+.gb-production-task-hierarchy button {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.gb-production-sidebar-actions {
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.gb-production-sidebar-button {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+
+.gb-production-task-hierarchy {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--cal-grid-line, var(--border));
+  border-radius: 7px;
+  min-inline-size: 0;
+}
+
+.gb-production-task-hierarchy legend,
+.gb-production-task-hierarchy label {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.gb-production-task-hierarchy label {
+  display: grid;
+  gap: 5px;
+}
+
+.gb-production-checklist {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.gb-production-checklist-item {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.gb-production-checklist-done {
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.gb-production-checklist-done input[type="checkbox"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+}
+
+.gb-production-checklist-item button {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .gb-production-sidebar-date-range,
@@ -709,6 +821,10 @@
 
 .gb-production-work-dialog {
   width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  box-sizing: border-box;
   padding: 14px;
   border: 1px solid var(--cal-control-border, var(--border));
   border-radius: 8px;
@@ -905,6 +1021,11 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-sidebar-empty strong {
     font-size: 15px;
   }
+
+  .gb-production-collaboration-actions .gb-production-sidebar-button {
+    flex: 1 1 calc(50% - 6px);
+    min-height: 44px;
+  }
 }
 
 @media (max-width: 480px) {
@@ -915,6 +1036,29 @@ body[data-cloud-mobile-editing-ui="1"] :is(
   .gb-production-quick-solutions { align-items: stretch; }
   .gb-production-quick-solutions strong { width: 100%; }
   .gb-production-quick-solutions .gb-production-task-button { flex: 1 1 100%; }
+  .gb-production-sidebar-content { padding: 8px; }
+  .gb-production-sidebar-actions,
+  .gb-production-collaboration-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+  .gb-production-collaboration-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .gb-production-sidebar-actions .gb-production-sidebar-button,
+  .gb-production-collaboration-actions .gb-production-sidebar-button {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+  }
+  .gb-production-checklist-item {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .gb-production-checklist-item button {
+    grid-column: 2;
+  }
 }
 
 /* --- 作品別タブの並べ替え・閉じる（シートビュータブと同じ操作感） --- */
@@ -1143,6 +1287,20 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 .gb-production-all-flat-load-more:hover {
   border-color: var(--cal-accent, var(--accent));
   color: var(--cal-accent, var(--accent));
+}
+
+@media (max-width: 640px), (pointer: coarse) {
+  .gb-production-collaboration-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .gb-production-collaboration-actions .gb-production-sidebar-button {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    min-height: 44px;
+  }
 }
 
 @media (max-width: 720px) {

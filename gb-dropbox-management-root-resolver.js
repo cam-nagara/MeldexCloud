@@ -108,6 +108,9 @@
    * アダプター、それ以外は個人領域アダプターを返す。
    */
   async function resolveAdapterForProvider(provider, options) {
+    if (typeof provider?.getSystemStorageAdapter === 'function') {
+      return provider.getSystemStorageAdapter();
+    }
     const dropboxAdapters = window.MeldexSystemStorageDropbox;
     if (!dropboxAdapters) throw new Error('gb-system-storage-dropbox.js が読み込まれていません');
     const { rootPath, namespaceKind, connectedRootPath } = await _effectiveRootInfo(provider, options?.targetPath);
@@ -250,11 +253,14 @@
         },
       };
     }
+    const providerAdapter = typeof provider?.getSystemStorageAdapter === 'function'
+      ? provider.getSystemStorageAdapter()
+      : null;
     return {
       scopeKey: 'personal',
       kind: 'personal',
       workspace: null,
-      adapter: dropboxAdapters.createPersonalAdapter({ accountBoundary: connected.rootPath }),
+      adapter: providerAdapter || dropboxAdapters.createPersonalAdapter({ accountBoundary: connected.rootPath }),
       toCanonicalPath(localPath) {
         const absolute = _absoluteForTarget(registry, connected.rootPath, localPath);
         return absolute.replace(/^\/+/, '');
@@ -272,6 +278,17 @@
    * (toCanonicalPath)と表示用ローカルパスへの逆変換(toLocalPath)を提供する。
    */
   async function resolveManagementScopeForPath(provider, targetPath) {
+    if (window.MeldexRuntimeAdapter?.isBrowserMode?.()) {
+      const adapter = provider?.getSystemStorageAdapter?.();
+      if (!adapter?.load || !adapter?.save) throw new Error('ブラウザ内の管理データ保存先を利用できません');
+      return {
+        adapter,
+        scopeKey: 'browser:connected-root',
+        isConnectedRootScope: true,
+        toCanonicalPath(path) { return String(path || '').replace(/^\/+|\/+$/g, ''); },
+        toLocalPath(path) { return String(path || '').replace(/^\/+|\/+$/g, ''); },
+      };
+    }
     const connected = await _connectedRootInfo(provider);
     const registry = window.MeldexSourceFolderRegistry;
     const absolute = _absoluteForTarget(registry, connected.rootPath, targetPath);
@@ -295,6 +312,9 @@
    * (読取専用の呼び出し元は捕捉して接続中スコープのみで継続してよい)。
    */
   async function resolveManagementScopesForProvider(provider) {
+    if (window.MeldexRuntimeAdapter?.isBrowserMode?.()) {
+      return [await resolveManagementScopeForPath(provider, '')];
+    }
     const connected = await _connectedRootInfo(provider);
     const registry = window.MeldexSourceFolderRegistry;
     const scopes = [];

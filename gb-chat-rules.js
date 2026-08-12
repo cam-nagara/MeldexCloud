@@ -13,6 +13,7 @@
   const HEADER_TITLE = 'ユーザー定義ルール';
   const HEADER_HELP = 'ソースフォルダに書いた指示の次に優先して適用されます。';
   const stateByContainer = new WeakMap();
+  let activeChatRulesModal = null;
 
   function crEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -271,23 +272,46 @@
       openKnowledgeHomeView('rules');
       return;
     }
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal chat-rules-modal" style="width:760px;max-width:92vw;height:560px;max-height:85vh;display:flex;flex-direction:column;">
-        <div class="gb-field-row" style="justify-content:space-between;gap:8px;margin-bottom:8px;">
-          <h3 style="margin:0;">チャットルール</h3>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon" data-cr-close data-e2e-id="chat-rules-dialog-close" aria-label="閉じる" title="閉じる">${crIcon('x', 14)}</button>
-        </div>
-        <div data-cr-dialog-body style="min-height:0;overflow:auto;flex:1;"></div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    openChatRulesView(overlay.querySelector('[data-cr-dialog-body]'));
-    overlay.querySelector('[data-cr-close]')?.addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) overlay.remove();
+    if (activeChatRulesModal?.isOpen?.()) {
+      activeChatRulesModal.modal?.focus?.({ preventScroll: true });
+      return activeChatRulesModal;
+    }
+    if (typeof window.GBUI?.createModal !== 'function') {
+      throw new Error('共通ダイアログを初期化できませんでした。');
+    }
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const body = document.createElement('div');
+    body.id = 'chat-rules-dialog-body';
+    body.className = 'chat-rules-dialog-body';
+    body.dataset.crDialogBody = '';
+    openChatRulesView(body);
+    const modalApi = window.GBUI.createModal({
+      id: 'chat-rules',
+      title: 'チャットルール',
+      body,
+      variant: 'mobile-sheet',
+      extraClass: 'chat-rules-dialog-modal',
+      geometryKey: 'chat-rules',
+      initialFocus: '[data-e2e-id="chat-rules-dialog-close"]',
+      returnFocus: restoreFocusTo || undefined,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (activeChatRulesModal === modalApi) activeChatRulesModal = null;
+      },
     });
+    modalApi.overlay.classList.add('modal-overlay', 'chat-rules-dialog-overlay');
+    modalApi.overlay.dataset.e2eId = 'chat-rules-dialog-overlay';
+    modalApi.modal.dataset.e2eId = 'chat-rules-dialog';
+    const closeButton = modalApi.header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.id = 'chat-rules-dialog-close';
+      closeButton.dataset.crClose = '';
+      closeButton.dataset.e2eId = 'chat-rules-dialog-close';
+    }
+    activeChatRulesModal = modalApi;
+    modalApi.open();
+    return modalApi;
   }
   window.showChatRulesDialog = showChatRulesDialog;
 })();

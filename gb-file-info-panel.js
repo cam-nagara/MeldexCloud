@@ -21,7 +21,11 @@
     return typeof global.lucide === 'function' ? global.lucide(name, size || 16) : '';
   }
 
-  function fileIcon(ext) {
+  function fileIcon(ext, kind, type) {
+    if (kind === 'folder') return 'folder';
+    if (type === 'board') return 'layoutDashboard';
+    if (type === 'database' || type === 'smart-db') return 'db';
+    if (type === 'scriptnote') return 'bookOpenText';
     if (IMAGE_EXTS.has(ext)) return 'image';
     if (VIDEO_EXTS.has(ext)) return 'clapperboard';
     if (AUDIO_EXTS.has(ext)) return 'audio';
@@ -42,23 +46,44 @@
     return (value / 1073741824).toFixed(1) + ' GB';
   }
 
-  function contextForPath(filePath) {
+  function contextForPath(filePath, options) {
     const normalized = String(filePath || '').replace(/\\/g, '/');
     const fileName = normalized.split('/').pop() || normalized;
     const dotIndex = fileName.lastIndexOf('.');
     const ext = dotIndex >= 0 ? fileName.slice(dotIndex + 1).toLowerCase() : '';
     const folderPath = normalized.includes('/') ? normalized.slice(0, normalized.lastIndexOf('/')) : '';
     const folderName = folderPath.split('/').pop() || folderPath;
-    const typeLabel = ext === 'md'
-      ? 'ノート'
-      : ext === 'json'
-        ? 'シナリオ／シート'
-        : ext === 'board' || ext === 'mel-board'
-          ? 'ボード'
-          : ext === 'html' || ext === 'htm'
-            ? 'HTML'
-            : ext || 'ファイル';
-    return { fileName, ext, folderPath, folderName, typeLabel };
+    const kind = options?.kind === 'folder' ? 'folder' : 'file';
+    const type = String(options?.type || '').trim();
+    const lowerName = fileName.toLowerCase();
+    const inferredTypeLabel = kind === 'folder'
+      ? 'フォルダ'
+      : type === 'database' || /(?:\.sheet|\.database)\.json$/.test(lowerName)
+        ? 'シート'
+        : type === 'smart-db' || /(?:\.smart|\.smart-db)\.json$/.test(lowerName)
+          ? 'スマートシート'
+          : type === 'scriptnote' || lowerName.endsWith('.scriptnote.json')
+            ? 'シナリオ'
+            : type === 'calendar'
+              ? 'カレンダー'
+              : type === 'csv'
+                ? 'CSV'
+            : type === 'board' || /(?:\.board\.(?:json|md)|\.mel-board|\.board)$/.test(lowerName)
+              ? 'ボード'
+              : ext === 'md'
+                ? 'ノート'
+                : ext === 'html' || ext === 'htm'
+                  ? 'HTML'
+                  : ext || 'ファイル';
+    return {
+      fileName,
+      ext,
+      folderPath,
+      folderName,
+      kind,
+      type,
+      typeLabel: String(options?.typeLabel || inferredTypeLabel),
+    };
   }
 
   function metadataRowsHtml(meta) {
@@ -81,7 +106,10 @@
   }
 
   function panelHtml(filePath, preloadedMeta, options) {
-    const info = contextForPath(filePath);
+    const info = contextForPath(filePath, {
+      ...options,
+      kind: options?.kind || preloadedMeta?.kind,
+    });
     const tagsHtml = options?.showTags === false
       ? ''
       : `<div data-global-tags-target-path="${escapeHtml(filePath)}"></div>`;
@@ -90,7 +118,7 @@
       ? `<button type="button" class="auto-link" data-e2e-id="${escapeHtml(folderIdentity)}" data-path="${escapeHtml(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${escapeHtml(info.folderName)}</button>`
       : '—';
     return `<div style="padding:12px;" data-file-info-path="${escapeHtml(filePath)}">`
-      + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${iconHtml(fileIcon(info.ext), 16)} ${escapeHtml(info.fileName)}</div>`
+      + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${iconHtml(fileIcon(info.ext, info.kind, info.type), 16)} ${escapeHtml(info.fileName)}</div>`
       + '<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">'
       + '<tbody>'
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">種類</td><td style="padding:4px 0;">${escapeHtml(info.typeLabel)}</td></tr>`
@@ -105,7 +133,9 @@
       + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
       + tagsHtml
       + '<div data-file-embedded-body></div>'
-      + '</div></div>';
+      + '</div>'
+      + (info.kind === 'folder' ? `<div data-duplicate-folder-setting data-path="${escapeHtml(filePath)}"></div>` : '')
+      + '</div>';
   }
 
   function findPanel(root, filePath) {

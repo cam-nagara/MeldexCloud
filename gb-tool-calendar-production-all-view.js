@@ -362,6 +362,10 @@
       const rowEl = event.target.closest?.('tr[data-row-path]');
       if (!rowEl) return;
       const row = instance._rowsByPath.get(rowEl.dataset.rowPath);
+      if (row?._schedulerProposal) {
+        _notify('案の表示中は編集できません。採用すると確定版へ反映されます');
+        return;
+      }
       if (row) instance.onOpenTask?.(row);
     });
 
@@ -386,6 +390,10 @@
     const tr = document.createElement('tr');
     tr.dataset.rowPath = path;
     tr.className = 'gb-production-all-flat-row';
+    if (row?._schedulerProposal) {
+      tr.classList.add('gb-scheduler-proposal-row');
+      tr.dataset.schedulerProposalId = row._schedulerProposalId || '';
+    }
 
     const selectTd = document.createElement('td');
     const checkbox = document.createElement('input');
@@ -512,11 +520,15 @@
       if (status) instance._facets.statuses.add(String(status));
       if (assignee) instance._facets.assignees.add(String(assignee));
     });
-    if (append) instance._rows = instance._rows.concat(rows);
+    if (append) instance._baseRows = instance._baseRows.concat(rows);
     else {
-      instance._rows = rows;
+      instance._baseRows = rows;
       instance._selectedPaths.clear();
     }
+    const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(
+      instance._baseRows, window.MeldexSchedulerProposalOverlay?.active?.(),
+    );
+    instance._rows = projection?.rows || instance._baseRows;
     _renderFilterOptions(instance);
     _renderHeaderLabels(instance);
     _renderTable(instance);
@@ -591,6 +603,7 @@
       _sheets: [],
       _sheetsByWork: new Map(),
       _rows: [],
+      _baseRows: [],
       _rowsByPath: new Map(),
       _selectedPaths: new Set(),
       _facets: { statuses: new Set(), assignees: new Set() },
@@ -643,6 +656,14 @@
 
     instance.open = function (sheets, opts) { return _open(instance, sheets, opts); };
     instance.refresh = function () { return _refresh(instance); };
+
+    instance.applySchedulerProposal = function (proposal) {
+      const projection = window.MeldexSchedulerProposalOverlay?.projectTaskRows?.(instance._baseRows, proposal);
+      instance._rows = projection?.rows || instance._baseRows;
+      _renderTable(instance);
+      _renderStatus(instance);
+      return projection || { rows: instance._rows, warnings: [] };
+    };
 
     instance.setVisible = function (visible) {
       // 非表示でも DOM から外さない（埋め込みシートと同じ制約は無いが、表示状態の

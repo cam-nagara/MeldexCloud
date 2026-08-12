@@ -438,11 +438,12 @@
     if (task.fixed_user) return staffMap.has(task.fixed_user) ? new Set([task.fixed_user]) : new Set();
     const allowed = contentCandidates.get(task.content || '') || new Set();
     const staffNames = new Set(staffMap.keys());
-    if (!allowed.size) return staffNames;
-    return new Set([...staffNames].filter(name => allowed.has(name)));
+    const explicit = new Set((task.candidate_users || []).map(value => String(value || '').trim()).filter(Boolean));
+    if (explicit.size) return new Set([...staffNames].filter(name => explicit.has(name)));
+    return allowed.size ? new Set([...staffNames].filter(name => allowed.has(name))) : staffNames;
   }
 
-  function reserveSlot(task, candidateStaffSet, segments, durationMs, deadline, earliestStart) {
+  function reserveSlot(task, candidateStaffSet, segments, durationMs, deadline, earliestStart, slotAllowed) {
     const fixed = task.fixed_user;
     const ordered = [...segments].sort((a, b) => (a.cursor - b.cursor) || (Number(a.overtime) - Number(b.overtime)) || (a.staff < b.staff ? -1 : a.staff > b.staff ? 1 : 0));
     for (const seg of ordered) {
@@ -452,6 +453,7 @@
       const start = (earliestStart && earliestStart > cursor) ? earliestStart : cursor;
       const end = new Date(start.getTime() + durationMs);
       if (end <= seg.end && end <= deadline) {
+        if (slotAllowed && !slotAllowed(start, end)) continue;
         if (start > cursor) {
           const before = { ...seg, cursor, end: start };
           if (before.end > before.cursor) segments.push(before);
@@ -461,6 +463,62 @@
       }
     }
     return null;
+  }
+
+  function topologicalTaskOrder(tasks) {
+    const byId = new Map(tasks.map(task => [String(task.id || ''), task]));
+    const rank = new Map(tasks.map((task, index) => [String(task.id || ''), index]));
+    const incoming = new Map([...byId].map(([id, task]) => [id, new Set(
+      (task.dependencies || []).map(String).filter(dependency => byId.has(dependency))
+    )]));
+    const ready = [...incoming].filter(([, dependencies]) => !dependencies.size).map(([id]) => id)
+      .sort((a, b) => rank.get(a) - rank.get(b));
+    const result = [];
+    while (ready.length) {
+      const id = ready.shift();
+      result.push(byId.get(id));
+      for (const candidate of [...incoming.keys()].sort((a, b) => rank.get(a) - rank.get(b))) {
+        const dependencies = incoming.get(candidate);
+        if (!dependencies.delete(id) || dependencies.size || result.includes(byId.get(candidate)) || ready.includes(candidate)) continue;
+        ready.push(candidate);
+        ready.sort((a, b) => rank.get(a) - rank.get(b));
+      }
+    }
+    const cycles = new Set([...incoming].filter(([, dependencies]) => dependencies.size).map(([id]) => id));
+    result.push(...tasks.filter(task => !result.includes(task)));
+    return { tasks: result, cycles };
+  }
+
+  function equipmentState(runtimeOptions) {
+    const resources = new Map();
+    (runtimeOptions && runtimeOptions.equipment || []).forEach(raw => {
+      if (!raw || typeof raw !== 'object') return;
+      const id = String(raw.id || raw.name || '').trim();
+      if (!id) return;
+      const ranges = values => (values || []).map(item => ({
+        start: new Date(String(item && item.start || '')),
+        end: new Date(String(item && item.end || '')),
+      })).filter(item => !Number.isNaN(item.start.getTime()) && !Number.isNaN(item.end.getTime()) && item.end > item.start);
+      resources.set(id, {
+        capacity: Math.max(1, Math.floor(safeFloat(raw.capacity, 1))),
+        availability: ranges(raw.availability),
+        reservations: ranges(raw.reservations || raw.busy),
+      });
+    });
+    return resources;
+  }
+
+  function equipmentAvailable(resources, required, start, end) {
+    return (required || []).every(value => {
+      const resource = resources.get(String(value));
+      if (!resource) return false;
+      if (resource.availability.length && !resource.availability.some(range => range.start <= start && end <= range.end)) return false;
+      return resource.reservations.filter(range => range.start < end && start < range.end).length < resource.capacity;
+    });
+  }
+
+  function reserveEquipment(resources, required, start, end) {
+    (required || []).forEach(value => resources.get(String(value)).reservations.push({ start, end }));
   }
 
   function compressionRatio(tasks, segments) {
@@ -488,7 +546,7 @@
     const startText = isoMinutes(start);
     const endText = isoMinutes(end);
     const hours = pythonRoundTo(durationMs / 3600000, 2);
-    return {
+    const row = {
       status: 'scheduled',
       task_path: String(task.path),
       task_id: task.id,
@@ -505,6 +563,8 @@
       changed: task.current_user !== staffName || task.current_range !== `${startText}|${endText}`,
       color: task.color || '',
     };
+    if (task.required_equipment && task.required_equipment.length) row.required_equipment = [...task.required_equipment];
+    return row;
   }
 
   function lockedRow(task) {
@@ -558,7 +618,7 @@
   // グループ全体へ適用する（production-management-ux-improvement-plan-2026-08-04.md §3-4。
   // タスク単位でソートすると後工程だけ「高」を付けた時に前工程より先に処理され、group_ready の
   // 逐次制約によって工程順が逆転してしまうため。Phase 1 修正後の挙動を必ず踏襲する）。
-  function buildPlanAtRatio(tasks, staff, segments, periodValue, contentOrder, contentCandidates, ratio) {
+  function buildPlanAtRatio(tasks, staff, segments, periodValue, contentOrder, contentCandidates, ratio, runtimeOptions) {
     const rows = [];
     const warnings = [];
     const staffMap = new Map(staff.map(row => [row.name, row]));
@@ -572,7 +632,7 @@
       if (current === undefined || rank < current) groupPriority.set(key, rank);
     });
 
-    const ordered = [...tasks].sort((a, b) => {
+    const baseOrdered = [...tasks].sort((a, b) => {
       const da = deadlineDt(a, periodValue).getTime();
       const db = deadlineDt(b, periodValue).getTime();
       if (da !== db) return da - db;
@@ -585,11 +645,31 @@
       if (ca !== cb) return ca - cb;
       return a.task_name < b.task_name ? -1 : a.task_name > b.task_name ? 1 : 0;
     });
+    const topological = topologicalTaskOrder(baseOrdered);
+    const ordered = topological.tasks;
 
     const groupReady = new Map();
     const blockedGroups = new Set();
+    const completedById = new Map();
+    const blockedTaskIds = new Set();
+    const knownTaskIds = new Set(tasks.map(task => String(task.id || '')));
+    const resources = equipmentState(runtimeOptions);
     ordered.forEach(task => {
       const groupKey = taskGroupKey(task);
+      if (topological.cycles.has(String(task.id || ''))) {
+        rows.push(unassignedRow(task, '依存関係が循環しています'));
+        warnings.push({ type: 'dependency', task: task.task_name, content: task.content });
+        blockedTaskIds.add(String(task.id || ''));
+        return;
+      }
+      const dependencies = (task.dependencies || []).map(String).filter(value => knownTaskIds.has(value));
+      const dependencyEnds = dependencies.map(value => completedById.get(value)).filter(Boolean);
+      if (dependencies.some(value => blockedTaskIds.has(value))) {
+        rows.push(unassignedRow(task, '依存タスクが未割り当てです'));
+        warnings.push({ type: 'dependency', task: task.task_name, content: task.content });
+        blockedTaskIds.add(String(task.id || ''));
+        return;
+      }
       if (blockedGroups.has(groupKey)) {
         rows.push(unassignedRow(task, '前工程が未割り当てです'));
         warnings.push({ type: 'dependency', task: task.task_name, content: task.content });
@@ -602,6 +682,7 @@
         if (endAt) {
           const current = groupReady.get(groupKey);
           groupReady.set(groupKey, (current && current > endAt) ? current : endAt);
+          completedById.set(String(task.id || ''), endAt);
         }
         return;
       }
@@ -612,23 +693,34 @@
         rows.push(unassignedRow(task, '担当できるスタッフがいません'));
         warnings.push({ type: 'no_staff', task: task.task_name, content: task.content });
         blockedGroups.add(groupKey);
+        blockedTaskIds.add(String(task.id || ''));
         return;
       }
-      const slot = reserveSlot(task, candidates, segments, durationMs, deadlineDt(task, periodValue), groupReady.get(groupKey) || null);
+      const dependencyReady = dependencyEnds.length ? new Date(Math.max(...dependencyEnds.map(value => value.getTime()))) : null;
+      const groupStart = groupReady.get(groupKey) || null;
+      const earliestStart = dependencyReady && (!groupStart || dependencyReady > groupStart) ? dependencyReady : groupStart;
+      const requiredEquipment = task.required_equipment || [];
+      const slot = reserveSlot(
+        task, candidates, segments, durationMs, deadlineDt(task, periodValue), earliestStart,
+        (start, end) => equipmentAvailable(resources, requiredEquipment, start, end),
+      );
       if (!slot) {
         rows.push(unassignedRow(task, '期間内の空き時間が足りません'));
         warnings.push({ type: 'deadline', task: task.task_name, minutes: Math.floor(durationMs / 60000) });
         blockedGroups.add(groupKey);
+        blockedTaskIds.add(String(task.id || ''));
         return;
       }
+      reserveEquipment(resources, requiredEquipment, slot.start, slot.end);
       rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs));
+      completedById.set(String(task.id || ''), slot.end);
       const current = groupReady.get(groupKey);
       groupReady.set(groupKey, (current && current > slot.end) ? current : slot.end);
     });
     return { rows, warnings };
   }
 
-  function buildPlan(tasks, staff, segments, periodValue, contentOrder, contentCandidates) {
+  function buildPlan(tasks, staff, segments, periodValue, contentOrder, contentCandidates, runtimeOptions) {
     const movable = tasks.filter(task => !taskProtected(task));
     const baseRatio = compressionRatio(movable, segments);
     const attempts = compressionAttempts(baseRatio);
@@ -636,7 +728,7 @@
     let bestWarnings = [];
     let bestScore = null;
     for (const ratio of attempts) {
-      const result = buildPlanAtRatio(tasks, staff, cloneSegments(segments), periodValue, contentOrder, contentCandidates, ratio);
+      const result = buildPlanAtRatio(tasks, staff, cloneSegments(segments), periodValue, contentOrder, contentCandidates, ratio, runtimeOptions);
       const deadlineWarnings = result.warnings.filter(w => w.type === 'deadline');
       const unassignedCount = result.rows.filter(r => r.status === 'unassigned').length;
       const score = [deadlineWarnings.length, unassignedCount];
@@ -743,6 +835,7 @@
     lockedRow,
     unassignedRow,
     rowEndDatetime,
+    topologicalTaskOrder,
     buildPlanAtRatio,
     buildPlan,
     suggestions,

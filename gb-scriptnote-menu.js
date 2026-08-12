@@ -538,25 +538,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     }
   },
 
-  // 自動配色: PALETTE_COLORSを循環して割り当て
-  _assignAutoColor(chara) {
-    if (chara.isDefault) return; // デフォルトタイプは自動配色対象外
-    if (chara.autoColor || chara.bgColor) return; // 既に色が設定されている場合はスキップ
-    const colors = typeof this._getAutoColorPalette === 'function'
-      ? this._getAutoColorPalette()
-      : (typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : []);
-    if (!colors.length) return;
-    // editor.autoColorRule から列ごとの配色先を取得
-    const acRule = this.doc.editor?.autoColorRule || {};
-    const allNone = Object.values(acRule).every(v => !v || v === 'none');
-    if (allNone) return;
-    // 既存キャラの使用色数をカウントしてインデックスを決定
-    const existingCount = this.doc.characters.filter(c => c.autoColor || c.bgColor).length;
-    const idx = existingCount % colors.length;
-    chara.autoColor = colors[idx];
-    chara.autoColorTarget = { ...acRule };
-  },
-
   _getCharacterList() {
     if (globalThis.GBScriptNoteRoleModel?.buildRoleChoices) {
       return globalThis.GBScriptNoteRoleModel.buildRoleChoices(this.doc)

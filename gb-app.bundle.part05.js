@@ -1,7 +1,25 @@
+  const text = String(message ?? '');
+  if (!text) return [];
+  const lines = text.split('\n');
+  const entries = lines.length < 2
+    ? [{ text, kind: 'body' }]
+    : [
+        { text: (lines.shift() || '').trim(), kind: 'title' },
+        { text: lines.join('\n').trim(), kind: 'muted' },
+      ];
+  return entries.filter(entry => entry.text).map((entry, index) => {
+    const node = document.createElement('div');
+    node.className = 'gb-confirm-message';
+    node.id = `${idBase}-message-${index}`;
+    node.textContent = entry.text;
+    if (entry.kind === 'title') node.style.fontWeight = '600';
+    if (entry.kind === 'muted') node.style.color = 'var(--ui-fg-muted)';
+    return node;
+  });
 }
 
-// v0.5.250: cf ダイアログは .modal (大型殻) から .gb-confirm (コンパクト殻) に統一。
-// - ヘッダー / フッター分割なし (短い問いかけ専用)
+// 短い問いかけ用の .gb-confirm 表示を保ちつつ、生成・閉鎖・フォーカス・
+// モバイル変換を GBUI.createModal へ統一する。
 // - OK ボタンは .gb-btn-primary 基準、message に「削除」が含まれる場合は .gb-btn-danger + ラベル「削除」に自動切替
 // - options.danger で明示指定可、options.okLabel / options.cancelLabel で文言上書き可
 function _cfIsDeleteMessage(text) {
@@ -16,22 +34,44 @@ function _cfRestoreFocusTarget() {
   return document.activeElement instanceof HTMLElement ? document.activeElement : null;
 }
 
-function _enhanceCfDialog(overlay, kind, label) {
-  const dialog = overlay?.querySelector?.('.gb-confirm');
-  if (!dialog) return null;
-  const idBase = `gb-${kind}-${++_cfDialogSeq}`;
-  overlay.dataset.e2eId = `${kind}-overlay`;
-  dialog.dataset.e2eId = `${kind}-dialog`;
-  dialog.id = dialog.id || `${idBase}-dialog`;
-  dialog.setAttribute('aria-label', label);
-  const messages = [...dialog.querySelectorAll('.gb-confirm-message')];
-  messages.forEach((message, index) => { message.id = message.id || `${idBase}-message-${index}`; });
-  if (messages.length) dialog.setAttribute('aria-describedby', messages.map(message => message.id).join(' '));
-  return dialog;
+function _cfIsTopmostDialog(dialog) {
+  const managed = window.GBDialogKeyboard?.topmostDialog?.();
+  if (managed) return managed === dialog;
+  const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')]
+    .filter(node => node.isConnected && !node.hidden);
+  return !dialogs.length || dialogs[dialogs.length - 1] === dialog;
 }
 
-function _restoreCfDialogFocus(target, overlay) {
-  if (target?.isConnected && !overlay?.contains?.(target)) target.focus?.();
+function _configureCfModal(modalApi, kind, label, role, messageNodes, idBase) {
+  modalApi.overlay.classList.add('modal-overlay');
+  modalApi.overlay.dataset.e2eId = `${kind}-overlay`;
+  modalApi.modal.classList.add('gb-confirm');
+  modalApi.modal.dataset.e2eId = `${kind}-dialog`;
+  modalApi.modal.dataset.dialogType = kind;
+  modalApi.modal.id = `${idBase}-dialog`;
+  modalApi.modal.setAttribute('role', role);
+  modalApi.modal.setAttribute('aria-label', label);
+  const closeButton = modalApi.header.querySelector('.gb-modal-close');
+  if (closeButton) closeButton.dataset.e2eId = `${kind}-close`;
+  if (messageNodes.length) {
+    modalApi.modal.setAttribute('aria-describedby', messageNodes.map(node => node.id).join(' '));
+  }
+  modalApi.footer.classList.add('gb-confirm-actions');
+  return modalApi;
+}
+
+function _completeCfModalPromise(modalApi, resolve, value) {
+  const settle = () => {
+    if (modalApi?.overlay?.isConnected) {
+      setTimeout(settle, 40);
+      return;
+    }
+    // GBUI.createModal のフォーカス復帰は、モバイル下端シートの閉じるアニメーション後に
+    // 同じ40ms周期で実行される。onClose時点で先にPromiseを解決すると、直後に開いた
+    // ダイアログから旧ダイアログの復帰処理がフォーカスを奪うため、次タスクまで待つ。
+    setTimeout(() => resolve(value), 0);
+  };
+  settle();
 }
 
 // カスタムalertダイアログ（alert()の代替、画面中央モーダル）
@@ -39,45 +79,58 @@ function cfAlert(message, options) {
   const opts = options || {};
   const okLabel = opts.okLabel || 'OK';
   const showSupport = opts.support !== false && /HTTP\s+\d{3}|Error|エラー|失敗|例外/.test(String(message || ''));
-  const supportButton = showSupport
-    ? '<button id="_gb-support" class="gb-btn gb-btn-sm">サポートに送信</button>'
-    : '';
+  if (typeof window.GBUI?.createModal !== 'function') {
+    if (typeof window.alert === 'function') window.alert(String(message || ''));
+    return Promise.resolve();
+  }
   return new Promise(resolve => {
     const restoreFocusTo = _cfRestoreFocusTarget();
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <div class="gb-confirm-actions">
-        ${supportButton}
-        <button id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    _enhanceCfDialog(o, 'cf-alert', 'お知らせ');
-    let done = false;
-    const cleanup = () => {
-      if (done) return;
-      done = true;
-      o.remove();
-      document.removeEventListener('keydown', kh);
-      _restoreCfDialogFocus(restoreFocusTo, o);
-      resolve();
+    const idBase = `gb-cf-alert-${++_cfDialogSeq}`;
+    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
+    const supportButton = document.createElement('button');
+    supportButton.type = 'button';
+    supportButton.id = '_gb-support';
+    supportButton.className = 'gb-btn gb-btn-sm';
+    supportButton.textContent = 'サポートに送信';
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.id = '_gb-ok';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.textContent = okLabel;
+    let modalApi = null;
+    const onDocumentKeydown = event => {
+      if (event.key !== 'Enter' || !_cfIsTopmostDialog(modalApi?.modal)) return;
+      const active = document.activeElement;
+      const interactive = active?.closest?.('button, a[href], input, select, textarea, [contenteditable="true"], [role="button"]');
+      if (interactive && modalApi.modal.contains(interactive)) return;
+      event.preventDefault();
+      modalApi.close('submit');
     };
-    function kh(e) {
-      if (e.key === 'Enter' || e.key === 'Escape') {
-        e.preventDefault();
-        cleanup();
-      }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', cleanup);
-    o.querySelector('#_gb-support')?.addEventListener('click', () => {
+    modalApi = _configureCfModal(window.GBUI.createModal({
+      id: idBase,
+      titleId: `${idBase}-title`,
+      title: 'お知らせ',
+      body: messageNodes,
+      footer: showSupport ? [supportButton, ok] : [ok],
+      variant: 'standard',
+      extraClass: 'gb-confirm',
+      geometryKey: 'cf-alert',
+      initialFocus: () => ok,
+      returnFocus: () => restoreFocusTo,
+      closeLabel: 'お知らせを閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        document.removeEventListener('keydown', onDocumentKeydown);
+        _completeCfModalPromise(modalApi, resolve);
+      },
+    }), 'cf-alert', 'お知らせ', 'alertdialog', messageNodes, idBase);
+    ok.addEventListener('click', () => modalApi.close('submit'));
+    supportButton.addEventListener('click', () => {
       window.MeldexDiagnostics?.showSupportDialog?.(new Error(String(message || '')), { kind: 'cfAlert' });
     });
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(); });
-    document.addEventListener('keydown', kh);
-    o.querySelector('#_gb-ok').focus();
+    document.addEventListener('keydown', onDocumentKeydown);
+    modalApi.open();
   });
 }
 
@@ -96,101 +149,129 @@ function cfConfirm(message, options) {
   const okLabel = opts.okLabel || defaultOk;
   const cancelLabel = opts.cancelLabel || 'キャンセル';
   const okVariant = isDanger ? 'gb-btn-danger' : 'gb-btn-primary';
+  if (typeof window.GBUI?.createModal !== 'function') {
+    const nativeValue = typeof window.confirm === 'function' ? window.confirm(String(message || '')) : false;
+    return Promise.resolve(nativeValue);
+  }
   return new Promise(resolve => {
     const restoreFocusTo = _cfRestoreFocusTarget();
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="alertdialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <div class="gb-confirm-actions">
-        <button id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button id="_gb-ok" class="gb-btn gb-btn-sm ${okVariant}">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    if (extraNode) {
-      const dialog = o.querySelector('.gb-confirm');
-      const actions = o.querySelector('.gb-confirm-actions');
-      if (dialog && actions) dialog.insertBefore(extraNode, actions);
-    }
-    document.body.appendChild(o);
-    _enhanceCfDialog(o, 'cf-confirm', '確認');
-    let done = false;
-    const cleanup = (val) => {
-      if (done) return;
-      done = true;
-      o.remove();
-      document.removeEventListener('keydown', kh);
-      _restoreCfDialogFocus(restoreFocusTo, o);
-      resolve(val);
+    const idBase = `gb-cf-confirm-${++_cfDialogSeq}`;
+    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.id = '_gb-cancel';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.textContent = cancelLabel;
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.id = '_gb-ok';
+    ok.className = `gb-btn gb-btn-sm ${okVariant}`;
+    ok.textContent = okLabel;
+    let result = false;
+    let modalApi = null;
+    const finish = (value, reason) => {
+      result = value;
+      modalApi.close(reason);
     };
-    function kh(e) {
-      if (e.key === 'Escape') { e.preventDefault(); cleanup(false); return; }
+    const onDocumentKeydown = event => {
       // 通常モードは Enter = OK のショートカット。
       // danger モードは誤操作防止のため Enter のショートカットを無効化し、
       // フォーカスされたボタン (初期は cancel) の自然な Enter 起動に任せる。
-      if (e.key === 'Enter' && !isDanger) {
+      if (event.key === 'Enter' && !isDanger && _cfIsTopmostDialog(modalApi?.modal)) {
         const active = document.activeElement;
-        if (active?.id === '_gb-cancel' || active?.id === '_gb-ok') return;
-        e.preventDefault();
-        cleanup(true);
+        const interactive = active?.closest?.('button, a[href], input, select, textarea, [contenteditable="true"], [role="button"]');
+        if (interactive && modalApi.modal.contains(interactive)) return;
+        event.preventDefault();
+        finish(true, 'submit');
       }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(true));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(false));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(false); });
-    document.addEventListener('keydown', kh);
-    // danger 時は誤操作防止のため cancel に初期フォーカス、それ以外は ok
-    o.querySelector(isDanger ? '#_gb-cancel' : '#_gb-ok').focus();
+    };
+    modalApi = _configureCfModal(window.GBUI.createModal({
+      id: idBase,
+      titleId: `${idBase}-title`,
+      title: '確認',
+      body: extraNode ? [...messageNodes, extraNode] : messageNodes,
+      footer: [cancel, ok],
+      variant: 'standard',
+      extraClass: 'gb-confirm',
+      geometryKey: 'cf-confirm',
+      initialFocus: () => isDanger ? cancel : ok,
+      returnFocus: () => restoreFocusTo,
+      closeLabel: '確認をキャンセル',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        document.removeEventListener('keydown', onDocumentKeydown);
+        _completeCfModalPromise(modalApi, resolve, result);
+      },
+    }), 'cf-confirm', '確認', 'alertdialog', messageNodes, idBase);
+    ok.addEventListener('click', () => finish(true, 'submit'));
+    cancel.addEventListener('click', () => finish(false, 'cancel'));
+    document.addEventListener('keydown', onDocumentKeydown);
+    modalApi.open();
   });
 }
-
 // カスタムpromptダイアログ（prompt()の代替）
 function cfPrompt(message, defaultValue, options) {
   const opts = options || {};
   const okLabel = opts.okLabel || '決定';
   const cancelLabel = opts.cancelLabel || 'キャンセル';
+  if (typeof window.GBUI?.createModal !== 'function') {
+    const nativeValue = typeof window.prompt === 'function'
+      ? window.prompt(String(message || ''), String(defaultValue ?? ''))
+      : null;
+    return Promise.resolve(nativeValue);
+  }
   return new Promise(resolve => {
     const restoreFocusTo = _cfRestoreFocusTarget();
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="dialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <input type="text" id="_gb-prompt-input" class="gb-confirm-input" value="${esc(defaultValue ?? '')}">
-      <div class="gb-confirm-actions">
-        <button type="button" id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button type="button" id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    _enhanceCfDialog(o, 'cf-prompt', '入力');
-    const input = o.querySelector('#_gb-prompt-input');
-    let done = false;
-    const cleanup = (val) => {
-      if (done) return;
-      done = true;
-      o.remove();
-      document.removeEventListener('keydown', kh);
-      _restoreCfDialogFocus(restoreFocusTo, o);
-      resolve(val);
+    const idBase = `gb-cf-prompt-${++_cfDialogSeq}`;
+    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = '_gb-prompt-input';
+    input.className = 'gb-confirm-input';
+    input.value = String(defaultValue ?? '');
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.id = '_gb-cancel';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.textContent = cancelLabel;
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.id = '_gb-ok';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.textContent = okLabel;
+    let result = null;
+    let modalApi = null;
+    const finish = (value, reason) => {
+      result = value;
+      modalApi.close(reason);
     };
-    function kh(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        cleanup(null);
+    modalApi = _configureCfModal(window.GBUI.createModal({
+      id: idBase,
+      titleId: `${idBase}-title`,
+      title: '入力',
+      body: [...messageNodes, input],
+      footer: [cancel, ok],
+      variant: 'standard',
+      extraClass: 'gb-confirm',
+      geometryKey: 'cf-prompt',
+      initialFocus: () => input,
+      returnFocus: () => restoreFocusTo,
+      closeLabel: '入力をキャンセル',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => _completeCfModalPromise(modalApi, resolve, result),
+    }), 'cf-prompt', '入力', 'dialog', messageNodes, idBase);
+    ok.addEventListener('click', () => finish(input.value, 'submit'));
+    cancel.addEventListener('click', () => finish(null, 'cancel'));
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish(input.value, 'submit');
       }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(input.value));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(null));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(null); });
-    document.addEventListener('keydown', kh);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); cleanup(input.value); }
-      if (e.key === 'Escape') { e.preventDefault(); cleanup(null); }
     });
-    input.focus();
-    input.select();
+    modalApi.open();
+    requestAnimationFrame(() => input.select());
   });
 }
 
@@ -817,84 +898,3 @@ function _gbIsTrustedInternalViewerUrl(rawUrl) {
   const text = String(rawUrl || '').trim();
   if (!text) return false;
   try {
-    const parsed = new URL(text, window.location.origin);
-    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
-    return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
-  } catch {
-    return false;
-  }
-}
-
-function _gbHtmlIframeSandboxForUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return _GB_UNTRUSTED_IFRAME_SANDBOX;
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (_gbIsTrustedInternalViewerUrl(parsed.href)) {
-      return _GB_TRUSTED_VIEWER_IFRAME_SANDBOX;
-    }
-    if (['http:', 'https:'].includes(parsed.protocol) && parsed.origin !== window.location.origin) {
-      return _GB_EXTERNAL_HTML_IFRAME_SANDBOX;
-    }
-  } catch {}
-  return _GB_UNTRUSTED_IFRAME_SANDBOX;
-}
-
-function _gbPrepareUntrustedIframe(iframe, rawUrl) {
-  if (!iframe) return null;
-  iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
-  iframe.setAttribute('referrerpolicy', 'no-referrer');
-  return iframe;
-}
-
-function _gbNormalizeHtmlViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return '';
-  try {
-    const parsed = new URL(text, window.location.origin);
-    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
-    return parsed.href;
-  } catch {
-    return '';
-  }
-}
-
-function _gbSetHtmlViewerSrc(rawUrl) {
-  const url = _gbNormalizeHtmlViewerUrl(rawUrl);
-  if (!url) {
-    if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
-    return false;
-  }
-  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
-  if (iframe) iframe.src = url;
-  const urlBar = document.getElementById('html-url-bar');
-  if (urlBar) urlBar.value = url;
-  return true;
-}
-
-_gbPrepareUntrustedIframe(document.getElementById('html-iframe'));
-
-function openHtmlFile(label, path, opts) {
-  const openOpts = opts || {};
-  if (!openOpts.skipShowView) showView('html');
-  else if (!openOpts.skipStateView) state.view = 'html';
-  state.currentPagePath = path;
-  const currentTitleEl = document.getElementById('current-title');
-  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
-  if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
-  if (!openOpts.skipNavPush) {
-    const _navEntry = {type:'html', label, path};
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'html');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
-  if (typeof trackIframeLoading === 'function') {
-    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
-  }
-  _gbSetHtmlViewerSrc(url);
-  if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
-}
-/* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
-function getUsername() {
-  try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }

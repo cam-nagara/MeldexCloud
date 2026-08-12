@@ -21,26 +21,28 @@
     return { content_base64: btoa(binary), byte_length: bytes.length };
   }
 
-  async function _collectFolderVersionFiles(provider, folderPath) {
+  async function _collectFolderVersionFiles(provider, folderPath, options = {}) {
     const base = _normalizeFolderPath(folderPath);
     const files = [];
     async function walk(current) {
       const entries = await _listDirectoryEntries(provider, current);
       for (const entry of entries) {
-        if (!entry.name || entry.name.startsWith('.')) continue;
+        if (!entry.name || (!options.includeAll && entry.name.startsWith('.'))) continue;
         const fullPath = _joinPath(current, entry.name);
         const relPath = _relativeToFolder(base, fullPath);
-        if (_skipFolderVersionRelPath(relPath)) continue;
+        if (!options.includeAll && _skipFolderVersionRelPath(relPath)) continue;
         if (entry.handle.kind === 'directory') {
+          files.push({ rel_path: relPath, entry_type: 'directory', size: 0, modified: '', content_base64: null });
           await walk(fullPath);
           continue;
         }
         const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (FOLDER_VERSION_EXCLUDE.has(ext)) continue;
+        if (!options.includeAll && FOLDER_VERSION_EXCLUDE.has(ext)) continue;
         const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
         const encoded = await _versionFileBase64(provider, fullPath);
         files.push({
           rel_path: relPath,
+          entry_type: 'file',
           size: stats.size || encoded.byte_length,
           modified: stats.modified || '',
           content_base64: encoded.content_base64,
@@ -58,7 +60,7 @@
     const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
     const kind = options?.auto ? 'auto' : 'manual';
     const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const files = await _collectFolderVersionFiles(provider, normalized);
+    const files = await _collectFolderVersionFiles(provider, normalized, options || {});
     const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
     const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
     const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
@@ -260,3 +262,8 @@
     );
     return { ok: true, version: record.payload.version_name };
   }
+
+  window.MeldexFolderVersionProviderOps = Object.freeze({
+    save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
+    read: (provider, path, version) => _readFolderVersion(provider, path, version),
+  });

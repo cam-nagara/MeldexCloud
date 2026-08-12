@@ -271,12 +271,23 @@
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
       const entry = await _resolveEntryHandle(provider, targetPath);
-      if (!entry || entry.kind !== 'file') throw new Error(`ファイルが見つかりません: ${targetPath}`);
+      if (!entry) throw new Error(`ファイルまたはフォルダが見つかりません: ${targetPath}`);
+      if (entry.kind === 'directory') {
+        const directoryStats = typeof provider.statPath === 'function'
+          ? await provider.statPath(targetPath).catch(() => null)
+          : null;
+        return {
+          created: directoryStats?.created || directoryStats?.modified || '',
+          modified: directoryStats?.modified || '',
+          kind: 'folder',
+        };
+      }
       const stats = await _fileStats(entry.handle);
       return {
         created: stats.modified,
         modified: stats.modified,
         size: stats.size,
+        kind: 'file',
       };
     }
 

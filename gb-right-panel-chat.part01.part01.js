@@ -11,7 +11,7 @@ const CHAT_ROOM_GENERATION_STORAGE_KEYS = [
   'chat-max-tokens',
   'chat-top-p',
 ];
-const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, stopSerial: 0 };
+const _chatState = { messages: [], streaming: false, provider: 'gemini', model: '', pendingModel: '', sessionId: '', targetPath: '', currentTargetPath: '', currentTargetKind: '', lastImplicitTargetPath: '', sessionTitle: '', sourceFolder: String(localStorage.getItem(_CHAT_SOURCE_FOLDER_STORAGE_KEY) || ''), workspaceId: String(localStorage.getItem(_CHAT_WORKSPACE_STORAGE_KEY) || ''), modelsByProvider: {}, abortController: null, streamingTargetPath: '', queuedMessages: [], queuedScope: null, queuedSendRunning: false, interruptDraftId: '', activeExecution: null, stopSerial: 0 };
 let _chatMode = localStorage.getItem('chat-mode') || 'team';
 if (_chatMode === 'cli') _chatMode = 'history';
 let _teamCurrentRoom = '';

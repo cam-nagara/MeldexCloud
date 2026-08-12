@@ -27,10 +27,6 @@ function _chatQueueUserInputForNextTurn(options = {}) {
   _chatLastSubmitAt = now;
 
   const queue = _chatQueuedMessages();
-  if (queue.length && !_chatQueueScopeMatchesCurrent()) {
-    if (typeof showStatus === 'function') showStatus('別チャットの保留メッセージがあるため、先に応答完了を待ってください', true);
-    return false;
-  }
 
   if (input) {
     input.value = '';
@@ -43,11 +39,12 @@ function _chatQueueUserInputForNextTurn(options = {}) {
     else _chatState.pendingAttachments = [];
   }
 
-  const timestamp = _chatLocalTimestamp();
-  const message = { role: 'user', content: _chatNormalizeUserContent(text, attachments), timestamp };
-  _ensureChatMessageId(message);
-  _chatState.queuedScope = _chatCurrentQueueScope();
+  const scope = _chatCurrentQueueScope();
+  const message = _chatCreateWaitingDraft(text, attachments, scope);
+  const timestamp = message.timestamp;
+  _chatState.queuedScope = scope;
   queue.push(message);
+  _chatPersistQueuedMessages();
   chatAddMessage('user', message.content, {
     messageIndex: _chatState.messages.length + queue.length - 1,
     msg_id: message.msg_id,
@@ -55,17 +52,19 @@ function _chatQueueUserInputForNextTurn(options = {}) {
     timestamp,
     queued_for_next_response: true,
   });
-  if (typeof showStatus === 'function') showStatus('応答完了後にまとめて送信します');
+  if (typeof showStatus === 'function') showStatus('待機カードへ追加しました');
   return true;
 }
 
 function _chatDrainQueuedMessagesForScope(scope) {
-  if (!_chatQueueScopesMatch(_chatState.queuedScope, scope)) return [];
   const queue = _chatQueuedMessages();
-  if (!queue.length) return [];
-  const drained = _chatCloneMessages(queue);
-  queue.splice(0, queue.length);
-  _chatState.queuedScope = null;
+  const drained = [];
+  for (let index = queue.length - 1; index >= 0; index--) {
+    if (!_chatQueueScopesMatch(_chatDraftScope(queue[index]), scope)) continue;
+    drained.unshift(queue.splice(index, 1)[0]);
+  }
+  if (!queue.length) _chatState.queuedScope = null;
+  _chatPersistQueuedMessages();
   return drained;
 }
 
@@ -105,20 +104,55 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
   if (_chatState.streaming || _chatState.queuedSendRunning) return false;
   const queue = _chatQueuedMessages();
   if (!queue.length) return false;
-  if (!Object.prototype.hasOwnProperty.call(options || {}, 'messages')) {
-    if (!_chatQueueScopeMatchesCurrent()) return false;
-  }
   const sendScope = _chatQueueScopeFromOptions(options);
-  if (!_chatQueueScopesMatch(_chatState.queuedScope, sendScope)) return false;
-
-  const queued = _chatDrainQueuedMessagesForScope(sendScope);
+  let queued = _chatDrainQueuedMessagesForScope(sendScope);
   if (!queued.length) return false;
+  const interruptId = String(_chatState.interruptDraftId || '');
+  if (interruptId) {
+    const chosen = queued.find(item => String(item?.msg_id || '') === interruptId);
+    const rest = queued.filter(item => item !== chosen);
+    if (rest.length) {
+      _chatState.queuedMessages = rest.concat(_chatQueuedMessages());
+      _chatPersistQueuedMessages();
+    }
+    queued = chosen ? [chosen] : queued.slice(0, 1);
+    _chatState.interruptDraftId = '';
+  }
+  const sendMode = interruptId ? 'one-by-one' : _chatQueueSendMode();
+  if (sendMode === 'one-by-one' && queued.length > 1) {
+    _chatState.queuedMessages = queued.slice(1).concat(_chatQueuedMessages());
+    queued = queued.slice(0, 1);
+    _chatPersistQueuedMessages();
+  } else if (sendMode === 'combined' && queued.length > 1) {
+    const combinedAttachments = queued.flatMap(item => item.attachments || []);
+    const combinedText = queued.map((item, index) => `${index + 1}. ${_chatContentToText(item.content)}`).join('\n\n');
+    const combined = _chatCreateWaitingDraft(combinedText, combinedAttachments, sendScope);
+    combined.msg_id = queued[0].msg_id;
+    queued = [combined];
+  }
+  if (interruptId) {
+    queued.unshift({
+      role: 'user',
+      origin: 'meldex-control',
+      controlKind: 'interrupt-handoff',
+      presentation: 'MeldexからAIへの自動指示',
+      content: 'これはMeldexからAIへの制御指示です。明示的な停止指示なら停止し、それ以外は追加内容を反映して元の作業を続けてください。',
+      timestamp: _chatLocalTimestamp(),
+    });
+  }
   _chatState.queuedSendRunning = true;
   const stopSerial = Number(_chatState.stopSerial || 0);
   let sent = false;
   try {
     if (typeof showStatus === 'function') showStatus(`保留メッセージ ${queued.length} 件を送信します`);
-    const deferredOptions = { deferredMessages: queued, fromQueuedMessages: true };
+    const firstDraft = queued.find(item => item?.origin !== 'meldex-control') || queued[0];
+    const deferredOptions = {
+      deferredMessages: queued,
+      fromQueuedMessages: true,
+      provider: firstDraft?.provider || options.provider,
+      model: firstDraft?.model || options.model,
+      generationSettings: firstDraft?.generation || null,
+    };
     if (Object.prototype.hasOwnProperty.call(options || {}, 'messages')) {
       Object.assign(deferredOptions, {
         streamMessages: options.messages,
@@ -127,22 +161,23 @@ async function _chatSendQueuedMessagesAfterStream(options = {}) {
         targetPath: options.targetPath,
         sourceFolder: options.sourceFolder,
         workspaceId: options.workspaceId,
-        provider: options.provider,
-        model: options.model,
+        provider: firstDraft?.provider || options.provider,
+        model: firstDraft?.model || options.model,
         mode: options.mode,
       });
     }
-    const cliProvider = options.provider && window.GBChatCli?.isCliChatProvider?.(options.provider);
+    const cliProvider = deferredOptions.provider && window.GBChatCli?.isCliChatProvider?.(deferredOptions.provider);
     const sendQueued = cliProvider && window.GBChatCli?.sendCliChat ? window.GBChatCli.sendCliChat : chatSend;
     sent = await sendQueued(deferredOptions);
     if (!sent && !_chatState.streaming) {
-      _chatState.queuedMessages = queued.concat(_chatQueuedMessages());
+      _chatState.queuedMessages = queued.filter(item => item.origin !== 'meldex-control').concat(_chatQueuedMessages());
       _chatState.queuedScope = sendScope;
+      _chatPersistQueuedMessages();
     }
     return sent;
   } finally {
     _chatState.queuedSendRunning = false;
-    if (sent && !_chatState.streaming && _chatQueuedMessages().length && Number(_chatState.stopSerial || 0) === stopSerial && _chatQueueScopesMatch(_chatState.queuedScope, sendScope)) {
+    if (sent && !_chatState.streaming && _chatQueuedMessagesForScope(sendScope).length && Number(_chatState.stopSerial || 0) === stopSerial) {
       setTimeout(() => { _chatSendQueuedMessagesAfterStream(options).catch(() => {}); }, 0);
     }
   }
@@ -347,7 +382,6 @@ async function chatSend(options = {}) {
     targetMessages.push(...deferredMessages);
     if (!detachedScope) _chatRenderStoredMessages();
   } else {
-    _chatPromoteQueuedMessagesToHistory();
     const _userContent = _chatNormalizeUserContent(text, _pendingAtts);
     if (_pendingAtts.length > 0) {
       if (typeof _chatClearPendingAttachments === 'function') _chatClearPendingAttachments();
@@ -382,6 +416,19 @@ async function chatSend(options = {}) {
   _chatState.streamingProvider = streamProvider;
   _chatState.streamingTargetPath = streamTargetPath;
   _chatState.lastImplicitTargetPath = streamTargetPath;
+  _chatState.activeExecution = {
+    messages: streamMessages,
+    sessionId: streamSessionId,
+    sessionTitle: streamSessionTitle,
+    targetPath: streamTargetPath,
+    sourceFolder: streamSourceFolder,
+    workspaceId: streamWorkspaceId,
+    provider: streamProvider,
+    model: streamModel,
+    mode: Object.prototype.hasOwnProperty.call(options || {}, 'mode') ? String(options.mode || '') : (typeof _chatMode === 'undefined' ? '' : String(_chatMode || '')),
+    controller: streamController,
+  };
+  window.MeldexChatListbox?.decorateHistory?.();
   _syncChatSourceFolderUi();
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn && !detachedScope) {

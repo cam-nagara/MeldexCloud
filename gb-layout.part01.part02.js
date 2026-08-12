@@ -44,16 +44,27 @@
     _paneMap[node.id] = { node, el: pane, contentEl: content };
     _updatePaneNavButtons(node.id);
 
-    // タブ群が横方向に溢れたらラベルを隠してアイコン化
-    // compact 化してもなお溢れる場合は tabsScroll が横スクロールで対応
+    // タブは自然幅 -> ラベル付き最小72px -> アイコンのみ、の順で縮退する。
+    // compact 化してもなお溢れる場合だけ tabsScroll が横スクロールで対応する。
     if (typeof ResizeObserver === 'function') {
       const updateCompact = () => {
-        tabBar.classList.remove('gb-tabs-compact');
+        tabBar.classList.remove('gb-tabs-shrink', 'gb-tabs-compact');
         // class 変更後のレイアウトを反映させるため強制 reflow
         void tabsScroll.offsetWidth;
         if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
-          tabBar.classList.add('gb-tabs-compact');
+          tabBar.classList.add('gb-tabs-shrink');
+          void tabsScroll.offsetWidth;
+          if (tabsScroll.scrollWidth > tabsScroll.clientWidth + 1) {
+            tabBar.classList.remove('gb-tabs-shrink');
+            tabBar.classList.add('gb-tabs-compact');
+          }
         }
+        const iconOnly = tabBar.classList.contains('gb-tabs-compact');
+        tabsScroll.querySelectorAll('.gb-tab').forEach((tabEl) => {
+          const title = tabEl.dataset.tabTitle || tabEl.querySelector('.gb-tab-label')?.textContent || 'タブ';
+          tabEl.title = iconOnly ? title : '';
+          tabEl.setAttribute('aria-label', title);
+        });
       };
       const ro = new ResizeObserver(updateCompact);
       ro.observe(tabsScroll);

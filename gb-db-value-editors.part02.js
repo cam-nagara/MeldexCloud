@@ -264,20 +264,23 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
   moreBtn.className = 'cell-value-more';
-  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border:0;border-radius:3px;z-index:2;';
+  moreBtn.style.cssText = 'position:absolute;right:2px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border:0;border-radius:3px;z-index:2;';
   moreBtn.innerHTML = lucide('ellipsis', 12);
-  moreBtn.title = propTypeConfig.type === 'image' ? '画像を管理' : 'メニュー';
-  moreBtn.setAttribute('aria-label', propTypeConfig.type === 'image' ? '画像を管理' : '候補値のメニュー');
+  moreBtn.title = 'メニュー';
+  moreBtn.setAttribute('aria-label', '候補値のメニュー');
   moreBtn.dataset.e2eId = _typedCellControlE2eId('value-more', entityPath, propName)
     + '-' + String(val?.candidate_index ?? 0);
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function') {
-      showImageGalleryModal(entityPath, propName, val, propTypeConfig);
-      return;
-    }
-    _showValueContextMenu(e, val, entityPath, propName);
+    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${CSS.escape(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+    const imageManager = propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function'
+      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, { returnFocus: imageReturnFocus })
+      : null;
+    _showValueContextMenu(e, val, entityPath, propName, imageManager ? {
+      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, { returnFocus: imageReturnFocus }),
+      onManageImage: imageManager,
+    } : {});
   });
   row.appendChild(moreBtn);
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
@@ -292,20 +295,39 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'checkbox') {
-    const cb = document.createElement('span');
+    const cb = document.createElement('button');
+    cb.type = 'button';
     cb.className = 'cell-checkbox';
-    cb.textContent = (v === 'true' || v === 'はい' || v === '1' || v === 'yes') ? '\u2611' : '\u2610';
+    cb.setAttribute('role', 'checkbox');
+    cb.setAttribute('aria-label', `${propName}を切り替え`);
+    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^A-Za-z0-9_-]+/g, '-');
+    let checked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
+    let saving = false;
+    const renderCheckbox = () => {
+      cb.setAttribute('aria-checked', checked ? 'true' : 'false');
+      cb.classList.toggle('is-checked', checked);
+      cb.innerHTML = checked ? lucide('check', 13) : '';
+      cb.title = checked ? 'チェック済み' : '未チェック';
+    };
+    renderCheckbox();
     cb.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (saving) return;
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      const isChecked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
-      const nv = isChecked ? 'false' : 'true';
+      const oldChecked = checked;
+      // Undoでは論理値だけでなく、旧データの表現（「はい」「1」「yes」等）も忠実に戻す。
+      const oldValue = v;
+      const nv = oldChecked ? 'false' : 'true';
+      checked = !oldChecked;
+      saving = true;
+      cb.disabled = true;
+      renderCheckbox();
       try {
         const hasExistingValue = val?.file && val.candidate_index != null;
         if (hasExistingValue) {
           await _apiPutValue(val, { new_value: nv });
-          _dbUndoValue('チェック: ' + v + ' → ' + nv, val, v, nv);
+          _dbUndoValue('チェック: ' + oldValue + ' → ' + nv, val, oldValue, nv, undefined, undefined, { dbPath, ctx: valueCtx });
         } else {
           const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
           val.file = result?.path || entityPath;
@@ -319,13 +341,43 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
             if (!Array.isArray(entityData[propName])) entityData[propName] = [];
             if (!entityData[propName].includes(val)) entityData[propName].push(val);
           }
+          if (val.file && typeof historyPush === 'function') {
+            let currentRef = {
+              file: val.file, entry_path: entityPath, property: propName,
+              candidate_index: val.candidate_index,
+            };
+            const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+            historyPush('チェック: false → true',
+              async () => {
+                await _apiPutValue(currentRef, { _delete: true });
+                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+              },
+              async () => {
+                const redo = await _apiPostValue(entityPath, propName, nv, '採用', '');
+                currentRef = {
+                  file: redo?.path || redo?.file || currentRef.file,
+                  entry_path: entityPath,
+                  property: redo?.property || propName,
+                  candidate_index: redo?.candidate_index,
+                };
+                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+              },
+              scope
+            );
+          }
         }
         val.value = nv;
-        cb.textContent = nv === 'true' ? '\u2611' : '\u2610';
-        showStatus(nv === 'true' ? '\u2611 チェック' : '\u2610 チェック解除');
+        showStatus(nv === 'true' ? 'チェックしました' : 'チェックを外しました');
         // Step 3: 部分更新化 (checkbox) — 条件付き書式 / フィルタ・グループ・ソート再評価のため
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(cb, entityPath, propName);
-      } catch (e) { showStatus('保存に失敗: ' + (e?.message || e), true); }
+      } catch (e) {
+        checked = oldChecked;
+        renderCheckbox();
+        showStatus('保存に失敗: ' + (e?.message || e), true);
+      } finally {
+        saving = false;
+        cb.disabled = false;
+      }
     });
     row.appendChild(cb);
     return row;
@@ -473,30 +525,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     return row;
   }
 
-  if (type === 'url') {
-    if (/^https?:\/\//.test(v)) {
-      const link = document.createElement('a');
-      link.className = 'value-url';
-      link.href = v;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      if (typeof _dbApplyCellInteractiveLinkA11y === 'function') {
-        _dbApplyCellInteractiveLinkA11y(link, 'url', entityPath, propName, v);
-      }
-      try { link.textContent = new URL(v).hostname + '\u2026'; } catch { link.textContent = v; }
-      link.addEventListener('click', (e) => e.stopPropagation());
-      row.appendChild(link);
-    } else {
-      const txt = document.createElement('span');
-      txt.className = 'value-text';
-      txt.textContent = v;
-      txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName));
-      row.appendChild(txt);
-    }
-    return row;
-  }
-
-  if (type === 'link' && typeof createDbLinkValueElement === 'function') {
+  if ((type === 'link' || type === 'url') && typeof createDbLinkValueElement === 'function') {
     row.appendChild(createDbLinkValueElement(val, entityPath, propName, thumbSize, propTypeConfig, { ...options, dbPath }));
     return row;
   }
@@ -1313,8 +1342,9 @@ window.openEntityChatForPath = async function openEntityChatForPath(entityPath) 
     if (toggle) toggle.click();
   }
   if (typeof openFileChat === 'function') {
-    await openFileChat(entityPath);
+    return await openFileChat(entityPath);
   }
+  return false;
 };
 window.openEntityAiChat = window.openEntityChatForPath;
 
@@ -1325,7 +1355,7 @@ function _userAvatarSmall(username) {
   return '<img src="' + esc(teamAvatar) + '" '
     + 'style="width:16px;height:16px;border-radius:50%;object-fit:cover;vertical-align:middle;" '
     + 'onerror="this.hidden=true;this.nextElementSibling.style.display=\'inline-flex\';">'
-    + '<span style="display:none;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--ui-fg-strong);font-size:9px;font-weight:bold;align-items:center;justify-content:center;vertical-align:middle;">'
+    + '<span style="display:none;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-size:9px;font-weight:bold;align-items:center;justify-content:center;vertical-align:middle;">'
     + esc((username || '?')[0].toUpperCase()) + '</span>';
 }
 

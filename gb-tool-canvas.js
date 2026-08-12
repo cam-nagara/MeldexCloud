@@ -38,7 +38,7 @@ class CanvasComponent extends ToolComponent {
     if (typeof GBLayout === 'undefined') return true;
     if (this.paneId === GBLayout.activePane) return true;
     const surface = GBLayout.paneMap?.[this.paneId]?.surface;
-    return surface === 'float' || surface === 'subpanel';
+    return surface === 'subpanel';
   }
 
   _trackBoardLoad(result) {

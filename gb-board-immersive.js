@@ -9,6 +9,7 @@
     bottom: 'meldex-board-toolbar-bottom-hidden',
   };
   const CLOSE_DELAY = 520;
+  const EDGE_SENSOR_FALLBACK_PX = 28;
   let nextInstanceId = 0;
 
   function storageGet(key, fallback) {
@@ -150,6 +151,17 @@
       || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, [role="menu"][aria-expanded="true"]');
   }
 
+  function edgeSensorSize(instance) {
+    const raw = getComputedStyle(instance.root).getPropertyValue('--bd-edge-sensor-size');
+    const value = Number.parseFloat(raw);
+    return Number.isFinite(value) && value > 0 ? value : EDGE_SENSOR_FALLBACK_PX;
+  }
+
+  function pointerRevealSuppressed(instance, event) {
+    if (instance.locks.size > 0 || document.querySelector('dialog[open], [role="dialog"][aria-modal="true"], .gb-modal.open, .modal.open, .modal.show')) return true;
+    return !!event.target.closest?.('input, textarea, [contenteditable="true"], .bd-node.dragging, .dragging');
+  }
+
   function edgeHeld(instance, edge) {
     const presence = instance.presence[edge];
     return !!(presence?.sensor || presence?.panel || presence?.pointer);
@@ -205,11 +217,20 @@
 
   function pointerMove(instance, event) {
     if (!isActiveRoot(instance.root) || event.pointerType === 'touch') return;
+    if (pointerRevealSuppressed(instance, event)) {
+      ['top', 'bottom', 'right'].forEach(edge => {
+        const wasNear = !!instance.presence[edge].pointer;
+        setEdgePresence(instance, edge, 'pointer', false);
+        if (wasNear) scheduleClose(instance, edge);
+      });
+      return;
+    }
     const rect = instance.host.getBoundingClientRect();
+    const sensorSize = edgeSensorSize(instance);
     const near = {
-      top: event.clientY - rect.top <= 10,
-      bottom: rect.bottom - event.clientY <= 10,
-      right: !!instance.shell && rect.right - event.clientX <= 12,
+      top: event.clientY - rect.top <= sensorSize,
+      bottom: rect.bottom - event.clientY <= sensorSize,
+      right: !!instance.shell && rect.right - event.clientX <= sensorSize,
     };
     ['top', 'bottom', 'right'].forEach(edge => {
       const wasNear = !!instance.presence[edge].pointer;

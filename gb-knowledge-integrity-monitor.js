@@ -21,6 +21,7 @@
   let _initialCheckTimer = 0;
   let _modeObserver = null;
   let _lastResult = null;
+  let _recoveryDialog = null;
 
   function _isDropboxMode() {
     return window.MeldexRuntimeAdapter?.isDropboxMode?.() || document.body?.dataset?.cloudMode === 'dropbox';
@@ -119,7 +120,7 @@
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-ki-close data-e2e-id="knowledge-integrity-banner-close" aria-label="ナレッジ署名の警告を閉じる">${_icon('x', 14, '')} 閉じる</button>
       </div>
     `;
-    bar.querySelector('[data-ki-recover]')?.addEventListener('click', () => openRecoveryDialog(failed));
+    bar.querySelector('[data-ki-recover]')?.addEventListener('click', event => openRecoveryDialog(failed, { trigger: event.currentTarget }));
     bar.querySelector('[data-ki-close]')?.addEventListener('click', _removeBanner);
   }
 
@@ -133,9 +134,11 @@
     return typeof window.confirm === 'function' ? !!window.confirm(message) : true;
   }
 
-  async function _loadVersions(target, root) {
+  async function _loadVersions(target, root, options = {}) {
     const box = root.querySelector(`[data-ki-versions="${target.scope}"]`);
     if (!box) return;
+    const setBusy = typeof options.setBusy === 'function' ? options.setBusy : () => {};
+    setBusy(true);
     box.textContent = '履歴を読み込み中...';
     try {
       const payload = await window.MeldexDataAccess?.requestJson?.('/version/list?path=' + encodeURIComponent(target.path));
@@ -149,12 +152,17 @@
           <span class="gb-knowledge-integrity-version-name">${_esc(version.name)} <span class="gb-section-desc">${_esc(version.created || version.modified || '')}</span></span>
           <button type="button" class="gb-btn gb-btn-xs gb-btn-warn" data-ki-restore="${_esc(target.scope)}" data-version="${_esc(version.name)}" data-e2e-id="knowledge-integrity-restore-${_e2eId(target.scope)}-${_e2eId(version.name)}" aria-label="${_esc(target.label)}を${_esc(version.name)}へ復元">復元</button>
         </div>
-      `).join('');
+      `).join('') + `<div class="gb-inline-error gb-knowledge-integrity-error" data-ki-error="${_esc(target.scope)}" data-e2e-id="knowledge-integrity-error-${_e2eId(target.scope)}" role="alert" hidden></div>`;
       box.querySelectorAll('[data-ki-restore]').forEach(btn => {
         btn.addEventListener('click', async () => {
           const versionName = btn.dataset.version || '';
           if (!await _confirmRestore(target, versionName)) return;
-          btn.disabled = true;
+          const error = box.querySelector(`[data-ki-error="${target.scope}"]`);
+          if (error) {
+            error.hidden = true;
+            error.textContent = '';
+          }
+          setBusy(true);
           try {
             await window.MeldexDataAccess?.requestJson?.('/version/restore', {
               method: 'POST',
@@ -162,63 +170,92 @@
             });
             await checkAll();
             if (typeof showStatus === 'function') showStatus('復元しました');
+            const scrollHost = box.closest('.gb-modal-body');
+            if (scrollHost) scrollHost.scrollTop = 0;
+          } catch (err) {
+            if (error) {
+              error.textContent = `復元できませんでした: ${err?.message || String(err)}`;
+              error.hidden = false;
+              error.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+            }
           } finally {
-            btn.disabled = false;
+            setBusy(false);
           }
         });
       });
     } catch (err) {
       box.textContent = '履歴の取得に失敗: ' + (err?.message || err);
+    } finally {
+      setBusy(false);
     }
   }
 
-  function openRecoveryDialog(items) {
+  function openRecoveryDialog(items, options = {}) {
     const targets = (items && items.length ? items : _lastResult?.failed || TARGETS).map(item => TARGETS.find(target => target.scope === item.scope) || item);
-    document.querySelectorAll('.modal-overlay[data-knowledge-integrity-recovery="1"]').forEach(el => el.remove());
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    if (_recoveryDialog?.isOpen?.()) {
+      const closed = _recoveryDialog.close('replace');
+      if (closed === false) return _recoveryDialog;
+    }
+    const restoreTarget = options.trigger instanceof HTMLElement
+      ? options.trigger
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const content = document.createElement('div');
+    content.className = 'gb-knowledge-integrity-content';
+    content.innerHTML = `
+      <div class="gb-section-desc">Dropboxのファイル履歴から署名検証に失敗したJSONを復元できます。復元後に再検証してください。</div>
+      ${targets.map(target => `
+        <section class="gb-section gb-section--boxed gb-knowledge-integrity-target">
+          <div class="gb-field-row gb-knowledge-integrity-target-header">
+            <div class="gb-knowledge-integrity-target-meta">
+              <div class="gb-section-title">${_esc(target.label)}</div>
+              <div class="gb-section-desc">${_esc(target.path)}</div>
+            </div>
+            <button type="button" class="gb-btn gb-btn-sm" data-ki-load="${_esc(target.scope)}" data-e2e-id="knowledge-integrity-load-${_e2eId(target.scope)}" aria-label="${_esc(target.label)}の履歴を表示">履歴を表示</button>
+          </div>
+          <div data-ki-versions="${_esc(target.scope)}" class="gb-section-desc gb-knowledge-integrity-version-list"></div>
+        </section>
+      `).join('')}
+    `;
+    let busy = false;
+    let dialogApi = null;
+    dialogApi = window.GBUI.createModal({
+      id: 'knowledge-integrity-recovery',
+      title: 'ナレッジ署名の復旧',
+      body: content,
+      variant: 'standard',
+      extraClass: 'gb-knowledge-integrity-dialog',
+      resizable: false,
+      initialFocus: '[data-ki-load]',
+      returnFocus: restoreTarget,
+      closeLabel: 'ナレッジ署名の復旧を閉じる',
+      onBeforeClose: () => !busy,
+      onClose: () => {
+        if (_recoveryDialog === dialogApi) _recoveryDialog = null;
+      },
+    });
+    _recoveryDialog = dialogApi;
+    const { overlay } = dialogApi;
     overlay.dataset.knowledgeIntegrityRecovery = '1';
     overlay.dataset.e2eId = 'knowledge-integrity-recovery-overlay';
-    overlay.innerHTML = `
-      <div class="modal gb-knowledge-integrity-dialog" role="dialog" aria-modal="true" aria-labelledby="knowledge-integrity-recovery-title">
-        <div class="gb-knowledge-integrity-header">
-          <h3 id="knowledge-integrity-recovery-title">ナレッジ署名の復旧</h3>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-quiet" data-ki-close data-e2e-id="knowledge-integrity-recovery-close" aria-label="ナレッジ署名の復旧を閉じる" title="閉じる">${_icon('x', 14, '閉じる')}</button>
-        </div>
-        <div class="gb-section-desc">Dropboxのファイル履歴から署名検証に失敗したJSONを復元できます。復元後に再検証してください。</div>
-        <div class="modal-body gb-knowledge-integrity-dialog-body">
-          ${targets.map(target => `
-            <section class="gb-section gb-section--boxed gb-knowledge-integrity-target">
-              <div class="gb-field-row gb-knowledge-integrity-target-header">
-                <div class="gb-knowledge-integrity-target-meta">
-                  <div class="gb-section-title">${_esc(target.label)}</div>
-                  <div class="gb-section-desc">${_esc(target.path)}</div>
-                </div>
-                <button type="button" class="gb-btn gb-btn-sm" data-ki-load="${_esc(target.scope)}" data-e2e-id="knowledge-integrity-load-${_e2eId(target.scope)}" aria-label="${_esc(target.label)}の履歴を表示">履歴を表示</button>
-              </div>
-              <div data-ki-versions="${_esc(target.scope)}" class="gb-section-desc gb-knowledge-integrity-version-list"></div>
-            </section>
-          `).join('')}
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    const close = () => {
-      overlay.remove();
-      document.removeEventListener('keydown', keyHandler);
+    dialogApi.modal.dataset.e2eId = 'knowledge-integrity-recovery-dialog';
+    dialogApi.header.classList.add('gb-knowledge-integrity-header');
+    dialogApi.body.classList.add('gb-knowledge-integrity-dialog-body');
+    const closeButton = dialogApi.header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.dataset.kiClose = '';
+      closeButton.dataset.e2eId = 'knowledge-integrity-recovery-close';
+    }
+    const setBusy = value => {
+      busy = !!value;
+      overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      overlay.querySelectorAll('button').forEach(button => { button.disabled = busy; });
     };
-    const keyHandler = event => {
-      if (event.key === 'Escape') close();
-    };
-    overlay.querySelector('[data-ki-close]')?.addEventListener('click', close);
-    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-    document.addEventListener('keydown', keyHandler);
     overlay.querySelectorAll('[data-ki-load]').forEach(btn => {
       const target = targets.find(item => item.scope === btn.dataset.kiLoad);
-      if (target) btn.addEventListener('click', () => _loadVersions(target, overlay));
+      if (target) btn.addEventListener('click', () => _loadVersions(target, overlay, { setBusy }));
     });
-    overlay.querySelector('[data-ki-load]')?.focus?.();
+    dialogApi.open();
+    return dialogApi;
   }
 
   function stopMonitor() {

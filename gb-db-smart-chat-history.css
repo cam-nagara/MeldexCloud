@@ -107,7 +107,28 @@
 .chat-history-settings-modal {
   width: min(620px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));
-  overflow: auto;
+  overflow: hidden;
+}
+
+.chat-history-settings-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat-history-settings-modal > .gb-modal-body {
+  overflow-x: hidden;
+  padding-bottom: calc(var(--ui-space-6, 16px) + 12px);
+}
+
+.chat-history-settings-error {
+  margin: 10px 0 8px;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .chat-history-filter-list {
@@ -154,6 +175,12 @@
   .chat-history-filter-row .gb-btn-icon {
     justify-self: end;
     min-width: 44px;
+    min-height: 44px;
+  }
+
+  .chat-history-settings-modal .chat-history-filter-row .gb-select,
+  .chat-history-settings-modal .chat-history-filter-row .gb-input,
+  .chat-history-settings-modal > .gb-modal-footer .gb-btn {
     min-height: 44px;
   }
 

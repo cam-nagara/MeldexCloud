@@ -113,6 +113,7 @@ button.gb-context-menu-item {
   word-spacing: 0px;
 }
 .gb-context-menu-item .menu-shortcut { margin-left: auto; color: var(--ui-fg-muted); font-size: var(--ui-font-11); }
+.gb-context-menu-slider-input { width: 80px; accent-color: var(--accent); }
 .gb-context-menu-item.has-submenu::after {
   content: '▶';
   margin-left: auto;
@@ -687,7 +688,7 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 /* ボタンプロパティ */
 .db-action-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  padding: 3px 10px; font-size: 12px; background: var(--accent); color: var(--ui-fg-strong);
+  padding: 3px 10px; font-size: 12px; background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong));
   border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;
 }
 .db-action-btn svg { display: block; width: 14px; height: 14px; flex: 0 0 14px; }

@@ -43,9 +43,35 @@ function _sheetArchiveSetStatus(text, isError) {
   el.style.color = isError ? 'var(--red,#d16969)' : 'var(--fg2)';
 }
 
-async function _sheetArchiveLoad() {
+function _sheetArchiveBeginBusy() {
+  const st = _sheetArchiveModalState;
+  if (!st) return;
+  st.busyDepth = Number(st.busyDepth || 0) + 1;
+  st.modal?.setAttribute('aria-busy', 'true');
+  const controls = [
+    ...(st.actionControls || []),
+    ...(st.modal?.querySelectorAll('button') || []),
+  ].filter(control => control.id !== 'sheet-archive-close' && control.dataset.e2eId !== 'sheet-archive-header-close');
+  [...new Set(controls)].forEach(control => { control.disabled = true; });
+}
+
+function _sheetArchiveEndBusy() {
+  const st = _sheetArchiveModalState;
+  if (!st) return;
+  st.busyDepth = Math.max(0, Number(st.busyDepth || 0) - 1);
+  if (st.busyDepth) return;
+  st.modal?.removeAttribute('aria-busy');
+  const controls = [
+    ...(st.actionControls || []),
+    ...(st.modal?.querySelectorAll('button') || []),
+  ].filter(control => control.id !== 'sheet-archive-close' && control.dataset.e2eId !== 'sheet-archive-header-close');
+  [...new Set(controls)].forEach(control => { control.disabled = false; });
+}
+
+async function _sheetArchiveLoad(keepStatus = false) {
   const st = _sheetArchiveModalState;
   if (!st?.path) return;
+  _sheetArchiveBeginBusy();
   try {
     const [status, policyRes] = await Promise.all([
       apiFetch('/sheet-archive/status?path=' + encodeURIComponent(st.path)),
@@ -54,9 +80,11 @@ async function _sheetArchiveLoad() {
     st.status = status;
     st.policy = policyRes.policy || status.policy || {};
     _sheetArchiveRenderStatus();
-    _sheetArchiveSetStatus('');
+    if (!keepStatus) _sheetArchiveSetStatus('');
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || 'アーカイブ情報を読み込めませんでした', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -85,7 +113,7 @@ function _sheetArchiveRenderArchives(archives) {
     st.archiveList.appendChild(empty);
     return;
   }
-  archives.forEach(archive => {
+  archives.forEach((archive, index) => {
     const row = document.createElement('div');
     row.className = 'gb-field-row';
     row.style.cssText = 'align-items:center;border-bottom:1px solid var(--border);padding:6px 0;';
@@ -102,6 +130,7 @@ function _sheetArchiveRenderArchives(archives) {
     info.appendChild(meta);
 
     const restore = _sheetArchiveButton('復元');
+    restore.dataset.e2eId = `sheet-archive-restore-${index}`;
     restore.addEventListener('click', () => _sheetArchiveRestore(archive.id));
     row.appendChild(info);
     row.appendChild(restore);
@@ -142,12 +171,15 @@ async function _sheetArchiveSavePolicy() {
     older_than_days: _sheetArchiveNum(st.modal, '[data-sheet-archive-days]', 0),
     batch_limit: _sheetArchiveNum(st.modal, '[data-sheet-archive-limit]', 500),
   };
+  _sheetArchiveBeginBusy();
   try {
     const res = await apiPut('/sheet-archive/policy', body);
     st.policy = res.policy || body;
     _sheetArchiveSetStatus('アーカイブ条件を保存しました');
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || 'アーカイブ条件を保存できませんでした', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -161,12 +193,15 @@ async function _sheetArchivePreviewCandidates() {
     limit: String(_sheetArchiveNum(st.modal, '[data-sheet-archive-limit]', 500)),
   });
   _sheetArchiveSetStatus('候補を確認しています...');
+  _sheetArchiveBeginBusy();
   try {
     const res = await apiFetch('/sheet-archive/candidates?' + params.toString());
     _sheetArchiveRenderCandidates(res.candidates || [], res.candidate_count || 0);
     _sheetArchiveSetStatus('');
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || '候補確認に失敗しました', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -184,13 +219,16 @@ async function _sheetArchiveRun() {
     limit: _sheetArchiveNum(st.modal, '[data-sheet-archive-limit]', 500),
   };
   _sheetArchiveSetStatus('アーカイブしています...');
+  _sheetArchiveBeginBusy();
   try {
     const res = await apiPost('/sheet-archive/archive', body);
     _sheetArchiveSetStatus(Number(res.archived || 0).toLocaleString('ja-JP') + '件をアーカイブしました');
-    await _sheetArchiveLoad();
+    await _sheetArchiveLoad(true);
     if (typeof selectDatabase === 'function') selectDatabase(st.path);
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || 'アーカイブに失敗しました', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -202,14 +240,17 @@ async function _sheetArchiveRestore(archiveId) {
     : confirm('このアーカイブのエントリを表示中のシートへ戻します。');
   if (!ok) return;
   _sheetArchiveSetStatus('復元しています...');
+  _sheetArchiveBeginBusy();
   try {
     const res = await apiPost('/sheet-archive/restore', { path: st.path, archive_id: archiveId, limit: _sheetArchiveNum(st.modal, '[data-sheet-archive-limit]', 500) });
     const conflicts = Array.isArray(res.conflicts) ? res.conflicts.length : 0;
     _sheetArchiveSetStatus(Number(res.restored || 0).toLocaleString('ja-JP') + '件を復元しました' + (conflicts ? '（重複 ' + conflicts + '件）' : ''));
-    await _sheetArchiveLoad();
+    await _sheetArchiveLoad(true);
     if (typeof selectDatabase === 'function') selectDatabase(st.path);
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || '復元に失敗しました', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -220,6 +261,7 @@ async function _sheetArchiveSearch() {
   st.searchResults.innerHTML = '';
   if (!q) return;
   _sheetArchiveSetStatus('アーカイブを検索しています...');
+  _sheetArchiveBeginBusy();
   try {
     const params = new URLSearchParams({ path: st.path, q, limit: '50' });
     const res = await apiFetch('/sheet-archive/search?' + params.toString());
@@ -230,7 +272,7 @@ async function _sheetArchiveSearch() {
       empty.textContent = '一致するアーカイブはありません';
       st.searchResults.appendChild(empty);
     }
-    results.forEach(item => {
+    results.forEach((item, index) => {
       const row = document.createElement('div');
       row.className = 'gb-field-row';
       row.style.cssText = 'align-items:flex-start;border-bottom:1px solid var(--border);padding:6px 0;';
@@ -245,6 +287,7 @@ async function _sheetArchiveSearch() {
       info.appendChild(title);
       info.appendChild(text);
       const restore = _sheetArchiveButton('この件を復元');
+      restore.dataset.e2eId = `sheet-archive-search-restore-${index}`;
       restore.addEventListener('click', () => _sheetArchiveRestoreOne(item));
       row.appendChild(info);
       row.appendChild(restore);
@@ -253,12 +296,15 @@ async function _sheetArchiveSearch() {
     _sheetArchiveSetStatus(results.length + '件見つかりました');
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || 'アーカイブ検索に失敗しました', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
 async function _sheetArchiveRestoreOne(item) {
   const st = _sheetArchiveModalState;
   if (!st || !item?.archive_id) return;
+  _sheetArchiveBeginBusy();
   try {
     const res = await apiPost('/sheet-archive/restore', {
       path: st.path,
@@ -267,10 +313,12 @@ async function _sheetArchiveRestoreOne(item) {
       limit: 1,
     });
     _sheetArchiveSetStatus(Number(res.restored || 0).toLocaleString('ja-JP') + '件を復元しました');
-    await _sheetArchiveLoad();
+    await _sheetArchiveLoad(true);
     if (typeof selectDatabase === 'function') selectDatabase(st.path);
   } catch (error) {
     _sheetArchiveSetStatus(error?.message || '復元に失敗しました', true);
+  } finally {
+    _sheetArchiveEndBusy();
   }
 }
 
@@ -280,49 +328,45 @@ function showSheetArchiveModal(path) {
     if (typeof showStatus === 'function') showStatus('シートを開いてから実行してください', true);
     return;
   }
+  if (_sheetArchiveModalState?.modalApi?.isOpen?.()) return _sheetArchiveModalState.overlay;
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('共通ダイアログを初期化できませんでした。');
+  }
   document.querySelectorAll('.modal-overlay[data-sheet-archive]').forEach(el => el.remove());
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.sheetArchive = '1';
-  overlay.style.zIndex = '100';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.style.cssText = 'width:760px;max-width:94vw;max-height:88vh;display:flex;flex-direction:column;';
-
-  const header = document.createElement('div');
-  header.className = 'gb-modal-header';
-  header.innerHTML = '<div class="gb-modal-title">シートアーカイブ管理</div>';
-
   const body = document.createElement('div');
-  body.className = 'gb-modal-body';
-  body.style.cssText = 'display:flex;flex-direction:column;gap:12px;overflow:auto;';
+  body.className = 'gb-sheet-archive-body';
+  body.dataset.e2eId = 'sheet-archive-body';
 
   const summary = document.createElement('div');
   summary.className = 'gb-section-desc';
+  summary.dataset.e2eId = 'sheet-archive-summary';
   summary.textContent = '読み込み中...';
 
   const condition = document.createElement('section');
   condition.className = 'gb-section gb-section--boxed';
   condition.innerHTML = `
     <div class="gb-section-title">アーカイブ条件</div>
-    <label class="gb-field-row"><span class="gb-label">表示に残す件数</span><input data-sheet-archive-max type="number" min="0" class="gb-input" style="width:110px;"><span class="gb-section-desc">0で件数条件なし</span></label>
-    <label class="gb-field-row"><span class="gb-label">対象期間</span><input data-sheet-archive-days type="number" min="0" class="gb-input" style="width:110px;"><span class="gb-section-desc">日前より古いもの（0で期間条件なし）</span></label>
-    <label class="gb-field-row"><span class="gb-label">1回の処理件数</span><input data-sheet-archive-limit type="number" min="1" class="gb-input" style="width:110px;"></label>
+    <label class="gb-field-row"><span class="gb-label">表示に残す件数</span><input id="sheet-archive-max" data-sheet-archive-max data-e2e-id="sheet-archive-max" type="number" min="0" class="gb-input" style="width:110px;"><span class="gb-section-desc">0で件数条件なし</span></label>
+    <label class="gb-field-row"><span class="gb-label">対象期間</span><input id="sheet-archive-days" data-sheet-archive-days data-e2e-id="sheet-archive-days" type="number" min="0" class="gb-input" style="width:110px;"><span class="gb-section-desc">日前より古いもの（0で期間条件なし）</span></label>
+    <label class="gb-field-row"><span class="gb-label">1回の処理件数</span><input id="sheet-archive-limit" data-sheet-archive-limit data-e2e-id="sheet-archive-limit" type="number" min="1" class="gb-input" style="width:110px;"></label>
   `;
   const actionRow = document.createElement('div');
   actionRow.className = 'gb-field-row';
   actionRow.style.justifyContent = 'flex-start';
   const saveBtn = _sheetArchiveButton('条件を保存');
+  saveBtn.dataset.e2eId = 'sheet-archive-save-policy';
   const previewBtn = _sheetArchiveButton('候補を確認');
-  const runBtn = _sheetArchiveButton('候補をアーカイブ', 'gb-btn gb-btn-sm primary');
+  previewBtn.dataset.e2eId = 'sheet-archive-preview';
+  const runBtn = _sheetArchiveButton('候補をアーカイブ', 'gb-btn gb-btn-sm gb-btn-primary');
+  runBtn.dataset.e2eId = 'sheet-archive-run';
   actionRow.appendChild(saveBtn);
   actionRow.appendChild(previewBtn);
   actionRow.appendChild(runBtn);
   condition.appendChild(actionRow);
 
   const candidateList = document.createElement('div');
+  candidateList.dataset.e2eId = 'sheet-archive-candidates';
   candidateList.style.cssText = 'max-height:160px;overflow:auto;';
   condition.appendChild(candidateList);
 
@@ -336,12 +380,15 @@ function showSheetArchiveModal(path) {
   const searchInput = document.createElement('input');
   searchInput.type = 'text';
   searchInput.className = 'gb-input';
+  searchInput.dataset.e2eId = 'sheet-archive-search-input';
   searchInput.placeholder = 'アーカイブ内を検索';
   searchInput.style.flex = '1';
   const searchBtn = _sheetArchiveButton('検索');
+  searchBtn.dataset.e2eId = 'sheet-archive-search';
   searchRow.appendChild(searchInput);
   searchRow.appendChild(searchBtn);
   const searchResults = document.createElement('div');
+  searchResults.dataset.e2eId = 'sheet-archive-search-results';
   searchResults.style.cssText = 'max-height:180px;overflow:auto;';
   search.appendChild(searchTitle);
   search.appendChild(searchRow);
@@ -353,6 +400,7 @@ function showSheetArchiveModal(path) {
   archiveTitle.className = 'gb-section-title';
   archiveTitle.textContent = '保存済みアーカイブ';
   const archiveList = document.createElement('div');
+  archiveList.dataset.e2eId = 'sheet-archive-list';
   archiveList.style.cssText = 'max-height:190px;overflow:auto;';
   archiveSection.appendChild(archiveTitle);
   archiveSection.appendChild(archiveList);
@@ -363,24 +411,46 @@ function showSheetArchiveModal(path) {
   body.appendChild(archiveSection);
 
   const footer = document.createElement('div');
-  footer.className = 'gb-modal-footer';
-  footer.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  footer.className = 'gb-sheet-archive-footer';
   const statusEl = document.createElement('div');
   statusEl.className = 'gb-section-desc';
+  statusEl.dataset.e2eId = 'sheet-archive-status';
   statusEl.style.cssText = 'flex:1;min-width:0;';
   const closeBtn = _sheetArchiveButton('閉じる');
-  closeBtn.addEventListener('click', () => overlay.remove());
+  closeBtn.id = 'sheet-archive-close';
+  closeBtn.dataset.e2eId = 'sheet-archive-close';
   footer.appendChild(statusEl);
   footer.appendChild(closeBtn);
 
-  modal.appendChild(header);
-  modal.appendChild(body);
-  modal.appendChild(footer);
-  overlay.appendChild(modal);
-  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
+  let modalApi = null;
+  modalApi = window.GBUI.createModal({
+    id: 'sheet-archive',
+    title: 'シートアーカイブ管理',
+    body,
+    footer,
+    variant: 'mobile-sheet',
+    extraClass: 'gb-sheet-archive-modal',
+    geometryKey: 'sheet-archive',
+    initialFocus: '#sheet-archive-close',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: () => Number(_sheetArchiveModalState?.busyDepth || 0) === 0,
+    onClose: () => {
+      if (_sheetArchiveModalState?.modalApi === modalApi) _sheetArchiveModalState = null;
+    },
+  });
+  const overlay = modalApi.overlay;
+  const modal = modalApi.modal;
+  overlay.classList.add('modal-overlay', 'gb-sheet-archive-overlay');
+  overlay.dataset.sheetArchive = '1';
+  overlay.dataset.e2eId = 'sheet-archive-overlay';
+  modal.dataset.e2eId = 'sheet-archive-dialog';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'sheet-archive-header-close';
+  closeBtn.addEventListener('click', () => modalApi.close('button'));
 
   _sheetArchiveModalState = {
+    modalApi,
     overlay,
     modal,
     path: sheetPath,
@@ -393,6 +463,18 @@ function showSheetArchiveModal(path) {
     archiveList,
     searchInput,
     searchResults,
+    closeBtn,
+    busyDepth: 0,
+    actionControls: [
+      condition.querySelector('[data-sheet-archive-max]'),
+      condition.querySelector('[data-sheet-archive-days]'),
+      condition.querySelector('[data-sheet-archive-limit]'),
+      saveBtn,
+      previewBtn,
+      runBtn,
+      searchInput,
+      searchBtn,
+    ],
   };
 
   saveBtn.addEventListener('click', _sheetArchiveSavePolicy);
@@ -402,7 +484,9 @@ function showSheetArchiveModal(path) {
   searchInput.addEventListener('keydown', ev => {
     if (ev.key === 'Enter' && !ev.isComposing) _sheetArchiveSearch();
   });
+  modalApi.open();
   _sheetArchiveLoad();
+  return overlay;
 }
 
 if (typeof window !== 'undefined') {

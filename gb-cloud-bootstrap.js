@@ -589,51 +589,63 @@
     _hideStartupSplashForBlockingCloudUi();
     const localMode = _localDataModeForPage();
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay meldex-cloud-mode-overlay';
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10020;padding:8px;box-sizing:border-box;';
-      overlay.innerHTML = `<div class="meldex-cloud-mode-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-cloud-mode-title" style="width:calc(100vw - 16px);max-width:760px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div id="meldex-cloud-mode-title" style="font-size:22px;font-weight:700;margin-bottom:10px;">保存先を変更</div>
-        <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:18px;">現在のデータは自動で移動・削除されません。別の保存先へ切り替えた後も、元の保存先へ戻せます。</div>
+      const body = document.createElement('div');
+      body.className = 'meldex-cloud-mode-body';
+      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">現在のデータは自動で移動・削除されません。別の保存先へ切り替えた後も、元の保存先へ戻せます。</div>
         <div class="meldex-cloud-choice-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px;">
-          <button id="choose-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-dropbox" data-e2e-id="cloud-mode-dropbox" type="button" class="meldex-cloud-choice meldex-cloud-choice--dropbox" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #356b4d;background:#18261e;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
             <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
-          <button id="choose-server" type="button" class="meldex-cloud-choice meldex-cloud-choice--server" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #3d6f86;background:#17242b;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-server" data-e2e-id="cloud-mode-server" type="button" class="meldex-cloud-choice meldex-cloud-choice--server" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #3d6f86;background:#17242b;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Meldex共有サーバーに接続</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c8d7;">管理者PCまたはNAS上のMeldexサーバーに接続します。SQLiteとファイルはサーバー側だけが扱います。</div>
+            <div style="font-size:12px;line-height:1.6;color:#a8c8d7;">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。Meldex公式のサーバー契約は不要です。</div>
           </button>
-          <button id="choose-legacy" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
+          <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
             <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
-        <div style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
-          <div><strong>共有したい場合:</strong> 同じDropboxを使う端末間ではDropbox、管理者PCやNASへ集約する場合はMeldex共有サーバーを選べます。</div>
-        </div>
-        <div style="display:flex;justify-content:flex-end;margin-top:12px;"><button id="choose-cancel" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">キャンセル</button></div>
-      </div>`;
-      document.body.appendChild(overlay);
-      overlay.querySelector('#choose-dropbox').addEventListener('click', () => {
-        _runtime().setMode('dropbox');
-        overlay.remove();
-        resolve('dropbox');
+        <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
+          <div><strong>共有したい場合:</strong> 同じDropboxを使う端末間ではDropbox、常時稼働PCやNASへ集約する場合は自分で管理するMeldex共有サーバーを選べます。どちらもMeldex公式のサーバーを必要としません。</div>
+        </div>`;
+      const cancelButton = document.createElement('button');
+      cancelButton.id = 'choose-cancel';
+      cancelButton.type = 'button';
+      cancelButton.className = 'gb-btn gb-btn-quiet';
+      cancelButton.dataset.e2eId = 'cloud-mode-cancel';
+      cancelButton.textContent = 'キャンセル';
+      let result = null;
+      let settled = false;
+      const dialogApi = window.GBUI.createModal({
+        id: 'cloud-mode-chooser',
+        title: '保存先を変更',
+        body,
+        footer: cancelButton,
+        variant: 'standard',
+        extraClass: 'meldex-cloud-mode-modal',
+        geometryKey: 'cloud-storage-mode',
+        initialFocus: '#choose-dropbox',
+        onClose: () => {
+          if (settled) return;
+          settled = true;
+          resolve(result);
+        },
       });
-      overlay.querySelector('#choose-server').addEventListener('click', () => {
-        _runtime().setMode('server');
-        overlay.remove();
-        resolve('server');
-      });
-      overlay.querySelector('#choose-legacy').addEventListener('click', () => {
-        _runtime().setMode(localMode);
-        overlay.remove();
-        resolve(localMode);
-      });
-      overlay.querySelector('#choose-cancel').addEventListener('click', () => {
-        overlay.remove();
-        resolve(null);
-      });
+      const overlay = dialogApi.overlay;
+      overlay.classList.add('modal-overlay', 'meldex-cloud-mode-overlay');
+      overlay.style.zIndex = '10020';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'cloud-mode-close');
+      const choose = (mode) => {
+        result = mode;
+        _runtime().setMode(mode);
+        dialogApi.close('select-' + mode);
+      };
+      body.querySelector('#choose-dropbox').addEventListener('click', () => choose('dropbox'));
+      body.querySelector('#choose-server').addEventListener('click', () => choose('server'));
+      body.querySelector('#choose-legacy').addEventListener('click', () => choose(localMode));
+      cancelButton.addEventListener('click', () => dialogApi.close('cancel'));
+      dialogApi.open();
     });
   }
 
@@ -685,27 +697,67 @@
     const localMode = _localDataModeForPage();
     const canSwitchLegacy = true;
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay meldex-cloud-setup-overlay';
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:8px;box-sizing:border-box;';
-      overlay.innerHTML = `<div class="meldex-cloud-setup-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-shared-server-title" style="width:calc(100vw - 16px);max-width:680px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:clamp(16px,4vw,24px);box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div id="meldex-shared-server-title" style="font-size:22px;font-weight:700;margin-bottom:8px;">Meldex共有サーバーに接続</div>
-        <div style="font-size:13px;color:#bdbdbd;line-height:1.7;margin-bottom:14px;">管理者PCまたはNAS上で動くMeldexサーバーへ接続します。ノート、画像、ユーザー、ワークスペースはこの接続先から読み込みます。</div>
+      const body = document.createElement('div');
+      body.className = 'meldex-shared-server-body';
+      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。ノート、画像、ユーザー、ワークスペースはこの接続先から読み込みます。Meldex公式による常設サーバーは不要です。</div>
         ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
         <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
           <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">接続先URL</label>
-          <input id="shared-server-url" class="gb-input" type="url" value="${_esc(initialUrl)}" placeholder="https://example.com/ または http://192.168.1.10:8001/" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
+          <input id="shared-server-url" data-e2e-id="shared-server-url" class="gb-input" type="url" value="${_esc(initialUrl)}" placeholder="https://example.com/ または http://192.168.1.10:8001/" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
           <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">インターネット経由で使う場合はHTTPSまたはVPN経由のURLを指定してください。LAN内HTTPは閉じたネットワークでの利用に限ってください。</div>
         </section>
         <div id="shared-server-status" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#263644;color:#b7d7ee;font-size:12px;line-height:1.6;"></div>
         <div id="shared-server-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
-        <div class="meldex-cloud-actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? '<button id="shared-server-switch-legacy" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">この端末に保存して使う</button>' : ''}
-          <button id="shared-server-test" type="button" class="gb-btn gb-btn-quiet" style="padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;">接続を確認</button>
-          <button id="shared-server-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">この接続先で開始</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
+      `;
+      const localButton = document.createElement('button');
+      localButton.id = 'shared-server-switch-legacy';
+      localButton.type = 'button';
+      localButton.className = 'gb-btn gb-btn-quiet';
+      localButton.dataset.e2eId = 'shared-server-local';
+      localButton.textContent = 'この端末に保存して使う';
+      const testButton = document.createElement('button');
+      testButton.id = 'shared-server-test';
+      testButton.type = 'button';
+      testButton.className = 'gb-btn gb-btn-quiet';
+      testButton.dataset.e2eId = 'shared-server-test';
+      testButton.textContent = '接続を確認';
+      const continueButton = document.createElement('button');
+      continueButton.id = 'shared-server-continue';
+      continueButton.type = 'button';
+      continueButton.className = 'gb-btn gb-btn-primary';
+      continueButton.dataset.e2eId = 'shared-server-continue';
+      continueButton.textContent = 'この接続先で開始';
+      let resultValue = { ok: false, cancelled: true };
+      let settled = false;
+      let busy = false;
+      let dialogApi = null;
+      const setBusy = value => {
+        busy = !!value;
+        dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
+        body.querySelectorAll('input,button').forEach(control => { control.disabled = busy; });
+        [localButton, testButton, continueButton].forEach(button => { button.disabled = busy; });
+      };
+      dialogApi = window.GBUI.createModal({
+        id: 'shared-server-setup',
+        title: 'Meldex共有サーバーに接続',
+        body,
+        footer: canSwitchLegacy ? [localButton, testButton, continueButton] : [testButton, continueButton],
+        variant: 'standard',
+        extraClass: 'meldex-cloud-setup-modal',
+        geometryKey: 'cloud-shared-server',
+        initialFocus: '#shared-server-url',
+        onBeforeClose: () => !busy,
+        onClose: () => {
+          if (settled) return;
+          settled = true;
+          resolve(resultValue);
+        },
+      });
+      dialogApi.modal.classList.add('meldex-shared-server-modal');
+      const overlay = dialogApi.overlay;
+      overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
+      overlay.style.zIndex = '10030';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'shared-server-close');
 
       function setStatus(text, isError) {
         const statusEl = overlay.querySelector('#shared-server-status');
@@ -733,29 +785,36 @@
         return result;
       }
 
-      overlay.querySelector('#shared-server-test')?.addEventListener('click', async () => {
+      testButton.addEventListener('click', async () => {
+        setBusy(true);
         try {
           await confirmConnection();
         } catch (err) {
           setStatus(err?.message || String(err), true);
+        } finally {
+          setBusy(false);
         }
       });
-      overlay.querySelector('#shared-server-switch-legacy')?.addEventListener('click', () => {
+      localButton.addEventListener('click', () => {
+        resultValue = { ok: false, switchToLegacy: true };
         _runtime().setMode(localMode);
-        overlay.remove();
-        resolve({ ok: false, switchToLegacy: true });
+        dialogApi.close('switch-local');
       });
-      overlay.querySelector('#shared-server-continue')?.addEventListener('click', async () => {
+      continueButton.addEventListener('click', async () => {
+        setBusy(true);
         try {
           const result = await confirmConnection();
           _runtime().setServerConnection?.({ url: result.normalized });
           _runtime().setMode('server');
-          overlay.remove();
-          resolve({ ok: true, mode: 'server', server: result });
+          resultValue = { ok: true, mode: 'server', server: result };
+          setBusy(false);
+          dialogApi.close('complete');
         } catch (err) {
           setStatus(err?.message || String(err), true);
+          setBusy(false);
         }
       });
+      dialogApi.open();
     });
   }
 
@@ -808,7 +867,6 @@
     const localMode = _localDataModeForPage();
     const isLegacyMode = _runtime().getMode?.() === localMode;
     const canSwitchLegacy = true;
-    const legacyButtonStyle = 'padding:8px 14px;border:1px solid #555;border-radius:6px;background:#252525;color:#d4d4d4;cursor:pointer;';
     const sessionLabel = session?.refreshToken
       ? `Dropbox接続済み${session?.account?.name?.display_name ? ` / ${_esc(session.account.name.display_name)}` : ''}`
       : '未接続';
@@ -816,12 +874,9 @@
       ? '接続できています。使うDropbox内フォルダを確認し、「この設定で開始」を押してください。'
       : 'まず「Dropboxに接続する」を押してください。接続後に共有フォルダや既存のソースフォルダを選べます。';
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay meldex-cloud-setup-overlay';
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;z-index:10030;padding:8px;box-sizing:border-box;';
-      overlay.innerHTML = `<div class="meldex-cloud-setup-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-dropbox-setup-title" style="width:calc(100vw - 16px);max-width:780px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;background:#1e1e1e;color:#d4d4d4;border:1px solid #333;border-radius:12px;padding:24px;box-shadow:0 16px 48px rgba(0,0,0,0.45);overflow-wrap:break-word;">
-        <div id="meldex-dropbox-setup-title" style="font-size:22px;font-weight:700;margin-bottom:8px;">Dropboxに接続</div>
-        <div class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
+      const body = document.createElement('div');
+      body.className = 'meldex-dropbox-setup-body';
+      body.innerHTML = `<div class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;background:#202020;">
           <div style="font-size:15px;font-weight:700;margin-bottom:8px;">同じデータを複数端末で使います</div>
           <div style="font-size:13px;color:#bdbdbd;line-height:1.7;">
             Dropboxに接続し、Meldexで使うフォルダを選ぶと、スマホ、タブレット、PCから同じソースフォルダを開けます。
@@ -884,12 +939,53 @@
           </div>
         </details>
         <div id="cloud-setup-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
-        <div class="meldex-cloud-actions" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
-          ${canSwitchLegacy ? `<button id="cloud-switch-legacy" type="button" class="gb-btn gb-btn-quiet" style="${legacyButtonStyle}">${isLegacyMode ? 'キャンセル' : 'この端末に保存して使う'}</button>` : ''}
-          <button id="cloud-continue" type="button" class="gb-btn gb-btn-primary" style="padding:8px 14px;border:none;border-radius:6px;background:#569cd6;color:#fff;cursor:pointer;">この設定で開始</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
+      `;
+      const localButton = document.createElement('button');
+      localButton.id = 'cloud-switch-legacy';
+      localButton.type = 'button';
+      localButton.className = 'gb-btn gb-btn-quiet';
+      localButton.dataset.e2eId = 'dropbox-setup-local';
+      localButton.textContent = isLegacyMode ? 'キャンセル' : 'この端末に保存して使う';
+      const continueButton = document.createElement('button');
+      continueButton.id = 'cloud-continue';
+      continueButton.type = 'button';
+      continueButton.className = 'gb-btn gb-btn-primary';
+      continueButton.dataset.e2eId = 'dropbox-setup-continue';
+      continueButton.textContent = 'この設定で開始';
+      let resultValue = { ok: false, cancelled: true };
+      let settled = false;
+      let busy = false;
+      let dialogApi = null;
+      const setBusy = value => {
+        busy = !!value;
+        dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
+        body.querySelectorAll('input,button,summary').forEach(control => {
+          if ('disabled' in control) control.disabled = busy;
+          control.setAttribute('aria-disabled', busy ? 'true' : 'false');
+        });
+        [localButton, continueButton].forEach(button => { button.disabled = busy; });
+      };
+      dialogApi = window.GBUI.createModal({
+        id: 'dropbox-setup',
+        title: 'Dropboxに接続',
+        body,
+        footer: canSwitchLegacy ? [localButton, continueButton] : continueButton,
+        variant: 'standard',
+        extraClass: 'meldex-cloud-setup-modal',
+        geometryKey: 'cloud-dropbox-setup',
+        initialFocus: '#cloud-auth-redirect',
+        onBeforeClose: () => !busy,
+        onClose: () => {
+          if (settled) return;
+          settled = true;
+          resolve(resultValue);
+        },
+      });
+      dialogApi.modal.classList.add('meldex-dropbox-setup-modal');
+      const overlay = dialogApi.overlay;
+      overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
+      overlay.style.zIndex = '10030';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'dropbox-setup-close');
       window.MeldexCloudBootstrapInherit?.renderInheritSection?.(overlay);
 
       function setError(text) {
@@ -901,6 +997,18 @@
         }
         el.style.display = '';
         el.textContent = text;
+      }
+
+      async function runBusy(task) {
+        setBusy(true);
+        try {
+          return await task();
+        } catch (err) {
+          setError(err?.message || String(err));
+          return undefined;
+        } finally {
+          setBusy(false);
+        }
       }
 
       function updateAdvancedSettings() {
@@ -938,7 +1046,7 @@
       updateAdvancedSettings();
 
       overlay.querySelector('#cloud-vault-pick')?.addEventListener('click', async () => {
-        try {
+        await runBusy(async () => {
           saveInputs();
           const currentSession = await _auth().getSession();
           if (!currentSession?.refreshToken) {
@@ -959,9 +1067,7 @@
           _auth().setVaultPath(selected.path);
           _auth().setVaultNamespaceKind?.(selected.namespaceKind);
           setError('');
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+        });
       });
 
       async function exchangeManualCodeIfPresent() {
@@ -989,72 +1095,64 @@
       }
 
       overlay.querySelector('#cloud-auth-redirect').addEventListener('click', async () => {
-        try {
+        await runBusy(async () => {
           await beginDropboxConnection({ manual: false });
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+        });
       });
 
       overlay.querySelector('#cloud-auth-switch-account').addEventListener('click', async () => {
-        try {
+        await runBusy(async () => {
           await beginDropboxConnection({ manual: false, switchAccount: true });
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+        });
       });
 
       overlay.querySelector('#cloud-auth-manual').addEventListener('click', async () => {
-        try {
+        await runBusy(async () => {
           await beginDropboxConnection({ manual: true });
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+        });
       });
 
       overlay.querySelector('#cloud-manual-submit').addEventListener('click', async () => {
-        try {
+        await runBusy(async () => {
           saveInputs();
           if (!await exchangeManualCodeIfPresent()) throw new Error('Dropboxのコードを入力してください');
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+        });
       });
 
       overlay.querySelector('#cloud-clear-session').addEventListener('click', async () => {
-        await _auth().clearSession();
-        setError('');
-        updateSessionStatus(
-          '未接続',
-          false,
-          'この端末の接続情報を削除しました。もう一度使う場合は「Dropboxに接続する」を押してください。'
-        );
+        await runBusy(async () => {
+          await _auth().clearSession();
+          setError('');
+          updateSessionStatus(
+            '未接続',
+            false,
+            'この端末の接続情報を削除しました。もう一度使う場合は「Dropboxに接続する」を押してください。'
+          );
+        });
       });
 
-      overlay.querySelector('#cloud-switch-legacy')?.addEventListener('click', () => {
+      localButton.addEventListener('click', () => {
         if (isLegacyMode) {
-          overlay.remove();
-          resolve({ ok: false, cancelled: true });
+          dialogApi.close('cancel');
           return;
         }
+        resultValue = { ok: false, switchToLegacy: true };
         _runtime().setMode(localMode);
-        overlay.remove();
-        resolve({ ok: false, switchToLegacy: true });
+        dialogApi.close('switch-local');
       });
 
-      overlay.querySelector('#cloud-continue').addEventListener('click', async () => {
-        try {
+      continueButton.addEventListener('click', async () => {
+        await runBusy(async () => {
           saveInputs();
           await exchangeManualCodeIfPresent();
           if (!_auth().getAppKey()) throw new Error('Dropbox App key を設定してください');
           if (!_auth().getVaultPath()) throw new Error('保存先フォルダを入力してください。通常は /MeldexVault のままで使えます。');
           _runtime().setMode('dropbox');
-          overlay.remove();
-          resolve({ ok: true });
-        } catch (err) {
-          setError(err?.message || String(err));
-        }
+          resultValue = { ok: true };
+        });
+        if (resultValue.ok) dialogApi.close('complete');
       });
+      dialogApi.open();
     });
   }
 
@@ -1151,7 +1249,7 @@
     }
     try {
       const params = new URLSearchParams(window.location.search);
-      if (params.has('smoke')) {
+      if (params.has('smoke') && !params.has('dataAccessMode')) {
         _runtime().setMode('legacy');
         return _enterLegacyMode();
       }

@@ -1,3 +1,33 @@
+      await _runPathMutationHooksSafe({
+        action: 'copy', oldPath: sourcePath, newPath: destPath,
+        isFolder: source.kind === 'directory',
+      }, warnings);
+      return {
+        ok: true,
+        new_path: destPath,
+        new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
+        ..._resultWarnings(warnings),
+      };
+    }
+
+    if (pathname === '/outliner/move' && method === 'POST') {
+      const provider = await _requirePwaProvider('readwrite');
+      const sourcePath = _normalizeFolderPath(body?.path || '');
+      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
+      _rejectProductionStructureMutation(sourcePath, '移動');
+      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
+        throw new Error('制作管理の管理リストエントリの配置は変更できません');
+      }
+      const source = await _resolveEntryHandle(provider, sourcePath);
+      const destEntry = await _resolveEntryHandle(provider, destFolder);
+      if (!source) throw new Error('見つかりません');
+      if (!destEntry || destEntry.kind !== 'directory') throw new Error(`移動先フォルダが見つかりません: ${destFolder}`);
+      if (source.kind === 'directory' && (destFolder === sourcePath || destFolder.startsWith(sourcePath + '/'))) throw new Error('フォルダ自身の中には移動できません');
+      if (destFolder === _dirname(sourcePath)) {
+        return {
+          ok: true,
+          unchanged: true,
+          new_path: sourcePath,
           new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
           file_id: _fnvFileId(sourcePath),
           relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },

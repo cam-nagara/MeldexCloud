@@ -125,8 +125,29 @@
   }
 
   function _defByPreview(previewEl) {
+    const stateId = previewEl?.dataset?.themeStateId || '';
+    if (stateId && typeof window.settingsThemeStateCoverageManifest === 'function') {
+      const entry = window.settingsThemeStateCoverageManifest().find(item => item.id === stateId);
+      if (entry) {
+        return {
+          label: entry.sectionLabel,
+          ...(entry.property === 'backgroundColor' ? { bg: entry.key }
+            : entry.property === 'color' ? { fg: entry.key }
+              : { line: entry.key }),
+          __themeStateEntry: entry,
+        };
+      }
+    }
     const id = previewEl?.dataset?.styleId || '';
-    return (id && _settingsStyleDefs.get(id)) || _defByLabel(previewEl?.dataset?.styleLabel || '');
+    const registered = id && _settingsStyleDefs.get(id);
+    if (registered) return registered;
+    const section = previewEl?.dataset?.styleSection || '';
+    const label = previewEl?.dataset?.styleLabel || '';
+    if (section && label) {
+      const exact = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
+      if (exact) return exact;
+    }
+    return _defByLabel(label);
   }
 
   function _isBgOnlySettingsDef(def) {
@@ -201,7 +222,6 @@
       add('textStrokeWidth', _settingsKey(def, 'strokeWidth', '-stroke-width'));
       add('leftAccent', _settingsKey(def, 'leftAccent', '-left-accent'));
       add('underline', _settingsKey(def, 'underline', '-underline'));
-      add('accentColor', _settingsKey(def, 'accent', '-accent-color'));
       // 背景色仮想フィールドは def に bg プロパティが明示されていないときだけ生成する
       // （bg: null は「背景色コントロールを出さない」という明示的指定）
       if (!map.bgColor && !Object.prototype.hasOwnProperty.call(def || {}, 'bg')) {
@@ -387,7 +407,9 @@
   }
 
   function openStylePreviewPopupUnified(previewEl) {
-    if (!previewEl || typeof openFormatPopup !== 'function') return;
+    const popupOpen = window.openFormatPopup
+      || (typeof openFormatPopup === 'function' ? openFormatPopup : null);
+    if (!previewEl || typeof popupOpen !== 'function') return;
     if (typeof _settingsThemeIsReadonlyElement === 'function' && _settingsThemeIsReadonlyElement(previewEl)) {
       if (typeof _settingsThemePromptDuplicateForEdit === 'function') _settingsThemePromptDuplicateForEdit();
       return;
@@ -396,11 +418,82 @@
     if (!def) return;
     const { map, fields } = _mapSettingsDef(def);
     if (!fields.length) return;
-    openFormatPopup(previewEl, {
+    const stateEntry = def.__themeStateEntry || null;
+    const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
+      ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
+      : (stateEntry ? [stateEntry.key] : []);
+    const stateStylesBefore = stateTargetKeys.map(key => ({
+      key,
+      value: document.documentElement.style.getPropertyValue(key),
+      priority: document.documentElement.style.getPropertyPriority(key),
+    }));
+    const statePreviewStylesBefore = stateEntry ? ['--theme-state-source', '--theme-state-focus', '--a11y-focus-ring'].map(key => ({
+      key,
+      value: previewEl.style.getPropertyValue(key),
+      priority: previewEl.style.getPropertyPriority(key),
+    })) : [];
+    const stateInlineBefore = stateEntry ? document.documentElement.style.getPropertyValue(stateEntry.key) : '';
+    const stateDirtyBefore = stateEntry && typeof _settingsThemeIsDirty === 'function' ? _settingsThemeIsDirty() : null;
+    const syncStateAccentSwatches = (color = '') => {
+      if (!stateTargetKeys.includes('--ui-accent')) return;
+      const accent = color || getComputedStyle(document.documentElement).getPropertyValue('--ui-accent').trim();
+      document.querySelectorAll('[data-settings-theme-accent-swatch]').forEach(swatch => {
+        swatch.style.background = accent;
+      });
+    };
+    let stateEditCancelled = false;
+    const cancelStateEdit = () => {
+      if (!stateEntry || stateEditCancelled) return;
+      stateEditCancelled = true;
+      stateStylesBefore.forEach(({ key, value, priority }) => {
+        if (value) document.documentElement.style.setProperty(key, value, priority);
+        else document.documentElement.style.removeProperty(key);
+        if (typeof updateCsSwatch === 'function') updateCsSwatch(key, value);
+      });
+      statePreviewStylesBefore.forEach(({ key, value, priority }) => {
+        if (value) previewEl.style.setProperty(key, value, priority);
+        else previewEl.style.removeProperty(key);
+      });
+      syncStateAccentSwatches();
+      if (typeof _settingsThemeSetDirty === 'function') _settingsThemeSetDirty(stateDirtyBefore);
+      previewEl.classList.remove('is-selected');
+      previewEl.setAttribute('aria-pressed', 'false');
+      openedPopup?._gbFmtCleanup?.();
+      openedPopup?.remove();
+      previewEl.focus({ preventScroll: true });
+    };
+    if (stateEntry?.state === 'selected') {
+      const selected = !previewEl.classList.contains('is-selected');
+      previewEl.classList.toggle('is-selected', selected);
+      previewEl.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    }
+    let openedPopup = null;
+    openedPopup = popupOpen(previewEl, {
       fields,
       values: _settingsValues(def, map),
       bgColorType: def.bgType || '',
       onChange(prop, value) {
+        const stateKey = stateEntry && ({
+          textColor: map.textColor,
+          bgColor: map.bgColor,
+          borderColor: map.borderColor,
+        })[prop];
+        if (stateKey) {
+          if (typeof applySettingsThemeStyleSetting === 'function') {
+            applySettingsThemeStyleSetting(stateKey, value || '');
+          } else {
+            _setRootStyle(stateKey, value || '');
+          }
+          if (typeof updateCsSwatch === 'function') updateCsSwatch(stateKey, value || '');
+          syncStateAccentSwatches(value || '');
+          const resolvedStateValue = value || _cssVar(stateKey) || '';
+          previewEl.style.setProperty('--theme-state-source', resolvedStateValue);
+          if (stateEntry.state === 'focus') {
+            previewEl.style.setProperty('--theme-state-focus', resolvedStateValue);
+            previewEl.style.setProperty('--a11y-focus-ring', resolvedStateValue);
+          }
+          return;
+        }
         if (prop === 'textColor' && map.textColor) _setThemeStyle(map.textColor, value || '');
         else if (prop === 'bgColor' && map.bgColor) _setThemeStyle(map.bgColor, _styleBgColorWithPreservedAlpha(def, _cssVar(map.bgColor), value));
         else if (prop === 'fontWeight' && map.fontWeight) _setThemeStyle(map.fontWeight, value === 'bold' ? 'bold' : 'normal');
@@ -411,14 +504,37 @@
         else if (prop === 'textStrokeWidth' && map.textStrokeWidth) _setThemeStyle(map.textStrokeWidth, value == null ? '' : value + 'px');
         else if (prop === 'leftAccent' && map.leftAccent) _setThemeStyle(map.leftAccent, value ? STYLE_LEFT_ACCENT_WIDTH : '');
         else if (prop === 'underline' && map.underline) _setThemeStyle(map.underline, value ? STYLE_UNDERLINE_WIDTH : '');
-        else if (prop === 'accentColor' && map.accentColor) _setThemeStyle(map.accentColor, value || '');
         else if (prop === 'borderColor' && map.borderColor) _setThemeStyle(map.borderColor, value || '');
         else if (prop === 'borderWidth' && map.borderWidth) _setThemeStyle(map.borderWidth, value == null ? '' : value + 'px');
         else if (prop === 'caretColor' && map.caretColor) _setThemeStyle(map.caretColor, value || '');
         else if (prop === 'caretWidth' && map.caretWidth) _setThemeStyle(map.caretWidth, value == null ? '' : value + 'px');
-        _refreshSettingsPreviewElement(previewEl, def);
+        if (stateEntry && typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
+        else _refreshSettingsPreviewElement(previewEl, def);
       },
+      ...(stateEntry ? {
+        closeOnEscape: false,
+        closeOnOutside: false,
+        footerActions: {
+          commands: [],
+          closeLabel: '取消',
+          onClose: cancelStateEdit,
+        },
+      } : {}),
     });
+    if (stateEntry && openedPopup) {
+      const escapeCancelHandler = (event) => {
+        if (event.key !== 'Escape' || document.querySelector('.gb-palette-popup')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        cancelStateEdit();
+      };
+      const previousCleanup = openedPopup._gbFmtCleanup;
+      openedPopup._gbFmtCleanup = () => {
+        document.removeEventListener('keydown', escapeCancelHandler, true);
+        previousCleanup?.();
+      };
+      document.addEventListener('keydown', escapeCancelHandler, true);
+    }
   }
 
   function openStyleBgOnlyPaletteUnified(swatchEl) {
@@ -804,6 +920,7 @@
 
   window.renderStyleRow = renderStyleRowUnified;
   window.openStylePreviewPopup = openStylePreviewPopupUnified;
+  window.getSettingsThemePreviewMappedFields = def => _mapSettingsDef(def).fields;
   window.openStyleBgOnlyPalette = openStyleBgOnlyPaletteUnified;
   window.renderFileStyleTab = renderFileStyleTabUnified;
   window.getFileThemePreviewMappedFields = getFileThemePreviewMappedFields;

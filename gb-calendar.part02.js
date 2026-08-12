@@ -318,19 +318,10 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
     showStatus('このDBではカレンダーから新規作成できません');
     return;
   }
-  document.querySelectorAll('.modal-overlay').forEach(existing => {
-    if (existing.querySelector?.('#ep-title')) existing.remove();
+  document.querySelectorAll('.gb-modal-overlay[data-dialog-id="calendar-db-event-edit"]').forEach(existing => {
+    if (typeof existing._calendarClose === 'function') existing._calendarClose('replaced');
+    else existing.remove();
   });
-  // v5.0: モーダルオーバーレイで編集（旧detail-panelは廃止済み）
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  const panel = document.createElement('div');
-  panel.className = 'modal';
-  panel.style.cssText = _calendarModalSizeStyle(450);
-  panel.dataset.calEventMembers = JSON.stringify(_calendarEventMembers(ev));
-  overlay.appendChild(panel);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
   const isNew=!ev;
   const title=isNew?'':ev.name;
   const _toLocalDT=(dt)=>{const y=dt.getFullYear(),m=_p2(dt.getMonth()+1),d=_p2(dt.getDate()),h=_p2(dt.getHours()),mi=_p2(dt.getMinutes());return `${y}-${m}-${d}T${h}:${mi}`;};
@@ -349,8 +340,8 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   const rec=isNew?{}:_recParse(ev);
   const recType=rec.type||'';
 
-  panel.innerHTML=`<div style="padding:12px;overflow-y:auto;">
-    <h3 style="margin:0 0 12px;">${isNew?'新規イベント':'イベント編集'}</h3>
+  const content=document.createElement('div');
+  content.innerHTML=`<div style="padding:4px;">
     <div class="field"><label>タイトル</label><input id="ep-title" value="${esc(title)}" placeholder="イベント名"></div>
     <div class="field"><label><input id="ep-allday" type="checkbox" ${allDay?'checked':''}> 終日</label></div>
     <div class="field"><label>開始</label><input id="ep-start" type="datetime-local" value="${start}" ${allDay?'disabled style="opacity:0.4"':''}></div>
@@ -376,12 +367,26 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
     </div>
     <div class="field"><label>カレンダー</label><input id="ep-calid" value="${esc(calId)}" placeholder="default"></div>
     ${_calendarUserFields('ep', ev)}
-    <div class="btn-row" style="margin-top:12px;">
-      ${isNew?'':`<button class="danger" id="ep-delete">削除</button>`}
-      <button id="ep-cancel">キャンセル</button>
-      <button class="primary" id="ep-save">${isNew?'作成':'更新'}</button>
-    </div>
   </div>`;
+  const cancelButton=document.createElement('button');
+  cancelButton.type='button';cancelButton.id='ep-cancel';cancelButton.className='gb-btn gb-btn-sm';cancelButton.textContent='キャンセル';
+  const saveButton=document.createElement('button');
+  saveButton.type='button';saveButton.id='ep-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
+  const deleteButton=isNew?null:document.createElement('button');
+  if(deleteButton){deleteButton.type='button';deleteButton.id='ep-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
+  let busy=false,deleteConfirmPending=false;
+  const modalApi=window.GBUI.createModal({
+    id:'calendar-db-event-edit',title:isNew?'新規イベント':'イベント編集',body:[...content.childNodes],
+    footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-event-edit',
+    minWidth:'0',initialFocus:'#ep-title',closeLabel:'イベント編集を閉じる',closeOnEsc:true,closeOnOverlay:true,
+    onBeforeClose:()=>!busy,
+  });
+  const overlay=modalApi.overlay,panel=modalApi.modal;
+  overlay.classList.add('modal-overlay');overlay.dataset.e2eId='calendar-db-event-edit-overlay';overlay._calendarClose=modalApi.close;
+  panel.classList.add('gb-calendar-db-dialog');panel.dataset.e2eId='calendar-db-event-edit-dialog';
+  panel.style.cssText=_calendarModalSizeStyle(450,'overflow:hidden;');panel.dataset.calEventMembers=JSON.stringify(_calendarEventMembers(ev));
+  const setBusy=(next)=>{busy=next;panel.setAttribute('aria-busy',next?'true':'false');[saveButton,deleteButton].filter(Boolean).forEach(btn=>{btn.disabled=next;});};
+  modalApi.open();
   // 繰り返しタイプ切替
   panel.querySelector('#ep-rec-type').addEventListener('change', function(){
     panel.querySelector('#ep-rec-opts').style.display=this.value?'':'none';
@@ -395,7 +400,8 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
   // 終日トグル
   panel.querySelector('#ep-allday').onchange=function(){const d=this.checked;['ep-start','ep-end'].forEach(id=>{const el=panel.querySelector('#'+id);el.disabled=d;el.style.opacity=d?'0.4':'1';});};
   // 保存
-  panel.querySelector('#ep-save').addEventListener('click', async()=>{
+  saveButton.addEventListener('click', async()=>{
+    if(busy)return;
     const t=panel.querySelector('#ep-title').value.trim()||'無題イベント';
     const sRaw=panel.querySelector('#ep-start').value,enRaw=panel.querySelector('#ep-end').value||sRaw;
     const c=getColorSwatchValue(colorSwatch, color || ''),lc=panel.querySelector('#ep-location').value;
@@ -410,17 +416,29 @@ function _openEventEditPanel(dbPath, ev, defStart, defEnd, defAllDay, defCalenda
     const rt=panel.querySelector('#ep-rec-type').value;
     if(rt){const r={type:rt,interval:parseInt(panel.querySelector('#ep-rec-interval').value)||1,endDate:panel.querySelector('#ep-rec-end').value||''};if(rt==='weekly')r.daysOfWeek=[...panel.querySelectorAll('.ep-rec-dow:checked')].map(cb=>parseInt(cb.value));recStr=JSON.stringify(r);}
     _calPushUndo(isNew?'イベント作成':'イベント編集');
+    setBusy(true);
     try{
       if(isNew) await apiPost('/calendar-db/events',{db_path:dbPath,title:t,start:s,end:en,color:c,location:lc,url:u,description:d,all_day:ad,alert_minutes:al,calendar_id:ci,creator,members,recurrence:recStr});
       else {
         await apiPut('/calendar-db/events/'+encodeURIComponent(ev.name),{db_path:dbPath,start:s,end:en,color:c,location:lc,url:u,description:d,all_day:ad,alert_minutes:al,calendar_id:ci,creator,members,recurrence:recStr,title:t});
         await _calendarNotifyEventSaved(ev, { ...ev, name: t, start: s, end: en, allDay: ad, color: c, location: lc, url: u, description: d, alertMinutes: al, calendarId: ci, creator, members, recurrence: recStr });
       }
-      overlay.remove();await _refreshCalendarDb(dbPath);
+      setBusy(false);modalApi.close('saved');await _refreshCalendarDb(dbPath);
     }catch{showStatus('保存に失敗',true);}
+    finally{if(modalApi.isOpen())setBusy(false);}
   });
-  panel.querySelector('#ep-cancel').addEventListener('click', ()=>{overlay.remove();});
-  if(!isNew) panel.querySelector('#ep-delete').addEventListener('click', async()=>{if(!await cfConfirm(ev.name+' を削除しますか？'))return;_calPushUndo('イベント削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));overlay.remove();await _refreshCalendarDb(dbPath);}catch{showStatus('削除に失敗',true);}});
+  cancelButton.addEventListener('click', ()=>modalApi.close('cancel'));
+  if(deleteButton)deleteButton.addEventListener('click',async()=>{
+    if(busy||deleteConfirmPending)return;
+    deleteConfirmPending=true;
+    let confirmed=false;
+    try{confirmed=await cfConfirm(ev.name+' を削除しますか？');}catch{}finally{deleteConfirmPending=false;}
+    if(!confirmed)return;
+    _calPushUndo('イベント削除');setBusy(true);
+    try{await apiDelete('/calendar-db/events/'+encodeURIComponent(ev.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
+    catch{showStatus('削除に失敗',true);}
+    finally{if(modalApi.isOpen())setBusy(false);}
+  });
 }
 function _recParse(ev){try{return ev?.recurrence?(typeof ev.recurrence==='string'?JSON.parse(ev.recurrence):ev.recurrence):{};}catch{return {};}}
 
@@ -429,9 +447,8 @@ function _recParse(ev){try{return ev?.recurrence?(typeof ev.recurrence==='string
    ============================== */
 function _openTaskModal(dbPath, task, defaultStatus) {
   const isNew=!task;
-  const o=document.createElement('div');o.className='modal-overlay';
-  o.innerHTML=`<div class="modal" style="${_calendarModalSizeStyle(450)}">
-    <h3>${isNew?'新規ToDo':'ToDo編集'}</h3>
+  const content=document.createElement('div');
+  content.innerHTML=`<div>
     <div class="field"><label>タイトル</label><input id="tk-title" value="${esc(task?.name||'')}"></div>
     <div style="display:flex;gap:8px;">
       <div class="field" style="flex:1;"><label>ステータス</label><select id="tk-status">
@@ -446,22 +463,33 @@ function _openTaskModal(dbPath, task, defaultStatus) {
       <div class="field" style="flex:1;"><label>担当者</label><input id="tk-assignee" value="${esc(task?.calendarId||'')}"></div>
     </div>
     <div class="field"><label>説明</label><textarea id="tk-desc" rows="3">${esc(task?.description?.replace(/status:\w+\s*/g,'').replace(/priority:\w+\s*/g,'').trim()||'')}</textarea></div>
-    <div class="btn-row">
-      ${isNew?'':`<button class="danger" id="tk-delete">削除</button>`}
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="tk-save">${isNew?'作成':'更新'}</button>
-    </div>
   </div>`;
-  document.body.appendChild(o);
-  o.querySelector('#tk-save').addEventListener('click', async()=>{
-    const title=o.querySelector('#tk-title').value.trim()||'無題タスク';
-    const status=o.querySelector('#tk-status').value;
-    const priority=o.querySelector('#tk-priority').value;
-    const due=o.querySelector('#tk-due').value;
-    const assignee=o.querySelector('#tk-assignee').value;
-    const desc=o.querySelector('#tk-desc').value;
+  const cancelButton=document.createElement('button');cancelButton.type='button';cancelButton.id='tk-cancel';cancelButton.className='gb-btn gb-btn-sm';cancelButton.textContent='キャンセル';
+  const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tk-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent=isNew?'作成':'更新';
+  const deleteButton=isNew?null:document.createElement('button');
+  if(deleteButton){deleteButton.type='button';deleteButton.id='tk-delete';deleteButton.className='gb-btn gb-btn-sm gb-btn-danger danger';deleteButton.textContent='削除';}
+  let busy=false,deleteConfirmPending=false;
+  const modalApi=window.GBUI.createModal({
+    id:'calendar-db-todo',title:isNew?'新規ToDo':'ToDo編集',body:[...content.childNodes],
+    footer:[deleteButton,cancelButton,saveButton].filter(Boolean),variant:'standard',geometryKey:'calendar-db-todo',
+    minWidth:'0',initialFocus:'#tk-title',closeLabel:'ToDo編集を閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
+  });
+  const o=modalApi.overlay,panel=modalApi.modal;
+  o.classList.add('modal-overlay');o.dataset.e2eId='calendar-db-todo-overlay';o._calendarClose=modalApi.close;
+  panel.classList.add('gb-calendar-db-dialog');panel.dataset.e2eId='calendar-db-todo-dialog';panel.style.cssText=_calendarModalSizeStyle(450,'overflow:hidden;');
+  const setBusy=(next)=>{busy=next;panel.setAttribute('aria-busy',next?'true':'false');[saveButton,deleteButton].filter(Boolean).forEach(btn=>{btn.disabled=next;});};
+  modalApi.open();
+  saveButton.addEventListener('click', async()=>{
+    if(busy)return;
+    const title=panel.querySelector('#tk-title').value.trim()||'無題タスク';
+    const status=panel.querySelector('#tk-status').value;
+    const priority=panel.querySelector('#tk-priority').value;
+    const due=panel.querySelector('#tk-due').value;
+    const assignee=panel.querySelector('#tk-assignee').value;
+    const desc=panel.querySelector('#tk-desc').value;
     const fullDesc=`status:${status} priority:${priority} ${desc}`.trim();
     _calPushUndo(isNew?'ToDo作成':'ToDo編集');
+    setBusy(true);
     try{
       const fallbackDate = task?.start ? _dateStr(task.start) : _dateStr(new Date());
       const taskDate = due || fallbackDate;
@@ -471,12 +499,23 @@ function _openTaskModal(dbPath, task, defaultStatus) {
         await apiPut('/calendar-db/events/'+encodeURIComponent(task.name),{db_path:dbPath,description:fullDesc,calendar_id:assignee||'default',title,start:taskDate,end:taskDate,color});
         await _calendarNotifyEventSaved(task, { ...task, name: title, description: fullDesc, calendarId: assignee || 'default', start: taskDate, end: taskDate, color });
       }
-      o.remove();
+      setBusy(false);modalApi.close('saved');
       await _refreshCalendarDb(dbPath);
     }catch{showStatus('保存に失敗',true);}
+    finally{if(modalApi.isOpen())setBusy(false);}
   });
-  if(!isNew) o.querySelector('#tk-delete').addEventListener('click', async()=>{if(!await cfConfirm('このToDoを削除しますか？'))return;o.remove();_calPushUndo('ToDo削除');try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));await _refreshCalendarDb(dbPath);}catch{}});
-  setTimeout(()=>o.querySelector('#tk-title').focus(),50);
+  cancelButton.addEventListener('click',()=>modalApi.close('cancel'));
+  if(deleteButton)deleteButton.addEventListener('click',async()=>{
+    if(busy||deleteConfirmPending)return;
+    deleteConfirmPending=true;
+    let confirmed=false;
+    try{confirmed=await cfConfirm('このToDoを削除しますか？');}catch{}finally{deleteConfirmPending=false;}
+    if(!confirmed)return;
+    _calPushUndo('ToDo削除');setBusy(true);
+    try{await apiDelete('/calendar-db/events/'+encodeURIComponent(task.name)+'?db_path='+encodeURIComponent(dbPath));setBusy(false);modalApi.close('deleted');await _refreshCalendarDb(dbPath);}
+    catch{showStatus('削除に失敗',true);}
+    finally{if(modalApi.isOpen())setBusy(false);}
+  });
 }
 
 /* ==============================
@@ -559,7 +598,7 @@ function _renderShiftView(container, dbPath, events) {
   let html='<table style="border-collapse:collapse;font-size:10px;width:max-content;">';
   html+='<tr><th style="border:1px solid var(--border);padding:2px 4px;background:var(--bg3);position:sticky;left:0;z-index:2;min-width:80px;">ユーザー</th>';
   for(let d=1;d<=daysInMonth;d++){const ds=`${y}-${_p2(m+1)}-${_p2(d)}`;const dow=new Date(y,m,d).getDay();const isToday=ds===todayStr;const isWe=dow===0||dow===6;
-    html+=`<th style="border:1px solid var(--border);padding:2px 4px;background:${isToday?'var(--accent)':isWe?'var(--bg4)':'var(--bg3)'};color:${isToday?'var(--ui-fg-strong)':'var(--fg2)'};min-width:36px;text-align:center;">${d}<br>${['日','月','火','水','木','金','土'][dow]}</th>`;}
+    html+=`<th style="border:1px solid var(--border);padding:2px 4px;background:${isToday?'var(--accent)':isWe?'var(--bg4)':'var(--bg3)'};color:${isToday?'var(--ui-accent-fg, var(--ui-fg-strong))':'var(--fg2)'};min-width:36px;text-align:center;">${d}<br>${['日','月','火','水','木','金','土'][dow]}</th>`;}
   html+='</tr>';
   users.forEach(user=>{
     // 予定行
@@ -643,7 +682,7 @@ function _renderMiniCalendar(sidebar,dbPath,events) {
     const ds=`${y}-${_p2(m+1)}-${_p2(d)}`;const el=document.createElement('div');
     el.style.cssText='font-size:10px;padding:2px;cursor:pointer;border-radius:3px;';
     if(ds===todayStr)el.style.cssText+='color:var(--accent);font-weight:bold;';
-    if(ds===selStr)el.style.cssText+='background:var(--accent);color:var(--ui-fg-strong);';
+    if(ds===selStr)el.style.cssText+='background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));';
     const hasEv=events.some(ev=>{
       const s=new Date(ev.start);s.setHours(0,0,0,0);
       const e=new Date(ev.end||ev.start);e.setHours(0,0,0,0);
@@ -754,50 +793,64 @@ const _dayLabels = ['日','月','火','水','木','金','土'];
 
 async function _showTemplateModal(dbPath) {
   let templates = [];
-  try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); } catch {}
-  const o = document.createElement('div'); o.className = 'modal-overlay';
-  let html = `<div class="modal" style="${_calendarModalSizeStyle(600)}"><h3>週間テンプレート</h3>`;
-  html += '<div id="tmpl-list">';
-  if (!templates.length) html += '<div style="color:var(--fg2);font-size:12px;padding:8px;">テンプレートがありません</div>';
-  templates.forEach(t => {
-    html += `<div style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:8px;">`;
-    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">`;
-    html += `<strong>${esc(t.name)}</strong><div>`;
-    html += `<button data-action="edit" data-tid="${esc(t.id)}" style="font-size:11px;padding:2px 8px;margin-right:4px;">編集</button>`;
-    html += `<button data-action="delete" data-tid="${esc(t.id)}" style="font-size:11px;padding:2px 8px;color:var(--red);margin-right:4px;">削除</button>`;
-    html += `<button data-action="generate" data-tid="${esc(t.id)}" style="font-size:11px;padding:2px 8px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">一括生成</button>`;
-    html += '</div></div>';
-    (t.entries || []).forEach(e => {
-      const endTime = _addMinutes(e.startTime || '09:00', e.duration || 60);
-      html += `<div style="font-size:11px;color:var(--fg2);padding:1px 0;">${_dayLabels[e.dayOfWeek]} ${e.startTime}〜${endTime} ${esc(e.title || '')}</div>`;
-    });
-    html += '</div>';
+  const content=document.createElement('div');
+  content.innerHTML='<div id="tmpl-status" role="status" aria-live="polite"></div><div id="tmpl-list"></div>';
+  const createButton=document.createElement('button');createButton.type='button';createButton.id='tmpl-create';createButton.className='gb-btn gb-btn-sm';createButton.textContent='新規テンプレート';
+  const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='tmpl-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','週間テンプレートを閉じる');
+  let busy=false,deleteConfirmPending=false;
+  const modalApi=window.GBUI.createModal({
+    id:'calendar-db-template-list',title:'週間テンプレート',body:[...content.childNodes],footer:[createButton,closeButton],
+    variant:'standard',geometryKey:'calendar-db-template-list',minWidth:'0',initialFocus:'#tmpl-create',
+    closeLabel:'週間テンプレートを閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
   });
-  html += '</div>';
-  html += '<div class="btn-row"><button id="tmpl-create">新規テンプレート</button><button data-action="this.closest(\'.modal-overlay\').remove()">閉じる</button></div>';
-  html += '</div>';
-  o.innerHTML = html;
-  document.body.appendChild(o);
-
-  // イベントハンドラ
-  o.querySelectorAll('[data-action="edit"]').forEach(btn => btn.addEventListener('click', () => { o.remove(); _editTemplate(dbPath, btn.dataset.tid); }));
-  o.querySelectorAll('[data-action="delete"]').forEach(btn => btn.addEventListener('click', async () => {
-    const target = templates.find(t => String(t.id) === String(btn.dataset.tid));
-    const name = target?.name || 'テンプレート';
-    if (!await cfConfirm(`${name} を削除しますか？`)) return;
-    try { await apiDelete('/cal/schedule-templates/' + btn.dataset.tid); } catch {}
-    o.remove(); _showTemplateModal(dbPath);
-  }));
-  o.querySelectorAll('[data-action="generate"]').forEach(btn => btn.addEventListener('click', () => _generateFromTemplate(dbPath, btn.dataset.tid, templates, o)));
-  o.querySelector('#tmpl-create').addEventListener('click', async () => {
+  const o=modalApi.overlay,panel=modalApi.modal,list=panel.querySelector('#tmpl-list'),status=panel.querySelector('#tmpl-status');
+  o.classList.add('modal-overlay');o.dataset.e2eId='calendar-db-template-list-overlay';o._calendarClose=modalApi.close;
+  panel.classList.add('gb-calendar-db-dialog');panel.dataset.e2eId='calendar-db-template-list-dialog';panel.style.cssText=_calendarModalSizeStyle(600,'overflow:hidden;');
+  const setBusy=(next)=>{busy=next;panel.setAttribute('aria-busy',next?'true':'false');panel.querySelectorAll('button').forEach(btn=>{if(btn!==closeButton)btn.disabled=next;});};
+  const render=()=>{
+    if(!templates.length){list.innerHTML='<div style="color:var(--fg2);font-size:12px;padding:8px;">テンプレートがありません</div>';return;}
+    list.innerHTML=templates.map(t=>{
+      const entries=(t.entries||[]).map(e=>`<div style="font-size:11px;color:var(--fg2);padding:1px 0;">${_dayLabels[e.dayOfWeek]} ${e.startTime}〜${_addMinutes(e.startTime||'09:00',e.duration||60)} ${esc(e.title||'')}</div>`).join('');
+      return `<div style="border:1px solid var(--border);border-radius:4px;padding:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><strong>${esc(t.name)}</strong><div><button type="button" class="gb-btn gb-btn-sm" data-action="edit" data-tid="${esc(t.id)}">編集</button><button type="button" class="gb-btn gb-btn-sm" data-action="delete" data-tid="${esc(t.id)}" style="color:var(--red);">削除</button><button type="button" data-action="generate" data-tid="${esc(t.id)}" class="gb-btn gb-btn-sm gb-btn-primary primary">一括生成</button></div></div>${entries}</div>`;
+    }).join('');
+  };
+  const loadTemplates=async()=>{
+    createButton.disabled=true;status.textContent='読み込み中...';
+    try{templates=await apiFetch('/cal/schedule-templates?user='+encodeURIComponent(_getUser()));status.textContent='';render();}
+    catch{status.innerHTML='テンプレートを読み込めませんでした。<button id="tmpl-retry" type="button">再試行</button>';status.querySelector('#tmpl-retry')?.addEventListener('click',loadTemplates);}
+    finally{createButton.disabled=false;}
+  };
+  modalApi.open();closeButton.addEventListener('click',()=>modalApi.close('close-button'));
+  list.addEventListener('click',async(event)=>{
+    const btn=event.target.closest('button[data-action]');if(!btn||busy)return;
+    const action=btn.dataset.action,tid=btn.dataset.tid;
+    if(action==='edit'){modalApi.close('edit');_editTemplate(dbPath,tid);return;}
+    if(action==='delete'){
+      const target=templates.find(t=>String(t.id)===String(tid));
+      if(deleteConfirmPending)return;
+      deleteConfirmPending=true;
+      let confirmed=false;
+      try{confirmed=await cfConfirm(`${target?.name||'テンプレート'} を削除しますか？`);}catch{}finally{deleteConfirmPending=false;}
+      if(!confirmed)return;
+      setBusy(true);try{await apiDelete('/cal/schedule-templates/'+tid);templates=templates.filter(t=>String(t.id)!==String(tid));status.textContent='';render();}
+      catch{status.textContent='削除に失敗しました。もう一度お試しください。';}finally{setBusy(false);}return;
+    }
+    if(action==='generate'){
+      setBusy(true);try{const generated=await _generateFromTemplate(dbPath,tid,templates,null);setBusy(false);if(generated)modalApi.close('generated');}finally{if(modalApi.isOpen())setBusy(false);}
+    }
+  });
+  createButton.addEventListener('click', async () => {
+    if(busy)return;
     let idx = 1, name = '無題';
     const names = templates.map(t => t.name);
     while (names.includes(name)) { idx++; name = '無題' + idx; }
-    try {
+    setBusy(true);try {
       const res = await apiPost('/cal/schedule-templates', { name, entries: [], user: _getUser() });
-      o.remove(); _editTemplate(dbPath, res.id);
-    } catch { showStatus('作成に失敗', true); }
+      setBusy(false);modalApi.close('created');_editTemplate(dbPath,res.id);
+    } catch { status.textContent='作成に失敗しました。もう一度お試しください。'; }
+    finally{if(modalApi.isOpen())setBusy(false);}
   });
+  await loadTemplates();
 }
 
 function _addMinutes(timeStr, minutes) {
@@ -808,32 +861,42 @@ function _addMinutes(timeStr, minutes) {
 
 async function _editTemplate(dbPath, tid) {
   let templates = [];
-  try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); } catch {}
-  const t = templates.find(x => x.id === tid);
-  if (!t) return;
+  try { templates = await apiFetch('/cal/schedule-templates?user=' + encodeURIComponent(_getUser())); }
+  catch { showStatus('テンプレートの読み込みに失敗しました', true); await _showTemplateModal(dbPath); return; }
+  const t = templates.find(x => String(x.id) === String(tid));
+  if (!t) { showStatus('テンプレートが見つかりません', true); await _showTemplateModal(dbPath); return; }
 
-  const o = document.createElement('div'); o.className = 'modal-overlay';
   let entriesHtml = '';
   (t.entries || []).forEach(e => { entriesHtml += _templateEntryRow(e); });
-
-  o.innerHTML = `<div class="modal" style="${_calendarModalSizeStyle(550)}">
-    <h3>テンプレート編集: ${esc(t.name)}</h3>
+  const content=document.createElement('div');
+  content.innerHTML = `<div>
+    <div id="tmpl-edit-status" role="status" aria-live="polite"></div>
     <div class="field"><label>名前</label><input id="tmpl-name" type="text" value="${esc(t.name)}"></div>
     <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">エントリ（1週間分）</div>
     <div id="tmpl-entries">${entriesHtml}</div>
     <button id="tmpl-add-entry" style="font-size:12px;padding:2px 8px;margin:4px 0;">+ エントリ追加</button>
-    <div class="btn-row">
-      <button id="tmpl-cancel">キャンセル</button>
-      <button class="primary" id="tmpl-save">保存</button>
-    </div>
   </div>`;
-  document.body.appendChild(o);
-  o.querySelector('#tmpl-add-entry').addEventListener('click', () => { o.querySelector('#tmpl-entries').insertAdjacentHTML('beforeend', _templateEntryRow({})); });
-  o.querySelector('#tmpl-cancel').addEventListener('click', () => { o.remove(); _showTemplateModal(dbPath); });
-  o.querySelector('#tmpl-save').addEventListener('click', async () => {
-    const name = o.querySelector('#tmpl-name').value.trim() || '無題';
+  const cancelButton=document.createElement('button');cancelButton.type='button';cancelButton.id='tmpl-cancel';cancelButton.className='gb-btn gb-btn-sm';cancelButton.textContent='キャンセル';
+  const saveButton=document.createElement('button');saveButton.type='button';saveButton.id='tmpl-save';saveButton.className='gb-btn gb-btn-sm gb-btn-primary primary';saveButton.textContent='保存';
+  let busy=false;
+  const modalApi=window.GBUI.createModal({
+    id:'calendar-db-template-edit',title:`テンプレート編集: ${t.name}`,body:[...content.childNodes],footer:[cancelButton,saveButton],
+    variant:'standard',geometryKey:'calendar-db-template-edit',minWidth:'0',initialFocus:'#tmpl-name',
+    closeLabel:'テンプレート編集を閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!busy,
+  });
+  const o=modalApi.overlay,panel=modalApi.modal,status=panel.querySelector('#tmpl-edit-status');
+  o.classList.add('modal-overlay');o.dataset.e2eId='calendar-db-template-edit-overlay';o._calendarClose=modalApi.close;
+  panel.classList.add('gb-calendar-db-dialog');panel.dataset.e2eId='calendar-db-template-edit-dialog';panel.style.cssText=_calendarModalSizeStyle(550,'overflow:hidden;');
+  const setBusy=(next)=>{busy=next;panel.setAttribute('aria-busy',next?'true':'false');[saveButton,panel.querySelector('#tmpl-add-entry')].forEach(btn=>{if(btn)btn.disabled=next;});};
+  modalApi.open();
+  panel.querySelector('#tmpl-add-entry').addEventListener('click', () => { panel.querySelector('#tmpl-entries').insertAdjacentHTML('beforeend', _templateEntryRow({})); });
+  panel.querySelector('#tmpl-entries').addEventListener('click',event=>{const btn=event.target.closest('button[data-action]');if(btn&&!busy)btn.closest('.tmpl-entry')?.remove();});
+  cancelButton.addEventListener('click', () => { if(modalApi.close('cancel'))_showTemplateModal(dbPath); });
+  saveButton.addEventListener('click', async () => {
+    if(busy)return;
+    const name = panel.querySelector('#tmpl-name').value.trim() || '無題';
     const entries = [];
-    o.querySelectorAll('#tmpl-entries .tmpl-entry').forEach(row => {
+    panel.querySelectorAll('#tmpl-entries .tmpl-entry').forEach(row => {
       entries.push({
         dayOfWeek: parseInt(row.querySelector('[data-field="dayOfWeek"]').value),
         startTime: row.querySelector('[data-field="startTime"]').value,
@@ -841,8 +904,10 @@ async function _editTemplate(dbPath, tid) {
         title: row.querySelector('[data-field="title"]').value.trim(),
       });
     });
-    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました'); } catch { showStatus('保存に失敗', true); }
-    o.remove(); _showTemplateModal(dbPath);
+    setBusy(true);status.textContent='保存中...';
+    try { await apiPut('/cal/schedule-templates/' + tid, { name, entries }); showStatus('テンプレートを保存しました');setBusy(false);modalApi.close('saved');_showTemplateModal(dbPath); }
+    catch { status.textContent='保存に失敗しました。入力内容を保ったまま再試行できます。';showStatus('保存に失敗', true); }
+    finally{if(modalApi.isOpen())setBusy(false);}
   });
 }
 
@@ -860,10 +925,10 @@ function _templateEntryRow(entry) {
 }
 
 async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
-  const t = templates.find(x => x.id === tid);
-  if (!t || !t.entries?.length) { showStatus('エントリがありません', true); return; }
+  const t = templates.find(x => String(x.id) === String(tid));
+  if (!t || !t.entries?.length) { showStatus('エントリがありません', true); return false; }
   const weeks = parseInt(await cfPrompt('何週間分生成しますか？', '4')) || 0;
-  if (weeks <= 0) return;
+  if (weeks <= 0) return false;
   const curDate = getCalendarDate(dbPath);
   const startDate = _weekStart(curDate);
   let count = 0;
@@ -886,18 +951,21 @@ async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
       } catch {}
     }
   }
-  if (modalEl) modalEl.remove();
+  if (modalEl) {
+    if (typeof modalEl.close === 'function') modalEl.close('generated');
+    else modalEl.remove();
+  }
   await _refreshCalendarDb(dbPath);
   showStatus(`${count}件のイベントを生成しました`);
+  return true;
 }
 
 /* ==============================
    同期モーダル（Google Calendar + iCal + CSV + テンプレート）
    ============================== */
 function _showSyncModal(dbPath) {
-  const o = document.createElement('div'); o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="${_calendarModalSizeStyle(500, null, { forceHeight: true })}">
-    <h3>カレンダー同期・ツール</h3>
+  const content=document.createElement('div');
+  content.innerHTML = `<div>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
       <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Google Calendar</div>
@@ -905,7 +973,7 @@ function _showSyncModal(dbPath) {
       <div id="sync-google-auth" style="display:none;">
         <div class="field"><label>Client ID</label><input id="sync-gcal-id" type="text" placeholder="Google Cloud Consoleで取得"></div>
         <div class="field"><label>Client Secret</label><input id="sync-gcal-secret" type="password"></div>
-        <button id="sync-gcal-auth-btn" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;">Google認証開始</button>
+        <button id="sync-gcal-auth-btn" style="font-size:12px;padding:4px 12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">Google認証開始</button>
       </div>
       <div id="sync-google-actions" style="display:none;gap:4px;">
         <button id="sync-gcal-pull" style="font-size:12px;padding:4px 12px;">← Googleから取得</button>
@@ -920,20 +988,6 @@ function _showSyncModal(dbPath) {
         <button id="sync-ical-export" style="font-size:12px;padding:4px 12px;">.icsエクスポート</button>
       </div>
       <div style="font-size:11px;color:var(--fg2);margin-top:4px;">iPhone・Outlook・Nextcloud等と互換</div>
-    </div>
-
-    <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
-      <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">打刻CSVエクスポート</div>
-      <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">予定ではなく、出勤・退勤などの打刻データをCSV出力</div>
-      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
-        <label style="font-size:11px;">開始: <input id="csv-from" type="date" style="padding:2px;font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>
-        <label style="font-size:11px;">終了: <input id="csv-to" type="date" style="padding:2px;font-size:11px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"></label>
-      </div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;">
-        <button id="csv-generic" style="font-size:12px;padding:4px 12px;">汎用CSV</button>
-        <button id="csv-smaregi" style="font-size:12px;padding:4px 12px;">スマレジ形式</button>
-        <button id="csv-mf" style="font-size:12px;padding:4px 12px;">マネーフォワード形式</button>
-      </div>
     </div>
 
     <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
@@ -956,8 +1010,20 @@ function _showSyncModal(dbPath) {
       <button id="sync-migrate" style="font-size:12px;padding:4px 12px;">マイグレーション実行</button>
     </div>
 
-    <div class="btn-row"><button data-action="this.closest('.modal-overlay').remove()">閉じる</button></div>
   </div>`;
-  document.body.appendChild(o);
+  const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='sync-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','カレンダー同期・ツールを閉じる');
+  let syncBusy=false;
+  const modalApi=window.GBUI.createModal({
+    id:'calendar-db-sync',title:'カレンダー同期・ツール',body:[...content.childNodes],footer:closeButton,
+    variant:'standard',geometryKey:'calendar-db-sync',minWidth:'0',initialFocus:'#sync-ical-import',
+    closeLabel:'カレンダー同期・ツールを閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!syncBusy,
+  });
+  const o=modalApi.overlay,panel=modalApi.modal;
+  o.classList.add('modal-overlay');o.dataset.e2eId='calendar-db-sync-overlay';o._calendarClose=modalApi.close;
+  panel.classList.add('gb-calendar-db-dialog');panel.dataset.e2eId='calendar-db-sync-dialog';panel.style.cssText=_calendarModalSizeStyle(500,'overflow:hidden;',{forceHeight:true});
+  const setSyncBusy=(next)=>{syncBusy=next;panel.setAttribute('aria-busy',next?'true':'false');panel.querySelectorAll('button').forEach(btn=>{if(btn!==closeButton)btn.disabled=next;});};
+  panel.addEventListener('click',event=>{if(syncBusy&&event.target.closest('button')!==closeButton){event.preventDefault();event.stopImmediatePropagation();}},true);
+  closeButton.addEventListener('click',()=>modalApi.close('close-button'));
+  modalApi.open();
 
   // Google Calendar ステータス確認

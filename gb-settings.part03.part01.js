@@ -520,32 +520,72 @@ function openCsPalette(swatchEl, key) {
 
 // プレビュークリックでカラー設定タブの行に対応する書式ポップアップを開く。
 // シナリオエディタのタイプ管理ポップアップと同パターン（openFormatPopup を流用）。
+function _settingsThemePreviewPopupFields(def) {
+  if (!def) return [];
+  if (typeof globalThis.getSettingsThemePreviewMappedFields === 'function') {
+    return globalThis.getSettingsThemePreviewMappedFields(def);
+  }
+  const fields = [];
+  const isCaret = /カーソル/.test(String(def.label || ''));
+  if (def.fg) fields.push(isCaret ? 'caretColor' : 'textColor');
+  if (def.bg) fields.push('bgColor');
+  if (def.bold) fields.push('bold');
+  if (def.italic) fields.push('italic');
+  if (def.fontSize) fields.push('fontSize');
+  if (def.font) fields.push('fontFamily');
+  const strokeKey = _settingsThemePreviewExtraKey(def, 'stroke', '-stroke-color');
+  const strokeWidthKey = _settingsThemePreviewExtraKey(def, 'strokeWidth', '-stroke-width');
+  if (strokeKey) fields.push('textStrokeColor');
+  if (strokeWidthKey) fields.push('textStrokeWidth');
+  if (def.line) fields.push('borderColor');
+  if (def.width) fields.push(isCaret ? 'caretWidth' : 'borderWidth');
+  if (_settingsThemePreviewExtraKey(def, 'leftAccent', '-left-accent')) fields.push('leftAccent');
+  if (_settingsThemePreviewExtraKey(def, 'underline', '-underline')) fields.push('underline');
+  return [...new Set(fields)];
+}
+
 function openStylePreviewPopup(previewEl) {
-  if (!previewEl || typeof openFormatPopup !== 'function') return;
+  const popupOpen = globalThis.openFormatPopup;
+  if (!previewEl || typeof popupOpen !== 'function') return;
   if (_settingsThemeIsReadonlyElement(previewEl)) {
     _settingsThemePromptDuplicateForEdit();
     return;
   }
   const label = previewEl.dataset.styleLabel;
+  const section = previewEl.dataset.styleSection || '';
   if (!label) return;
   let def = null;
-  for (const list of Object.values(UI_STYLE_SECTIONS)) {
+  const lists = section && UI_STYLE_SECTIONS[section]
+    ? [UI_STYLE_SECTIONS[section]]
+    : Object.values(UI_STYLE_SECTIONS);
+  for (const list of lists) {
     const found = list.find(item => item.label === label);
     if (found) { def = found; break; }
   }
   if (!def) return;
-  const fields = [];
-  if (def.fg) fields.push('textColor');
-  if (def.bg) fields.push('bgColor');
-  if (def.bold) fields.push('bold');
-  if (def.italic) fields.push('italic');
+  const fields = _settingsThemePreviewPopupFields(def);
+  const isCaret = /カーソル/.test(String(def.label || ''));
+  const strokeKey = _settingsThemePreviewExtraKey(def, 'stroke', '-stroke-color');
+  const strokeWidthKey = _settingsThemePreviewExtraKey(def, 'strokeWidth', '-stroke-width');
+  const leftAccentKey = _settingsThemePreviewExtraKey(def, 'leftAccent', '-left-accent');
+  const underlineKey = _settingsThemePreviewExtraKey(def, 'underline', '-underline');
   const values = {
-    textColor: def.fg ? getCssVar(def.fg) : '',
+    textColor: def.fg && !isCaret ? getCssVar(def.fg) : '',
     bgColor: def.bg ? getCssVar(def.bg) : '',
     fontWeight: def.bold && getCssVar(def.bold) === 'bold' ? 'bold' : '',
     fontStyle: def.italic && getCssVar(def.italic) === 'italic' ? 'italic' : '',
+    fontSize: def.fontSize ? parseFloat(getCssVar(def.fontSize)) || '' : '',
+    fontFamily: def.font ? getCssVar(def.font) : '',
+    textStrokeColor: strokeKey ? getCssVar(strokeKey) : '',
+    textStrokeWidth: strokeWidthKey ? parseFloat(getCssVar(strokeWidthKey)) || 0 : 0,
+    borderColor: def.line ? getCssVar(def.line) : '',
+    borderWidth: def.width && !isCaret ? parseFloat(getCssVar(def.width)) || 0 : 0,
+    caretColor: def.fg && isCaret ? getCssVar(def.fg) : '',
+    caretWidth: def.width && isCaret ? parseFloat(getCssVar(def.width)) || 0 : 0,
+    leftAccent: leftAccentKey ? _settingsThemePreviewActiveFlag(getCssVar(leftAccentKey)) : false,
+    underline: underlineKey ? _settingsThemePreviewActiveFlag(getCssVar(underlineKey)) : false,
   };
-  openFormatPopup(previewEl, {
+  popupOpen(previewEl, {
     fields,
     values,
     onChange(prop, value) {
@@ -563,7 +603,37 @@ function openStylePreviewPopup(previewEl) {
         setColorSetting(def.italic, value === 'italic' ? 'italic' : 'normal');
         const btn = document.querySelector(`.cs-toggle[data-key="${def.italic}"]`);
         if (btn) btn.classList.toggle('active', value === 'italic');
+      } else if (prop === 'fontSize' && def.fontSize) {
+        setColorSetting(def.fontSize, `${Math.max(1, Number(value) || 1)}px`);
+      } else if (prop === 'fontFamily' && def.font) {
+        setColorSetting(def.font, value || 'inherit');
+      } else if (prop === 'textStrokeColor' && strokeKey) {
+        setColorSetting(strokeKey, value);
+      } else if (prop === 'textStrokeWidth' && strokeWidthKey) {
+        setColorSetting(strokeWidthKey, `${Math.max(0, Number(value) || 0)}px`);
+      } else if (prop === 'borderColor' && def.line) {
+        setColorSetting(def.line, value);
+      } else if (prop === 'borderWidth' && def.width && !isCaret) {
+        setColorSetting(def.width, `${Math.max(0, Number(value) || 0)}px`);
+      } else if (prop === 'caretColor' && def.fg && isCaret) {
+        setColorSetting(def.fg, value);
+      } else if (prop === 'caretWidth' && def.width && isCaret) {
+        setColorSetting(def.width, `${Math.max(0, Number(value) || 0)}px`);
+      } else if (prop === 'leftAccent' && leftAccentKey) {
+        setColorSetting(leftAccentKey, value ? THEME_STYLE_LEFT_ACCENT_WIDTH : '0');
+      } else if (prop === 'underline' && underlineKey) {
+        setColorSetting(underlineKey, value ? THEME_STYLE_UNDERLINE_WIDTH : '0');
       }
+      if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
+    },
+    onReset() {
+      [
+        def.fg, def.bg, def.bold, def.italic, def.fontSize, def.font,
+        def.line, def.width, strokeKey, strokeWidthKey, leftAccentKey, underlineKey,
+      ].filter(Boolean)
+        .forEach(key => document.documentElement.style.removeProperty(key));
+      if (typeof _settingsThemeMarkDirty === 'function') _settingsThemeMarkDirty();
+      if (typeof refreshSettingsThemePreview === 'function') refreshSettingsThemePreview();
     },
   });
 }

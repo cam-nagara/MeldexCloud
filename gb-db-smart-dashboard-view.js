@@ -28,7 +28,10 @@ async function setSmartDbActiveView(viewName) {
   def.activeView = viewName === 'dashboard' ? 'dashboard' : 'table';
   if (def.activeView === 'dashboard') getSmartDbDashboardView(def);
   try {
-    if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(def);
+    if (typeof saveSmartDbDef === 'function') {
+      await saveSmartDbDef(def);
+      await _runSmartDbPostCommitSteps('表示切り替え', [], _runSmartDbBasePostCommitEffects(def));
+    }
   } catch (e) {
     showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
   }
@@ -243,15 +246,22 @@ function _smartDbDashboardFocusFirstDialogControl(overlay) {
 }
 
 function _smartDbDashboardFocusAfterRender(widgetId, fallbackTarget) {
-  setTimeout(() => {
-    const escapedWidgetId = widgetId && window.CSS?.escape
-      ? CSS.escape(widgetId)
-      : String(widgetId || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const target = widgetId
-      ? document.querySelector(`[data-e2e-id="smart-db-widget-${escapedWidgetId}-edit"]`)
-      : document.querySelector('[data-e2e-id^="smart-db-add-widget-"]');
-    _smartDbDashboardRestoreFocus(target || fallbackTarget);
-  }, 0);
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        const escapedWidgetId = widgetId && window.CSS?.escape
+          ? CSS.escape(widgetId)
+          : String(widgetId || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const target = widgetId
+          ? document.querySelector(`[data-e2e-id="smart-db-widget-${escapedWidgetId}-edit"]`)
+          : document.querySelector('[data-e2e-id^="smart-db-add-widget-"]');
+        _smartDbDashboardRestoreFocus(target || fallbackTarget);
+        resolve(true);
+      } catch (error) {
+        reject(error);
+      }
+    }, 0);
+  });
 }
 
 function _smartDbDashboardGlobalIndexResult(result, def) {
@@ -656,21 +666,39 @@ async function removeSmartDbWidget(widgetId, restoreTarget) {
   if (view.widgets.length === beforeLength) return;
   try {
     if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(state.currentSmartDb);
-    if (typeof pushSmartDbDefinitionHistory === 'function') {
-      pushSmartDbDefinitionHistory('スマートシート: ウィジェット削除', before, state.currentSmartDb, state.currentSmartDb?.name || '');
-    }
-    renderSmartDbDashboardView();
-    _smartDbDashboardFocusAfterRender('', restoreTarget);
   } catch (e) {
     view.widgets = previousWidgets;
-    renderSmartDbDashboardView();
-    showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
+    try { renderSmartDbDashboardView(); }
+    catch (renderError) { console.error('ウィジェット削除の復元表示に失敗しました:', renderError); }
+    try { showStatus('スマートシートの保存に失敗しました: ' + e.message, true); }
+    catch (statusError) { console.error('ウィジェット削除の保存失敗を表示できませんでした:', statusError); }
+    return false;
   }
+  const baseErrors = _runSmartDbBasePostCommitEffects(state.currentSmartDb);
+  await _runSmartDbPostCommitSteps('ウィジェット削除', [
+    {
+      label: '履歴の更新',
+      run: () => {
+        if (typeof pushSmartDbDefinitionHistory === 'function') {
+          pushSmartDbDefinitionHistory('スマートシート: ウィジェット削除', before, state.currentSmartDb, state.currentSmartDb?.name || '');
+        }
+      },
+    },
+    { label: 'ダッシュボードの更新', run: () => renderSmartDbDashboardView() },
+    { label: 'フォーカスの復元', run: () => _smartDbDashboardFocusAfterRender('', restoreTarget) },
+  ], baseErrors);
+  return true;
 }
 
 function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
   const view = getSmartDbDashboardView();
   if (!view) return;
+  if (!window.GBUI?.createModal) throw new Error('ウィジェット編集ダイアログを初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="smart-db-widget-editor-dialog"]');
+  if (existingDialog) {
+    existingDialog.focus();
+    return existingDialog.closest('.gb-modal-overlay')?._smartDbWidgetEditorApi || null;
+  }
   restoreTarget = restoreTarget || _smartDbDashboardActiveElement();
   const widget = _normalizeSmartDbWidget(existingWidget ? JSON.parse(JSON.stringify(existingWidget)) : {
     id: _newSmartDbWidgetId(),
@@ -680,36 +708,21 @@ function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
     config: {},
   }, view.widgets.length);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'smart-db-widget-editor-overlay';
-  const modal = document.createElement('div');
-  modal.className = 'smart-db-widget-editor-modal';
-  modal.classList.add('modal');
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', 'smart-db-widget-editor-title');
-  modal.dataset.e2eId = 'smart-db-widget-editor-dialog';
-  overlay.appendChild(modal);
+  const body = document.createElement('div');
+  body.className = 'smart-db-widget-editor-content';
 
-  const h3 = document.createElement('h3');
-  h3.id = 'smart-db-widget-editor-title';
-  h3.textContent = existingWidget ? 'ウィジェット編集' : 'ウィジェット追加';
-  h3.className = 'smart-db-modal-title';
-  modal.appendChild(h3);
-
-  const titleInput = _appendTextField(modal, 'タイトル', widget.title, '例: 総エピソード数', {
+  const titleInput = _appendTextField(body, 'タイトル', widget.title, '例: 総エピソード数', {
     id: 'smart-db-widget-title',
     e2eId: 'smart-db-widget-editor-title-input',
   });
-  const typeSel = _appendSelectField(modal, 'タイプ', [
+  const typeSel = _appendSelectField(body, 'タイプ', [
     ['stat', '数値（統計値）'],
     ['progress', 'プログレスバー'],
     ['chart', 'チャート'],
     ['list', 'フィルタリスト'],
   ], widget.type, { id: 'smart-db-widget-type', e2eId: 'smart-db-widget-editor-type' });
 
-  const sourceKind = _appendSelectField(modal, '参照ソース', [
+  const sourceKind = _appendSelectField(body, '参照ソース', [
     ['sheet', 'シート'],
     ['smart-sheet', 'スマートシート'],
   ], widget.source.kind, { id: 'smart-db-widget-source-kind', e2eId: 'smart-db-widget-editor-source-kind' });
@@ -733,6 +746,7 @@ function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
   sourceRow.appendChild(sourceInput);
   const pickBtn = document.createElement('button');
   pickBtn.type = 'button';
+  pickBtn.className = 'gb-btn gb-btn-sm';
   pickBtn.textContent = '選択...';
   pickBtn.dataset.e2eId = 'smart-db-widget-editor-source-pick';
   pickBtn.setAttribute('aria-label', '参照ファイルを選択');
@@ -742,12 +756,32 @@ function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
   }, pickBtn));
   sourceRow.appendChild(pickBtn);
   sourceField.appendChild(sourceRow);
-  modal.appendChild(sourceField);
+  body.appendChild(sourceField);
 
   const configDiv = document.createElement('div');
-  modal.appendChild(configDiv);
+  body.appendChild(configDiv);
+  function applyNarrowWidgetLayout() {
+    if (window.innerWidth > 640) return;
+    body.style.minWidth = '0';
+    body.querySelectorAll('.field').forEach(field => {
+      field.style.display = 'block';
+      field.style.minWidth = '0';
+      const label = field.querySelector(':scope > label');
+      if (label) label.style.display = 'block';
+    });
+    body.querySelectorAll('input,select').forEach(control => {
+      control.style.width = '100%';
+      control.style.maxWidth = '100%';
+      control.style.boxSizing = 'border-box';
+    });
+    sourceRow.style.display = 'grid';
+    sourceRow.style.gridTemplateColumns = 'minmax(0, 1fr)';
+    sourceRow.style.gap = '8px';
+    pickBtn.style.width = '100%';
+  }
   function renderConfig() {
     _renderSmartDbWidgetConfig(configDiv, typeSel.value, widget.config || {});
+    applyNarrowWidgetLayout();
   }
   typeSel.addEventListener('change', renderConfig);
   renderConfig();
@@ -756,16 +790,45 @@ function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
   btnRow.className = 'smart-db-modal-buttons';
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
   cancelBtn.textContent = 'キャンセル';
   cancelBtn.dataset.e2eId = 'smart-db-widget-editor-cancel';
-  cancelBtn.addEventListener('click', () => closeOverlay());
   btnRow.appendChild(cancelBtn);
   const saveBtn = document.createElement('button');
   saveBtn.type = 'button';
-  saveBtn.className = 'primary';
+  saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   saveBtn.textContent = '保存';
   saveBtn.dataset.e2eId = 'smart-db-widget-editor-save';
+  btnRow.appendChild(saveBtn);
+  let saving = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'smart-db-widget-editor',
+    title: existingWidget ? 'ウィジェット編集' : 'ウィジェット追加',
+    body,
+    footer: btnRow,
+    variant: 'standard',
+    extraClass: 'smart-db-widget-editor-modal',
+    geometryKey: 'smart-db-widget-editor',
+    minWidth: '0',
+    initialFocus: titleInput,
+    returnFocus: restoreTarget || undefined,
+    closeLabel: 'ウィジェット編集を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || !saving,
+  });
+  modalApi.overlay.dataset.e2eId = 'smart-db-widget-editor-overlay';
+  modalApi.overlay._smartDbWidgetEditorApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'smart-db-widget-editor-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'smart-db-widget-editor-close';
+  modalApi.modal.style.width = 'min(620px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
   saveBtn.addEventListener('click', async () => {
+    if (saving) return;
+    saving = true;
+    saveBtn.disabled = true;
+    cancelBtn.disabled = true;
     const before = (typeof _captureSmartDbHistorySnapshot === 'function')
       ? _captureSmartDbHistorySnapshot(state.currentSmartDb)
       : null;
@@ -779,23 +842,40 @@ function showSmartDbWidgetEditor(existingWidget, restoreTarget) {
     else view.widgets.push(widget);
     try {
       if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(state.currentSmartDb);
-      if (typeof pushSmartDbDefinitionHistory === 'function') {
-        const label = existingWidget ? 'スマートシート: ウィジェット編集' : 'スマートシート: ウィジェット追加';
-        pushSmartDbDefinitionHistory(label, before, state.currentSmartDb, widget.title);
-      }
-      closeOverlay(false);
-      renderSmartDbDashboardView();
-      _smartDbDashboardFocusAfterRender(widget.id, restoreTarget);
     } catch (e) {
       view.widgets = previousWidgets;
-      showStatus('スマートシートの保存に失敗しました: ' + e.message, true);
+      try { showStatus('スマートシートの保存に失敗しました: ' + e.message, true); }
+      catch (statusError) { console.error('ウィジェットの保存失敗を表示できませんでした:', statusError); }
+      saving = false;
+      saveBtn.disabled = false;
+      cancelBtn.disabled = false;
+      saveBtn.focus({ preventScroll: true });
+      return;
+    }
+    const baseErrors = _runSmartDbBasePostCommitEffects(state.currentSmartDb);
+    const historyLabel = existingWidget ? 'スマートシート: ウィジェット編集' : 'スマートシート: ウィジェット追加';
+    try {
+      await _runSmartDbPostCommitSteps(historyLabel, [
+        {
+          label: '履歴の更新',
+          run: () => {
+            if (typeof pushSmartDbDefinitionHistory === 'function') {
+              pushSmartDbDefinitionHistory(historyLabel, before, state.currentSmartDb, widget.title);
+            }
+          },
+        },
+        { label: 'ダッシュボードの更新', run: () => renderSmartDbDashboardView() },
+        { label: '編集画面を閉じる', run: () => modalApi.close('saved') },
+        { label: 'フォーカスの復元', run: () => _smartDbDashboardFocusAfterRender(widget.id, restoreTarget) },
+      ], baseErrors);
+    } finally {
+      saving = false;
+      if (saveBtn.isConnected) saveBtn.disabled = false;
+      if (cancelBtn.isConnected) cancelBtn.disabled = false;
     }
   });
-  btnRow.appendChild(saveBtn);
-  modal.appendChild(btnRow);
-  const closeOverlay = _smartDbDashboardAttachOverlayDismiss(overlay, restoreTarget);
-  document.body.appendChild(overlay);
-  _smartDbDashboardFocusFirstDialogControl(overlay);
+  modalApi.open();
+  return modalApi;
 }
 
 function _appendTextField(parent, labelText, value, placeholder, options = {}) {
@@ -944,45 +1024,51 @@ function _collectSmartDbWidgetConfig(type) {
 }
 
 function showSmartDbSourcePicker(kind, currentPath, onSelect, restoreTarget) {
+  if (!window.GBUI?.createModal) throw new Error('参照ファイル選択ダイアログを初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="smart-db-source-picker-dialog"]');
+  if (existingDialog) {
+    existingDialog.focus();
+    return existingDialog.closest('.gb-modal-overlay')?._smartDbSourcePickerApi || null;
+  }
   restoreTarget = restoreTarget || _smartDbDashboardActiveElement();
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'smart-db-source-picker-overlay';
-  const modal = document.createElement('div');
-  modal.className = 'smart-db-source-picker-modal';
-  modal.classList.add('modal');
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', 'smart-db-source-picker-title');
-  modal.dataset.e2eId = 'smart-db-source-picker-dialog';
-  const title = document.createElement('h3');
-  title.id = 'smart-db-source-picker-title';
-  title.textContent = kind === 'smart-sheet' ? 'スマートシートを選択' : 'シートを選択';
-  title.className = 'smart-db-modal-title';
-  modal.appendChild(title);
   const list = document.createElement('div');
   list.className = 'smart-db-source-picker';
   list.dataset.e2eId = 'smart-db-source-picker-list';
   list.setAttribute('role', 'list');
   list.setAttribute('aria-live', 'polite');
-  modal.appendChild(list);
-  const footer = document.createElement('div');
-  footer.className = 'smart-db-source-picker-footer';
   const cancel = document.createElement('button');
   cancel.type = 'button';
+  cancel.className = 'gb-btn gb-btn-sm';
   cancel.textContent = 'キャンセル';
   cancel.dataset.e2eId = 'smart-db-source-picker-cancel';
-  cancel.addEventListener('click', () => closeOverlay());
-  footer.appendChild(cancel);
-  modal.appendChild(footer);
-  overlay.appendChild(modal);
-  const closeOverlay = _smartDbDashboardAttachOverlayDismiss(overlay, restoreTarget);
-  document.body.appendChild(overlay);
+  const modalApi = window.GBUI.createModal({
+    id: 'smart-db-source-picker',
+    title: kind === 'smart-sheet' ? 'スマートシートを選択' : 'シートを選択',
+    body: list,
+    footer: cancel,
+    variant: 'standard',
+    extraClass: 'smart-db-source-picker-modal',
+    geometryKey: 'smart-db-source-picker',
+    minWidth: '0',
+    initialFocus: () => list.querySelector('button,[role="button"]') || cancel,
+    returnFocus: restoreTarget || undefined,
+    closeLabel: '参照ファイル選択を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+  });
+  modalApi.overlay.dataset.e2eId = 'smart-db-source-picker-overlay';
+  modalApi.overlay._smartDbSourcePickerApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'smart-db-source-picker-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'smart-db-source-picker-close';
+  modalApi.modal.style.width = 'min(620px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  cancel.addEventListener('click', () => modalApi.close('cancel'));
   _loadSmartDbSourcePickerItems(list, kind, currentPath, selected => {
     onSelect(selected);
-    closeOverlay();
+    modalApi.close('selected');
   });
-  _smartDbDashboardFocusFirstDialogControl(overlay);
+  modalApi.open();
+  return modalApi;
 }
 
 async function _loadSmartDbSourcePickerItems(container, kind, currentPath, onSelect) {
@@ -1018,8 +1104,10 @@ function _appendSmartDbSourcePickerRow(container, item, kind, currentPath, onSel
   row.dataset.e2eId = 'smart-db-source-picker-row';
   row.setAttribute('role', 'listitem');
   const itemLabel = item.name || item.path || '項目';
+  const stableItemId = _smartDbDashboardStableIdPart(item.path || itemLabel);
   const openBtn = document.createElement('button');
   openBtn.type = 'button';
+  openBtn.id = 'smart-db-source-picker-open-' + stableItemId;
   openBtn.className = 'tb-icon-btn';
   openBtn.title = item.type === 'folder' ? '展開' : '選択';
   openBtn.dataset.e2eId = 'smart-db-source-picker-open';
@@ -1028,11 +1116,14 @@ function _appendSmartDbSourcePickerRow(container, item, kind, currentPath, onSel
   _smartDbDashboardFixIconSize(openBtn, 16);
   row.appendChild(openBtn);
   const label = document.createElement('span');
+  label.id = 'smart-db-source-picker-label-' + stableItemId;
   label.textContent = itemLabel;
   label.className = 'smart-db-source-picker-label';
   row.appendChild(label);
   const chooseBtn = document.createElement('button');
   chooseBtn.type = 'button';
+  chooseBtn.id = 'smart-db-source-picker-choose-' + stableItemId;
+  chooseBtn.className = 'gb-btn gb-btn-sm';
   chooseBtn.textContent = '選択';
   chooseBtn.dataset.e2eId = 'smart-db-source-picker-choose';
   chooseBtn.setAttribute('aria-label', '参照ファイルに選択: ' + itemLabel);

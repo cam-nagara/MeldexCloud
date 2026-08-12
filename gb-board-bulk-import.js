@@ -15,6 +15,7 @@
   const SUPPORTED_TAB_TYPES = new Set([
     'smart-db', 'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form',
   ]);
+  let _activeBulkImportModal = null;
 
   async function bdOpenBulkLinkImport() {
     if (typeof bd === 'undefined') {
@@ -52,46 +53,75 @@
   }
 
   function _openWizard(candidates) {
+    _activeBulkImportModal?.close?.('superseded');
     document.querySelectorAll('.bd-bulk-import-overlay').forEach(existing => existing.remove());
+    if (typeof window.GBUI?.createModal !== 'function') {
+      if (typeof showStatus === 'function') showStatus('一括読込ダイアログを開けません', true);
+      return;
+    }
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const uid = 'bdbl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
-    const titleId = uid + '-title';
     const descId = uid + '-desc';
     const sourceId = uid + '-source';
     const viewId = uid + '-view';
     const statusId = uid + '-status';
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay bd-bulk-import-overlay';
+    const body = document.createElement('div');
+    body.className = 'bd-bulk-import-content';
+    body.innerHTML = `
+      <label class="bd-bulk-import-field" for="${sourceId}">
+        <span class="bd-bulk-import-label">対象のシート / スマートシート</span>
+        <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
+      </label>
+      <label class="bd-bulk-import-field" for="${viewId}">
+        <span class="bd-bulk-import-label">ビュー ${fieldHelp('選択したビューのフィルタを適用します')}</span>
+        <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
+      </label>
+      <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>`;
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'gb-btn gb-btn-sm';
+    cancelBtn.dataset.bdblCancel = '';
+    cancelBtn.textContent = 'キャンセル';
+    const goBtn = document.createElement('button');
+    goBtn.type = 'button';
+    goBtn.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    goBtn.dataset.bdblGo = '';
+    goBtn.textContent = '読み込む';
+    let busy = false;
+    const modalApi = window.GBUI.createModal({
+      id: uid,
+      title: 'シート / スマートシートから一括読込',
+      body,
+      footer: [cancelBtn, goBtn],
+      variant: 'standard',
+      extraClass: 'bd-bulk-import-dialog',
+      geometryKey: 'board-bulk-link-import',
+      initialFocus: '[data-bdbl-source]',
+      returnFocus: restoreFocusTo || undefined,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => !busy || reason === 'complete' || reason === 'superseded',
+      onClose: () => {
+        if (_activeBulkImportModal === modalApi) _activeBulkImportModal = null;
+      },
+    });
+    _activeBulkImportModal = modalApi;
+    const overlay = modalApi.overlay;
+    overlay.classList.add('bd-bulk-import-overlay');
     overlay.style.zIndex = '250';
-    overlay.innerHTML = `
-      <div class="gb-confirm bd-bulk-import-dialog" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1">
-        <div class="bd-bulk-import-header">
-          <div class="gb-confirm-title bd-bulk-import-title" id="${titleId}">シート / スマートシートから一括読込</div>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon bd-bulk-import-close" data-bdbl-close title="閉じる" aria-label="閉じる">${_bdblIcon('x', 14)}</button>
-        </div>
-        <div class="gb-confirm-body bd-bulk-import-body" id="${descId}">
-          <label class="bd-bulk-import-field" for="${sourceId}">
-            <span class="bd-bulk-import-label">対象のシート / スマートシート</span>
-            <select id="${sourceId}" class="gb-select bd-bulk-import-select" data-bdbl-source></select>
-          </label>
-          <label class="bd-bulk-import-field" for="${viewId}">
-            <span class="bd-bulk-import-label">ビュー ${fieldHelp('選択したビューのフィルタを適用します')}</span>
-            <select id="${viewId}" class="gb-select bd-bulk-import-select" data-bdbl-view></select>
-          </label>
-          <div id="${statusId}" class="bd-bulk-import-status" data-bdbl-status role="status" aria-live="polite"></div>
-        </div>
-        <div class="gb-confirm-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-bdbl-cancel>キャンセル</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-bdbl-go>読み込む</button>
-        </div>
-      </div>`;
+    modalApi.body.id = descId;
+    modalApi.modal.setAttribute('aria-describedby', descId);
+    modalApi.header.classList.add('bd-bulk-import-header');
+    modalApi.header.querySelector('.gb-modal-title')?.classList.add('bd-bulk-import-title');
+    modalApi.body.classList.add('gb-confirm-body', 'bd-bulk-import-body');
+    modalApi.footer.classList.add('gb-confirm-actions');
+    const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+    closeBtn?.classList.add('gb-btn', 'gb-btn-sm', 'gb-btn-icon', 'bd-bulk-import-close');
+    if (closeBtn) closeBtn.dataset.bdblClose = '';
 
-    const srcSelect = overlay.querySelector('[data-bdbl-source]');
-    const viewSelect = overlay.querySelector('[data-bdbl-view]');
-    const statusEl = overlay.querySelector('[data-bdbl-status]');
-    const goBtn = overlay.querySelector('[data-bdbl-go]');
-    const cancelBtn = overlay.querySelector('[data-bdbl-cancel]');
-    const closeBtn = overlay.querySelector('[data-bdbl-close]');
+    const srcSelect = body.querySelector('[data-bdbl-source]');
+    const viewSelect = body.querySelector('[data-bdbl-view]');
+    const statusEl = body.querySelector('[data-bdbl-status]');
 
     candidates.forEach((c, i) => {
       const opt = document.createElement('option');
@@ -101,7 +131,6 @@
     });
 
     let currentEntries = null;
-    let busy = false;
     // ユーザーが高速にドロップダウンを切り替えると複数の refreshPreview が in-flight になる。
     // 古い fetch の結果が新しい結果を上書きして表示件数と実エントリがずれる事態を防ぐため、
     // 発火ごとに seq を増やし、結果適用前に自分の seq が最新か照合する。
@@ -164,22 +193,11 @@
     srcSelect.addEventListener('change', refreshViews);
     viewSelect.addEventListener('change', refreshPreview);
 
-    // Escape ハンドラを含むクリーンアップ。× ボタン / キャンセル / overlay クリック / ESC の
-    // いずれで閉じても必ず handler を剥がす (多重オープンでのリーク防止)。
-    const onKey = (e) => { if (e.key === 'Escape' && overlay.isConnected) close(); };
     const close = (options = {}) => {
       if (busy && !options.force) return;
-      document.removeEventListener('keydown', onKey);
-      overlay.remove();
-      if (restoreFocusTo?.isConnected) {
-        if (typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(restoreFocusTo);
-        else restoreFocusTo.focus?.();
-      }
+      modalApi.close(options.force ? 'complete' : 'programmatic');
     };
-    closeBtn.addEventListener('click', () => close());
-    cancelBtn.addEventListener('click', close);
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', onKey);
+    cancelBtn.addEventListener('click', () => close());
 
     goBtn.addEventListener('click', async () => {
       if (busy) return;
@@ -203,15 +221,8 @@
       }
     });
 
-    document.body.appendChild(overlay);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    srcSelect.focus();
+    modalApi.open();
     refreshViews();
-  }
-
-  function _bdblIcon(name, size) {
-    if (typeof lucide === 'function') return lucide(name, size || 14);
-    return name === 'x' ? '×' : '';
   }
 
   async function _getViewsFor(target) {

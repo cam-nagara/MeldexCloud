@@ -119,12 +119,37 @@ function _snToolPresetNames(storageKey, orderKey) {
   return [...ordered, ...keys.filter(name => !ordered.includes(name))];
 }
 
-function _snToolWritePresetOrder(orderKey, names, data) {
+function _snToolFilteredPresetOrder(names, data) {
   const seen = new Set();
-  const filtered = names.filter(name => typeof name === 'string' && name
+  return names.filter(name => typeof name === 'string' && name
     && (!data || Object.prototype.hasOwnProperty.call(data, name))
     && !seen.has(name) && seen.add(name));
-  localStorage.setItem(orderKey, JSON.stringify(filtered));
+}
+
+function _snToolWriteStorageAtomically(entries) {
+  const changes = entries.map(([key, value]) => ({ key, value: String(value), before: localStorage.getItem(key) }));
+  const written = [];
+  try {
+    changes.forEach(change => {
+      localStorage.setItem(change.key, change.value);
+      written.push(change);
+    });
+  } catch (error) {
+    for (let index = written.length - 1; index >= 0; index--) {
+      const change = written[index];
+      try {
+        if (change.before === null) localStorage.removeItem(change.key);
+        else localStorage.setItem(change.key, change.before);
+      } catch (rollbackError) {
+        console.error(`プリセット設定 ${change.key} のロールバックに失敗しました:`, rollbackError);
+      }
+    }
+    throw error;
+  }
+}
+
+function _snToolWritePresetOrder(orderKey, names, data) {
+  localStorage.setItem(orderKey, JSON.stringify(_snToolFilteredPresetOrder(names, data)));
 }
 
 function _snToolClone(value) {
@@ -251,7 +276,7 @@ class ScriptNoteComponent extends ToolComponent {
     super.destroy();
   }
 
-  // 遷移前flush契約（計画書「閲覧・編集・保存」節）。gb-float-panel.js /
+  // 遷移前flush契約（計画書「閲覧・編集・保存」節）。gb-subpanel.js /
   // gb-subpanel.js が対象置換・戻る/進む・閉じる・メインパネル昇格の前に
   // getComponentInstance(tabId).flush() として汎用的に呼び出す。保留中の
   // 自動保存タイマーを即座に実行し、保存の成否(true/false)を返す。
@@ -317,6 +342,11 @@ class ScriptNoteComponent extends ToolComponent {
     if (typeof showBoardTabs === 'function') showBoardTabs(false);
     if (typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
     if (typeof showNoteTabs === 'function') showNoteTabs(false);
+    if (typeof showFileInfoTab === 'function') showFileInfoTab(true);
+    const scenarioPath = this._editor?._path || this.state.scenarioPath || '';
+    if (scenarioPath && typeof renderFileInfoDetailTab === 'function') {
+      void renderFileInfoDetailTab(scenarioPath, null, { type: 'scriptnote', typeLabel: 'シナリオ' });
+    }
     if (typeof showDbTabs === 'function') showDbTabs(false);
     if (typeof showPublishDetailTab === 'function') showPublishDetailTab(false);
     if (typeof showFileStyleTab === 'function') showFileStyleTab(true);
@@ -485,50 +515,41 @@ class ScriptNoteComponent extends ToolComponent {
       if (typeof showStatus === 'function') showStatus(`${label || '項目'}を選択できませんでした`, true);
       return false;
     }
-    const dialogId = `sn2-${dialog}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const titleId = `${dialogId}-title`;
-    const selectId = `${dialogId}-select`;
+    const owner = document.activeElement;
+    const selectId = `sn2-${dialog}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-select`;
     const options = [...source.options].map(opt => (
       `<option value="${esc(opt.value)}">${esc(opt.textContent || opt.label || opt.value)}</option>`
     )).join('');
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const content = document.createElement('div');
+    content.innerHTML = `<label class="sn2-preset-field" for="${selectId}"><span class="sn2-preset-label">${esc(label)}</span><select id="${selectId}" class="gb-select sn2-toolbar-modal-select">${options}</select></label>`;
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
+    const okButton = document.createElement('button');
+    okButton.type = 'button'; okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; okButton.textContent = okText;
+    const modalApi = window.GBUI.createModal({
+      id: 'scriptnote-toolbar-select', title, body: [...content.childNodes], footer: [cancelButton, okButton],
+      variant: 'standard', geometryKey: 'scriptnote-toolbar-select', minWidth: '0', initialFocus: '.sn2-toolbar-modal-select',
+      returnFocus: owner, closeLabel: `${title}を閉じる`, closeOnEsc: true, closeOnOverlay: true,
+    });
+    const overlay = modalApi.overlay;
+    const panel = modalApi.modal;
     overlay.dataset.sn2Dialog = dialog;
-    overlay.innerHTML = `<div class="modal sn2-preset-modal sn2-toolbar-select-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(title)}</h3>
-      <div class="modal-body sn2-preset-modal-body"><label class="sn2-preset-field" for="${selectId}"><span class="sn2-preset-label">${esc(label)}</span><select id="${selectId}" class="gb-select sn2-toolbar-modal-select">${options}</select></label></div>
-      <div class="btn-row sn2-preset-modal-actions">
-        <button type="button" class="gb-btn gb-btn-sm cancel-btn">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary ok-btn">${esc(okText)}</button>
-      </div></div>`;
-    const select = overlay.querySelector('.sn2-toolbar-modal-select');
+    overlay.dataset.e2eId = 'scriptnote-toolbar-select-overlay';
+    panel.dataset.e2eId = 'scriptnote-toolbar-select-dialog';
+    panel.classList.add('sn2-preset-modal', 'sn2-toolbar-select-modal');
+    modalApi.body.classList.add('sn2-preset-modal-body');
+    modalApi.footer.classList.add('sn2-preset-modal-actions');
+    const select = panel.querySelector('.sn2-toolbar-modal-select');
     if (select) select.value = source.value;
-    const close = () => {
-      document.removeEventListener('keydown', keyHandler, true);
-      overlay.remove();
-    };
     const apply = () => {
       if (!select) return;
       source.value = select.value;
       source.dispatchEvent(new Event('change', { bubbles: true }));
-      close();
+      modalApi.close('apply');
     };
-    function keyHandler(ev) {
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        ev.stopPropagation();
-        close();
-      }
-    }
-    overlay.querySelector('.cancel-btn')?.addEventListener('click', close);
-    overlay.querySelector('.ok-btn')?.addEventListener('click', apply);
-    overlay.addEventListener('click', ev => {
-      if (ev.target === overlay) close();
-    });
-    document.addEventListener('keydown', keyHandler, true);
-    document.body.appendChild(overlay);
-    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-      window.GBModalShell.enhanceOverlay(overlay);
-    }
-    requestAnimationFrame(() => select?.focus?.());
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    okButton.addEventListener('click', apply);
+    modalApi.open();
     return true;
   }
 
@@ -790,43 +811,67 @@ class ScriptNoteComponent extends ToolComponent {
     }
   }
 
-  _showNameModal({ title, label, placeholder, value = '', okText = '登録', onSubmit }) {
-    const dialogId = `sn2-preset-name-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const titleId = `${dialogId}-title`;
-    const inputId = `${dialogId}-input`;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+  _showNameModal({ title, label, placeholder, value = '', okText = '登録', onSubmit, returnFocus, onClose }) {
+    const owner = returnFocus || document.activeElement;
+    const inputId = `sn2-preset-name-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-input`;
+    const content = document.createElement('div');
+    content.innerHTML = `<div class="sn2-preset-status" role="status" aria-live="polite"></div><label class="sn2-preset-field" for="${inputId}"><span class="sn2-preset-label">${esc(label)}</span><input id="${inputId}" type="text" class="gb-input sn2-preset-name" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label>`;
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm cancel-btn'; cancelButton.textContent = 'キャンセル';
+    const okButton = document.createElement('button');
+    okButton.type = 'button'; okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; okButton.textContent = okText;
+    let busy = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'scriptnote-name', title, body: [...content.childNodes], footer: [cancelButton, okButton],
+      variant: 'standard', geometryKey: 'scriptnote-name', minWidth: '0', initialFocus: '.sn2-preset-name',
+      returnFocus: owner, closeLabel: `${title}を閉じる`, closeOnEsc: true, closeOnOverlay: true,
+      onBeforeClose: () => !busy,
+      onClose: reason => onClose?.(reason),
+    });
+    const overlay = modalApi.overlay;
+    const panel = modalApi.modal;
     overlay.dataset.sn2Dialog = 'preset-name';
-    overlay.innerHTML = `<div class="modal sn2-preset-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(title)}</h3>
-      <div class="modal-body sn2-preset-modal-body"><label class="sn2-preset-field" for="${inputId}"><span class="sn2-preset-label">${esc(label)}</span><input id="${inputId}" type="text" class="gb-input sn2-preset-name" placeholder="${esc(placeholder || '')}" value="${esc(value)}"></label></div>
-      <div class="btn-row sn2-preset-modal-actions">
-        <button type="button" class="gb-btn gb-btn-sm cancel-btn">キャンセル</button><button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary ok-btn">${esc(okText)}</button>
-      </div></div>`;
-    const input = overlay.querySelector('.sn2-preset-name');
-    const close = () => overlay.remove();
-    const submit = () => {
-      const name = input.value.trim();
-      if (!name || onSubmit?.(name) === false) return;
-      close();
+    overlay.dataset.e2eId = 'scriptnote-name-overlay';
+    panel.dataset.e2eId = 'scriptnote-name-dialog';
+    panel.classList.add('sn2-preset-modal');
+    modalApi.body.classList.add('sn2-preset-modal-body');
+    modalApi.footer.classList.add('sn2-preset-modal-actions');
+    const input = panel.querySelector('.sn2-preset-name');
+    const status = panel.querySelector('.sn2-preset-status');
+    const setBusy = next => {
+      busy = next;
+      panel.setAttribute('aria-busy', next ? 'true' : 'false');
+      okButton.disabled = next;
+      cancelButton.disabled = next;
     };
-    overlay.querySelector('.ok-btn').addEventListener('click', submit);
-    overlay.querySelector('.cancel-btn').addEventListener('click', close);
-    input.addEventListener('keydown', ev => { if (ev.key === 'Enter') submit(); });
-    overlay.addEventListener('keydown', ev => {
-      if (ev.key !== 'Escape') return;
+    const submit = async () => {
+      if (busy) return;
+      const name = input.value.trim();
+      if (!name) return;
+      setBusy(true);
+      status.textContent = '';
+      try {
+        const accepted = await onSubmit?.(name);
+        if (accepted === false) { setBusy(false); return; }
+        setBusy(false);
+        modalApi.close('submit');
+      } catch (error) {
+        console.error('プリセット名の保存に失敗しました:', error);
+        status.textContent = '保存できませんでした。入力内容を保ったまま再試行できます。';
+        if (typeof showStatus === 'function') showStatus('保存できませんでした。もう一度お試しください', true);
+        setBusy(false);
+      }
+    };
+    okButton.addEventListener('click', submit);
+    cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+    input.addEventListener('keydown', ev => {
+      if (ev.key !== 'Enter') return;
       ev.preventDefault();
-      ev.stopPropagation();
-      close();
+      submit();
     });
-    overlay.addEventListener('click', ev => {
-      if (ev.target === overlay) close();
-    });
-    document.body.appendChild(overlay);
-    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-      window.GBModalShell.enhanceOverlay(overlay);
-    }
-    input.focus();
+    modalApi.open();
     input.select();
+    return true;
   }
 
   _managedPresetConfig(kind) {
@@ -871,11 +916,13 @@ class ScriptNoteComponent extends ToolComponent {
     if (this._reservedPresetName(kind, name)) { if (typeof showStatus === 'function') showStatus('この名前は予約済みです', true); return false; }
     if (!allowOverwrite && Object.prototype.hasOwnProperty.call(data, name)) { if (typeof showStatus === 'function') showStatus('同じ名前がすでにあります', true); return false; }
     const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
-    data[name] = _snToolClone(value);
-    localStorage.setItem(cfg.storageKey, JSON.stringify(data));
     const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
+    data[name] = _snToolClone(value);
     if (!order.includes(name)) order.push(name);
-    _snToolWritePresetOrder(cfg.orderKey, order, data);
+    _snToolWriteStorageAtomically([
+      [cfg.storageKey, JSON.stringify(data)],
+      [cfg.orderKey, JSON.stringify(_snToolFilteredPresetOrder(order, data))],
+    ]);
     _snToolPushStorageHistory(label, beforeStorage, [cfg.storageKey, cfg.orderKey], name);
     this._refreshManagedPresetUi(kind);
     onSaved?.();
@@ -883,12 +930,13 @@ class ScriptNoteComponent extends ToolComponent {
   }
 
   _addTemplatePreset(options = {}) {
-    if (!this._editor?.doc) return;
-    this._showNameModal({
+    if (!this._editor?.doc) return false;
+    return this._showNameModal({
       title: options.title || 'テンプレート登録',
       label: 'テンプレート名',
       placeholder: 'マイテンプレート',
       okText: options.okText || '登録',
+      onClose: options.onClose,
       onSubmit: name => {
         const value = globalThis.GBScriptNoteRoleModel?.createTemplate
           ? globalThis.GBScriptNoteRoleModel.createTemplate(this._editor.doc)
@@ -911,12 +959,13 @@ class ScriptNoteComponent extends ToolComponent {
 
   _addFilterPreset(options = {}) {
     const value = this._currentFilterPresetValue();
-    if (!value) { if (typeof showStatus === 'function') showStatus('フィルタが未設定です'); return; }
-    this._showNameModal({
+    if (!value) { if (typeof showStatus === 'function') showStatus('フィルタが未設定です'); return false; }
+    return this._showNameModal({
       title: options.title || 'フィルタプリセット登録',
       label: 'プリセット名',
       placeholder: 'キャラのみ',
       okText: options.okText || '登録',
+      onClose: options.onClose,
       onSubmit: name => {
         const saved = this._savePresetValue('filter', name, value, {
           allowOverwrite: options.allowOverwrite,
@@ -931,18 +980,31 @@ class ScriptNoteComponent extends ToolComponent {
 
   _showPresetManager(kind) {
     const cfg = this._managedPresetConfig(kind);
-    const titleId = `sn2-preset-manager-${kind}-${Date.now().toString(36)}`;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const owner = document.activeElement;
+    const content = document.createElement('div');
+    content.innerHTML = `<div class="sn2-preset-manager-status" role="status" aria-live="polite"></div>
+      <button type="button" class="tb-text-btn sn2-preset-manager-add" data-pm-add aria-label="${esc(cfg.itemLabel)}を追加"><span class="ico ico-plus"></span>追加</button>
+      <div class="sn2-preset-manager-list" data-pm-list></div>`;
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button'; closeButton.className = 'gb-btn gb-btn-sm cancel-btn'; closeButton.textContent = '閉じる';
+    let busy = false, childOpen = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'scriptnote-preset-manager', title: cfg.title, body: [...content.childNodes], footer: [closeButton],
+      variant: 'standard', geometryKey: 'scriptnote-preset-manager', minWidth: '0', initialFocus: '[data-pm-add]',
+      returnFocus: owner, closeLabel: `${cfg.title}を閉じる`, closeOnEsc: true, closeOnOverlay: true,
+      onBeforeClose: () => !busy && !childOpen,
+    });
+    const overlay = modalApi.overlay;
+    const panel = modalApi.modal;
     overlay.dataset.sn2Dialog = 'preset-manager';
-    overlay.innerHTML = `<div class="modal sn2-preset-manager-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}"><h3 id="${titleId}">${esc(cfg.title)}</h3>
-      <div class="modal-body sn2-preset-manager-body">
-        <button type="button" class="tb-text-btn sn2-preset-manager-add" data-pm-add aria-label="${esc(cfg.itemLabel)}を追加"><span class="ico ico-plus"></span>追加</button>
-        <div class="sn2-preset-manager-list" data-pm-list></div>
-      </div>
-      <div class="btn-row sn2-preset-modal-actions"><button type="button" class="gb-btn gb-btn-sm cancel-btn">閉じる</button></div></div>`;
-    const list = overlay.querySelector('[data-pm-list]');
-    const close = () => overlay.remove();
+    overlay.dataset.e2eId = 'scriptnote-preset-manager-overlay';
+    panel.dataset.e2eId = 'scriptnote-preset-manager-dialog';
+    panel.classList.add('sn2-preset-manager-modal');
+    modalApi.body.classList.add('sn2-preset-manager-body');
+    modalApi.footer.classList.add('sn2-preset-modal-actions');
+    const list = panel.querySelector('[data-pm-list]');
+    const status = panel.querySelector('.sn2-preset-manager-status');
+    const addButton = panel.querySelector('[data-pm-add]');
     const render = () => {
       const names = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
       list.innerHTML = '';
@@ -977,50 +1039,96 @@ class ScriptNoteComponent extends ToolComponent {
         list.appendChild(row);
       });
       if (typeof replaceIcons === 'function') replaceIcons(list);
+      if (busy) list.querySelectorAll('button').forEach(button => { button.disabled = true; });
     };
-    overlay.querySelector('[data-pm-add]').addEventListener('click', () => {
-      const opts = { allowOverwrite: false, okText: '追加', onSaved: render, title: cfg.itemLabel + '追加' };
-      if (kind === 'template') this._addTemplatePreset(opts);
-      else this._addFilterPreset(opts);
+    const setBusy = next => {
+      busy = next;
+      panel.setAttribute('aria-busy', next ? 'true' : 'false');
+      addButton.disabled = next;
+      closeButton.disabled = next;
+      if (next) list.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      else render();
+    };
+    const showMutationFailure = error => {
+      console.error(`${cfg.itemLabel}の更新に失敗しました:`, error);
+      status.textContent = '保存できませんでした。内容を保ったまま再試行できます。';
+      if (typeof showStatus === 'function') showStatus('保存できませんでした。もう一度お試しください', true);
+    };
+    addButton.addEventListener('click', () => {
+      if (busy || childOpen) return;
+      childOpen = true;
+      const opts = {
+        allowOverwrite: false, okText: '追加', onSaved: render, title: cfg.itemLabel + '追加',
+        onClose: () => { childOpen = false; },
+      };
+      const opened = kind === 'template' ? this._addTemplatePreset(opts) : this._addFilterPreset(opts);
+      if (opened === false) childOpen = false;
     });
-    list.addEventListener('click', event => {
+    list.addEventListener('click', async event => {
       const btn = event.target.closest('[data-pm-action]');
       const name = btn?.closest('[data-pm-name]')?.dataset.pmName;
-      if (!btn || !name) return;
+      if (!btn || !name || busy || childOpen) return;
       const action = btn.dataset.pmAction;
-      if (action === 'copy') this._duplicateManagedPreset(kind, name, render);
-      if (action === 'up') this._moveManagedPreset(kind, name, -1, render);
-      if (action === 'down') this._moveManagedPreset(kind, name, 1, render);
-      if (action === 'delete') this._deleteManagedPreset(kind, name, render);
+      let deleteResult = false;
+      if (action === 'copy') {
+        childOpen = true;
+        const opened = this._duplicateManagedPreset(kind, name, render, () => { childOpen = false; });
+        if (opened === false) childOpen = false;
+      }
+      try {
+        if (action === 'up' || action === 'down') {
+          this._moveManagedPreset(kind, name, action === 'up' ? -1 : 1, render);
+          const movedRow = [...list.querySelectorAll('[data-pm-name]')].find(item => item.dataset.pmName === name);
+          const sameAction = movedRow?.querySelector(`[data-pm-action="${action}"]`);
+          const oppositeAction = movedRow?.querySelector(`[data-pm-action="${action === 'up' ? 'down' : 'up'}"]`);
+          const focusTarget = !sameAction?.disabled ? sameAction : (!oppositeAction?.disabled ? oppositeAction : movedRow?.querySelector('[data-pm-action="copy"]'));
+          focusTarget?.focus?.();
+        }
+        if (action === 'delete') {
+          setBusy(true);
+          deleteResult = await this._deleteManagedPreset(kind, name, render);
+          status.textContent = '';
+        }
+      } catch (error) {
+        showMutationFailure(error);
+      } finally {
+        if (action === 'delete') {
+          setBusy(false);
+          const sameRow = [...list.querySelectorAll('[data-pm-name]')].find(item => item.dataset.pmName === name);
+          const focusTarget = deleteResult
+            ? list.querySelector('[data-pm-action]') || addButton
+            : sameRow?.querySelector('[data-pm-action="delete"]') || addButton;
+          focusTarget?.focus?.();
+        }
+      }
     });
-    overlay.querySelector('.cancel-btn').addEventListener('click', close);
-    overlay.addEventListener('keydown', ev => {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      close();
-    });
-    overlay.addEventListener('click', ev => {
-      if (ev.target === overlay) close();
-    });
-    document.body.appendChild(overlay);
+    closeButton.addEventListener('click', () => modalApi.close('close'));
     render();
     if (typeof replaceIcons === 'function') replaceIcons(overlay);
-    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-      window.GBModalShell.enhanceOverlay(overlay);
-    }
+    modalApi.open();
+    return true;
   }
 
-  _duplicateManagedPreset(kind, name, onSaved) {
+  _duplicateManagedPreset(kind, name, onSaved, onClose) {
     const cfg = this._managedPresetConfig(kind);
     const data = _snToolReadJsonObject(cfg.storageKey);
-    if (!Object.prototype.hasOwnProperty.call(data, name)) return;
-    this._showNameModal({
+    if (!Object.prototype.hasOwnProperty.call(data, name)) return false;
+    let savedCopyName = '';
+    const returnFocus = () => {
+      const manager = document.querySelector('[data-e2e-id="scriptnote-preset-manager-dialog"]');
+      const targetName = savedCopyName || name;
+      const row = [...(manager?.querySelectorAll('[data-pm-name]') || [])]
+        .find(item => item.dataset.pmName === targetName);
+      return row?.querySelector('[data-pm-action="copy"]') || manager?.querySelector('[data-pm-add]');
+    };
+    return this._showNameModal({
       title: cfg.itemLabel + '複製',
       label: cfg.itemLabel + '名',
       placeholder: name,
       value: _snToolUniquePresetName(name, Object.keys(data)),
       okText: '複製',
+      returnFocus,
+      onClose,
       onSubmit: copyName => {
         const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
         const nextData = _snToolReadJsonObject(cfg.storageKey);
@@ -1029,13 +1137,16 @@ class ScriptNoteComponent extends ToolComponent {
           if (typeof showStatus === 'function') showStatus('この名前は使えません', true);
           return false;
         }
-        nextData[copyName] = _snToolClone(nextData[name]);
-        localStorage.setItem(cfg.storageKey, JSON.stringify(nextData));
         const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey).filter(item => item !== copyName);
         order.splice(Math.max(0, order.indexOf(name)) + 1, 0, copyName);
-        _snToolWritePresetOrder(cfg.orderKey, order, nextData);
+        nextData[copyName] = _snToolClone(nextData[name]);
+        _snToolWriteStorageAtomically([
+          [cfg.storageKey, JSON.stringify(nextData)],
+          [cfg.orderKey, JSON.stringify(_snToolFilteredPresetOrder(order, nextData))],
+        ]);
         _snToolPushStorageHistory('シナリオ: ' + cfg.itemLabel + '複製', beforeStorage, [cfg.storageKey, cfg.orderKey], copyName);
         this._refreshManagedPresetUi(kind);
+        savedCopyName = copyName;
         onSaved?.();
         if (typeof showStatus === 'function') showStatus(`${cfg.itemLabel}「${copyName}」を複製しました`);
         return true;
@@ -1060,20 +1171,25 @@ class ScriptNoteComponent extends ToolComponent {
 
   async _deleteManagedPreset(kind, name, onSaved) {
     const cfg = this._managedPresetConfig(kind);
+    if (!Object.prototype.hasOwnProperty.call(_snToolReadJsonObject(cfg.storageKey), name)) return false;
+    if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`, { danger: true, okLabel: '削除' })) return false;
+    if (typeof cfConfirm !== 'function' && typeof confirm === 'function' && !confirm(`プリセット「${name}」を削除しますか？`)) return false;
     const data = _snToolReadJsonObject(cfg.storageKey);
-    if (!Object.prototype.hasOwnProperty.call(data, name)) return;
-    if (typeof cfConfirm === 'function' && !await cfConfirm(`プリセット「${name}」を削除しますか？`, { danger: true, okLabel: '削除' })) return;
-    if (typeof cfConfirm !== 'function' && typeof confirm === 'function' && !confirm(`プリセット「${name}」を削除しますか？`)) return;
+    if (!Object.prototype.hasOwnProperty.call(data, name)) return false;
     const beforeStorage = _snToolCaptureStorageHistory([cfg.storageKey, cfg.orderKey]);
+    const order = _snToolPresetNames(cfg.storageKey, cfg.orderKey);
     delete data[name];
-    localStorage.setItem(cfg.storageKey, JSON.stringify(data));
-    _snToolWritePresetOrder(cfg.orderKey, _snToolPresetNames(cfg.storageKey, cfg.orderKey), data);
+    _snToolWriteStorageAtomically([
+      [cfg.storageKey, JSON.stringify(data)],
+      [cfg.orderKey, JSON.stringify(_snToolFilteredPresetOrder(order, data))],
+    ]);
     if (kind === 'filter' && this._activeFilterPreset === name) this._clearActiveFilterPreset();
     const deleteLabel = kind === 'template' ? 'シナリオ: テンプレート削除' : 'シナリオ: フィルタプリセット削除';
     _snToolPushStorageHistory(deleteLabel, beforeStorage, [cfg.storageKey, cfg.orderKey], name);
     this._refreshManagedPresetUi(kind);
     onSaved?.();
     if (typeof showStatus === 'function') showStatus(`${cfg.itemLabel}「${name}」を削除しました`);
+    return true;
   }
 
   _clearActiveFilterPreset() {

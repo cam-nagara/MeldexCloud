@@ -1025,6 +1025,24 @@
       }
     }
 
+    async readBytesFresh(relativePath) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const location = this._dropboxLocation(normalized);
+      const metadata = () => this._rpc('files/get_metadata', {
+        path: location.path, include_deleted: false, include_has_explicit_shared_members: false,
+      }, location);
+      const before = await metadata();
+      const response = await this._content('files/download', { path: location.path }, undefined, location);
+      const downloaded = _safeJsonParse(response.headers.get('dropbox-api-result'), null) || {};
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const after = await metadata();
+      if (!before?.rev || before.rev !== downloaded.rev || before.rev !== after?.rev) {
+        throw Object.assign(new Error('Dropboxファイルの読込中に内容が変わりました'), { status: 409, meldexCode: 'etag_conflict' });
+      }
+      this._rememberMeta(normalized, after);
+      return { bytes, revision: after.rev };
+    }
+
     async getTemporaryLink(relativePath) {
       const normalized = _normalizeRelativePath(relativePath);
       const location = this._dropboxLocation(normalized);
@@ -1244,6 +1262,39 @@
         conflictError.conflictBackupDocumentId = conflict.documentId;
         throw conflictError;
       }
+    }
+
+    async uploadBytesConditional(relativePath, bytes, expectedRevision) {
+      const normalized = _normalizeRelativePath(relativePath);
+      const parent = _dirname(normalized);
+      if (parent) await this.ensureDirectory(parent);
+      try {
+        const mode = expectedRevision == null ? 'add' : { '.tag': 'update', update: String(expectedRevision) };
+        return await this._uploadBytesWithMode(normalized, bytes, mode);
+      } catch (error) {
+        if (!_isDropboxConflictError(error)) throw error;
+        this._forgetMeta(normalized);
+        throw Object.assign(new Error('Dropbox上で同時に更新されました'), { status: 409, meldexCode: 'etag_conflict' });
+      }
+    }
+
+    async deletePathConditional(relativePath, expectedRevision) {
+      void relativePath; void expectedRevision;
+      throw Object.assign(new Error('Dropbox APIはrev条件付き削除を提供しないため、厳密なフォルダー復元では削除できません'), {
+        status: 503, meldexCode: 'strict_cas_unavailable',
+      });
+    }
+
+    async deleteEmptyDirectoryConditional(relativePath) {
+      void relativePath;
+      throw Object.assign(new Error('Dropbox APIは空フォルダーのatomic条件付き削除を提供しません'), {
+        status: 503, meldexCode: 'strict_cas_unavailable',
+      });
+    }
+
+    supportsStrictConditionalDelete() { return false; }
+    folderRestoreCapabilities() {
+      return Object.freeze({ createFileCas: true, updateFileCas: true, deleteFileCas: false, deleteEmptyDirectoryCas: false });
     }
 
     async overwriteBytes(relativePath, bytes) {

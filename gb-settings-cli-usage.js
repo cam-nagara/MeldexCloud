@@ -30,6 +30,7 @@
   function usageRowHtml(key, usage) {
     const label = PROVIDER_LABELS[key] || key;
     const windows = Array.isArray(usage?.windows) ? usage.windows : [];
+    if (!windows.length) return '';
     const bars = windows.length ? windows.map(item => {
       const remaining = Math.max(0, Math.min(100, Number(item?.remaining_percent || 0)));
       const reset = resetLabel(item?.resets_at);
@@ -38,9 +39,15 @@
     }).join('') : `<div aria-label="${_settingsCliEsc(label)}の残り使用量は取得できません" style="height:7px;margin-top:7px;background:repeating-linear-gradient(135deg,var(--bg3),var(--bg3) 6px,var(--border) 6px,var(--border) 8px);border:1px solid var(--border);border-radius:999px;"></div>`;
     return `<section data-cli-usage-provider="${_settingsCliEsc(key)}" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;"><strong style="font-size:12px;">${_settingsCliEsc(label)}</strong><span style="font-size:11px;color:var(--fg2);">プラン: ${_settingsCliEsc(planLabel(usage?.plan))}</span></div>${bars}${usage?.message ? `<div style="margin-top:6px;font-size:11px;color:var(--fg2);">${_settingsCliEsc(usage.message)}</div>` : ''}</section>`;
   }
-  function usagePanelHtml(payload, compact = false) {
+  function selectedProvider() {
+    return String(window._chatState?.provider || document.getElementById('chat-provider')?.value || '').trim();
+  }
+  function usagePanelHtml(payload, compact = false, providerKey = selectedProvider()) {
     const providers = payload?.providers || {};
-    return `<div class="meldex-cli-usage-list" style="display:grid;gap:${compact ? 6 : 8}px;">${['codex', 'claude_code', 'antigravity_cli'].map(key => usageRowHtml(key, providers[key] || {})).join('')}</div>`;
+    const body = Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, providerKey)
+      ? usageRowHtml(providerKey, providers[providerKey] || {})
+      : '';
+    return body ? `<div class="meldex-cli-usage-list" style="display:grid;gap:${compact ? 6 : 8}px;">${body}</div>` : '';
   }
   async function fetchUsage() {
     if (!isDesktopCliSurface()) throw new Error('CLIはデスクトップ版で設定してください。');
@@ -51,7 +58,7 @@
     const host = scope.querySelector('#settings-cli-usage-status');
     if (!host) return;
     host.innerHTML = '<div class="gb-section-desc">プランと残り使用量を確認中...</div>';
-    try { host.innerHTML = usagePanelHtml(await fetchUsage()); }
+    try { host.innerHTML = usagePanelHtml(await fetchUsage()) || ''; }
     catch (error) { host.innerHTML = `<div class="gb-section-desc" style="color:var(--fg2);">この環境ではCLIの利用量を確認できません。${_settingsCliEsc(error?.message || '')}</div>`; }
   }
   function extendSettingsRenderer() {
@@ -96,11 +103,21 @@
       }
     };
     setTimeout(() => document.addEventListener('pointerdown', close, true), 0);
-    try { if (popup) popup.innerHTML = usagePanelHtml(await fetchUsage(), true); }
+    try {
+      const body = usagePanelHtml(await fetchUsage(), true);
+      if (!body) { popup?.remove(); popup = null; return; }
+      if (popup) popup.innerHTML = body;
+    }
     catch (error) { if (popup) popup.textContent = `この環境ではCLIの利用量を確認できません。${error?.message || ''}`; }
   }
   function installChatControls() {
-    if (!isDesktopCliSurface()) {
+    const provider = selectedProvider();
+    const providerSelect = document.getElementById('chat-provider');
+    if (providerSelect && providerSelect.dataset.cliUsageBound !== '1') {
+      providerSelect.dataset.cliUsageBound = '1';
+      providerSelect.addEventListener('change', () => setTimeout(installChatControls, 0));
+    }
+    if (!isDesktopCliSurface() || !Object.prototype.hasOwnProperty.call(PROVIDER_LABELS, provider)) {
       document.getElementById('chat-cli-usage-btn')?.remove();
       if (popup) { popup.remove(); popup = null; }
       return;

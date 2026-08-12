@@ -1,5 +1,5 @@
 /* gb-entity-props-selection.js — エントリ「列一覧」（.entity-props-grid-container、
-   renderEntityPropsGridInto がフルページ版/フロートパネル版/モバイルドロワー共通で付与する
+   renderEntityPropsGridInto がフルページ版/サブパネル版/モバイルドロワー共通で付与する
    クラス）内の文字選択・コピー操作を担当する。シート表示・ビュー状態計画 2026-08-04 で実装。
 
    - 値要素 (.cell-value) はシートセルと共有描画コード（gb-db-cell-ui.js の createValueElement /

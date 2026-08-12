@@ -9,10 +9,24 @@
  * @param {string} scope - 特定シートパス（空=全シート）
  * @returns {Promise<object>} smart-dbレスポンス
  */
-async function doDbSearch(query, scope) {
+async function doDbSearch(query, scope, fallbackSheetPaths) {
   if (!query) return { entities: [] };
   const params = new URLSearchParams({ q: query, filters: '[]' });
-  if (scope) params.set('scope', scope);
+  let sources = [];
+  if (scope) {
+    sources = [{ kind: 'sheet', path: scope }];
+    params.set('scope', scope);
+  } else {
+    const roots = await apiFetch('/outliner-roots').catch(() => []);
+    sources = (Array.isArray(roots) ? roots : [])
+      .filter(root => root && root.visible !== false && root.path)
+      .map(root => ({ kind: 'folder', path: root.path }));
+    if (!sources.length) {
+      sources = Array.from(new Set(Array.from(fallbackSheetPaths || []).filter(Boolean)))
+        .map(path => ({ kind: 'sheet', path }));
+    }
+  }
+  params.set('sources', JSON.stringify(sources));
   return await apiFetch('/smart-db?' + params.toString());
 }
 
@@ -495,25 +509,23 @@ if (typeof window !== 'undefined') {
 function showDbSearchModal(options) {
   const opts = options || {};
   const preferredScope = opts.scope === 'current' ? (state.currentDbPath || '') : (opts.scope || '');
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.style.zIndex = '100';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.style.cssText = 'width:750px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;';
+  const returnFocus = typeof opts.returnFocus === 'function'
+    ? opts.returnFocus
+    : (opts.returnFocus?.isConnected ? opts.returnFocus : null);
+  const body = document.createElement('div');
+  body.className = 'gb-db-search-body';
 
   // ヘッダー
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-shrink:0;';
+  header.className = 'gb-db-search-controls';
 
   const input = document.createElement('input');
   input.type = 'text';
+  input.dataset.e2eId = 'db-search-input';
   input.placeholder = 'シート横断検索...（エントリ名・列の値）';
-  input.style.cssText = 'flex:1;width:auto;min-width:0;padding:6px 10px;font-size:14px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
 
   const scopeSelect = document.createElement('select');
-  scopeSelect.style.cssText = 'width:auto;flex-shrink:0;padding:4px 8px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;';
+  scopeSelect.dataset.e2eId = 'db-search-scope';
   const optAll = document.createElement('option');
   optAll.value = '';
   optAll.textContent = '全シート';
@@ -532,37 +544,61 @@ function showDbSearchModal(options) {
 
   header.appendChild(input);
   header.appendChild(scopeSelect);
-  modal.appendChild(header);
+  body.appendChild(header);
 
   // 結果エリア
   const resultArea = document.createElement('div');
-  resultArea.style.cssText = 'flex:1;overflow-y:auto;min-height:200px;';
+  resultArea.className = 'gb-db-search-results';
+  resultArea.dataset.e2eId = 'db-search-results';
   resultArea.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">キーワードを入力してEnterで検索</div>';
-  modal.appendChild(resultArea);
+  body.appendChild(resultArea);
 
   // フッター
-  const footer = document.createElement('div');
-  footer.style.cssText = 'margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;';
   const statusSpan = document.createElement('span');
-  statusSpan.style.cssText = 'font-size:12px;color:var(--fg2);';
-  footer.appendChild(statusSpan);
-
-  const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px;';
+  statusSpan.className = 'gb-db-search-status';
+  statusSpan.dataset.e2eId = 'db-search-status';
   const exportBtn = document.createElement('button');
+  exportBtn.type = 'button';
+  exportBtn.className = 'gb-btn gb-btn-sm';
+  exportBtn.dataset.e2eId = 'db-search-export';
   exportBtn.textContent = 'CSVエクスポート';
-  exportBtn.style.display = 'none';
+  const setExportVisible = visible => {
+    exportBtn.dataset.dbSearchExportVisible = visible ? '1' : '0';
+    exportBtn.style.display = visible ? '' : 'none';
+    const compact = window.matchMedia?.('(max-width: 600px)')?.matches === true;
+    statusSpan.style.display = compact && !visible ? 'none' : '';
+    closeBtn.style.flex = compact && !visible ? '1 1 100%' : '';
+    closeBtn.style.width = compact && !visible ? '100%' : '';
+  };
   exportBtn.addEventListener('click', () => _exportDbSearchCsv(lastResults));
-  btnRow.appendChild(exportBtn);
   const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'db-search-close';
   closeBtn.textContent = '閉じる';
-  closeBtn.addEventListener('click', () => overlay.remove());
-  btnRow.appendChild(closeBtn);
-  footer.appendChild(btnRow);
-  modal.appendChild(footer);
+  setExportVisible(false);
 
   let lastResults = [];
   let searchSeq = 0;
+  const modalApi = window.GBUI.createModal({
+    id: 'database-cross-sheet-search-dialog',
+    title: 'シート横断検索',
+    body,
+    footer: [statusSpan, exportBtn, closeBtn],
+    variant: 'standard',
+    extraClass: 'gb-db-search-modal',
+    geometryKey: 'database-cross-sheet-search',
+    initialFocus: '[data-e2e-id="db-search-input"]',
+    returnFocus: returnFocus || undefined,
+    onClose: () => { searchSeq += 1; },
+  });
+  const overlay = modalApi.overlay;
+  modalApi.footer.classList.add('gb-db-search-footer');
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.dbSearchDialog = '1';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'db-search-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('close-button'));
 
   // 検索実行
   async function doSearch() {
@@ -570,26 +606,34 @@ function showDbSearchModal(options) {
     const seq = ++searchSeq;
     if (!q) {
       lastResults = [];
-      exportBtn.style.display = 'none';
+      setExportVisible(false);
       resultArea.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">キーワードを入力してEnterで検索</div>';
       statusSpan.textContent = '';
       return;
     }
     lastResults = [];
-    exportBtn.style.display = 'none';
+    setExportVisible(false);
     statusSpan.textContent = '検索中...';
     resultArea.innerHTML = '';
     try {
-      const data = await doDbSearch(q, scopeSelect.value);
+      const knownSheetPaths = Array.from(scopeSelect.options).map(option => option.value).filter(Boolean);
+      const data = await doDbSearch(q, scopeSelect.value, knownSheetPaths);
       if (seq !== searchSeq) return;
       lastResults = data.entities || [];
-      _renderDbSearchResults(resultArea, lastResults, q);
+      _renderDbSearchResults(resultArea, lastResults, q, entry => {
+        modalApi.close('result-select');
+        if (entry.db_path) {
+          selectDatabase(entry.db_path).then(() => {
+            if (entry.path && typeof selectEntity === 'function') selectEntity(entry.path);
+          });
+        }
+      });
       statusSpan.textContent = lastResults.length + '件（' + (data.total_dbs_scanned || '?') + 'シート検索）';
-      exportBtn.style.display = lastResults.length > 0 ? '' : 'none';
+      setExportVisible(lastResults.length > 0);
     } catch (e) {
       if (seq !== searchSeq) return;
       lastResults = [];
-      exportBtn.style.display = 'none';
+      setExportVisible(false);
       resultArea.innerHTML = '<div style="text-align:center;padding:20px;color:var(--red,#d16969);">検索エラー</div>';
       statusSpan.textContent = 'エラー';
     }
@@ -597,18 +641,13 @@ function showDbSearchModal(options) {
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing) doSearch();
-    if (e.key === 'Escape') overlay.remove();
   });
-
-  overlay.appendChild(modal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
-  document.body.appendChild(overlay);
-  setTimeout(() => input.focus(), 50);
+  modalApi.open();
 }
 
 /* --- 結果描画 --- */
 
-function _renderDbSearchResults(container, results, query) {
+function _renderDbSearchResults(container, results, query, onSelect) {
   if (results.length === 0) {
     container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">一致するエントリなし</div>';
     return;
@@ -619,15 +658,19 @@ function _renderDbSearchResults(container, results, query) {
   results.forEach(entry => {
     const item = document.createElement('div');
     item.className = 'db-search-result';
+    item.dataset.e2eId = 'db-search-result';
+    item.tabIndex = 0;
 
     // エントリ名 + シート名
     const titleRow = document.createElement('div');
-    titleRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+    titleRow.className = 'gb-db-search-result-title';
     const nameSpan = document.createElement('span');
+    nameSpan.className = 'gb-db-search-result-name';
     nameSpan.style.cssText = 'font-weight:bold;font-size:13px;';
     nameSpan.innerHTML = _highlightMatch(entry.name, qLower);
     titleRow.appendChild(nameSpan);
     const dbBadge = document.createElement('span');
+    dbBadge.className = 'gb-db-search-result-badge';
     dbBadge.style.cssText = 'font-size:10px;background:var(--bg4);color:var(--fg2);padding:1px 6px;border-radius:8px;';
     dbBadge.textContent = (entry.root_name ? entry.root_name + '/' : '') + entry.db_name;
     titleRow.appendChild(dbBadge);
@@ -638,6 +681,7 @@ function _renderDbSearchResults(container, results, query) {
     const propKeys = Object.keys(props).slice(0, 5);
     if (propKeys.length > 0) {
       const propDiv = document.createElement('div');
+      propDiv.className = 'gb-db-search-result-props';
       propDiv.style.cssText = 'font-size:11px;color:var(--fg2);margin-top:4px;line-height:1.5;';
       propKeys.forEach(pn => {
         const vals = props[pn] || [];
@@ -652,15 +696,14 @@ function _renderDbSearchResults(container, results, query) {
     }
 
     // クリック → 遷移
-    item.addEventListener('click', () => {
-      document.querySelector('.modal-overlay')?.remove();
-      if (entry.db_path) {
-        selectDatabase(entry.db_path).then(() => {
-          if (entry.path && typeof selectEntity === 'function') {
-            selectEntity(entry.path);
-          }
-        });
-      }
+    const activate = () => {
+      if (typeof onSelect === 'function') onSelect(entry);
+    };
+    item.addEventListener('click', activate);
+    item.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      activate();
     });
 
     container.appendChild(item);
@@ -678,7 +721,7 @@ function _highlightMatch(text, qLower) {
     const idx = lower.indexOf(needle, pos);
     if (idx < 0) break;
     out += esc(raw.slice(pos, idx));
-    out += '<span style="background:var(--accent);color:var(--ui-fg-strong);padding:0 2px;border-radius:2px;">'
+    out += '<span style="background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:0 2px;border-radius:2px;">'
       + esc(raw.slice(idx, idx + needle.length))
       + '</span>';
     pos = idx + needle.length;

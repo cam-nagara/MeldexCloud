@@ -12,7 +12,7 @@ const THEME_COLOR_EXTRA_SLOT_SETTINGS_THEME_KEY = '_theme-color-extra-slot-setti
 const STANDARD_PALETTE_THEME_KEY = '_standard-palette-adjust';
 const STANDARD_PALETTE_ADJUST_STORAGE_KEY = 'meldex-standard-palette-adjust';
 const THEME_UI_CUSTOM_COLOR_PREFIX = 'color:';
-const THEME_STYLE_LEFT_ACCENT_WIDTH = '6px';
+const THEME_STYLE_LEFT_ACCENT_WIDTH = '2px';
 const THEME_STYLE_UNDERLINE_WIDTH = '2px';
 const SETTINGS_THEME_COMMON_BODY_BG_KEY = '--content-bg';
 const SETTINGS_THEME_COMMON_BODY_BG_LINKED_KEYS = Object.freeze([
@@ -83,7 +83,7 @@ const UI_STYLE_SECTIONS = {
     { label: '折りたたみ/ドックバー', bg:'--ui-collapsed-tabbar-bg', text:'折りたたみ' },
     { label: 'ボタン', fg:'--ui-fg-default', bg:'--ui-bg-control', text:'ボタン' },
     { label: 'ボタンホバー', fg:'--ui-hover-fg', bg:'--ui-bg-control-hover', text:'ホバー' },
-    { label: 'ボタン選択', fg:'--ui-fg-strong', bg:'--ui-accent', text:'選択' },
+    { label: 'ボタン選択', fg:'--ui-accent-fg', bg:'--ui-accent', text:'選択' },
     { label: '通常文字', fg:'--fg', bg:'--ui-text-bg', bold:'--ui-text-bold', italic:'--ui-text-italic', fontSize:'--ui-text-font-size', text:'通常テキスト', font:'--ui-font' },
     { label: 'サブテキスト', fg:'--fg2', bold:'--ui-muted-bold', italic:'--ui-muted-italic', fontSize:'--ui-muted-font-size', text:'サブテキスト', font:'--ui-muted-font' },
     { label: 'ヘッダー', fg:'--ui-header-fg', bg:'--ui-header-bg', text:'ヘッダー', font:'--ui-header-font' },
@@ -95,7 +95,7 @@ const UI_STYLE_SECTIONS = {
     { label: 'パネル内タブ 選択', fg:'--ui-inner-tab-active-fg', bg:'--ui-inner-tab-active-bg', bold:'--ui-inner-tab-active-font-weight', line:'--ui-inner-tab-active-underline', width:'--ui-inner-tab-underline-width', text:'選択中' },
     { label: 'パネル内タブ 選択背景濃度', numbers:[{ label:'濃度', key:'--ui-inner-tab-active-bg-alpha', min:0, max:100, step:1, unit:'%', slider:true, fallback:14 }], text:'14%' },
     { label: 'パネル内タブ サイズ', numbers:[{ label:'高さ', key:'--ui-inner-tab-height', min:18, max:56, step:1, unit:'px', fallback:28 }, { label:'左右余白', key:'--ui-inner-tab-padding-x', min:0, max:40, step:1, unit:'px', fallback:12 }], text:'タブ' },
-    { label: '強調文字', fg:'--ui-fg-strong', previewBg:'--ui-accent', text:'強調文字' },
+    { label: '強調文字', fg:'--ui-accent-fg', previewBg:'--ui-accent', text:'強調文字' },
     { label: 'スライダー', previewType:'slider', fg:'--ui-range-fill-bg', fgLabel:'塗り', bg:'--ui-range-track-bg', bgLabel:'残り', text:'スライダー' },
     { label: 'アクセント', fg:'--accent', bg:'--accent-bg', text:'アクセント' },
     { label: 'リンク', fg:'--accent2', text:'リンク色' },
@@ -673,7 +673,7 @@ function _settingsThemePreviewStyle(d) {
     );
   }
   if (hasLeftAccent) {
-    shadows.push(`-${THEME_STYLE_LEFT_ACCENT_WIDTH} 0 0 0 ${accent}`);
+    parts.push(`border-left:${THEME_STYLE_LEFT_ACCENT_WIDTH} solid var(--ui-accent, ${accent})`);
     parts.push(`padding-left:${THEME_STYLE_LEFT_ACCENT_WIDTH}`);
   }
   if (hasUnderline) {

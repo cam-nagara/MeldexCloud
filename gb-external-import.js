@@ -272,37 +272,66 @@
 
   function showEagleLibraryPicker(onSubmit) {
     return new Promise(resolve => {
-      const restoreFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay external-import-eagle-picker-overlay';
-      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.52);display:flex;align-items:center;justify-content:center;z-index:10020;';
-      overlay.innerHTML = `
-        <div class="modal gb-section gb-section--boxed gb-mobile-dialog-sheet gb-mobile-dialog-sheet-open external-import-eagle-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="external-import-eagle-picker-title" aria-describedby="external-import-eagle-picker-desc" style="width:min(680px, calc(100vw - 48px));max-height:calc(100vh - 80px);overflow:auto;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.42);padding:14px;">
-          <div id="external-import-eagle-picker-title" class="gb-section-title" style="margin-bottom:8px;">Eagleライブラリを選択</div>
-          <div id="external-import-eagle-picker-desc" class="gb-section-desc" style="margin-bottom:10px;">Eagleライブラリ本体、または .library フォルダが入っている親フォルダのパスを指定してください。</div>
-          <div class="gb-field-row" style="align-items:stretch;gap:8px;margin-bottom:8px;">
-            <input id="external-import-eagle-path" class="gb-input" type="text" autocomplete="off" aria-label="Eagleライブラリのパス" aria-describedby="external-import-eagle-picker-desc external-import-eagle-picker-message" placeholder="例: \\\\NAS\\Public\\Eaglelibrary または D:\\\\Eagle\\資料.library" style="flex:1;min-width:0;">
-            <button type="button" id="external-import-eagle-browse" class="gb-btn gb-btn-sm">参照</button>
-            <button type="button" id="external-import-eagle-scan" class="gb-btn gb-btn-sm">候補を確認</button>
-          </div>
-          <div id="external-import-eagle-picker-message" class="gb-section-desc" role="status" aria-live="polite" aria-atomic="true" style="min-height:18px;margin-bottom:8px;"></div>
-          <div id="external-import-eagle-picker-list" aria-label="Eagleライブラリ候補" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;"></div>
-          <div style="display:flex;gap:8px;justify-content:flex-end;">
-            <button type="button" id="external-import-eagle-picker-cancel" class="gb-btn gb-btn-sm gb-btn-quiet">キャンセル</button>
-            <button type="button" id="external-import-eagle-picker-ok" class="gb-btn gb-btn-sm primary">追加</button>
-          </div>
-        </div>`;
-      document.body.appendChild(overlay);
+      const body = document.createElement('div');
+      body.className = 'external-import-eagle-picker-body';
+      body.innerHTML = `
+        <div id="external-import-eagle-picker-desc" class="gb-section-desc external-import-eagle-picker-desc">Eagleライブラリ本体、または .library フォルダが入っている親フォルダのパスを指定してください。</div>
+        <div class="gb-field-row external-import-eagle-picker-field">
+          <input id="external-import-eagle-path" class="gb-input" type="text" autocomplete="off" aria-label="Eagleライブラリのパス" aria-describedby="external-import-eagle-picker-desc external-import-eagle-picker-message" placeholder="例: \\\\NAS\\Public\\Eaglelibrary または D:\\\\Eagle\\資料.library">
+          <button type="button" id="external-import-eagle-browse" class="gb-btn gb-btn-sm">参照</button>
+          <button type="button" id="external-import-eagle-scan" class="gb-btn gb-btn-sm">候補を確認</button>
+        </div>
+        <div id="external-import-eagle-picker-message" class="gb-section-desc external-import-eagle-picker-message" role="status" aria-live="polite" aria-atomic="true"></div>
+        <div id="external-import-eagle-picker-list" class="external-import-eagle-picker-list" aria-label="Eagleライブラリ候補"></div>`;
+      const cancelButton = document.createElement('button');
+      cancelButton.type = 'button';
+      cancelButton.id = 'external-import-eagle-picker-cancel';
+      cancelButton.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+      cancelButton.textContent = 'キャンセル';
+      const okButton = document.createElement('button');
+      okButton.type = 'button';
+      okButton.id = 'external-import-eagle-picker-ok';
+      okButton.className = 'gb-btn gb-btn-sm primary';
+      okButton.textContent = '追加';
+      let closed = false;
+      const modalApi = window.GBUI.createModal({
+        id: 'external-import-eagle-picker',
+        title: 'Eagleライブラリを選択',
+        body,
+        footer: [cancelButton, okButton],
+        variant: 'mobile-sheet',
+        extraClass: 'external-import-eagle-picker-dialog',
+        initialFocus: '#external-import-eagle-path',
+        closeLabel: 'Eagleライブラリ選択を閉じる',
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          if (!closed) {
+            closed = true;
+            resolve(false);
+          }
+        },
+      });
+      const overlay = modalApi.overlay;
+      overlay.classList.add('modal-overlay', 'external-import-eagle-picker-overlay');
+      overlay.dataset.e2eId = 'external-import-eagle-picker-overlay';
+      modalApi.modal.classList.add('gb-section', 'gb-section--boxed');
+      modalApi.modal.dataset.e2eId = 'external-import-eagle-picker-dialog';
+      modalApi.modal.setAttribute('aria-describedby', 'external-import-eagle-picker-desc');
+      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'external-import-eagle-picker-header-close');
+      modalApi.footer.classList.add('external-import-eagle-picker-actions');
+      modalApi.open();
 
       const input = overlay.querySelector('#external-import-eagle-path');
       const message = overlay.querySelector('#external-import-eagle-picker-message');
       const list = overlay.querySelector('#external-import-eagle-picker-list');
-      const okBtn = overlay.querySelector('#external-import-eagle-picker-ok');
+      const okBtn = okButton;
       let selectedPath = '';
 
       const close = value => {
-        overlay.remove();
-        restoreFocusEl?.focus?.({ preventScroll: true });
+        if (closed) return;
+        closed = true;
+        modalApi.close(value ? 'submit' : 'cancel');
         resolve(!!value);
       };
       const setMessage = (text, isError) => {
@@ -391,17 +420,6 @@
         event.stopPropagation();
         close('');
       });
-      overlay.addEventListener('pointerdown', event => event.stopPropagation());
-      overlay.addEventListener('click', event => {
-        event.stopPropagation();
-        if (event.target === overlay) close('');
-      });
-      overlay.addEventListener('keydown', event => {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          close('');
-        }
-      });
       okBtn.addEventListener('click', async () => {
         const path = selectedPath || await inspect();
         if (!path) return;
@@ -420,13 +438,7 @@
           event.stopPropagation();
           okBtn.click();
         }
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          event.stopPropagation();
-          close('');
-        }
       });
-      input.focus();
       setMessage('親フォルダを指定すると、中のEagleライブラリ候補を一覧表示します。', false);
     });
   }

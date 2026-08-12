@@ -65,13 +65,13 @@ async function _syncDetailPanel(label, path, type, opts) {
       GBPaneBridge.clearDetailPaneShell();
     }
     // ここは「開いているエントリに表示中の詳細を追従させる」ための同期処理。
-    // 開いていないフロートパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
-    // フロートパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
+    // 開いていないサブパネル/ドロワーをここで開くと、既定パネルがメインパネルでも
+    // サブパネルが必ず一緒に開いてしまうため、既に開いている場合だけ追従させる。
     const drawerOpen = !!window.MeldexCloudMobileSideDrawer?.isOpen?.();
-    const floatPanelOpen = typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.isOpen === 'function'
-      ? GBFloatPanel.isOpen('entity')
+    const subPanelOpen = typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.isOpen === 'function'
+      ? GBSubPanel.isOpen()
       : false;
-    if (!drawerOpen && !floatPanelOpen) return false;
+    if (!drawerOpen && !subPanelOpen) return false;
     return openEntityInSplit(path, label);
   }
   // ペインシステム（#rp-detailが.gb-pane-content配下）ではcfg.visibleに関係なく同期する。
@@ -100,9 +100,11 @@ async function _syncDetailPanel(label, path, type, opts) {
   if (type !== 'calendar' && typeof showCalendarDetailTabs === 'function') showCalendarDetailTabs(false);
   if (type !== 'scriptnote') hideScriptnoteDetailTabs();
   const noteEditorTypes = new Set(['page']);
+  const fileInfoTypes = new Set(['folder', 'page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   const dbTypes = new Set(['database']);
   const publishTypes = new Set(['page', 'database', 'calendar', 'csv', 'smart-db', 'board', 'scriptnote']);
   if (typeof showNoteTabs === 'function') showNoteTabs(noteEditorTypes.has(type));
+  if (typeof showFileInfoTab === 'function') showFileInfoTab(fileInfoTypes.has(type));
   if (typeof showDbTabs === 'function') showDbTabs(dbTypes.has(type));
   // ショートカットキータブは常に出し、開いている間は対象アプリに合わせて絞り込みを更新する
   if (typeof showShortcutsDetailTab === 'function') showShortcutsDetailTab();
@@ -131,18 +133,24 @@ async function _syncDetailPanel(label, path, type, opts) {
     // 対象から除外する」）。前の選択対象を残すと、フォルダ表示中にバックリンク
     // タブを開いた時に無関係な古い対象の結果が出てしまうため明示的に空にする。
     window.GBOptionTargetContext?.clear('folder-open');
-    // フォルダ選択時は詳細パネルにフォルダ情報を表示
-    await showDetailPanel(`<div style="padding:8px;font-size:12px;color:var(--fg2);">
-      <div style="font-weight:bold;font-size:12px;color:var(--fg);margin-bottom:8px;">${esc(label)}</div>
-      <div>パス: ${esc(path)}</div>
-      <div data-global-tags-target-path="${esc(path)}"></div>
-      <div data-duplicate-folder-setting data-path="${esc(path)}"></div>
-    </div>`);
+    // フォルダもファイルと同じ情報表示を使い、作成・更新日時を取得する。
+    await _showFileInfoInDetailPanel(path, opts?.fileMeta, {
+      kind: 'folder',
+      type: 'folder',
+      updateTargetContext: false,
+    });
     if (seq !== _detailSyncSeq) return false;
     if (typeof hydrateGlobalTagTargetEditors === 'function') hydrateGlobalTagTargetEditors(document.getElementById('rp-detail') || document);
     window.MeldexDuplicateMonitor?.renderFolderTargetControls?.(document.getElementById('rp-detail') || document);
   } else if (type === 'database') {
+    const fileInfoType = opts?.fileInfoType === 'smart-db' ? 'smart-db' : 'database';
+    void renderFileInfoDetailTab(path, opts?.fileMeta, {
+      type: fileInfoType,
+      typeLabel: fileInfoType === 'smart-db' ? 'スマートシート' : 'シート',
+    });
     await _showDatabaseInfoInDetailPanel(label, path);
+  } else if (fileInfoTypes.has(type)) {
+    void renderFileInfoDetailTab(path, opts?.fileMeta, { type });
   }
 }
 

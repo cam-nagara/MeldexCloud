@@ -225,8 +225,17 @@ async function renderChatHistory() {
       return;
     }
     listEl.innerHTML = '';
+    listEl.setAttribute('role', 'listbox');
+    listEl.setAttribute('aria-label', 'AIチャット履歴');
     items.forEach(item => {
       const div = document.createElement('div');
+      const sessionId = String(item.name || '');
+      const modifiedMs = Date.parse(item.modified || '') || 0;
+      const readMs = Number(localStorage.getItem('meldex-chat-read:' + encodeURIComponent(sessionId)) || 0);
+      const isUnread = modifiedMs > readMs && sessionId !== String(_chatState.sessionId || '');
+      div.dataset.chatSessionId = sessionId;
+      div.dataset.chatUnread = isUnread ? '1' : '0';
+      div.setAttribute('role', 'option');
       div.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;';
       div.onmouseover = () => div.style.background = 'rgba(255,255,255,0.03)';
       div.onmouseout = () => div.style.background = '';
@@ -244,10 +253,13 @@ async function renderChatHistory() {
       const providerIcon = getProviderIconHtml(item.provider || 'gemini', 14);
       div.innerHTML = `<div style="display:flex;align-items:center;gap:4px;color:${isActive ? 'var(--accent)' : 'var(--fg)'};${isActive ? 'font-weight:bold;' : ''}">${providerIcon}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(displayTitle)}</span> ${msgCount}</div>${targetInfo}${modifiedInfo}`;
       div.addEventListener('click', () => {
+        localStorage.setItem('meldex-chat-read:' + encodeURIComponent(sessionId), String(Date.now()));
+        div.dataset.chatUnread = '0';
         openSavedChat(item.path, '', item.source_folder || item.sourceFolder);
       });
       listEl.appendChild(div);
     });
+    window.MeldexChatListbox?.decorateHistory?.();
   } catch (e) {
     listEl.innerHTML = '<div style="padding:8px;color:var(--fg2);font-size:11px;text-align:center;">履歴を取得できません</div>';
   } finally {
@@ -420,7 +432,8 @@ document.getElementById('chat-search-scope')?.addEventListener('change', () => {
 
 // Enter送信、Shift+Enter改行
 document.getElementById('chat-input')?.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
+  const shortcutId = window.MeldexShortcutRegistry?.matchEvent(e, ['chat']) || '';
+  if (shortcutId === 'chat.send' || (!window.MeldexShortcutRegistry && e.key === 'Enter' && !e.shiftKey)) {
     if (typeof _chatIsImeEnterEvent === 'function' && _chatIsImeEnterEvent(e)) return;
     e.preventDefault();
     chatSend();

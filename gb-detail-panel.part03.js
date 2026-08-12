@@ -120,31 +120,59 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   setTimeout(() => body.querySelector('#dp-cal-title')?.focus(), 50);
 }
 
-async function _dpCalSave(editId) {
-  // Phase C: CalendarComponentに直接undo記録を依頼
-  const formRoot = document.getElementById('dp-cal-title')?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
+function _dpCalSave(editId) {
+  const titleInput = document.getElementById('dp-cal-title');
+  const formRoot = titleInput?.closest('.modal, #rp-detail, [id^="detail-panel-"]');
+  if (formRoot?._dpCalSavePromise) return formRoot._dpCalSavePromise;
   const calComponent = formRoot?._calComponent || document.getElementById('rp-calendar')?._calComponent || null;
-  if (calComponent) calComponent.pushUndo(editId ? 'イベント編集' : 'イベント作成');
-  const data = {
-    title: document.getElementById('dp-cal-title')?.value || '',
-    start: document.getElementById('dp-cal-start')?.value || '',
-    end: document.getElementById('dp-cal-end')?.value || '',
-    all_day: document.getElementById('dp-cal-allday')?.checked ? 1 : 0,
-    color: getColorSwatchValue(document.getElementById('dp-cal-color'), ''),
-    location: document.getElementById('dp-cal-location')?.value || '',
-    url: document.getElementById('dp-cal-url')?.value || '',
-    description: document.getElementById('dp-cal-desc')?.value || '',
-    calendar_id: document.getElementById('dp-cal-calendar')?.value || '',
-    user: getUsername(),
+  const saveButton = formRoot?.querySelector('#dp-cal-save') || document.getElementById('dp-cal-save');
+  const modalApi = formRoot?._detailLegacyModalApi || titleInput?.closest('[data-e2e-id="detail-legacy-modal-content"]')?._detailLegacyModalApi || null;
+  const setBusy = (next) => {
+    const busy = !!next;
+    modalApi?.setBusy?.(busy);
+    if (formRoot) formRoot.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (saveButton) saveButton.disabled = busy;
   };
-  try {
-    if (editId) await apiPut('/cal/events/' + editId, data);
-    else await apiPost('/cal/events', data);
-    showStatus('イベントを保存しました');
-    // Phase C: CalendarComponentに直接リロードを通知
-    if (calComponent) calComponent.reload();
-    _hideDetailPanel();
-  } catch { showStatus('保存に失敗', true); }
+  const operation = (async () => {
+    setBusy(true);
+    try {
+      // Phase C: CalendarComponentに直接undo記録を依頼。同期例外も保存失敗として
+      // 扱い、finallyで必ず操作可能状態へ戻す。
+      if (calComponent) calComponent.pushUndo(editId ? 'イベント編集' : 'イベント作成');
+      const data = {
+        title: titleInput?.value || '',
+        start: document.getElementById('dp-cal-start')?.value || '',
+        end: document.getElementById('dp-cal-end')?.value || '',
+        all_day: document.getElementById('dp-cal-allday')?.checked ? 1 : 0,
+        color: getColorSwatchValue(document.getElementById('dp-cal-color'), ''),
+        location: document.getElementById('dp-cal-location')?.value || '',
+        url: document.getElementById('dp-cal-url')?.value || '',
+        description: document.getElementById('dp-cal-desc')?.value || '',
+        calendar_id: document.getElementById('dp-cal-calendar')?.value || '',
+        user: getUsername(),
+      };
+      if (editId) await apiPut('/cal/events/' + editId, data);
+      else await apiPost('/cal/events', data);
+      showStatus('イベントを保存しました');
+      // Phase C: CalendarComponentに直接リロードを通知
+      if (calComponent) calComponent.reload();
+      // 保存成功によるプログラム閉鎖だけはbusy解除後に通す。
+      setBusy(false);
+      _hideDetailPanel();
+      return true;
+    } catch {
+      showStatus('保存に失敗', true);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  })();
+  if (!formRoot) return operation;
+  const tracked = operation.finally(() => {
+    if (formRoot._dpCalSavePromise === tracked) formRoot._dpCalSavePromise = null;
+  });
+  formRoot._dpCalSavePromise = tracked;
+  return tracked;
 }
 
 async function _dpCalDelete(id) {
@@ -276,8 +304,9 @@ async function openEntityInSplit(entityPath, entityName) {
   _splitPath = entityPath;
   _splitDirty = false;
   if (window.MeldexCloudMobileSideDrawer?.openEntity?.(entityPath, name)) return true;
-  if (typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.open === 'function') {
-    return GBFloatPanel.open('entity', { path: entityPath, label: name });
+  if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
+    if (typeof openRightPanelTab === 'function') openRightPanelTab('subpanel');
+    return GBSubPanel.open({ type: 'entity', path: entityPath, label: name });
   }
   if (typeof selectEntity === 'function') {
     await selectEntity(entityPath);

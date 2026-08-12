@@ -18,6 +18,21 @@
     return typeof lucide === 'function' ? lucide(name, size) : '';
   }
 
+  // CLI（Codex CLI/Claude Code/Antigravity CLI）はローカルの定額制CLIをサブプロセス起動する
+  // ため、デスクトップ版（ローカルPythonサーバーが動く環境）でのみ選択肢に出す。
+  // Meldex Cloud（ブラウザのみ）ではサブプロセスを起動できないため表示しない
+  // （gb-settings-cli-usage.js の isDesktopCliSurface() と同じ判定を踏襲）。
+  const CLI_PROVIDER_OPTIONS = [
+    { value: 'codex', label: 'Codex CLI' },
+    { value: 'claude_code', label: 'Claude Code' },
+    { value: 'antigravity_cli', label: 'Antigravity CLI' },
+  ];
+
+  function _isDesktopCliSurface() {
+    return !(window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || ''));
+  }
+
   function _readRaw() {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; }
     catch { return {}; }
@@ -159,12 +174,19 @@
       <div class="knowledge-auto-ai-panel" data-knowledge-auto-ai-panel ${aiEnabled ? '' : 'hidden'}>
         <label class="gb-field-row">
           <span class="gb-label" style="min-width:140px;">使うAI</span>
-          <select id="knowledge-auto-provider" class="gb-select" data-setting="knowledge-auto-provider" style="width:150px;">
-            <option value="anthropic" ${selectedProvider === 'anthropic' ? 'selected' : ''}>Claude</option>
-            <option value="openai" ${selectedProvider === 'openai' ? 'selected' : ''}>ChatGPT</option>
-            <option value="gemini" ${selectedProvider === 'gemini' ? 'selected' : ''}>Gemini</option>
+          <select id="knowledge-auto-provider" class="gb-select" data-setting="knowledge-auto-provider" style="width:170px;">
+            <optgroup label="APIキーを使う">
+              <option value="anthropic" ${selectedProvider === 'anthropic' ? 'selected' : ''}>Claude</option>
+              <option value="openai" ${selectedProvider === 'openai' ? 'selected' : ''}>ChatGPT</option>
+              <option value="gemini" ${selectedProvider === 'gemini' ? 'selected' : ''}>Gemini</option>
+            </optgroup>
+            ${_isDesktopCliSurface() ? `
+            <optgroup label="CLI（追加料金なし）">
+              ${CLI_PROVIDER_OPTIONS.map(item => `<option value="${item.value}" ${selectedProvider === item.value ? 'selected' : ''}>${_esc(item.label)}</option>`).join('')}
+            </optgroup>` : ''}
           </select>
           <input id="knowledge-auto-model" type="text" class="gb-input" data-setting="knowledge-auto-model" style="flex:1;min-width:160px;" value="${_esc(settings.model)}" placeholder="空欄なら標準モデル">
+          ${fieldHelp('CLIを選ぶとAPIの追加料金は発生しません。お使いのPCにそのCLIがインストール・ログイン済みである必要があります。未インストールや未ログインの場合は自動抽出がスキップされ、端末内の簡易抽出だけが動きます。')}
         </label>
       </div>
       <details class="knowledge-auto-details">

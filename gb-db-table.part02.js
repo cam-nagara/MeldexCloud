@@ -991,16 +991,16 @@ function renderEntityCell(entityName, propName, ctx, options) {
       );
     });
 
-    // 候補値追加は基本機能。ステータス機能OFFでも値のある列型では常に＋を出す
-    // （ユーザー判断・案A 2026-07-25。従来の「OFF時は1セル1値」設計を反転）。
-    // button/formula/rollup 等の非値型は上の分岐で処理されここには来ないが、防御的に除外する。
-    const _nonValueTypes = ['button', 'formula', 'rollup', 'multi-source-relation', 'chat'];
-    const _allowAdd = (!ptc || !_nonValueTypes.includes(ptc.type)) && !_hideStatusUi;
-    if (_allowAdd) {
-      const addBtn = document.createElement('span');
+    // 単独の「＋」は、フィルター後の表示件数ではなく元データの候補値が0件の時だけ出す。
+    if (typeof _cellUiShouldShowStandaloneAdd === 'function'
+        && _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx)) {
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
+      addBtn.dataset.e2eId = `${td.dataset.e2eId || 'db-table-cell'}-add`;
       addBtn.innerHTML = lucide('plus', 14);
       addBtn.title = ptc && ptc.type === 'select' ? '値を選択' : '候補値を追加';
+      addBtn.setAttribute('aria-label', addBtn.title);
       addBtn.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1181,16 +1181,16 @@ function renderEntityRow(entityName, ctx, options) {
     const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
     if (!ep) return;
     const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
-    const target = cfg.defaultPanel || 'main';
+    const target = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
+      ? 'right-sidebar'
+      : (cfg.defaultPanel || 'main');
     const sourcePaneId = e.target.closest('.gb-pane')?.dataset?.paneId || '';
-    if (target === 'float') {
-      if (typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(ep, entityName, { linkType: 'entity', sourcePaneId });
-    } else if (target === 'sidebar') {
-      // フロートパネル／サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
+    if (target === 'right-sidebar') {
+      // サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
       // 右サイドバー補助操作の制限に触れるため、呼び出し元要素を渡して判定させる
       // （計画書「右サイドバー操作の制限」節）。制限時は openLinkInRightPane 側が
       // 実行を中止し、短いステータス通知を出す。
-      if (typeof openLinkInRightPane === 'function') openLinkInRightPane(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e.target });
+      if (typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e.target });
     } else {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
     }

@@ -739,19 +739,114 @@
     return !!(cfg.betaFeedbackRelay === true || dbPath === FEEDBACK_DB_DIR || dbPath.startsWith(FEEDBACK_DB_DIR + '/'));
   }
 
+  // 送信済みの入力から本文の材料を組み立てる。Meldex本体側
+  // (app/meldex_debugger_reports.py) と同じ見出しの並びを使う。
+  const FEEDBACK_SECTION_ORDER = ['件名', '種別', '内容', '再現手順', '期待する動作', '画面/機能', '重要度', '環境'];
+  const FEEDBACK_PRIVATE_FIELDS = new Set(['お名前', '連絡先']);
+
+  function _fieldText(value) {
+    if (value == null) return '';
+    if (Array.isArray(value)) return value.map(_fieldText).filter(Boolean).join(', ');
+    if (typeof value === 'object') return String(value.value ?? value.text ?? value.label ?? '').trim();
+    return String(value).trim();
+  }
+
+  function _feedbackReportType(kind) {
+    const normalized = _fieldText(kind);
+    if (normalized === '要望' || normalized === '改善') return 'request';
+    if (normalized === '質問') return 'question';
+    return 'bug';
+  }
+
+  function buildFeedbackSections(fields) {
+    const source = fields && typeof fields === 'object' ? fields : {};
+    const sections = [];
+    FEEDBACK_SECTION_ORDER.forEach((label) => {
+      const value = _fieldText(source[label]);
+      if (value) sections.push({ heading: label, body: value });
+    });
+    const extra = {};
+    Object.keys(source).forEach((key) => {
+      if (FEEDBACK_SECTION_ORDER.includes(key) || FEEDBACK_PRIVATE_FIELDS.has(key)) return;
+      const value = _fieldText(source[key]);
+      if (value) extra[key] = value;
+    });
+    if (Object.keys(extra).length) {
+      sections.push({ heading: 'そのほかの入力', body: JSON.stringify(extra, null, 2) });
+    }
+    return sections;
+  }
+
+  const DEBUGGER_UNAVAILABLE = { ok: false, skipped: true, configured: false, reason: 'cloud-send-needs-desktop-server' };
+
+  function _isCloudDataMode() {
+    return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+  }
+
+  async function _getJson(path) {
+    const response = await fetch((typeof API_BASE === 'string' ? API_BASE : '/api') + path, {
+      headers: _authHeaders(),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  }
+
+  async function getDebuggerSettings() {
+    if (_isCloudDataMode()) return { ...DEBUGGER_UNAVAILABLE, baseUrl: '', projectSlug: '' };
+    return _getJson('/debugger/settings');
+  }
+
+  async function saveDebuggerSettings(baseUrl, projectSlug) {
+    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    const response = await fetch((typeof API_BASE === 'string' ? API_BASE : '/api') + '/debugger/settings', {
+      method: 'PUT',
+      headers: _authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ baseUrl: String(baseUrl || '').trim(), projectSlug: String(projectSlug || '').trim() }),
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json())?.detail || ''; } catch (_) {}
+      throw new Error(detail || `HTTP ${response.status}`);
+    }
+    return response.json();
+  }
+
+  async function getDebuggerQueue() {
+    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    return _getJson('/debugger/queue');
+  }
+
+  async function flushDebuggerQueue() {
+    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    return _postJson('/debugger/flush', {}, false);
+  }
+
+  async function sendDebuggerReport(payload) {
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+      return { ok: false, skipped: true, reason: 'cloud-send-needs-desktop-server' };
+    }
+    return _postJson('/debugger/reports', payload, false);
+  }
+
   async function maybeSendFeedbackForm(data) {
     if (!_isFeedbackFormPayload(data)) return { ok: false, skipped: true, reason: 'not-feedback-form' };
-    const payload = {
-      dbPath: data.dbPath || '',
-      formId: data.formConfig?.id || '',
-      name: data.name || '',
-      fields: data.fields || {},
-      source: data.source || 'meldex-form',
-      sentAt: _nowIso(),
-      runtimeMode: window.MeldexRuntimeAdapter?.getMode?.() || 'legacy',
-      userAgent: navigator.userAgent || '',
-    };
-    return sendGoogle('feedback', payload);
+    const fields = data.fields || {};
+    const sections = buildFeedbackSections(fields);
+    if (!sections.length) return { ok: false, skipped: true, reason: 'empty-feedback' };
+    sections.push({
+      heading: '報告元',
+      body: `Meldex内のフィードバックフォーム（${window.MeldexRuntimeAdapter?.getMode?.() || 'legacy'}）`,
+    });
+    try {
+      return await sendDebuggerReport({
+        reportType: _feedbackReportType(fields['種別']),
+        origin: 'feedback-form',
+        sections,
+      });
+    } catch (error) {
+      // 送信できなくても、フォームの入力はMeldex内の保管シートに残っている。
+      return { ok: false, skipped: true, reason: 'debugger-send-failed', message: String(error?.message || error) };
+    }
   }
 
   async function flushTelemetry(reason) {
@@ -763,10 +858,11 @@
       if (!_shouldPersistTelemetrySummary(summary.reason)) {
         return { ok: true, delivered: false, skipped: true, reason: 'telemetry-snapshot-only', summary };
       }
-      const tasks = [];
-      tasks.push(_postJson('/beta/usage', summary, reason !== 'manual'));
-      tasks.push(sendGoogle('usage', summary));
-      const results = await Promise.allSettled(tasks);
+      // 利用状況はMeldex内の記録だけに残す。外部への送信先は持たない
+      // (計画書 Phase 2-4: Debugger側に対応する受け口が無いため外部送信は廃止)。
+      const results = await Promise.allSettled([
+        _postJson('/beta/usage', summary, reason !== 'manual'),
+      ]);
       const delivered = results.some(_isDeliveredTelemetryResult);
       if (delivered) _resetVolatileCounters();
       return { ok: delivered, delivered, skipped: !delivered, results };
@@ -820,11 +916,12 @@
     }
     if (!isCrashReportEnabled() || _isBypassMode()) return;
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+      // Cloud版はサーバーを持たないため、この端末内の記録だけを残す。
       _writeCloudCrashReport(payload).catch(() => {});
     } else {
+      // 本体サーバーが記録し、同意があればDebuggerの送信待ちへ回す。
       _postJson('/beta/crash-report', payload, true).catch(() => {});
     }
-    sendGoogle('crash', payload).catch(() => {});
   }
 
   function _checkbox(id, label, checked) {
@@ -1000,10 +1097,53 @@
     status.className = 'gb-section-desc';
     status.id = 'settings-feedback-send-status';
     status.setAttribute('aria-live', 'polite');
-    status.textContent = isGoogleConfigured()
-      ? 'Google Apps Script Web App: 設定済み'
-      : 'Google Apps Script Web App: 未設定（Meldex内の記録のみ有効）';
+    status.textContent = '送信先の状態を確認しています…';
     section.appendChild(status);
+
+    const debuggerUrlRow = document.createElement('label');
+    debuggerUrlRow.className = 'gb-field-row';
+    const debuggerUrlLabel = document.createElement('span');
+    debuggerUrlLabel.className = 'gb-label';
+    debuggerUrlLabel.textContent = '不具合報告の送信先';
+    if (typeof fieldHelp === 'function') {
+      debuggerUrlLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('不具合・要望を受け取る管理システムのアドレスです。空にすると外部への送信を行わず、この端末内の記録だけになります'));
+    }
+    const debuggerUrlInput = document.createElement('input');
+    debuggerUrlInput.id = 'settings-debugger-base-url';
+    debuggerUrlInput.className = 'gb-input';
+    debuggerUrlInput.placeholder = 'https://...';
+    debuggerUrlRow.append(debuggerUrlLabel, debuggerUrlInput);
+    section.appendChild(debuggerUrlRow);
+
+    const debuggerSlugRow = document.createElement('label');
+    debuggerSlugRow.className = 'gb-field-row';
+    const debuggerSlugLabel = document.createElement('span');
+    debuggerSlugLabel.className = 'gb-label';
+    debuggerSlugLabel.textContent = 'ソフトの識別名';
+    if (typeof fieldHelp === 'function') {
+      debuggerSlugLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('送信先で、このソフトを見分けるための名前です。英小文字・数字・ハイフンで指定します'));
+    }
+    const debuggerSlugInput = document.createElement('input');
+    debuggerSlugInput.id = 'settings-debugger-project-slug';
+    debuggerSlugInput.className = 'gb-input';
+    debuggerSlugInput.placeholder = 'meldex';
+    debuggerSlugRow.append(debuggerSlugLabel, debuggerSlugInput);
+    section.appendChild(debuggerSlugRow);
+
+    const debuggerActions = document.createElement('div');
+    debuggerActions.className = 'gb-field-row settings-feedback-actions';
+    const saveDebuggerButton = document.createElement('button');
+    saveDebuggerButton.type = 'button';
+    saveDebuggerButton.className = 'gb-btn gb-btn-sm';
+    saveDebuggerButton.dataset.e2eId = 'settings-debugger-save';
+    saveDebuggerButton.textContent = '送信先を保存';
+    const flushDebuggerButton = document.createElement('button');
+    flushDebuggerButton.type = 'button';
+    flushDebuggerButton.className = 'gb-btn gb-btn-sm';
+    flushDebuggerButton.dataset.e2eId = 'settings-debugger-flush';
+    flushDebuggerButton.textContent = '送信待ちを今すぐ送る';
+    debuggerActions.append(saveDebuggerButton, flushDebuggerButton);
+    section.appendChild(debuggerActions);
 
     const googleUrlRow = document.createElement('label');
     googleUrlRow.className = 'gb-field-row';

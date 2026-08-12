@@ -1,5 +1,7 @@
 /* キャラ／タイプ分離管理。上下の一覧は互いにスクロール位置を共有しない。 */
 .sn2-role-management {
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   min-height: 0;
   overflow: hidden;
@@ -10,13 +12,28 @@
   display: flex;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 0;
+  min-height: 150px;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius-sm);
   background: var(--ui-bg-panel);
 }
+.sn2-role-manage-separator {
+  position: relative;
+  flex: 0 0 10px;
+  min-height: 10px;
+  cursor: row-resize;
+  touch-action: none;
+}
+.sn2-role-manage-separator::before {
+  content: '';
+  position: absolute;
+  inset: 4px 0;
+  border-top: 2px solid var(--ui-border);
+}
+.sn2-role-manage-separator:hover::before,
+.sn2-role-manage-separator:focus-visible::before { border-color: var(--ui-accent); }
 .sn2-role-manage-header {
   display: flex;
   flex: 0 0 auto;
@@ -49,12 +66,12 @@
 }
 .sn2-role-manage-table {
   width: 100%;
-  min-width: 460px;
+  min-width: 560px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: var(--ui-font-11);
 }
-.sn2-role-manage-table--characters { min-width: 610px; }
+.sn2-role-manage-table--characters { min-width: 560px; }
 .sn2-role-manage-table th {
   position: sticky;
   top: 0;
@@ -66,6 +83,20 @@
   text-align: left;
   white-space: nowrap;
 }
+.sn2-role-manage-table th { box-sizing: border-box; }
+.sn2-role-manage-format-header { cursor: pointer; }
+.sn2-role-column-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 3;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sn2-role-column-resizer:hover,
+.sn2-role-column-resizer:focus-visible { background: color-mix(in srgb, var(--ui-accent) 35%, transparent); }
 .sn2-role-manage-table td {
   height: 32px;
   padding: 3px 5px;
@@ -73,18 +104,37 @@
   vertical-align: middle;
 }
 .sn2-role-manage-table th:first-child,
-.sn2-role-manage-table td:first-child { width: 32px; text-align: center; }
-.sn2-role-manage-table--types th:nth-child(2) { width: 34%; }
-.sn2-role-manage-table--types th:nth-child(3) { width: 36%; }
-.sn2-role-manage-table--types th:last-child { width: 142px; }
-.sn2-role-manage-table--characters th:nth-child(2) { width: 42px; }
-.sn2-role-manage-table--characters th:nth-child(3) { width: 27%; }
-.sn2-role-manage-table--characters th:nth-child(4) { width: 30%; }
-.sn2-role-manage-table--characters th:last-child { width: 142px; }
+.sn2-role-manage-table td:first-child { width: 32px; padding-inline: 2px; text-align: center; }
+.sn2-role-manage-table th:nth-child(2),
+.sn2-role-manage-table td:nth-child(2) { width: 32px; text-align: center; }
+.sn2-role-manage-table--types th:nth-child(3) { width: 34%; }
+.sn2-role-manage-table--types th:nth-child(4) { width: 36%; }
+.sn2-role-manage-table--types th:last-child { width: 72px; }
+.sn2-role-manage-table--characters th:nth-child(3) { width: 42px; }
+.sn2-role-manage-table--characters th:nth-child(4) { width: 27%; }
+.sn2-role-manage-table--characters th:nth-child(5) { width: 30%; }
+.sn2-role-manage-table--characters th:last-child { width: 72px; }
+.sn2-role-manage-grip {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--ui-radius-xs);
+  background: transparent;
+  color: var(--ui-fg-muted);
+  cursor: grab;
+  touch-action: none;
+}
+.sn2-role-manage-grip:hover,
+.sn2-role-manage-grip:focus-visible { background: var(--ui-bg-control); color: var(--ui-fg-default); }
+.sn2-role-manage-grip:active { cursor: grabbing; }
 .sn2-role-manage-row:hover { background: var(--ui-bg-control); }
 .sn2-role-manage-row.selected { background: var(--ui-bg-selected); }
 .sn2-role-manage-row.sn2-dragging { opacity: 0.4; }
 .sn2-role-manage-row.sn2-drop-above { box-shadow: inset 0 2px 0 var(--ui-accent); }
+.sn2-role-manage-row.sn2-drop-below { box-shadow: inset 0 -2px 0 var(--ui-accent); }
 .sn2-role-manage-row.is-editing { outline: 1px solid var(--ui-accent); outline-offset: -1px; }
 .sn2-role-manage-name,
 .sn2-role-type-select {
@@ -163,6 +213,14 @@
 .sn2-role-delete-body {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.sn2-role-delete-modal .gb-modal-body,
+.sn2-role-delete-body > * {
+  min-width: 0;
+  max-width: 100%;
 }
 .sn2-role-delete-body p,
 .sn2-role-delete-body ul {
@@ -170,9 +228,13 @@
 }
 .sn2-role-delete-body ul {
   max-height: 132px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-left: 22px;
   color: var(--ui-fg-muted);
+}
+.sn2-role-delete-body li {
+  overflow-wrap: anywhere;
 }
 .sn2-role-delete-field {
   display: grid;
@@ -228,6 +290,7 @@
   .sn2-role-name-color {
     width: 44px;
   }
+  .sn2-role-manage-grip { width: 44px; height: 44px; }
   .sn2-role-manage-actions {
     gap: 4px;
   }

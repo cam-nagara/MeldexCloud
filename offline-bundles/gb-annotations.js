@@ -510,7 +510,8 @@ function _getActivePaneTabByType(type) {
 }
 
 function _getStandaloneAnnotationHost() {
-  return document.getElementById('btn-tb-annotation')?.parentElement
+  return document.getElementById('ann-desktop-host')
+    || document.getElementById('btn-tb-annotation')?.parentElement
     || document.getElementById('ann-overlay')?.parentElement
     || document.getElementById('main-views')
     || document.getElementById('main-area')
@@ -652,6 +653,52 @@ const ann = {
   strokeEndRequested: false,
   targetPath: '', // 現在のファイルパス
 };
+function _readTrayAnnotationHostQuery() {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const targetPath = _normalizeAnnotationTargetPath(params.get('annotation_target') || '');
+    const annotationId = String(params.get('annotation_id') || '').trim();
+    if (params.get('tray') !== '1' || targetPath !== '_meldex/desktop' || !annotationId) return null;
+    return {
+      targetPath,
+      annotationId,
+      modified: '',
+      pollTimer: 0,
+      initialized: false,
+    };
+  } catch {
+    return null;
+  }
+}
+let _trayAnnotationHost = _readTrayAnnotationHostQuery();
+function _configureTrayAnnotationHostFromLocation() {
+  if (_trayAnnotationHost) return _trayAnnotationHost;
+  _trayAnnotationHost = _readTrayAnnotationHostQuery();
+  return _trayAnnotationHost;
+}
+function _isTrayAnnotationHost() {
+  return !!_trayAnnotationHost;
+}
+function _trayAnnotationApiFetch(path, options) {
+  if (_isTrayAnnotationHost() && typeof _origApiFetch === 'function') {
+    return _origApiFetch(path, options);
+  }
+  return apiFetch(path, options);
+}
+function _trayAnnotationApiPut(path, body) {
+  return _trayAnnotationApiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+}
+function _trayAnnotationApiPost(path, body) {
+  return _trayAnnotationApiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+}
 let _annLoadSeq = 0;
 let _annMutationSeq = 0;
 let _annMutationTargetPath = '';
@@ -679,6 +726,10 @@ function _markAnnotationMutated(targetPath) {
   _annMutationTargetPath = _normalizeAnnotationTargetPath(targetPath || ann?.targetPath || '');
 }
 function _resolveAnnotationWriteTarget() {
+  if (_isTrayAnnotationHost()) {
+    ann.targetPath = _trayAnnotationHost.targetPath;
+    return ann.targetPath;
+  }
   const current = (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '';
   const targetPath = current || ann.targetPath || '';
   if (targetPath) ann.targetPath = targetPath;
@@ -704,7 +755,7 @@ function _normalizeAnnotationHistoryRow(row) {
 
 async function _fetchAnnotationHistoryRow(annId) {
   if (!annId) return null;
-  const rows = await apiFetch('/annotations?ann_id=' + encodeURIComponent(annId) + '&limit=1');
+  const rows = await _trayAnnotationApiFetch('/annotations?ann_id=' + encodeURIComponent(annId) + '&limit=1');
   return _normalizeAnnotationHistoryRow(Array.isArray(rows) ? rows[0] : null);
 }
 
@@ -820,8 +871,20 @@ async function _pushAnnotationCreateHistory(annId, label, detail) {
 
 async function _putAnnotationWithHistory(annId, body, label, detail) {
   const before = await _fetchAnnotationHistoryRow(annId);
-  await apiPut('/annotations/' + encodeURIComponent(annId), body);
+  const payload = { ...(body || {}) };
+  if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
+    const expectedModified = _trayAnnotationHost.modified || before?.modified || '';
+    if (expectedModified) payload.expected_modified = expectedModified;
+  }
+  if (_isTrayAnnotationHost()) {
+    await _trayAnnotationApiPut('/annotations/' + encodeURIComponent(annId), payload);
+  } else {
+    await apiPut('/annotations/' + encodeURIComponent(annId), payload);
+  }
   const after = await _fetchAnnotationHistoryRow(annId);
+  if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
+    _trayAnnotationHost.modified = String(after?.modified || '');
+  }
   _pushAnnotationHistory(label || '注釈: 更新', before, after, detail);
   return after;
 }
@@ -1521,6 +1584,14 @@ annOverlay.addEventListener('pointercancel', (e) => {
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   _resetAnnotationStrokeState();
 });
+
+if (typeof _initTrayAnnotationHost === 'function') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => _initTrayAnnotationHost(), { once: true });
+  } else {
+    _initTrayAnnotationHost();
+  }
+}
 // Audit-P2 H-7: document キャプチャで UI 要素の click/change をガードする
 // スクロールコンテナ内のインタラクティブ要素のみ対象（タブバー・ヘッダー等は除外）。
 if (typeof ViewLock !== 'undefined' && typeof ViewLock.installInteractionInterceptor === 'function') {
@@ -1673,8 +1744,10 @@ function _sanitizeAnnotationHtml(html) {
 function _annotationNotePayload(data, editor, note) {
   const html = _sanitizeAnnotationHtml(editor?.innerHTML || '');
   const text = _annotationReadableTextFromEditor(editor);
+  const persistedData = { ...(data || {}) };
+  delete persistedData._desktop;
   return {
-    ...data,
+    ...persistedData,
     text,
     html,
     width: Math.max(120, Math.round(note.offsetWidth || parseFloat(note.style.width) || data.width || 180)),
@@ -1924,7 +1997,9 @@ function _contentCoordsFromNoteOffset(note) {
 }
 
 function _installAnnotationNoteResize(note, data, persist) {
-  const dirs = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
+  const dirs = (_isTrayAnnotationHost() && data?._desktop)
+    ? ['se']
+    : ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'];
   dirs.forEach(dir => {
     const handle = document.createElement('span');
     handle.className = 'ann-note-resize-handle';
@@ -2024,16 +2099,69 @@ function _isStandaloneAnnotationNoteItem(item, data) {
   return type === 'note' || type === 'sticky';
 }
 
+function _trayAnnotationData(item, parsedData) {
+  const data = { ...(parsedData || {}) };
+  data.x = 0;
+  data.y = 0;
+  data.width = Math.max(120, Number(item?.width) || Number(data.width) || 250);
+  data.height = Math.max(60, Number(item?.height) || Number(data.height) || 200);
+  data._desktop = {
+    x: Number(item?.desktop_x) || 0,
+    y: Number(item?.desktop_y) || 0,
+    width: data.width,
+    height: data.height,
+    monitorId: String(item?.monitor_id || ''),
+    monitorW: Number(item?.monitor_w) || 0,
+    monitorH: Number(item?.monitor_h) || 0,
+    alwaysOnTop: item?.always_on_top !== 0,
+    zOrder: Number(item?.z_order) || 0,
+    collapsed: !!item?.collapsed,
+  };
+  return data;
+}
+
+function _trayAnnotationUpdateBody(data, payload) {
+  if (!_isTrayAnnotationHost() || !data?._desktop) return { data: payload };
+  const desktop = data._desktop;
+  desktop.width = payload.width;
+  desktop.height = payload.height;
+  return {
+    data: payload,
+    body: payload.text || '',
+    desktop_x: Math.round(Number(desktop.x) || 0),
+    desktop_y: Math.round(Number(desktop.y) || 0),
+    width: Math.round(Number(desktop.width) || 250),
+    height: Math.round(Number(desktop.height) || 200),
+    monitor_id: desktop.monitorId || '',
+    monitor_w: Math.round(Number(desktop.monitorW) || 0),
+    monitor_h: Math.round(Number(desktop.monitorH) || 0),
+    always_on_top: desktop.alwaysOnTop ? 1 : 0,
+    z_order: Math.round(Number(desktop.zOrder) || 0),
+    collapsed: desktop.collapsed ? 1 : 0,
+  };
+}
+
+function _trayAnnotationBridgeCall(method, ...args) {
+  if (!_isTrayAnnotationHost()) return Promise.resolve(false);
+  try {
+    const fn = window.pywebview?.api?.[method];
+    if (typeof fn === 'function') return Promise.resolve(fn(...args)).catch(() => false);
+  } catch {}
+  return Promise.resolve(false);
+}
+
 function renderNote(id, shape, data, color, opacity, user, created) {
   // v5.0: 付箋は現在の注釈ホスト（アクティブなペイン）に配置する
   const mainArea = _getStandaloneAnnotationHost();
   const note = document.createElement('div');
   note.className = 'ann-note ' + shape;
   note.dataset.annId = id;
+  note.dataset.e2eId = `annotation-note-${id}`;
   note._annData = data;
   // 座標欠落時のフォールバック（NaNpx 防止）
-  const baseX = Number.isFinite(data.x) ? data.x : 0;
-  const baseY = Number.isFinite(data.y) ? data.y : 0;
+  const isTrayHostNote = _isTrayAnnotationHost() && String(id) === _trayAnnotationHost.annotationId;
+  const baseX = isTrayHostNote ? 0 : (Number.isFinite(data.x) ? data.x : 0);
+  const baseY = isTrayHostNote ? 0 : (Number.isFinite(data.y) ? data.y : 0);
   note.dataset.baseY = baseY; // スクロール同期用の基準Y
   note.draggable = true;
   note.addEventListener('dragstart', (e) => {
@@ -2049,6 +2177,10 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   note.style.top = (baseY - scrollY) + 'px';
   note.style.width = (data.width || 180) + 'px';
   note.style.height = (data.height || 100) + 'px';
+  if (isTrayHostNote) {
+    note.dataset.annotationTrayNote = '1';
+    note.style.boxSizing = 'border-box';
+  }
   _applyAnnotationNoteColor(note, color);
   note.style.opacity = String(_normalizeAnnotationOpacity(opacity, 1));
   note.addEventListener('pointerdown', () => {
@@ -2072,6 +2204,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   deleteBtn.type = 'button';
   deleteBtn.className = 'ann-note-delete-btn';
   deleteBtn.dataset.annDelete = '1';
+  deleteBtn.dataset.e2eId = `annotation-note-${id}-delete`;
   deleteBtn.setAttribute('aria-label', '注釈を削除');
   deleteBtn.title = '削除';
   deleteBtn.innerHTML = lucide('x', 12);
@@ -2097,7 +2230,10 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     data.html = d.html;
     data.width = d.width;
     data.height = d.height;
-    return _putAnnotationWithHistory(id, { data: d }, '注釈: 付箋更新', id)
+    if (isTrayHostNote && data._desktop) {
+      _trayAnnotationBridgeCall('tray_annotation_resize', d.width, d.height);
+    }
+    return _putAnnotationWithHistory(id, _trayAnnotationUpdateBody(data, d), '注釈: 付箋更新', id)
       .catch(error => {
         _reportAnnotationSaveFailure(error);
         return false;
@@ -2112,6 +2248,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 
   // ドラッグ移動
   let dragging = false, dragOff = { x: 0, y: 0 };
+  let trayDragStart = null;
   const pointerCssPos = (ev) => {
     const z = (typeof _getZoom === 'function' ? _getZoom() : 1) || 1;
     return { x: ev.clientX / z, y: ev.clientY / z };
@@ -2119,6 +2256,12 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   const onDragMove = (ev) => {
     if (!dragging) return;
     ev.preventDefault();
+    if (isTrayHostNote && data._desktop && trayDragStart) {
+      data._desktop.x = trayDragStart.x + (ev.screenX - trayDragStart.screenX);
+      data._desktop.y = trayDragStart.y + (ev.screenY - trayDragStart.screenY);
+      _trayAnnotationBridgeCall('tray_annotation_move', data._desktop.x, data._desktop.y);
+      return;
+    }
     const pt = pointerCssPos(ev);
     note.style.left = (pt.x - dragOff.x) + 'px';
     note.style.top = (pt.y - dragOff.y) + 'px';
@@ -2130,11 +2273,15 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     document.removeEventListener('pointermove', onDragMove);
     document.removeEventListener('pointerup', onDragEnd);
     document.removeEventListener('pointercancel', onDragEnd);
-    const pos = _contentCoordsFromNoteOffset(note);
-    data.x = pos.x;
-    data.y = pos.y;
-    note.dataset.baseX = String(pos.x);
-    note.dataset.baseY = String(pos.y);
+    if (isTrayHostNote && data._desktop) {
+      trayDragStart = null;
+    } else {
+      const pos = _contentCoordsFromNoteOffset(note);
+      data.x = pos.x;
+      data.y = pos.y;
+      note.dataset.baseX = String(pos.x);
+      note.dataset.baseY = String(pos.y);
+    }
     persist();
   };
   header.addEventListener('pointerdown', (e) => {
@@ -2143,6 +2290,14 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     e.stopPropagation();
     dragging = true;
     note.draggable = false;
+    if (isTrayHostNote && data._desktop) {
+      trayDragStart = {
+        screenX: e.screenX,
+        screenY: e.screenY,
+        x: Number(data._desktop.x) || 0,
+        y: Number(data._desktop.y) || 0,
+      };
+    }
     const pt = pointerCssPos(e);
     dragOff.x = pt.x - note.offsetLeft;
     dragOff.y = pt.y - note.offsetTop;
@@ -2348,7 +2503,11 @@ function renderNote(id, shape, data, color, opacity, user, created) {
       openColorPalette(noteEl, color, (newColor) => {
         color = newColor;
         _applyAnnotationNoteColor(noteEl, newColor);
-        _putAnnotationWithHistory(id, { color: newColor }, '注釈: 色変更', id)
+        if (isTrayHostNote) data.style = { ...(data.style || {}), color: newColor };
+        const colorBody = isTrayHostNote
+          ? { color: newColor, ..._trayAnnotationUpdateBody(data, _annotationNotePayload(data, editor, noteEl)) }
+          : { color: newColor };
+        _putAnnotationWithHistory(id, colorBody, '注釈: 色変更', id)
           .catch(error => _reportAnnotationSaveFailure(error));
       });
     });
@@ -2375,6 +2534,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
   moreBtn.className = 'note-more-btn';
+  moreBtn.dataset.e2eId = `annotation-note-${id}-menu`;
   moreBtn.setAttribute('aria-label', '注釈メニュー');
   moreBtn.title = 'メニュー';
   moreBtn.innerHTML = lucide('moreHorizontal', 16);
@@ -2387,6 +2547,8 @@ function renderNote(id, shape, data, color, opacity, user, created) {
 async function deleteNote(id, el, options = {}) {
   if (!options.skipConfirm && typeof cfConfirm === 'function' && !await cfConfirm('この注釈を削除しますか？')) return false;
   const isNote = el?.classList?.contains('ann-note');
+  const previousParent = el?.parentNode || null;
+  const previousNextSibling = el?.nextSibling || null;
   const before = await _fetchAnnotationHistoryRow(id).catch(() => null);
   if (el) {
     el.dataset.deleted = '1';
@@ -2400,7 +2562,14 @@ async function deleteNote(id, el, options = {}) {
       const payload = _annotationNotePayload(data, editor, el);
       payload.deleted = true;
       payload.deletedAt = new Date().toISOString();
-      await apiPut('/annotations/' + encodeURIComponent(id), { data: payload });
+      if (_isTrayAnnotationHost()) {
+        const expectedModified = _trayAnnotationHost.modified || before?.modified || '';
+        const update = { data: payload };
+        if (expectedModified) update.expected_modified = expectedModified;
+        await _trayAnnotationApiPut('/annotations/' + encodeURIComponent(id), update);
+      } else {
+        await apiPut('/annotations/' + encodeURIComponent(id), { data: payload });
+      }
       const after = await _fetchAnnotationHistoryRow(id).catch(() => null);
       _pushAnnotationHistory('注釈: 削除', before, after, id);
     } else {
@@ -2408,9 +2577,26 @@ async function deleteNote(id, el, options = {}) {
       _pushAnnotationHistory('注釈: 削除', before, null, id);
     }
     if (typeof showStatus === 'function') showStatus('削除しました');
+    if (_isTrayAnnotationHost() && String(id) === _trayAnnotationHost.annotationId) {
+      _trayAnnotationBridgeCall('tray_annotation_close');
+    }
     return true;
-  } catch {
-    if (typeof showStatus === 'function') showStatus('削除に失敗', true);
+  } catch (error) {
+    if (el && previousParent && !el.isConnected) {
+      delete el.dataset.deleted;
+      try { previousParent.insertBefore(el, previousNextSibling); }
+      catch { try { previousParent.appendChild(el); } catch {} }
+    }
+    if (_isTrayAnnotationHost()) {
+      await loadAnnotations().catch(() => null);
+      const conflict = Number(error?.status || error?.response?.status || 0) === 409
+        || /(?:HTTP\s*)?409|競合/.test(String(error?.message || ''));
+      if (typeof showStatus === 'function') {
+        showStatus(conflict
+          ? '他の場所で更新されたため削除せず、最新の付箋を再読み込みしました'
+          : '削除できなかったため、最新の付箋を再読み込みしました', true);
+      }
+    } else if (typeof showStatus === 'function') showStatus('削除に失敗', true);
     return false;
   }
 }
@@ -2432,7 +2618,7 @@ async function loadAnnotations() {
     _setAnnotationRenderedTarget(targetPath);
   }
   try {
-    const items = await apiFetch(_annotationTargetFetchUrl(targetPath));
+    const items = await _trayAnnotationApiFetch(_annotationTargetFetchUrl(targetPath));
     if (
       loadSeq !== _annLoadSeq ||
       targetPath !== ann.targetPath ||
@@ -2444,9 +2630,14 @@ async function loadAnnotations() {
     if (layer) layer.innerHTML = '';
     _forEachStandaloneAnnotationNote(el => el.remove());
     _setAnnotationRenderedTarget(targetPath);
-    items.forEach(item => {
-      const data = _parseAnnotationData(item);
+    const visibleItems = _isTrayAnnotationHost()
+      ? items.filter(item => String(item?.id || '') === _trayAnnotationHost.annotationId)
+      : items;
+    visibleItems.forEach(item => {
+      const parsedData = _parseAnnotationData(item);
+      const data = _isTrayAnnotationHost() ? _trayAnnotationData(item, parsedData) : parsedData;
       if (data == null) return;
+      if (_isTrayAnnotationHost()) _trayAnnotationHost.modified = String(item?.modified || '');
       if (_isStandaloneAnnotationNoteItem(item, data)) {
         renderNote(item.id, item.shape || 'sticky', data, item.color, item.opacity, item.user, item.created);
       } else if (item.type === 'comment' || item.type === 'note' || item.type === 'sticky') {
@@ -2477,6 +2668,60 @@ async function loadAnnotations() {
       }
     });
   } catch(e) {}
+}
+
+function _installTrayAnnotationHostStyles(host) {
+  document.body.dataset.annotationTrayHost = '1';
+  document.body.classList.add('ann-toolbar-active');
+  document.documentElement.style.background = 'transparent';
+  document.body.style.margin = '0';
+  document.body.style.overflow = 'hidden';
+  document.body.style.background = 'transparent';
+  [...document.body.children].forEach(child => {
+    if (child === host || ['SCRIPT', 'STYLE', 'LINK'].includes(child.tagName)) return;
+    child.style.setProperty('display', 'none', 'important');
+  });
+  Object.assign(host.style, {
+    position: 'fixed',
+    inset: '0',
+    overflow: 'hidden',
+    background: 'transparent',
+    zIndex: '2147483000',
+  });
+}
+
+async function _pollTrayAnnotationHost() {
+  if (!_isTrayAnnotationHost() || !_trayAnnotationHost.initialized) return;
+  try {
+    const items = await _trayAnnotationApiFetch('/annotations?ann_id=' + encodeURIComponent(_trayAnnotationHost.annotationId) + '&limit=1');
+    const item = Array.isArray(items) ? items[0] : null;
+    const modified = String(item?.modified || '');
+    const editorActive = !!document.activeElement?.closest?.('[data-annotation-tray-note="1"] .ann-note-editor');
+    if (item && modified && modified !== _trayAnnotationHost.modified && !editorActive && !ann.drawing) {
+      await loadAnnotations();
+    }
+  } catch (error) {
+    _reportAnnotationSaveFailure(error, 'デスクトップ付箋を同期できませんでした');
+  } finally {
+    clearTimeout(_trayAnnotationHost.pollTimer);
+    _trayAnnotationHost.pollTimer = setTimeout(_pollTrayAnnotationHost, 1000);
+  }
+}
+
+async function _initTrayAnnotationHost() {
+  if (!_isTrayAnnotationHost() || _trayAnnotationHost.initialized) return false;
+  _trayAnnotationHost.initialized = true;
+  const host = document.createElement('main');
+  host.id = 'ann-desktop-host';
+  host.dataset.e2eId = 'tray-annotation-host';
+  host.setAttribute('aria-label', 'デスクトップ付箋');
+  document.body.appendChild(host);
+  _installTrayAnnotationHostStyles(host);
+  ann.targetPath = _trayAnnotationHost.targetPath;
+  ann.active = true;
+  await loadAnnotations();
+  _trayAnnotationHost.pollTimer = setTimeout(_pollTrayAnnotationHost, 1000);
+  return true;
 }
 async function annClear() {
   if (!await cfConfirm('この画面の注釈をすべて削除しますか？')) return;

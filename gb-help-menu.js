@@ -28,6 +28,14 @@ function _closeMeldexHelpMenu() {
   document.querySelectorAll('.meldex-help-menu').forEach(el => el.remove());
 }
 
+let _meldexHelpDialogReturnFocus = null;
+
+function _meldexHelpDialogOwner(explicitOwner) {
+  if (explicitOwner?.isConnected && explicitOwner?.focus) return explicitOwner;
+  if (_meldexHelpDialogReturnFocus?.isConnected && _meldexHelpDialogReturnFocus?.focus) return _meldexHelpDialogReturnFocus;
+  return _fallbackMeldexHelpMenuAnchor();
+}
+
 function _openMeldexHelpManual(item) {
   _closeMeldexHelpMenu();
   const fullPath = (_homeFolderPath || '').replace(/[\\/]$/, '') + '/' + item.path;
@@ -182,6 +190,7 @@ function _positionMeldexHelpMenu(menu, anchor) {
 
 function showMeldexHelpMenu(event) {
   const anchor = _resolveMeldexHelpMenuAnchor(event?.currentTarget || event?.target);
+  _meldexHelpDialogReturnFocus = anchor;
   _closeMeldexHelpMenu();
   if (typeof window !== 'undefined') window.GBTooltip?.hide?.({ suppressUntilLeave: true });
   const menu = document.createElement('div');
@@ -213,8 +222,8 @@ function showMeldexHelpMenu(event) {
       if (item.type === 'manual') _openMeldexHelpManual(item);
       else if (item.type === 'external') _openMeldexHelpExternal(item);
       else if (item.type === 'action') _runMeldexHelpAction(item);
-      else if (item.type === 'changelog') showMeldexChangelogDialog();
-      else if (item.type === 'about') showMeldexAboutDialog();
+      else if (item.type === 'changelog') showMeldexChangelogDialog(anchor);
+      else if (item.type === 'about') showMeldexAboutDialog(anchor);
     });
     menu.appendChild(row);
   });
@@ -244,13 +253,10 @@ function _openMeldexLegalDoc(filename) {
   window.open(_meldexLegalDocUrl(filename), '_blank', 'noopener');
 }
 
-function showMeldexAboutDialog() {
+function showMeldexAboutDialog(returnFocus) {
   _closeMeldexHelpMenu();
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="width:min(680px, calc(100vw - 24px));max-width:680px;max-height:85vh;overflow-y:auto;">
-    <h3 style="display:flex;align-items:center;gap:8px;">${lucide('info',16)} Meldex（メルデックス）について</h3>
-    <section class="gb-section gb-section--boxed">
+  const content = document.createElement('div');
+  content.innerHTML = `<section class="gb-section gb-section--boxed">
       <div class="gb-section-title">${lucide('info',14)} Meldex（メルデックス） BETA</div>
       <div class="gb-section-desc" style="line-height:1.7;">
         複数のアプリが連携して、創作全般を補助する統合ワークスペースです。
@@ -263,7 +269,7 @@ function showMeldexAboutDialog() {
         <dt>ビルド種別</dt><dd><span id="settings-about-variant">読み込み中...</span></dd>
         <dt>同意設定</dt><dd><span id="settings-about-consent-status">確認中...</span></dd>
         <dt>配布者</dt><dd>cam-nagara / Meldex 開発者</dd>
-        <dt>公式URL</dt><dd><a href="https://github.com/cam-nagara/Meldex" target="_blank" rel="noopener">https://github.com/cam-nagara/Meldex</a></dd>
+        <dt>公式URL</dt><dd><a href="https://github.com/cam-nagara/Meldex" target="_blank" rel="noopener" data-e2e-id="settings-about-official-url">https://github.com/cam-nagara/Meldex</a></dd>
         <dt>問い合わせ</dt><dd>GitHub Issues または Meldex ベータ配布ページに記載された連絡先</dd>
       </dl>
       <div class="settings-about-muted" style="margin-top:12px;">
@@ -282,8 +288,8 @@ function showMeldexAboutDialog() {
         <li>Image export by <a href="https://github.com/niklasvh/html2canvas" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-html2canvas">html2canvas</a> (MIT)</li>
         <li>Backend libraries: FastAPI, Starlette, Uvicorn, Pydantic, PyYAML, Pillow, openpyxl, python-docx, python-multipart</li>
         <li>LLM / API SDKs: Anthropic, OpenAI, Google Gen AI, Google API Client, Notion SDK</li>
-        <li>CalDAV server: <a href="https://github.com/Kozea/Radicale" target="_blank" rel="noopener">Radicale</a> (GPLv3)</li>
-        <li>Tray / hotkey: <a href="https://github.com/moses-palmer/pystray" target="_blank" rel="noopener">pystray</a> / <a href="https://github.com/moses-palmer/pynput" target="_blank" rel="noopener">pynput</a> (LGPLv3)</li>
+        <li>CalDAV server: <a href="https://github.com/Kozea/Radicale" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-radicale">Radicale</a> (GPLv3)</li>
+        <li>Tray / hotkey: <a href="https://github.com/moses-palmer/pystray" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-pystray">pystray</a> / <a href="https://github.com/moses-palmer/pynput" target="_blank" rel="noopener" data-e2e-id="settings-about-credit-pynput">pynput</a> (LGPLv3)</li>
       </ul>
       <div class="settings-about-muted" style="margin-top:10px;">
         詳細は <code>LICENSE</code>, <code>THIRD-PARTY.md</code>, <code>CREDITS.md</code>, <code>fonts/OFL.txt</code> を参照してください。
@@ -294,34 +300,112 @@ function showMeldexAboutDialog() {
         <button type="button" data-action="_openMeldexLegalDoc('THIRD-PARTY.md')">OSSライセンス</button>
         <button type="button" data-action="window.MeldexDiagnostics?.exportDiagnostics?.()">診断情報を保存</button>
       </div>
-    </section>
-    <div class="btn-row" style="margin-top:12px;">
-      <button type="button" data-action="this.closest('.modal-overlay').remove()">閉じる</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  replaceIcons(o);
-  if (typeof refreshMeldexAboutPanel === 'function') refreshMeldexAboutPanel(o);
+    </section>`;
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'gb-btn gb-btn-sm';
+  closeButton.dataset.e2eId = 'meldex-about-close';
+  closeButton.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'meldex-help-about',
+    title: 'Meldex（メルデックス）について',
+    body: [...content.childNodes],
+    footer: closeButton,
+    variant: 'standard',
+    geometryKey: 'meldex-help-about',
+    minWidth: '0',
+    initialFocus: closeButton,
+    returnFocus: _meldexHelpDialogOwner(returnFocus),
+    closeLabel: 'Meldexについてを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+  });
+  modalApi.overlay.classList.add('meldex-help-about-overlay');
+  modalApi.overlay.dataset.e2eId = 'meldex-help-about-overlay';
+  modalApi.modal.classList.add('meldex-help-about-dialog');
+  modalApi.modal.dataset.e2eId = 'meldex-help-about-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'meldex-about-header-close';
+  modalApi.modal.style.cssText = 'width:min(680px, calc(100vw - 24px));max-width:680px;height:min(85vh, 720px);max-height:85vh;overflow:hidden;';
+  modalApi.body.style.cssText = 'min-height:0;overflow-y:auto;overflow-x:hidden;';
+  modalApi.body.querySelectorAll('.gb-section').forEach(section => {
+    section.style.cssText += ';box-sizing:border-box;min-width:0;max-width:100%;';
+  });
+  modalApi.body.querySelectorAll('.gb-section > *:not(.gb-section-title)').forEach(item => {
+    item.style.cssText += ';box-sizing:border-box;min-width:0;max-width:calc(100% - 1em);';
+  });
+  modalApi.body.querySelectorAll('a').forEach(link => {
+    link.style.overflowWrap = 'anywhere';
+  });
+  modalApi.body.querySelectorAll('.btn-row').forEach(row => {
+    row.style.flexWrap = 'wrap';
+  });
+  modalApi.footer.style.cssText = 'position:relative;z-index:2;';
+  closeButton.style.cssText = 'box-sizing:border-box;min-width:88px;max-width:100%;white-space:nowrap;';
+  closeButton.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
+  replaceIcons(modalApi.overlay);
+  if (typeof refreshMeldexAboutPanel === 'function') refreshMeldexAboutPanel(modalApi.overlay);
+  return modalApi;
 }
 
-async function showMeldexChangelogDialog() {
+async function showMeldexChangelogDialog(returnFocus) {
   _closeMeldexHelpMenu();
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="width:min(760px, calc(100vw - 24px));max-width:760px;max-height:85vh;">
-    <h3 style="display:flex;align-items:center;gap:8px;">${lucide('history',16)} 更新履歴</h3>
-    <pre id="meldex-changelog-body" style="flex:1;overflow:auto;white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>
-    <div class="btn-row" style="margin-top:12px;">
-      <button type="button" data-action="this.closest('.modal-overlay').remove()">閉じる</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  replaceIcons(o);
-  const body = o.querySelector('#meldex-changelog-body');
-  try {
-    const res = await fetch('CHANGELOG.md', { cache: 'no-store' });
-    body.textContent = res.ok ? await res.text() : '更新履歴を読み込めませんでした。';
-  } catch (e) {
-    body.textContent = '更新履歴を読み込めませんでした。';
-  }
+  const content = document.createElement('div');
+  content.innerHTML = `<div id="meldex-changelog-status" role="status" aria-live="polite"></div>
+    <pre id="meldex-changelog-body" style="min-height:96px;max-height:min(60vh,480px);box-sizing:border-box;margin:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;font-size:12px;line-height:1.6;color:var(--fg);">読み込み中...</pre>`;
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'gb-btn gb-btn-sm';
+  closeButton.dataset.e2eId = 'meldex-changelog-close';
+  closeButton.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'meldex-help-changelog',
+    title: '更新履歴',
+    body: [...content.childNodes],
+    footer: closeButton,
+    variant: 'standard',
+    geometryKey: 'meldex-help-changelog',
+    minWidth: '0',
+    initialFocus: closeButton,
+    returnFocus: _meldexHelpDialogOwner(returnFocus),
+    closeLabel: '更新履歴を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+  });
+  modalApi.overlay.classList.add('meldex-help-changelog-overlay');
+  modalApi.overlay.dataset.e2eId = 'meldex-help-changelog-overlay';
+  modalApi.modal.classList.add('meldex-help-changelog-dialog');
+  modalApi.modal.dataset.e2eId = 'meldex-help-changelog-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'meldex-changelog-header-close';
+  modalApi.modal.style.cssText = 'width:min(760px, calc(100vw - 24px));max-width:760px;max-height:85vh;overflow:hidden;';
+  modalApi.body.style.cssText = 'min-height:0;box-sizing:border-box;overflow:hidden;';
+  modalApi.footer.style.cssText = 'position:relative;z-index:2;width:100%;min-width:0;max-width:100%;padding-left:16px;padding-right:16px;';
+  closeButton.style.cssText = 'box-sizing:border-box;flex:0 0 auto;min-width:88px;max-width:100%;white-space:nowrap;overflow:visible;';
+  const body = modalApi.modal.querySelector('#meldex-changelog-body');
+  const status = modalApi.modal.querySelector('#meldex-changelog-status');
+  const load = async () => {
+    modalApi.modal.setAttribute('aria-busy', 'true');
+    status.textContent = '更新履歴を読み込んでいます。';
+    body.textContent = '読み込み中...';
+    try {
+      const res = await fetch('CHANGELOG.md', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (!modalApi.isOpen()) return;
+      body.textContent = text;
+      status.textContent = '';
+    } catch (error) {
+      if (!modalApi.isOpen()) return;
+      body.textContent = '更新履歴を読み込めませんでした。';
+      status.innerHTML = '<button type="button" class="gb-btn gb-btn-sm" data-e2e-id="meldex-changelog-retry">再試行</button>';
+      status.querySelector('[data-e2e-id="meldex-changelog-retry"]')?.addEventListener('click', load);
+    } finally {
+      if (modalApi.isOpen()) modalApi.modal.setAttribute('aria-busy', 'false');
+    }
+  };
+  closeButton.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
+  replaceIcons(modalApi.overlay);
+  await load();
+  return modalApi;
 }

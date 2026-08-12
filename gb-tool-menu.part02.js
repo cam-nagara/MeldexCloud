@@ -61,7 +61,7 @@ function buildToolMenuItems(toolType) {
         { label: 'Excelとして保存...', action: () => _exportFile('db', 'xlsx'), disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('database'); }, disabled: !hasFile },
         { separator: true },
-        { label: '辞書ファイルを出力', action: () => _exportDictFile() },
+        { label: '辞書ファイルを出力', action: context => _exportDictFile({ trigger: context?.trigger }) },
       ],
     },
     board: {
@@ -117,7 +117,7 @@ function buildToolMenuItems(toolType) {
   const specific = {
     page: [
       { label: 'オプションを表示', action: () => { if (typeof toggleOptionPanel === 'function') toggleOptionPanel(); else if (typeof toggleDetailPanel === 'function') toggleDetailPanel(); }, disabled: !hasFile },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '公開を更新', action: () => { if (typeof publishCurrentPageView === 'function') publishCurrentPageView(); else if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('page'); }, disabled: !hasFile },
     ],
     scriptnote: [
@@ -125,12 +125,12 @@ function buildToolMenuItems(toolType) {
     ],
     database: [
       { label: '列の表示と順序', action: () => { if (typeof showColumnDisplayOrderModal === 'function') showColumnDisplayOrderModal(); else if (typeof showColVisibilityModal === 'function') showColVisibilityModal(); }, disabled: !hasFile },
-      { label: 'シート横断検索', action: () => { if (typeof showDbSearchModal === 'function') showDbSearchModal(); }, disabled: !hasFile },
+      { label: 'シート横断検索', action: context => { if (typeof showDbSearchModal === 'function') showDbSearchModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
       { label: '整合性検証', action: () => { if (typeof onValidateClick === 'function') onValidateClick(); }, disabled: !hasFile },
       { label: '検証ルール管理', action: () => { if (typeof showValidationRulesModal === 'function') showValidationRulesModal(state.currentDbPath || currentPath); }, disabled: !hasFile },
       { label: 'アーカイブ管理...', action: () => { if (typeof showSheetArchiveModal === 'function') showSheetArchiveModal(state.currentDbPath || currentPath); }, disabled: !hasFile },
       { separator: true },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     board: [
       { label: '新規リンクカード: ノート', action: () => {
@@ -163,14 +163,14 @@ function buildToolMenuItems(toolType) {
       ...productionCalendarItems,
       { separator: true },
       { label: '同期設定...', action: () => _openCalendarSyncFromMenu() },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     csv: [
       { label: '行を追加', action: () => { if (typeof addCsvRow === 'function') addCsvRow(); }, disabled: !hasFile },
       { label: '列を追加', action: () => { if (typeof addCsvColumn === 'function') addCsvColumn(); }, disabled: !hasFile },
       { separator: true },
       { label: 'シートに変換...', action: () => { if (typeof convertCsvToDb === 'function') convertCsvToDb(); }, disabled: !hasFile },
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
     folder: [
       { label: '現在のフォルダを開く', action: () => { const path = getCurrentFilePath(); if (path && typeof openNative === 'function') openNative(path); }, disabled: !hasFile },
@@ -180,7 +180,7 @@ function buildToolMenuItems(toolType) {
       { label: 'オプションを表示', action: () => { if (typeof showFolderPanelSettings === 'function') showFolderPanelSettings(); } },
     ],
     'smart-db': [
-      { label: '公開設定...', action: () => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal(); }, disabled: !hasFile },
+      { label: '公開設定...', action: context => { if (typeof showPublishSettingsModal === 'function') showPublishSettingsModal({ returnFocus: context?.trigger }); }, disabled: !hasFile },
     ],
   };
 
@@ -320,11 +320,6 @@ function _toolMenuDialogIcon(name, size) {
   return typeof lucide === 'function' ? lucide(name, size || 14) : '';
 }
 
-function _restoreToolMenuDialogFocus(trigger) {
-  if (!trigger?.isConnected || typeof trigger.focus !== 'function') return;
-  try { trigger.focus({ preventScroll: true }); } catch { try { trigger.focus(); } catch {} }
-}
-
 function _setSaveAsFolderTreeOpen(folderTree, folderDisplay, open) {
   folderTree.hidden = !open;
   folderDisplay.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -341,81 +336,134 @@ async function _showSaveAsModal(srcPath, options = {}) {
   // 拡張子を除いた名前
   const baseName = srcName.includes('.') ? srcName.substring(0, srcName.lastIndexOf('.')) : srcName;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay gb-tool-save-as-overlay';
-  overlay.dataset.e2eId = 'tool-menu-save-as-overlay';
-  overlay.innerHTML = `<div class="modal gb-tool-save-as-modal" role="dialog" aria-modal="true" aria-labelledby="saveas-title" tabindex="-1" data-e2e-id="tool-menu-save-as-dialog">
-    <div class="gb-modal-header gb-tool-save-as-header" data-modal-header>
-      <h3 id="saveas-title" class="gb-modal-title gb-tool-save-as-title"><span class="gb-tool-save-as-title-icon" aria-hidden="true">${_toolMenuDialogIcon('copy', 16)}</span><span>別名で保存</span></h3>
-      <button type="button" id="saveas-close" class="gb-modal-close gb-tool-save-as-close" aria-label="別名で保存を閉じる" data-e2e-id="tool-menu-save-as-close">${_toolMenuDialogIcon('x', 14)}</button>
+  const bodyContent = document.createElement('div');
+  bodyContent.innerHTML = `<div class="field gb-tool-save-as-field">
+      <label for="saveas-name" class="gb-tool-save-as-label">新しい名前</label>
+      <input id="saveas-name" class="gb-input gb-tool-save-as-name" type="text" value="${esc(baseName)}" aria-label="新しい名前" data-e2e-id="tool-menu-save-as-name">
     </div>
-    <div class="gb-modal-body gb-tool-save-as-body">
-      <div class="field gb-tool-save-as-field">
-        <label for="saveas-name" class="gb-tool-save-as-label">新しい名前</label>
-        <input id="saveas-name" class="gb-input gb-tool-save-as-name" type="text" value="${esc(baseName)}" aria-label="新しい名前" data-e2e-id="tool-menu-save-as-name">
+    <div class="field gb-tool-save-as-field">
+      <label id="saveas-folder-label-title" class="gb-tool-save-as-label">保存先フォルダ</label>
+      <div id="saveas-folder-display" class="gb-tool-save-as-folder-display" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="false" aria-labelledby="saveas-folder-label-title saveas-folder-label" data-e2e-id="tool-menu-save-as-folder-display">
+        <span class="gb-tool-save-as-folder-icon" aria-hidden="true">${_toolMenuDialogIcon('folder', 14)}</span>
+        <span id="saveas-folder-label" class="gb-tool-save-as-folder-label">${esc(srcFolder || '(ルート)')}</span>
+        <span class="gb-tool-save-as-folder-chevron" aria-hidden="true">${_toolMenuDialogIcon('chevronDown', 12)}</span>
       </div>
-      <div class="field gb-tool-save-as-field">
-        <label id="saveas-folder-label-title" class="gb-tool-save-as-label">保存先フォルダ</label>
-        <div id="saveas-folder-display" class="gb-tool-save-as-folder-display" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="false" aria-labelledby="saveas-folder-label-title saveas-folder-label" data-e2e-id="tool-menu-save-as-folder-display">
-          <span class="gb-tool-save-as-folder-icon" aria-hidden="true">${_toolMenuDialogIcon('folder', 14)}</span>
-          <span id="saveas-folder-label" class="gb-tool-save-as-folder-label">${esc(srcFolder || '(ルート)')}</span>
-          <span class="gb-tool-save-as-folder-chevron" aria-hidden="true">${_toolMenuDialogIcon('chevronDown', 12)}</span>
-        </div>
-        <div id="saveas-folder-tree" class="gb-tool-save-as-folder-tree" role="listbox" hidden data-e2e-id="tool-menu-save-as-folder-tree"></div>
-      </div>
+      <div id="saveas-folder-tree" class="gb-tool-save-as-folder-tree" role="listbox" hidden data-e2e-id="tool-menu-save-as-folder-tree"></div>
     </div>
-    <div class="gb-modal-footer gb-tool-save-as-footer" data-modal-footer>
-      <button type="button" id="saveas-cancel" class="gb-btn gb-btn-sm">キャンセル</button>
-      <button type="button" id="saveas-ok" class="gb-btn gb-btn-sm gb-btn-primary">保存</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  window.GBModalShell?.enhanceOverlay?.(overlay);
-
-  const nameInput = overlay.querySelector('#saveas-name');
-  const folderDisplay = overlay.querySelector('#saveas-folder-display');
-  const folderTree = overlay.querySelector('#saveas-folder-tree');
-  const folderLabel = overlay.querySelector('#saveas-folder-label');
-  const cancelButton = overlay.querySelector('#saveas-cancel');
-  const closeButton = overlay.querySelector('#saveas-close');
-  const saveButton = overlay.querySelector('#saveas-ok');
+    <div class="gb-tool-save-as-status" data-e2e-id="tool-menu-save-as-status" role="status" aria-live="polite" hidden></div>`;
+  const nameInput = bodyContent.querySelector('#saveas-name');
+  const folderDisplay = bodyContent.querySelector('#saveas-folder-display');
+  const folderTree = bodyContent.querySelector('#saveas-folder-tree');
+  const folderLabel = bodyContent.querySelector('#saveas-folder-label');
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.id = 'saveas-cancel';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.id = 'saveas-ok';
+  saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary';
+  saveButton.textContent = '保存';
   let selectedFolder = srcFolder;
-  let saving = false;
+  let actionBusy = false;
   let closed = false;
-
-  const closeDialog = (restoreFocus = true) => {
-    if (closed) return;
-    closed = true;
-    overlay.remove();
-    if (restoreFocus) _restoreToolMenuDialogFocus(trigger);
-  };
-
-  requestAnimationFrame(() => {
-    nameInput.focus();
-    nameInput.select();
+  const modalApi = window.GBUI.createModal({
+    id: 'tool-menu-save-as-dialog',
+    titleId: 'saveas-title',
+    title: '別名で保存',
+    body: [...bodyContent.childNodes],
+    footer: [cancelButton, saveButton],
+    variant: 'standard',
+    extraClass: 'gb-tool-save-as-modal',
+    geometryKey: 'tool-menu-save-as-dialog',
+    minWidth: '0',
+    initialFocus: nameInput,
+    returnFocus: () => trigger,
+    closeLabel: '別名で保存を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !actionBusy || ['saved', 'test-cleanup'].includes(reason),
+    onClose: () => { closed = true; },
   });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay', 'gb-tool-save-as-overlay');
+  overlay.dataset.e2eId = 'tool-menu-save-as-overlay';
+  overlay._toolMenuSaveAsModalApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'tool-menu-save-as-dialog';
+  modalApi.modal.style.minHeight = '320px';
+  modalApi.header.classList.add('gb-tool-save-as-header');
+  modalApi.header.dataset.modalHeader = '1';
+  modalApi.body.classList.add('gb-tool-save-as-body');
+  modalApi.footer.classList.add('gb-tool-save-as-footer');
+  modalApi.footer.dataset.modalFooter = '1';
+  const titleElement = modalApi.header.querySelector('.gb-modal-title');
+  titleElement?.classList.add('gb-tool-save-as-title');
+  if (titleElement) {
+    const titleIcon = document.createElement('span');
+    titleIcon.className = 'gb-tool-save-as-title-icon';
+    titleIcon.setAttribute('aria-hidden', 'true');
+    titleIcon.innerHTML = _toolMenuDialogIcon('copy', 16);
+    titleElement.prepend(titleIcon);
+  }
+  const closeButton = modalApi.header.querySelector('.gb-modal-close');
+  if (closeButton) {
+    closeButton.id = 'saveas-close';
+    closeButton.classList.add('gb-tool-save-as-close');
+    closeButton.dataset.e2eId = 'tool-menu-save-as-close';
+  }
+  const status = modalApi.body.querySelector('[data-e2e-id="tool-menu-save-as-status"]');
+  const setStatus = (message, isError = false) => {
+    status.textContent = String(message || '');
+    status.hidden = !message;
+    status.dataset.error = isError ? '1' : '0';
+  };
+  const setActionBusy = next => {
+    actionBusy = !!next;
+    overlay.setAttribute('aria-busy', actionBusy ? 'true' : 'false');
+    nameInput.disabled = actionBusy;
+    folderDisplay.setAttribute('aria-disabled', actionBusy ? 'true' : 'false');
+    folderDisplay.tabIndex = actionBusy ? -1 : 0;
+    cancelButton.disabled = actionBusy;
+    saveButton.disabled = actionBusy;
+    if (closeButton) closeButton.disabled = actionBusy;
+  };
 
   // フォルダツリー表示/非表示
   folderDisplay.addEventListener('click', async () => {
+    if (actionBusy) return;
+    setStatus('');
     if (window.GBFolderPicker?.pickFolder) {
-      const selected = await window.GBFolderPicker.pickFolder({
-        title: '保存先フォルダを選択',
-        initialPath: selectedFolder,
-      });
-      if (selected?.path !== undefined) {
-        selectedFolder = selected.path;
-        folderLabel.textContent = selected.label || selected.name || selected.path || '(ルート)';
-        _setSaveAsFolderTreeOpen(folderTree, folderDisplay, false);
+      setActionBusy(true);
+      try {
+        const selected = await window.GBFolderPicker.pickFolder({
+          title: '保存先フォルダを選択',
+          initialPath: selectedFolder,
+        });
+        if (selected?.path !== undefined) {
+          selectedFolder = selected.path;
+          folderLabel.textContent = selected.label || selected.name || selected.path || '(ルート)';
+          _setSaveAsFolderTreeOpen(folderTree, folderDisplay, false);
+        }
+      } catch (error) {
+        setStatus('保存先を選択できませんでした: ' + (error.message || error), true);
+      } finally {
+        if (!closed) setActionBusy(false);
       }
       return;
     }
     if (folderTree.hidden) {
       _setSaveAsFolderTreeOpen(folderTree, folderDisplay, true);
-      await _loadSaveAsFolderTree(folderTree, selectedFolder, (path, label) => {
-        selectedFolder = path;
-        folderLabel.textContent = label || '(ルート)';
-        _setSaveAsFolderTreeOpen(folderTree, folderDisplay, false);
-      });
+      setActionBusy(true);
+      try {
+        await _loadSaveAsFolderTree(folderTree, selectedFolder, (path, label) => {
+          selectedFolder = path;
+          folderLabel.textContent = label || '(ルート)';
+          _setSaveAsFolderTreeOpen(folderTree, folderDisplay, false);
+        });
+      } finally {
+        if (!closed) setActionBusy(false);
+      }
     } else {
       _setSaveAsFolderTreeOpen(folderTree, folderDisplay, false);
     }
@@ -427,43 +475,44 @@ async function _showSaveAsModal(srcPath, options = {}) {
   });
 
   // キャンセル
-  closeButton.addEventListener('click', () => closeDialog(true));
-  cancelButton.addEventListener('click', () => closeDialog(true));
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeDialog(true); });
-  overlay.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeDialog(true);
-    }
-  }, true);
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
 
   // 保存実行
   saveButton.addEventListener('click', async () => {
-    if (saving) return;
+    if (actionBusy) return;
     const newName = nameInput.value.trim();
-    if (!newName) { showStatus('名前を入力してください'); return; }
-    saving = true;
-    saveButton.disabled = true;
+    if (!newName) {
+      setStatus('名前を入力してください', true);
+      showStatus('名前を入力してください', true);
+      nameInput.focus({ preventScroll: true });
+      return;
+    }
+    setStatus('');
+    setActionBusy(true);
     try {
       const res = await apiPost('/outliner/save-as', {
         path: srcPath,
         new_name: newName,
         dest_folder: selectedFolder,
       });
-      closeDialog(true);
+      modalApi.close('saved');
       showStatus('「' + (res.new_name || newName) + '」に保存しました', false, { showSaveDialog: true });
       if (typeof loadOutliner === 'function') loadOutliner();
     } catch (e) {
-      showStatus('保存に失敗: ' + (e.message || e), true);
-      saving = false;
-      saveButton.disabled = false;
+      const message = '保存に失敗: ' + (e.message || e);
+      setStatus(message, true);
+      showStatus(message, true);
+      if (!closed) setActionBusy(false);
     }
   });
 
   // Enter で保存
   nameInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') saveButton.click();
+    if (e.key === 'Enter' && !actionBusy) saveButton.click();
   });
+  modalApi.open();
+  requestAnimationFrame(() => nameInput.select());
+  return modalApi;
 }
 
 // フォルダツリーを読み込んで表示
@@ -617,84 +666,111 @@ function _prepareDictExport(entries, allowedStatuses) {
 
 // 辞書出力で出力ステータスを選ぶダイアログ。
 // 戻り値: Set=書き出し、null=キャンセル。
-function _showDictStatusDialog(statuses, summary) {
+function _showDictStatusDialog(statuses, summary, options = {}) {
   return new Promise((resolve) => {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'dict-status-dialog-overlay';
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-  modal.style.cssText = 'max-width:360px;width:auto;';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-label', '辞書に出力するステータスを選択');
+  const trigger = options.trigger
+    || document.activeElement?.closest?.('.tool-menu-btn, button, [role="button"], [tabindex]')
+    || null;
   const body = document.createElement('div');
-  body.className = 'modal-body';
-  body.style.padding = '16px';
-  const title = document.createElement('div');
-  title.style.cssText = 'font-weight:600;margin-bottom:8px;';
-  title.textContent = '辞書に出力するステータス';
-  body.appendChild(title);
+  body.className = 'gb-tool-dict-status-content';
   const toggleRow = document.createElement('div');
-  toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
+  toggleRow.className = 'gb-tool-dict-status-toggle-row';
   const selectAllBtn = document.createElement('button');
   selectAllBtn.type = 'button';
   selectAllBtn.className = 'gb-btn gb-btn-sm';
   selectAllBtn.textContent = 'すべて選択';
+  selectAllBtn.dataset.e2eId = 'dict-status-select-all';
   const clearAllBtn = document.createElement('button');
   clearAllBtn.type = 'button';
   clearAllBtn.className = 'gb-btn gb-btn-sm';
   clearAllBtn.textContent = 'すべて解除';
+  clearAllBtn.dataset.e2eId = 'dict-status-clear-all';
   toggleRow.append(selectAllBtn, clearAllBtn);
   body.appendChild(toggleRow);
   const listWrap = document.createElement('div');
-  listWrap.style.cssText = 'display:flex;flex-direction:column;gap:4px;max-height:50vh;overflow:auto;';
+  listWrap.className = 'gb-tool-dict-status-list';
+  listWrap.setAttribute('role', 'group');
+  listWrap.setAttribute('aria-label', '辞書に出力するステータス');
+  listWrap.dataset.e2eId = 'dict-status-options';
+  listWrap.dataset.smallList = (statuses || []).length <= 3 ? '1' : '0';
   const boxes = [];
-  (statuses || []).forEach(st => {
+  (statuses || []).forEach((st, index) => {
     const row = document.createElement('label');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;';
+    row.className = 'gb-tool-dict-status-option';
+    row.dataset.status = st;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = st === '採用';
     cb.dataset.status = st;
+    cb.dataset.e2eId = `dict-status-option-${index + 1}`;
     boxes.push(cb);
     row.appendChild(cb);
-    row.appendChild(document.createTextNode(st));
+    const labelText = document.createElement('span');
+    labelText.textContent = st;
+    row.appendChild(labelText);
     listWrap.appendChild(row);
   });
   body.appendChild(listWrap);
   const reason = document.createElement('div');
+  reason.className = 'gb-tool-dict-status-reason';
   reason.dataset.e2eId = 'dict-status-selection-reason';
-  reason.style.cssText = 'min-height:18px;margin-top:8px;color:var(--fg2);font-size:12px;';
+  reason.setAttribute('role', 'status');
+  reason.setAttribute('aria-live', 'polite');
   const excluded = Number(summary?.withoutReading) || 0;
   reason.textContent = excluded > 0 ? `ルビのない${excluded}件は除外されます。` : '';
   body.appendChild(reason);
-  const btnRow = document.createElement('div');
-  btnRow.className = 'btn-row';
-  btnRow.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px;';
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
-  cancelBtn.className = 'cancel-btn';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
   cancelBtn.textContent = 'キャンセル';
+  cancelBtn.dataset.e2eId = 'dict-status-cancel';
   const okBtn = document.createElement('button');
   okBtn.type = 'button';
-  okBtn.className = 'primary';
+  okBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
   okBtn.textContent = '書き出し';
-  btnRow.append(cancelBtn, okBtn);
-  body.appendChild(btnRow);
-  modal.appendChild(body);
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-  if (typeof replaceIcons === 'function') replaceIcons(overlay);
+  okBtn.dataset.e2eId = 'dict-status-export';
+  let closeValue = null;
+  let settled = false;
+  const initialFocus = boxes.find((box) => box.checked) || boxes[0] || cancelBtn;
+  const modalApi = window.GBUI.createModal({
+    id: 'tool-menu-dict-status-dialog',
+    titleId: 'tool-menu-dict-status-title',
+    title: '辞書に出力するステータス',
+    body,
+    footer: [cancelBtn, okBtn],
+    variant: 'standard',
+    extraClass: 'gb-tool-dict-status-modal',
+    geometryKey: 'tool-menu-dict-status-dialog',
+    minWidth: '0',
+    initialFocus,
+    returnFocus: () => trigger,
+    closeLabel: '辞書の出力対象選択を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onClose: () => {
+      if (settled) return;
+      settled = true;
+      resolve(closeValue);
+    },
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay', 'gb-tool-dict-status-overlay');
+  overlay.dataset.e2eId = 'dict-status-dialog-overlay';
+  overlay._toolMenuDictStatusModalApi = modalApi;
+  modalApi.modal.classList.add('modal');
+  modalApi.modal.dataset.e2eId = 'dict-status-dialog';
+  modalApi.modal.style.minHeight = '320px';
+  modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'dict-status-header-close');
+  modalApi.footer.dataset.e2eId = 'dict-status-footer';
   const updateState = () => {
     const selectedCount = boxes.filter((box) => box.checked).length;
     okBtn.disabled = selectedCount === 0;
     if (!selectedCount) reason.textContent = '出力するステータスを1つ以上選択してください。';
     else reason.textContent = excluded > 0 ? `ルビのない${excluded}件は除外されます。` : '';
   };
-  const close = (result) => {
-    if (overlay.parentNode) overlay.remove();
-    resolve(result);
+  const close = (result, reason) => {
+    closeValue = result;
+    modalApi.close(reason || 'programmatic');
   };
   boxes.forEach((box) => box.addEventListener('change', updateState));
   selectAllBtn.addEventListener('click', () => {
@@ -705,28 +781,20 @@ function _showDictStatusDialog(statuses, summary) {
     boxes.forEach((box) => { box.checked = false; });
     updateState();
   });
-  cancelBtn.addEventListener('click', () => close(null));
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
-  overlay.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      close(null);
-    }
-  });
+  cancelBtn.addEventListener('click', () => close(null, 'cancel'));
   okBtn.addEventListener('click', () => {
     const allowed = new Set(boxes.filter(b => b.checked).map(b => b.dataset.status));
     if (!allowed.size) return;
-    close(allowed);
+    close(allowed, 'export');
   });
   updateState();
-  const initialFocus = boxes.find((box) => box.checked) || boxes[0] || cancelBtn;
-  initialFocus.focus();
+  modalApi.open();
   });
 }
 
 // 辞書ファイル出力（IME辞書形式）。ステータスで出力対象を絞り込める。
 let _dictExportInProgress = false;
-async function _exportDictFile() {
+async function _exportDictFile(options = {}) {
   if (_dictExportInProgress) {
     showStatus('辞書を準備しています。しばらくお待ちください');
     return;
@@ -754,7 +822,7 @@ async function _exportDictFile() {
       const ia = STATUS_ORDER.indexOf(a), ib = STATUS_ORDER.indexOf(b);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
     });
-    const allowed = await _showDictStatusDialog(present, prepared);
+    const allowed = await _showDictStatusDialog(present, prepared, options);
     if (!allowed) {
       showStatus('辞書出力をキャンセルしました');
       return;

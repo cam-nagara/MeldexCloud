@@ -162,6 +162,7 @@
         <div class="dup-item-radio">
           <input type="radio" name="dup-keep-${groupIndex}" value="${fileIndex}" ${checked ? 'checked' : ''}
             data-dup-radio data-group="${groupIndex}" data-index="${fileIndex}"
+            data-e2e-id="duplicate-keep-${groupIndex}-${fileIndex}"
             aria-label="${esc(fileName(file))}を残す">
           <span class="${automatic && isExisting(file) ? 'dup-item-rec-label' : 'dup-item-keep-label'}">${selectedLabel}</span>
         </div>
@@ -190,49 +191,64 @@
   }
 
   function createOverlay(options) {
-    const overlay = document.createElement('div');
-    overlay._dupReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    overlay.className = 'modal-overlay dup-monitor-overlay';
-    overlay.dataset.folderPath = options.folderPath || '';
-    overlay.innerHTML = `<div class="gb-modal dup-monitor-modal" role="dialog" aria-modal="true"
-      aria-labelledby="${options.titleId}" data-e2e-id="${options.e2eId}">
-      <header class="gb-modal-header">
-        <h3 id="${options.titleId}" class="gb-modal-title">${esc(options.title)}</h3>
-        <button type="button" class="gb-modal-close" aria-label="閉じる" title="閉じる"
-          data-dup-close data-e2e-id="${options.e2eId}-close">${lucide('x', 14)}</button>
-      </header>
-      <div class="gb-modal-body">
-        <div class="dup-progress" data-dup-progress>
-          <div class="dup-progress-target" data-dup-target
-            data-e2e-id="duplicate-progress-target"${options.folderPath ? '' : ' hidden'}>${targetHtml(options.folderPath)}</div>
-          <div class="dup-progress-row">
-            <span class="gb-section-desc" data-dup-status aria-live="polite">${esc(options.status || '')}</span>
-            <span class="dup-progress-count" data-dup-progress-count></span>
-          </div>
-          <progress max="100" value="0" data-dup-progress-bar aria-label="処理の進捗"></progress>
-          <div class="dup-progress-stats">
-            <span class="dup-progress-percent" data-dup-progress-percent></span>
-            <span class="dup-progress-eta" data-dup-progress-eta></span>
-          </div>
-          <div class="dup-progress-current" data-dup-progress-current hidden></div>
-        </div>
-        <div class="dup-results" data-dup-results></div>
+    const body = document.createElement('div');
+    body.className = 'dup-monitor-content';
+    body.innerHTML = `<div class="dup-progress" data-dup-progress>
+      <div class="dup-progress-target" data-dup-target
+        data-e2e-id="duplicate-progress-target"${options.folderPath ? '' : ' hidden'}>${targetHtml(options.folderPath)}</div>
+      <div class="dup-progress-row">
+        <span class="gb-section-desc" data-dup-status aria-live="polite">${esc(options.status || '')}</span>
+        <span class="dup-progress-count" data-dup-progress-count></span>
       </div>
-      <footer class="gb-modal-footer">
-        <button type="button" class="gb-btn gb-btn-sm" data-dup-keep-all hidden>すべて残す</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-warn" data-dup-cancel hidden>中止</button>
-        <button type="button" class="gb-btn gb-btn-sm" data-dup-close>閉じる</button>
-      </footer>
-    </div>`;
-    document.body.appendChild(overlay);
-    setTimeout(() => {
-      const firstAction = overlay.querySelector(
+      <progress max="100" value="0" data-dup-progress-bar aria-label="処理の進捗"></progress>
+      <div class="dup-progress-stats">
+        <span class="dup-progress-percent" data-dup-progress-percent></span>
+        <span class="dup-progress-eta" data-dup-progress-eta></span>
+      </div>
+      <div class="dup-progress-current" data-dup-progress-current hidden></div>
+    </div>
+    <div class="dup-results" data-dup-results></div>`;
+
+    const footer = document.createElement('div');
+    footer.className = 'dup-monitor-footer';
+    footer.innerHTML = `<button type="button" class="gb-btn gb-btn-sm" data-dup-keep-all
+        data-e2e-id="${options.e2eId}-keep-all" hidden>すべて残す</button>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-warn" data-dup-cancel
+        data-e2e-id="${options.e2eId}-cancel" hidden>中止</button>
+      <button type="button" class="gb-btn gb-btn-sm" data-dup-close
+        data-e2e-id="${options.e2eId}-close-footer">閉じる</button>`;
+
+    let overlay = null;
+    const modalApi = window.GBUI.createModal({
+      id: options.e2eId,
+      titleId: options.titleId,
+      title: options.title,
+      body,
+      footer,
+      variant: 'mobile-sheet',
+      extraClass: 'dup-monitor-modal',
+      geometryKey: options.e2eId,
+      initialFocus: modal => modal.querySelector(
         '[data-dup-cancel]:not([hidden]):not(:disabled),'
         + '[data-dup-keep-all]:not([hidden]):not(:disabled),'
         + '[data-dup-close]:not(:disabled)'
-      );
-      firstAction?.focus();
-    }, 0);
+      ),
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => overlay?._dupOnBeforeClose?.(reason) !== false,
+      onClose: reason => overlay?._dupOnClose?.(reason),
+    });
+    overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay', 'dup-monitor-overlay');
+    overlay.dataset.folderPath = options.folderPath || '';
+    overlay._dupModalApi = modalApi;
+    modalApi.modal.dataset.e2eId = options.e2eId;
+    const headerClose = modalApi.header.querySelector('.gb-modal-close');
+    if (headerClose) {
+      headerClose.dataset.dupClose = '';
+      headerClose.dataset.e2eId = `${options.e2eId}-close`;
+    }
+    modalApi.open();
     return overlay;
   }
 
@@ -449,23 +465,20 @@
       options.controller.abort();
       return true;
     };
-    const close = () => {
-      if (requestCancellation()) return;
-      const returnFocus = overlay._dupReturnFocus;
-      overlay.remove();
+    const close = reason => overlay._dupModalApi?.close(reason || 'button');
+    overlay._dupOnBeforeClose = () => !requestCancellation();
+    overlay._dupOnClose = () => {
       if (!overlay._dupCloseHandled) {
         overlay._dupCloseHandled = true;
         Promise.resolve(options.onClose?.()).catch(() => {});
-      }
-      if (returnFocus?.isConnected && typeof returnFocus.focus === 'function') {
-        setTimeout(() => returnFocus.focus(), 0);
       }
       if (overlay === activeAlertModal) {
         activeAlertModal = null;
         setTimeout(drainAlertQueue, 0);
       }
     };
-    overlay.querySelectorAll('[data-dup-close]').forEach(button => button.addEventListener('click', close));
+    overlay.querySelectorAll('[data-dup-close]:not(.gb-modal-close)')
+      .forEach(button => button.addEventListener('click', () => close('button')));
     if (cancel) {
       if (options.controller) {
         cancel.hidden = false;
@@ -474,33 +487,8 @@
         cancel.remove();
       }
     }
-    overlay.querySelector('[data-dup-keep-all]')?.addEventListener('click', close);
-    overlay.addEventListener('keydown', event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        close();
-        return;
-      }
-      if (event.key !== 'Tab') return;
-      const focusable = [...overlay.querySelectorAll(
-        'button:not([disabled]):not([hidden]),input:not([disabled]):not([hidden]),'
-        + '[href],[tabindex]:not([tabindex="-1"])'
-      )].filter(element => element.getClientRects().length > 0);
-      if (!focusable.length) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    });
+    overlay.querySelector('[data-dup-keep-all]')
+      ?.addEventListener('click', () => close('keep-all'));
   }
 
   async function openManualScan(folderPath) {
@@ -832,11 +820,11 @@
         <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
         <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
         <div class="gb-check-help-row">
-          <label><input type="checkbox" data-dup-setting="enabled" ${settings.enabled !== false ? 'checked' : ''}> 重複を見張る</label>
+          <label><input type="checkbox" data-dup-setting="enabled" data-e2e-id="duplicate-setting-enabled" ${settings.enabled !== false ? 'checked' : ''}> 重複を見張る</label>
           ${typeof fieldHelp === 'function' ? fieldHelp('オフにしても手動の「重複を確認」は利用できます。既存ファイルの索引は保持されます。') : ''}
         </div>
         <label class="dup-settings-field"><span>全体を調べ直す間隔</span>
-          <select data-dup-setting="refresh_days">
+          <select data-dup-setting="refresh_days" data-e2e-id="duplicate-setting-refresh-days">
             <option value="0" ${Number(settings.refresh_days) === 0 ? 'selected' : ''}>自動では調べ直さない</option>
             <option value="1" ${Number(settings.refresh_days) === 1 ? 'selected' : ''}>毎日</option>
             <option value="7" ${Number(settings.refresh_days ?? 7) === 7 ? 'selected' : ''}>7日ごと</option>
@@ -844,11 +832,11 @@
           </select>
         </label>
         <div class="gb-check-help-row">
-          <label><input type="checkbox" data-dup-setting="watch_changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
+          <label><input type="checkbox" data-dup-setting="watch_changes" data-e2e-id="duplicate-setting-watch-changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
           ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
         </div>
         <div class="dup-settings-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline>${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline data-e2e-id="duplicate-setting-scan-now">${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
           <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>
         </div>
       </section>

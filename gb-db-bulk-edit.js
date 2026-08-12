@@ -408,11 +408,11 @@ function _showBulkEditModal(entityNames, ctx) {
     return;
   }
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:460px;">
-    <h3>一括編集 (${entityNames.length} 件)</h3>
-    <div style="margin:8px 0;color:var(--fg2);font-size:12px;max-height:80px;overflow-y:auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
+  const returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+    ? document.activeElement
+    : null;
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="db-bulk-edit-selection-summary" style="margin:0 0 8px;color:var(--fg2);font-size:12px;line-height:20px;min-height:20px;max-height:80px;overflow-y:auto;flex:0 0 auto;">${entityNames.map(n => esc(n)).join(' / ')}</div>
     <div class="field"><label>列</label>
       <select id="bulk-edit-prop" style="width:100%;padding:4px;">
         ${editableProps.map(p => `<option value="${esc(p)}">${esc(p)} (${esc(propTypes[p]?.type || 'text')})</option>`).join('')}
@@ -427,14 +427,37 @@ function _showBulkEditModal(entityNames, ctx) {
         <option value="掲載済み">掲載済み</option>
       </select>
     </div>` : ''}
-    <div class="field" id="bulk-edit-replace-row"><label><input id="bulk-edit-replace" type="checkbox" checked ${statusOn ? '' : 'disabled'}> ${statusOn ? '既存の値を置き換える（チェックなしで候補値として追加）' : '既存の値を置き換える'}</label></div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="bulk-edit-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    <div class="field" id="bulk-edit-replace-row"><label><input id="bulk-edit-replace" type="checkbox" checked ${statusOn ? '' : 'disabled'}> ${statusOn ? '既存の値を置き換える（チェックなしで候補値として追加）' : '既存の値を置き換える'}</label></div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.dataset.e2eId = 'db-bulk-edit-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  applyBtn.id = 'bulk-edit-apply';
+  applyBtn.textContent = '適用';
+  const modalApi = window.GBUI.createModal({
+    id: 'db-bulk-edit-dialog',
+    title: `一括編集 (${entityNames.length} 件)`,
+    body,
+    footer: [cancelBtn, applyBtn],
+    variant: 'standard',
+    extraClass: 'db-bulk-edit-modal',
+    geometryKey: 'db-bulk-edit',
+    initialFocus: '#bulk-edit-prop',
+    returnFocus: returnFocus || undefined,
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.dbBulkEditModal = '1';
+  modalApi.modal.style.width = 'min(560px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = 'calc(100vw - 24px)';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'db-bulk-edit-close-icon';
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  modalApi.open();
 
   let renderValueInputSeq = 0;
   const renderValueInput = async (propName) => {
@@ -494,12 +517,12 @@ function _showBulkEditModal(entityNames, ctx) {
       inp.style.cssText = baseStyle;
       if (ptc.unit) inp.placeholder = '単位: ' + ptc.unit;
       container.appendChild(inp);
-    } else if (ptc.type === 'url') {
+    } else if (ptc.type === 'link' || ptc.type === 'url') {
       const inp = document.createElement('input');
-      inp.type = 'url';
+      inp.type = 'text';
       inp.id = 'bulk-edit-value';
       inp.style.cssText = baseStyle;
-      inp.placeholder = 'https://...';
+      inp.placeholder = 'Web URL、Meldex項目、ファイル、フォルダ';
       container.appendChild(inp);
     } else if (ptc.type === 'relation' || ptc.type === 'multi-relation') {
       const isSelfRef = (ptc.relationDb === '' && ptc.relationDb !== undefined);
@@ -588,7 +611,7 @@ function _showBulkEditModal(entityNames, ctx) {
     return el ? el.value : '';
   };
 
-  document.getElementById('bulk-edit-apply').addEventListener('click', async () => {
+  applyBtn.addEventListener('click', async () => {
     const prop = document.getElementById('bulk-edit-prop').value;
     const value = collectValue();
     const statusEl = document.getElementById('bulk-edit-status');
@@ -607,7 +630,7 @@ function _showBulkEditModal(entityNames, ctx) {
         : Promise.resolve(window.confirm('一括編集で既存のリレーション候補を置き換えます。続行しますか？')));
       if (!ok) return;
     }
-    overlay.remove();
+    modalApi.close('apply');
     showStatus(entityNames.length + ' 件を更新中...');
     let ok = 0;
     let fail = 0;

@@ -19,7 +19,7 @@
       emptyEl.innerHTML = '<div style="font-size:36px;color:var(--fg2);">' + (typeof lucide === 'function' ? lucide(GBTabs.tabIcon(toolType), 48) : '') + '</div>'
         + '<div style="font-size:16px;color:var(--fg);">' + label + '</div>'
         + '<div style="font-size:13px;color:var(--fg2);">ファイルを開くか、新規作成してください</div>'
-        + '<button class="gb-empty-create-btn" style="margin-top:8px;padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:6px;cursor:pointer;font-size:13px;">+ 新規作成</button>';
+        + '<button class="gb-empty-create-btn" style="margin-top:8px;padding:6px 16px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:6px;cursor:pointer;font-size:13px;">+ 新規作成</button>';
       const createBtn = emptyEl.querySelector('.gb-empty-create-btn');
       createBtn.dataset.e2eId = `empty-create-${toolType}`;
       createBtn.addEventListener('click', () => {
@@ -526,10 +526,10 @@
     if (typeof GBLayout === 'undefined' || !pane?.id || !contentEl) return false;
     const paneMap = GBLayout.paneMap;
     if (!paneMap) return false;
-    const surface = options?.surface || 'float';
+    const surface = options?.surface || 'subpanel';
     paneMap[pane.id] = {
       node: pane,
-      el: contentEl.closest?.('.gb-float-panel, .gb-subpanel') || contentEl,
+      el: contentEl.closest?.('.gb-subpanel') || contentEl,
       contentEl,
       surface,
     };
@@ -604,11 +604,11 @@
   }
 
   // ================================================================
-  // 右サイドバー補助操作の制限（フロートパネル／サブパネル内）
+  // 右サイドバー補助操作の制限（サブパネル内）
   //
   // 計画書「右サイドバー操作の制限」節: オプション・ビューワー・バージョン管理・
   // チャット・タイマー・ヒストリー・注釈・タグ・別サブパネルを開く操作は、
-  // フロートパネル／サブパネル内では使用できない。メインパネルからは従来どおり。
+  // サブパネル内では使用できない。メインパネルからは従来どおり。
   // ================================================================
   const RIGHT_SIDEBAR_RESTRICTED_TOOLS = new Set([
     'detail', 'preview', 'version', 'chat', 'timer', 'history',
@@ -618,14 +618,13 @@
   function _surfaceOfElement(el) {
     if (!el || typeof el.closest !== 'function') return 'main';
     if (el.closest('.gb-subpanel')) return 'subpanel';
-    if (el.closest('.gb-float-panel')) return 'float';
     return 'main';
   }
 
   function _surfaceOfPaneId(paneId) {
     const info = GBLayout?.paneMap?.[paneId];
     if (!info) return 'main';
-    if (info.surface === 'float' || info.surface === 'subpanel') return info.surface;
+    if (info.surface === 'subpanel') return info.surface;
     return _surfaceOfElement(info.contentEl || info.el);
   }
 
@@ -638,12 +637,12 @@
       return _surfaceOfElement(typeof document !== 'undefined' ? document.activeElement : null);
     }
     if (typeof source === 'string') {
-      if (source === 'main' || source === 'float' || source === 'subpanel') return source;
+      if (source === 'main' || source === 'subpanel') return source;
       return _surfaceOfPaneId(source);
     }
     if (source.nodeType) return _surfaceOfElement(source);
     if (typeof source === 'object') {
-      if (source.surface === 'main' || source.surface === 'float' || source.surface === 'subpanel') {
+      if (source.surface === 'main' || source.surface === 'subpanel') {
         return source.surface;
       }
       const nestedSource = source.source ?? source.sourceEl ?? source.sourcePaneId
@@ -654,7 +653,7 @@
   }
 
   function _canUseRightSidebarTools(surface) {
-    return surface !== 'float' && surface !== 'subpanel';
+    return surface !== 'subpanel';
   }
 
   function _isRightSidebarRestrictedTool(toolType) {
@@ -662,12 +661,12 @@
   }
 
   function _surfaceStatusLabel(surface) {
-    return surface === 'subpanel' ? 'サブパネル' : 'フロートパネル';
+    return surface === 'subpanel' ? 'サブパネル' : '作業領域';
   }
 
   // 右サイドバー補助操作（オプション/ビューワー/バージョン管理/チャット/タイマー/
   // ヒストリー/注釈/タグ/サブパネルを開く）の可否を判定する。制限対象で、かつ
-  // フロートパネル／サブパネル内からの呼び出しであれば false を返し、短いステータス
+  // サブパネル内からの呼び出しであれば false を返し、短いステータス
   // 通知を出す。呼び出し側はこの戻り値が true の場合のみ処理を継続すること。
   function _guardRightSidebarTool(toolType, source) {
     if (!RIGHT_SIDEBAR_RESTRICTED_TOOLS.has(toolType)) return true;

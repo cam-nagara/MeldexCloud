@@ -67,7 +67,7 @@ function _resolveRpAnnotationCurrentTarget() {
   return '';
 }
 
-// フロートパネル／サブパネル内では、右サイドバー補助操作（オプション/ビューワー/
+// サブパネル内では、右サイドバー補助操作（オプション/ビューワー/
 // バージョン管理/チャット/タイマー/ヒストリー/注釈/タグ/サブパネル）を使用できない。
 // source は明示的な呼び出し元（DOM要素／paneId）。省略時はフォーカス位置で判定する。
 function _rightSidebarToolAllowed(tabName, source) {
@@ -932,7 +932,7 @@ function _editCommentInline(el, c) {
   bar.className = 'rp-ann-inline-edit-actions';
   bar.style.cssText = 'display:flex;gap:4px;margin-top:4px;justify-content:flex-end;';
   bar.innerHTML = `<button class="rp-ann-cancel" data-rp-ann-inline-action="cancel" data-e2e-id="rp-ann-inline-cancel-${esc(c.id || 'unknown')}" aria-label="キャンセル" style="font-size:11px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;">キャンセル</button>
-    <button class="rp-ann-save" data-rp-ann-inline-action="save" data-e2e-id="rp-ann-inline-save-${esc(c.id || 'unknown')}" aria-label="保存" style="font-size:11px;padding:2px 8px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:3px;cursor:pointer;">保存</button>`;
+    <button class="rp-ann-save" data-rp-ann-inline-action="save" data-e2e-id="rp-ann-inline-save-${esc(c.id || 'unknown')}" aria-label="保存" style="font-size:11px;padding:2px 8px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:3px;cursor:pointer;">保存</button>`;
   el.innerHTML = '';
   el.appendChild(ta);
   el.appendChild(bar);

@@ -481,7 +481,12 @@
     let swipe = null;
 
     const reset = () => { swipe = null; };
-    const isBlockedTarget = (target) => !!target?.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay, .cloud-mobile-menu-overlay, .cloud-mobile-overflow-overlay, .cloud-conflict-resolver-overlay, [role="dialog"]');
+    const isAnnotationInteraction = (target) => {
+      if (target?.closest?.('#ann-overlay, .ann-note, .cloud-mobile-annotationbar')) return true;
+      try { return typeof ann !== 'undefined' && !!(ann.active || ann.drawing); } catch { return false; }
+    };
+    const isBlockedTarget = (target) => !!target?.closest?.('.modal-overlay, .gb-modal-overlay, .gb-cal-modal-overlay, .link-modal-overlay, .cloud-mobile-menu-overlay, .cloud-mobile-overflow-overlay, .cloud-conflict-resolver-overlay, [role="dialog"]')
+      || isAnnotationInteraction(target);
 
     document.addEventListener('pointerdown', (event) => {
       if (!shouldUseSidebarDrawer() || _isTreeScreenOpen() || isBlockedTarget(event.target)) return;

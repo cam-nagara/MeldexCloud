@@ -683,6 +683,7 @@ function bdAppendMissingImagePlaceholder(div, node) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'bd-missing-image-action';
+    button.dataset.e2eId = `board-missing-image-relocate-${node.id}`;
     button.textContent = '画像を再指定';
     button.addEventListener('click', ev => {
       ev.preventDefault();

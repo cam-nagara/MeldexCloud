@@ -9,17 +9,25 @@
  *   これで「どのアプリでもオプションパネルからショートカットを確認・変更できる」状態に
  *   しつつ、そのアプリに存在しない操作を一覧へ出さずに済む。
  *
- * カスタム値は localStorage の 'meldex-custom-shortcuts' に保存する（キーの上書きのみ）。
+ * カスタム値は後方互換のため localStorage の 'meldex-custom-shortcuts' に保存する。
+ * 同期用の更新時刻・clientId・reset墓標は別のローカル状態へ保持し、個人設定
+ * shortcut-settings とID単位でマージする。
  */
 (function (global) {
   'use strict';
 
   const STORAGE_KEY = 'meldex-custom-shortcuts';
+  const SYNC_DOCUMENT_NAME = 'shortcut-settings';
+  const SYNC_STATE_KEY = 'meldex-shortcut-sync-state';
+  const SYNC_ENABLED_KEY = 'meldex-shortcut-sync-enabled';
+  const SYNC_CLIENT_ID_KEY = 'meldex-shortcut-sync-client-id';
+  const SYNC_MIGRATED_KEY = 'meldex-shortcut-sync-migrated-v1';
+  const SYNC_PUSH_DELAY_MS = 900;
   const MODIFIER_KEYS = new Set(['control', 'shift', 'alt', 'meta']);
   // Shift+数字キーの記号→数字マッピング（US配列基準）
   const SHIFT_DIGIT_MAP = { '!': '1', '@': '2', '#': '3', '$': '4', '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0' };
 
-  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'quickmemo', 'timer', 'panelset'];
+  const SCOPE_ORDER = ['global', 'note', 'scenario', 'database', 'board', 'calendar', 'csv', 'folder', 'viewer', 'chat', 'annotation', 'comment', 'tray', 'quickmemo', 'timer', 'panelset'];
   const SCOPE_LABELS = {
     global: '全体',
     note: 'ノート',
@@ -30,6 +38,10 @@
     csv: 'CSV',
     folder: 'フォルダ',
     viewer: 'ビューワー',
+    chat: 'チャット',
+    annotation: '注釈',
+    comment: 'コメント',
+    tray: '常駐アプリ',
     quickmemo: 'クイックメモ',
     timer: 'タイマー',
     panelset: 'パネルセット',
@@ -62,12 +74,16 @@
     preview: 'viewer',
     media: 'viewer',
     viewer: 'viewer',
+    chat: 'chat',
     'quick-memo': 'quickmemo',
     quickmemo: 'quickmemo',
     timer: 'timer',
   };
 
   const definitions = {};
+  let _syncPushTimer = null;
+  let _syncBusy = false;
+  let _applyingSyncedBindings = false;
 
   function _esc(value) {
     if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
@@ -102,6 +118,243 @@
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; }
   }
 
+  function _parseObject(text, fallback) {
+    try {
+      const value = JSON.parse(text || 'null');
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback;
+    } catch { return fallback; }
+  }
+
+  function _clientId() {
+    let value = '';
+    try { value = String(localStorage.getItem(SYNC_CLIENT_ID_KEY) || ''); } catch {}
+    if (value) return value;
+    value = `shortcut-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    try { localStorage.setItem(SYNC_CLIENT_ID_KEY, value); } catch {}
+    return value;
+  }
+
+  function isSyncEnabled() {
+    try { return localStorage.getItem(SYNC_ENABLED_KEY) !== '0'; } catch { return true; }
+  }
+
+  function _readSyncState() {
+    let state = {};
+    try { state = _parseObject(localStorage.getItem(SYNC_STATE_KEY), {}); } catch {}
+    return {
+      schemaVersion: 1,
+      revision: String(state.revision || ''),
+      needsPush: state.needsPush === true,
+      bindings: _normalizeBindings(state.bindings),
+    };
+  }
+
+  function _writeSyncState(state) {
+    const normalized = {
+      schemaVersion: 1,
+      revision: String(state?.revision || ''),
+      needsPush: state?.needsPush === true,
+      bindings: _normalizeBindings(state?.bindings),
+    };
+    try { localStorage.setItem(SYNC_STATE_KEY, JSON.stringify(normalized)); } catch {}
+    return normalized;
+  }
+
+  function _normalizeBinding(value) {
+    if (!value || typeof value !== 'object') return null;
+    const reset = value.reset === true;
+    const key = reset ? '' : normalizeKeyDef(value.key || '');
+    if (!reset && !key) return null;
+    return {
+      key,
+      updatedAt: String(value.updatedAt || ''),
+      clientId: String(value.clientId || ''),
+      reset,
+    };
+  }
+
+  function _normalizeBindings(bindings) {
+    const result = {};
+    if (!bindings || typeof bindings !== 'object') return result;
+    Object.entries(bindings).forEach(([id, value]) => {
+      const normalized = _normalizeBinding(value);
+      if (normalized) result[String(id)] = normalized;
+    });
+    return result;
+  }
+
+  function _newerBinding(left, right) {
+    if (!left) return right || null;
+    if (!right) return left;
+    const leftText = String(left.updatedAt || '');
+    const rightText = String(right.updatedAt || '');
+    const leftTime = Date.parse(leftText);
+    const rightTime = Date.parse(rightText);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) return leftTime > rightTime ? left : right;
+    if ((!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) && leftText !== rightText) return leftText > rightText ? left : right;
+    return String(left.clientId || '') >= String(right.clientId || '') ? left : right;
+  }
+
+  function mergeBindings(localBindings, remoteBindings) {
+    const local = _normalizeBindings(localBindings);
+    const remote = _normalizeBindings(remoteBindings);
+    const merged = {};
+    new Set([...Object.keys(local), ...Object.keys(remote)]).forEach((id) => {
+      const winner = _newerBinding(local[id], remote[id]);
+      if (winner) merged[id] = { ...winner };
+    });
+    return merged;
+  }
+
+  function _bindingsEqual(left, right) {
+    return JSON.stringify(_normalizeBindings(left)) === JSON.stringify(_normalizeBindings(right));
+  }
+
+  function _migrateLegacyOnce() {
+    try {
+      if (localStorage.getItem(SYNC_MIGRATED_KEY) === '1') return _readSyncState();
+    } catch {}
+    const state = _readSyncState();
+    const legacy = getCustom();
+    const timestamp = new Date().toISOString();
+    const clientId = _clientId();
+    let migrated = false;
+    Object.entries(legacy).forEach(([id, value]) => {
+      if (state.bindings[id]) return;
+      const key = normalizeKeyDef(value?.key || '');
+      if (key) {
+        state.bindings[id] = { key, updatedAt: timestamp, clientId, reset: false };
+        migrated = true;
+      }
+    });
+    if (migrated) state.needsPush = true;
+    _writeSyncState(state);
+    try { localStorage.setItem(SYNC_MIGRATED_KEY, '1'); } catch {}
+    return state;
+  }
+
+  function _recordLocalChanges(before, after) {
+    if (_applyingSyncedBindings) return;
+    const state = _migrateLegacyOnce();
+    const timestamp = new Date().toISOString();
+    const clientId = _clientId();
+    new Set([...Object.keys(before || {}), ...Object.keys(after || {})]).forEach((id) => {
+      const beforeKey = normalizeKeyDef(before?.[id]?.key || '');
+      const afterKey = normalizeKeyDef(after?.[id]?.key || '');
+      if (beforeKey === afterKey) return;
+      state.bindings[id] = afterKey
+        ? { key: afterKey, updatedAt: timestamp, clientId, reset: false }
+        : { key: '', updatedAt: timestamp, clientId, reset: true };
+    });
+    state.needsPush = true;
+    _writeSyncState(state);
+    scheduleSyncPush();
+  }
+
+  function _applyBindings(bindings) {
+    const current = getCustom();
+    const next = { ...current };
+    Object.entries(_normalizeBindings(bindings)).forEach(([id, value]) => {
+      if (value.reset) delete next[id];
+      else next[id] = { key: value.key };
+    });
+    if (JSON.stringify(current) === JSON.stringify(next)) return false;
+    _applyingSyncedBindings = true;
+    try { saveCustom(next, { skipHistory: true, skipSync: true }); }
+    finally { _applyingSyncedBindings = false; }
+    _refreshOpenSettings();
+    return true;
+  }
+
+  function _syncGet() {
+    if (typeof global.apiFetch !== 'function' && typeof apiFetch !== 'function') return Promise.resolve(null);
+    const fetcher = typeof global.apiFetch === 'function' ? global.apiFetch : apiFetch;
+    return fetcher(`/personal-preferences/${SYNC_DOCUMENT_NAME}`, { silentError: true });
+  }
+
+  function _syncPut(body) {
+    if (typeof global.apiFetch !== 'function' && typeof apiFetch !== 'function') return Promise.resolve(null);
+    const fetcher = typeof global.apiFetch === 'function' ? global.apiFetch : apiFetch;
+    return fetcher(`/personal-preferences/${SYNC_DOCUMENT_NAME}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), silentError: true,
+    });
+  }
+
+  async function pullShortcutSettings() {
+    if (!isSyncEnabled()) return { enabled: false, applied: false };
+    const response = await _syncGet();
+    if (!response || response.available === false) return { available: false, applied: false };
+    const state = _migrateLegacyOnce();
+    const remoteBindings = _normalizeBindings(response.payload?.bindings);
+    const merged = mergeBindings(state.bindings, remoteBindings);
+    const remoteNeedsMerge = !_bindingsEqual(merged, remoteBindings);
+    _writeSyncState({ revision: response.revision || '', bindings: merged, needsPush: remoteNeedsMerge || state.needsPush });
+    const applied = _applyBindings(merged);
+    if (remoteNeedsMerge) scheduleSyncPush();
+    return { available: true, applied, revision: response.revision || '', remoteNeedsMerge };
+  }
+
+  async function _pushAttempt(retryConflict) {
+    const state = _migrateLegacyOnce();
+    if (!state.needsPush) return { available: true, pushed: false };
+    try {
+      const response = await _syncPut({
+        payload: { schemaVersion: 1, bindings: state.bindings },
+        expectedRevision: state.revision || null,
+      });
+      if (!response || response.available === false) return { available: false, pushed: false };
+      _writeSyncState({ revision: response.revision || '', bindings: state.bindings, needsPush: false });
+      return { available: true, pushed: true, revision: response.revision || '' };
+    } catch (error) {
+      const conflict = Number(error?.status || error?.response?.status || 0) === 409
+        || /(?:HTTP\s*)?409|競合/.test(String(error?.message || ''));
+      if (!retryConflict || !conflict) return { pushed: false, conflict, offline: !conflict, error };
+      const remote = await _syncGet();
+      if (!remote || remote.available === false) return { available: false, pushed: false, error };
+      const latest = _readSyncState();
+      const merged = mergeBindings(latest.bindings, remote.payload?.bindings);
+      _writeSyncState({ revision: remote.revision || '', bindings: merged, needsPush: true });
+      _applyBindings(merged);
+      return _pushAttempt(false);
+    }
+  }
+
+  async function pushShortcutSettings() {
+    if (!isSyncEnabled()) return { enabled: false, pushed: false };
+    return _pushAttempt(true);
+  }
+
+  async function syncNow() {
+    if (_syncBusy || !isSyncEnabled()) return null;
+    _syncBusy = true;
+    try {
+      const pulled = await pullShortcutSettings();
+      if (pulled?.available === false) return { pulled };
+      const pushed = await pushShortcutSettings();
+      return { pulled, pushed };
+    } catch (error) {
+      return { error };
+    } finally { _syncBusy = false; }
+  }
+
+  function scheduleSyncPush() {
+    if (!isSyncEnabled() || _applyingSyncedBindings) return;
+    if (_syncPushTimer) clearTimeout(_syncPushTimer);
+    _syncPushTimer = setTimeout(() => {
+      _syncPushTimer = null;
+      if (_syncBusy) return;
+      _syncBusy = true;
+      pushShortcutSettings().catch(() => null).finally(() => { _syncBusy = false; });
+    }, SYNC_PUSH_DELAY_MS);
+  }
+
+  function setSyncEnabled(enabled) {
+    try { localStorage.setItem(SYNC_ENABLED_KEY, enabled ? '1' : '0'); } catch {}
+    if (enabled) syncNow();
+    _refreshOpenSettings();
+  }
+
   // 設定変更後に、開いている全部のショートカット一覧（設定ダイアログ／オプションパネル）を描き直す
   function _refreshOpenSettings() {
     if (typeof global._updateAllTooltips === 'function') global._updateAllTooltips();
@@ -112,6 +365,7 @@
   }
 
   function saveCustom(custom, options) {
+    const previousCustom = getCustom();
     const before = (typeof global.captureLocalStorageSettings === 'function')
       ? global.captureLocalStorageSettings([STORAGE_KEY])
       : null;
@@ -120,14 +374,24 @@
     if (typeof global.updateDatabaseShortcutStatusbar === 'function') global.updateDatabaseShortcutStatusbar();
     if (typeof global.updateCsvShortcutStatusbar === 'function') global.updateCsvShortcutStatusbar();
     if (before && options?.skipHistory !== true && typeof global.pushLocalStorageSettingsHistory === 'function') {
+      const after = global.captureLocalStorageSettings([STORAGE_KEY]);
+      const refreshAfterHistory = (_keys, restoredSnapshot) => {
+        const restoredCustom = getCustom();
+        const restoredRaw = restoredSnapshot?.storage?.[STORAGE_KEY] ?? null;
+        const beforeRaw = before?.storage?.[STORAGE_KEY] ?? null;
+        const otherCustom = restoredRaw === beforeRaw ? (custom || {}) : previousCustom;
+        _recordLocalChanges(otherCustom, restoredCustom);
+        _refreshOpenSettings();
+      };
       global.pushLocalStorageSettingsHistory(
         options?.label || '設定: ショートカット変更',
         before,
-        global.captureLocalStorageSettings([STORAGE_KEY]),
+        after,
         options?.detail || '',
-        _refreshOpenSettings
+        refreshAfterHistory
       );
     }
+    if (options?.skipSync !== true) _recordLocalChanges(previousCustom, custom || {});
   }
 
   function effective() {
@@ -269,7 +533,9 @@
     const query = (container.querySelector('[data-shortcut-search]')?.value || '').trim().toLowerCase();
     const selectedScope = container.querySelector('[data-shortcut-scope-filter]')?.value || 'all';
     container.querySelectorAll('.shortcut-row').forEach(row => {
-      const matchesScope = selectedScope === 'all' || row.dataset.scope === selectedScope;
+      const matchesScope = selectedScope === 'all'
+        || (selectedScope === 'current' && ['global', container.dataset.shortcutCurrentScope].includes(row.dataset.scope))
+        || row.dataset.scope === selectedScope;
       const matchesSearch = !query || (row.dataset.search || '').includes(query);
       row.hidden = !(matchesScope && matchesSearch);
     });
@@ -283,8 +549,12 @@
     if (empty) empty.hidden = !!container.querySelector('.shortcut-group:not([hidden])');
   }
 
-  function _scopeOptionsHtml(scopeOptions, previousScope) {
+  function _scopeOptionsHtml(scopeOptions, previousScope, currentScope) {
     let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
+    if (currentScope && currentScope !== 'global') {
+      html += '<option value="current"' + (previousScope === 'current' ? ' selected' : '') + '>Meldex共通＋'
+        + _esc(scopeLabel(currentScope)) + '</option>';
+    }
     for (const [scope, items] of scopeOptions) {
       html += '<option value="' + _esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>'
         + _esc(scopeLabel(scope)) + ' (' + items.length + ')</option>';
@@ -368,10 +638,15 @@
   function renderSettings(container, options) {
     if (!container) return;
     const opts = options || {};
+    const previousCurrentScope = container.dataset.shortcutCurrentScope || '';
+    if (previousCurrentScope && previousCurrentScope !== (opts.scope || '')) {
+      container.dataset.shortcutScopeUserChoice = '0';
+    }
     container._shortcutSettingsOptions = opts;
     container.dataset.shortcutSettingsHost = '1';
     container.dataset.shortcutSettingsScope = opts.scope || '';
     container.dataset.shortcutSettingsBoxed = opts.boxed ? '1' : '0';
+    container.dataset.shortcutCurrentScope = opts.scope || '';
 
     const shortcuts = effective();
     const custom = getCustom();
@@ -380,7 +655,7 @@
     const previousSearch = container.querySelector('[data-shortcut-search]')?.value || '';
     // 既定は「いま開いているアプリの分だけ」。ただしユーザーが絞り込みを自分で
     // 変えた後は、アプリを切り替えてもその選択を尊重する。
-    const autoScope = (opts.scope && grouped[opts.scope]?.length) ? opts.scope : 'all';
+    const autoScope = (opts.scope && grouped[opts.scope]?.length) ? 'current' : 'all';
     const previousScope = container.dataset.shortcutScopeUserChoice === '1'
       ? (container.querySelector('[data-shortcut-scope-filter]')?.value || autoScope)
       : autoScope;
@@ -388,11 +663,13 @@
     let html = '<section class="gb-section shortcut-settings-wrap'
       + (opts.boxed ? ' gb-section--boxed' : ' gb-section--detail') + '">';
     html += '<div class="gb-section-title">ショートカットキー</div>';
+    html += '<label class="gb-field-row shortcut-sync-toggle"><input type="checkbox" class="gb-checkbox" data-shortcut-sync-enabled data-e2e-id="shortcut-sync-enabled"'
+      + (isSyncEnabled() ? ' checked' : '') + '>この環境の変更を他のMeldexと連動</label>';
     html += '<div class="gb-field-row shortcut-settings-filter">';
     html += '<input class="gb-input" type="text" placeholder="検索" data-shortcut-search'
       + (opts.boxed ? ' id="shortcut-search"' : '') + ' value="' + _esc(previousSearch) + '">';
     html += '<select class="gb-select" data-shortcut-scope-filter' + (opts.boxed ? ' id="shortcut-scope-filter"' : '') + '>';
-    html += _scopeOptionsHtml(scopeOptions, previousScope);
+    html += _scopeOptionsHtml(scopeOptions, previousScope, opts.scope || '');
     html += '</select>';
     html += '<button type="button" class="gb-btn gb-btn-sm" data-shortcut-reset-all'
       + (opts.boxed ? ' id="shortcut-reset-all"' : '') + '>すべてリセット</button>';
@@ -431,11 +708,29 @@
     });
 
     container.querySelector('[data-shortcut-search]')?.addEventListener('input', () => applyFilter(container));
+    container.querySelector('[data-shortcut-sync-enabled]')?.addEventListener('change', event => {
+      setSyncEnabled(event.currentTarget.checked);
+    });
     container.querySelector('[data-shortcut-scope-filter]')?.addEventListener('change', () => {
       container.dataset.shortcutScopeUserChoice = '1';
       applyFilter(container);
     });
     applyFilter(container);
+  }
+
+  function _startSync() {
+    _migrateLegacyOnce();
+    global.addEventListener?.('focus', () => { syncNow(); });
+    global.addEventListener?.('online', () => { syncNow(); });
+    global.addEventListener?.('storage', event => {
+      if (event.key === STORAGE_KEY && !_applyingSyncedBindings) {
+        _refreshOpenSettings();
+        scheduleSyncPush();
+      }
+    });
+    const periodicSync = global.setInterval?.(() => { syncNow(); }, 60000);
+    periodicSync?.unref?.();
+    syncNow();
   }
 
   global.MeldexShortcutRegistry = Object.freeze({
@@ -456,7 +751,22 @@
     scopeForType,
     renderSettings,
     applyFilter,
+    isSyncEnabled,
+    setSyncEnabled,
+    mergeBindings,
+    pullShortcutSettings,
+    pushShortcutSettings,
+    syncNow,
+    scheduleSyncPush,
+    SYNC_DOCUMENT_NAME,
+    SYNC_STATE_KEY,
+    SYNC_ENABLED_KEY,
     SCOPE_LABELS,
     SCOPE_ORDER,
   });
+
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startSync, { once: true });
+    else _startSync();
+  }
 })(typeof window !== 'undefined' ? window : globalThis);

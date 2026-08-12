@@ -95,13 +95,22 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   _writeRowsetPresets(presets, options = {}) {
     const beforeStorage = options.skipHistory ? null : _snRowsetCaptureStorageHistory();
-    localStorage.setItem(SN2_ROWSET_PRESETS_STORAGE_KEY, JSON.stringify(presets && typeof presets === 'object' ? presets : {}));
-    if (!options.skipHistory) {
-      _snRowsetPushStorageHistory(
-        options.label || 'シナリオ: 行セットプリセット変更',
-        beforeStorage,
-        options.detail || ''
-      );
+    const previousValue = localStorage.getItem(SN2_ROWSET_PRESETS_STORAGE_KEY);
+    try {
+      localStorage.setItem(SN2_ROWSET_PRESETS_STORAGE_KEY, JSON.stringify(presets && typeof presets === 'object' ? presets : {}));
+      if (!options.skipHistory) {
+        _snRowsetPushStorageHistory(
+          options.label || 'シナリオ: 行セットプリセット変更',
+          beforeStorage,
+          options.detail || ''
+        );
+      }
+    } catch (error) {
+      try {
+        if (previousValue === null) localStorage.removeItem(SN2_ROWSET_PRESETS_STORAGE_KEY);
+        else localStorage.setItem(SN2_ROWSET_PRESETS_STORAGE_KEY, previousValue);
+      } catch {}
+      throw error;
     }
   },
 
@@ -159,23 +168,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     saveBtn.setAttribute('aria-label', '現在の行セットをプリセットとして保存');
     saveBtn.addEventListener('click', () => {
       if (!this._rowsetRows.length) return;
-      const focusReturnTarget = saveBtn;
       const dialogId = `sn2-rsp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-      const titleId = dialogId + '-title';
       const inputId = dialogId + '-name';
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.dataset.sn2Dialog = 'rowset-preset-save';
-      const modal = document.createElement('div');
-      modal.className = 'modal sn2-rowset-save-modal';
-      modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      modal.setAttribute('aria-labelledby', titleId);
-      const heading = document.createElement('h3');
-      heading.id = titleId;
-      heading.textContent = '行セットプリセット保存';
       const body = document.createElement('div');
-      body.className = 'modal-body sn2-rowset-save-body';
+      body.className = 'sn2-rowset-save-content';
       const field = document.createElement('label');
       field.className = 'sn2-rowset-save-field';
       field.setAttribute('for', inputId);
@@ -190,9 +186,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       input.dataset.e2eId = 'scriptnote-rowset-save-preset-name';
       input.setAttribute('aria-label', '行セットプリセット名');
       field.append(labelText, input);
-      body.appendChild(field);
-      const actions = document.createElement('div');
-      actions.className = 'btn-row sn2-rowset-save-actions';
+      const status = document.createElement('div');
+      status.className = 'sn2-rowset-save-status';
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      body.append(field, status);
       const cancelBtn = document.createElement('button');
       cancelBtn.type = 'button';
       cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
@@ -201,52 +199,64 @@ Object.assign(ScriptNoteEditor.prototype, {
       okBtn.type = 'button';
       okBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
       okBtn.textContent = '保存';
-      actions.append(cancelBtn, okBtn);
-      modal.append(heading, body, actions);
-      overlay.appendChild(modal);
-      const close = () => {
-        if (typeof window !== 'undefined') window.removeEventListener('keydown', keyHandler, true);
-        document.removeEventListener('keydown', keyHandler, true);
-        overlay.remove();
-        _snRowsetRestoreFocus(focusReturnTarget);
-        setTimeout(() => _snRowsetRestoreFocus(focusReturnTarget), 0);
-        setTimeout(() => _snRowsetRestoreFocus(focusReturnTarget), 60);
-        if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => _snRowsetRestoreFocus(focusReturnTarget));
-        }
-      };
+      let busy = false;
+      const modalApi = window.GBUI.createModal({
+        id: 'scriptnote-rowset-save', title: '行セットプリセット保存', body, footer: [cancelBtn, okBtn],
+        variant: 'standard', geometryKey: 'scriptnote-rowset-save', minWidth: '0', initialFocus: `#${inputId}`,
+        returnFocus: saveBtn, closeLabel: '行セットプリセット保存を閉じる', closeOnEsc: true, closeOnOverlay: true,
+        onBeforeClose: (reason) => reason === 'submit' || !busy,
+      });
+      modalApi.overlay.dataset.sn2Dialog = 'rowset-preset-save';
+      modalApi.overlay.dataset.e2eId = 'scriptnote-rowset-save-overlay';
+      modalApi.modal.dataset.e2eId = 'scriptnote-rowset-save-dialog';
+      modalApi.modal.classList.add('sn2-rowset-save-modal');
+      modalApi.body.classList.add('sn2-rowset-save-body');
+      modalApi.footer.classList.add('sn2-rowset-save-actions');
+      globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modalApi.modal);
       const doSave = () => {
+        if (busy) return;
         const name = input.value.trim();
         if (!name) return;
-        close();
-        const presets = this._readRowsetPresets();
-        presets[name] = JSON.parse(JSON.stringify(this._rowsetRows));
-        this._writeRowsetPresets(presets, {
-          label: 'シナリオ: 行セットプリセット保存',
-          detail: name,
-        });
-        this._refreshRowsetPresetOptions(presetSel);
-        if (typeof showStatus === 'function') showStatus(`行セットプリセット「${name}」を保存しました`);
-      };
-      function keyHandler(ev) {
-        if (ev.key === 'Escape') {
-          ev.preventDefault();
-          ev.stopPropagation();
-          ev.stopImmediatePropagation?.();
-          close();
+        busy = true;
+        okBtn.disabled = true;
+        cancelBtn.disabled = true;
+        modalApi.modal.setAttribute('aria-busy', 'true');
+        status.textContent = '';
+        try {
+          const presets = this._readRowsetPresets();
+          presets[name] = JSON.parse(JSON.stringify(this._rowsetRows));
+          this._writeRowsetPresets(presets, {
+            label: 'シナリオ: 行セットプリセット保存',
+            detail: name,
+          });
+          let refreshWarning = false;
+          try {
+            this._refreshRowsetPresetOptions(presetSel);
+          } catch (error) {
+            console.warn('行セットプリセット保存後の一覧更新に失敗しました:', error);
+            refreshWarning = true;
+          }
+          modalApi.close('submit');
+          if (typeof showStatus === 'function') {
+            if (refreshWarning) showStatus(`行セットプリセット「${name}」は保存しましたが、一覧を更新できませんでした`, true);
+            else showStatus(`行セットプリセット「${name}」を保存しました`);
+          }
+        } catch (error) {
+          status.textContent = '保存できませんでした。入力内容を保ったまま再試行できます。';
+          if (typeof showStatus === 'function') showStatus('行セットプリセットを保存できませんでした', true);
+        } finally {
+          busy = false;
+          modalApi.modal.setAttribute('aria-busy', 'false');
+          if (modalApi.isOpen()) {
+            okBtn.disabled = false;
+            cancelBtn.disabled = false;
+          }
         }
-      }
+      };
       okBtn.addEventListener('click', doSave);
-      cancelBtn.addEventListener('click', close);
+      cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
       input.addEventListener('keydown', ev => { if (ev.key === 'Enter') doSave(); });
-      overlay.addEventListener('click', ev => { if (ev.target === overlay) close(); });
-      if (typeof window !== 'undefined') window.addEventListener('keydown', keyHandler, true);
-      document.addEventListener('keydown', keyHandler, true);
-      document.body.appendChild(overlay);
-      if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-        window.GBModalShell.enhanceOverlay(overlay);
-      }
-      input.focus();
+      modalApi.open();
       input.select();
     });
     presetRow.appendChild(saveBtn);
@@ -393,6 +403,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     wrap.appendChild(execRow);
 
     container.appendChild(wrap);
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(wrap);
+    if (window.innerWidth <= 1024) wrap.querySelectorAll('.sn2-rowset-handle').forEach(handle => {
+      handle.style.minWidth = '44px';
+      handle.style.minHeight = '44px';
+    });
   },
 
   _execRowsetInsert(panelContainer) {

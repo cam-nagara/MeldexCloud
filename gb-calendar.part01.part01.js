@@ -190,7 +190,7 @@ function _bindCalendarCellAddButton(cell, onClick) {
   btn.setAttribute('aria-label', 'イベントを追加');
   const token = [cell.dataset.date || 'day', cell.dataset.hour || 'all-day'].join('-').replace(/[^a-zA-Z0-9_-]/g, '-');
   btn.dataset.e2eId = `cal-cell-quick-add-${token}`;
-  btn.style.cssText = 'position:absolute;top:4px;right:4px;width:20px;height:20px;border:none;border-radius:999px;background:var(--accent);color:var(--ui-fg-strong);font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.12s ease;z-index:4;';
+  btn.style.cssText = 'position:absolute;top:4px;right:4px;width:20px;height:20px;border:none;border-radius:999px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-size:14px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.12s ease;z-index:4;';
   btn.addEventListener('click', async (e) => {
     e.preventDefault();
     e.stopPropagation();

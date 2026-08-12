@@ -137,7 +137,7 @@
         item.className = 'user-option';
         const isSelected = selected.has(u.name);
         item.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;border-radius:3px;font-size:12px;'
-          + (isSelected ? 'background:var(--accent);color:var(--ui-fg-strong);' : '');
+          + (isSelected ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));' : '');
         item.innerHTML = (isMulti ? '<span style="font-size:11px;">' + (isSelected ? '✓' : '　') + '</span> ' : '')
           + _pickerAvatarHtml(u.name) + ' ' + _pickerEsc(u.name)
           + '<span style="margin-left:auto;font-size:10px;color:' + (isSelected ? 'color-mix(in srgb, var(--ui-fg-strong) 70%, transparent)' : 'var(--fg2)') + ';">' + _pickerEsc(u.role || '') + '</span>';

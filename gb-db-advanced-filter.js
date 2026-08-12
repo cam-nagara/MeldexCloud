@@ -30,21 +30,35 @@ function _showLegacyAdvancedFilterModal(ctx) {
   const allProps = _getAdvancedFilterPropertyNames(dbPath, ctx);
   const filters = getAdvancedFilters(dbPath, { ctx });
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal cond-modal">
-    <h3>複数条件フィルタ</h3>
-    <div class="modal-body cond-modal-body">
+  if (!globalThis.GBUI?.createModal) throw new Error('複数条件フィルタを初期化できませんでした');
+  const existing = document.querySelector('[data-e2e-id="db-advanced-filter-dialog"]');
+  if (existing) { existing.focus(); return existing.closest('.gb-modal-overlay')?._dbAdvancedFilterApi || null; }
+  const content = document.createElement('div');
+  content.className = 'cond-modal-body';
+  content.innerHTML = `
       <div id="adv-filter-list" class="cond-list"></div>
-      <button type="button" id="adv-filter-add-btn" class="cond-add-btn">+ 条件を追加</button>
-    </div>
-    <div class="btn-row">
-      <button type="button" id="adv-filter-clear-btn">全クリア</button>
-      <button type="button" id="adv-filter-cancel-btn">キャンセル</button>
-      <button type="button" class="primary" id="adv-filter-apply-btn">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
+      <button type="button" id="adv-filter-add-btn" class="gb-btn gb-btn-sm cond-add-btn">+ 条件を追加</button>`;
+  const clearButton = document.createElement('button');
+  clearButton.type = 'button'; clearButton.id = 'adv-filter-clear-btn'; clearButton.className = 'gb-btn gb-btn-sm'; clearButton.textContent = '全クリア';
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.id = 'adv-filter-cancel-btn'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.id = 'adv-filter-apply-btn'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.textContent = '適用';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-advanced-filter', title: '複数条件フィルタ', body: content, footer: [clearButton, cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-advanced-filter', minWidth: '0', initialFocus: '#adv-filter-add-btn',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: '複数条件フィルタを閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'applied' || !busy,
+  });
+  const o = modalApi.overlay;
+  o._dbAdvancedFilterApi = modalApi;
+  o.dataset.e2eId = 'db-advanced-filter-overlay';
+  modalApi.modal.dataset.e2eId = 'db-advanced-filter-dialog';
+  modalApi.modal.classList.add('cond-modal');
+  modalApi.modal.style.width = 'min(720px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
   o._dbPath = dbPath;
   o._dbCtx = ctx || null;
   const { list } = setupConditionModalLayout(o, '#adv-filter-list');
@@ -57,9 +71,27 @@ function _showLegacyAdvancedFilterModal(ctx) {
     e.preventDefault();
     addAdvFilterRow();
   });
-  o.querySelector('#adv-filter-clear-btn')?.addEventListener('click', clearAdvFilters);
-  o.querySelector('#adv-filter-cancel-btn')?.addEventListener('click', () => o.remove());
-  o.querySelector('#adv-filter-apply-btn')?.addEventListener('click', applyAdvFilters);
+  const run = async (clear) => {
+    if (busy) return;
+    busy = true;
+    [clearButton, cancelButton, applyButton].forEach(button => { button.disabled = true; });
+    let ok = false;
+    try {
+      ok = clear ? await clearAdvFilters(o, { close: false }) : await applyAdvFilters(o, { close: false });
+    } catch (error) {
+      console.warn('詳細フィルターの保存に失敗:', error);
+      showStatus('詳細フィルターの保存に失敗しました: ' + (error?.message || error), true);
+    }
+    if (ok) { modalApi.close('applied'); return; }
+    busy = false;
+    [clearButton, cancelButton, applyButton].forEach(button => { button.disabled = false; });
+    (clear ? clearButton : applyButton).focus({ preventScroll: true });
+  };
+  clearButton.addEventListener('click', () => run(true));
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  applyButton.addEventListener('click', () => run(false));
+  modalApi.open();
+  return modalApi;
 }
 
 function styleConditionControl(el, extraCss = '') {
@@ -250,8 +282,8 @@ async function _refreshAdvancedFilterResults(dbPath, ctx) {
   }
 }
 
-async function applyAdvFilters() {
-  const overlay = document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
+async function applyAdvFilters(rootOverlay = null, options = {}) {
+  const overlay = rootOverlay || document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
   const dbPath = overlay?._dbPath || state.currentDbPath;
   const ctx = overlay?._dbCtx || null;
   const rows = overlay?.querySelectorAll('#adv-filter-list [data-adv-filter-row]') || document.querySelectorAll('#adv-filter-list [data-adv-filter-row]');
@@ -266,16 +298,46 @@ async function applyAdvFilters() {
     }
     filters.push({ field, property: prop, operator: op, value: val });
   });
-  setAdvancedFilters(dbPath, filters, { ctx });
-  closeConditionModal('#adv-filter-list');
-  await _refreshAdvancedFilterResults(dbPath, ctx);
+  const before = getAdvancedFilters(dbPath, { ctx });
+  const beforeHistory = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  try {
+    setAdvancedFilters(dbPath, filters, { ctx, skipHistory: true });
+    await _refreshAdvancedFilterResults(dbPath, ctx);
+  } catch (error) {
+    setAdvancedFilters(dbPath, before, { ctx, skipHistory: true });
+    try { await _refreshAdvancedFilterResults(dbPath, ctx); } catch (restoreError) {
+      console.warn('フィルタ適用失敗後の表示復元に失敗:', restoreError);
+    }
+    showStatus('フィルタの適用に失敗しました: ' + (error?.message || error), true);
+    return false;
+  }
+  if (beforeHistory && typeof captureDbViewConfigHistory === 'function' && typeof pushDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: 複数条件フィルタ', beforeHistory, captureDbViewConfigHistory(dbPath));
+  }
+  if (options.close !== false) closeConditionModal('#adv-filter-list');
+  return true;
 }
 
-async function clearAdvFilters() {
-  const overlay = document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
+async function clearAdvFilters(rootOverlay = null, options = {}) {
+  const overlay = rootOverlay || document.querySelector('#adv-filter-list')?.closest?.('.modal-overlay');
   const dbPath = overlay?._dbPath || state.currentDbPath;
   const ctx = overlay?._dbCtx || null;
-  setAdvancedFilters(dbPath, [], { ctx });
-  closeConditionModal('#adv-filter-list');
-  await _refreshAdvancedFilterResults(dbPath, ctx);
+  const before = getAdvancedFilters(dbPath, { ctx });
+  const beforeHistory = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
+  try {
+    setAdvancedFilters(dbPath, [], { ctx, skipHistory: true });
+    await _refreshAdvancedFilterResults(dbPath, ctx);
+  } catch (error) {
+    setAdvancedFilters(dbPath, before, { ctx, skipHistory: true });
+    try { await _refreshAdvancedFilterResults(dbPath, ctx); } catch (restoreError) {
+      console.warn('フィルタ全クリア失敗後の表示復元に失敗:', restoreError);
+    }
+    showStatus('フィルタの全クリアに失敗しました: ' + (error?.message || error), true);
+    return false;
+  }
+  if (beforeHistory && typeof captureDbViewConfigHistory === 'function' && typeof pushDbViewConfigHistory === 'function') {
+    pushDbViewConfigHistory(dbPath, 'シート表示: 複数条件フィルタ', beforeHistory, captureDbViewConfigHistory(dbPath));
+  }
+  if (options.close !== false) closeConditionModal('#adv-filter-list');
+  return true;
 }

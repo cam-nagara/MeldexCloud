@@ -22,6 +22,10 @@
   let _installListenersBound = false;
   let _installSectionObserverBound = false;
   let _cloudHomeLaunchFlowActive = false;
+  let _installDialogApi = null;
+  let _cloudHomeDialogApi = null;
+  let _installHelpDialogApi = null;
+  let _consentDialogApi = null;
 
   function _safeStorageGet(key) {
     try { return localStorage.getItem(key); } catch (_) { return null; }
@@ -456,6 +460,7 @@
   function showCloudHomeOnlyNotice() {
     const options = arguments[0] || {};
     _hideStartupSplashForCloudHome();
+    if (_cloudHomeDialogApi?.isOpen?.()) _cloudHomeDialogApi.close('home-only');
     document.getElementById('meldex-cloud-home-first-overlay')?.remove();
     const existing = document.getElementById('meldex-cloud-home-only');
     if (existing) existing.remove();
@@ -634,94 +639,76 @@
   function showMeldexInstallDialog(options) {
     options = options || {};
     if (!options.force && _isStandaloneDisplayMode()) return false;
-    const existing = document.getElementById('meldex-install-prompt-overlay');
-    if (existing) existing.remove();
-    const overlay = _el('div', {
-      id: 'meldex-install-prompt-overlay',
-      class: 'modal-overlay meldex-install-prompt-overlay',
+    if (_installDialogApi?.isOpen?.()) _installDialogApi.close('replace');
+    document.getElementById('meldex-install-prompt-overlay')?.remove();
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    let dialogApi = null;
+    const installSection = _createInstallSection({
+      context: 'modal',
+      closeOnSuccess: () => dialogApi?.close('installed'),
     });
-    const dialog = _el('div', {
-      class: 'modal meldex-install-prompt-modal',
-      role: 'dialog',
-      'aria-modal': 'true',
-      'aria-labelledby': 'meldex-install-prompt-title',
+    const intro = _el('p', {
+      class: 'meldex-install-help-intro',
+      text: 'Meldex本体とクイックメモは別々にホーム画面へ追加できます。本体はワークスペース全体、クイックメモは短いメモや共有保存に使います。',
     });
-    const title = _el('h3', { id: 'meldex-install-prompt-title', text: 'ホーム画面に追加' });
-    const body = _el('div', { class: 'modal-body meldex-install-prompt-body' }, [
-      _el('p', {
-        class: 'meldex-install-help-intro',
-        text: 'Meldex本体とクイックメモは別々にホーム画面へ追加できます。本体はワークスペース全体、クイックメモは短いメモや共有保存に使います。',
-      }),
-    ]);
-    const close = () => {
-      document.removeEventListener('keydown', onKeydown);
-      overlay.remove();
-    };
-    function onKeydown(event) {
-      if (event.key === 'Escape' && overlay.isConnected) close();
-    }
-    body.appendChild(_createInstallSection({ context: 'modal', closeOnSuccess: close }));
-    const buttons = _el('div', { class: 'btn-row' });
     const laterButton = _el('button', {
       id: 'meldex-install-prompt-later',
       type: 'button',
+      class: 'gb-btn gb-btn-sm',
       dataset: { e2eId: 'install-modal-later-button' },
       text: '今はしない',
     });
-    laterButton.addEventListener('click', close);
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) close();
+    dialogApi = window.GBUI.createModal({
+      id: 'meldex-install-prompt-dialog',
+      titleId: 'meldex-install-prompt-title',
+      title: 'ホーム画面に追加',
+      body: [intro, installSection],
+      footer: laterButton,
+      variant: 'standard',
+      extraClass: 'meldex-install-prompt-modal',
+      geometryKey: 'meldex-install-prompt-dialog',
+      initialFocus: '[data-meldex-install-button]',
+      returnFocus: opener,
+      onClose: () => {
+        if (_installDialogApi === dialogApi) _installDialogApi = null;
+      },
     });
-    document.addEventListener('keydown', onKeydown);
-    buttons.appendChild(laterButton);
-    dialog.append(title, body, buttons);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    _applyConsentDialogResponsiveSizing(overlay, dialog);
+    _installDialogApi = dialogApi;
+    const { overlay, modal: dialog, header, body, footer } = dialogApi;
+    overlay.id = 'meldex-install-prompt-overlay';
+    overlay.classList.add('modal-overlay', 'meldex-install-prompt-overlay');
+    dialog.classList.add('modal');
+    dialog.dataset.e2eId = 'meldex-install-prompt-dialog';
+    body.classList.add('modal-body', 'meldex-install-prompt-body');
+    footer.classList.add('btn-row');
+    header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'install-modal-header-close');
+    overlay.addEventListener('meldex-release-dialog-close', () => dialogApi.close('external'));
+    laterButton.addEventListener('click', () => dialogApi.close('later'));
+    dialogApi.open();
     _refreshInstallUi(overlay);
-    const installButton = overlay.querySelector('[data-meldex-install-button]');
-    installButton?.focus?.();
     return true;
   }
 
-  function _completeCloudHomeInstall(overlay, resolve) {
+  function _completeCloudHomeInstall(dialogApi, resolve) {
     markCloudHomeInstalled();
     _cloudHomeLaunchFlowActive = false;
-    if (overlay._meldexCloudHomeKeydown) {
-      document.removeEventListener('keydown', overlay._meldexCloudHomeKeydown);
-    }
-    overlay.remove();
+    dialogApi?.close('installed');
     showCloudHomeOnlyNotice().then(resolve);
   }
 
   function showCloudHomeFirstRunDialog() {
     _hideStartupSplashForCloudHome();
     _cloudHomeLaunchFlowActive = true;
-    const existing = document.getElementById('meldex-cloud-home-first-overlay');
-    if (existing) {
-      if (existing._meldexCloudHomeKeydown) {
-        document.removeEventListener('keydown', existing._meldexCloudHomeKeydown);
-      }
-      existing.remove();
-    }
+    if (_cloudHomeDialogApi?.isOpen?.()) _cloudHomeDialogApi.close('replace');
+    document.getElementById('meldex-cloud-home-first-overlay')?.remove();
     return new Promise((resolve) => {
-      const overlay = _el('div', {
-        id: 'meldex-cloud-home-first-overlay',
-        class: 'modal-overlay meldex-cloud-home-first-overlay',
-      });
-      const dialog = _el('div', {
-        class: 'modal meldex-cloud-home-first-modal',
-        role: 'dialog',
-        'aria-modal': 'true',
-        'aria-labelledby': 'meldex-cloud-home-first-title',
-      });
-      const title = _el('h3', { id: 'meldex-cloud-home-first-title', text: 'Meldexをホーム画面に追加' });
+      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const status = _el('div', {
         class: 'meldex-cloud-home-status',
         role: 'status',
         'aria-live': 'polite',
       });
-      const body = _el('div', { class: 'modal-body meldex-cloud-home-first-body' }, [
+      const bodyContent = [
         _el('p', {
           class: 'meldex-cloud-home-copy',
           text: 'ホーム画面に追加すると、次回からMeldexアイコンで直接開けます。スマホやタブレットではこの使い方が安定します。',
@@ -741,44 +728,87 @@
           ]),
         ]),
         status,
-      ]);
-      const buttons = _el('div', { class: 'btn-row meldex-cloud-home-actions' });
+      ];
       const addButton = _el('button', {
         id: 'meldex-cloud-home-first-add',
         type: 'button',
-        class: 'primary',
+        class: 'gb-btn gb-btn-sm gb-btn-primary primary',
         dataset: { e2eId: 'cloud-home-first-add' },
         text: 'ホーム画面に追加する',
       });
       const browserButton = _el('button', {
         id: 'meldex-cloud-home-first-browser',
         type: 'button',
+        class: 'gb-btn gb-btn-sm',
         dataset: { e2eId: 'cloud-home-first-browser' },
         text: 'ブラウザで続ける',
       });
+      let dialogApi = null;
+      let busy = false;
+      let settled = false;
       function onKeydown(event) {
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          browserButton.focus();
-        }
+        if (event.key !== 'Escape' || !dialogApi?.isOpen?.()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        browserButton.focus();
       }
       const continueInBrowser = () => {
+        if (settled) return;
+        settled = true;
+        busy = false;
         markCloudHomeBrowserLaunch();
         _cloudHomeLaunchFlowActive = false;
-        document.removeEventListener('keydown', onKeydown);
-        overlay.remove();
+        dialogApi.close('browser');
         setTimeout(() => _scheduleFirstRunConsent(), 800);
         resolve(true);
       };
-      overlay._meldexCloudHomeKeydown = onKeydown;
+      const completeInstall = () => {
+        if (settled) return;
+        settled = true;
+        busy = false;
+        _completeCloudHomeInstall(dialogApi, resolve);
+      };
+      dialogApi = window.GBUI.createModal({
+        id: 'meldex-cloud-home-first-dialog',
+        titleId: 'meldex-cloud-home-first-title',
+        title: 'Meldexをホーム画面に追加',
+        body: bodyContent,
+        footer: [addButton, browserButton],
+        variant: 'standard',
+        extraClass: 'meldex-cloud-home-first-modal',
+        geometryKey: 'meldex-cloud-home-first-dialog',
+        initialFocus: addButton,
+        returnFocus: opener,
+        closeOnEsc: false,
+        closeOnOverlay: false,
+        onBeforeClose: () => !busy,
+        onClose: () => {
+          document.removeEventListener('keydown', onKeydown);
+          if (_cloudHomeDialogApi === dialogApi) _cloudHomeDialogApi = null;
+        },
+      });
+      _cloudHomeDialogApi = dialogApi;
+      const { overlay, modal: dialog, header, body, footer } = dialogApi;
+      overlay.id = 'meldex-cloud-home-first-overlay';
+      overlay.classList.add('modal-overlay', 'meldex-cloud-home-first-overlay');
+      dialog.classList.add('modal');
+      dialog.dataset.e2eId = 'meldex-cloud-home-first-dialog';
+      body.classList.add('modal-body', 'meldex-cloud-home-first-body');
+      footer.classList.add('btn-row', 'meldex-cloud-home-actions');
+      header.querySelector('.gb-modal-close')?.remove();
+      overlay.addEventListener('meldex-release-dialog-close', () => dialogApi.close('external'));
       addButton.addEventListener('click', async () => {
+        if (busy || settled) return;
+        busy = true;
         addButton.disabled = true;
         status.textContent = 'ブラウザの確認画面を開きます。';
         const result = await installMeldexApp({
-          onManualDone: () => _completeCloudHomeInstall(overlay, resolve),
+          onManualDone: completeInstall,
         }).catch(error => ({ ok: false, error }));
+        busy = false;
+        if (settled) return;
         if (result?.installed || result?.outcome === 'accepted') {
-          _completeCloudHomeInstall(overlay, resolve);
+          completeInstall();
           return;
         }
         addButton.disabled = false;
@@ -790,12 +820,7 @@
       });
       browserButton.addEventListener('click', continueInBrowser);
       document.addEventListener('keydown', onKeydown);
-      buttons.append(addButton, browserButton);
-      dialog.append(title, body, buttons);
-      overlay.appendChild(dialog);
-      document.body.appendChild(overlay);
-      _applyConsentDialogResponsiveSizing(overlay, dialog);
-      addButton.focus();
+      dialogApi.open();
     });
   }
 
@@ -877,20 +902,10 @@
 
   function showMeldexInstallHelpDialog() {
     const options = arguments[0] || {};
-    const existing = document.getElementById('meldex-install-help-overlay');
-    if (existing) existing.remove();
-    const overlay = _el('div', {
-      id: 'meldex-install-help-overlay',
-      class: 'modal-overlay meldex-install-help-overlay',
-    });
-    const dialog = _el('div', {
-      class: 'modal meldex-install-help-modal',
-      role: 'dialog',
-      'aria-modal': 'true',
-      'aria-labelledby': 'meldex-install-help-title',
-    });
-    const title = _el('h3', { id: 'meldex-install-help-title', text: 'ホーム画面に追加' });
-    const body = _el('div', { class: 'modal-body meldex-install-help-body' }, [
+    if (_installHelpDialogApi?.isOpen?.()) _installHelpDialogApi.close('replace');
+    document.getElementById('meldex-install-help-overlay')?.remove();
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const bodyContent = [
       _el('p', {
         class: 'meldex-install-help-intro',
         text: 'このブラウザではMeldex本体の追加画面を直接開けないため、次の手順で追加してください。',
@@ -899,11 +914,11 @@
       _el('ol', { class: 'meldex-install-help-list' }, _installSteps().map(step => _el('li', { text: step }))),
       _el('div', { class: 'meldex-install-help-subtitle', text: 'クイックメモ' }),
       _el('ol', { class: 'meldex-install-help-list' }, _quickMemoInstallSteps().map(step => _el('li', { text: step }))),
-    ]);
-    const buttons = _el('div', { class: 'btn-row' });
+    ];
     const quickMemoButton = _el('button', {
       id: 'meldex-install-help-quick-memo',
       type: 'button',
+      class: 'gb-btn gb-btn-sm',
       dataset: { e2eId: 'install-help-open-quick-memo-button' },
       text: 'クイックメモを開く',
     });
@@ -911,7 +926,7 @@
       ? _el('button', {
         id: 'meldex-install-help-done',
         type: 'button',
-        class: 'primary',
+        class: 'gb-btn gb-btn-sm gb-btn-primary primary',
         dataset: { e2eId: 'install-help-done-button' },
         text: 'ホームに追加できたら押す',
       })
@@ -919,35 +934,46 @@
     const closeButton = _el('button', {
       id: 'meldex-install-help-close',
       type: 'button',
-      class: options.onManualDone ? '' : 'primary',
+      class: options.onManualDone ? 'gb-btn gb-btn-sm' : 'gb-btn gb-btn-sm gb-btn-primary primary',
       dataset: { e2eId: 'install-help-close-button' },
       text: '閉じる',
     });
-    const close = () => {
-      document.removeEventListener('keydown', onKeydown);
-      overlay.remove();
-    };
-    function onKeydown(event) {
-      if (event.key === 'Escape' && overlay.isConnected) close();
-    }
+    let dialogApi = null;
+    const footerContent = [quickMemoButton];
+    if (doneButton) footerContent.push(doneButton);
+    footerContent.push(closeButton);
+    dialogApi = window.GBUI.createModal({
+      id: 'meldex-install-help-dialog',
+      titleId: 'meldex-install-help-title',
+      title: 'ホーム画面に追加',
+      body: bodyContent,
+      footer: footerContent,
+      variant: 'standard',
+      extraClass: 'meldex-install-help-modal',
+      geometryKey: 'meldex-install-help-dialog',
+      initialFocus: doneButton || closeButton,
+      returnFocus: opener,
+      onClose: () => {
+        if (_installHelpDialogApi === dialogApi) _installHelpDialogApi = null;
+      },
+    });
+    _installHelpDialogApi = dialogApi;
+    const { overlay, modal: dialog, header, body, footer } = dialogApi;
+    overlay.id = 'meldex-install-help-overlay';
+    overlay.classList.add('modal-overlay', 'meldex-install-help-overlay');
+    dialog.classList.add('modal');
+    dialog.dataset.e2eId = 'meldex-install-help-dialog';
+    body.classList.add('modal-body', 'meldex-install-help-body');
+    footer.classList.add('btn-row');
+    header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'install-help-header-close');
+    overlay.addEventListener('meldex-release-dialog-close', () => dialogApi.close('external'));
     doneButton?.addEventListener('click', () => {
-      close();
+      dialogApi.close('done');
       options.onManualDone?.();
     });
     quickMemoButton.addEventListener('click', openMeldexQuickMemo);
-    closeButton.addEventListener('click', close);
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) close();
-    });
-    document.addEventListener('keydown', onKeydown);
-    buttons.appendChild(quickMemoButton);
-    if (doneButton) buttons.appendChild(doneButton);
-    buttons.appendChild(closeButton);
-    dialog.append(title, body, buttons);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    _applyConsentDialogResponsiveSizing(overlay, dialog);
-    (doneButton || closeButton).focus();
+    closeButton.addEventListener('click', () => dialogApi.close('footer'));
+    dialogApi.open();
     return true;
   }
 
@@ -989,75 +1015,17 @@
     observer.observe(target, { childList: true, subtree: true });
   }
 
-  function _applyConsentDialogResponsiveSizing(overlay, dialog) {
-    if (!overlay || !dialog) return;
-    const zoom = Math.max(0.1, (typeof _getZoom === 'function'
-      ? Number(_getZoom())
-      : Number.parseFloat(document.documentElement.style.zoom || '1')) || 1);
-    const viewportWidth = (window.visualViewport?.width || window.innerWidth) / zoom;
-    const viewportHeight = (window.visualViewport?.height || window.innerHeight) / zoom;
-    dialog.style.minWidth = '0';
-    dialog.style.boxSizing = 'border-box';
-    dialog.style.maxWidth = Math.min(620, Math.max(240, viewportWidth - 16)) + 'px';
-    if (window.innerWidth > 768) return;
-    const title = dialog.querySelector(':scope > h3');
-    const body = dialog.querySelector(':scope > .modal-body');
-    const footer = dialog.querySelector(':scope > .btn-row');
-    overlay.style.alignItems = 'flex-end';
-    overlay.style.justifyContent = 'center';
-    overlay.style.overflowX = 'hidden';
-    overlay.style.overflowY = 'auto';
-    overlay.style.padding = 'var(--gb-mobile-dialog-top-gap, 10px) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left))';
-    dialog.style.setProperty('width', Math.max(240, viewportWidth - 16) + 'px', 'important');
-    dialog.style.setProperty('max-width', Math.max(240, viewportWidth - 16) + 'px', 'important');
-    dialog.style.setProperty('max-height', Math.max(180, viewportHeight - 10) + 'px', 'important');
-    dialog.style.borderRadius = '16px 16px 0 0';
-    dialog.style.overflowX = 'hidden';
-    [title, body, footer].forEach(section => {
-      if (!section) return;
-      section.style.boxSizing = 'border-box';
-      section.style.width = '100%';
-      section.style.minWidth = '0';
-      section.style.maxWidth = '100%';
-      section.style.overflowX = 'hidden';
-    });
-    if (footer) {
-      footer.style.display = 'grid';
-      footer.style.gridTemplateColumns = 'minmax(0, 1fr)';
-      footer.style.justifyContent = 'stretch';
-      footer.style.justifyItems = 'stretch';
-      footer.style.gap = '8px';
-      footer.querySelectorAll('button').forEach(button => {
-        button.style.width = '100%';
-        button.style.minWidth = '0';
-        button.style.whiteSpace = 'normal';
-      });
-    }
-  }
-
   function showConsentDialog(options) {
     options = options || {};
     if (!options.force && hasConsent()) return false;
     if (document.getElementById('meldex-beta-consent-overlay')) return false;
-
-    const overlay = _el('div', {
-      id: 'meldex-beta-consent-overlay',
-      class: 'modal-overlay meldex-beta-consent-overlay',
-    });
-    const dialog = _el('div', {
-      class: 'modal meldex-beta-consent-modal',
-      role: 'dialog',
-      'aria-modal': 'true',
-      'aria-labelledby': 'meldex-beta-consent-title',
-    });
-    const title = _el('h3', { id: 'meldex-beta-consent-title', text: `Meldex ${BETA_LABEL} について` });
-    const body = _el('div', { class: 'modal-body' });
-    body.appendChild(_el('ul', { class: 'meldex-beta-consent-summary' }, [
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const bodyContent = [_el('ul', { class: 'meldex-beta-consent-summary' }, [
       _el('li', { text: 'この版はベータ版です。正式版までに機能名、配置、挙動が変わる可能性があります。' }),
       _el('li', { text: '作品・データはユーザーに帰属し、原則としてローカルPCまたはユーザーが指定したクラウドストレージに保存されます。' }),
       _el('li', { text: 'クラッシュレポートと利用統計は、下の任意チェックを入れた場合だけ送信します。作品本文・ファイル名・個人識別情報は含めません。' }),
       _el('li', { text: 'LLM連携を使う場合、質問本文と選択した関連コンテキストは各LLMプロバイダへ送信されます。' }),
-    ]));
+    ])];
     const links = _el('p', { class: 'meldex-beta-consent-muted' }, [
       _el('a', {
         id: 'meldex-beta-consent-privacy-link',
@@ -1076,7 +1044,7 @@
       }),
       document.createTextNode(' を確認できます。'),
     ]);
-    body.appendChild(links);
+    bodyContent.push(links);
 
     const checks = _el('div', { class: 'meldex-beta-consent-checks' });
     const required = _createConsentCheckbox(
@@ -1103,32 +1071,52 @@
     checks.appendChild(crash);
     checks.appendChild(telemetry);
     checks.appendChild(updateChecks);
-    body.appendChild(checks);
-    body.appendChild(_el('div', {
+    bodyContent.push(checks);
+    bodyContent.push(_el('div', {
       class: 'meldex-beta-consent-muted',
       text: '送信設定はあとから 設定 → フィードバック で変更できます。',
     }));
 
-    const buttons = _el('div', { class: 'btn-row' });
     const continueButton = _el('button', {
       id: 'meldex-beta-consent-continue',
-      class: 'primary',
+      class: 'gb-btn gb-btn-sm gb-btn-primary primary',
       type: 'button',
       dataset: { e2eId: 'beta-consent-continue' },
       text: '同意して開始',
     });
     continueButton.disabled = true;
-    buttons.appendChild(continueButton);
-    dialog.appendChild(title);
-    dialog.appendChild(body);
-    dialog.appendChild(buttons);
-    overlay.appendChild(dialog);
-    _applyConsentDialogResponsiveSizing(overlay, dialog);
-
     const requiredInput = required.querySelector('input');
     const crashInput = crash.querySelector('input');
     const telemetryInput = telemetry.querySelector('input');
     const updateInput = updateChecks.querySelector('input');
+    let dialogApi = null;
+    dialogApi = window.GBUI.createModal({
+      id: 'meldex-beta-consent-dialog',
+      titleId: 'meldex-beta-consent-title',
+      title: `Meldex ${BETA_LABEL} について`,
+      body: bodyContent,
+      footer: continueButton,
+      variant: 'standard',
+      extraClass: 'meldex-beta-consent-modal',
+      geometryKey: 'meldex-beta-consent-dialog',
+      initialFocus: () => window.innerWidth > 768 ? requiredInput : dialogApi?.modal,
+      returnFocus: opener,
+      closeOnEsc: false,
+      closeOnOverlay: false,
+      onClose: () => {
+        if (_consentDialogApi === dialogApi) _consentDialogApi = null;
+      },
+    });
+    _consentDialogApi = dialogApi;
+    const { overlay, modal: dialog, header, body, footer } = dialogApi;
+    overlay.id = 'meldex-beta-consent-overlay';
+    overlay.classList.add('modal-overlay', 'meldex-beta-consent-overlay');
+    dialog.classList.add('modal');
+    dialog.dataset.e2eId = 'meldex-beta-consent-dialog';
+    body.classList.add('modal-body');
+    footer.classList.add('btn-row');
+    header.querySelector('.gb-modal-close')?.remove();
+    overlay.addEventListener('meldex-release-dialog-close', () => dialogApi.close('external'));
     requiredInput.addEventListener('change', () => {
       continueButton.disabled = !requiredInput.checked;
     });
@@ -1141,9 +1129,9 @@
       });
       if (telemetryInput.checked) window.MeldexBetaFeedback?.startTelemetry?.();
       if (updateInput.checked) window.MeldexUpdateChecker?.checkNow?.({ force: true }).catch(() => {});
-      overlay.remove();
+      dialogApi.close('consent');
       refreshMeldexAboutPanel(document);
       if (options.showInstallAfterConsent !== false && !_isCloudHomeLaunchTarget()) {
-        setTimeout(() => showMeldexInstallDialog({ reason: 'after-consent' }), 80);
+        setTimeout(() => showMeldexInstallDialog({ reason: 'after-consent' }), 260);
       }
     });

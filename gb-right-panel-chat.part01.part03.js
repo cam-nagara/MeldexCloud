@@ -88,7 +88,7 @@ function _chatResetCurrentSession(options = {}) {
   } else {
     _chatState.pendingAttachments = [];
   }
-  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
   if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
@@ -278,9 +278,10 @@ async function _initChatSourceFolderSelector() {
 function _detectSourceFolderFromPath(targetPath) {
   const raw = _chatNormalizePath(targetPath);
   if (!raw) return '';
+  const options = _chatSourceOptions();
   let best = '';
   let bestLength = 0;
-  _chatSourceOptions().forEach(option => {
+  options.forEach(option => {
     const rootPath = _chatNormalizePath(option?.path || option?.value);
     if (!rootPath) return;
     if (raw === rootPath || raw.startsWith(rootPath + '/')) {
@@ -290,6 +291,14 @@ function _detectSourceFolderFromPath(targetPath) {
       }
     }
   });
+  // Cloud/browser providerのタスクIDは、選択中ソースを基準にした
+  // 相対パスである。絶対パスのprefix照合だけにするとDesktop APIへ
+  // フォールバックしてしまうため、現在の実provider scopeを使う。
+  const isRelative = !/^(?:[a-z][a-z0-9_-]*:|[a-z]:\/|\/)/i.test(raw);
+  if (!best && isRelative) {
+    const selected = _chatFindSourceOption(_chatTargetSelectorValue(), options);
+    if (selected) return selected.kind === 'workspace' ? selected.value : (selected.path || selected.value);
+  }
   return best;
 }
 
@@ -363,15 +372,21 @@ function _chatCloneMessages(messages) {
 
 function _chatMessageRenderOptions(message, index) {
   const options = (message && typeof message === 'object') ? { ...message } : {};
+  const plain = typeof _chatContentToText === 'function' ? _chatContentToText(options.content || '') : String(options.content || '');
+  if (options.role === 'user' && !options.origin && /^前回のCLI実行の続きです[。\n]/.test(plain)) {
+    options.origin = 'meldex-control';
+    options.controlKind = 'automatic-continuation';
+    options.presentation = 'MeldexからAIへの自動指示';
+  }
   options.messageIndex = index;
   options.msg_id = _ensureChatMessageId(options);
   return options;
 }
 
 function _chatRenderQueuedMessageBubbles() {
-  if (!_chatQueueScopeMatchesCurrent()) return;
   const queue = Array.isArray(_chatState.queuedMessages) ? _chatState.queuedMessages : [];
-  queue.forEach((message, offset) => {
+  const currentScope = _chatCurrentQueueScope();
+  queue.filter(message => _chatQueueScopesMatch(_chatDraftScope(message), currentScope)).forEach((message, offset) => {
     if (!message || message.role !== 'user') return;
     const messageId = _ensureChatMessageId(message);
     chatAddMessage('user', message.content, {
@@ -380,6 +395,7 @@ function _chatRenderQueuedMessageBubbles() {
       queuedMessageId: messageId,
       timestamp: message.timestamp || '',
       queued_for_next_response: true,
+      waitingDraft: message,
     });
   });
 }
@@ -455,13 +471,14 @@ function _chatRemoveQueuedMessage(msgId) {
   const queue = _chatQueuedMessages();
   const index = queue.findIndex(message => String(message?.msg_id || '') === id);
   if (index < 0) return false;
-  queue.splice(index, 1);
+  const [removed] = queue.splice(index, 1);
   if (!queue.length) _chatState.queuedScope = null;
+  _chatPersistQueuedMessages();
   const row = Array.from(document.querySelectorAll('#chat-messages .chat-message-row'))
     .find(el => String(el.dataset.msgId || '') === id);
   if (row) row.remove();
   else if (!_chatState.streaming) _chatRenderStoredMessages();
-  if (typeof showStatus === 'function') showStatus('保留メッセージを取り消しました');
+  _chatShowDraftUndo(removed, index);
   return true;
 }
 window._chatRemoveQueuedMessage = _chatRemoveQueuedMessage;
@@ -671,18 +688,19 @@ function chatAddMessage(role, content, options = {}) {
   const container = _chatLiveMessagesContainer();
   if (!container) return null;
   container.querySelectorAll('.chat-empty-placeholder').forEach(el => el.remove());
-  const isUser = role === 'user';
+  const isControl = options?.origin === 'meldex-control';
+  const isUser = role === 'user' && !isControl;
   const shouldScrollAfterAppend = _chatShouldStickToBottom(container, options?.forceScroll === true || (isUser && options?.forceScroll !== false));
   const isQueued = !!options?.queued_for_next_response;
   const plainContent = _chatContentToText(content);
   const provider = options?.provider || _chatState.provider;
   const model = options?.model || _chatState.model;
-  const name = isUser ? getUsername() : getProviderLabel(provider, model);
-  const icon = isUser ? getUserAvatarHtml(getUsername(), 18) : getProviderIconHtml(provider, 18);
+  const name = isControl ? 'MeldexからAIへの自動指示' : (isUser ? getUsername() : getProviderLabel(provider, model));
+  const icon = isControl ? (typeof lucide === 'function' ? lucide('workflow', 16) : '') : (isUser ? getUserAvatarHtml(getUsername(), 18) : getProviderIconHtml(provider, 18));
 
   // ラッパー（名前+アイコン+バブル）
   const wrapper = document.createElement('div');
-  wrapper.className = 'chat-message-row chat-message-row-llm chat-copy-message' + (isUser ? ' is-user' : ' is-assistant');
+  wrapper.className = 'chat-message-row chat-message-row-llm chat-copy-message' + (isControl ? ' is-control' : (isUser ? ' is-user' : ' is-assistant'));
   const msgId = options?.msg_id || options?.msgId || '';
   if (msgId) wrapper.dataset.msgId = msgId;
   if (Number.isInteger(options?.messageIndex)) wrapper.dataset.chatMessageIndex = String(options.messageIndex);
@@ -722,24 +740,26 @@ function chatAddMessage(role, content, options = {}) {
   if (isQueued && isUser) {
     const badge = document.createElement('span');
     badge.className = 'chat-queued-badge';
-    badge.textContent = '保留';
-    badge.title = '応答完了後に送信されます';
+    badge.textContent = '待機';
+    badge.title = 'AI作業の完了後に送信されます';
     badge.style.cssText = 'display:inline-flex;align-items:center;height:16px;padding:0 6px;border:1px solid var(--border);border-radius:999px;font-size:10px;color:var(--fg2);background:var(--bg2);';
     header.appendChild(badge);
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.title = '保留を取り消す';
-    cancelBtn.setAttribute('aria-label', '保留を取り消す');
-    cancelBtn.disabled = !!_chatState.queuedSendRunning;
-    cancelBtn.dataset.chatQueuedCancelId = String(options?.queuedMessageId || msgId || '');
-    cancelBtn.dataset.e2eId = 'chat-message-queued-cancel-' + (options?.queuedMessageId || msgId || 'unknown');
-    cancelBtn.innerHTML = lucide('x', 12);
-    cancelBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-left:2px;background:transparent;color:var(--fg2);border:none;border-radius:4px;cursor:pointer;padding:0;';
-    cancelBtn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      _chatRemoveQueuedMessage(options?.queuedMessageId || msgId);
-    });
-    header.appendChild(cancelBtn);
+    const queuedId = String(options?.queuedMessageId || msgId || '');
+    const addAction = (label, iconName, handler, attr) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.title = label;
+      button.setAttribute('aria-label', label);
+      button.disabled = !!_chatState.queuedSendRunning;
+      button.dataset[attr] = queuedId;
+      button.innerHTML = lucide(iconName, 12);
+      button.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin-left:2px;background:transparent;color:var(--fg2);border:1px solid transparent;border-radius:4px;cursor:pointer;padding:0;';
+      button.addEventListener('click', event => { event.stopPropagation(); handler(queuedId); });
+      header.appendChild(button);
+    };
+    addAction('割り込み送信', 'send', _chatInterruptWithQueuedMessage, 'chatQueuedInterruptId');
+    addAction('編集', 'pencil', _chatEditQueuedMessage, 'chatQueuedEditId');
+    addAction('削除', 'trash2', _chatRemoveQueuedMessage, 'chatQueuedCancelId');
   }
   if (Number.isInteger(options?.messageIndex) && !isQueued) {
     const copyBtn = document.createElement('button');
@@ -808,10 +828,12 @@ function chatAddMessage(role, content, options = {}) {
 
   // バブル
   const div = document.createElement('div');
-  div.className = 'chat-message-bubble chat-message-bubble-llm chat-copy-body' + (isUser ? ' is-user' : ' is-assistant');
+  div.className = 'chat-message-bubble chat-message-bubble-llm chat-copy-body' + (isControl ? ' is-control' : (isUser ? ' is-user' : ' is-assistant'));
   div.style.cssText = isUser
-    ? 'background:var(--accent);color:var(--ui-fg-strong);padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
-    : 'background:var(--bg3);color:var(--fg);padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;';
+    ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));padding:8px 12px;border-radius:12px 12px 2px 12px;white-space:pre-wrap;word-break:break-word;font-size:13px;'
+    : (isControl
+      ? 'background:var(--bg2);color:var(--fg2);padding:8px 12px;border:1px dashed var(--border);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;'
+      : 'background:var(--bg3);color:var(--fg);padding:8px 12px;border-radius:12px 12px 12px 2px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.6;');
   // スタンプのみメッセージの判定
   const _isStructured = Array.isArray(content);
   const _stampOnly = !_isStructured && typeof isStampOnly === 'function' && isStampOnly(plainContent);
@@ -891,6 +913,7 @@ const CHAT_WORKSPACE_REFRESH_TOOLS = new Set([
   'write_to_database',
   'create_entity',
   'add_value',
+  'set_link_value',
   'set_property_type',
   'configure_public_form',
   'configure_form_view',
@@ -915,7 +938,7 @@ function _chatToolResultSucceeded(parsed) {
   return !!parsed && !parsed.error && parsed.ok !== false;
 }
 
-const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
+const CHAT_WRITE_VERIFY_TOOLS = new Set(['write_file', 'create_sheet', 'create_entity', 'add_value', 'set_link_value', 'set_property_type', 'configure_public_form', 'configure_form_view', 'update_knowledge', 'create_folder', 'rename', 'delete', 'llm_ui_action', 'add_debug_report']);
 const CHAT_NONEMPTY_RESULT_TOOLS = new Set(['search', 'search_knowledge', 'llm_list_ui_controls']);
 
 function _chatToolResultHasMatches(parsed) {

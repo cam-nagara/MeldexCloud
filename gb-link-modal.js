@@ -4,6 +4,7 @@
  */
 const MeldexLinkModal = (() => {
   let _overlay = null;
+  let _dialogApi = null;
   let _savedRange = null;
   let _callback = null;
   // サイドバーを一時的にモーダルへ移動するため、元の親 / 次兄弟 / display を記録
@@ -170,58 +171,17 @@ const MeldexLinkModal = (() => {
   }
 
   function show(savedRange, callback) {
-    if (_overlay) close();
+    if (_dialogApi?.isOpen?.()) close('replace');
     _savedRange = savedRange;
     _callback = callback || null;
     _focusReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-
-    _overlay = document.createElement('div');
-    _overlay.className = 'link-modal-overlay';
-    _overlay.dataset.e2eId = 'link-insert-modal-overlay';
-    _overlay.addEventListener('mousedown', (e) => { if (e.target === _overlay) close(); });
-    _overlay.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape') return;
-      e.preventDefault();
-      close();
-    });
-
-    const modal = document.createElement('div');
-    modal.className = 'link-modal';
-    modal.dataset.e2eId = 'link-insert-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.setAttribute('aria-labelledby', 'link-insert-modal-title');
-    modal.tabIndex = -1;
-
-    // タイトル
-    const header = document.createElement('div');
-    header.className = 'gb-modal-shell-header link-modal-header';
-    header.dataset.e2eId = 'link-insert-modal-header';
-    const title = document.createElement('div');
-    title.id = 'link-insert-modal-title';
-    title.className = 'gb-modal-title';
-    title.textContent = 'リンクを挿入';
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'gb-modal-close link-modal-close';
-    closeBtn.dataset.e2eId = 'link-insert-modal-close';
-    closeBtn.setAttribute('aria-label', '閉じる');
-    closeBtn.title = '閉じる';
-    closeBtn.innerHTML = typeof lucide === 'function' ? lucide('x', 16) : '<span class="ico ico-x" aria-hidden="true"></span>';
-    closeBtn.addEventListener('click', close);
-    header.append(title, closeBtn);
-    modal.appendChild(header);
-
-    const body = document.createElement('div');
-    body.className = 'gb-modal-shell-body link-modal-body';
-    body.dataset.e2eId = 'link-insert-modal-body';
-    modal.appendChild(body);
+    const bodyNodes = [];
 
     // フォルダツリー（既存 #sidebar を埋め込み）
     const treeWrap = document.createElement('div');
     treeWrap.className = 'link-modal-tree';
     treeWrap.dataset.e2eId = 'link-insert-modal-tree';
-    body.appendChild(treeWrap);
+    bodyNodes.push(treeWrap);
 
     // このノートの見出し（工程11: 見出しリンク作成導線）。
     // savedRange が実際に見出しを持つ編集ホスト内にある時だけ表示する。
@@ -264,7 +224,7 @@ const MeldexLinkModal = (() => {
         item.addEventListener('click', () => insertHeadingLink(candidate));
         headingsWrap.appendChild(item);
       });
-      body.appendChild(headingsWrap);
+      bodyNodes.push(headingsWrap);
     }
 
     // URL入力欄
@@ -287,12 +247,9 @@ const MeldexLinkModal = (() => {
     });
     urlWrap.appendChild(urlLabel);
     urlWrap.appendChild(urlInput);
-    body.appendChild(urlWrap);
+    bodyNodes.push(urlWrap);
 
     // ボタン
-    const btnWrap = document.createElement('div');
-    btnWrap.className = 'gb-modal-shell-footer link-modal-actions';
-    btnWrap.dataset.e2eId = 'link-insert-modal-actions';
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'gb-btn gb-btn-sm link-modal-cancel';
@@ -307,20 +264,41 @@ const MeldexLinkModal = (() => {
     insertUrlBtn.addEventListener('click', () => {
       if (urlInput.value.trim()) insertUrlLink(urlInput.value.trim());
     });
-    btnWrap.appendChild(cancelBtn);
-    btnWrap.appendChild(insertUrlBtn);
-    modal.appendChild(btnWrap);
-
-    _overlay.appendChild(modal);
-    document.body.appendChild(_overlay);
+    _dialogApi = window.GBUI.createModal({
+      id: 'link-insert-modal',
+      titleId: 'link-insert-modal-title',
+      title: 'リンクを挿入',
+      body: bodyNodes,
+      footer: [cancelBtn, insertUrlBtn],
+      variant: 'standard',
+      extraClass: 'link-modal',
+      geometryKey: 'link-insert-modal',
+      initialFocus: urlInput,
+      returnFocus: _focusReturnTarget,
+      closeLabel: '閉じる',
+      onClose: _completeClose,
+    });
+    const { overlay, modal, header, body, footer } = _dialogApi;
+    _overlay = overlay;
+    overlay.classList.add('link-modal-overlay');
+    overlay.dataset.e2eId = 'link-insert-modal-overlay';
+    modal.dataset.e2eId = 'link-insert-modal';
+    header.classList.add('link-modal-header');
+    header.dataset.e2eId = 'link-insert-modal-header';
+    body.classList.add('link-modal-body');
+    body.dataset.e2eId = 'link-insert-modal-body';
+    footer.classList.add('link-modal-actions');
+    footer.dataset.e2eId = 'link-insert-modal-actions';
+    const closeBtn = header.querySelector('.gb-modal-close');
+    if (closeBtn) {
+      closeBtn.classList.add('link-modal-close');
+      closeBtn.dataset.e2eId = 'link-insert-modal-close';
+    }
+    _dialogApi.open();
 
     // 既存サイドバーをモーダル内に移動
     _moveSidebarInto(treeWrap);
     document.body.dataset.linkModalOpen = '1';
-    window.GBModalShell?.enhanceOverlay?.(_overlay);
-    setTimeout(() => {
-      try { urlInput.focus({ preventScroll: true }); } catch (_) { urlInput.focus(); }
-    }, 0);
   }
 
   function _normalizeSafeUrl(rawUrl) {
@@ -424,26 +402,20 @@ const MeldexLinkModal = (() => {
     close();
   }
 
-  function _restoreFocusTarget(target) {
-    if (!target?.isConnected || typeof target.focus !== 'function') return;
-    try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
-  }
-
-  function close() {
-    // サイドバーを元の位置に戻してからオーバーレイを除去
-    const focusTarget = _focusReturnTarget;
+  function _completeClose() {
     _restoreSidebar();
-    if (_overlay) {
-      _overlay.remove();
-      _overlay = null;
-    }
+    _overlay = null;
+    _dialogApi = null;
     delete document.body.dataset.linkModalOpen;
     _savedRange = null;
     _callback = null;
-    _restoreFocusTarget(focusTarget);
-    requestAnimationFrame(() => _restoreFocusTarget(focusTarget));
-    setTimeout(() => _restoreFocusTarget(focusTarget), 260);
     _focusReturnTarget = null;
+  }
+
+  function close(reason = 'programmatic') {
+    if (_dialogApi?.isOpen?.()) return _dialogApi.close(reason);
+    _completeClose();
+    return false;
   }
 
   return { show, close };

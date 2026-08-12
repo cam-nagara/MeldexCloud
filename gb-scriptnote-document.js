@@ -181,6 +181,72 @@ function _scriptNoteMigrateUnifiedGutterStyles(doc) {
   doc.editor = editor;
 }
 
+function _scriptNoteAutoBackground(color) {
+  const value = String(color || '');
+  if (!/^#[0-9a-f]{6}$/i.test(value)) return value;
+  const channels = [1, 3, 5].map(index => parseInt(value.slice(index, index + 2), 16));
+  const mix = channel => Math.round((channel * 0.6 + 128 * 0.4) * 0.5);
+  return `#${channels.map(channel => mix(channel).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function freezeLegacyScriptNoteAutoColors(doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  const editor = _scriptNotePlainObject(doc.editor);
+  const customIds = (Array.isArray(editor.customColumns) ? editor.customColumns : [])
+    .map(column => String(column?.id || '')).filter(Boolean);
+  const columns = [
+    ['_gutter', 'gutterStyle'], ['_gutter2', 'gutter2Style'],
+    ['_role', 'roleStyle'], ['_text', 'textStyle'],
+    ...customIds.map(id => [id, 'customStyles']),
+  ];
+  const freezeAppearance = appearance => {
+    const target = _scriptNotePlainObject(appearance);
+    const autoColor = String(target.autoColor || '');
+    if (autoColor) {
+      // 旧描画は要素ごとの指定だけを参照し、未指定時は常に背景色へ適用していた。
+      // editor.autoColorRule は生成UI側の既定であり、既存要素の実効表示を上書きしない。
+      const targetRule = target.autoColorTarget || 'bg';
+      columns.forEach(([columnId, styleKey]) => {
+        const action = typeof targetRule === 'object'
+          ? String(targetRule[columnId] || 'none')
+          : String(targetRule || 'bg');
+        if (action === 'none') return;
+        let style;
+        if (styleKey === 'customStyles') {
+          target.customStyles = _scriptNotePlainObject(target.customStyles);
+          style = _scriptNotePlainObject(target.customStyles[columnId]);
+          target.customStyles[columnId] = style;
+        } else {
+          style = _scriptNotePlainObject(target[styleKey]);
+          target[styleKey] = style;
+        }
+        if ((action === 'bg' || action === 'both')
+          && !Object.prototype.hasOwnProperty.call(style, 'bgColor') && !target.bgColor) {
+          style.bgColor = action === 'both' ? _scriptNoteAutoBackground(autoColor) : autoColor;
+        }
+        if ((action === 'text' || action === 'both')
+          && !Object.prototype.hasOwnProperty.call(style, 'textColor') && !target.textColor) {
+          style.textColor = autoColor;
+        }
+      });
+    }
+    delete target.autoColor;
+    delete target.autoColorTarget;
+    return target;
+  };
+  freezeAppearance(editor.defaultType);
+  freezeAppearance(editor.noneType);
+  (doc.scenarioTypes || []).forEach(freezeAppearance);
+  (doc.characters || []).forEach(character => {
+    freezeAppearance(character);
+    if (character?.legacyAppearance) freezeAppearance(character.legacyAppearance);
+  });
+  ['autoColor', 'autoColorTarget', 'autoColorRule', 'autoColorPaletteRow', 'autoColorConfig']
+    .forEach(key => delete editor[key]);
+  doc.editor = editor;
+  return doc;
+}
+
 function createScriptNoteDoc(parsed = {}, options = {}) {
   const input = _scriptNotePlainObject(parsed);
   const roleModel = _scriptNoteRoleModel();
@@ -279,6 +345,7 @@ function applyLegacyScriptNoteDocMigrations(doc, options = {}) {
   _scriptNoteMigrateUnifiedGutterStyles(doc);
   const roleModel = _scriptNoteRoleModel();
   if (roleModel) roleModel.ensureDocument(doc, options.roleModelOptions || {});
+  freezeLegacyScriptNoteAutoColors(doc);
 
   return doc;
 }

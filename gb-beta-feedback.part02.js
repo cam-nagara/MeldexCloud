@@ -26,6 +26,61 @@
       });
       if (current.acceptedAt && typeof refreshMeldexAboutPanel === 'function') refreshMeldexAboutPanel(document);
     });
+    function _describeDebuggerState(state) {
+      if (!state?.configured) return '不具合報告の送信先: 未設定（この端末内の記録のみ）';
+      const pending = Number(state.pending || 0);
+      const failed = Number(state.failed || 0);
+      const parts = ['不具合報告の送信先: 設定済み'];
+      if (pending) parts.push(`送信待ち ${pending}件`);
+      if (failed) parts.push(`送信できなかったもの ${failed}件`);
+      return parts.join(' / ');
+    }
+
+    async function _refreshDebuggerState() {
+      try {
+        const settings = await getDebuggerSettings();
+        debuggerUrlInput.value = settings.baseUrl || '';
+        debuggerSlugInput.value = settings.projectSlug || '';
+        const queue = settings.configured ? await getDebuggerQueue() : { configured: false };
+        status.textContent = _describeDebuggerState({ ...settings, ...queue });
+      } catch (error) {
+        status.textContent = '送信先の状態を確認できませんでした';
+      }
+    }
+
+    saveDebuggerButton.addEventListener('click', async () => {
+      saveDebuggerButton.disabled = true;
+      status.textContent = '送信先を保存中...';
+      try {
+        await saveDebuggerSettings(debuggerUrlInput.value, debuggerSlugInput.value);
+        await _refreshDebuggerState();
+      } catch (error) {
+        status.textContent = '送信先を保存できませんでした: ' + (error?.message || error);
+      } finally {
+        saveDebuggerButton.disabled = false;
+      }
+    });
+    flushDebuggerButton.addEventListener('click', async () => {
+      flushDebuggerButton.disabled = true;
+      status.textContent = '送信待ちを送信中...';
+      try {
+        const result = await flushDebuggerQueue();
+        if (result?.skipped) {
+          status.textContent = '送信先が未設定のため送信できません';
+        } else {
+          const failed = Number(result?.failedNow || 0);
+          status.textContent = `送信 ${result?.sent || 0}件 / 残り ${result?.pending || 0}件`
+            + (failed ? ` / 送信できなかったもの ${failed}件` : '')
+            + (result?.rateLimited ? '（送信の間隔を空けています）' : '');
+        }
+      } catch (error) {
+        status.textContent = '送信待ちを送信できませんでした: ' + (error?.message || error);
+      } finally {
+        flushDebuggerButton.disabled = false;
+      }
+    });
+    _refreshDebuggerState();
+
     saveGoogleButton.addEventListener('click', () => {
       setGoogleWebAppUrl(googleUrlInput.value);
       setGoogleAdminToken(tokenInput.value);
@@ -152,6 +207,9 @@
     _installPwaHandlers();
     _bindSettingsObserver();
     if (isTelemetryEnabled()) startTelemetry();
+    // 前回オフラインで送れなかった報告を、起動時に一度だけ送る。
+    // 送信先が未設定なら何も起きない。
+    setTimeout(() => { flushDebuggerQueue().catch(() => {}); }, 5000);
   }
 
   window.MeldexBetaFeedback = {
@@ -170,6 +228,12 @@
     startTelemetry,
     stopTelemetry,
     sendGoogle,
+    sendDebuggerReport,
+    buildFeedbackSections,
+    getDebuggerSettings,
+    saveDebuggerSettings,
+    getDebuggerQueue,
+    flushDebuggerQueue,
     setGoogleWebAppUrl,
     setGoogleAdminToken,
     setFeedbackFormUrl,

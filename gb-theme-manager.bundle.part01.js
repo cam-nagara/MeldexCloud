@@ -94,6 +94,7 @@
   let _themeUiApplicationsCss = '';
   const _osAccentPreviousStyleValues = new Map();
   let _osAccentRuntimeColor = '';
+  let _osAccentRuntimeAvailable = null;
   const _appliedThemeVarKeys = new Set();
   let _trackedExistingThemeVars = false;
   const THEME_UI_PROP_FG = 'fg';
@@ -202,7 +203,7 @@
     { id: 'button', group: 'ui', label: '共通ボタン', props: BUTTON_UI_PROPS, states: BUTTON_UI_STATES, vars: {
       normal: { fg: '--ui-fg-default', bg: '--ui-bg-control' },
       hover: { fg: '--ui-hover-fg', bg: '--ui-bg-control-hover' },
-      selected: { fg: '--ui-fg-strong', bg: ['--ui-accent', '--ui-bg-control-active', '--accent'] },
+      selected: { fg: '--ui-accent-fg', bg: ['--ui-accent', '--ui-bg-control-active', '--accent'] },
     } },
     { id: 'panel-tab', group: 'ui', label: 'パネルタブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
     { id: 'inner-tab', group: 'ui', label: 'パネル内タブ', props: TAB_UI_PROPS, states: BUTTON_UI_STATES },
@@ -252,6 +253,10 @@
   const THEME_OS_ACCENT_KEY = 'meldex-theme-use-os-accent';
   const THEME_OS_ACCENT_CSS = 'var(--theme-os-accent, AccentColor)';
   const THEME_OS_ACCENT_TEXT_CSS = 'var(--theme-os-accent-text, AccentColorText)';
+  const BUILTIN_ACCENT_POLICIES = Object.freeze({
+    'builtin-dark': Object.freeze({ kind: 'system-or-default', defaultColor: '#569cd6' }),
+    'builtin-light': Object.freeze({ kind: 'system-or-default', defaultColor: '#0055aa' }),
+  });
   const COMMON_INTEGRATED_APP_STYLE_KEYS = Object.freeze([
     '--page-text-bg', '--sn2-page-bg', '--db-row-bg', '--fv-panel-bg',
     '--cal-content-bg', '--preview-bg', '--detail-bg', '--chat-bg',
@@ -271,42 +276,45 @@
   ]);
   const COMMON_INTEGRATED_APP_STYLE_KEY_SET = new Set(COMMON_INTEGRATED_APP_STYLE_KEYS);
   const THEME_OS_ACCENT_STYLE_KEYS = Object.freeze([
-    '--accent', '--accent2', '--blue', '--ui-range-fill-bg', '--editor-caret-color',
+    '--accent', '--accent2', '--blue', '--ui-accent', '--link-fg', '--ui-range-fill-bg', '--editor-caret-color',
     '--ui-inner-tab-active-fg', '--ui-inner-tab-active-underline',
     '--selection', '--ui-selection-bg',
     '--sn2-drop-color', '--sn2-drag-select-color',
     '--bd-select-rect-color', '--bd-group-color', '--bd-anchor-color',
-    '--cal-accent', '--cal-today-fg', '--cal-mini-selected-bg', '--cal-now-line-color',
+    '--cal-accent', '--cal-mini-selected-bg', '--cal-now-line-color',
   ]);
   const THEME_OS_ACCENT_TEXT_STYLE_KEYS = Object.freeze([
-    '--ui-selection-fg',
+    '--ui-selection-fg', '--ui-accent-fg',
+    '--cal-accent-fg', '--cal-mini-selected-fg',
+    '--chat-active-fg', '--timer-active-fg', '--version-active-fg',
   ]);
   const THEME_UI_AUTO_TONE_DEFAULT = Object.freeze({ light: 30, dark: 30 });
 
   const DARK_VARS = {
-    '--bg': '#1e1e1e', '--bg2': '#252525', '--bg3': '#2d2d2d', '--bg4': '#3e3e3e',
+    '--bg': '#0b0d10', '--bg2': '#111419', '--bg3': '#181c22', '--bg4': '#242a32',
     '--fg': '#d4d4d4', '--fg2': '#969696', '--accent': '#569cd6', '--accent2': '#4ec9b0',
     '--red': '#f44747', '--green': '#6a9955', '--orange': '#ce9178', '--blue': '#6fa8dc',
-    '--border': '#333333', '--selection': '#264f78',
+    '--border': '#2b323b', '--selection': '#264f78',
     '--link-fg': '#4da3ff',
-    '--content-bg': '#252525',
-    '--ui-tooltip-bg': '#2d2d2d', '--ui-tooltip-fg': '#f2f2f2', '--ui-tooltip-border': '#555555',
-    '--ui-scrollbar-track-bg': '#252525', '--ui-scrollbar-thumb-bg': '#3e3e3e', '--ui-scrollbar-thumb-hover-bg': '#969696',
-    '--ui-pane-tabbar-bg': '#252525', '--ui-pane-tab-active-bg': '#1e1e1e',
-    '--ui-panelset-tabbar-bg': '#252525', '--ui-collapsed-tabbar-bg': '#252525', '--ui-dockbar-bg': '#252525',
-    '--ui-header-fg': '#969696', '--ui-header-bg': '#2d2d2d',
-    '--ui-toolbar-fg': '#d4d4d4', '--ui-toolbar-bg': '#252525',
-    '--ui-hover-fg': '#d4d4d4', '--ui-hover-bg': '#3e3e3e',
-    '--ui-accent': '#2563eb',
+    '--content-bg': '#0f1216',
+    '--ui-tooltip-bg': '#181c22', '--ui-tooltip-fg': '#f2f2f2', '--ui-tooltip-border': '#3a424d',
+    '--ui-scrollbar-track-bg': '#111419', '--ui-scrollbar-thumb-bg': '#242a32', '--ui-scrollbar-thumb-hover-bg': '#969696',
+    '--ui-pane-tabbar-bg': '#111419', '--ui-pane-tab-active-bg': '#0b0d10',
+    '--ui-panelset-tabbar-bg': '#111419', '--ui-collapsed-tabbar-bg': '#111419', '--ui-dockbar-bg': '#111419',
+    '--ui-header-fg': '#969696', '--ui-header-bg': '#181c22',
+    '--ui-toolbar-fg': '#d4d4d4', '--ui-toolbar-bg': '#111419',
+    '--ui-hover-fg': '#d4d4d4', '--ui-hover-bg': '#242a32',
+    '--ui-accent': '#569cd6',
     '--ui-fg-strong': '#ffffff',
     '--ui-selection-fg': '#ffffff', '--ui-selection-bg': '#264f78',
     '--ui-range-fill-bg': '#569cd6', '--ui-range-track-bg': '#2a2a2a',
     '--editor-caret-color': '#569cd6', '--editor-caret-width': '2px', '--a11y-focus-ring': THEME_OS_ACCENT_CSS,
-    '--db-th-fg': '#969696', '--db-th-bg': '#2d2d2d', '--db-entity-fg': '#d4d4d4', '--db-entity-bg': '#1e1e1e',
+    '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
+    '--db-th-fg': '#969696', '--db-th-bg': '#181c22', '--db-entity-fg': '#d4d4d4', '--db-entity-bg': '#0b0d10',
     '--db-cell-fg': '#d4d4d4', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#d4d4d4', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #569cd6)', '--page-h2-fg': 'var(--theme-palette-1, #4ec9b0)', '--page-h3-fg': 'var(--theme-palette-2, #dcdcaa)', '--page-h4-fg': 'var(--theme-palette-3, #6a9955)', '--page-h5-fg': 'var(--theme-palette-4, #ce9178)', '--page-h6-fg': 'var(--theme-palette-5, #6fa8dc)',
     '--page-h1-bg': 'transparent', '--page-h2-bg': 'transparent', '--page-h3-bg': 'transparent', '--page-h4-bg': 'transparent', '--page-h5-bg': 'transparent', '--page-h6-bg': 'transparent',
-    '--page-text-fg': '#d4d4d4', '--page-text-bg': '#252525', '--page-link-fg': 'var(--link-fg)',
+    '--page-text-fg': '#d4d4d4', '--page-text-bg': '#0f1216', '--page-link-fg': 'var(--link-fg)',
     '--page-hr-color': 'var(--border)', '--page-quote-fg': '#969696', '--page-quote-border': 'var(--border)',
   };
   const LIGHT_VARS = {
@@ -327,6 +335,7 @@
     '--ui-selection-fg': '#1e1e1e', '--ui-selection-bg': '#bbdefb',
     '--ui-range-fill-bg': '#0055aa', '--ui-range-track-bg': '#d6d6d6',
     '--editor-caret-color': '#0055aa', '--editor-caret-width': '2px', '--a11y-focus-ring': THEME_OS_ACCENT_CSS,
+    '--cal-event-bg': '#2563eb', '--cal-event-fg': '#ffffff',
     '--db-th-fg': '#555555', '--db-th-bg': '#ebebeb', '--db-entity-fg': '#1e1e1e', '--db-entity-bg': '#ffffff',
     '--db-cell-fg': '#1e1e1e', '--db-grid-border': 'var(--border)', '--db-active-color': 'var(--editor-caret-color)',
     '--page-title-fg': '#1e1e1e', '--page-title-bg': 'transparent', '--page-h1-fg': 'var(--theme-palette-0, #0055aa)', '--page-h2-fg': 'var(--theme-palette-1, #007050)', '--page-h3-fg': 'var(--theme-palette-2, #b45309)', '--page-h4-fg': 'var(--theme-palette-3, #2e7d32)', '--page-h5-fg': 'var(--theme-palette-4, #1565c0)', '--page-h6-fg': 'var(--theme-palette-5, #7c3aed)',
@@ -888,13 +897,3 @@
     });
     return saveThemeUiApplications(cfg, options);
   }
-
-  function getUseOsAccentColor() {
-    try { return localStorage.getItem(THEME_OS_ACCENT_KEY) === '1'; } catch { return false; }
-  }
-
-  function hasOsAccentRuntimeColor() {
-    return /^#[0-9a-f]{6}$/i.test(_osAccentRuntimeColor);
-  }
-
-  function refreshOsAccentColor() {

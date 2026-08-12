@@ -1,3 +1,96 @@
+    });
+    const css = rules.join('\n');
+    if (_themeUiApplicationsCss !== css || style.textContent !== css) {
+      _themeUiApplicationsCss = css;
+      style.textContent = css;
+    }
+  }
+
+  function ensurePaletteRuntimeStyle() {
+    if (document.getElementById('meldex-theme-palette-style')) return;
+    const style = document.createElement('style');
+    style.id = 'meldex-theme-palette-style';
+    style.textContent = `
+[data-theme-palette-index="0"]{--theme-slot-color:var(--theme-palette-0)}
+[data-theme-palette-index="1"]{--theme-slot-color:var(--theme-palette-1)}
+[data-theme-palette-index="2"]{--theme-slot-color:var(--theme-palette-2)}
+[data-theme-palette-index="3"]{--theme-slot-color:var(--theme-palette-3)}
+[data-theme-palette-index="4"]{--theme-slot-color:var(--theme-palette-4)}
+[data-theme-palette-index="5"]{--theme-slot-color:var(--theme-palette-5)}
+[data-theme-palette-index="6"]{--theme-slot-color:var(--theme-palette-6)}
+[data-theme-palette-index="7"]{--theme-slot-color:var(--theme-palette-7)}
+[data-theme-palette-index="8"]{--theme-slot-color:var(--theme-palette-8)}
+[data-theme-palette-index="9"]{--theme-slot-color:var(--theme-palette-9)}
+`;
+    document.head.appendChild(style);
+  }
+
+  function getBoardState() {
+    try {
+      if (typeof bd !== 'undefined') return bd;
+    } catch {}
+    return global.bd || null;
+  }
+
+  function isBoardRenderReady(board) {
+    if (!board || !board.path || typeof document === 'undefined') return false;
+    const root = (typeof global.bdGetActiveBoardRoot === 'function') ? global.bdGetActiveBoardRoot() : null;
+    const canvas = (typeof global.bdGetBoardElement === 'function')
+      ? global.bdGetBoardElement('canvas', root)
+      : document.getElementById('bd-canvas');
+    const nodes = (typeof global.bdGetBoardElement === 'function')
+      ? global.bdGetBoardElement('nodes', root)
+      : document.getElementById('bd-nodes');
+    if (!canvas || !nodes || !canvas.isConnected || !nodes.isConnected) return false;
+    if (typeof getComputedStyle === 'function') {
+      let el = canvas;
+      let guard = 0;
+      while (el && el !== document.body && guard < 8) {
+        const style = getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        el = el.parentElement;
+        guard += 1;
+      }
+    }
+    return true;
+  }
+
+  function scheduleBoardRender() {
+    const board = getBoardState();
+    if (!isBoardRenderReady(board)) return;
+    const render = (typeof global.bdRender === 'function') ? global.bdRender : (typeof bdRender === 'function' ? bdRender : null);
+    if (typeof render !== 'function') return;
+    const token = ++_boardRenderToken;
+    const requestFrame = global.requestAnimationFrame || (fn => setTimeout(fn, 16));
+    requestFrame(() => {
+      if (token !== _boardRenderToken) return;
+      if (!isBoardRenderReady(board)) return;
+      render();
+    });
+  }
+
+  function isThemeLight(themeDef) {
+    const bg = themeDef?.ui?.cssVars?.['--bg'] || themeDef?.board?.backgroundColor || '';
+    const hex = normalizeThemeColor(bg);
+    if (!hex) return themeDef?.id === 'builtin-light' || themeDef?.id === 'builtin-pastel';
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return (r * 0.299 + g * 0.587 + b * 0.114) > 150;
+  }
+
+  function normalizeThemeStyleVarValue(key, value) {
+    const raw = String(value == null ? '' : value).trim();
+    if (!raw) return raw;
+    const name = String(key || '');
+    if (/-left-accent$/i.test(name) && raw === '3px') return '6px';
+    if (/-underline$/i.test(name) && raw.toLowerCase() === 'underline') return '2px';
+    return raw;
+  }
+
+  function withDerivedUiStyleVars(vars) {
+    const next = { ...(vars || {}) };
+    Object.keys(next).forEach(key => { next[key] = normalizeThemeStyleVarValue(key, next[key]); });
     const isLightSurface = () => {
       const hex = normalizeThemeColor(next['--content-bg'] || next['--bg'] || '');
       if (!hex) return false;
@@ -400,9 +493,12 @@
     });
     if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
-    const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true });
+    const preservePresetAccent = getThemeAccentPolicy(themeDef).kind === 'system-or-default';
+    const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, {
+      preserveStored: preservePresetAccent || options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true,
+    });
     applyThemeStandardPaletteAdjustFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredStandardPalette === true });
-    applyOsAccentColorSetting(osAccentEnabled, { restorePrevious: false });
+    applyOsAccentColorSetting(osAccentEnabled, { restorePrevious: false, themeDef });
     applyThemeUiSettingsFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true });
     applyPaletteTargets(themeDef);
     applyThemeColorSlotSettingsFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredColorSlots === true });
@@ -802,99 +898,3 @@
     const current = list[index];
     current.name = String(name || current.name || 'カスタムテーマ').trim();
     current.builtIn = false;
-    current.ui = {
-      ...(current.ui || {}),
-      cssVars: collectCurrentCssVars(),
-      useOsAccentColor: getUseOsAccentColor(),
-      standardPaletteAdjust: typeof global.getStandardPaletteAdjust === 'function' ? global.getStandardPaletteAdjust() : null,
-      themeUiApplications: getThemeUiApplications(),
-      themeUiAutoTone: getThemeUiAutoTone(),
-    };
-    setThemeColorSetOnTheme(current, getThemeColorSet(null, { ignoreOsAccent: true }));
-    setThemeColorSlotSettingsOnTheme(current, readCurrentThemeColorSlotSettings());
-    setThemeColorExtraSlotSettingsOnTheme(current, readCurrentThemeColorExtraSlotSettings());
-    setThemeOsAccentOnTheme(current, current.ui.useOsAccentColor);
-    setThemeStandardPaletteAdjustOnTheme(current, current.ui.standardPaletteAdjust);
-    setThemeUiSettingsOnTheme(current, current.ui.themeUiApplications, current.ui.themeUiAutoTone);
-    list[index] = current;
-    saveCustomThemes(list);
-    return clone(current);
-  }
-
-  function renameCustomTheme(id, name) {
-    const label = String(name || '').trim();
-    if (!label) return null;
-    const normalized = normalizeThemeId(id);
-    const list = getCustomThemes();
-    const item = list.find(t => t.id === normalized);
-    if (!item) return null;
-    item.name = label;
-    saveCustomThemes(list);
-    return clone(item);
-  }
-
-  function importCustomTheme(themeDef, fallbackName) {
-    const imported = normalizeCustomThemePayload(themeDef?.theme || themeDef, fallbackName);
-    const list = getCustomThemes();
-    const usedIds = new Set(list.map(t => String(t.id || '')));
-    if (usedIds.has(String(imported.id || ''))) imported.id = newCustomThemeId('custom-import');
-    const usedNames = new Set(list.map(t => String(t.name || '')));
-    const baseName = String(imported.name || fallbackName || 'カスタムテーマ').trim() || 'カスタムテーマ';
-    let nextName = baseName;
-    let suffix = 0;
-    while (usedNames.has(nextName)) {
-      suffix += 1;
-      nextName = suffix === 1 ? `${baseName} コピー` : `${baseName} コピー ${suffix}`;
-    }
-    imported.name = nextName;
-    list.push(imported);
-    saveCustomThemes(list);
-    return clone(imported);
-  }
-
-  function deleteCustomTheme(id) {
-    const normalized = normalizeThemeId(id);
-    const list = getCustomThemes();
-    const next = list.filter(t => t.id !== normalized);
-    if (next.length === list.length) return false;
-    saveCustomThemes(next);
-    if (getDefaultThemeId() === normalized) setDefaultThemeId('builtin-dark');
-    return true;
-  }
-
-  function getBoardThemeColorSet(board) {
-    if (!board?.themeId) return getThemeColorSet();
-    return resolveThemeColorSet(getActiveBoardTheme(board));
-  }
-
-  function getBuiltinRainbowPalette() {
-    return normalizeThemeColorSet(null, RAINBOW_PALETTE);
-  }
-
-  function getRainbowPalette(board) {
-    return getBoardThemeColorSet(board);
-  }
-
-  function migrateStoredThemeColorSet() {
-    const storedPalette = readStoredThemeColorSet();
-    if (!storedPalette) return;
-    const currentId = getDefaultThemeId();
-    const currentTheme = getThemeById(currentId);
-    if (themeColorSetsEqual(storedPalette, resolveThemeColorSet(currentTheme))) {
-      cancelThemeColorSetCommit();
-      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
-      return;
-    }
-    const customThemes = getCustomThemes();
-    const custom = customThemes.find(t => t.id === currentId);
-    if (custom) {
-      setThemeColorSetOnTheme(custom, storedPalette);
-      saveCustomThemes(customThemes);
-      cancelThemeColorSetCommit();
-      try { localStorage.removeItem(THEME_COLOR_SET_KEY); } catch {}
-      return;
-    }
-    const promotedSources = _promotedInitialThemeSourcesByTarget();
-    if (_initialBuiltinTargetFromId(currentId) && promotedSources.has(currentId)) {
-      _updatePromotedInitialThemeSource(currentId, theme => setThemeColorSetOnTheme(theme, storedPalette));
-      cancelThemeColorSetCommit();

@@ -151,7 +151,7 @@ function bdContextMenu(e, nodeId) {
       ? MeldexBoardOpenTarget.resolve(nd)
       : null;
     if ((isLinkCard || isImageCard) && openTarget?.path) {
-      // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+      // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
       // 一覧に出さない（計画書「右サイドバー操作の制限」節。他の右サイドバー分岐と
       // 同じ判定パターンに合わせる）。sourceEl を明示的に open() へ渡すことで、実行側の
       // ガード(guardRightSidebarTool)がフォーカス位置フォールバック頼みでバイパスされる
@@ -164,7 +164,7 @@ function bdContextMenu(e, nodeId) {
         MeldexBoardOpenTarget.open(nd, undefined, { sourceEl: cardMenuSourceEl });
       });
       MeldexBoardOpenTarget.getAvailableTargets()
-        .filter(target => cardMenuCanUseRightSidebar || target.value !== 'sidebar')
+        .filter(target => cardMenuCanUseRightSidebar || !['sidebar', 'right-sidebar'].includes(target.value))
         .forEach(target => {
           item(`${target.label}で開く`, () => MeldexBoardOpenTarget.open(nd, target.value, { sourceEl: cardMenuSourceEl }));
         });
@@ -768,15 +768,28 @@ function _bdClearStatusOnNodes(statusName) {
 }
 
 function bdManageStatuses() {
-  const o = document.createElement('div'); o.className = 'modal-overlay';
+  if (!window.GBUI?.createModal) throw new Error('ステータス管理ダイアログを初期化できませんでした');
+  const existing = document.querySelector('[data-e2e-id="board-status-manager-dialog"]');
+  if (existing) { existing.focus(); return existing.closest('.gb-modal-overlay')?._bdStatusManagerApi || null; }
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const uid = 'bd-status-manager-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  const content = document.createElement('div');
+  content.dataset.e2eId = 'board-status-manager-content';
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'gb-btn gb-btn-sm';
+  closeButton.dataset.e2eId = 'board-status-manager-close';
+  closeButton.textContent = '閉じる';
+  closeButton.style.cssText = 'min-width:44px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;line-height:1.2;';
   let undoCaptured = false;
+  let actionPending = false;
   const captureUndo = () => {
     if (undoCaptured) return;
     undoCaptured = true;
     if (typeof bdPushUndo === 'function') bdPushUndo();
   };
   const bindStatusSwatches = () => {
-    o.querySelectorAll('.bd-status-color').forEach((swatch) => {
+    content.querySelectorAll('.bd-status-color').forEach((swatch) => {
       const idx = parseInt(swatch.dataset.i, 10);
       bindColorSwatch(swatch, () => getColorSwatchValue(swatch, bd.statuses[idx]?.color || '#888'), (nextColor) => {
         const appliedColor = nextColor || '#888';
@@ -788,23 +801,92 @@ function bdManageStatuses() {
     });
   };
   function render() {
-    let html = '<div class="modal" style="min-width:400px;"><h3>ステータス管理</h3>';
+    let html = '<div data-bd-status-list>';
     bd.statuses.forEach((s,i) => {
-      html += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
-        <input type="text" value="${esc(s.name)}" data-i="${i}" data-f="name" style="width:80px;font-size:13px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;">
-        <button type="button" class="bd-status-color gb-color-swatch gb-color-swatch--status" data-i="${i}" data-f="color" data-color="${esc(s.color)}" title="色"></button>
-        <label style="font-size:11px;color:var(--fg2);">透過<input type="range" min="0" max="1" step="0.1" value="${s.opacity}" data-i="${i}" data-f="opacity" style="width:50px;vertical-align:middle;"></label>
-        <label style="font-size:11px;color:var(--fg2);">枠<input type="text" value="${esc(s.border||'')}" data-i="${i}" data-f="border" placeholder="例: 2px solid #22c55e" style="width:100px;font-size:11px;padding:1px 3px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:2px;"></label>
-        <button data-del="${i}" style="font-size:11px;padding:1px 6px;color:var(--fg2);">${lucide('x', 12)}</button>
+      html += `<div data-bd-status-row="${i}" style="box-sizing:border-box;display:grid;grid-template-columns:minmax(92px,1fr) 44px minmax(96px,1fr) 44px;gap:6px;align-items:center;width:100%;max-width:100%;min-width:0;margin-bottom:8px;">
+        <input class="gb-input" aria-label="ステータス名" type="text" value="${esc(s.name)}" data-i="${i}" data-f="name" style="box-sizing:border-box;width:100%;max-width:100%;min-width:0;grid-column:1;grid-row:1;">
+        <button type="button" class="bd-status-color gb-color-swatch gb-color-swatch--status" data-i="${i}" data-f="color" data-color="${esc(s.color)}" title="色" aria-label="ステータスの色" style="grid-column:2;grid-row:1;"></button>
+        <label style="display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px;align-items:center;min-width:0;grid-column:3;grid-row:1;">透過<input type="range" min="0" max="1" step="0.1" value="${s.opacity}" data-i="${i}" data-f="opacity" style="box-sizing:border-box;width:100%;max-width:100%;min-width:0;"></label>
+        <label style="display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px;align-items:center;min-width:0;grid-column:1 / -1;grid-row:2;">枠<input class="gb-input" aria-label="ステータスの枠線" type="text" value="${esc(s.border||'')}" data-i="${i}" data-f="border" placeholder="例: 2px solid #22c55e" style="box-sizing:border-box;width:100%;max-width:100%;min-width:0;"></label>
+        <button type="button" class="gb-btn gb-btn-sm gb-btn-icon" data-del="${i}" aria-label="ステータス「${esc(s.name)}」を削除" style="grid-column:4;grid-row:1;">${lucide('x', 16)}</button>
       </div>`;
     });
-    html += `<div style="margin-top:8px;"><button id="bd-st-add" style="font-size:12px;padding:3px 10px;">+ ステータスを追加</button></div>`;
-    html += '<div class="btn-row"><button id="bd-st-close">閉じる</button></div></div>';
-    o.innerHTML = html;
+    html += `<div style="margin-top:8px;"><button type="button" class="gb-btn gb-btn-sm" id="bd-st-add" data-e2e-id="board-status-add">+ ステータスを追加</button></div></div>`;
+    content.innerHTML = html;
+    content.querySelectorAll('button').forEach(button => {
+      button.style.minWidth = '44px';
+      button.style.minHeight = '44px';
+    });
     bindStatusSwatches();
+    replaceIcons(content);
   }
-  render(); document.body.appendChild(o);
-  o.addEventListener('input', (ev) => {
+  const modalApi = window.GBUI.createModal({
+    id: uid,
+    title: 'ステータス管理',
+    body: content,
+    footer: closeButton,
+    variant: 'standard',
+    extraClass: 'bd-status-manager-dialog',
+    geometryKey: 'board-status-manager',
+    minWidth: '0',
+    initialFocus: () => content.querySelector('[data-f="name"], #bd-st-add') || closeButton,
+    returnFocus: returnFocus || undefined,
+    closeLabel: 'ステータス管理を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !actionPending || reason === 'complete',
+  });
+  modalApi.overlay.dataset.e2eId = 'board-status-manager-overlay';
+  modalApi.overlay._bdStatusManagerApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'board-status-manager-dialog';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  headerClose?.setAttribute('data-e2e-id', 'board-status-manager-header-close');
+  if (headerClose) headerClose.style.cssText = 'width:44px;min-width:44px;height:44px;min-height:44px;';
+  modalApi.modal.style.cssText = 'width:min(680px, calc(100vw - 24px));overflow:hidden;';
+  modalApi.body.style.cssText = 'box-sizing:border-box;min-width:0;min-height:0;overflow-y:auto;';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  render();
+  const setActionPending = pending => {
+    actionPending = !!pending;
+    modalApi.overlay.setAttribute('aria-busy', actionPending ? 'true' : 'false');
+    modalApi.modal.setAttribute('aria-busy', actionPending ? 'true' : 'false');
+  };
+  const runDialogHistory = async (direction, focusSpec) => {
+    if (actionPending) return;
+    setActionPending(true);
+    try {
+      if (typeof _bdHasCommonHistory === 'function' && _bdHasCommonHistory()) {
+        const operation = direction === 'redo' ? historyRedo : historyUndo;
+        await operation(_bdHistoryScope());
+      } else if (direction === 'redo') {
+        if (typeof bdRedo === 'function') bdRedo();
+      } else if (typeof bdUndo === 'function') {
+        bdUndo();
+      }
+      undoCaptured = false;
+      render();
+      const nextFocus = focusSpec?.field
+        ? content.querySelector(`[data-f="${focusSpec.field}"][data-i="${focusSpec.index}"]`)
+        : content.querySelector('[data-f="name"], #bd-st-add');
+      nextFocus?.focus?.({ preventScroll: true });
+    } finally {
+      setActionPending(false);
+    }
+  };
+  content.addEventListener('keydown', ev => {
+    if (!(ev.ctrlKey || ev.metaKey)) return;
+    const key = String(ev.key || '').toLowerCase();
+    const redo = key === 'y' || (key === 'z' && ev.shiftKey);
+    if (key !== 'z' && key !== 'y') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const focusSpec = { field: ev.target?.dataset?.f || '', index: ev.target?.dataset?.i || '' };
+    runDialogHistory(redo ? 'redo' : 'undo', focusSpec).catch(error => {
+      console.error('ステータス管理の履歴操作に失敗しました:', error);
+      try { showStatus('ステータス管理の履歴操作に失敗しました', true); } catch {}
+    });
+  });
+  content.addEventListener('input', (ev) => {
     const i = parseInt(ev.target.dataset.i, 10), f = ev.target.dataset.f;
     if (!Number.isFinite(i) || !f || !bd.statuses[i]) return;
     if (f === 'name') {
@@ -832,19 +914,51 @@ function bdManageStatuses() {
     bdRender();
     bdDirty();
   });
-  o.addEventListener('click', async (ev) => {
+  content.addEventListener('click', async (ev) => {
     const delBtn = ev.target.closest?.('[data-del]');
     if (delBtn?.dataset?.del!==undefined) {
       const idx = +delBtn.dataset.del;
-      if (!Number.isFinite(idx) || !bd.statuses[idx]) return;
+      if (actionPending || !Number.isFinite(idx) || !bd.statuses[idx]) return;
       const label = bd.statuses[idx].name || 'このステータス';
-      if (typeof cfConfirm === 'function' && !(await cfConfirm(`ステータス「${label}」を削除しますか？`))) return;
-      captureUndo();
-      bd.statuses.splice(idx,1);
-      _bdClearStatusOnNodes(label);
-      bdRender();
-      bdDirty();
-      render();
+      setActionPending(true);
+      delBtn.disabled = true;
+      let mutationCheckpoint = null;
+      let statusesBefore = null;
+      let nodeStatusesBefore = null;
+      let undoCapturedBefore = undoCaptured;
+      try {
+        if (typeof cfConfirm === 'function' && !(await cfConfirm(`ステータス「${label}」を削除しますか？`))) return;
+        mutationCheckpoint = _bdDialogCaptureMutationCheckpoint();
+        statusesBefore = bd.statuses.slice();
+        nodeStatusesBefore = (bd.nodes || []).map(node => ({
+          node,
+          hadStatus: Object.prototype.hasOwnProperty.call(node, 'status'),
+          status: node.status,
+        }));
+        undoCapturedBefore = undoCaptured;
+        captureUndo();
+        bd.statuses.splice(idx,1);
+        _bdClearStatusOnNodes(label);
+        bdRender();
+        bdDirty();
+        render();
+      } catch (error) {
+        if (mutationCheckpoint) {
+          bd.statuses = statusesBefore;
+          nodeStatusesBefore.forEach(entry => {
+            if (entry.hadStatus) entry.node.status = entry.status; else delete entry.node.status;
+          });
+          undoCaptured = undoCapturedBefore;
+          _bdDialogRestoreMutationCheckpoint(mutationCheckpoint);
+          try { bdRender(); } catch (renderError) { console.error('ステータス削除復元後の再描画に失敗しました:', renderError); }
+          render();
+        }
+        console.error('ステータスを削除できませんでした:', error);
+        try { showStatus('ステータスを削除できませんでした', true); } catch {}
+      } finally {
+        setActionPending(false);
+        if (delBtn.isConnected) delBtn.disabled = false;
+      }
       return;
     }
     if (ev.target.id==='bd-st-add') {
@@ -853,16 +967,26 @@ function bdManageStatuses() {
       bdDirty();
       render();
     }
-    if (ev.target.id==='bd-st-close') { o.remove(); bdRender(); bdDirty(); }
   });
+  closeButton.addEventListener('click', () => {
+    if (actionPending) return;
+    bdRender();
+    bdDirty();
+    modalApi.close('footer-close');
+  });
+  modalApi.open();
+  replaceIcons(modalApi.overlay);
+  return modalApi;
 }
 
 // --- 16. Help Dialog ---
 function bdShowHelp() {
-  const o = document.createElement('div'); o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="max-width:500px;">
-    <h3>ボード ショートカット</h3>
-    <div style="font-size:13px;line-height:2;columns:2;column-gap:24px;">
+  if (!window.GBUI?.createModal) throw new Error('ボード ショートカットダイアログを初期化できませんでした');
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const content = document.createElement('div');
+  content.dataset.e2eId = 'board-shortcuts-content';
+  content.style.cssText = `box-sizing:border-box;width:100%;max-width:100%;min-width:0;font-size:13px;line-height:2;columns:${window.innerWidth <= 900 ? 1 : 2};column-gap:24px;overflow-wrap:anywhere;`;
+  content.innerHTML = `
       <div><kbd>ダブルクリック</kbd> カード追加/編集</div>
       <div><kbd>左ドラッグ (空白)</kbd> 範囲選択</div>
       <div><kbd>左ドラッグ (カード)</kbd> 移動</div>
@@ -886,10 +1010,46 @@ function bdShowHelp() {
       <div><kbd>Ctrl+C/V</kbd> コピー/ペースト</div>
       <div><kbd>Ctrl+Z/Y</kbd> 元に戻す/やり直し</div>
       <div><kbd>自動保存</kbd> 編集内容を保存</div>
-    </div>
-    <div class="btn-row"><button data-action="this.closest('.modal-overlay').remove()">閉じる</button></div>
-  </div>`;
-  document.body.appendChild(o);
+  `;
+  content.querySelectorAll(':scope > div').forEach(row => {
+    row.style.breakInside = 'avoid';
+    row.style.maxWidth = '100%';
+    row.style.minWidth = '0';
+    row.style.overflowWrap = 'anywhere';
+  });
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'gb-btn gb-btn-sm';
+  closeButton.dataset.e2eId = 'board-shortcuts-close';
+  closeButton.textContent = '閉じる';
+  closeButton.style.cssText = 'min-width:44px;min-height:44px;';
+  const modalApi = window.GBUI.createModal({
+    id: 'board-shortcuts-dialog',
+    title: 'ボード ショートカット',
+    body: content,
+    footer: closeButton,
+    variant: 'standard',
+    extraClass: 'bd-shortcuts-dialog',
+    geometryKey: 'board-shortcuts',
+    minWidth: '0',
+    initialFocus: closeButton,
+    returnFocus: returnFocus || undefined,
+    closeLabel: 'ボード ショートカットを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+  });
+  modalApi.overlay.dataset.e2eId = 'board-shortcuts-overlay';
+  modalApi.modal.dataset.e2eId = 'board-shortcuts-dialog';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  headerClose?.setAttribute('data-e2e-id', 'board-shortcuts-header-close');
+  if (headerClose) headerClose.style.cssText = 'width:44px;min-width:44px;height:44px;min-height:44px;';
+  modalApi.modal.style.cssText = 'width:min(560px, calc(100vw - 24px));overflow:hidden;';
+  modalApi.body.style.cssText = 'box-sizing:border-box;min-width:0;min-height:0;overflow-y:auto;';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  closeButton.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
+  replaceIcons(modalApi.overlay);
+  return modalApi;
 }
 
 
@@ -917,7 +1077,7 @@ async function bdLinkifyCardAs(nodeId, type) {
     n.text = label;
     bdRender();
     bdDirty();
-    if (typeof _bdOpenEntryInFloatPanel === 'function') _bdOpenEntryInFloatPanel(label, path, n.linkType);
+    if (typeof _bdOpenEntryInRightSidebar === 'function') _bdOpenEntryInRightSidebar(label, path, n.linkType);
     showStatus('リンクカード化: ' + label);
   } catch {
     showStatus('リンクカード化に失敗しました', true);

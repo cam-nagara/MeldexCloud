@@ -784,19 +784,9 @@ let _showConfirmDialogSeq = 0;
 function showConfirmDialog(message, onOk, onCancel) {
   const focusReturnTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const dialogId = 'show-confirm-dialog-' + (++_showConfirmDialogSeq);
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'show-confirm-dialog-overlay';
-  overlay.dataset.confirmDialog = '1';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal show-confirm-dialog';
-  modal.dataset.e2eId = 'show-confirm-dialog';
-  modal.setAttribute('role', 'alertdialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-label', '確認');
-  modal.setAttribute('aria-describedby', dialogId + '-body');
-  modal.tabIndex = -1;
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('確認ダイアログを初期化できませんでした。');
+  }
 
   const body = document.createElement('div');
   body.id = dialogId + '-body';
@@ -821,51 +811,40 @@ function showConfirmDialog(message, onOk, onCancel) {
   okBtn.textContent = 'OK';
 
   buttonRow.append(cancelBtn, okBtn);
-  modal.append(body, buttonRow);
-  overlay.appendChild(modal);
-
-  let closed = false;
-  const restoreFocus = () => {
-    if (focusReturnTarget?.isConnected && typeof focusReturnTarget.focus === 'function') {
-      try { focusReturnTarget.focus({ preventScroll: true }); } catch (_) { focusReturnTarget.focus(); }
-    }
-  };
-  const queueFocusRestore = () => {
-    setTimeout(() => {
-      const active = document.activeElement;
-      if (!active || !active.isConnected || active === document.body || active === document.documentElement || active === focusReturnTarget) {
-        restoreFocus();
-      }
-    }, 0);
-  };
-  const close = (confirmed) => {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener('keydown', onKeyDown);
-    overlay.remove();
-    restoreFocus();
-    queueFocusRestore();
-    if (confirmed) {
-      if (onOk) onOk();
-    } else if (onCancel) {
-      onCancel();
-    }
-  };
-  function onKeyDown(e) {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    close(false);
-  }
-
-  okBtn.addEventListener('click', () => close(true));
-  cancelBtn.addEventListener('click', () => close(false));
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(false); });
-  document.addEventListener('keydown', onKeyDown);
-  document.body.appendChild(overlay);
-  window.GBModalShell?.enhanceOverlay?.(overlay);
-  setTimeout(() => {
-    try { okBtn.focus({ preventScroll: true }); } catch (_) { okBtn.focus(); }
-  }, 0);
+  let confirmed = false;
+  const modalApi = window.GBUI.createModal({
+    id: dialogId,
+    title: '確認',
+    body,
+    footer: buttonRow,
+    variant: 'standard',
+    extraClass: 'show-confirm-dialog',
+    geometryKey: 'show-confirm-dialog',
+    initialFocus: okBtn,
+    returnFocus: focusReturnTarget || undefined,
+    closeLabel: '確認を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onClose: () => {
+      if (confirmed) onOk?.();
+      else onCancel?.();
+    },
+  });
+  const { overlay, modal } = modalApi;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.e2eId = 'show-confirm-dialog-overlay';
+  overlay.dataset.confirmDialog = '1';
+  overlay._showConfirmDialogApi = modalApi;
+  modal.dataset.e2eId = 'show-confirm-dialog';
+  modal.setAttribute('role', 'alertdialog');
+  modal.setAttribute('aria-label', '確認');
+  modal.setAttribute('aria-describedby', dialogId + '-body');
+  okBtn.addEventListener('click', () => {
+    confirmed = true;
+    modalApi.close('submit');
+  });
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  modalApi.open();
   return overlay;
 }
 

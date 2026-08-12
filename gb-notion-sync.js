@@ -11,8 +11,7 @@
   // 自動同期の実行判断・巡回はバックエンド（meldex_import_scheduler.py）が担う。
   let _syncInProgress = false; // 同期の同時実行防止
   let _currentOverlay = null;  // 現在開いているモーダルの参照
-  let _currentOverlayKeydown = null;
-  let _currentOverlayReturnFocus = null;
+  let _currentModalApi = null;
   let _notionModalSeq = 0;
   const _SYNC_LOCK_KEY = 'meldex-notion-sync-lock-v1';
   const _SYNC_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -92,38 +91,45 @@
   // === Notion同期設定UI ===
   async function showNotionSyncModal() {
     _closeModal();
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.dataset.e2eId = 'notion-sync-modal-overlay';
-    const titleId = `notion-sync-title-${++_notionModalSeq}`;
+    const body = document.createElement('div');
+    body.id = 'notion-sync-modal-body';
     const descId = `notion-sync-global-status-${_notionModalSeq}`;
-    _currentOverlayReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    _currentOverlay = o;
-    o.innerHTML = `<div class="modal notion-sync-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="notion-sync-modal">
-      <h3 id="${titleId}" class="notion-sync-title">${lucide('refreshCw', 16)} Notion同期</h3>
-      <div id="notion-sync-modal-body"></div>
-      <div class="btn-row notion-sync-footer" data-modal-footer>
-        <button id="notion-close-btn" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-close" aria-label="Notion同期を閉じる">閉じる</button>
-      </div>
-    </div>`;
-    const onKeyDown = event => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        _closeModal();
-      }
-    };
-    _currentOverlayKeydown = onKeyDown;
-    document.addEventListener('keydown', onKeyDown, true);
-    o.addEventListener('pointerdown', event => {
-      if (event.target === o) _closeModal();
+    const closeButton = document.createElement('button');
+    closeButton.id = 'notion-close-btn';
+    closeButton.type = 'button';
+    closeButton.className = 'gb-btn gb-btn-sm notion-sync-action';
+    closeButton.dataset.e2eId = 'notion-close';
+    closeButton.setAttribute('aria-label', 'Notion同期を閉じる');
+    closeButton.textContent = '閉じる';
+    const modalApi = window.GBUI.createModal({
+      id: `notion-sync-${++_notionModalSeq}`,
+      title: 'Notion同期',
+      body,
+      footer: closeButton,
+      variant: 'mobile-sheet',
+      extraClass: 'notion-sync-modal',
+      initialFocus: '#notion-token, #notion-add-folder, #notion-close-btn',
+      closeLabel: 'Notion同期を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (_currentModalApi === modalApi) _currentModalApi = null;
+        if (_currentOverlay === modalApi.overlay) _currentOverlay = null;
+      },
     });
-
-    document.body.appendChild(o);
+    const o = modalApi.overlay;
+    o.classList.add('modal-overlay');
+    o.dataset.e2eId = 'notion-sync-modal-overlay';
+    modalApi.modal.dataset.e2eId = 'notion-sync-modal';
+    modalApi.modal.setAttribute('aria-describedby', descId);
+    modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'notion-sync-header-close');
+    modalApi.footer.classList.add('btn-row', 'notion-sync-footer');
+    _currentModalApi = modalApi;
+    _currentOverlay = o;
+    closeButton.addEventListener('click', () => modalApi.close('close-button'));
+    modalApi.open();
+    await _renderNotionSyncSettings(body, { modal: true, descId });
     replaceIcons(o);
-    await _renderNotionSyncSettings(o.querySelector('#notion-sync-modal-body'), { modal: true, descId });
-    o.querySelector('#notion-close-btn')?.addEventListener('click', () => _closeModal());
-    window.GBModalShell?.enhanceOverlay?.(o);
-    o.querySelector('.notion-sync-modal')?.focus?.();
   }
 
   async function renderNotionSyncSettings(root) {
@@ -190,21 +196,15 @@
   }
 
   function _closeModal() {
-    if (_currentOverlayKeydown) {
-      document.removeEventListener('keydown', _currentOverlayKeydown, true);
-      _currentOverlayKeydown = null;
-    }
-    if (_currentOverlay) {
-      _currentOverlay.remove();
+    if (_currentModalApi) {
+      const modalApi = _currentModalApi;
+      _currentModalApi = null;
       _currentOverlay = null;
+      modalApi.close('programmatic');
+      return;
     }
-    const target = _currentOverlayReturnFocus;
-    _currentOverlayReturnFocus = null;
-    if (target?.isConnected && typeof target.focus === 'function') {
-      setTimeout(() => {
-        try { target.focus({ preventScroll: true }); } catch { target.focus(); }
-      }, 0);
-    }
+    _currentOverlay?.remove();
+    _currentOverlay = null;
   }
 
   // === トークン保存 + 自動リロード ===
@@ -360,40 +360,68 @@
 
   function _showNotionFolderTreePicker(initialPath = '') {
     return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
+      const pickerDescId = `notion-folder-picker-current-${++_notionModalSeq}`;
+      const body = document.createElement('div');
+      body.className = 'notion-folder-picker-body';
+      body.innerHTML = `
+        <div class="notion-folder-picker-current-row">
+          <span class="notion-sync-label">選択中:</span>
+          <code id="${pickerDescId}" class="notion-folder-picker-current">${esc(initialPath || 'ルート')}</code>
+        </div>
+        <div id="notion-folder-picker-tree" class="notion-folder-picker-tree"></div>
+        <div id="notion-folder-picker-status" class="notion-sync-status-line"></div>`;
+      const cancelButton = document.createElement('button');
+      cancelButton.id = 'notion-folder-picker-cancel';
+      cancelButton.type = 'button';
+      cancelButton.className = 'gb-btn gb-btn-sm notion-sync-action';
+      cancelButton.dataset.e2eId = 'notion-folder-picker-cancel';
+      cancelButton.textContent = 'キャンセル';
+      const okButton = document.createElement('button');
+      okButton.id = 'notion-folder-picker-ok';
+      okButton.type = 'button';
+      okButton.className = 'gb-btn gb-btn-sm gb-btn-primary notion-sync-action';
+      okButton.dataset.e2eId = 'notion-folder-picker-ok';
+      okButton.textContent = '選択';
+      let closed = false;
+      const modalApi = window.GBUI.createModal({
+        id: `notion-folder-picker-${_notionModalSeq}`,
+        title: 'フォルダを選択',
+        body,
+        footer: [cancelButton, okButton],
+        variant: 'mobile-sheet',
+        extraClass: 'notion-folder-picker-modal',
+        initialFocus: '[data-notion-folder-path]',
+        closeLabel: 'フォルダ選択を閉じる',
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          document.removeEventListener('keydown', onKeyDown, true);
+          if (!closed) {
+            closed = true;
+            resolve(null);
+          }
+        },
+      });
+      const overlay = modalApi.overlay;
+      overlay.classList.add('modal-overlay');
       overlay.dataset.notionFolderPicker = '1';
-      const pickerTitleId = `notion-folder-picker-title-${++_notionModalSeq}`;
-      const pickerDescId = `notion-folder-picker-current-${_notionModalSeq}`;
-      overlay.innerHTML = `<div class="modal notion-folder-picker-modal" role="dialog" aria-modal="true" aria-labelledby="${pickerTitleId}" aria-describedby="${pickerDescId}" tabindex="-1" data-e2e-id="notion-folder-picker-dialog">
-        <h3 id="${pickerTitleId}" class="notion-sync-title">${lucide('folderTree', 16)} フォルダを選択</h3>
-        <div class="notion-folder-picker-body">
-          <div class="notion-folder-picker-current-row">
-            <span class="notion-sync-label">選択中:</span>
-            <code id="${pickerDescId}" class="notion-folder-picker-current">${esc(initialPath || 'ルート')}</code>
-          </div>
-          <div id="notion-folder-picker-tree" class="notion-folder-picker-tree"></div>
-          <div id="notion-folder-picker-status" class="notion-sync-status-line"></div>
-        </div>
-        <div class="btn-row notion-folder-picker-actions">
-          <button id="notion-folder-picker-cancel" type="button" class="gb-btn gb-btn-sm notion-sync-action" data-e2e-id="notion-folder-picker-cancel">キャンセル</button>
-          <button id="notion-folder-picker-ok" type="button" class="gb-btn gb-btn-sm gb-btn-primary notion-sync-action" data-e2e-id="notion-folder-picker-ok">選択</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
+      modalApi.modal.dataset.e2eId = 'notion-folder-picker-dialog';
+      modalApi.modal.setAttribute('aria-describedby', pickerDescId);
+      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'notion-folder-picker-header-close');
+      modalApi.footer.classList.add('btn-row', 'notion-folder-picker-actions');
+      modalApi.open();
       replaceIcons(overlay);
 
-      const tree = overlay.querySelector('#notion-folder-picker-tree');
-      const currentEl = overlay.querySelector(`#${pickerDescId}`);
-      const statusEl = overlay.querySelector('#notion-folder-picker-status');
+      const tree = body.querySelector('#notion-folder-picker-tree');
+      const currentEl = body.querySelector(`#${pickerDescId}`);
+      const statusEl = body.querySelector('#notion-folder-picker-status');
       let selectedPath = String(initialPath || '');
-      let closed = false;
 
       const close = value => {
         if (closed) return;
         closed = true;
         document.removeEventListener('keydown', onKeyDown, true);
-        overlay.remove();
+        modalApi.close(value ? 'select' : 'cancel');
         resolve(value);
       };
       const setStatus = (message, error = false) => {
@@ -500,7 +528,6 @@
         }
       };
       const onKeyDown = event => {
-        if (event.key === 'Escape') close(null);
         if (event.key === 'Enter') close({ path: selectedPath });
       };
 
@@ -509,11 +536,8 @@
       tree.appendChild(rootRow);
       if (!selectedPath) markSelected(rootRow);
       expandFolder('', 0, rootRow);
-      window.GBModalShell?.enhanceOverlay?.(overlay);
-      overlay.querySelector('.notion-folder-picker-modal')?.focus?.();
-      overlay.querySelector('#notion-folder-picker-ok')?.addEventListener('click', () => close({ path: selectedPath }));
-      overlay.querySelector('#notion-folder-picker-cancel')?.addEventListener('click', () => close(null));
-      overlay.addEventListener('click', event => { if (event.target === overlay) close(null); });
+      okButton.addEventListener('click', () => close({ path: selectedPath }));
+      cancelButton.addEventListener('click', () => close(null));
       document.addEventListener('keydown', onKeyDown, true);
     });
   }

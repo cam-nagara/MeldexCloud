@@ -19,7 +19,7 @@
         allow_web_search: chatAllowWebSearch(),
         allow_auto_compress: chatAllowAutoCompress(),
         allow_code_execution: chatAllowCodeExecution(),
-        ...chatGenerationSettings(),
+        ...(options.generationSettings || chatGenerationSettings()),
         ...chatCustomInstructionSettings(),
       }),
     });
@@ -212,8 +212,32 @@
         provider: streamProvider,
         model: streamModel,
       }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
-    } else if (streamVisibleInCurrentChat()) {
-      chatAddSystem('エラー: ' + (e?.message || e));
+    } else {
+      const errorText = '応答を完了できませんでした。接続または送信設定を確認して、もう一度お試しください。';
+      if (!streamVisibleInCurrentChat()) assistantDiv = null;
+      if (!assistantDiv || !assistantDiv.isConnected) assistantDiv = addAssistantToVisibleStream(errorText, _assistantRenderOptions());
+      else assistantDiv.textContent = errorText;
+      streamMessages.push({
+        role: 'assistant',
+        content: errorText,
+        msg_id: assistantMessageId,
+        provider: streamProvider,
+        model: streamModel,
+        timestamp: assistantTimestamp || _chatLocalTimestamp(),
+        error: true,
+        error_code: e?.meldexCode || 'stream_failed',
+      });
+      sendOk = true;
+      chatAutoSave({
+        messages: streamMessages,
+        sessionId: streamSessionId,
+        sessionTitle: streamSessionTitle,
+        targetPath: streamTargetPath,
+        sourceFolder: streamSourceFolder,
+        workspaceId: streamWorkspaceId,
+        provider: streamProvider,
+        model: streamModel,
+      }).then(() => { if (typeof renderChatHistory === 'function') renderChatHistory(); });
     }
   } finally {
     spinnerWrapper.remove();
@@ -232,7 +256,8 @@
       }
       if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
       if (!detachedScope && input?.isConnected && !window.GBChatFormatting?.focusInput?.()) input.focus();
-      if (streamCompleted && typeof _chatSendQueuedMessagesAfterStream === 'function') {
+      const shouldInterruptSend = !!_chatState.interruptDraftId;
+      if ((streamCompleted || shouldInterruptSend) && typeof _chatSendQueuedMessagesAfterStream === 'function') {
         setTimeout(() => {
           _chatSendQueuedMessagesAfterStream({
             messages: streamMessages,
@@ -249,6 +274,8 @@
           }).catch(() => {});
         }, 0);
       }
+      if (_chatState.activeExecution?.controller === streamController) _chatState.activeExecution = null;
+      window.MeldexChatListbox?.decorateHistory?.();
     }
     if (msgContainer && !detachedScope) msgContainer.removeEventListener('scroll', _scrollHandler);
   }
@@ -414,6 +441,7 @@ read_databaseで取得可能（calendar_db: trueフラグあり）。
 - **create_sheet(path, title)**: シート本体を作成する。キャラ表、用語集、一覧表などのシート作成依頼では、最初にこれを使う
 - **create_entity(parent_path, name)**: シートにエントリを作成。戻り値 path を add_value の folder_path に使う
 - **set_property_type(db_path, property, type, ...)**: シートのプロパティ型・選択肢・リレーション・数式・ロールアップを設定
+- **set_link_value(folder_path/db_path+entity, property, kind, target, label?)**: リンク列へWeb・Meldex内・PC内ファイル/フォルダのリンクを設定
 - **add_value(folder_path, property, value, status)**: エントリにプロパティ値を追加。新形式では create_entity の戻り値 path または db_path + entity を指定
 - **configure_form_view(db_path, fields, required, ...)**: ブラウザ側のフォームビュー項目・必須・ラベル・説明を設定
 - **configure_public_form(db_path, enabled, ...)**: 公開フォーム送信設定を保存
@@ -685,7 +713,7 @@ async function openFileChat(targetPath) {
       label.textContent = `「${fileName}」のチャットはまだありません`;
       const createBtn = document.createElement('button');
       createBtn.type = 'button';
-      createBtn.style.cssText = 'min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:6px 16px;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;cursor:pointer;font-size:13px;';
+      createBtn.style.cssText = 'min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:6px 16px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;font-size:13px;';
       createBtn.innerHTML = (typeof lucide === 'function' ? lucide('messagesSquare', 14) : '') + ' チャットを作成';
       createBtn.addEventListener('click', () => _createFileChat(targetPath));
       placeholder.append(label, createBtn);
@@ -713,7 +741,8 @@ function _createFileChat(targetPath) {
   } else {
     _chatState.pendingAttachments = [];
   }
-  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  if (!_chatState.streaming && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  else if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();
   if (container) container.innerHTML = '';
@@ -954,7 +983,8 @@ function chatClear() {
     _chatState.pendingAttachments = [];
   }
   if (typeof _chatCleanupDraftUploads === 'function') _chatCleanupDraftUploads('chat-input', { force: true });
-  if (typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  if (!_chatState.streaming && typeof _chatClearQueuedMessages === 'function') _chatClearQueuedMessages();
+  else if (typeof _chatPersistQueuedMessages === 'function') _chatPersistQueuedMessages();
   if (typeof _renderChatAttachments === 'function') _renderChatAttachments();
   _setChatSessionTitle('');
   const container = _chatLiveMessagesContainer();

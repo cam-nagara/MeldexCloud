@@ -794,7 +794,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
       startDate = cell.dataset.date; startHour = parseInt(cell.dataset.hour);
       document.body.style.userSelect = 'none';
       preview = document.createElement('div'); preview.className = 'gb-cal-week-event';
-      preview.style.cssText = 'background:var(--cal-event-bg, var(--cal-accent, var(--accent)));color:var(--cal-event-fg, var(--ui-fg-strong));opacity:0.6;pointer-events:none;top:0;height:40px;left:2px;right:18px;';
+      preview.style.cssText = 'background:var(--cal-event-bg, var(--cal-accent, var(--accent)));color:var(--cal-event-fg, var(--ui-accent-fg, var(--ui-fg-strong)));opacity:0.6;pointer-events:none;top:0;height:40px;left:2px;right:18px;';
       preview.textContent = `${startHour}:00 – ${startHour+1}:00`;
       cell.style.position = 'relative'; cell.appendChild(preview);
     });
@@ -949,7 +949,7 @@ CalendarComponent.prototype._renderShiftView = async function(renderSeq) {
     const ds = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const dow = ['日','月','火','水','木','金','土'][new Date(y,m,d).getDay()];
     const isT = ds === todayStr, isW = [0,6].includes(new Date(y,m,d).getDay());
-    html += `<th style="padding:2px 4px;border:1px solid var(--cal-grid-line, var(--border));background:${isT?'var(--cal-mini-selected-bg, var(--cal-accent, var(--accent)))':isW?'var(--cal-cell-hover-bg, var(--bg4))':'var(--cal-header-bg, var(--bg3))'};color:${isT?'var(--cal-mini-selected-fg, var(--ui-fg-strong))':'var(--cal-header-fg, var(--fg))'};min-width:36px;text-align:center;">${d}<br><span style="font-size:9px;">${dow}</span></th>`;
+    html += `<th style="padding:2px 4px;border:1px solid var(--cal-grid-line, var(--border));background:${isT?'var(--cal-mini-selected-bg, var(--cal-accent, var(--accent)))':isW?'var(--cal-cell-hover-bg, var(--bg4))':'var(--cal-header-bg, var(--bg3))'};color:${isT?'var(--cal-mini-selected-fg, var(--ui-accent-fg, var(--ui-fg-strong)))':'var(--cal-header-fg, var(--fg))'};min-width:36px;text-align:center;">${d}<br><span style="font-size:9px;">${dow}</span></th>`;
   }
   html += '</tr>';
   users.forEach(user => {
@@ -1368,38 +1368,168 @@ CalendarComponent.prototype._closeRightPanel = function() {
 CalendarComponent._recParse = function(ev) { try { return ev?.recurrence ? (typeof ev.recurrence === 'string' ? JSON.parse(ev.recurrence) : ev.recurrence) : {}; } catch { return {}; } };
 
 // === ToDoモーダル ===
-CalendarComponent.prototype._showTaskModal = function(editId, defaultStatus) {
+CalendarComponent.prototype._showTaskDialogModal = function(editId, defaultStatus) {
   const t = editId ? this._tasks.find(x => x.id === editId) : null;
-  const o = document.createElement('div'); o.className = 'gb-cal-modal-overlay';
   const sts = [['backlog','バックログ'],['todo','未着手'],['in_progress','進行中'],['review','レビュー'],['done','完了']];
   const pris = [['low','低'],['medium','中'],['high','高'],['urgent','緊急']];
-  o.innerHTML = `<div class="gb-cal-modal" style="${_gbCalModalSizeStyle(450)}"><h3>${t?'ToDo編集':'新規ToDo'}</h3>
-<div class="field"><label>タイトル</label><input class="tk-title" value="${esc(t?.title||'')}"></div>
-<div style="display:flex;gap:8px;">
-  <div class="field" style="flex:1;"><label>ステータス</label><select class="tk-status">${sts.map(([v,l])=>`<option value="${v}" ${(t?.status||defaultStatus||'todo')===v?'selected':''}>${l}</option>`).join('')}</select></div>
-  <div class="field" style="flex:1;"><label>優先度</label><select class="tk-priority">${pris.map(([v,l])=>`<option value="${v}" ${(t?.priority||'medium')===v?'selected':''}>${l}</option>`).join('')}</select></div>
-</div>
-<div style="display:flex;gap:8px;">
-  <div class="field" style="flex:1;"><label>期限</label><input class="tk-due" type="date" value="${t?.due_date||''}"></div>
-  <div class="field" style="flex:1;"><label>担当者</label><input class="tk-assignee" value="${esc(t?.assignee||'')}"></div>
-</div>
-<div style="display:flex;gap:8px;">
-  <div class="field" style="flex:1;"><label>見積(h)</label><input class="tk-est" type="number" step="0.5" value="${t?.estimated_hours||0}"></div>
-  <div class="field" style="flex:1;"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
-</div>
-<div class="field"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
-<div class="btn-row">
-  ${t?'<button class="tk-delete" style="color:var(--red);">削除</button>':''}
-  <button class="tk-cancel">キャンセル</button>
-  <button class="primary tk-save">保存</button>
-</div></div>`;
-  document.body.appendChild(o);
-  o.querySelector('.tk-save').addEventListener('click', () => this._saveTask(t?.id || '', o));
-  o.querySelector('.tk-cancel').addEventListener('click', () => o.remove());
-  if (t) {
-    o.querySelector('.tk-delete').addEventListener('click', async () => {
-      if (await this._deleteTask(t.id)) o.remove();
-    });
+  const content = document.createElement('div');
+  content.innerHTML = `<div class="gb-cal-task-form">
+<div class="gb-cal-task-form-wide" role="status" aria-live="polite" data-cal-task-status></div>
+<div class="field gb-cal-task-form-wide"><label>タイトル</label><input class="tk-title" value="${esc(t?.title||'')}"></div>
+<div class="field"><label>ステータス</label><select class="tk-status">${sts.map(([v,l])=>`<option value="${v}" ${(t?.status||defaultStatus||'todo')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+<div class="field"><label>優先度</label><select class="tk-priority">${pris.map(([v,l])=>`<option value="${v}" ${(t?.priority||'medium')===v?'selected':''}>${l}</option>`).join('')}</select></div>
+<div class="field"><label>期限</label><input class="tk-due" type="date" value="${t?.due_date||''}"></div>
+<div class="field"><label>担当者</label><input class="tk-assignee" value="${esc(t?.assignee||'')}"></div>
+<div class="field"><label>見積(h)</label><input class="tk-est" type="number" step="0.5" value="${t?.estimated_hours||0}"></div>
+<div class="field"><label>実績(h)</label><input class="tk-act" type="number" step="0.5" value="${t?.actual_hours||0}"></div>
+<div class="field gb-cal-task-form-wide"><label>説明</label><textarea class="tk-desc" rows="3">${esc(t?.description||'')}</textarea></div>
+</div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'tk-cancel gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button'; saveButton.className = 'tk-save gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.textContent = '保存';
+  const deleteButton = t ? document.createElement('button') : null;
+  if (deleteButton) {
+    deleteButton.type = 'button'; deleteButton.className = 'tk-delete gb-btn gb-btn-sm gb-btn-danger danger'; deleteButton.textContent = '削除';
   }
-  o.querySelector('.tk-title').focus();
+  let busy = false;
+  let deleteConfirmPending = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'calendar-tool-todo',
+    title: t ? 'ToDo編集' : '新規ToDo',
+    body: [...content.childNodes],
+    footer: [deleteButton, cancelButton, saveButton].filter(Boolean),
+    variant: 'standard',
+    geometryKey: 'calendar-tool-todo',
+    minWidth: '0',
+    initialFocus: '.tk-title',
+    closeLabel: 'ToDo編集を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: () => !busy && !deleteConfirmPending,
+  });
+  const o = modalApi.overlay;
+  const panel = modalApi.modal;
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  modalApi.body.style.minWidth = '0';
+  modalApi.body.style.overflowWrap = 'anywhere';
+  o.dataset.e2eId = 'calendar-tool-todo-overlay';
+  o._calendarClose = modalApi.close;
+  panel.classList.add('gb-cal-task-modal');
+  panel.dataset.e2eId = 'calendar-tool-todo-dialog';
+  panel.style.cssText = _gbCalModalSizeStyle(450, 'overflow:hidden;');
+  const form = panel.querySelector('.gb-cal-task-form');
+  if (form) {
+    form.style.display = 'grid';
+    form.style.gridTemplateColumns = window.innerWidth <= 640 ? 'minmax(0,1fr)' : 'repeat(2,minmax(0,1fr))';
+    form.style.gap = '12px';
+    form.style.minWidth = '0';
+  }
+  panel.querySelectorAll('.gb-cal-task-form-wide').forEach(field => { field.style.gridColumn = '1 / -1'; });
+  panel.querySelectorAll('.field').forEach(field => {
+    field.style.display = 'grid';
+    field.style.gap = '6px';
+    field.style.minWidth = '0';
+    const label = field.querySelector('label');
+    if (label) label.style.display = 'block';
+  });
+  panel.querySelectorAll('.field input,.field select,.field textarea').forEach(control => {
+    control.style.width = '100%';
+    control.style.minWidth = '0';
+    control.style.maxWidth = '100%';
+    control.style.boxSizing = 'border-box';
+  });
+  const status = panel.querySelector('[data-cal-task-status]');
+  const setBusy = (next) => {
+    busy = next;
+    panel.setAttribute('aria-busy', next ? 'true' : 'false');
+    [saveButton, deleteButton, cancelButton].filter(Boolean).forEach(button => { button.disabled = next; });
+  };
+  const reloadTasks = async () => {
+    await this._loadTasks();
+    this._render();
+    this._renderTodayTasks();
+  };
+  modalApi.open();
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  saveButton.addEventListener('click', async () => {
+    if (busy) return;
+    const data = {
+      title: panel.querySelector('.tk-title').value,
+      status: panel.querySelector('.tk-status').value,
+      priority: panel.querySelector('.tk-priority').value,
+      due_date: panel.querySelector('.tk-due').value,
+      assignee: panel.querySelector('.tk-assignee').value,
+      estimated_hours: parseFloat(panel.querySelector('.tk-est').value) || 0,
+      actual_hours: parseFloat(panel.querySelector('.tk-act').value) || 0,
+      description: panel.querySelector('.tk-desc').value,
+      user: this._getUser(),
+    };
+    setBusy(true);
+    if (status) status.textContent = '保存中...';
+    try {
+      if (editId) await apiPut('/cal/tasks/' + encodeURIComponent(editId), data);
+      else await apiPost('/cal/tasks', data);
+    } catch {
+      if (status) status.textContent = '保存に失敗しました。入力内容を保ったまま再試行できます。';
+      this._showStatus('保存に失敗', true);
+      if (modalApi.isOpen()) setBusy(false);
+      return;
+    }
+    let undoFailed = false;
+    try { this._pushUndo(editId ? 'ToDo編集' : 'ToDo作成'); }
+    catch {
+      undoFailed = true;
+      this._showStatus('ToDoは保存しましたが、Undo履歴を記録できませんでした', true);
+    }
+    let reloadFailed = false;
+    try { await reloadTasks(); }
+    catch {
+      reloadFailed = true;
+      this._showStatus('ToDoは保存しましたが、表示を更新できませんでした。画面を再読み込みしてください', true);
+    }
+    if (!reloadFailed && !undoFailed) this._showStatus('ToDoを保存しました');
+    setBusy(false);
+    modalApi.close('saved');
+  });
+  deleteButton?.addEventListener('click', async () => {
+    if (busy || deleteConfirmPending) return;
+    deleteConfirmPending = true;
+    setBusy(true);
+    if (status) status.textContent = '削除を確認中...';
+    let confirmed = false;
+    try { confirmed = typeof cfConfirm !== 'function' || await cfConfirm('このToDoを削除しますか？'); }
+    catch {
+      if (status) status.textContent = '削除確認を表示できませんでした。もう一度お試しください。';
+    } finally {
+      deleteConfirmPending = false;
+      if (!confirmed && modalApi.isOpen()) setBusy(false);
+    }
+    if (!confirmed) return;
+    if (status) status.textContent = '削除中...';
+    try {
+      await apiFetch('/cal/tasks/' + encodeURIComponent(t.id), { method: 'DELETE' });
+    } catch {
+      if (status) status.textContent = '削除に失敗しました。もう一度お試しください。';
+      this._showStatus('削除に失敗', true);
+      if (modalApi.isOpen()) setBusy(false);
+      return;
+    }
+    let undoFailed = false;
+    try { this._pushUndo('ToDo削除'); }
+    catch {
+      undoFailed = true;
+      this._showStatus('ToDoは削除しましたが、Undo履歴を記録できませんでした', true);
+    }
+    let reloadFailed = false;
+    try { await reloadTasks(); }
+    catch {
+      reloadFailed = true;
+      this._showStatus('ToDoは削除しましたが、表示を更新できませんでした。画面を再読み込みしてください', true);
+    }
+    if (!reloadFailed && !undoFailed) this._showStatus('削除しました');
+    setBusy(false);
+    modalApi.close('deleted');
+  });
 };
+CalendarComponent.prototype._showTaskModal = CalendarComponent.prototype._showTaskDialogModal;

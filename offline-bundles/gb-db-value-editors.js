@@ -411,20 +411,23 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
   moreBtn.className = 'cell-value-more';
-  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border:0;border-radius:3px;z-index:2;';
+  moreBtn.style.cssText = 'position:absolute;right:2px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);background:var(--bg3);border:0;border-radius:3px;z-index:2;';
   moreBtn.innerHTML = lucide('ellipsis', 12);
-  moreBtn.title = propTypeConfig.type === 'image' ? '画像を管理' : 'メニュー';
-  moreBtn.setAttribute('aria-label', propTypeConfig.type === 'image' ? '画像を管理' : '候補値のメニュー');
+  moreBtn.title = 'メニュー';
+  moreBtn.setAttribute('aria-label', '候補値のメニュー');
   moreBtn.dataset.e2eId = _typedCellControlE2eId('value-more', entityPath, propName)
     + '-' + String(val?.candidate_index ?? 0);
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function') {
-      showImageGalleryModal(entityPath, propName, val, propTypeConfig);
-      return;
-    }
-    _showValueContextMenu(e, val, entityPath, propName);
+    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${CSS.escape(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+    const imageManager = propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function'
+      ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, { returnFocus: imageReturnFocus })
+      : null;
+    _showValueContextMenu(e, val, entityPath, propName, imageManager ? {
+      onAddCandidate: () => showImageGalleryModal(entityPath, propName, { value: '' }, propTypeConfig, { returnFocus: imageReturnFocus }),
+      onManageImage: imageManager,
+    } : {});
   });
   row.appendChild(moreBtn);
   row.addEventListener('mouseenter', () => { moreBtn.style.display = ''; });
@@ -439,20 +442,39 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   }
 
   if (type === 'checkbox') {
-    const cb = document.createElement('span');
+    const cb = document.createElement('button');
+    cb.type = 'button';
     cb.className = 'cell-checkbox';
-    cb.textContent = (v === 'true' || v === 'はい' || v === '1' || v === 'yes') ? '\u2611' : '\u2610';
+    cb.setAttribute('role', 'checkbox');
+    cb.setAttribute('aria-label', `${propName}を切り替え`);
+    cb.dataset.e2eId = `db-checkbox-${String(entityPath)}-${String(propName)}`.replace(/[^A-Za-z0-9_-]+/g, '-');
+    let checked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
+    let saving = false;
+    const renderCheckbox = () => {
+      cb.setAttribute('aria-checked', checked ? 'true' : 'false');
+      cb.classList.toggle('is-checked', checked);
+      cb.innerHTML = checked ? lucide('check', 13) : '';
+      cb.title = checked ? 'チェック済み' : '未チェック';
+    };
+    renderCheckbox();
     cb.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (saving) return;
       const lockMsg = _valueEditorLockMessage(dbPath, propName, valueCtx);
       if (lockMsg) { showStatus(lockMsg); return; }
-      const isChecked = v === 'true' || v === 'はい' || v === '1' || v === 'yes';
-      const nv = isChecked ? 'false' : 'true';
+      const oldChecked = checked;
+      // Undoでは論理値だけでなく、旧データの表現（「はい」「1」「yes」等）も忠実に戻す。
+      const oldValue = v;
+      const nv = oldChecked ? 'false' : 'true';
+      checked = !oldChecked;
+      saving = true;
+      cb.disabled = true;
+      renderCheckbox();
       try {
         const hasExistingValue = val?.file && val.candidate_index != null;
         if (hasExistingValue) {
           await _apiPutValue(val, { new_value: nv });
-          _dbUndoValue('チェック: ' + v + ' → ' + nv, val, v, nv);
+          _dbUndoValue('チェック: ' + oldValue + ' → ' + nv, val, oldValue, nv, undefined, undefined, { dbPath, ctx: valueCtx });
         } else {
           const result = await _apiPostValue(entityPath, propName, nv, '採用', '');
           val.file = result?.path || entityPath;
@@ -466,13 +488,43 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
             if (!Array.isArray(entityData[propName])) entityData[propName] = [];
             if (!entityData[propName].includes(val)) entityData[propName].push(val);
           }
+          if (val.file && typeof historyPush === 'function') {
+            let currentRef = {
+              file: val.file, entry_path: entityPath, property: propName,
+              candidate_index: val.candidate_index,
+            };
+            const scope = typeof _dbScope === 'function' ? _dbScope(dbPath) : '';
+            historyPush('チェック: false → true',
+              async () => {
+                await _apiPutValue(currentRef, { _delete: true });
+                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+              },
+              async () => {
+                const redo = await _apiPostValue(entityPath, propName, nv, '採用', '');
+                currentRef = {
+                  file: redo?.path || redo?.file || currentRef.file,
+                  entry_path: entityPath,
+                  property: redo?.property || propName,
+                  candidate_index: redo?.candidate_index,
+                };
+                if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, valueCtx, { silent: true });
+              },
+              scope
+            );
+          }
         }
         val.value = nv;
-        cb.textContent = nv === 'true' ? '\u2611' : '\u2610';
-        showStatus(nv === 'true' ? '\u2611 チェック' : '\u2610 チェック解除');
+        showStatus(nv === 'true' ? 'チェックしました' : 'チェックを外しました');
         // Step 3: 部分更新化 (checkbox) — 条件付き書式 / フィルタ・グループ・ソート再評価のため
         if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(cb, entityPath, propName);
-      } catch (e) { showStatus('保存に失敗: ' + (e?.message || e), true); }
+      } catch (e) {
+        checked = oldChecked;
+        renderCheckbox();
+        showStatus('保存に失敗: ' + (e?.message || e), true);
+      } finally {
+        saving = false;
+        cb.disabled = false;
+      }
     });
     row.appendChild(cb);
     return row;
@@ -620,30 +672,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     return row;
   }
 
-  if (type === 'url') {
-    if (/^https?:\/\//.test(v)) {
-      const link = document.createElement('a');
-      link.className = 'value-url';
-      link.href = v;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      if (typeof _dbApplyCellInteractiveLinkA11y === 'function') {
-        _dbApplyCellInteractiveLinkA11y(link, 'url', entityPath, propName, v);
-      }
-      try { link.textContent = new URL(v).hostname + '\u2026'; } catch { link.textContent = v; }
-      link.addEventListener('click', (e) => e.stopPropagation());
-      row.appendChild(link);
-    } else {
-      const txt = document.createElement('span');
-      txt.className = 'value-text';
-      txt.textContent = v;
-      txt.addEventListener('click', () => startInlineEdit(txt, val, entityPath, propName));
-      row.appendChild(txt);
-    }
-    return row;
-  }
-
-  if (type === 'link' && typeof createDbLinkValueElement === 'function') {
+  if ((type === 'link' || type === 'url') && typeof createDbLinkValueElement === 'function') {
     row.appendChild(createDbLinkValueElement(val, entityPath, propName, thumbSize, propTypeConfig, { ...options, dbPath }));
     return row;
   }
@@ -1460,8 +1489,9 @@ window.openEntityChatForPath = async function openEntityChatForPath(entityPath) 
     if (toggle) toggle.click();
   }
   if (typeof openFileChat === 'function') {
-    await openFileChat(entityPath);
+    return await openFileChat(entityPath);
   }
+  return false;
 };
 window.openEntityAiChat = window.openEntityChatForPath;
 
@@ -1472,7 +1502,7 @@ function _userAvatarSmall(username) {
   return '<img src="' + esc(teamAvatar) + '" '
     + 'style="width:16px;height:16px;border-radius:50%;object-fit:cover;vertical-align:middle;" '
     + 'onerror="this.hidden=true;this.nextElementSibling.style.display=\'inline-flex\';">'
-    + '<span style="display:none;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--ui-fg-strong);font-size:9px;font-weight:bold;align-items:center;justify-content:center;vertical-align:middle;">'
+    + '<span style="display:none;width:16px;height:16px;border-radius:50%;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-size:9px;font-weight:bold;align-items:center;justify-content:center;vertical-align:middle;">'
     + esc((username || '?')[0].toUpperCase()) + '</span>';
 }
 
@@ -1528,7 +1558,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       item.className = 'user-option';
       const isSelected = selected.has(u.name);
       item.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;border-radius:3px;font-size:12px;'
-        + (isSelected ? 'background:var(--accent);color:var(--ui-fg-strong);' : '');
+        + (isSelected ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));' : '');
       item.innerHTML = (isMulti ? '<span style="font-size:11px;">' + (isSelected ? '\u2713' : '\u3000') + '</span> ' : '')
         + _userAvatarSmall(u.name) + ' ' + esc(u.name)
         + '<span style="margin-left:auto;font-size:10px;color:' + (isSelected ? 'color-mix(in srgb, var(--ui-fg-strong) 70%, transparent)' : 'var(--fg2)') + ';">' + esc(u.role || '') + '</span>';
@@ -2226,52 +2256,65 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
 
 function _showAutoFillStatusInput(dbPath, propName, ptc, currentValue) {
   closeColHeaderMenu();
+  if (!globalThis.GBUI?.createModal) throw new Error('ステータス連動設定を初期化できませんでした');
   const currentText = (currentValue && typeof currentValue === 'object')
     ? JSON.stringify(currentValue, null, 2)
     : (currentValue || '');
-  // インラインモーダル（prompt()禁止のため）
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal" style="width:350px;padding:16px;">
-      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">ステータス連動設定 ${fieldHelp('どのステータスに変更されたとき、この日時列に現在日時を自動入力しますか？空にすると自動入力を解除します。')}</div>
-      <input id="_autoFillStatusInput" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み"
-        style="width:100%;padding:6px 8px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;box-sizing:border-box;margin-bottom:12px;">
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button style="padding:4px 12px;font-size:12px;cursor:pointer;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;"
-          data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-        <button id="_autoFillStatusOk" style="padding:4px 12px;font-size:12px;cursor:pointer;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;">設定</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-
-  const input = document.getElementById('_autoFillStatusInput');
-  input.focus();
-  input.select();
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="gb-section-desc">${fieldHelp('どのステータスに変更されたとき、この日時列に現在日時を自動入力しますか？空にすると自動入力を解除します。')}</div>
+    <div class="field"><label for="_autoFillStatusInput">対象ステータス</label><input id="_autoFillStatusInput" class="gb-input" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み" style="width:100%;min-width:0;box-sizing:border-box;"></div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.id = '_autoFillStatusOk'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary'; applyButton.textContent = '設定';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-auto-fill-status', title: 'ステータス連動設定', body, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-auto-fill-status', minWidth: '0', initialFocus: '#_autoFillStatusInput',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: 'ステータス連動設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || !busy,
+  });
+  modalApi.overlay.dataset.e2eId = 'db-auto-fill-status-overlay';
+  modalApi.modal.dataset.e2eId = 'db-auto-fill-status-dialog';
+  modalApi.modal.style.width = 'min(440px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  const input = body.querySelector('#_autoFillStatusInput');
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
 
   const confirm = async () => {
+    if (busy) return;
     const raw = input.value.trim();
     const newPtc = { ...ptc };
     let nextValue = raw;
     if (raw && /^[{\[]/.test(raw)) {
       try { nextValue = JSON.parse(raw); }
-      catch (e) { showStatus('JSON形式の自動入力設定が不正です', true); return; }
+      catch (e) { showStatus('JSON形式の自動入力設定が不正です', true); input.focus(); return; }
     }
     if (raw) {
       newPtc.autoFillOnStatus = nextValue;
     } else {
       delete newPtc.autoFillOnStatus;
     }
+    busy = true;
+    cancelButton.disabled = true;
+    applyButton.disabled = true;
     try {
       await Promise.resolve(setPropertyType(dbPath, propName, newPtc));
       showStatus(raw ? 'ステータス連動自動入力を設定' : '自動入力を解除');
-      overlay.remove();
+      modalApi.close('saved');
     } catch (e) {
       showStatus('自動入力設定の保存に失敗: ' + (e?.message || e), true);
+      busy = false;
+      cancelButton.disabled = false;
+      applyButton.disabled = false;
+      applyButton.focus({ preventScroll: true });
     }
   };
 
-  document.getElementById('_autoFillStatusOk').addEventListener('click', confirm);
+  applyButton.addEventListener('click', confirm);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
+  modalApi.open();
+  setTimeout(() => input.select(), 0);
+  return modalApi;
 }

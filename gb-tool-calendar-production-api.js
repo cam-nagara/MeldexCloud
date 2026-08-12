@@ -2,11 +2,24 @@
 (function() {
   'use strict';
 
+  const READ_POST_ENDPOINTS = new Set([
+    '/production-management/tasks/query',
+    '/production-management/tasks/preview',
+    '/production-management/tasks/structure/preview',
+  ]);
+
+  function isWriteRequest(path, method) {
+    return method !== 'GET' && !(method === 'POST' && READ_POST_ENDPOINTS.has(path));
+  }
+
   async function request(path, options = {}) {
     const method = String(options.method || 'GET').toUpperCase();
     const body = options.body || {};
     const timeoutMs = Number(options.timeoutMs || (method === 'GET' ? 0 : 60000));
     if (method === 'GET') return apiFetch(path, timeoutMs ? { timeoutMs } : undefined);
+    if (isWriteRequest(path, method) && window.MeldexProductionUiAvailability?.ensureWritable?.() === false) {
+      const error = new Error('閲覧専用モードのため編集できません'); error.status = 403; throw error;
+    }
     return apiFetch(path, {
       method,
       headers: { 'Content-Type': 'application/json' },

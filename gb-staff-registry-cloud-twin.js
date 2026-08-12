@@ -255,6 +255,7 @@
       role: _srtPropValue(frontmatter, '権限'),
       work_hours: _srtPropValue(frontmatter, '作業可能時間'),
       break_hours: _srtPropValue(frontmatter, '休憩時間'),
+      hourly_rate: _srtPropValue(frontmatter, '標準時間単価'),
       holidays: _srtPropValue(frontmatter, '休日'),
       active_from: _srtPropValue(frontmatter, '参加開始日'),
       active_to: _srtPropValue(frontmatter, '参加終了日'),
@@ -383,6 +384,7 @@
     setIfAllowed('権限', payload.role);
     setIfAllowed('作業可能時間', payload.work_hours);
     setIfAllowed('休憩時間', payload.break_hours);
+    setIfAllowed('標準時間単価', payload.hourly_rate);
     setIfAllowed('休日', payload.holidays);
     setIfAllowed('参加開始日', payload.active_from);
     setIfAllowed('参加終了日', payload.active_to);
@@ -466,6 +468,28 @@
     const row = await _srtUpsertStaff(provider, root, payload, fillOnly);
     return { ok: true, staff: row };
   }
+
+  window.MeldexStaffRegistryCloudTwin = Object.freeze({
+    createBoundStaffResolver(provider, requestIdentity) {
+      if (!provider) throw new Error('Cloudスタッフデータを利用できません');
+      const identity = Object.freeze({
+        actor: String(requestIdentity?.actor || ''),
+        role: String(requestIdentity?.role || ''),
+        workspaceId: String(requestIdentity?.workspaceId || ''),
+      });
+      const configuredPath = _normalizeFolderPath(_srtGetConfig().path || '');
+      return Object.freeze({
+        identity,
+        async resolve() {
+          if (!configuredPath || !await _srtIsDirectory(provider, configuredPath)) {
+            return { identity, staff: [], duplicates: [] };
+          }
+          const result = await _srtLoadStaff(provider, configuredPath);
+          return { identity, staff: structuredClone(result.staff || []), duplicates: structuredClone(result.duplicates || []) };
+        },
+      });
+    },
+  });
 
   handlers.push(async function _staffRegistryCloudHandler({ method, body, pathname }) {
     if (!/^\/staff-registry(\/|$)/.test(pathname)) return NOT_HANDLED;

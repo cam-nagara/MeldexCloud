@@ -668,17 +668,16 @@ ${spEsc(actionText)}</pre>
         : `「${status}」を削除しますか？`,
       count > 0
         ? [
-            { value: 'replace', label: '置換して削除', primary: true },
-            { value: 'keep', label: 'ポリシーだけ削除' },
+            { value: 'replace', label: '置換して削除', primary: true, action: () => spApi('/status_policies/' + encodeURIComponent(status) + '?replace_with_unset=true', { method: 'DELETE' }) },
+            { value: 'keep', label: 'ポリシーだけ削除', action: () => spApi('/status_policies/' + encodeURIComponent(status) + '?replace_with_unset=false', { method: 'DELETE' }) },
             { value: '', label: 'キャンセル' },
           ]
         : [
-            { value: 'keep', label: '削除', danger: true },
+            { value: 'keep', label: '削除', danger: true, action: () => spApi('/status_policies/' + encodeURIComponent(status) + '?replace_with_unset=false', { method: 'DELETE' }) },
             { value: '', label: 'キャンセル' },
           ],
     );
     if (!choice) return;
-    await spApi('/status_policies/' + encodeURIComponent(status) + '?replace_with_unset=' + (choice === 'replace' ? 'true' : 'false'), { method: 'DELETE' });
     await loadPolicies(container);
   }
 
@@ -824,36 +823,79 @@ ${spEsc(actionText)}</pre>
 
   function spChoiceDialog(title, message, choices) {
     return new Promise(resolve => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      const modal = document.createElement('div');
-      modal.className = 'gb-confirm sp-choice-dialog';
-      modal.setAttribute('role', 'dialog');
-      modal.setAttribute('aria-modal', 'true');
-      const h = document.createElement('h3');
-      h.textContent = title;
       const p = document.createElement('p');
       p.textContent = message;
+      const status = document.createElement('div');
+      status.className = 'gb-section-desc sp-choice-status';
+      status.dataset.e2eId = 'status-policy-choice-status';
+      status.hidden = true;
       const row = document.createElement('div');
       row.className = 'btn-row';
+      let selected = '';
+      let dialog = null;
+      let busy = false;
       choices.forEach(choice => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.textContent = choice.label;
+        btn.dataset.spChoice = String(choice.value || '');
+        btn.dataset.e2eId = 'status-policy-choice-' + (String(choice.value || 'cancel').replace(/[^a-z0-9_-]+/gi, '-'));
         if (choice.primary) btn.className = 'primary';
         if (choice.danger) btn.className = 'danger';
-        btn.addEventListener('click', () => {
-          overlay.remove();
-          resolve(choice.value);
+        btn.addEventListener('click', async () => {
+          if (busy) return;
+          if (typeof choice.action !== 'function') {
+            selected = choice.value;
+            dialog.close('complete');
+            return;
+          }
+          busy = true;
+          dialog.overlay.setAttribute('aria-busy', 'true');
+          dialog.footer.querySelectorAll('button').forEach(button => { button.disabled = true; });
+          const closeButton = dialog.header.querySelector('.gb-modal-close');
+          if (closeButton) closeButton.disabled = true;
+          status.hidden = true;
+          status.textContent = '';
+          try {
+            await choice.action();
+            selected = choice.value;
+            dialog.close('complete');
+          } catch (error) {
+            status.textContent = '操作に失敗しました: ' + (error?.message || error);
+            status.hidden = false;
+          } finally {
+            busy = false;
+            dialog.overlay.setAttribute('aria-busy', 'false');
+            dialog.footer.querySelectorAll('button').forEach(button => { button.disabled = false; });
+            if (closeButton) closeButton.disabled = false;
+          }
         });
         row.appendChild(btn);
       });
-      modal.appendChild(h);
-      modal.appendChild(p);
-      modal.appendChild(row);
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
-      row.querySelector('button')?.focus();
+      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      dialog = window.GBUI.createModal({
+        id: 'status-policy-choice-dialog',
+        title,
+        body: [p, status],
+        footer: Array.from(row.children),
+        variant: 'standard',
+        extraClass: 'sp-choice-dialog',
+        geometryKey: 'status-policy-choice-dialog',
+        minWidth: '0',
+        initialFocus: () => dialog.footer.querySelector('button:not([disabled])'),
+        returnFocus: opener,
+        onBeforeClose: reason => !busy || reason === 'complete',
+        onClose: () => resolve(selected),
+      });
+      dialog.overlay.classList.add('modal-overlay');
+      dialog.overlay.dataset.statusPolicyChoice = '1';
+      dialog.overlay.dataset.e2eId = 'status-policy-choice-overlay';
+      dialog.modal.classList.add('gb-confirm');
+      dialog.modal.dataset.e2eId = 'status-policy-choice-dialog';
+      dialog.footer.classList.add('btn-row');
+      const commonClose = dialog.header.querySelector('.gb-modal-close');
+      if (commonClose) commonClose.dataset.e2eId = 'status-policy-choice-close';
+      dialog.open();
     });
   }
 

@@ -2,6 +2,7 @@
   'use strict';
 
   let _lastNotifyAt = 0;
+  let _activeRecoveryModal = null;
 
   function _esc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -12,21 +13,6 @@
     const now = new Date();
     const pad = value => String(value).padStart(2, '0');
     return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-  }
-
-  function _icon(name, size = 14) {
-    return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  function _restoreFocus(el) {
-    if (!el?.isConnected || typeof el.focus !== 'function') return;
-    try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch {} }
-  }
-
-  function _closeRecoveryDialog(overlay, trigger) {
-    if (!overlay?.isConnected) return;
-    overlay.remove();
-    setTimeout(() => _restoreFocus(trigger), 0);
   }
 
   function _downloadText(filename, text) {
@@ -45,7 +31,7 @@
     const node = root?.querySelector?.('[data-owner-key-recovery-status]');
     if (!node) return;
     node.textContent = text || '';
-    node.style.color = error ? 'var(--danger)' : 'var(--fg2)';
+    node.classList.toggle('is-error', !!error);
   }
 
   function _isOwner() {
@@ -172,23 +158,14 @@
   }
 
   function showRecoveryDialog(options = {}) {
-    document.querySelectorAll('.modal-overlay[data-owner-key-recovery="1"]').forEach(el => el.remove());
+    _activeRecoveryModal?.close?.('replaced');
     const minLength = window.MeldexOwnerKeyStore?.PASSPHRASE_MIN_LENGTH || 12;
     const reason = String(options.reason || '');
     const owner = _isOwner();
     const disabled = owner ? '' : 'disabled';
     const trigger = options.trigger && document.contains(options.trigger) ? options.trigger : document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.ownerKeyRecovery = '1';
-    overlay.dataset.e2eId = 'owner-key-recovery-overlay';
-    overlay.innerHTML = `
-      <div class="modal gb-owner-key-recovery-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-key-recovery-title" data-e2e-id="owner-key-recovery-dialog">
-        <div class="gb-modal-header gb-owner-key-dialog-header">
-          <h3 id="owner-key-recovery-title" class="gb-modal-title">管理者鍵の復旧</h3>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-owner-key-dialog-close" aria-label="管理者鍵の復旧を閉じる" data-owner-key-recovery-close data-e2e-id="owner-key-recovery-close">${_icon('x', 14) || '閉じる'}</button>
-        </div>
-        <div class="gb-modal-body gb-owner-key-recovery-body" data-e2e-id="owner-key-recovery-body">
+    const content = document.createElement('div');
+    content.innerHTML = `
         <div class="gb-section-desc gb-owner-key-recovery-reason">${_esc(reason || '署名検証に必要な管理者鍵がこの端末にありません。')}</div>
         <section class="gb-section gb-section--boxed gb-owner-key-recovery-section">
           <div class="gb-section-title">パスフレーズから復旧</div>
@@ -208,18 +185,36 @@
           </div>
         </section>
         <div class="gb-section-desc gb-owner-key-recovery-status" data-owner-key-recovery-status data-e2e-id="owner-key-recovery-status" role="status" aria-live="polite"></div>
-        </div>
-      </div>
     `;
-    document.body.appendChild(overlay);
-    const close = () => _closeRecoveryDialog(overlay, trigger);
-    overlay.querySelector('[data-owner-key-recovery-close]')?.addEventListener('click', close);
-    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-    overlay.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
+    const modalApi = window.GBUI.createModal({
+      id: 'owner-key-recovery',
+      title: '管理者鍵の復旧',
+      body: [...content.childNodes],
+      variant: 'mobile-sheet',
+      extraClass: 'gb-owner-key-recovery-dialog',
+      initialFocus: owner ? '[data-owner-key-recovery-passphrase]' : '[data-owner-key-recovery-close]',
+      returnFocus: trigger || undefined,
+      closeLabel: '管理者鍵の復旧を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: (_reason, api) => {
+        if (_activeRecoveryModal === api) _activeRecoveryModal = null;
+      },
     });
+    _activeRecoveryModal = modalApi;
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay');
+    overlay.dataset.ownerKeyRecovery = '1';
+    overlay.dataset.e2eId = 'owner-key-recovery-overlay';
+    modalApi.modal.classList.add('modal');
+    modalApi.modal.dataset.e2eId = 'owner-key-recovery-dialog';
+    modalApi.header.classList.add('gb-owner-key-dialog-header');
+    const close = modalApi.header.querySelector('.gb-modal-close');
+    close?.classList.add('gb-btn', 'gb-btn-sm', 'gb-btn-icon', 'gb-owner-key-dialog-close');
+    close?.setAttribute('data-owner-key-recovery-close', '');
+    close?.setAttribute('data-e2e-id', 'owner-key-recovery-close');
+    modalApi.body.classList.add('gb-owner-key-recovery-body');
+    modalApi.body.dataset.e2eId = 'owner-key-recovery-body';
     overlay.addEventListener('click', event => {
       const action = event.target?.closest?.('[data-owner-key-recovery-action]')?.dataset?.ownerKeyRecoveryAction;
       if (action === 'derive') _setFromPassphrase(overlay);
@@ -227,11 +222,7 @@
       if (action === 'export') _exportBackup(overlay);
     });
     if (!owner) _status(overlay, '管理者のみ実行できます。', true);
-    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
-    setTimeout(() => {
-      const target = overlay.querySelector(owner ? '[data-owner-key-recovery-passphrase]' : '[data-owner-key-recovery-close]');
-      target?.focus?.({ preventScroll: true });
-    }, 0);
+    modalApi.open();
     return overlay;
   }
 

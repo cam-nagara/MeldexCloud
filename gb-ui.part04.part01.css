@@ -626,12 +626,17 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-group-actions {
   min-width: min(620px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   max-height: 85vh;
-  overflow: auto;
+  overflow: hidden;
 }
 #notion-sync-modal-body {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+}
+.notion-sync-modal > .gb-modal-body,
+.notion-folder-picker-modal > .gb-modal-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .notion-sync-title {
   display: flex;
@@ -909,6 +914,27 @@ body[data-mobile-ui-local="1"] .gb-tag-management-panel .gb-tag-group-actions {
   .notion-sync-modal {
     height: calc(100vh - 16px);
   }
+  .notion-sync-modal > .gb-modal-body,
+  .notion-folder-picker-modal > .gb-modal-body,
+  #notion-sync-modal-body,
+  .notion-folder-picker-body {
+    max-width: 100%;
+    overflow-x: hidden;
+    box-sizing: border-box;
+  }
+  #notion-sync-modal-body > *,
+  .notion-folder-picker-body > *,
+  .notion-sync-section,
+  .notion-folder-card {
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+  .notion-sync-global-status,
+  .notion-sync-mode-label,
+  .notion-folder-status {
+    overflow-wrap: anywhere;
+  }
   .notion-sync-heading-row,
   .notion-sync-token-row,
   .notion-sync-row,
@@ -973,6 +999,7 @@ body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-m
   flex: 1 1 auto !important;
   min-height: 0 !important;
   overflow: auto !important;
+  overflow-x: hidden !important;
   -webkit-overflow-scrolling: touch;
   scroll-padding-bottom: calc(64px + var(--cloud-mobile-safe-bottom, 0px));
 }

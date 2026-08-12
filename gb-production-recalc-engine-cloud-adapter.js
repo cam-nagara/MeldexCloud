@@ -132,8 +132,10 @@
     return rows;
   }
 
-  async function loadStaff() {
-    const result = await window.MeldexDataAccess.requestJson('/staff-registry/list');
+  async function loadStaff(boundResolver) {
+    const result = boundResolver
+      ? await boundResolver.resolve()
+      : await window.MeldexDataAccess.requestJson('/staff-registry/list');
     const duplicates = Array.isArray(result && result.duplicates) ? result.duplicates : [];
     if (duplicates.length) {
       const dup = duplicates[0];
@@ -273,6 +275,20 @@
     });
   }
 
+  function applyTaskOptions(tasks, body) {
+    const raw = body && (body.taskOptions || body.task_options);
+    const optionsByTask = raw && typeof raw === 'object' ? raw : {};
+    tasks.forEach(task => {
+      const identifiers = [String(task.id || ''), String(task.path || ''), Engine.canonicalTaskPath(task.path)];
+      const options = identifiers.map(id => optionsByTask[id]).find(value => value && typeof value === 'object') || {};
+      if (options.remainingHours != null) task.target_hours = Math.max(0, Engine.safeFloat(options.remainingHours, task.target_hours));
+      task.candidate_users = Array.isArray(options.assigneeCandidates) ? options.assigneeCandidates.map(String) : [];
+      task.dependencies = Array.isArray(options.dependencies) ? options.dependencies.map(String) : [];
+      task.required_equipment = Array.isArray(options.requiredEquipment) ? options.requiredEquipment.map(String) : [];
+      if (options.deadline) task.deadline = String(options.deadline);
+    });
+  }
+
   // スタッフ未登録でも割当再計算が使えるよう、現在のユーザーを仮スタッフとして補う。
   // 旧「かんたん割当」のゼロ設定フォールバック（2026-08-05 の一本化で吸収）。Desktopの
   // meldex_production_recalculate.py の _with_fallback_solo_staff と完全同一挙動にする。
@@ -298,9 +314,10 @@
     const unassignedOnly = Engine.truthy(body && body.unassigned_only);
     const periodValue = Engine.period(body || {});
     const allTasks = await loadTasks(provider, internals, deps, false);
+    applyTaskOptions(allTasks, body || {});
     markUnassignedOnlyLocks(allTasks, unassignedOnly);
     const tasks = allTasks.filter(task => Engine.taskInScope(task, periodValue));
-    const { staff, warning: fallbackStaffWarning } = withFallbackSoloStaff(await loadStaff(), body);
+    const { staff, warning: fallbackStaffWarning } = withFallbackSoloStaff(await loadStaff(deps.boundStaffResolver), body);
     const allowOvertime = (body && body.allow_overtime) === undefined ? true : !!body.allow_overtime;
     const baseShiftRows = await loadShiftRows(provider, internals, deps, periodValue);
     // 可用時間の計算は期間内の全タスクを対象にする（他リストの担当者が既に埋まっている時間帯を
@@ -311,7 +328,9 @@
     const order = await contentOrder(provider, internals, deps);
     const candidates = await contentCandidates(provider, internals, deps);
     const scopedTasks = Engine.applyRecalculationScope(tasks, body || {});
-    const planResult = Engine.buildPlan(scopedTasks, staff, shifts, periodValue, order, candidates);
+    const planResult = Engine.buildPlan(scopedTasks, staff, shifts, periodValue, order, candidates, {
+      equipment: Array.isArray(body && body.equipment) ? body.equipment : [],
+    });
     const shiftWarnings = await loadShiftWarnings(provider, internals, deps, periodValue);
     const warnings = [...shiftWarnings, ...planResult.warnings];
     if (fallbackStaffWarning) warnings.unshift(fallbackStaffWarning);
@@ -337,6 +356,14 @@
 
   async function applyCloud(provider, internals, body, deps) {
     await deps.init(provider, internals);
+    if (body && body.expected_source_revision) {
+      const sourcePreview = await previewCloud(provider, internals, body, deps);
+      const source = (sourcePreview.rows || []).slice()
+        .sort((a, b) => `${a.task_id || ''}\u0000${a.task_path || ''}`.localeCompare(`${b.task_id || ''}\u0000${b.task_path || ''}`))
+        .map(row => ({ taskId: row.task_id, user: row.before_user, range: row.before_range }));
+      const currentRevision = await window.MeldexSystemStorage.computeRevision(source);
+      if (currentRevision !== body.expected_source_revision) throw staleError();
+    }
     const suppliedRows = Array.isArray(body && body.rows) ? body.rows : null;
     let rows;
     if (suppliedRows === null) {

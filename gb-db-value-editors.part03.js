@@ -49,7 +49,7 @@ async function _showUserDropdown(anchor, val, entityPath, propName, currentValue
       item.className = 'user-option';
       const isSelected = selected.has(u.name);
       item.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;cursor:pointer;border-radius:3px;font-size:12px;'
-        + (isSelected ? 'background:var(--accent);color:var(--ui-fg-strong);' : '');
+        + (isSelected ? 'background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));' : '');
       item.innerHTML = (isMulti ? '<span style="font-size:11px;">' + (isSelected ? '\u2713' : '\u3000') + '</span> ' : '')
         + _userAvatarSmall(u.name) + ' ' + esc(u.name)
         + '<span style="margin-left:auto;font-size:10px;color:' + (isSelected ? 'color-mix(in srgb, var(--ui-fg-strong) 70%, transparent)' : 'var(--fg2)') + ';">' + esc(u.role || '') + '</span>';
@@ -747,52 +747,65 @@ function showSelectDropdown(el, val, entityPath, propName, options, dbPath) {
 
 function _showAutoFillStatusInput(dbPath, propName, ptc, currentValue) {
   closeColHeaderMenu();
+  if (!globalThis.GBUI?.createModal) throw new Error('ステータス連動設定を初期化できませんでした');
   const currentText = (currentValue && typeof currentValue === 'object')
     ? JSON.stringify(currentValue, null, 2)
     : (currentValue || '');
-  // インラインモーダル（prompt()禁止のため）
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `
-    <div class="modal" style="width:350px;padding:16px;">
-      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">ステータス連動設定 ${fieldHelp('どのステータスに変更されたとき、この日時列に現在日時を自動入力しますか？空にすると自動入力を解除します。')}</div>
-      <input id="_autoFillStatusInput" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み"
-        style="width:100%;padding:6px 8px;font-size:13px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;box-sizing:border-box;margin-bottom:12px;">
-      <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button style="padding:4px 12px;font-size:12px;cursor:pointer;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;"
-          data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-        <button id="_autoFillStatusOk" style="padding:4px 12px;font-size:12px;cursor:pointer;background:var(--accent);color:var(--ui-fg-strong);border:none;border-radius:4px;">設定</button>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-
-  const input = document.getElementById('_autoFillStatusInput');
-  input.focus();
-  input.select();
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="gb-section-desc">${fieldHelp('どのステータスに変更されたとき、この日時列に現在日時を自動入力しますか？空にすると自動入力を解除します。')}</div>
+    <div class="field"><label for="_autoFillStatusInput">対象ステータス</label><input id="_autoFillStatusInput" class="gb-input" type="text" value="${esc(currentText)}" placeholder="例: 撮影済み, 確認済み" style="width:100%;min-width:0;box-sizing:border-box;"></div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.id = '_autoFillStatusOk'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary'; applyButton.textContent = '設定';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-auto-fill-status', title: 'ステータス連動設定', body, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-auto-fill-status', minWidth: '0', initialFocus: '#_autoFillStatusInput',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: 'ステータス連動設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || !busy,
+  });
+  modalApi.overlay.dataset.e2eId = 'db-auto-fill-status-overlay';
+  modalApi.modal.dataset.e2eId = 'db-auto-fill-status-dialog';
+  modalApi.modal.style.width = 'min(440px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  const input = body.querySelector('#_autoFillStatusInput');
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
 
   const confirm = async () => {
+    if (busy) return;
     const raw = input.value.trim();
     const newPtc = { ...ptc };
     let nextValue = raw;
     if (raw && /^[{\[]/.test(raw)) {
       try { nextValue = JSON.parse(raw); }
-      catch (e) { showStatus('JSON形式の自動入力設定が不正です', true); return; }
+      catch (e) { showStatus('JSON形式の自動入力設定が不正です', true); input.focus(); return; }
     }
     if (raw) {
       newPtc.autoFillOnStatus = nextValue;
     } else {
       delete newPtc.autoFillOnStatus;
     }
+    busy = true;
+    cancelButton.disabled = true;
+    applyButton.disabled = true;
     try {
       await Promise.resolve(setPropertyType(dbPath, propName, newPtc));
       showStatus(raw ? 'ステータス連動自動入力を設定' : '自動入力を解除');
-      overlay.remove();
+      modalApi.close('saved');
     } catch (e) {
       showStatus('自動入力設定の保存に失敗: ' + (e?.message || e), true);
+      busy = false;
+      cancelButton.disabled = false;
+      applyButton.disabled = false;
+      applyButton.focus({ preventScroll: true });
     }
   };
 
-  document.getElementById('_autoFillStatusOk').addEventListener('click', confirm);
+  applyButton.addEventListener('click', confirm);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirm(); });
+  modalApi.open();
+  setTimeout(() => input.select(), 0);
+  return modalApi;
 }

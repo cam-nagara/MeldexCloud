@@ -582,6 +582,10 @@ async function _apiPutValue(valObj, updates) {
     } else if (updates.new_value != null) {
       delete valObj.rich_html;
     }
+    if (updates.new_link !== undefined) {
+      if (updates.new_link && typeof updates.new_link === 'object') valObj.link = { ...updates.new_link };
+      else delete valObj.link;
+    }
     return res;
   }, valObj);
 }
@@ -614,6 +618,7 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
     if (extra && typeof extra === 'object') {
       if (Array.isArray(extra.relations)) body.relations = extra.relations;
       if (Array.isArray(extra.published_in)) body.published_in = extra.published_in;
+      if (extra.link && typeof extra.link === 'object') body.link = { ...extra.link };
       if (extra.created) body.created = extra.created;
       const baseRevision = Number(extra.baseRevision ?? extra.base_revision ?? extra.entryRevision ?? extra.revision);
       if (Number.isInteger(baseRevision) && baseRevision >= 0) body.baseRevision = baseRevision;

@@ -605,26 +605,9 @@ class ScriptNoteEditor {
 
   // === キャラクタースタイル ===
 
-  // autoColor/autoColorTarget対応: 実効的な背景色・文字色を解決
   _resolveCharaColors(chara, colId) {
     if (!chara) return { bgColor: '', textColor: '' };
-    let bg = chara.bgColor || '';
-    let fg = chara.textColor || '';
-    if (chara.autoColor) {
-      // 列ごとのターゲットを取得（オブジェクト形式: { _gutter: 'bg', _role: 'text' }、文字列形式: 'bg'）
-      // autoColorが設定済みならデフォルトは'bg'（既存データとの互換性）、未設定時のデフォルトは'none'
-      const act = chara.autoColorTarget || 'bg';
-      const target = (typeof act === 'object' && colId) ? (act[colId] || 'none') : (typeof act === 'string' ? act : 'bg');
-      if (target === 'both') {
-        if (!bg) bg = typeof calcBgColor === 'function' ? calcBgColor(chara.autoColor) : chara.autoColor;
-        if (!fg) fg = chara.autoColor;
-      } else if (target === 'bg') {
-        bg = bg || chara.autoColor;
-      } else if (target === 'text') {
-        fg = fg || chara.autoColor;
-      }
-    }
-    return { bgColor: bg, textColor: fg };
+    return { bgColor: chara.bgColor || '', textColor: chara.textColor || '' };
   }
 
   _getCharaStyle(role) {
@@ -1002,6 +985,34 @@ class ScriptNoteEditor {
     return Array.isArray(this.doc.editor?.customColumns) ? this.doc.editor.customColumns : [];
   }
 
+  _getVisibleColumnIds(options = {}) {
+    const includeHandle = options.includeHandle !== false;
+    const statusEnabled = !!this.doc.editor?.statusEnabled;
+    const visible = {
+      _handle: true, _gutter: true, _gutter2: true, _role: true,
+      _status: statusEnabled, _text: true,
+      ...(this.doc.editor?.visibleStandardColumns || {}),
+    };
+    visible._handle = true;
+    if (!statusEnabled) visible._status = false;
+    const standard = ['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+      .filter(id => (includeHandle || id !== '_handle') && visible[id] !== false);
+    const custom = this._getCustomColumns().filter(column => column?.id && column.visible !== false).map(column => column.id);
+    const ids = [...standard, ...custom];
+    const order = Array.isArray(this.doc.editor?.columnOrder) ? this.doc.editor.columnOrder : [];
+    const handle = ids.includes('_handle');
+    const rest = ids.filter(id => id !== '_handle');
+    rest.sort((left, right) => {
+      const li = order.indexOf(left);
+      const ri = order.indexOf(right);
+      if (li >= 0 && ri >= 0) return li - ri;
+      if (li >= 0) return -1;
+      if (ri >= 0) return 1;
+      return 0;
+    });
+    return handle ? ['_handle', ...rest] : rest;
+  }
+
   _render() {
     if (!this.host || !this.doc) return;
     this._teardownWrapResizeObserver();
@@ -1112,8 +1123,6 @@ class ScriptNoteEditor {
     const colLabels = this.doc.editor?.columnLabels || {};
     const countDef = this._getCountDef();
     const defaultLabels = { _gutter: countDef.primaryLabel, _gutter2: countDef.secondaryLabel, _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
-    const visCols = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
-    if (!statusEnabled) visCols._status = false;
     const allStdCols = [
       { id: '_handle', label: '', width: colWidths._handle || 36 },
       { id: '_gutter', label: colLabels._gutter || defaultLabels._gutter, width: colWidths._gutter || 40 },
@@ -1122,24 +1131,12 @@ class ScriptNoteEditor {
       { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
       { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
     ];
-    const unsortedCols = [
-      ...allStdCols.filter(c => visCols[c.id] !== false),
+    const allColumns = [
+      ...allStdCols,
       ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80 })),
     ];
-    // columnOrderで並べ替え（_handleは常に先頭）
-    const colOrder = this.doc.editor?.columnOrder;
-    const cols = colOrder ? (() => {
-      const handleCol = unsortedCols.find(c => c.id === '_handle');
-      const rest = unsortedCols.filter(c => c.id !== '_handle');
-      rest.sort((a, b) => {
-        const ai = colOrder.indexOf(a.id), bi = colOrder.indexOf(b.id);
-        if (ai >= 0 && bi >= 0) return ai - bi;
-        if (ai >= 0) return -1;
-        if (bi >= 0) return 1;
-        return 0;
-      });
-      return handleCol ? [handleCol, ...rest] : rest;
-    })() : unsortedCols;
+    const columnsById = new Map(allColumns.map(column => [column.id, column]));
+    const cols = this._getVisibleColumnIds().map(id => columnsById.get(id)).filter(Boolean);
     const buildHeader = (withResizer = true, instanceKey = '') => {
       const h = document.createElement('div');
       h.className = 'sn2-header' + (viewMode === 'vertical' ? ' sn2-header-vertical' : '');

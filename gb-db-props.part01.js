@@ -11,8 +11,8 @@ const PROP_TYPE_ICON = {
   checkbox: 'checkSquare',
   color: 'palette',
   date: 'calendar',
-  url: 'globe',
-  link: 'paperclip',
+  url: 'externalLink', // 旧type:urlの読込互換
+  link: 'externalLink',
   image: 'image',
   relation: 'link2',
   'multi-relation': 'link2',

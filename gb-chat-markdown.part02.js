@@ -381,7 +381,14 @@
     if (!target) return false;
     try {
       if (typeof apiPost === 'function') {
-        await apiPost('/open-local-path', { path: target });
+        const dangerous = /\.(?:exe|com|bat|cmd|ps1|vbs|js|jse|wsf|wsh|msi|msp|scr|lnk|url)$/i.test(target);
+        if (dangerous) {
+          const confirmed = typeof cfConfirm === 'function'
+            ? await cfConfirm('次のPC内ファイルを実行しますか？\n' + target)
+            : false;
+          if (!confirmed) return false;
+        }
+        await apiPost('/open-local-path', { path: target, confirmed_dangerous: dangerous });
         if (typeof showStatus === 'function') showStatus('ネイティブアプリで開きました');
         return true;
       }

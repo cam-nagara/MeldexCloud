@@ -61,7 +61,7 @@
 
 /* エントリプロパティグリッド (複数段表示・D&D 並べ替え・開閉・列幅設定)
    .entity-props-grid-container は renderEntityPropsGridInto がフルページ版(#entity-props-grid)・
-   フロートパネル版(.gb-float-panel-entity-props)双方へ付与する共通クラス。列幅は --entity-prop-col-width
+   サブパネル版にも付与する共通クラス。列幅は --entity-prop-col-width
    (既定300px, 列幅設定ポップアップで上書き) で揃える。 */
 .entity-props-grid-container {
   display: grid;
@@ -471,7 +471,7 @@
 /* リサイズハンドル（四隅）。メニュー・モーダル・トーストより背面に置く。 */
 .em-resize-handle {
   display: none; position: fixed; width: 14px; height: 14px; z-index: calc(var(--ui-z-menu, 200) - 1);
-  background: var(--accent); border: 2px solid var(--ui-fg-strong); border-radius: 2px; cursor: nwse-resize;
+  background: var(--accent); border: 2px solid var(--ui-accent-fg, var(--ui-fg-strong)); border-radius: 2px; cursor: nwse-resize;
 }
 .em-resize-handle.visible { display: block; }
 .em-resize-handle[data-media-resize-corner="nw"],

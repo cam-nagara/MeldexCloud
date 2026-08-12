@@ -385,32 +385,56 @@ class VersionComponent extends ToolComponent {
 
   _previewEditEntry(entry) {
     if (!entry) return;
+    const existing = document.querySelector('.version-edit-record-preview-overlay');
+    if (existing?._versionPreviewModalApi?.isOpen?.()) {
+      existing._versionPreviewModalApi.modal.focus?.({ preventScroll: true });
+      return existing._versionPreviewModalApi;
+    }
     const time = this._formatTimelineDate(entry);
     const oldValue = entry.old_value || entry.old_status || '';
     const newValue = entry.new_value || entry.new_status || '';
     const summary = entry.body_diff_summary || '';
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '110';
-    o.innerHTML = `<div class="gb-modal" style="min-width:560px;max-width:80vw;">
-      <header class="gb-modal-header">
-        <h3 class="gb-modal-title">${typeof lucide === 'function' ? lucide('pencilLine', 14) : ''} 変更レコード</h3>
-        <button class="gb-modal-close" data-version-preview-close>${typeof lucide === 'function' ? lucide('x', 14) : 'x'}</button>
-      </header>
-      <div class="gb-modal-body" style="font-size:12px;line-height:1.5;">
+    if (typeof window.GBUI?.createModal !== 'function') {
+      throw new Error('変更レコードを初期化できませんでした。');
+    }
+    const content = document.createElement('div');
+    content.style.cssText = 'font-size:12px;line-height:1.5;';
+    content.innerHTML = `
         <div class="gb-section-desc" style="margin-bottom:8px;">${esc(time)} / ${esc(entry.user || '')}${entry.actor_model ? ' / ' + esc(entry.actor_model) : ''}</div>
         <div style="margin-bottom:8px;"><b>${esc(entry.action || '')}</b> ${esc(entry.entity_name || '')}${entry.property_name ? ' / ' + esc(entry.property_name) : ''}</div>
         ${summary ? `<pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;">${esc(summary)}</pre>` : ''}
         ${oldValue || newValue ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
           <div><div class="gb-section-desc">変更前</div><pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;min-height:64px;">${esc(oldValue)}</pre></div>
           <div><div class="gb-section-desc">変更後</div><pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;min-height:64px;">${esc(newValue)}</pre></div>
-        </div>` : ''}
-      </div>
-      <footer class="gb-modal-footer"><button class="gb-btn gb-btn-sm" data-version-preview-close>閉じる</button></footer>
-    </div>`;
-    o.querySelectorAll('[data-version-preview-close]').forEach(btn => btn.addEventListener('click', () => o.remove()));
-    o.addEventListener('click', e => { if (e.target === o) o.remove(); });
-    document.body.appendChild(o);
+        </div>` : ''}`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'gb-btn gb-btn-sm';
+    close.dataset.versionPreviewClose = '';
+    close.textContent = '閉じる';
+    const modalApi = window.GBUI.createModal({
+      id: 'version-edit-record-preview',
+      title: '変更レコード',
+      body: content,
+      footer: close,
+      variant: 'standard',
+      extraClass: 'version-edit-record-preview-modal',
+      geometryKey: 'version-edit-record-preview',
+      minWidth: '0',
+      initialFocus: close,
+      returnFocus: document.activeElement,
+      closeLabel: '変更レコードを閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+    });
+    modalApi.overlay.classList.add('modal-overlay', 'version-edit-record-preview-overlay');
+    modalApi.overlay._versionPreviewModalApi = modalApi;
+    modalApi.overlay.dataset.e2eId = 'version-edit-record-preview-overlay';
+    modalApi.modal.dataset.e2eId = 'version-edit-record-preview-dialog';
+    modalApi.modal.style.maxWidth = 'min(80vw, 920px)';
+    close.addEventListener('click', () => modalApi.close('footer-close'));
+    modalApi.open();
+    return modalApi;
   }
 
   _bindVersionActions() {

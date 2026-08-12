@@ -376,33 +376,6 @@ async function applyPropertyType(propName, root, options = {}) {
     return null;
   }
   _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
-  if (prev.type === 'image' && type !== 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
-  }
-  const overlay = scope.closest?.('.modal-overlay');
-  if (overlay) overlay.remove();
-  // 数式キャッシュをクリア
-  if (type === 'formula') {
-    for (const k in _formulaCache) delete _formulaCache[k];
-  }
-  if (options.render !== false) {
-    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-    else renderPivot(ctx);
-  }
-  // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
-  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
-  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
-  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
-  const _relTargetMayHaveChanged = _relTypes.includes(type)
-    && (prev.type !== type
-      || (config.relationDb || '') !== (prev.relationDb || '')
-      || type === 'multi-source-relation');
-  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
-    Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
-      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-      else if (options.render !== false) renderPivot(ctx);
-    }).catch(() => {});
-  }
   try {
     await savePromise;
   } catch (e) {
@@ -420,7 +393,11 @@ async function applyPropertyType(propName, root, options = {}) {
     saveDbViewConfig(dbPath, localCfg, { skipBackend: true, skipHistory: true, ctx });
     const metadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath, ctx) : null;
     if (metadata) metadata.property_types = currentTypes;
-    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    try {
+      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+    } catch (renderError) {
+      console.warn('列設定保存失敗後の表示復元に失敗:', renderError);
+    }
     if (globalThis.GbDbEntryIdentity && ctx) {
       try { await globalThis.GbDbEntryIdentity.reload(ctx, dbPath); } catch (reloadError) {
         console.error('列設定保存失敗後の再読み込みに失敗:', reloadError, e);
@@ -429,9 +406,53 @@ async function applyPropertyType(propName, root, options = {}) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
+  if (prev.type === 'image' && type !== 'image') {
+    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
+  }
+  const overlay = scope.closest?.('.modal-overlay');
+  if (overlay && !scope._ptModalApi) overlay.remove();
+  // 数式キャッシュをクリア
+  if (type === 'formula') {
+    for (const k in _formulaCache) delete _formulaCache[k];
+  }
+  let refreshWarning = false;
+  try {
+    if (options.render !== false) {
+      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+      else await Promise.resolve(renderPivot(ctx));
+    }
+  } catch (error) {
+    console.warn('列設定保存後の表示更新に失敗:', error);
+    refreshWarning = true;
+  }
+  // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
+  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
+  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
+  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
+  const _relTargetMayHaveChanged = _relTypes.includes(type)
+    && (prev.type !== type
+      || (config.relationDb || '') !== (prev.relationDb || '')
+      || type === 'multi-source-relation');
+  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
+    try {
+      await Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+        else if (options.render !== false) renderPivot(ctx);
+      });
+    } catch (error) {
+      console.warn('列設定保存後の参照先読み込みに失敗:', error);
+      refreshWarning = true;
+    }
+  }
   // 保存が確定してから履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
-  await _ptReloadOtherDbContexts(dbPath, ctx);
-  _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
+  try {
+    await _ptReloadOtherDbContexts(dbPath, ctx);
+    _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
+  } catch (error) {
+    console.warn('列設定保存後の履歴または別画面更新に失敗:', error);
+    refreshWarning = true;
+  }
+  if (refreshWarning) showStatus('列設定は保存しましたが、表示を更新できませんでした', true);
   return config;
 }
 

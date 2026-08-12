@@ -8,6 +8,7 @@
   const MAX_BYTES = 1024 * 1024;
   const timers = new Map();
   let recoveryRetryTimer = 0;
+  let activeRecoveryModal = null;
   // 編集ロック一覧（マニュアル等のシステム保護）がまだ読み込まれていない間は、
   // ロック済みパスの残留ドラフトを掃除できない。起動1.8秒時点ではホームフォルダの
   // 読み込みが終わっていないことがあり、掃除が空振りしたまま「未保存の編集があります」
@@ -297,7 +298,10 @@
       const label = row.querySelector('.draft-recovery-meta')?.getAttribute('title') || '';
       if (label && !alive.has(label)) row.remove();
     });
-    if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
+    if (!overlay.querySelector('[data-draft-row]')) {
+      if (activeRecoveryModal?.overlay === overlay) activeRecoveryModal.close('no-drafts');
+      else overlay.remove();
+    }
   }
 
   async function showRecoveryDialog() {
@@ -318,9 +322,12 @@
       return;
     }
     window.GBTooltip?.hide?.({ suppressUntilLeave: true });
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.draftRecoveryDialog = '1';
+    if (typeof window.GBUI?.createModal !== 'function') {
+      if (typeof showStatus === 'function') showStatus('未保存の編集を確認できません', true);
+      return;
+    }
+    if (activeRecoveryModal && !activeRecoveryModal.isOpen()) activeRecoveryModal.close('stale');
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const rows = drafts.map((item, index) => `
       <div class="draft-recovery-row" data-draft-row data-draft-index="${index}">
         <div class="draft-recovery-info">
@@ -333,45 +340,100 @@
           <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard" data-draft-index="${index}" data-e2e-id="draft-recovery-${index}-discard" aria-label="${esc(_fileLabel(item.path))} のドラフトを破棄">破棄</button>
         </div>
       </div>`).join('');
-    overlay.innerHTML = `<div class="modal gb-mobile-dialog-sheet gb-mobile-dialog-sheet-open" role="dialog" aria-modal="true" aria-labelledby="draft-recovery-title" data-e2e-id="draft-recovery-dialog">
-      <h3 id="draft-recovery-title">未保存の編集があります</h3>
-      <div class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
-      <div class="draft-recovery-list">${rows}</div>
-      <div class="btn-row draft-recovery-footer">
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-draft-action="discard-all" data-e2e-id="draft-recovery-discard-all">すべて破棄</button>
-        <span class="draft-recovery-spacer" aria-hidden="true"></span>
-        <button type="button" class="gb-btn gb-btn-sm" data-draft-action="close" data-e2e-id="draft-recovery-close">閉じる</button>
-      </div>
-    </div>`;
+    const body = document.createElement('div');
+    body.className = 'draft-recovery-content';
+    body.innerHTML = `
+      <div id="draft-recovery-description" class="gb-section-desc">前回終了時に保存前だった編集を復元できます。</div>
+      <div class="draft-recovery-list">${rows}</div>`;
+    const discardAllButton = document.createElement('button');
+    discardAllButton.type = 'button';
+    discardAllButton.className = 'gb-btn gb-btn-sm gb-btn-danger';
+    discardAllButton.dataset.draftAction = 'discard-all';
+    discardAllButton.dataset.e2eId = 'draft-recovery-discard-all';
+    discardAllButton.textContent = 'すべて破棄';
+    const spacer = document.createElement('span');
+    spacer.className = 'draft-recovery-spacer';
+    spacer.setAttribute('aria-hidden', 'true');
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'gb-btn gb-btn-sm';
+    closeButton.dataset.draftAction = 'close';
+    closeButton.dataset.e2eId = 'draft-recovery-close';
+    closeButton.textContent = '閉じる';
+    let busy = false;
+    const modalApi = window.GBUI.createModal({
+      id: 'draft-recovery',
+      title: '未保存の編集があります',
+      body,
+      footer: [discardAllButton, spacer, closeButton],
+      variant: 'mobile-sheet',
+      extraClass: 'draft-recovery-dialog',
+      geometryKey: 'draft-recovery',
+      initialFocus: '[data-draft-action="close"]',
+      returnFocus: restoreFocusTo || undefined,
+      closeOnEsc: true,
+      closeOnOverlay: false,
+      onBeforeClose: reason => !busy || ['overwrite', 'save-as', 'discard-all', 'discard-last', 'no-drafts'].includes(reason),
+      onClose: () => {
+        if (activeRecoveryModal === modalApi) activeRecoveryModal = null;
+      },
+    });
+    activeRecoveryModal = modalApi;
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay');
+    overlay.dataset.draftRecoveryDialog = '1';
+    modalApi.modal.classList.add('modal');
+    modalApi.modal.dataset.e2eId = 'draft-recovery-dialog';
+    modalApi.modal.setAttribute('aria-describedby', 'draft-recovery-description');
+    modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'draft-recovery-header-close');
+    modalApi.footer.classList.add('draft-recovery-footer');
     overlay.addEventListener('click', async (event) => {
       const button = event.target?.closest?.('[data-draft-action]');
       if (!button || !overlay.contains(button)) return;
       const action = button.dataset.draftAction;
       if (!action) return;
-      if (action === 'close') { overlay.remove(); return; }
+      if (action === 'close') { modalApi.close('close-button'); return; }
       if (action === 'discard-all') {
         if (!await _confirmDiscard('未保存ドラフトをすべて破棄しますか？')) return;
-        await clearAllDrafts();
-        overlay.remove();
-        if (typeof showStatus === 'function') showStatus('未保存ドラフトをすべて破棄しました');
+        busy = true;
+        try {
+          await clearAllDrafts();
+          busy = false;
+          modalApi.close('discard-all');
+          if (typeof showStatus === 'function') showStatus('未保存ドラフトをすべて破棄しました');
+        } finally {
+          busy = false;
+        }
         return;
       }
       const item = drafts[Number(button.dataset.draftIndex)];
       if (!item) return;
-      if (action === 'overwrite') {
-        await _overwriteDraft(item);
-        overlay.remove();
-      } else if (action === 'save-as') {
-        const saved = await _saveDraftAs(item);
-        if (saved) overlay.remove();
-      } else if (action === 'discard') {
-        if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
-        await clearDraft(item.path, item.storageKey);
-        button.closest('[data-draft-row]')?.remove();
-        if (!overlay.querySelector('[data-draft-row]')) overlay.remove();
+      busy = true;
+      try {
+        if (action === 'overwrite') {
+          await _overwriteDraft(item);
+          busy = false;
+          modalApi.close('overwrite');
+        } else if (action === 'save-as') {
+          const saved = await _saveDraftAs(item);
+          if (saved) {
+            busy = false;
+            modalApi.close('save-as');
+          }
+        } else if (action === 'discard') {
+          if (!await _confirmDiscard(`「${_fileLabel(item.path)}」の未保存ドラフトを破棄しますか？`)) return;
+          await clearDraft(item.path, item.storageKey);
+          button.closest('[data-draft-row]')?.remove();
+          if (!overlay.querySelector('[data-draft-row]')) {
+            busy = false;
+            modalApi.close('discard-last');
+          }
+        }
+      } finally {
+        busy = false;
       }
     });
-    document.body.appendChild(overlay);
+    modalApi.open();
     startupPromptSettled = true;
   }
 

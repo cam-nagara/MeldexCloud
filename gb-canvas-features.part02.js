@@ -382,26 +382,164 @@ function _bdGetNumber(nodeId) {
   return nums.length ? nums.join('.') + '. ' : '';
 }
 
+// --- Dialog mutation checkpoints ---
+function _bdDialogCaptureHistoryCheckpoint() {
+  if (typeof _bdHasCommonHistory === 'function' && _bdHasCommonHistory()
+      && typeof _historyStacks !== 'undefined' && typeof _bdHistoryScope === 'function') {
+    const scope = _bdHistoryScope();
+    const existed = Object.prototype.hasOwnProperty.call(_historyStacks, scope);
+    const stack = _historyStacks[scope] || { undo: [], redo: [] };
+    return {
+      mode: 'common',
+      scope,
+      existed,
+      undo: stack.undo.slice(),
+      redo: stack.redo.slice(),
+      globalRedo: typeof _historyGlobal !== 'undefined' ? _historyGlobal.redo.slice() : null,
+    };
+  }
+  return {
+    mode: 'local',
+    undo: typeof _bdUndoStack !== 'undefined' ? _bdUndoStack.slice() : [],
+    redo: typeof _bdRedoStack !== 'undefined' ? _bdRedoStack.slice() : [],
+  };
+}
+
+function _bdDialogRestoreHistoryCheckpoint(checkpoint) {
+  if (!checkpoint) return;
+  if (checkpoint.mode === 'common' && typeof _historyStacks !== 'undefined') {
+    if (!checkpoint.existed) {
+      delete _historyStacks[checkpoint.scope];
+    } else {
+      const stack = _historyStacks[checkpoint.scope] || (_historyStacks[checkpoint.scope] = { undo: [], redo: [] });
+      stack.undo.splice(0, stack.undo.length, ...checkpoint.undo);
+      stack.redo.splice(0, stack.redo.length, ...checkpoint.redo);
+    }
+    if (checkpoint.globalRedo && typeof _historyGlobal !== 'undefined') {
+      _historyGlobal.redo.splice(0, _historyGlobal.redo.length, ...checkpoint.globalRedo);
+    }
+    try { if (typeof renderHistoryList === 'function') renderHistoryList(); } catch {}
+    try { if (typeof renderHistoryPanel === 'function') renderHistoryPanel(); } catch {}
+  } else {
+    if (typeof _bdUndoStack !== 'undefined') _bdUndoStack.splice(0, _bdUndoStack.length, ...checkpoint.undo);
+    if (typeof _bdRedoStack !== 'undefined') _bdRedoStack.splice(0, _bdRedoStack.length, ...checkpoint.redo);
+  }
+  try { if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates(); } catch {}
+}
+
+function _bdDialogCaptureMutationCheckpoint() {
+  return {
+    dirty: !!bd.dirty,
+    autoVersionDirty: typeof _autoVersionDirty !== 'undefined' ? _autoVersionDirty : undefined,
+    hadPendingSave: !!window._bdTimer && !!bd.dirty,
+    history: _bdDialogCaptureHistoryCheckpoint(),
+  };
+}
+
+function _bdDialogRestoreMutationCheckpoint(checkpoint) {
+  if (!checkpoint) return;
+  if (window._bdTimer) clearTimeout(window._bdTimer);
+  window._bdTimer = null;
+  bd.dirty = checkpoint.dirty;
+  if (checkpoint.autoVersionDirty !== undefined && typeof _autoVersionDirty !== 'undefined') {
+    _autoVersionDirty = checkpoint.autoVersionDirty;
+  }
+  _bdDialogRestoreHistoryCheckpoint(checkpoint.history);
+  if (checkpoint.hadPendingSave && typeof bdSave === 'function') window._bdTimer = setTimeout(bdSave, 500);
+}
+
+function _bdDialogHistorySize(checkpoint) {
+  const history = checkpoint?.history || checkpoint;
+  return {
+    undo: history?.undo?.length || 0,
+    redo: history?.redo?.length || 0,
+    globalRedo: history?.globalRedo?.length || 0,
+  };
+}
+
 // --- Note Panel ---
 function bdEditNote(nodeId) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const o = document.createElement('div'); o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="min-width:500px;">
-    <h3>ノート: ${esc((n.text||'').split('\n')[0].slice(0,30))}</h3>
-    <textarea id="bd-note-text" rows="12" style="width:100%;font-size:13px;padding:8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;resize:vertical;">${esc(n.note || '')}</textarea>
-    <div class="btn-row">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" data-action="_bdSaveNote('${nodeId}')">保存</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-}
-function _bdSaveNote(nodeId) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  n.note = document.getElementById('bd-note-text').value;
-  document.querySelector('.modal-overlay').remove();
-  bdRender(); bdDirty();
-  showStatus('ノートを保存しました');
+  if (!window.GBUI?.createModal) throw new Error('カードのノート編集ダイアログを初期化できませんでした');
+  const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const uid = 'bd-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+  const textarea = document.createElement('textarea');
+  textarea.id = uid + '-text';
+  textarea.className = 'gb-textarea';
+  textarea.rows = 12;
+  textarea.value = n.note || '';
+  textarea.dataset.e2eId = 'board-note-text';
+  textarea.setAttribute('aria-label', 'カードのノート');
+  textarea.style.cssText = 'box-sizing:border-box;width:100%;min-height:180px;resize:vertical;';
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.dataset.e2eId = 'board-note-cancel';
+  cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary';
+  saveButton.dataset.e2eId = 'board-note-save';
+  saveButton.textContent = '保存';
+  [cancelButton, saveButton].forEach(button => {
+    button.style.minWidth = '44px';
+    button.style.minHeight = '44px';
+  });
+  let saving = false;
+  const modalApi = window.GBUI.createModal({
+    id: uid,
+    title: `ノート: ${(n.text || '').split('\n')[0].slice(0, 30)}`,
+    body: textarea,
+    footer: [cancelButton, saveButton],
+    variant: 'standard',
+    extraClass: 'bd-note-dialog',
+    geometryKey: 'board-card-note',
+    minWidth: '0',
+    initialFocus: textarea,
+    returnFocus: returnFocus || undefined,
+    closeLabel: 'カードのノートを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !saving || reason === 'saved',
+  });
+  modalApi.overlay.dataset.e2eId = 'board-note-overlay';
+  modalApi.modal.dataset.e2eId = 'board-note-dialog';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  headerClose?.setAttribute('data-e2e-id', 'board-note-header-close');
+  if (headerClose) headerClose.style.cssText = 'width:44px;min-width:44px;height:44px;min-height:44px;';
+  modalApi.modal.style.cssText = 'width:min(620px, calc(100vw - 24px));overflow:hidden;';
+  modalApi.body.style.cssText = 'box-sizing:border-box;min-width:0;min-height:0;overflow-y:auto;';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  saveButton.addEventListener('click', () => {
+    if (saving) return;
+    saving = true;
+    saveButton.disabled = true;
+    const hadOwnNote = Object.prototype.hasOwnProperty.call(n, 'note');
+    const previousNote = n.note;
+    const checkpoint = _bdDialogCaptureMutationCheckpoint();
+    try {
+      if (typeof bdPushUndo === 'function') bdPushUndo('カードのノートを編集');
+      n.note = textarea.value;
+      bdRender();
+      bdDirty();
+    } catch (error) {
+      if (hadOwnNote) n.note = previousNote; else delete n.note;
+      _bdDialogRestoreMutationCheckpoint(checkpoint);
+      try { bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
+      console.error('カードのノートを保存できませんでした:', error);
+      try { showStatus('ノートを保存できませんでした', true); } catch {}
+      saving = false;
+      saveButton.disabled = false;
+      textarea.focus({ preventScroll: true });
+      return;
+    }
+    modalApi.close('saved');
+    try { showStatus('ノートを保存しました'); } catch (error) { console.warn('カードのノート保存通知に失敗しました:', error); }
+  });
+  modalApi.open();
+  replaceIcons(modalApi.overlay);
+  return modalApi;
 }
 
 // --- Checkbox + Progress ---

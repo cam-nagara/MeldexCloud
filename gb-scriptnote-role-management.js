@@ -150,15 +150,21 @@ Object.assign(ScriptNoteEditor.prototype, {
           },
         ));
       },
-      move: (kind, id, delta) => {
-        const target = kind === 'type' ? doc.scenarioTypes : doc.characters;
-        const index = target.findIndex(item => item?.id === id);
-        const next = index + delta;
-        if (index < 0 || next < 0 || next >= target.length) return false;
-        const [item] = target.splice(index, 1);
-        target.splice(next, 0, item);
-        return true;
-      },
+      move: (kind, id, destination) => invoke(
+        'moveRole',
+        [doc, { kind, id }, Number.isInteger(destination) ? { delta: destination } : destination],
+        () => {
+          const target = kind === 'type' ? doc.scenarioTypes : doc.characters;
+          const index = target.findIndex(item => item?.id === id);
+          const next = Number.isInteger(destination)
+            ? index + destination
+            : target.findIndex(item => item?.id === destination?.beforeId);
+          if (index < 0 || next < 0 || next >= target.length || next === index) return false;
+          const [item] = target.splice(index, 1);
+          target.splice(index < next ? next - 1 : next, 0, item);
+          return true;
+        },
+      ),
       clone: (kind, source) => {
         const clone = JSON.parse(JSON.stringify(source));
         clone.id = uniqueId(kind);
@@ -180,11 +186,67 @@ Object.assign(ScriptNoteEditor.prototype, {
     const root = document.createElement('div');
     root.className = 'sn2-detail sn2-role-management';
     root.dataset.e2eId = 'scriptnote-role-management';
-    root.append(
-      this._buildRoleManagementSection('type', adapter, container),
-      this._buildRoleManagementSection('character', adapter, container),
-    );
+    const typeSection = this._buildRoleManagementSection('type', adapter, container);
+    const characterSection = this._buildRoleManagementSection('character', adapter, container);
+    const separator = this._buildRoleManagementSeparator(typeSection, characterSection);
+    root.append(typeSection, separator, characterSection);
     container.appendChild(root);
+  },
+
+  _buildRoleManagementSeparator(typeSection, characterSection) {
+    const storageKey = 'meldex.scriptnote.roleManagement.splitPercent';
+    const separator = document.createElement('div');
+    separator.className = 'sn2-role-manage-separator';
+    separator.dataset.e2eId = 'scriptnote-role-management-separator';
+    separator.tabIndex = 0;
+    separator.setAttribute('role', 'separator');
+    separator.setAttribute('aria-orientation', 'horizontal');
+    separator.setAttribute('aria-label', 'タイプとキャラの表示割合を調整');
+    separator.setAttribute('aria-valuemin', '20');
+    separator.setAttribute('aria-valuemax', '80');
+    const storedValue = localStorage.getItem(storageKey);
+    const stored = storedValue == null ? Number.NaN : Number(storedValue);
+    let percent = Number.isFinite(stored) ? Math.max(20, Math.min(80, stored)) : 50;
+    const apply = (next, persist = true) => {
+      percent = Math.max(20, Math.min(80, Math.round(next)));
+      typeSection.style.flex = `0 1 ${percent}%`;
+      characterSection.style.flex = `0 1 ${100 - percent}%`;
+      separator.setAttribute('aria-valuenow', String(percent));
+      if (persist) localStorage.setItem(storageKey, String(percent));
+    };
+    apply(percent, false);
+    separator.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      event.preventDefault();
+      apply(percent + (event.key === 'ArrowDown' ? 5 : -5));
+    });
+    separator.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      separator.setPointerCapture?.(event.pointerId);
+      const root = separator.parentElement;
+      const move = pointerEvent => {
+        const rect = root.getBoundingClientRect();
+        if (rect.height <= 0) return;
+        apply(((pointerEvent.clientY - rect.top) / rect.height) * 100, false);
+      };
+      const end = pointerEvent => {
+        move(pointerEvent);
+        localStorage.setItem(storageKey, String(percent));
+        separator.removeEventListener('pointermove', move);
+        separator.removeEventListener('pointerup', end);
+        separator.removeEventListener('pointercancel', cancel);
+      };
+      const cancel = () => {
+        separator.removeEventListener('pointermove', move);
+        separator.removeEventListener('pointerup', end);
+        separator.removeEventListener('pointercancel', cancel);
+      };
+      separator.addEventListener('pointermove', move);
+      separator.addEventListener('pointerup', end);
+      separator.addEventListener('pointercancel', cancel);
+    });
+    return separator;
   },
 
   _roleManagementButton(label, title, action, e2eId = '') {
@@ -230,13 +292,32 @@ Object.assign(ScriptNoteEditor.prototype, {
     table.className = `sn2-role-manage-table sn2-role-manage-table--${isType ? 'types' : 'characters'}`;
     const thead = document.createElement('thead');
     const headings = isType
-      ? [['', '選択'], ['タイプ名', 'シナリオ上の機能と完全な書式を所有する名前'], ['書式', '書式プレビュー。クリックすると既存の完全な書式設定を開きます'], ['設定', 'タイプの機能・ガター・詳細設定']]
-      : [['', '選択'], ['色', 'タイプ列に表示するキャラ名だけへ適用する名前色'], ['キャラ名', 'シナリオに表示するキャラ名'], ['対応タイプ', '選択したタイプの完全な書式を使用します'], ['設定', 'キャラ行の編集と並べ替え']];
+      ? [['', '並べ替え'], ['', '選択'], ['タイプ名', 'シナリオ上の機能と完全な書式を所有する名前'], ['書式', '書式プレビュー。クリックすると既存の完全な書式設定を開きます'], ['設定', 'タイプの機能・ガター・詳細設定']]
+      : [['', '並べ替え'], ['', '選択'], ['色', 'タイプ列に表示するキャラ名だけへ適用する名前色'], ['キャラ名', 'シナリオに表示するキャラ名'], ['対応タイプ', '選択したタイプの完全な書式を使用します'], ['設定', 'キャラ行の編集']];
     const headingRow = document.createElement('tr');
-    headings.forEach(([label, tooltip]) => {
+    headings.forEach(([label, tooltip], columnIndex) => {
       const th = document.createElement('th');
       th.textContent = label;
       th.title = tooltip;
+      const resizable = isType ? [2, 3].includes(columnIndex) : [3, 4].includes(columnIndex);
+      if (resizable) this._bindRoleManagementColumnResize(th, kind, columnIndex);
+      if (isType && label === '書式') {
+        th.classList.add('sn2-role-manage-format-header');
+        th.dataset.e2eId = 'scriptnote-type-format-header';
+        th.tabIndex = 0;
+        th.setAttribute('role', 'button');
+        th.setAttribute('aria-label', '選択中のタイプの書式を設定');
+        const open = event => {
+          if (event.target.closest?.('.sn2-role-column-resizer')) return;
+          this._showColBulkPopup(th, '_role', panelContainer);
+        };
+        th.addEventListener('click', open);
+        th.addEventListener('keydown', event => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          open(event);
+        });
+      }
       headingRow.appendChild(th);
     });
     thead.appendChild(headingRow);
@@ -262,6 +343,60 @@ Object.assign(ScriptNoteEditor.prototype, {
     section.appendChild(scroll);
     section.appendChild(this._buildRoleManagementToolbar(kind, adapter, panelContainer));
     return section;
+  },
+
+  _bindRoleManagementColumnResize(header, kind, columnIndex) {
+    const storageKey = 'meldex.scriptnote.roleManagement.columnWidths.v1';
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
+    const key = `${kind}:${columnIndex}`;
+    const stored = Number(saved[key]);
+    if (Number.isFinite(stored) && stored >= 80) header.style.width = `${stored}px`;
+    const resizer = document.createElement('span');
+    resizer.className = 'sn2-role-column-resizer';
+    resizer.dataset.e2eId = `scriptnote-${kind}-column-resizer-${columnIndex}`;
+    resizer.tabIndex = 0;
+    resizer.setAttribute('role', 'separator');
+    resizer.setAttribute('aria-orientation', 'vertical');
+    resizer.setAttribute('aria-label', `${header.textContent || '列'}の幅を調整`);
+    const setWidth = width => {
+      const next = Math.max(80, Math.min(480, Math.round(width)));
+      header.style.width = `${next}px`;
+      resizer.setAttribute('aria-valuenow', String(next));
+      return next;
+    };
+    resizer.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      event.preventDefault();
+      const next = setWidth(header.getBoundingClientRect().width + (event.key === 'ArrowRight' ? 10 : -10));
+      saved[key] = next;
+      localStorage.setItem(storageKey, JSON.stringify(saved));
+    });
+    resizer.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      resizer.setPointerCapture?.(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = header.getBoundingClientRect().width;
+      let width = startWidth;
+      const move = pointerEvent => { width = setWidth(startWidth + pointerEvent.clientX - startX); };
+      const end = () => {
+        saved[key] = width;
+        localStorage.setItem(storageKey, JSON.stringify(saved));
+        resizer.removeEventListener('pointermove', move);
+        resizer.removeEventListener('pointerup', end);
+        resizer.removeEventListener('pointercancel', cancel);
+      };
+      const cancel = () => {
+        resizer.removeEventListener('pointermove', move);
+        resizer.removeEventListener('pointerup', end);
+        resizer.removeEventListener('pointercancel', cancel);
+      };
+      resizer.addEventListener('pointermove', move);
+      resizer.addEventListener('pointerup', end);
+      resizer.addEventListener('pointercancel', cancel);
+    });
+    header.appendChild(resizer);
   },
 
   _showTypeManagementSettingsMenu(anchor, type, panelContainer) {
@@ -309,9 +444,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     row.className = 'sn2-role-manage-row';
     row.dataset.roleId = type.id;
     row.dataset.e2eId = `scriptnote-type-row-${index}`;
-    row.draggable = true;
     const selected = this._detailTypeSelection.has(type.id);
     row.classList.toggle('selected', selected);
+    const handleCell = document.createElement('td');
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -372,23 +508,8 @@ Object.assign(ScriptNoteEditor.prototype, {
     const options = this._roleManagementButton('設定', 'タイプの機能、ガター、カスタム列を設定', () => {
       this._showTypeManagementSettingsMenu(options, type, panelContainer);
     }, `scriptnote-type-settings-${index}`);
-    const up = this._roleManagementButton('↑', 'タイプを1つ上へ移動', () => {
-      this._pushUndo('タイプ並び替え');
-      if (!adapter.move('type', type.id, -1)) return;
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    }, `scriptnote-type-move-up-${index}`);
-    const down = this._roleManagementButton('↓', 'タイプを1つ下へ移動', () => {
-      this._pushUndo('タイプ並び替え');
-      if (!adapter.move('type', type.id, 1)) return;
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    }, `scriptnote-type-move-down-${index}`);
-    up.disabled = index === 0;
-    down.disabled = index === adapter.types.length - 1;
-    settingsCell.append(options, up, down);
-    row.append(selectCell, nameCell, previewCell, settingsCell);
-    this._bindRoleManagementDrag(row, 'type', type.id, adapter, panelContainer);
+    settingsCell.append(options);
+    row.append(handleCell, selectCell, nameCell, previewCell, settingsCell);
     return row;
   },
 
@@ -397,9 +518,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     row.className = 'sn2-role-manage-row';
     row.dataset.roleId = character.id;
     row.dataset.e2eId = `scriptnote-character-row-${index}`;
-    row.draggable = true;
     const selected = this._detailCharacterSelection.has(character.id);
     row.classList.toggle('selected', selected);
+    const handleCell = document.createElement('td');
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -414,25 +536,25 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     selectCell.appendChild(check);
     const colorCell = document.createElement('td');
-    const color = document.createElement('input');
-    color.type = 'color';
-    color.className = 'sn2-role-name-color';
-    color.value = /^#[0-9a-f]{6}$/i.test(String(character.nameColor || '')) ? character.nameColor : '#cccccc';
+    const color = document.createElement('button');
+    color.type = 'button';
+    color.className = 'sn2-role-name-color gb-color-swatch gb-color-swatch--field';
+    color.dataset.color = character.nameColor || 'transparent';
+    color.style.background = character.nameColor || 'transparent';
     color.title = 'タイプ列に表示するキャラ名の色';
     color.dataset.e2eId = `scriptnote-character-name-color-${index}`;
     color.setAttribute('aria-label', `${character.name || 'キャラ'}の名前色`);
-    let colorUndoCaptured = false;
-    color.addEventListener('input', () => {
-      if (!colorUndoCaptured) {
+    color.addEventListener('click', () => {
+      if (typeof openColorPalette !== 'function') return;
+      openColorPalette(color, character.nameColor || 'transparent', nextColor => {
         this._pushUndo('キャラ名前色変更');
-        colorUndoCaptured = true;
-      }
-      character.nameColor = color.value;
-      adapter.touch();
+        character.nameColor = nextColor || 'transparent';
+        color.dataset.color = character.nameColor;
+        color.style.background = character.nameColor;
+        adapter.touch();
+        requestAnimationFrame(() => color.isConnected && color.focus());
+      });
     });
-    const resetColorUndoCapture = () => { colorUndoCaptured = false; };
-    color.addEventListener('change', resetColorUndoCapture);
-    color.addEventListener('blur', resetColorUndoCapture);
     colorCell.appendChild(color);
     const nameCell = document.createElement('td');
     const name = document.createElement('input');
@@ -481,13 +603,6 @@ Object.assign(ScriptNoteEditor.prototype, {
       this.renderDetailPanel(panelContainer);
     });
     typeCell.appendChild(typeSelect);
-    if (!character.typeId) {
-      const badge = document.createElement('span');
-      badge.className = 'sn2-role-unset-badge';
-      badge.textContent = '未設定';
-      badge.title = character.legacyAppearance ? '旧ファイルの表示を維持しています' : '新規タイプの既定書式を使用します';
-      typeCell.appendChild(badge);
-    }
     const settingsCell = document.createElement('td');
     settingsCell.className = 'sn2-role-manage-actions';
     const edit = this._roleManagementButton('設定', 'この行で名前色、キャラ名、対応タイプを設定', () => {
@@ -495,52 +610,80 @@ Object.assign(ScriptNoteEditor.prototype, {
       name.focus();
       name.select();
     }, `scriptnote-character-settings-${index}`);
-    const up = this._roleManagementButton('↑', 'キャラを1つ上へ移動', () => {
-      this._pushUndo('キャラ並び替え');
-      if (!adapter.move('character', character.id, -1)) return;
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    }, `scriptnote-character-move-up-${index}`);
-    const down = this._roleManagementButton('↓', 'キャラを1つ下へ移動', () => {
-      this._pushUndo('キャラ並び替え');
-      if (!adapter.move('character', character.id, 1)) return;
-      adapter.touch();
-      this.renderDetailPanel(panelContainer);
-    }, `scriptnote-character-move-down-${index}`);
-    up.disabled = index === 0;
-    down.disabled = index === adapter.characters.length - 1;
-    settingsCell.append(edit, up, down);
-    row.append(selectCell, colorCell, nameCell, typeCell, settingsCell);
-    this._bindRoleManagementDrag(row, 'character', character.id, adapter, panelContainer);
+    settingsCell.append(edit);
+    row.append(handleCell, selectCell, colorCell, nameCell, typeCell, settingsCell);
     return row;
   },
 
-  _bindRoleManagementDrag(row, kind, id, adapter, panelContainer) {
-    row.addEventListener('dragstart', event => {
-      event.dataTransfer?.setData('text/plain', `${kind}:${id}`);
-      row.classList.add('sn2-dragging');
-    });
-    row.addEventListener('dragend', () => row.classList.remove('sn2-dragging'));
-    row.addEventListener('dragover', event => {
-      event.preventDefault();
-      row.classList.add('sn2-drop-above');
-    });
-    row.addEventListener('dragleave', () => row.classList.remove('sn2-drop-above'));
-    row.addEventListener('drop', event => {
-      event.preventDefault();
-      row.classList.remove('sn2-drop-above');
-      const [sourceKind, sourceId] = String(event.dataTransfer?.getData('text/plain') || '').split(':');
-      if (sourceKind !== kind || !sourceId || sourceId === id) return;
-      const target = kind === 'type' ? adapter.types : adapter.characters;
-      const from = target.findIndex(item => item.id === sourceId);
-      const to = target.findIndex(item => item.id === id);
-      if (from < 0 || to < 0) return;
-      this._pushUndo(kind === 'type' ? 'タイプ並び替え' : 'キャラ並び替え');
-      const [moved] = target.splice(from, 1);
-      target.splice(to, 0, moved);
+  _buildRoleManagementGrip(row, kind, item, adapter, panelContainer) {
+    const grip = document.createElement('button');
+    grip.type = 'button';
+    grip.className = 'sn2-role-manage-grip';
+    grip.dataset.e2eId = `scriptnote-${kind}-drag-${item.id}`;
+    grip.setAttribute('aria-label', `${item.name || (kind === 'type' ? 'タイプ' : 'キャラ')}を並べ替え`);
+    grip.title = 'ドラッグで並べ替え。Alt+上下キーでも移動できます';
+    grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
+    const finishMove = () => {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
+      requestAnimationFrame(() => {
+        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(item.id)}"]`)?.focus();
+      });
+    };
+    grip.addEventListener('keydown', event => {
+      if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+      event.preventDefault();
+      const delta = event.key === 'ArrowUp' ? -1 : 1;
+      const target = kind === 'type' ? adapter.types : adapter.characters;
+      const index = target.findIndex(candidate => candidate.id === item.id);
+      if (index < 0 || index + delta < 0 || index + delta >= target.length) return;
+      this._pushUndo(kind === 'type' ? 'タイプ並び替え' : 'キャラ並び替え');
+      if (adapter.move(kind, item.id, delta)) finishMove();
     });
+    grip.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      grip.setPointerCapture?.(event.pointerId);
+      row.classList.add('sn2-dragging');
+      let destination = null;
+      const autoScroll = globalThis.MeldexDragAutoScroll;
+      autoScroll?.beginPointerSession?.(event.clientX, event.clientY);
+      const move = pointerEvent => {
+        autoScroll?.updatePointer?.(pointerEvent.clientX, pointerEvent.clientY);
+        const targetRow = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest?.('.sn2-role-manage-row');
+        if (!targetRow || targetRow.closest('section') !== row.closest('section')) return;
+        row.closest('tbody')?.querySelectorAll('.sn2-drop-above, .sn2-drop-below').forEach(candidate => {
+          candidate.classList.remove('sn2-drop-above', 'sn2-drop-below');
+        });
+        const targetId = targetRow.dataset.roleId || item.id;
+        const rect = targetRow.getBoundingClientRect();
+        const dropAfter = pointerEvent.clientY >= rect.top + rect.height / 2;
+        targetRow.classList.add(dropAfter ? 'sn2-drop-below' : 'sn2-drop-above');
+        destination = dropAfter ? { afterId: targetId } : { beforeId: targetId };
+      };
+      const cleanup = () => {
+        autoScroll?.endPointerSession?.();
+        row.classList.remove('sn2-dragging');
+        row.closest('tbody')?.querySelectorAll('.sn2-drop-above, .sn2-drop-below').forEach(candidate => {
+          candidate.classList.remove('sn2-drop-above', 'sn2-drop-below');
+        });
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', end);
+        grip.removeEventListener('pointercancel', cancel);
+      };
+      const end = () => {
+        cleanup();
+        const targetId = destination?.beforeId || destination?.afterId || '';
+        if (!destination || targetId === item.id) return;
+        this._pushUndo(kind === 'type' ? 'タイプ並び替え' : 'キャラ並び替え');
+        if (adapter.move(kind, item.id, destination)) finishMove();
+      };
+      const cancel = cleanup;
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', end);
+      grip.addEventListener('pointercancel', cancel);
+    });
+    return grip;
   },
 
   _deleteManagedRoles(kind, selected, adapter, panelContainer, onDeleted = null) {
@@ -549,8 +692,10 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selection = isType ? this._detailTypeSelection : this._detailCharacterSelection;
     const selectedIds = new Set(selected.map(item => item.id));
     const used = selected.filter(item => adapter.references(kind, item.id) > 0);
-    const finish = (replacement = null, close = null) => {
+    const finish = async (replacement = null, close = null, setBusy = null) => {
+      setBusy?.(true);
       try {
+        await Promise.resolve();
         selected.forEach(item => {
           if (!adapter.canDelete(kind, item.id, replacement)) {
             throw new Error(`「${item.name || '名称未設定'}」の参照を置換できません`);
@@ -560,13 +705,16 @@ Object.assign(ScriptNoteEditor.prototype, {
         adapter.remove(kind, selected.map(item => item.id), replacement);
       } catch (error) {
         if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
-        return;
+        setBusy?.(false);
+        return false;
       }
       selection.clear();
-      close?.();
       onDeleted?.();
       adapter.touch();
       this.renderDetailPanel(panelContainer);
+      setBusy?.(false);
+      close?.('submitted');
+      return true;
     };
     if (!used.length) {
       const message = `${selected.length}件の${isType ? 'タイプ' : 'キャラ'}を削除しますか？`;
@@ -630,20 +778,54 @@ Object.assign(ScriptNoteEditor.prototype, {
     confirm.className = 'gb-btn gb-btn-danger';
     confirm.textContent = '置換して削除';
     confirm.dataset.e2eId = `scriptnote-${kind}-delete-confirm`;
+    const owner = document.activeElement;
+    let busy = false;
+    const returnFocus = () => owner?.isConnected
+      ? owner
+      : panelContainer?.querySelector(`[data-e2e-id="scriptnote-${kind}-delete"]`);
+    const restoreParentFocus = reason => {
+      if (reason === 'submitted') return;
+      setTimeout(() => {
+        const target = returnFocus();
+        const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(dialog => dialog.isConnected);
+        const topDialog = dialogs[dialogs.length - 1];
+        if (target?.isConnected && (!topDialog || topDialog.contains(target))) target.focus();
+      }, 0);
+    };
     const modal = globalThis.GBUI.createModal({
+      id: `scriptnote-${kind}-delete-replacement-dialog`,
       title: `${isType ? 'タイプ' : 'キャラ'}の参照を置換して削除`,
       body,
       footer: [cancel, confirm],
-      minWidth: 380,
+      variant: 'standard',
+      geometryKey: `scriptnote-${kind}-delete-replacement`,
+      minWidth: '0',
       extraClass: 'sn2-role-delete-modal',
+      initialFocus: select,
+      returnFocus,
+      closeLabel: `${isType ? 'タイプ' : 'キャラ'}の削除を閉じる`,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => !busy || reason === 'submitted',
+      onClose: restoreParentFocus,
     });
-    cancel.addEventListener('click', () => modal.close());
+    modal.overlay.dataset.e2eId = `scriptnote-${kind}-delete-overlay`;
+    modal.modal.dataset.e2eId = `scriptnote-${kind}-delete-dialog`;
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modal.modal);
+    const setBusy = next => {
+      busy = next;
+      modal.modal.setAttribute('aria-busy', next ? 'true' : 'false');
+      confirm.disabled = next;
+      cancel.disabled = next;
+      select.disabled = next;
+    };
+    cancel.addEventListener('click', () => modal.close('cancel'));
     confirm.addEventListener('click', () => {
+      if (busy) return;
       const [replacementKind, replacementId] = select.value.split(':');
-      finish({ kind: replacementKind, id: replacementId }, modal.close);
+      finish({ kind: replacementKind, id: replacementId }, modal.close, setBusy);
     });
-    document.body.appendChild(modal.overlay);
-    select.focus();
+    modal.open();
   },
 
   _buildRoleManagementToolbar(kind, adapter, panelContainer) {

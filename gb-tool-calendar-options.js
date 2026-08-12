@@ -93,6 +93,11 @@
   function _calPrepareCalendarDetailShell(detailEl) {
     if (!detailEl) return;
     if (typeof showNoteTabs === 'function') showNoteTabs(false);
+    if (typeof showFileInfoTab === 'function') showFileInfoTab(true);
+    const calendarPath = _calFindCalendarComponent()?.state?.calendarPath || '';
+    if (calendarPath && typeof renderFileInfoDetailTab === 'function') {
+      void renderFileInfoDetailTab(calendarPath, null, { type: 'calendar', typeLabel: 'カレンダー' });
+    }
     if (typeof showDbTabs === 'function') showDbTabs(false);
     if (typeof showBoardTabs === 'function') showBoardTabs(false);
     if (typeof hideBoardNoteTab === 'function') hideBoardNoteTab();

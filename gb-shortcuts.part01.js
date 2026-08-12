@@ -31,6 +31,38 @@ const GB_SHORTCUTS = {
   'global.reload2':       { key: 'f5',           label: 'リロード（F5）',             scope: 'global' },
   'global.addComment':    { key: 'alt+shift+c',  label: '注釈コメントを追加',        scope: 'global' },
 
+  // --- 横断アクションID契約（各画面は同じIDをMeldexShortcutRegistryへ登録する） ---
+  // 注釈・コメントはどの画面でも使うため、上の global.annotation / global.addComment が正本。
+  'chat.focusInput':      { key: 'ctrl+shift+j', label: 'チャット入力欄へ移動',       scope: 'global' },
+  'chat.send':            { key: 'enter',        label: 'チャットを送信',             scope: 'chat' },
+
+  // 単独ビューワーのローカル登録と同じID。Meldex本体の設定画面からも編集できる。
+  'viewer.playPause':    { key: 'space',            label: '再生 / 一時停止', scope: 'viewer' },
+  'viewer.prevFolder':   { key: 'arrowup',          label: '前のフォルダ', scope: 'viewer' },
+  'viewer.nextFolder':   { key: 'arrowdown',        label: '次のフォルダ', scope: 'viewer' },
+  'viewer.shiftForward': { key: 'shift+arrowright', label: '1枚ずらして進む', scope: 'viewer' },
+  'viewer.shiftBackward':{ key: 'shift+arrowleft',  label: '1枚ずらして戻る', scope: 'viewer' },
+  'viewer.next':         { key: 'arrowright',       label: '次へ', scope: 'viewer' },
+  'viewer.prev':         { key: 'arrowleft',        label: '前へ', scope: 'viewer' },
+  'viewer.toggleHud':    { key: 'h',                label: '情報表示の切替', scope: 'viewer' },
+  'viewer.fullscreen':   { key: 'f',                label: '全画面表示', scope: 'viewer' },
+  'viewer.reversePlay':  { key: 'r',                label: '逆再生の切替', scope: 'viewer' },
+  'viewer.flipH':        { key: 'm',                label: '左右反転', scope: 'viewer' },
+  'viewer.original':     { key: 'o',                label: '原寸表示', scope: 'viewer' },
+  'viewer.rotate':       { key: 'q',                label: '回転', scope: 'viewer' },
+  'viewer.zoomIn':       { key: '=',                label: '拡大', scope: 'viewer' },
+  'viewer.zoomOut':      { key: '-',                label: '縮小', scope: 'viewer' },
+  'viewer.fitContain':   { key: '1',                label: '画面に合わせる', scope: 'viewer' },
+  'viewer.fitHeight':    { key: '2',                label: '高さに合わせる', scope: 'viewer' },
+  'viewer.fitWidth':     { key: '3',                label: '幅に合わせる', scope: 'viewer' },
+  'viewer.fitNone':      { key: '4',                label: 'フィットしない', scope: 'viewer' },
+  'viewer.annotation':   { key: 'a',                label: '注釈の切替', scope: 'viewer' },
+
+  // 常駐アプリはこの3 IDをPersonal Preferencesから取得し、OS登録へ反映する。
+  'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
+  'tray.screenshot.region': { key: 'ctrl+shift+r', label: '範囲を撮影', scope: 'tray' },
+  'tray.screenshot.window': { key: 'ctrl+shift+w', label: 'ウィンドウを撮影', scope: 'tray' },
+
   // --- ノートエディタ ---
   'note.bold':            { key: 'ctrl+b',       label: '太字',                      scope: 'note' },
   'note.italic':          { key: 'ctrl+i',       label: '斜体',                      scope: 'note' },
@@ -221,6 +253,7 @@ function _resolveShortcutScope(e) {
     const noteHostSelector = (typeof MeldexNoteBlockTypes !== 'undefined' && MeldexNoteBlockTypes.EDITABLE_SELECTOR)
       || '#page-content, #entity-freetext, #dp-editable';
     if (editEl.closest?.(noteHostSelector)) return ['global', 'note'];
+    if (editEl.closest?.('#chat-input, .chat-rich-input')) return ['global', 'chat'];
   }
 
   const rightPanel = document.getElementById('right-panel');
@@ -430,23 +463,21 @@ function updateCsvShortcutStatusbar(targetEl) {
   sc.textContent = getCsvShortcutStatusText();
 }
 
-// ビューワー（media ビュー）のショートカットは viewer-controls.js 内に固定実装されており、
-// GB_SHORTCUTS のカスタマイズ対象外（他アプリのようにキー変更UIを持たない）ため、
-// _shortcutStatusItem/getShortcutKey は使わず固定文字列で一覧を返す。表示形式・区切り記号
-// （半角スペース区切りのキー表記 + ラベル、項目間は ' | '）は他アプリの一覧に揃える。
 function getMediaViewerShortcutStatusText() {
   return [
-    '← → 前後',
-    'Shift+←→ 1枚送り',
-    'Space 再生',
-    '+/- 拡大縮小',
-    '1〜4 フィット',
-    'M 反転',
-    'Q 回転',
-    'F 全画面',
-    'H 情報',
-    'A 注釈',
-  ].join(' | ');
+    _shortcutStatusItem('viewer.prev', '前へ'),
+    _shortcutStatusItem('viewer.next', '次へ'),
+    _shortcutStatusItem('viewer.shiftBackward', '1枚戻る'),
+    _shortcutStatusItem('viewer.shiftForward', '1枚進む'),
+    _shortcutStatusItem('viewer.playPause', '再生'),
+    _shortcutStatusItem('viewer.zoomIn', '拡大'),
+    _shortcutStatusItem('viewer.zoomOut', '縮小'),
+    _shortcutStatusItem('viewer.flipH', '反転'),
+    _shortcutStatusItem('viewer.rotate', '回転'),
+    _shortcutStatusItem('viewer.fullscreen', '全画面'),
+    _shortcutStatusItem('viewer.toggleHud', '情報'),
+    _shortcutStatusItem('viewer.annotation', '注釈'),
+  ].filter(Boolean).join(' | ');
 }
 
 function updateMediaViewerShortcutStatusbar(targetEl) {
@@ -685,6 +716,17 @@ const _shortcutHandlers = {
   'global.quickOpen': () => {
     const searchInput = document.getElementById('sidebar-search-input');
     if (searchInput) { searchInput.focus(); searchInput.select(); }
+  },
+  'chat.focusInput': () => {
+    const input = document.getElementById('chat-input');
+    if (!input) return false;
+    input.focus();
+    const length = typeof input.value === 'string' ? input.value.length : 0;
+    if (typeof input.setSelectionRange === 'function') input.setSelectionRange(length, length);
+  },
+  'chat.send': () => {
+    if (typeof chatSend !== 'function') return false;
+    chatSend();
   },
   'global.undo': () => {
     // contentEditable内ではブラウザデフォルトに任せる（この判定はショートカット側のみに残す。

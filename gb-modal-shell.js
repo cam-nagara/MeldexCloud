@@ -11,6 +11,7 @@
   const RESIZE_CLICK_SUPPRESS_MS = 350;
   let _observerStarted = false;
   let _staleOverlayRecoveryStarted = false;
+  let _legacyDialogId = 0;
 
   function _zoom() {
     if (typeof _getZoom === 'function') return _getZoom();
@@ -668,7 +669,8 @@
   }
 
   function _isMobileDialogSheetActive(overlay, modal) {
-    return overlay.dataset.mobileDialogSheetActive === '1' || modal.dataset.mobileDialogSheet === '1';
+    const contract = modal.dataset.mobileDialogSheet;
+    return overlay.dataset.mobileDialogSheetActive === '1' || contract === '1' || contract === 'on';
   }
 
   function _clearModalShellGeometryForSheet(modal) {
@@ -690,11 +692,32 @@
       _clearModalShellGeometryForSheet(modal);
       return false;
     }
+    if (modal?.dataset?.dialogResizable === 'off') {
+      modal.classList.remove('gb-modal-resizable');
+      modal.querySelectorAll(':scope > .gb-modal-shell-edge').forEach(edge => edge.remove());
+      return false;
+    }
     modal.classList.add('gb-modal-resizable');
     _ensureResizeHandles(modal, header, footer);
     _bindDrag(header, modal, footer);
     _ensureGeometry(modal, header, footer);
     return true;
+  }
+
+  function _normalizeDialogContract(overlay, modal) {
+    const explicitId = overlay.dataset.dialogId
+      || modal.dataset.dialogId
+      || overlay.dataset.e2eId
+      || modal.dataset.e2eId
+      || modal.id
+      || modal.getAttribute('aria-labelledby');
+    const dialogId = explicitId || ('legacy-dialog-' + (++_legacyDialogId));
+    const variant = overlay.dataset.dialogVariant || modal.dataset.dialogVariant || 'standard';
+    overlay.dataset.dialogId = dialogId;
+    modal.dataset.dialogId = dialogId;
+    overlay.dataset.dialogVariant = variant;
+    modal.dataset.dialogVariant = variant;
+    modal.classList.add('gb-modal-variant-' + variant);
   }
 
   function enhanceOverlay(overlay) {
@@ -714,6 +737,7 @@
       overlay.dataset.modalShellEnhanced = 'skip';
       return;
     }
+    _normalizeDialogContract(overlay, modal);
     const alreadyEnhanced = overlay.dataset.modalShellEnhanced === '1';
     if (!alreadyEnhanced) {
       overlay.dataset.modalShellEnhanced = '1';

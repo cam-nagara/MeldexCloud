@@ -57,6 +57,81 @@
   padding: 2px 0 4px;
 }
 
+@media (max-width: 600px) {
+  .gb-unified-filter-overlay .uf-modal-body,
+  .gb-unified-filter-overlay .uf-modal-body > div {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .gb-unified-filter-overlay .uf-modal-body {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
+  .gb-unified-filter-overlay .uf-modal > .gb-modal-body {
+    overflow-x: hidden !important;
+  }
+
+  .gb-unified-filter-overlay .uf-modal-body label {
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  .gb-unified-filter-overlay #uf-status-btns {
+    flex-wrap: wrap;
+  }
+
+  .gb-unified-filter-overlay #uf-status-btns > button,
+  .gb-unified-filter-overlay .uf-add-condition,
+  .gb-unified-filter-overlay .uf-open-column-filter,
+  .gb-unified-filter-overlay #uf-col-filter-add-select {
+    min-height: 44px;
+    min-width: 0;
+  }
+
+  .gb-unified-filter-overlay .uf-add-condition {
+    width: 100%;
+  }
+
+  .gb-unified-filter-overlay .uf-column-filter-add {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+  }
+
+  .gb-unified-filter-overlay .uf-open-column-filter {
+    white-space: nowrap;
+  }
+
+  .gb-unified-filter-overlay .uf-cond {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+    gap: 8px !important;
+    align-items: center;
+    padding-block: 4px;
+  }
+
+  .gb-unified-filter-overlay .uf-cond > [data-field="property"],
+  .gb-unified-filter-overlay .uf-cond > [data-field="value"] {
+    grid-column: span 2;
+  }
+
+  .gb-unified-filter-overlay .uf-cond > select,
+  .gb-unified-filter-overlay .uf-cond > input,
+  .gb-unified-filter-overlay .uf-cond > button {
+    width: 100% !important;
+    min-width: 0;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+
+  .gb-unified-filter-overlay .uf-cond > datalist {
+    display: none;
+  }
+}
+
 /* 列ヘッダーの値フィルターポップアップ内、条件フィルタの要約表示 */
 .db-column-filter-condition-summary {
   font-size: 11px;

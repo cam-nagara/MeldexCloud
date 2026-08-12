@@ -1,11 +1,4 @@
-    document.body.appendChild(overlay);
-    if (window.innerWidth > 768) {
-      try {
-        requiredInput.focus({ preventScroll: true });
-      } catch (_) {
-        requiredInput.focus();
-      }
-    }
+    dialogApi.open();
     try {
       const resetConsentScroll = () => {
         dialog.scrollTop = 0;

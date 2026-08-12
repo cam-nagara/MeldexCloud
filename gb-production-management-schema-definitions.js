@@ -78,6 +78,8 @@
       '再計算ロック': { type: 'checkbox' },
       '担当者固定': { type: 'checkbox' },
       'シフト固定': { type: 'checkbox' },
+      '親タスクID': { type: 'text' },
+      'チェックリスト': { type: 'text' },
       'シフト割当不能理由': { type: 'text' },
       '対象色': { type: 'text' },
       '備考': { type: 'text' },

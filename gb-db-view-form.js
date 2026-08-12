@@ -416,9 +416,10 @@ function _buildFormInputRow(prop, cfg, ptc) {
   } else if (type === 'date') {
     input = document.createElement('input');
     input.type = ptc.withTime ? 'datetime-local' : 'date';
-  } else if (type === 'url') {
+  } else if (type === 'link' || type === 'url') {
     input = document.createElement('input');
-    input.type = 'url';
+    input.type = 'text';
+    input.placeholder = 'Web URL、Meldex項目、ファイル、フォルダ';
   } else if (type === 'long-text') {
     input = document.createElement('textarea');
     input.rows = 4;

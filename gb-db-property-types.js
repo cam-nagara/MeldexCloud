@@ -11,8 +11,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     { type: 'checkbox', label: 'チェックボックス', icon: 'checkSquare' },
     { type: 'color', label: 'カラー', icon: 'palette' },
     { type: 'date', label: '日時', icon: 'calendar' },
-    { type: 'url', label: 'URL', icon: 'globe' },
-    { type: 'link', label: 'リンク', icon: 'paperclip' },
+    { type: 'link', label: 'リンク', icon: 'externalLink' },
     { type: 'image', label: '画像・ファイル', icon: 'image' },
     { type: 'relation', label: 'リレーション', icon: 'link2' },
     { type: 'multi-relation', label: 'リレーション（複数）', icon: 'link2' },
@@ -29,6 +28,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     return global.PROPERTY_TYPES.map(t => ({ ...t }));
   };
   global.getPropertyTypeDefinition = function getPropertyTypeDefinition(type) {
+    if (type === 'url') type = 'link';
     return global.PROPERTY_TYPES.find(t => t.type === type) || null;
   };
   global.getPropertyTypeMenuItems = function getPropertyTypeMenuItems() {
@@ -46,6 +46,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     return global.getPropertyTypeDefinition(type)?.label || type || 'テキスト';
   };
   global.getPropertyTypeUiBaseType = function getPropertyTypeUiBaseType(type) {
+    if (type === 'url') return 'link';
     if (type === 'multi-select') return 'select';
     if (type === 'multi-relation') return 'relation';
     if (type === 'multi-user') return 'user';

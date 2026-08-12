@@ -18,6 +18,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   // (visibleStandardColumns / columnOrder) と同じ並び替えを行い、実際の見た目の
   // 左右（縦書きは上下）の並びとナビゲーション順序を一致させる。
   _getNavigableColumnOrder() {
+    if (typeof this._getVisibleColumnIds === 'function') return this._getVisibleColumnIds();
     const customCols = this._getCustomColumns();
     const statusEnabled = !!this.doc.editor?.statusEnabled;
     const visCols = {

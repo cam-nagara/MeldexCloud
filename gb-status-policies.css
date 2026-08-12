@@ -60,19 +60,31 @@
 }
 
 .idea-inbox-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  display: block;
   min-width: 0;
 }
 
 .idea-inbox-toolbar-main {
-  flex: 1 1 auto;
-  min-width: 220px;
+  min-width: 0;
 }
 
-.modal .idea-inbox-view .gb-btn {
+.idea-inbox-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ui-space-3);
+  margin-top: var(--ui-space-4);
+}
+
+.idea-inbox-toolbar-actions .gb-select {
+  width: 132px;
+}
+
+.idea-inbox-toolbar-actions .gb-check {
+  white-space: nowrap;
+}
+
+.idea-inbox-modal .idea-inbox-view .gb-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -84,14 +96,14 @@
 }
 
 .idea-inbox-title .settings-modal-close,
-.modal .idea-inbox-view .gb-select,
-.modal .idea-inbox-view .gb-check,
-.modal .idea-inbox-view input,
-.modal .idea-inbox-view .gb-btn:not(:disabled):not([disabled]) {
+.idea-inbox-modal .idea-inbox-view .gb-select,
+.idea-inbox-modal .idea-inbox-view .gb-check,
+.idea-inbox-modal .idea-inbox-view input,
+.idea-inbox-modal .idea-inbox-view .gb-btn:not(:disabled):not([disabled]) {
   pointer-events: auto !important;
 }
 
-.modal .idea-inbox-view .gb-check {
+.idea-inbox-modal .idea-inbox-view .gb-check {
   min-height: var(--ui-h-sm);
 }
 
@@ -190,10 +202,7 @@
   }
 
   .idea-inbox-toolbar {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch !important;
-    gap: var(--ui-space-3) !important;
+    display: block !important;
   }
 
   .idea-inbox-toolbar-main {
@@ -202,20 +211,27 @@
     min-width: 0 !important;
   }
 
-  .modal .idea-inbox-view .gb-select,
-  .modal .idea-inbox-view .gb-check,
-  .modal .idea-inbox-view .gb-btn,
+  .idea-inbox-toolbar-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: var(--ui-space-3);
+  }
+
+  .idea-inbox-modal .idea-inbox-view .gb-select,
+  .idea-inbox-modal .idea-inbox-view .gb-check,
+  .idea-inbox-modal .idea-inbox-view .gb-btn,
   .idea-inbox-title .settings-modal-close {
     min-height: var(--ui-h-touch);
   }
 
-  .modal .idea-inbox-view .gb-select,
-  .modal .idea-inbox-view .gb-btn {
+  .idea-inbox-modal .idea-inbox-view .gb-select,
+  .idea-inbox-modal .idea-inbox-view .gb-btn {
     height: auto;
     width: 100%;
   }
 
-  .modal .idea-inbox-view .gb-check {
+  .idea-inbox-modal .idea-inbox-view .gb-check {
     padding: 0 var(--ui-space-2);
   }
 

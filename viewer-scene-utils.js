@@ -156,6 +156,16 @@
     return !!(img && (img.naturalWidth || img.naturalHeight));
   }
 
+  function logicalPointFromScreenDelta(dx, dy, flipH, flipV, rotateDeg) {
+    const screenX = (Number(dx) || 0) * (flipH ? -1 : 1);
+    const screenY = (Number(dy) || 0) * (flipV ? -1 : 1);
+    const rad = -(Number(rotateDeg) || 0) * Math.PI / 180;
+    return {
+      x: screenX * Math.cos(rad) - screenY * Math.sin(rad),
+      y: screenX * Math.sin(rad) + screenY * Math.cos(rad),
+    };
+  }
+
   function waitForImageElement(img, timeoutMs = VIEWER_IMAGE_LOAD_TIMEOUT_MS) {
     return new Promise(resolve => {
       if (!img) { resolve(false); return; }
@@ -214,5 +224,6 @@
     deriveViewerTargetFromSearchParams,
     isViewerReopenTargetSupported,
     canReopenWithUrl,
+    logicalPointFromScreenDelta,
   };
 })();

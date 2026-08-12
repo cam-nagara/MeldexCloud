@@ -97,10 +97,6 @@ function _historyActionAttrs(action, args = []) {
   return `data-action="${esc(action)}" data-args="${esc(JSON.stringify(args))}"`;
 }
 
-function _historyCloseAttrs(id) {
-  return `type="button" aria-label="閉じる" title="閉じる" data-e2e-id="${esc(id)}" data-action="this.closest('.modal-overlay').remove()"`;
-}
-
 function _versionDisplayDate(version) {
   const value = String(version?.created || version?.modified || '');
   return value ? value.substring(0, 19).replace('T', ' ') : '';
@@ -259,12 +255,6 @@ async function showVersionsModal(path, type) {
   const isDb = type === 'db';
   const versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.historyVersionModal = '1';
-  o.dataset.versionPath = path || '';
-  o.dataset.versionType = type || 'file';
-
   let listHtml = '';
   if (versions.length === 0) {
     listHtml = `<div class="gb-empty-state" style="padding:24px;">
@@ -289,22 +279,40 @@ async function showVersionsModal(path, type) {
     });
   }
 
-  o.innerHTML = `<div class="gb-modal" style="min-width:600px;max-width:90vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">バージョン管理</h3>
-      <button class="gb-modal-close" ${_historyCloseAttrs('history-versions-close-icon')}>${lucide('x', 14)}</button>
-    </header>
-    <div class="gb-modal-body">
-      <div style="margin-bottom:var(--ui-space-4);">
-        <button class="gb-btn gb-btn-sm gb-btn-primary" ${_historyActionAttrs('saveManualVersion', [path, type])}>+ バージョンを保存</button>
-      </div>
-      <div class="gb-history-list">${listHtml}</div>
-    </div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-versions-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  const body = document.createElement('div');
+  body.innerHTML = `<div style="margin-bottom:var(--ui-space-4);">
+    <button class="gb-btn gb-btn-sm gb-btn-primary" ${_historyActionAttrs('saveManualVersion', [path, type])}>+ バージョンを保存</button>
+  </div>
+  <div class="gb-history-list">${listHtml}</div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-versions-close-footer';
+  closeBtn.setAttribute('aria-label', '閉じる');
+  closeBtn.title = '閉じる';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-versions-dialog',
+    title: 'バージョン管理',
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-versions',
+    initialFocus: '.gb-history-list button, .gb-modal-footer button',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.dataset.historyVersionModal = '1';
+  o.dataset.versionPath = path || '';
+  o.dataset.versionType = type || 'file';
+  o._historyModalApi = modalApi;
+  modalApi.modal.classList.add('history-versions-modal');
+  modalApi.modal.style.width = 'min(600px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '90vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'history-versions-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
 }
 
 async function saveManualVersion(path, type) {
@@ -381,7 +389,8 @@ function _refreshVersionViews(path, type) {
   document.querySelectorAll('.modal-overlay[data-history-version-modal="1"]').forEach(modal => {
     const modalType = modal.dataset.versionType || 'file';
     if (modalType !== targetType || !_sameVersionTargetPath(modal.dataset.versionPath || '', path)) return;
-    modal.remove();
+    if (modal._historyModalApi?.close) modal._historyModalApi.close('refresh');
+    else modal.remove();
     showVersionsModal(path, targetType).catch(() => {});
   });
 }
@@ -397,7 +406,11 @@ async function restoreVersion(path, versionName, type) {
       await apiPost('/version/restore', { path, version: versionName });
     }
     showStatus('復元しました');
-    document.querySelector('.modal-overlay')?.remove();
+    const versionModal = [...document.querySelectorAll('.modal-overlay[data-history-version-modal="1"]')]
+      .find(modal => (modal.dataset.versionType || 'file') === (type || 'file')
+        && _sameVersionTargetPath(modal.dataset.versionPath || '', path));
+    if (versionModal?._historyModalApi?.close) versionModal._historyModalApi.close('restore');
+    else versionModal?.remove();
     await _refreshRestoredVersionTarget(path, type || 'file');
     _refreshVersionViews(path, type || 'file');
   } catch (err) {
@@ -417,31 +430,40 @@ async function previewVersion(path, versionName, type) {
 }
 
 function showTextPreview(content, title) {
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.style.zIndex = '110';
   // フロントマター除去
   let md = content;
   const fmMatch = md.match(/^---\n[\s\S]*?\n---\n?/);
   if (fmMatch) md = md.substring(fmMatch[0].length);
   const html = md.trim() ? mdToHtml(md) : '<span class="gb-section-desc">(空)</span>';
-  o.innerHTML = `<div class="gb-modal" style="min-width:700px;max-width:90vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">${esc(title)}</h3>
-      <button class="gb-modal-close" ${_historyCloseAttrs('history-text-preview-close-icon')}>${lucide('x', 14)}</button>
-    </header>
-    <div class="gb-modal-body gb-history-preview">${html}</div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-text-preview-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  const body = document.createElement('div');
+  body.className = 'gb-history-preview';
+  body.innerHTML = html;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-text-preview-close-footer';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-text-preview-dialog',
+    title: String(title || ''),
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-text-preview',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.style.zIndex = '110';
+  modalApi.modal.classList.add('history-text-preview-modal');
+  modalApi.modal.style.width = 'min(700px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '90vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'history-text-preview-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
 }
 
 function showDbSnapshotPreview(data, title) {
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.style.zIndex = '110';
   let tableHtml = '<table class="gb-history-table">';
   tableHtml += '<tr><th>エントリ</th><th>列</th><th>値</th><th>ステータス</th></tr>';
   for (const [entName, entData] of Object.entries(data.entities || {})) {
@@ -454,20 +476,32 @@ function showDbSnapshotPreview(data, title) {
     }
   }
   tableHtml += '</table>';
-  o.innerHTML = `<div class="gb-modal" style="min-width:700px;max-width:90vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">DBスナップショット: ${esc(title)}</h3>
-      <button class="gb-modal-close" ${_historyCloseAttrs('history-db-preview-close-icon')}>${lucide('x', 14)}</button>
-    </header>
-    <div class="gb-modal-body">
-      <div class="gb-section-desc" style="margin-bottom:var(--ui-space-2);">${data.timestamp || ''}</div>
-      <div style="overflow:auto;">${tableHtml}</div>
-    </div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-db-preview-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="gb-section-desc" style="margin-bottom:var(--ui-space-2);">${esc(data.timestamp || '')}</div>
+    <div style="overflow:auto;">${tableHtml}</div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-db-preview-close-footer';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-db-preview-dialog',
+    title: `DBスナップショット: ${title || ''}`,
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-db-preview',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.style.zIndex = '110';
+  modalApi.modal.classList.add('history-db-preview-modal');
+  modalApi.modal.style.width = 'min(700px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '90vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'history-db-preview-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
 }
 
 // diff比較モーダル
@@ -533,10 +567,6 @@ function showScriptNoteDiff(oldDoc, newDoc, oldTitle, newTitle) {
   let added = 0, removed = 0;
   diff.forEach(d => { if (d.type === 'add') added++; if (d.type === 'del') removed++; });
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.style.zIndex = '110';
-
   let rowsHtml = '';
   diff.forEach(d => {
     const cls = d.type === 'add' ? 'gb-diff-add' : d.type === 'del' ? 'gb-diff-del' : '';
@@ -553,22 +583,38 @@ function showScriptNoteDiff(oldDoc, newDoc, oldTitle, newTitle) {
     rowsHtml += `<div class="gb-diff-line ${cls}"><span class="gb-diff-prefix">${prefix}</span>${roleHtml}${textHtml}</div>`;
   });
 
-  o.innerHTML = `<div class="gb-modal" style="min-width:800px;max-width:95vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">シナリオ差分: ${esc(oldTitle)} ↔ ${esc(newTitle)}</h3>
-      <div class="gb-panel-actions">
-        <span class="gb-section-desc">+${added} -${removed} 行</span>
-        <button class="gb-modal-close" ${_historyCloseAttrs('history-scriptnote-diff-close-icon')}>${lucide('x', 14)}</button>
-      </div>
-    </header>
-    <div class="gb-modal-body" style="overflow:auto;">
-      <div class="gb-diff-inline">${rowsHtml}</div>
-    </div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-scriptnote-diff-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  const body = document.createElement('div');
+  body.style.overflow = 'auto';
+  body.innerHTML = `<div class="gb-diff-inline">${rowsHtml}</div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-scriptnote-diff-close-footer';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-scriptnote-diff-dialog',
+    title: `シナリオ差分: ${oldTitle || ''} ↔ ${newTitle || ''}`,
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-scriptnote-diff',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.style.zIndex = '110';
+  modalApi.modal.classList.add('history-scriptnote-diff-modal');
+  modalApi.modal.style.width = 'min(800px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '95vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) {
+    headerClose.dataset.e2eId = 'history-scriptnote-diff-close-icon';
+    const stats = document.createElement('span');
+    stats.className = 'gb-section-desc';
+    stats.textContent = `+${added} -${removed} 行`;
+    modalApi.header.insertBefore(stats, headerClose);
+  }
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
 }
 
 function showDiffModal(oldText, newText, oldTitle, newTitle) {
@@ -576,31 +622,45 @@ function showDiffModal(oldText, newText, oldTitle, newTitle) {
   function stripFm(t) { const m = t.match(/^---\n[\s\S]*?\n---\n?/); return m ? t.substring(m[0].length) : t; }
   const diff = textDiff(stripFm(oldText), stripFm(newText));
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
+  const body = document.createElement('div');
+  body.innerHTML = '<div class="gb-history-diff-container" data-diff-container></div>';
+  const toggleBtn = document.createElement('button');
+  toggleBtn.type = 'button';
+  toggleBtn.className = 'gb-btn gb-btn-xs';
+  toggleBtn.dataset.diffToggle = '1';
+  toggleBtn.dataset.e2eId = 'version-diff-toggle';
+  toggleBtn.setAttribute('aria-label', '差分表示切替');
+  toggleBtn.textContent = _diffMode === 'side' ? 'インライン表示' : '左右表示';
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-file-diff-close-footer';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-file-diff-dialog',
+    title: '差分比較',
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-file-diff',
+    initialFocus: '[data-e2e-id="version-diff-toggle"]',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
   o.style.zIndex = '110';
-
-  const toggleBtn = `<button class="gb-btn gb-btn-xs" data-diff-toggle data-e2e-id="version-diff-toggle" aria-label="差分表示切替">${_diffMode === 'side' ? 'インライン表示' : '左右表示'}</button>`;
-
-  o.innerHTML = `<div class="gb-modal" style="min-width:800px;max-width:95vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">差分比較</h3>
-      <div class="gb-panel-actions">
-        ${toggleBtn}
-        <button class="gb-modal-close" ${_historyCloseAttrs('history-file-diff-close-icon')}>${lucide('x', 14)}</button>
-      </div>
-    </header>
-    <div class="gb-modal-body">
-      <div class="gb-history-diff-container" data-diff-container></div>
-    </div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-file-diff-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  modalApi.modal.classList.add('history-file-diff-modal');
+  modalApi.modal.style.width = 'min(800px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '95vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) {
+    headerClose.dataset.e2eId = 'history-file-diff-close-icon';
+    modalApi.header.insertBefore(toggleBtn, headerClose);
+  }
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  toggleBtn.addEventListener('click', (ev) => toggleDiffMode(ev.currentTarget, o));
+  modalApi.open();
 
   o._diffData = { diff, oldTitle, newTitle };
-  o.querySelector('[data-diff-toggle]')?.addEventListener('click', (ev) => toggleDiffMode(ev.currentTarget, o));
   renderDiff(o);
 }
 
@@ -743,10 +803,6 @@ function showDbDiff(snapshot, title, currentData = null) {
   const data = currentData || state.pivotData;
   if (!data) { showStatus('DBデータがありません', true); return; }
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.style.zIndex = '110';
-
   let html = '<table class="gb-history-table">';
   html += '<tr><th>エントリ</th><th>列</th><th>旧値</th><th>旧ステータス</th><th>現在値</th><th>現在ステータス</th><th>変更</th></tr>';
 
@@ -780,17 +836,32 @@ function showDbDiff(snapshot, title, currentData = null) {
   }
   html += '</table>';
 
-  o.innerHTML = `<div class="gb-modal" style="min-width:800px;max-width:95vw;">
-    <header class="gb-modal-header">
-      <h3 class="gb-modal-title">DB差分: ${esc(title)} ↔ 現在</h3>
-      <button class="gb-modal-close" ${_historyCloseAttrs('history-db-diff-close-icon')}>${lucide('x', 14)}</button>
-    </header>
-    <div class="gb-modal-body" style="overflow:auto;">${html}</div>
-    <footer class="gb-modal-footer">
-      <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-db-diff-close-footer')}>閉じる</button>
-    </footer>
-  </div>`;
-  document.body.appendChild(o);
+  const body = document.createElement('div');
+  body.style.overflow = 'auto';
+  body.innerHTML = html;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'history-db-diff-close-footer';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'history-db-diff-dialog',
+    title: `DB差分: ${title || ''} ↔ 現在`,
+    body,
+    footer: closeBtn,
+    variant: 'standard',
+    geometryKey: 'history-db-diff',
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay');
+  o.style.zIndex = '110';
+  modalApi.modal.classList.add('history-db-diff-modal');
+  modalApi.modal.style.width = 'min(800px, calc(100vw - 24px))';
+  modalApi.modal.style.maxWidth = '95vw';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'history-db-diff-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+  modalApi.open();
 }
 
 /* ==============================
@@ -817,9 +888,6 @@ async function showFolderVersionFiles(folderPath, versionName) {
     const meta = await apiFetch('/version/read-folder?path=' + encodeURIComponent(folderPath) + '&version=' + encodeURIComponent(versionName));
     hideLoading();
     const files = meta.files || [];
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '110';
     let listHtml = '<div style="max-height:60vh;overflow:auto;">';
     files.forEach(f => {
       listHtml += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);">
@@ -828,22 +896,34 @@ async function showFolderVersionFiles(folderPath, versionName) {
       </div>`;
     });
     listHtml += '</div>';
-    const label = meta.label ? ' — ' + esc(meta.label) : '';
-    o.innerHTML = `<div class="gb-modal history-folder-files-modal" role="dialog" aria-modal="true" aria-labelledby="history-folder-files-title" style="width:min(500px, calc(100vw - 24px));max-width:90vw;">
-      <header class="gb-modal-header">
-        <h3 id="history-folder-files-title" class="gb-modal-title">フォルダバージョン: ${esc(versionName)}${label}</h3>
-        <button class="gb-modal-close" ${_historyCloseAttrs('history-folder-files-close-icon')}>${lucide('x', 14)}</button>
-      </header>
-      <div class="gb-modal-body">
-        <div class="gb-section-desc" style="margin-bottom:8px;">${files.length}ファイル</div>
-        ${listHtml}
-      </div>
-      <footer class="gb-modal-footer">
-        <button class="gb-btn gb-btn-sm" ${_historyCloseAttrs('history-folder-files-close-footer')}>閉じる</button>
-      </footer>
-    </div>`;
-    document.body.appendChild(o);
-    if (typeof window.GBModalShell?.enhanceAll === 'function') window.GBModalShell.enhanceAll();
+    const body = document.createElement('div');
+    body.innerHTML = `<div class="gb-section-desc" style="margin-bottom:8px;">${files.length}ファイル</div>${listHtml}`;
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'gb-btn gb-btn-sm';
+    closeBtn.dataset.e2eId = 'history-folder-files-close-footer';
+    closeBtn.setAttribute('aria-label', '閉じる');
+    closeBtn.title = '閉じる';
+    closeBtn.textContent = '閉じる';
+    const modalApi = window.GBUI.createModal({
+      id: 'history-folder-files-dialog',
+      titleId: 'history-folder-files-title',
+      title: `フォルダバージョン: ${versionName || ''}${meta.label ? ' — ' + meta.label : ''}`,
+      body,
+      footer: closeBtn,
+      variant: 'standard',
+      geometryKey: 'history-folder-files',
+    });
+    const o = modalApi.overlay;
+    o.classList.add('modal-overlay');
+    o.style.zIndex = '110';
+    modalApi.modal.classList.add('history-folder-files-modal');
+    modalApi.modal.style.width = 'min(500px, calc(100vw - 24px))';
+    modalApi.modal.style.maxWidth = '90vw';
+    const headerClose = modalApi.header.querySelector('.gb-modal-close');
+    if (headerClose) headerClose.dataset.e2eId = 'history-folder-files-close-icon';
+    closeBtn.addEventListener('click', () => modalApi.close('footer-close'));
+    modalApi.open();
   } catch (err) {
     hideLoading();
     showStatus('ファイル一覧の取得に失敗しました', true);

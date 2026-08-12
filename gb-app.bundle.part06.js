@@ -1,3 +1,84 @@
+    const parsed = new URL(text, window.location.origin);
+    const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
+    return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
+function _gbHtmlIframeSandboxForUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return _GB_UNTRUSTED_IFRAME_SANDBOX;
+  try {
+    const parsed = new URL(text, window.location.origin);
+    if (_gbIsTrustedInternalViewerUrl(parsed.href)) {
+      return _GB_TRUSTED_VIEWER_IFRAME_SANDBOX;
+    }
+    if (['http:', 'https:'].includes(parsed.protocol) && parsed.origin !== window.location.origin) {
+      return _GB_EXTERNAL_HTML_IFRAME_SANDBOX;
+    }
+  } catch {}
+  return _GB_UNTRUSTED_IFRAME_SANDBOX;
+}
+
+function _gbPrepareUntrustedIframe(iframe, rawUrl) {
+  if (!iframe) return null;
+  iframe.setAttribute('sandbox', _gbHtmlIframeSandboxForUrl(rawUrl || iframe.getAttribute('src') || iframe.src || ''));
+  iframe.setAttribute('referrerpolicy', 'no-referrer');
+  return iframe;
+}
+
+function _gbNormalizeHtmlViewerUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text, window.location.origin);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+function _gbSetHtmlViewerSrc(rawUrl) {
+  const url = _gbNormalizeHtmlViewerUrl(rawUrl);
+  if (!url) {
+    if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
+    return false;
+  }
+  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
+  if (iframe) iframe.src = url;
+  const urlBar = document.getElementById('html-url-bar');
+  if (urlBar) urlBar.value = url;
+  return true;
+}
+
+_gbPrepareUntrustedIframe(document.getElementById('html-iframe'));
+
+function openHtmlFile(label, path, opts) {
+  const openOpts = opts || {};
+  if (!openOpts.skipShowView) showView('html');
+  else if (!openOpts.skipStateView) state.view = 'html';
+  state.currentPagePath = path;
+  const currentTitleEl = document.getElementById('current-title');
+  if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
+  if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
+  if (!openOpts.skipNavPush) {
+    const _navEntry = {type:'html', label, path};
+    navPush(_navEntry);
+  }
+  if (!openOpts.skipRecent) addRecent(label, path, 'html');
+  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+  const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
+  if (typeof trackIframeLoading === 'function') {
+    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
+  }
+  _gbSetHtmlViewerSrc(url);
+  if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
+}
+/* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
+function getUsername() {
+  try { const cfg = JSON.parse(localStorage.getItem('meldex-user') || '{}'); return cfg.name || 'anonymous'; } catch { return 'anonymous'; }
 }
 
 // ビュー切り替え時のアノテーション再読み込みは showView 本体 (720-731行) で処理済み

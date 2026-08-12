@@ -429,6 +429,29 @@
     return { type, ...syncRoleNames(doc) };
   }
 
+  function moveRole(doc, value, destination = {}) {
+    const resolved = resolveRole(doc, value);
+    if (!resolved || resolved.kind === 'none') throw new Error('並べ替える役割を確認できません');
+    const list = resolved.kind === 'type' ? doc.scenarioTypes : doc.characters;
+    const item = resolved.kind === 'type' ? resolved.type : resolved.character;
+    const from = list.indexOf(item);
+    if (from < 0) return false;
+    let to;
+    if (Number.isInteger(destination.delta)) {
+      to = Math.max(0, Math.min(list.length - 1, from + destination.delta));
+    } else {
+      const targetId = text(destination.beforeId || destination.afterId);
+      const target = list.findIndex(candidate => text(candidate?.id) === targetId);
+      if (target < 0) return false;
+      to = target + (destination.afterId ? 1 : 0);
+      if (from < to) to -= 1;
+    }
+    if (to === from) return false;
+    list.splice(from, 1);
+    list.splice(to, 0, item);
+    return true;
+  }
+
   function countReferences(doc, value) {
     const resolved = resolveRole(doc, value);
     if (!resolved) return { rows: 0, characters: 0, total: 0 };
@@ -613,6 +636,7 @@
     setCharacterType,
     renameCharacter,
     renameType,
+    moveRole,
     syncRoleNames,
     countReferences,
     canDeleteRole,

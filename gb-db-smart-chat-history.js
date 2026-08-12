@@ -237,7 +237,10 @@
         const current = def.sortBy === column;
         def.sortBy = column;
         def.sortDir = current ? (def.sortDir === 'asc' ? 'desc' : 'asc') : 'asc';
-        if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(def, { skipVersionDirty: true });
+        if (typeof saveSmartDbDef === 'function') {
+          await saveSmartDbDef(def, { skipVersionDirty: true });
+          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
+        }
         renderChatHistorySmartDbTable(def);
       };
       header.addEventListener('click', sort);
@@ -365,7 +368,10 @@
       created: saved?.created || new Date().toISOString(),
     };
     if (typeof normalizeSmartDbDefinition === 'function') normalizeSmartDbDefinition(def);
-    if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(def, { skipVersionDirty: true });
+    if (typeof saveSmartDbDef === 'function') {
+      await saveSmartDbDef(def, { skipVersionDirty: true });
+      _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
+    }
     if (typeof selectSmartDb === 'function') {
       const selectOptions = { skipRecent: true };
       if (openOptions.refreshExistingView) {
@@ -381,15 +387,6 @@
       return true;
     }
     return false;
-  }
-
-  function _modalCloseHandler(overlay, restoreTarget) {
-    if (typeof _smartDbAttachOverlayDismiss === 'function') return _smartDbAttachOverlayDismiss(overlay, restoreTarget);
-    const close = () => overlay.remove();
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) close();
-    });
-    return close;
   }
 
   function _createFilterRow(filter, index) {
@@ -461,20 +458,8 @@
     const def = typeof _findSmartDbDefinition === 'function' ? _findSmartDbDefinition(smartDbId) : null;
     if (!_isChatHistoryDef(def)) return;
     const restoreTarget = typeof _smartDbActiveElement === 'function' ? _smartDbActiveElement() : document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.e2eId = 'chat-history-filter-overlay';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal cond-modal chat-history-settings-modal';
-    dialog.dataset.e2eId = 'chat-history-filter-dialog';
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'chat-history-filter-title');
-
-    const title = document.createElement('h3');
-    title.id = 'chat-history-filter-title';
-    title.className = 'gb-modal-title';
-    title.textContent = 'チャット履歴の絞り込み';
+    const body = document.createElement('div');
+    body.className = 'chat-history-settings-body';
     const description = document.createElement('p');
     description.className = 'gb-section-desc';
     description.textContent = 'すべての条件に一致する履歴を表示します。履歴ファイル自体は変更されません。';
@@ -488,8 +473,6 @@
     add.dataset.e2eId = 'chat-history-filter-add';
     add.textContent = '＋ 条件を追加';
     add.addEventListener('click', () => rowsHost.appendChild(_createFilterRow({}, rowsHost.children.length)));
-    const actions = document.createElement('div');
-    actions.className = 'btn-row';
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-sm';
@@ -500,42 +483,71 @@
     save.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
     save.dataset.e2eId = 'chat-history-filter-save';
     save.textContent = '適用';
-    actions.append(cancel, save);
-    dialog.append(title, description, rowsHost, add, actions);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    const close = _modalCloseHandler(overlay, restoreTarget);
-    cancel.addEventListener('click', close);
+    const error = document.createElement('div');
+    error.className = 'gb-inline-error chat-history-settings-error';
+    error.dataset.e2eId = 'chat-history-filter-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    body.append(description, rowsHost, add, error);
+    let busy = false;
+    const dialogApi = window.GBUI.createModal({
+      id: 'chat-history-filter',
+      title: 'チャット履歴の絞り込み',
+      body,
+      footer: [cancel, save],
+      variant: 'standard',
+      extraClass: 'chat-history-settings-modal',
+      geometryKey: 'chat-history-filter',
+      initialFocus: '[data-e2e-id="chat-history-filter-add"]',
+      returnFocus: restoreTarget,
+      onBeforeClose: () => !busy,
+    });
+    dialogApi.modal.classList.add('cond-modal');
+    dialogApi.modal.dataset.e2eId = 'chat-history-filter-dialog';
+    dialogApi.overlay.dataset.e2eId = 'chat-history-filter-overlay';
+    const setBusy = value => {
+      busy = !!value;
+      dialogApi.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      body.querySelectorAll('input,select,button').forEach(control => { control.disabled = busy; });
+      cancel.disabled = busy;
+      save.disabled = busy;
+    };
+    cancel.addEventListener('click', () => dialogApi.close('cancel'));
     save.addEventListener('click', async () => {
-      def.filters = Array.from(rowsHost.children).map(row => ({
+      const nextFilters = Array.from(rowsHost.children).map(row => ({
         column: row.querySelector('[data-field="column"]')?.value || 'title',
         operator: row.querySelector('[data-field="operator"]')?.value || 'contains',
         value: row.querySelector('[data-field="value"]')?.value || '',
       }));
-      if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(def, { skipVersionDirty: true });
-      renderChatHistorySmartDbTable(def);
-      close();
+      const previousFilters = Array.isArray(def.filters) ? def.filters : [];
+      setBusy(true);
+      error.hidden = true;
+      error.textContent = '';
+      try {
+        def.filters = nextFilters;
+        if (typeof saveSmartDbDef === 'function') {
+          await saveSmartDbDef(def, { skipVersionDirty: true });
+          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
+        }
+        renderChatHistorySmartDbTable(def);
+        setBusy(false);
+        dialogApi.close('apply');
+      } catch (err) {
+        def.filters = previousFilters;
+        error.textContent = `絞り込みを保存できませんでした: ${err?.message || String(err)}`;
+        error.hidden = false;
+        setBusy(false);
+      }
     });
-    if (typeof _smartDbFocusFirstDialogControl === 'function') _smartDbFocusFirstDialogControl(overlay);
+    dialogApi.open();
   }
 
   function showChatHistorySmartDbColumnsModal() {
     const def = state.currentSmartDb;
     if (!_isChatHistoryDef(def)) return;
-    const restoreTarget = document.querySelector('[data-e2e-id="chat-history-columns"]') || document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.e2eId = 'chat-history-columns-overlay';
-    const dialog = document.createElement('div');
-    dialog.className = 'modal chat-history-settings-modal';
-    dialog.dataset.e2eId = 'chat-history-columns-dialog';
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-labelledby', 'chat-history-columns-title');
-    const title = document.createElement('h3');
-    title.id = 'chat-history-columns-title';
-    title.className = 'gb-modal-title';
-    title.textContent = 'チャット履歴の表示項目';
+    const restoreTarget = typeof _smartDbActiveElement === 'function' ? _smartDbActiveElement() : document.activeElement;
+    const body = document.createElement('div');
+    body.className = 'chat-history-settings-body';
     const list = document.createElement('div');
     list.className = 'chat-history-column-list';
     const selected = new Set(_visibleColumns(def));
@@ -550,35 +562,79 @@
       label.append(input, document.createTextNode(meta.label));
       list.appendChild(label);
     });
-    const actions = document.createElement('div');
-    actions.className = 'btn-row';
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-sm';
+    cancel.dataset.e2eId = 'chat-history-columns-cancel';
     cancel.textContent = 'キャンセル';
     const save = document.createElement('button');
     save.type = 'button';
     save.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
     save.dataset.e2eId = 'chat-history-columns-save';
     save.textContent = '適用';
-    actions.append(cancel, save);
-    dialog.append(title, list, actions);
-    overlay.appendChild(dialog);
-    document.body.appendChild(overlay);
-    const close = _modalCloseHandler(overlay, restoreTarget);
-    cancel.addEventListener('click', close);
+    const error = document.createElement('div');
+    error.className = 'gb-inline-error chat-history-settings-error';
+    error.dataset.e2eId = 'chat-history-columns-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    body.append(list, error);
+    let busy = false;
+    const dialogApi = window.GBUI.createModal({
+      id: 'chat-history-columns',
+      title: 'チャット履歴の表示項目',
+      body,
+      footer: [cancel, save],
+      variant: 'standard',
+      extraClass: 'chat-history-settings-modal',
+      geometryKey: 'chat-history-columns',
+      initialFocus: '[data-e2e-id="chat-history-column-title"]',
+      returnFocus: restoreTarget,
+      onBeforeClose: () => !busy,
+    });
+    dialogApi.modal.dataset.e2eId = 'chat-history-columns-dialog';
+    dialogApi.overlay.dataset.e2eId = 'chat-history-columns-overlay';
+    const setBusy = value => {
+      busy = !!value;
+      dialogApi.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      body.querySelectorAll('input').forEach(control => { control.disabled = busy; });
+      cancel.disabled = busy;
+      save.disabled = busy;
+    };
+    cancel.addEventListener('click', () => dialogApi.close('cancel'));
     save.addEventListener('click', async () => {
       const columns = Array.from(list.querySelectorAll('input:checked')).map(input => input.value);
       if (!columns.length) {
-        if (typeof showStatus === 'function') showStatus('表示する項目を1つ以上選択してください', true);
+        error.textContent = '表示する項目を1つ以上選択してください';
+        error.hidden = false;
+        error.scrollIntoView({ block: 'end', inline: 'nearest' });
+        const scrollHost = error.closest('.gb-modal-body');
+        if (scrollHost) scrollHost.scrollTop = scrollHost.scrollHeight;
         return;
       }
-      def.columns = columns;
-      if (typeof saveSmartDbDef === 'function') await saveSmartDbDef(def, { skipVersionDirty: true });
-      renderChatHistorySmartDbTable(def);
-      close();
+      const previousColumns = Array.isArray(def.columns) ? def.columns : [];
+      setBusy(true);
+      error.hidden = true;
+      error.textContent = '';
+      try {
+        def.columns = columns;
+        if (typeof saveSmartDbDef === 'function') {
+          await saveSmartDbDef(def, { skipVersionDirty: true });
+          _runSmartDbBasePostCommitEffects(def, { skipVersionDirty: true });
+        }
+        renderChatHistorySmartDbTable(def);
+        setBusy(false);
+        dialogApi.close('apply');
+      } catch (err) {
+        def.columns = previousColumns;
+        error.textContent = `表示項目を保存できませんでした: ${err?.message || String(err)}`;
+        error.hidden = false;
+        setBusy(false);
+        error.scrollIntoView({ block: 'end', inline: 'nearest' });
+        const scrollHost = error.closest('.gb-modal-body');
+        if (scrollHost) scrollHost.scrollTop = scrollHost.scrollHeight;
+      }
     });
-    if (typeof _smartDbFocusFirstDialogControl === 'function') _smartDbFocusFirstDialogControl(overlay);
+    dialogApi.open();
   }
 
   function configureChatHistorySmartDbToolbar(def) {

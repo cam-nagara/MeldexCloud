@@ -1,65 +1,65 @@
-      if (e.key === 'Enter' && !isDanger) {
-        const active = document.activeElement;
-        if (active?.id === '_gb-cancel' || active?.id === '_gb-ok') return;
-        e.preventDefault();
-        cleanup(true);
-      }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(true));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(false));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(false); });
-    document.addEventListener('keydown', kh);
-    // danger 時は誤操作防止のため cancel に初期フォーカス、それ以外は ok
-    o.querySelector(isDanger ? '#_gb-cancel' : '#_gb-ok').focus();
-  });
-}
-
 // カスタムpromptダイアログ（prompt()の代替）
 function cfPrompt(message, defaultValue, options) {
   const opts = options || {};
   const okLabel = opts.okLabel || '決定';
   const cancelLabel = opts.cancelLabel || 'キャンセル';
+  if (typeof window.GBUI?.createModal !== 'function') {
+    const nativeValue = typeof window.prompt === 'function'
+      ? window.prompt(String(message || ''), String(defaultValue ?? ''))
+      : null;
+    return Promise.resolve(nativeValue);
+  }
   return new Promise(resolve => {
     const restoreFocusTo = _cfRestoreFocusTarget();
-    const o = document.createElement('div');
-    o.className = 'modal-overlay';
-    o.style.zIndex = '300';
-    o.innerHTML = `<div class="gb-confirm" role="dialog" aria-modal="true">
-      ${_buildCfDialogBody(message)}
-      <input type="text" id="_gb-prompt-input" class="gb-confirm-input" value="${esc(defaultValue ?? '')}">
-      <div class="gb-confirm-actions">
-        <button type="button" id="_gb-cancel" class="gb-btn gb-btn-sm">${esc(cancelLabel)}</button>
-        <button type="button" id="_gb-ok" class="gb-btn gb-btn-sm gb-btn-primary">${esc(okLabel)}</button>
-      </div>
-    </div>`;
-    document.body.appendChild(o);
-    _enhanceCfDialog(o, 'cf-prompt', '入力');
-    const input = o.querySelector('#_gb-prompt-input');
-    let done = false;
-    const cleanup = (val) => {
-      if (done) return;
-      done = true;
-      o.remove();
-      document.removeEventListener('keydown', kh);
-      _restoreCfDialogFocus(restoreFocusTo, o);
-      resolve(val);
+    const idBase = `gb-cf-prompt-${++_cfDialogSeq}`;
+    const messageNodes = _buildCfDialogBodyNodes(message, idBase);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = '_gb-prompt-input';
+    input.className = 'gb-confirm-input';
+    input.value = String(defaultValue ?? '');
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.id = '_gb-cancel';
+    cancel.className = 'gb-btn gb-btn-sm';
+    cancel.textContent = cancelLabel;
+    const ok = document.createElement('button');
+    ok.type = 'button';
+    ok.id = '_gb-ok';
+    ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.textContent = okLabel;
+    let result = null;
+    let modalApi = null;
+    const finish = (value, reason) => {
+      result = value;
+      modalApi.close(reason);
     };
-    function kh(e) {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        cleanup(null);
+    modalApi = _configureCfModal(window.GBUI.createModal({
+      id: idBase,
+      titleId: `${idBase}-title`,
+      title: '入力',
+      body: [...messageNodes, input],
+      footer: [cancel, ok],
+      variant: 'standard',
+      extraClass: 'gb-confirm',
+      geometryKey: 'cf-prompt',
+      initialFocus: () => input,
+      returnFocus: () => restoreFocusTo,
+      closeLabel: '入力をキャンセル',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => _completeCfModalPromise(modalApi, resolve, result),
+    }), 'cf-prompt', '入力', 'dialog', messageNodes, idBase);
+    ok.addEventListener('click', () => finish(input.value, 'submit'));
+    cancel.addEventListener('click', () => finish(null, 'cancel'));
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish(input.value, 'submit');
       }
-    }
-    o.querySelector('#_gb-ok').addEventListener('click', () => cleanup(input.value));
-    o.querySelector('#_gb-cancel').addEventListener('click', () => cleanup(null));
-    o.addEventListener('click', (e) => { if (e.target === o) cleanup(null); });
-    document.addEventListener('keydown', kh);
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); cleanup(input.value); }
-      if (e.key === 'Escape') { e.preventDefault(); cleanup(null); }
     });
-    input.focus();
-    input.select();
+    modalApi.open();
+    requestAnimationFrame(() => input.select());
   });
 }
 

@@ -348,74 +348,74 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
     return;
   }
   const panelSeq = ++_mappedCalendarPanelSeq;
-  const titleId = `mapped-cal-title-${panelSeq}`;
-  const descId = `mapped-cal-desc-${panelSeq}`;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.mappedCalendarPanel = '1';
-  const modal = document.createElement('div');
-  modal.className = 'modal mapped-calendar-event-panel';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', titleId);
-  modal.setAttribute('aria-describedby', descId);
-  modal.tabIndex = -1;
-  modal.style.cssText = 'min-width:0;width:min(520px,95vw);max-width:min(520px,95vw);';
   const startWithTime = !!ctx.startPtc.withTime || (typeof _dbDateHasTimeToken === 'function' && _dbDateHasTimeToken(ctx.startRaw));
   const endWithTime = !!ctx.endPtc.withTime || (typeof _dbDateHasTimeToken === 'function' && _dbDateHasTimeToken(ctx.endRaw));
   const startField = _buildMappedCalendarInput('開始', ctx.startRaw, startWithTime, `mapped-cal-start-${panelSeq}`, 'mapped-cal-start');
   const endField = (ctx.inlineRange || ctx.mapping.endProp || ev._mappedSupportsEnd)
     ? _buildMappedCalendarInput('終了', ctx.inlineRange ? ctx.endRaw : ctx.endRaw, endWithTime || startWithTime, `mapped-cal-end-${panelSeq}`, 'mapped-cal-end')
     : null;
-
-  modal.innerHTML = `
-    <h3 id="${titleId}">${esc(ev.name || ev.entityName || '予定')}</h3>
-    <div id="${descId}" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">
-      日時のみここで編集できます ${fieldHelp('タイトルや色は元エントリ側で変更してください')}
-    </div>
-    <div id="mapped-cal-fields" style="display:flex;flex-direction:column;gap:8px;"></div>
-    <div class="btn-row" data-modal-footer style="justify-content:space-between;margin-top:12px;">
-      <button type="button" class="gb-btn gb-btn-sm" id="mapped-cal-open" data-e2e-id="mapped-cal-open" style="min-height:44px;">エントリを開く</button>
-      <div style="display:flex;gap:8px;">
-        <button type="button" class="gb-btn gb-btn-sm" id="mapped-cal-cancel" data-e2e-id="mapped-cal-cancel" style="min-height:44px;">キャンセル</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" id="mapped-cal-save" data-e2e-id="mapped-cal-save" style="min-height:44px;">保存</button>
-      </div>
-    </div>
-  `;
-  overlay.appendChild(modal);
-  let closed = false;
-  const closePanel = (options = {}) => {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener('keydown', onKeyDown);
-    overlay.remove();
-    if (options.restoreFocus !== false) {
-      _focusMappedCalendarTrigger(triggerEl);
-      setTimeout(() => _focusMappedCalendarTrigger(triggerEl), 0);
-      setTimeout(() => _focusMappedCalendarTrigger(triggerEl), 60);
-    }
-  };
-  const onKeyDown = (e) => {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    closePanel();
-  };
-  overlay.addEventListener('pointerdown', (e) => {
-    if (e.target === overlay) closePanel();
-  });
-  document.addEventListener('keydown', onKeyDown);
-  document.body.appendChild(overlay);
-
-  const fields = modal.querySelector('#mapped-cal-fields');
+  const description = document.createElement('div');
+  description.id = `mapped-cal-desc-${panelSeq}`;
+  description.style.cssText = 'font-size:12px;color:var(--fg2);margin-bottom:8px;';
+  description.innerHTML = `日時のみここで編集できます ${fieldHelp('タイトルや色は元エントリ側で変更してください')}`;
+  const fields = document.createElement('div');
+  fields.id = 'mapped-cal-fields';
+  fields.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
   fields.appendChild(startField.wrap);
   if (endField) fields.appendChild(endField.wrap);
 
-  modal.querySelector('#mapped-cal-open')?.addEventListener('click', () => {
-    closePanel({ restoreFocus: false });
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'gb-btn gb-btn-sm';
+  openBtn.id = 'mapped-cal-open';
+  openBtn.dataset.e2eId = 'mapped-cal-open';
+  openBtn.style.cssText = 'min-height:44px;margin-right:auto;';
+  openBtn.textContent = 'エントリを開く';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.id = 'mapped-cal-cancel';
+  cancelBtn.dataset.e2eId = 'mapped-cal-cancel';
+  cancelBtn.style.minHeight = '44px';
+  cancelBtn.textContent = 'キャンセル';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  saveBtn.id = 'mapped-cal-save';
+  saveBtn.dataset.e2eId = 'mapped-cal-save';
+  saveBtn.style.minHeight = '44px';
+  saveBtn.textContent = '保存';
+  const modalApi = window.GBUI.createModal({
+    id: `mapped-calendar-event-panel-${panelSeq}`,
+    title: ev.name || ev.entityName || '予定',
+    body: [description, fields],
+    footer: [openBtn, cancelBtn, saveBtn],
+    variant: 'standard',
+    extraClass: 'mapped-calendar-event-panel',
+    geometryKey: 'mapped-calendar-event',
+    initialFocus: startField.input,
+    returnFocus: triggerEl || undefined,
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.mappedCalendarPanel = '1';
+  modalApi.modal.setAttribute('aria-describedby', description.id);
+  modalApi.footer.classList.add('mapped-calendar-event-footer');
+  modalApi.modal.style.cssText = 'min-width:0;width:min(520px,95vw);max-width:min(520px,95vw);';
+  modalApi.footer.style.columnGap = '8px';
+  modalApi.footer.style.paddingLeft = '12px';
+  modalApi.footer.style.paddingRight = '12px';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'mapped-cal-close-icon';
+  const closePanel = (reason = 'programmatic') => modalApi.close(reason);
+  modalApi.open();
+
+  openBtn.addEventListener('click', () => {
+    closePanel('open-entry');
     if (ctx.entityPath && typeof selectEntity === 'function') selectEntity(ctx.entityPath);
   });
-  modal.querySelector('#mapped-cal-cancel')?.addEventListener('click', () => closePanel());
-  modal.querySelector('#mapped-cal-save')?.addEventListener('click', async () => {
+  cancelBtn.addEventListener('click', () => closePanel('cancel'));
+  saveBtn.addEventListener('click', async () => {
     const startVal = startField.input.value;
     const endVal = endField ? endField.input.value.trim() : '';
     if (!startVal) {
@@ -433,19 +433,17 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
         clearEndIfMissing: !!endField && !endVal,
       });
       showStatus('日時を更新しました');
-      closePanel();
+      closePanel('save');
     } catch (e) {
       showStatus('日時の更新に失敗: ' + (e?.message || e), true);
     }
   });
-  window.GBModalShell?.enhanceAll?.();
-  setTimeout(() => startField.input.focus(), 30);
 }
 
 function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, currentMapping) {
   const current = _normalizeCalendarMapping(currentMapping);
   const dateProps = props.filter(p => (propTypes[p]?.type || '') === 'date');
-  const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
+  const textLikeProps = props.filter(p => ['text', 'select', 'multi-select', 'link', 'url', 'number', 'date'].includes(propTypes[p]?.type || 'text'));
 
   const rowSelect = (id, label, options, value, placeholder = '(なし)', help = '') => `
     <div class="field gb-field" style="margin-top:6px;">

@@ -1,10 +1,3 @@
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });
 })();
 
 (function initOutlinerLassoSelection() {

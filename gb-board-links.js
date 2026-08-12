@@ -84,7 +84,7 @@ function _bdOpenExternalActionUrl(path) {
 
 const _BD_LINK_OPENABLE_TYPES = new Set(['page', 'entity', 'scriptnote', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'smart-db', 'html', 'folder', 'calendar', 'csv', 'media', 'board', 'timer']);
 const _BD_DEFAULT_OPEN_TARGET_KEY = 'gb:board-default-open-target:v1';
-const _BD_VALID_OPEN_TARGETS = new Set(['float', 'main', 'sidebar']);
+const _BD_VALID_OPEN_TARGETS = new Set(['main', 'right-sidebar']);
 const _bdResolvedLinkTypeCache = new Map();
 const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
@@ -92,14 +92,19 @@ let _bdLinkedSelectionSyncSeq = 0;
 
 function _bdNormalizeOpenTarget(target) {
   const next = String(target || '').trim().toLowerCase();
-  return _BD_VALID_OPEN_TARGETS.has(next) ? next : 'float';
+  // 旧保存値は読み取り時にだけ正規化し、以後は right-sidebar を保存する。
+  if (next === 'float' || next === 'sidebar') return 'right-sidebar';
+  return _BD_VALID_OPEN_TARGETS.has(next) ? next : 'right-sidebar';
 }
 
 function _bdGetDefaultOpenTarget() {
   try {
-    return _bdNormalizeOpenTarget(window.localStorage?.getItem(_BD_DEFAULT_OPEN_TARGET_KEY));
+    const saved = window.localStorage?.getItem(_BD_DEFAULT_OPEN_TARGET_KEY);
+    const normalized = _bdNormalizeOpenTarget(saved);
+    if (saved && saved !== normalized) window.localStorage?.setItem(_BD_DEFAULT_OPEN_TARGET_KEY, normalized);
+    return normalized;
   } catch {
-    return 'float';
+    return 'right-sidebar';
   }
 }
 
@@ -148,18 +153,17 @@ function _bdIsCloudMobileBoardSurface() {
 
 function _bdAvailableOpenTargets() {
   if (_bdIsStandaloneBoardSurface()) {
-    return [{ value: 'float', label: 'ビューワー' }];
+    return [{ value: 'main', label: 'ビューワー' }];
   }
   if (_bdIsCloudMobileBoardSurface()) {
     return [
-      { value: 'float', label: 'サイドドロワー' },
+      { value: 'right-sidebar', label: 'サイドドロワー' },
       { value: 'main', label: 'メインパネル' },
     ];
   }
   return [
-    { value: 'float', label: 'フロートパネル' },
+    { value: 'right-sidebar', label: '右サイドバー' },
     { value: 'main', label: 'メインパネル' },
-    { value: 'sidebar', label: '右サイドバー' },
   ];
 }
 
@@ -679,32 +683,15 @@ async function openLinkedPathInMainPane(path, label, options) {
   });
 }
 
-async function openLinkedPathInFloatPanel(path, label, options) {
-  const opts = options || {};
-  const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
-  if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return;
-  const tabState = { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) };
-  if (typeof GBFloatPanel !== 'undefined' && typeof GBFloatPanel.open === 'function') {
-    GBFloatPanel.open(entry.type, {
-      path: entry.path || path || '',
-      label: entry.label || label || '',
-      linkType: opts.linkType || entry.type || '',
-      state: tabState,
-    });
-    return;
-  }
-  if (typeof navOpen === 'function') {
-    navOpen(entry);
-    return;
-  }
-  if (typeof openLink === 'function') openLink(entry.path || path || '', entry.label || label || '');
+async function openLinkedPathInRightSidebar(path, label, options) {
+  return openLinkedPathInRightPane(path, label, options);
 }
 
 async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
-  // フロートパネル／サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
+  // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
   // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
   // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
   // sourcePaneId を明示的なヒントとして優先し、無ければフォーカス位置で判定する。
@@ -732,18 +719,19 @@ async function openLinkedPathInRightPane(path, label, options) {
       state: { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) },
     });
   }
-  return openLinkedPathInFloatPanel(path, label, { ...opts, entry });
+  if (typeof navOpen === 'function') {
+    navOpen(entry);
+    return true;
+  }
+  return false;
 }
 
 async function _bdOpenAtTarget(path, label, linkType, target, options) {
   const opts = { ...(options || {}), linkType };
   const normalized = _bdNormalizeOpenTarget(target);
-  const mapped = (_bdIsStandaloneBoardSurface() || (_bdIsCloudMobileBoardSurface() && normalized === 'sidebar'))
-    ? 'float'
-    : normalized;
+  const mapped = _bdIsStandaloneBoardSurface() ? 'main' : normalized;
   if (mapped === 'main') return openLinkedPathInMainPane(path, label, opts);
-  if (mapped === 'sidebar') return openLinkedPathInRightPane(path, label, opts);
-  return openLinkedPathInFloatPanel(path, label, opts);
+  return openLinkedPathInRightPane(path, label, opts);
 }
 
 async function copyBoardLinkedPath(path) {
@@ -810,7 +798,7 @@ const MeldexBoardOpenTarget = Object.freeze({
 if (typeof window !== 'undefined') window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
 
 // 右サイドバー(ビューワータブ)にエントリのプロパティ一覧＋本文を描画する。
-// フルページ/フロートパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
+// フルページ/サブパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
 async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   if (!entityPath || !pane || typeof apiFetch !== 'function' || typeof renderEntityPropsGridInto !== 'function') return false;
   try {
@@ -841,7 +829,7 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
     if (parentDb) {
       const parent = document.createElement('button');
       parent.type = 'button';
-      parent.className = 'gb-float-panel-link-button';
+      parent.className = 'gb-subpanel-link-button';
       parent.style.cssText = 'margin-bottom:8px;';
       parent.textContent = '← ' + (parentDb.split('/').pop() || parentDb);
       parent.title = parentDb;
@@ -883,8 +871,8 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   }
 }
 
-function _bdOpenEntryInFloatPanel(label, path, type) {
-  openLinkedPathInFloatPanel(path, label, { linkType: type });
+function _bdOpenEntryInRightSidebar(label, path, type) {
+  openLinkedPathInRightSidebar(path, label, { linkType: type });
 }
 
 function _bdStandaloneViewerUrl(entry) {
@@ -945,7 +933,7 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   e?.preventDefault?.();
   e?.stopPropagation?.();
   document.querySelectorAll('.gb-context-menu').forEach(menu => menu.remove());
-  // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const anchorEl = e?.currentTarget || e?.target || null;
   const canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
@@ -973,15 +961,14 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
     menu.appendChild(item);
   };
   if (_bdIsStandaloneBoardSurface()) {
-    addItem('ビューワーで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
+    addItem('ビューワーで開く', 'layers-2', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else if (_bdIsCloudMobileBoardSurface()) {
-    addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
+    if (canUseRightSidebar) addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else {
-    addItem('フロートパネルで開く', 'layers-2', () => openLinkedPathInFloatPanel(targetPath, label, opts));
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
     if (canUseRightSidebar) {
-      addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightPane(targetPath, label, { ...opts, sourceEl: anchorEl }));
+      addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     }
   }
   if (_bdIsExternalBrowserUrl(targetPath)) {

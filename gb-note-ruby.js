@@ -62,6 +62,20 @@
     try { el.focus({ preventScroll: true }); } catch (_) { try { el.focus(); } catch (__) { /* 失われたノード */ } }
   }
 
+  function selectedRubySpan(range, editable) {
+    if (!range || !editable) return null;
+    var start = range.startContainer && range.startContainer.nodeType === 1
+      ? range.startContainer
+      : range.startContainer && range.startContainer.parentElement;
+    var end = range.endContainer && range.endContainer.nodeType === 1
+      ? range.endContainer
+      : range.endContainer && range.endContainer.parentElement;
+    var startSpan = start && start.closest ? start.closest('[data-ruby]') : null;
+    var endSpan = end && end.closest ? end.closest('[data-ruby]') : null;
+    if (!startSpan || startSpan !== endSpan || !editable.contains(startSpan)) return null;
+    return range.toString().trim() === String(startSpan.textContent || '').trim() ? startSpan : null;
+  }
+
   // --- ルビの適用 -----------------------------------------------------------
   // シナリオの _applyRubyToSelection と同じく、本文を作り直さず DOM を直接書き換える。
   // 再描画を挟まないのでスクロール位置もキャレットも動かない。
@@ -83,13 +97,7 @@
     sel.addRange(range);
     if (typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
 
-    var rangeRoot = range.commonAncestorContainer && range.commonAncestorContainer.nodeType === 1
-      ? range.commonAncestorContainer
-      : (range.commonAncestorContainer && range.commonAncestorContainer.parentElement);
-    var existing = rangeRoot && rangeRoot.closest ? rangeRoot.closest('[data-ruby]') : null;
-    var span = (existing && editable.contains(existing) && text.trim() === existing.textContent.trim())
-      ? existing
-      : null;
+    var span = selectedRubySpan(range, editable);
 
     if (span) {
       span.dataset.ruby = reading;
@@ -124,43 +132,40 @@
   }
 
   // --- 入口 -----------------------------------------------------------------
-  // シナリオの _insertRuby と同じ形。統合ポップアップを優先し、使えない環境
-  // （クラウドのスマホ編集UIなど。書式設定ポップアップ自体が抑止される）だけ
-  // 専用ポップアップへ落とす。
+  // 書式設定とは別の専用ポップアップを開く。
   function insertRuby(editable, range) {
     if (!editable || !range) return;
     var gts = global.GBTextSelectionFormat;
-    if (gts && typeof gts.openForSelection === 'function') {
-      focusWithoutScroll(editable);
-      var sel = global.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range.cloneRange());
-      gts.openForSelection({ focusRuby: true, force: true });
-      if (document.querySelector('.gb-text-selection-fmt [data-e2e-id="sn2-ruby-row"]')) return;
-    }
+    if (gts && typeof gts.suppressFor === 'function') gts.suppressFor(1200);
+    else if (gts && typeof gts.close === 'function') gts.close();
+    focusWithoutScroll(editable);
+    var sel = global.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range.cloneRange());
     showLegacyPopup(editable, range);
   }
 
-  // 統合ポップアップが使えない環境向けの専用ポップアップ（旧 showNoteRubyPopup）。
+  // ノート専用のルビ編集ポップアップ。
   function showLegacyPopup(editable, range) {
     if (!editable || !range) return;
     document.querySelectorAll('.note-ruby-popup').forEach(function (el) { el.remove(); });
     var text = range.toString();
     if (!text) return;
-    var esc = global.esc || function (s) { return String(s == null ? '' : s); };
+    var existingRuby = selectedRubySpan(range, editable);
     var popup = document.createElement('div');
     popup.className = 'gb-context-menu note-ruby-popup';
     popup.setAttribute('role', 'dialog');
     popup.setAttribute('aria-label', 'ノート本文にルビを設定');
     var label = document.createElement('div');
     label.className = 'note-ruby-popup-label';
-    label.textContent = '「' + text.slice(0, 20) + '」にルビを設定';
+    label.textContent = '「' + text.slice(0, 20) + '」のルビを' + (existingRuby ? '編集' : '設定');
     var row = document.createElement('div');
     row.className = 'note-ruby-popup-row';
     var input = document.createElement('input');
     input.type = 'text';
     input.className = 'gb-input note-ruby-input';
     input.placeholder = 'ルビを入力...';
+    input.value = existingRuby ? String(existingRuby.dataset.ruby || '') : '';
     input.setAttribute('aria-label', 'ノート本文のルビ');
     input.dataset.e2eId = 'note-ruby-input';
     // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
@@ -169,7 +174,7 @@
     applyButton.type = 'button';
     applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary note-ruby-ok';
     applyButton.dataset.e2eId = 'note-ruby-apply';
-    applyButton.textContent = '設定';
+    applyButton.textContent = existingRuby ? '更新' : '設定';
     row.append(input, applyButton);
     popup.append(label, row);
     popup.addEventListener('mousedown', function (ev) { if (ev.target.tagName !== 'INPUT') ev.preventDefault(); });
@@ -181,11 +186,13 @@
     var keyHandler = null;
     var cleanup = function () {
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler, true);
-      if (keyHandler) document.removeEventListener('keydown', keyHandler, true);
+      if (keyHandler) global.removeEventListener('keydown', keyHandler, true);
       closeHandler = null;
       keyHandler = null;
     };
     var closePopup = function (restoreFocusEl) {
+      var formatUi = global.GBTextSelectionFormat;
+      if (formatUi && typeof formatUi.suppressFor === 'function') formatUi.suppressFor(800);
       if (typeof global._closeEditorPopup === 'function') global._closeEditorPopup(popup, cleanup, restoreFocusEl);
       else { cleanup(); popup.remove(); }
     };
@@ -197,6 +204,7 @@
     };
     applyButton.addEventListener('click', apply);
     input.addEventListener('keydown', function (ev) {
+      if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'Enter') { ev.preventDefault(); apply(); }
       else if (ev.key === 'Escape') { ev.preventDefault(); closePopup(editable); }
       ev.stopPropagation();
@@ -219,7 +227,7 @@
     };
     setTimeout(function () {
       document.addEventListener('pointerdown', closeHandler, true);
-      document.addEventListener('keydown', keyHandler, true);
+      global.addEventListener('keydown', keyHandler, true);
       try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); }
     }, 0);
   }
@@ -264,6 +272,7 @@
     captureScroll: captureScroll,
     restoreScroll: restoreScroll,
     focusWithoutScroll: focusWithoutScroll,
+    selectedRubySpan: selectedRubySpan,
     attachBoundary: attachBoundary,
   };
 

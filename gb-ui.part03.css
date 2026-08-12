@@ -436,6 +436,10 @@ input[type="range"]::-moz-range-thumb {
   background: var(--ui-bg-surface);
   overflow: auto;
 }
+.gb-modal-variant-full-bleed > .gb-modal-body,
+.gb-modal-variant-full-bleed > .gb-modal-shell-body {
+  padding: 0;
+}
 .gb-modal-footer {
   display: flex;
   align-items: center;
@@ -459,8 +463,8 @@ input[type="range"]::-moz-range-thumb {
 
 /* ------------------------------------------------------------
    シンプル確認ダイアログ (cfConfirm / cfAlert / cfPrompt 共通)
-   v0.5.250: .modal (大型ダイアログ殻) を使わず、短い問いかけに最適化した
-   コンパクト構造。ヘッダー / フッター分割を持たず、メッセージとアクション行だけ。
+   短い問いかけ向けの幅と本文密度を保ち、共通 .gb-modal の
+   ヘッダー／本文／フッター構造でも二重余白を作らない。
    ------------------------------------------------------------ */
 .gb-confirm {
   background: var(--ui-bg-surface);
@@ -474,6 +478,20 @@ input[type="range"]::-moz-range-thumb {
   flex-direction: column;
   gap: var(--ui-space-5);
   box-sizing: border-box;
+}
+.gb-modal.gb-confirm {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.gb-modal.gb-confirm > .gb-modal-body {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-space-5);
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 /* 連続するメッセージ (2 行メッセージのタイトル + 本文) は近接配置 */
 .gb-confirm-message + .gb-confirm-message { margin-top: calc(-1 * var(--ui-space-3)); }
@@ -549,6 +567,10 @@ input[type="range"]::-moz-range-thumb {
     max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
     overflow: auto;
     padding: var(--ui-space-5);
+  }
+  .gb-modal.gb-confirm {
+    padding: 0;
+    overflow: hidden;
   }
   .gb-confirm-actions { gap: var(--ui-space-3); }
   .gb-confirm-actions .gb-btn {

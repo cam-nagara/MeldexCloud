@@ -8,7 +8,7 @@
   <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="color-scheme" content="dark">
   <title>Meldex BETA</title>
-  <meta name="description" content="Meldex BETA の配布ページです。利用環境に合わせてデスクトップ版とクラウド版を選べます。">
+  <meta name="description" content="Meldex BETA の配布ページです。作品も資料もすべて手元のファイルとして残る創作支援ワークスペース。デスクトップ版とクラウド版を選べます。">
   <link rel="icon" href="Meldex_icon_64.png" type="image/png">
   <link rel="apple-touch-icon" sizes="180x180" href="Meldex_apple_touch_icon_180.png">
   <link rel="apple-touch-icon" sizes="167x167" href="Meldex_apple_touch_icon_167.png">
@@ -25,7 +25,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-      var fallbackVersion = 'v0.7.182 BETA';
+      var fallbackVersion = 'v0.7.259 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -206,6 +206,7 @@
       <span>Meldex BETA</span>
     </a>
     <nav class="nav" aria-label="ページ内ナビゲーション">
+      <a href="#philosophy">考え方</a>
       <a href="#download">デスクトップ版</a>
       <a href="#cloud">クラウド版</a>
       <a href="#standalone-apps">単独アプリ</a>
@@ -224,7 +225,8 @@
         <p class="eyebrow">BETA / 利用環境に合わせて選択</p>
         <h1>Meldex BETA</h1>
         <p class="lead">
-          Meldexは、漫画・小説・シナリオ・企画などの創作を、資料整理から構成・執筆・管理まで一つにまとめる創作支援ワークスペースです。
+          Meldexは、漫画・小説・シナリオ・企画などの創作を、資料集めから構成・執筆・進行管理まで一つにまとめる創作支援ワークスペースです。
+          書いたものも集めたものも、特定のサービスの中ではなく、手元のフォルダに「何年後でも開ける一般的な形式のファイル」として残ります。
           Windows PCではデスクトップ版とクラウド版、iPad・スマホ・Macなどではブラウザで使えるクラウド版を選べます。
         </p>
         <div class="actions">
@@ -243,7 +245,7 @@
           </div>
         </header>
         <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.182 BETA</span></li>
+          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.259 BETA</span></li>
           <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
           <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
           <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
@@ -254,6 +256,46 @@
         </ul>
       </aside>
     </section>
+    <section class="section" id="philosophy">
+      <div class="section-inner">
+        <h2>Meldexの考え方</h2>
+        <p>Meldexは「創作の材料と成果を、全部自分の手元に置く」ために作られています。どの機能も、この4つの方針の上に載っています。</p>
+        <div class="grid">
+          <article class="item">
+            <h3>データはすべて、手元のファイル</h3>
+            <ul>
+            <li>書いた文章も、集めた画像も、表もボードも、あなたのフォルダの中に通常のファイルとして保存されます。</li>
+            <li>どこかのサービスの障害や終了で、作品が読めなくなることはありません。</li>
+            <li>バックアップはフォルダをコピーするだけ。エクスポート作業を待つ必要はありません。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>何年後でも開ける形式だけを使う</h3>
+            <ul>
+            <li>保存形式はMarkdown・JSON・CSV・SQLiteなどの一般的な形式だけ。作品データを独自形式や暗号化で閉じ込めません。</li>
+            <li>仮にMeldexが使えなくなっても、テキストエディタや表計算ソフトなど別の手段でデータを読み出せます。</li>
+            <li>他ツールへ移行するための手順マニュアルまで用意しています。本体はMITライセンスで配布しています。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>すべてが一つの場所で繋がる</h3>
+            <ul>
+            <li>文章・表・ボード・台本・画像・スケジュールが同じ場所にあり、互いにリンクで行き来できます。</li>
+            <li>表に登録した名前は、本文に書くだけで自動でリンクになります。作品の設定資料が、手作業なしで網の目のように育ちます。</li>
+            <li>Meldex上でファイルを移動・改名しても、リンクやバックリンクは自動で追従します。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>AIに読ませる前提で貯める</h3>
+            <ul>
+            <li>手元に貯めたノート・表・ボード・台本・画像は、そのままAIチャットや外部AIツールの参照資料になります。</li>
+            <li>AIは読むだけでなく、調査した結果を表や図としてMeldexの中へ書き戻すこともできます。</li>
+            <li>「集める → 貯まる → AIが読む → AIが書く」の循環が、手元で完結します。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
     <section class="section" id="download">
       <div class="section-inner">
         <h2>デスクトップ版をダウンロード</h2>
@@ -262,11 +304,11 @@
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.182 BETA / 最新</option>
+              <option value="0">v0.7.259 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.182 BETA</strong></span>
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.259 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -377,7 +419,7 @@
     <section class="section" id="features">
       <div class="section-inner">
         <h2>機能紹介</h2>
-        <p>Meldexのメイン機能・補助機能・取り込み機能について、それぞれの特徴を3つずつ紹介します。デスクトップ版とクラウド版のどちらでも、同じ作品データを扱えます。</p>
+        <p>どの機能で作ったものも、手元のフォルダに一般的な形式のファイルとして残ります。メイン機能・補助機能・取り込み機能の特徴を3つずつ紹介します。デスクトップ版とクラウド版のどちらでも、同じ作品データを扱えます。</p>
         <h3 class="group-title">メイン機能</h3>
         <div class="grid">
           <article class="item">
@@ -399,33 +441,33 @@
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>ノートエディタ</h3>
             <ul>
-            <li>自動リンク: ファイル名を書くだけで関連資料へのリンクが自動で張られ、バックリンクからつながりを辿れます。</li>
+            <li>自動リンク: シートに登録した名前を本文に書くだけで関連資料へのリンクが自動で張られ、バックリンクからつながりを辿れます。</li>
             <li>Markdown形式のリッチテキスト編集。見出し・リスト・画像・コールアウト・目次を扱えます。</li>
-            <li>編集履歴とバージョン管理で、過去の状態へ戻せます。</li>
+            <li>縦書きとルビに対応。シートの「ふりがな」列に読みを登録しておくと、その名前に自動でルビが振られます。</li>
             </ul>
           </article>
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/></svg>シナリオ</h3>
             <ul>
-            <li>ページ・コマ・キャラクター・セリフを表形式で構造化して執筆できます。</li>
-            <li>プロットモードで、構成の検討と本文の執筆を行き来できます。</li>
-            <li>条件付きカラー、印刷レイアウト、CLIP STUDIO PAINT連携などの出力に対応します。</li>
+            <li>ページ・コマ・キャラクター・セリフを表形式で執筆できます。キャラクター名は毎回入力せず、ドロップダウンから選べます。</li>
+            <li>縦書き・ルビ・プロットモードに対応し、構成の検討と本文の執筆を行き来できます。</li>
+            <li>書いたシナリオはCLIP STUDIO PAINTへ送信でき、ネーム作業へそのまま進めます。条件付きカラーや印刷レイアウトにも対応します。</li>
             </ul>
           </article>
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>シート</h3>
             <ul>
-            <li>リレーション・ロールアップ・数式を含む列タイプで、キャラ・設定・伏線・タスクを構造化できます。</li>
-            <li>ピボットテーブル・ギャラリー・カンバン・タイムライン・チャートなどの表示を切り替えられます。</li>
-            <li>スケジュールとの双方向同期で、日付の列をカレンダーに表示できます。</li>
+            <li>リレーション・ロールアップ・数式などの列タイプで、キャラ・設定・伏線・タスクを構造化できます。生年月日から年齢を求めるような数式も書けます。</li>
+            <li>ひとつの項目に複数の案を「採用・案・ボツ」のステータス付きで残せます。没にした案も消えず、いつでも見返せます。</li>
+            <li>ピボット・ギャラリー・カンバン・タイムライン・チャートの表示切り替え、画像サムネイルの拡大表示、スケジュールとの双方向同期に対応します。</li>
             </ul>
           </article>
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></svg>ボード</h3>
             <ul>
-            <li>カードとラインを自由に配置して、関係図・構成図・伏線マップを作れます。</li>
-            <li>ノートやシートへのリンクカードを置いて、資料へすぐ移動できます。</li>
-            <li>シートやスマートシートからカードを一括取込できます。</li>
+            <li>カードとラインを自由に配置して、関係図・マインドマップ・伏線マップを作れます。</li>
+            <li>ノートやシートへのリンクカードを置けるので、全体の構成を眺めながら、カードの中身をパネルで確認できます。</li>
+            <li>画像は「埋め込み」と「リンク参照」を選べます。シートやスマートシートからカードを一括取込できます。</li>
             </ul>
           </article>
           <article class="item">
@@ -475,7 +517,7 @@
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4c0-1.1.9-2 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg>チャット</h3>
             <ul>
             <li>参照中のファイルや作品の設定を文脈にして、AIへ相談できます。</li>
-            <li>AIがノートやシートを読み書きするツール実行に対応しています。</li>
+            <li>AIは答えるだけでなく、ノート・シート・ボード・シナリオの作成や編集もできます。調査の結果を表や図の形で残せます。</li>
             <li>チーム利用時は、メンバーとのメッセージ交換にも使えます。</li>
             </ul>
           </article>
@@ -512,7 +554,7 @@
             </ul>
           </article>
         </div>
-        <h3 class="group-title">取り込み・Web連携</h3>
+        <h3 class="group-title">取り込み・外部連携</h3>
         <div class="grid">
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>インポート</h3>
@@ -525,9 +567,9 @@
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16z"/></svg>X（旧Twitter）連携</h3>
             <ul>
-            <li>Xのブックマークを取り込んで、資料として整理できます。</li>
-            <li>アカウントを指定して、ポストをまとめてダウンロードできます。</li>
-            <li>定期実行に対応し、新しいポストを自動で取り込み続けられます。</li>
+            <li>自分のXアカウントで認証して、ブックマークした投稿を取り込めます。差分同期で同じ投稿は増えません。</li>
+            <li>アカウントを指定して、そのアカウントの投稿を画像つきでまとめて取り込めます。</li>
+            <li>定期実行に対応し、新しい投稿を自動で取り込み続けられます。</li>
             </ul>
           </article>
           <article class="item">
@@ -536,6 +578,22 @@
             <li>ブラウザで見ているWebページ・選択範囲・画像・ブックマークをMeldexへ保存できます。</li>
             <li>「ページ内の画像を一括保存」で、ページ上の画像をまとめてダウンロードできます。</li>
             <li>Chrome / Edge / Brave / Vivaldi / Opera に対応し、デスクトップ版の設定画面から準備できます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>AIツール連携（CLI / MCP）</h3>
+            <ul>
+            <li>Claude Code / Codex / Gemini CLI などのAI CLIから、Meldex内のノートやシートを直接読み書きできます（デスクトップ版）。</li>
+            <li>手元に貯めた資料・設定・作業ログが、そのままAIの参照資料になります。</li>
+            <li>チャットパネルからCLIへ依頼を送り、返答をMeldexに残すこともできます。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>エクスポート・移行</h3>
+            <ul>
+            <li>Word文書・HTML・画像・CSV・ICSなど、一般的な形式への書き出しに対応します。</li>
+            <li>作品フォルダを丸ごとコピーするだけで、バックアップや別環境への引っ越しができます。</li>
+            <li>他ツールへ移行するための手順もマニュアルとして用意しています。囲い込まないことを方針にしています。</li>
             </ul>
           </article>
         </div>

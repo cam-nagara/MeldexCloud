@@ -5,6 +5,7 @@
 
   const DONE_KEY = 'meldex-onboarding-complete-v1';
   let state = { step: 0, startup: null, sample: true, busy: false };
+  let modalController = null;
 
   function _setOnboardingActive(active) {
     try {
@@ -51,7 +52,7 @@
 
   function _openSampleGuide() {
     _setOnboardingActive(false);
-    document.getElementById('meldex-onboarding-overlay')?.remove();
+    _removeOnboardingOverlayNow('sample-guide');
     if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
       openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
       return;
@@ -68,6 +69,10 @@
     return ['ようこそ', '保存先', 'サンプル', '同意'][index] || '';
   }
 
+  function _stepTitle(index) {
+    return ['Meldexの準備をします', 'データの保存先', 'サンプルデータ', '同意と最初のノート'][index] || '';
+  }
+
   function _renderSteps() {
     return `<div class="meldex-onboarding-steps" role="list" aria-label="初期設定の進行状況">
       ${[0, 1, 2, 3].map(i => `<div class="meldex-onboarding-step${i === state.step ? ' is-active' : ''}" role="listitem"${i === state.step ? ' aria-current="step"' : ''}>
@@ -80,12 +85,10 @@
   function _body() {
     const home = _homePath() || 'Documents/Meldex';
     if (state.step === 0) {
-      return `<h2 id="meldex-onboarding-title" class="meldex-onboarding-title">Meldexの準備をします</h2>
-        <p id="meldex-onboarding-description" class="meldex-onboarding-copy">最初に、作品や設定を保存する場所を確認します。あとから設定で変更できます。</p>`;
+      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">最初に、作品や設定を保存する場所を確認します。あとから設定で変更できます。</p>`;
     }
     if (state.step === 1) {
-      return `<h2 id="meldex-onboarding-title" class="meldex-onboarding-title">データの保存先</h2>
-        <p id="meldex-onboarding-description" class="meldex-onboarding-copy">現在のホームフォルダは次の場所です。</p>
+      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">現在のホームフォルダは次の場所です。</p>
         <div class="meldex-onboarding-path">${esc(home)}</div>
         <div class="meldex-onboarding-button-row">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-change-home" data-onboarding-action="change-home">${lucide('folderOpen',14)} ホームフォルダを変更</button>
@@ -94,15 +97,13 @@
         <p class="meldex-onboarding-copy">迷った場合は、このまま進めて構いません。</p>`;
     }
     if (state.step === 2) {
-      return `<h2 id="meldex-onboarding-title" class="meldex-onboarding-title">サンプルデータ</h2>
-        <p id="meldex-onboarding-description" class="meldex-onboarding-copy">必要な場合だけ、ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
+      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">必要な場合だけ、ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
         <div class="meldex-onboarding-button-row">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-sample-install" data-onboarding-action="sample-install">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-sample-guide" data-onboarding-action="sample-guide">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>`;
     }
-    return `<h2 id="meldex-onboarding-title" class="meldex-onboarding-title">同意と最初のノート</h2>
-      <p id="meldex-onboarding-description" class="meldex-onboarding-copy">ベータ版の利用条件を確認し、最初の無題ノートを作成して開始します。</p>
+    return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">ベータ版の利用条件を確認し、最初の無題ノートを作成して開始します。</p>
       <div class="meldex-onboarding-button-row">
         <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-consent" data-onboarding-action="consent">${lucide('shieldCheck',14)} 利用条件を確認</button>
         <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-about" data-onboarding-action="about">${lucide('info',14)} Meldex（メルデックス）について</button>
@@ -110,48 +111,89 @@
   }
 
   function _overlay() {
-    let overlay = document.getElementById('meldex-onboarding-overlay');
-    if (overlay?.dataset?.mobileDialogClosing === '1' || overlay?.classList?.contains('gb-mobile-dialog-overlay-closing')) {
-      _removeOnboardingOverlayNow();
-      overlay = null;
-    }
-    if (overlay) return overlay;
-    overlay = document.createElement('div');
-    overlay.id = 'meldex-onboarding-overlay';
-    overlay.className = 'modal-overlay meldex-onboarding-overlay';
-    document.body.appendChild(overlay);
-    return overlay;
+    return modalController?.overlay || document.getElementById('meldex-onboarding-overlay');
   }
 
-  function _removeOnboardingOverlayNow() {
+  function _removeOnboardingOverlayNow(reason = 'programmatic') {
     const overlay = document.getElementById('meldex-onboarding-overlay');
     if (!overlay) return;
+    if (modalController?.isOpen?.()) {
+      modalController.close(reason);
+      if (overlay.isConnected) overlay.remove();
+      modalController = null;
+      return;
+    }
     try { overlay.parentNode?.removeChild(overlay); }
     catch (_) { try { overlay.remove(); } catch (_) {} }
+    modalController = null;
+  }
+
+  function _createOnboardingController() {
+    const content = document.createElement('div');
+    const prev = document.createElement('button');
+    prev.type = 'button';
+    const primary = document.createElement('button');
+    primary.type = 'button';
+    const controller = window.GBUI.createModal({
+      id: 'meldex-onboarding',
+      titleId: 'meldex-onboarding-title',
+      title: _stepTitle(state.step),
+      body: content,
+      footer: [prev, primary],
+      variant: 'standard',
+      geometryKey: 'meldex-onboarding',
+      minWidth: '0',
+      initialFocus: () => controller.modal.querySelector('[data-onboarding-action]:not([disabled])'),
+      closeButton: false,
+      closeOnEsc: false,
+      closeOnOverlay: false,
+      onBeforeClose: (reason) => [
+        'programmatic',
+        'settings-transition',
+        'change-home',
+        'add-source',
+        'sample-guide',
+        'complete',
+      ].includes(reason),
+      onClose: (reason) => {
+        if (modalController === controller) modalController = null;
+      },
+    });
+    controller.overlay.id = 'meldex-onboarding-overlay';
+    controller.overlay.classList.add('meldex-onboarding-overlay');
+    controller.overlay.dataset.e2eId = 'meldex-onboarding-overlay';
+    controller.modal.classList.add('meldex-onboarding-modal');
+    controller.modal.dataset.e2eId = 'meldex-onboarding-dialog';
+    controller.modal.setAttribute('aria-describedby', 'meldex-onboarding-description');
+    modalController = controller;
+    return controller;
   }
 
   function render() {
-    const overlay = _overlay();
+    _setOnboardingActive(true);
+    const controller = modalController?.isOpen?.() ? modalController : _createOnboardingController();
+    const overlay = controller.overlay;
+    const modal = controller.modal;
     const busy = !!state.busy;
-    overlay.innerHTML = `<div class="modal meldex-onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-onboarding-title" aria-describedby="meldex-onboarding-description" tabindex="-1">
-      ${_renderSteps()}
-      <section class="gb-section gb-section--boxed meldex-onboarding-section">${_body()}</section>
-      <div class="btn-row meldex-onboarding-actions">
-        <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-prev" data-onboarding-action="prev" ${state.step === 0 || busy ? 'disabled' : ''}>戻る</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="onboarding-primary" data-onboarding-action="${state.step >= 3 ? 'finish' : 'next'}" ${busy ? 'disabled' : ''}>${busy ? '処理中...' : (state.step >= 3 ? '最初のノートを作って開始' : '次へ')}</button>
-      </div>
-    </div>`;
+    controller.header.querySelector('.gb-modal-title').textContent = _stepTitle(state.step);
+    controller.body.innerHTML = `${_renderSteps()}<section class="gb-section gb-section--boxed meldex-onboarding-section">${_body()}</section>`;
+    controller.footer.classList.add('btn-row', 'meldex-onboarding-actions');
+    controller.footer.innerHTML = `<button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-prev" data-onboarding-action="prev" ${state.step === 0 || busy ? 'disabled' : ''}>戻る</button>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="onboarding-primary" data-onboarding-action="next" ${busy ? 'disabled' : ''}>${busy ? '処理中...' : (state.step >= 3 ? '最初のノートを作って開始' : '次へ')}</button>`;
+    const primaryButton = controller.footer.querySelector('[data-e2e-id="onboarding-primary"]');
+    if (primaryButton) primaryButton.dataset.onboardingAction = state.step >= 3 ? 'finish' : 'next';
+    modal.setAttribute('aria-busy', busy ? 'true' : 'false');
     replaceIcons(overlay);
     overlay.querySelectorAll('[data-onboarding-action]').forEach(button => {
-      button.addEventListener('click', () => handleAction(button.dataset.onboardingAction));
+      button.addEventListener('click', () => handleAction(button.dataset.onboardingAction, button));
     });
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    const focusTarget = overlay.querySelector('[data-onboarding-action]:not([disabled])') || overlay.querySelector('[role="dialog"]');
-    focusTarget?.focus?.();
+    if (!controller.isOpen()) controller.open();
+    const focusTarget = overlay.querySelector('[data-onboarding-action]:not([disabled])') || modal;
+    focusTarget?.focus?.({ preventScroll: true });
   }
 
   async function _openSettings(panel) {
-    document.getElementById('meldex-onboarding-overlay')?.remove();
+    _removeOnboardingOverlayNow('settings-transition');
     if (typeof showSettingsModal === 'function') showSettingsModal({ panel: panel || '全般' });
   }
 
@@ -222,19 +264,19 @@
     _bringConsentDialogToFront();
   }
 
-  async function handleAction(action) {
+  async function handleAction(action, triggerElement) {
     if (state.busy) return;
     if (action === 'prev') state.step = Math.max(0, state.step - 1);
     else if (action === 'next') state.step = Math.min(3, state.step + 1);
     else if (action === 'change-home') {
-      _removeOnboardingOverlayNow();
+      _removeOnboardingOverlayNow('change-home');
       state.startup = state.startup || {};
       state.startup.homePath = await _changeHomeFolderForOnboarding();
       render();
       return;
     }
     else if (action === 'add-source') {
-      _removeOnboardingOverlayNow();
+      _removeOnboardingOverlayNow('add-source');
       await _addSourceFolder();
       render();
       return;
@@ -243,7 +285,7 @@
     else if (action === 'sample-install') { await window.MeldexSampleInstaller?.installNow?.({ trigger: 'onboarding-samples', homePath: _homePath() }); return; }
     else if (action === 'sample-guide') { _openSampleGuide(); return; }
     else if (action === 'consent') { _showConsentFromOnboarding(); return; }
-    else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(); return; }
+    else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(triggerElement); return; }
     else if (action === 'finish') {
       if (window.MeldexBetaRelease && !window.MeldexBetaRelease.hasConsent?.()) {
         _showConsentFromOnboarding();
@@ -255,7 +297,7 @@
         await _createFirstNote();
         _setDone();
         _setOnboardingActive(false);
-        document.getElementById('meldex-onboarding-overlay')?.remove();
+        _removeOnboardingOverlayNow('complete');
       } catch (error) {
         state.busy = false;
         window.MeldexDiagnostics?.showSupportDialog?.(error, { kind: 'onboarding-create-note' });

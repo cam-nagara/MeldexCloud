@@ -432,27 +432,70 @@ async function loadFileFolderTags(filePath, container) {
 }
 
 function showAddFolderLinkModal(filePath, tagsContainer) {
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal" style="box-sizing:border-box;min-width:min(450px, calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);">
-    <h3>フォルダにリンク登録</h3>
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('フォルダリンク登録を初期化できませんでした。');
+  }
+  const existing = document.querySelector('.folder-link-register-overlay');
+  if (existing?._folderLinkModalApi?.isOpen?.()) {
+    existing._folderLinkModalApi.modal.focus?.({ preventScroll: true });
+    return existing._folderLinkModalApi;
+  }
+  const content = document.createElement('div');
+  content.innerHTML = `
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
     <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『MUDMAN』/第1話登場"></div>
     <div id="modal-link-tree" style="max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;margin-bottom:8px;background:var(--bg);font-size:12px;">
       <div style="color:var(--fg2);padding:4px;">読み込み中...</div>
     </div>
-    <div class="btn-row">
-      <button type="button" data-role="cancel">キャンセル</button>
-      <button type="button" class="primary" data-role="submit">登録</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  o.querySelector('[data-role="cancel"]')?.addEventListener('click', () => o.remove());
-  o.querySelector('[data-role="submit"]')?.addEventListener('click', () => submitAddFolderLink(filePath));
-  window._folderLinkTagsContainer = tagsContainer;
-  setTimeout(() => document.getElementById('modal-link-folder')?.focus(), 50);
+    <div class="gb-dialog-inline-status" data-folder-link-status role="status" aria-live="polite" hidden></div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.dataset.role = 'cancel';
+  cancelButton.textContent = 'キャンセル';
+  const submitButton = document.createElement('button');
+  submitButton.type = 'button';
+  submitButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  submitButton.dataset.role = 'submit';
+  submitButton.textContent = '登録';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'folder-link-register',
+    title: 'フォルダにリンク登録',
+    body: [...content.childNodes],
+    footer: [cancelButton, submitButton],
+    variant: 'standard',
+    extraClass: 'folder-link-register-modal',
+    geometryKey: 'folder-link-register',
+    minWidth: '0',
+    initialFocus: '#modal-link-folder',
+    returnFocus: document.activeElement,
+    closeLabel: 'フォルダリンク登録を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !busy || ['saved', 'test-cleanup'].includes(reason),
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay', 'folder-link-register-overlay');
+  o.dataset.e2eId = 'folder-link-register-overlay';
+  o._folderLinkModalApi = modalApi;
+  o._folderLinkFilePath = filePath;
+  o._folderLinkTagsContainer = tagsContainer;
+  o._setFolderLinkBusy = value => {
+    busy = !!value;
+    o.setAttribute('aria-busy', busy ? 'true' : 'false');
+    cancelButton.disabled = busy;
+    submitButton.disabled = busy;
+    const closeButton = modalApi.header.querySelector('.gb-modal-close');
+    if (closeButton) closeButton.disabled = busy;
+    modalApi.body.querySelector('#modal-link-folder').disabled = busy;
+  };
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  submitButton.addEventListener('click', () => submitAddFolderLink(filePath, o));
+  modalApi.open();
   // フォルダツリーを読み込み
-  _loadFolderLinkTree(document.getElementById('modal-link-tree'));
+  _loadFolderLinkTree(modalApi.body.querySelector('#modal-link-tree'));
+  return modalApi;
 }
 
 async function _loadFolderLinkTree(container) {
@@ -574,14 +617,31 @@ function _createLinkTreeNode(name, path, rootPath, isRoot, options = {}) {
   return div;
 }
 
-async function submitAddFolderLink(filePath) {
-  const folder = document.getElementById('modal-link-folder').value.trim();
+async function submitAddFolderLink(filePath, overlay) {
+  const activeOverlay = overlay || document.querySelector('.folder-link-register-overlay');
+  const input = activeOverlay?.querySelector('#modal-link-folder');
+  const folder = input?.value.trim() || '';
   if (!folder) { showStatus('フォルダパスを入力してください', true); return; }
-  document.getElementById('modal-link-folder')?.closest('.modal-overlay')?.remove();
+  if (activeOverlay?.getAttribute('aria-busy') === 'true') return;
+  const status = activeOverlay?.querySelector('[data-folder-link-status]');
+  if (status) {
+    status.hidden = true;
+    status.textContent = '';
+  }
+  activeOverlay?._setFolderLinkBusy?.(true);
   try {
-    await addFolderLinkWithHistory(filePath, folder, { tagsContainer: window._folderLinkTagsContainer });
+    await addFolderLinkWithHistory(filePath, folder, { tagsContainer: activeOverlay?._folderLinkTagsContainer });
     showStatus('リンク登録しました');
-  } catch (e) { showStatus('リンク登録に失敗', true); }
+    activeOverlay?._folderLinkModalApi?.close?.('saved');
+  } catch (e) {
+    showStatus('リンク登録に失敗', true);
+    if (status) {
+      status.hidden = false;
+      status.textContent = 'リンク登録に失敗しました。内容を確認して再試行してください。';
+    }
+  } finally {
+    if (activeOverlay?.isConnected) activeOverlay._setFolderLinkBusy?.(false);
+  }
 }
 
 function _getViewerParam(params, key) {
@@ -1270,13 +1330,42 @@ async function extractArchiveItem(item) {
     openNative(item.path);
     return;
   }
+  return extractArchiveItems([item]);
+}
+
+async function extractArchiveItems(items) {
+  const targets = (Array.isArray(items) ? items : [items])
+    .filter(item => item?.path && _folderCanExtractArchive(item));
+  if (!targets.length) return;
+  const failures = [];
+  const results = [];
   try {
-    showStatus('解凍しています...');
-    const result = await apiPost('/archive/extract', { path: item.path }, { silentError: true });
+    showStatus(targets.length > 1 ? `${targets.length}件を解凍しています...` : '解凍しています...');
+    // 各圧縮ファイルを独立して最後まで展開する。1件の失敗で残りを止めない。
+    for (const target of targets) {
+      try {
+        results.push(await apiPost('/archive/extract', { path: target.path }, { silentError: true }));
+      } catch (error) {
+        failures.push({ target, error });
+      }
+    }
     if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath, { skipNavPush: true, skipSaveLastView: true, skipHighlight: true });
-    showStatus('解凍しました: ' + (result?.name || result?.path || 'フォルダ'));
+    if (failures.length) {
+      const first = failures[0];
+      if (targets.length === 1) {
+        const error = first.error;
+        showStatus('解凍に失敗しました: ' + (error?.userMessage || error?.message || error), true);
+      } else {
+        showStatus(`${results.length}件を解凍、${failures.length}件に失敗しました: ${first.target.name || first.target.path}`, true);
+      }
+      return { ok: false, results, failures };
+    }
+    if (targets.length > 1) showStatus(`${targets.length}件をすべて解凍しました`);
+    else showStatus('解凍しました: ' + (results[0]?.name || results[0]?.path || 'フォルダ'));
+    return { ok: true, results, failures: [] };
   } catch (err) {
     showStatus('解凍に失敗しました: ' + (err?.userMessage || err?.message || err), true);
+    return { ok: false, results, failures: failures.concat([{ target: null, error: err }]) };
   }
 }
 

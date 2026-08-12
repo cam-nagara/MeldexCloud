@@ -9,6 +9,7 @@
 
   const state = {
     overlay: null,
+    modalApi: null,
     restoreFocus: null,
     view: 'list', // 'list' | 'form'
     items: [],
@@ -57,52 +58,56 @@
 
   /* ---------- モーダルの開閉 ---------- */
 
-  function onSkillsKeydown(event) {
-    if (event.key !== 'Escape' || event.defaultPrevented) return;
-    if (!state.overlay?.isConnected) return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeSkillsModal();
-  }
-
-  function closeSkillsModal() {
-    const overlay = state.overlay;
-    if (!overlay) return;
-    document.removeEventListener('keydown', onSkillsKeydown, true);
-    overlay.remove();
-    state.overlay = null;
-    const restoreTarget = state.restoreFocus;
-    state.restoreFocus = null;
-    if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
-      setTimeout(() => {
-        try { restoreTarget.focus({ preventScroll: true }); } catch { restoreTarget.focus(); }
-      }, 0);
-    }
+  function closeSkillsModal(reason = 'programmatic') {
+    if (state.modalApi?.isOpen?.()) return state.modalApi.close(reason);
+    return false;
   }
 
   function ensureSkillsModal() {
-    if (state.overlay?.isConnected) return state.overlay;
+    if (state.modalApi?.isOpen?.()) return state.overlay;
+    if (typeof window.GBUI?.createModal !== 'function') {
+      throw new Error('共通ダイアログを初期化できませんでした。');
+    }
     state.restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.chatSkillsModal = '1';
-    overlay.innerHTML = `
-      <div class="modal gb-chat-skills-modal" data-e2e-id="skills-panel-dialog" role="dialog" aria-modal="true" aria-labelledby="skills-panel-title" style="width:min(720px, 92vw);height:min(680px, 88vh);">
-        <div class="gb-field-row" style="justify-content:space-between;flex-wrap:nowrap;">
-          <h3 id="skills-panel-title" style="display:flex;align-items:center;gap:6px;margin:0;">${skIcon('puzzle', 16)} <span data-sk-title>スキル</span></h3>
-          <button type="button" class="gb-modal-close" data-sk-close data-e2e-id="skills-panel-close" title="閉じる" aria-label="閉じる">${skIcon('x', 16)}</button>
-        </div>
-        <div class="modal-body" data-sk-root></div>
-      </div>
-    `;
-    overlay.addEventListener('click', (event) => {
-      if (event.target === overlay || event.target.closest('[data-sk-close]')) closeSkillsModal();
+    const root = document.createElement('div');
+    root.id = 'skills-panel-root';
+    root.className = 'gb-chat-skills-root';
+    root.dataset.skRoot = '';
+    const modalApi = window.GBUI.createModal({
+      id: 'chat-skills',
+      title: 'スキル',
+      body: root,
+      variant: 'mobile-sheet',
+      extraClass: 'gb-chat-skills-modal',
+      geometryKey: 'chat-skills',
+      initialFocus: '[data-e2e-id="skills-panel-close"]',
+      returnFocus: state.restoreFocus || undefined,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: () => !state.form?.saving,
+      onClose: () => {
+        if (state.modalApi !== modalApi) return;
+        state.overlay = null;
+        state.modalApi = null;
+        state.restoreFocus = null;
+      },
     });
-    document.addEventListener('keydown', onSkillsKeydown, true);
-    document.body.appendChild(overlay);
-    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
-    state.overlay = overlay;
-    return overlay;
+    modalApi.overlay.classList.add('modal-overlay', 'gb-chat-skills-overlay');
+    modalApi.overlay.dataset.chatSkillsModal = '1';
+    modalApi.overlay.dataset.e2eId = 'skills-panel-overlay';
+    modalApi.modal.dataset.e2eId = 'skills-panel-dialog';
+    const title = modalApi.header.querySelector('.gb-modal-title');
+    if (title) title.dataset.skTitle = '';
+    const closeButton = modalApi.header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.id = 'skills-panel-close';
+      closeButton.dataset.skClose = '';
+      closeButton.dataset.e2eId = 'skills-panel-close';
+    }
+    state.overlay = modalApi.overlay;
+    state.modalApi = modalApi;
+    modalApi.open();
+    return modalApi.overlay;
   }
 
   /* ---------- 描画: 一覧 / フォームの切り替え ---------- */
@@ -124,7 +129,7 @@
     root.innerHTML = `
       <section class="gb-section gb-section--boxed" style="margin-bottom:10px;">
         <div class="gb-field-row" style="justify-content:space-between;">
-          <div class="gb-section-desc" style="margin:0;">チャットが話題に応じて自動で参照する指示をまとめます ${fieldHelp('名前・説明・トリガー・本文で1つのスキルを構成します。依頼内容が説明やトリガーに合う時だけ、チャットが本文を読み込んで参照します')}</div>
+          <div class="gb-section-desc" style="margin:0;">チャットが話題に応じて自動で参照する指示をまとめます ${fieldHelp('名前・説明・トリガー・本文で1つのスキルを構成します。依頼内容が説明やトリガーに合う時だけ、チャットが本文を読み込んで参照します', { e2eId: 'skills-overview-help' })}</div>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-primary" data-sk-create data-e2e-id="skills-create">${skIcon('plus', 14)} 新規作成</button>
         </div>
       </section>
@@ -276,15 +281,15 @@
         <input id="sk-form-name" type="text" class="gb-input" data-e2e-id="skills-form-name" placeholder="例: プロット構成レビュー" value="${skEsc(form.name)}"${disabledAttr}>
       </div>
       <div class="field gb-field">
-        <label class="gb-label" for="sk-form-description">説明 ${fieldHelp('どんな時に使うスキルかを短く書きます。チャットがこの説明を見て、本文を読み込むかどうかを判断します')}</label>
+        <label class="gb-label" for="sk-form-description">説明 ${fieldHelp('どんな時に使うスキルかを短く書きます。チャットがこの説明を見て、本文を読み込むかどうかを判断します', { e2eId: 'skills-description-help' })}</label>
         <textarea id="sk-form-description" class="gb-textarea" rows="2" data-e2e-id="skills-form-description" placeholder="例: 長編プロットの構成をレビューするときの観点"${disabledAttr}>${skEsc(form.description)}</textarea>
       </div>
       <div class="field gb-field">
-        <label class="gb-label" for="sk-form-triggers">トリガー ${fieldHelp('このスキルを参照してほしい話題やキーワードを1行に1つずつ入力します')}</label>
+        <label class="gb-label" for="sk-form-triggers">トリガー ${fieldHelp('このスキルを参照してほしい話題やキーワードを1行に1つずつ入力します', { e2eId: 'skills-triggers-help' })}</label>
         <textarea id="sk-form-triggers" class="gb-textarea" rows="3" data-e2e-id="skills-form-triggers" placeholder="例:&#10;プロット&#10;構成レビュー"${disabledAttr}>${skEsc(form.triggersText)}</textarea>
       </div>
       <div class="field gb-field">
-        <label class="gb-label" for="sk-form-body">本文 ${fieldHelp('チャットが参照する指示の本文です。Markdown形式で書けます')}</label>
+        <label class="gb-label" for="sk-form-body">本文 ${fieldHelp('チャットが参照する指示の本文です。Markdown形式で書けます', { e2eId: 'skills-body-help' })}</label>
         <textarea id="sk-form-body" class="gb-textarea" data-e2e-id="skills-form-body" style="min-height:280px;font-family:var(--font-mono, monospace);"${disabledAttr}>${skEsc(form.body)}</textarea>
       </div>
       <div class="gb-field-row" style="justify-content:flex-end;">

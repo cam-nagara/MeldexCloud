@@ -40,6 +40,7 @@
   /* ポップアップの外周は種類にかかわらず同じ明るさへ揃える。 */
   --ui-popup-border: var(--ui-border-strong);
   --ui-accent: var(--accent);
+  --ui-accent-fg: var(--ui-fg-strong);
   --ui-inner-tabbar-bg: var(--ui-bg-panel);
   --ui-inner-tabbar-border: var(--ui-border);
   --ui-inner-tabbar-border-width: 1px;
@@ -375,7 +376,7 @@
   border-radius: var(--ui-radius-xs); cursor: pointer; white-space: nowrap;
 }
 .gb-toolbar button:not(.tb-icon-btn):not(.tb-text-btn):hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
-.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-fg-strong); border-color: var(--ui-accent); }
+.gb-toolbar button.active:not(.tb-icon-btn):not(.tb-text-btn) { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .gb-toolbar input[type="color"] {
   width: 24px; height: var(--ui-h-xs); padding: 0;
   border: var(--ui-border-width) solid var(--ui-border); cursor: pointer; border-radius: var(--ui-radius-xs);

@@ -632,21 +632,11 @@ function _cropScreenshotCanvas(canvas, region) {
 
 function _selectScreenshotRegionFromCanvas(canvas) {
   return new Promise(resolve => {
+    if (typeof window.GBUI?.createModal !== 'function') {
+      resolve(null);
+      return;
+    }
     const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay screenshot-region-overlay';
-    overlay.dataset.modalShell = 'off';
-    overlay.dataset.e2eId = 'screenshot-region-overlay';
-    overlay.style.zIndex = '5000';
-
-    const shell = document.createElement('div');
-    shell.className = 'screenshot-region-shell';
-    shell.dataset.e2eId = 'screenshot-region-shell';
-    shell.tabIndex = -1;
-    shell.setAttribute('role', 'dialog');
-    shell.setAttribute('aria-modal', 'true');
-    shell.setAttribute('aria-label', 'スクリーンショット撮影対象を選択');
-
     const stage = document.createElement('div');
     stage.className = 'screenshot-region-stage';
     stage.dataset.e2eId = 'screenshot-region-stage';
@@ -673,40 +663,39 @@ function _selectScreenshotRegionFromCanvas(canvas) {
 
     const actions = document.createElement('div');
     actions.className = 'screenshot-region-actions';
+    actions.style.width = '100%';
+    actions.style.minWidth = '0';
     actions.setAttribute('aria-label', '範囲選択の操作');
 
     const cancel = document.createElement('button');
     cancel.type = 'button';
     cancel.className = 'gb-btn gb-btn-sm';
+    cancel.style.flex = '0.8 1 0';
     cancel.dataset.e2eId = 'screenshot-region-cancel';
     cancel.textContent = 'キャンセル';
 
     const ok = document.createElement('button');
     ok.type = 'button';
     ok.className = 'gb-btn gb-btn-sm gb-btn-primary';
+    ok.style.flex = '1.5 1 0';
+    ok.style.minWidth = '0';
     ok.dataset.e2eId = 'screenshot-region-save';
     ok.textContent = 'スクリーンショット撮影';
 
-    actions.append(cancel, ok);
     stage.append(preview, selection);
-    shell.append(stage, actions);
-    overlay.append(shell);
-    document.body.appendChild(overlay);
+    actions.append(cancel, ok);
 
     let start = null;
     let current = null;
     let activePointerId = null;
     let cleaned = false;
+    let result = null;
+    let modalApi = null;
 
-    const cleanup = (value) => {
+    const cleanup = (value, reason = 'programmatic') => {
       if (cleaned) return;
-      cleaned = true;
-      overlay.remove();
-      document.removeEventListener('keydown', onKeyDown);
-      if (restoreFocusTo?.isConnected && !restoreFocusTo.closest?.('.screenshot-region-overlay')) {
-        restoreFocusTo.focus?.();
-      }
-      resolve(value);
+      result = value;
+      modalApi.close(reason);
     };
     const pointFromEvent = (ev) => {
       const rect = preview.getBoundingClientRect();
@@ -752,12 +741,9 @@ function _selectScreenshotRegionFromCanvas(canvas) {
       };
     };
     function onKeyDown(ev) {
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        cleanup(null);
-      } else if (ev.key === 'Enter') {
+      if (ev.key === 'Enter') {
         const region = canvasRegion();
-        if (region) cleanup(region);
+        if (region) cleanup(region, 'submit');
       }
     }
     stage.addEventListener('pointerdown', (ev) => {
@@ -785,17 +771,45 @@ function _selectScreenshotRegionFromCanvas(canvas) {
     stage.addEventListener('pointercancel', (ev) => {
       if (activePointerId != null && ev.pointerId === activePointerId) activePointerId = null;
     });
-    cancel.addEventListener('click', () => cleanup(null));
+    cancel.addEventListener('click', () => cleanup(null, 'cancel'));
     ok.addEventListener('click', () => {
       const region = canvasRegion();
       if (!region) {
         showStatus('範囲を選択してください', true);
         return;
       }
-      cleanup(region);
+      cleanup(region, 'submit');
     });
     document.addEventListener('keydown', onKeyDown);
-    shell.focus();
+    modalApi = window.GBUI.createModal({
+      id: 'screenshot-region-selector',
+      title: 'スクリーンショット撮影対象を選択',
+      body: stage,
+      footer: actions,
+      variant: 'full-bleed',
+      extraClass: 'screenshot-region-shell',
+      geometryKey: 'screenshot-region-selector',
+      minWidth: '0',
+      initialFocus: stage,
+      returnFocus: restoreFocusTo || undefined,
+      closeLabel: '範囲選択を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (cleaned) return;
+        cleaned = true;
+        document.removeEventListener('keydown', onKeyDown);
+        resolve(result);
+      },
+    });
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay', 'screenshot-region-overlay');
+    overlay.dataset.e2eId = 'screenshot-region-overlay';
+    overlay.style.zIndex = '5000';
+    overlay._screenshotRegionModalApi = modalApi;
+    modalApi.modal.dataset.e2eId = 'screenshot-region-shell';
+    modalApi.footer.classList.add('screenshot-region-actions');
+    modalApi.open();
   });
 }
 
@@ -881,20 +895,6 @@ async function captureScreenshot(mode) {
 /* ==============================
    ステータスバー
    ============================== */
-// メッセージ先頭行をタイトル、残りを本文として HTML を組み立てる。
-// 単一行メッセージは従来通り本文 div のみ表示し、複数行のみタイトル化する。
-function _buildCfDialogBody(message) {
-  const text = String(message ?? '');
-  if (!text) return '';
-  // v0.5.250: .gb-confirm-message クラスに統一 (CSS で line-height / white-space / word-break を一括指定)。
-  // 複数行メッセージでは先頭行を強調表示 (font-weight) し、以降を本文として扱う。
-  const lines = text.split('\n');
-  if (lines.length < 2) {
-    return `<div class="gb-confirm-message">${esc(text)}</div>`;
-  }
-  const title = (lines.shift() || '').trim();
-  const body = lines.join('\n').trim();
-  let html = '';
-  if (title) html += `<div class="gb-confirm-message" style="font-weight:600;">${esc(title)}</div>`;
-  if (body) html += `<div class="gb-confirm-message" style="color:var(--ui-fg-muted);">${esc(body)}</div>`;
-  return html;
+// メッセージ先頭行をタイトル、残りを本文として安全なDOMへ変換する。
+// 単一行メッセージは従来通り本文だけ、複数行のみ先頭行を強調する。
+function _buildCfDialogBodyNodes(message, idBase) {

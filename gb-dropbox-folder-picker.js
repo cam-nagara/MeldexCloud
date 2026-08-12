@@ -116,30 +116,17 @@
     const workspaceMode = options.mode === 'workspace';
     return new Promise((resolve) => {
       const pickerId = `meldex-dropbox-folder-picker-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-      const overlay = _el('div', {
-        class: 'modal-overlay meldex-dropbox-folder-picker-overlay',
-        'data-dropbox-folder-picker': '1',
-        'data-e2e-id': 'dropbox-folder-picker-overlay',
+      const body = _el('div', {
+        class: 'meldex-dropbox-folder-picker-body',
+        'data-e2e-id': 'dropbox-folder-picker-body',
       });
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;background:rgba(0,0,0,0.55);';
-      const dialog = _el('div', {
-        class: 'modal meldex-dropbox-folder-picker-modal',
-        role: 'dialog',
-        'aria-modal': 'true',
-        'aria-labelledby': `${pickerId}-title`,
-        'data-e2e-id': 'dropbox-folder-picker-modal',
-      });
-      dialog.style.cssText = 'width:min(620px,calc(100vw - 32px));max-height:min(680px,calc(100vh - 32px));display:flex;flex-direction:column;overflow:hidden;background:var(--bg2);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:0;';
-      const title = _el('h3', { id: `${pickerId}-title`, text: options.title || 'Dropbox内フォルダを選択' });
-      title.style.cssText = 'margin:0;padding:14px 16px;border-bottom:1px solid var(--border);font-size:16px;';
-      const body = _el('div', { class: 'modal-body' });
-      body.style.cssText = 'display:grid;grid-template-rows:auto auto 1fr auto;gap:10px;min-height:0;padding:12px 16px;overflow:hidden;';
       const namespacePicker = _el('div', {
+        class: 'meldex-dropbox-folder-picker-namespace',
         role: 'group',
         'aria-label': 'Dropboxの領域',
         'data-e2e-id': 'dropbox-folder-picker-namespace',
       });
-      namespacePicker.style.cssText = 'display:none;grid-template-columns:1fr 1fr;gap:8px;';
+      namespacePicker.hidden = true;
       const homeNamespaceButton = _el('button', {
         type: 'button',
         class: 'gb-btn gb-btn-sm',
@@ -154,23 +141,14 @@
         'data-namespace-kind': 'team_root',
         'data-e2e-id': 'dropbox-folder-picker-namespace-team',
       });
-      for (const button of [homeNamespaceButton, teamNamespaceButton]) {
-        button.style.cssText = 'min-height:44px;';
-        namespacePicker.appendChild(button);
-      }
-      const toolbar = _el('div', { class: 'gb-field-row' });
-      toolbar.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;';
+      for (const button of [homeNamespaceButton, teamNamespaceButton]) namespacePicker.appendChild(button);
+      const toolbar = _el('div', { class: 'gb-field-row meldex-dropbox-folder-picker-toolbar' });
       const upButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '上へ', title: '上の階層へ', 'aria-label': '上の階層へ', 'data-e2e-id': 'dropbox-folder-picker-up' });
-      const pathText = _el('div', { class: 'gb-section-desc', 'data-e2e-id': 'dropbox-folder-picker-current-path' });
-      pathText.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg2);';
+      const pathText = _el('div', { class: 'gb-section-desc meldex-dropbox-folder-picker-path', 'data-e2e-id': 'dropbox-folder-picker-current-path' });
       const refreshButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '更新', title: 'フォルダ一覧を更新', 'data-e2e-id': 'dropbox-folder-picker-refresh' });
       toolbar.append(upButton, pathText, refreshButton);
-      const list = _el('div', { role: 'listbox', 'aria-label': 'Dropboxフォルダ一覧', 'data-e2e-id': 'dropbox-folder-picker-list' });
-      list.style.cssText = 'min-height:220px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--bg);';
-      const status = _el('div', { class: 'gb-section-desc', text: '', role: 'status', 'aria-live': 'polite', 'data-e2e-id': 'dropbox-folder-picker-status' });
-      status.style.cssText = 'min-height:18px;color:var(--fg2);font-size:12px;';
-      const buttons = _el('div', { class: 'btn-row' });
-      buttons.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--border);';
+      const list = _el('div', { class: 'meldex-dropbox-folder-picker-list', role: 'listbox', 'aria-label': 'Dropboxフォルダ一覧', 'data-e2e-id': 'dropbox-folder-picker-list' });
+      const status = _el('div', { class: 'gb-section-desc meldex-dropbox-folder-picker-status', text: '', role: 'status', 'aria-live': 'polite', 'data-e2e-id': 'dropbox-folder-picker-status' });
       const newButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: '新規フォルダ', title: '新規フォルダ', 'data-e2e-id': 'dropbox-folder-picker-new' });
       const cancelButton = _el('button', { type: 'button', class: 'gb-btn gb-btn-sm', text: 'キャンセル', 'data-e2e-id': 'dropbox-folder-picker-cancel' });
       const selectButton = _el('button', {
@@ -181,27 +159,50 @@
       });
       // 参加先を選ぶ画面では新しいフォルダを作っても意味がない（作った直後の空フォルダは
       // 共有ワークスペースではないため）ので出さない
-      if (!workspaceMode) buttons.appendChild(newButton);
-      buttons.append(cancelButton, selectButton);
       body.append(namespacePicker, toolbar, list, status);
-      dialog.append(title, body, buttons);
-      overlay.appendChild(dialog);
-      document.body.appendChild(overlay);
+      const footer = workspaceMode
+        ? [cancelButton, selectButton]
+        : [newButton, cancelButton, selectButton];
+      const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      let closeValue = null;
+      let settled = false;
+      const modalApi = window.GBUI.createModal({
+        id: pickerId,
+        title: options.title || 'Dropbox内フォルダを選択',
+        body,
+        footer,
+        variant: 'mobile-sheet',
+        extraClass: 'meldex-dropbox-folder-picker-modal',
+        initialFocus: '[data-e2e-id="dropbox-folder-picker-cancel"]',
+        returnFocus: restoreFocusTo || undefined,
+        closeOnEsc: true,
+        closeOnOverlay: true,
+        onClose: () => {
+          if (settled) return;
+          settled = true;
+          resolve(closeValue);
+        },
+      });
+      const overlay = modalApi.overlay;
+      overlay.classList.add('modal-overlay', 'meldex-dropbox-folder-picker-overlay');
+      overlay.dataset.dropboxFolderPicker = '1';
+      overlay.dataset.e2eId = 'dropbox-folder-picker-overlay';
+      const dialog = modalApi.modal;
+      dialog.classList.add('modal');
+      dialog.dataset.e2eId = 'dropbox-folder-picker-modal';
+      dialog.dataset.dropboxPickerMode = workspaceMode ? 'workspace' : 'source';
+      modalApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'dropbox-folder-picker-header-close');
+      modalApi.footer.classList.add('meldex-dropbox-folder-picker-footer');
 
       let currentPath = _escPath(options.initialPath || '/');
       let selectedPath = currentPath;
       let currentNamespaceKind = _normalizeNamespaceKind(options.namespaceKind);
       let renderSeq = 0;
 
-      const close = (value) => {
-        document.removeEventListener('keydown', onKeydown);
-        overlay.remove();
-        resolve(value || null);
+      const close = (value, reason) => {
+        closeValue = value || null;
+        modalApi.close(reason || 'programmatic');
       };
-
-      function onKeydown(event) {
-        if (event.key === 'Escape') close(null);
-      }
 
       async function render() {
         const seq = ++renderSeq;
@@ -230,11 +231,11 @@
           list.setAttribute('aria-busy', 'false');
           if (!folders.length) {
             const empty = _el('div', {
+              class: 'meldex-dropbox-folder-picker-empty',
               text: workspaceMode
                 ? 'この場所に共有ワークスペースはありません'
                 : 'この階層にフォルダはありません',
             });
-            empty.style.cssText = 'padding:14px;color:var(--fg2);font-size:13px;';
             list.appendChild(empty);
           }
           folders.forEach((folder) => {
@@ -248,11 +249,9 @@
               'data-e2e-id': 'dropbox-folder-picker-row',
             });
             if (workspaceMode) row.dataset.workspaceFolder = folder.isWorkspace ? '1' : '0';
-            row.style.cssText = 'width:100%;display:flex;align-items:center;gap:8px;padding:10px 12px;border:0;border-bottom:1px solid var(--border);background:transparent;color:var(--fg);text-align:left;cursor:pointer;';
             row.appendChild(_el('span', { text: folder.name }));
             if (folder.isWorkspace) {
-              const badge = _el('span', { text: '共有ワークスペース', 'data-e2e-id': 'dropbox-folder-picker-workspace-badge' });
-              badge.style.cssText = 'margin-left:auto;flex:0 0 auto;font-size:11px;color:var(--fg2);border:1px solid var(--border);border-radius:999px;padding:1px 8px;';
+              const badge = _el('span', { class: 'meldex-dropbox-folder-picker-badge', text: '共有ワークスペース', 'data-e2e-id': 'dropbox-folder-picker-workspace-badge' });
               row.appendChild(badge);
             }
             row.addEventListener('click', () => {
@@ -315,20 +314,17 @@
           status.textContent = err?.message || String(err);
         }
       });
-      cancelButton.addEventListener('click', () => close(null));
+      cancelButton.addEventListener('click', () => close(null, 'cancel'));
       selectButton.addEventListener('click', () => close({
         path: selectedPath,
         name: _displayName(selectedPath),
         namespaceKind: currentNamespaceKind,
-      }));
-      overlay.addEventListener('click', (event) => {
-        if (event.target === overlay) close(null);
-      });
-      document.addEventListener('keydown', onKeydown);
+      }, 'select'));
+      modalApi.open();
       render();
       Promise.resolve(_auth()?.getNamespaceContext?.(false)).then((context) => {
         if (!context?.isTeam) return;
-        namespacePicker.style.display = 'grid';
+        namespacePicker.hidden = false;
       }).catch(() => {});
     });
   }

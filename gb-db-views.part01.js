@@ -467,13 +467,16 @@ async function _showDbConfigModal(dbPath, ctx) {
   const thumbnailSize = activeView?.thumbnailSize || 'small';
   const entityPinned = activeView ? activeView.entityColumnPinned !== false : true;
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
-  const defaultPanel = cfg.defaultPanel || 'main';
+    const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
+      ? 'right-sidebar'
+      : (cfg.defaultPanel || 'main');
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.innerHTML = `<div class="modal db-config-modal">
-    <h3>シート設定</h3>
-    <div class="modal-body db-config-modal-body">
+  if (!globalThis.GBUI?.createModal) throw new Error('シート設定を初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="db-config-dialog"]');
+  if (existingDialog) { existingDialog.focus(); return existingDialog.closest('.gb-modal-overlay')?._dbConfigApi || null; }
+  const content = document.createElement('div');
+  content.className = 'db-config-modal-body';
+  content.innerHTML = `
       <div class="field">
         <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
         <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
@@ -498,8 +501,7 @@ async function _showDbConfigModal(dbPath, ctx) {
           <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
             <select id="dbcfg-default-panel">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
-              <option value="float"${defaultPanel === 'float' ? ' selected' : ''}>フロートパネル</option>
-              <option value="sidebar"${defaultPanel === 'sidebar' ? ' selected' : ''}>サイドバー</option>
+              <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>右サイドバー</option>
             </select>
           </div>
         </div>
@@ -518,30 +520,67 @@ async function _showDbConfigModal(dbPath, ctx) {
           <button type="button" id="dbcfg-attachments">添付ファイルを整理...</button>
         </div>
       </div>
-      <div id="dbcfg-calendar-mapping-anchor"></div>
-    </div>
-    <div class="btn-row" style="justify-content:space-between;">
-      <button id="dbcfg-template" style="font-size:12px;">テンプレートを適用...</button>
-      <div style="display:flex;gap:8px;">
-        <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-        <button class="primary" id="dbcfg-save">保存</button>
-      </div>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
+      <div id="dbcfg-calendar-mapping-anchor"></div>`;
+  const templateButton = document.createElement('button');
+  templateButton.type = 'button'; templateButton.id = 'dbcfg-template'; templateButton.className = 'gb-btn gb-btn-sm'; templateButton.textContent = 'テンプレートを適用...';
+  const footerSpacer = document.createElement('span');
+  footerSpacer.style.flex = '1';
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button'; saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.id = 'dbcfg-save'; saveButton.textContent = '保存';
+  let busy = false;
+  let childOpen = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-config', title: 'シート設定', body: content,
+    footer: [templateButton, footerSpacer, cancelButton, saveButton],
+    variant: 'standard', geometryKey: 'db-config', minWidth: '0', initialFocus: '#dbcfg-name-template',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: 'シート設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || (!busy && !childOpen),
+  });
+  const o = modalApi.overlay;
+  o._dbConfigApi = modalApi;
+  o.dataset.e2eId = 'db-config-overlay';
+  modalApi.modal.dataset.e2eId = 'db-config-dialog';
+  modalApi.modal.classList.add('db-config-modal');
+  modalApi.modal.style.width = 'min(780px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  content.querySelectorAll('.dbcfg-check-row').forEach(row => { row.style.minHeight = '44px'; });
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+
+  function openChildDialog(trigger, launch) {
+    if (busy || childOpen) return;
+    childOpen = true;
+    const before = new Set(document.querySelectorAll('.gb-modal-overlay, .modal-overlay'));
+    // タッチ操作では click 前にボタンへ focus が移らないため、子モーダル自身の
+    // returnFocus も確実に親側の起動ボタンを指すよう、起動前に明示しておく。
+    trigger?.focus?.({ preventScroll: true });
+    try { launch(); } catch (error) { childOpen = false; throw error; }
+    queueMicrotask(() => {
+      const child = Array.from(document.querySelectorAll('.gb-modal-overlay, .modal-overlay'))
+        .reverse().find(node => node !== o && !before.has(node));
+      if (!child) { childOpen = false; trigger?.focus?.({ preventScroll: true }); return; }
+      const observer = new MutationObserver(() => {
+        if (child.isConnected) return;
+        observer.disconnect(); childOpen = false; trigger?.focus?.({ preventScroll: true });
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    });
+  }
 
   // 添付ファイルの整理
   const attachBtn = o.querySelector('#dbcfg-attachments');
   if (attachBtn && typeof showSheetAttachmentCleanupModal === 'function') {
-    attachBtn.addEventListener('click', () => { o.remove(); showSheetAttachmentCleanupModal(dbPath); });
+    attachBtn.addEventListener('click', () => openChildDialog(attachBtn, () => showSheetAttachmentCleanupModal(dbPath)));
   } else if (attachBtn) {
     attachBtn.style.display = 'none';
   }
 
   // テンプレートボタン
-  const tmplBtn = o.querySelector('#dbcfg-template');
+  const tmplBtn = templateButton;
   if (tmplBtn && typeof showTemplateGalleryModal === 'function') {
-    tmplBtn.addEventListener('click', () => { o.remove(); showTemplateGalleryModal(dbPath); });
+    tmplBtn.addEventListener('click', () => openChildDialog(tmplBtn, () => showTemplateGalleryModal(dbPath)));
   } else if (tmplBtn) {
     tmplBtn.style.display = 'none';
   }
@@ -627,15 +666,25 @@ async function _showDbConfigModal(dbPath, ctx) {
     );
   }
 
-  o.querySelector('#dbcfg-grid-border')?.addEventListener('click', () => {
-    if (typeof showGridBorderModal === 'function') showGridBorderModal(localCtx);
+  o.querySelector('#dbcfg-grid-border')?.addEventListener('click', event => {
+    if (typeof showGridBorderModal === 'function') openChildDialog(event.currentTarget, () => showGridBorderModal(localCtx));
   });
   const conditionalColorButton = o.querySelector('#dbcfg-conditional-color');
   conditionalColorButton?.addEventListener('click', () => {
-    if (typeof showConditionalColorPickerModal === 'function') showConditionalColorPickerModal(dbPath, localCtx, conditionalColorButton);
+    if (typeof showConditionalColorPickerModal === 'function') openChildDialog(conditionalColorButton, () => showConditionalColorPickerModal(dbPath, localCtx, conditionalColorButton));
   });
 
-  o.querySelector('#dbcfg-save').addEventListener('click', async () => {
+  saveButton.addEventListener('click', async () => {
+    if (busy || childOpen) return;
+    busy = true;
+    [templateButton, cancelButton, saveButton, attachBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
+      .filter(Boolean).forEach(button => { button.disabled = true; });
+    const finishRetry = () => {
+      busy = false;
+      [templateButton, cancelButton, saveButton, attachBtn, o.querySelector('#dbcfg-grid-border'), conditionalColorButton]
+        .filter(Boolean).forEach(button => { button.disabled = false; });
+      saveButton.focus({ preventScroll: true });
+    };
     const c = _cloneDbViewObject(getDbViewConfig(dbPath));
     c.entryNameTemplate = o.querySelector('#dbcfg-name-template').value.trim();
     const targetView = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
@@ -664,6 +713,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     });
     if (new Set(statusList.map(status => status.name)).size !== statusList.length) {
       showStatus('同じ名前のステータスは複数登録できません', true);
+      finishRetry();
       return;
     }
     const presentOriginalNames = new Set(
@@ -698,6 +748,7 @@ async function _showDbConfigModal(dbPath, ctx) {
         }
       } catch (e) {
         showStatus('ステータス値の移行に失敗: ' + (e?.message || e), true);
+        finishRetry();
         return;
       }
     }
@@ -713,7 +764,11 @@ async function _showDbConfigModal(dbPath, ctx) {
       try {
         calendarMapping = _collectCalendarMappingConfig(o);
       } catch (e) {
+        try { await statusMigration?.rollback?.(); } catch (rollbackError) {
+          console.error('カレンダー連携検証失敗後のステータス値復旧に失敗:', rollbackError);
+        }
         showStatus(e?.message || 'カレンダー連携設定の保存に失敗しました', true);
+        finishRetry();
         return;
       }
     }
@@ -739,20 +794,29 @@ async function _showDbConfigModal(dbPath, ctx) {
       }
       c.statusList = originalStatuses;
       showStatus('シート設定の保存に失敗したため、ステータス変更を元に戻しました', true);
+      finishRetry();
       return;
     }
-    o.remove();
-    showStatus('シート設定を保存しました');
-    await selectDatabase(dbPath, localCtx, {
-      silent: true,
-      skipRecent: true,
-      skipNavPush: true,
-      skipSaveLastView: true,
-    });
-    if (typeof _ptReloadOtherDbContexts === 'function') {
-      await _ptReloadOtherDbContexts(dbPath, localCtx);
+    modalApi.close('saved');
+    try {
+      await selectDatabase(dbPath, localCtx, {
+        silent: true,
+        skipRecent: true,
+        skipNavPush: true,
+        skipSaveLastView: true,
+      });
+      if (typeof _ptReloadOtherDbContexts === 'function') {
+        await _ptReloadOtherDbContexts(dbPath, localCtx);
+      }
+    } catch (error) {
+      console.warn('シート設定保存後の表示更新に失敗:', error);
+      showStatus('シート設定は保存しましたが、表示を更新できませんでした', true);
+      return;
     }
+    showStatus('シート設定を保存しました');
   });
+  modalApi.open();
+  return modalApi;
 }
 
 /* ==============================

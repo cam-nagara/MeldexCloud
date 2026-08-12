@@ -816,6 +816,8 @@ function _dbUndoValue(label, val, oldValue, newValue, oldRichHtml, newRichHtml, 
     undoUpdates.new_rich_html = oldRichHtml || '';
     redoUpdates.new_rich_html = newRichHtml || '';
   }
+  if (options.oldUpdates && typeof options.oldUpdates === 'object') Object.assign(undoUpdates, options.oldUpdates);
+  if (options.newUpdates && typeof options.newUpdates === 'object') Object.assign(redoUpdates, options.newUpdates);
   historyPush(label,
     async () => { await _apiPutValue(val, undoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },
     async () => { await _apiPutValue(val, redoUpdates); if (dbPath) await selectDatabase(dbPath, ctx, { silent: true }); },

@@ -9,6 +9,10 @@
   scroll-padding-bottom: 72px;
 }
 
+.dup-monitor-footer {
+  display: contents;
+}
+
 .dup-progress {
   display: grid;
   gap: var(--ui-space-2);

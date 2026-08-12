@@ -275,11 +275,12 @@
       });
       if (fileMeta) {
         const modified = fileMeta.modified || fileMeta.created || '';
+        const isFolder = fileMeta.kind === 'folder' || fileMeta.kind === 'directory';
         return {
-          kind: 'file',
+          kind: isFolder ? 'directory' : 'file',
           name: _basename(normalized),
           path: normalized,
-          size: Number(fileMeta.size || 0),
+          size: isFolder ? 0 : Number(fileMeta.size || 0),
           modified,
           modifiedMs: _jsonDate(modified),
           meta: fileMeta,

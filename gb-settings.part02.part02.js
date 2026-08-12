@@ -147,11 +147,7 @@ function renderSettingsThemePaletteEditor(options = {}) {
       <input type="range" min="${min}" max="${max}" step="1" data-e2e-id="settings-theme-palette-slider-${key}" data-theme-palette-slider="${key}">
       <input type="number" min="${min}" max="${max}" step="1" class="gb-input-sm cs-theme-palette-slider-num" data-e2e-id="settings-theme-palette-slider-num-${key}" data-theme-palette-slider-num="${key}">
     </label>`;
-  const osAccent = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getUseOsAccentColor === 'function'
-    ? MeldexThemeManager.getUseOsAccentColor()
-    : false;
   const actionsHtml = `<div class="cs-theme-palette-slider-actions">
-    <button type="button" class="cs-toggle${osAccent ? ' active' : ''}" data-e2e-id="settings-theme-palette-os-accent-toggle" data-theme-os-accent-toggle title="リンク色・スライダー・カーソルなどの基本アクセント色をOSのアクセントカラーに合わせる">OSアクセント</button>
     <button type="button" class="cs-toggle" data-e2e-id="settings-theme-palette-reset" data-theme-palette-reset title="色相・彩度・明度・明暗比の調整値をリセット">調整をリセット</button>
   </div>`;
   const slidersHtml = `<div class="cs-theme-palette-sliders">

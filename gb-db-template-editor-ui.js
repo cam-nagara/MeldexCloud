@@ -90,40 +90,19 @@ function _showDbTemplateFormModal(options) {
   const trigger = _dbTemplateTrigger(options.triggerEl);
   const mode = options.mode === 'edit' ? 'edit' : 'create';
   const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
-  const titleId = `db-template-${mode}-title-${seq}`;
   const descId = `db-template-${mode}-desc-${seq}`;
   const nameId = `db-template-name-${seq}`;
   const detailId = `db-template-desc-${seq}`;
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.dbTemplateModal = mode;
-  overlay.style.zIndex = '120';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal db-template-modal db-template-' + mode + '-modal';
-  modal.dataset.e2eId = 'db-template-' + mode + '-dialog';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', titleId);
-  modal.setAttribute('aria-describedby', descId);
-  modal.tabIndex = -1;
-  _setDbTemplateModalSize(modal, { maxWidth: 500, maxHeight: 560, heightRatio: 0.66, minHeight: 400 });
-
-  const h3 = document.createElement('h3');
-  h3.id = titleId;
-  h3.textContent = mode === 'edit' ? 'カスタムテンプレート編集' : 'カスタムテンプレート作成';
-  modal.appendChild(h3);
   const modalDesc = document.createElement('div');
   modalDesc.id = descId;
   modalDesc.className = 'gb-visually-hidden';
   modalDesc.textContent = mode === 'edit'
     ? 'カスタムテンプレートの名前・説明・アイコンを編集するダイアログ'
     : '現在のシート設定をカスタムテンプレートとして保存するダイアログ';
-  modal.appendChild(modalDesc);
-
   const body = document.createElement('div');
   body.className = 'modal-body';
+  body.appendChild(modalDesc);
 
   const iconField = _buildDbTemplateIconField(options.initialIcon);
   body.appendChild(iconField.field);
@@ -181,35 +160,73 @@ function _showDbTemplateFormModal(options) {
     }
     body.appendChild(note);
   }
-  modal.appendChild(body);
-
   // ボタン
-  const btnRow = document.createElement('div');
-  btnRow.className = 'db-template-footer';
   const cancelBtn = document.createElement('button');
   _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-' + mode + '-cancel');
   cancelBtn.textContent = 'キャンセル';
-  cancelBtn.addEventListener('click', () => _closeDbTemplateOverlay(overlay, trigger));
-  btnRow.appendChild(cancelBtn);
   const saveBtn = document.createElement('button');
   _setupDbTemplateButton(saveBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-' + mode + '-save');
   saveBtn.textContent = '保存';
-  saveBtn.addEventListener('click', () => {
+  let busy = false;
+  let modalApi = null;
+  const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
+  const setBusy = (next) => {
+    busy = !!next;
+    if (!modalApi) return;
+    modalApi.modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+    [cancelBtn, saveBtn, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
+      .forEach(control => { control.disabled = busy; });
+  };
+  saveBtn.addEventListener('click', async () => {
+    if (busy) return;
     const name = nameInput.value.trim();
     if (!name) { showStatus('名前を入力してください', true); return; }
-    const result = options.onSave({
-      name,
-      description: descInput.value.trim(),
-      icon: iconField.getIcon(),
-    });
-    if (result === false) return;
-    _closeDbTemplateOverlay(overlay, trigger);
+    setBusy(true);
+    try {
+      const result = await Promise.resolve(options.onSave({
+        name,
+        description: descInput.value.trim(),
+        icon: iconField.getIcon(),
+      }));
+      if (result === false) return;
+      modalApi.close('saved');
+    } catch (error) {
+      showStatus('カスタムテンプレートの保存に失敗: ' + (error?.message || error), true);
+    } finally {
+      if (modalApi.isOpen()) setBusy(false);
+    }
   });
-  btnRow.appendChild(saveBtn);
-  modal.appendChild(btnRow);
-
-  overlay.appendChild(modal);
-  _showDbTemplateOverlay(overlay, modal, trigger, nameInput);
+  modalApi = window.GBUI.createModal({
+    id: `db-template-${mode}-${seq}`,
+    title: mode === 'edit' ? 'カスタムテンプレート編集' : 'カスタムテンプレート作成',
+    body,
+    footer: [cancelBtn, saveBtn],
+    variant: 'standard',
+    extraClass: `db-template-${mode}-modal`,
+    geometryKey: `db-template-${mode}`,
+    minWidth: '0',
+    initialFocus: nameInput,
+    returnFocus: trigger || undefined,
+    closeLabel: mode === 'edit' ? 'カスタムテンプレート編集を閉じる' : 'カスタムテンプレート作成を閉じる',
+    onBeforeClose: reason => !busy || reason === 'saved' || reason === 'superseded',
+    onClose: releaseOverflowLock,
+  });
+  const overlay = modalApi.overlay;
+  const modal = modalApi.modal;
+  modal.classList.add('modal', 'db-template-modal');
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.dbTemplateModal = mode;
+  overlay.style.zIndex = '120';
+  overlay._dbTemplateTrigger = trigger;
+  overlay._dbTemplateClose = modalApi.close;
+  modal.dataset.e2eId = 'db-template-' + mode + '-dialog';
+  modal.setAttribute('aria-describedby', descId);
+  modalApi.footer.classList.add('db-template-footer');
+  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+  if (closeBtn) closeBtn.dataset.e2eId = `db-template-${mode}-close`;
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  _setDbTemplateModalSize(modal, { maxWidth: 500, maxHeight: 560, heightRatio: 0.66, minHeight: 400 });
+  modalApi.open();
 }
 
 /**

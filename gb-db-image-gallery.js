@@ -103,9 +103,49 @@ function _createAttachmentThumb(item, index) {
     img.loading = 'lazy';
     img.decoding = 'async';
     img.fetchPriority = 'low';
-    img.src = _imageSrc(item, true);
+    // 読み込み判定前の img を見せると、低速時にブラウザ標準の破損アイコンと
+    // alt 文言が一瞬表示される。成功時だけ実画像を表示し、失敗時は下の
+    // フォールバックタイルへ置換する。
+    img.style.visibility = 'hidden';
     img.alt = label;
     if (index != null) img.dataset.imageIndex = String(index);
+    const replaceFailedImage = () => {
+      // サムネイル生成だけが失敗した場合は、保存済みの原寸ファイルへ一度だけ
+      // 切り替える。原寸も読めない時だけ中立タイルにする。
+      if (img.dataset.rawFallback !== '1') {
+        const rawSrc = _imageSrc(item, false);
+        if (rawSrc && rawSrc !== img.getAttribute('src')) {
+          img.dataset.rawFallback = '1';
+          img.src = rawSrc;
+          return;
+        }
+      }
+      // file: URL は src 代入時に同期的に失敗し、呼出元が DOM へ追加する前に
+      // error が届くことがある。親がまだ無い時だけ次の描画まで待つ。
+      if (!img.parentNode) {
+        requestAnimationFrame(() => {
+          if (img.parentNode) replaceFailedImage();
+        });
+        return;
+      }
+      const fallback = document.createElement('div');
+      fallback.className = 'gb-image-thumb gb-attachment-tile gb-image-thumb-fallback';
+      fallback.dataset.kind = 'image';
+      if (index != null) fallback.dataset.imageIndex = String(index);
+      fallback.title = label;
+      if (typeof lucide === 'function') fallback.innerHTML = lucide('image', 20) || '';
+      const caption = document.createElement('span');
+      caption.textContent = label || '画像';
+      fallback.appendChild(caption);
+      img.replaceWith(_setupAttachmentThumbDrag(fallback, item));
+    };
+    img.addEventListener('error', replaceFailedImage);
+    img.addEventListener('load', () => {
+      img.style.removeProperty('visibility');
+    }, { once: true });
+    // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
+    // フォールバックの listener を登録してから読み込みを開始する。
+    img.src = _imageSrc(item, true);
     return _setupAttachmentThumbDrag(img, item);
   }
   const tile = document.createElement('div');
@@ -156,6 +196,13 @@ function _imagePropDbPathForEntity(entityPath) {
 }
 
 function _imagePropLockMessage(entityPath, propName) {
+  const dataset = globalThis.document?.body?.dataset || {};
+  if (dataset.cloudQuotaBlocked === '1') {
+    return 'Dropbox容量が95%を超えているため編集を停止しています';
+  }
+  if (dataset.cloudReadonly === '1') {
+    return '閲覧専用のため変更できません';
+  }
   const dbPath = _imagePropDbPathForEntity(entityPath);
   return dbPath && typeof checkColumnEditable === 'function' ? checkColumnEditable(dbPath, propName) : null;
 }
@@ -226,18 +273,60 @@ async function uploadImagePropertyFiles(files, entityPath, propName, val, ptc) {
 
 async function saveImagePropertyItems(entityPath, propName, val, items) {
   const newValue = stringifyImagePropertyValue(items);
+  const oldValue = typeof val?.value === 'string'
+    ? val.value
+    : stringifyImagePropertyValue(parseImagePropertyValue(val?.value));
+  const dbPath = _imagePropDbPathForEntity(entityPath);
   const isExistingValue = !!(val && val.file && (val.candidate_index != null || _imagePropNormalizePath(val.file) !== _imagePropNormalizePath(entityPath)));
   if (isExistingValue) {
     await _apiPutValue(val, { new_value: newValue });
+    if (oldValue !== newValue && typeof _dbUndoValue === 'function') {
+      _dbUndoValue(`画像変更: ${propName}`, val, oldValue, newValue, undefined, undefined, { dbPath, entityPath });
+    }
     val.value = newValue;
   } else {
-    const result = await _apiPostValue(entityPath, propName, newValue, '採用', '');
-    if (val && result) {
+    const status = val?.status || '採用';
+    let currentRef = null;
+    const applyCreatedResult = result => {
+      if (!result) return null;
+      currentRef = {
+        file: result.path || result.file || entityPath,
+        entry_path: entityPath,
+        property: propName,
+        candidate_index: result.candidate_index,
+        value: newValue,
+        status,
+        note: '',
+      };
+      if (val) {
+        Object.assign(val, currentRef);
+        if (result.candidate_index == null) delete val.candidate_index;
+      }
+      return currentRef;
+    };
+    applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
+    if (currentRef && typeof historyPush === 'function') {
+      const historyScope = typeof _dbScope === 'function' ? _dbScope(dbPath) : `db:${dbPath || ''}`;
+      const deleteCurrent = async () => {
+        if (currentRef.candidate_index != null) {
+          await _apiPutValue(currentRef, { _delete: true });
+        } else if (currentRef.file && _imagePropNormalizePath(currentRef.file) !== _imagePropNormalizePath(entityPath)) {
+          await apiPost('/outliner/delete', { path: currentRef.file });
+        }
+        await apiPost('/media/rebuild-refs', {}).catch(() => {});
+        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+      };
+      const recreate = async () => {
+        applyCreatedResult(await _apiPostValue(entityPath, propName, newValue, status, ''));
+        await apiPost('/media/rebuild-refs', {}).catch(() => {});
+        if (dbPath && typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
+      };
+      historyPush(`画像候補追加: ${propName}`, deleteCurrent, recreate, historyScope);
+    }
+    if (val && currentRef) {
       val.value = newValue;
-      val.file = result.path || result.file || entityPath;
       val.property = propName;
-      if (result.candidate_index != null) val.candidate_index = result.candidate_index;
-      val.status = val.status || '採用';
+      val.status = status;
     }
   }
   apiPost('/media/rebuild-refs', {}).catch(() => {});
@@ -386,27 +475,68 @@ function createImagePropertyValueElement(val, entityPath, propName, thumbSize, p
   return wrap;
 }
 
-function showImageGalleryModal(entityPath, propName, val, ptc) {
+function showImageGalleryModal(entityPath, propName, val, ptc, modalOptions = {}) {
   const options = _imagePropOptions(ptc);
   let items = parseImagePropertyValue(val?.value);
   const lockMsg = _imagePropLockMessage(entityPath, propName);
   const canEdit = !lockMsg;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal gb-image-gallery-modal">
-    <h3>${typeof lucide === 'function' ? lucide('images', 16) : ''} ${esc(propName)}</h3>
+  let busy = false;
+  const returnFocus = typeof modalOptions.returnFocus === 'function'
+    ? modalOptions.returnFocus
+    : (modalOptions.returnFocus?.isConnected
+      ? modalOptions.returnFocus
+      : (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null));
+  const body = document.createElement('div');
+  body.className = 'gb-image-gallery-body';
+  body.innerHTML = `
     <div class="gb-image-gallery-toolbar">
-      <label class="gb-btn gb-btn-sm">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="${esc(options.accept.map(ext => '.' + ext).join(','))}" hidden></label>
+      <label class="gb-btn gb-btn-sm" data-e2e-id="image-gallery-add">${typeof lucide === 'function' ? lucide('imagePlus', 13) : ''} 追加<input id="gb-img-file-input" type="file" multiple accept="${esc(options.accept.map(ext => '.' + ext).join(','))}" hidden></label>
       <span class="gb-section-desc">${items.length} / ${options.maxCount}</span>
     </div>
-    <div id="gb-img-gallery-list" class="gb-image-gallery-list"></div>
-    <div class="btn-row"><button data-action="this.closest('.modal-overlay').remove()">閉じる</button></div>
-  </div>`;
-  document.body.appendChild(overlay);
+    <div id="gb-img-gallery-list" class="gb-image-gallery-list"></div>`;
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'gb-btn gb-btn-sm';
+  closeBtn.dataset.e2eId = 'image-gallery-close';
+  closeBtn.textContent = '閉じる';
+  const modalApi = window.GBUI.createModal({
+    id: 'image-property-gallery-dialog',
+    title: `${propName}の画像`,
+    body,
+    footer: [closeBtn],
+    variant: 'standard',
+    extraClass: 'gb-image-gallery-modal',
+    geometryKey: 'image-property-gallery',
+    initialFocus: '[data-e2e-id="image-gallery-add"]',
+    returnFocus: returnFocus || undefined,
+    onBeforeClose: () => {
+      if (!busy) return true;
+      if (typeof showStatus === 'function') showStatus('画像を保存しています。完了後に閉じてください', true);
+      return false;
+    },
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.imageGalleryDialog = '1';
+  overlay._imageGalleryModalApi = modalApi;
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'image-gallery-close-icon';
+  closeBtn.addEventListener('click', () => modalApi.close('close-button'));
+  modalApi.open();
   const list = overlay.querySelector('#gb-img-gallery-list');
   const fileInput = overlay.querySelector('#gb-img-file-input');
   const countEl = overlay.querySelector('.gb-section-desc');
   if (fileInput) fileInput.disabled = !canEdit;
+  const setBusy = (nextBusy) => {
+    busy = nextBusy === true;
+    overlay.dataset.imageGalleryBusy = busy ? '1' : '0';
+    overlay.querySelectorAll('.gb-image-gallery-card input, .gb-image-gallery-card button').forEach((control) => {
+      control.disabled = busy || !canEdit && control.title !== '開き方を選ぶ';
+    });
+    if (fileInput) fileInput.disabled = busy || !canEdit;
+    closeBtn.disabled = busy;
+    if (headerClose) headerClose.disabled = busy;
+  };
   const render = () => {
     if (countEl) countEl.textContent = `${items.length} / ${options.maxCount}`;
     list.innerHTML = '';
@@ -415,6 +545,7 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       empty.className = 'gb-image-gallery-empty';
       empty.textContent = '画像をドロップ';
       list.appendChild(empty);
+      setBusy(busy);
       return;
     }
     items.forEach((item, idx) => {
@@ -487,15 +618,19 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       card.appendChild(meta);
       list.appendChild(card);
     });
+    setBusy(busy);
   };
   const saveNextItems = async (nextItems) => {
     const prevItems = _imagePropCloneItems(items);
+    setBusy(true);
     try {
       await saveImagePropertyItems(entityPath, propName, val, nextItems);
       items = _imagePropCloneItems(nextItems);
     } catch (err) {
       items = prevItems;
       showStatus(err?.message || '画像列の保存に失敗しました', true);
+    } finally {
+      setBusy(false);
     }
     render();
   };
@@ -504,12 +639,15 @@ function showImageGalleryModal(entityPath, propName, val, ptc) {
       if (lockMsg) showStatus(lockMsg, true);
       return;
     }
+    setBusy(true);
     try {
       items = await uploadImagePropertyFiles(files, entityPath, propName, val, ptc);
-      render();
     } catch (err) {
       showStatus(err?.message || '画像追加に失敗しました', true);
+    } finally {
+      setBusy(false);
     }
+    render();
   };
   fileInput?.addEventListener('change', async (e) => {
     await addFiles(e.target.files);

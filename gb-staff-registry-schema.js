@@ -28,6 +28,7 @@
     '権限': { type: 'select', options: [...PERMISSION_OPTIONS] },
     '作業可能時間': { type: 'text' },
     '休憩時間': { type: 'text' },
+    '標準時間単価': { type: 'number' },
     '休日': { type: 'text' },
     '参加開始日': date(false),
     '参加終了日': date(false),

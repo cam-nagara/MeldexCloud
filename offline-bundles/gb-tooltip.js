@@ -932,6 +932,21 @@
     if (activeEl) queueHide(activeEl);
   }
 
+  function handleFieldHelpClick(ev) {
+    const target = ev.target instanceof Element
+      ? ev.target.closest('.gb-field-help[' + ATTR_PRIMARY + ']')
+      : null;
+    if (!target) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    suppressFocusTooltipAfterTouch();
+    clearTouchLongPress();
+    // タッチ端末ではhoverが無いため、丸い「?」をタップした時点で即表示する。
+    // マウスでも同じ操作を使えるため、タッチ専用分岐にはしない。
+    suppressNativeTitle(target);
+    showFor(target);
+  }
+
   function handleImmediateDismiss() {
     if (!activeEl && !pendingEl && !touchLongPressEl) return;
     clearTouchLongPress();
@@ -992,6 +1007,7 @@
     document.addEventListener('pointerout', handlePointerOut, true);
     document.addEventListener('pointerup', handlePointerEnd, true);
     document.addEventListener('pointercancel', handlePointerEnd, true);
+    document.addEventListener('click', handleFieldHelpClick, true);
     document.addEventListener('focusin', handleFocusIn, true);
     document.addEventListener('focusout', handleFocusOut, true);
     document.addEventListener('keydown', handleKeyDown, true);

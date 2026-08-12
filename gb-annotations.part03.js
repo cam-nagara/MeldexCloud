@@ -209,3 +209,11 @@ annOverlay.addEventListener('pointercancel', (e) => {
   try { annOverlay.releasePointerCapture(e.pointerId); } catch (_) {}
   _resetAnnotationStrokeState();
 });
+
+if (typeof _initTrayAnnotationHost === 'function') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => _initTrayAnnotationHost(), { once: true });
+  } else {
+    _initTrayAnnotationHost();
+  }
+}

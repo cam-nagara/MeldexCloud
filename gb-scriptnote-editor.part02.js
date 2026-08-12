@@ -126,8 +126,11 @@
     // まとめ表示: 前行と同じガター値やタイプ値なら非表示フラグ
     const mergeGutter = mergeDisplay && prevRow && calc && idx > 0;
     const mergeRole = mergeDisplay && prevRow && prevRow.role === row.role && row.role;
-    const visCols = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: !!this.doc.editor?.statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
-    if (!this.doc.editor?.statusEnabled) visCols._status = false;
+    const visibleIds = new Set(typeof this._getVisibleColumnIds === 'function'
+      ? this._getVisibleColumnIds()
+      : (visibleCols || []).map(column => column.id));
+    const visCols = Object.fromEntries(['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+      .map(id => [id, visibleIds.has(id)]));
 
     // 列間枠線: どの列の右側に枠線を表示するかを判定
     const colBorderSet = this._getColumnBorderSet();
@@ -324,7 +327,7 @@
 
     // カスタム列
     if (!row.columns) row.columns = {};
-    customCols.forEach(col => {
+    customCols.filter(col => visibleIds.has(col.id)).forEach(col => {
       const cell = document.createElement('div');
       cell.className = 'sn2-custom-cell';
       cell.dataset.colId = col.id;

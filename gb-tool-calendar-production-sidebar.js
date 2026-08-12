@@ -7,9 +7,11 @@
   let LAST_BODY = null;
   let SIDEBAR_ID_SEQ = 0;
   const MODES = [
-    ['detail', 'タスク詳細', 'fileText'],
-    ['templates', 'テンプレート', 'layoutTemplate'],
-    ['actions', '管理操作', 'settings2'],
+    ['detail', '詳細', 'fileText'],
+    ['project', 'プロジェクト', 'folderKanban'],
+    ['taskSettings', 'タスク設定', 'listChecks'],
+    ['allocation', '割り当て', 'calendarClock'],
+    ['calendar', 'カレンダー', 'calendarDays'],
   ];
   // production-tasklist-redesign-plan-2026-07-15 3.2章: 大分類=作品そのものになったため、
   // レベル列は新規タスクリストシートの 中分類/小分類/詳細分類（旧: 単位レベル1/2/3）を指す。
@@ -54,12 +56,19 @@
     return prop(row, '作品タイトル') || row?.name || prop(row, '作品タイトル_話数');
   }
 
+  function collaborationPath(row) {
+    const path = String(row?.path || '').trim();
+    if (!path || /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(path)) return path;
+    const home = String(typeof _homeFolderPath !== 'undefined' ? _homeFolderPath || '' : window._homeFolderPath || '').replace(/[\\/]+$/, '');
+    return home ? `${home}/${path.replace(/^[\\/]+/, '')}` : path;
+  }
+
   function componentFor(options = {}) {
     return options.component || window.MeldexCalendarOptionPanel?.findCalendarComponent?.() || null;
   }
 
   function optionBody(select = true) {
-    return window.MeldexCalendarOptionPanel?.container?.('制作管理', {
+    return window.MeldexCalendarOptionPanel?.container?.('スケジュール', {
       tabId: 'calendar-production',
       select,
     }) || null;
@@ -75,7 +84,7 @@
   function openMobileProductionDrawer(body, title) {
     const drawer = window.MeldexCloudMobileSideDrawer;
     if (!body?.parentNode || !drawer?.isEnabled?.() || typeof drawer.openElement !== 'function') return false;
-    return !!drawer.openElement(title || '制作管理', body, { kind: 'production' });
+    return !!drawer.openElement(title || 'スケジュール', body, { kind: 'scheduler' });
   }
 
   function closeProductionOptionPanelIfOpen() {
@@ -577,6 +586,19 @@
     buildField('再計算ロック', '再計算ロック', 'checkbox', null, undefined, 'オンにすると、このタスクは自動割り当てで動かなくなります');
     buildField('担当者固定', '担当者固定', 'checkbox', null, undefined, 'オンにすると、自動割り当てでも担当者が変わりません');
     buildField('シフト固定', 'シフト固定', 'checkbox', null, undefined, 'オンにすると、この予定日時は自動割り当てで動かなくなります');
+    const hierarchy = window.MeldexProductionTaskHierarchyUi?.create?.({
+      parentValue: prop(row, '親タスクID'),
+      checklistValue: prop(row, 'チェックリスト'),
+      rowId: row.id,
+      scopePath: row.path,
+      onChange: () => form.dispatchEvent(new Event('change', { bubbles: true })),
+    });
+    if (hierarchy) {
+      controls.set('親タスクID', hierarchy.parentControl);
+      controls.set('チェックリスト', hierarchy.checklistControl);
+      form.appendChild(hierarchy.root);
+      fieldControls.push(...hierarchy.parentControl.controls, ...hierarchy.checklistInputs());
+    }
     fieldControls.forEach(control => window.MeldexProductionUiAvailability?.markWriteControl?.(control));
     const initialValues = new Map(Array.from(controls, ([name, item]) => [name, String(item.value() ?? '')]));
     managedSelectQueue.forEach(({ item, managedKey }) => {
@@ -604,10 +626,75 @@
       if (row.path && typeof openPage === 'function') openPage(row.name || '制作タスク', row.path);
     });
     actions.append(save, source);
+    const collaboration = document.createElement('div');
+    collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
+    collaboration.setAttribute('role', 'group');
+    collaboration.setAttribute('aria-label', 'タスクについて相談・確認');
+    const chatPath = collaborationPath(row);
+    const runCollaboration = async (control, failureMessage, callback) => {
+      if (control.dataset.busy === 'true') return;
+      control.dataset.busy = 'true';
+      control.disabled = true;
+      control.setAttribute('aria-busy', 'true');
+      try { await callback(); }
+      catch (error) { status(error?.message || failureMessage, true); }
+      finally {
+        control.dataset.busy = 'false';
+        control.disabled = false;
+        control.setAttribute('aria-busy', 'false');
+      }
+    };
+    const chat = button('チャット', 'messageSquare', () => runCollaboration(chat, 'このタスクのチャットを開けません', async () => {
+      if (!chatPath || typeof window.openEntityChatForPath !== 'function') throw new Error('このタスクのチャットを開けません');
+      const opened = await window.openEntityChatForPath(chatPath);
+      if (opened === false) throw new Error('このタスクのチャットを開けません');
+      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
+        detail: { kind: 'chat', path: row.path, resolvedPath: chatPath },
+      }));
+      status('このタスクのチャットを開きました');
+    }));
+    chat.dataset.e2eId = 'gb-production-task-collaboration-chat';
+    chat.dataset.gbTooltip = 'このタスクのチャットで相談し、ファイルを共有します';
+    const note = button('ノート', 'fileText', () => runCollaboration(note, 'このタスクのノートを開けません', async () => {
+      if (!row.path || typeof openPage !== 'function') throw new Error('このタスクのノートを開けません');
+      await openPage(row.name || '制作タスク', row.path);
+      document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
+        detail: { kind: 'note', path: row.path },
+      }));
+      status('このタスクのノートを開きました');
+    }));
+    note.dataset.e2eId = 'gb-production-task-collaboration-note';
+    note.dataset.gbTooltip = 'このタスクのノートを開きます';
+    const annotation = button('注釈', 'messagesSquare', () => runCollaboration(annotation, 'このタスクの注釈を開けません', async () => {
+      if (!row.path || typeof openPage !== 'function' || typeof openRightPanelTab !== 'function') throw new Error('このタスクの注釈を開けません');
+      await openPage(row.name || '制作タスク', row.path);
+      openRightPanelTab('annotation', { surface: 'main' });
+      const annotationOpened = document.getElementById('right-panel')?.classList.contains('open')
+        || (typeof GBTabs !== 'undefined' && !!GBTabs.findPaneWithTab?.('annotation', ''));
+      if (annotationOpened) {
+        document.dispatchEvent(new CustomEvent('meldex:production-collaboration-handoff', {
+          detail: { kind: 'annotation', path: row.path },
+        }));
+        status('このタスクの注釈を開きました');
+      } else throw new Error('このタスクの注釈を開けません');
+    }));
+    annotation.dataset.e2eId = 'gb-production-task-collaboration-annotation';
+    annotation.dataset.gbTooltip = 'このタスクの注釈を開きます';
+    const notifications = button('通知', 'bell', () => runCollaboration(notifications, '通知を確認できません', async () => {
+      const calendar = componentFor(options);
+      if (typeof calendar?._checkAlarms !== 'function') throw new Error('通知を確認できません');
+      await calendar._checkAlarms();
+      status('現在の通知を確認しました');
+    }));
+    notifications.dataset.e2eId = 'gb-production-task-collaboration-notifications';
+    notifications.dataset.gbTooltip = '現在の通知を確認します';
+    collaboration.append(chat, note, annotation, notifications);
     form.appendChild(actions);
+    form.appendChild(collaboration);
     window.MeldexProductionUiAvailability?.markWriteForm?.(form);
     const setFormBusy = busy => {
       fieldControls.forEach(control => { control.disabled = busy; });
+      hierarchy?.setBusy?.(busy);
       save.disabled = busy;
       source.disabled = busy;
     };
@@ -623,7 +710,10 @@
       const savingState = STATE.get(options.body);
       if (savingState) savingState.saveInFlight = true;
       try {
-        const result = await api().patchEntry({ sheet: 'タスクリスト', path: row.path, id: row.id, properties });
+        const result = await api().patchEntry({
+          sheet: 'タスクリスト', path: row.path, id: row.id,
+          expectedModified: row.modified || '', properties,
+        });
         const updated = result.row || row;
         status('タスクを保存しました');
         emitUpdated(updated);
@@ -665,7 +755,7 @@
     const tabs = document.createElement('div');
     tabs.className = 'gb-production-sidebar-tabs';
     tabs.setAttribute('role', 'tablist');
-    tabs.setAttribute('aria-label', '制作管理');
+    tabs.setAttribute('aria-label', 'スケジュールのオプション');
     state.sidebarDomId = state.sidebarDomId || `gb-production-sidebar-${++SIDEBAR_ID_SEQ}`;
     const panelId = `${state.sidebarDomId}-panel`;
     const activateMode = (key, focusAfterActivation = false) => {
@@ -764,19 +854,10 @@
       if (options.forceDetail !== true && (options.taskListSurface === true || component?._surface === 'productionTasks')) taskListSurfaceNotice(content);
       else taskDetail(content, state.row, context);
     }
-    else if (state.mode === 'templates') {
-      if (window.MeldexProductionTemplates?.render) {
-        window.MeldexProductionTemplates.render(content, {
-          component: context.component,
-          workMeta: context.component?._productionTaskState?.workMeta || {},
-          contextProvider: () => context.component?._productionTaskContext?.() || {},
-        });
-      } else content.textContent = 'テンプレートを初期化しています…';
-    } else if (state.mode === 'actions') {
-      if (window.MeldexProductionManagementActions?.render) {
-        window.MeldexProductionManagementActions.render(content);
-      } else content.textContent = '管理操作を初期化できませんでした。';
-    }
+    else if (state.mode === 'project') window.MeldexSchedulerUi?.renderProject?.(content, context.component);
+    else if (state.mode === 'taskSettings') window.MeldexSchedulerUi?.renderTaskSettings?.(content, context.component);
+    else if (state.mode === 'allocation') window.MeldexSchedulerUi?.renderAllocation?.(content, context.component);
+    else if (state.mode === 'calendar') window.MeldexSchedulerUi?.renderCalendar?.(content, context.component);
   }
 
   function openTask(row, component, options = {}) {
@@ -836,8 +917,8 @@
     const body = optionBody(true);
     if (!body) return;
     runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'templates', component });
-      openMobileProductionDrawer(body, '制作テンプレート');
+      render(body, { mode: 'taskSettings', component });
+      openMobileProductionDrawer(body, 'タスク設定');
     });
   }
 
@@ -845,8 +926,8 @@
     const body = optionBody(true);
     if (!body) return;
     runAfterDiscardConfirmation(body, false, () => {
-      render(body, { mode: 'actions', component });
-      openMobileProductionDrawer(body, '制作管理の操作');
+      render(body, { mode: 'allocation', component });
+      openMobileProductionDrawer(body, '割り当て');
     });
   }
 
@@ -854,7 +935,7 @@
     const body = existingOptionBody();
     if (!body) return true;
     const current = STATE.get(body);
-    if (current?.mode === 'templates' || current?.mode === 'actions') return true;
+    if (current?.mode && current.mode !== 'detail') return true;
     const prepare = () => {
       render(body, { mode: 'detail', row: null, component, taskListSurface: true });
       closeProductionOptionPanelIfOpen();
@@ -871,7 +952,7 @@
     const body = existingOptionBody();
     if (!body) return;
     const current = STATE.get(body);
-    if (current?.mode === 'templates' || current?.mode === 'actions' || current?.detailDirty || current?.taskDetailDirty || current?.classificationDirty) return;
+    if ((current?.mode && current.mode !== 'detail') || current?.detailDirty || current?.taskDetailDirty || current?.classificationDirty) return;
     if (!body.querySelector('[data-e2e-id="gb-production-task-list-sidebar-note"]')) {
       render(body, { mode: 'detail', row: null, component, taskListSurface: true });
     }

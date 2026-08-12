@@ -117,65 +117,68 @@
 
   function _pmModal(title, width = '760px', options = {}) {
     const focusSource = options.trigger || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay gb-production-modal-overlay';
+    const dialogE2eId = options.dialogE2eId || 'production-modal-dialog';
+    let busy = false;
+    const dialogApi = window.GBUI.createModal({
+      id: `${dialogE2eId}-common`,
+      titleId: `${dialogE2eId}-title`,
+      title,
+      variant: 'standard',
+      extraClass: 'gb-production-modal',
+      geometryKey: dialogE2eId,
+      minWidth: '0',
+      initialFocus: modal => modal.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])'),
+      returnFocus: focusSource,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => !busy || reason === 'complete',
+    });
+    const { overlay, modal, header, body, footer } = dialogApi;
+    overlay.classList.add('modal-overlay', 'gb-production-modal-overlay');
     overlay.dataset.e2eId = options.e2eId || 'production-modal-overlay';
-    const modal = document.createElement('div');
-    modal.className = 'modal gb-production-modal';
+    modal.classList.add('modal');
     modal.style.setProperty('--gb-production-modal-width', width);
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.tabIndex = -1;
-    modal.dataset.e2eId = options.dialogE2eId || 'production-modal-dialog';
-    const titleId = `${modal.dataset.e2eId}-title`;
-    modal.setAttribute('aria-labelledby', titleId);
-    const header = document.createElement('div');
-    header.className = 'gb-modal-header gb-production-modal-header';
-    const heading = document.createElement('h3');
-    heading.id = titleId;
-    heading.className = 'gb-production-title';
-    heading.textContent = title;
-    const closeButton = document.createElement('button');
-    closeButton.type = 'button';
-    closeButton.className = 'gb-modal-close gb-production-modal-close';
+    modal.dataset.e2eId = dialogE2eId;
+    header.classList.add('gb-production-modal-header');
+    header.querySelector('.gb-modal-title')?.classList.add('gb-production-title');
+    const closeButton = header.querySelector('.gb-modal-close');
+    closeButton?.classList.add('gb-production-modal-close');
     closeButton.setAttribute('aria-label', `${title}を閉じる`);
-    closeButton.dataset.e2eId = `${modal.dataset.e2eId}-close`;
-    closeButton.innerHTML = _pmIcon('x', 14) || '×';
-    header.append(heading, closeButton);
-    const body = document.createElement('div');
-    body.className = 'gb-modal-body gb-production-modal-body';
-    modal.append(header, body);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    const close = () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      overlay.remove();
-      _pmRestoreFocus(focusSource);
+    closeButton.dataset.e2eId = `${dialogE2eId}-close`;
+    body.classList.add('gb-production-modal-body');
+    footer.classList.add('gb-production-modal-footer');
+    footer.dataset.modalFooter = '1';
+    const status = document.createElement('div');
+    status.className = 'gb-production-dialog-status';
+    status.hidden = true;
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const close = (reason = 'programmatic') => dialogApi.close(reason);
+    Object.assign(close, { footer, body, status });
+    close.showStatus = (message, error = false) => {
+      status.textContent = String(message || '');
+      status.hidden = !status.textContent;
+      status.dataset.statusKind = error ? 'error' : 'info';
     };
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
+    close.setBusy = (next) => {
+      busy = !!next;
+      overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      closeButton.disabled = busy;
     };
-    overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) close();
-    });
-    closeButton.addEventListener('click', close);
-    document.addEventListener('keydown', onKeyDown, true);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    window.requestAnimationFrame(() => {
-      const focusTarget = body.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])') || modal;
-      _pmRestoreFocus(focusTarget);
-    });
+    dialogApi.open();
     return { overlay, modal, body, close };
   }
 
-  function _pmFooter(closeModal, buttons) {
-    const footer = document.createElement('div');
-    footer.className = 'gb-modal-footer gb-production-modal-footer';
+  function _pmFooter(closeModal, buttons, options = {}) {
+    const footer = closeModal.footer;
+    footer.classList.add('gb-modal-footer', 'gb-production-modal-footer');
     footer.dataset.modalFooter = '1';
+    footer.replaceChildren();
+    if (!footer.isConnected) closeModal.body?.parentElement?.appendChild(footer);
+    if (closeModal.status && !closeModal.status.isConnected) closeModal.body?.appendChild(closeModal.status);
     const cancel = _pmButton('閉じる');
-    cancel.addEventListener('click', closeModal);
+    if (options.e2eIdPrefix) cancel.dataset.e2eId = `${options.e2eIdPrefix}-cancel`;
+    cancel.addEventListener('click', () => closeModal('cancel'));
     footer.append(cancel, ...buttons);
     return footer;
   }
@@ -193,7 +196,7 @@
     // 「割当再計算」へ改名・かんたん割当も全廃してここへ一本化）。その後、2026-08-08 に
     // ユーザー判断で表示名のみ「自動割り当て」へ差し戻した（挙動・e2eId・エンドポイントは
     // 変更しない）。
-    const { body, close } = _pmModal('自動割り当て', '760px', {
+    const { modal, body, close } = _pmModal('自動割り当て', '760px', {
       trigger: options?.trigger,
       e2eId: 'production-recalculate-dialog-overlay',
       dialogE2eId: 'production-recalculate-dialog',
@@ -204,6 +207,7 @@
     to.dataset.e2eId = 'production-recalculate-to';
     const resultBox = document.createElement('div');
     resultBox.className = 'gb-production-result-box';
+    resultBox.dataset.e2eId = 'production-recalculate-result';
     const previewButton = _pmButton('プレビューを作成', true);
     previewButton.dataset.e2eId = 'production-recalculate-preview';
     const applyButton = _pmButton('適用', true);
@@ -214,6 +218,20 @@
     let lastAllowOvertime = true;
     let lastUnassignedOnly = false;
     let previewRequestId = 0;
+    let busyControls = null;
+    const setBusy = (next, message = '') => {
+      if (next) {
+        busyControls = Array.from(modal.querySelectorAll('input, textarea, select, button'))
+          .map(control => ({ control, disabled: control.disabled }));
+        busyControls.forEach(({ control }) => { control.disabled = true; });
+        close.setBusy(true);
+        close.showStatus(message || '処理中です。画面を閉じずにお待ちください…');
+        return;
+      }
+      close.setBusy(false);
+      (busyControls || []).forEach(({ control, disabled }) => { control.disabled = disabled; });
+      busyControls = null;
+    };
     // 期間や対象を変えたら古いプレビュー結果を適用できないようにする（旧計画の誤適用防止）
     const resetPreview = () => {
       // 進行中のプレビュー応答（ネットワーク遅延中）が、後から届いて今回の変更を
@@ -228,6 +246,7 @@
       note.className = 'gb-production-preview-note';
       note.textContent = '期間や対象を変更しました。適用するには再度プレビューを作成してください。';
       resultBox.appendChild(note);
+      close.showStatus('期間や対象を変更しました。再度プレビューを作成してください。');
       updateScopeValidity();
     };
     ['input', 'change'].forEach(eventName => {
@@ -249,6 +268,7 @@
     allowOvertimeRow.className = 'gb-check-help-row gb-production-check-help-row';
     allowOvertimeRow.appendChild(allowOvertimeLabel);
     allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト時間を超える割り当てをしません'));
+    allowOvertimeRow.querySelector('.gb-field-help').dataset.e2eId = 'production-recalculate-overtime-help';
     allowOvertimeToggle.addEventListener('change', resetPreview);
 
     // --- 未割当のタスクだけ（旧「担当者と時間を割り当て」の即時実行に相当するスコープ）。
@@ -268,6 +288,7 @@
     unassignedOnlyRow.className = 'gb-check-help-row gb-production-check-help-row';
     unassignedOnlyRow.appendChild(unassignedOnlyLabel);
     unassignedOnlyRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、既に予定があるタスクは動かさず、まだ担当者や時間が決まっていないタスクだけに割り当てます'));
+    unassignedOnlyRow.querySelector('.gb-field-help').dataset.e2eId = 'production-recalculate-unassigned-help';
     unassignedOnlyToggle.addEventListener('change', resetPreview);
 
     // --- 対象タスクリスト（作品ごとのシート）のスコープ選択（production-tasklist-redesign-plan
@@ -382,8 +403,8 @@
     }
 
     previewButton.addEventListener('click', async () => {
-      previewButton.disabled = true;
       const requestId = ++previewRequestId;
+      setBusy(true, '自動割り当てのプレビューを作成しています…');
       try {
         const scope = currentScopeBody();
         const allowOvertime = !allowOvertimeToggle.checked;
@@ -398,19 +419,22 @@
         lastUnassignedOnly = unassignedOnly;
         _pmRenderPreview(resultBox, result);
         applyButton.disabled = !rows.length;
+        close.showStatus(`プレビューを作成しました: ${rows.length}件`);
       } catch (error) {
         if (requestId !== previewRequestId) return;
         // プレビュー失敗時は前回結果を残さない（古い計画の誤適用防止）
         rows = [];
         applyButton.disabled = true;
+        close.showStatus(error?.message || String(error), true);
         _pmStatus(error?.message || String(error), true);
       } finally {
-        previewButton.disabled = false;
+        setBusy(false);
         updateScopeValidity();
+        applyButton.disabled = !rows.length;
       }
     });
     applyButton.addEventListener('click', async () => {
-      applyButton.disabled = true;
+      setBusy(true, '自動割り当てを適用しています…');
       try {
         // プレビュー時と同じスコープ(work_titles/task_paths)・allow_overtime・unassigned_onlyを
         // 渡す: サーバー側の陳腐化検知は同一bodyでプレビューを再計算して比較するため、
@@ -420,11 +444,15 @@
         _pmRefreshCalendars();
         // 埋め込みタスクリスト(あれば)にも反映する。
         document.dispatchEvent(new CustomEvent('meldex:production-task-updated', { detail: { reason: 'recalculate' } }));
-        close();
+        close('complete');
       } catch (error) {
+        close.showStatus(error?.message || String(error), true);
         _pmStatus(error?.message || String(error), true);
       } finally {
-        applyButton.disabled = false;
+        if (modal.isConnected) {
+          setBusy(false);
+          applyButton.disabled = !rows.length;
+        }
       }
     });
     body.append(
@@ -436,7 +464,7 @@
       scopeFieldset,
       resultBox
     );
-    body.parentElement.append(_pmFooter(close, [previewButton, applyButton]));
+    _pmFooter(close, [previewButton, applyButton], { e2eIdPrefix: 'production-recalculate' });
     loadScopeSheets();
   }
 

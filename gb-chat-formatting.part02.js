@@ -319,6 +319,13 @@
   document.addEventListener('selectionchange', () => _scheduleSelectionOpen(), true);
   document.addEventListener('mouseup', _scheduleSelectionOpen, true);
   document.addEventListener('contextmenu', _handleContextMenu, true);
+  document.addEventListener('copy', event => {
+    const target = _chatCopyTargetFromSelection();
+    if (!target?.text || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', target.text);
+    if (typeof showStatus === 'function') showStatus('選択範囲をコピーしました');
+  }, true);
   document.addEventListener('pointerdown', (event) => {
     if (event.target?.closest?.('.gb-fmt-popup, .gb-palette-popup')) _suppressUntil = Date.now() + 800;
   }, true);

@@ -1,4 +1,4 @@
-/* Shared editable entity detail surface for main, right-sidebar, and float panels. */
+/* Shared editable entity detail surface for main and right-sidebar panels. */
 (function () {
   'use strict';
 
@@ -21,6 +21,25 @@
       if (value) return value;
     }
     return '';
+  }
+
+  function firstPropertyValue(data, name) {
+    const values = data?.properties?.[name];
+    for (const item of Array.isArray(values) ? values : []) {
+      const value = String(item?.value ?? item ?? '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
+  function htmlSnapshotPath(data) {
+    const path = firstPropertyValue(data, 'HTML');
+    return /\.html?(?:$|[?#])/i.test(path) ? path.replace(/\\/g, '/') : '';
+  }
+
+  function fileRawUrl(path) {
+    if (/^(?:https?:|data:|blob:|\/api\/)/i.test(path)) return path;
+    return window.MeldexResourceUrl?.fileRaw?.(path) || '/api/file-raw?path=' + encodeURIComponent(path);
   }
 
   function icon(name, size = 14) {
@@ -160,10 +179,13 @@
       saving: null,
       editor: null,
       data: options.data || null,
+      staticContent: false,
     };
 
     async function save() {
-      if (state.disposed || !state.editor || state.root.dataset.readOnly === '1') return false;
+      if (state.disposed) return false;
+      if (state.staticContent) return true;
+      if (!state.editor || state.root.dataset.readOnly === '1') return false;
       clearTimeout(state.timer);
       state.timer = 0;
       if (!state.dirty) return true;
@@ -225,10 +247,8 @@
       if (options.showParent !== false && parent) {
         const parentButton = document.createElement('button');
         parentButton.type = 'button';
-        parentButton.className = 'gb-float-panel-link-button meldex-entity-detail-parent';
-        parentButton.dataset.e2eId = state.surface === 'float'
-          ? 'gb-float-panel-entity-parent'
-          : 'entity-detail-parent-link';
+        parentButton.className = 'gb-subpanel-link-button meldex-entity-detail-parent';
+        parentButton.dataset.e2eId = 'entity-detail-parent-link';
         parentButton.dataset.allowReadonly = '1';
         parentButton.textContent = '← ' + (parent.split('/').pop() || parent);
         parentButton.title = parent;
@@ -283,6 +303,34 @@
           surface: state.surface,
           readOnly: access.readOnly,
         });
+      }
+
+      const snapshotPath = htmlSnapshotPath(data);
+      if (snapshotPath) {
+        state.staticContent = true;
+        const preview = document.createElement('section');
+        preview.className = 'meldex-entity-detail-webclip';
+        const previewBar = document.createElement('div');
+        previewBar.className = 'meldex-entity-detail-webclip-toolbar';
+        const previewLabel = document.createElement('span');
+        previewLabel.textContent = 'HTMLスナップショット';
+        const openSnapshot = document.createElement('a');
+        openSnapshot.href = fileRawUrl(snapshotPath);
+        openSnapshot.target = '_blank';
+        openSnapshot.rel = 'noopener noreferrer';
+        openSnapshot.textContent = '別画面で開く';
+        const frame = document.createElement('iframe');
+        frame.className = 'meldex-entity-detail-webclip-frame';
+        frame.title = '保存したHTML';
+        frame.src = fileRawUrl(snapshotPath);
+        frame.setAttribute('sandbox', 'allow-same-origin allow-forms allow-popups');
+        previewBar.append(previewLabel, openSnapshot);
+        preview.append(previewBar, frame);
+        root.appendChild(preview);
+        applyReadOnly(root, true, access.reason || '保存したHTMLを表示しています');
+        if (state.surface !== 'main') stripIds(root);
+        delete root.dataset.loadFailed;
+        return true;
       }
 
       const raw = String(data?.page_content || '');

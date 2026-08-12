@@ -45,6 +45,10 @@ function _focusConditionalColorTrigger(triggerEl) {
 
 function _closeConditionalColorOverlay(overlay, triggerEl = null, options = {}) {
   if (!overlay || !overlay.isConnected) return;
+  if (overlay._conditionalColorModalApi?.close) {
+    overlay._conditionalColorModalApi.close(options.reason || 'programmatic');
+    return;
+  }
   if (typeof overlay._conditionalColorCleanup === 'function') overlay._conditionalColorCleanup();
   overlay.remove();
   if (options.restoreFocus === false) return;
@@ -53,38 +57,35 @@ function _closeConditionalColorOverlay(overlay, triggerEl = null, options = {}) 
   setTimeout(() => _focusConditionalColorTrigger(triggerEl), 60);
 }
 
-function _bindConditionalColorDismiss(overlay, modal, triggerEl) {
-  if (!overlay || !modal) return;
-  const onPointerDown = (e) => {
-    if (e.target !== overlay) return;
-    _closeConditionalColorOverlay(overlay, triggerEl);
-  };
-  const onKeyDown = (e) => {
-    if (e.key !== 'Escape' || !overlay.isConnected) return;
-    e.preventDefault();
-    e.stopPropagation();
-    _closeConditionalColorOverlay(overlay, triggerEl);
-  };
-  overlay.addEventListener('pointerdown', onPointerDown);
-  document.addEventListener('keydown', onKeyDown, true);
-  overlay._conditionalColorCleanup = () => {
-    overlay.removeEventListener('pointerdown', onPointerDown);
-    document.removeEventListener('keydown', onKeyDown, true);
-    overlay._conditionalColorCleanup = null;
-  };
+function _conditionalColorButton(id, text, primary = false) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = id;
+  button.dataset.e2eId = id;
+  button.className = `gb-btn gb-btn-sm${primary ? ' gb-btn-primary primary' : ''}`;
+  button.textContent = text;
+  return button;
 }
 
-function _enhanceConditionalColorOverlay(overlay, modal, triggerEl, focusTarget = null) {
-  _bindConditionalColorDismiss(overlay, modal, triggerEl);
-  document.body.appendChild(overlay);
-  if (typeof GBModalShell !== 'undefined' && GBModalShell?.enhanceAll) GBModalShell.enhanceAll();
-  requestAnimationFrame(() => {
-    try {
-      (focusTarget || modal)?.focus?.({ preventScroll: true });
-    } catch {
-      try { (focusTarget || modal)?.focus?.(); } catch {}
-    }
-  });
+function _conditionalColorDescription(id, text) {
+  const description = document.createElement('div');
+  description.id = `${id}-description`;
+  description.className = 'gb-visually-hidden';
+  description.textContent = text;
+  return description;
+}
+
+function _configureConditionalColorDialog(modalApi, options) {
+  modalApi.overlay.classList.add('modal-overlay');
+  modalApi.overlay.dataset.conditionalColorDialog = options.kind;
+  modalApi.overlay._conditionalColorTrigger = options.trigger;
+  modalApi.overlay._conditionalColorModalApi = modalApi;
+  modalApi.modal.dataset.e2eId = options.e2eId;
+  modalApi.modal.setAttribute('aria-describedby', options.description.id);
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = `conditional-color-${options.kind}-close-icon`;
+  modalApi.open();
+  return modalApi;
 }
 
 function showConditionalColorModal(propName, dbPathOverride = '', ctx = null, triggerEl = null) {
@@ -95,35 +96,40 @@ function showConditionalColorModal(propName, dbPathOverride = '', ctx = null, tr
   const colors = getConditionalColors(dbPath, { ctx });
   const rules = _conditionalColorRules(colors, propName);
   const seq = ++_conditionalColorDialogSeq;
-  const titleId = `cc-title-${seq}`;
-  const descId = `cc-desc-${seq}`;
-
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.conditionalColorDialog = 'rules';
-  o._conditionalColorTrigger = trigger;
-  o.innerHTML = `<div class="modal cond-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="conditional-color-dialog">
-    <h3 id="${titleId}">条件付きカラー: ${esc(propName)}</h3>
-    <div id="${descId}" class="gb-visually-hidden">条件付きカラーのルール設定</div>
-    <div class="modal-body cond-modal-body">
-      <div id="cc-rules" class="cond-list"></div>
-      <button type="button" id="cc-add-rule-btn" class="cond-add-btn gb-btn gb-btn-sm" data-e2e-id="cc-add-rule-btn">+ ルール追加</button>
-    </div>
-    <div class="btn-row">
-      <button type="button" id="cc-cancel-btn" class="gb-btn gb-btn-sm" data-e2e-id="cc-cancel-btn">キャンセル</button>
-      <button type="button" id="cc-apply-btn" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="cc-apply-btn">適用</button>
-    </div>
-  </div>`;
-  const modal = o.querySelector('.cond-modal');
+  const body = document.createElement('div');
+  body.className = 'modal-body cond-modal-body';
+  body.innerHTML = `<div id="cc-rules" class="cond-list"></div>
+    <button type="button" id="cc-add-rule-btn" class="cond-add-btn gb-btn gb-btn-sm" data-e2e-id="cc-add-rule-btn">+ ルール追加</button>`;
+  const cancelBtn = _conditionalColorButton('cc-cancel-btn', 'キャンセル');
+  const applyBtn = _conditionalColorButton('cc-apply-btn', '適用', true);
+  const dialogId = `conditional-color-rules-dialog-${seq}`;
+  const description = _conditionalColorDescription(dialogId, '条件付きカラーのルール設定');
+  const modalApi = window.GBUI.createModal({
+    id: dialogId,
+    title: `条件付きカラー: ${propName}`,
+    body: [description, body],
+    footer: [cancelBtn, applyBtn],
+    variant: 'standard',
+    extraClass: 'cond-modal',
+    geometryKey: 'conditional-color-rules',
+    initialFocus: '#cc-add-rule-btn',
+    returnFocus: trigger || undefined,
+  });
+  _configureConditionalColorDialog(modalApi, {
+    kind: 'rules',
+    description,
+    trigger,
+    e2eId: 'conditional-color-dialog',
+  });
+  const o = modalApi.overlay;
   const { list: container } = setupConditionModalLayout(o, '#cc-rules');
   rules.forEach(r => addConditionalColorRow(container, r));
   o.querySelector('#cc-add-rule-btn').addEventListener('click', (e) => {
     e.preventDefault();
     addConditionalColorRow(container, null);
   });
-  o.querySelector('#cc-cancel-btn').addEventListener('click', () => _closeConditionalColorOverlay(o, trigger));
-  o.querySelector('#cc-apply-btn').addEventListener('click', () => applyConditionalColors(propName, dbPath, ctx));
-  _enhanceConditionalColorOverlay(o, modal, trigger, modal);
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  applyBtn.addEventListener('click', () => applyConditionalColors(propName, dbPath, ctx));
 }
 
 function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, triggerEl = null) {
@@ -144,34 +150,43 @@ function showConditionalColorPickerModal(dbPathOverride = '', ctx = null, trigge
     showStatus('条件付きカラーを設定できる列がありません', true);
     return;
   }
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.conditionalColorDialog = 'picker';
-  o._conditionalColorTrigger = trigger;
   const seq = ++_conditionalColorDialogSeq;
-  const titleId = `cc-picker-title-${seq}`;
-  const descId = `cc-picker-desc-${seq}`;
-  o.innerHTML = `<div class="modal cond-picker-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" data-e2e-id="conditional-color-picker-dialog" style="min-width:0;width:min(420px, calc(100vw - 32px));max-width:min(420px, calc(100vw - 32px));">
-    <h3 id="${titleId}">条件付きカラー</h3>
-    <div id="${descId}" class="gb-visually-hidden">条件付きカラーを設定する列の選択</div>
-    <div class="field gb-field"><label class="gb-label" for="cc-picker-prop">列</label>
+  const body = document.createElement('div');
+  body.innerHTML = `<div class="field gb-field"><label class="gb-label" for="cc-picker-prop">列</label>
       <select id="cc-picker-prop" class="gb-select" data-e2e-id="cc-picker-prop" style="width:100%;box-sizing:border-box;">
         ${visibleProps.map(prop => `<option value="${esc(prop)}">${esc(prop)}</option>`).join('')}
       </select>
-    </div>
-    <div class="btn-row">
-      <button type="button" id="cc-picker-cancel" class="gb-btn gb-btn-sm" data-e2e-id="cc-picker-cancel">キャンセル</button>
-      <button type="button" id="cc-picker-open" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="cc-picker-open">設定</button>
-    </div>
-  </div>`;
-  const modal = o.querySelector('.cond-picker-modal');
-  o.querySelector('#cc-picker-cancel')?.addEventListener('click', () => _closeConditionalColorOverlay(o, trigger));
-  o.querySelector('#cc-picker-open')?.addEventListener('click', () => {
-    const propName = o.querySelector('#cc-picker-prop')?.value || visibleProps[0];
-    _closeConditionalColorOverlay(o, trigger, { restoreFocus: false });
+    </div>`;
+  const cancelBtn = _conditionalColorButton('cc-picker-cancel', 'キャンセル');
+  const openBtn = _conditionalColorButton('cc-picker-open', '設定', true);
+  const dialogId = `conditional-color-picker-dialog-${seq}`;
+  const description = _conditionalColorDescription(dialogId, '条件付きカラーを設定する列の選択');
+  const modalApi = window.GBUI.createModal({
+    id: dialogId,
+    title: '条件付きカラー',
+    body: [description, body],
+    footer: [cancelBtn, openBtn],
+    variant: 'standard',
+    extraClass: 'cond-picker-modal',
+    geometryKey: 'conditional-color-picker',
+    initialFocus: '#cc-picker-prop',
+    returnFocus: trigger || undefined,
+  });
+  _configureConditionalColorDialog(modalApi, {
+    kind: 'picker',
+    description,
+    trigger,
+    e2eId: 'conditional-color-picker-dialog',
+  });
+  modalApi.modal.style.minWidth = '0';
+  modalApi.modal.style.width = 'min(420px, calc(100vw - 32px))';
+  modalApi.modal.style.maxWidth = 'min(420px, calc(100vw - 32px))';
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  openBtn.addEventListener('click', () => {
+    const propName = body.querySelector('#cc-picker-prop')?.value || visibleProps[0];
+    modalApi.close('replace');
     showConditionalColorModal(propName, dbPath, ctx, trigger);
   });
-  _enhanceConditionalColorOverlay(o, modal, trigger, o.querySelector('#cc-picker-prop'));
 }
 
 function addConditionalColorRule() { addConditionalColorRow(document.getElementById('cc-rules'), null); }

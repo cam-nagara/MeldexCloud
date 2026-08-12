@@ -7,6 +7,8 @@
   const CHOICE_ENABLED = 'enabled';
   const CHOICE_ONLINE = 'online';
   const MESSAGE_TIMEOUT_MS = 180000;
+  let _choiceDialogApi = null;
+  let _choiceDialogPromise = null;
 
   function _runtime() {
     return window.MeldexRuntimeAdapter;
@@ -74,67 +76,152 @@
     catch (error) { return { ok: false, enabled: false, message: error?.message || String(error) }; }
   }
 
-  function _showFirstRunDialog() {
-    return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay meldex-offline-choice-overlay';
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:10025;display:flex;align-items:center;justify-content:center;padding:8px;box-sizing:border-box;background:rgba(0,0,0,.58);';
-      overlay.innerHTML = `<div class="meldex-offline-choice-modal" role="dialog" aria-modal="true" aria-labelledby="meldex-offline-choice-title" style="width:calc(100vw - 16px);max-width:620px;max-height:calc(100vh - 16px);overflow:auto;box-sizing:border-box;padding:clamp(16px,4vw,24px);border:1px solid #3a3a3a;border-radius:12px;background:#1e1e1e;color:#d4d4d4;box-shadow:0 16px 48px rgba(0,0,0,.45);">
-        <h2 id="meldex-offline-choice-title" style="margin:0 0 8px;font-size:22px;">オフラインでも使いますか？</h2>
-        <p style="margin:0 0 16px;color:#bdbdbd;font-size:13px;line-height:1.7;">どちらを選んでも、データはこの端末内に自動保存されます。オフライン利用を選ぶと、Meldex本体もこの端末に保存します。あとから設定で変更できます。</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));gap:10px;">
-          <button id="meldex-offline-enable" type="button" style="min-height:92px;padding:14px;text-align:left;border:1px solid #356b4d;border-radius:10px;background:#18261e;color:#e5e7eb;cursor:pointer;white-space:normal;">
-            <strong style="display:block;font-size:16px;margin-bottom:5px;">オフラインでも使えるようにする</strong>
-            <span style="display:block;font-size:12px;line-height:1.6;color:#a8c0b0;">通信できない時もMeldexを起動できます。最初にアプリ本体を保存します。</span>
-          </button>
-          <button id="meldex-offline-online" type="button" style="min-height:92px;padding:14px;text-align:left;border:1px solid #444;border-radius:10px;background:#252525;color:#e5e7eb;cursor:pointer;white-space:normal;">
-            <strong style="display:block;font-size:16px;margin-bottom:5px;">オンライン時だけ使う</strong>
-            <span style="display:block;font-size:12px;line-height:1.6;color:#aaa;">アプリ本体は保存せず、接続中に最新版を読み込みます。</span>
-          </button>
-        </div>
-        <div id="meldex-offline-choice-status" role="status" aria-live="polite" style="min-height:20px;margin-top:12px;color:#bdbdbd;font-size:12px;line-height:1.6;"></div>
-      </div>`;
-      document.body.appendChild(overlay);
-      const enableButton = overlay.querySelector('#meldex-offline-enable');
-      const onlineButton = overlay.querySelector('#meldex-offline-online');
-      const statusElement = overlay.querySelector('#meldex-offline-choice-status');
-      const setBusy = (busy) => {
-        enableButton.disabled = busy;
-        onlineButton.disabled = busy;
-        enableButton.style.opacity = busy ? '.65' : '1';
-        onlineButton.style.opacity = busy ? '.65' : '1';
-      };
-      enableButton.addEventListener('click', async () => {
-        setBusy(true);
-        statusElement.textContent = 'Meldex本体をこの端末に保存しています。画面を閉じずにお待ちください…';
-        try {
-          await enable();
-          overlay.remove();
-          resolve(CHOICE_ENABLED);
-        } catch (error) {
-          setBusy(false);
-          statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}　オンライン時だけ使うことはできます。`;
-          statusElement.style.color = '#f7b4c0';
-        }
-      });
-      onlineButton.addEventListener('click', () => {
-        _setChoice(CHOICE_ONLINE);
-        overlay.remove();
-        resolve(CHOICE_ONLINE);
-      });
-      enableButton.focus();
-    });
+  function _choiceButton(id, title, description, primary) {
+    const button = document.createElement('button');
+    button.id = id;
+    button.type = 'button';
+    button.className = `gb-btn meldex-offline-choice-button${primary ? ' meldex-offline-choice-button-primary' : ''}`;
+    button.style.cssText = `min-width:0;min-height:92px;padding:14px;text-align:left;border-radius:10px;white-space:normal;${primary ? 'border-color:#356b4d;background:#18261e;' : ''}`;
+    const strong = document.createElement('strong');
+    strong.textContent = title;
+    strong.style.cssText = 'display:block;font-size:16px;margin-bottom:5px;';
+    const detail = document.createElement('span');
+    detail.textContent = description;
+    detail.style.cssText = 'display:block;font-size:12px;line-height:1.6;color:var(--ui-fg-muted,#aaa);';
+    button.append(strong, detail);
+    return button;
   }
 
-  async function prepareFirstRunChoice() {
-    if (!_runtime()?.isBrowserMode?.() || _isBypassLaunch()) return getChoice();
+  function _choiceDialogContent() {
+    const description = document.createElement('p');
+    description.className = 'meldex-offline-choice-description';
+    description.textContent = 'どちらを選んでも、データはこの端末内に自動保存されます。オフライン利用を選ぶと、Meldex本体もこの端末に保存します。あとから設定で変更できます。';
+    description.style.cssText = 'margin:0;color:var(--ui-fg-muted,#bdbdbd);font-size:13px;line-height:1.7;overflow-wrap:anywhere;';
+    const status = document.createElement('div');
+    status.id = 'meldex-offline-choice-status';
+    status.className = 'meldex-offline-choice-status';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    status.style.cssText = 'min-height:20px;color:var(--ui-fg-muted,#bdbdbd);font-size:12px;line-height:1.6;overflow-wrap:anywhere;';
+    return { description, status };
+  }
+
+  function _setChoiceBusy(enableButton, onlineButton, overlay, busy) {
+    enableButton.disabled = busy;
+    onlineButton.disabled = busy;
+    enableButton.style.opacity = busy ? '.65' : '1';
+    onlineButton.style.opacity = busy ? '.65' : '1';
+    overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
+  }
+
+  function _showFirstRunDialog(options) {
+    options = options || {};
+    if (_choiceDialogApi?.isOpen?.() && _choiceDialogPromise) return _choiceDialogPromise;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const enableButton = _choiceButton(
+      'meldex-offline-enable',
+      'オフラインでも使えるようにする',
+      '通信できない時もMeldexを起動できます。最初にアプリ本体を保存します。',
+      true
+    );
+    const onlineButton = _choiceButton(
+      'meldex-offline-online',
+      'オンライン時だけ使う',
+      'アプリ本体は保存せず、接続中に最新版を読み込みます。',
+      false
+    );
+    const { description, status: statusElement } = _choiceDialogContent();
+    const enableOffline = typeof options.enable === 'function' ? options.enable : enable;
+    let resolveChoice = null;
+    let settled = false;
+    let busy = false;
+    let dialogApi = null;
+    const promise = new Promise(resolve => { resolveChoice = resolve; });
+    _choiceDialogPromise = promise;
+    const settle = (choice) => {
+      if (settled) return;
+      settled = true;
+      busy = false;
+      _setChoiceBusy(enableButton, onlineButton, dialogApi?.overlay, false);
+      dialogApi.close(choice);
+      resolveChoice(choice);
+    };
+    dialogApi = window.GBUI.createModal({
+      id: 'meldex-offline-choice-dialog',
+      titleId: 'meldex-offline-choice-title',
+      title: 'オフラインでも使いますか？',
+      body: [description, statusElement],
+      footer: [enableButton, onlineButton],
+      variant: 'standard',
+      extraClass: 'meldex-offline-choice-modal',
+      geometryKey: 'meldex-offline-choice-dialog',
+      minWidth: '0',
+      initialFocus: enableButton,
+      returnFocus: opener,
+      closeOnEsc: false,
+      closeOnOverlay: false,
+      onBeforeClose: reason => ['enabled', 'online', 'test-cleanup'].includes(reason) && (!busy || reason === 'test-cleanup'),
+      onClose: () => {
+        if (_choiceDialogApi === dialogApi) _choiceDialogApi = null;
+        if (_choiceDialogPromise === promise) _choiceDialogPromise = null;
+        if (!settled) {
+          settled = true;
+          resolveChoice('');
+        }
+      },
+    });
+    _choiceDialogApi = dialogApi;
+    const { overlay, modal, header, body, footer } = dialogApi;
+    overlay.classList.add('modal-overlay', 'meldex-offline-choice-overlay');
+    overlay.style.zIndex = '10025';
+    modal.classList.add('modal');
+    modal.dataset.e2eId = 'offline-choice-dialog';
+    modal.style.width = 'min(620px, calc(100vw - 16px))';
+    modal.style.maxWidth = 'min(620px, calc(100vw - 16px))';
+    modal.style.minHeight = 'min(340px, calc(100vh - 16px))';
+    modal.style.maxHeight = 'calc(100vh - 16px)';
+    body.classList.add('modal-body', 'meldex-offline-choice-body');
+    body.style.cssText += 'display:grid;gap:12px;min-width:0;overflow-x:hidden;';
+    footer.classList.add('btn-row', 'meldex-offline-choice-actions');
+    footer.style.cssText += 'display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));align-items:stretch;gap:10px;height:auto;min-height:120px;padding:12px 16px;';
+    header.querySelector('.gb-modal-close')?.remove();
+    overlay.addEventListener('meldex-offline-dialog-close', () => dialogApi.close('test-cleanup'));
+    enableButton.addEventListener('click', async () => {
+      if (busy || settled) return;
+      busy = true;
+      _setChoiceBusy(enableButton, onlineButton, overlay, true);
+      statusElement.style.color = 'var(--ui-fg-muted,#bdbdbd)';
+      statusElement.textContent = 'Meldex本体をこの端末に保存しています。画面を閉じずにお待ちください…';
+      try {
+        await enableOffline();
+        _setChoice(CHOICE_ENABLED);
+        settle(CHOICE_ENABLED);
+      } catch (error) {
+        busy = false;
+        _setChoiceBusy(enableButton, onlineButton, overlay, false);
+        statusElement.textContent = `準備できませんでした: ${error?.message || String(error)}　オンライン時だけ使うことはできます。`;
+        statusElement.style.color = '#f7b4c0';
+      }
+    });
+    onlineButton.addEventListener('click', () => {
+      if (busy || settled) return;
+      _setChoice(CHOICE_ONLINE);
+      settle(CHOICE_ONLINE);
+    });
+    dialogApi.open();
+    return promise;
+  }
+
+  async function prepareFirstRunChoice(options) {
+    options = options || {};
+    if (!options.force && (!_runtime()?.isBrowserMode?.() || _isBypassLaunch())) return getChoice();
     const choice = getChoice();
     if (choice === CHOICE_ENABLED) {
       enable().catch((error) => console.warn('[MeldexOfflineShell] 更新確認に失敗しました', error));
       return choice;
     }
     if (choice === CHOICE_ONLINE) return choice;
-    return _showFirstRunDialog();
+    return _showFirstRunDialog(options);
   }
 
   function renderSettings(container) {

@@ -117,6 +117,41 @@ function _cellUiColumnLockMessage(dbPath, propName, ctx) {
   return (typeof checkColumnEditable === 'function') ? checkColumnEditable(dbPath, propName, ctx) : '';
 }
 
+function _cellUiWriteBlockedMessage(ctx) {
+  if (ctx?.writeBlocked === true) {
+    return String(ctx.writeBlockedReason || '閲覧専用のため変更できません');
+  }
+  if (ctx?.readOnly === true || ctx?.access === 'viewer') {
+    return '閲覧専用のため変更できません';
+  }
+  const dataset = document.body?.dataset || {};
+  if (dataset.cloudQuotaBlocked === '1') {
+    return 'Dropbox容量が95%を超えているため編集を停止しています';
+  }
+  if (dataset.cloudReadonly === '1') {
+    return '閲覧専用のため変更できません';
+  }
+  return '';
+}
+
+function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
+  const type = String(ptc?.type || 'text').replace(/_/g, '-');
+  if (ptc?.source) return false;
+  if (['button', 'formula', 'rollup', 'multi-source-relation', 'chat'].includes(type)) return false;
+  if (typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath)) return false;
+  if (_cellUiWriteBlockedMessage(ctx)) return false;
+  if (_cellUiColumnLockMessage(dbPath, propName, ctx)) return false;
+  if (options.hasExistingValue && typeof getStatusEnabled === 'function' && !getStatusEnabled(dbPath)) {
+    return ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'image'].includes(type);
+  }
+  return true;
+}
+
+function _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx) {
+  return (!Array.isArray(rawValues) || rawValues.length === 0)
+    && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
+}
+
 function _cellUiCanQuickRename(ptc) {
   const type = String(ptc?.type || 'text');
   return type === 'text' || type === 'furigana';
@@ -410,7 +445,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   const moreBtn = document.createElement('button');
   moreBtn.type = 'button';
   moreBtn.className = 'cell-value-more';
-  moreBtn.style.cssText = 'position:absolute;right:28px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);font-size:11px;background:var(--bg3);border:0;border-radius:3px;z-index:2;';
+  moreBtn.style.cssText = 'position:absolute;right:2px;top:50%;transform:translateY(-50%);display:none;cursor:pointer;padding:0 2px;color:var(--fg2);font-size:11px;background:var(--bg3);border:0;border-radius:3px;z-index:2;';
   moreBtn.innerHTML = lucide('ellipsis', 12);
   moreBtn.title = 'メニュー';
   moreBtn.setAttribute('aria-label', '候補値のメニュー');
@@ -524,17 +559,66 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
   return row;
 }
 
-function _showValueContextMenu(e, val, entityPath, propName) {
+function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
   menu.className = 'gb-context-menu';
+  menu.setAttribute('role', 'menu');
   const sourcePaneId = e?.target?.closest?.('.gb-pane')?.dataset?.paneId || '';
   const currentDbPath = _cellUiDbPathForEntity(entityPath) || state.currentDbPath || '';
   const currentCtx = typeof _dbPaneContextFromEvent === 'function'
     ? _dbPaneContextFromEvent(e?.target || null, { dbPath: currentDbPath })
     : null;
   const _ptc = currentDbPath ? getPropertyTypes(currentDbPath, currentCtx)[propName] : null;
-  const lockMsg = _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
+  const lockMsg = _cellUiWriteBlockedMessage(currentCtx)
+    || _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
+  const addCandidate = document.createElement('div');
+  addCandidate.className = 'gb-context-menu-item';
+  addCandidate.innerHTML = lucide('plus', 14) + ' 候補値を追加';
+  const canAddCandidate = _cellUiCanAddCandidate(currentDbPath, propName, _ptc, currentCtx, { hasExistingValue: true });
+  if (!canAddCandidate) {
+    addCandidate.classList.add('disabled');
+    addCandidate.setAttribute('aria-disabled', 'true');
+  }
+  addCandidate.addEventListener('click', () => {
+    const currentCanAddCandidate = _cellUiCanAddCandidate(
+      currentDbPath,
+      propName,
+      _ptc,
+      currentCtx,
+      { hasExistingValue: true },
+    );
+    if (!canAddCandidate || !currentCanAddCandidate) {
+      const blockedMessage = _cellUiWriteBlockedMessage(currentCtx)
+        || _cellUiColumnLockMessage(currentDbPath, propName, currentCtx);
+      if (blockedMessage && typeof showStatus === 'function') showStatus(blockedMessage, true);
+      return;
+    }
+    const td = e?.target?.closest?.('td');
+    const entityName = td?.closest?.('tr[data-entity-name]')?.dataset?.entityName
+      || String(entityPath || '').split('/').pop()?.replace(/\.(md|json)$/i, '')
+      || '';
+    menu.remove();
+    if (typeof options.onAddCandidate === 'function') {
+      options.onAddCandidate();
+    } else if (td && typeof startCellInlineAdd === 'function') {
+      startCellInlineAdd(td, entityPath, entityName, propName);
+    }
+  });
+  menu.appendChild(addCandidate);
+  if (typeof options.onManageImage === 'function') {
+    const manageImage = document.createElement('div');
+    manageImage.className = 'gb-context-menu-item';
+    manageImage.innerHTML = lucide('images', 14) + ' 画像を管理';
+    manageImage.addEventListener('click', () => {
+      menu.remove();
+      options.onManageImage();
+    });
+    menu.appendChild(manageImage);
+  }
+  const actionSep = document.createElement('div');
+  actionSep.className = 'gb-context-menu-sep';
+  menu.appendChild(actionSep);
   // 上部にリネーム入力欄: 値テキストを変更
   if (typeof _addMenuRenameInput === 'function' && !lockMsg && _cellUiCanQuickRename(_ptc)) {
     const old = _cellUiValueToString(val.value);
@@ -607,7 +691,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
         sub.appendChild(copyItem);
         const rightItem = document.createElement('div');
         rightItem.className = 'gb-context-menu-item';
-        rightItem.innerHTML = lucide('layers-2', 14) + ' フロートパネルで開く';
+        rightItem.innerHTML = lucide('panelRight', 14) + ' 右サイドバーで開く';
         rightItem.addEventListener('click', async () => {
           menu.remove();
           let name = idOrName;
@@ -615,7 +699,7 @@ function _showValueContextMenu(e, val, entityPath, propName) {
             name = await _resolveRelationName(idOrName, relDb);
           }
           const path = typeof _entityPath === 'function' ? _entityPath(relDb, name || idOrName) : '';
-          if (path && typeof openLinkInFloatPanel === 'function') openLinkInFloatPanel(path, name || idOrName, { linkType: 'entity', sourcePaneId });
+          if (path && typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(path, name || idOrName, { linkType: 'entity', sourcePaneId });
           else navigateToEntity(name || idOrName, relDb, currentCtx);
         });
         sub.appendChild(rightItem);
@@ -849,8 +933,41 @@ function _showValueContextMenu(e, val, entityPath, propName) {
   menu.style.left = (e.clientX / _z) + 'px';
   menu.style.top = (e.clientY / _z) + 'px';
   document.body.appendChild(menu);
+  const keyboardItems = Array.from(menu.querySelectorAll(
+    ':scope > .gb-context-menu-item, :scope > div > .gb-context-menu-item',
+  ));
+  keyboardItems.forEach(item => {
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = -1;
+  });
+  const enabledKeyboardItems = () => keyboardItems.filter(item => item.getAttribute('aria-disabled') !== 'true');
+  menu.addEventListener('keydown', event => {
+    const items = enabledKeyboardItems();
+    if (!items.length) return;
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex = currentIndex;
+    if (event.key === 'ArrowDown') nextIndex = (currentIndex + 1 + items.length) % items.length;
+    else if (event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + items.length) % items.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = items.length - 1;
+    else if ((event.key === 'Enter' || event.key === ' ') && currentIndex >= 0) {
+      event.preventDefault();
+      items[currentIndex].click();
+      return;
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      menu.remove();
+      e?.target?.focus?.();
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  });
   if (typeof clampPopupToViewport === 'function') clampPopupToViewport(menu);
   setTimeout(() => {
+    enabledKeyboardItems()[0]?.focus();
     const closer = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('pointerdown', closer); } };
     document.addEventListener('pointerdown', closer);
   }, 0);

@@ -605,26 +605,9 @@ class ScriptNoteEditor {
 
   // === キャラクタースタイル ===
 
-  // autoColor/autoColorTarget対応: 実効的な背景色・文字色を解決
   _resolveCharaColors(chara, colId) {
     if (!chara) return { bgColor: '', textColor: '' };
-    let bg = chara.bgColor || '';
-    let fg = chara.textColor || '';
-    if (chara.autoColor) {
-      // 列ごとのターゲットを取得（オブジェクト形式: { _gutter: 'bg', _role: 'text' }、文字列形式: 'bg'）
-      // autoColorが設定済みならデフォルトは'bg'（既存データとの互換性）、未設定時のデフォルトは'none'
-      const act = chara.autoColorTarget || 'bg';
-      const target = (typeof act === 'object' && colId) ? (act[colId] || 'none') : (typeof act === 'string' ? act : 'bg');
-      if (target === 'both') {
-        if (!bg) bg = typeof calcBgColor === 'function' ? calcBgColor(chara.autoColor) : chara.autoColor;
-        if (!fg) fg = chara.autoColor;
-      } else if (target === 'bg') {
-        bg = bg || chara.autoColor;
-      } else if (target === 'text') {
-        fg = fg || chara.autoColor;
-      }
-    }
-    return { bgColor: bg, textColor: fg };
+    return { bgColor: chara.bgColor || '', textColor: chara.textColor || '' };
   }
 
   _getCharaStyle(role) {
@@ -1002,6 +985,34 @@ class ScriptNoteEditor {
     return Array.isArray(this.doc.editor?.customColumns) ? this.doc.editor.customColumns : [];
   }
 
+  _getVisibleColumnIds(options = {}) {
+    const includeHandle = options.includeHandle !== false;
+    const statusEnabled = !!this.doc.editor?.statusEnabled;
+    const visible = {
+      _handle: true, _gutter: true, _gutter2: true, _role: true,
+      _status: statusEnabled, _text: true,
+      ...(this.doc.editor?.visibleStandardColumns || {}),
+    };
+    visible._handle = true;
+    if (!statusEnabled) visible._status = false;
+    const standard = ['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+      .filter(id => (includeHandle || id !== '_handle') && visible[id] !== false);
+    const custom = this._getCustomColumns().filter(column => column?.id && column.visible !== false).map(column => column.id);
+    const ids = [...standard, ...custom];
+    const order = Array.isArray(this.doc.editor?.columnOrder) ? this.doc.editor.columnOrder : [];
+    const handle = ids.includes('_handle');
+    const rest = ids.filter(id => id !== '_handle');
+    rest.sort((left, right) => {
+      const li = order.indexOf(left);
+      const ri = order.indexOf(right);
+      if (li >= 0 && ri >= 0) return li - ri;
+      if (li >= 0) return -1;
+      if (ri >= 0) return 1;
+      return 0;
+    });
+    return handle ? ['_handle', ...rest] : rest;
+  }
+
   _render() {
     if (!this.host || !this.doc) return;
     this._teardownWrapResizeObserver();
@@ -1112,8 +1123,6 @@ class ScriptNoteEditor {
     const colLabels = this.doc.editor?.columnLabels || {};
     const countDef = this._getCountDef();
     const defaultLabels = { _gutter: countDef.primaryLabel, _gutter2: countDef.secondaryLabel, _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
-    const visCols = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
-    if (!statusEnabled) visCols._status = false;
     const allStdCols = [
       { id: '_handle', label: '', width: colWidths._handle || 36 },
       { id: '_gutter', label: colLabels._gutter || defaultLabels._gutter, width: colWidths._gutter || 40 },
@@ -1122,24 +1131,12 @@ class ScriptNoteEditor {
       { id: '_status', label: colLabels._status || defaultLabels._status, width: colWidths._status || 92 },
       { id: '_text', label: colLabels._text || defaultLabels._text, width: textWidth },
     ];
-    const unsortedCols = [
-      ...allStdCols.filter(c => visCols[c.id] !== false),
+    const allColumns = [
+      ...allStdCols,
       ...customCols.map(c => ({ id: c.id, label: c.label || c.id, width: colWidths[c.id] || c.width || 80 })),
     ];
-    // columnOrderで並べ替え（_handleは常に先頭）
-    const colOrder = this.doc.editor?.columnOrder;
-    const cols = colOrder ? (() => {
-      const handleCol = unsortedCols.find(c => c.id === '_handle');
-      const rest = unsortedCols.filter(c => c.id !== '_handle');
-      rest.sort((a, b) => {
-        const ai = colOrder.indexOf(a.id), bi = colOrder.indexOf(b.id);
-        if (ai >= 0 && bi >= 0) return ai - bi;
-        if (ai >= 0) return -1;
-        if (bi >= 0) return 1;
-        return 0;
-      });
-      return handleCol ? [handleCol, ...rest] : rest;
-    })() : unsortedCols;
+    const columnsById = new Map(allColumns.map(column => [column.id, column]));
+    const cols = this._getVisibleColumnIds().map(id => columnsById.get(id)).filter(Boolean);
     const buildHeader = (withResizer = true, instanceKey = '') => {
       const h = document.createElement('div');
       h.className = 'sn2-header' + (viewMode === 'vertical' ? ' sn2-header-vertical' : '');
@@ -1722,8 +1719,11 @@ class ScriptNoteEditor {
     // まとめ表示: 前行と同じガター値やタイプ値なら非表示フラグ
     const mergeGutter = mergeDisplay && prevRow && calc && idx > 0;
     const mergeRole = mergeDisplay && prevRow && prevRow.role === row.role && row.role;
-    const visCols = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: !!this.doc.editor?.statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
-    if (!this.doc.editor?.statusEnabled) visCols._status = false;
+    const visibleIds = new Set(typeof this._getVisibleColumnIds === 'function'
+      ? this._getVisibleColumnIds()
+      : (visibleCols || []).map(column => column.id));
+    const visCols = Object.fromEntries(['_handle', '_gutter', '_gutter2', '_role', '_status', '_text']
+      .map(id => [id, visibleIds.has(id)]));
 
     // 列間枠線: どの列の右側に枠線を表示するかを判定
     const colBorderSet = this._getColumnBorderSet();
@@ -1920,7 +1920,7 @@ class ScriptNoteEditor {
 
     // カスタム列
     if (!row.columns) row.columns = {};
-    customCols.forEach(col => {
+    customCols.filter(col => visibleIds.has(col.id)).forEach(col => {
       const cell = document.createElement('div');
       cell.className = 'sn2-custom-cell';
       cell.dataset.colId = col.id;
@@ -4281,12 +4281,11 @@ class ScriptNoteEditor {
   _insertRuby() {
     const context = this._rubySelectionContext();
     if (!context) return;
-    // ルビ入力は文字列選択時の書式設定ポップアップへ統合済み。
-    // 書式設定ポップアップが使えない環境（単独シナリオアプリ、Cloudモバイル編集UI等）だけ
-    // 従来のルビ専用ポップアップを開く
-    if (window.GBTextSelectionFormat?.openForSelection) {
-      window.GBTextSelectionFormat.openForSelection({ focusRuby: true, force: true });
-      if (document.querySelector('.gb-text-selection-fmt [data-e2e-id="sn2-ruby-input"]')) return;
+    // 書式ポップアップの selectionchange 再表示を抑止し、ルビ専用UIだけを開く。
+    if (typeof window.GBTextSelectionFormat?.suppressFor === 'function') {
+      window.GBTextSelectionFormat.suppressFor(1200);
+    } else if (typeof window.GBTextSelectionFormat?.close === 'function') {
+      window.GBTextSelectionFormat.close();
     }
     this._openLegacyRubyPopup(context);
   }
@@ -4303,6 +4302,20 @@ class ScriptNoteEditor {
     return { sel, range, text, textEl };
   }
 
+  _selectedRubySpan(range, textEl) {
+    if (!range || !textEl) return null;
+    const start = range.startContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer
+      : range.startContainer?.parentElement;
+    const end = range.endContainer?.nodeType === Node.ELEMENT_NODE
+      ? range.endContainer
+      : range.endContainer?.parentElement;
+    const startSpan = start?.closest?.('[data-ruby]') || null;
+    const endSpan = end?.closest?.('[data-ruby]') || null;
+    if (!startSpan || startSpan !== endSpan || !textEl.contains(startSpan)) return null;
+    return range.toString().trim() === String(startSpan.textContent || '').trim() ? startSpan : null;
+  }
+
   // 選択範囲をルビスパンへ置き換えて保存・表示を更新する（レガシーポップアップと
   // 書式設定ポップアップ内ルビ入力の共通経路）。挿入できたら true
   _applyRubyToSelection(range, textEl, ruby, addRule) {
@@ -4310,12 +4323,17 @@ class ScriptNoteEditor {
     const text = range.toString().trim();
     if (!text) return false;
     this._pushUndo('ルビ追加');
-    // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
-    range.deleteContents();
-    const rubyNode = document.createElement('span');
-    rubyNode.dataset.ruby = ruby;
-    rubyNode.textContent = text;
-    range.insertNode(rubyNode);
+    let rubyNode = this._selectedRubySpan(range, textEl);
+    if (rubyNode) {
+      rubyNode.dataset.ruby = ruby;
+    } else {
+      // 選択範囲を削除してルビスパンを挿入（インラインstyleはCSSに任せる）
+      range.deleteContents();
+      rubyNode = document.createElement('span');
+      rubyNode.dataset.ruby = ruby;
+      rubyNode.textContent = text;
+      range.insertNode(rubyNode);
+    }
     // insertNodeが作る空テキストノードを除去して改行を防止
     textEl.normalize();
     const sel = window.getSelection();
@@ -4355,7 +4373,8 @@ class ScriptNoteEditor {
     title.id = 'sn2-ruby-label';
     title.className = 'sn2-ruby-popup-title';
     title.dataset.e2eId = 'sn2-ruby-label';
-    title.textContent = `「${text.slice(0, 20)}」にルビを追加`;
+    const existingRuby = this._selectedRubySpan(range, textEl);
+    title.textContent = `「${text.slice(0, 20)}」のルビを${existingRuby ? '編集' : '追加'}`;
 
     const mainRow = document.createElement('div');
     mainRow.className = 'sn2-ruby-popup-main';
@@ -4365,6 +4384,7 @@ class ScriptNoteEditor {
     input.className = 'gb-input-sm sn2-ruby-popup-input';
     input.dataset.e2eId = 'sn2-ruby-input';
     input.placeholder = 'ルビを入力...';
+    input.value = existingRuby ? String(existingRuby.dataset.ruby || '') : '';
     input.setAttribute('aria-label', '選択文字のルビ');
     // 開くと同時に自動フォーカスされるため、フォーカス由来のツールチップは出さない
     input.setAttribute('data-gb-tooltip-disabled', 'true');
@@ -4373,7 +4393,7 @@ class ScriptNoteEditor {
     okButton.id = 'sn2-ruby-ok';
     okButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary sn2-ruby-popup-ok';
     okButton.dataset.e2eId = 'sn2-ruby-ok';
-    okButton.textContent = '追加';
+    okButton.textContent = existingRuby ? '更新' : '追加';
     mainRow.append(input, okButton);
 
     const optionRow = document.createElement('div');
@@ -4413,9 +4433,12 @@ class ScriptNoteEditor {
       catch { textEl.focus(); }
     };
     const closeRubyPopup = (options = {}) => {
+      if (typeof window.GBTextSelectionFormat?.suppressFor === 'function') {
+        window.GBTextSelectionFormat.suppressFor(800);
+      }
       popup.remove();
       if (closeHandler) document.removeEventListener('pointerdown', closeHandler);
-      if (keyHandler) document.removeEventListener('keydown', keyHandler);
+      if (keyHandler) window.removeEventListener('keydown', keyHandler, true);
       if (this._rubyPopup === popup) {
         this._rubyPopup = null;
         this._closeRubyPopup = null;
@@ -4434,6 +4457,7 @@ class ScriptNoteEditor {
     };
     okButton.addEventListener('click', () => apply(input.value.trim()));
     input.addEventListener('keydown', (ev) => {
+      if (ev.isComposing || ev.keyCode === 229) return;
       if (ev.key === 'Enter') {
         ev.preventDefault();
         ev.stopPropagation();
@@ -4468,7 +4492,7 @@ class ScriptNoteEditor {
       ev.stopPropagation();
       closeRubyPopup();
     };
-    document.addEventListener('keydown', keyHandler);
+    window.addEventListener('keydown', keyHandler, true);
     setTimeout(() => document.addEventListener('pointerdown', closeHandler), 0);
   }
 

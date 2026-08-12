@@ -77,41 +77,84 @@ function _showBulkColumnWidthModal(propName, ctxOrDbPath) {
   const firstWidth = Number(widths[targets[0]] || 100);
   const sameWidth = targets.every(name => Number(widths[name] || 100) === firstWidth);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.innerHTML = `<div class="modal" style="min-width:360px;">
-    <h3>列幅を指定</h3>
+  if (!globalThis.GBUI?.createModal) throw new Error('列幅指定を初期化できませんでした');
+  const existing = document.querySelector('[data-e2e-id="db-bulk-column-width-dialog"]');
+  if (existing) { existing.focus(); return existing.closest('.gb-modal-overlay')?._dbBulkColumnWidthApi || null; }
+  const content = document.createElement('div');
+  content.innerHTML = `
     <div style="margin:8px 0;color:var(--fg2);font-size:12px;line-height:1.6;">対象: ${targets.map(name => esc(name)).join(' / ')}</div>
     <div class="field">
-      <label>幅 (px)</label>
-      <input id="bulk-col-width-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="width:100%;padding:6px 8px;">
-    </div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="bulk-col-width-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-  overlay.querySelector('#bulk-col-width-apply')?.addEventListener('click', () => {
-    const input = overlay.querySelector('#bulk-col-width-input');
+      <label for="bulk-col-width-input">幅 (px)</label>
+      <input id="bulk-col-width-input" class="gb-input" type="number" min="60" step="1" value="${sameWidth ? firstWidth : ''}" placeholder="${sameWidth ? '' : '現在は列ごとに異なります'}" style="width:100%;min-width:0;box-sizing:border-box;">
+    </div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.id = 'bulk-col-width-apply'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.textContent = '適用';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-bulk-column-width', title: '列幅を指定', body: content, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-bulk-column-width', minWidth: '0', initialFocus: '#bulk-col-width-input',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: '列幅指定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'applied' || !busy,
+  });
+  const overlay = modalApi.overlay;
+  overlay._dbBulkColumnWidthApi = modalApi;
+  overlay.dataset.e2eId = 'db-bulk-column-width-overlay';
+  modalApi.modal.dataset.e2eId = 'db-bulk-column-width-dialog';
+  modalApi.modal.style.width = 'min(420px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  applyButton.addEventListener('click', async () => {
+    if (busy) return;
+    const input = content.querySelector('#bulk-col-width-input');
     const raw = (input?.value || '').trim();
     const parsed = parseInt(raw, 10);
     if (!raw || Number.isNaN(parsed)) {
       showStatus('幅を入力してください', true);
       return;
     }
+    busy = true;
+    cancelButton.disabled = true;
+    applyButton.disabled = true;
     const value = Math.max(60, parsed);
     const before = typeof captureDbViewConfigHistory === 'function' ? captureDbViewConfigHistory(dbPath) : null;
-    targets.forEach(name => setColWidthPersist(dbPath, name, value, { skipHistory: true, ctx }));
+    try {
+      targets.forEach(name => setColWidthPersist(dbPath, name, value, { skipHistory: true, ctx }));
+      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+      else if (typeof renderPivot === 'function') await Promise.resolve(renderPivot(ctx));
+    } catch (error) {
+      if (before && typeof restoreLocalStorageSettings === 'function') {
+        try {
+          restoreLocalStorageSettings(before);
+          if (typeof _persistDbViewConfigToBackend === 'function') {
+            await Promise.resolve(_persistDbViewConfigToBackend(dbPath, getDbViewConfig(dbPath), { immediate: true, ctx }));
+          }
+        } catch (restoreError) {
+          console.warn('列幅保存失敗後の設定復元に失敗:', restoreError);
+        }
+      }
+      try {
+        if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+        else if (typeof renderPivot === 'function') await Promise.resolve(renderPivot(ctx));
+      } catch (restoreError) {
+        console.warn('列幅保存失敗後の表示復元に失敗:', restoreError);
+      }
+      showStatus('列幅の保存に失敗しました: ' + (error?.message || error), true);
+      busy = false;
+      cancelButton.disabled = false;
+      applyButton.disabled = false;
+      applyButton.focus({ preventScroll: true });
+      return;
+    }
     if (typeof pushDbViewConfigHistory === 'function' && typeof captureDbViewConfigHistory === 'function') {
       pushDbViewConfigHistory(dbPath, 'シート表示: 列幅', before, captureDbViewConfigHistory(dbPath), targets.join(' / '));
     }
-    overlay.remove();
-    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-    else if (typeof renderPivot === 'function') renderPivot(ctx);
+    modalApi.close('applied');
   });
-  setTimeout(() => overlay.querySelector('#bulk-col-width-input')?.focus(), 30);
+  modalApi.open();
+  return modalApi;
 }
 
 /* DB Undo/Redo ヘルパー（scope = 'db:' + dbPath で開いているDB単位） */

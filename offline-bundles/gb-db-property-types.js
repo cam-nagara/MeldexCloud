@@ -307,10 +307,18 @@ function getPropertyTypes(dbPath, ctxOverride) {
   // バックエンド（フォルダノート）を優先: property_types キーが存在すればそれを使う
   if (targetMetadata && 'property_types' in targetMetadata && targetMetadata.property_types !== null) {
     const backendTypes = targetMetadata.property_types || {};
+    // 旧URL列は読込時だけリンクの別名として扱う。ここではメモリ上だけを
+    // 正規化し、通常の列設定保存が発生するまで既存ファイルを書き換えない。
+    Object.values(backendTypes).forEach(config => {
+      if (config && typeof config === 'object' && config.type === 'url') config.type = 'link';
+    });
     if (Object.keys(backendTypes).length > 0) return backendTypes;
     return Object.keys(localTypes).length > 0 ? localTypes : backendTypes;
   }
   // フォールバック: localStorage（後方互換、オフライン対応）
+  Object.values(localTypes).forEach(config => {
+    if (config && typeof config === 'object' && config.type === 'url') config.type = 'link';
+  });
   return localTypes;
 }
 
@@ -1348,12 +1356,13 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
     });
   }
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
+  if (!globalThis.GBUI?.createModal) throw new Error('列タイプ設定を初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="db-property-type-dialog"]');
+  if (existingDialog) { existingDialog.focus(); return existingDialog.closest('.gb-modal-overlay')?._dbPropertyTypeApi || null; }
   const scopeId = 'modal-' + Math.random().toString(36).slice(2, 8);
-  o.innerHTML = `<div class="modal pt-modal" data-pt-root>
-    <h3>列タイプの設定</h3>
-    <div class="modal-body">
+  const content = document.createElement('div');
+  content.setAttribute('data-pt-root', '');
+  content.innerHTML = `
       <div class="gb-section-desc">列: ${esc(propName)}</div>
       <div class="field"><label>型</label>
         <select id="pt-type" data-onchange="onPropertyTypeChange(this.closest('[data-pt-root]'))">
@@ -1361,22 +1370,49 @@ function showPropertyTypeModal(propName, dbPathOverride, ctxOverride) {
         </select>
       </div>
       ${_renderPropertyMultiplicityControls(current.type, scopeId)}
-      <div id="pt-options"></div>
-    </div>
-    <div class="btn-row">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button class="primary" id="modal-pt-apply">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  const root = o.querySelector('[data-pt-root]');
-  // propName の ' や \ を保護するため直接バインド
-  root.querySelector('#modal-pt-apply').addEventListener('click', () => applyPropertyType(propName, root));
+      <div id="pt-options"></div>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  const applyButton = document.createElement('button');
+  applyButton.type = 'button'; applyButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; applyButton.id = 'modal-pt-apply'; applyButton.textContent = '適用';
+  let busy = false;
+  const modalApi = globalThis.GBUI.createModal({
+    id: 'db-property-type', title: '列タイプの設定', body: content, footer: [cancelButton, applyButton],
+    variant: 'standard', geometryKey: 'db-property-type', minWidth: '0', initialFocus: '#pt-type',
+    returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : undefined,
+    closeLabel: '列タイプ設定を閉じる', closeOnEsc: true, closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || !busy,
+  });
+  const o = modalApi.overlay;
+  o._dbPropertyTypeApi = modalApi;
+  o.dataset.e2eId = 'db-property-type-overlay';
+  modalApi.modal.dataset.e2eId = 'db-property-type-dialog';
+  modalApi.modal.classList.add('pt-modal');
+  modalApi.modal.style.width = 'min(760px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  const root = content;
+  root._ptModalApi = modalApi;
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  applyButton.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true; cancelButton.disabled = true; applyButton.disabled = true;
+    let saved = null;
+    try {
+      saved = await applyPropertyType(propName, root);
+    } catch (error) {
+      console.warn('列設定の保存に失敗:', error);
+      showStatus('列設定の保存に失敗しました: ' + (error?.message || error), true);
+    }
+    if (saved) { modalApi.close('saved'); return; }
+    busy = false; cancelButton.disabled = false; applyButton.disabled = false; applyButton.focus({ preventScroll: true });
+  });
 
   // 型別オプションを表示
   _ptSetState(root, current, [...existingValues], propName, dbPath, pivotData, ctx);
   onPropertyTypeChange(root);
   if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
+  modalApi.open();
+  return modalApi;
 }
 
 // DB一覧から選択するピッカー（relation参照先DB・MSRソース用）
@@ -2640,33 +2676,6 @@ async function applyPropertyType(propName, root, options = {}) {
     return null;
   }
   _ptSetState(scope, config, _propertySettingsExistingValues(propName, pivotData), propName, dbPath, pivotData, ctx);
-  if (prev.type === 'image' && type !== 'image') {
-    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
-  }
-  const overlay = scope.closest?.('.modal-overlay');
-  if (overlay) overlay.remove();
-  // 数式キャッシュをクリア
-  if (type === 'formula') {
-    for (const k in _formulaCache) delete _formulaCache[k];
-  }
-  if (options.render !== false) {
-    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-    else renderPivot(ctx);
-  }
-  // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
-  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
-  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
-  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
-  const _relTargetMayHaveChanged = _relTypes.includes(type)
-    && (prev.type !== type
-      || (config.relationDb || '') !== (prev.relationDb || '')
-      || type === 'multi-source-relation');
-  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
-    Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
-      if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
-      else if (options.render !== false) renderPivot(ctx);
-    }).catch(() => {});
-  }
   try {
     await savePromise;
   } catch (e) {
@@ -2684,7 +2693,11 @@ async function applyPropertyType(propName, root, options = {}) {
     saveDbViewConfig(dbPath, localCfg, { skipBackend: true, skipHistory: true, ctx });
     const metadata = typeof _ptMetadataForDbPath === 'function' ? _ptMetadataForDbPath(dbPath, ctx) : null;
     if (metadata) metadata.property_types = currentTypes;
-    if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+    try {
+      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+    } catch (renderError) {
+      console.warn('列設定保存失敗後の表示復元に失敗:', renderError);
+    }
     if (globalThis.GbDbEntryIdentity && ctx) {
       try { await globalThis.GbDbEntryIdentity.reload(ctx, dbPath); } catch (reloadError) {
         console.error('列設定保存失敗後の再読み込みに失敗:', reloadError, e);
@@ -2693,9 +2706,53 @@ async function applyPropertyType(propName, root, options = {}) {
     showStatus('列設定の保存に失敗: ' + (e?.message || e), true);
     return null;
   }
+  if (prev.type === 'image' && type !== 'image') {
+    Promise.resolve(savePromise).then(() => apiPost('/media/rebuild-refs', {})).catch(() => {});
+  }
+  const overlay = scope.closest?.('.modal-overlay');
+  if (overlay && !scope._ptModalApi) overlay.remove();
+  // 数式キャッシュをクリア
+  if (type === 'formula') {
+    for (const k in _formulaCache) delete _formulaCache[k];
+  }
+  let refreshWarning = false;
+  try {
+    if (options.render !== false) {
+      if (typeof _renderCurrentDbView === 'function') await Promise.resolve(_renderCurrentDbView(ctx, dbPath));
+      else await Promise.resolve(renderPivot(ctx));
+    }
+  } catch (error) {
+    console.warn('列設定保存後の表示更新に失敗:', error);
+    refreshWarning = true;
+  }
+  // リレーションの参照先シートを変えた（または型をリレーションにした）直後は、新しい
+  // 参照先の名前解決マップがまだ無く生ID（ent_xxx）が表示される。マップを取得し終えて
+  // から描き直し、再読み込みを押さなくても名前で表示されるようにする。
+  const _relTypes = ['relation', 'multi-relation', 'multi-source-relation'];
+  const _relTargetMayHaveChanged = _relTypes.includes(type)
+    && (prev.type !== type
+      || (config.relationDb || '') !== (prev.relationDb || '')
+      || type === 'multi-source-relation');
+  if (_relTargetMayHaveChanged && typeof _preloadRelationMapsForDb === 'function') {
+    try {
+      await Promise.resolve(_preloadRelationMapsForDb(dbPath, pivotData, ctx)).then(() => {
+        if (typeof _renderCurrentDbView === 'function') _renderCurrentDbView(ctx, dbPath);
+        else if (options.render !== false) renderPivot(ctx);
+      });
+    } catch (error) {
+      console.warn('列設定保存後の参照先読み込みに失敗:', error);
+      refreshWarning = true;
+    }
+  }
   // 保存が確定してから履歴へ積む（型が実際に変わった時のみ。ヘルパー側でゲート）
-  await _ptReloadOtherDbContexts(dbPath, ctx);
-  _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
+  try {
+    await _ptReloadOtherDbContexts(dbPath, ctx);
+    _ptPushTypeChangeHistory(dbPath, propName, beforeCfg, config, ctx);
+  } catch (error) {
+    console.warn('列設定保存後の履歴または別画面更新に失敗:', error);
+    refreshWarning = true;
+  }
+  if (refreshWarning) showStatus('列設定は保存しましたが、表示を更新できませんでした', true);
   return config;
 }
 

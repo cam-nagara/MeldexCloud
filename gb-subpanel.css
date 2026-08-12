@@ -188,6 +188,25 @@
   padding: 14px 16px 18px;
 }
 
+.gb-subpanel-entity-parent { min-height: 24px; margin-bottom: 10px; }
+.gb-subpanel-link-button {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.gb-subpanel-link-button:hover,
+.gb-subpanel-link-button:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.meldex-entity-detail-webclip { display: flex; flex: 1 1 auto; min-height: 320px; flex-direction: column; }
+.meldex-entity-detail-webclip-toolbar { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; }
+.meldex-entity-detail-webclip-frame { flex: 1 1 auto; width: 100%; min-height: 320px; border: 1px solid var(--border); background: #fff; }
+
 @media (max-width: 640px) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]
     .cloud-mobile-side-drawer[data-drawer-kind="panel"] .gb-subpanel-titlebar {

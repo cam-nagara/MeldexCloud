@@ -157,6 +157,8 @@ async function _chatCustomInstructionPathType(dbPath) {
 }
 
 async function ensureChatCustomInstructionSheet() {
+  const settingsOverlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
+  if (settingsOverlay?.getAttribute('aria-busy') === 'true') return '';
   let dbPath = CHAT_CUSTOM_INSTRUCTIONS_DB_NAME;
   let metadataSaved = false;
   const pathType = await _chatCustomInstructionPathType(dbPath);
@@ -176,7 +178,14 @@ async function ensureChatCustomInstructionSheet() {
   }
   if (!metadataSaved) await _saveChatCustomInstructionMetadata(dbPath);
   _applyChatCustomInstructionViewConfig(dbPath);
-  document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
+  if (settingsOverlay) {
+    if (typeof window.closeSettingsModalWithReason !== 'function') return '';
+    const settingsClosed = await window.closeSettingsModalWithReason(
+      'settings-transition:chat-custom-instructions',
+      settingsOverlay,
+    );
+    if (!settingsClosed) return '';
+  }
   if (typeof refreshOutliner === 'function') refreshOutliner();
   if (typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
   if (typeof showStatus === 'function') showStatus('カスタムインストラクション入力フォームを開きました');

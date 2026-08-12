@@ -889,14 +889,11 @@
     const targetZoom = Math.max(0.2, Math.min(5, Number(requestedZoom) || 1));
     if (Math.abs(targetZoom - oldZoom) < 0.0005) return;
     const display = document.getElementById('display');
-    const rect = display ? display.getBoundingClientRect() : null;
-    const centerX = rect ? rect.left + rect.width / 2 : 0;
-    const centerY = rect ? rect.top + rect.height / 2 : 0;
-    const cx = (typeof clientX === 'number') ? clientX : centerX;
-    const cy = (typeof clientY === 'number') ? clientY : centerY;
-    // c = カーソル位置(またはdisplay中心) − #display中心
-    const cX = cx - centerX;
-    const cY = cy - centerY;
+    const point = viewerLogicalPoint(display, clientX, clientY);
+    // c = カーソル位置（回転・反転を戻したビューポート論理座標）− #display中心。
+    // 変形後のメディア矩形を基準にしないため、連続ズームでも誤差を累積させない。
+    const cX = point.x;
+    const cY = point.y;
     const oldPanX = panX, oldPanY = panY;
     if (isPdf) applyPdfZoomInPlace(targetZoom);
     else { zoom = targetZoom; reapplyMediaFitStyle(); }
@@ -1002,8 +999,20 @@
   function panBy(deltaX, deltaY) {
     panX += Number(deltaX) || 0;
     panY += Number(deltaY) || 0;
-    clampPan();
+    // PDFはcanvasの寸法更新が非同期なので、旧寸法でパンを狭くクランプしない。
+    // applyPdfZoomInPlace()のrefit完了時に新寸法でクランプされる。
+    if (!isPdf) clampPan();
     applyPan();
+  }
+
+  function viewerLogicalPoint(display, clientX, clientY) {
+    if (!display) return { x: 0, y: 0 };
+    const rect = display.getBoundingClientRect();
+    let dx = (typeof clientX === 'number' ? clientX : rect.left + rect.width / 2) - (rect.left + rect.width / 2);
+    let dy = (typeof clientY === 'number' ? clientY : rect.top + rect.height / 2) - (rect.top + rect.height / 2);
+    // applyViewerTransform() は scale(...) rotate(...) の順で宣言するため、画面座標から
+    // 論理座標へ戻す時は反転を戻してから逆回転する。
+    return Utils.logicalPointFromScreenDelta(dx, dy, flipH, flipV, rotateDeg);
   }
 
   // パンの可動範囲（はみ出し量）を現在の表示コンテンツの実寸から計算する。
@@ -1040,31 +1049,53 @@
     panY = overflowY > 0 ? Math.max(-overflowY, Math.min(overflowY, panY)) : 0;
   }
 
-  (function() {
+  (function installPointerPan() {
     const display = document.getElementById('display');
-    let panning = false, startX = 0, startY = 0, panX0 = 0, panY0 = 0;
-    display.addEventListener('mousedown', (e) => {
-      // Ctrl押下時はD&D(ボードへのカード化)を優先し、パンは開始しない
-      // （ビューワー残課題修正計画 2026-08-04「1. 画像ドラッグ=パン即応」）。
-      if (e.target.closest('.nav-area') || e.target.closest('.sa-toolbar') || e.target.closest('.sa-note') || e.target.closest('svg') || window.MeldexViewerAnnotations?.isActive?.() || e.button !== 0 || e.ctrlKey) return;
-      // 動画のネイティブコントロールバー付近（下端約40px）ではパンを開始しない
-      // （シーク操作とパンドラッグの競合を避ける。「動画内シークはネイティブコントロールで行う」）。
+    let activePointerId = null, startX = 0, startY = 0, panX0 = 0, panY0 = 0;
+    function isBlockedTarget(e) {
+      if (e.target.closest('.nav-area, #controls, .sa-toolbar, .sa-note, button, input, select, textarea, [contenteditable="true"]')) return true;
       if (e.target.tagName === 'VIDEO') {
         const videoRect = e.target.getBoundingClientRect();
-        if (e.clientY >= videoRect.bottom - 40) return;
+        if (e.clientY >= videoRect.bottom - 40) return true;
       }
-      panning = true; startX = e.clientX; startY = e.clientY;
+      return false;
+    }
+    display.addEventListener('pointerdown', (e) => {
+      // Ctrl押下時はD&D(ボードへのカード化)を優先し、パンは開始しない
+      // （ビューワー残課題修正計画 2026-08-04「1. 画像ドラッグ=パン即応」）。
+      if (activePointerId !== null || e.pointerType === 'touch' || isBlockedTarget(e)
+          || window.MeldexViewerAnnotations?.isActive?.() || e.button !== 0 || e.ctrlKey) return;
+      activePointerId = e.pointerId;
+      startX = e.clientX; startY = e.clientY;
       panX0 = panX; panY0 = panY;
+      try { display.setPointerCapture(e.pointerId); } catch {}
       display.classList.add('panning');
+      e.preventDefault();
     });
-    document.addEventListener('mousemove', (e) => {
-      if (!panning) return;
-      panX = panX0 + (e.clientX - startX);
-      panY = panY0 + (e.clientY - startY);
+    display.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== activePointerId) return;
+      const start = viewerLogicalPoint(display, startX, startY);
+      const current = viewerLogicalPoint(display, e.clientX, e.clientY);
+      panX = panX0 + (current.x - start.x);
+      panY = panY0 + (current.y - start.y);
       clampPan();
       applyPan();
+      e.preventDefault();
     });
-    document.addEventListener('mouseup', () => { panning = false; display.classList.remove('panning'); });
+    function finish(e) {
+      if (e.pointerId !== activePointerId) return;
+      try { display.releasePointerCapture(e.pointerId); } catch {}
+      activePointerId = null;
+      display.classList.remove('panning');
+    }
+    display.addEventListener('pointerup', finish);
+    display.addEventListener('pointercancel', finish);
+    display.addEventListener('lostpointercapture', e => {
+      if (e.pointerId === activePointerId) {
+        activePointerId = null;
+        display.classList.remove('panning');
+      }
+    });
   })();
 
   // フォルダナビゲーション（前/次のフォルダ）

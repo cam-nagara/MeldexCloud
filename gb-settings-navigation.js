@@ -39,14 +39,10 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: 'テーマ',
-    desc: 'テーマ、テーマカラー、フォント、アプリ別テーマ',
+    desc: 'テーマカラー、アクセント、詳細設定、プレビュー',
     icon: 'palette',
     pages: [
       { id: 'theme', label: 'テーマ', panels: ['テーマ'], view: 'theme' },
-      { id: 'color', label: 'テーマカラー', panels: ['テーマ'], view: 'color' },
-      { id: 'font', label: 'フォント', panels: ['テーマ'], view: 'font' },
-      { id: 'state', label: '状態・装飾', panels: ['テーマ'], view: 'state' },
-      { id: 'apps', label: 'アプリ別', panels: ['テーマ'], view: 'apps' },
     ],
   },
   {
@@ -263,6 +259,9 @@ function _settingsNavigationIcon(name) {
 function _settingsTagDirectChildren(panel, views) {
   if (!panel || !Array.isArray(views)) return;
   Array.from(panel.children).forEach((child, index) => {
+    // 現行HTMLが明示した所属先を優先し、旧HTMLだけを順序で補完する。
+    // 項目追加によるインデックスずれで別画面へ混ざる事故を防ぐ。
+    if (child.dataset.settingsView) return;
     const view = views[index];
     if (!view) return;
     child.dataset.settingsView = Array.isArray(view) ? view.join(' ') : String(view);
@@ -271,26 +270,26 @@ function _settingsTagDirectChildren(panel, views) {
 
 function _tagSettingsNavigationSections(root = document) {
   const scope = root?.querySelector ? root : document;
-  // 【重要】このview配列は「全般」パネル直下childの出現順と1対1で一致させること。
-  // セクションを追加・削除・並べ替えたら、必ず同じ順序でここを更新する（ずれると別タブへ混ざる）。
+  // 旧HTMLとの互換用フォールバック。現行HTMLは data-settings-view を正とする。
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="全般"]'), [
     'storage',   // 0 ソースフォルダ
     'storage',   // 1 #settings-cloud-link-card（Dropbox 状態カード）
     'storage',   // 2 ホームフォルダ
-    'connect',   // 3 スマホ・タブレットからの接続（接続タブへ移設）
-    'connect',   // 4 保存の仕組み・共有サーバー
-    'setup',     // 5 ファイルを開くアプリ
-    'setup',     // 6 サンプルデータ
-    'setup',     // 7 ホーム画面に追加（#settings-install-container）
-    'transfer',  // 8 設定の引き継ぎ
-    'display',   // 9 表示オプション
-    'display',   // 10 表示サイズ
-    'display',   // 11 自動起動
-    'history',   // 12 ヒストリー（Undo/Redo）
-    'history',   // 13 自動バージョン保存
-    'history',   // 14 レイアウト
-    'history',   // 15 履歴データのエクスポート
-    'transfer',  // 16 全設定リセット
+    'storage',   // 3 スクリーンショット保存先
+    'connect',   // 4 スマホ・タブレットからの接続（接続タブへ移設）
+    'connect',   // 5 保存の仕組み・共有サーバー
+    'setup',     // 6 ファイルを開くアプリ
+    'setup',     // 7 サンプルデータ
+    'setup',     // 8 ホーム画面に追加（#settings-install-container）
+    'transfer',  // 9 設定の引き継ぎ
+    'display',   // 10 表示オプション
+    'display',   // 11 表示サイズ
+    'display',   // 12 自動起動
+    'history',   // 13 ヒストリー（Undo/Redo）
+    'history',   // 14 自動バージョン保存
+    'history',   // 15 レイアウト
+    'history',   // 16 履歴データのエクスポート
+    'transfer',  // 17 全設定リセット
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="LLM"]'), [
     'auto-tag',

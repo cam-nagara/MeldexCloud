@@ -234,7 +234,7 @@
 
     // ダイアログを閉じて、保存完了を先にユーザーへ返す。
     // フォルダツリー再読込などの重い後処理は閉じる動作をブロックしない。
-    settingsOverlay?.remove();
+    if (typeof closeSettingsModalWithReason === 'function') closeSettingsModalWithReason('complete', settingsOverlay);
     showStatus('設定を保存しました', false, { showSaveDialog: true });
     // ユーザー表示を更新（ユーザー名変更 / アバター設定を反映）
     try { if (typeof updateUserIcon === 'function') updateUserIcon(); } catch {}
@@ -247,7 +247,6 @@
   } catch (err) {
     console.error('設定保存エラー:', err);
     showStatus('設定の保存に失敗: ' + (err?.message || err), true);
-    document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
   } finally {
     hideLoading();
   }
@@ -515,10 +514,9 @@ function openTrashFromFolderTree() {
   if (typeof showTrashModal === 'function') showTrashModal();
 }
 
-async function showTrashModal() {
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-
+async function showTrashModal(options = {}) {
+  const returnFocus = options.returnFocus || document.activeElement;
+  showTrashModal._returnFocus = returnFocus;
   let items = [];
   let loadError = null;
   let partial = false;
@@ -556,48 +554,101 @@ async function showTrashModal() {
       const delDate = it.deleted_at ? new Date(it.deleted_at).toLocaleString('ja-JP') : '';
       const origPath = it.original_path || '';
       const rootName = it.trash_root_name || '';
-      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid var(--border);font-size:13px;">
-          <span>${icon}</span>
-          <div style="flex:1;overflow:hidden;min-width:0;">
-            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.name)}${info}</div>
-            <div style="font-size:11px;color:var(--fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${rootName ? esc(rootName) + ' / ' : ''}${origPath ? '元: '+esc(origPath) : ''}${delDate ? ' | '+delDate : ''}</div>
+      html += `<div class="trash-dialog-row" data-e2e-id="trash-dialog-row-${i}">
+          <span class="trash-dialog-icon">${icon}</span>
+          <div class="trash-dialog-copy">
+            <div class="trash-dialog-name">${esc(it.name)}${info}</div>
+            <div class="trash-dialog-detail">${rootName ? esc(rootName) + ' / ' : ''}${origPath ? '元: '+esc(origPath) : ''}${delDate ? ' | '+delDate : ''}</div>
           </div>
-          <button data-action="trashRestore" data-args='${esc(JSON.stringify([i]))}' style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--accent);border:1px solid var(--border);border-radius:3px;cursor:pointer;">復元</button>
-          <button data-action="trashDelete" data-args='${esc(JSON.stringify([i]))}' style="font-size:11px;padding:1px 6px;background:var(--bg3);color:var(--red);border:1px solid var(--border);border-radius:3px;cursor:pointer;">削除</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-trash-restore="${i}" data-e2e-id="trash-dialog-restore-${i}">復元</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" data-trash-delete="${i}" data-e2e-id="trash-dialog-delete-${i}">完全に削除</button>
         </div>`;
     });
     return html;
   }
-
-  o.innerHTML = `<div class="modal" style="min-width:450px;">
-    <h3>${lucide('trash2',16)} ゴミ箱</h3>
-    <div id="trash-list" style="max-height:400px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;">${renderList()}</div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button data-action="trashEmpty()" style="color:var(--red);">ゴミ箱を空にする</button>
-      <span style="flex:1;"></span>
-      <button data-action="this.closest('.modal-overlay').remove()">閉じる</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-
-  // グローバル関数として公開（data-action属性から呼ぶため）
+  showTrashModal._activeDialog?.close?.('superseded');
+  const body = document.createElement('div');
+  body.className = 'trash-dialog-body';
+  body.innerHTML = `<div id="trash-list" class="trash-dialog-list" data-e2e-id="trash-dialog-list">${renderList()}</div>
+    <div class="gb-section-desc trash-dialog-status" data-e2e-id="trash-dialog-status" aria-live="polite"></div>`;
+  const emptyButton = document.createElement('button');
+  emptyButton.type = 'button';
+  emptyButton.className = 'gb-btn gb-btn-danger';
+  emptyButton.dataset.e2eId = 'trash-dialog-empty';
+  emptyButton.textContent = 'ゴミ箱を空にする';
+  emptyButton.disabled = items.length === 0 || !!loadError;
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'gb-btn';
+  closeButton.dataset.e2eId = 'trash-dialog-close';
+  closeButton.textContent = '閉じる';
+  let busy = false;
+  let dialogApi = null;
+  const setBusy = value => {
+    busy = !!value;
+    showTrashModal._busy = busy;
+    dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
+    body.querySelectorAll('button').forEach(button => { button.disabled = busy; });
+    emptyButton.disabled = busy || items.length === 0 || !!loadError;
+    closeButton.disabled = busy;
+  };
+  dialogApi = window.GBUI.createModal({
+    id: 'trash-dialog',
+    title: 'ゴミ箱',
+    body,
+    footer: [emptyButton, closeButton],
+    variant: 'standard',
+    extraClass: 'trash-dialog-modal',
+    geometryKey: 'trash',
+    initialFocus: items.length ? '[data-e2e-id="trash-dialog-restore-0"]' : '[data-e2e-id="trash-dialog-close"]',
+    returnFocus,
+    onBeforeClose: reason => !busy || reason === 'refresh' || reason === 'complete' || reason === 'superseded',
+    onClose: () => {
+      if (showTrashModal._activeDialog === dialogApi) showTrashModal._activeDialog = null;
+    },
+  });
+  showTrashModal._activeDialog = dialogApi;
+  const o = dialogApi.overlay;
+  o.classList.add('modal-overlay');
+  o.dataset.trashModal = '1';
+  dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'trash-dialog-close-icon');
+  body.querySelectorAll('[data-trash-restore]').forEach(button => button.addEventListener('click', () => trashRestore(Number(button.dataset.trashRestore))));
+  body.querySelectorAll('[data-trash-delete]').forEach(button => button.addEventListener('click', () => trashDelete(Number(button.dataset.trashDelete))));
+  emptyButton.addEventListener('click', () => trashEmpty());
+  closeButton.addEventListener('click', () => dialogApi.close('close-button'));
   window._trashItems = items;
   window._trashModal = o;
+  window._setTrashDialogBusy = setBusy;
+  window._setTrashDialogStatus = message => {
+    const status = body.querySelector('[data-e2e-id="trash-dialog-status"]');
+    if (status) status.textContent = message || '';
+  };
+  dialogApi.open();
+}
+
+function _refreshTrashDialog() {
+  const returnFocus = showTrashModal._returnFocus;
+  showTrashModal._activeDialog?.close?.('refresh');
+  return showTrashModal({ returnFocus });
 }
 
 async function trashRestore(idx) {
   const item = window._trashItems?.[idx];
   const name = item?.name;
   if (!name) return;
+  window._setTrashDialogBusy?.(true);
   try {
     const res = await apiPost('/trash/restore', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
     showStatus(`「${name}」を復元しました → ${res.restored_to}`);
     window._trashItems.splice(idx, 1);
     await loadOutliner();
-    window._trashModal?.remove();
-    showTrashModal();
+    window._setTrashDialogBusy?.(false);
+    await _refreshTrashDialog();
   } catch (e) {
-    showStatus('復元に失敗しました: ' + (e.message || e), true);
+    const message = '復元に失敗しました: ' + (e.message || e);
+    window._setTrashDialogBusy?.(false);
+    window._setTrashDialogStatus?.(message);
+    showStatus(message, true);
   }
 }
 
@@ -614,14 +665,18 @@ async function trashDelete(idx) {
       )
     : await cfConfirm(confirmMessage);
   if (!confirmed) return;
+  window._setTrashDialogBusy?.(true);
   try {
     await apiPost('/trash/delete', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
     showStatus(`「${name}」を完全に削除しました`);
     window._trashItems.splice(idx, 1);
-    window._trashModal?.remove();
-    showTrashModal();
+    window._setTrashDialogBusy?.(false);
+    await _refreshTrashDialog();
   } catch (e) {
-    showStatus('完全削除に失敗しました: ' + (e.message || e), true);
+    const message = '完全削除に失敗しました: ' + (e.message || e);
+    window._setTrashDialogBusy?.(false);
+    window._setTrashDialogStatus?.(message);
+    showStatus(message, true);
   }
 }
 
@@ -634,13 +689,17 @@ async function trashEmpty() {
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
     : await cfConfirm(confirmMessage);
   if (!confirmed) return;
+  window._setTrashDialogBusy?.(true);
   try {
     await apiPost('/trash/empty', {});
     showStatus('ゴミ箱を空にしました');
-    window._trashModal?.remove();
-    showTrashModal();
+    window._setTrashDialogBusy?.(false);
+    await _refreshTrashDialog();
   } catch (e) {
-    showStatus('ゴミ箱を空にできませんでした: ' + (e.message || e), true);
+    const message = 'ゴミ箱を空にできませんでした: ' + (e.message || e);
+    window._setTrashDialogBusy?.(false);
+    window._setTrashDialogStatus?.(message);
+    showStatus(message, true);
   }
 }
 

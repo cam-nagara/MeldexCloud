@@ -195,6 +195,7 @@ async function _restoreSmartDbHistorySnapshot(snapshot) {
   if (snapshot._filePath) def._filePath = snapshot._filePath;
   if (snapshot._fileId) def._fileId = snapshot._fileId;
   await saveSmartDbDef(def);
+  await _runSmartDbPostCommitSteps('スマートシートの履歴復元', [], _runSmartDbBasePostCommitEffects(def));
   if (state.currentSmartDb?.id === def.id || (def._filePath && state.currentSmartDb?._filePath === def._filePath)) {
     await selectSmartDb(def.id, def, {
       skipNavPush: true,
@@ -268,7 +269,6 @@ async function saveSmartDbDef(def, opts) {
         body: JSON.stringify({ content: JSON.stringify(_serializeSmartDbDefinition(def), null, 2) })
       });
     }
-    if (!saveOpts.skipVersionDirty && typeof markAutoVersionDirty === 'function') markAutoVersionDirty();
     return true;
   }
   const dbs = getSavedSmartDbs();
@@ -278,8 +278,56 @@ async function saveSmartDbDef(def, opts) {
   if (idx >= 0) dbs[idx] = stored;
   else dbs.push(stored);
   setSavedSmartDbs(dbs);
-  renderSmartDbList();
   return true;
+}
+
+function _smartDbPostCommitError(step, error) {
+  return { step, error: error instanceof Error ? error : new Error(String(error || '不明なエラー')) };
+}
+
+function _applySmartDbCommittedDefinition(currentDef, committedDef) {
+  try {
+    Object.assign(currentDef, committedDef);
+    return null;
+  } catch (error) {
+    if (state.currentSmartDb === currentDef) state.currentSmartDb = committedDef;
+    return _smartDbPostCommitError('保存済み状態の反映', error);
+  }
+}
+
+function _runSmartDbBasePostCommitEffects(def, opts) {
+  const postOpts = opts || {};
+  const errors = [];
+  const run = (step, effect) => {
+    try { effect(); }
+    catch (error) { errors.push(_smartDbPostCommitError(step, error)); }
+  };
+  if (def?._filePath && !postOpts.skipVersionDirty && typeof markAutoVersionDirty === 'function') {
+    run('バージョン状態の更新', () => markAutoVersionDirty());
+  }
+  if (!def?._filePath && !postOpts.skipListRender && typeof renderSmartDbList === 'function') {
+    run('一覧の更新', () => renderSmartDbList());
+  }
+  return errors;
+}
+
+async function _runSmartDbPostCommitSteps(label, steps, initialErrors) {
+  const errors = Array.isArray(initialErrors) ? initialErrors.slice() : [];
+  for (const step of (Array.isArray(steps) ? steps : [])) {
+    if (!step || typeof step.run !== 'function') continue;
+    try { await step.run(); }
+    catch (error) { errors.push(_smartDbPostCommitError(step.label || '画面の更新', error)); }
+  }
+  if (errors.length) {
+    const detail = errors.map(item => `${item.step}: ${item.error.message}`).join(' / ');
+    console.warn(`${label}の保存後処理に失敗しました:`, ...errors.map(item => item.error));
+    try {
+      showStatus(`${label}は保存しましたが、画面の更新に失敗しました。再読み込みしてください: ${detail}`, true);
+    } catch (statusError) {
+      console.warn(`${label}の部分成功を表示できませんでした:`, statusError);
+    }
+  }
+  return errors;
 }
 
 function _findSmartDbDefinition(smartDbId) {
@@ -837,10 +885,15 @@ function showSmartDbFilterModal(smartDbId) {
     else showStatus('チャット履歴用フィルタを開けません', true);
     return;
   }
+  if (!window.GBUI?.createModal) throw new Error('スマートシートのフィルタ設定を初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="smart-filter-dialog"]');
+  if (existingDialog) {
+    existingDialog.focus();
+    return existingDialog.closest('.gb-modal-overlay')?._smartDbFilterApi || null;
+  }
   const restoreTarget = _smartDbActiveElement();
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.e2eId = 'smart-filter-overlay';
+  const content = document.createElement('div');
+  content.className = 'cond-modal-body';
   let filtersHtml = '';
   (def.filters || []).forEach((f, i) => {
     filtersHtml += `<div class="sdf-row" data-idx="${i}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
@@ -858,7 +911,7 @@ function showSmartDbFilterModal(smartDbId) {
         <option value="empty"${f.operator === 'empty' ? ' selected' : ''}>空</option>
       </select>
       <input type="text" class="gb-input" value="${esc(f.value)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${i}-value" aria-label="スマートシート条件${i + 1} 値">
-      <button type="button" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-danger cond-del-btn" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${i}-remove" aria-label="スマートシート条件${i + 1}を削除" style="min-width:44px;">${lucide('x', 14)}</button>
     </div>`;
   });
   // 既存 sources を「フォルダ」「対象シート」に分離する。
@@ -880,51 +933,125 @@ function showSmartDbFilterModal(smartDbId) {
   folderExplicit.forEach((s, i) => {
     sourcesHtml += _smartDbSourceRowHtml(s.path, i);
   });
-  o.innerHTML = `<div class="modal cond-modal" role="dialog" aria-modal="true" aria-labelledby="sdf-title" aria-describedby="sdf-desc" data-e2e-id="smart-filter-dialog" style="min-width:500px;">
-    <h3 id="sdf-title">スマートシート フィルタ設定</h3>
-    <div class="modal-body cond-modal-body">
-      <div class="field"><label for="sdf-name">名前</label><input id="sdf-name" class="gb-input" type="text" value="${esc(def.name)}" data-e2e-id="smart-filter-name" aria-label="スマートシート名"></div>
-      <div id="sdf-desc" style="margin:0;font-size:12px;color:var(--fg2);">${esc(sourcesNote)}</div>
-      <div id="sdf-sources" class="cond-list">${sourcesHtml}</div>
-      <button type="button" class="cond-add-btn" id="sdf-add-source-btn" data-e2e-id="smart-filter-add-source" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ フォルダを追加</button>
-      <div style="margin:8px 0 0;font-size:12px;color:var(--fg2);">フィルタ条件（AND: すべて一致）</div>
-      <div id="sdf-filters" class="cond-list">${filtersHtml}</div>
-      <button type="button" class="cond-add-btn" data-smart-db-action="add-filter-row" data-e2e-id="smart-filter-add-row" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;margin:4px 0;">+ 条件追加</button>
-    </div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button type="button" data-smart-db-action="close-modal" data-e2e-id="smart-filter-cancel">キャンセル</button>
-      <button type="button" class="primary" id="sdf-save-btn" data-e2e-id="smart-filter-save">保存</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(o, '#sdf-filters');
-  const closeOverlay = _smartDbAttachOverlayDismiss(o, restoreTarget);
-  o.addEventListener('click', (ev) => {
+  content.innerHTML = `<div class="field"><label for="sdf-name">名前</label><input id="sdf-name" class="gb-input" type="text" value="${esc(def.name)}" data-e2e-id="smart-filter-name" aria-label="スマートシート名"></div>
+    <div id="sdf-desc" class="gb-section-desc">${esc(sourcesNote)}</div>
+    <div id="sdf-sources" class="cond-list">${sourcesHtml}</div>
+    <button type="button" class="gb-btn gb-btn-sm cond-add-btn" id="sdf-add-source-btn" data-e2e-id="smart-filter-add-source">+ フォルダを追加</button>
+    <div class="gb-section-desc">フィルタ条件（AND: すべて一致）</div>
+    <div id="sdf-filters" class="cond-list">${filtersHtml}</div>
+    <button type="button" class="gb-btn gb-btn-sm cond-add-btn" data-smart-db-action="add-filter-row" data-e2e-id="smart-filter-add-row">+ 条件追加</button>`;
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.dataset.e2eId = 'smart-filter-cancel';
+  cancelButton.textContent = 'キャンセル';
+  const saveButton = document.createElement('button');
+  saveButton.type = 'button';
+  saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  saveButton.dataset.e2eId = 'smart-filter-save';
+  saveButton.textContent = '保存';
+  const footer = document.createElement('div');
+  footer.className = 'btn-row';
+  footer.append(cancelButton, saveButton);
+  let saving = false;
+  let folderPickerOpening = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'smart-filter',
+    title: 'スマートシート フィルタ設定',
+    body: content,
+    footer,
+    variant: 'standard',
+    extraClass: 'cond-modal',
+    geometryKey: 'smart-db-filter',
+    minWidth: '0',
+    initialFocus: () => content.querySelector('[data-e2e-id="smart-filter-name"]'),
+    returnFocus: restoreTarget || undefined,
+    closeLabel: 'スマートシートのフィルタ設定を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => reason === 'saved' || (!saving && !folderPickerOpening),
+  });
+  modalApi.overlay.dataset.e2eId = 'smart-filter-overlay';
+  modalApi.overlay._smartDbFilterApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'smart-filter-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'smart-filter-close';
+  modalApi.modal.setAttribute('aria-describedby', 'sdf-desc');
+  modalApi.modal.style.width = 'min(720px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  const applyNarrowSourceLayout = () => {
+    if (window.innerWidth > 640) return;
+    content.querySelectorAll('.sdf-src-row').forEach(row => {
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = 'minmax(0, 1fr) 44px';
+      row.style.width = '100%';
+      row.style.boxSizing = 'border-box';
+      const input = row.querySelector('input');
+      if (input) {
+        input.style.width = '100%';
+        input.style.maxWidth = '100%';
+        input.style.boxSizing = 'border-box';
+      }
+    });
+  };
+  applyNarrowSourceLayout();
+  if (typeof setupConditionModalLayout === 'function') setupConditionModalLayout(modalApi.overlay, '#sdf-filters');
+  content.addEventListener('click', (ev) => {
     const actionEl = ev.target?.closest?.('[data-smart-db-action]');
-    if (!actionEl || !o.contains(actionEl)) return;
+    if (!actionEl || !content.contains(actionEl)) return;
     const action = actionEl.dataset.smartDbAction;
     if (action === 'remove-filter-row') actionEl.closest('.sdf-row')?.remove();
     else if (action === 'remove-source-row') actionEl.closest('.sdf-src-row')?.remove();
-    else if (action === 'add-filter-row') document.getElementById('sdf-filters')?.insertAdjacentHTML('beforeend', _smartDbFilterRowHtml());
-    else if (action === 'close-modal') closeOverlay();
+    else if (action === 'add-filter-row') content.querySelector('#sdf-filters')?.insertAdjacentHTML('beforeend', _smartDbFilterRowHtml());
   });
-  // smartDbId に特殊文字が含まれる場合 esc() は JS 文字列を保護できないため直接バインド
-  document.getElementById('sdf-save-btn').addEventListener('click', () => _saveSmartDbFilters(smartDbId));
-  document.getElementById('sdf-add-source-btn').addEventListener('click', () => {
-    _openSmartDbFolderPicker(def, (folderPath) => {
-      if (!folderPath) return;
-      const host = document.getElementById('sdf-sources');
-      if (host) host.insertAdjacentHTML('beforeend', _smartDbSourceRowHtml(folderPath));
-    }, document.getElementById('sdf-add-source-btn'));
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
+  saveButton.addEventListener('click', async () => {
+    if (saving) return;
+    saving = true;
+    saveButton.disabled = true;
+    cancelButton.disabled = true;
+    let saved = false;
+    try {
+      saved = await _saveSmartDbFilters(smartDbId, content);
+      if (saved) modalApi.close('saved');
+    } catch (error) {
+      try { showStatus('スマートシートの保存に失敗しました: ' + error.message, true); }
+      catch (statusError) { console.error('スマートシートの保存失敗を表示できませんでした:', statusError); }
+    } finally {
+      saving = false;
+      if (saveButton.isConnected) saveButton.disabled = false;
+      if (cancelButton.isConnected) cancelButton.disabled = false;
+      if (!saved && saveButton.isConnected) saveButton.focus({ preventScroll: true });
+    }
   });
-  _smartDbFocusFirstDialogControl(o);
+  content.querySelector('#sdf-add-source-btn').addEventListener('click', async (event) => {
+    if (folderPickerOpening) return;
+    const sourceButton = event.currentTarget;
+    folderPickerOpening = true;
+    sourceButton.disabled = true;
+    try {
+      const pickerApi = await _openSmartDbFolderPicker(def, (folderPath) => {
+        if (!folderPath) return;
+        const host = content.querySelector('#sdf-sources');
+        if (host) {
+          host.insertAdjacentHTML('beforeend', _smartDbSourceRowHtml(folderPath));
+          applyNarrowSourceLayout();
+        }
+      }, sourceButton);
+      if (pickerApi?.closed && typeof pickerApi.closed.then === 'function') await pickerApi.closed;
+    } finally {
+      folderPickerOpening = false;
+      if (sourceButton.isConnected) sourceButton.disabled = false;
+    }
+  });
+  modalApi.open();
+  return modalApi;
 }
 
 function _smartDbSourceRowHtml(path, idx) {
   const safeIdx = (idx != null) ? String(idx) : ('new-' + Date.now().toString(36));
   return `<div class="sdf-src-row" data-src-idx="${esc(safeIdx)}" style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-    <input type="text" class="gb-input" value="${esc(path || '')}" placeholder="フォルダパス" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="path" data-e2e-id="smart-filter-source-${esc(safeIdx)}-path" aria-label="対象フォルダ ${esc(safeIdx)}">
-    <button type="button" data-smart-db-action="remove-source-row" data-e2e-id="smart-filter-source-${esc(safeIdx)}-remove" aria-label="対象フォルダ ${esc(safeIdx)} を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+    <input type="text" class="gb-input" value="${esc(path || '')}" placeholder="フォルダパス" style="flex:1;min-width:0;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="path" data-e2e-id="smart-filter-source-${esc(safeIdx)}-path" aria-label="対象フォルダ ${esc(safeIdx)}">
+    <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-danger cond-del-btn" data-smart-db-action="remove-source-row" data-e2e-id="smart-filter-source-${esc(safeIdx)}-remove" aria-label="対象フォルダ ${esc(safeIdx)} を削除" style="min-width:44px;">${lucide('x', 14)}</button>
   </div>`;
 }
 
@@ -946,6 +1073,12 @@ async function _openSmartDbFolderPicker(def, callback) {
   catch { showStatus('ソースフォルダ一覧の取得に失敗しました', true); return; }
   const visibleRoots = (Array.isArray(roots) ? roots : []).filter(r => r && r.visible !== false && r.path);
   if (!visibleRoots.length) { showStatus('ソースフォルダが設定されていません', true); return; }
+  if (!window.GBUI?.createModal) throw new Error('対象フォルダ選択を初期化できませんでした');
+  const existingDialog = document.querySelector('[data-e2e-id="smart-folder-picker-dialog"]');
+  if (existingDialog) {
+    existingDialog.focus();
+    return existingDialog.closest('.gb-modal-overlay')?._smartDbFolderPickerApi || null;
+  }
 
   // ソースフォルダ絶対パスの map（フロントは絶対パス→相対化）
   const rootMap = visibleRoots.map(r => ({
@@ -953,36 +1086,50 @@ async function _openSmartDbFolderPicker(def, callback) {
     abs: String(r.path || '').replace(/\\/g, '/').replace(/\/+$/, ''),
   }));
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.e2eId = 'smart-folder-picker-overlay';
-  const closePicker = () => {
-    o.remove();
-    _smartDbRestoreFocus(restoreTarget);
-  };
-  o.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="sdf-folder-title" data-e2e-id="smart-folder-picker-dialog" style="min-width:520px;max-width:80vw;">
-    <h3 id="sdf-folder-title">対象フォルダを選択 ${fieldHelp('フォルダをクリックすると、そのフォルダ＋サブフォルダがスマートシートの対象になります')}</h3>
-    <div id="sdf-folder-tree" role="tree" aria-label="対象フォルダ" style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:6px;background:var(--bg);"></div>
-    <div class="btn-row" style="margin-top:12px;">
-      <button type="button" data-smart-db-action="close-modal" data-e2e-id="smart-folder-picker-cancel">キャンセル</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
-  const dismiss = _smartDbAttachOverlayDismiss(o, restoreTarget);
-  o.addEventListener('click', (ev) => {
-    const actionEl = ev.target?.closest?.('[data-smart-db-action]');
-    if (!actionEl || !o.contains(actionEl)) return;
-    if (actionEl.dataset.smartDbAction === 'close-modal') dismiss();
+  const tree = document.createElement('div');
+  tree.id = 'sdf-folder-tree';
+  tree.setAttribute('role', 'tree');
+  tree.setAttribute('aria-label', '対象フォルダ');
+  tree.className = 'cond-list';
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'gb-btn gb-btn-sm';
+  cancelButton.dataset.e2eId = 'smart-folder-picker-cancel';
+  cancelButton.textContent = 'キャンセル';
+  let resolveClosed;
+  const closed = new Promise(resolve => { resolveClosed = resolve; });
+  const modalApi = window.GBUI.createModal({
+    id: 'smart-folder-picker',
+    title: '対象フォルダを選択',
+    body: tree,
+    footer: cancelButton,
+    variant: 'standard',
+    extraClass: 'smart-folder-picker-modal',
+    geometryKey: 'smart-db-folder-picker',
+    minWidth: '0',
+    initialFocus: () => tree.querySelector('[role="button"]') || cancelButton,
+    returnFocus: restoreTarget || undefined,
+    closeLabel: '対象フォルダ選択を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onClose: reason => resolveClosed(reason),
   });
-
-  const tree = o.querySelector('#sdf-folder-tree');
+  modalApi.closed = closed;
+  modalApi.overlay.dataset.e2eId = 'smart-folder-picker-overlay';
+  modalApi.overlay._smartDbFolderPickerApi = modalApi;
+  modalApi.modal.dataset.e2eId = 'smart-folder-picker-dialog';
+  modalApi.header.querySelector('.gb-modal-close').dataset.e2eId = 'smart-folder-picker-close';
+  modalApi.modal.style.width = 'min(620px, calc(100vw - 24px))';
+  modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+  cancelButton.addEventListener('click', () => modalApi.close('cancel'));
   const fragment = document.createDocumentFragment();
   rootMap.forEach(r => fragment.appendChild(_buildSmartDbFolderRoot(r, (relPath) => {
     if (callback) callback(relPath);
-    closePicker();
+    modalApi.close('selected');
   })));
   tree.appendChild(fragment);
-  _smartDbFocusFirstDialogControl(o);
+  modalApi.open();
+  return modalApi;
 }
 
 // 絶対パスから「ソースフォルダ名/サブパス」形式のソース相対パスを組み立てる
@@ -1149,13 +1296,13 @@ function _smartDbFilterRowHtml(prop='', field='value', op='contains', val='') {
       <option value="empty"${op === 'empty' ? ' selected' : ''}>空</option>
     </select>
     <input type="text" class="gb-input" value="${esc(val)}" placeholder="値" style="flex:1;padding:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;" data-field="value" data-e2e-id="smart-filter-${rowId}-value" aria-label="スマートシート新規条件 値">
-    <button type="button" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${rowId}-remove" aria-label="スマートシート新規条件を削除" style="background:none;border:none;color:var(--red);cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+    <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-btn-danger cond-del-btn" data-smart-db-action="remove-filter-row" data-e2e-id="smart-filter-${rowId}-remove" aria-label="スマートシート新規条件を削除" style="min-width:44px;">${lucide('x', 14)}</button>
   </div>`;
 }
 
-async function _saveSmartDbFilters(smartDbId) {
-  const name = document.getElementById('sdf-name').value.trim() || '無題';
-  const rows = document.querySelectorAll('#sdf-filters .sdf-row');
+async function _saveSmartDbFilters(smartDbId, root = document) {
+  const name = root.querySelector('#sdf-name').value.trim() || '無題';
+  const rows = root.querySelectorAll('#sdf-filters .sdf-row');
   const filters = [];
   rows.forEach(r => {
     const prop = r.querySelector('[data-field="property"]').value.trim();
@@ -1167,7 +1314,7 @@ async function _saveSmartDbFilters(smartDbId) {
   const def = _findSmartDbDefinition(smartDbId);
   // 対象フォルダ（sources）— 空の行は無視、kind は folder 固定（サブフォルダ含む）
   // 生成済み定義の対象シート source（kind: "sheet" 等）は正式な参照元として保持する。
-  const srcRows = document.querySelectorAll('#sdf-sources .sdf-src-row');
+  const srcRows = root.querySelectorAll('#sdf-sources .sdf-src-row');
   const folderSources = [];
   srcRows.forEach(r => {
     const p = (r.querySelector('[data-field="path"]')?.value || '').trim();
@@ -1183,15 +1330,27 @@ async function _saveSmartDbFilters(smartDbId) {
     if (def._filePath) nextDef._filePath = def._filePath;
     if (def._fileId) nextDef._fileId = def._fileId;
     try { await saveSmartDbDef(nextDef); }
-    catch (e) { showStatus('スマートシートの保存に失敗しました: ' + e.message, true); return; }
-    Object.assign(def, nextDef);
-    if (typeof pushSmartDbDefinitionHistory === 'function') {
-      pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
+    catch (e) { showStatus('スマートシートの保存に失敗しました: ' + e.message, true); return false; }
+    const baseErrors = _runSmartDbBasePostCommitEffects(nextDef, { skipListRender: true });
+    const applyError = _applySmartDbCommittedDefinition(def, nextDef);
+    if (applyError) baseErrors.push(applyError);
+    const steps = [
+      {
+        label: '履歴の更新',
+        run: () => {
+          if (typeof pushSmartDbDefinitionHistory === 'function') {
+            pushSmartDbDefinitionHistory('スマートシート: フィルタ保存', before, nextDef, nextDef.name);
+          }
+        },
+      },
+      { label: '一覧の更新', run: () => renderSmartDbList() },
+    ];
+    if (state.currentSmartDb?.id === smartDbId) {
+      steps.push({ label: 'スマートシートの再読み込み', run: () => selectSmartDb(smartDbId, nextDef) });
     }
-    renderSmartDbList();
-    showStatus('フィルタを保存しました');
-    document.getElementById('sdf-filters')?.closest('.modal-overlay')?.remove();
-    // 開いていたら再読み込み
-    if (state.currentSmartDb?.id === smartDbId) selectSmartDb(smartDbId, def);
+    const postErrors = await _runSmartDbPostCommitSteps('フィルタ', steps, baseErrors);
+    if (!postErrors.length) showStatus('フィルタを保存しました');
+    return true;
   }
+  return false;
 }

@@ -565,37 +565,10 @@ function _renderInlineDiff(elA, elB, textA, textB) {
  * @param {string} [preselectedPath] - 1つ目のファイルが既に選択されている場合
  */
 function showCompareModal(preselectedPath) {
-  const restoreFocusEl = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay compare-modal-overlay';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal compare-file-modal';
-  modal.style.cssText = 'width:500px;max-width:90vw;';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
   const modalId = 'compare-file-modal-' + Date.now().toString(36);
-  const titleId = modalId + '-title';
   const hintId = modalId + '-hint';
-  modal.setAttribute('aria-labelledby', titleId);
-  modal.setAttribute('aria-describedby', hintId);
-
-  const closeModal = () => {
-    document.removeEventListener('keydown', onKeydown, true);
-    overlay.remove();
-    if (restoreFocusEl?.isConnected) restoreFocusEl.focus?.({ preventScroll: true });
-  };
-  const onKeydown = (e) => {
-    if (e.key !== 'Escape') return;
-    e.preventDefault();
-    closeModal();
-  };
-
-  const h3 = document.createElement('h3');
-  h3.id = titleId;
-  h3.textContent = 'ファイル比較';
-  h3.style.margin = '0 0 12px 0';
-  modal.appendChild(h3);
+  const body = document.createElement('div');
+  body.className = 'compare-file-modal-body';
 
   // ファイルA
   const fieldA = document.createElement('div');
@@ -613,7 +586,7 @@ function showCompareModal(preselectedPath) {
   inputA.value = preselectedPath || '';
   inputA.placeholder = 'パスを入力（例: プロット/第1話/候補A.md）';
   fieldA.appendChild(inputA);
-  modal.appendChild(fieldA);
+  body.appendChild(fieldA);
 
   // ファイルB
   const fieldB = document.createElement('div');
@@ -630,45 +603,72 @@ function showCompareModal(preselectedPath) {
   inputB.dataset.gbPathInput = '1';
   inputB.placeholder = 'パスを入力（例: プロット/第1話/候補B.md）';
   fieldB.appendChild(inputB);
-  modal.appendChild(fieldB);
+  body.appendChild(fieldB);
 
   const hint = document.createElement('div');
   hint.id = hintId;
   hint.style.cssText = 'font-size:11px;color:var(--fg2);margin-bottom:12px;';
   hint.textContent = 'フォルダツリーのファイルメニューから「比較...」を選んでも開けます。非テキスト形式はメタデータと先頭バイトで比較します。';
-  modal.appendChild(hint);
+  body.appendChild(hint);
 
   // ボタン
-  const btnRow = document.createElement('div');
-  btnRow.className = 'btn-row';
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
   cancelBtn.textContent = 'キャンセル';
-  cancelBtn.addEventListener('click', closeModal);
-  btnRow.appendChild(cancelBtn);
   const compareBtn = document.createElement('button');
   compareBtn.type = 'button';
   compareBtn.textContent = '比較';
-  compareBtn.className = 'primary';
+  compareBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: modalId,
+    title: 'ファイル比較',
+    body,
+    footer: [cancelBtn, compareBtn],
+    variant: 'standard',
+    geometryKey: 'compare-file-modal',
+    minWidth: '0',
+    initialFocus: preselectedPath ? inputB : inputA,
+    closeLabel: 'ファイル比較を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    resizable: true,
+    onBeforeClose: () => !busy,
+  });
+  const { overlay, modal } = modalApi;
+  overlay.classList.add('modal-overlay', 'compare-modal-overlay');
+  overlay.dataset.e2eId = 'compare-file-modal-overlay';
+  overlay._compareFileModalApi = modalApi;
+  modal.classList.add('modal', 'compare-file-modal');
+  modal.dataset.e2eId = 'compare-file-modal-dialog';
+  modal.style.cssText = 'width:min(500px,calc(100vw - 24px));max-width:100%;overflow:hidden;';
+  modal.setAttribute('aria-describedby', hintId);
+  const setBusy = (next) => {
+    busy = !!next;
+    modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+    compareBtn.disabled = busy;
+  };
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
   compareBtn.addEventListener('click', async () => {
+    if (busy) return;
     const a = inputA.value.trim();
     const b = inputB.value.trim();
     if (!a || !b) { showStatus('両方のファイルパスを入力してください', true); return; }
-    compareBtn.disabled = true;
+    setBusy(true);
     try {
       const ok = await openCompareView(a, b);
-      if (ok) closeModal();
+      if (ok) {
+        setBusy(false);
+        modalApi.close('compared');
+      }
       else showStatus('比較に失敗しました。パスを確認してください', true);
+    } catch (error) {
+      console.error('ファイル比較に失敗しました:', error);
+      showStatus('比較に失敗しました。パスを確認してください', true);
     } finally {
-      compareBtn.disabled = false;
+      if (modalApi.isOpen()) setBusy(false);
     }
   });
-  btnRow.appendChild(compareBtn);
-  modal.appendChild(btnRow);
-
-  overlay.appendChild(modal);
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
-  document.body.appendChild(overlay);
-  document.addEventListener('keydown', onKeydown, true);
-  setTimeout(() => (preselectedPath ? inputB : inputA).focus(), 50);
+  modalApi.open();
 }

@@ -308,6 +308,8 @@
     return data;
   };
 
+  window.MeldexProductionTaskView = Object.freeze({ renderListBar });
+
   const baseDestroy = CalendarComponent.prototype.destroy;
   CalendarComponent.prototype.destroy = function() {
     if (this._productionTaskUpdateHandler) {

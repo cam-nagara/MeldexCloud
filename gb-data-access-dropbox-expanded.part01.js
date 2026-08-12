@@ -1110,6 +1110,10 @@
       } else if (Object.prototype.hasOwnProperty.call(body, 'new_value')) {
         delete candidate.rich_html;
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'new_link')) {
+        if (body.new_link && typeof body.new_link === 'object') candidate.link = { ...body.new_link };
+        else delete candidate.link;
+      }
       list[index] = candidate;
     }
     let resultIndex = index;
@@ -1218,6 +1222,7 @@
       created: _nowIso(),
     };
     if (body?.rich_html != null) candidate.rich_html = String(body.rich_html || '');
+    if (body?.link && typeof body.link === 'object') candidate.link = { ...body.link };
     list.push(candidate);
     props[prop] = list;
     stored.frontmatter.properties = props;
@@ -1520,6 +1525,14 @@
       computed_props: Array.isArray(fm.computed_props) ? fm.computed_props : [],
     };
   }
+
+  // Scheduler folder restore must resolve targets from the same provider-bound
+  // database registry used by the production Cloud routes.  Raw request paths
+  // are deliberately not accepted by the restore adapter.
+  window.MeldexCalendarDatabaseRegistryCloud = Object.freeze({
+    list: provider => _listDatabases(provider),
+    metadata: (provider, path) => _dbMetadata(provider, path),
+  });
 
   async function _renameDbProperty(provider, body) {
     const service = window.MeldexDropboxSchemaMutation;
@@ -1901,6 +1914,41 @@
     await _directoryHandle(provider, CALENDAR_STORE_DIR, true);
     await provider.writeJson(_calendarStorePath(name), Array.isArray(rows) ? rows : []);
   }
+
+  function _deriveCloudAttendanceEvent(rows, user, day, existing) {
+    const parts = String(day || '').split('-').map(Number);
+    const next = parts.length === 3 ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1)) : new Date(NaN);
+    const nextDay = Number.isNaN(next.getTime()) ? day : next.toISOString().slice(0, 10);
+    const records = (Array.isArray(rows) ? rows : []).filter(row => row.user === user
+      && String(row.timestamp || '') >= day && String(row.timestamp || '') <= `${nextDay}T23:59:59`)
+      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+    const start = records.findIndex(row => row.type === 'clock_in' && String(row.timestamp || '').slice(0, 10) === day);
+    if (start < 0) return null;
+    const scoped = [];
+    let inSession = false;
+    for (const row of records.slice(start)) {
+      if (row.type === 'clock_in') {
+        if (String(row.timestamp || '').slice(0, 10) !== day) break;
+        if (inSession) continue;
+        inSession = true; scoped.push(row); continue;
+      }
+      if (!inSession) continue;
+      scoped.push(row);
+      if (row.type === 'clock_out') inSession = false;
+    }
+    const first = scoped[0];
+    const lastOut = [...scoped].reverse().find(row => row.type === 'clock_out');
+    const labels = { clock_in: '出勤', clock_out: '退勤', break_start: '離席', break_end: '復帰' };
+    return {
+      ...(existing || {}), id: `attendance:${user}:${day}`, title: `実績 ${user}`,
+      start: first.timestamp, end: lastOut?.timestamp || scoped.at(-1)?.timestamp || first.timestamp,
+      all_day: 0, color: '#6a9955',
+      description: scoped.filter(row => row.timestamp).map(row => `${String(row.timestamp).slice(11, 16)} ${labels[row.type] || row.type || ''}`).join('\n'),
+      calendar_source: 'attendance', external_id: '', user, creator: user, modified: new Date().toISOString(),
+    };
+  }
+
+  window.MeldexCloudAttendanceSync = Object.freeze({ deriveEvent: _deriveCloudAttendanceEvent });
 
   function _filterRows(rows, url, fields) {
     return rows.filter((row) => fields.every((field) => {

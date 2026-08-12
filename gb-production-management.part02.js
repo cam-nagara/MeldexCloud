@@ -147,11 +147,11 @@
 
   async function _pmCloudFindByName(provider, internals, sheet, name) { return (await _pmCloudListEntries(provider, internals, sheet)).find(entry => entry.name === String(name))?.path || ''; }
 
-  async function _pmCloudTaskSheetNames(provider, internals) {
+  async function _pmCloudTaskSheetNames(provider, internals, cachedWorks = null) { // cachedWorksは同一処理内で列挙済みの作品リストのみ再利用可（別タイミング取得分は陳腐化し得るため使い回さない）。省略時は従来どおり自前で列挙する
     const names = new Set();
     const legacyDir = internals._joinPath(_pmCloudRoot(internals), 'タスクリスト');
     if (await _pmCloudEntryExists(provider, legacyDir, internals)) names.add('タスクリスト');
-    for (const work of await _pmCloudListEntries(provider, internals, '作品リスト')) {
+    for (const work of (Array.isArray(cachedWorks) ? cachedWorks : await _pmCloudListEntries(provider, internals, '作品リスト'))) {
       const sheet = _pmCloudPropValue(work.frontmatter, 'タスクリストシート');
       if (sheet) names.add(sheet);
     }
@@ -805,6 +805,10 @@
     await provider.writeText(note, _pmCloudFrontmatterText(fm, parsed.body || `# ${sheet}\n\n`));
     return { sheet, work };
   }
+  async function _pmCloudEnsureProjectlessTaskSheet(provider, internals, journal) {
+    const sheet = 'タスクリスト_未分類', dir = internals._joinPath(_pmCloudRoot(internals), sheet), note = internals._joinPath(dir, sheet + '.md'); await _pmCloudJournalDirectory(journal, dir); await _pmCloudJournalText(journal, note); await _pmCloudEnsureSheet(provider, internals, sheet, 'タスクリスト');
+    const parsed = await _pmCloudReadFrontmatter(provider, note), fm = { ...(parsed.frontmatter || {}), property_types: { ...(parsed.frontmatter?.property_types || {}) } }; _pmResolveLevelPropNames('中分類,小分類,詳細分類').forEach(names => { fm.property_types[names[0]] ||= { type: 'text' }; }); await provider.writeText(note, _pmCloudFrontmatterText(fm, parsed.body || `# ${sheet}\n\n`)); return { sheet };
+  }
 
   async function _pmCloudCreateEntry(provider, internals, body) {
     if ((await _pmCloudMissing(provider, internals)).length) await _pmCloudInit(provider, internals);
@@ -829,6 +833,37 @@
     } catch (error) { return _pmCloudRollbackMutation(journal, error); }
   }
 
+  async function _pmCloudValidateTaskParentGraph(provider, internals, entry, updates) {
+    const rows = (await _pmCloudRawTaskEntries(provider, internals))
+      .filter(candidate => String(candidate.sheet || '') === String(entry.sheet || ''));
+    const parents = new Map();
+    for (const candidate of rows) {
+      const id = String(candidate.frontmatter?.id || '').trim();
+      if (!id) continue;
+      if (parents.has(id)) throw _pmCloudError(409, '同じタスクIDが複数あるため親タスクを保存できません');
+      parents.set(id, _pmCloudPropValue(candidate.frontmatter, '親タスクID'));
+    }
+    const targetId = String(entry.frontmatter?.id || '').trim();
+    if (!targetId || !parents.has(targetId)) throw _pmCloudError(409, '対象タスクを同じタスクシート内で確認できません');
+    parents.set(targetId, String(updates['親タスクID'] || '').trim());
+    for (const [id, parentId] of parents) {
+      if (parentId && !parents.has(parentId)) throw _pmCloudError(400, `親タスク ${parentId} は同じタスクシート内に存在しません`);
+      if (parentId === id) throw _pmCloudError(400, 'タスク自身を親タスクにはできません');
+    }
+    const visited = new Set();
+    const visiting = new Set();
+    const visit = id => {
+      if (visited.has(id)) return;
+      if (visiting.has(id)) throw _pmCloudError(400, '親タスクに循環があるため保存できません');
+      visiting.add(id);
+      const parentId = parents.get(id);
+      if (parentId) visit(parentId);
+      visiting.delete(id);
+      visited.add(id);
+    };
+    parents.forEach((_parentId, id) => visit(id));
+  }
+
   async function _pmCloudPatchEntry(provider, internals, body) {
     const sheet = _pmCloudSheetAlias(body?.sheet);
     if (!PM_PROPERTY_TYPES[sheet]) throw _pmCloudError(400, '対象リストが不正です');
@@ -837,6 +872,14 @@
     if (sheet === 'タスクリスト') {
       delete updates[PM_TASK_LEGACY_NAME_PROP];
       if (Object.prototype.hasOwnProperty.call(updates, '作業予定日時') && !Object.prototype.hasOwnProperty.call(updates, '作業予定区間')) updates['作業予定区間'] = '';
+      if (Object.prototype.hasOwnProperty.call(updates, '親タスクID')) {
+        const expectedModified = String(body?.expectedModified ?? body?.expected_modified ?? '').trim();
+        const actualModified = String(entry.frontmatter?.modified || '').trim();
+        if (!expectedModified || expectedModified !== actualModified) {
+          throw _pmCloudError(409, 'このタスクは別の画面で更新されています。再読み込みしてからやり直してください');
+        }
+        await _pmCloudValidateTaskParentGraph(provider, internals, entry, updates);
+      }
     }
     if (!Object.keys(updates).length) throw _pmCloudError(400, '更新内容がありません');
     const schema = await _pmCloudEntrySchema(provider, internals, sheet, entry.sheet, entry.frontmatter);
@@ -911,9 +954,10 @@
     const template = await _pmCloudResolveEntry(provider, internals, 'タスクテンプレート', { path: body?.template_path, id: body?.template_id });
     const journal = _pmCloudMutationJournal(provider, internals);
     try {
-      let work;
-      if (body?.work_path || body?.work_id) work = await _pmCloudResolveEntry(provider, internals, '作品リスト', { path: body.work_path, id: body.work_id });
-      else {
+      const projectless = String(body?.scope || '').trim().toLowerCase() === 'projectless';
+      let work = null;
+      if (!projectless && (body?.work_path || body?.work_id)) work = await _pmCloudResolveEntry(provider, internals, '作品リスト', { path: body.work_path, id: body.work_id });
+      else if (!projectless) {
         const workTitle = String(body?.work_title || body?.['作品タイトル'] || '').trim();
         if (!workTitle) throw _pmCloudError(400, 'work_id、work_path、work_title のいずれかは必須です');
         work = await _pmCloudGetOrCreateWork(provider, internals, workTitle, journal, true);
@@ -924,14 +968,14 @@
       const unknown = Object.keys(overrides).filter(name => !PM_CLOUD_TEMPLATE_FIELDS.has(name) && !['name', 'name_override'].includes(name));
       if (unknown.length) throw _pmCloudError(400, '上書きできない項目です: ' + unknown.join(', '));
       Object.entries(overrides).forEach(([name, value]) => { if (PM_CLOUD_TEMPLATE_FIELDS.has(name)) { if (value == null || value === '') delete props[name]; else props[name] = String(value); } });
-      const labels = _pmCloudPropValue(work.frontmatter, '階層ラベル') || '中分類,小分類,詳細分類';
+      const labels = (work ? _pmCloudPropValue(work.frontmatter, '階層ラベル') : '') || '中分類,小分類,詳細分類';
       const levelNames = _pmResolveLevelPropNames(labels).map(names => names[0]);
       const classification = body?.classification && typeof body.classification === 'object' ? body.classification : {};
       const levels = [1, 2, 3].map(index => String(classification[`level${index}`] ?? body?.[`level${index}`] ?? props[`\u5358\u4f4d\u30ec\u30d9\u30eb${index}`] ?? '').trim());
       levels.forEach((value, index) => { delete props[`\u5358\u4f4d\u30ec\u30d9\u30eb${index + 1}`]; if (value) props[levelNames[index]] = value; });
       const key = 'template-instance:' + (globalThis.crypto?.randomUUID?.() || _pmHash(Date.now() + '|' + Math.random()));
-      props['作品タイトル'] = work.name; props['階層パス'] = levels.filter(Boolean).join('-'); props['階層ラベル'] = labels;
-      props['プリセット種別'] = _pmCloudPropValue(work.frontmatter, 'プリセット種別') || '汎用'; props['状況'] ||= '未着手';
+      props['作品タイトル'] = work?.name || ''; props['階層パス'] = levels.filter(Boolean).join('-'); props['階層ラベル'] = labels;
+      props['プリセット種別'] = (work ? _pmCloudPropValue(work.frontmatter, 'プリセット種別') : '') || '汎用'; props['状況'] ||= '未着手';
       props['元テンプレートID'] = String(template.frontmatter?.id || template.name); props['作成キー'] = key;
       // 分類（作業対象・作業内容・作業規模）が揃っている場合のみ、目標作業時間_値／
       // 目標作業時間を計算式（基準×内容倍率×規模倍率×対象数）で上書きする。分類が1つでも
@@ -942,7 +986,9 @@
       const surface = String(body?.drop?.surface || body?.surface || 'list').toLowerCase();
       if (!['list', 'calendar'].includes(surface)) throw _pmCloudError(400, 'drop.surface は list または calendar を指定してください');
       if (surface === 'calendar') _pmCloudApplyCalendarDrop(props, body, body?.drop || {});
-      const { sheet } = await _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal);
+      const { sheet } = projectless
+        ? await _pmCloudEnsureProjectlessTaskSheet(provider, internals, journal)
+        : await _pmCloudEnsureTaskSheetForWork(provider, internals, work, journal);
       if (surface === 'calendar') { await _pmCloudJournalCalendar(journal, 'events'); await _pmCloudJournalCalendar(journal, 'calendars'); }
       const entry = await _pmCloudWriteNewEntry(provider, internals, 'タスクリスト', sheet, name, props, journal, key);
       if (surface === 'calendar') await _pmCloudSyncTaskEvent(provider, internals, entry.path, entry.frontmatter);
@@ -1383,7 +1429,6 @@
   function _pmShiftId(row) {
     return 'pm-shift-' + _pmHash([row.user, row.date, row.start_time, row.end_time, row.type].join('|')).slice(0, 20);
   }
-
   function _pmSafeName(value) {
     return String(value || '無題').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim().slice(0, 100) || '無題';
   }
@@ -1396,8 +1441,6 @@
     });
     return (hash >>> 0).toString(16) + Math.abs(String(value || '').length).toString(16);
   }
-
-
   window.openProductionManagementStart = openProductionManagementStart;
   window.openProductionShiftImport = openProductionShiftImport;
   window.openProductionTaskCreate = openProductionTaskCreate;
@@ -1412,6 +1455,9 @@
     // INTERNAL_METADATA_PROPERTIES とJS側複製の集合一致をテストで検証できるよう公開する
     // （test_meldex_production_schema_cleanup.py）。
     INTERNAL_METADATA_PROPERTIES: PM_INTERNAL_METADATA_PROPERTIES,
+    queryCloudTasksWithProvider: _pmCloudQueryTasks,
+    cloudRecalcDeps: _pmRecalcEngineDeps,
+    withCloudProductionLease: _pmCloudWithProductionLease,
     async renameCloudManagedEntry(body) {
       const internals = window.__MeldexPwaDataAccessInternals;
       if (!internals) throw new Error('Cloudデータ操作を利用できません');

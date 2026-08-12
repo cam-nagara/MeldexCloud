@@ -236,6 +236,11 @@ function sn2CopyForClipStudio() {
 }
 
 function _sn2ShowSepDialog(editor) {
+  const existing = document.querySelector('[data-e2e-id="scriptnote-clipstudio-send-dialog"]');
+  if (existing) {
+    existing.querySelector('input, button')?.focus?.();
+    return;
+  }
   const doc = editor.doc;
   const selectedRows = _sn2RowsForClipStudio(editor);
   const hasSelection = selectedRows.length > 0 && selectedRows.length < doc.rows.length;
@@ -243,10 +248,10 @@ function _sn2ShowSepDialog(editor) {
   const selectedOption = hasSelection
     ? `<label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="selected" checked> 選択範囲（${selectedRows.length}行）</label>`
     : '';
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.sn2Dialog = 'clipstudio-send';
-  o.innerHTML = `<div class="modal sn2-sep-modal" role="dialog" aria-modal="true" aria-labelledby="sn2-sep-title"><h3 id="sn2-sep-title">CLIP STUDIO PAINTへ送信 ${fieldHelp('「送信」を押した後、カウントダウン中にCLIP STUDIO PAINTのストーリーエディタをクリックしてください')}</h3>
+  const owner = document.activeElement;
+  const body = document.createElement('div');
+  body.className = 'sn2-sep-modal-body';
+  body.innerHTML = `<div class="sn2-sep-help">${fieldHelp('「送信」を押した後、カウントダウン中にCLIP STUDIO PAINTのストーリーエディタをクリックしてください')}</div>
     <div class="field"><label>送信範囲</label><div class="sn2-sep-range-row">
       <label class="sn2-sep-choice"><input type="radio" name="sn2-sep-range" value="all"${allChecked}> 全行（${doc.rows.length}行）</label>${selectedOption}</div></div>
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-include-affix"> テキストの前後設定（「」（）等）を含める</label></div>
@@ -255,12 +260,25 @@ function _sn2ShowSepDialog(editor) {
     <div class="field"><label class="sn2-sep-choice"><input type="checkbox" id="sn2-sep-skip-blank"> 空白行を出力しない</label></div>
     <div id="sn2-sep-countdown-slot"></div>
     <div id="sn2-sep-break-wait-slot"></div>
-    <div id="sn2-sep-status" class="sn2-sep-status"></div>
-    <div class="btn-row"><button type="button" class="cancel-btn" data-sn2-role="cancel">キャンセル</button>
-    <button type="button" class="sn2-sep-stop-btn" data-sn2-role="stop">中断</button>
-    <button type="button" class="primary ok-btn" data-sn2-role="send">送信</button></div></div>`;
-  document.body.appendChild(o);
-  const slot = o.querySelector('#sn2-sep-countdown-slot');
+    <div id="sn2-sep-status" class="sn2-sep-status" role="status" aria-live="polite"></div>`;
+  const cancel = document.createElement('button');
+  cancel.type = 'button'; cancel.className = 'gb-btn gb-btn-sm cancel-btn'; cancel.dataset.sn2Role = 'cancel'; cancel.textContent = 'キャンセル';
+  const stop = document.createElement('button');
+  stop.type = 'button'; stop.className = 'gb-btn gb-btn-sm sn2-sep-stop-btn'; stop.dataset.sn2Role = 'stop'; stop.textContent = '中断';
+  const send = document.createElement('button');
+  send.type = 'button'; send.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; send.dataset.sn2Role = 'send'; send.textContent = '送信';
+  const modalApi = window.GBUI.createModal({
+    id: 'scriptnote-clipstudio-send', title: 'CLIP STUDIO PAINTへ送信', body, footer: [cancel, stop, send],
+    variant: 'standard', geometryKey: 'scriptnote-clipstudio-send', minWidth: '0',
+    initialFocus: 'input[name="sn2-sep-range"]:checked', returnFocus: owner,
+    closeLabel: 'CLIP STUDIO PAINTへ送信を閉じる', closeOnEsc: true, closeOnOverlay: true,
+  });
+  const o = modalApi.overlay;
+  o.dataset.sn2Dialog = 'clipstudio-send';
+  o.dataset.e2eId = 'scriptnote-clipstudio-send-overlay';
+  modalApi.modal.dataset.e2eId = 'scriptnote-clipstudio-send-dialog';
+  modalApi.modal.classList.add('sn2-sep-modal');
+  const slot = modalApi.modal.querySelector('#sn2-sep-countdown-slot');
   if (slot && window.GBUI && typeof window.GBUI.buildNumInput === 'function') {
     const control = window.GBUI.buildNumInput({
       label: 'カウントダウン',
@@ -275,7 +293,7 @@ function _sn2ShowSepDialog(editor) {
   } else if (slot) {
     slot.outerHTML = '<div class="field sn2-sep-field"><label for="sn2-sep-countdown">カウントダウン（秒）</label><input id="sn2-sep-countdown" class="sn2-sep-number" type="number" min="1" max="60" value="5"></div>';
   }
-  const breakWaitSlot = o.querySelector('#sn2-sep-break-wait-slot');
+  const breakWaitSlot = modalApi.modal.querySelector('#sn2-sep-break-wait-slot');
   if (breakWaitSlot && window.GBUI && typeof window.GBUI.buildNumInput === 'function') {
     const control = window.GBUI.buildNumInput({
       label: 'ページ送り後の待機',
@@ -291,11 +309,33 @@ function _sn2ShowSepDialog(editor) {
   } else if (breakWaitSlot) {
     breakWaitSlot.outerHTML = '<div class="field sn2-sep-field"><label for="sn2-sep-break-wait">ページ送り後の待機（秒）</label><input id="sn2-sep-break-wait" class="sn2-sep-number" type="number" min="0" max="10" step="0.1" value="1.0"></div>';
   }
+  const modalBody = modalApi.body;
+  [modalApi.modal, modalBody].forEach(element => {
+    element.style.setProperty('box-sizing', 'border-box');
+    element.style.setProperty('min-width', '0');
+    element.style.setProperty('max-width', '100%');
+  });
+  modalBody.style.setProperty('width', '100%');
+  modalBody.style.setProperty('overflow-x', 'hidden', 'important');
+  if (window.innerWidth <= 900) {
+    modalApi.modal.querySelectorAll('.sn2-sep-field, .sn2-sep-range-row, .sn2-sep-choice').forEach(element => {
+      element.style.setProperty('box-sizing', 'border-box');
+      element.style.setProperty('min-width', '0');
+      element.style.setProperty('max-width', '100%');
+    });
+    modalApi.modal.querySelectorAll('.sn2-sep-field').forEach(field => field.style.setProperty('width', '100%'));
+    modalApi.modal.querySelectorAll('.sn2-sep-choice').forEach(choice => {
+      choice.style.setProperty('white-space', 'normal');
+      choice.style.setProperty('overflow-wrap', 'anywhere');
+    });
+  }
   o._sn2Editor = editor;
-  o.querySelector('[data-sn2-role="cancel"]')?.addEventListener('click', () => { o.remove(); });
-  o.querySelector('[data-sn2-role="stop"]')?.addEventListener('click', () => { _sn2StopSep(); });
-  o.querySelector('[data-sn2-role="send"]')?.addEventListener('click', () => { _sn2StartSep(); });
-  window.GBModalShell?.enhanceOverlay?.(o);
+  o._sn2ModalApi = modalApi;
+  globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modalApi.modal);
+  cancel.addEventListener('click', () => modalApi.close('cancel'));
+  stop.addEventListener('click', () => { _sn2StopSep(); });
+  send.addEventListener('click', () => { _sn2StartSep(); });
+  modalApi.open();
 }
 
 function _sn2GetTextAffix(editor, roleOrRow) {
@@ -311,19 +351,20 @@ function _sn2GetTextAffix(editor, roleOrRow) {
 }
 
 function _sn2StartSep() {
-  const overlay = document.querySelector('.modal-overlay[data-sn2-dialog="clipstudio-send"]') || document.querySelector('.modal-overlay');
+  const overlay = document.querySelector('[data-e2e-id="scriptnote-clipstudio-send-overlay"]');
+  const dialog = overlay?.querySelector('[data-e2e-id="scriptnote-clipstudio-send-dialog"]');
   const editor = overlay?._sn2Editor || _sn2GetActiveEditor();
-  if (!editor?.doc) return;
+  if (!overlay || !dialog || !editor?.doc || overlay.dataset.sn2Sending === '1') return;
   if (typeof editor._syncAllFromDom === 'function') editor._syncAllFromDom();
-  const countdown = parseInt(document.getElementById('sn2-sep-countdown')?.value) || 5;
-  const breakWaitRaw = parseFloat(document.getElementById('sn2-sep-break-wait')?.value);
+  const countdown = parseInt(dialog.querySelector('#sn2-sep-countdown')?.value) || 5;
+  const breakWaitRaw = parseFloat(dialog.querySelector('#sn2-sep-break-wait')?.value);
   const breakWait = Number.isFinite(breakWaitRaw) ? Math.max(0, Math.min(10, Math.round(breakWaitRaw * 10) / 10)) : 1.0;
-  const includeAffix = !!document.getElementById('sn2-sep-include-affix')?.checked;
-  const includeSummary = !!document.getElementById('sn2-sep-include-summary')?.checked;
-  const includeBreakText = !!document.getElementById('sn2-sep-include-break-text')?.checked;
-  const skipBlank = !!document.getElementById('sn2-sep-skip-blank')?.checked;
+  const includeAffix = !!dialog.querySelector('#sn2-sep-include-affix')?.checked;
+  const includeSummary = !!dialog.querySelector('#sn2-sep-include-summary')?.checked;
+  const includeBreakText = !!dialog.querySelector('#sn2-sep-include-break-text')?.checked;
+  const skipBlank = !!dialog.querySelector('#sn2-sep-skip-blank')?.checked;
   const doc = editor.doc;
-  const range = document.querySelector('input[name="sn2-sep-range"]:checked')?.value || 'all';
+  const range = dialog.querySelector('input[name="sn2-sep-range"]:checked')?.value || 'all';
   const sourceRows = range === 'selected' ? _sn2RowsForClipStudio(editor) : doc.rows;
   // 「見開き」ONの区切り行が連続したとき、偶数回目はページ送りをスルーしてコマ送り扱いにする。
   // 連続は「区切り行だけを抽出した並び」で数え、他の行を挟んでも継続する。
@@ -391,16 +432,21 @@ function _sn2StartSep() {
     return;
   }
   try {
+    overlay.dataset.sn2Sending = '1';
     _sn2SepWs.send(JSON.stringify({ command: 'paste', rows, countdown, breakWait }));
     _sn2EnterRunningMode(overlay);
   } catch {
+    delete overlay.dataset.sn2Sending;
     if (typeof showStatus === 'function') showStatus('CLIP STUDIO PAINT連携への送信に失敗しました', true);
   }
 }
 
 // 送信中は元のダイアログを閉じ、画面全体を覆う警告オーバーレイに切り替える
 function _sn2EnterRunningMode(dialogOverlay) {
-  try { dialogOverlay?.remove(); } catch {}
+  try {
+    if (dialogOverlay?._sn2ModalApi) dialogOverlay._sn2ModalApi.close('submit');
+    else dialogOverlay?.remove();
+  } catch {}
   // 既に警告オーバーレイが出ていれば再利用
   let ov = document.getElementById('sn2-sep-running-overlay');
   if (ov) return ov;
@@ -437,6 +483,7 @@ function _sn2EnterRunningMode(dialogOverlay) {
   box.appendChild(btnRow);
   ov.appendChild(box);
   document.body.appendChild(ov);
+  globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(box);
   return ov;
 }
 
@@ -468,5 +515,7 @@ function _sn2StopSep() {
     return;
   }
   // 送信前のキャンセル: 送信ダイアログを閉じる
-  document.querySelector('.modal-overlay[data-sn2-dialog="clipstudio-send"]')?.remove();
+  const dialogOverlay = document.querySelector('[data-e2e-id="scriptnote-clipstudio-send-overlay"]');
+  if (dialogOverlay?._sn2ModalApi) dialogOverlay._sn2ModalApi.close('stop');
+  else dialogOverlay?.remove();
 }

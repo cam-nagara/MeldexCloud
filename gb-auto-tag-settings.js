@@ -616,6 +616,8 @@
   }
 
   async function ensureAutoTagDictionarySheet(targetPath, sourceFolder) {
+    const settingsOverlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
+    if (settingsOverlay?.getAttribute('aria-busy') === 'true') return '';
     if (!isTagDictionaryEditingAvailable()) {
       atStatus('タグ辞書を編集できる保存先へ接続してください', true);
       return '';
@@ -631,7 +633,14 @@
       atStatus('タグ辞書を準備しました');
       return dbPath;
     }
-    document.querySelector('.modal-overlay[data-settings-modal="1"]')?.remove();
+    if (settingsOverlay) {
+      if (typeof window.closeSettingsModalWithReason !== 'function') return '';
+      const settingsClosed = await window.closeSettingsModalWithReason(
+        'settings-transition:auto-tag-dictionary',
+        settingsOverlay,
+      );
+      if (!settingsClosed) return '';
+    }
     if (typeof refreshOutliner === 'function') refreshOutliner();
     if (typeof selectDatabase === 'function') await selectDatabase(dbPath, undefined, { silent: true });
     atStatus('自動タグ辞書シートを開きました');

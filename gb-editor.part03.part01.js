@@ -786,7 +786,7 @@ async function openLink(filePath, name, options) {
   await _openLinkInCurrentTab(filePath, label);
 }
 
-async function openLinkInFloatPanel(filePath, name, options) {
+async function openLinkInRightSidebar(filePath, name, options) {
   if (!filePath) return;
   const noteAnchorId = _noteAnchorIdFromHref(filePath);
   if (noteAnchorId) {
@@ -795,8 +795,11 @@ async function openLinkInFloatPanel(filePath, name, options) {
   }
   const label = name || filePath.split(/[/\\]/).pop();
   if (typeof flushPendingEditorAutosave === 'function') await flushPendingEditorAutosave();
-  if (typeof openLinkedPathInFloatPanel === 'function') {
-    return openLinkedPathInFloatPanel(filePath, label, options || {});
+  if (typeof openLinkedPathInRightSidebar === 'function') {
+    return openLinkedPathInRightSidebar(filePath, label, options || {});
+  }
+  if (typeof openLinkedPathInRightPane === 'function') {
+    return openLinkedPathInRightPane(filePath, label, options || {});
   }
   return _openLinkInCurrentTab(filePath, label);
 }
@@ -806,7 +809,7 @@ function openLinkInRightPane(filePath, name, options) {
     const label = name || filePath.split(/[/\\]/).pop();
     return openLinkedPathInRightPane(filePath, label, options || {});
   }
-  return openLinkInFloatPanel(filePath, name, options);
+  return openLinkInRightSidebar(filePath, name, options);
 }
 
 function openLinkInMainPane(filePath, name, options) {
@@ -884,7 +887,7 @@ function onAutoLinkClick(el, e) {
     }
   }
   const name = el.textContent.replace(/^[\s]*/, '').trim() || filePath.split(/[/\\]/).pop();
-  openLinkInFloatPanel(filePath, name, {
+  openLinkInRightSidebar(filePath, name, {
     linkType: el.dataset.linkType || el.dataset.type || '',
     sourcePaneId: el.closest('.gb-pane')?.dataset?.paneId || '',
   });
@@ -1050,7 +1053,7 @@ function _showLinkContextMenu(e, linkTarget) {
   removeTooltip();
   if (typeof closeColHeaderMenu === 'function') closeColHeaderMenu();
   document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  // フロートパネル／サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
+  // サブパネル内では、右サイドバーで開く（別サブパネルを開くUI）を
   // 表示しない（計画書「右サイドバー操作の制限」節）。
   const _canUseRightSidebar = typeof GBPaneBridge === 'undefined' || typeof GBPaneBridge.canUseRightSidebarTools !== 'function'
     || typeof GBPaneBridge.surfaceOf !== 'function'
@@ -1122,10 +1125,6 @@ function _showLinkContextMenu(e, linkTarget) {
     });
   }
   if (!linkTarget.localAnchor) {
-    addItem('layers-2', 'フロートパネルで開く', () => openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
-      linkType: linkTarget.linkType || '',
-      sourcePaneId: linkTarget.sourcePaneId || '',
-    }));
     addItem('panelTop', 'メインパネルで開く', () => openLinkInMainPane(linkTarget.path, linkTarget.label, {
       linkType: linkTarget.linkType || '',
       sourcePaneId: linkTarget.sourcePaneId || '',
@@ -1252,13 +1251,13 @@ function _openContextLinkCurrent(linkTarget) {
   openLink(linkTarget.path, linkTarget.label);
 }
 
-function _openContextLinkFloatPanel(linkTarget) {
+function _openContextLinkRightSidebar(linkTarget) {
   if (!linkTarget?.path) return;
   if (typeof linkTarget.openAction === 'function') {
     linkTarget.openAction();
     return;
   }
-  openLinkInFloatPanel(linkTarget.path, linkTarget.label, {
+  openLinkInRightSidebar(linkTarget.path, linkTarget.label, {
     linkType: linkTarget.linkType || '',
     sourcePaneId: linkTarget.sourcePaneId || '',
   });
@@ -1288,7 +1287,7 @@ document.addEventListener('click', (e) => {
   clearTimeout(_linkActivationTimer);
   _linkActivationTimer = setTimeout(() => {
     if (token !== _linkActivationToken) return;
-    _openContextLinkFloatPanel(linkTarget);
+    _openContextLinkRightSidebar(linkTarget);
   }, 320);
 }, true);
 
@@ -1379,7 +1378,9 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
   // 呼ぶことで、キャッシュ済み描画をスキップする場合でも選択状態の追従は必ず起きる
   // （ファイル参照整合性計画 Phase 5: フォルダパネルの一般ファイル選択が古いノート等の
   // 対象でバックリンクを表示し続ける不具合の修正）。
-  if (multiFileTargets.length > 1) {
+  if (options?.updateTargetContext === false) {
+    // フォルダ等、バックリンク対象外の情報表示では既存対象を上書きしない。
+  } else if (multiFileTargets.length > 1) {
     window.GBOptionTargetContext?.set(
       multiFileTargets.map(item => ({ path: item.path, kind: 'file' })),
       'file-info-panel-multi'
@@ -1401,6 +1402,7 @@ function _showFileInfoInDetailPanel(filePath, preloadedMeta, options) {
         isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
       })
     : window.MeldexFileInfoPanel?.showInDetailPanel(normalizedPath, {
+        ...(options || {}),
         preloadedMeta,
         isCurrent: () => revision === _fileInfoRenderRevision && _fileInfoCurrentPath === renderKey,
       });

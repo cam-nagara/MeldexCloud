@@ -3,37 +3,6 @@
 
 Object.assign(ScriptNoteEditor.prototype, {
 
-  _bindColumnModalOverlay(overlay, focusSelector) {
-    if (!overlay) return () => {};
-    if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-      window.GBModalShell.enhanceOverlay(overlay);
-    }
-    let closed = false;
-    function close() {
-      if (closed) return;
-      closed = true;
-      document.removeEventListener('keydown', keyHandler, true);
-      overlay.remove();
-    }
-    function keyHandler(ev) {
-      if (ev.key !== 'Escape') return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      close();
-    }
-    overlay.addEventListener('click', (ev) => {
-      if (ev.target === overlay) close();
-    });
-    document.addEventListener('keydown', keyHandler, true);
-    requestAnimationFrame(() => {
-      if (!overlay.isConnected) return;
-      const target = focusSelector ? overlay.querySelector(focusSelector) : null;
-      target?.focus?.();
-      target?.select?.();
-    });
-    return close;
-  },
-
   _startColResize(e, colId, resizerEl) {
     e.preventDefault();
     this._pushUndo('列幅変更');
@@ -198,6 +167,40 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   // === ヘッダーメニュー（セルクリックで表示） ===
 
+  _getScriptNoteVisibleContentColumnIds() {
+    return (typeof this._getVisibleColumnIds === 'function'
+      ? this._getVisibleColumnIds({ includeHandle: false })
+      : []).filter(columnId => columnId !== '_status');
+  },
+
+  _setScriptNoteColumnVisible(colId, visible) {
+    const current = this._getScriptNoteVisibleContentColumnIds();
+    if (!visible && current.includes(colId) && current.length <= 1) {
+      if (typeof showStatus === 'function') showStatus('最後の内容列は非表示にできません', true);
+      return false;
+    }
+    this._pushUndo('列表示変更');
+    if (colId.startsWith('_')) {
+      this.doc.editor.visibleStandardColumns ||= {};
+      this.doc.editor.visibleStandardColumns[colId] = !!visible;
+    } else {
+      const column = this._getCustomColumns().find(item => item.id === colId);
+      if (!column) return false;
+      column.visible = !!visible;
+    }
+    const focusWasHidden = !visible && this._activeCellColId === colId;
+    const oldIndex = current.indexOf(colId);
+    this._markDirty();
+    this._render();
+    if (focusWasHidden) {
+      const next = this._getScriptNoteVisibleContentColumnIds();
+      const focusId = next[Math.min(Math.max(0, oldIndex), next.length - 1)];
+      this._activeCellColId = focusId || null;
+      requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(focusId || '')}"]`)?.focus());
+    }
+    return true;
+  },
+
   _showHeaderMenu(cell, colId) {
     // 既存メニュー・サブメニューを閉じる
     document.querySelectorAll('.sn2-header-popup, .sn2-header-sub-popup').forEach(el => el.remove());
@@ -309,6 +312,36 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     popup.appendChild(mkSep());
 
+    const standardLabels = {
+      _gutter: '大区切り', _gutter2: '小区切り', _role: 'タイプ', _text: 'テキスト',
+    };
+    const visibilityItems = [
+      ...Object.entries(standardLabels).map(([id, label]) => ({ id, label })),
+      ...customCols.map(column => ({ id: column.id, label: column.label || column.id })),
+    ];
+    popup.appendChild(mkSubItem('列の表示', `${this._getScriptNoteVisibleContentColumnIds().length}列`, sub => {
+      visibilityItems.forEach(item => {
+        const isVisible = item.id.startsWith('_')
+          ? this.doc.editor?.visibleStandardColumns?.[item.id] !== false
+          : customCols.find(column => column.id === item.id)?.visible !== false;
+        const button = mkItem(`${isVisible ? '✓ ' : ''}${item.label}`, isVisible, () => {
+          if (this._setScriptNoteColumnVisible(item.id, !isVisible)) closePopup();
+        });
+        if (isVisible && this._getScriptNoteVisibleContentColumnIds().length <= 1) button.disabled = true;
+        sub.appendChild(button);
+      });
+    }));
+    const hiddenItems = visibilityItems.filter(item => item.id.startsWith('_')
+      ? this.doc.editor?.visibleStandardColumns?.[item.id] === false
+      : customCols.find(column => column.id === item.id)?.visible === false);
+    hiddenItems.forEach(item => {
+      popup.appendChild(mkItem(`${item.label}列を表示`, false, () => {
+        if (this._setScriptNoteColumnVisible(item.id, true)) closePopup();
+      }));
+    });
+
+    popup.appendChild(mkSep());
+
     // 列スタイル（背景色・テキスト色・書式・フォントサイズ）
     popup.appendChild(mkItem('列スタイル設定…', false, () => {
       closePopup();
@@ -322,7 +355,11 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (!isStandard) {
       popup.appendChild(mkItem('列を複製', false, () => { closePopup(); this._duplicateColumn(colId); }));
     }
-    if (colId !== '_handle') {
+    // 採用状況列は採用状況機能のオン／オフだけで制御し、列表示メニューと競合させない。
+    if (colId !== '_handle' && colId !== '_status') {
+      popup.appendChild(mkItem('列を非表示', false, () => { closePopup(); this._setScriptNoteColumnVisible(colId, false); }));
+    }
+    if (!isStandard) {
       popup.appendChild(mkItem('列を削除', false, () => { closePopup(); this._deleteColumn(colId); }));
     }
 
@@ -334,21 +371,6 @@ Object.assign(ScriptNoteEditor.prototype, {
     if (colDef?.type === 'number') {
       popup.appendChild(mkSep());
       popup.appendChild(mkItem('単位を設定…', false, () => { closePopup(); this._showUnitPopup(cell, colId); }));
-    }
-
-    // 非表示の標準列を復元
-    const visCols = this.doc.editor?.visibleStandardColumns;
-    if (visCols) {
-      const hiddenLabels = { _gutter: '大区切り', _gutter2: '小区切り', _role: 'タイプ', _status: '採用状況', _text: 'テキスト' };
-      const hiddenCols = Object.entries(hiddenLabels).filter(([id]) => (id !== '_status' || this.doc.editor?.statusEnabled) && visCols[id] === false);
-      if (hiddenCols.length) {
-        popup.appendChild(mkSep());
-        hiddenCols.forEach(([id, label]) => {
-          popup.appendChild(mkItem(`${label}列を表示`, false, () => {
-            this._pushUndo('列表示変更'); visCols[id] = true; this._markDirty(); this._render(); closePopup();
-          }));
-        });
-      }
     }
 
     let closeHandler = null;
@@ -516,73 +538,110 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列追加（指定列の右に） ===
 
   _addColumnAt(afterColId) {
-    if (!this.doc) return;
-    if (!this.doc.editor.customColumns) this.doc.editor.customColumns = [];
-    const id = 'col-' + Date.now();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal sn2-column-modal" style="min-width:480px;max-width:640px;">
-      <h3>列を追加</h3>
-      <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;min-height:300px;">
-        <div class="field"><label>列名</label><input type="text" id="sn2-col-name" value="新しい列" style="width:100%;padding:4px 6px;"></div>
-        <div class="field"><label>タイプ</label>
-          <select id="sn2-col-type" style="width:100%;padding:4px 6px;">
-            <option value="text">テキスト</option>
-            <option value="number">数値</option>
-            <option value="select">ドロップダウン</option>
-          </select>
-        </div>
-        <div class="field" id="sn2-col-options-wrap" style="display:none;">
-          <label>選択肢（改行区切り）</label>
-          <textarea id="sn2-col-options" rows="8" style="width:100%;padding:4px 6px;"></textarea>
-        </div>
-        <div class="field"><label>幅(px)</label><input type="number" id="sn2-col-width" value="80" min="20" max="400" style="width:80px;padding:4px 6px;"></div>
-      </div>
-      <div class="btn-row">
-        <button class="btn" id="sn2-col-cancel">キャンセル</button>
-        <button class="primary" id="sn2-col-ok">追加</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-col-name');
-    const typeSel = overlay.querySelector('#sn2-col-type');
-    const optWrap = overlay.querySelector('#sn2-col-options-wrap');
-    typeSel.addEventListener('change', () => { optWrap.style.display = typeSel.value === 'select' ? '' : 'none'; });
-    overlay.querySelector('#sn2-col-cancel').addEventListener('click', closeOverlay);
-    overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
-      const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
-      const type = typeSel.value;
-      const rawWidth = Number(overlay.querySelector('#sn2-col-width').value);
-      const width = Math.max(20, Math.min(400, Number.isFinite(rawWidth) ? rawWidth : 80));
-      const options = type === 'select'
-        ? overlay.querySelector('#sn2-col-options').value.split('\n').map(s => s.trim()).filter(Boolean)
-        : undefined;
-      this._pushUndo('列追加');
-      const newCol = { id, label, type, width, options };
-      // afterColIdの位置を探して、その直後に挿入
-      const afterIdx = this.doc.editor.customColumns.findIndex(c => c.id === afterColId);
-      if (afterIdx >= 0) {
-        this.doc.editor.customColumns.splice(afterIdx + 1, 0, newCol);
-      } else {
-        this.doc.editor.customColumns.push(newCol);
-      }
-      const statusEnabled = !!this.doc.editor?.statusEnabled;
-      const visCols = { _gutter: true, _gutter2: true, _role: true, _status: statusEnabled, _text: true, ...(this.doc.editor?.visibleStandardColumns || {}) };
-      if (!statusEnabled) visCols._status = false;
-      const stdOrder = ['_gutter', '_gutter2', '_role', '_status', '_text'].filter(col => visCols[col] !== false);
-      const customOrder = this.doc.editor.customColumns.filter(c => c.id !== id).map(c => c.id);
-      let order = Array.isArray(this.doc.editor.columnOrder)
-        ? this.doc.editor.columnOrder.filter(col => col !== '_handle' && col !== id)
-        : [...stdOrder, ...customOrder];
-      [...stdOrder, ...customOrder].forEach(col => { if (!order.includes(col)) order.push(col); });
-      order = order.filter(col => stdOrder.includes(col) || customOrder.includes(col));
-      const insertIdx = order.indexOf(afterColId);
-      order.splice(insertIdx >= 0 ? insertIdx + 1 : 0, 0, id);
-      this.doc.editor.columnOrder = order;
-      this._render();
-      this._markDirty();
-      closeOverlay();
+    this._showAddScriptNoteColumnModal(afterColId);
+  },
+
+  _showAddScriptNoteColumnModal(afterColId = null) {
+    if (!this.doc || !globalThis.GBUI?.createModal) return;
+    const owner = document.activeElement;
+    this.doc.editor.customColumns ||= [];
+    const body = document.createElement('div');
+    body.className = 'sn2-column-modal-fields';
+    body.innerHTML = `
+      <label class="field"><span>列名</span><input class="gb-input" data-column-name value="新しい列"></label>
+      <label class="field"><span>種類</span><select class="gb-select" data-column-type><option value="text">テキスト</option><option value="number">数値</option><option value="select">ドロップダウン</option></select></label>
+      <label class="field"><span>幅(px)</span><input class="gb-input" data-column-width type="number" value="80" min="20" max="400"></label>
+      <label class="field" data-column-options-wrap hidden><span>選択肢（改行区切り）</span><textarea class="gb-input" data-column-options rows="6"></textarea></label>`;
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'gb-btn gb-btn-secondary';
+    cancel.textContent = 'キャンセル';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'gb-btn gb-btn-primary';
+    add.textContent = '追加';
+    add.dataset.e2eId = 'scriptnote-add-column-confirm';
+    const name = body.querySelector('[data-column-name]');
+    const type = body.querySelector('[data-column-type]');
+    const width = body.querySelector('[data-column-width]');
+    const optionsWrap = body.querySelector('[data-column-options-wrap]');
+    const options = body.querySelector('[data-column-options]');
+    let busy = false;
+    const returnFocus = () => {
+      if (owner?.isConnected && owner !== document.body) return owner;
+      const columnId = afterColId || '_text';
+      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(columnId)}"]`) || this.host;
+    };
+    const restoreParentFocus = reason => {
+      if (reason === 'submitted') return;
+      setTimeout(() => {
+        const target = returnFocus();
+        const dialogs = [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].filter(dialog => dialog.isConnected);
+        const topDialog = dialogs[dialogs.length - 1];
+        if (target?.isConnected && (!topDialog || topDialog.contains(target))) target.focus();
+      }, 0);
+    };
+    const modal = globalThis.GBUI.createModal({
+      id: 'scriptnote-add-column', title: '列を追加', body, footer: [cancel, add],
+      variant: 'standard', geometryKey: 'scriptnote-add-column', minWidth: '0',
+      extraClass: 'sn2-column-modal', initialFocus: name, returnFocus,
+      closeLabel: '列の追加を閉じる', closeOnEsc: true, closeOnOverlay: true,
+      onBeforeClose: reason => !busy || reason === 'submitted',
+      onClose: restoreParentFocus,
     });
+    modal.overlay.dataset.e2eId = 'scriptnote-add-column-overlay';
+    modal.modal.dataset.e2eId = 'scriptnote-add-column-dialog';
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modal.modal);
+    const setBusy = next => {
+      busy = next;
+      modal.modal.setAttribute('aria-busy', next ? 'true' : 'false');
+      add.disabled = next;
+      cancel.disabled = next;
+    };
+    type.addEventListener('change', () => { optionsWrap.hidden = type.value !== 'select'; });
+    cancel.addEventListener('click', () => modal.close('cancel'));
+    add.addEventListener('click', async () => {
+      if (busy) return;
+      const label = name.value.trim();
+      if (!label) {
+        name.setCustomValidity('列名を入力してください');
+        name.reportValidity();
+        name.focus();
+        return;
+      }
+      name.setCustomValidity('');
+      const id = `col-${Date.now()}`;
+      const rawWidth = Number(width.value);
+      const column = {
+        id, label, type: type.value,
+        width: Math.max(20, Math.min(400, Number.isFinite(rawWidth) ? rawWidth : 80)),
+        visible: true,
+        ...(type.value === 'select'
+          ? { options: options.value.split('\n').map(value => value.trim()).filter(Boolean) }
+          : {}),
+      };
+      setBusy(true);
+      try {
+        await Promise.resolve();
+        this._pushUndo('列追加');
+        this.doc.editor.customColumns.push(column);
+        const order = this._getVisibleColumnIds({ includeHandle: false }).filter(columnId => columnId !== id);
+        const insertAt = order.indexOf(afterColId);
+        order.splice(insertAt >= 0 ? insertAt + 1 : order.length, 0, id);
+        this.doc.editor.columnOrder = order;
+        this._markDirty();
+        this._render();
+        setBusy(false);
+        modal.close('submitted');
+        requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(id)}"]`)?.focus());
+      } catch (error) {
+        if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
+      } finally {
+        if (modal.isOpen()) setBusy(false);
+      }
+    });
+    modal.open();
+    name.select();
   },
 
   // === 列を複製 ===
@@ -615,32 +674,18 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === 列を削除 ===
 
   _deleteColumn(colId) {
+    if (colId.startsWith('_')) {
+      this._setScriptNoteColumnVisible(colId, false);
+      return;
+    }
     const colLabel = colId === '_gutter' ? '大区切り' : colId === '_gutter2' ? '小区切り' : colId === '_role' ? 'タイプ' : colId === '_status' ? '採用状況' : colId === '_text' ? 'テキスト'
       : (this._getCustomColumns().find(c => c.id === colId)?.label || colId);
     showConfirmDialog(`「${colLabel}」列を削除しますか？`, () => {
     this._pushUndo('列削除');
-    const isStandard = colId.startsWith('_');
-    if (isStandard) {
-      // 標準列: visibleStandardColumnsで非表示にする
-      if (!this.doc.editor.visibleStandardColumns) {
-        this.doc.editor.visibleStandardColumns = { _handle: true, _gutter: true, _gutter2: true, _role: true, _status: !!this.doc.editor?.statusEnabled, _text: true };
-      }
-      // 最後の標準列（_handle除く）は削除不可
-      const vis = this.doc.editor.visibleStandardColumns;
-      const visibleCount = ['_gutter', '_gutter2', '_role', '_status', '_text']
-        .filter(id => (id !== '_status' || this.doc.editor?.statusEnabled) && vis[id] !== false).length;
-      if (visibleCount <= 1 && vis[colId] !== false) {
-        if (typeof showStatus === 'function') showStatus('最後の標準列は削除できません', true);
-        return;
-      }
-      vis[colId] = false;
-    } else {
-      // カスタム列: 配列から除去、各行のデータも除去
-      const customCols = this._getCustomColumns();
-      const idx = customCols.findIndex(c => c.id === colId);
-      if (idx >= 0) customCols.splice(idx, 1);
-      this.doc.rows.forEach(r => { if (r.columns) delete r.columns[colId]; });
-    }
+    const customCols = this._getCustomColumns();
+    const idx = customCols.findIndex(c => c.id === colId);
+    if (idx >= 0) customCols.splice(idx, 1);
+    this.doc.rows.forEach(r => { if (r.columns) delete r.columns[colId]; });
     this._render();
     this._markDirty();
     }); // showConfirmDialog
@@ -652,26 +697,44 @@ Object.assign(ScriptNoteEditor.prototype, {
     const customCols = this._getCustomColumns();
     const colDef = customCols.find(c => c.id === colId);
     if (!colDef || colDef.type !== 'select') return;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal sn2-column-modal sn2-column-options-modal" style="min-width:400px;max-width:500px;">
-      <h3>${esc(colDef.label)} — 選択肢を編集</h3>
-      <div class="modal-body" style="min-height:200px;">
-        <label>選択肢（改行区切り）</label>
-        <textarea id="sn2-opt-edit" rows="10" style="width:100%;padding:6px;font-size:13px;"></textarea>
-      </div>
-      <div class="btn-row">
-        <button class="btn" id="sn2-opt-cancel">キャンセル</button>
-        <button class="primary" id="sn2-opt-ok">保存</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-opt-edit');
-    const textarea = overlay.querySelector('#sn2-opt-edit');
+    if (!globalThis.GBUI?.createModal) return;
+    const owner = document.activeElement;
+    const body = document.createElement('div');
+    body.className = 'sn2-column-options-body';
+    const field = document.createElement('label');
+    field.className = 'field gb-field sn2-column-options-field';
+    const label = document.createElement('span');
+    label.className = 'gb-label';
+    label.textContent = '選択肢（改行区切り）';
+    const textarea = document.createElement('textarea');
+    textarea.id = 'sn2-opt-edit';
+    textarea.className = 'gb-textarea sn2-column-options-input';
+    textarea.wrap = 'soft';
+    textarea.style.setProperty('overflow-x', 'hidden', 'important');
+    textarea.rows = 10;
+    textarea.dataset.e2eId = 'scriptnote-column-options-input';
+    field.append(label, textarea);
+    body.appendChild(field);
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.id = 'sn2-opt-cancel'; cancel.className = 'gb-btn gb-btn-sm cancel-btn'; cancel.textContent = 'キャンセル';
+    const save = document.createElement('button');
+    save.type = 'button'; save.id = 'sn2-opt-ok'; save.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn'; save.textContent = '保存';
+    const modalApi = globalThis.GBUI.createModal({
+      id: 'scriptnote-column-options', title: `${colDef.label} — 選択肢を編集`, body, footer: [cancel, save],
+      variant: 'standard', geometryKey: 'scriptnote-column-options', minWidth: '0',
+      initialFocus: '#sn2-opt-edit', returnFocus: owner, closeLabel: '選択肢の編集を閉じる',
+      closeOnEsc: true, closeOnOverlay: true,
+    });
+    modalApi.overlay.dataset.sn2Dialog = 'column-options';
+    modalApi.overlay.dataset.e2eId = 'scriptnote-column-options-overlay';
+    modalApi.modal.dataset.e2eId = 'scriptnote-column-options-dialog';
+    modalApi.modal.classList.add('sn2-column-modal', 'sn2-column-options-modal');
+    modalApi.body.classList.add('sn2-column-options-modal-body');
+    modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(modalApi.modal);
     textarea.value = (colDef.options || []).join('\n');
-    textarea.focus();
-    overlay.querySelector('#sn2-opt-cancel').addEventListener('click', closeOverlay);
-    overlay.querySelector('#sn2-opt-ok').addEventListener('click', () => {
+    cancel.addEventListener('click', () => modalApi.close('cancel'));
+    save.addEventListener('click', () => {
       this._pushUndo('選択肢編集');
       const nextOptions = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
       const allowed = new Set(nextOptions);
@@ -687,8 +750,10 @@ Object.assign(ScriptNoteEditor.prototype, {
       this._render();
       this._markDirty();
       if (cleared && typeof showStatus === 'function') showStatus(`削除された選択肢を使っていた${cleared}件の値を空にしました`);
-      closeOverlay();
+      modalApi.close('submit');
     });
+    modalApi.open();
+    textarea.select();
   },
 
   // === 数値列の単位設定 ===
@@ -762,53 +827,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   // === カスタム列追加（末尾に追加、既存メソッド） ===
 
   _addCustomColumn() {
-    if (!this.doc) return;
-    if (!this.doc.editor.customColumns) this.doc.editor.customColumns = [];
-    const id = 'col-' + Date.now();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `<div class="modal sn2-column-modal" style="min-width:480px;max-width:640px;">
-      <h3>列を追加</h3>
-      <div class="modal-body" style="display:flex;flex-direction:column;gap:8px;min-height:300px;">
-        <div class="field"><label>列名</label><input type="text" id="sn2-col-name" value="新しい列" style="width:100%;padding:4px 6px;"></div>
-        <div class="field"><label>タイプ</label>
-          <select id="sn2-col-type" style="width:100%;padding:4px 6px;">
-            <option value="text">テキスト</option>
-            <option value="number">数値</option>
-            <option value="select">ドロップダウン</option>
-          </select>
-        </div>
-        <div class="field" id="sn2-col-options-wrap" style="display:none;">
-          <label>選択肢（改行区切り）</label>
-          <textarea id="sn2-col-options" rows="8" style="width:100%;padding:4px 6px;"></textarea>
-        </div>
-        <div class="field"><label>幅(px)</label><input type="number" id="sn2-col-width" value="80" min="20" max="400" style="width:80px;padding:4px 6px;"></div>
-      </div>
-      <div class="btn-row">
-        <button class="btn" id="sn2-col-cancel">キャンセル</button>
-        <button class="primary" id="sn2-col-ok">追加</button>
-      </div>
-    </div>`;
-    document.body.appendChild(overlay);
-    const closeOverlay = this._bindColumnModalOverlay(overlay, '#sn2-col-name');
-    const typeSel = overlay.querySelector('#sn2-col-type');
-    const optWrap = overlay.querySelector('#sn2-col-options-wrap');
-    typeSel.addEventListener('change', () => { optWrap.style.display = typeSel.value === 'select' ? '' : 'none'; });
-    overlay.querySelector('#sn2-col-cancel').addEventListener('click', closeOverlay);
-    overlay.querySelector('#sn2-col-ok').addEventListener('click', () => {
-      const label = overlay.querySelector('#sn2-col-name').value.trim() || '列';
-      const type = typeSel.value;
-      const rawWidth = Number(overlay.querySelector('#sn2-col-width').value);
-      const width = Math.max(20, Math.min(400, Number.isFinite(rawWidth) ? rawWidth : 80));
-      const options = type === 'select'
-        ? overlay.querySelector('#sn2-col-options').value.split('\n').map(s => s.trim()).filter(Boolean)
-        : undefined;
-      this._pushUndo('列追加');
-      this.doc.editor.customColumns.push({ id, label, type, width, options });
-      this._render();
-      this._markDirty();
-      closeOverlay();
-    });
+    this._showAddScriptNoteColumnModal(null);
   },
 
 });

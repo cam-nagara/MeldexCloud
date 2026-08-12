@@ -296,68 +296,61 @@ function _handleImportCustomColorsFile(file) {
 // 削除相当の確認として3択（キャンセル/追加/置き換え）で提示し、既定フォーカスは
 // 非破壊の「追加」に置く。
 function _showPersonalColorsImportModeDialog(onChoose) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.dataset.e2eId = 'color-palette-import-mode-overlay';
-
-  const modal = document.createElement('div');
-  modal.className = 'modal gb-palette-import-mode-dialog';
-  modal.dataset.e2eId = 'color-palette-import-mode-dialog';
-  modal.setAttribute('role', 'alertdialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-label', 'カスタムカラーの読み込み方法');
-  modal.tabIndex = -1;
-
   const body = document.createElement('div');
   body.className = 'modal-body';
   body.textContent = '読み込んだカスタムカラーを、現在のセットへ追加しますか、それとも置き換えますか。';
-  modal.appendChild(body);
-
-  const buttonRow = document.createElement('div');
-  buttonRow.className = 'btn-row';
 
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
-  cancelBtn.className = 'cancel-btn';
+  cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
   cancelBtn.dataset.e2eId = 'color-palette-import-mode-cancel';
   cancelBtn.textContent = 'キャンセル';
 
   const replaceBtn = document.createElement('button');
   replaceBtn.type = 'button';
-  replaceBtn.className = 'danger';
+  replaceBtn.className = 'gb-btn gb-btn-sm gb-btn-danger danger';
   replaceBtn.dataset.e2eId = 'color-palette-import-mode-replace';
   replaceBtn.textContent = '置き換える';
   replaceBtn.title = '現在のカスタムカラーをすべて削除してから読み込みます';
 
   const appendBtn = document.createElement('button');
   appendBtn.type = 'button';
-  appendBtn.className = 'primary ok-btn';
+  appendBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
   appendBtn.dataset.e2eId = 'color-palette-import-mode-append';
   appendBtn.textContent = '追加して読み込む';
 
-  buttonRow.append(cancelBtn, replaceBtn, appendBtn);
-  modal.appendChild(buttonRow);
-  overlay.appendChild(modal);
+  let modalApi = null;
+  modalApi = window.GBUI.createModal({
+    id: 'color-palette-import-mode',
+    title: 'カスタムカラーを読み込む',
+    body,
+    footer: [cancelBtn, replaceBtn, appendBtn],
+    variant: 'standard',
+    geometryKey: 'color-palette-import-mode',
+    minWidth: '0',
+    initialFocus: appendBtn,
+    closeLabel: 'カスタムカラーの読み込みを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    resizable: true,
+    onClose: (reason) => {
+      const mode = reason === 'append' || reason === 'replace' ? reason : null;
+      if (typeof onChoose === 'function') onChoose(mode);
+    },
+  });
+  const { overlay, modal } = modalApi;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.e2eId = 'color-palette-import-mode-overlay';
+  overlay._personalColorsImportModeModalApi = modalApi;
+  modal.classList.add('modal', 'gb-palette-import-mode-dialog');
+  modal.dataset.e2eId = 'color-palette-import-mode-dialog';
+  modal.setAttribute('role', 'alertdialog');
+  modal.style.cssText = 'width:min(460px,calc(100vw - 24px));max-width:100%;overflow:hidden;';
 
-  let closed = false;
-  const close = (mode) => {
-    if (closed) return;
-    closed = true;
-    overlay.remove();
-    document.removeEventListener('keydown', onKey, true);
-    if (typeof onChoose === 'function') onChoose(mode || null);
-  };
-  const onKey = (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); close(null); }
-  };
-  cancelBtn.addEventListener('click', () => close(null));
-  replaceBtn.addEventListener('click', () => close('replace'));
-  appendBtn.addEventListener('click', () => close('append'));
-  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) close(null); });
-  document.addEventListener('keydown', onKey, true);
-
-  document.body.appendChild(overlay);
-  appendBtn.focus({ preventScroll: true });
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  replaceBtn.addEventListener('click', () => modalApi.close('replace'));
+  appendBtn.addEventListener('click', () => modalApi.close('append'));
+  modalApi.open();
 }
 
 // APIが使える場合はサーバーの/importで追加/置換を確定させ、使えない場合

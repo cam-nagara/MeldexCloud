@@ -281,6 +281,18 @@
   min-height: 36px;
   text-align: left;
 }
+.sn2-dialog-touch-target,
+.sn2-dialog-touch-choice {
+  /* Tablet互換表示の0.9倍描画後も44px以上を確保する。 */
+  min-height: 49px !important;
+}
+.sn2-dialog-touch-button {
+  min-width: 49px !important;
+}
+.sn2-dialog-touch-choice {
+  display: flex;
+  align-items: center;
+}
 .sn2-save-folder-label {
   min-width: 0;
   overflow: hidden;
@@ -367,6 +379,116 @@
 }
 .sn2-save-as-actions {
   flex-wrap: wrap;
+}
+
+.sn2-column-options-modal,
+.sn2-column-options-modal-body,
+.sn2-column-options-body,
+.sn2-column-options-field,
+.sn2-column-options-input,
+.sn2-save-as-modal,
+.sn2-save-as-body,
+.sn2-save-as-content,
+.sn2-save-field,
+.sn2-save-name-input,
+.sn2-save-folder-display,
+.sn2-save-as-actions {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+.sn2-column-options-modal-body,
+.sn2-column-options-body,
+.sn2-column-options-field,
+.sn2-column-options-input,
+.sn2-save-as-body,
+.sn2-save-as-content,
+.sn2-save-field,
+.sn2-save-name-input,
+.sn2-save-folder-display,
+.sn2-save-as-actions {
+  width: 100%;
+}
+.sn2-column-options-body,
+.sn2-column-options-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.sn2-column-options-input {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.sn2-column-options-modal > .gb-modal-footer,
+.sn2-save-as-modal > .gb-modal-footer {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.sn2-column-options-modal > .gb-modal-footer > .gb-btn,
+.sn2-save-as-modal > .gb-modal-footer > .gb-btn {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+@media (max-width: 900px) {
+  .sn2-column-options-modal,
+  .sn2-save-as-modal,
+  .sn2-save-as-body,
+  .sn2-save-as-content,
+  .sn2-save-field,
+  .sn2-save-name-input,
+  .sn2-save-folder-display {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+  .sn2-save-as-content,
+  .sn2-save-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .sn2-column-options-modal,
+  .sn2-save-as-modal {
+    width: min(100%, calc((100vw - 16px) / var(--meldex-ui-zoom, 1))) !important;
+    max-width: min(100%, calc((100vw - 16px) / var(--meldex-ui-zoom, 1))) !important;
+  }
+  .sn2-column-options-modal > .gb-modal-footer,
+  .sn2-save-as-modal > .gb-modal-footer {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, max-content)) !important;
+    justify-content: end !important;
+    width: 100% !important;
+    padding-right: 16px !important;
+    padding-left: 16px !important;
+  }
+  .sn2-column-options-modal > .gb-modal-footer > .gb-btn,
+  .sn2-save-as-modal > .gb-modal-footer > .gb-btn {
+    width: auto;
+    min-width: 49px;
+  }
+}
+
+.sn2-column-modal-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.sn2-column-modal-fields > .field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+.sn2-column-modal-fields > .field:first-child,
+.sn2-column-modal-fields > [data-column-options-wrap] {
+  grid-column: 1 / -1;
+}
+.sn2-column-modal-fields input,
+.sn2-column-modal-fields select,
+.sn2-column-modal-fields textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
 }
 
 @media (max-width: 640px), (pointer: coarse) {

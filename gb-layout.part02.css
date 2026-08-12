@@ -49,10 +49,23 @@
   max-width: 160px; min-width: 0; user-select: none; position: relative;
   -webkit-touch-callout: none;
 }
+/* ラベルを保ったまま縮められる中間段階。72pxでも収まらない場合だけ
+   JSが gb-tabs-compact へ進める。 */
+.gb-pane-tabs.gb-tabs-shrink .gb-tab {
+  flex: 1 1 auto;
+  min-width: 72px;
+}
 /* 幅不足時はラベルを隠してアイコン化（JS で gb-tabs-compact を付与） */
 .gb-pane-tabs.gb-tabs-compact .gb-tab .gb-tab-label { display: none; }
 .gb-pane-tabs.gb-tabs-compact .gb-tab .gb-tab-close { display: none; }
-.gb-pane-tabs.gb-tabs-compact .gb-tab { padding: 0 4px; gap: 0; }
+.gb-pane-tabs.gb-tabs-compact .gb-tab {
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+  padding: 0 7px;
+  gap: 0;
+}
 .gb-tab:hover { background: var(--ui-hover-bg); color: var(--ui-hover-fg); }
 .gb-tab.active { color: var(--fg); background: var(--ui-pane-tab-active-bg, var(--bg)); border-bottom: 2px solid var(--accent); }
 .gb-tab.dragging { opacity: 0.4; }

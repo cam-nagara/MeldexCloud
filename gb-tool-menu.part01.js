@@ -189,6 +189,7 @@ function showToolMenu(e, toolType) {
   dd.querySelector('.gb-context-menu-item:not(:disabled)')?.focus?.();
 
   setTimeout(() => {
+    if (!dd.isConnected) return;
     pointerHandler = (ev) => {
       const inAny = [...document.querySelectorAll('.tool-menu-dropdown')].some(m => m.contains(ev.target));
       if (!inAny && ev.target !== btn) {
@@ -474,6 +475,14 @@ function _setScriptNoteOpenMessage(host, text, depth = 0, isError = false) {
 
 function showScriptNoteOpenModal(mode = 'open', options = {}) {
   const isImport = mode === 'import';
+  const existing = document.querySelector(`.gb-scriptnote-open-overlay[data-scriptnote-open-mode="${isImport ? 'import' : 'open'}"]`);
+  if (existing?._scriptNoteOpenModalApi?.isOpen?.()) {
+    existing._scriptNoteOpenModalApi.modal.focus?.({ preventScroll: true });
+    return existing._scriptNoteOpenModalApi;
+  }
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('シナリオ選択を初期化できませんでした。');
+  }
   const trigger = options.trigger
     || document.activeElement?.closest?.('.tool-menu-btn, button, [role="button"], [tabindex]')
     || null;
@@ -489,15 +498,8 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
   let selectedLabel = selectedFromTree
     ? (selectedTreeNode.name || '')
     : (canReuseActivePath ? activeLabel : '');
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay gb-scriptnote-open-overlay';
-  overlay.dataset.e2eId = isImport ? 'tool-menu-scriptnote-import-overlay' : 'tool-menu-scriptnote-open-overlay';
-  overlay.innerHTML = `<div class="modal gb-scriptnote-open-modal" role="dialog" aria-modal="true" aria-labelledby="scriptnote-open-title" tabindex="-1" data-e2e-id="${isImport ? 'tool-menu-scriptnote-import-dialog' : 'tool-menu-scriptnote-open-dialog'}">
-    <div class="gb-modal-header gb-scriptnote-open-header" data-modal-header>
-      <h3 id="scriptnote-open-title" class="gb-modal-title gb-scriptnote-open-title"><span class="gb-scriptnote-open-title-icon" aria-hidden="true">${_toolMenuModalIcon(isImport ? 'scenario' : 'bookOpenText', 16)}</span><span>${isImport ? '旧シナリオからインポート' : 'シナリオを開く'}</span></h3>
-      <button type="button" id="scriptnote-open-close" class="gb-modal-close gb-scriptnote-open-close" aria-label="${isImport ? '旧シナリオからインポートを閉じる' : 'シナリオを開くを閉じる'}" data-e2e-id="tool-menu-scriptnote-open-close">${_toolMenuModalIcon('x', 14)}</button>
-    </div>
-    <div class="gb-modal-body gb-scriptnote-open-body">
+  const content = document.createElement('div');
+  content.innerHTML = `
       <div class="field gb-scriptnote-open-field">
         <label id="scriptnote-open-tree-label" class="gb-scriptnote-open-label">フォルダツリーから${isImport ? '旧シナリオ' : 'シナリオ'}を選択</label>
         <div id="scriptnote-open-tree" class="gb-scriptnote-open-tree" role="group" aria-labelledby="scriptnote-open-tree-label" data-e2e-id="tool-menu-scriptnote-open-tree"></div>
@@ -505,29 +507,63 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
       <div id="scriptnote-open-selection" class="gb-scriptnote-open-selection" aria-live="polite"></div>
       <div class="gb-scriptnote-open-hint">
         ${isImport ? 'フォルダを展開して旧シナリオファイル(.scenario.json)を選択してください。選択した旧シナリオからシナリオファイルを作成して開きます。' : 'フォルダを展開してシナリオファイルを選択してください。'}
-      </div>
-    </div>
-    <div class="gb-modal-footer gb-scriptnote-open-footer" data-modal-footer>
-      <button type="button" id="scriptnote-open-cancel" class="gb-btn gb-btn-sm">キャンセル</button>
-      <button type="button" id="scriptnote-open-ok" class="gb-btn gb-btn-sm gb-btn-primary" disabled>${isImport ? '作成して開く' : '開く'}</button>
-    </div>
-  </div>`;
-  document.body.appendChild(overlay);
-  window.GBModalShell?.enhanceOverlay?.(overlay);
-  const treeHost = overlay.querySelector('#scriptnote-open-tree');
-  const selectionEl = overlay.querySelector('#scriptnote-open-selection');
-  const openBtn = overlay.querySelector('#scriptnote-open-ok');
-  const closeBtn = overlay.querySelector('#scriptnote-open-close');
-  const cancelBtn = overlay.querySelector('#scriptnote-open-cancel');
-  let onKeyDown = null;
-  let closed = false;
-  const close = (restoreFocus = true) => {
-    if (closed) return;
-    closed = true;
-    if (onKeyDown) document.removeEventListener('keydown', onKeyDown);
-    overlay.remove();
-    if (restoreFocus) _restoreToolMenuModalFocus(trigger);
-  };
+      </div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.id = 'scriptnote-open-cancel';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.textContent = 'キャンセル';
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.id = 'scriptnote-open-ok';
+  openBtn.className = 'gb-btn gb-btn-sm gb-btn-primary';
+  openBtn.disabled = true;
+  openBtn.textContent = isImport ? '作成して開く' : '開く';
+  const modalApi = window.GBUI.createModal({
+    id: isImport ? 'scriptnote-import-dialog' : 'scriptnote-open-dialog',
+    titleId: 'scriptnote-open-title',
+    title: isImport ? '旧シナリオからインポート' : 'シナリオを開く',
+    body: [...content.childNodes],
+    footer: [cancelBtn, openBtn],
+    variant: 'standard',
+    extraClass: 'gb-scriptnote-open-modal',
+    geometryKey: isImport ? 'scriptnote-import-dialog' : 'scriptnote-open-dialog',
+    minWidth: '0',
+    initialFocus: '#scriptnote-open-tree',
+    returnFocus: () => trigger,
+    closeLabel: isImport ? '旧シナリオからインポートを閉じる' : 'シナリオを開くを閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay', 'gb-scriptnote-open-overlay');
+  overlay.dataset.scriptnoteOpenMode = isImport ? 'import' : 'open';
+  overlay.dataset.e2eId = isImport ? 'tool-menu-scriptnote-import-overlay' : 'tool-menu-scriptnote-open-overlay';
+  overlay._scriptNoteOpenModalApi = modalApi;
+  modalApi.modal.dataset.e2eId = isImport ? 'tool-menu-scriptnote-import-dialog' : 'tool-menu-scriptnote-open-dialog';
+  modalApi.header.classList.add('gb-scriptnote-open-header');
+  modalApi.header.dataset.modalHeader = '1';
+  modalApi.body.classList.add('gb-scriptnote-open-body');
+  modalApi.footer.classList.add('gb-scriptnote-open-footer');
+  modalApi.footer.dataset.modalFooter = '1';
+  const titleElement = modalApi.header.querySelector('.gb-modal-title');
+  titleElement?.classList.add('gb-scriptnote-open-title');
+  if (titleElement) {
+    const icon = document.createElement('span');
+    icon.className = 'gb-scriptnote-open-title-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = _toolMenuModalIcon(isImport ? 'scenario' : 'bookOpenText', 16);
+    titleElement.prepend(icon);
+  }
+  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+  if (closeBtn) {
+    closeBtn.id = 'scriptnote-open-close';
+    closeBtn.classList.add('gb-scriptnote-open-close');
+    closeBtn.dataset.e2eId = 'tool-menu-scriptnote-open-close';
+  }
+  const treeHost = modalApi.body.querySelector('#scriptnote-open-tree');
+  const selectionEl = modalApi.body.querySelector('#scriptnote-open-selection');
+  const close = () => modalApi.close('programmatic');
   const submit = () => {
     if (!selectedPath) {
       showStatus(`${isImport ? 'インポートする旧シナリオ' : '開くシナリオファイル'}を選択してください`, true);
@@ -537,7 +573,7 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
       showStatus('開く... ではシナリオファイルだけを選択できます。旧シナリオは「旧シナリオからインポート...」を使ってください', true);
       return;
     }
-    close(true);
+    modalApi.close('opened');
     const label = selectedLabel || getScriptNoteLabelFromPath(selectedPath, '');
     if (!isImport && loadScenarioIntoActiveScriptNote(selectedPath, label)) return;
     if (openScenarioInScriptNote(selectedPath, label)) return;
@@ -683,16 +719,14 @@ function showScriptNoteOpenModal(mode = 'open', options = {}) {
       _setScriptNoteOpenMessage(treeHost, 'フォルダツリーの読み込みに失敗しました', 0, true);
     }
   };
-  closeBtn.addEventListener('click', () => close(true));
-  cancelBtn.addEventListener('click', () => close(true));
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
   openBtn.addEventListener('click', submit);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(true); });
-  onKeyDown = (e) => {
-    if (e.key === 'Escape') close(true);
-    if (e.key === 'Enter' && !openBtn.disabled) submit();
-  };
-  document.addEventListener('keydown', onKeyDown);
+  modalApi.modal.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !openBtn.disabled && !e.target.closest('button')) submit();
+  });
   renderTree();
+  modalApi.open();
+  return modalApi;
 }
 
 function showScriptNoteImportModal(options = {}) {

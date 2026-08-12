@@ -28,17 +28,15 @@
     { key: 'schedule', label: 'スケジュール' },
     { key: 'data', label: 'データ' },
   ];
-  // 中央のシート表示や共通ツールバーと重複しない、制作管理固有の操作だけを
-  // 右側の「管理操作」に残す。タスク作成は一覧/共通ツールバーから行う。「割当再計算」
-  // （旧「担当者と時間を割り当て」＋「再計算」＋「予定を組み直す」の統合先）はこのパネルの
-  // 「スケジュール」グループに残す（§6-1）。
-  const MANAGEMENT_ACTIONS = ACTIONS.filter(action => action.fn !== 'openProductionTaskCreate');
+  // 中央の一覧や共通ツールバーと重複しない操作だけを右側に残す。
+  // 自動割り当ては共通ツールバーの単一コマンドだけに置き、割り当てタブは
+  // 対象・能力・直近の案を表示し、実行ボタンを重複させない。
+  const MANAGEMENT_ACTIONS = ACTIONS.filter(action => (
+    action.fn !== 'openProductionTaskCreate' && action.fn !== 'openProductionRecalculate'
+  ));
   const PRODUCTION_SHEET_TABS = [
     { key: 'tasks', id: 'production-task-list', label: 'タスクリスト', icon: 'listTodo' },
-    { key: 'works', id: 'production-managed-works', label: '作品設定', icon: 'bookOpen' },
-    { key: 'targets', id: 'production-managed-targets', label: '作業対象', icon: 'crosshair' },
-    { key: 'contents', id: 'production-managed-contents', label: '作業内容', icon: 'listChecks' },
-    { key: 'scales', id: 'production-managed-scales', label: '作業規模', icon: 'gauge' },
+    { key: 'works', id: 'production-managed-works', label: 'プロジェクト一覧', icon: 'folderKanban' },
   ];
 
   function _pmIcon(name, size = 14) {
@@ -76,7 +74,7 @@
     _pmOpenOptionPanel(options.select !== false);
     const helpers = window.MeldexCalendarOptionPanel || {};
     if (typeof helpers.container === 'function') {
-      return helpers.container('制作管理', {
+      return helpers.container('スケジュール', {
         tabId: 'calendar-production',
         select: options.select !== false,
       });
@@ -87,7 +85,7 @@
     detailEl.replaceChildren();
     const header = document.createElement('div');
     header.className = 'cal-option-header';
-    header.textContent = '制作管理';
+    header.textContent = 'スケジュール';
     const body = document.createElement('div');
     body.className = 'cal-option-body';
     detailEl.append(header, body);

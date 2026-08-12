@@ -465,6 +465,14 @@
     // 戻った後も、このシート固有の property_types を失わないために必要。
     instance.containerEl._dbPaneContext = instance.ctx;
     _installWriteGuard(instance);
+    if (typeof MutationObserver === 'function') {
+      instance._schedulerOverlayObserver = new MutationObserver(() => {
+        window.MeldexSchedulerProposalOverlay?.applyTaskTable?.(
+          instance.containerEl, window.MeldexSchedulerProposalOverlay?.active?.(),
+        );
+      });
+      instance._schedulerOverlayObserver.observe(instance.containerEl, { childList: true, subtree: true });
+    }
     instance._mounted = true;
     return instance.containerEl;
   }
@@ -504,6 +512,9 @@
     if (!await _refreshWriteGuard(instance, path)) return false;
     if (generation !== instance._generation) return false;
     instance._currentPath = path;
+    window.MeldexSchedulerProposalOverlay?.applyTaskTable?.(
+      instance.containerEl, window.MeldexSchedulerProposalOverlay?.active?.(),
+    );
     return true;
   }
 
@@ -580,6 +591,8 @@
     instance._destroyed = true;
     instance._generation += 1; // 進行中 open() の応答が _currentPath を更新しないようにする
     instance._writeGuardSeq += 1;
+    instance._schedulerOverlayObserver?.disconnect?.();
+    instance._schedulerOverlayObserver = null;
     _destroyWriteGuard(instance);
     const ctx = instance.ctx;
     if (ctx) {
@@ -637,6 +650,7 @@
       _writeGuardDomObserver: null,
       _writeGuardBodyObserver: null,
       _guardReleaseRefreshPending: false,
+      _schedulerOverlayObserver: null,
       _lastWriteGuardAnnouncement: 0,
       _currentPath: null,
     };
@@ -646,6 +660,10 @@
     instance.mount = function (hostEl) { return _mount(instance, hostEl); };
     instance.open = function (dbPath, openOpts) { return _open(instance, dbPath, openOpts); };
     instance.refresh = function () { return _refresh(instance); };
+    instance.applySchedulerProposal = function (proposal) {
+      return window.MeldexSchedulerProposalOverlay?.applyTaskTable?.(instance.containerEl, proposal)
+        || { matched: 0, warnings: [] };
+    };
     instance.getSelectedEntryPaths = function () { return _getSelectedEntryPaths(instance); };
     instance.setVisible = function (visible) { _setVisible(instance, visible); };
     instance.destroy = function () { _destroy(instance); };

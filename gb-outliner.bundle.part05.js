@@ -1,10 +1,3 @@
-          before,
-          sortPath + ' / ' + o.label,
-          sortHistoryKeys
-        );
-        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
-          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
-            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
           renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
         }
         const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
@@ -898,3 +891,10 @@ function _outlinerKeyboardTryVirtualStep(current, key) {
   const scrollTargets = ['tree-scroll-container'];
   scrollTargets.forEach(id => {
     const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('wheel', (e) => {
+      if (!_isDragging) return;
+      e.preventDefault();
+      el.scrollTop += e.deltaY;
+    }, { passive: false });
+  });

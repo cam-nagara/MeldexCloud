@@ -166,10 +166,35 @@ function setPinnedShellVerbs(list) {
   localStorage.setItem(_PINNED_VERBS_KEY, JSON.stringify(Array.isArray(list) ? list : []));
 }
 
+function _restoreShellVerbPreference(key, previousValue) {
+  if (previousValue == null) localStorage.removeItem(key);
+  else localStorage.setItem(key, previousValue);
+}
+
+function saveShellVerbPreferences(hiddenList, pinnedList) {
+  const previousHidden = localStorage.getItem(_HIDDEN_VERBS_KEY);
+  const previousPinned = localStorage.getItem(_PINNED_VERBS_KEY);
+  try {
+    setHiddenShellVerbs(hiddenList);
+    setPinnedShellVerbs(pinnedList);
+  } catch (error) {
+    let rollbackError = null;
+    try { _restoreShellVerbPreference(_HIDDEN_VERBS_KEY, previousHidden); } catch (restoreError) { rollbackError = restoreError; }
+    try { _restoreShellVerbPreference(_PINNED_VERBS_KEY, previousPinned); } catch (restoreError) { rollbackError ||= restoreError; }
+    if (rollbackError && error && typeof error === 'object') error.rollbackError = rollbackError;
+    throw error;
+  }
+}
+
 function _isDefaultPinnedShellVerb(verb) {
   const text = _shellVerbText(verb);
   return text.includes('dropbox')
-    || text.includes('圧縮')
+    || _isArchiveShellVerb(verb);
+}
+
+function _isArchiveShellVerb(verb) {
+  const text = _shellVerbText(verb);
+  return text.includes('圧縮')
     || text.includes('解凍')
     || text.includes('展開')
     || /\b(compress|archive|extract|unzip|zip)\b/.test(text);
@@ -220,7 +245,23 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   const visibleVerbs = verbs.filter(v => (
     !hidden.includes(v.name) && !(editingLocked && _isEditMutationShellVerb(v))
   ));
-  const promotedVerbs = visibleVerbs.filter(isPinnedShellVerb);
+  const archiveVerbs = visibleVerbs.filter(_isArchiveShellVerb);
+  if (archiveVerbs.length) {
+    let archivePanel = menu.querySelector('[data-shell-archive-panel="1"]');
+    if (!archivePanel) {
+      archivePanel = _shellMenuCreatePanel('圧縮/解凍');
+      archivePanel.dataset.shellArchivePanel = '1';
+      _shellMenuAppendSubmenu(menu, '圧縮/解凍', 'archive', archivePanel);
+    }
+    archiveVerbs.forEach(v => {
+      _shellMenuAppendItem(archivePanel, v.name, () => {
+        if (typeof closeTreeContextMenu === 'function') closeTreeContextMenu();
+        executeShellVerb(path, v.raw);
+      });
+    });
+  }
+
+  const promotedVerbs = visibleVerbs.filter(v => isPinnedShellVerb(v) && !_isArchiveShellVerb(v));
   promotedVerbs.forEach(v => {
     _shellMenuAppendItem(menu, v.name, () => {
       if (typeof closeTreeContextMenu === 'function') closeTreeContextMenu();
@@ -232,7 +273,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
   const shellPanel = _shellMenuCreatePanel('OS メニュー');
   _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
 
-  const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v));
+  const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v) && !_isArchiveShellVerb(v));
   if (submenuVerbs.length === 0) {
     _shellMenuAppendItem(
       shellPanel,
@@ -318,6 +359,7 @@ function _showHideVerbPopup(x, y, verbName, parentMenu, path) {
 // --- カスタマイズモーダル ---
 
 async function showShellVerbSettings() {
+  const compactDialog = window.matchMedia?.('(max-width: 900px), (pointer: coarse)')?.matches === true;
   // 全キャッシュから動詞を集約
   const allVerbs = new Map(); // name -> raw
   for (const verbs of Object.values(_shellVerbCache)) {
@@ -337,24 +379,6 @@ async function showShellVerbSettings() {
   }
 
   const hidden = getHiddenShellVerbs();
-  const o = document.createElement('div');
-  o.className = 'modal-overlay shell-verb-settings-overlay';
-  o.dataset.shellVerbSettings = '1';
-  o.dataset.e2eId = 'shell-verb-settings-overlay';
-  const modal = document.createElement('div');
-  modal.className = 'modal shell-verb-settings-modal';
-  modal.dataset.e2eId = 'shell-verb-settings-dialog';
-  modal.setAttribute('role', 'dialog');
-  modal.setAttribute('aria-modal', 'true');
-  modal.setAttribute('aria-labelledby', 'shell-verb-settings-title');
-  modal.style.minWidth = '360px';
-  modal.style.width = 'min(520px, calc(100vw - 32px))';
-  modal.style.maxHeight = 'min(70vh, calc(100dvh - 24px))';
-
-  const title = document.createElement('h3');
-  title.id = 'shell-verb-settings-title';
-  title.textContent = '右クリックメニューのカスタマイズ';
-
   const desc = document.createElement('div');
   desc.className = 'gb-section-desc shell-verb-settings-desc';
   desc.textContent = '表示する項目と、OSメニューの外側（トップ）にも表示する項目を選べます。Dropbox・圧縮・解凍は初期状態でトップに表示されます。';
@@ -368,16 +392,25 @@ async function showShellVerbSettings() {
   list.setAttribute('role', 'group');
   list.setAttribute('aria-label', 'OS メニュー項目');
   const configuredPinned = getPinnedShellVerbs();
+  let verbIndex = 0;
   for (const [name, raw] of allVerbs) {
+    const stableVerbId = String(++verbIndex);
     const row = document.createElement('div');
     row.className = 'shell-verb-settings-row';
+    row.style.flexWrap = 'nowrap';
+    row.style.boxSizing = 'border-box';
+    if (compactDialog) {
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.style.paddingBlock = '8px';
+    }
     const label = document.createElement('label');
     label.className = 'shell-verb-settings-visibility';
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.checked = !hidden.includes(name);
     input.dataset.verbName = name;
-    input.dataset.e2eId = 'shell-verb-settings-check-' + String(name).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    input.dataset.e2eId = 'shell-verb-settings-check-' + stableVerbId;
     input.setAttribute('aria-label', `${name}を表示`);
     const text = document.createElement('span');
     text.textContent = name;
@@ -391,8 +424,13 @@ async function showShellVerbSettings() {
       : configuredPinned.includes(name);
     pinInput.disabled = !input.checked;
     pinInput.dataset.pinnedVerbName = name;
+    pinInput.dataset.e2eId = 'shell-verb-settings-pin-' + stableVerbId;
     pinInput.setAttribute('aria-label', `${name}をトップにも表示`);
     pinLabel.append(pinInput, document.createTextNode('トップにも表示'));
+    if (compactDialog) {
+      label.style.width = '100%';
+      pinLabel.style.width = '100%';
+    }
     input.addEventListener('change', () => {
       pinInput.disabled = !input.checked;
       if (!input.checked) pinInput.checked = false;
@@ -400,54 +438,116 @@ async function showShellVerbSettings() {
     row.append(label, pinLabel);
     list.appendChild(row);
   }
-  const footer = document.createElement('div');
-  footer.className = 'btn-row shell-verb-settings-actions';
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
+  closeButton.style.minWidth = '72px';
+  closeButton.style.whiteSpace = 'nowrap';
+  closeButton.style.flex = '0 0 72px';
   closeButton.dataset.e2eId = 'shell-verb-settings-close';
   closeButton.textContent = '閉じる';
   const saveButton = document.createElement('button');
   saveButton.type = 'button';
+  saveButton.style.minWidth = '72px';
+  saveButton.style.whiteSpace = 'nowrap';
+  saveButton.style.flex = '0 0 72px';
   saveButton.className = 'primary';
   saveButton.id = 'btn-save-verb-settings';
   saveButton.dataset.e2eId = 'shell-verb-settings-save';
   saveButton.textContent = '保存';
-  footer.append(closeButton, saveButton);
-  modal.append(title, desc, groupTitle, list, footer);
-  o.appendChild(modal);
-  document.body.appendChild(o);
-
-  const close = () => {
-    document.removeEventListener('keydown', keyCloser, true);
-    o.remove();
-  };
-  const keyCloser = (event) => {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    close();
-  };
-  o.addEventListener('pointerdown', (event) => {
-    if (event.target === o) close();
+  const status = document.createElement('div');
+  status.className = 'gb-validation-message';
+  status.dataset.e2eId = 'shell-verb-settings-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.hidden = true;
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  let saving = false;
+  const dialog = window.GBUI.createModal({
+    id: 'shell-verb-settings',
+    title: '右クリックメニューのカスタマイズ',
+    titleId: 'shell-verb-settings-title',
+    body: [desc, groupTitle, list, status],
+    footer: [closeButton, saveButton],
+    variant: 'standard',
+    extraClass: 'shell-verb-settings-modal',
+    geometryKey: 'shell-verb-settings',
+    minWidth: '0',
+    initialFocus: list.querySelector('input:not([disabled])') || closeButton,
+    returnFocus: opener,
+    onBeforeClose: () => !saving,
   });
-  closeButton.addEventListener('click', close);
-  document.addEventListener('keydown', keyCloser, true);
+  const o = dialog.overlay;
+  const modal = dialog.modal;
+  o.classList.add('modal-overlay', 'shell-verb-settings-overlay');
+  o.dataset.shellVerbSettings = '1';
+  o.dataset.e2eId = 'shell-verb-settings-overlay';
+  modal.classList.add('modal');
+  modal.dataset.e2eId = 'shell-verb-settings-dialog';
+  modal.style.width = 'min(520px, calc(100vw - 32px))';
+  modal.style.maxHeight = 'min(70vh, calc(100dvh - 24px))';
+  modal.style.boxSizing = 'border-box';
+  dialog.body.style.minWidth = '0';
+  dialog.body.style.maxWidth = '100%';
+  dialog.body.style.boxSizing = 'border-box';
+  dialog.body.style.overflowX = 'hidden';
+  dialog.footer.classList.add('btn-row', 'shell-verb-settings-actions');
+  dialog.footer.style.minWidth = '0';
+  dialog.footer.style.boxSizing = 'border-box';
+  dialog.footer.style.flexWrap = 'nowrap';
+  list.style.width = '100%';
+  list.style.minWidth = '0';
+  list.style.boxSizing = 'border-box';
+  if (compactDialog) {
+    closeButton.style.minHeight = '44px';
+    saveButton.style.minHeight = '44px';
+  }
+  const commonClose = dialog.header.querySelector('.gb-modal-close');
+  if (commonClose) commonClose.dataset.e2eId = 'shell-verb-settings-close-icon';
+  closeButton.addEventListener('click', () => dialog.close('cancel'));
+  // 既存のタッチE2Eと実機のpointerdown外側タップを、共通controllerへ集約する。
+  o.addEventListener('pointerdown', event => {
+    if (event.target === o) dialog.close('overlay');
+  });
 
   saveButton.addEventListener('click', () => {
+    if (saving) return;
+    saving = true;
+    status.hidden = true;
+    status.textContent = '';
+    o.setAttribute('aria-busy', 'true');
+    saveButton.disabled = true;
+    closeButton.disabled = true;
+    if (commonClose) commonClose.disabled = true;
     const displayedNames = new Set(allVerbs.keys());
     const newHidden = hidden.filter(name => !displayedNames.has(name));
     o.querySelectorAll('input[data-verb-name]').forEach(cb => {
       if (!cb.checked) newHidden.push(cb.dataset.verbName);
     });
-    setHiddenShellVerbs([...new Set(newHidden)]);
     const pinned = [...o.querySelectorAll('input[data-pinned-verb-name]:checked:not(:disabled)')]
       .map(cb => cb.dataset.pinnedVerbName);
-    setPinnedShellVerbs([...new Set(pinned)]);
-    close();
-    showStatus('メニュー設定を保存しました');
+    let saved = false;
+    try {
+      saveShellVerbPreferences([...new Set(newHidden)], [...new Set(pinned)]);
+      saved = true;
+    } catch (error) {
+      status.textContent = '設定を保存できませんでした。もう一度お試しください。';
+      status.hidden = false;
+      console.warn('シェルメニュー設定を保存できませんでした:', error);
+    } finally {
+      saving = false;
+      o.setAttribute('aria-busy', 'false');
+      saveButton.disabled = false;
+      closeButton.disabled = false;
+      if (commonClose) commonClose.disabled = false;
+    }
+    if (saved) {
+      dialog.close('complete');
+      showStatus('メニュー設定を保存しました');
+    } else {
+      saveButton.focus({ preventScroll: true });
+    }
   });
-  if (typeof window !== 'undefined' && window.GBModalShell?.enhanceOverlay) {
-    window.GBModalShell.enhanceOverlay(o);
-  }
+  dialog.open();
 }
 
 if (typeof window !== 'undefined') {
@@ -466,6 +566,7 @@ if (typeof window !== 'undefined') {
     setHiddenShellVerbs,
     getPinnedShellVerbs,
     setPinnedShellVerbs,
+    saveShellVerbPreferences,
     isPinnedShellVerb,
   };
 }

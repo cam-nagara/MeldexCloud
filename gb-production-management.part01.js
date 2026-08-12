@@ -103,15 +103,6 @@
     return typeof ensureWritable !== 'function' || ensureWritable(options);
   }
 
-  function _pmIcon(name, size = 14) {
-    return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  function _pmRestoreFocus(target) {
-    if (!target?.isConnected || typeof target.focus !== 'function') return;
-    try { target.focus({ preventScroll: true }); } catch { try { target.focus(); } catch {} }
-  }
-
   function _pmRecoveryText(base, result) {
     return result?.recovered_count ? `${base}（不足していた制作管理ファイルを自動復旧しました）` : base;
   }
@@ -132,11 +123,12 @@
     throw new Error('制作管理APIを呼び出せません');
   }
 
-  function _pmButton(label, primary) {
+  function _pmButton(label, primary, e2eId = '') {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = primary ? 'gb-btn gb-btn-sm gb-btn-primary' : 'gb-btn gb-btn-sm';
     button.textContent = label;
+    if (e2eId) button.dataset.e2eId = e2eId;
     return button;
   }
 
@@ -174,77 +166,84 @@
 
   function _pmModal(title, options = {}) {
     const focusSource = options.trigger || (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay gb-production-modal-overlay';
+    const dialogE2eId = options.dialogE2eId || 'production-dialog';
+    let busy = false;
+    const dialogApi = window.GBUI.createModal({
+      id: `${dialogE2eId}-common`,
+      titleId: `${dialogE2eId}-title`,
+      title,
+      variant: 'standard',
+      extraClass: 'gb-production-modal',
+      geometryKey: dialogE2eId,
+      minWidth: '0',
+      initialFocus: modal => modal.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])'),
+      returnFocus: focusSource,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onBeforeClose: reason => !busy || reason === 'complete',
+    });
+    const { overlay, modal, header, body, footer } = dialogApi;
+    overlay.classList.add('modal-overlay', 'gb-production-modal-overlay');
     overlay.dataset.e2eId = options.e2eId || 'production-dialog-overlay';
-    const modal = document.createElement('div');
-    modal.className = 'modal gb-production-modal';
+    modal.classList.add('modal');
     modal.style.setProperty('--gb-production-modal-width', options.width || '720px');
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
-    modal.tabIndex = -1;
-    modal.dataset.e2eId = options.dialogE2eId || 'production-dialog';
-    const titleId = `${modal.dataset.e2eId}-title`;
-    modal.setAttribute('aria-labelledby', titleId);
-    const header = document.createElement('div');
-    header.className = 'gb-modal-header gb-production-modal-header';
-    const heading = document.createElement('h3');
-    heading.id = titleId;
-    heading.className = 'gb-production-title';
-    heading.textContent = title;
-    const closeButton = document.createElement('button');
-    closeButton.type = 'button';
-    closeButton.className = 'gb-modal-close gb-production-modal-close';
-    closeButton.setAttribute('aria-label', `${title}を閉じる`);
-    closeButton.dataset.e2eId = `${modal.dataset.e2eId}-close`;
-    closeButton.innerHTML = _pmIcon('x', 14) || '×';
-    header.append(heading, closeButton);
-    const body = document.createElement('div');
-    body.className = 'gb-modal-body gb-production-modal-body';
-    modal.append(header, body);
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    const close = () => {
-      document.removeEventListener('keydown', onKeyDown, true);
-      overlay.remove();
-      _pmRestoreFocus(focusSource);
-      window.requestAnimationFrame?.(() => _pmRestoreFocus(focusSource));
+    modal.dataset.e2eId = dialogE2eId;
+    header.classList.add('gb-production-modal-header');
+    const heading = header.querySelector('.gb-modal-title');
+    heading?.classList.add('gb-production-title');
+    const closeButton = header.querySelector('.gb-modal-close');
+    closeButton?.classList.add('gb-production-modal-close');
+    closeButton.setAttribute('aria-label', `${title}を閉じる`); closeButton.dataset.e2eId = `${dialogE2eId}-close`;
+    body.classList.add('gb-production-modal-body');
+    footer.classList.add('gb-production-modal-footer'); footer.dataset.modalFooter = '1';
+    const status = document.createElement('div');
+    Object.assign(status, { className: 'gb-production-dialog-status', hidden: true });
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    const close = (reason = 'programmatic') => dialogApi.close(reason);
+    Object.assign(close, { footer, body, status });
+    close.showStatus = (message, error = false) => {
+      status.textContent = String(message || '');
+      status.hidden = !status.textContent;
+      status.dataset.statusKind = error ? 'error' : 'info';
     };
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
+    close.setBusy = (next) => {
+      busy = !!next;
+      overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+      closeButton.disabled = busy;
     };
-    overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) close();
-    });
-    closeButton.addEventListener('click', close);
-    document.addEventListener('keydown', onKeyDown, true);
-    window.GBModalShell?.enhanceOverlay?.(overlay);
-    window.requestAnimationFrame(() => {
-      const focusTarget = body.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])') || modal;
-      _pmRestoreFocus(focusTarget);
-    });
+    queueMicrotask(() => dialogApi.open());
     return { overlay, modal, body, close };
   }
 
   function _pmFooter(closeModal, okLabel, onOk, options = {}) {
-    const footer = document.createElement('div');
-    footer.className = 'gb-modal-footer gb-production-modal-footer';
+    const footer = closeModal.footer || document.createElement('div');
+    footer.classList.add('gb-modal-footer', 'gb-production-modal-footer');
     footer.dataset.modalFooter = '1';
-    const cancel = _pmButton('キャンセル');
-    const ok = _pmButton(okLabel, true);
+    footer.replaceChildren();
+    const status = closeModal.status;
+    if (status && closeModal.body && !status.isConnected) closeModal.body.appendChild(status);
+    const e2ePrefix = String(options.e2eIdPrefix || '').trim();
+    const cancel = _pmButton('キャンセル', false, e2ePrefix && `${e2ePrefix}-cancel`);
+    const ok = _pmButton(okLabel, true, e2ePrefix && `${e2ePrefix}-primary`);
     if (options.write) window.MeldexProductionUiAvailability?.markWriteControl?.(ok);
-    cancel.addEventListener('click', closeModal);
+    cancel.addEventListener('click', () => closeModal('cancel'));
     ok.addEventListener('click', async () => {
-      ok.disabled = true;
+      const modal = footer.closest('.gb-production-modal');
+      const controls = Array.from(modal?.querySelectorAll('input, textarea, select, button') || []);
+      const priorDisabled = controls.map(control => control.disabled);
+      controls.forEach(control => { control.disabled = true; });
+      closeModal.setBusy?.(true);
+      closeModal.showStatus?.('処理中です。画面を閉じずにお待ちください…');
       try {
         await onOk();
-        closeModal();
+        closeModal('complete');
       } catch (err) {
+        closeModal.showStatus?.(err?.message || String(err), true);
         _pmShowStatus(err?.message || String(err), true);
       } finally {
-        ok.disabled = false;
+        closeModal.setBusy?.(false);
+        controls.forEach((control, index) => { control.disabled = priorDisabled[index]; });
       }
     });
     footer.append(cancel, ok);
@@ -290,7 +289,8 @@
         _pmShowStatus(preview.textContent, true);
       }
     });
-    body.append(_pmField('Excel / CSV', fileInput), preview, _pmFooter(close, '取り込む', async () => {
+    body.append(_pmField('Excel / CSV', fileInput), preview);
+    body.parentElement.append(_pmFooter(close, '取り込む', async () => {
       if (!parsedRows.length) throw new Error('取り込む行がありません');
       const result = await _pmRequest('/production-management/shifts/apply', { method: 'POST', body: { rows: parsedRows, source_file: fileInput.files?.[0]?.name || '' } });
       let _shiftMsg = `シフトを取り込みました: ${result.count || 0}件`;
@@ -298,7 +298,7 @@
       const _shiftWarns = Array.isArray(result.registry_name_warnings) ? result.registry_name_warnings : [];
       if (_shiftWarns.length) _shiftMsg += ` ⚠ 表記ゆれの可能性: ${_shiftWarns.map(w => `「${w.name}」≈「${w.similar_to}」`).join('、')}`;
       _pmShowStatus(_pmRecoveryText(_shiftMsg, result), _shiftWarns.length > 0);
-    }, { write: true }));
+    }, { write: true, e2eIdPrefix: 'production-shift-import' }));
   }
 
   function _pmRenderPreview(container, rows) {
@@ -406,11 +406,11 @@
       _pmField('対象', kind),
       _pmField('形式', format),
       _pmField('開始日', from),
-      _pmField('終了日', to),
-      _pmFooter(close, '保存', async () => {
-        await _pmSaveExport(kind.value, format.value, from.value, to.value);
-      })
+      _pmField('終了日', to)
     );
+    body.parentElement.append(_pmFooter(close, '保存', async () => {
+      await _pmSaveExport(kind.value, format.value, from.value, to.value);
+    }, { e2eIdPrefix: 'production-export' }));
   }
 
   async function _pmSaveExport(kind, format, from, to) {
@@ -738,7 +738,7 @@
         count,
       };
     });
-    return { ok: true, root: PM_ROOT, sheets: rows.filter(Boolean), cloud: true };
+    const resolved = rows.filter(Boolean), registered = new Set(resolved.map(row => String(row.sheet_name).toLocaleLowerCase('ja'))); await Promise.all((await _pmCloudTaskSheetNames(provider, internals, works)).filter(name => !registered.has(String(name).toLocaleLowerCase('ja'))).map(async sheetName => { const dir = internals._joinPath(_pmCloudRoot(internals), sheetName), entries = await _pmCloudDirectoryEntries(provider, internals, dir); resolved.push({ sheet_name: sheetName, work_title: sheetName === 'タスクリスト_未分類' ? '' : String(sheetName).replace(/^タスクリスト_/, ''), dir, count: entries.filter(entry => entry?.handle?.kind === 'file' && String(entry.name || '').endsWith('.md') && entry.name !== sheetName + '.md').length }); })); return { ok: true, root: PM_ROOT, sheets: resolved, cloud: true };
   }
 
   function _pmCloudLegacyTaskWorkTitle(entry) {

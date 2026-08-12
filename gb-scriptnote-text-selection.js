@@ -84,6 +84,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       ? [...firstRow.children].map(cell => cell.dataset?.colId || '').filter(colId => colId && colId !== '_handle')
       : [];
     if (domIds.length) return domIds;
+    if (typeof this._getVisibleColumnIds === 'function') return this._getVisibleColumnIds({ includeHandle: false });
     const statusEnabled = !!this.doc?.editor?.statusEnabled;
     const visible = {
       _gutter: true,

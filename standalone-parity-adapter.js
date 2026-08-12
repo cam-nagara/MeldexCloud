@@ -234,54 +234,51 @@
   function closeOverlay(kind, restoreFocus) {
     const record = kind === 'link' ? linkDialog : openDialog;
     if (!record) return;
-    record.overlay.remove();
-    if (kind === 'link') linkDialog = null;
-    else openDialog = null;
-    if (restoreFocus?.isConnected) {
-      try { restoreFocus.focus({ preventScroll: true }); } catch (error) { restoreFocus.focus?.(); }
-    }
+    record.api.close('programmatic');
   }
 
   function createOverlay(kind, title, description) {
     closeOverlay(kind);
+    if (typeof global.GBUI?.createModal !== 'function') {
+      throw new Error('表示先ダイアログを初期化できませんでした。');
+    }
     const focusReturn = document.activeElement;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay standalone-parity-overlay';
-    overlay.dataset.e2eId = `standalone-parity-${kind}-overlay`;
-    const dialog = document.createElement('div');
-    dialog.className = 'modal standalone-parity-dialog';
-    dialog.dataset.e2eId = `standalone-parity-${kind}-dialog`;
-    dialog.setAttribute('role', 'dialog');
-    dialog.setAttribute('aria-modal', 'true');
-    dialog.setAttribute('aria-label', title);
-    dialog.tabIndex = -1;
-    dialog.style.maxWidth = 'min(520px, calc(100vw - 24px))';
-    dialog.style.maxHeight = 'min(720px, calc(100vh - 24px))';
-    dialog.style.overflow = 'auto';
-    const heading = document.createElement('h2');
-    heading.textContent = title;
-    heading.style.margin = '0 0 8px';
-    heading.style.fontSize = '18px';
     const message = document.createElement('p');
     message.textContent = description || '';
     message.dataset.e2eId = `standalone-parity-${kind}-message`;
     message.style.margin = '0 0 16px';
-    dialog.append(heading, message);
-    overlay.appendChild(dialog);
-    overlay.addEventListener('pointerdown', event => {
-      if (event.target === overlay) closeOverlay(kind, focusReturn);
+    const content = document.createElement('div');
+    content.className = 'standalone-parity-dialog-content';
+    content.appendChild(message);
+    let api = null;
+    api = global.GBUI.createModal({
+      id: `standalone-parity-${kind}`,
+      title,
+      body: content,
+      variant: 'standard',
+      extraClass: 'standalone-parity-dialog',
+      geometryKey: `standalone-parity-${kind}`,
+      minWidth: '0',
+      initialFocus: () => content.querySelector('button, input, [tabindex]') || api?.modal,
+      returnFocus: () => focusReturn,
+      closeLabel: `${title}を閉じる`,
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (kind === 'link') linkDialog = null;
+        else openDialog = null;
+      },
     });
-    overlay.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeOverlay(kind, focusReturn);
-    });
-    document.body.appendChild(overlay);
-    const record = { overlay, dialog, message, focusReturn };
+    const overlay = api.overlay;
+    overlay.classList.add('modal-overlay', 'standalone-parity-overlay');
+    overlay.dataset.e2eId = `standalone-parity-${kind}-overlay`;
+    overlay._standaloneParityModalApi = api;
+    api.modal.dataset.e2eId = `standalone-parity-${kind}-dialog`;
+    api.modal.style.maxWidth = 'min(520px, calc(100vw - 24px))';
+    const record = { api, overlay, modal: api.modal, dialog: content, message, focusReturn };
     if (kind === 'link') linkDialog = record;
     else openDialog = record;
-    global.GBModalShell?.enhanceOverlay?.(overlay);
-    queueMicrotask(() => dialog.focus());
+    api.open();
     return record;
   }
 

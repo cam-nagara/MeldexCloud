@@ -102,10 +102,9 @@
     const googleTasks = syncStatus.googleTasks || {};
     const microsoft = syncStatus.microsoft || {};
     const icsEnabled = cloud && !!window.MeldexCalIcsSubscribe?.isAutoRefreshEnabled?.();
-    const o = document.createElement('div');
-    o.className = 'gb-cal-modal-overlay';
-    o.innerHTML = `<div class="gb-cal-modal gb-cal-sync-modal">
-      <h3>カレンダー同期</h3>
+    const content = document.createElement('div');
+    content.className = 'gb-cal-sync-content';
+    content.innerHTML = `
       ${_syncCard('Google Calendar', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!google.connected, !!google.available)}</div>
         ${!google.connected && google.available ? `
@@ -161,27 +160,45 @@
         <div class="sync-ics-result gb-cal-sync-status gb-cal-sync-auth-status">${icsEnabled ? '購読用ファイルの自動更新: Meldexでカレンダーを開いている間' : ''}</div>
         <div class="gb-cal-sync-actions"><button class="sync-ics-create gb-cal-sync-action primary" type="button">購読用URLを作成</button></div>
       `) : ''}
-      <div class="btn-row"><button class="sync-close gb-cal-sync-action" type="button">閉じる</button></div>
-    </div>`;
-    document.body.appendChild(o);
-    const close = () => {
+    `;
+    const closeButton = document.createElement('button');
+    closeButton.className = 'sync-close gb-btn gb-btn-quiet gb-cal-sync-action';
+    closeButton.type = 'button';
+    closeButton.textContent = '閉じる';
+    closeButton.setAttribute('aria-label', 'カレンダー同期を閉じる');
+    closeButton.dataset.e2eId = 'calendar-sync-close';
+    const modalApi = window.GBUI.createModal({
+      id: 'calendar-tool-sync',
+      title: 'カレンダー同期',
+      body: content,
+      footer: closeButton,
+      variant: 'mobile-sheet',
+      extraClass: 'gb-cal-sync-modal',
+      initialFocus: '.sync-gcal-id, .sync-gcal-pull, .sync-gtask-id, .sync-gtask-sync, .sync-close',
+      closeLabel: 'カレンダー同期を閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: () => {
+        if (o._msPollTimer) clearTimeout(o._msPollTimer);
+        if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
+      },
+    });
+    const o = modalApi.overlay;
+    o.classList.add('gb-cal-modal-overlay');
+    o.dataset.e2eId = 'calendar-sync-overlay';
+    modalApi.modal.classList.add('gb-cal-modal');
+    modalApi.modal.dataset.e2eId = 'calendar-sync-dialog';
+    modalApi.body.classList.add('gb-cal-sync-body');
+    modalApi.body.dataset.e2eId = 'calendar-sync-body';
+    modalApi.footer.classList.add('gb-cal-sync-footer');
+    const close = (reason = 'programmatic') => {
       if (o._msPollTimer) clearTimeout(o._msPollTimer);
       if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
-      document.removeEventListener('keydown', onKeyDown, true);
-      o.remove();
-    };
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape' || !document.body.contains(o)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
+      modalApi.close(reason);
     };
     o._gbCloseSyncModal = close;
-    o.querySelector('.sync-close').addEventListener('click', close);
-    o.addEventListener('pointerdown', (event) => {
-      if (event.target === o) close();
-    });
-    document.addEventListener('keydown', onKeyDown, true);
+    closeButton.addEventListener('click', () => close('close-button'));
+    modalApi.open();
     o.querySelector('.sync-gcal-auth')?.addEventListener('click', () => (cloud ? this._googleCalAuthCloud(o) : this._googleCalAuth(o)));
     o.querySelector('.sync-gcal-pull')?.addEventListener('click', () => this._googleCalPull(o));
     o.querySelector('.sync-gcal-push')?.addEventListener('click', () => this._googleCalPush());

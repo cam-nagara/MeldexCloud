@@ -180,13 +180,9 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
   const entryName = data.entity || '';
   const properties = data.properties || {};
   const seq = ++_dbActionModalSeq;
-  const titleId = `db-action-modal-title-${seq}`;
   const descId = `db-action-modal-desc-${seq}`;
 
-  let html = '<div class="modal-overlay" data-db-action-modal="1">';
-  html += `<div class="modal db-action-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${descId}" tabindex="-1" style="width:min(500px, calc(100vw - 32px));max-height:min(80vh, calc(100vh - 32px));overflow:auto;">`;
-  html += `<h3 id="${titleId}" class="gb-modal-title" style="margin:0 0 6px;">${esc(action.label || 'アクション実行')}</h3>`;
-  html += `<p id="${descId}" style="margin:0 0 12px;color:var(--fg2);font-size:12px;">必要な項目を入力して実行してください。</p>`;
+  let html = `<p id="${descId}" style="margin:0 0 12px;color:var(--fg2);font-size:12px;">必要な項目を入力して実行してください。</p>`;
 
   // エントリ本文（操作手順等）をプレビュー表示
   if (data.page_content) {
@@ -222,41 +218,45 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
     });
   }
 
-  html += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">';
-  html += '<button type="button" class="gb-btn gb-btn-sm modal-cancel" data-e2e-id="db-action-modal-cancel" style="min-height:44px;">キャンセル</button>';
-  html += '<button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary modal-exec" data-e2e-id="db-action-modal-exec" style="min-height:44px;">実行</button>';
-  html += '</div></div></div>';
-
-  const overlay = document.createElement('div');
-  overlay.innerHTML = html;
-  const el = overlay.firstChild;
-  document.body.appendChild(el);
-  const modal = el.querySelector('.db-action-modal');
-  let closed = false;
-  const closeModal = () => {
-    if (closed) return;
-    closed = true;
-    document.removeEventListener('keydown', onKeydown);
-    el.remove();
-    _dbActionFocusTrigger(triggerEl);
-  };
-  const onKeydown = (ev) => {
-    if (ev.key === 'Escape') {
-      ev.preventDefault();
-      closeModal();
-    }
-  };
-  document.addEventListener('keydown', onKeydown);
-  el.addEventListener('pointerdown', (ev) => {
-    if (ev.target === el) closeModal();
+  const body = document.createElement('div');
+  body.innerHTML = html;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm modal-cancel';
+  cancelBtn.dataset.e2eId = 'db-action-modal-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const execBtn = document.createElement('button');
+  execBtn.type = 'button';
+  execBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary modal-exec';
+  execBtn.dataset.e2eId = 'db-action-modal-exec';
+  execBtn.textContent = '実行';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: `db-action-dialog-${seq}`,
+    title: action.label || 'アクション実行',
+    body,
+    footer: [cancelBtn, execBtn],
+    variant: 'standard',
+    extraClass: 'db-action-modal',
+    geometryKey: 'db-action',
+    initialFocus: '[data-field-index="0"], [data-e2e-id="db-action-modal-exec"]',
+    returnFocus: triggerEl || undefined,
+    onBeforeClose: reason => !busy || reason === 'complete' || reason === 'superseded',
+    onClose: () => _dbActionFocusTrigger(triggerEl),
   });
-  window.GBModalShell?.enhanceAll?.();
-  requestAnimationFrame(() => {
-    try { modal?.focus?.({ preventScroll: true }); } catch { modal?.focus?.(); }
-  });
+  const el = modalApi.overlay;
+  el.classList.add('modal-overlay');
+  el.dataset.dbActionModal = '1';
+  modalApi.modal.style.width = 'min(500px, calc(100vw - 32px))';
+  modalApi.modal.style.maxWidth = 'calc(100vw - 32px)';
+  modalApi.modal.setAttribute('aria-describedby', descId);
+  const closeBtn = modalApi.header.querySelector('.gb-modal-close');
+  if (closeBtn) closeBtn.dataset.e2eId = 'db-action-modal-close-icon';
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  modalApi.open();
 
-  el.querySelector('.modal-cancel').addEventListener('click', closeModal);
-  el.querySelector('.modal-exec').addEventListener('click', async () => {
+  execBtn.addEventListener('click', async () => {
+    if (busy) return;
     // バリデーション
     const inputValues = {};
     if (action.input_fields) {
@@ -272,8 +272,21 @@ function _showDbActionModal(action, data, entityPath, triggerEl = null) {
         inputValues[field.property] = val;
       }
     }
-    await _executeDbAction(action, data, entityPath, inputValues);
-    closeModal();
+    busy = true;
+    cancelBtn.disabled = true;
+    execBtn.disabled = true;
+    if (closeBtn) closeBtn.disabled = true;
+    try {
+      await _executeDbAction(action, data, entityPath, inputValues);
+      modalApi.close('complete');
+    } finally {
+      busy = false;
+      if (modalApi.isOpen()) {
+        cancelBtn.disabled = false;
+        execBtn.disabled = false;
+        if (closeBtn) closeBtn.disabled = false;
+      }
+    }
   });
 }
 

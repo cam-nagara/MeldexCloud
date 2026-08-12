@@ -25,7 +25,7 @@
   padding: var(--ui-space-2) var(--ui-space-5); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
   background: var(--ui-bg-control); color: var(--ui-fg-default); cursor: pointer; font-size: var(--ui-font-13);
 }
-.modal button.primary { background: var(--ui-accent); color: var(--ui-fg-strong); border-color: var(--ui-accent); }
+.modal button.primary { background: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--ui-accent); }
 .modal button:hover { opacity: 0.9; }
 .modal input, .modal textarea, .modal select {
   background: var(--ui-bg-app); color: var(--ui-fg-default); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-xs);
@@ -153,6 +153,12 @@
 .gb-modal-shell > .gb-validation-footer {
   justify-content: space-between;
 }
+.gb-validation-editor-footer.gb-modal-shell-footer {
+  justify-content: flex-end;
+}
+.gb-validation-footer.gb-modal-shell-footer > .gb-btn {
+  min-width: 72px;
+}
 @media (pointer: coarse), (max-width: 640px) {
   .gb-validation-result-item,
   .gb-validation-rule-row {
@@ -236,7 +242,21 @@
 .gb-modal-shell-body {
   flex: 1 1 auto;
   min-height: 0;
+  padding: var(--ui-space-6);
   overflow: auto;
+}
+.gb-validation-results-modal,
+.gb-validation-rules-modal {
+  width: min(600px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+}
+.gb-validation-rule-editor {
+  width: min(500px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+}
+.gb-validation-results-content,
+.gb-validation-editor-content {
+  min-height: 0;
 }
 .gb-modal-shell-body-generated {
   padding: var(--ui-space-6);
@@ -492,14 +512,15 @@
   flex: 0 0 auto;
 }
 .col-vis-action-btn {
-  min-width: 58px;
+  min-width: 72px;
   height: 28px;
   padding: 0 var(--ui-space-2);
   flex: 0 0 auto;
   font-size: var(--ui-font-12);
 }
-.col-vis-action-label { line-height: 1; }
+.col-vis-action-label { line-height: 1; white-space: nowrap; }
 .col-vis-action-btn.danger { color: var(--ui-danger, #d85b5b); }
+.col-vis-modal > .gb-modal-footer > button { min-width: 72px; white-space: nowrap; }
 
 /* Phase 3e-b: プロパティ型設定モーダル (showPropertyTypeModal) */
 .pt-modal {
@@ -1156,17 +1177,14 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   text-decoration: line-through;
 }
 
-/* フロートパネル・右サイドバーのビューワー・スマホのドロワーに出す本文。
+/* 右サイドバーのビューワー・スマホのドロワーに出す本文。
    全体リセット（gb-theme.css の `* { padding: 0 }`）で ul/ol の左余白が 0 になっており、
    箇条書きの記号は本文の外側に描かれるため、そのままだとパネルの枠に接触する。
    上のメインパネル側と同じ余白を与えて、記号が本文の内側に収まるようにする。 */
-.gb-float-panel-entity-note ul, .gb-float-panel-entity-note ol,
 .gb-preview-entity-note ul, .gb-preview-entity-note ol,
 .cloud-mobile-side-drawer-editable ul, .cloud-mobile-side-drawer-editable ol { padding-inline-start: 24px; margin-block: 4px; }
-.gb-float-panel-entity-note li,
 .gb-preview-entity-note li,
 .cloud-mobile-side-drawer-editable li { line-height: 1.4; margin-block: 0.4em; }
-.gb-float-panel-entity-note hr,
 .gb-preview-entity-note hr,
 .cloud-mobile-side-drawer-editable hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
 
@@ -1575,7 +1593,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 }
 .dbcfg-inline-field select {
   width: auto;
-  /* 最長の選択肢（「フロートパネル」）と右端の▼が切れずに収まる幅 */
+  /* 最長の選択肢と右端の▼が切れずに収まる幅 */
   min-width: 116px;
   flex-shrink: 0;
 }

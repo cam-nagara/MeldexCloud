@@ -11,7 +11,7 @@
    外枠(見出し・戻る/進む・「メインパネルで開く」・本文)は `createRootElement()`
    が生成する持続DOM（#gb-subpanel-root）で、gb-pane-bridge.part01.part01.js の
    `_createLegacyStorage()` から他の固定右レール項目(preview/detail等)と
-   同じ仕組みで初回生成・退避・移動される。内容の表示は GBFloatPanel と同じ
+   同じ仕組みで初回生成・退避・移動される。内容は右サイドバーの共通表示面へ
    「共通副画面ホスト」契約（`GBPaneBridge.mountVirtualPane(pane, contentEl,
    { surface: 'subpanel' })`）を使う仮想ペインマウントで行う。
    ============================== */
@@ -164,7 +164,7 @@ const GBSubPanel = (() => {
     return { ok: true };
   }
 
-  // ---- 既存内容の破棄（GBFloatPanel の _retractCurrentContent 相当） ----
+  // ---- 既存内容の破棄 ----
   function _retractCurrentContent(options) {
     const opts = options || {};
     if (!_contentEl) return Promise.resolve();
@@ -657,7 +657,7 @@ const GBSubPanel = (() => {
       if (typeof showStatus === 'function') showStatus('メインパネルを取得できませんでした', true);
       return false;
     }
-    // 昇格直前にライブ状態を取得してからマージする（GBFloatPanel._openInMainPane と
+    // 昇格直前にライブ状態を取得してからマージする（メインパネルへの昇格経路と
     // 同じ流儀）。_current.state はエントリ解決時点のスナップショットのため、そのまま
     // 渡すと昇格直前までのコンポーネント内部状態（スクロール位置・選択範囲など）が
     // 失われる。getState が無い/例外の場合は従来どおり _current.state のみを使う。

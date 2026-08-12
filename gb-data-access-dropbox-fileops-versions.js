@@ -154,7 +154,14 @@ async function _saveFileVersion(provider, path, options) {
   const versionName = _fileVersionName(normalized, options || {});
   const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
   const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
+  const expectedRevision = String(options?.expectedRevision || '');
+  const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
+  const before = expectedRevision ? await provider.getMetadata(normalized) : null;
   const content = await provider.readText(normalized);
+  const after = expectedRevision ? await provider.getMetadata(normalized) : null;
+  if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
+    throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
+  }
   await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
     object_type: 'text-file',
     original_relative_path: normalized,
@@ -320,3 +327,8 @@ async function _undeleteFileVersion(provider, path, token) {
   );
   return { ok: true, version: record.payload.version_name };
 }
+
+window.MeldexFileVersionProviderOps = Object.freeze({
+  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
+  read: (provider, path, version) => _readFileVersion(provider, path, version),
+});

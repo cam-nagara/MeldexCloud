@@ -60,7 +60,7 @@
   box-sizing: border-box !important;
   margin: auto !important;
   padding: 0;
-  overflow: auto;
+  overflow: hidden;
   transform: none !important;
   align-self: center !important;
   justify-self: center !important;
@@ -77,7 +77,8 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px 18px 0;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .meldex-beta-consent-modal > .btn-row {
@@ -306,6 +307,77 @@
   overflow-wrap: anywhere;
 }
 
+.meldex-cloud-mode-modal.gb-modal {
+  width: min(760px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+}
+
+.meldex-shared-server-modal.gb-modal {
+  width: min(680px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+}
+
+.meldex-dropbox-setup-modal.gb-modal {
+  width: min(780px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+}
+
+.meldex-shared-server-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.meldex-shared-server-modal > .gb-modal-body {
+  overflow-x: hidden;
+}
+
+.meldex-shared-server-modal .gb-modal-shell-body-generated,
+.meldex-shared-server-modal .meldex-cloud-setup-section,
+.meldex-shared-server-modal .gb-input {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.meldex-dropbox-setup-body {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.meldex-dropbox-setup-modal > .gb-modal-body {
+  overflow-x: hidden;
+}
+
+.meldex-dropbox-setup-modal .gb-modal-shell-body-generated,
+.meldex-dropbox-setup-modal .meldex-cloud-setup-section,
+.meldex-dropbox-setup-modal .meldex-cloud-action-row,
+.meldex-dropbox-setup-modal .meldex-cloud-input-row,
+.meldex-dropbox-setup-modal .gb-input {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.meldex-cloud-mode-body,
+.meldex-cloud-mode-description,
+.meldex-cloud-mode-note {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.meldex-cloud-mode-description {
+  line-height: 1.7;
+  margin-bottom: 18px;
+}
+
 .meldex-cloud-mode-modal.gb-modal-shell,
 .meldex-cloud-setup-modal.gb-modal-shell {
   background: var(--ui-bg-surface) !important;
@@ -364,7 +436,7 @@
   width: min(460px, calc(100vw - 28px));
   max-height: min(520px, calc(100vh - 28px));
   padding: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 
 .meldex-cloud-home-first-modal > h3 {
@@ -487,6 +559,37 @@
   padding: 0;
 }
 
+.meldex-install-prompt-modal > .gb-modal-body,
+.meldex-install-help-modal > .gb-modal-body,
+.meldex-cloud-home-first-modal > .gb-modal-body,
+.meldex-beta-consent-modal > .gb-modal-body {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.meldex-install-card,
+.meldex-install-options,
+.meldex-install-option,
+.meldex-cloud-home-install-types,
+.meldex-cloud-home-install-type,
+.meldex-beta-consent-summary,
+.meldex-beta-consent-checks,
+.meldex-beta-consent-check {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 769px) {
+  .meldex-install-card--modal .meldex-install-button {
+    white-space: nowrap;
+  }
+}
+
 .meldex-install-prompt-modal > h3,
 .meldex-install-help-modal > h3 {
   margin: 0;
@@ -589,7 +692,7 @@
     min-width: 0 !important;
     max-height: calc(100vh - 16px) !important;
     border-radius: 16px 16px 0 0 !important;
-    overflow-x: hidden !important;
+    overflow: hidden !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal.meldex-beta-consent-modal {
@@ -597,7 +700,7 @@
     max-width: min(100%, calc(100vw - 16px)) !important;
     max-height: calc(100% - var(--gb-mobile-dialog-top-gap, 10px)) !important;
     border-radius: 16px 16px 0 0 !important;
-    overflow-x: hidden !important;
+    overflow: hidden !important;
   }
 
   .meldex-beta-consent-modal > h3,
@@ -610,6 +713,10 @@
     min-width: 0 !important;
     max-width: 100% !important;
     overflow-x: hidden !important;
+  }
+
+  .meldex-beta-consent-modal .modal-body {
+    overflow-y: auto !important;
   }
 
   .meldex-beta-consent-modal > .btn-row {
@@ -713,7 +820,8 @@
     align-items: flex-end !important;
     justify-content: center !important;
     padding: max(10px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left)) !important;
-    overflow: auto !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
   }
 
   .meldex-install-prompt-modal,
@@ -723,6 +831,13 @@
     max-width: calc(100% - 16px) !important;
     max-height: calc((100dvh - 10px - env(safe-area-inset-top, 0px)) / var(--meldex-ui-zoom, 1)) !important;
     border-radius: 16px 16px 0 0 !important;
+    overflow: hidden !important;
+  }
+
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.meldex-install-prompt-modal > .gb-modal-body,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.meldex-install-help-modal > .gb-modal-body,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.meldex-cloud-home-first-modal > .gb-modal-body,
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet.meldex-beta-consent-modal > .gb-modal-body {
     overflow-x: hidden !important;
     overflow-y: auto !important;
   }
@@ -813,6 +928,23 @@
     display: flex !important;
     align-items: center !important;
     min-height: 44px !important;
+  }
+
+  body[data-cloud-mobile="1"] .meldex-dropbox-setup-modal details label {
+    min-height: 44px !important;
+    align-items: center !important;
+  }
+
+  body[data-cloud-mobile="1"] .meldex-dropbox-setup-modal > .gb-modal-footer .gb-btn-quiet:not(:disabled) {
+    color: var(--fg, #f2f2f2) !important;
+    background: var(--bg3, #24282f) !important;
+    border-color: var(--border, #4a4f58) !important;
+  }
+
+  body[data-cloud-mobile="1"] .meldex-dropbox-setup-modal > .gb-modal-footer .gb-btn-primary:not(:disabled) {
+    color: #fff !important;
+    background: var(--ui-accent, #3478c8) !important;
+    border-color: var(--ui-accent, #3478c8) !important;
   }
 
   body[data-cloud-mobile="1"] .meldex-cloud-step-grid,

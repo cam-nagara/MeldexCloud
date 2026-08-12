@@ -30,11 +30,32 @@ function openMeldexSampleDownload() {
   window.open(url, '_blank', 'noopener');
 }
 
+let _settingsModalController = null;
+
+function closeSettingsModalWithReason(reason = 'settings-transition', targetOverlay) {
+  const overlay = targetOverlay?.matches?.('[data-settings-modal="1"]')
+    ? targetOverlay
+    : document.querySelector('.modal-overlay[data-settings-modal="1"]');
+  if (!overlay) return false;
+  const bridge = overlay.__meldexRequestSettingsClose;
+  if (typeof bridge === 'function') return bridge(reason);
+  const controller = overlay.__meldexSettingsModalController || _settingsModalController;
+  if (controller?.isOpen?.()) return controller.close(reason);
+  const rawRemove = overlay.__meldexSettingsRawRemove;
+  if (typeof rawRemove === 'function' && overlay.isConnected) {
+    rawRemove();
+    return true;
+  }
+  return false;
+}
+
+if (typeof window !== 'undefined') window.closeSettingsModalWithReason = closeSettingsModalWithReason;
+
 function closeSettingsModalRestoringTheme() {
   const overlay = document.querySelector('.modal-overlay[data-settings-modal="1"]');
   if (!overlay) return;
   if (typeof restoreThemeSnapshot === 'function') restoreThemeSnapshot(window._settingsThemeSnapshot);
-  overlay.remove();
+  closeSettingsModalWithReason('cancel', overlay);
 }
 
 function _setSettingsAvatarPreview(el, avatar) {
@@ -199,12 +220,11 @@ async function showSettingsModal(opts) {
   const _treeOpenClickMode = localStorage.getItem('gb:tree-open-click-mode') === 'double' ? 'double' : 'single';
   const _viewerWheelMode = localStorage.getItem('gb:viewer-wheel-mode') === 'nav' ? 'nav' : 'zoom';
 
-  const o = document.createElement('div');
-  o.className = 'modal-overlay';
-  o.dataset.settingsModal = '1';
+  let o = document.createElement('div');
+  o.className = 'settings-build-root';
   const _isMobile = _shouldUseSettingsMobileLayout();
   const _settingsModalStyle = _settingsModalViewportStyle(_isMobile);
-  o.innerHTML = `<div class="modal settings-modal" data-dialog-geometry-key="settings" style="${_settingsModalStyle}">
+  o.innerHTML = `<div class="settings-content-host" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
       ${_isMobile ? '<button id="settings-back-btn" class="settings-back-btn" type="button" hidden title="設定一覧へ戻る" aria-label="設定一覧へ戻る" style="cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);">←</button>' : ''}
       <span id="settings-header-text" style="display:inline-flex;align-items:center;gap:8px;min-width:0;"><span class="ico ico-settings"></span><span>設定</span></span>
@@ -215,7 +235,7 @@ async function showSettingsModal(opts) {
     <style>
       .settings-modal .settings-sidebar-tab{border:1px solid transparent;background:transparent;color:var(--fg2);font-size:13px;}
       .settings-modal .settings-sidebar-tab:hover{background:var(--bg3);color:var(--fg);}
-      .settings-modal .settings-sidebar-tab.active,.settings-modal .settings-sidebar-tab.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-fg-strong);font-weight:600;}
+      .settings-modal .settings-sidebar-tab.active,.settings-modal .settings-sidebar-tab.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-weight:600;}
       .settings-modal .settings-sidebar-tab svg{flex:0 0 auto;}
       .settings-modal .settings-sidebar-group-label{padding:10px 8px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;}
       .settings-modal .settings-sidebar-group:first-child .settings-sidebar-group-label{padding-top:0;}
@@ -264,29 +284,29 @@ async function showSettingsModal(opts) {
     <div id="settings-subtab-header" class="settings-subtab-header" hidden></div>
     <!-- 全般 -->
     <div class="settings-panel settings-panel-grid settings-panel-grid--general" data-panel="全般">
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
         <div class="gb-section-title">${lucide('folder',14)} ソースフォルダ ${fieldHelp('フォルダツリーに表示するフォルダを管理します')}</div>
         <div id="modal-outliner-roots"><div class="gb-section-desc">読み込み中...</div></div>
         <div>
           <button class="gb-btn gb-btn-sm" data-action="addOutlinerRootFromSettings()">+ フォルダを追加</button>
         </div>
       </section>
-      <div id="settings-cloud-link-card" class="settings-section-wide"></div>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <div id="settings-cloud-link-card" class="settings-section-wide" data-settings-view="storage"></div>
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
         <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
         <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-screenshot-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(localStorage.getItem('meldex-screenshot-folder') || ((_homeFolderPath || '').replace(/[\\/]$/, '') + '/スクリーンショット'))}" readonly>
           <button type="button" class="gb-btn gb-btn-sm" data-action="changeScreenshotFolder()">変更</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="connect">
         <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続 ${fieldHelp('このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください')}</div>
         <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
           <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
@@ -295,7 +315,7 @@ async function showSettingsModal(opts) {
         </div>
         <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="connect">
         <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます', { e2eId: 'settings-storage-mode-help' })}</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
@@ -303,7 +323,7 @@ async function showSettingsModal(opts) {
           <button class="gb-btn gb-btn-sm" data-action="closeSettingsModalRestoringTheme(); window.MeldexCloudBootstrap?.openSettingsFlow?.()">保存先を設定...</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section">
+      <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="setup">
         <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
@@ -315,20 +335,20 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="setup">
         <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません', { e2eId: 'settings-sample-data-help' })}</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
           <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
           <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>
       </section>
-      <div id="settings-install-container">
+      <div id="settings-install-container" data-settings-view="setup">
         <section class="gb-section gb-section--boxed">
           <div class="gb-section-title">${lucide('download',14)} ホーム画面に追加</div>
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </section>
       </div>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">${lucide('archive',14)} 設定の引き継ぎ ${fieldHelp('このPCのMeldex設定保存先を確認し、別PCへ移す設定ZIPを作成・取り込みできます。LLM APIキーは含まれません')}</div>
         <div id="settings-transfer-location" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
@@ -339,7 +359,7 @@ async function showSettingsModal(opts) {
         </div>
         <div id="settings-transfer-status" class="gb-section-desc"></div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="display">
         <div class="gb-section-title">表示オプション</div>
         <div class="gb-check-row" style="flex-direction:column;align-items:flex-start;">
           <label class="gb-check">
@@ -400,7 +420,7 @@ async function showSettingsModal(opts) {
           ${fieldHelp('検出済みのOSコマンドから、フォルダツリーとフォルダパネルのメニュー上部に表示する項目を選べます')}
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="display">
         <div class="gb-section-title">表示サイズ</div>
         <label class="gb-field-row">
           <span class="gb-label">表示サイズ:</span>
@@ -409,21 +429,21 @@ async function showSettingsModal(opts) {
           </select>
         </label>
       </section>
-      <section class="gb-section gb-section--boxed" id="settings-autostart-section">
+      <section class="gb-section gb-section--boxed" id="settings-autostart-section" data-settings-view="display">
         <div class="gb-section-title">自動起動</div>
         <label class="gb-check">
           <input type="checkbox" id="modal-autostart">
           <span>OS起動時にMeldexを自動起動する</span>
         </label>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）')}</div>
         <label class="gb-field-row">
           <span class="gb-label">最大アンドゥ回数</span>
           <input id="modal-history-max" type="number" class="gb-input" style="width:80px;" value="${getHistoryMax()}" min="1" max="200">
         </label>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">自動バージョン保存 ${fieldHelp('編集があった場合のみ保存します。古いものから自動削除されます')}</div>
         <label class="gb-field-row">
           <span class="gb-label">間隔</span>
@@ -440,20 +460,20 @@ async function showSettingsModal(opts) {
           <input id="modal-version-max" type="number" class="gb-input" style="width:80px;" value="${getMaxAutoVersions()}" min="1" max="200">
         </label>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">レイアウト ${fieldHelp('現在のパネル配置を単一レイアウトとして保存します。ファイル形式による自動切り替えは行いません')}</div>
         <div class="gb-field-row">
           <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})">レイアウトを初期化</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・注釈・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）')}</div>
         <div class="gb-field-row">
           <button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button>
           <span id="export-to-db-status" class="gb-section-desc"></span>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide">
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="transfer">
         <div class="gb-section-title">全設定リセット ${fieldHelp('レイアウト・テーマ・フィルタ・表示設定など、この端末に保存された全ての設定を初期化します。ログイン情報もリセットされます', { e2eId: 'settings-reset-all-help' })}</div>
         <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('すべての設定を初期化しますか？\\nテーマ・レイアウト・フィルタ等すべてがリセットされます。\\nページをリロードします。').then(ok=>{if(ok)resetAllSettings();})">全設定を初期化</button>
       </section>
@@ -728,68 +748,272 @@ async function showSettingsModal(opts) {
   </div>`;
   // キャンセル用スナップショットをグローバルに保持
   window._settingsThemeSnapshot = _themeSnapshot;
-  document.body.appendChild(o);
+  const legacyModal = o.querySelector('.settings-content-host');
+  const legacyHeader = legacyModal?.querySelector('#settings-header');
+  const legacyActions = legacyModal?.querySelector(':scope > .btn-row:last-child');
+  const bodyContent = document.createDocumentFragment();
+  legacyHeader?.remove();
+  legacyActions?.remove();
+  while (legacyModal?.firstChild) bodyContent.appendChild(legacyModal.firstChild);
+  const actionButtons = legacyActions ? Array.from(legacyActions.children) : [];
+  const cancelSettingsButton = actionButtons[0] || null;
+  const saveSettingsButton = actionButtons[1] || null;
+  cancelSettingsButton?.removeAttribute('data-action');
+  saveSettingsButton?.removeAttribute('data-action');
+  if (cancelSettingsButton) cancelSettingsButton.dataset.e2eId = 'settings-dialog-cancel';
+  if (saveSettingsButton) saveSettingsButton.dataset.e2eId = 'settings-dialog-save';
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  let settingsSaveBusy = false;
+  let suppressSettingsReturnFocus = false;
+  const suppressedReturnFocusTarget = document.createElement('span');
+  const dialog = window.GBUI.createModal({
+    id: 'settings-dialog',
+    title: '設定',
+    titleId: 'settings-header-text',
+    body: bodyContent,
+    footer: actionButtons,
+    variant: 'standard',
+    extraClass: 'settings-modal',
+    geometryKey: 'settings',
+    minWidth: '0',
+    initialFocus: () => _isMobile
+      ? dialog.modal.querySelector('.settings-nav-item:not([disabled])')
+      : dialog.modal.querySelector('.settings-tab.gb-inner-tab-active:not([disabled]), .settings-tab:not([disabled])'),
+    returnFocus: () => suppressSettingsReturnFocus ? suppressedReturnFocusTarget : opener,
+    onBeforeClose: reason => {
+      if (settingsSaveBusy && reason !== 'complete') return false;
+      if (reason !== 'complete' && typeof restoreThemeSnapshot === 'function') {
+        restoreThemeSnapshot(window._settingsThemeSnapshot);
+      }
+      if (reason.startsWith('settings-transition')) suppressSettingsReturnFocus = true;
+      return true;
+    },
+    onClose: () => {
+      if (_settingsModalController === dialog) _settingsModalController = null;
+    },
+  });
+  _settingsModalController = dialog;
+  o = dialog.overlay;
+  o.classList.add('modal-overlay');
+  o.dataset.settingsModal = '1';
+  o.dataset.e2eId = 'settings-dialog-overlay';
+  o.__meldexSettingsModalController = dialog;
+  o.__meldexRequestSettingsClose = reason => {
+    const closeReason = String(reason || 'settings-transition');
+    if (dialog.isOpen()) return dialog.close(closeReason);
+    const rawRemove = o.__meldexSettingsRawRemove;
+    if (typeof rawRemove === 'function' && o.isConnected) {
+      rawRemove();
+      return true;
+    }
+    return false;
+  };
+  dialog.modal.classList.add('modal');
+  dialog.modal.dataset.e2eId = 'settings-dialog';
+  dialog.modal.style.cssText = legacyModal?.style?.cssText || _settingsModalStyle;
+  dialog.header.id = 'settings-header';
+  dialog.header.style.cssText = 'flex-shrink:0;display:flex;align-items:center;gap:8px;';
+  const titleNode = dialog.header.querySelector('.gb-modal-title');
+  if (titleNode) {
+    titleNode.innerHTML = '<span class="ico ico-settings"></span><span>設定</span>';
+    titleNode.style.cssText = 'display:inline-flex;align-items:center;gap:8px;min-width:0;';
+  }
+  const commonClose = dialog.header.querySelector('.gb-modal-close');
+  if (commonClose) {
+    commonClose.id = 'settings-modal-close';
+    commonClose.classList.add('settings-modal-close');
+    commonClose.dataset.e2eId = 'settings-dialog-close';
+    commonClose.title = '設定を閉じる';
+    commonClose.setAttribute('aria-label', '設定を閉じる');
+  }
+  cancelSettingsButton?.addEventListener('click', () => dialog.close('cancel'));
+  saveSettingsButton?.addEventListener('click', async () => {
+    if (settingsSaveBusy || typeof submitSettings !== 'function') return;
+    settingsSaveBusy = true;
+    o.setAttribute('aria-busy', 'true');
+    saveSettingsButton.disabled = true;
+    if (cancelSettingsButton) cancelSettingsButton.disabled = true;
+    if (commonClose) commonClose.disabled = true;
+    const originalShowStatus = window.showStatus;
+    let saved = false;
+    window.showStatus = function captureSettingsSaveResult(message, ...args) {
+      if (String(message || '').includes('設定を保存しました')) saved = true;
+      return typeof originalShowStatus === 'function' ? originalShowStatus.call(this, message, ...args) : undefined;
+    };
+    try {
+      await submitSettings();
+    } finally {
+      window.showStatus = originalShowStatus;
+      settingsSaveBusy = false;
+      o.setAttribute('aria-busy', 'false');
+    }
+    if (saved) {
+      if (dialog.isOpen()) closeSettingsModalWithReason('complete', o);
+      return;
+    }
+    saveSettingsButton.disabled = false;
+    if (cancelSettingsButton) cancelSettingsButton.disabled = false;
+    if (commonClose) commonClose.disabled = false;
+  });
+  if (_isMobile) {
+    const back = document.createElement('button');
+    back.id = 'settings-back-btn';
+    back.className = 'settings-back-btn';
+    back.type = 'button';
+    back.hidden = true;
+    back.title = '設定一覧へ戻る';
+    back.setAttribute('aria-label', '設定一覧へ戻る');
+    back.style.cssText = 'cursor:pointer;font-size:18px;width:44px;height:44px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);color:var(--fg);';
+    back.textContent = '←';
+    dialog.header.insertBefore(back, titleNode);
+  }
+  dialog.footer.classList.add('btn-row');
+  dialog.footer.style.cssText = legacyActions?.style?.cssText || 'margin-top:12px;flex-shrink:0;';
+  dialog.open();
+  o.__meldexSettingsRawRemove = o.remove.bind(o);
   replaceIcons(o);
   if (typeof _tagSettingsNavigationSections === 'function') _tagSettingsNavigationSections(o);
   const settingsCloseBtn = o.querySelector('#settings-modal-close');
-  settingsCloseBtn?.addEventListener('click', () => {
-    closeSettingsModalRestoringTheme();
-  });
   o.querySelector('#settings-back-btn')?.addEventListener('click', () => _backToSettingsList(o));
   o.querySelector('#staff-registry-open-btn')?.addEventListener('click', () => {
     window.MeldexUserRegistry?.openSheet?.();
   });
-  // スタッフ管理シートの保存場所を変更する小型ダイアログ。テキスト入力のみの
-  // cfPrompt を、列タイプ設定ダイアログの「一覧から選択」と同じ
-  // GBFolderPicker.pickFolder を使えるモーダルに置き換える
-  // （GBFolderPicker 未定義の環境では従来どおり cfPrompt にフォールバック）。
-  function _openStaffRegistryRelocateDialog(initialPath) {
-    if (typeof window.GBFolderPicker?.pickFolder !== 'function') {
-      return cfPrompt('スタッフ管理シートの保存場所（フォルダパス）を入力してください:', initialPath || '');
-    }
+  function _openStaffRegistryRelocateDialog(initialPath, onSave) {
     return new Promise((resolve) => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="staff-registry-relocate-title" style="min-width:420px;">
-        <h3 id="staff-registry-relocate-title">スタッフ管理シートの保存場所</h3>
-        <div class="modal-body">
-          <label for="staff-registry-relocate-input" style="display:block;margin-bottom:6px;">フォルダパス</label>
-          <div class="db-picker-input-row">
-            <input type="text" id="staff-registry-relocate-input" data-gb-path-input value="${esc(initialPath || '')}">
-            <button type="button" class="db-picker-btn" id="staff-registry-relocate-pick-btn" title="一覧から選択" aria-label="一覧から選択">${lucide('folderTree', 14)}</button>
-          </div>
-        </div>
-        <div class="btn-row">
-          <button type="button" id="staff-registry-relocate-cancel-btn">キャンセル</button>
-          <button type="button" class="primary" id="staff-registry-relocate-save-btn">保存</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
-      replaceIcons(overlay);
-      const input = overlay.querySelector('#staff-registry-relocate-input');
-      let pickerOpen = false; // pickFolder のポップアップ側 Escape ハンドラ（capture）が
-      // 先に走った直後でも、同じ Escape 押下でこちらまで閉じてしまわないようにするガード。
-      const finish = (val) => {
-        document.removeEventListener('keydown', onKeyDown);
-        overlay.remove();
-        resolve(val);
-      };
-      const onKeyDown = (e) => { if (e.key === 'Escape' && !pickerOpen) { e.preventDefault(); finish(null); } };
-      document.addEventListener('keydown', onKeyDown);
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(null); });
-      overlay.querySelector('#staff-registry-relocate-cancel-btn').addEventListener('click', () => finish(null));
-      overlay.querySelector('#staff-registry-relocate-save-btn').addEventListener('click', () => finish(input.value));
-      overlay.querySelector('#staff-registry-relocate-pick-btn').addEventListener('click', async () => {
-        pickerOpen = true;
-        const selection = await window.GBFolderPicker.pickFolder({
-          title: '保存場所のフォルダを選択',
-          initialPath: input.value,
-        });
-        pickerOpen = false;
-        if (selection && selection.path) input.value = selection.path;
+      const originalPath = String(initialPath || '').trim();
+      const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const description = document.createElement('div');
+      description.className = 'gb-section-desc';
+      description.textContent = 'スタッフ管理シートの正本を置くフォルダを指定します。元の場所のデータは自動では移動・削除しません。';
+      const label = document.createElement('label');
+      label.htmlFor = 'staff-registry-relocate-input';
+      label.textContent = 'フォルダパス';
+      const row = document.createElement('div');
+      row.className = 'db-picker-input-row';
+      const input = document.createElement('input');
+      input.id = 'staff-registry-relocate-input';
+      input.className = 'gb-input';
+      input.dataset.gbPathInput = '';
+      input.dataset.e2eId = 'staff-registry-relocate-input';
+      input.type = 'text';
+      input.value = originalPath;
+      input.style.minHeight = '44px';
+      const pickButton = document.createElement('button');
+      pickButton.id = 'staff-registry-relocate-pick-btn';
+      pickButton.className = 'db-picker-btn';
+      pickButton.dataset.e2eId = 'staff-registry-relocate-pick';
+      pickButton.type = 'button';
+      pickButton.title = '一覧から選択';
+      pickButton.setAttribute('aria-label', '一覧から選択');
+      pickButton.innerHTML = lucide('folderTree', 14);
+      pickButton.hidden = typeof window.GBFolderPicker?.pickFolder !== 'function';
+      row.append(input, pickButton);
+      const status = document.createElement('div');
+      status.className = 'gb-inline-dialog-status';
+      status.dataset.e2eId = 'staff-registry-relocate-status';
+      status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      status.hidden = true;
+      const cancel = document.createElement('button');
+      cancel.id = 'staff-registry-relocate-cancel-btn';
+      cancel.className = 'gb-btn gb-btn-sm';
+      cancel.dataset.e2eId = 'staff-registry-relocate-cancel';
+      cancel.type = 'button';
+      cancel.textContent = 'キャンセル';
+      const save = document.createElement('button');
+      save.id = 'staff-registry-relocate-save-btn';
+      save.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+      save.dataset.e2eId = 'staff-registry-relocate-save';
+      save.type = 'button';
+      save.textContent = '保存場所を変更';
+      let busy = false;
+      let saved = false;
+      const dialog = window.GBUI.createModal({
+        id: 'staff-registry-relocate-dialog',
+        titleId: 'staff-registry-relocate-title',
+        title: 'スタッフ管理シートの保存場所',
+        body: [description, label, row, status],
+        footer: [cancel, save],
+        variant: 'standard',
+        extraClass: 'staff-registry-relocate-modal',
+        geometryKey: 'staff-registry-relocate-dialog',
+        minWidth: '0',
+        initialFocus: input,
+        returnFocus: opener,
+        onBeforeClose: reason => !busy || reason === 'complete',
+        onClose: () => resolve(saved),
       });
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); finish(input.value); } });
-      input.focus();
+      dialog.overlay.dataset.staffRegistryRelocate = '1';
+      dialog.overlay.dataset.e2eId = 'staff-registry-relocate-overlay';
+      dialog.modal.dataset.e2eId = 'staff-registry-relocate-dialog';
+      dialog.modal.style.width = 'min(520px, calc(100vw - 24px))';
+      dialog.modal.style.minHeight = '330px';
+      const closeButton = dialog.header.querySelector('.gb-modal-close');
+      if (closeButton) closeButton.dataset.e2eId = 'staff-registry-relocate-close';
+      const showMessage = (message, error = false) => {
+        status.textContent = String(message || '');
+        status.hidden = !status.textContent;
+        status.dataset.statusKind = error ? 'error' : 'info';
+      };
+      const setBusy = next => {
+        busy = !!next;
+        dialog.overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+        input.disabled = busy;
+        pickButton.disabled = busy;
+        cancel.disabled = busy;
+        save.disabled = busy;
+        if (closeButton) closeButton.disabled = busy;
+      };
+      const submit = async () => {
+        const nextPath = input.value.trim();
+        if (!nextPath) {
+          showMessage('フォルダパスを入力してください', true);
+          input.focus();
+          return;
+        }
+        if (nextPath === originalPath) {
+          saved = true;
+          dialog.close('complete');
+          return;
+        }
+        setBusy(true);
+        showMessage('保存場所を変更しています…');
+        try {
+          await onSave(nextPath);
+          saved = true;
+          dialog.close('complete');
+        } catch (error) {
+          showMessage(error?.message || '保存場所の変更に失敗しました', true);
+        } finally {
+          if (dialog.modal.isConnected) setBusy(false);
+        }
+      };
+      cancel.addEventListener('click', () => dialog.close('cancel'));
+      save.addEventListener('click', submit);
+      pickButton.addEventListener('click', async () => {
+        setBusy(true);
+        try {
+          const selection = await window.GBFolderPicker.pickFolder({
+            title: '保存場所のフォルダを選択',
+            initialPath: input.value,
+          });
+          if (selection?.path) {
+            input.value = selection.path;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+        } catch (error) {
+          showMessage(error?.message || 'フォルダ一覧を開けませんでした', true);
+        } finally {
+          if (dialog.modal.isConnected) setBusy(false);
+        }
+        input.focus({ preventScroll: true });
+      });
+      input.addEventListener('keydown', event => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        submit();
+      });
+      dialog.open();
       input.select();
     });
   }
@@ -797,15 +1021,11 @@ async function showSettingsModal(opts) {
   o.querySelector('#staff-registry-relocate-btn')?.addEventListener('click', async () => {
     if (!window.MeldexUserRegistry) return;
     const current = await window.MeldexUserRegistry.getConfig().catch(() => ({ path: '' }));
-    const next = await _openStaffRegistryRelocateDialog(current.path || '');
-    if (!next || next === current.path) return;
-    try {
+    await _openStaffRegistryRelocateDialog(current.path || '', async next => {
       await window.MeldexUserRegistry.relocate(next);
       showStatus('スタッフ管理シートの保存場所を変更しました');
       if (typeof _renderStaffRegistrySettings === 'function') _renderStaffRegistrySettings();
-    } catch (e) {
-      showStatus('保存場所の変更に失敗しました: ' + (e?.message || e), true);
-    }
+    });
   });
   o.querySelectorAll('.settings-nav-item[data-target]').forEach((item) => {
     item.addEventListener('click', (event) => {

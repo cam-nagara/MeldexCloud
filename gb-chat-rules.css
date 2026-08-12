@@ -16,6 +16,96 @@
   -webkit-user-select: text;
 }
 
+.gb-modal.chat-rules-dialog-modal {
+  width: min(760px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 64px));
+}
+
+.gb-modal.chat-rules-dialog-modal > .gb-modal-body {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  overflow-x: hidden;
+}
+
+.chat-rules-dialog-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+@media (max-width: 600px) {
+  .gb-modal.chat-rules-dialog-modal {
+    width: 100%;
+    max-width: 100%;
+    height: min(85vh, var(--cloud-visual-vh, 85vh));
+  }
+
+  .chat-rules-dialog-body .gb-btn,
+  .chat-rules-dialog-modal .gb-modal-close,
+  .chat-rules-dialog-body .gb-check {
+    min-height: 44px;
+  }
+}
+
+.gb-modal.gb-chat-skills-modal {
+  width: min(720px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 64px));
+}
+
+.gb-modal.gb-chat-skills-modal > .gb-modal-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-height: 0;
+  overflow: hidden;
+  overflow-x: hidden;
+}
+
+.gb-chat-skills-root {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+@media (max-width: 600px) {
+  .gb-modal.gb-chat-skills-modal {
+    width: 100%;
+    max-width: 100%;
+    height: min(88vh, var(--cloud-visual-vh, 88vh));
+  }
+
+  .gb-chat-skills-root .gb-field-row,
+  .gb-chat-skills-root .gb-skills-row {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .gb-chat-skills-root .gb-skills-row > div:last-child {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .gb-chat-skills-root .gb-btn,
+  .gb-chat-skills-modal .gb-modal-close {
+    min-height: 44px;
+  }
+
+  .gb-chat-skills-root .gb-input,
+  .gb-chat-skills-root .gb-textarea {
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .gb-chat-skills-root .gb-input {
+    min-height: 44px;
+  }
+}
+
 .chat-rules-modal .chat-rules-toolbar {
   display: flex;
   align-items: center;

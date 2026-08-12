@@ -1,8 +1,10 @@
 /* gb-detail-tab-dnd.js: オプションパネル内タブの並べ替え */
 (function (global) {
   const STORAGE_KEY = 'detail-tab-order';
+  const ORDER_VERSION_KEY = 'detail-tab-order-version';
+  const ORDER_VERSION = 'info-last-v1';
+  const INFO_TAB_ID = 'note-editor';
   const DEFAULT_ORDER = [
-    'note-editor',
     'db-property-settings',
     'calendar-today',
     'calendar-settings',
@@ -21,13 +23,20 @@
     'sn2-rowset',
     'backlinks',
     'shortcuts',
+    INFO_TAB_ID,
   ];
   let _draggedTabId = '';
 
   function _readStoredOrder() {
     try {
       const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-      return Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string' && id) : [];
+      const ids = Array.isArray(parsed) ? parsed.filter(id => typeof id === 'string' && id) : [];
+      if (localStorage.getItem(ORDER_VERSION_KEY) === ORDER_VERSION) return ids;
+      const migrated = ids.filter(id => id !== INFO_TAB_ID);
+      if (ids.includes(INFO_TAB_ID)) migrated.push(INFO_TAB_ID);
+      if (ids.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+      localStorage.setItem(ORDER_VERSION_KEY, ORDER_VERSION);
+      return migrated;
     } catch {
       return [];
     }

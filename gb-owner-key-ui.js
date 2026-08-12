@@ -3,6 +3,7 @@
 
   let _observer = null;
   let _activeAuditTrigger = null;
+  let _activeAuditModal = null;
 
   function _esc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -11,18 +12,6 @@
 
   function _icon(name, size = 14) {
     return typeof lucide === 'function' ? lucide(name, size) : '';
-  }
-
-  function _restoreFocus(el) {
-    if (!el?.isConnected || typeof el.focus !== 'function') return;
-    try { el.focus({ preventScroll: true }); } catch { try { el.focus(); } catch {} }
-  }
-
-  function _closeAuditDialog(overlay, trigger = _activeAuditTrigger) {
-    if (!overlay?.isConnected) return;
-    overlay.remove();
-    _activeAuditTrigger = null;
-    setTimeout(() => _restoreFocus(trigger), 0);
   }
 
   async function _promptImportKey() {
@@ -45,7 +34,7 @@
     const el = root?.querySelector?.('[data-owner-key-status]');
     if (!el) return;
     el.textContent = text || '';
-    el.style.color = error ? 'var(--danger)' : 'var(--fg2)';
+    el.classList.toggle('is-error', !!error);
   }
 
   async function _resign(root) {
@@ -150,40 +139,50 @@
   }
 
   function _openAuditDialog(rows, options = {}) {
-    document.querySelectorAll('.modal-overlay[data-owner-key-audit="1"]').forEach(el => el.remove());
+    _activeAuditModal?.close?.('replaced');
     const trigger = options.trigger || document.activeElement;
     _activeAuditTrigger = trigger && document.contains(trigger) ? trigger : null;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
+    const content = document.createElement('div');
+    content.innerHTML = `
+      ${(rows || []).slice().reverse().slice(0, 200).map(row => `
+        <div class="gb-owner-key-audit-row" role="listitem" data-e2e-id="owner-key-audit-row">
+          <div><strong>${_esc(row.type || 'event')}</strong> <span class="gb-section-desc">${_esc(row.at || '')}</span></div>
+          <pre class="gb-owner-key-audit-json">${_esc(JSON.stringify(row, null, 2))}</pre>
+        </div>
+      `).join('') || '<div class="gb-section-desc">監査ログはまだありません。</div>'}
+    `;
+    const modalApi = window.GBUI.createModal({
+      id: 'owner-key-audit',
+      title: 'ナレッジ監査ログ',
+      body: [...content.childNodes],
+      variant: 'mobile-sheet',
+      extraClass: 'gb-owner-key-audit-dialog',
+      initialFocus: '[data-owner-key-audit-close]',
+      returnFocus: _activeAuditTrigger || undefined,
+      closeLabel: '監査ログを閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
+      onClose: (_reason, api) => {
+        if (_activeAuditModal === api) _activeAuditModal = null;
+        _activeAuditTrigger = null;
+      },
+    });
+    _activeAuditModal = modalApi;
+    const overlay = modalApi.overlay;
+    overlay.classList.add('modal-overlay');
     overlay.dataset.ownerKeyAudit = '1';
     overlay.dataset.e2eId = 'owner-key-audit-overlay';
-    overlay.innerHTML = `
-      <div class="modal gb-owner-key-audit-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-key-audit-title" data-e2e-id="owner-key-audit-dialog">
-        <div class="gb-modal-header gb-owner-key-dialog-header">
-          <h3 id="owner-key-audit-title" class="gb-modal-title">ナレッジ監査ログ</h3>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-icon gb-owner-key-dialog-close" aria-label="監査ログを閉じる" data-owner-key-audit-close data-e2e-id="owner-key-audit-close">${_icon('x', 14) || '閉じる'}</button>
-        </div>
-        <div class="gb-modal-body gb-owner-key-audit-body" role="list" data-e2e-id="owner-key-audit-body">
-          ${(rows || []).slice().reverse().slice(0, 200).map(row => `
-            <div class="gb-owner-key-audit-row" role="listitem" data-e2e-id="owner-key-audit-row">
-              <div><strong>${_esc(row.type || 'event')}</strong> <span class="gb-section-desc">${_esc(row.at || '')}</span></div>
-              <pre class="gb-owner-key-audit-json">${_esc(JSON.stringify(row, null, 2))}</pre>
-            </div>
-          `).join('') || '<div class="gb-section-desc">監査ログはまだありません。</div>'}
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    const close = () => _closeAuditDialog(overlay, _activeAuditTrigger);
-    overlay.querySelector('[data-owner-key-audit-close]')?.addEventListener('click', close);
-    overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-    overlay.addEventListener('keydown', event => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
-    });
-    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
-    setTimeout(() => overlay.querySelector('[data-owner-key-audit-close]')?.focus?.({ preventScroll: true }), 0);
+    modalApi.modal.classList.add('modal');
+    modalApi.modal.dataset.e2eId = 'owner-key-audit-dialog';
+    modalApi.header.classList.add('gb-owner-key-dialog-header');
+    const close = modalApi.header.querySelector('.gb-modal-close');
+    close?.classList.add('gb-btn', 'gb-btn-sm', 'gb-btn-icon', 'gb-owner-key-dialog-close');
+    close?.setAttribute('data-owner-key-audit-close', '');
+    close?.setAttribute('data-e2e-id', 'owner-key-audit-close');
+    modalApi.body.classList.add('gb-owner-key-audit-body');
+    modalApi.body.setAttribute('role', 'list');
+    modalApi.body.dataset.e2eId = 'owner-key-audit-body';
+    modalApi.open();
     return overlay;
   }
 

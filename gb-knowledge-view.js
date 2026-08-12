@@ -180,11 +180,13 @@
         <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-kv-action="summary-refresh" data-e2e-id="settings-knowledge-summary-refresh" aria-label="更新" title="更新">${kvIcon('refreshCw', 14)} 更新</button>
       </section>
       <div data-kv-summary-alert aria-live="polite"></div>
+      <div data-unified-knowledge-status></div>
       <div data-kv-summary-body class="kv-summary-body">
         <section class="gb-section gb-section--boxed"><div class="gb-section-desc">読み込み中...</div></section>
       </div>
     `;
     panel.querySelector('[data-kv-action="summary-refresh"]')?.addEventListener('click', () => loadSummary(container));
+    window.MeldexUnifiedKnowledgeStatus?.mount?.(panel);
   }
 
   function setSummaryAlert(container, text, error = false) {
@@ -468,36 +470,45 @@
   }
 
   function openKnowledgeHomeView(initialTab) {
-    document.querySelectorAll('.modal-overlay[data-knowledge-home-modal="1"]').forEach(el => el.remove());
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.knowledgeHomeModal = '1';
-    const closeOverlay = () => {
-      document.removeEventListener('keydown', onKeydown);
-      overlay.remove();
-    };
-    const onKeydown = (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      closeOverlay();
-    };
-    overlay.innerHTML = `
-      <div class="modal knowledge-home-modal" role="dialog" aria-modal="true" aria-labelledby="knowledge-home-title">
-        <div class="gb-field-row knowledge-home-title-row">
-          <h3 id="knowledge-home-title">${kvIcon('brain', 16)} ナレッジ</h3>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="knowledge-home-close" data-kv-modal-close aria-label="閉じる" title="閉じる">${kvIcon('x', 14)}</button>
-        </div>
-        <div data-kv-home-body class="knowledge-home-body"></div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-    document.addEventListener('keydown', onKeydown);
-    const body = overlay.querySelector('[data-kv-home-body]');
+    const existing = document.querySelector('.modal-overlay[data-knowledge-home-modal="1"]');
+    if (existing?._knowledgeHomeModalApi?.isOpen?.()) {
+      existing._knowledgeHomeModalApi.modal.focus?.({ preventScroll: true });
+      return existing._knowledgeHomeModalApi;
+    }
+    if (typeof window.GBUI?.createModal !== 'function') {
+      throw new Error('ナレッジを初期化できませんでした。');
+    }
+    const body = document.createElement('div');
+    body.dataset.kvHomeBody = '';
+    body.className = 'knowledge-home-body';
     openKnowledgeLayerView(body, initialTab || 'overview');
-    overlay.querySelector('[data-kv-modal-close]')?.addEventListener('click', closeOverlay);
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay) closeOverlay();
+    const restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const modalApi = window.GBUI.createModal({
+      id: 'knowledge-home',
+      title: 'ナレッジ',
+      body,
+      variant: 'standard',
+      extraClass: 'knowledge-home-modal',
+      geometryKey: 'knowledge-home',
+      minWidth: '0',
+      initialFocus: '[data-e2e-id="knowledge-home-close"]',
+      returnFocus: restoreFocusTo || undefined,
+      closeLabel: 'ナレッジを閉じる',
+      closeOnEsc: true,
+      closeOnOverlay: true,
     });
+    modalApi.overlay.classList.add('modal-overlay');
+    modalApi.overlay.dataset.knowledgeHomeModal = '1';
+    modalApi.overlay.dataset.e2eId = 'knowledge-home-overlay';
+    modalApi.overlay._knowledgeHomeModalApi = modalApi;
+    modalApi.modal.dataset.e2eId = 'knowledge-home-dialog';
+    const closeButton = modalApi.header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.dataset.kvModalClose = '';
+      closeButton.dataset.e2eId = 'knowledge-home-close';
+    }
+    modalApi.open();
+    return modalApi;
   }
 
   window.openKnowledgeLayerView = openKnowledgeLayerView;

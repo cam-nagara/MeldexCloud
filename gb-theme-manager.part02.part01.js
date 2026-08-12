@@ -113,11 +113,21 @@
     }
     const rules = [];
     const autoTone = getThemeUiAutoTone();
+    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
+    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
     THEME_UI_TARGETS.forEach(target => {
       _themeUiStatesForTarget(target).forEach(state => {
         const selector = _themeUiStateSelector(target.id, state.id);
         _themeUiPropsForTarget(target, state.id).forEach(prop => {
-          const colorCss = _themeUiColorCss(config[target.id]?.[state.id]?.[prop.id], autoTone, { rootVars: !!target?.vars });
+          const value = config[target.id]?.[state.id]?.[prop.id];
+          const backgroundValue = config[target.id]?.[state.id]?.bg;
+          const autoForegroundOnAccent = singleAccentPolicy
+            && prop.id === 'fg'
+            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
+            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
+          const colorCss = autoForegroundOnAccent
+            ? singleAccentText
+            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
           const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
           if (rule) rules.push(rule);
         });
@@ -617,9 +627,12 @@
     });
     if (root.dataset) root.dataset.meldexThemeId = themeDef.id || '';
     root.classList.toggle('light-theme', isThemeLight(themeDef));
-    const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true });
+    const preservePresetAccent = getThemeAccentPolicy(themeDef).kind === 'system-or-default';
+    const osAccentEnabled = applyThemeOsAccentSettingFromTheme(themeDef, {
+      preserveStored: preservePresetAccent || options.preserveStoredThemeUi === true || options.preserveStoredOsAccent === true,
+    });
     applyThemeStandardPaletteAdjustFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredStandardPalette === true });
-    applyOsAccentColorSetting(osAccentEnabled, { restorePrevious: false });
+    applyOsAccentColorSetting(osAccentEnabled, { restorePrevious: false, themeDef });
     applyThemeUiSettingsFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true });
     applyPaletteTargets(themeDef);
     applyThemeColorSlotSettingsFromTheme(themeDef, { preserveStored: options.preserveStoredThemeUi === true || options.preserveStoredColorSlots === true });

@@ -21,6 +21,13 @@ function _ufResolveContext(options = {}) {
   return { ctx, dbPath };
 }
 
+function _ufCloseOverlay(overlay, reason = 'programmatic') {
+  if (!overlay) return false;
+  if (overlay._ufModalApi?.close) return overlay._ufModalApi.close(reason);
+  overlay.remove();
+  return true;
+}
+
 function showUnifiedFilterModal() {
   // スマートシート表示中は state.currentDbPath が null なので、
   // ここで通常シート用ダイアログを開くと保存先が無く条件が消える。
@@ -39,13 +46,13 @@ function showUnifiedFilterModal() {
   const dbPath = ctx?.dbPath || state.currentDbPath;
   const filterMode = ctx?.filter ?? state.filter ?? 'disabled';
   const advFilters = dbPath ? getAdvancedFilters(dbPath, { ctx }) : [];
-  document.querySelectorAll('.gb-unified-filter-overlay').forEach(el => el.remove());
-  const o = document.createElement('div'); o.className = 'modal-overlay gb-unified-filter-overlay';
-  o.dataset.ufDbPath = dbPath || '';
-  o._ufCtx = ctx || null;
-  o.innerHTML = `<div class="modal uf-modal" style="min-width:500px;">
-    <h3>フィルタ</h3>
-    <div class="uf-modal-body">
+  document.querySelectorAll('.gb-unified-filter-overlay').forEach(el => _ufCloseOverlay(el, 'replace'));
+  const returnFocus = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+    ? document.activeElement
+    : null;
+  const body = document.createElement('div');
+  body.className = 'uf-modal-body';
+  body.innerHTML = `
     <div style="margin-bottom:12px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
         <label style="font-size:12px;color:var(--fg2);display:flex;align-items:center;gap:4px;cursor:pointer;">
@@ -54,32 +61,63 @@ function showUnifiedFilterModal() {
         </label>
       </div>
       <div id="uf-status-btns" style="display:${filterMode !== 'disabled' ? 'flex' : 'none'};gap:6px;">
-        <button id="uf-all" class="${!filterMode || filterMode==='all' || filterMode==='disabled'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">全表示</button>
-        <button id="uf-adopted" class="${filterMode==='adopted'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">採用+掲載済みのみ</button>
-        <button id="uf-nobotsu" class="${filterMode==='nobotsu'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">ボツ非表示</button>
+        <button type="button" id="uf-all" class="gb-btn gb-btn-sm ${!filterMode || filterMode==='all' || filterMode==='disabled'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">全表示</button>
+        <button type="button" id="uf-adopted" class="gb-btn gb-btn-sm ${filterMode==='adopted'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">採用+掲載済みのみ</button>
+        <button type="button" id="uf-nobotsu" class="gb-btn gb-btn-sm ${filterMode==='nobotsu'?'primary':''}" data-action="document.querySelectorAll('#uf-all,#uf-adopted,#uf-nobotsu').forEach(b=>b.classList.remove('primary'));this.classList.add('primary');">ボツ非表示</button>
       </div>
     </div>
     <div style="margin-bottom:12px;">
       <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">条件フィルタ</div>
       <div id="uf-conditions"></div>
-      <button data-action="_ufAddCondition()" style="font-size:11px;margin-top:4px;">+ 条件を追加</button>
+      <button type="button" class="gb-btn gb-btn-sm uf-add-condition" data-action="_ufAddCondition()" style="font-size:11px;margin-top:4px;">+ 条件を追加</button>
     </div>
     <div style="margin-bottom:12px;">
       <div style="font-size:12px;color:var(--fg2);margin-bottom:4px;">列の値フィルター</div>
       <div id="uf-col-filters"></div>
-      <div style="display:flex;gap:4px;margin-top:6px;">
+      <div class="uf-column-filter-add" style="display:flex;gap:4px;margin-top:6px;">
         <select id="uf-col-filter-add-select" class="gb-select gb-select-sm" style="flex:1;"></select>
-        <button data-action="_ufOpenColumnValueFilterFromDialog()" style="font-size:11px;">値を選択...</button>
+        <button type="button" class="gb-btn gb-btn-sm uf-open-column-filter" data-action="_ufOpenColumnValueFilterFromDialog()" style="font-size:11px;">値を選択...</button>
       </div>
-    </div>
-    </div>
-    <div class="btn-row">
-      <button data-action="this.closest('.modal-overlay').remove()">キャンセル</button>
-      <button data-action="_ufClear()" style="color:var(--red);">全解除</button>
-      <button class="primary" data-action="_ufApply()">適用</button>
-    </div>
-  </div>`;
-  document.body.appendChild(o);
+    </div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.dataset.e2eId = 'unified-filter-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'gb-btn gb-btn-sm';
+  clearBtn.dataset.e2eId = 'unified-filter-clear';
+  clearBtn.style.color = 'var(--red)';
+  clearBtn.textContent = '全解除';
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  applyBtn.dataset.e2eId = 'unified-filter-apply';
+  applyBtn.textContent = '適用';
+  const modalApi = window.GBUI.createModal({
+    id: 'unified-filter-dialog',
+    title: 'フィルタ',
+    body,
+    footer: [cancelBtn, clearBtn, applyBtn],
+    variant: 'standard',
+    extraClass: 'uf-modal',
+    geometryKey: 'unified-filter',
+    initialFocus: '#uf-status-enabled',
+    returnFocus: returnFocus || undefined,
+  });
+  const o = modalApi.overlay;
+  o.classList.add('modal-overlay', 'gb-unified-filter-overlay');
+  o.dataset.ufDbPath = dbPath || '';
+  o._ufCtx = ctx || null;
+  o._ufModalApi = modalApi;
+  modalApi.modal.style.minWidth = 'min(500px, calc(100vw - 24px))';
+  const headerClose = modalApi.header.querySelector('.gb-modal-close');
+  if (headerClose) headerClose.dataset.e2eId = 'unified-filter-close-icon';
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  clearBtn.addEventListener('click', _ufClear);
+  applyBtn.addEventListener('click', _ufApply);
+  modalApi.open();
   // 採用状況フィルタのチェックボックス制御
   const sfCb = o.querySelector('#uf-status-enabled');
   const sfBtns = o.querySelector('#uf-status-btns');
@@ -140,9 +178,9 @@ function _ufConditionRow(f, dbPath, ctx) {
       <option value="empty" ${f?.operator==='empty'?'selected':''}>空</option>
       <option value="not_empty" ${f?.operator==='not_empty'?'selected':''}>空でない</option>
     </select>
-    <input type="text" data-field="value" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;"${valueListAttr}>
+    <input type="text" data-field="value" class="gb-input gb-input-sm" value="${esc(f?.value ?? '')}" style="padding:2px;width:80px;"${valueListAttr}>
     <datalist id="${datalistId}"></datalist>
-    <button data-action="this.parentElement.remove()" style="color:var(--red);background:none;border:none;cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
+    <button type="button" class="gb-btn gb-btn-sm gb-btn-icon uf-remove-condition" aria-label="条件を削除" data-action="this.parentElement.remove()" style="color:var(--red);background:none;border:none;cursor:pointer;display:flex;align-items:center;">${lucide('x', 14)}</button>
   </div>`;
 }
 // 共通タグ列を対象にした条件行のみ、タグカタログからタグ名の候補を <datalist> に流し込む
@@ -252,7 +290,7 @@ function _ufPopulateColumnFilterAddSelect(select, dbPath, ctx) {
 // showDbColumnFilterPopup を共有するため、選択状態はここで編集してもヘッダー側にそのまま反映される）。
 function _ufEditColumnFilter(dbPath, propName, ctx, sourceBtn) {
   const rect = typeof sourceBtn?.getBoundingClientRect === 'function' ? sourceBtn.getBoundingClientRect() : null;
-  document.querySelectorAll('.gb-unified-filter-overlay').forEach(el => el.remove());
+  document.querySelectorAll('.gb-unified-filter-overlay').forEach(el => _ufCloseOverlay(el, 'open-column-filter'));
   if (typeof showDbColumnFilterPopup !== 'function') return;
   const fakeSource = rect ? { currentTarget: { getBoundingClientRect: () => rect } } : {};
   showDbColumnFilterPopup(fakeSource, propName, ctx, dbPath);
@@ -304,7 +342,7 @@ function _ufApply() {
       setAdvancedFilters(dbPath, filters, { ctx });
     }
   }
-  overlay?.remove();
+  _ufCloseOverlay(overlay, 'apply');
   _updateFilterBadge({ dbPath, filter: ctx?.filter ?? nextFilter, ctx });
   if (dbPath) _ufRefreshTarget(ctx, dbPath, { statusFilterChanged: nextFilter !== previousFilterMode });
 }
@@ -322,7 +360,7 @@ function _ufClear() {
       if (typeof setColumnValueFilters === 'function') setColumnValueFilters(dbPath, {}, { ctx });
     }
   }
-  overlay?.remove();
+  _ufCloseOverlay(overlay, 'clear');
   _updateFilterBadge({ dbPath, filter: 'disabled', ctx });
   if (dbPath) _ufRefreshTarget(ctx, dbPath, { statusFilterChanged: previousFilterMode !== 'disabled' });
 }

@@ -38,16 +38,18 @@
     let applyAll = !!this.doc.editor.columnAllRules[colId];
     const rule0 = this.doc.editor.columnAllRules[colId] || {};
     const getTargets = () => {
-      if (applyAll) return this.doc.characters.map((_, i) => i);
-      return this._detailSelection?.size ? [...this._detailSelection] : this.doc.characters.map((_, i) => i);
+      const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
+      const selectedIds = this._detailTypeSelection || new Set();
+      const selected = types.filter(type => selectedIds.has(type.id));
+      return selected.length ? selected : types;
     };
     const applyChanges = (changes, opts = {}) => {
       this._pushUndo('タイプ一括変更');
       const targets = getTargets();
-      targets.forEach((i) => {
-        const c = this.doc.characters[i];
-        if (!c) return;
-        const s = this._getColStyle(c, colId);
+      if (applyAll && this.doc.editor?.defaultType) targets.push(this.doc.editor.defaultType);
+      targets.forEach((type) => {
+        if (!type) return;
+        const s = this._getColStyle(type, colId);
         Object.entries(changes).forEach(([prop, val]) => {
           if (val === '' || val === null || val === undefined) delete s[prop];
           else s[prop] = val;
@@ -90,6 +92,8 @@
     // 貼り付けで applyChanges → renderDetailPanel が走るとヘッダー要素が作り直されるため、
     // 開き直し用に現在のヘッダーセルを取り直す
     const freshHeaderAnchor = () => {
+      const managedHeader = panelContainer?.querySelector?.('.sn2-role-manage-format-header');
+      if (managedHeader) return managedHeader;
       const ids = ['_role', '_text', ...((this.doc.editor?.customColumns || []).map(c => c.id))];
       const i = ids.indexOf(colId);
       const ths = panelContainer?.querySelectorAll?.('.sn2-detail-th-col') || [];
@@ -142,12 +146,11 @@
       onReset: () => {
         this._pushUndo('一括書式リセット');
         const targets = getTargets();
-        targets.forEach((i) => {
-          const c = this.doc.characters[i];
-          if (!c) return;
-          const s = this._getColStyle(c, colId);
+        if (applyAll && this.doc.editor?.defaultType) targets.push(this.doc.editor.defaultType);
+        targets.forEach((type) => {
+          if (!type) return;
+          const s = this._getColStyle(type, colId);
           ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete s[p]);
-          this._reapplyAutoColor(c);
         });
         if (applyAll && this.doc.editor.columnAllRules?.[colId]) {
           delete this.doc.editor.columnAllRules[colId];
@@ -433,7 +436,6 @@
       out.customStyles = {};
       Object.entries(src.customStyles).forEach(([k, v]) => { out.customStyles[k] = { ...(v || {}) }; });
     }
-    if (src.autoColorTarget && typeof src.autoColorTarget === 'object') out.autoColorTarget = { ...src.autoColorTarget };
     return out;
   },
 
@@ -465,61 +467,6 @@
         else style[prop] = val;
       });
     });
-  },
-
-  // リセット後に自動配色を再適用する
-  _getAutoColorPaletteRow() {
-    const raw = Number(this.doc?.editor?.autoColorPaletteRow);
-    return Number.isFinite(raw) ? Math.max(1, Math.min(4, Math.round(raw))) : 3;
-  },
-
-  _getAutoColorPalette() {
-    const row = this._getAutoColorPaletteRow();
-    if (typeof getStandardPaletteSwatches === 'function') {
-      const colors = getStandardPaletteSwatches(undefined, { themeSlots: true })
-        .filter(swatch => swatch && swatch.row === row && swatch.color && swatch.color !== 'transparent')
-        .map(swatch => swatch.color);
-      if (colors.length) return colors;
-    }
-    const fallback = typeof PALETTE_COLORS !== 'undefined' ? PALETTE_COLORS : [];
-    const ranges = { 1: [0, 7], 2: [7, 15], 3: [15, 23], 4: [23, 31] };
-    const [start, end] = ranges[row] || ranges[3];
-    const colors = fallback.slice(start, end).filter(Boolean);
-    return colors.length ? colors : fallback.filter(Boolean);
-  },
-
-  _getAutoColorAppearanceTargets() {
-    if (Number(this.doc?.schema_version) >= 3 || Array.isArray(this.doc?.scenarioTypes)) {
-      const targets = [...(this.doc?.scenarioTypes || [])];
-      (this.doc?.characters || []).forEach(character => {
-        if (!character?.typeId && character?.legacyAppearance) targets.push(character.legacyAppearance);
-      });
-      return targets;
-    }
-    return (this.doc?.characters || []).filter(character => !character?.isDefault);
-  },
-
-  _resetAutoColorPaletteAssignments() {
-    const targets = this._getAutoColorAppearanceTargets();
-    targets.forEach(target => { delete target.autoColor; });
-    targets.forEach(target => this._reapplyAutoColor(target));
-  },
-
-  _reapplyAutoColor(chara) {
-    if (!chara) return;
-    const acRule = this.doc.editor?.autoColorRule || {};
-    const allNone = Object.values(acRule).every(v => !v || v === 'none');
-    if (allNone) { delete chara.autoColor; return; }
-    // autoColorが未設定なら再割り当て
-    if (!chara.autoColor) {
-      const colors = this._getAutoColorPalette();
-      if (colors.length) {
-        const existingCount = this._getAutoColorAppearanceTargets()
-          .filter(item => item !== chara && (item.autoColor || item.bgColor)).length;
-        chara.autoColor = colors[existingCount % colors.length];
-      }
-    }
-    chara.autoColorTarget = { ...acRule };
   },
 
   _refreshRowStyles() {

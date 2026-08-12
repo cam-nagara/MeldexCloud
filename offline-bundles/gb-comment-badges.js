@@ -200,7 +200,7 @@
       if (!badge) {
         badge = document.createElement('span');
         badge.className = 'display-layer-badge';
-        badge.style.cssText = 'position:absolute;top:2px;right:2px;min-width:7px;height:7px;padding:0 2px;border-radius:999px;background:var(--accent,#4a90e2);box-shadow:0 0 0 1px var(--bg2);font-size:9px;line-height:10px;color:var(--ui-fg-strong);pointer-events:none;';
+        badge.style.cssText = 'position:absolute;top:2px;right:2px;min-width:7px;height:7px;padding:0 2px;border-radius:999px;background:var(--accent,#4a90e2);box-shadow:0 0 0 1px var(--bg2);font-size:9px;line-height:10px;color:var(--ui-accent-fg, var(--ui-fg-strong));pointer-events:none;';
         btn.style.position = btn.style.position || 'relative';
         btn.appendChild(badge);
       }
@@ -276,7 +276,7 @@
       badge = document.createElement('span');
       badge.className = 'cmt-badge';
       badge.contentEditable = 'false';
-      badge.style.cssText = 'display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:0 5px;margin-left:6px;background:var(--accent,#4a90e2);color:var(--ui-fg-strong);border-radius:8px;cursor:pointer;user-select:none;vertical-align:middle;line-height:14px;height:14px;';
+      badge.style.cssText = 'display:inline-flex;align-items:center;gap:2px;font-size:10px;padding:0 5px;margin-left:6px;background:var(--accent,#4a90e2);color:var(--ui-accent-fg, var(--ui-fg-strong));border-radius:8px;cursor:pointer;user-select:none;vertical-align:middle;line-height:14px;height:14px;';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { badge._cmtClick?.(); } catch {} });
       badge.addEventListener('keydown', (e) => _handleCommentBadgeKeydown(e, badge));
@@ -468,7 +468,7 @@
       badge = document.createElement('span');
       badge.className = 'cmt-cal-badge';
       badge.contentEditable = 'false';
-      badge.style.cssText = 'position:absolute;top:-4px;right:-4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;font-size:9px;min-width:14px;height:12px;padding:0 3px;background:var(--accent,#4a90e2);color:var(--ui-fg-strong);border-radius:8px;cursor:pointer;user-select:none;line-height:12px;pointer-events:auto;box-shadow:0 0 0 1px var(--bg2);';
+      badge.style.cssText = 'position:absolute;top:-4px;right:-4px;z-index:2;display:inline-flex;align-items:center;justify-content:center;font-size:9px;min-width:14px;height:12px;padding:0 3px;background:var(--accent,#4a90e2);color:var(--ui-accent-fg, var(--ui-fg-strong));border-radius:8px;cursor:pointer;user-select:none;line-height:12px;pointer-events:auto;box-shadow:0 0 0 1px var(--bg2);';
       badge.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
       badge.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { badge._cmtClick?.(); } catch {} });
       badge.addEventListener('keydown', (e) => _handleCommentBadgeKeydown(e, badge));

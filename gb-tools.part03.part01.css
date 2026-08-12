@@ -13,7 +13,7 @@
 .bd-toolbar-group-meta { margin-left: auto; }
 .bd-toolbar-label { font-size: 11px; color: var(--fg2); white-space: nowrap; }
 .bd-toolbar-select { min-width: 118px; padding: 3px 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); }
-.bd-toolbar-btn.active { background: var(--accent); color: var(--ui-fg-strong); border-color: var(--accent); }
+.bd-toolbar-btn.active { background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); border-color: var(--accent); }
 .bd-toolbar-icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; padding: 3px 6px; }
 /* ツールバーのスタイルプレビュー (#bd-card-style-preview / #bd-line-style-preview) */
 /* 横幅はピッカートリガーの縮小に合わせて従来の半分に縮める。内部の SVG/span は親幅に追従。 */
@@ -197,7 +197,7 @@
 .bd-style-line-preview-large { width: 336px; height: 28px; }
 #bd-card-style-preview .bd-style-card-preview { width: 100%; height: 18px; }
 #bd-line-style-preview svg { width: 100%; display: block; }
-.bd-filter-badge { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; min-width: 16px; height: 16px; border-radius: 999px; background: var(--accent); color: var(--ui-fg-strong); font-size: 10px; }
+.bd-filter-badge { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; min-width: 16px; height: 16px; border-radius: 999px; background: var(--accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); font-size: 10px; }
 .bd-toolbar-meta { font-size: 12px; color: var(--fg2); min-width: 36px; text-align: center; }
 .bd-toolbar-meta-btn {
   display: inline-flex;
@@ -508,7 +508,7 @@
   min-width: 14px; height: 14px; padding: 0 3px;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 10px; line-height: 1; z-index: 8; cursor: pointer;
-  color: var(--ui-fg-strong); background: var(--accent); border-radius: 7px;
+  color: var(--ui-accent-fg, var(--ui-fg-strong)); background: var(--accent); border-radius: 7px;
 }
 /* 件数 0 の空状態は非表示 (「コメントを追加」ボタンは廃止してポップアップメニューへ移設)。
    HUD 要素自体は DOM に残しておく (CommentBadges.refreshBoard が find して件数を更新する想定) */
@@ -682,7 +682,7 @@
 .bd-detail-tabs { display: flex; flex-wrap: wrap; gap: var(--ui-space-2); }
 /* .bd-detail-tab-btn の pill 形状 (999px) はタブの意味付けとして維持 */
 .bd-detail-tab-btn { padding: 3px var(--ui-space-4); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-pill); background: var(--ui-bg-panel); color: var(--ui-fg-muted); font-size: var(--ui-font-12); cursor: pointer; }
-.bd-detail-tab-btn.active { background: var(--ui-accent); border-color: var(--ui-accent); color: var(--ui-fg-strong); }
+.bd-detail-tab-btn.active { background: var(--ui-accent); border-color: var(--ui-accent); color: var(--ui-accent-fg, var(--ui-fg-strong)); }
 .bd-detail-tab-panel { display: none; }
 .bd-detail-tab-panel.active { display: block; }
 .bd-detail-section { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--ui-space-1) var(--ui-space-3); margin-top: var(--ui-space-5); padding-right: 1em; box-sizing: border-box; }

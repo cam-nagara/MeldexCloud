@@ -1,5 +1,14 @@
 (function () {
-  const state = { status: 'new', items: [], busy: false, includeTasteFiltered: false, loadToken: 0, updatingIds: new Set() };
+  const state = {
+    status: 'new',
+    items: [],
+    busy: false,
+    includeTasteFiltered: false,
+    loadToken: 0,
+    updatingIds: new Set(),
+    pendingCount: 0,
+  };
+  let dialogApi = null;
 
   function ideaEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -33,46 +42,64 @@
   }
 
   function ensureModal() {
-    let overlay = document.querySelector('.modal-overlay[data-idea-inbox="1"]');
-    if (overlay) return overlay;
+    if (dialogApi?.isOpen?.()) return dialogApi.overlay;
     const restoreTarget = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    let closed = false;
-    overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.dataset.ideaInbox = '1';
-    function closeModal() {
-      if (closed) return;
-      closed = true;
-      document.removeEventListener('keydown', keydown, true);
-      overlay.remove();
-      if (restoreTarget?.isConnected && typeof restoreTarget.focus === 'function') {
-        setTimeout(() => {
-          try { restoreTarget.focus({ preventScroll: true }); } catch { restoreTarget.focus(); }
-        }, 0);
-      }
-    }
-    function keydown(event) {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeModal();
-    }
-    overlay.innerHTML = `
-      <div class="modal idea-inbox-modal" data-e2e-id="idea-inbox-dialog" role="dialog" aria-modal="true" aria-labelledby="idea-inbox-title">
-        <h3 id="idea-inbox-title" class="idea-inbox-title">
-          ${ideaIcon('lightbulb', 16)} <span>アイディアインボックス</span>
-          <button type="button" class="settings-modal-close gb-modal-close" data-idea-close data-e2e-id="idea-inbox-close" title="閉じる" aria-label="閉じる">${ideaIcon('x', 16)}</button>
-        </h3>
-        <div data-idea-root class="idea-inbox-view"></div>
-      </div>
-    `;
-    overlay.addEventListener('click', event => {
-      if (event.target === overlay || event.target.closest('[data-idea-close]')) closeModal();
+    const root = document.createElement('div');
+    root.dataset.ideaRoot = '';
+    root.className = 'idea-inbox-view';
+    dialogApi = window.GBUI.createModal({
+      id: 'idea-inbox',
+      titleId: 'idea-inbox-title',
+      title: 'アイディアインボックス',
+      body: root,
+      variant: 'standard',
+      extraClass: 'idea-inbox-modal',
+      geometryKey: 'idea-inbox',
+      initialFocus: '[data-idea-status]',
+      returnFocus: restoreTarget,
+      closeLabel: '閉じる',
+      onBeforeClose: () => state.pendingCount === 0,
+      onClose: () => {
+        state.loadToken += 1;
+        state.pendingCount = 0;
+        dialogApi = null;
+      },
     });
-    document.addEventListener('keydown', keydown, true);
-    document.body.appendChild(overlay);
-    if (window.GBModalShell?.enhanceOverlay) window.GBModalShell.enhanceOverlay(overlay);
+    const { overlay, modal, header } = dialogApi;
+    overlay.classList.add('modal-overlay');
+    overlay.dataset.ideaInbox = '1';
+    overlay.dataset.e2eId = 'idea-inbox-overlay';
+    modal.dataset.e2eId = 'idea-inbox-dialog';
+    header.classList.add('idea-inbox-title');
+    const title = header.querySelector('.gb-modal-title');
+    if (title) title.insertAdjacentHTML('afterbegin', ideaIcon('lightbulb', 16));
+    const closeButton = header.querySelector('.gb-modal-close');
+    if (closeButton) {
+      closeButton.classList.add('settings-modal-close');
+      closeButton.dataset.ideaClose = '';
+      closeButton.dataset.e2eId = 'idea-inbox-close';
+    }
+    dialogApi.open();
     return overlay;
+  }
+
+  function syncDialogBusy(root) {
+    const overlay = root?.closest?.('[data-idea-inbox="1"]') || dialogApi?.overlay;
+    if (!overlay) return;
+    const busy = state.pendingCount > 0;
+    overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+    const closeButton = overlay.querySelector('[data-idea-close]');
+    if (closeButton) closeButton.disabled = busy;
+  }
+
+  function beginPending(root) {
+    state.pendingCount += 1;
+    syncDialogBusy(root);
+  }
+
+  function endPending(root) {
+    state.pendingCount = Math.max(0, state.pendingCount - 1);
+    syncDialogBusy(root);
   }
 
   function renderRoot(root) {
@@ -82,12 +109,14 @@
           <div class="gb-section-title">${ideaIcon('sparkles', 14)} 今日の連想</div>
           <div class="gb-section-desc">離れた設定・資料・記憶をつないだ提案を確認します。</div>
         </div>
-        <select class="gb-select" data-idea-status data-e2e-id="idea-inbox-status" aria-label="表示するアイディアの状態">
-          ${['new', 'reviewed', 'adopted', 'discarded', 'later'].map(status => `<option value="${status}" ${state.status === status ? 'selected' : ''}>${status}</option>`).join('')}
-        </select>
-        <label class="gb-check" data-e2e-id="idea-inbox-include-taste-filtered"><input type="checkbox" data-idea-taste-filtered data-e2e-id="idea-inbox-include-taste-filtered-input" ${state.includeTasteFiltered ? 'checked' : ''}> 低スコアも表示</label>
-        <button type="button" class="gb-btn gb-btn-sm" data-idea-action="mine" data-e2e-id="idea-inbox-mine" aria-label="手動更新" title="手動更新">${ideaIcon('pickaxe', 14)} 手動更新</button>
-        <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-action="rebuild" data-e2e-id="idea-inbox-rebuild" aria-label="再構築" title="再構築">${ideaIcon('refreshCw', 14)} 再構築</button>
+        <div class="idea-inbox-toolbar-actions" data-dialog-actions="1">
+          <select class="gb-select" data-idea-status data-e2e-id="idea-inbox-status" aria-label="表示するアイディアの状態">
+            ${['new', 'reviewed', 'adopted', 'discarded', 'later'].map(status => `<option value="${status}" ${state.status === status ? 'selected' : ''}>${status}</option>`).join('')}
+          </select>
+          <label class="gb-check" data-e2e-id="idea-inbox-include-taste-filtered"><input type="checkbox" data-idea-taste-filtered data-e2e-id="idea-inbox-include-taste-filtered-input" ${state.includeTasteFiltered ? 'checked' : ''}> 低スコアも表示</label>
+          <button type="button" class="gb-btn gb-btn-sm" data-idea-action="mine" data-e2e-id="idea-inbox-mine" aria-label="手動更新" title="手動更新">${ideaIcon('pickaxe', 14)} 手動更新</button>
+          <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-idea-action="rebuild" data-e2e-id="idea-inbox-rebuild" aria-label="再構築" title="再構築">${ideaIcon('refreshCw', 14)} 再構築</button>
+        </div>
       </section>
       <div data-idea-alert aria-live="polite"></div>
       <section class="gb-section gb-section--boxed">
@@ -106,16 +135,33 @@
     root.querySelector('[data-idea-action="rebuild"]')?.addEventListener('click', () => mineIdeas(root, true));
   }
 
-  function setAlert(root, text, error = false) {
+  function setAlert(root, text, error = false, retry = null) {
     const alert = root.querySelector('[data-idea-alert]');
     if (!alert) return;
-    alert.innerHTML = text ? `<div class="gb-section-desc idea-inbox-alert-text${error ? ' is-error' : ''}">${ideaEsc(text)}</div>` : '';
+    alert.replaceChildren();
+    if (!text) return;
+    const message = document.createElement('div');
+    message.className = `gb-section-desc idea-inbox-alert-text${error ? ' is-error' : ''}`;
+    message.textContent = text;
+    alert.appendChild(message);
+    if (typeof retry === 'function') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'gb-btn gb-btn-sm gb-btn-quiet idea-inbox-retry';
+      button.dataset.e2eId = 'idea-inbox-retry';
+      button.textContent = '再試行';
+      button.setAttribute('aria-label', '再試行');
+      button.title = '再試行';
+      button.addEventListener('click', retry, { once: true });
+      alert.appendChild(button);
+    }
   }
 
   async function loadIdeas(root) {
     const token = ++state.loadToken;
     const status = state.status;
     const includeTasteFiltered = state.includeTasteFiltered;
+    beginPending(root);
     try {
       const payload = await ideaApi('/idea_inbox?status=' + encodeURIComponent(status) + (includeTasteFiltered ? '&include_taste_filtered=true' : ''));
       if (token !== state.loadToken) return;
@@ -124,13 +170,16 @@
       setAlert(root, '');
     } catch (err) {
       if (token !== state.loadToken) return;
-      setAlert(root, '読み込みに失敗: ' + (err.message || err), true);
+      setAlert(root, '読み込みに失敗: ' + (err.message || err), true, () => loadIdeas(root));
+    } finally {
+      endPending(root);
     }
   }
 
   async function mineIdeas(root, rebuild) {
     if (state.busy) return;
     state.busy = true;
+    beginPending(root);
     setAlert(root, rebuild ? '概念インデックスを再構築しています...' : '連想を生成しています...');
     try {
       await ideaApi('/idea_inbox/mine', {
@@ -141,9 +190,10 @@
       renderRoot(root);
       await loadIdeas(root);
     } catch (err) {
-      setAlert(root, '生成に失敗: ' + (err.message || err), true);
+      setAlert(root, '生成に失敗: ' + (err.message || err), true, () => mineIdeas(root, rebuild));
     } finally {
       state.busy = false;
+      endPending(root);
     }
   }
 
@@ -230,6 +280,7 @@
     const itemId = Number(id);
     if (!Number.isFinite(itemId) || state.updatingIds.has(itemId)) return;
     state.updatingIds.add(itemId);
+    beginPending(root);
     renderList(root);
     setAlert(root, '状態を保存中...');
     try {
@@ -239,10 +290,11 @@
       });
       await loadIdeas(root);
     } catch (err) {
-      setAlert(root, '状態変更に失敗: ' + (err.message || err), true);
+      setAlert(root, '状態変更に失敗: ' + (err.message || err), true, () => setIdeaStatus(root, itemId, status));
     } finally {
       state.updatingIds.delete(itemId);
       renderList(root);
+      endPending(root);
     }
   }
 

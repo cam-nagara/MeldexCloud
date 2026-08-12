@@ -1,3 +1,12 @@
+      },
+      options.scope || '',
+      detail
+    );
+  }
+
+  return { targets, requestedTargets, succeeded, skipped, failed, failedCount, deletedCount, deletedPaths, trashNames, trashRefs };
+}
+
 const MAIN_CALENDAR_SETTINGS_KEYS = ['main-calendar-path', 'main-calendar-id'];
 
 function _refreshMainCalendarSettingAfterHistory() {
@@ -369,19 +378,11 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         _openInNewTab(nodeData.name || '', nodeData.path, openType);
       },
     });
-    if (typeof openLinkedPathInFloatPanel === 'function') {
-      _outlinerAppendMenuItem(openPanel, {
-        label: 'フロートパネルで開く', icon: 'panelsTopLeft', action: () => {
-          closeTreeContextMenu();
-          openLinkedPathInFloatPanel(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
-        },
-      });
-    }
-    if (canUseRightSidebar && typeof openLinkedPathInRightPane === 'function') {
+    if (canUseRightSidebar && typeof openLinkedPathInRightSidebar === 'function') {
       _outlinerAppendMenuItem(openPanel, {
         label: '右サイドバーで開く', icon: 'panelRight', action: () => {
           closeTreeContextMenu();
-          openLinkedPathInRightPane(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
+          openLinkedPathInRightSidebar(nodeData.path, nodeData.name, { linkType: nodeData.type, sourceEl: nodeEl });
         },
       });
     }
@@ -527,14 +528,6 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       if (typeof openFolderVersionTab === 'function') openFolderVersionTab(nodeData.path);
       else if (typeof openVersionTab === 'function') openVersionTab(nodeData.path, 'folder');
     }, null, 'gitBranch');
-  }
-
-  // --- Notion同期（フォルダのみ） ---
-  if (!isMulti && isFolder && nodeData.path && typeof addNotionSyncFolder === 'function') {
-    addMenuItem('Notion同期フォルダに追加', () => {
-      closeTreeContextMenu();
-      addNotionSyncFolder(nodeData.path);
-    }, null, 'sync');
   }
 
   // --- 画像ツール（フォルダのみ） ---
@@ -898,3 +891,10 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
         setSortSetting(sortPath, o.sort, o.order);
         pushOutlinerSettingsHistory(
           'フォルダツリー: 並び替え設定',
+          before,
+          sortPath + ' / ' + o.label,
+          sortHistoryKeys
+        );
+        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
+          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];

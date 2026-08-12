@@ -510,7 +510,8 @@ function _getActivePaneTabByType(type) {
 }
 
 function _getStandaloneAnnotationHost() {
-  return document.getElementById('btn-tb-annotation')?.parentElement
+  return document.getElementById('ann-desktop-host')
+    || document.getElementById('btn-tb-annotation')?.parentElement
     || document.getElementById('ann-overlay')?.parentElement
     || document.getElementById('main-views')
     || document.getElementById('main-area')
@@ -652,6 +653,52 @@ const ann = {
   strokeEndRequested: false,
   targetPath: '', // 現在のファイルパス
 };
+function _readTrayAnnotationHostQuery() {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const targetPath = _normalizeAnnotationTargetPath(params.get('annotation_target') || '');
+    const annotationId = String(params.get('annotation_id') || '').trim();
+    if (params.get('tray') !== '1' || targetPath !== '_meldex/desktop' || !annotationId) return null;
+    return {
+      targetPath,
+      annotationId,
+      modified: '',
+      pollTimer: 0,
+      initialized: false,
+    };
+  } catch {
+    return null;
+  }
+}
+let _trayAnnotationHost = _readTrayAnnotationHostQuery();
+function _configureTrayAnnotationHostFromLocation() {
+  if (_trayAnnotationHost) return _trayAnnotationHost;
+  _trayAnnotationHost = _readTrayAnnotationHostQuery();
+  return _trayAnnotationHost;
+}
+function _isTrayAnnotationHost() {
+  return !!_trayAnnotationHost;
+}
+function _trayAnnotationApiFetch(path, options) {
+  if (_isTrayAnnotationHost() && typeof _origApiFetch === 'function') {
+    return _origApiFetch(path, options);
+  }
+  return apiFetch(path, options);
+}
+function _trayAnnotationApiPut(path, body) {
+  return _trayAnnotationApiFetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+}
+function _trayAnnotationApiPost(path, body) {
+  return _trayAnnotationApiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+}
 let _annLoadSeq = 0;
 let _annMutationSeq = 0;
 let _annMutationTargetPath = '';
@@ -679,6 +726,10 @@ function _markAnnotationMutated(targetPath) {
   _annMutationTargetPath = _normalizeAnnotationTargetPath(targetPath || ann?.targetPath || '');
 }
 function _resolveAnnotationWriteTarget() {
+  if (_isTrayAnnotationHost()) {
+    ann.targetPath = _trayAnnotationHost.targetPath;
+    return ann.targetPath;
+  }
   const current = (typeof getAnnotationTarget === 'function') ? getAnnotationTarget() : '';
   const targetPath = current || ann.targetPath || '';
   if (targetPath) ann.targetPath = targetPath;
@@ -704,7 +755,7 @@ function _normalizeAnnotationHistoryRow(row) {
 
 async function _fetchAnnotationHistoryRow(annId) {
   if (!annId) return null;
-  const rows = await apiFetch('/annotations?ann_id=' + encodeURIComponent(annId) + '&limit=1');
+  const rows = await _trayAnnotationApiFetch('/annotations?ann_id=' + encodeURIComponent(annId) + '&limit=1');
   return _normalizeAnnotationHistoryRow(Array.isArray(rows) ? rows[0] : null);
 }
 
@@ -820,8 +871,20 @@ async function _pushAnnotationCreateHistory(annId, label, detail) {
 
 async function _putAnnotationWithHistory(annId, body, label, detail) {
   const before = await _fetchAnnotationHistoryRow(annId);
-  await apiPut('/annotations/' + encodeURIComponent(annId), body);
+  const payload = { ...(body || {}) };
+  if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
+    const expectedModified = _trayAnnotationHost.modified || before?.modified || '';
+    if (expectedModified) payload.expected_modified = expectedModified;
+  }
+  if (_isTrayAnnotationHost()) {
+    await _trayAnnotationApiPut('/annotations/' + encodeURIComponent(annId), payload);
+  } else {
+    await apiPut('/annotations/' + encodeURIComponent(annId), payload);
+  }
   const after = await _fetchAnnotationHistoryRow(annId);
+  if (_isTrayAnnotationHost() && _trayAnnotationHost.annotationId === String(annId)) {
+    _trayAnnotationHost.modified = String(after?.modified || '');
+  }
   _pushAnnotationHistory(label || '注釈: 更新', before, after, detail);
   return after;
 }
