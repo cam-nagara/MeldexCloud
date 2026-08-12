@@ -1,7 +1,7 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-08-12T08:42:00.590256+00:00",
-  "semver": "0.7.259",
+  "generatedAt": "2026-08-12T09:50:27.285094+00:00",
+  "semver": "0.7.260",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
   "automatedGateSummary": {
@@ -159,18 +159,18 @@
     }
   ],
   "artifactHashes": {
-    "index.html": "9c3e6e83b227fe015ed4f0d40989392395ac776ede11f5fc7333404370396704",
+    "index.html": "535a166648b7d74524ecae62c8f886a06a65ae05f04e7e64b89afdf130d6deaf",
     "public-standalone-apps.css": "76c5f5b575c6177bc85efcdd0adba31a7034dbbba018f08368b1a171d0ad7dd3",
-    "public-index.css": "1ab4626bbdf7a67bf5de42a25caf5208163ee7c7b6b67c293521228fb43df907",
+    "public-index.css": "06cd7a2af73e02b93d4fb1a11c50e08a754c20c4963c88ace84eb4669b06e117",
     "public-standalone-apps.js": "e9a54e8876b46e5621edc6f0880c14f24417aee6ba12a0c8bd09a73ec4597629",
     "Meldex.html": "77aa05099f5f2c86a6ed99536a6dd00f54c7fe9ce1516d3a53f7f59420de89e6",
     "manifest.json": "494af8a202f60ef76a659c4691b9b22621ee09ebaf40c414d11ec1650d6672c8",
     "sw.js": "7de47f47fbc72d9f48694fa0a2cfb957bf51f28675131854185936e4e5cf1c56",
     "beta-status.json": "7bc4c10716c6dafe4b2c831975444e220d34d1514f9619cd31b7ff9786e527c2",
-    "offline-shell-manifest.json": "ce1e477fa65ead7a8dd21c784f2696a1e8c005f6141b3f8d3e2a5916b9018be1",
+    "offline-shell-manifest.json": "97f2b659a5a7db2fa3f2cbb05fc4501d662a7126bb66676c3016d3ef37f95b1d",
     "gb-config.js": "885b85dbe7908bd4e07162e5a84eaea8a86be229c05d0a8fda049d9cbe32b9c7",
-    "gb-cloud-runtime-config.js": "6c7ece94a45f7abd4b59ed06f2d123b73daa35f9d3fddc2269ec1c4d085f4707",
-    "cloud-samples/manifest.json": "02a4b4dd854432f95ea514e9852e75540a4f4036152db85e3f02adeed4834865",
+    "gb-cloud-runtime-config.js": "0e80079f64ba0d5be1953188d26cb3e4a19ffc4ce8af5751ff1a2e6cfb5f4f7a",
+    "cloud-samples/manifest.json": "d49207b230c283b2cbc50e2c1902366f64aedc0649f4b725fe5b2a7ec4354eb9",
     "meldex-cloud-runtime-01.js": "26425dba5549ce70c423cdf8e14579c01ea057aed33e2b20a46ad20feaa1767b",
     "meldex-cloud-runtime-02.js": "aa03cb1e62028fe45e5ea7eb7f549babf44bdec770ddd64c9a9cc4e83b4df583",
     "meldex-cloud-runtime-03.js": "08df30124f9ded3a5ca73feab5f23ecd4f00a9cb365bc83d61d4b4abe7b27ea0",

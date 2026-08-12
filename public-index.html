@@ -25,7 +25,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-      var fallbackVersion = 'v0.7.259 BETA';
+      var fallbackVersion = 'v0.7.260 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -206,12 +206,12 @@
       <span>Meldex BETA</span>
     </a>
     <nav class="nav" aria-label="ページ内ナビゲーション">
+      <a href="#features">機能紹介</a>
       <a href="#philosophy">考え方</a>
       <a href="#download">デスクトップ版</a>
       <a href="#cloud">クラウド版</a>
       <a href="#standalone-apps">単独アプリ</a>
       <a href="#samples">サンプル</a>
-      <a href="#features">機能紹介</a>
       <a href="#changelog">更新履歴</a>
       <a href="#compare">版の比較</a>
       <a href="#speed">速度比較</a>
@@ -225,8 +225,9 @@
         <p class="eyebrow">BETA / 利用環境に合わせて選択</p>
         <h1>Meldex BETA</h1>
         <p class="lead">
-          Meldexは、漫画・小説・シナリオ・企画などの創作を、資料集めから構成・執筆・進行管理まで一つにまとめる創作支援ワークスペースです。
-          書いたものも集めたものも、特定のサービスの中ではなく、手元のフォルダに「何年後でも開ける一般的な形式のファイル」として残ります。
+          Meldexは、漫画・小説・脚本・動画などの創作を、資料集めから設定管理・構成づくり・進行管理まで支える創作支援ワークスペースです。
+          完成原稿を作るのは、使い慣れた制作ツールのまま。Meldexはその手前の「集める・整理する・組み立てる」を引き受けます。
+          集めたものも考えたことも、特定のサービスの中ではなく、手元のフォルダに「何年後でも開ける一般的な形式のファイル」として残ります。
           Windows PCではデスクトップ版とクラウド版、iPad・スマホ・Macなどではブラウザで使えるクラウド版を選べます。
         </p>
         <div class="actions">
@@ -236,190 +237,48 @@
           <a class="button subtle" href="#download" data-runtime-href="desktop-releases">過去版を選ぶ</a>
         </div>
       </div>
-      <aside class="status-panel" aria-label="配布状態">
-        <header>
-          <img src="Meldex_icon_128.png" alt="">
-          <div>
-            <h2>デスクトップ版 / クラウド版</h2>
-            <p>Windows desktop / Browser cloud</p>
-          </div>
-        </header>
-        <ul class="facts">
-          <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.259 BETA</span></li>
-          <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
-          <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
-          <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
-          <li><strong>ベータテスター登録数</strong><span id="beta-tester-count">更新確認中</span></li>
-          <li><strong>Dropbox接続枠（Development）</strong><span id="dropbox-development-count">更新確認中</span></li>
-          <li><strong>集計状態</strong><span id="beta-status-updated">集計値は更新確認中です</span></li>
-          <li><strong>状態</strong><span>BETA。機能名、配置、挙動は変更される可能性があります。</span></li>
-        </ul>
-      </aside>
-    </section>
-    <section class="section" id="philosophy">
-      <div class="section-inner">
-        <h2>Meldexの考え方</h2>
-        <p>Meldexは「創作の材料と成果を、全部自分の手元に置く」ために作られています。どの機能も、この4つの方針の上に載っています。</p>
-        <div class="grid">
-          <article class="item">
-            <h3>データはすべて、手元のファイル</h3>
-            <ul>
-            <li>書いた文章も、集めた画像も、表もボードも、あなたのフォルダの中に通常のファイルとして保存されます。</li>
-            <li>どこかのサービスの障害や終了で、作品が読めなくなることはありません。</li>
-            <li>バックアップはフォルダをコピーするだけ。エクスポート作業を待つ必要はありません。</li>
-            </ul>
-          </article>
-          <article class="item">
-            <h3>何年後でも開ける形式だけを使う</h3>
-            <ul>
-            <li>保存形式はMarkdown・JSON・CSV・SQLiteなどの一般的な形式だけ。作品データを独自形式や暗号化で閉じ込めません。</li>
-            <li>仮にMeldexが使えなくなっても、テキストエディタや表計算ソフトなど別の手段でデータを読み出せます。</li>
-            <li>他ツールへ移行するための手順マニュアルまで用意しています。本体はMITライセンスで配布しています。</li>
-            </ul>
-          </article>
-          <article class="item">
-            <h3>すべてが一つの場所で繋がる</h3>
-            <ul>
-            <li>文章・表・ボード・台本・画像・スケジュールが同じ場所にあり、互いにリンクで行き来できます。</li>
-            <li>表に登録した名前は、本文に書くだけで自動でリンクになります。作品の設定資料が、手作業なしで網の目のように育ちます。</li>
-            <li>Meldex上でファイルを移動・改名しても、リンクやバックリンクは自動で追従します。</li>
-            </ul>
-          </article>
-          <article class="item">
-            <h3>AIに読ませる前提で貯める</h3>
-            <ul>
-            <li>手元に貯めたノート・表・ボード・台本・画像は、そのままAIチャットや外部AIツールの参照資料になります。</li>
-            <li>AIは読むだけでなく、調査した結果を表や図としてMeldexの中へ書き戻すこともできます。</li>
-            <li>「集める → 貯まる → AIが読む → AIが書く」の循環が、手元で完結します。</li>
-            </ul>
-          </article>
-        </div>
-      </div>
-    </section>
-    <section class="section" id="download">
-      <div class="section-inner">
-        <h2>デスクトップ版をダウンロード</h2>
-        <p>Windows PCでローカルファイルとして扱いたい場合は、デスクトップ版を利用できます。PC内のファイルを直接読むため、速度や外部ツール連携の面で有利です。</p>
-        <div class="version-picker" aria-label="ダウンロードするバージョン">
-          <label for="desktop-version-select">
-            ダウンロードするバージョン
-            <select id="desktop-version-select">
-              <option value="0">v0.7.259 BETA / 最新</option>
-            </select>
-          </label>
-          <div class="version-meta">
-            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.259 BETA</strong></span>
-            <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
-            <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="#download" data-runtime-href="desktop-download">選択した版をダウンロード</a>
-            <a class="button subtle" href="#changelog" data-runtime-href="desktop-changelog">この版の変更内容を見る</a>
-            <a class="button subtle" href="#download" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
-            <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
-          </div>
-        </div>
-        <div class="grid">
-          <article class="item available">
-            <h3>デスクトップ版</h3>
-            <p>Windowsダウンロード版では、Dropbox、Google Drive、OneDrive、iCloud Driveなど、デスクトップ同期アプリがPC上に作成する同期フォルダーを、ホームフォルダー、ワークスペースフォルダー、ソースフォルダーとして利用できます。Meldex側でサービスごとの接続設定は不要です。PC上に同期フォルダーを作成しないWeb専用サービスは対象外です。</p>
-          </article>
-          <article class="item limited">
-            <h3>古いバージョン</h3>
-            <p>過去版を取得できた場合は、上の選択欄で選べます。表示されない場合は「すべての過去版を見る」から選んでください。</p>
-          </article>
-          <article class="item important">
-            <h3>確認事項</h3>
-            <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
-          </article>
-        </div>
-      </div>
-    </section>
-    <section class="section" id="cloud">
-      <div class="section-inner">
-        <h2>クラウド版</h2>
-        <p>Meldex Cloudはアカウントなしですぐに開始でき、初期状態ではこの端末内に保存します。Dropboxへの接続とオフライン利用は、起動後いつでも設定できます。</p>
-        <p>端末内保存はブラウザごとに独立しています。別の端末と同じデータを使う場合だけ、設定からDropboxへ接続してください。切り替えても端末内データを自動で移動・削除しません。</p>
-        <div class="version-picker" aria-label="クラウド版を起動">
-          <div class="version-meta">
-            <span>起動する版: <strong>公開中の最新版</strong></span>
-            <span>初期保存先: <strong>この端末内</strong></span>
-            <span>必要なアカウント: <strong>なし</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="Meldex.html">クラウド版を起動</a>
-          </div>
-        </div>
-        <div class="grid">
-          <article class="item available">
-            <h3>すぐ開ける</h3>
-            <p>iPad、iPhone、Android、Windows、Macなどの最新ブラウザで、アカウントを作らずに開始できます。</p>
-            <div class="mode-actions">
-              <a class="button" href="Meldex.html">クラウド版を起動</a>
-            </div>
-          </article>
-          <article class="item limited">
-            <h3>オンライン / オフラインを選べる</h3>
-            <p>初回起動時に、オンライン時だけ使うか、Meldex本体を端末へ保存してオフラインでも使うかを選べます。設定から後で変更できます。</p>
-          </article>
-          <article class="item available">
-            <h3>ホーム画面に追加</h3>
-            <p>Meldex本体とクイックメモは別々に追加できます。本体は作業全体、クイックメモは短いメモや共有URLの保存に使います。</p>
-            <div class="mode-actions">
-              <a class="button" href="Meldex.html">Meldex本体を開く</a>
-              <a class="button subtle" href="quick-memo.html">クイックメモを開く</a>
-            </div>
-          </article>
-          <article class="item important">
-            <h3>クラウド版のバージョン</h3>
-            <p>クラウド版は最新版のみ提供しています。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
-          </article>
-          <article class="item limited">
-            <h3>正式版でのオンラインストレージ対応</h3>
-            <p>将来の正式版では、Apple App Store / Google Play向けのネイティブアプリを公開し、OSのファイル選択機能を通じてiCloud Drive、Google Drive、OneDriveなどのフォルダーを扱えるようにする見込みです。ストア審査と実機検証が必要なため、開発版では今後の実装予定です。</p>
-          </article>
-        </div>
-      </div>
-    </section>
-    <section class="section" id="standalone-apps">
-      <div class="section-inner">
-        <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
-        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
-        <ul class="notes">
-          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
-          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
-          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="samples">
-      <div class="section-inner">
-        <h2>サンプルデータ</h2>
-        <p>サンプル作品は、デスクトップ版でもクラウド版でも、Meldex内の「サンプルを追加」を明示的に押した場合だけホームフォルダへ追加されます。確認ダイアログは表示されません。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
-        <div class="version-picker" aria-label="サンプルデータを追加">
-          <div class="version-meta">
-            <span>デスクトップ版: <strong>設定から明示的に追加</strong></span>
-            <span>クラウド版: <strong>端末内保存またはDropbox接続後、設定から明示的に追加</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
-            <a class="button subtle" href="#download">デスクトップ版で追加</a>
-          </div>
-        </div>
-        <ul class="notes">
-          <li>初回起動、Dropbox接続、ホームフォルダ変更、設定復帰の際に、サンプル追加の確認を自動表示しません。</li>
-          <li>「サンプルを追加」を押すと、別の確認を挟まず追加を開始します。</li>
-          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
-          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
-        </ul>
-      </div>
+      <figure class="hero-shot">
+        <img src="public-shot-workspace.png" alt="Meldexのワークスペース。左にフォルダツリー、中央に作品フォルダの中身（表・ボード・ノート・画像フォルダ）が一覧表示されている" width="1600" height="1000" loading="eager">
+      </figure>
     </section>
     <section class="section" id="features">
       <div class="section-inner">
         <h2>機能紹介</h2>
-        <p>どの機能で作ったものも、手元のフォルダに一般的な形式のファイルとして残ります。メイン機能・補助機能・取り込み機能の特徴を3つずつ紹介します。デスクトップ版とクラウド版のどちらでも、同じ作品データを扱えます。</p>
+        <p>画面はすべて実際のスクリーンショットです。どの機能で作ったものも、手元のフォルダに一般的な形式のファイルとして残り、デスクトップ版とクラウド版のどちらでも同じ作品データを扱えます。</p>
+        <div class="showcase">
+          <figure class="showcase-media">
+            <img src="public-shot-sheet.png" alt="キャラクターの一覧表。ふりがな・一人称・生年月日・性別・身長・体型などの列に、7人分の設定が整理されている" width="1600" height="1000" loading="lazy">
+          </figure>
+          <div class="showcase-copy">
+            <h3>設定は表で。没にした案も捨てない</h3>
+            <p>キャラ・アイテム・伏線を、リレーションや数式が使える表で管理できます。ひとつの項目に「採用・案・ボツ」の候補を並べて残せるので、迷った案も没にした案も、そのまま作品の資産になります。</p>
+          </div>
+        </div>
+        <!-- スクリーンショット: ボード（相関図またはマインドマップ）を開いた画面。全カードが収まる全体表示で、カード同士がラインで繋がっている状態。挿入時はこのブロックを class="showcase flip" に戻し、showcase-copy の前に <figure class="showcase-media"><img src="public-shot-board.png" ...></figure> を追加し、build_cloud_static_manifest.py の STATIC_FILES へ public-shot-board.png を再登録する -->
+        <div class="showcase solo">
+          <div class="showcase-copy">
+            <h3>考えごとは、面に広げる</h3>
+            <p>相関図・フローチャート・マインドマップを、同じボードの上で自由に作れます。カードにノートや表をリンクしておけば、全体の構成を眺めたまま、気になったカードの中身をすぐ確認できます。</p>
+          </div>
+        </div>
+        <div class="showcase">
+          <figure class="showcase-media">
+            <img src="public-shot-images.png" alt="画像フォルダのサムネイル一覧。キャラクターの立ち絵がタイル状に並び、ファイルサイズと解像度が表示されている" width="1600" height="1000" loading="lazy">
+          </figure>
+          <div class="showcase-copy">
+            <h3>集めた画像が、探せる資料になる</h3>
+            <p>フォルダのサムネイル一覧、タグ付け（AIによる自動タグ付けに対応）、重複画像の検出、そして言葉で中身を探せる画像検索。長年集めてきた資料を、使える状態のまま抱えられます。</p>
+          </div>
+        </div>
+        <div class="showcase flip">
+          <figure class="showcase-media">
+            <img src="public-shot-note.png" alt="作品のプロットを開いたノート。作成方針・章立て・各章の本文が見出し付きで整理されている" width="1600" height="1000" loading="lazy">
+          </figure>
+          <div class="showcase-copy">
+            <h3>書いた名前が、ぜんぶ繋がる</h3>
+            <p>表に登録した名前は、ノートや台本の本文に書くだけで自動的にリンクになります。手作業でリンクを張らなくても、作品の設定資料が網の目のように育ちます。</p>
+          </div>
+        </div>
         <h3 class="group-title">メイン機能</h3>
         <div class="grid">
           <article class="item">
@@ -449,9 +308,9 @@
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v14"/><path d="M16 12h2"/><path d="M16 8h2"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 12h2"/><path d="M6 8h2"/></svg>シナリオ</h3>
             <ul>
-            <li>ページ・コマ・キャラクター・セリフを表形式で執筆できます。キャラクター名は毎回入力せず、ドロップダウンから選べます。</li>
-            <li>縦書き・ルビ・プロットモードに対応し、構成の検討と本文の執筆を行き来できます。</li>
-            <li>書いたシナリオはCLIP STUDIO PAINTへ送信でき、ネーム作業へそのまま進めます。条件付きカラーや印刷レイアウトにも対応します。</li>
+            <li>ページ・コマ・キャラクター・セリフを表形式で整理して、話の流れを組み立てられます。キャラクター名は毎回入力せず、ドロップダウンから選べます。</li>
+            <li>プロットと本文を行き来しながら構成を詰められます。縦書き・ルビの表示に対応します。</li>
+            <li>組み上げた内容はCLIP STUDIO PAINTへ送信でき、ネーム作業へそのまま進めます。条件付きカラーや印刷レイアウトにも対応します。</li>
             </ul>
           </article>
           <article class="item">
@@ -599,6 +458,185 @@
         </div>
       </div>
     </section>
+    <section class="section" id="philosophy">
+      <div class="section-inner">
+        <h2>Meldexの考え方</h2>
+        <p>Meldexは「創作の材料と成果を、全部自分の手元に置く」ために作られています。どの機能も、この4つの方針の上に載っています。</p>
+        <div class="grid">
+          <article class="item">
+            <h3>データはすべて、手元のファイル</h3>
+            <ul>
+            <li>書いた文章も、集めた画像も、表もボードも、あなたのフォルダの中に通常のファイルとして保存されます。</li>
+            <li>どこかのサービスの障害や終了で、作品が読めなくなることはありません。</li>
+            <li>バックアップはフォルダをコピーするだけ。エクスポート作業を待つ必要はありません。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>何年後でも開ける形式だけを使う</h3>
+            <ul>
+            <li>保存形式はMarkdown・JSON・CSV・SQLiteなどの一般的な形式だけ。作品データを独自形式や暗号化で閉じ込めません。</li>
+            <li>仮にMeldexが使えなくなっても、テキストエディタや表計算ソフトなど別の手段でデータを読み出せます。</li>
+            <li>他ツールへ移行するための手順マニュアルまで用意しています。本体はMITライセンスで配布しています。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>すべてが一つの場所で繋がる</h3>
+            <ul>
+            <li>文章・表・ボード・台本・画像・スケジュールが同じ場所にあり、互いにリンクで行き来できます。</li>
+            <li>表に登録した名前は、本文に書くだけで自動でリンクになります。作品の設定資料が、手作業なしで網の目のように育ちます。</li>
+            <li>Meldex上でファイルを移動・改名しても、リンクやバックリンクは自動で追従します。</li>
+            </ul>
+          </article>
+          <article class="item">
+            <h3>AIに読ませる前提で貯める</h3>
+            <ul>
+            <li>手元に貯めたノート・表・ボード・台本・画像は、そのままAIチャットや外部AIツールの参照資料になります。</li>
+            <li>AIは読むだけでなく、調査した結果を表や図としてMeldexの中へ書き戻すこともできます。</li>
+            <li>「集める → 貯まる → AIが読む → AIが書く」の循環が、手元で完結します。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="download">
+      <div class="section-inner">
+        <h2>デスクトップ版をダウンロード</h2>
+        <p>Windows PCでローカルファイルとして扱いたい場合は、デスクトップ版を利用できます。PC内のファイルを直接読むため、速度や外部ツール連携の面で有利です。</p>
+        <div class="version-picker" aria-label="ダウンロードするバージョン">
+          <label for="desktop-version-select">
+            ダウンロードするバージョン
+            <select id="desktop-version-select">
+              <option value="0">v0.7.260 BETA / 最新</option>
+            </select>
+          </label>
+          <div class="version-meta">
+            <span>選択中: <strong data-runtime-text="desktop-version">v0.7.260 BETA</strong></span>
+            <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
+            <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="#download" data-runtime-href="desktop-download">選択した版をダウンロード</a>
+            <a class="button subtle" href="#changelog" data-runtime-href="desktop-changelog">この版の変更内容を見る</a>
+            <a class="button subtle" href="#download" data-runtime-href="desktop-release-page">リリース詳細を見る</a>
+            <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
+          </div>
+        </div>
+        <aside class="status-panel" aria-label="配布状態">
+          <header>
+            <img src="Meldex_icon_128.png" alt="">
+            <div>
+              <h2>デスクトップ版 / クラウド版</h2>
+              <p>Windows desktop / Browser cloud</p>
+            </div>
+          </header>
+          <ul class="facts">
+            <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.260 BETA</span></li>
+            <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
+            <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
+            <li><strong>クラウド版</strong><span><a href="Meldex.html">最新版を起動</a></span></li>
+            <li><strong>ベータテスター登録数</strong><span id="beta-tester-count">更新確認中</span></li>
+            <li><strong>Dropbox接続枠（Development）</strong><span id="dropbox-development-count">更新確認中</span></li>
+            <li><strong>集計状態</strong><span id="beta-status-updated">集計値は更新確認中です</span></li>
+            <li><strong>状態</strong><span>BETA。機能名、配置、挙動は変更される可能性があります。</span></li>
+          </ul>
+        </aside>
+        <div class="grid">
+          <article class="item available">
+            <h3>デスクトップ版</h3>
+            <p>Windowsダウンロード版では、Dropbox、Google Drive、OneDrive、iCloud Driveなど、デスクトップ同期アプリがPC上に作成する同期フォルダーを、ホームフォルダー、ワークスペースフォルダー、ソースフォルダーとして利用できます。Meldex側でサービスごとの接続設定は不要です。PC上に同期フォルダーを作成しないWeb専用サービスは対象外です。</p>
+          </article>
+          <article class="item limited">
+            <h3>古いバージョン</h3>
+            <p>過去版を取得できた場合は、上の選択欄で選べます。表示されない場合は「すべての過去版を見る」から選んでください。</p>
+          </article>
+          <article class="item important">
+            <h3>確認事項</h3>
+            <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="cloud">
+      <div class="section-inner">
+        <h2>クラウド版</h2>
+        <p>Meldex Cloudはアカウントなしですぐに開始でき、初期状態ではこの端末内に保存します。Dropboxへの接続とオフライン利用は、起動後いつでも設定できます。</p>
+        <p>端末内保存はブラウザごとに独立しています。別の端末と同じデータを使う場合だけ、設定からDropboxへ接続してください。切り替えても端末内データを自動で移動・削除しません。</p>
+        <div class="version-picker" aria-label="クラウド版を起動">
+          <div class="version-meta">
+            <span>起動する版: <strong>公開中の最新版</strong></span>
+            <span>初期保存先: <strong>この端末内</strong></span>
+            <span>必要なアカウント: <strong>なし</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+          </div>
+        </div>
+        <div class="grid">
+          <article class="item available">
+            <h3>すぐ開ける</h3>
+            <p>iPad、iPhone、Android、Windows、Macなどの最新ブラウザで、アカウントを作らずに開始できます。</p>
+            <div class="mode-actions">
+              <a class="button" href="Meldex.html">クラウド版を起動</a>
+            </div>
+          </article>
+          <article class="item limited">
+            <h3>オンライン / オフラインを選べる</h3>
+            <p>初回起動時に、オンライン時だけ使うか、Meldex本体を端末へ保存してオフラインでも使うかを選べます。設定から後で変更できます。</p>
+          </article>
+          <article class="item available">
+            <h3>ホーム画面に追加</h3>
+            <p>Meldex本体とクイックメモは別々に追加できます。本体は作業全体、クイックメモは短いメモや共有URLの保存に使います。</p>
+            <div class="mode-actions">
+              <a class="button" href="Meldex.html">Meldex本体を開く</a>
+              <a class="button subtle" href="quick-memo.html">クイックメモを開く</a>
+            </div>
+          </article>
+          <article class="item important">
+            <h3>クラウド版のバージョン</h3>
+            <p>クラウド版は最新版のみ提供しています。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
+          </article>
+          <article class="item limited">
+            <h3>正式版でのオンラインストレージ対応</h3>
+            <p>将来の正式版では、Apple App Store / Google Play向けのネイティブアプリを公開し、OSのファイル選択機能を通じてiCloud Drive、Google Drive、OneDriveなどのフォルダーを扱えるようにする見込みです。ストア審査と実機検証が必要なため、開発版では今後の実装予定です。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="standalone-apps">
+      <div class="section-inner">
+        <h2>各ツールを単独アプリとして使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
+        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
+        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
+        <ul class="notes">
+          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
+          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
+          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="samples">
+      <div class="section-inner">
+        <h2>サンプルデータ</h2>
+        <p>サンプル作品は、デスクトップ版でもクラウド版でも、Meldex内の「サンプルを追加」を明示的に押した場合だけホームフォルダへ追加されます。確認ダイアログは表示されません。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
+        <div class="version-picker" aria-label="サンプルデータを追加">
+          <div class="version-meta">
+            <span>デスクトップ版: <strong>設定から明示的に追加</strong></span>
+            <span>クラウド版: <strong>端末内保存またはDropbox接続後、設定から明示的に追加</strong></span>
+          </div>
+          <div class="mode-actions">
+            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
+            <a class="button subtle" href="#download">デスクトップ版で追加</a>
+          </div>
+        </div>
+        <ul class="notes">
+          <li>初回起動、Dropbox接続、ホームフォルダ変更、設定復帰の際に、サンプル追加の確認を自動表示しません。</li>
+          <li>「サンプルを追加」を押すと、別の確認を挟まず追加を開始します。</li>
+          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
+          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
+        </ul>
+      </div>
+    </section>
     <section class="section" id="compare">
       <div class="section-inner">
         <h2>クラウド版とデスクトップ版の違い</h2>
@@ -670,7 +708,7 @@
                 <td>デスクトップ版（ソースフォルダ：ローカル）</td>
                 <td><span class="speed-rank">最速</span></td>
                 <td>PC内のファイルを直接読むため、通信待ちがありません。</td>
-                <td>大きいボード、長いノート、大量シート編集、長時間の執筆。</td>
+                <td>大きいボード、長いノート、大量シート編集などの長時間作業。</td>
               </tr>
               <tr>
                 <td>デスクトップ版（ソースフォルダ：同期フォルダー内）</td>

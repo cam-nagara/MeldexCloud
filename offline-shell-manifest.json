@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.259-0243f862636fb8f3d1d2",
+  "version": "0.7.260-53146b1bdfe430b890fa",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -717,7 +717,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "6c7ece94a45f7abd4b59ed06f2d123b73daa35f9d3fddc2269ec1c4d085f4707"
+      "sha256": "0e80079f64ba0d5be1953188d26cb3e4a19ffc4ce8af5751ff1a2e6cfb5f4f7a"
     },
     {
       "path": "gb-cloud-sample-seed.js",
@@ -3133,7 +3133,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "9c3e6e83b227fe015ed4f0d40989392395ac776ede11f5fc7333404370396704"
+      "sha256": "535a166648b7d74524ecae62c8f886a06a65ae05f04e7e64b89afdf130d6deaf"
     },
     {
       "path": "manifest.json",
@@ -3552,16 +3552,36 @@
       "sha256": "34ee4a94bca969403f8dc35fa507d0a16971f2f5c0049a57fbc72989669ffdaf"
     },
     {
+      "path": "public-beta-status.js",
+      "sha256": "5c3d9adcdabb9117093c34d990a19e14e33832b7f8845d5722ec4da853827160"
+    },
+    {
       "path": "public-index.css",
-      "sha256": "1ab4626bbdf7a67bf5de42a25caf5208163ee7c7b6b67c293521228fb43df907"
+      "sha256": "06cd7a2af73e02b93d4fb1a11c50e08a754c20c4963c88ace84eb4669b06e117"
     },
     {
       "path": "public-index.html",
-      "sha256": "e0c1d0f48a17f84359a15c39a5bd84bf119c53dd2d6dccb42cf7df3ad84d8845"
+      "sha256": "d19cd131e5835e0606be7653a75d439189a41ff817d9eb016ad87ad18fdbdd45"
     },
     {
       "path": "public-legal.css",
       "sha256": "f43831a03c7b474c0f7edf3675767aa28ba6b7a41254026b8537de5f2a32bcfd"
+    },
+    {
+      "path": "public-shot-images.png",
+      "sha256": "9d0328b0d5864871b5cb9415e8d1c4448132b44c50a91c461f2348b6e25a45ab"
+    },
+    {
+      "path": "public-shot-note.png",
+      "sha256": "6d47933f79c8a01b7c133c1726c2a8925fd8d5ecbc800d52ea424906dfa13e7f"
+    },
+    {
+      "path": "public-shot-sheet.png",
+      "sha256": "2126886bfd1b5f907d754d33619aefcc01bcb0b47c0644f958dd774da2a18be6"
+    },
+    {
+      "path": "public-shot-workspace.png",
+      "sha256": "2b942311b5429dc440d9f7c20bac0786e9fc4674681c3869e5b78ad619572029"
     },
     {
       "path": "public-standalone-apps.css",
@@ -3797,7 +3817,7 @@
     },
     {
       "path": "version.json",
-      "sha256": "5939f8730f68ff1d0cd64114db3e95323087bf48f721558e0f8dfc175911c5d0"
+      "sha256": "907e1095654b171e764f6f7af5acfcc76432eb7fef70999672d1ae7c61a6a10d"
     },
     {
       "path": "viewer-annotation-legacy.js",
