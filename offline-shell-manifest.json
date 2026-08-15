@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.306-004df11eb1e4102b1451",
+  "version": "0.7.306-471c5e3a8ba436109146",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -741,7 +741,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "1a8243f97caad8e37f4a73930a42466ad15b9acb670b393ea8169603340c609c"
+      "sha256": "1879a674472b72eec4c076fdcb6974d8e52bb9dcd895b0df7f7260a49649b7f6"
     },
     {
       "path": "gb-cloud-sample-seed.js",

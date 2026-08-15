@@ -49,13 +49,6 @@
         "version": "0.7.165"
       },
       {
-        "publishedAt": "2026-08-06",
-        "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.157",
-        "assetName": "Meldex-v0.7.157.zip",
-        "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.157/Meldex-v0.7.157.zip",
-        "version": "0.7.157"
-      },
-      {
         "publishedAt": "2026-07-31",
         "pageUrl": "https://github.com/cam-nagara/MeldexCloud/releases/tag/v0.7.081",
         "assetName": "Meldex-v0.7.081.zip",
