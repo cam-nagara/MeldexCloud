@@ -161,7 +161,7 @@ const UI_STYLE_SECTIONS = {
     { label: 'カーソル', fg:'--bd-caret-color', width:'--bd-caret-width', text:'┃' },
     { label: 'カード隙間', numbers:[
       { label:'同階層', key:'--bd-gap-siblings', min:0, max:400, step:1, unit:'px', fallback:10 },
-      { label:'階層間',  key:'--bd-gap-levels',  min:0, max:600, step:1, unit:'px', fallback:30 },
+      { label:'階層間',  key:'--bd-gap-levels',  min:0, max:600, step:1, unit:'px', fallback:50 },
     ], text:'隙間' },
   ],
   'スケジュール': [
@@ -282,6 +282,65 @@ const UI_STYLE_SECTIONS = {
   ],
 };
 
+// 2026-08-12: 「バランス黒」パレット計画（2026-08-09/08-10）より前の builtin-dark 既定値。
+// gb-theme-manager.part01.part02.js の同名テーブル（STALE_BUILTIN_PALETTE_CSS_VARS）と対になる
+// 参照値で、意図的に複製している（両ファイルとも編集対象が限定されているため）。
+// editor-theme（COLOR_SETTINGS_KEY）は saveColorSettings() 実行時点の全キーをまるごと保存する
+// ため、ユーザーが1色も編集していなくても「当時のデフォルト値」がそのまま入り込み、
+// loadColorSettings() が無条件に再適用してテーマ管理側の新しい既定値を覆い隠してしまう。
+// ここに載っている値と完全一致するキーだけを「未編集」とみなして保存データから取り除き、
+// 1色でも異なれば必ずユーザー編集として残す。
+const STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS = Object.freeze({
+  '--bg': '#1e1e1e', '--bg2': '#252525', '--bg3': '#2d2d2d', '--bg4': '#3e3e3e',
+  '--border': '#333333',
+  '--content-bg': '#252525',
+  '--ui-tooltip-bg': '#2d2d2d', '--ui-tooltip-border': '#555555',
+  '--ui-scrollbar-track-bg': '#252525', '--ui-scrollbar-thumb-bg': '#3e3e3e',
+  '--ui-pane-tabbar-bg': '#252525', '--ui-pane-tab-active-bg': '#1e1e1e',
+  '--ui-panelset-tabbar-bg': '#252525', '--ui-collapsed-tabbar-bg': '#252525', '--ui-dockbar-bg': '#252525',
+  '--ui-header-bg': '#2d2d2d',
+  '--ui-toolbar-bg': '#252525',
+  '--ui-hover-bg': '#3e3e3e',
+  '--ui-accent': '#2563eb',
+  '--db-th-bg': '#2d2d2d', '--db-entity-bg': '#1e1e1e',
+  '--page-text-bg': '#252525',
+});
+
+function _normalizeStaleColorCompareValue(value) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  const short = raw.match(/^#([0-9a-f]{3})$/);
+  if (short) return '#' + short[1].split('').map(ch => ch + ch).join('');
+  return raw;
+}
+
+// editor-theme に保存された「背景系キー」が、当時のbuilt-inデフォルトをそのまま写しただけの
+// 値かどうかを判定し、そうであればsettingsから取り除く（=テーマ管理側の解決結果を優先させる）。
+// 現在の既定テーマが builtin-dark 系でない場合は対象外（別テーマの意図的な色を誤って消さない）。
+function _pruneStaleBuiltinBackgroundColorSettings(settings) {
+  if (!settings || typeof settings !== 'object') return false;
+  let currentThemeId = '';
+  try {
+    // getThemeById() は引数なしで現在の既定テーマ（「OSに合わせる」の解決結果も含む）を返す。
+    // 生の保存値（getDefaultThemeId()）だけを見ると「OSに合わせる」でダーク相当になっている
+    // ケースを取りこぼすため、こちらを使う。
+    currentThemeId = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
+      ? (MeldexThemeManager.getThemeById()?.id || '')
+      : '';
+  } catch {
+    currentThemeId = '';
+  }
+  if (currentThemeId !== 'builtin-dark') return false;
+  let pruned = false;
+  Object.keys(STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS).forEach(key => {
+    if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+    if (_normalizeStaleColorCompareValue(settings[key]) === STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS[key]) {
+      delete settings[key];
+      pruned = true;
+    }
+  });
+  return pruned;
+}
+
 const CS_TAB_NAMES = Object.keys(UI_STYLE_SECTIONS);
 const COMMON_INTEGRATED_APP_STYLE_KEYS = new Set([
   ...COMMON_THEME_SURFACE_STYLE_KEYS,
@@ -396,6 +455,9 @@ function loadColorSettings() {
     const storedStandardPaletteAdjust = localStorage.getItem(STANDARD_PALETTE_ADJUST_STORAGE_KEY);
     if (saved) {
       const s = JSON.parse(saved);
+      if (_pruneStaleBuiltinBackgroundColorSettings(s)) {
+        try { localStorage.setItem(COLOR_SETTINGS_KEY, JSON.stringify(s)); } catch {}
+      }
       for (const [k, v] of Object.entries(s)) {
         if (k.startsWith('--')) applySettingsThemeStyleSetting(k, normalizeStyleSettingValue(k, v), { markDirty: false });
       }

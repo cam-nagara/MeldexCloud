@@ -766,4 +766,9 @@
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;
+  // gb-settings-x-bookmarks.js 等、他の設定パネルからも同じ「Cloud静的版では
+  // 成立しないデスクトップ専用操作を隠す」判定を再利用できるよう公開する
+  // （新しい判定を作らず、既存のこの判定へ揃えるため。インポート・機能生成
+  // ファイル保護計画のクラウド並行修正で追加）。
+  window.isCloudStaticImportSurface = isCloudStaticImportSurface;
 })();

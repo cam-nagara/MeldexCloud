@@ -22,6 +22,7 @@
     selectedTagIds: [],
     tagIdsByName: {},
     commonTagColors: {}, // 共通タグ由来の候補: 名前 → 色（#rrggbb、無ければ空文字）。スウォッチ表示用
+    defaultPresetTagNames: [], // 既定プリセット（標準）に属するタグ名。候補帯の並び順3段目に使う
     voiceTimerInterval: null,
     voiceStartTime: 0,
     voicePausing: false,
@@ -37,6 +38,22 @@
   if (typeof window !== 'undefined') {
     window.MeldexQuickMemo = window.MeldexQuickMemo || {};
     window.MeldexQuickMemo.currentPath = () => state.currentPath || '';
+    // Meldex本体のフロートパネル（gb-quick-memo-panel.js）が、閉じる前に
+    // 書きかけを保存させるために呼ぶ。単独アプリでも同じ経路を使える。
+    window.MeldexQuickMemo.flush = () => saveNow({ manual: true });
+  }
+
+  // Meldex本体のフロートパネル等へ埋め込まれている状態。埋め込み時は
+  // 本体側のService Workerと同じオリジンになるため、クイックメモ専用の
+  // Service Workerを重ねて登録しない。
+  function isEmbedded() {
+    if (typeof window === 'undefined') return false;
+    try {
+      if (window.top !== window.self) return true;
+    } catch {
+      return true;
+    }
+    return new URLSearchParams(location.search).get('embed') === '1';
   }
   let editorController = null;
   let drawingController = null;
@@ -210,6 +227,9 @@
     window.addEventListener('online', flushPendingQueue);
     window.addEventListener('meldex:tag-dictionary-changed', () => loadTags());
     window.addEventListener('beforeunload', () => persistDraft(collectMemo()));
+    // フロートパネルのリサイズ（本体埋め込み時）でも横スクロールのフェード表示を
+    // 追随させる。iframeの表示領域が変わればcontentWindowのresizeが発火する。
+    window.addEventListener('resize', () => _updateTagChipsOverflowHint());
   }
 
   function switchMode(mode) {
@@ -1058,6 +1078,59 @@
   }
 
   // --- タグチップ ---------------------------------------------------------
+  //
+  // 候補帯は辞書の全件（同梱標準プリセットだけで1,000件）を並び順のまま描画すると
+  // 上下が見切れて中央付近しか見えなくなる問題があった。1行・横スクロールへ直した
+  // 上で（gb-quick-memo-panel/quick-memo.css側）、候補の選出基準を持たせる:
+  //   1. 現在このメモに付いているタグ（常に先頭・常に表示）
+  //   2. 最近このユーザーが付けたタグ（この端末のlocalStorageで管理）
+  //   3. 2が無い新規環境では、既定プリセット（標準）に属するタグ
+  //   4. 残りは辞書の並び順
+  // 選択状態は背景色の変化だけでなく、色に依存しないチェック印も併用する。
+  // （2026-08-14 画像以外の自動タグ付け／タグ候補帯の仕様是正 計画書 Phase 1-3）
+
+  const RECENT_TAG_NAMES_KEY = 'meldex:quick-memo:recent-tags:v1';
+  const RECENT_TAG_NAMES_LIMIT = 24;
+  const TAG_RAIL_DISPLAY_LIMIT = 16;
+  const DEFAULT_TAG_PRESET_NAME = '標準';
+
+  function _loadRecentTagNames() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(RECENT_TAG_NAMES_KEY) || '[]');
+      return Array.isArray(raw) ? raw.filter(item => typeof item === 'string' && item.trim()) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function _recordRecentTagName(name) {
+    const tag = String(name || '').trim();
+    if (!tag) return;
+    try {
+      const next = [tag, ..._loadRecentTagNames().filter(item => item !== tag)].slice(0, RECENT_TAG_NAMES_LIMIT);
+      localStorage.setItem(RECENT_TAG_NAMES_KEY, JSON.stringify(next));
+    } catch (_) {
+      // この端末で保存できなくても、候補の並び順が変わらないだけで操作は続行する。
+    }
+  }
+
+  // 選出基準に沿って候補の並び順を作る（重複なし・存在するタグのみ）。
+  function _tagRailCandidateOrder() {
+    const known = new Set(state.allTags);
+    const seen = new Set();
+    const ordered = [];
+    const push = (name) => {
+      const tag = String(name || '').trim();
+      if (!tag || !known.has(tag) || seen.has(tag)) return;
+      seen.add(tag);
+      ordered.push(tag);
+    };
+    state.selectedTags.forEach(push);
+    _loadRecentTagNames().forEach(push);
+    (state.defaultPresetTagNames || []).forEach(push);
+    state.allTags.forEach(push);
+    return ordered;
+  }
 
   async function _loadUnifiedTagCatalog() {
     if (window.MeldexGlobalTags?.loadTags) {
@@ -1095,6 +1168,7 @@
     const nextColors = {};
     const nextIds = {};
     const names = [];
+    const defaultPresetNames = [];
     tags.forEach((tag) => {
       const name = String(tag?.name || '').trim();
       if (!name) return;
@@ -1102,10 +1176,13 @@
       names.push(name);
       nextColors[name] = groupColor || String(tag?.color || '').trim();
       nextIds[name] = String(tag?.id || '');
+      const presets = Array.isArray(tag?.presets) ? tag.presets.map(preset => String(preset || '')) : [];
+      if (!presets.length || presets.includes(DEFAULT_TAG_PRESET_NAME)) defaultPresetNames.push(name);
     });
     state.allTags = [...new Set(names)];
     state.commonTagColors = nextColors;
     state.tagIdsByName = nextIds;
+    state.defaultPresetTagNames = [...new Set(defaultPresetNames)];
     state.selectedTagIds = state.selectedTags
       .map(name => nextIds[name])
       .filter(Boolean);
@@ -1143,28 +1220,94 @@
     return tagLoadPromise;
   }
 
+  function _buildTagChip(tag) {
+    const chip = document.createElement('span');
+    const isSelected = state.selectedTags.includes(tag);
+    const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
+    const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
+    chip.className = 'qm-tag-chip'
+      + (isSelected ? ' is-selected' : '')
+      + (isCommonTag ? ' qm-tag-chip-common' : '');
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('tabindex', '0');
+    chip.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+    chip.title = isCommonTag ? '統一タグ辞書' : '';
+    // 選択中のチェック印はCSSの::beforeで表示する（DOMへテキストノードを
+    // 足すと el.textContent がタグ名と一致しなくなり、E2Eの選択判定が壊れるため）。
+    const label = document.createElement('span');
+    label.className = 'qm-tag-chip-label';
+    label.textContent = tag;
+    if (commonColor) label.style.color = commonColor;
+    chip.appendChild(label);
+    chip.addEventListener('click', () => toggleTag(tag));
+    chip.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        toggleTag(tag);
+      }
+    });
+    return chip;
+  }
+
+  function _buildTagRailMoreChip(hiddenCount, allNames) {
+    const chip = document.createElement('span');
+    chip.className = 'qm-tag-chip qm-tag-chip-more';
+    chip.setAttribute('role', 'button');
+    chip.setAttribute('tabindex', '0');
+    chip.textContent = `+${hiddenCount}`;
+    chip.title = `すべてのタグ（${allNames.length}件）\n${allNames.join('、')}`;
+    chip.setAttribute('aria-label', `残り${hiddenCount}件のタグを含むすべてのタグから選ぶ`);
+    const openAll = () => { addNewTag(); };
+    chip.addEventListener('click', openAll);
+    chip.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openAll();
+      }
+    });
+    return chip;
+  }
+
+  function _updateTagChipsOverflowHint() {
+    const container = els.tagChips;
+    if (!container) return;
+    const overflowing = container.scrollWidth > container.clientWidth + 1;
+    container.classList.toggle('qm-tag-chips--overflow', overflowing);
+  }
+
+  function _ensureTagRailHelp() {
+    const label = document.querySelector('#tagSelector .qm-tag-label');
+    if (!label || label.dataset.helpAttached === '1' || typeof window.fieldHelp !== 'function') return;
+    label.dataset.helpAttached = '1';
+    label.insertAdjacentHTML('beforeend', window.fieldHelp(
+      '付いているタグ→最近使ったタグ→よく使うタグの順に並びます。横スクロールで続きを見られます',
+    ));
+  }
+
   function renderTagChips() {
     const container = els.tagChips;
     if (!container) return;
+    _ensureTagRailHelp();
     container.innerHTML = '';
-    const tags = [...new Set(state.allTags)];
-    tags.forEach((tag) => {
-      const chip = document.createElement('span');
-      const isCommonTag = Object.prototype.hasOwnProperty.call(state.commonTagColors, tag);
-      const commonColor = isCommonTag ? (state.commonTagColors[tag] || '') : '';
-      chip.className = 'qm-tag-chip' + (state.selectedTags.includes(tag) ? ' is-selected' : '') + (isCommonTag ? ' qm-tag-chip-common' : '');
-      chip.textContent = tag;
-      if (commonColor) chip.style.color = commonColor;
-      chip.title = isCommonTag ? '統一タグ辞書' : '';
-      chip.addEventListener('click', () => toggleTag(tag));
-      container.appendChild(chip);
-    });
+    const ordered = _tagRailCandidateOrder();
+    const alwaysShown = ordered.filter(tag => state.selectedTags.includes(tag));
+    const rest = ordered.filter(tag => !state.selectedTags.includes(tag));
+    const restLimit = Math.max(0, TAG_RAIL_DISPLAY_LIMIT - alwaysShown.length);
+    const visible = [...alwaysShown, ...rest.slice(0, restLimit)];
+    const hiddenCount = ordered.length - visible.length;
+    visible.forEach((tag) => container.appendChild(_buildTagChip(tag)));
+    if (hiddenCount > 0) container.appendChild(_buildTagRailMoreChip(hiddenCount, ordered));
+    requestAnimationFrame(_updateTagChipsOverflowHint);
   }
 
   function toggleTag(tag) {
     const idx = state.selectedTags.indexOf(tag);
-    if (idx >= 0) state.selectedTags.splice(idx, 1);
-    else state.selectedTags.push(tag);
+    if (idx >= 0) {
+      state.selectedTags.splice(idx, 1);
+    } else {
+      state.selectedTags.push(tag);
+      _recordRecentTagName(tag);
+    }
     state.selectedTagIds = state.selectedTags.map(name => state.tagIdsByName[name]).filter(Boolean);
     renderTagChips();
     scheduleSave();
@@ -1178,6 +1321,7 @@
       if (!state.allTags.includes(tag)) await _createUnifiedTag(tag);
       await loadTags();
       if (!state.selectedTags.includes(tag)) state.selectedTags.push(tag);
+      _recordRecentTagName(tag);
       state.selectedTagIds = state.selectedTags.map(name => state.tagIdsByName[name]).filter(Boolean);
       renderTagChips();
       scheduleSave();
@@ -1552,7 +1696,7 @@
     // クラウド版（apps/quick-memo/）はビルド時に生成される専用のsw.jsを
     // standalone-pwa-install.js が登録する。ここで quick-memo-sw.js を登録すると
     // 存在しないパスへ向けた誤った登録になるため、クラウドモードではスキップする。
-    if (isCloudMode()) return;
+    if (isCloudMode() || isEmbedded()) return;
     if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
     const cleanupLegacyRootWorker = navigator.serviceWorker.getRegistration
       ? navigator.serviceWorker.getRegistration('./').then((registration) => {

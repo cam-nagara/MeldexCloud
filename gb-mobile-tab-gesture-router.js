@@ -28,7 +28,12 @@
     const selector = tablist.classList.contains('gb-pane-tabs')
       ? ':scope > .gb-pane-tabs-scroll > .gb-tab'
       : ':scope > [role="tab"]';
-    return Array.from(tablist.querySelectorAll(selector));
+    // #detail-tab-bar（オプションパネル）や #smart-db-view-tabs のように、
+    // 複数の対象タイプ用タブを同じタブバーへ同居させ、現在のタイプに合わない
+    // タブを `hidden` 属性で隠す実装がある。ここで hidden を素通りさせると、
+    // スマホ用ドロップダウンに無関係な20件前後のタブが並び、実質的に目的の
+    // タブへ切り替えられなくなる（2026-08-13 バグ報告で確認）。
+    return Array.from(tablist.querySelectorAll(selector)).filter(tab => !tab.hidden);
   }
 
   function activeTab(tabs) {
@@ -118,7 +123,18 @@
     document.addEventListener('pointerdown', dismiss, true);
   }
 
-  function ensureDropdown(tablist) {
+  // 1ペイン内に複数のタブバー（ペイン自体のタブ + 中に埋め込まれたオプション
+  // パネルのタブ等）が入れ子になることがある。祖先ペインのIDだけを優先すると、
+  // 同じペインを共有する別々のタブバーへ同一の data-e2e-id が付いてしまう
+  // （例: オプションパネルの「詳細タブ」）。まず自分自身の id / aria-label を
+  // 優先し、それが無いタブバー（＝ペイン直下のタブバー自身）だけ祖先ペインIDへ
+  // フォールバックする。
+  function _dropdownOwnerKey(tablist) {
+    return tablist.id || tablist.getAttribute?.('aria-label')
+      || tablist.closest?.('[data-pane-id]')?.dataset?.paneId || 'tabs';
+  }
+
+  function ensureDropdown(tablist, usedIds) {
     let trigger = tablist.previousElementSibling;
     if (!trigger?.classList?.contains('gb-mobile-tab-dropdown')) {
       trigger = document.createElement('button');
@@ -129,30 +145,51 @@
       trigger.addEventListener('click', () => openMenu(trigger, tablist));
       tablist.parentNode?.insertBefore(trigger, tablist);
     }
-    const owner = tablist.closest?.('[data-pane-id]')?.dataset?.paneId
-      || tablist.id || tablist.getAttribute?.('aria-label') || 'tabs';
-    trigger.dataset.e2eId = `mobile-tab-dropdown-${String(owner).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'tabs'}`;
+    const owner = _dropdownOwnerKey(tablist);
+    const base = `mobile-tab-dropdown-${String(owner).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'tabs'}`;
+    let e2eId = base;
+    // 上記の優先順位を揃えても、想定していない入れ子構造では同じ owner が
+    // 複数のタブバーへ再び付き得る。同一syncAllパス内での重複だけは、
+    // 安定した通し番号を付けて必ず一意化する（安全網）。
+    if (usedIds) {
+      let n = 2;
+      while (usedIds.has(e2eId) && usedIds.get(e2eId) !== tablist) {
+        e2eId = `${base}-${n}`;
+        n += 1;
+      }
+      usedIds.set(e2eId, tablist);
+    }
+    // 同じ値でも属性へ書けば変更通知は発生する。実際に変わる時だけ書くこと
+    // （この関数を呼んでいる MutationObserver が再発火して無限ループになるため）。
+    if (trigger.dataset.e2eId !== e2eId) trigger.dataset.e2eId = e2eId;
     trigger.__meldexTablist = tablist;
     return trigger;
   }
 
-  function syncOne(tablist) {
+  function syncOne(tablist, usedIds) {
     if (!tablist?.isConnected) return;
-    const trigger = ensureDropdown(tablist);
+    const trigger = ensureDropdown(tablist, usedIds);
     const tabs = tabItems(tablist);
     const active = activeTab(tabs);
     const title = tabTitle(active);
+    const label = `${title}。表示を切り替える`;
+    const disabled = tabs.length === 0;
+    // すべて「変化した時だけ書く」こと。値が同じでも属性への書き込みは変更通知を
+    // 発生させ、下の MutationObserver（disabled を監視対象に含む）が再びこの関数を
+    // 呼ぶ。タブが0個のタブバー（読み込み中のタスクリスト等）では disabled=true を
+    // 毎回書き直すため終わらない連鎖になり、画面全体が停止していた（2026-08-13）。
     if (trigger.textContent !== title) trigger.textContent = title;
-    trigger.title = title;
-    trigger.setAttribute('aria-label', `${title}。表示を切り替える`);
-    trigger.disabled = tabs.length === 0;
+    if (trigger.title !== title) trigger.title = title;
+    if (trigger.getAttribute('aria-label') !== label) trigger.setAttribute('aria-label', label);
+    if (trigger.disabled !== disabled) trigger.disabled = disabled;
   }
 
   function syncAll() {
     const phone = isPhone();
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
-    tablists.forEach(syncOne);
+    const usedIds = new Map();
+    tablists.forEach((tablist) => syncOne(tablist, usedIds));
     document.querySelectorAll('.gb-mobile-tab-dropdown').forEach((trigger) => {
       if (!trigger.__meldexTablist?.isConnected) trigger.remove();
     });
@@ -216,12 +253,52 @@
     document.addEventListener('pointercancel', () => { gesture = null; }, true);
   }
 
+  // openMenu() が作るドロップダウンメニュー(.gb-mobile-tab-menu)は、位置制御の
+  // 都合上 document.body 直下に付く（ポップアップの位置制御ルール通り）。
+  // そのため、このメニューをタブバーの内側に持つ他のポップアップ・ダイアログ
+  // （例: アイコンピッカー）が「自分の外側を pointerdown/mousedown したら閉じる」を
+  // `!el.contains(event.target)` で判定していると、メニュー項目のタップは
+  // 常に「外側」と誤判定され、タブ切替と同時に親ポップアップごと閉じてしまう
+  // （2026-08-13 バグ報告で確認。iconピッカーの候補タブが選べなくなっていた）。
+  // ここで最初期に capture フェーズの document リスナーを登録しておくと、
+  // 同一ノードへの capture リスナーは登録順に実行されるため、後から各
+  // ポップアップが登録する「外側クリックで閉じる」判定より必ず先に走り、
+  // stopImmediatePropagation() でそれらを止められる。
+  //
+  // 対象は pointerdown/mousedown のみに絞る（click は含めない）。click は
+  // pointerdown/pointerup の後に発火する別イベントで、メニュー項目自身の
+  // click リスナー（tab.click() 実行）はそれを使う。ここで click まで止めると
+  // 伝播が target 手前で完全に止まり、項目自身のクリックハンドラーに一生
+  // 届かなくなる（タブ切替そのものが無効化される）ため、pointerdown/mousedown
+  // だけを対象にして「外側クリックで閉じる」誤爆だけを防ぐ。
+  function _installMenuOutsideClickGuard() {
+    const guard = (event) => {
+      if (event.target?.closest?.('.gb-mobile-tab-menu')) event.stopImmediatePropagation();
+    };
+    ['pointerdown', 'mousedown'].forEach((type) => {
+      document.addEventListener(type, guard, true);
+    });
+  }
+
+  // DOMが変わるたびに全タブバーを走査するため、変更が連続する画面では走査が
+  // 積み上がる。連続した変更は1回の走査にまとめる（実行の順番は従来どおり、
+  // 次の描画より前）。
+  let syncQueued = false;
+  function scheduleSync() {
+    if (syncQueued) return;
+    syncQueued = true;
+    const run = () => { syncQueued = false; syncAll(); };
+    if (typeof queueMicrotask === 'function') queueMicrotask(run);
+    else setTimeout(run, 0);
+  }
+
   function init() {
     syncAll();
     installGestures();
-    observer = new MutationObserver(syncAll);
+    _installMenuOutsideClickGuard();
+    observer = new MutationObserver(scheduleSync);
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-disabled', 'disabled'] });
-    global.addEventListener('resize', syncAll, { passive: true });
+    global.addEventListener('resize', scheduleSync, { passive: true });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });

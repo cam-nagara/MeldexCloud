@@ -10,6 +10,13 @@
   };
   const CLOSE_DELAY = 520;
   const EDGE_SENSOR_FALLBACK_PX = 28;
+  // pointerdown時点のスワイプ開始判定用の端ゾーン（論理px）。edgeSensorSizeより
+  // やや狭く、タッチスワイプの起点をエッジ付近に限定する目的の固定値。
+  const SWIPE_EDGE_FALLBACK_PX = 22;
+  // 上下のツールバーは初期状態で出したままにする。隠したい人は
+  // キャンバスの右クリックメニュー (「上端/下端ツールバーを常時表示」) で切り替える。
+  // 右サイドバーは従来通り、必要なときだけ端から開く。
+  const DEFAULT_MODES = { top: 'pinned', bottom: 'pinned', right: 'auto' };
   let nextInstanceId = 0;
 
   function storageGet(key, fallback) {
@@ -24,7 +31,7 @@
       if (legacy === '0') return 'pinned';
       if (legacy === '1') return 'auto';
     }
-    return 'auto';
+    return DEFAULT_MODES[edge] || 'auto';
   }
 
   function storageSet(key, value) {
@@ -148,13 +155,22 @@
   function interactionLocked(instance) {
     return instance.locks.size > 0
       || document.body.classList.contains('bsa-resizing-sidebar')
-      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, [role="menu"][aria-expanded="true"]');
+      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"]');
   }
 
   function edgeSensorSize(instance) {
     const raw = getComputedStyle(instance.root).getPropertyValue('--bd-edge-sensor-size');
     const value = Number.parseFloat(raw);
     return Number.isFinite(value) && value > 0 ? value : EDGE_SENSOR_FALLBACK_PX;
+  }
+
+  // getBoundingClientRect() / event.clientX・clientY は表示倍率（CSS zoom）適用後の
+  // 実座標を返すが、--bd-edge-sensor-size 等のCSS寸法値は倍率適用前の論理px値のまま。
+  // 距離をpxで直接比較すると、倍率100%以外では判定ゾーンの実寸が意図とズレる
+  // （例: 150%表示だと28pxの指定が実質18.7px相当でしか反応しない）。
+  // 比較は必ず実座標側へ揃えるため、CSS寸法値には倍率を掛けてから比較する。
+  function currentUiZoom() {
+    return typeof _getZoom === 'function' ? _getZoom() : 1;
   }
 
   function pointerRevealSuppressed(instance, event) {
@@ -226,7 +242,7 @@
       return;
     }
     const rect = instance.host.getBoundingClientRect();
-    const sensorSize = edgeSensorSize(instance);
+    const sensorSize = edgeSensorSize(instance) * currentUiZoom();
     const near = {
       top: event.clientY - rect.top <= sensorSize,
       bottom: rect.bottom - event.clientY <= sensorSize,
@@ -242,12 +258,13 @@
 
   function pointerDown(instance, event) {
     const rect = instance.host.getBoundingClientRect();
+    const swipeEdgeSize = SWIPE_EDGE_FALLBACK_PX * currentUiZoom();
     instance.swipe = {
       x: event.clientX,
       y: event.clientY,
-      top: event.clientY - rect.top <= 22,
-      bottom: rect.bottom - event.clientY <= 22,
-      right: !!instance.shell && rect.right - event.clientX <= 22,
+      top: event.clientY - rect.top <= swipeEdgeSize,
+      bottom: rect.bottom - event.clientY <= swipeEdgeSize,
+      right: !!instance.shell && rect.right - event.clientX <= swipeEdgeSize,
     };
     if (event.target.closest?.('[role="separator"], input, textarea, [contenteditable="true"]')) {
       instance.locks.add(`pointer:${event.pointerId}`);
@@ -270,14 +287,29 @@
     if (start.right && start.x - event.clientX > 28) reveal(instance, 'right', true);
   }
 
+  // 新規作成直後のボードは、ファイル名の見出しから作られたルートカードを 1 枚だけ持つ。
+  // 利用者から見ればこれは「まだ何も作っていない」状態なので、空状態の案内を出す対象に含める。
+  // 本文の追記・画像・リンク・ライン・グループのいずれかが付いた時点で「中身あり」に切り替わる。
+  function looksUntouched(state) {
+    const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+    if (!nodes.length) return true;
+    if (nodes.length > 1) return false;
+    if ((state.connections?.length || 0) > 0 || (state.groups?.length || 0) > 0) return false;
+    const only = nodes[0] || {};
+    if (only.img || only.link || only.note || only.parent) return false;
+    return !String(only.text || '').includes('\n');
+  }
+
   function hasPersistentContent(instance) {
     const current = boardState();
-    if (current && isActiveRoot(instance.root)) {
-      if ((current.nodes?.length || 0) > 0 || (current.connections?.length || 0) > 0) return true;
+    const stateReadable = !!current && isActiveRoot(instance.root);
+    if (stateReadable) {
+      if (!looksUntouched(current)) return true;
       if (current.backgroundImage || current.background?.image || current._fileStyle?.board?.backgroundImage) return true;
+    } else {
+      const nodeContainer = instance.root.querySelector('[data-bd-role="nodes"]');
+      if (nodeContainer?.children.length) return true;
     }
-    const nodeContainer = instance.root.querySelector('[data-bd-role="nodes"]');
-    if (nodeContainer?.children.length) return true;
     const annotationLayer = document.getElementById('ann-layer');
     if (annotationLayer?.children.length) return true;
     const canvas = instance.root.querySelector('[data-bd-role="canvas"]');
@@ -339,7 +371,10 @@
     const guide = document.createElement('div');
     guide.className = 'bd-empty-guide';
     guide.setAttribute('aria-hidden', 'true');
-    guide.innerHTML = '<div>ダブルクリックでカードを追加</div><div>ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>';
+    guide.dataset.e2eId = `board-${identity}-empty-guide`;
+    guide.innerHTML = '<div class="bd-empty-guide-title">ダブルクリックでカードを追加</div>'
+      + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
+      + '<div class="bd-empty-guide-hint">カードを選んで Tab で子カードを追加</div>';
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);

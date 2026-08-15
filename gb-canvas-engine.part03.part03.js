@@ -7,50 +7,61 @@
   document.addEventListener('selectionchange', updateCaret);
   setTimeout(updateCaret, 0);
 }
+// 課題8: contentEditable='false' への代入がブラウザによっては同期的に blur を誘発し、
+// blur ハンドラ (bdEditNode 側) が bdFinishEdit() を再入呼び出しすることがある。
+// 再入すると bd.editing が途中で null 化され、外側の呼び出しが `bd.nodes.find(...===bd.editing)`
+// で自ノードを見失い、確定処理 (bdPushUndo/text 反映) が丸ごと skip される実害があるため、
+// 実行中フラグで多重実行そのものを防ぐ。
+let _bdFinishEditRunning = false;
 function bdFinishEdit() {
-  if (!bd.editing) return;
-  const el = document.querySelector('.bd-node.bd-editing');
-  let editedNode = null;
-  let changed = false;
-  if (el) {
-    el.classList.remove('bd-editing');
-    const txt = el.querySelector('.bd-text');
-    txt.contentEditable = 'false';
-    editedNode = bd.nodes.find(v=>v.id===bd.editing);
-    if (editedNode) {
-      const beforeText = editedNode.text || '';
-      const nextText = txt.innerText.trim();
-      changed = nextText !== beforeText;
-      if (changed) {
-        bdPushUndo();
-        editedNode.text = nextText;
+  if (!bd.editing || _bdFinishEditRunning) return;
+  _bdFinishEditRunning = true;
+  try {
+    const el = document.querySelector('.bd-node.bd-editing');
+    let editedNode = null;
+    let changed = false;
+    if (el) {
+      el.classList.remove('bd-editing');
+      const txt = el.querySelector('.bd-text');
+      txt.contentEditable = 'false';
+      editedNode = bd.nodes.find(v=>v.id===bd.editing);
+      if (editedNode) {
+        const beforeText = editedNode.text || '';
+        const nextText = txt.innerText.trim();
+        changed = nextText !== beforeText;
+        if (changed) {
+          bdPushUndo();
+          editedNode.text = nextText;
+        }
+        txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
       }
-      txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
+      // カスタムキャレットを削除 + selectionchange リスナー解除
+      if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
+      const caret = el.querySelector(':scope > .bd-custom-caret');
+      if (caret) caret.remove();
     }
-    // カスタムキャレットを削除 + selectionchange リスナー解除
-    if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
-    const caret = el.querySelector(':scope > .bd-custom-caret');
-    if (caret) caret.remove();
-  }
-  bd.editing = null;
-  if (changed) bdDirty();
-  // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
-  if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
-  if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
-  if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
-  if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
-  if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
-  else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-  // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
-  // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
-  if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
-    const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
-    if (_editedRoot?.structure) {
-      if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
-      else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+    bd.editing = null;
+    if (changed) bdDirty();
+    // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
+    if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
+    if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
+    if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
+    if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
+    else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+    // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
+    // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
+    if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
+      const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
+      if (_editedRoot?.structure) {
+        if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
+        else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+      }
     }
+    document.getElementById('bd-canvas').focus();
+  } finally {
+    _bdFinishEditRunning = false;
   }
-  document.getElementById('bd-canvas').focus();
 }
 
 // --- 削除 ---

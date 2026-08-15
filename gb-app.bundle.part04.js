@@ -1,3 +1,13 @@
+      }
+      return null;
+    });
+}
+
+function _refreshOutlinerAfterStartupReady() {
+  try {
+    const outlinerOptions = {
+      coalesce: true,
+      skipIfRecentlyLoaded: true,
       reason: 'startup-ready',
     };
     if (typeof refreshOutliner === 'function') return refreshOutliner(outlinerOptions);
@@ -175,6 +185,16 @@ async function init() {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
       showView('welcome');
+    }
+
+    // ホームフォルダの版間共有: 起動時の共有警告・引き継ぎ提案チェック。
+    // オンボーディングウィザードが出る場合はダイアログの重なりを避けて後回しにする
+    // （設定画面を開いた時に loadHomeFolderSharingStatusForSettings() 経由で再チェックされる）。
+    if (!onboardingShown && window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings) {
+      _runStartupBackground(
+        'home-folder-sharing-check',
+        window.MeldexHomeFolderSharing.loadHomeFolderSharingStatusForSettings()
+      );
     }
 
     document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
@@ -878,23 +898,3 @@ async function captureScreenshot(mode) {
       // 左端から右スワイプ → サイドバー開く
       sidebar.classList.add('open');
       if (backdrop) {
-        backdrop.classList.add('open');
-        backdrop.style.setProperty('display', 'block', 'important');
-      }
-    } else if (dx < 0 && sidebar.classList.contains('open')) {
-      // 左スワイプ → サイドバー閉じる
-      sidebar.classList.remove('open');
-      if (backdrop) {
-        backdrop.classList.remove('open');
-        backdrop.style.setProperty('display', 'none', 'important');
-      }
-    }
-  }, { passive: true });
-})();
-
-/* ==============================
-   ステータスバー
-   ============================== */
-// メッセージ先頭行をタイトル、残りを本文として安全なDOMへ変換する。
-// 単一行メッセージは従来通り本文だけ、複数行のみ先頭行を強調する。
-function _buildCfDialogBodyNodes(message, idBase) {

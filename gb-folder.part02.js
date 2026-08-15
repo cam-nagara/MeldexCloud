@@ -443,7 +443,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   const content = document.createElement('div');
   content.innerHTML = `
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
-    <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『MUDMAN』/第1話登場"></div>
+    <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『サンプル作品』/第1話登場"></div>
     <div id="modal-link-tree" style="max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;margin-bottom:8px;background:var(--bg);font-size:12px;">
       <div style="color:var(--fg2);padding:4px;">読み込み中...</div>
     </div>
@@ -860,11 +860,12 @@ function getFolderDisplayConfig() {
 }
 function saveFolderDisplayConfig(cfg) { localStorage.setItem('folder-display-config', JSON.stringify(cfg)); }
 
-function _fdSection(menu, title, actionNode) {
+function _fdSection(menu, title, actionNode, titleDataset) {
   const head = document.createElement('div');
   head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 12px 4px;font-size:11px;font-weight:bold;color:var(--accent);cursor:default;';
   const label = document.createElement('span');
   label.textContent = title;
+  if (titleDataset) Object.assign(label.dataset, titleDataset);
   head.appendChild(label);
   if (actionNode) {
     const spacer = document.createElement('span');
@@ -1071,7 +1072,20 @@ function showFolderDisplaySettings(options) {
   searchInput.style.flex = '1 1 auto';
   searchControls.appendChild(searchInput);
   window.MeldexUnifiedSearch?.button?.(searchControls, { e2eId: 'folder-panel-search-scope-trigger' });
+  window.MeldexUnifiedSearch?.tagButton?.(searchControls, {
+    e2eId: 'folder-panel-search-tag-trigger',
+    sourceFolder: () => ((typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || ''),
+    onChange: () => _scheduleFolderUnifiedSearch(searchInput.value),
+  });
   searchRow.appendChild(searchControls);
+  // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+  // テキスト行（1-A追記）。_refreshFolderUnifiedSearch() がIDで参照する。
+  const searchHint = document.createElement('div');
+  searchHint.id = 'folder-panel-search-hint';
+  searchHint.dataset.e2eId = 'folder-panel-search-hint';
+  searchHint.style.cssText = 'display:none;font-size:11px;line-height:1.4;color:var(--fg2);';
+  window.MeldexUnifiedSearch?.updateHint?.(searchHint, null, searchInput.value);
+  searchRow.appendChild(searchHint);
   menu.appendChild(searchRow);
 
   const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);
@@ -1142,7 +1156,62 @@ function showFolderDisplaySettings(options) {
   }
   menu.appendChild(folderBox);
 
-  _fdSection(menu, 'タグ');
+  const tagModeLabel = { all: 'すべて含む', any: 'どれかを含む' };
+  const tagSectionAction = document.createElement('div');
+  tagSectionAction.style.cssText = 'display:flex;align-items:center;gap:4px;';
+  const tagModeSelect = document.createElement('select');
+  tagModeSelect.dataset.e2eId = 'folder-filter-tag-mode';
+  tagModeSelect.setAttribute('aria-label', 'タグの判定方法');
+  tagModeSelect.style.cssText = 'font-size:11px;padding:2px 4px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:4px;';
+  [['all', 'すべて含む'], ['any', 'どれかを含む']].forEach(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    tagModeSelect.appendChild(option);
+  });
+  tagModeSelect.value = (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(cfg) : 'all';
+  tagModeSelect.addEventListener('change', () => {
+    const latestCfg = _saveFolderDisplayConfigPatch({ filterTagMode: tagModeSelect.value });
+    renderFolderGrid();
+    refreshTagSectionUi(latestCfg);
+  });
+  tagSectionAction.appendChild(tagModeSelect);
+  const tagPickerBtn = window.GBTagPickerPanel?.createTriggerButton?.({
+    title: 'タグツリーから選ぶ',
+    icon: 'listTree',
+    className: 'gb-btn gb-btn-xs gb-btn-quiet gb-btn-icon',
+    e2eId: 'folder-filter-tag-picker-trigger',
+    onOpen: (btn) => {
+      const existingIds = new Set((choices.tags || []).map(([tag]) => String(tag).toLowerCase()));
+      const latestCfg = getFolderDisplayConfig();
+      window.GBTagPickerPanel.open({
+        ownerKey: 'folder-filter',
+        headerLabel: 'フォルダの絞り込みに使うタグ',
+        sourceFolder: (typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || '',
+        existingTagIds: existingIds,
+        tagIds: _folderFilterArray(latestCfg.filterTags),
+        matchMode: (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(latestCfg) : 'all',
+        onChange: (tagIds, mode) => {
+          const nextCfg = _saveFolderDisplayConfigPatch({
+            filterTags: tagIds.map(id => String(id).toLowerCase()),
+            filterTagMode: mode,
+          });
+          if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+          renderFolderGrid();
+          refreshTagSectionUi(nextCfg);
+        },
+      });
+      window.GBTagPickerPanel.syncTriggerButton(btn, 'folder-filter');
+    },
+  });
+  if (tagPickerBtn) tagSectionAction.appendChild(tagPickerBtn);
+  _fdSection(menu, `タグ（${tagModeLabel[tagModeSelect.value] || 'すべて含む'}）`, tagSectionAction, { fdTagSectionTitle: '1' });
+
+  const tagChips = document.createElement('div');
+  tagChips.className = 'fd-tag-filter-chips';
+  tagChips.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:2px 12px 4px;';
+  menu.appendChild(tagChips);
+
   const tagBox = document.createElement('div');
   tagBox.style.maxHeight = '150px';
   tagBox.style.overflowY = 'auto';
@@ -1157,10 +1226,37 @@ function showFolderDisplaySettings(options) {
     choices.tags.forEach(([tag, label]) => {
       tagBox.appendChild(_fdCheckboxRow(label, selectedTags.has(String(tag).toLowerCase()), (enabled) => {
         _fdSetArrayFilter(cfg, 'filterTags', tag, enabled);
+        refreshTagSectionUi(getFolderDisplayConfig());
       }, { dataset: { folderFilterTag: tag } }));
     });
   }
   menu.appendChild(tagBox);
+
+  // ピッカーでの選択・チップの×・チェックボックスのどれで変えても、この3つの
+  // 表示（見出しの判定方法／チップ／チェック状態）が食い違わないようにする。
+  function refreshTagSectionUi(latestCfg) {
+    const mode = (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(latestCfg) : 'all';
+    tagModeSelect.value = mode;
+    const heading = menu.querySelector('[data-fd-tag-section-title]');
+    if (heading) heading.textContent = `タグ（${tagModeLabel[mode] || 'すべて含む'}）`;
+    const selectedNow = new Set(typeof _folderFilterTagKeys === 'function' ? _folderFilterTagKeys(latestCfg) : []);
+    tagBox.querySelectorAll('[data-folder-filter-tag]').forEach(row => {
+      const key = String(row.dataset.folderFilterTag || '').toLowerCase();
+      const input = row.querySelector('input[type="checkbox"]');
+      if (input) input.checked = selectedNow.has(key);
+    });
+    if (window.GBTagPickerPanel?.renderSelectedChips) {
+      window.GBTagPickerPanel.renderSelectedChips(tagChips, {
+        tagIds: Array.from(selectedNow),
+        sourceFolder: (typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || '',
+        onRemove: (id) => {
+          _fdSetArrayFilter(getFolderDisplayConfig(), 'filterTags', id, false);
+          refreshTagSectionUi(getFolderDisplayConfig());
+        },
+      });
+    }
+  }
+  refreshTagSectionUi(cfg);
 
   _fdSection(menu, '更新期間');
   const periodRow = document.createElement('div');

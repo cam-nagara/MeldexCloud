@@ -530,6 +530,13 @@ input[type="range"]::-moz-range-thumb {
   color: var(--ui-warning);
   font-size: var(--ui-font-13);
 }
+/* インポート・機能生成ファイル保護計画 Phase 2: 機能保存先の削除警告
+   （app/docs/import-and-feature-file-protection-plan-2026-08-12.md §5 Phase 2）。 */
+.gb-delete-impact-warning-feature-save-dir {
+  font-weight: 600;
+  color: var(--ui-warning);
+  font-size: var(--ui-font-13);
+}
 /* 削除影響の照会中プレースホルダー（フェーズB徹底チェック 修正3(b)）。
    まだ警告と確定していないため、警告色ではなく中立色の枠にする。 */
 .gb-delete-impact-warning-loading {

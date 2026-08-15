@@ -303,7 +303,7 @@
   // 親ウィンドウのテーマ色を継承（meldex-core.js提供）
   try {
     if (typeof inheritParentTheme === 'function') inheritParentTheme();
-    const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim() || '#252525';
+    const bg2 = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim() || '#111419';
     document.documentElement.style.setProperty('--panel-bg', bg2 + 'ee');
   } catch(e) {}
 })();

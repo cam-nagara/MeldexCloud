@@ -150,7 +150,7 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn, disabled = false) {
+  function addMI(label, fn, disabled = false, e2eId = '') {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
@@ -158,6 +158,7 @@ function _handleTabBarContextmenu(e) {
     mi.textContent = label;
     mi.disabled = !!disabled;
     if (disabled) mi.setAttribute('aria-disabled', 'true');
+    if (e2eId) mi.dataset.e2eId = e2eId;
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
   }
@@ -178,4 +179,4 @@ function _handleTabBarContextmenu(e) {
       if (ok) closeTab(tab.id);
       else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
     });
-  });
+  }, false, 'tab-menu-new-window');

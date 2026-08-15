@@ -56,6 +56,7 @@
               deleted_at: String(meta?.deleted_at || ''),
               trash_root: itemTrashRoot.path,
               trash_root_name: itemTrashRoot.name,
+              trash_path: entryPath,
             });
           }
         } catch (error) {
@@ -110,12 +111,49 @@
       const trashRoot = await _resolveAllowedTrashRoot(body?.trash_root);
       const trashPath = _joinPath(trashRoot.path, name);
       const metaPath = trashPath + '._trash_meta.json';
-      if (await _resolveEntryHandle(provider, trashPath)) await _removeEntry(provider, trashPath);
+      const durable = window.MeldexCloudIdentityClaimAftercare?.durableDelete;
+      if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
+      const result = await durable(provider, {
+        operationId: body?.confirmationToken || body?.confirmation_token,
+        operation: 'permanent-delete', payload: { name, trash_root: trashRoot.path },
+        prepare: async () => {
+          const entry = await _resolveEntryHandle(provider, trashPath);
+          const meta = await _readJsonSafe(provider, metaPath, null);
+          const originalPath = _normalizeFolderPath(meta?.original_path || '');
+          if (!entry || !originalPath) throw new Error('削除元情報を確認できないため完全削除できません');
+          const confirmationItems = [{
+            path: originalPath, kind: entry.kind === 'directory' ? 'folder' : 'file',
+            physicalPath: trashPath,
+          }];
+          const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'permanent');
+          const collected = await _collectCloudIdentityCandidates(
+            provider, trashPath, entry.kind, originalPath,
+            { includeCompletedImageClaims: true },
+          );
+          return { trash_path: trashPath, meta_path: metaPath, original_path: originalPath,
+            source_kind: entry.kind, confirmation_items: confirmationItems,
+            receipt: consumed.receipt, identity_claims: {
+              boundary: collected.boundary, target_path: collected.target_path, items: collected.items,
+            } };
+        },
+        steps: intent => [{ name: 'physical-delete', run: async () => {
+          const current = await _resolveEntryHandle(provider, intent.trash_path);
+          if (!current) return { ok: true, already_missing: true };
+          await window.MeldexCloudDeleteConfirmation.revalidateProviderDelete({
+            provider, receipt: intent.receipt, items: intent.confirmation_items,
+          });
+          await _removeEntry(provider, intent.trash_path);
+          return { ok: true };
+        } }, { name: 'identity-claims', run: () => (
+          _tombstoneCollectedCloudIdentities(intent.identity_claims, provider)
+        ) }],
+        result: () => ({ ok: true, trash_root: trashRoot.path }),
+      });
       const warnings = [];
       await _runPostMutationStep(warnings, 'trash-metadata', async () => {
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });
-      return { ok: true, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
+      return { ...result, ..._resultWarnings(warnings) };
     }
 
     if (pathname === '/trash/empty' && method === 'POST') {
@@ -130,51 +168,64 @@
         seenPhysicalRoots.add(key);
         return true;
       });
-      const failures = [];
-      let removed = 0;
-      for (const trashRoot of roots) {
-        try {
-          const trash = await _resolveEntryHandle(provider, trashRoot.path);
-          if (!trash || trash.kind !== 'directory') continue;
-          const entries = await _listDirectoryEntries(provider, trashRoot.path);
-          const entryNames = new Set(entries.map((entry) => entry.name));
-          const handled = new Set();
-          for (const entry of entries) {
-            if (handled.has(entry.name)) continue;
-            const isMeta = entry.name.endsWith('._trash_meta.json');
-            const itemName = isMeta ? entry.name.slice(0, -'._trash_meta.json'.length) : entry.name;
-            if (isMeta && entryNames.has(itemName)) continue;
-            try {
-              await _removeEntry(provider, _joinPath(trashRoot.path, entry.name));
-              removed += 1;
-            } catch (error) {
-              failures.push({ trash_root: trashRoot.path, name: entry.name, error: error?.message || String(error) });
-              if (!isMeta) handled.add(entry.name + '._trash_meta.json');
-              continue;
-            }
-            if (isMeta) continue;
-            const metaName = entry.name + '._trash_meta.json';
-            handled.add(metaName);
-            if (!entryNames.has(metaName)) continue;
-            try {
-              await _removeEntry(provider, _joinPath(trashRoot.path, metaName));
-              removed += 1;
-            } catch (error) {
-              failures.push({ trash_root: trashRoot.path, name: metaName, error: error?.message || String(error) });
+      const durable = window.MeldexCloudIdentityClaimAftercare?.durableDelete;
+      if (!durable) throw Object.assign(new Error('完全削除journalを利用できません'), { status: 503 });
+      try { return await durable(provider, {
+        operationId: body?.confirmationToken || body?.confirmation_token,
+        operation: 'empty-trash', payload: { trash_roots: roots.map(root => root.path) },
+        prepare: async () => {
+          const confirmationItems = [];
+          const entries = [];
+          for (const trashRoot of roots) {
+            const trash = await _resolveEntryHandle(provider, trashRoot.path);
+            if (!trash || trash.kind !== 'directory') continue;
+            for (const entry of await _listDirectoryEntries(provider, trashRoot.path)) {
+              if (entry.name.endsWith('._trash_meta.json')) continue;
+              const itemPath = _joinPath(trashRoot.path, entry.name);
+              const metaPath = itemPath + '._trash_meta.json';
+              const meta = await _readJsonSafe(provider, metaPath, null);
+              const originalPath = _normalizeFolderPath(meta?.original_path || '');
+              if (!originalPath) throw new Error('削除元情報を確認できない項目があるためゴミ箱を空にできません');
+              confirmationItems.push({ path: originalPath,
+                kind: entry.handle.kind === 'directory' ? 'folder' : 'file', physicalPath: itemPath });
+              const collected = await _collectCloudIdentityCandidates(
+                provider, itemPath, entry.handle.kind, originalPath,
+                { includeCompletedImageClaims: true },
+              );
+              entries.push({ trash_path: itemPath, meta_path: metaPath,
+                identity_claims: { boundary: collected.boundary,
+                  target_path: collected.target_path, items: collected.items } });
             }
           }
-        } catch (error) {
-          failures.push({ trash_root: trashRoot.path, name: '', error: error?.message || String(error) });
-        }
-      }
-      if (failures.length) {
-        const error = new Error(`ゴミ箱を完全に空にできませんでした（${failures.length}件）`);
+          const consumed = confirmationItems.length
+            ? await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'permanent') : null;
+          return { confirmation_items: confirmationItems, receipt: consumed?.receipt || null, entries };
+        },
+        steps: intent => intent.entries.flatMap((entry, index) => [{
+          name: `${index}:physical-delete`, run: async () => {
+            if (!(await _pathExists(provider, entry.trash_path))) return { ok: true, already_missing: true };
+            if (!intent.receipt) throw new Error('削除直前の確認情報がありません');
+            await window.MeldexCloudDeleteConfirmation.revalidateProviderDelete({
+              provider, receipt: intent.receipt,
+              items: intent.confirmation_items.filter(item => item.physicalPath === entry.trash_path),
+            });
+            await _removeEntry(provider, entry.trash_path);
+            return { ok: true };
+          },
+        }, { name: `${index}:identity-claims`, run: () => (
+          _tombstoneCollectedCloudIdentities(entry.identity_claims, provider)
+        ) }, { name: `${index}:trash-metadata`, run: async () => {
+          if (await _pathExists(provider, entry.meta_path)) await _removeEntry(provider, entry.meta_path);
+          return { ok: true };
+        } }]),
+        result: intent => ({ ok: true, removed: intent.entries.length,
+          trash_roots: roots.map(root => root.path) }),
+      }); } catch (cause) {
+        const error = new Error('ゴミ箱を完全に空にできませんでした（1件）');
         error.code = 'trash_empty_partial_failure';
-        error.failures = failures;
-        error.removed = removed;
+        error.failures = [{ trash_root: '', name: '', error: cause?.message || String(cause) }];
         throw error;
       }
-      return { ok: true, removed, trash_roots: roots.map((root) => root.path) };
     }
 
     if (pathname === '/server-info' && method === 'GET') return { local_ip: 'ブラウザ版ではローカルIPは利用しません' };
@@ -196,5 +247,8 @@
     if (pathname === '/pick-folder' && method === 'GET') return { ok: false, needManualInput: true };
 
     return NOT_HANDLED;
+  });
+  window.MeldexCloudIdentityCopyTransaction = Object.freeze({
+    copyPath: _copyPathWithIdentityTransaction,
   });
 })();

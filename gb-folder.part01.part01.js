@@ -374,17 +374,24 @@ function _getFolderFilteredItems() {
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   const folders = new Set(_folderFilterFolderKeys(cfg));
   const tags = new Set(_folderFilterTagKeys(cfg));
+  const tagMode = _folderTagFilterMode(cfg);
+  // 検索欄のタグ条件（search側。フィルタの filterTags とは別物）。
+  // 検索文字列が空でもタグ条件だけで絞り込めるようにする（2-F）。
+  const hasSearchTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   return _folderItems.filter(item => {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
       const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
       if (!(includeName && haystack.includes(text)) && !unifiedMatch) return false;
+    } else if (hasSearchTagCondition) {
+      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
+      if (!unifiedMatch) return false;
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
     if (!_folderMatchesFolderFilter(item, folders)) return false;
-    if (!_folderMatchesTagFilter(item, tags)) return false;
+    if (!_folderMatchesTagFilter(item, tags, tagMode)) return false;
     return _folderMatchesModifiedFilter(item, cfg);
   });
 }

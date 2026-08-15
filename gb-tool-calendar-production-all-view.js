@@ -27,7 +27,8 @@
   const SEARCH_DEBOUNCE_MS = 300;
 
   // field はサーバー側 FIELD_ALIASES（Desktop: meldex_production_task_query.py、
-  // Cloud: gb-production-management.part02.js の _pmCloudQuerySort）と両方が受理する
+  // Cloud: gb-production-management-cloud-task-event-query.js（旧
+  // gb-production-management.part02.js の一部）の _pmCloudQuerySort）と両方が受理する
   // キー名で揃えている。
   const COLUMN_DEFS = [
     { key: 'work', field: 'work_title', label: '作品', sortable: true },

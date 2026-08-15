@@ -15,18 +15,27 @@ let _folderUnifiedSearchPaths = new Set();
 let _folderUnifiedSearchSeq = 0;
 let _folderUnifiedSearchTimer = 0;
 
+function _folderSearchHintEl() {
+  return document.getElementById('folder-panel-search-hint');
+}
+
 function _refreshFolderUnifiedSearch(query) {
   const text = String(query || '').trim();
   const seq = ++_folderUnifiedSearchSeq;
   _folderUnifiedSearchPaths = new Set();
-  if (!text || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
+  const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+  // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+  // 検索結果が返ってから追加で反映する。
+  window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), null, text);
+  if ((!text && !hasTagCondition) || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
   const scopes = window.MeldexUnifiedSearch.active();
-  if (!scopes.some(scope => scope !== 'name')) return Promise.resolve();
+  if (!hasTagCondition && !scopes.some(scope => scope !== 'name')) return Promise.resolve();
   return window.MeldexUnifiedSearch.search(text, { path: _folderPath || '', limit: 100 })
     .then(data => {
       if (seq !== _folderUnifiedSearchSeq) return;
       _folderUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
       if (typeof renderFolderGrid === 'function') renderFolderGrid();
+      window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), data, text);
     })
     .catch(() => {});
 }
@@ -39,10 +48,14 @@ function _scheduleFolderUnifiedSearch(query) {
   }, 240);
 }
 
+function _folderSearchRowHasTagCondition() {
+  return (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+}
+
 window.addEventListener('meldex:search-scopes-changed', () => {
   const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
   const query = String(cfg.filterText || '');
-  if (query.trim()) _scheduleFolderUnifiedSearch(query);
+  if (query.trim() || _folderSearchRowHasTagCondition()) _scheduleFolderUnifiedSearch(query);
 });
 let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
@@ -446,13 +459,32 @@ function _folderFilterTagKeys(cfg) {
   return _folderFilterArray(cfg?.filterTags).map(value => String(value || '').toLowerCase()).filter(Boolean);
 }
 
-function _folderMatchesTagFilter(item, selectedTags) {
+// タグの判定方法（すべて含む=AND / どれかを含む=OR）。既定は「すべて含む」。
+// 2026-08系のタグ選択フロートパネル導入までは常にOR固定だった。タグを2件以上
+// 保存していた既存フィルタだけ結果が変わる（CHANGELOGへ明記）。
+function _folderTagFilterMode(cfg) {
+  return (cfg && cfg.filterTagMode === 'any') ? 'any' : 'all';
+}
+
+function _folderMatchesTagFilter(item, selectedTags, mode) {
   if (!selectedTags || selectedTags.size === 0) return true;
-  return _folderItemTags(item).some(tag => {
+  const itemKeys = new Set();
+  _folderItemTags(item).forEach(tag => {
     const id = String(tag.id || '').toLowerCase();
     const name = String(tag.name || '').toLowerCase();
-    return selectedTags.has(id) || selectedTags.has(name);
+    if (id) itemKeys.add(id);
+    if (name) itemKeys.add(name);
   });
+  if (mode === 'any') {
+    for (const key of selectedTags) {
+      if (itemKeys.has(key)) return true;
+    }
+    return false;
+  }
+  for (const key of selectedTags) {
+    if (!itemKeys.has(key)) return false;
+  }
+  return true;
 }
 
 function _folderTagLabel(value) {
@@ -523,26 +555,23 @@ async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
     showStatus('リンク登録できる項目がありません', true);
     return 0;
   }
-  let ok = 0;
-  let failed = 0;
-  for (const source of items) {
-    try {
-      if (typeof addFolderLinkWithHistory === 'function') {
-        await addFolderLinkWithHistory(source.path, targetPath);
-      } else {
-        await apiPost('/folder-links/add', { file_path: source.path, folder_path: targetPath });
-      }
-      _folderInvalidateMembershipsForPath(source.path);
-      ok += 1;
-    } catch {
-      failed += 1;
-    }
+  let result;
+  try {
+    result = typeof addFolderLinksBatchWithHistory === 'function'
+      ? await addFolderLinksBatchWithHistory(items, targetPath)
+      : await apiPost('/folder-links/batch/add', { items: items.map(source => ({ file_path: source.path })), folder_path: targetPath });
+  } catch {
+    showStatus('リンク登録に失敗しました', true);
+    return 0;
   }
+  items.forEach(source => _folderInvalidateMembershipsForPath(source.path));
+  const ok = result?.created_count || 0;
+  const failed = result?.failed_count || 0;
   if (ok > 0 && typeof _folderEnsureMemberships === 'function') {
     _folderEnsureMemberships(_folderItems, { rerender: _folderHasActiveFolderFilter(getFolderDisplayConfig()) });
   }
   const suffix = failed > 0 ? `（${failed} 件失敗）` : '';
-  showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にリンク登録しました${suffix}` : 'リンク登録に失敗しました', failed > 0 && ok === 0);
+  showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にも表示しました${suffix}` : (failed ? 'リンク登録に失敗しました' : 'すでに表示されています'), failed > 0 && ok === 0);
   return ok;
 }
 
@@ -692,6 +721,20 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   if (!targetPath || items.length === 0) {
     showStatus('移動できる項目がありません', true);
     return 0;
+  }
+  // シートの中に置けるのはエントリだけ。ボード等を落とすと
+  // 「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+  if (targetItem?.type === 'database') {
+    const rejected = items.filter(source => !(window.MeldexSheetAttachments?.itemFitsInSheet?.(source) ?? true));
+    if (rejected.length) {
+      const first = rejected[0]?.name || rejected[0]?.path || '対象';
+      showStatus(
+        'シートの中にはエントリだけを置けます（' + first +
+        (rejected.length > 1 ? ' ほか ' + (rejected.length - 1) + ' 件' : '') + '）',
+        true
+      );
+      return 0;
+    }
   }
   const progress = window.MeldexImportProgress;
   progress?.beginOperation?.('ファイルを移動中', items.length);

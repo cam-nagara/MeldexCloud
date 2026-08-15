@@ -84,6 +84,29 @@
     return String(path || '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').trim();
   }
 
+  // サーバー側 meldex_file_locks.SYSTEM_LOCK_BLACKLIST と同じ一覧。
+  // 管理用フォルダは自動編集中ロックの対象外で、確保しようとすると 400 が返る。
+  // 以前はその 400 で書き込み自体が中止され、チャットの画像添付（_chat 配下へ保存）が
+  // 「アップロードに失敗しました」で必ず失敗していた。ロックを取らずに書き込みへ進む。
+  const SYSTEM_LOCK_SKIP_SEGMENTS = new Set([
+    '_chat', '_skills', '_models', '_knowledge', '.meldex', '_meldex', '.trash', '_trash',
+  ]);
+
+  function _isLockExemptPath(path) {
+    return _normalizePath(path)
+      .split('/')
+      .some(segment => SYSTEM_LOCK_SKIP_SEGMENTS.has(segment.toLowerCase()));
+  }
+
+  function _isLockExemptError(error) {
+    if (Number(error?.status) !== 400) return false;
+    const detail = error?.payload?.detail;
+    const message = String(
+      (detail && typeof detail === 'object' ? detail.message : detail) || error?.message || ''
+    );
+    return message.includes('自動編集中ロックの対象外');
+  }
+
   function _uniquePaths(paths) {
     const result = [];
     const seen = new Set();
@@ -191,6 +214,7 @@
   async function ensureLock(path, options) {
     const normalized = _normalizePath(path);
     if (!normalized) return null;
+    if (_isLockExemptPath(normalized)) return null;
     lastUsedAt.set(normalized, Date.now());
     const current = localLocks.get(normalized);
     const needsDescendantCheck = options?.includeDescendants === true || options?.include_descendants === true;
@@ -209,6 +233,8 @@
       _startHeartbeat();
       return entry;
     } catch (error) {
+      // 管理用フォルダはロック対象外。ロックを取れないことを理由に書き込みを止めない。
+      if (_isLockExemptError(error)) return null;
       if (error?.status === 423) {
         const message = _conflictMessage(error);
         _status(message, true);
@@ -242,6 +268,7 @@
     const acquired = [];
     try {
       for (const candidate of _candidateSpecs(candidates)) {
+        if (_isLockExemptPath(candidate.path)) continue;
         const current = mutationLockRefs.get(candidate.path);
         if (current) {
           current.count += 1;

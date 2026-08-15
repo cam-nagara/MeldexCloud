@@ -44,7 +44,9 @@ function bdMoveZ(direction) {
   } else {
     ids.reverse().forEach(id => { const idx = bd.nodes.findIndex(n => n.id === id); if (idx >= 0) { const n = bd.nodes.splice(idx, 1)[0]; bd.nodes.unshift(n); } });
   }
-  bdRender(); bdDirty();
+  if (typeof bdSyncNodeDomOrder === 'function') bdSyncNodeDomOrder();
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'move-z');
+  bdDirty();
 }
 // --- 4. Lock ---
 function bdToggleLock() {
@@ -52,7 +54,9 @@ function bdToggleLock() {
   bdPushUndo();
   const anyLocked = ids.some(id => { const n = bd.nodes.find(v => v.id === id); return n && n.locked; });
   ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.locked = !anyLocked; });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'toggle-lock');
+  else bdRender();
+  bdDirty();
   showStatus(anyLocked ? 'ロック解除' : 'ロックしました');
 }
 // --- 5. Flip / Rotate / Opacity ---
@@ -64,7 +68,9 @@ function bdFlip(axis) {
     if (axis === 'h') n.flipH = !n.flipH;
     else n.flipV = !n.flipV;
   });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'flip');
+  else bdRender();
+  bdDirty();
 }
 
 function bdRotate(deg) {
@@ -74,14 +80,18 @@ function bdRotate(deg) {
     const n = bd.nodes.find(v => v.id === id); if (!n) return;
     n.rotate = ((n.rotate || 0) + deg) % 360;
   });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'rotate');
+  else bdRender();
+  bdDirty();
 }
 
 function bdSetOpacity(val) {
   const ids = [...bd.selected]; if (!ids.length) return;
   bdPushUndo();
   ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.opacity = val; });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'opacity');
+  else bdRender();
+  bdDirty();
 }
 // --- 8. Color Picker ---
 function bdColorPicker() {
@@ -126,14 +136,9 @@ function bdPasteImage() {
             bdPushUndo();
             const canvasEl = document.getElementById('bd-canvas');
             let pos = { x: 200, y: 160 };
-            if (canvasEl && typeof bdScreenToWorld === 'function') {
+            if (canvasEl) {
               const rect = canvasEl.getBoundingClientRect();
               pos = bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-            } else if (canvasEl) {
-              pos = {
-                x: ((canvasEl.offsetWidth || 600) / 2 - (bd.panX || 0)) / (bd.zoom || 1),
-                y: ((canvasEl.offsetHeight || 400) / 2 - (bd.panY || 0)) / (bd.zoom || 1),
-              };
             }
             const n = bdNode('', pos.x - 150, pos.y - 100, 300, 0, { img: reader.result });
             bd.nodes.push(n);
@@ -334,18 +339,15 @@ function bdStartSlideshow(interval) {
 function bdStopSlideshow() {
   if (_bdSlideshow) { clearTimeout(_bdSlideshow.timer); _bdSlideshow = null; showStatus('スライドショー停止'); }
 }
-// --- 12. Background Color ---
-function bdSetBackground(color) {
-  document.getElementById('bd-canvas').style.background = color;
-  bd._bgColor = color;
-  bdDirty();
-}
 // --- Find & Replace は gb-board-find.js に分離済み (v0.5.287) ---
 
 // --- Numbering ---
 function bdToggleNumbering() {
   bd._numbering = !bd._numbering;
-  bdRender(); bdDirty();
+  const nodeIds = (bd.nodes || []).map(node => node?.id).filter(Boolean);
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(nodeIds, 'toggle-numbering');
+  else bdRender();
+  bdDirty();
   showStatus(bd._numbering ? '番号付けON' : '番号付けOFF');
 }
 function _bdGetNumber(nodeId) {
@@ -521,12 +523,13 @@ function bdEditNote(nodeId) {
     try {
       if (typeof bdPushUndo === 'function') bdPushUndo('カードのノートを編集');
       n.note = textarea.value;
-      bdRender();
+      if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'edit-note', { detailPanel: true });
+      else bdRender();
       bdDirty();
     } catch (error) {
       if (hadOwnNote) n.note = previousNote; else delete n.note;
       _bdDialogRestoreMutationCheckpoint(checkpoint);
-      try { bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
+      try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
       console.error('カードのノートを保存できませんでした:', error);
       try { showStatus('ノートを保存できませんでした', true); } catch {}
       saving = false;
@@ -540,19 +543,6 @@ function bdEditNote(nodeId) {
   modalApi.open();
   replaceIcons(modalApi.overlay);
   return modalApi;
-}
-
-// --- Checkbox + Progress ---
-function bdToggleCheck(nodeId) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  if (n.checked === undefined) n.checked = false;
-  n.checked = !n.checked;
-  bdRender(); bdDirty();
-}
-function bdSetProgress(nodeId, pct) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  n.progress = pct;
-  bdRender(); bdDirty();
 }
 
 // --- Summary ---
@@ -587,7 +577,12 @@ function bdAddSummary() {
     bd.connections.push(conn);
   });
   // 追加直後のインライン編集は発火させない (F2 / ダブルクリックで編集開始)
-  bdRender(); bdSelect(summary.id); bdDirty();
+  if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(summary)) {
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([summary.id], 'add-summary');
+    else bdRender();
+  }
+  if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [summary.id], reason: 'add-summary' });
+  bdSelect(summary.id); bdDirty();
 }
 
 // --- Drill Down ---
@@ -619,7 +614,9 @@ function bdSetMarker(nodeId, category, markerIdx) {
   const markers = BD_MARKERS[category];
   if (!markers || markerIdx < 0 || markerIdx >= markers.length) { delete n.markers[category]; }
   else { n.markers[category] = markerIdx; }
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'marker');
+  else bdRender();
+  bdDirty();
 }
 
 // --- カードHUD クリック時のサブメニュー (board-card-popup-redesign-plan.md §7) ---
@@ -712,7 +709,9 @@ function bdStatusMenuFor(nodeId, rect, trigger) {
   const setStatus = (st) => {
     bdPushUndo();
     targetIds.forEach(id => { const nd = bd.nodes.find(v => v.id === id); if (nd) nd.status = st; });
-    bdRender(); bdDirty();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targetIds, 'status-hud');
+    else bdRender();
+    bdDirty();
   };
   const curStatus = n.status || '';
   // 「なし」項目
@@ -757,7 +756,9 @@ function bdMarkerMenuFor(nodeId, rect, trigger) {
       bdPushUndo();
       const n2 = bd.nodes.find(v => v.id === nodeId);
       if (n2) n2.markers = {};
-      bdRender(); bdDirty();
+      if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'clear-markers-hud');
+      else bdRender();
+      bdDirty();
     }));
   }
   _bdRepositionHudMenu(menu, rect);
@@ -854,18 +855,9 @@ const BD_SHAPE_LABELS = {rect:'矩形',ellipse:'楕円',pill:'ピル',octagon:'�
 function bdSetShape(nodeId, shape) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
   n.shape = BD_SHAPES.includes(shape) && shape !== 'rect' ? shape : '';
-  bdRender(); bdDirty();
-}
-
-// --- Font Settings ---
-async function bdSetFont(nodeId) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const size = await cfPrompt('フォントサイズ (px)', n.fontSize || '13');
-  if (size === null) return;
-  n.fontSize = parseInt(size) || 13;
-  const bold = await cfConfirm('太字にしますか？');
-  n.fontBold = bold;
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'shape');
+  else bdRender();
+  bdDirty();
 }
 
 // --- Resize Selected ---
@@ -877,7 +869,9 @@ async function bdResizeSelected() {
   if(w===null || h===null) return;
   bdPushUndo();
   ids.forEach(id=>{ const n=bd.nodes.find(v=>v.id===id); if(n){n.w=parseInt(w)||160; n.h=parseInt(h)||0;} });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'resize-selected');
+  else bdRender();
+  bdDirty();
 }
 
 // --- 14. Context Menus ---
@@ -1036,7 +1030,8 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
     if (styleId) node._userCardStyle = true;
     else delete node._userCardStyle;
   });
-  bdRender();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'menu-card-style', { detailPanel: true });
+  else bdRender();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
 }
@@ -1047,7 +1042,8 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
 // - _userCardStyle / _userBgColor / _userFontSize / _userFontBold / _userW フラグを削除
 //   （これらが立っていると bdApplyAutoStyle が深さ別の値で上書きしないため、
 //    フラグを消して階層スタイルが効くようにする）
-// - 対象ノードからルートまで遡り、ルートに _autoStyle: true があれば
+// - 対象ノードから親方向へ辿り、最初に見つかった起点 (_autoStyle: true のカード。
+//   絶対ルートとは限らない。入れ子起点は近い方が優先される) があれば
 //   bdApplyAutoStyle を再実行して深さ別スタイルを再適用する。
 function _bdRestoreCardToHierarchy(nodeIds) {
   const ids = [...new Set((nodeIds || []).filter(Boolean))];
@@ -1064,26 +1060,22 @@ function _bdRestoreCardToHierarchy(nodeIds) {
     delete node._userFontSize;
     delete node._userFontBold;
     delete node._userW;
-    let cur = node;
-    const guard = new Set();
-    while (cur && cur.parent && !guard.has(cur.id)) {
-      guard.add(cur.id);
-      const parent = bd.nodes.find(n => n.id === cur.parent);
-      if (!parent) break;
-      cur = parent;
-    }
-    if (cur && cur._autoStyle) rootsToReapply.add(cur.id);
+    // 課題18-案A: 絶対ルートではなく「最も近い起点」まで遡る。祖先鎖の途中に起点があれば
+    // そちらを優先し (入れ子起点の「近い方が勝つ」)、絶対ルートまで遡らない。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(nodeId) : null;
+    if (anchor) rootsToReapply.add(anchor.id);
   });
   if (typeof bdApplyAutoStyle === 'function') {
     rootsToReapply.forEach(rid => bdApplyAutoStyle(rid));
   }
-  bdRender();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'restore-depth-style', { detailPanel: true });
+  else bdRender();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   if (typeof showStatus === 'function') {
     showStatus(rootsToReapply.size
       ? '階層別スタイルに戻しました'
-      : '個別スタイルを解除しました（ルートカードで「階層別スタイル」を有効にすると深さ別スタイルが反映されます）');
+      : '個別スタイルを解除しました（カードを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
   }
 }
 
@@ -1212,7 +1204,9 @@ function bdConnContextMenu(e, conn) {
       if (idx >= 0 && idx < bd.connections.length - 1) {
         bd.connections.splice(idx, 1);
         bd.connections.push(conn);
-        bdDrawConns(); bdDirty();
+        if (typeof bdSyncConnectionDomOrder === 'function') bdSyncConnectionDomOrder();
+        else bdDrawConns();
+        bdDirty();
       }
     });
     _bdContextMenuItem(viewPanel, '背面に移動', () => {
@@ -1221,7 +1215,9 @@ function bdConnContextMenu(e, conn) {
       if (idx > 0) {
         bd.connections.splice(idx, 1);
         bd.connections.unshift(conn);
-        bdDrawConns(); bdDirty();
+        if (typeof bdSyncConnectionDomOrder === 'function') bdSyncConnectionDomOrder();
+        else bdDrawConns();
+        bdDirty();
       }
     });
   }
@@ -1246,7 +1242,7 @@ function bdConnContextMenu(e, conn) {
     if (!(await cfConfirm('このラインを削除しますか？'))) return;
     bdPushUndo();
     if (typeof bdRemoveConnection === 'function') bdRemoveConnection(conn);
-    else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns(); bdDirty(); }
+    else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns({ connIds: [conn.id], reason: 'remove-connection-fallback' }); bdDirty(); }
   });
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {

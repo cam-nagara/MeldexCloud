@@ -237,15 +237,21 @@
         preset_names: ['標準'],
         load_error: error?.userMessage || error?.message || String(error),
       }));
-      const [settingsResult, modelsResult, dictionaryResult] = await Promise.all([
+      const pendingPromise = apiFetch('/auto-tag/pending', { silentError: true })
+        .catch(() => ({ ok: false, total: 0, scopes: [] }));
+      const [settingsResult, modelsResult, dictionaryResult, pendingResult] = await Promise.all([
         apiFetch('/auto-tag/settings', { silentError: true }),
         apiFetch('/auto-tag/models', { silentError: true }),
         dictionaryPromise,
+        pendingPromise,
       ]);
       return {
         settings: settingsResult?.settings || {},
         models: Array.isArray(modelsResult?.models) ? modelsResult.models : [],
         dictionary: dictionaryResult || { tags: [], groups: [], db_path: '' },
+        // Phase 8: Web Clipperが保存した画像のうち、まだ画像認識を掛けていない件数
+        // (待ち行列)。0件なら表示自体を出さない(基本UIをシンプルに保つ)。
+        pending: pendingResult && pendingResult.ok !== false ? pendingResult : { total: 0, scopes: [] },
       };
     })().catch(error => {
       loadBundleCache.delete(cacheKey);
@@ -366,7 +372,7 @@
       <div class="at-settings-head">
         <div>
           <h3>自動タグ付け</h3>
-          <p>画像や文書から候補を作り、自動タグ辞書で許可したタグだけを付けます。</p>
+          <p>画像はAIで、対応形式の文書は本文でタグ候補を作ります ${atFieldHelp('画像は選んだ判定方法（CLI AI／ローカル画像AI）で内容を認識します。文書はmd・txt・csv・jsonの本文を読みます。それ以外の形式（PDF・Word・画像以外の圧縮ファイル等）はファイル名とフォルダ名だけで判定します。いずれも自動タグ辞書で「自動付与」を許可したタグだけが付きます。')}。</p>
         </div>
         <label class="at-switch-row">
           <input type="checkbox" data-at-setting="enabled" ${settings.enabled ? 'checked' : ''}>
@@ -430,12 +436,50 @@
           <p class="at-help">プリセットの導入・CSV取込・CSV書出は、右側のタグパネルで行います。</p>
         </div>
       </div>
+      ${atPendingQueueSectionHtml(state)}
       <div class="at-settings-footer">
         <span data-at-save-state>選択中: ${atEsc(selected?.name || 'なし')}</span>
         <button type="button" class="gb-btn gb-btn-primary" data-at-save>${atIcon('save', 14)} 設定を保存</button>
       </div>
     `;
     atBindSettings(host, state);
+  }
+
+  // Phase 8(2026-08-14自動タグ付け計画): Web Clipperで保存した画像は、保存時に
+  // 画像認識を掛けない(応答を待たせないため)。ここで待ち件数と「今すぐ実行」を
+  // 出す。0件のときはセクション自体を出さない(基本UIをシンプルに保つ)。
+  function atPendingQueueSectionHtml(state) {
+    const scopes = Array.isArray(state.pending?.scopes) ? state.pending.scopes : [];
+    if (!scopes.length) return '';
+    return `
+      <div class="at-field-block" data-at-pending-queue>
+        <div class="at-field-label">Web Clipperの画像認識待ち ${atFieldHelp('Web Clipperで保存した画像は、保存時には画像そのものを見ていません。ここから実行すると、選んだ判定方法(CLI AI/ローカル画像AI)でまとめて画像認識を掛けます。')}</div>
+        ${scopes.map(scope => `
+          <div class="at-pending-row">
+            <span>${atEsc(scope.name || scope.source_folder)}: <strong>${Number(scope.count || 0).toLocaleString('ja-JP')}件</strong></span>
+            <button type="button" class="gb-btn gb-btn-sm" data-at-run-pending="${atEsc(scope.source_folder)}">
+              ${atIcon('play', 14)} 今すぐ実行
+            </button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  async function atRunPendingQueue(host, state, sourceFolder) {
+    if (!window.MeldexAutoTagJobs?.startPendingQueue) return;
+    try {
+      await window.MeldexAutoTagJobs.startPendingQueue(sourceFolder, {
+        label: 'Web Clipperの画像認識',
+      });
+      const refreshed = await apiFetch('/auto-tag/pending', { silentError: true }).catch(() => null);
+      if (refreshed) {
+        state.pending = refreshed;
+        atRenderSettingsBody(host, state);
+      }
+    } catch (error) {
+      atStatus('待ち行列の実行を開始できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    }
   }
 
   function atReadSettings(host, state) {
@@ -581,6 +625,14 @@
       });
     });
     host.querySelector('[data-at-open-dictionary]')?.addEventListener('click', () => ensureAutoTagDictionarySheet());
+    host.querySelectorAll('[data-at-run-pending]').forEach(button => {
+      button.addEventListener('click', () => {
+        button.disabled = true;
+        atRunPendingQueue(host, state, button.dataset.atRunPending).finally(() => {
+          if (button.isConnected) button.disabled = false;
+        });
+      });
+    });
   }
 
   async function renderAutoTagSettings(root) {

@@ -1,3 +1,4 @@
+  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
   items.forEach(({ index, entry }) => {
     const item = document.createElement('button');
     item.type = 'button';
@@ -589,12 +590,21 @@ async function apiPut(path, body, options = {}) {
 }
 
 async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
+  let stableCopyKey = '';
+  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
+      && body && typeof body === 'object' && !body.operation_id) {
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
+      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    body = prepared.body; stableCopyKey = prepared.key;
+  }
+  const result = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     ...(options || {}),
   });
+  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  return result;
 }
 
 /* ==============================
@@ -888,13 +898,3 @@ function _runStartupBackground(label, promise, onReady) {
           message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
           stack: error?.stack || '',
         });
-      }
-      return null;
-    });
-}
-
-function _refreshOutlinerAfterStartupReady() {
-  try {
-    const outlinerOptions = {
-      coalesce: true,
-      skipIfRecentlyLoaded: true,

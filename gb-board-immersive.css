@@ -121,11 +121,33 @@
   transform: translate(-50%, -50%);
   pointer-events: none;
   text-align: center;
-  color: color-mix(in srgb, var(--fg2) 58%, transparent);
+  color: color-mix(in srgb, var(--fg2) 72%, transparent);
   font-size: 13px;
-  line-height: 1.8;
+  line-height: 1.9;
   user-select: none;
   white-space: nowrap;
+  max-width: calc(100% - 32px);
+}
+
+.bd-empty-guide-title {
+  margin-bottom: 4px;
+  color: var(--fg2);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.bd-empty-guide-hint {
+  font-size: 12px;
+}
+
+/* 幅の狭い画面では 1 行に収まらないため、折り返しと文字サイズを詰める。 */
+@media (max-width: 640px) {
+  .bd-empty-guide {
+    white-space: normal;
+  }
+  .bd-empty-guide-title {
+    font-size: 15px;
+  }
 }
 
 .bd-empty-guide[hidden] {

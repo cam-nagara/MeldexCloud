@@ -16,16 +16,18 @@
       showSettingsModal({ panel: 'ユーザー' });
     }, null, 'users');
     addSep();
-    addMenuItem('このソースフォルダを削除', async () => {
+    addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」をフォルダツリーから削除しますか？\n（ファイルは削除されません）')) return;
+      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
       const roots = await apiFetch('/outliner-roots');
       const baseRoots = _cloneOutlinerRootsForBase(roots);
       const newRoots = roots.filter(r => r.path !== nodeData.path);
       await _putOutlinerRootsWithBase(newRoots, baseRoots);
       await loadOutliner();
-      showStatus('ソースフォルダを削除しました');
-    }, null, 'trash2');
+      showStatus('ソースフォルダの登録を解除しました');
+    }, null, 'folder-minus');
   }
 
   // --- 作品フォルダ設定（フォルダのみ） ---
@@ -130,8 +132,24 @@
 }
 
 // 追加先の親パスを決定
+// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
+// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
+function _outlinerContainerAcceptsItemType(nodeData, itemType) {
+  if (nodeData?.type !== 'database') return true;
+  return String(itemType || '') === 'entity';
+}
+
+// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
+// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
+function _outlinerItemFitsInSheet(nodeData) {
+  return window.MeldexSheetAttachments?.itemFitsInSheet
+    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
+    : true;
+}
+
 function getAddParentPath(nodeEl, nodeData, options = {}) {
-  const isContainer = nodeData.type === 'folder' || nodeData.type === 'database';
+  const isContainer = nodeData.type === 'folder'
+    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
@@ -421,6 +439,20 @@ async function addItemAt(parentPath, type) {
   }
 }
 
+// シートの中へエントリを追加する（シートに作れるのはエントリだけ）
+async function addSheetEntryAt(sheetPath) {
+  const path = String(sheetPath || '').trim();
+  if (!path) return;
+  try {
+    await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    showStatus('エントリを追加しました');
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
+  } catch (e) {
+    showStatus((e && e.message) || 'エントリの追加に失敗しました', true);
+  }
+}
+
 // ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
 async function showAddOutlinerItem(type) {
   // 選択中のアイテムから追加先を決定
@@ -429,7 +461,7 @@ async function showAddOutlinerItem(type) {
     // ホーム内のノードが選択されている場合
     if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
       const nd = treeSelection.lastClicked._nodeData;
-      if (nd.type === 'folder' || nd.type === 'database') {
+      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
         const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
         parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
       } else {
@@ -437,7 +469,7 @@ async function showAddOutlinerItem(type) {
         parentPath = pn?._nodeData?.path || _homeFolderPath;
       }
     } else {
-      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData);
+      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
     }
   }
   // 何も選択されていない場合、ホームフォルダにフォールバック

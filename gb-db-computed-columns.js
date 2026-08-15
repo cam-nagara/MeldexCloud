@@ -91,8 +91,8 @@ function applyComputedColumnCellStyle(td, dbPath, propName, ctx) {
 // 装飾関数を window.MeldexCellDisplayAugment.decorators に登録すると、その列が計算列
 // （computed_props宣言済み）である時だけ、値表示コンテナが組み上がった直後に呼ばれる。
 // 登録は単純なグローバルオブジェクトへのプロパティ代入のため、このファイルと登録側
-// （例: gb-production-management.part02.js）のスクリプト読込順に依存しない（描画時に
-// 遅延解決するため、登録側が後から読み込まれても動く）。
+// （例: gb-production-management-cloud-task-generation.js）のスクリプト読込順に依存しない
+// （描画時に遅延解決するため、登録側が後から読み込まれても動く）。
 function decorateComputedColumnCell(td, container, dbPath, propName, entityData, ctx) {
   if (!td || !container || !isComputedColumn(dbPath, propName, ctx)) return false;
   const decorator = typeof window !== 'undefined'

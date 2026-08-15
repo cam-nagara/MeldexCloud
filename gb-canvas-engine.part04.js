@@ -63,6 +63,10 @@ function _bdSnapshot() {
     nodes: bd.nodes,
     connections: bd.connections,
     groups: bd.groups,
+    // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
+    // スナップショットへ含めて復元時に再選択する (_bdApplySnapshot 側で現存IDへ絞る)。
+    selectedNodeIds: [...((bd.selected instanceof Set) ? bd.selected : [])],
+    selectedConnIds: typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [],
     cardStyles: bd.cardStyles,
     lineStyles: bd.lineStyles,
     depthStyles: bd.depthStyles,
@@ -109,6 +113,11 @@ function bdClearUndoStacks(path) {
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function _bdApplySnapshot(s) {
+  // 課題8: undo/redo は bd.nodes を丸ごと差し替えるため、編集中のカードがあると
+  // contentEditable 側にしか無い未確定のキー入力が確定される機会もないまま消える。
+  // スナップショット適用前に確定しておく（gb-board-find.js の
+  // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
@@ -143,8 +152,19 @@ function _bdApplySnapshot(s) {
     if (typeof bdApplyCanvasBackground === 'function') bdApplyCanvasBackground(canvasEl);
     else canvasEl.style.background = bd._bgColor || '';
   }
-  bd.selected = new Set(); bd.editing = null; bdClearConnectionSelection();
+  bd.editing = null;
+  // 課題10-2: 選択集合をスナップショットから復元する。現存しなくなった (削除された等) IDは
+  // 除外する。旧スナップショット (selectedNodeIds 未保存) を undo/redo する場合は空扱いで
+  // 従来どおり全解除になる。
+  const existingNodeIds = new Set(bd.nodes.map(n => n.id));
+  const restoredNodeIds = Array.isArray(s.selectedNodeIds) ? s.selectedNodeIds.filter(id => existingNodeIds.has(id)) : [];
+  bd.selected = new Set(restoredNodeIds);
   bdEnsureConnectionRuntime(bd.connections);
+  if (typeof bdSetConnectionSelection === 'function') {
+    bdSetConnectionSelection(Array.isArray(s.selectedConnIds) ? s.selectedConnIds : []);
+  } else {
+    bdClearConnectionSelection();
+  }
 }
 function bdUndo() {
   if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
@@ -420,9 +440,12 @@ async function bdOpenBoard(label, path, opts) {
       const canvasEl = document.getElementById('bd-canvas');
       if (canvasEl) canvasEl.style.background = bd._bgColor;
     }
-    // _autoStyle が有効なルートカードには、レンダリング前に階層別スタイルを適用しておく。
+    // _autoStyle が有効な起点カード (絶対ルートとは限らない。入れ子起点も含め全て) には、
+    // レンダリング前に階層別スタイルを適用しておく。
     // (これをしないと、ボード読込直後は _autoStyle = true だがスタイルが未反映で、
     //  一度チェックを外して再度 ON にするまで反映されない)
+    // 課題18-案A: bdApplyAutoStyle は入れ子起点の子孫を書き換えないため (自分以外の
+    // _autoStyle カードに到達したら打ち切る)、この forEach の処理順に依存せず安全に呼べる。
     if (typeof bdApplyAutoStyle === 'function') {
       bd.nodes.forEach(n => { if (n._autoStyle) bdApplyAutoStyle(n.id); });
     }

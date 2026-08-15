@@ -74,7 +74,7 @@
         raw: embeddedMeta.rating == null ? null : Number(embeddedMeta.rating),
         display: embeddedMeta.rating == null ? '' : `${Number(embeddedMeta.rating) || 0} / 5`,
       }],
-      ['note', { label: webclip.page_url ? 'WebClipperメモ' : 'メモ', raw: text(embeddedMeta.note || webclip.note) || null, display: text(embeddedMeta.note || webclip.note) }],
+      ['note', { label: 'メモ', raw: text(embeddedMeta.note || webclip.note) || null, display: text(embeddedMeta.note || webclip.note) }],
       ['page-url', { label: '元ページ', raw: text(webclip.page_url) || null, display: text(webclip.page_url) }],
       ['image-url', { label: '画像URL', raw: text(webclip.image_url) || null, display: text(webclip.image_url) }],
       ['clipped-at', { label: '保存日時', raw: text(webclip.clipped_at) || null, display: text(webclip.clipped_at) }],

@@ -1,10 +1,10 @@
-  addMI('タブを閉じる', () => closeTab(tab.id));
-  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
-  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
+  addMI('タブを閉じる', () => closeTab(tab.id), false, 'tab-menu-close');
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0, 'tab-menu-close-left');
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1, 'tab-menu-close-right');
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);
-  });
+  }, false, 'tab-menu-close-others');
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
   const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
@@ -790,12 +790,21 @@ async function apiPut(path, body, options = {}) {
 }
 
 async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
+  let stableCopyKey = '';
+  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
+      && body && typeof body === 'object' && !body.operation_id) {
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
+      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    body = prepared.body; stableCopyKey = prepared.key;
+  }
+  const result = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     ...(options || {}),
   });
+  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  return result;
 }
 
 /* ==============================

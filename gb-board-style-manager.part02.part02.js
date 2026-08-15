@@ -85,7 +85,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = !(bd.displayFilters[key] !== false);
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -103,7 +103,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd[key] = !bd[key];
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -120,7 +120,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = bd.displayFilters[key] !== true;
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);

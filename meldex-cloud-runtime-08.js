@@ -903,7 +903,7 @@
       if (!items.length) return;
       const details = document.createElement('details');
       details.className = 'file-embedded-group';
-      // 埋め込み情報のグループは既定で全部閉じる（一番上のタグだけ開いた状態にする）。
+      // 埋め込み情報のグループは既定で全部閉じる（タグと主要項目は常に開いた状態のまま）。
       details.open = false;
       const summary = document.createElement('summary');
       summary.textContent = `${group.name || '情報'}（${items.length}）`;
@@ -918,10 +918,11 @@
     });
   }
 
-  function renderEditor(host, path, meta) {
-    if (!host) return;
+  function renderEditor(primaryHost, groupsHost, path, meta) {
+    if (!primaryHost) return;
     _pruneDetachedMemos();
-    host.replaceChildren();
+    primaryHost.replaceChildren();
+    if (groupsHost) groupsHost.replaceChildren();
     if (meta?._metadataLoadError) {
       const error = document.createElement('div');
       error.className = 'file-embedded-empty file-embedded-error';
@@ -936,10 +937,10 @@
       retry.addEventListener('click', async () => {
         retry.disabled = true;
         const refreshed = await load(path, null, { force: true });
-        renderEditor(host, path, refreshed);
+        renderEditor(primaryHost, groupsHost, path, refreshed);
       });
       error.append(message, retry);
-      host.appendChild(error);
+      primaryHost.appendChild(error);
       return;
     }
     const embedded = embeddedOf(meta);
@@ -948,22 +949,22 @@
       const empty = document.createElement('div');
       empty.className = 'file-embedded-empty';
       empty.textContent = '表示できる埋め込み情報はありません';
-      host.appendChild(empty);
+      primaryHost.appendChild(empty);
       return;
     }
 
     if (embedded?.width && embedded?.height) {
-      host.appendChild(row('画像サイズ', dimensionText(embedded)).wrapper);
+      primaryHost.appendChild(row('画像サイズ', dimensionText(embedded)).wrapper);
     }
     if (embedded?.kind === 'image') {
       const ratingRow = row('評価', '');
       ratingRow.content.appendChild(ratingControl(path, meta));
-      host.appendChild(ratingRow.wrapper);
+      primaryHost.appendChild(ratingRow.wrapper);
     }
-    appendLinkRow(host, '元ページ', webclip?.page_url);
-    appendLinkRow(host, '画像URL', webclip?.image_url);
+    appendLinkRow(primaryHost, '元ページ', webclip?.page_url);
+    appendLinkRow(primaryHost, '画像URL', webclip?.image_url);
     if (webclip?.clipped_at) {
-      host.appendChild(row('保存日時', webclip.clipped_at).wrapper);
+      primaryHost.appendChild(row('保存日時', webclip.clipped_at).wrapper);
     }
 
     if (embedded?.kind === 'image') {
@@ -971,11 +972,13 @@
       const memo = document.createElement('div');
       memo.className = 'file-embedded-memo';
       const label = document.createElement('label');
-      label.textContent = webclip ? 'WebClipperメモ' : 'メモ';
+      // 取り込み元（Web Clipper経由か否か）に関わらずどの画像でも使えるメモ欄のため、
+      // 特定機能名を冠したラベルは付けない（用語統一ルール）。
+      label.textContent = 'メモ';
       // 「画像ファイル内へ保存します」の説明は基本UIから外し、ラベル横の
       // ヘルプアイコンのツールチップへ集約する（UI共通ルール）。
       if (editable && typeof fieldHelp === 'function') {
-        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます'));
+        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます', { e2eId: 'file-embedded-memo-help' }));
       }
       const textarea = document.createElement('textarea');
       const initialNote = String(embedded.note || webclip?.note || '');
@@ -993,10 +996,10 @@
       if (!editable) status.textContent = 'この形式のメモは閲覧のみです';
       actions.append(status);
       memo.append(label, textarea, actions);
-      host.appendChild(memo);
+      primaryHost.appendChild(memo);
       if (editable) bindMemoAutosave(textarea, status, path, initialNote);
     }
-    appendMetadataGroups(host, embedded);
+    if (groupsHost) appendMetadataGroups(groupsHost, embedded);
   }
 
   function renderFolderTags(host, item) {
@@ -1238,7 +1241,7 @@
         raw: embeddedMeta.rating == null ? null : Number(embeddedMeta.rating),
         display: embeddedMeta.rating == null ? '' : `${Number(embeddedMeta.rating) || 0} / 5`,
       }],
-      ['note', { label: webclip.page_url ? 'WebClipperメモ' : 'メモ', raw: text(embeddedMeta.note || webclip.note) || null, display: text(embeddedMeta.note || webclip.note) }],
+      ['note', { label: 'メモ', raw: text(embeddedMeta.note || webclip.note) || null, display: text(embeddedMeta.note || webclip.note) }],
       ['page-url', { label: '元ページ', raw: text(webclip.page_url) || null, display: text(webclip.page_url) }],
       ['image-url', { label: '画像URL', raw: text(webclip.image_url) || null, display: text(webclip.image_url) }],
       ['clipped-at', { label: '保存日時', raw: text(webclip.clipped_at) || null, display: text(webclip.clipped_at) }],
@@ -1661,15 +1664,21 @@
         preset_names: ['標準'],
         load_error: error?.userMessage || error?.message || String(error),
       }));
-      const [settingsResult, modelsResult, dictionaryResult] = await Promise.all([
+      const pendingPromise = apiFetch('/auto-tag/pending', { silentError: true })
+        .catch(() => ({ ok: false, total: 0, scopes: [] }));
+      const [settingsResult, modelsResult, dictionaryResult, pendingResult] = await Promise.all([
         apiFetch('/auto-tag/settings', { silentError: true }),
         apiFetch('/auto-tag/models', { silentError: true }),
         dictionaryPromise,
+        pendingPromise,
       ]);
       return {
         settings: settingsResult?.settings || {},
         models: Array.isArray(modelsResult?.models) ? modelsResult.models : [],
         dictionary: dictionaryResult || { tags: [], groups: [], db_path: '' },
+        // Phase 8: Web Clipperが保存した画像のうち、まだ画像認識を掛けていない件数
+        // (待ち行列)。0件なら表示自体を出さない(基本UIをシンプルに保つ)。
+        pending: pendingResult && pendingResult.ok !== false ? pendingResult : { total: 0, scopes: [] },
       };
     })().catch(error => {
       loadBundleCache.delete(cacheKey);
@@ -1790,7 +1799,7 @@
       <div class="at-settings-head">
         <div>
           <h3>自動タグ付け</h3>
-          <p>画像や文書から候補を作り、自動タグ辞書で許可したタグだけを付けます。</p>
+          <p>画像はAIで、対応形式の文書は本文でタグ候補を作ります ${atFieldHelp('画像は選んだ判定方法（CLI AI／ローカル画像AI）で内容を認識します。文書はmd・txt・csv・jsonの本文を読みます。それ以外の形式（PDF・Word・画像以外の圧縮ファイル等）はファイル名とフォルダ名だけで判定します。いずれも自動タグ辞書で「自動付与」を許可したタグだけが付きます。')}。</p>
         </div>
         <label class="at-switch-row">
           <input type="checkbox" data-at-setting="enabled" ${settings.enabled ? 'checked' : ''}>
@@ -1854,12 +1863,50 @@
           <p class="at-help">プリセットの導入・CSV取込・CSV書出は、右側のタグパネルで行います。</p>
         </div>
       </div>
+      ${atPendingQueueSectionHtml(state)}
       <div class="at-settings-footer">
         <span data-at-save-state>選択中: ${atEsc(selected?.name || 'なし')}</span>
         <button type="button" class="gb-btn gb-btn-primary" data-at-save>${atIcon('save', 14)} 設定を保存</button>
       </div>
     `;
     atBindSettings(host, state);
+  }
+
+  // Phase 8(2026-08-14自動タグ付け計画): Web Clipperで保存した画像は、保存時に
+  // 画像認識を掛けない(応答を待たせないため)。ここで待ち件数と「今すぐ実行」を
+  // 出す。0件のときはセクション自体を出さない(基本UIをシンプルに保つ)。
+  function atPendingQueueSectionHtml(state) {
+    const scopes = Array.isArray(state.pending?.scopes) ? state.pending.scopes : [];
+    if (!scopes.length) return '';
+    return `
+      <div class="at-field-block" data-at-pending-queue>
+        <div class="at-field-label">Web Clipperの画像認識待ち ${atFieldHelp('Web Clipperで保存した画像は、保存時には画像そのものを見ていません。ここから実行すると、選んだ判定方法(CLI AI/ローカル画像AI)でまとめて画像認識を掛けます。')}</div>
+        ${scopes.map(scope => `
+          <div class="at-pending-row">
+            <span>${atEsc(scope.name || scope.source_folder)}: <strong>${Number(scope.count || 0).toLocaleString('ja-JP')}件</strong></span>
+            <button type="button" class="gb-btn gb-btn-sm" data-at-run-pending="${atEsc(scope.source_folder)}">
+              ${atIcon('play', 14)} 今すぐ実行
+            </button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  async function atRunPendingQueue(host, state, sourceFolder) {
+    if (!window.MeldexAutoTagJobs?.startPendingQueue) return;
+    try {
+      await window.MeldexAutoTagJobs.startPendingQueue(sourceFolder, {
+        label: 'Web Clipperの画像認識',
+      });
+      const refreshed = await apiFetch('/auto-tag/pending', { silentError: true }).catch(() => null);
+      if (refreshed) {
+        state.pending = refreshed;
+        atRenderSettingsBody(host, state);
+      }
+    } catch (error) {
+      atStatus('待ち行列の実行を開始できませんでした: ' + (error?.userMessage || error?.message || error), true);
+    }
   }
 
   function atReadSettings(host, state) {
@@ -2005,6 +2052,14 @@
       });
     });
     host.querySelector('[data-at-open-dictionary]')?.addEventListener('click', () => ensureAutoTagDictionarySheet());
+    host.querySelectorAll('[data-at-run-pending]').forEach(button => {
+      button.addEventListener('click', () => {
+        button.disabled = true;
+        atRunPendingQueue(host, state, button.dataset.atRunPending).finally(() => {
+          if (button.isConnected) button.disabled = false;
+        });
+      });
+    });
   }
 
   async function renderAutoTagSettings(root) {
@@ -2681,6 +2736,16 @@
     return startEndpoint('/global-tags/auto-tag', payload, options);
   }
 
+  // Phase 8(2026-08-14自動タグ付け計画): Web Clipperが保存した画像の
+  // 待ち行列をまとめて処理する。対象は待ち行列のパスに固定されるため、
+  // 呼び出し側はソースフォルダだけを渡す。
+  function startPendingQueue(sourceFolder, options) {
+    return startEndpoint('/auto-tag/pending/run', { source_folder: sourceFolder }, {
+      ...options,
+      label: options?.label || 'Web Clipperの画像認識',
+    });
+  }
+
   function startReset(payload, options) {
     return startEndpoint('/global-tags/reset', payload, {
       ...options,
@@ -2728,6 +2793,7 @@
   window.MeldexAutoTagJobs = {
     start,
     startReset,
+    startPendingQueue,
     cancel,
     restore,
     snapshot: () => [...jobs.values()].map(job => ({ ...job })),
@@ -2756,7 +2822,6 @@
   let treeRoot = null;
   let context = emptyContext();
   let requestRevision = 0;
-  let patchHandle = 0;
   let filterRenderTimer = 0;
   let mutationQueue = Promise.resolve();
 
@@ -2905,20 +2970,15 @@
     schedulePatch();
   }
 
+  // タグの付け外し状態はスクロール中も含めて即座に見た目へ反映する必要があるため、
+  // requestAnimationFrame によるバッチ遅延は使わず同期で塗り直す。非表示/非合成の
+  // ブラウザ面ではrAFが発火しないことがあり、決定的な検証・実運用の両方で
+  // 同期反映の方が安全（2026-08-14 タグツリー複数列化での見直し）。
   function schedulePatch() {
-    if (patchHandle) return;
-    const run = () => {
-      patchHandle = 0;
-      patchVisibleTree();
-    };
-    if (typeof requestAnimationFrame === 'function') patchHandle = requestAnimationFrame(run);
-    else {
-      patchHandle = 1;
-      queueMicrotask(run);
-    }
+    patchVisibleTree();
   }
 
-  function checkboxReason(tagId) {
+  function assignmentBlockedReason() {
     if (!context.path) return 'ファイルを1件選択してください';
     if (context.selectionCount !== 1) return 'タグを付け外しするファイルを1件だけ選択してください';
     if (context.recursive) return 'フォルダではなくファイルを1件選択してください';
@@ -2933,6 +2993,12 @@
     return '';
   }
 
+  function isTagAssigned(tag) {
+    const tagId = String(tag?.id || '');
+    const tagName = String(tag?.name || '').toLocaleLowerCase('ja');
+    return context.assignedIds.has(tagId) || context.assignedNames.has(tagName);
+  }
+
   function isPending(key) {
     return Number(pendingKeyCounts.get(key) || 0) > 0;
   }
@@ -2945,24 +3011,34 @@
     return false;
   }
 
+  // タグツリーの行に埋め込まれたタグチップ（[data-tag-assignment-id]付き）を、
+  // 現在の付け外し状態・操作可否に合わせて塗り直す。チップの生成そのものは
+  // gb-tag-management.js 側が担当し、ここでは既存要素のクラス/属性だけを更新する。
+  function applyChipVisual(chip) {
+    const tagId = String(chip.dataset.tagAssignmentId || '');
+    const tagName = String(chip.dataset.tagAssignmentName || '');
+    const assigned = context.assignedIds.has(tagId) || context.assignedNames.has(tagName.toLocaleLowerCase('ja'));
+    const reason = assignmentBlockedReason();
+    const pending = isPending(context.signature + '\n' + tagId);
+    chip.classList.toggle('gb-tag-chip--assigned', assigned);
+    chip.classList.toggle('gb-tag-chip--assignment-disabled', !!reason);
+    chip.classList.toggle('gb-tag-chip--assignment-pending', pending);
+    chip.setAttribute('aria-pressed', assigned ? 'true' : 'false');
+    chip.setAttribute(
+      'aria-label',
+      reason
+        ? `${tagName || 'タグ'}（${reason}）`
+        : `${tagName || 'タグ'}を選択ファイルへ${assigned ? '外す' : '付ける'}`,
+    );
+  }
+
   function patchVisibleTree() {
     if (!treeRoot?.isConnected) return;
-    treeRoot.querySelectorAll('[data-tag-assignment-id]').forEach(input => {
-      const tagId = String(input.dataset.tagAssignmentId || '');
-      const tagName = String(input.dataset.tagAssignmentName || '').toLocaleLowerCase('ja');
-      input.checked = context.assignedIds.has(tagId) || context.assignedNames.has(tagName);
-      const reason = checkboxReason(tagId);
-      input.disabled = !!reason;
-      input.title = reason || `${input.dataset.tagAssignmentLabel || 'タグ'}を付け外し`;
-      input.closest('.gb-tag-assignment-toggle')?.classList.toggle(
-        'is-saving',
-        isPending(context.signature + '\n' + tagId),
-      );
-    });
+    treeRoot.querySelectorAll('[data-tag-assignment-id]').forEach(applyChipVisual);
     const status = treeRoot.querySelector('[data-tag-assignment-status]');
     if (!status) return;
     status.classList.toggle('is-error', context.loadFailed);
-    if (!context.path) status.textContent = 'ファイルを1件選択すると、チェックでタグを付け外しできます。';
+    if (!context.path) status.textContent = 'タグをクリックすると、選択中のファイルに付け外しできます。';
     else if (context.selectionCount !== 1) status.textContent = '複数選択中です。タグの付け外しはファイルを1件だけ選択してください。';
     else if (context.recursive) status.textContent = 'フォルダが選択されています。タグの付け外しはファイルを1件だけ選択してください。';
     else if (context.loading) status.textContent = '選択ファイルのタグを読み込んでいます…';
@@ -2970,7 +3046,7 @@
     else if (context.catalogMutationBlocked || context.targetMutationBlocked) {
       status.textContent = context.warning || 'タグ辞書の同期競合を解消してください。';
     }
-    else status.textContent = 'チェックを切り替えると、選択ファイルのタグをすぐに更新します。';
+    else status.textContent = 'ファイルを1件選択すると、タグをクリックで付け外しできます。';
   }
 
   async function refreshTarget(force) {
@@ -3056,7 +3132,7 @@
     }
   }
 
-  function queueTagMutation(input, tag, checked) {
+  function queueTagMutation(tag, checked) {
     const captured = {
       path: context.path,
       sourceFolder: context.sourceFolder,
@@ -3087,28 +3163,16 @@
         && !hasPendingForSignature(captured.signature)
       ) refreshTarget(true);
     });
-    input.checked = checked;
   }
 
-  function createTagToggle(tag) {
-    const label = document.createElement('label');
-    label.className = 'gb-tag-assignment-toggle';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.dataset.tagAssignmentId = String(tag?.id || '');
-    input.dataset.tagAssignmentName = String(tag?.name || '');
-    input.dataset.tagAssignmentLabel = String(tag?.name || 'タグ');
-    input.dataset.e2eId = 'tag-tree-assignment-' + String(tag?.id || '');
-    input.setAttribute('aria-label', `${tag?.name || 'タグ'}を選択ファイルへ付ける`);
-    input.addEventListener('click', event => event.stopPropagation());
-    input.addEventListener('change', event => {
-      event.stopPropagation();
-      if (input.disabled) return;
-      queueTagMutation(input, tag, input.checked);
-    });
-    label.addEventListener('click', event => event.stopPropagation());
-    label.appendChild(input);
-    return label;
+  // タグ行（チップ）のクリック/Enter/Spaceから呼ばれる、唯一の付け外し入口。
+  // 対象が1件も選べていない・複数選択・フォルダ選択・読込中などは
+  // assignmentBlockedReason() が理由を返し、その間は何も起きない。
+  function toggleTagAssignment(tag) {
+    if (!tag) return false;
+    if (assignmentBlockedReason()) return false;
+    queueTagMutation(tag, !isTagAssigned(tag));
+    return true;
   }
 
   function mountTree(root) {
@@ -3147,7 +3211,9 @@
     createTabBar,
     setTreeContext,
     createTargetStatus,
-    createTagToggle,
+    isTagAssigned,
+    assignmentBlockedReason,
+    toggleTagAssignment,
     mountTree,
     scheduleTreeFilterRender,
     refreshTarget: () => refreshTarget(true),
@@ -5757,6 +5823,13 @@
   };
   const CLOSE_DELAY = 520;
   const EDGE_SENSOR_FALLBACK_PX = 28;
+  // pointerdown時点のスワイプ開始判定用の端ゾーン（論理px）。edgeSensorSizeより
+  // やや狭く、タッチスワイプの起点をエッジ付近に限定する目的の固定値。
+  const SWIPE_EDGE_FALLBACK_PX = 22;
+  // 上下のツールバーは初期状態で出したままにする。隠したい人は
+  // キャンバスの右クリックメニュー (「上端/下端ツールバーを常時表示」) で切り替える。
+  // 右サイドバーは従来通り、必要なときだけ端から開く。
+  const DEFAULT_MODES = { top: 'pinned', bottom: 'pinned', right: 'auto' };
   let nextInstanceId = 0;
 
   function storageGet(key, fallback) {
@@ -5771,7 +5844,7 @@
       if (legacy === '0') return 'pinned';
       if (legacy === '1') return 'auto';
     }
-    return 'auto';
+    return DEFAULT_MODES[edge] || 'auto';
   }
 
   function storageSet(key, value) {
@@ -5895,13 +5968,22 @@
   function interactionLocked(instance) {
     return instance.locks.size > 0
       || document.body.classList.contains('bsa-resizing-sidebar')
-      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, [role="menu"][aria-expanded="true"]');
+      || !!document.querySelector('.gb-context-menu, .bd-style-picker-menu, .bd-style-manager-popup, [role="menu"][aria-expanded="true"]');
   }
 
   function edgeSensorSize(instance) {
     const raw = getComputedStyle(instance.root).getPropertyValue('--bd-edge-sensor-size');
     const value = Number.parseFloat(raw);
     return Number.isFinite(value) && value > 0 ? value : EDGE_SENSOR_FALLBACK_PX;
+  }
+
+  // getBoundingClientRect() / event.clientX・clientY は表示倍率（CSS zoom）適用後の
+  // 実座標を返すが、--bd-edge-sensor-size 等のCSS寸法値は倍率適用前の論理px値のまま。
+  // 距離をpxで直接比較すると、倍率100%以外では判定ゾーンの実寸が意図とズレる
+  // （例: 150%表示だと28pxの指定が実質18.7px相当でしか反応しない）。
+  // 比較は必ず実座標側へ揃えるため、CSS寸法値には倍率を掛けてから比較する。
+  function currentUiZoom() {
+    return typeof _getZoom === 'function' ? _getZoom() : 1;
   }
 
   function pointerRevealSuppressed(instance, event) {
@@ -5973,7 +6055,7 @@
       return;
     }
     const rect = instance.host.getBoundingClientRect();
-    const sensorSize = edgeSensorSize(instance);
+    const sensorSize = edgeSensorSize(instance) * currentUiZoom();
     const near = {
       top: event.clientY - rect.top <= sensorSize,
       bottom: rect.bottom - event.clientY <= sensorSize,
@@ -5989,12 +6071,13 @@
 
   function pointerDown(instance, event) {
     const rect = instance.host.getBoundingClientRect();
+    const swipeEdgeSize = SWIPE_EDGE_FALLBACK_PX * currentUiZoom();
     instance.swipe = {
       x: event.clientX,
       y: event.clientY,
-      top: event.clientY - rect.top <= 22,
-      bottom: rect.bottom - event.clientY <= 22,
-      right: !!instance.shell && rect.right - event.clientX <= 22,
+      top: event.clientY - rect.top <= swipeEdgeSize,
+      bottom: rect.bottom - event.clientY <= swipeEdgeSize,
+      right: !!instance.shell && rect.right - event.clientX <= swipeEdgeSize,
     };
     if (event.target.closest?.('[role="separator"], input, textarea, [contenteditable="true"]')) {
       instance.locks.add(`pointer:${event.pointerId}`);
@@ -6017,14 +6100,29 @@
     if (start.right && start.x - event.clientX > 28) reveal(instance, 'right', true);
   }
 
+  // 新規作成直後のボードは、ファイル名の見出しから作られたルートカードを 1 枚だけ持つ。
+  // 利用者から見ればこれは「まだ何も作っていない」状態なので、空状態の案内を出す対象に含める。
+  // 本文の追記・画像・リンク・ライン・グループのいずれかが付いた時点で「中身あり」に切り替わる。
+  function looksUntouched(state) {
+    const nodes = Array.isArray(state?.nodes) ? state.nodes : [];
+    if (!nodes.length) return true;
+    if (nodes.length > 1) return false;
+    if ((state.connections?.length || 0) > 0 || (state.groups?.length || 0) > 0) return false;
+    const only = nodes[0] || {};
+    if (only.img || only.link || only.note || only.parent) return false;
+    return !String(only.text || '').includes('\n');
+  }
+
   function hasPersistentContent(instance) {
     const current = boardState();
-    if (current && isActiveRoot(instance.root)) {
-      if ((current.nodes?.length || 0) > 0 || (current.connections?.length || 0) > 0) return true;
+    const stateReadable = !!current && isActiveRoot(instance.root);
+    if (stateReadable) {
+      if (!looksUntouched(current)) return true;
       if (current.backgroundImage || current.background?.image || current._fileStyle?.board?.backgroundImage) return true;
+    } else {
+      const nodeContainer = instance.root.querySelector('[data-bd-role="nodes"]');
+      if (nodeContainer?.children.length) return true;
     }
-    const nodeContainer = instance.root.querySelector('[data-bd-role="nodes"]');
-    if (nodeContainer?.children.length) return true;
     const annotationLayer = document.getElementById('ann-layer');
     if (annotationLayer?.children.length) return true;
     const canvas = instance.root.querySelector('[data-bd-role="canvas"]');
@@ -6086,7 +6184,10 @@
     const guide = document.createElement('div');
     guide.className = 'bd-empty-guide';
     guide.setAttribute('aria-hidden', 'true');
-    guide.innerHTML = '<div>ダブルクリックでカードを追加</div><div>ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>';
+    guide.dataset.e2eId = `board-${identity}-empty-guide`;
+    guide.innerHTML = '<div class="bd-empty-guide-title">ダブルクリックでカードを追加</div>'
+      + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
+      + '<div class="bd-empty-guide-hint">カードを選んで Tab で子カードを追加</div>';
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);
@@ -7673,6 +7774,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-modal', 'sn2-toolbar-select-modal');
     modalApi.body.classList.add('sn2-preset-modal-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const select = panel.querySelector('.sn2-toolbar-modal-select');
     if (select) select.value = source.value;
     const apply = () => {
@@ -7970,6 +8072,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-modal');
     modalApi.body.classList.add('sn2-preset-modal-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const input = panel.querySelector('.sn2-preset-name');
     const status = panel.querySelector('.sn2-preset-status');
     const setBusy = next => {
@@ -8136,6 +8239,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-manager-modal');
     modalApi.body.classList.add('sn2-preset-manager-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const list = panel.querySelector('[data-pm-list]');
     const status = panel.querySelector('.sn2-preset-manager-status');
     const addButton = panel.querySelector('[data-pm-add]');
@@ -8174,6 +8278,10 @@ class ScriptNoteComponent extends ToolComponent {
       });
       if (typeof replaceIcons === 'function') replaceIcons(list);
       if (busy) list.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      // render()は一覧行をinnerHTMLごと作り直すため、初期化時に一度だけ行った
+      // applyCompactTargetsではこの後に生成される行内ボタン（複製/上/下/削除）へ
+      // タップ領域クラスが付かない。行を作り直すたびに再適用する。
+      globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     };
     const setBusy = next => {
       busy = next;
@@ -9376,7 +9484,19 @@ async function restoreVersion(path, versionName, type) {
     if (type === 'db') {
       await apiPost('/version/restore-db', { path, version: versionName });
     } else {
-      await apiPost('/version/restore', { path, version: versionName });
+      const revisionState = await apiFetch('/version/read?path=' + encodeURIComponent(path)
+        + '&version=' + encodeURIComponent(versionName));
+      const transportRevision = revisionState?.transport_revision || null;
+      const revisionToken = String(revisionState?.etag || transportRevision?.token || '').trim();
+      if (!revisionToken || !transportRevision) {
+        throw new Error('復元対象の最新revisionを確認できませんでした');
+      }
+      await apiPost('/version/restore', {
+        path,
+        version: versionName,
+        if_match_etag: revisionToken,
+        transport_revision: transportRevision,
+      });
     }
     showStatus('復元しました');
     const versionModal = [...document.querySelectorAll('.modal-overlay[data-history-version-modal="1"]')]
@@ -9871,6 +9991,13 @@ async function showFolderVersionFiles(folderPath, versionName) {
     listHtml += '</div>';
     const body = document.createElement('div');
     body.innerHTML = `<div class="gb-section-desc" style="margin-bottom:8px;">${files.length}ファイル</div>${listHtml}`;
+    // initialFocus未指定だと共通ダイアログ既定のfallback（先頭のbutton要素）が
+    // ヘッダーの閉じるアイコンへ合ってしまい、開いた直後にフォーカスイン→
+    // gb-tooltip.jsのネイティブtitle抑制(suppressNativeTitle)が発火してtitleが
+    // 消える（このダイアログを閉じるボタン以外に意味のある初期フォーカス先が
+    // 無いため、内容領域自体をフォーカス対象にする。gb-detail-panel.part01.part01.js
+    // の legacy modal と同じ手法）。
+    body.tabIndex = -1;
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'gb-btn gb-btn-sm';
@@ -9886,6 +10013,7 @@ async function showFolderVersionFiles(folderPath, versionName) {
       footer: closeBtn,
       variant: 'standard',
       geometryKey: 'history-folder-files',
+      initialFocus: () => body,
     });
     const o = modalApi.overlay;
     o.classList.add('modal-overlay');
@@ -13187,9 +13315,16 @@ ${spEsc(actionText)}</pre>
     container.querySelectorAll('[data-kv-tab]').forEach(btn => {
       btn.addEventListener('click', () => switchTab(container, btn.dataset.kvTab));
     });
-    ensureRole(container).then(() => {
-      if (container.isConnected) renderActiveTab(container);
-    });
+    // roleがまだ未取得の初回表示だけ、取得完了後に再描画して書き込み権限ボタンを反映する。
+    // roleが既に判明しているタブ切替では再描画を予約しない。ここを無条件にすると、
+    // 同期描画（Viewer相当のボタン構成）の直後に非同期の役割確定描画が必ず割り込み、
+    // タブ切替のたびに一覧をボタンごと作り直す・APIを二重に叩く不要な競合状態になる
+    // （記憶継承タブの手動追加ボタン等が再構築中に一瞬掴めなくなる不具合の原因）。
+    if (!state.roleLoaded) {
+      ensureRole(container).then(() => {
+        if (container.isConnected) renderActiveTab(container);
+      });
+    }
     renderActiveTab(container);
   }
 
@@ -13534,11 +13669,26 @@ ${spEsc(actionText)}</pre>
   }
 
   function openKnowledgeHomeView(initialTab) {
-    const existing = document.querySelector('.modal-overlay[data-knowledge-home-modal="1"]');
-    if (existing?._knowledgeHomeModalApi?.isOpen?.()) {
-      existing._knowledgeHomeModalApi.modal.focus?.({ preventScroll: true });
-      return existing._knowledgeHomeModalApi;
+    // data-knowledge-home-modal="1" だけで探す(.modal-overlayクラスに依存しない)。
+    // スマホ表示のクローズアニメーション中、共通ダイアログ基盤(gb-modal-shell.js)は
+    // modal-overlay等のクラスだけ先に外して「.modal-overlay」セレクタから除外するが、
+    // dataset(data-knowledge-home-modal / data-e2e-id等)はDOM除去が完了するまで残る。
+    // クラスだけで探すと、閉じ済みなのに残っている要素を見失い、後段で二重に検出できず
+    // 除去し損ねる。
+    const existingOverlays = [...document.querySelectorAll('[data-knowledge-home-modal="1"]')];
+    const openExisting = existingOverlays.find(overlay => overlay?._knowledgeHomeModalApi?.isOpen?.());
+    if (openExisting) {
+      openExisting._knowledgeHomeModalApi.modal.focus?.({ preventScroll: true });
+      return openExisting._knowledgeHomeModalApi;
     }
+    // isOpen()が既にfalse(閉じ済み)の古いオーバーレイがまだDOMに残っている場合がある。
+    // スマホ表示ではモーダル共通基盤がクローズを最大数百msのアニメーション付きで行うため、
+    // 直後に再度開くと新旧2つのオーバーレイが一瞬同居し、data-e2e-id等の識別子が重複して、
+    // 要素選択がフェードアウト中(pointer-events:none)の古い方を掴むことがある。
+    // 論理的には閉じ済みなので、アニメーション完了を待たずここで即時に切り離す。
+    existingOverlays.forEach(overlay => {
+      if (overlay?.isConnected) overlay.parentNode?.removeChild(overlay);
+    });
     if (typeof window.GBUI?.createModal !== 'function') {
       throw new Error('ナレッジを初期化できませんでした。');
     }
@@ -15868,6 +16018,7 @@ ${spEsc(actionText)}</pre>
     disposed: false,
     capabilities: null,
     pendingManifest: null,
+    unification: null,
   };
 
   function sourceFolder() {
@@ -16148,14 +16299,60 @@ ${spEsc(actionText)}</pre>
     }
   }
 
+  function renderUnification(preview) {
+    runtime.unification = preview || null;
+    const section = runtime.root?.querySelector('[data-tag-unification]');
+    const summary = runtime.root?.querySelector('[data-tag-unification-summary]');
+    const button = runtime.root?.querySelector('[data-tag-unification-run]');
+    if (!section || !summary || !button) return;
+    section.hidden = !preview?.pending;
+    if (!preview?.pending) return;
+    summary.textContent = `${Number(preview.dictionary_count || 0).toLocaleString('ja-JP')}個の旧辞書（延べ${Number(preview.source_tag_count || 0).toLocaleString('ja-JP')}件）を、${Number(preview.merged_tag_count || 0).toLocaleString('ja-JP')}件へまとめます。定義の相違 ${Number(preview.conflict_count || 0).toLocaleString('ja-JP')}件、付与IDの付け替え ${Number(preview.assignment_remap_count || 0).toLocaleString('ja-JP')}件です。`;
+    button.disabled = isReadonly();
+  }
+
+  async function runUnification() {
+    const preview = runtime.unification;
+    if (!preview?.pending) return;
+    const message = `${preview.dictionary_count}個の旧タグ辞書を個人ホームの1つへまとめます。実行前の辞書はCSV、付与記録はJSONでバックアップします。続行しますか？`;
+    const confirmed = typeof cfConfirm === 'function'
+      ? await cfConfirm(message)
+      : window.confirm(message);
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const result = await apiPost('/global-tags/unification', {
+        confirmed: true,
+        signature: preview.signature,
+      });
+      renderUnification({ pending: false });
+      await refresh();
+      statusText(`タグ辞書を1つにまとめました。バックアップ: ${result.backup_path}`);
+    } catch (error) {
+      statusText(`タグ辞書をまとめられませんでした: ${error?.message || error}`, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function fetchUnification() {
+    try {
+      return await apiFetch('/global-tags/unification', { silentError: true });
+    } catch (_error) {
+      // Cloudは既に接続単位で1辞書のため、Desktop旧辞書の移行APIを持たない。
+      return { pending: false };
+    }
+  }
+
   async function refresh() {
     if (!runtime.root || runtime.disposed) return;
     try {
-      const [status, candidates, events, capabilities] = await Promise.all([
+      const [status, candidates, events, capabilities, unification] = await Promise.all([
         apiFetch(scopedUrl('/tag-maintenance/status'), { silentError: true }),
         apiFetch(scopedUrl('/tag-maintenance/candidates?status=pending&limit=100'), { silentError: true }),
         apiFetch(scopedUrl('/tag-maintenance/events?limit=20'), { silentError: true }),
         apiFetch('/tag-maintenance/portable-uid/capabilities', { silentError: true }),
+        fetchUnification(),
       ]);
       runtime.capabilities = capabilities || { embedding: false, manifest: false };
       const manifestExport = runtime.root?.querySelector('[data-tag-maintenance-manifest-export]');
@@ -16163,6 +16360,7 @@ ${spEsc(actionText)}</pre>
       renderSummary(status || {});
       renderCandidates(candidates?.items || []);
       renderEvents(events?.items || []);
+      renderUnification(unification);
       if (!navigator.onLine) statusText('オフラインです。表示中の情報は接続時点の内容です。');
       else statusText(isReadonly() ? '閲覧専用です。候補の確認のみできます。' : '必要な時だけ差分照合を実行します。');
     } catch (error) {
@@ -16535,6 +16733,14 @@ ${spEsc(actionText)}</pre>
         </div>
         <div class="gb-section-desc" data-tag-maintenance-message role="status" aria-live="polite"></div>
       </section>
+      <section class="gb-section gb-section--boxed" data-tag-unification hidden>
+        <div class="gb-section-title">タグ辞書を個人ホームへまとめる</div>
+        <div class="gb-section-desc" data-tag-unification-summary></div>
+        <div class="gb-section-desc">実行前の各辞書はCSV、ファイルへの付与記録はJSONで保存します。確認するまで既存データは変更しません。</div>
+        <div class="tag-maintenance-actions">
+          <button type="button" class="gb-btn gb-btn-sm primary" data-tag-unification-run data-tag-maintenance-write>確認した内容でまとめる</button>
+        </div>
+      </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">確認すれば復旧できる候補</div>
         <div data-tag-maintenance-candidates><div class="gb-section-desc">読み込み中…</div></div>
@@ -16572,6 +16778,7 @@ ${spEsc(actionText)}</pre>
     bind(container, '[data-tag-maintenance-portable-regenerate]', () => writePortableUid(true));
     bind(container, '[data-tag-maintenance-portable-remove]', removePortableUid);
     bind(container, '[data-tag-maintenance-manifest-export]', exportManifest);
+    bind(container, '[data-tag-unification-run]', runUnification);
     bind(container, '[data-tag-maintenance-manifest-select]', () => {
       container.querySelector('[data-tag-maintenance-manifest-input]')?.click();
     });
@@ -17234,11 +17441,12 @@ async function showSettingsModal(opts) {
       </section>
       <div id="settings-cloud-link-card" class="settings-section-wide" data-settings-view="storage"></div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
-        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
+        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。ソースフォルダが個人用のDropbox等なら、その直下のMeldexHomeへ自動的に揃います')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
+        <div id="home-folder-sharing-status" class="gb-section-desc" hidden></div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
         <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
@@ -17371,11 +17579,12 @@ async function showSettingsModal(opts) {
         </label>
       </section>
       <section class="gb-section gb-section--boxed" id="settings-autostart-section" data-settings-view="display">
-        <div class="gb-section-title">自動起動</div>
+        <div class="gb-section-title">自動起動 ${fieldHelp('OSへのサインイン後、画面を開かず常駐アプリとバックグラウンド機能を開始します。いつでも解除できます。')}</div>
         <label class="gb-check">
           <input type="checkbox" id="modal-autostart">
-          <span>OS起動時にMeldexを自動起動する</span>
+          <span>OS起動時にMeldex常駐アプリを開始する</span>
         </label>
+        <div id="modal-autostart-status" class="gb-field-help" role="status" aria-live="polite">自動起動の状態を確認しています</div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）')}</div>
@@ -18257,16 +18466,25 @@ async function importSettingsTransferBundleFromFile(input) {
 }
 
 async function _loadAutostartStateForSettings() {
+  const cb = document.getElementById('modal-autostart');
+  const section = document.getElementById('settings-autostart-section');
+  const status = document.getElementById('modal-autostart-status');
   try {
     const res = await apiFetch('/autostart');
-    const cb = document.getElementById('modal-autostart');
-    const section = document.getElementById('settings-autostart-section');
     if (!res.supported) {
       if (section) section.hidden = true;
       return;
     }
-    if (cb) cb.checked = res.enabled;
-  } catch {}
+    if (cb) cb.checked = !!res.enabled || (!!res.setupRequired && !!res.recommendedEnabled);
+    if (status) {
+      if (res.setupRequired) status.textContent = '初回設定です。オンのまま保存すると、次回のOS起動時から常駐を開始します。';
+      else if (res.enabled && res.verified === false) status.textContent = '登録を確認できません。オンのまま保存して修復してください。';
+      else if (res.enabled) status.textContent = '有効です。次回のOS起動時に常駐を開始します。';
+      else status.textContent = '無効です。必要な場合はオンにして保存してください。';
+    }
+  } catch {
+    if (status) status.textContent = '状態を確認できませんでした。接続を確認してもう一度お試しください。';
+  }
 }
 
 async function _loadLlmConfigForSettings() {
@@ -19815,7 +20033,7 @@ const UI_STYLE_SECTIONS = {
     { label: 'カーソル', fg:'--bd-caret-color', width:'--bd-caret-width', text:'┃' },
     { label: 'カード隙間', numbers:[
       { label:'同階層', key:'--bd-gap-siblings', min:0, max:400, step:1, unit:'px', fallback:10 },
-      { label:'階層間',  key:'--bd-gap-levels',  min:0, max:600, step:1, unit:'px', fallback:30 },
+      { label:'階層間',  key:'--bd-gap-levels',  min:0, max:600, step:1, unit:'px', fallback:50 },
     ], text:'隙間' },
   ],
   'スケジュール': [
@@ -19936,6 +20154,65 @@ const UI_STYLE_SECTIONS = {
   ],
 };
 
+// 2026-08-12: 「バランス黒」パレット計画（2026-08-09/08-10）より前の builtin-dark 既定値。
+// gb-theme-manager.part01.part02.js の同名テーブル（STALE_BUILTIN_PALETTE_CSS_VARS）と対になる
+// 参照値で、意図的に複製している（両ファイルとも編集対象が限定されているため）。
+// editor-theme（COLOR_SETTINGS_KEY）は saveColorSettings() 実行時点の全キーをまるごと保存する
+// ため、ユーザーが1色も編集していなくても「当時のデフォルト値」がそのまま入り込み、
+// loadColorSettings() が無条件に再適用してテーマ管理側の新しい既定値を覆い隠してしまう。
+// ここに載っている値と完全一致するキーだけを「未編集」とみなして保存データから取り除き、
+// 1色でも異なれば必ずユーザー編集として残す。
+const STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS = Object.freeze({
+  '--bg': '#1e1e1e', '--bg2': '#252525', '--bg3': '#2d2d2d', '--bg4': '#3e3e3e',
+  '--border': '#333333',
+  '--content-bg': '#252525',
+  '--ui-tooltip-bg': '#2d2d2d', '--ui-tooltip-border': '#555555',
+  '--ui-scrollbar-track-bg': '#252525', '--ui-scrollbar-thumb-bg': '#3e3e3e',
+  '--ui-pane-tabbar-bg': '#252525', '--ui-pane-tab-active-bg': '#1e1e1e',
+  '--ui-panelset-tabbar-bg': '#252525', '--ui-collapsed-tabbar-bg': '#252525', '--ui-dockbar-bg': '#252525',
+  '--ui-header-bg': '#2d2d2d',
+  '--ui-toolbar-bg': '#252525',
+  '--ui-hover-bg': '#3e3e3e',
+  '--ui-accent': '#2563eb',
+  '--db-th-bg': '#2d2d2d', '--db-entity-bg': '#1e1e1e',
+  '--page-text-bg': '#252525',
+});
+
+function _normalizeStaleColorCompareValue(value) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  const short = raw.match(/^#([0-9a-f]{3})$/);
+  if (short) return '#' + short[1].split('').map(ch => ch + ch).join('');
+  return raw;
+}
+
+// editor-theme に保存された「背景系キー」が、当時のbuilt-inデフォルトをそのまま写しただけの
+// 値かどうかを判定し、そうであればsettingsから取り除く（=テーマ管理側の解決結果を優先させる）。
+// 現在の既定テーマが builtin-dark 系でない場合は対象外（別テーマの意図的な色を誤って消さない）。
+function _pruneStaleBuiltinBackgroundColorSettings(settings) {
+  if (!settings || typeof settings !== 'object') return false;
+  let currentThemeId = '';
+  try {
+    // getThemeById() は引数なしで現在の既定テーマ（「OSに合わせる」の解決結果も含む）を返す。
+    // 生の保存値（getDefaultThemeId()）だけを見ると「OSに合わせる」でダーク相当になっている
+    // ケースを取りこぼすため、こちらを使う。
+    currentThemeId = typeof MeldexThemeManager !== 'undefined' && typeof MeldexThemeManager.getThemeById === 'function'
+      ? (MeldexThemeManager.getThemeById()?.id || '')
+      : '';
+  } catch {
+    currentThemeId = '';
+  }
+  if (currentThemeId !== 'builtin-dark') return false;
+  let pruned = false;
+  Object.keys(STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS).forEach(key => {
+    if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+    if (_normalizeStaleColorCompareValue(settings[key]) === STALE_BUILTIN_DARK_BACKGROUND_CSS_VARS[key]) {
+      delete settings[key];
+      pruned = true;
+    }
+  });
+  return pruned;
+}
+
 const CS_TAB_NAMES = Object.keys(UI_STYLE_SECTIONS);
 const COMMON_INTEGRATED_APP_STYLE_KEYS = new Set([
   ...COMMON_THEME_SURFACE_STYLE_KEYS,
@@ -20050,6 +20327,9 @@ function loadColorSettings() {
     const storedStandardPaletteAdjust = localStorage.getItem(STANDARD_PALETTE_ADJUST_STORAGE_KEY);
     if (saved) {
       const s = JSON.parse(saved);
+      if (_pruneStaleBuiltinBackgroundColorSettings(s)) {
+        try { localStorage.setItem(COLOR_SETTINGS_KEY, JSON.stringify(s)); } catch {}
+      }
       for (const [k, v] of Object.entries(s)) {
         if (k.startsWith('--')) applySettingsThemeStyleSetting(k, normalizeStyleSettingValue(k, v), { markDirty: false });
       }
@@ -22679,6 +22959,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadOutlinerRootsForSettings === 'function') loadOutlinerRootsForSettings();
       if (typeof loadStorageInfoForSettings === 'function') loadStorageInfoForSettings();
       if (typeof loadMobileAccessUrlsForSettings === 'function') loadMobileAccessUrlsForSettings();
+      if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
       if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
@@ -22901,28 +23182,57 @@ function _backToSettingsList(root) {
   replaceIcons(modal);
 }
 
+// 拡張機能ごとの手順ノート（配布版でインストールボタンを出せない時の誘導先）。
+const MELDEX_EXTENSION_GUIDES = {
+  pillow: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
+  clip: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
+  caldav: { title: 'CalDAVカレンダー同期の設定', path: 'MeldexHome/マニュアル/03_設定と連携/CalDAVカレンダー同期の設定.md' },
+};
+
+function openExtensionInstallGuide(key) {
+  const guide = MELDEX_EXTENSION_GUIDES[key];
+  if (!guide) return;
+  if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
+  if (typeof openPage === 'function') {
+    openPage(guide.title, guide.path, { fromExplorer: true, skipAutoAppLayout: true });
+  }
+}
+
 async function _loadExtensionStatus() {
   const el = document.getElementById('ext-status');
   if (!el) return;
   el.innerHTML = '<span style="color:var(--fg2);">読み込み中...</span>';
   try {
     const status = await apiFetch('/extensions/status');
+    // 凍結ビルド（配布版のexe）では sys.executable がMeldex本体を指すため
+    // pip installが成立しない。ボタンは出さず、手順ノートへの誘導へ差し替える（③）。
+    const frozen = !!status.frozen;
     const exts = [
       { key: 'pillow', name: 'Pillow（画像処理）', desc: '重複画像検出に必要', size: '~3MB', installed: status.pillow },
       { key: 'clip', name: 'CLIP（画像類似検索）', desc: 'テキストで画像を検索。Pillowも同時にインストールされます', size: '~2GB', installed: status.clip },
       { key: 'caldav', name: 'CalDAV（カレンダー同期）', desc: 'iPhone/Thunderbird等とカレンダーを双方向同期', size: '~5MB', installed: status.caldav },
     ];
-    el.innerHTML = exts.map(ext => `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
+    el.innerHTML = exts.map(ext => {
+      let action;
+      if (ext.installed) {
+        action = `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`;
+      } else if (frozen) {
+        action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+          <span style="font-size:11px;color:var(--fg2);">配布版では自動インストールできません</span>
+          <button data-action="openExtensionInstallGuide('${ext.key}')" style="padding:4px 14px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;">導入手順を見る</button>
+        </div>`;
+      } else {
+        action = `<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button>`;
+      }
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
       <div style="flex:1;">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);">${ext.name}</div>
         <div style="font-size:11px;color:var(--fg2);">${ext.desc}</div>
               <div style="font-size:11px;color:var(--fg2);">ファイルサイズ: ${ext.size}</div>
       </div>
-      ${ext.installed
-        ? `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`
-        : `<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button>`
-      }
-    </div>`).join('');
+      ${action}
+    </div>`;
+    }).join('');
 
     // CalDAVが有効なら接続情報を表示
     if (status.caldav) {
@@ -23228,7 +23538,25 @@ async function submitSettings() {
   const autostartCb = document.getElementById('modal-autostart');
   const autostartSection = document.getElementById('settings-autostart-section');
   if (autostartCb && !autostartSection?.hidden) {
-    await apiPost('/autostart', { enabled: autostartCb.checked });
+    let autostartResult = null;
+    try {
+      autostartResult = await apiPost('/autostart', { enabled: autostartCb.checked }, { silentError: true });
+    } catch (err) {
+      autostartResult = null;
+    }
+    // 実際に登録できたかどうかをトグルの見た目へ反映する。オンにしたつもりが
+    // 実際には登録されていない、という食い違いを残さないため。
+    autostartCb.checked = !!(autostartResult && autostartResult.enabled);
+    if (!autostartResult || autostartResult.ok === false) {
+      showStatus('自動起動を設定できませんでした。もう一度お試しください。', true);
+      const status = document.getElementById('modal-autostart-status');
+      if (status) status.textContent = '設定を保存できませんでした。権限とOSの設定を確認してください。';
+      return;
+    }
+    const status = document.getElementById('modal-autostart-status');
+    if (status) status.textContent = autostartResult.enabled
+      ? '有効です。次回のOS起動時に常駐を開始します。'
+      : '無効です。必要な場合はオンにして保存してください。';
   }
 
   // バージョン管理設定
@@ -23445,214 +23773,6 @@ async function _syncSettingsVaultPathFromOutlinerRoots(roots) {
   return true;
 }
 
-function _settingsCliEsc(value) {
-  return typeof esc === 'function'
-    ? esc(value)
-    : String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function _settingsCliIcon(name, size) {
-  return typeof lucide === 'function' ? lucide(name, size || 14) : '';
-}
-
-// CLIチャット設定のモデル選択肢。チャットパネルのモデル一覧（CHAT_CLI_MODEL_CATALOG）と
-// 同じ表を使い、設定ダイアログ側だけ候補が古い・少ないという食い違いを作らない。
-// CHAT_CLI_MODEL_CATALOG が未読込の環境向けに、同じ内容のフォールバックを持つ。
-const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
-  codex: [
-    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
-    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
-    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
-  ],
-  claude_code: [
-    { id: 'claude-fable-5', name: 'Fable 5' },
-    { id: 'claude-opus-5', name: 'Opus 5' },
-    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
-    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
-    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
-  ],
-  antigravity_cli: [
-    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
-    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
-    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
-  ],
-};
-
-function _settingsCliModelChoices(key) {
-  const sentinel = typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
-  const shared = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || null;
-  const source = shared || SETTINGS_CLI_CHAT_MODEL_FALLBACK[key] || [];
-  return source
-    .filter(item => item && item.id && item.id !== sentinel)
-    .map(item => ({ id: String(item.id), name: String(item.name || item.id) }));
-}
-
-function _settingsCliProviderRows(config) {
-  const providers = config?.providers || {};
-  const order = ['codex', 'claude_code', 'antigravity_cli'];
-  const labels = {
-    codex: 'Codex CLI',
-    claude_code: 'Claude Code',
-    antigravity_cli: 'Antigravity CLI',
-  };
-  // サーバ側 CLI_CHAT_PROVIDER_DEFAULTS の既定model値と対。この値が入っている＝未設定なので、
-  // 「CLI既定」扱いにする。
-  const defaultModels = {
-    codex: 'CLI既定（推奨）',
-    claude_code: 'Claude Code',
-    antigravity_cli: 'Antigravity CLI',
-  };
-  const modelTitles = {
-    codex: 'CLIへ渡すモデルです。「CLI既定」ならCodex CLI自身の既定モデルを使います',
-    claude_code: 'CLIへ渡すモデルです。「CLI既定」ならClaude Code自身の既定モデルを使います',
-    antigravity_cli: 'CLIへ渡すモデルです。「CLI既定」ならAntigravity CLI自身の既定モデルを使います',
-  };
-  return order.map(key => {
-    const item = providers[key] || {};
-    const label = item.label || labels[key] || key;
-    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'antigravity_cli' ? 'agy' : 'codex');
-    const placeholderModel = defaultModels[key] || label;
-    const rawModel = String(item.model || '').trim();
-    // valueは実設定値のみ（未設定・プレースホルダ既定ラベルと同じ場合は空欄）にし、
-    // ラベルはplaceholder属性へ回す。value側にも既定ラベルを入れてしまうと、datalistの
-    // 絞り込み候補がその文字列でフィルタされ、他候補がほぼ見えなくなる不具合があった。
-    const modelValue = (!rawModel || rawModel === placeholderModel) ? '' : rawModel;
-    const available = item.available !== false;
-    const compatible = item.compatible !== false;
-    const statusText = !available
-      ? '未検出'
-      : !compatible
-        ? '更新必要'
-        : item.version
-          ? `v${item.version}`
-          : '検出済み';
-    // 「検出済み」は実行ファイルの所在確認であり、ログイン状態の確認ではない
-    // （2026-07-31、両者の混同で認証エラーの原因調査が長引いたユーザー報告を踏まえて明記）。
-    const statusTitle = !available || !compatible
-      ? ''
-      : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
-    const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
-    const compatibilityMessage = String(item.compatibility_message || '').trim();
-    // 旧実装は「候補付きテキスト入力（datalist）」だった。ブラウザは入力済みの文字列で候補を
-    // 絞り込むため、一度モデルを保存すると次回から候補が1件しか出ず、他のモデルへ変え直せない
-    // という報告があった（2026-08-07）。常に全候補が見えるドロップダウンにしている。
-    // 一覧に無い保存済みモデル（旧バージョンで保存した別名など）は、黙って別の値へ変わらないよう
-    // そのまま選択肢へ足して選択状態を保つ。別のモデルを選び直せばその選択肢は次回から消える。
-    const choices = _settingsCliModelChoices(key).slice();
-    if (modelValue && !choices.some(choice => choice.id === modelValue)) {
-      choices.push({ id: modelValue, name: modelValue });
-    }
-    const modelOptions = [`<option value=""${modelValue ? '' : ' selected'}>CLI既定（推奨）</option>`]
-      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}"${choice.id === modelValue ? ' selected' : ''}>${_settingsCliEsc(choice.name)}</option>`))
-      .join('');
-    return `
-      <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
-        <label class="gb-check" style="min-width:0;">
-          <input type="checkbox" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-enabled" data-cli-chat-field="enabled" ${item.enabled === false ? '' : 'checked'}>
-          <span>${_settingsCliEsc(label)}</span>
-        </label>
-        <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
-        <select class="gb-select" style="min-width:0;" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル')}">${modelOptions}</select>
-        <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
-        ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
-      </div>`;
-  }).join('');
-}
-
-function _renderCliChatSettingsContainer(container, config) {
-  if (!container) return;
-  container.innerHTML = `
-    <div class="gb-check-help-row" style="margin-top:4px;">
-      <label class="gb-check">
-        <input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}>
-        <span>CLIチャットを有効にする</span>
-      </label>
-      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
-    </div>
-    <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
-    <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
-      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-refresh">${_settingsCliIcon('refreshCw',14)} 状態を更新</button>
-      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-save">${_settingsCliIcon('save',14)} CLIチャット設定を保存</button>
-    </div>
-    <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
-    <div id="settings-workspace-cli-relay-container"></div>
-  `;
-  container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
-  container.querySelector('#settings-cli-chat-save')?.addEventListener('click', () => saveCliChatSettingsFromSettingsDialog(container.closest('.modal-overlay') || document));
-  if (typeof renderWorkspaceCliRelaySettingsForSettings === 'function') {
-    renderWorkspaceCliRelaySettingsForSettings(container.closest('.modal-overlay') || document);
-  }
-  if (typeof replaceIcons === 'function') replaceIcons(container);
-}
-
-async function renderCliChatSettingsForSettings(root) {
-  const scope = root?.querySelector ? root : document;
-  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
-  if (!container) return;
-  container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
-  try {
-    const config = await apiFetch('/cli-chat/config');
-    _renderCliChatSettingsContainer(container, config);
-  } catch (e) {
-    container.innerHTML = `<div class="gb-section-desc" style="color:var(--red);">CLIチャット設定を読み込めませんでした: ${_settingsCliEsc(e?.message || e)}</div>`;
-  }
-}
-
-async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
-  const scope = root?.querySelector ? root : document;
-  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
-  if (!container || !container.querySelector('[data-provider]')) return true;
-  const providers = {};
-  container.querySelectorAll('[data-provider]').forEach(row => {
-    const key = row.dataset.provider || '';
-    if (!key) return;
-    const enabled = row.querySelector('[data-cli-chat-field="enabled"]')?.checked !== false;
-    const command = row.querySelector('[data-cli-chat-field="command"]')?.value?.trim() || '';
-    const model = row.querySelector('[data-cli-chat-field="model"]')?.value?.trim() || '';
-    providers[key] = { enabled, command, model };
-  });
-  const body = {
-    cli_chat_enabled: document.getElementById('settings-cli-chat-enabled')?.checked !== false,
-    cli_chat_providers: providers,
-  };
-  const status = container.querySelector('#settings-cli-chat-status');
-  try {
-    if (status) {
-      status.textContent = '保存中...';
-      status.style.color = 'var(--fg2)';
-    }
-    await apiPut('/cli-chat/config', body);
-    if (typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
-      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(container.closest('.modal-overlay') || document, { silent: true, skipReload: true });
-      if (relayOk === false) return false;
-    }
-    if (status) {
-      status.textContent = '保存しました。未検出のままならMeldexを再起動してください。';
-      status.style.color = 'var(--fg2)';
-    }
-    if (typeof window.GBChatCli?.loadChatConfig === 'function') {
-      const reload = window.GBChatCli.loadChatConfig().catch(() => {});
-      if (!options.backgroundChatRefresh) await reload;
-    }
-    if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-    if (!options.skipReload) {
-      await renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document);
-    }
-    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定を保存しました');
-    return true;
-  } catch (e) {
-    if (status) {
-      status.textContent = '保存に失敗しました: ' + (e?.message || e);
-      status.style.color = 'var(--red)';
-    }
-    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定の保存に失敗しました', true);
-    return false;
-  }
-}
-
 /* Notion同期 → gb-notion-sync.js に分離 */
 /* ==============================
    ゴミ箱
@@ -23805,16 +23925,23 @@ async function trashDelete(idx) {
   if (!name) return;
   const confirmMessage = `「${name}」を完全に削除しますか？この操作は取り消せません。`;
   const impactPath = item?.original_path || '';
-  const confirmed = (impactPath && typeof MeldexDeleteImpactWarning !== 'undefined')
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file' }],
-        confirmMessage,
-      )
-    : await cfConfirm(confirmMessage);
+  if (!impactPath || typeof MeldexDeleteImpactWarning === 'undefined') {
+    showStatus('削除元情報を確認できないため完全削除できません', true);
+    return;
+  }
+  const confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file', physicalPath: item?.trash_path || '' }],
+    confirmMessage,
+    { operation: 'permanent' },
+  );
   if (!confirmed) return;
   window._setTrashDialogBusy?.(true);
   try {
-    await apiPost('/trash/delete', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
+    await apiPost('/trash/delete', {
+      name,
+      ...(item.trash_root ? { trash_root: item.trash_root } : {}),
+      ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
+    });
     showStatus(`「${name}」を完全に削除しました`);
     window._trashItems.splice(idx, 1);
     window._setTrashDialogBusy?.(false);
@@ -23831,14 +23958,23 @@ async function trashEmpty() {
   const confirmMessage = 'ゴミ箱を空にしますか？この操作は取り消せません。';
   const impactTargets = (window._trashItems || [])
     .filter(item => item?.original_path)
-    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file' }));
-  const confirmed = (impactTargets.length && typeof MeldexDeleteImpactWarning !== 'undefined')
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-    : await cfConfirm(confirmMessage);
+    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file', physicalPath: item.trash_path || '' }));
+  if (!impactTargets.length) {
+    showStatus('ゴミ箱は空です');
+    return;
+  }
+  if (impactTargets.length !== (window._trashItems || []).length
+      || typeof MeldexDeleteImpactWarning === 'undefined') {
+    showStatus('削除元情報を確認できない項目があるためゴミ箱を空にできません', true);
+    return;
+  }
+  const confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    impactTargets, confirmMessage, { operation: 'permanent' },
+  );
   if (!confirmed) return;
   window._setTrashDialogBusy?.(true);
   try {
-    await apiPost('/trash/empty', {});
+    await apiPost('/trash/empty', window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {});
     showStatus('ゴミ箱を空にしました');
     window._setTrashDialogBusy?.(false);
     await _refreshTrashDialog();
@@ -23975,149 +24111,6 @@ async function renderDatabaseMaintenanceSettings(root) {
     });
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
-  }
-}
-
-function _formatUsd(value) {
-  const number = Number(value || 0);
-  return '$' + number.toFixed(number >= 1 ? 2 : 4) + '（' + _formatApproxJpyFromUsd(number) + '）';
-}
-
-const CHAT_COST_USD_JPY_APPROX_RATE = 156;
-
-function _formatApproxJpyFromUsd(value) {
-  const amount = Number(value || 0) * CHAT_COST_USD_JPY_APPROX_RATE;
-  if (!Number.isFinite(amount) || amount === 0) return '約0円';
-  if (Math.abs(amount) < 1) {
-    return '約' + amount.toFixed(2).replace(/\.?0+$/, '') + '円';
-  }
-  return '約' + Math.round(amount).toLocaleString('ja-JP') + '円';
-}
-
-const CHAT_COST_DEFAULTS = {
-  monthly_budget_usd: 300,
-  daily_budget_usd: 30,
-  session_budget_usd: 100,
-  max_concurrent_requests: 60,
-  max_tool_iterations: 300,
-  max_retry_attempts: 60,
-  large_context_warning_tokens: 4800000,
-  large_context_block_tokens: 6000000,
-};
-
-function _chatCostRoot(root) {
-  const scope = root?.querySelector ? root : document;
-  if (scope?.matches?.('#chat-cost-settings-container')) return scope;
-  return scope.querySelector('#chat-cost-settings-container');
-}
-
-function _chatCostNumber(container, id, fallback) {
-  const value = String(container?.querySelector?.('#' + id)?.value ?? '').trim();
-  if (!value) return fallback;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function _chatCostFallbackStatus() {
-  return {
-    settings: { ...CHAT_COST_DEFAULTS, pricing_last_reviewed: '' },
-    totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } },
-  };
-}
-
-async function _chatCostLoadBudgetStatus(timeoutMs = 4500) {
-  if (typeof apiFetch !== 'function') return _chatCostFallbackStatus();
-  let timer = 0;
-  const timeout = new Promise((resolve) => {
-    timer = window.setTimeout(() => resolve(null), timeoutMs);
-  });
-  try {
-    const status = await Promise.race([apiFetch('/chat/budget'), timeout]);
-    return status && typeof status === 'object' ? status : _chatCostFallbackStatus();
-  } catch (_err) {
-    return _chatCostFallbackStatus();
-  } finally {
-    if (timer) window.clearTimeout(timer);
-  }
-}
-
-async function saveChatCostSettingsFromSettingsDialog(root, options = {}) {
-  const container = _chatCostRoot(root);
-  if (!container || !container.querySelector('#chat-budget-monthly')) return true;
-  const statusEl = container.querySelector('#chat-budget-status');
-  try {
-    await apiPut('/chat/budget', {
-      monthly_budget_usd: _chatCostNumber(container, 'chat-budget-monthly', CHAT_COST_DEFAULTS.monthly_budget_usd),
-      daily_budget_usd: _chatCostNumber(container, 'chat-budget-daily', CHAT_COST_DEFAULTS.daily_budget_usd),
-      session_budget_usd: _chatCostNumber(container, 'chat-budget-session', CHAT_COST_DEFAULTS.session_budget_usd),
-      monthly_mode: container.querySelector('#chat-budget-monthly-mode')?.value || 'hard',
-      daily_mode: container.querySelector('#chat-budget-daily-mode')?.value || 'hard',
-      session_mode: container.querySelector('#chat-budget-session-mode')?.value || 'hard',
-      max_concurrent_requests: _chatCostNumber(container, 'chat-budget-concurrency', CHAT_COST_DEFAULTS.max_concurrent_requests),
-      max_tool_iterations: _chatCostNumber(container, 'chat-budget-tool-iterations', CHAT_COST_DEFAULTS.max_tool_iterations),
-      max_retry_attempts: _chatCostNumber(container, 'chat-budget-retry-attempts', CHAT_COST_DEFAULTS.max_retry_attempts),
-      large_context_warning_tokens: _chatCostNumber(container, 'chat-budget-large-warning', CHAT_COST_DEFAULTS.large_context_warning_tokens),
-      large_context_block_tokens: _chatCostNumber(container, 'chat-budget-large-block', CHAT_COST_DEFAULTS.large_context_block_tokens),
-    });
-    if (statusEl) statusEl.textContent = '保存しました';
-    if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
-    if (!options.silent && typeof showStatus === 'function') {
-      showStatus('AI使用量設定を保存しました', false, { showSaveDialog: true });
-    }
-    return true;
-  } catch (error) {
-    if (statusEl) statusEl.textContent = '保存に失敗しました: ' + (error?.message || error);
-    if (!options.silent && typeof showStatus === 'function') showStatus('AI使用量設定の保存に失敗しました: ' + (error?.message || error), true);
-    return false;
-  }
-}
-
-async function renderChatCostSettings(root) {
-  const container = (root?.querySelector ? root : document).querySelector('#chat-cost-settings-container');
-  if (!container) return;
-  container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('walletCards',14)} AI使用量</div><div class="gb-section-desc">読み込み中...</div></section>`;
-  try {
-    const status = await _chatCostLoadBudgetStatus();
-    const settings = status.settings || {};
-    const totals = status.totals || {};
-    const modeOptions = value => ['hard', 'warn', 'off'].map(mode => {
-      const label = mode === 'hard' ? 'ハード停止' : mode === 'warn' ? '警告のみ' : '無効';
-      return `<option value="${mode}" ${String(value || 'hard') === mode ? 'selected' : ''}>${label}</option>`;
-    }).join('');
-    container.innerHTML = `
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('gauge',14)} AI API使用量 ${fieldHelp('Meldex本体の課金ではありません。登録したAI APIキーで各社APIを使った場合の推定使用量です。')}</div>
-        <div class="gb-section-desc">今日: ${_formatUsd(totals.day?.cost_usd)} / 今月: ${_formatUsd(totals.month?.cost_usd)}</div>
-        <div class="gb-section-desc">AI API単価表レビュー日: ${esc(settings.pricing_last_reviewed || '')}</div>
-      </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('shieldAlert',14)} 予算上限</div>
-        <label class="gb-field-row"><span class="gb-label">月次</span><input id="chat-budget-monthly" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.monthly_budget_usd ?? CHAT_COST_DEFAULTS.monthly_budget_usd)}"><select id="chat-budget-monthly-mode" class="gb-select">${modeOptions(settings.monthly_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">日次</span><input id="chat-budget-daily" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.daily_budget_usd ?? CHAT_COST_DEFAULTS.daily_budget_usd)}"><select id="chat-budget-daily-mode" class="gb-select">${modeOptions(settings.daily_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">1チャット</span><input id="chat-budget-session" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.session_budget_usd ?? CHAT_COST_DEFAULTS.session_budget_usd)}"><select id="chat-budget-session-mode" class="gb-select">${modeOptions(settings.session_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">同時実行</span><input id="chat-budget-concurrency" type="number" min="1" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_concurrent_requests ?? CHAT_COST_DEFAULTS.max_concurrent_requests)}"><span class="gb-section-desc">件まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">ツールループ</span><input id="chat-budget-tool-iterations" type="number" min="5" max="600" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_tool_iterations ?? CHAT_COST_DEFAULTS.max_tool_iterations)}"><span class="gb-section-desc">回まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">リトライ</span><input id="chat-budget-retry-attempts" type="number" min="0" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_retry_attempts ?? CHAT_COST_DEFAULTS.max_retry_attempts)}"><span class="gb-section-desc">回まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">長文警告</span><input id="chat-budget-large-warning" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_warning_tokens ?? CHAT_COST_DEFAULTS.large_context_warning_tokens)}"><span class="gb-section-desc">tokens</span></label>
-        <label class="gb-field-row"><span class="gb-label">長文停止</span><input id="chat-budget-large-block" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_block_tokens ?? CHAT_COST_DEFAULTS.large_context_block_tokens)}"><span class="gb-section-desc">tokens</span></label>
-        <div class="gb-field-row" style="justify-content:flex-start;">
-          <button type="button" class="gb-btn gb-btn-sm" id="chat-budget-save">${lucide('save',14)} 保存</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" id="chat-budget-reset">${lucide('rotateCcw',14)} 使用量履歴をリセット</button>
-        </div>
-        <div id="chat-budget-status" class="gb-section-desc"></div>
-      </section>`;
-    const statusEl = container.querySelector('#chat-budget-status');
-    container.querySelector('#chat-budget-save')?.addEventListener('click', () => saveChatCostSettingsFromSettingsDialog(container, { silent: false }));
-    container.querySelector('#chat-budget-reset')?.addEventListener('click', async () => {
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？', { danger: true, okLabel: 'リセット' }) : confirm('LLM使用量履歴をリセットしますか？');
-      if (!ok) return;
-      await apiPost('/chat/usage/reset', {});
-      statusEl.textContent = '使用量履歴をリセットしました';
-      if (typeof renderChatCostSettings === 'function') renderChatCostSettings(root);
-      if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
-    });
-  } catch (error) {
-    container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} AI使用量</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
   }
 }
 
@@ -24354,6 +24347,161 @@ if (typeof applyThumbnailSize === 'function') applyThumbnailSize(resolveThumbnai
 _restoreUiConfigFromServer();
 
 /* showNotionSyncModal / saveNotionToken / doNotionSync 等は gb-notion-sync.js に移動 */
+/* gb-settings-cli-chat.js: CLI chat settings UI */
+function _settingsCliEsc(value) {
+  return typeof esc === 'function'
+    ? esc(value)
+    : String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function _settingsCliIcon(name, size) {
+  return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+}
+
+const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
+  codex: [
+    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+  ],
+  claude_code: [
+    { id: 'claude-fable-5', name: 'Fable 5' },
+    { id: 'claude-opus-5', name: 'Opus 5' },
+    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
+    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
+    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+  ],
+  antigravity_cli: [
+    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
+    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
+    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
+  ],
+};
+
+function _settingsCliModelChoices(key) {
+  const sentinel = typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
+  const shared = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || null;
+  const source = shared || SETTINGS_CLI_CHAT_MODEL_FALLBACK[key] || [];
+  return source
+    .filter(item => item && item.id && item.id !== sentinel)
+    .map(item => ({ id: String(item.id), name: String(item.name || item.id) }));
+}
+
+function _settingsCliProviderRows(config) {
+  const providers = config?.providers || {};
+  const order = ['codex', 'claude_code', 'antigravity_cli'];
+  const labels = { codex: 'Codex CLI', claude_code: 'Claude Code', antigravity_cli: 'Antigravity CLI' };
+  const defaultModels = { codex: 'CLI既定（推奨）', claude_code: 'Claude Code', antigravity_cli: 'Antigravity CLI' };
+  const modelTitles = {
+    codex: 'CLIへ渡すモデルです。「CLI既定」ならCodex CLI自身の既定モデルを使います',
+    claude_code: 'CLIへ渡すモデルです。「CLI既定」ならClaude Code自身の既定モデルを使います',
+    antigravity_cli: 'CLIへ渡すモデルです。「CLI既定」ならAntigravity CLI自身の既定モデルを使います',
+  };
+  return order.map(key => {
+    const item = providers[key] || {};
+    const label = item.label || labels[key] || key;
+    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'antigravity_cli' ? 'agy' : 'codex');
+    const placeholderModel = defaultModels[key] || label;
+    const rawModel = String(item.model || '').trim();
+    const modelValue = (!rawModel || rawModel === placeholderModel) ? '' : rawModel;
+    const available = item.available !== false;
+    const compatible = item.compatible !== false;
+    const statusText = !available ? '未検出' : !compatible ? '更新必要' : item.version ? `v${item.version}` : '検出済み';
+    const statusTitle = !available || !compatible ? '' : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
+    const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
+    const compatibilityMessage = String(item.compatibility_message || '').trim();
+    const choices = _settingsCliModelChoices(key).slice();
+    if (modelValue && !choices.some(choice => choice.id === modelValue)) choices.push({ id: modelValue, name: modelValue });
+    const modelOptions = [`<option value=""${modelValue ? '' : ' selected'}>CLI既定（推奨）</option>`]
+      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}"${choice.id === modelValue ? ' selected' : ''}>${_settingsCliEsc(choice.name)}</option>`))
+      .join('');
+    return `
+      <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
+        <label class="gb-check" style="min-width:0;">
+          <input type="checkbox" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-enabled" data-cli-chat-field="enabled" ${item.enabled === false ? '' : 'checked'}>
+          <span>${_settingsCliEsc(label)}</span>
+        </label>
+        <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
+        <select class="gb-select" style="min-width:0;" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル')}">${modelOptions}</select>
+        <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
+        ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function _renderCliChatSettingsContainer(container, config) {
+  if (!container) return;
+  container.innerHTML = `
+    <div class="gb-check-help-row" style="margin-top:4px;">
+      <label class="gb-check"><input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}><span>CLIチャットを有効にする</span></label>
+      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
+    </div>
+    <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
+    <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
+      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-refresh">${_settingsCliIcon('refreshCw',14)} 状態を更新</button>
+      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-save">${_settingsCliIcon('save',14)} CLIチャット設定を保存</button>
+    </div>
+    <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
+    <div id="settings-workspace-cli-relay-container"></div>`;
+  container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
+  container.querySelector('#settings-cli-chat-save')?.addEventListener('click', () => saveCliChatSettingsFromSettingsDialog(container.closest('.modal-overlay') || document));
+  if (typeof renderWorkspaceCliRelaySettingsForSettings === 'function') renderWorkspaceCliRelaySettingsForSettings(container.closest('.modal-overlay') || document);
+  if (typeof replaceIcons === 'function') replaceIcons(container);
+}
+
+async function renderCliChatSettingsForSettings(root) {
+  const scope = root?.querySelector ? root : document;
+  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
+  if (!container) return;
+  container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
+  try {
+    _renderCliChatSettingsContainer(container, await apiFetch('/cli-chat/config'));
+  } catch (e) {
+    container.innerHTML = `<div class="gb-section-desc" style="color:var(--red);">CLIチャット設定を読み込めませんでした: ${_settingsCliEsc(e?.message || e)}</div>`;
+  }
+}
+
+async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
+  const scope = root?.querySelector ? root : document;
+  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
+  if (!container || !container.querySelector('[data-provider]')) return true;
+  const providers = {};
+  container.querySelectorAll('[data-provider]').forEach(row => {
+    const key = row.dataset.provider || '';
+    if (!key) return;
+    providers[key] = {
+      enabled: row.querySelector('[data-cli-chat-field="enabled"]')?.checked !== false,
+      command: row.querySelector('[data-cli-chat-field="command"]')?.value?.trim() || '',
+      model: row.querySelector('[data-cli-chat-field="model"]')?.value?.trim() || '',
+    };
+  });
+  const body = { cli_chat_enabled: document.getElementById('settings-cli-chat-enabled')?.checked !== false, cli_chat_providers: providers };
+  const status = container.querySelector('#settings-cli-chat-status');
+  try {
+    if (status) { status.textContent = '保存中...'; status.style.color = 'var(--fg2)'; }
+    await apiPut('/cli-chat/config', body);
+    if (typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
+      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(container.closest('.modal-overlay') || document, { silent: true, skipReload: true });
+      if (relayOk === false) return false;
+    }
+    if (status) { status.textContent = '保存しました。未検出のままならMeldexを再起動してください。'; status.style.color = 'var(--fg2)'; }
+    if (typeof window.GBChatCli?.loadChatConfig === 'function') {
+      const reload = window.GBChatCli.loadChatConfig().catch(() => {});
+      if (!options.backgroundChatRefresh) await reload;
+    }
+    if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
+    if (!options.skipReload) await renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document);
+    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定を保存しました');
+    return true;
+  } catch (e) {
+    if (status) { status.textContent = '保存に失敗しました: ' + (e?.message || e); status.style.color = 'var(--red)'; }
+    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定の保存に失敗しました', true);
+    return false;
+  }
+}
 /* gb-settings-cli-usage.js: truthful local CLI plan and remaining-limit UI */
 (function () {
   'use strict';
@@ -24500,6 +24648,174 @@ _restoreUiConfigFromServer();
   window.showCliUsagePopup = showCliUsagePopup;
   window.MeldexCliUsageUi = { fetchUsage, renderSettingsUsage, showCliUsagePopup, isDesktopCliSurface };
 })();
+/* gb-settings-ai-usage.js: AI API budget and administrator AI usage settings */
+function _formatUsd(value) {
+  const number = Number(value || 0);
+  return '$' + number.toFixed(number >= 1 ? 2 : 4) + '（' + _formatApproxJpyFromUsd(number) + '）';
+}
+
+const CHAT_COST_USD_JPY_APPROX_RATE = 156;
+function _formatApproxJpyFromUsd(value) {
+  const amount = Number(value || 0) * CHAT_COST_USD_JPY_APPROX_RATE;
+  if (!Number.isFinite(amount) || amount === 0) return '約0円';
+  if (Math.abs(amount) < 1) return '約' + amount.toFixed(2).replace(/\.?0+$/, '') + '円';
+  return '約' + Math.round(amount).toLocaleString('ja-JP') + '円';
+}
+
+const CHAT_COST_DEFAULTS = {
+  monthly_budget_usd: 300,
+  daily_budget_usd: 30,
+  session_budget_usd: 100,
+  max_concurrent_requests: 60,
+  max_tool_iterations: 300,
+  max_retry_attempts: 60,
+  large_context_warning_tokens: 4800000,
+  large_context_block_tokens: 6000000,
+};
+
+function _chatCostRoot(root) {
+  const scope = root?.querySelector ? root : document;
+  return scope?.matches?.('#chat-cost-settings-container') ? scope : scope.querySelector('#chat-cost-settings-container');
+}
+
+function _chatCostNumber(container, id, fallback) {
+  const value = String(container?.querySelector?.('#' + id)?.value ?? '').trim();
+  if (!value) return fallback;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function _chatCostFallbackStatus() {
+  return { settings: { ...CHAT_COST_DEFAULTS, pricing_last_reviewed: '' }, totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } } };
+}
+
+async function _chatCostLoadBudgetStatus(timeoutMs = 4500) {
+  if (typeof apiFetch !== 'function') return _chatCostFallbackStatus();
+  let timer = 0;
+  const timeout = new Promise(resolve => { timer = window.setTimeout(() => resolve(null), timeoutMs); });
+  try {
+    const status = await Promise.race([apiFetch('/chat/budget'), timeout]);
+    return status && typeof status === 'object' ? status : _chatCostFallbackStatus();
+  } catch (_err) {
+    return _chatCostFallbackStatus();
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
+}
+
+async function saveChatCostSettingsFromSettingsDialog(root, options = {}) {
+  const container = _chatCostRoot(root);
+  if (!container || !container.querySelector('#chat-budget-monthly')) return true;
+  const statusEl = container.querySelector('#chat-budget-status');
+  try {
+    await apiPut('/chat/budget', {
+      monthly_budget_usd: _chatCostNumber(container, 'chat-budget-monthly', CHAT_COST_DEFAULTS.monthly_budget_usd),
+      daily_budget_usd: _chatCostNumber(container, 'chat-budget-daily', CHAT_COST_DEFAULTS.daily_budget_usd),
+      session_budget_usd: _chatCostNumber(container, 'chat-budget-session', CHAT_COST_DEFAULTS.session_budget_usd),
+      monthly_mode: container.querySelector('#chat-budget-monthly-mode')?.value || 'hard',
+      daily_mode: container.querySelector('#chat-budget-daily-mode')?.value || 'hard',
+      session_mode: container.querySelector('#chat-budget-session-mode')?.value || 'hard',
+      max_concurrent_requests: _chatCostNumber(container, 'chat-budget-concurrency', CHAT_COST_DEFAULTS.max_concurrent_requests),
+      max_tool_iterations: _chatCostNumber(container, 'chat-budget-tool-iterations', CHAT_COST_DEFAULTS.max_tool_iterations),
+      max_retry_attempts: _chatCostNumber(container, 'chat-budget-retry-attempts', CHAT_COST_DEFAULTS.max_retry_attempts),
+      large_context_warning_tokens: _chatCostNumber(container, 'chat-budget-large-warning', CHAT_COST_DEFAULTS.large_context_warning_tokens),
+      large_context_block_tokens: _chatCostNumber(container, 'chat-budget-large-block', CHAT_COST_DEFAULTS.large_context_block_tokens),
+    });
+    if (statusEl) statusEl.textContent = '保存しました';
+    if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
+    if (!options.silent && typeof showStatus === 'function') showStatus('AI使用量設定を保存しました', false, { showSaveDialog: true });
+    return true;
+  } catch (error) {
+    if (statusEl) statusEl.textContent = '保存に失敗しました: ' + (error?.message || error);
+    if (!options.silent && typeof showStatus === 'function') showStatus('AI使用量設定の保存に失敗しました: ' + (error?.message || error), true);
+    return false;
+  }
+}
+
+async function _loadWorkspaceCliConfigForAiUsageSummary() {
+  try {
+    const config = await apiFetch('/workspace-cli/config', { silentError: true });
+    return config && typeof config === 'object' ? config : null;
+  } catch {
+    return null;
+  }
+}
+
+function _workspaceCliAiUsageSummaryRowsHtml(rows, formatItem) {
+  const list = Array.isArray(rows) ? rows : [];
+  return list.length ? list.map(formatItem).join(' / ') : 'まだありません';
+}
+
+function _workspaceCliAiUsageSummarySectionHtml(config) {
+  const summary = config?.ai_usage_summary;
+  if (!summary) return '';
+  const total = Number(summary.month_total_count || 0);
+  const failures = Number(summary.month_failure_count || 0);
+  const memberRows = _workspaceCliAiUsageSummaryRowsHtml(summary.top_members, item => `${esc(item?.member || '')} ${Number(item?.count || 0)}件`);
+  const modelRows = _workspaceCliAiUsageSummaryRowsHtml(summary.top_models, item => `${esc(item?.model || '')} ${Number(item?.count || 0)}件`);
+  return `
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('users',14)} 管理者AIの利用状況（今月） ${fieldHelp('ワークスペースタブから管理者PCへ依頼した回数です。メンバー個人のAPIキー・CLI利用（AIタブ）は含まれません。依頼内容や返答本文は表示されません。定額CLIのため費用は計算していません。')}</div>
+        <div class="gb-section-desc">依頼: ${total}件${failures ? `（失敗 ${failures}件）` : ''}</div>
+        <div class="gb-section-desc">メンバー別: ${memberRows}</div>
+        <div class="gb-section-desc">モデル別: ${modelRows}</div>
+        <div class="gb-field-row" style="justify-content:flex-start;margin-top:6px;"><button type="button" class="gb-btn gb-btn-sm" id="workspace-cli-ai-usage-open-sheet">${lucide('externalLink',14)} シートで開く</button></div>
+      </section>`;
+}
+
+async function _openWorkspaceCliAiUsageSheet(sheetName) {
+  if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
+  if (typeof showView === 'function') showView('database');
+  if (typeof selectDatabase === 'function') await selectDatabase(sheetName || 'AI使用量');
+}
+
+async function renderChatCostSettings(root) {
+  const container = (root?.querySelector ? root : document).querySelector('#chat-cost-settings-container');
+  if (!container) return;
+  container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('walletCards',14)} AI使用量</div><div class="gb-section-desc">読み込み中...</div></section>`;
+  try {
+    const [status, workspaceCliConfig] = await Promise.all([_chatCostLoadBudgetStatus(), _loadWorkspaceCliConfigForAiUsageSummary()]);
+    const settings = status.settings || {};
+    const totals = status.totals || {};
+    const modeOptions = value => ['hard', 'warn', 'off'].map(mode => {
+      const label = mode === 'hard' ? 'ハード停止' : mode === 'warn' ? '警告のみ' : '無効';
+      return `<option value="${mode}" ${String(value || 'hard') === mode ? 'selected' : ''}>${label}</option>`;
+    }).join('');
+    container.innerHTML = `
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('gauge',14)} AI API使用量 ${fieldHelp('Meldex本体の課金ではありません。登録したAI APIキーで各社APIを使った場合の推定使用量です。', { e2eId: 'settings-ai-usage-help' })}</div>
+        <div class="gb-section-desc">今日: ${_formatUsd(totals.day?.cost_usd)} / 今月: ${_formatUsd(totals.month?.cost_usd)}</div>
+        <div class="gb-section-desc">AI API単価表レビュー日: ${esc(settings.pricing_last_reviewed || '')}</div>
+      </section>
+      ${_workspaceCliAiUsageSummarySectionHtml(workspaceCliConfig)}
+      <section class="gb-section gb-section--boxed">
+        <div class="gb-section-title">${lucide('shieldAlert',14)} 予算上限</div>
+        <label class="gb-field-row"><span class="gb-label">月次</span><input id="chat-budget-monthly" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.monthly_budget_usd ?? CHAT_COST_DEFAULTS.monthly_budget_usd)}"><select id="chat-budget-monthly-mode" class="gb-select">${modeOptions(settings.monthly_mode)}</select></label>
+        <label class="gb-field-row"><span class="gb-label">日次</span><input id="chat-budget-daily" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.daily_budget_usd ?? CHAT_COST_DEFAULTS.daily_budget_usd)}"><select id="chat-budget-daily-mode" class="gb-select">${modeOptions(settings.daily_mode)}</select></label>
+        <label class="gb-field-row"><span class="gb-label">1チャット</span><input id="chat-budget-session" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.session_budget_usd ?? CHAT_COST_DEFAULTS.session_budget_usd)}"><select id="chat-budget-session-mode" class="gb-select">${modeOptions(settings.session_mode)}</select></label>
+        <label class="gb-field-row"><span class="gb-label">同時実行</span><input id="chat-budget-concurrency" type="number" min="1" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_concurrent_requests ?? CHAT_COST_DEFAULTS.max_concurrent_requests)}"><span class="gb-section-desc">件まで</span></label>
+        <label class="gb-field-row"><span class="gb-label">ツールループ</span><input id="chat-budget-tool-iterations" type="number" min="5" max="600" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_tool_iterations ?? CHAT_COST_DEFAULTS.max_tool_iterations)}"><span class="gb-section-desc">回まで</span></label>
+        <label class="gb-field-row"><span class="gb-label">リトライ</span><input id="chat-budget-retry-attempts" type="number" min="0" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_retry_attempts ?? CHAT_COST_DEFAULTS.max_retry_attempts)}"><span class="gb-section-desc">回まで</span></label>
+        <label class="gb-field-row"><span class="gb-label">長文警告</span><input id="chat-budget-large-warning" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_warning_tokens ?? CHAT_COST_DEFAULTS.large_context_warning_tokens)}"><span class="gb-section-desc">tokens</span></label>
+        <label class="gb-field-row"><span class="gb-label">長文停止</span><input id="chat-budget-large-block" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_block_tokens ?? CHAT_COST_DEFAULTS.large_context_block_tokens)}"><span class="gb-section-desc">tokens</span></label>
+        <div class="gb-field-row" style="justify-content:flex-start;"><button type="button" class="gb-btn gb-btn-sm" id="chat-budget-save">${lucide('save',14)} 保存</button><button type="button" class="gb-btn gb-btn-sm gb-btn-danger" id="chat-budget-reset">${lucide('rotateCcw',14)} 使用量履歴をリセット</button></div>
+        <div id="chat-budget-status" class="gb-section-desc"></div>
+      </section>`;
+    const statusEl = container.querySelector('#chat-budget-status');
+    container.querySelector('#workspace-cli-ai-usage-open-sheet')?.addEventListener('click', () => _openWorkspaceCliAiUsageSheet(workspaceCliConfig?.ai_usage_sheet_name));
+    container.querySelector('#chat-budget-save')?.addEventListener('click', () => saveChatCostSettingsFromSettingsDialog(container, { silent: false }));
+    container.querySelector('#chat-budget-reset')?.addEventListener('click', async () => {
+      const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？', { danger: true, okLabel: 'リセット' }) : confirm('LLM使用量履歴をリセットしますか？');
+      if (!ok) return;
+      await apiPost('/chat/usage/reset', {});
+      statusEl.textContent = '使用量履歴をリセットしました';
+      if (typeof renderChatCostSettings === 'function') renderChatCostSettings(root);
+      if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
+    });
+  } catch (error) {
+    container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} AI使用量</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
+  }
+}
 /* gb-settings.part05.js: appearance tab theme editor integration */
 
 function _settingsThemeAction(iconName, fallback, label, action, danger) {
@@ -24965,10 +25281,13 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       <div class="gb-section-title">自動色の強さ</div>
       ${typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : ''}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
-      <div class="gb-section-title">テーマカラーの自動適用設定</div>
-      ${renderThemeUiApplicationEditor({ hideLabel: true })}
-    </section>
+    <!-- 「テーマカラーの自動適用設定」の対象別ピッカーは、下の「アプリ別テーマ」タブ群
+         （共通/フォルダ/ノート/シナリオ/シート/ボード/スケジュール/補助パネル）で
+         全ターゲットを重複なく網羅している。以前はここに全ターゲット横断の一覧を
+         フィルタなしで別途表示しており、アプリ別タブと同じ data-e2e-id を持つ行が
+         同時に2つ描画されていた（2026-08-05 v0.7.151でテーマ詳細設定ダイアログを
+         サブタブへ統合した際、旧「連番配色」タブと旧「アプリ別」タブが排他表示
+         ではなくなり重複が顕在化。2026-08-13 バグ報告で確認・削除）。 -->
     <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">基本の面</div>
       ${_renderSettingsThemeDetailStyleGroups('surface')}
@@ -26940,6 +27259,10 @@ async function showMeldexChangelogDialog(returnFocus) {
     else if (action === 'add-source') {
       _removeOnboardingOverlayNow('add-source');
       await _addSourceFolder();
+      // ソースフォルダ追加でホームフォルダが個人ルート追従の対象になったかもしれない
+      // ため、既存ホームの引き継ぎ提案（見つかれば）をここでも確認する
+      // （gb-home-folder-sharing.js。設定画面と同じ判定・同じダイアログを再利用）。
+      window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings?.();
       render();
       return;
     }
@@ -26988,6 +27311,222 @@ async function showMeldexChangelogDialog(returnFocus) {
     handleStartupState,
     showSourceSetupWizard,
   };
+})();
+
+;
+
+/* === gb-home-folder-sharing.js === */
+;
+// ホームフォルダの版間共有（個人ルート追従化） フロントエンド。
+//
+// 設計方針: app/docs/home-folder-sharing-plan-2026-08-12.md
+//
+// 責務:
+// - 設定「全般」タブのホームフォルダ欄に、共有関連の状態を1行だけ表示する
+//   （常時表示せず、共有と判定できた場合のみ）。
+// - 起動時・設定画面表示時に、既存ホームの引き継ぎ提案（Phase3 ①）と、
+//   ローカル既定に残ったデータの移行確認（Phase3 ②）を1回だけ提示する。
+//
+// バックエンド: meldex_api_home_folder_sharing.py
+(function () {
+  'use strict';
+
+  if (window.MeldexHomeFolderSharing) return;
+
+  const SHARED_REASON_LABEL = {
+    workspace: '共有ワークスペース',
+    team_root: 'チームスペース',
+    team_json: '複数人が使うフォルダ',
+  };
+
+  let _promptChecked = false;
+  let _startupWarningShown = false;
+
+  async function _fetchStatus() {
+    try {
+      return await apiFetch('/home-folder-sharing/status', { silentError: true });
+    } catch (err) {
+      console.warn('[MeldexHomeFolderSharing] status fetch failed', err);
+      return null;
+    }
+  }
+
+  async function _fetchCandidate() {
+    try {
+      return await apiFetch('/home-folder-sharing/inherit-candidate', { silentError: true });
+    } catch (err) {
+      console.warn('[MeldexHomeFolderSharing] candidate fetch failed', err);
+      return null;
+    }
+  }
+
+  function _renderStatusLine(status) {
+    const el = document.getElementById('home-folder-sharing-status');
+    if (!el) return;
+    if (!status) { el.hidden = true; return; }
+    if (status.vaultShared && status.homeSource !== 'explicit') {
+      el.hidden = false;
+      el.style.color = '';
+      el.textContent = 'ルートフォルダが共有のため、ホームは個人の場所に置かれています。';
+      return;
+    }
+    if (status.homeShared) {
+      el.hidden = false;
+      el.style.color = 'var(--danger)';
+      const label = SHARED_REASON_LABEL[status.homeSharedReason] || '共有フォルダ';
+      el.textContent = `ホームフォルダが${label}の中にあります。他の人から見える可能性があります。`;
+      return;
+    }
+    el.hidden = true;
+  }
+
+  async function loadHomeFolderSharingStatusForSettings() {
+    const status = await _fetchStatus();
+    _renderStatusLine(status);
+    if (status?.homeShared && !_startupWarningShown) {
+      _startupWarningShown = true;
+      if (typeof showStatus === 'function') {
+        showStatus('ホームフォルダが共有フォルダの中にあります。他の人から内容が見える可能性があります。', true);
+      }
+    }
+    _maybeShowInheritOrMigrationPrompt();
+    return status;
+  }
+
+  async function _maybeShowInheritOrMigrationPrompt() {
+    if (_promptChecked) return;
+    _promptChecked = true;
+    const data = await _fetchCandidate();
+    if (!data) return;
+    if (data.candidate) {
+      _showInheritDialog(data.candidate);
+    } else if (data.migration) {
+      _showMigrationDialog(data.migration);
+    }
+  }
+
+  function _applyAdoptedHome(path) {
+    const homeInput = document.getElementById('modal-home-folder');
+    if (homeInput) homeInput.value = path;
+    try {
+      window._homeFolderPath = path;
+      if (typeof _homeFolderPath !== 'undefined') _homeFolderPath = path; // eslint-disable-line no-undef
+    } catch (_) {}
+    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+  }
+
+  function _dialogParagraph(text) {
+    const p = document.createElement('p');
+    p.className = 'meldex-onboarding-copy';
+    p.textContent = text;
+    return p;
+  }
+
+  function _dialogPath(text) {
+    const div = document.createElement('div');
+    div.className = 'meldex-onboarding-path';
+    div.textContent = text;
+    return div;
+  }
+
+  function _dialogButton(label, primary) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = primary ? 'gb-btn gb-btn-sm gb-btn-primary' : 'gb-btn gb-btn-sm';
+    btn.textContent = label;
+    return btn;
+  }
+
+  function _showInheritDialog(candidate) {
+    if (!window.GBUI?.createModal) return;
+    let settled = false;
+    const content = document.createElement('div');
+    content.appendChild(_dialogParagraph('デスクトップ版／クラウド版で使っているホームフォルダが見つかりました。'));
+    content.appendChild(_dialogPath(candidate.path));
+    content.appendChild(_dialogParagraph('これを使いますか？'));
+    const skipBtn = _dialogButton('今のままにする', false);
+    const useBtn = _dialogButton('このフォルダを使う', true);
+    const controller = window.GBUI.createModal({
+      id: 'home-folder-sharing-inherit',
+      title: 'ホームフォルダの引き継ぎ',
+      body: content,
+      footer: [skipBtn, useBtn],
+      variant: 'standard',
+      onClose: () => {
+        if (settled) return;
+        settled = true;
+        apiPost('/home-folder-sharing/inherit-decision', { decision: 'dismiss' }, { silentError: true }).catch(() => {});
+      },
+    });
+    useBtn.addEventListener('click', async () => {
+      settled = true;
+      try {
+        await apiPost('/home-folder-sharing/inherit-decision', { decision: 'adopt', path: candidate.path });
+        _applyAdoptedHome(candidate.path);
+        if (typeof showStatus === 'function') showStatus('ホームフォルダを引き継ぎました');
+      } catch (err) {
+        // apiFetch がエラートーストを既に出しているため、ここでは再表示しない。
+      }
+      controller.close('use');
+    });
+    skipBtn.addEventListener('click', () => {
+      settled = true;
+      apiPost('/home-folder-sharing/inherit-decision', { decision: 'dismiss' }, { silentError: true }).catch(() => {});
+      controller.close('skip');
+    });
+    controller.open();
+  }
+
+  function _showMigrationDialog(migration) {
+    if (!window.GBUI?.createModal) return;
+    let settled = false;
+    const content = document.createElement('div');
+    content.appendChild(_dialogParagraph('これまで使っていたホームフォルダにデータが残っています。'));
+    content.appendChild(_dialogPath(migration.path));
+    content.appendChild(_dialogParagraph('コピーして新しいホームフォルダへ引っ越しますか？（元のフォルダは残ります）'));
+    const keepBtn = _dialogButton('今のまま使い続ける', false);
+    const copyBtn = _dialogButton('コピーして引っ越す', true);
+    const controller = window.GBUI.createModal({
+      id: 'home-folder-sharing-migration',
+      title: 'ホームフォルダの引っ越し',
+      body: content,
+      footer: [keepBtn, copyBtn],
+      variant: 'standard',
+      initialFocus: () => keepBtn,
+      onClose: () => {
+        if (settled) return;
+        settled = true;
+        apiPost('/home-folder-sharing/migration-decision', { decision: 'dismiss' }, { silentError: true }).catch(() => {});
+      },
+    });
+    copyBtn.addEventListener('click', async () => {
+      settled = true;
+      try {
+        await apiPost('/home-folder-sharing/migration-decision', { decision: 'copy', path: migration.path });
+        if (typeof showStatus === 'function') showStatus('データをコピーしました');
+      } catch (err) {
+        // apiFetch がエラートーストを既に出している。
+      }
+      controller.close('copy');
+    });
+    keepBtn.addEventListener('click', async () => {
+      settled = true;
+      try {
+        await apiPost('/home-folder-sharing/migration-decision', { decision: 'keep-old', path: migration.path });
+        _applyAdoptedHome(migration.path);
+        if (typeof showStatus === 'function') showStatus('今までのホームフォルダを使い続けます');
+      } catch (err) {
+        // apiFetch がエラートーストを既に出している。
+      }
+      controller.close('keep-old');
+    });
+    controller.open();
+  }
+
+  window.MeldexHomeFolderSharing = {
+    loadHomeFolderSharingStatusForSettings,
+  };
+  window.loadHomeFolderSharingStatusForSettings = loadHomeFolderSharingStatusForSettings;
 })();
 
 ;
@@ -29727,7 +30266,17 @@ function resetLayoutToDefault() {
   }
 
   // === Notion同期設定UI ===
-  async function showNotionSyncModal() {
+  // triggerEl: このモーダルを開いた「外側の本来のトリガー要素」。
+  // 省略時（外部からの新規オープン）は現在のフォーカス位置を採用する。
+  // _refreshNotionSyncSettings からの内部再生成呼び出しでは、直前のモーダルが
+  // 保持していたトリガー要素をそのまま引き継ぐ（document.activeElement の
+  // 再取得はしない）。再生成は「閉じてすぐ作り直す」ため、その瞬間の
+  // document.activeElement は直前のモーダルごと消える内部要素（フォルダ追加
+  // ボタン等）になっており、それを拾うと二度と外側へフォーカスを戻せなくなる。
+  async function showNotionSyncModal(triggerEl) {
+    const opener = (triggerEl instanceof HTMLElement && triggerEl.isConnected)
+      ? triggerEl
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     _closeModal();
     const body = document.createElement('div');
     body.id = 'notion-sync-modal-body';
@@ -29750,6 +30299,10 @@ function resetLayoutToDefault() {
       closeLabel: 'Notion同期を閉じる',
       closeOnEsc: true,
       closeOnOverlay: true,
+      // 外側の本来のトリガー要素を明示的に指定する。指定した要素が閉じる時点で
+      // 接続済みなら、document.activeElement の暗黙キャプチャより優先される
+      // （gb-ui.js の _restoreOpenerFocus 参照）。
+      returnFocus: () => (opener && opener.isConnected) ? opener : null,
       onClose: () => {
         if (_currentModalApi === modalApi) _currentModalApi = null;
         if (_currentOverlay === modalApi.overlay) _currentOverlay = null;
@@ -29766,7 +30319,7 @@ function resetLayoutToDefault() {
     _currentOverlay = o;
     closeButton.addEventListener('click', () => modalApi.close('close-button'));
     modalApi.open();
-    await _renderNotionSyncSettings(body, { modal: true, descId });
+    await _renderNotionSyncSettings(body, { modal: true, descId, triggerEl: opener });
     replaceIcons(o);
   }
 
@@ -30272,7 +30825,9 @@ function resetLayoutToDefault() {
       _renderNotionSyncSettings(root, options);
       return;
     }
-    if (options.modal) showNotionSyncModal();
+    // 「閉じてすぐ作り直す」再生成。外側の本来のトリガー要素（options.triggerEl）を
+    // そのまま引き継ぎ、新しいモーダルの document.activeElement 再取得に頼らない。
+    if (options.modal) showNotionSyncModal(options.triggerEl);
   }
 
   async function _handleDeleteToken(root, options = {}) {
@@ -30930,6 +31485,16 @@ function resetLayoutToDefault() {
   function renderXBookmarksSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
+    // OAuth中継を持たないDropbox直結のCloud静的版では、押しても成立しない
+    // デスクトップ専用操作（X接続・差分保存等）を表示しない。gb-external-import.js
+    // が定義する既存判定をそのまま再利用する（新しい判定は作らない）。
+    if (window.isCloudStaticImportSurface?.()) {
+      container.hidden = true;
+      container.dataset.cloudDesktopOnlyHidden = '1';
+      return;
+    }
+    container.hidden = false;
+    delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
       loadStatus();
       return;
@@ -31770,6 +32335,11 @@ function resetLayoutToDefault() {
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;
+  // gb-settings-x-bookmarks.js 等、他の設定パネルからも同じ「Cloud静的版では
+  // 成立しないデスクトップ専用操作を隠す」判定を再利用できるよう公開する
+  // （新しい判定を作らず、既存のこの判定へ揃えるため。インポート・機能生成
+  // ファイル保護計画のクラウド並行修正で追加）。
+  window.isCloudStaticImportSurface = isCloudStaticImportSurface;
 })();
 
 ;
@@ -32305,6 +32875,8 @@ function resetLayoutToDefault() {
   }
 
   function _init() {
+    // デスクトップ付箋の小窓には進捗を出す場所が無い。付箋の枚数だけポーリングを増やさない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     _injectCSS();
     _ensureContainer();
     start();
@@ -32959,6 +33531,7 @@ function resetLayoutToDefault() {
     const osSync = document.createElement('button');
     osSync.type = 'button';
     osSync.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+    osSync.dataset.e2eId = editorId + '-os-sync';
     osSync.dataset.globalTagsRole = 'os-sync';
     osSync.setAttribute('aria-label', 'OSタグを再同期');
     osSync.innerHTML = icon('refreshCw', 14) + ' OSタグを再同期';
@@ -33758,8 +34331,26 @@ function resetLayoutToDefault() {
   }
 
   function clearDropState(element) {
-    element?.classList?.remove('is-drop-before', 'is-drop-after', 'is-drop-target');
-    if (element?.dataset) delete element.dataset.tagDropPlacement;
+    element?.classList?.remove('is-drop-before', 'is-drop-after', 'is-drop-before-h', 'is-drop-after-h', 'is-drop-target');
+    if (element?.dataset) {
+      delete element.dataset.tagDropPlacement;
+      delete element.dataset.tagDropAxis;
+    }
+  }
+
+  // タグは列幅に応じて格子（複数列）で並ぶ。2列以上ならドラッグの挿入判定を
+  // 左右（X座標）にし、1列なら従来どおり上下（Y座標）にする。列数はCSSの
+  // 計算済み grid-template-columns から読む（幅の実測やウィンドウサイズ分岐はしない）。
+  function currentColumnCount(container) {
+    if (!container) return 1;
+    try {
+      const template = String(getComputedStyle(container).gridTemplateColumns || '').trim();
+      if (!template || template === 'none') return 1;
+      const count = template.split(/\s+/).filter(Boolean).length;
+      return count > 0 ? count : 1;
+    } catch (_) {
+      return 1;
+    }
   }
 
   function uniqueDraggedTags(items, state, excludedId) {
@@ -33858,13 +34449,22 @@ function resetLayoutToDefault() {
       event.stopPropagation();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       clearDropState(row);
+      const columns = currentColumnCount(row.parentElement);
+      const horizontal = columns >= 2;
       const rect = row.getBoundingClientRect();
-      const placement = Number.isFinite(event.clientY) && rect.height
-        && (event.clientY - rect.top) / rect.height > 0.5
-        ? 'after'
-        : 'before';
+      let placement = 'before';
+      if (horizontal && rect.width && Number.isFinite(event.clientX)) {
+        placement = (event.clientX - rect.left) / rect.width > 0.5 ? 'after' : 'before';
+      } else if (rect.height && Number.isFinite(event.clientY)) {
+        placement = (event.clientY - rect.top) / rect.height > 0.5 ? 'after' : 'before';
+      }
       row.dataset.tagDropPlacement = placement;
-      row.classList.add(placement === 'after' ? 'is-drop-after' : 'is-drop-before');
+      row.dataset.tagDropAxis = horizontal ? 'h' : 'v';
+      row.classList.add(
+        horizontal
+          ? (placement === 'after' ? 'is-drop-after-h' : 'is-drop-before-h')
+          : (placement === 'after' ? 'is-drop-after' : 'is-drop-before'),
+      );
     });
     row.addEventListener('dragleave', event => {
       if (!event.relatedTarget || !row.contains(event.relatedTarget)) clearDropState(row);
@@ -34634,16 +35234,23 @@ function resetLayoutToDefault() {
     bindDropTarget(head, null, 'root');
     wrap.appendChild(head);
     if (!collapsed) {
-      const box = document.createElement('div');
-      box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
-      if (!tags.length) box.appendChild(emptyRow('タグなし'));
-      tags.forEach(tag => {
-        if (!window.MeldexTagTreeRuntime?.takeTag
-          || window.MeldexTagTreeRuntime.takeTag(budget)) {
-          box.appendChild(renderTagRow(tag, groupsById, 0));
-        }
-      });
-      wrap.appendChild(box);
+      if (!tags.length) {
+        const emptyWrap = document.createElement('div');
+        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.appendChild(emptyRow('タグなし'));
+        wrap.appendChild(emptyWrap);
+      } else {
+        const tagsGrid = document.createElement('div');
+        tagsGrid.className = 'gb-tag-tree-grid';
+        tagsGrid.style.marginLeft = '18px';
+        tags.forEach(tag => {
+          if (!window.MeldexTagTreeRuntime?.takeTag
+            || window.MeldexTagTreeRuntime.takeTag(budget)) {
+            tagsGrid.appendChild(renderTagRow(tag, groupsById));
+          }
+        });
+        wrap.appendChild(tagsGrid);
+      }
     }
     return wrap;
   }
@@ -34691,67 +35298,71 @@ function resetLayoutToDefault() {
     bindDropTarget(head, group.id, 'group');
     wrap.appendChild(head);
     if (!group.collapsed) {
-      const box = document.createElement('div');
-      box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
-      group.tags.forEach(tag => {
-        if (!window.MeldexTagTreeRuntime?.takeTag
-          || window.MeldexTagTreeRuntime.takeTag(budget)) {
-          box.appendChild(renderTagRow(tag, groupsById, depth + 1));
-        }
-      });
-      group.children.forEach(child => box.appendChild(
-        renderGroupNode(child, groupsById, depth + 1, budget),
-      ));
-      if (!group.tags.length && !group.children.length) box.appendChild(emptyRow('空のグループ'));
-      wrap.appendChild(box);
+      // タグ用の入れ物（格子並び）と子グループ用の入れ物（全幅の縦並び）を分ける。
+      // 表示順は従来どおり「タグ → 子グループ」。
+      if (group.tags.length) {
+        const tagsGrid = document.createElement('div');
+        tagsGrid.className = 'gb-tag-tree-grid';
+        tagsGrid.style.marginLeft = '18px';
+        group.tags.forEach(tag => {
+          if (!window.MeldexTagTreeRuntime?.takeTag
+            || window.MeldexTagTreeRuntime.takeTag(budget)) {
+            tagsGrid.appendChild(renderTagRow(tag, groupsById));
+          }
+        });
+        wrap.appendChild(tagsGrid);
+      }
+      if (group.children.length) {
+        const childrenBox = document.createElement('div');
+        childrenBox.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
+        group.children.forEach(child => childrenBox.appendChild(
+          renderGroupNode(child, groupsById, depth + 1, budget),
+        ));
+        wrap.appendChild(childrenBox);
+      }
+      if (!group.tags.length && !group.children.length) {
+        const emptyWrap = document.createElement('div');
+        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.appendChild(emptyRow('空のグループ'));
+        wrap.appendChild(emptyWrap);
+      }
     }
     return wrap;
+  }
+
+  function tagChipTitle(tag) {
+    const name = tag.name || '';
+    const aliases = Array.isArray(tag.aliases) ? tag.aliases.filter(Boolean) : [];
+    return aliases.length ? `${name} / 別名: ${aliases.join(', ')}` : name;
   }
 
   function renderTagRow(tag, groupsById) {
     const key = rowKey('tag', tag.id);
     const row = treeRowBase('tag', key, 0);
-    const assignmentToggle = window.MeldexTagPanelTabs?.createTagToggle?.(tag);
-    if (assignmentToggle) row.appendChild(assignmentToggle);
-    else {
-      const indent = document.createElement('span');
-      indent.style.cssText = 'display:inline-block;flex:0 0 24px;width:24px;';
-      row.appendChild(indent);
-    }
     row.appendChild(api()?.createTagChip?.(tag, {
       groupsById,
       compact: true,
       className: 'gb-tag-tree-chip',
+      title: tagChipTitle(tag),
+      dataset: {
+        tagAssignmentId: String(tag?.id || ''),
+        tagAssignmentName: String(tag?.name || ''),
+      },
     }) || rowLabel(tag.name || '', false, effectiveTagColor(tag, groupsById)));
-    if (Array.isArray(tag.aliases) && tag.aliases.length) {
-      const aliasBadge = document.createElement('span');
-      aliasBadge.className = 'gb-tag-alias-badge';
-      aliasBadge.style.cssText = 'font-size:10px;color:var(--fg2);white-space:nowrap;';
-      aliasBadge.textContent = '別名 ' + tag.aliases.length;
-      aliasBadge.title = '別名: ' + tag.aliases.join(', ');
-      row.appendChild(aliasBadge);
-    }
-    if (tag.auto_assign) {
-      const autoBadge = document.createElement('span');
-      autoBadge.className = 'gb-tag-auto-assign-badge';
-      autoBadge.style.cssText = 'display:inline-flex;align-items:center;color:var(--green,#4bc995);';
-      autoBadge.innerHTML = ic('sparkles', 11);
-      autoBadge.title = '自動付与を許可';
-      autoBadge.setAttribute('aria-label', '自動付与を許可');
-      row.appendChild(autoBadge);
-    }
-    row.appendChild(rowCount(typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : ''));
+    const sourceCount = typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : 0;
+    if (sourceCount) row.appendChild(rowCount(sourceCount));
     row.appendChild(iconButton('ellipsis', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
     row.addEventListener('click', event => {
-      if (event.target.closest('button, input, label')) return;
-      setSelectionFromEvent(event, key);
-      if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      refreshTreeContent();
+      if (event.target.closest('button')) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        setSelectionFromEvent(event, key);
+        refreshTreeContent();
+        return;
+      }
+      window.MeldexTagPanelTabs?.toggleTagAssignment?.(tag);
     });
-    bindRowKeyboard(row, event => {
-      setSelectionFromEvent(event, key);
-      if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      refreshTreeContent();
+    bindRowKeyboard(row, () => {
+      window.MeldexTagPanelTabs?.toggleTagAssignment?.(tag);
     }, event => openTagMenu(event.currentTarget, tag));
     bindRowMenu(row, event => openTagMenu(event.currentTarget, tag));
     bindDragSource(row, 'tag', tag.id);
@@ -34768,7 +35379,7 @@ function resetLayoutToDefault() {
     row.setAttribute('role', 'treeitem');
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
-    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:28px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
+    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
     if (isSelected(key)) {
       row.style.background = 'rgba(86,156,214,0.22)';
       row.style.outline = '1px solid rgba(86,156,214,0.55)';
@@ -34897,15 +35508,18 @@ function resetLayoutToDefault() {
     row.addEventListener('dragend', () => {
       _dragRows = [];
       row.classList.remove('dragging');
-      document.querySelectorAll('.gb-tag-tree-row.is-drop-target, .gb-tag-tree-row.is-drop-before, .gb-tag-tree-row.is-drop-after')
-        .forEach(clearDropTargetState);
+      document.querySelectorAll(
+        '.gb-tag-tree-row.is-drop-target, .gb-tag-tree-row.is-drop-before, .gb-tag-tree-row.is-drop-after, '
+        + '.gb-tag-tree-row.is-drop-before-h, .gb-tag-tree-row.is-drop-after-h',
+      ).forEach(clearDropTargetState);
     });
   }
 
   function clearDropTargetState(el) {
-    el.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+    el.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after', 'is-drop-before-h', 'is-drop-after-h');
     el.style.boxShadow = '';
     delete el.dataset.tagDropPlacement;
+    delete el.dataset.tagDropAxis;
   }
 
   function groupDropPlacement(el, event, items, targetGroupId, targetKind) {
@@ -36463,7 +37077,7 @@ const MeldexAutoLink = (() => {
     };
   }
 
-  function metadataRowsHtml(meta) {
+  function metadataRowsHtml(meta, options) {
     if (!meta) return '';
     const rows = [];
     const dateRow = (label, value) => {
@@ -36475,11 +37089,19 @@ const MeldexAutoLink = (() => {
     dateRow('作成日時', meta.created);
     dateRow('更新日時', meta.modified);
     if (meta.size != null) rows.push(['ファイルサイズ', formatFileSize(meta.size)]);
-    if (meta._metadataLoadError) rows.push(['詳細', '読み込めませんでした']);
+    if (meta._metadataLoadError && meta._metadataLoadStatus !== 404) rows.push(['詳細', '読み込めませんでした']);
+    const brokenRow = meta._metadataLoadStatus === 404
+      ? '<tr data-file-info-broken><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">状態</td>'
+        + '<td style="padding:4px 0;"><span class="gb-badge" style="color:var(--danger);">リンク切れ</span>'
+        + (typeof options?.onRelocate === 'function'
+          ? ' <button type="button" class="btn-small" data-file-info-relocate>新しいファイルを選んで付け替える</button>'
+          : '')
+        + '</td></tr>'
+      : '';
     return rows.map(([label, value]) => (
       `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">${escapeHtml(label)}</td>`
       + `<td style="padding:4px 0;">${escapeHtml(value)}</td></tr>`
-    )).join('');
+    )).join('') + brokenRow;
   }
 
   function panelHtml(filePath, preloadedMeta, options) {
@@ -36502,14 +37124,16 @@ const MeldexAutoLink = (() => {
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
-      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, options)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
       + '</table>'
-      // タグは埋め込み情報の一番上。以前は埋め込み情報の外・下に置いていた。
+      // タグはメモ入力欄の下（埋め込み情報の主要項目と埋め込み情報グループの間）に配置する。
       // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
-      // 描画先を [data-file-embedded-body] に分けている。
+      // 描画先を [data-file-embedded-primary] と [data-file-embedded-groups] の2つに分け、
+      // タグはそのどちらの子要素でもない兄弟要素として置く。
       + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
+      + '<div data-file-embedded-primary></div>'
       + tagsHtml
-      + '<div data-file-embedded-body></div>'
+      + '<div data-file-embedded-groups></div>'
       + '</div>'
       + (info.kind === 'folder' ? `<div data-duplicate-folder-setting data-path="${escapeHtml(filePath)}"></div>` : '')
       + '</div>';
@@ -36532,19 +37156,25 @@ const MeldexAutoLink = (() => {
       return {
         ...(preloaded || {}),
         _metadataLoadError: error?.userMessage || error?.message || String(error),
+        _metadataLoadStatus: Number(error?.status) || 0,
       };
     }
   }
 
-  function applyMetadata(root, filePath, meta) {
+  function applyMetadata(root, filePath, meta, options) {
     const panel = findPanel(root, filePath);
     if (!panel) return false;
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
-    if (rows) rows.innerHTML = metadataRowsHtml(meta);
+    if (rows) rows.innerHTML = metadataRowsHtml(meta, options);
+    rows?.querySelector('[data-file-info-relocate]')?.addEventListener('click', () => {
+      if (options?.isCurrent?.() === false) return;
+      options?.onRelocate?.();
+    });
     const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
-    const embeddedHost = embeddedPanel?.querySelector('[data-file-embedded-body]') || embeddedPanel;
-    global.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
+    const primaryHost = embeddedPanel?.querySelector('[data-file-embedded-primary]') || embeddedPanel;
+    const groupsHost = embeddedPanel?.querySelector('[data-file-embedded-groups]') || null;
+    global.MeldexEmbeddedMetadata?.renderEditor?.(primaryHost, groupsHost, filePath, meta);
     return true;
   }
 
@@ -36569,7 +37199,7 @@ const MeldexAutoLink = (() => {
     hydrateTags(container, options);
     const meta = await metadataPromise;
     if (renderRevisions.get(container) !== revision || options?.isCurrent?.() === false) return false;
-    return applyMetadata(container, normalizedPath, meta);
+    return applyMetadata(container, normalizedPath, meta, options);
   }
 
   async function showInDetailPanel(filePath, options) {
@@ -36584,7 +37214,7 @@ const MeldexAutoLink = (() => {
     hydrateTags(detailRoot, options);
     const meta = await metadataPromise;
     if (options?.isCurrent?.() === false) return false;
-    return applyMetadata(detailRoot, normalizedPath, meta);
+    return applyMetadata(detailRoot, normalizedPath, meta, options);
   }
 
   function renderEmbedded(container, target) {
@@ -42220,6 +42850,7 @@ document.addEventListener('keydown', async (e) => {
       : await cfConfirm(confirmMessage);
     if (!confirmed) return;
     deleteOutlinerItemsWithHistory(items, {
+      confirmation: confirmed,
       label: items.length + ' 件を削除',
       onItemDeleted: (item) => {
         if (typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([item.path]);
@@ -50661,7 +51292,7 @@ function toggleOverlayVisibility() {
   _forEachStandaloneAnnotationNote(el => { el.style.visibility = (!embedded && _overlayVisible) ? '' : 'hidden'; });
   if (btn) {
     btn.classList.toggle('active', _overlayVisible);
-    btn.innerHTML = lucide(_overlayVisible ? 'eye' : 'eyeOff', 18);
+    _setAnnotationUtilityIcon(btn, _overlayVisible ? 'eye' : 'eyeOff');
     btn.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
     btn.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
   }
@@ -51299,7 +51930,9 @@ const _ANN_TOOL_GROUPS = {
     { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
   ],
   line: [
-    { tool: 'polyline', label: '折れ線', icon: 'spline' },
+    // 折れ線のアイコンは spline（曲線。折れ線を表せていなかった）から activity
+    // （角のはっきりした折れ線）へ変更（注釈フロートパレット改修計画2026-08-13 §1-3）。
+    { tool: 'polyline', label: '折れ線', icon: 'activity' },
     { tool: 'ellipse-line', label: '円形', icon: 'circle' },
     { tool: 'rect-line', label: '矩形', icon: 'square' },
   ],
@@ -51310,13 +51943,34 @@ const _ANN_TOOL_GROUPS = {
   ],
 };
 
+// グループボタン（ストローク/ライン/塗りつぶし）の表示名。選択中メンバーの
+// アイコン・ラベルへ追従させる際に「ストローク（マーカー）」のように組み立てる。
+const _ANN_TOOL_GROUP_LABELS = { stroke: 'ストローク', line: 'ライン', fill: '塗りつぶし' };
+
+// グループボタンの中身（アイコン・title・aria-label）を、選択中メンバーへ合わせて描き直す。
+// 注釈フロートパレット改修計画2026-08-13 §1-2: 従来は data-tool 属性だけ書き換えていて
+// ボタンの見た目（アイコン）が選択中ツールに追従しなかった。
+function _applyAnnotationGroupButtonIcon(button, group, member) {
+  if (!button || !member) return;
+  _setAnnotationUtilityIcon(button, member.icon);
+  const groupLabel = _ANN_TOOL_GROUP_LABELS[group] || '';
+  const label = groupLabel ? `${groupLabel}（${member.label}）` : member.label;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
 function _annotationSelectTool(tool, sourceButton) {
   ann.tool = tool;
   document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
     const group = button.dataset.annToolGroup;
-    const members = group ? (_ANN_TOOL_GROUPS[group] || []).map(item => item.tool) : [button.dataset.tool];
-    button.classList.toggle('active', members.includes(tool));
-    if (members.includes(tool)) button.dataset.tool = tool;
+    const groupMembers = group ? (_ANN_TOOL_GROUPS[group] || []) : null;
+    const members = groupMembers ? groupMembers.map(item => item.tool) : [button.dataset.tool];
+    const isMatch = members.includes(tool);
+    button.classList.toggle('active', isMatch);
+    if (isMatch) {
+      button.dataset.tool = tool;
+      if (groupMembers) _applyAnnotationGroupButtonIcon(button, group, groupMembers.find(item => item.tool === tool));
+    }
   });
   document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
   _updateAnnotationBrushCursor();
@@ -51364,15 +52018,31 @@ function _initAnnotationToolGroups() {
   const rectFill = toolbar?.querySelector('[data-tool="rect"]');
   if (!toolbar || !pen || !fill) return;
   pen.dataset.annToolGroup = 'stroke';
-  pen.title = 'ストローク'; pen.setAttribute('aria-label', 'ストローク');
   marker?.remove();
   const line = document.createElement('button');
-  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = 'polyline'; line.dataset.annToolGroup = 'line';
-  line.title = 'ライン'; line.setAttribute('aria-label', 'ライン');
-  line.innerHTML = typeof lucide === 'function' ? lucide('spline', 14) : '⌁';
+  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = _ANN_TOOL_GROUPS.line[0].tool; line.dataset.annToolGroup = 'line';
   fill.before(line);
-  fill.dataset.annToolGroup = 'fill'; fill.title = '塗りつぶし'; fill.setAttribute('aria-label', '塗りつぶし');
+  fill.dataset.annToolGroup = 'fill';
   rectFill?.remove();
+  // 初期表示アイコン・ラベルは各グループの既定メンバー（先頭要素）に合わせる。
+  // ペン/囲い塗りボタンは data-tool が既に既定メンバーと一致しているのでそのまま使う。
+  _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
+  _applyAnnotationGroupButtonIcon(line, 'line', _ANN_TOOL_GROUPS.line[0]);
+  _applyAnnotationGroupButtonIcon(fill, 'fill', _ANN_TOOL_GROUPS.fill[0]);
+}
+
+// 注釈フロートパレットのユーティリティボタン（.vl-lock-icon 相当）のアイコンを、
+// .ico span を使わず JS が直接描いた SVG へ置き換えるための共通ヘルパー。
+// 共通アイコン展開処理（meldex-core の replaceIcons()）は、ツールバー外と判定した
+// .ico span へインラインで width:18px; height:18px; を書き込む。このボタン群は
+// CSS（.vl-lock-icon svg / .vl-lock-icon .ico）でアイコンを14pxに縮めて表示するため、
+// .ico span を残したままだとインラインstyleがCSSに勝ち、枠だけ18pxのまま残って
+// アイコンの中心が上に2pxズレる（注釈フロートパレット改修計画2026-08-13 §1-1）。
+// .ico span 自体を持たせない（button.innerHTML を直接SVGへ置き換える）ことで、
+// replaceIcons() が後から何度走っても影響を受けない構造にする。
+function _setAnnotationUtilityIcon(button, iconName, size = 14) {
+  if (!button || !iconName) return;
+  button.innerHTML = typeof lucide === 'function' ? lucide(iconName, size) : '';
 }
 
 function _styleAnnotationUtilityButtons() {
@@ -51380,7 +52050,17 @@ function _styleAnnotationUtilityButtons() {
   const screenshotButton = toolbar?.querySelector('button[title="スクリーンショット撮影"], button[aria-label="スクリーンショット撮影"]');
   const overlayButton = document.getElementById('btn-overlay-toggle');
   const clearButton = toolbar?.querySelector('button[title="全削除"], button[aria-label="全削除"]');
-  [screenshotButton, overlayButton, clearButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+  const lockButton = document.getElementById('ann-view-lock-btn');
+  [screenshotButton, overlayButton, clearButton, lockButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+  _setAnnotationUtilityIcon(screenshotButton, 'camera');
+  _setAnnotationUtilityIcon(overlayButton, _overlayVisible ? 'eye' : 'eyeOff');
+  _setAnnotationUtilityIcon(clearButton, 'trash2');
+  // 表示ロックボタンは、実際の施錠状態反映（bindHudIcon/render または
+  // _disableAnnFloatingViewLockButton）が始まるまでの初期表示だけをここで整える。
+  // 既にどちらかが動いた後（viewLockIconId / viewLockState が付いた後）は上書きしない。
+  if (lockButton && !lockButton.dataset.viewLockIconId && !lockButton.dataset.viewLockState) {
+    _setAnnotationUtilityIcon(lockButton, 'unlock');
+  }
 }
 
 function _updateAnnotationBrushCursor() {
@@ -54044,7 +54724,7 @@ const _FS_FIELDS = {
       { key: '--bd-anchor-color',      label: 'アンカー色', type: 'color' },
       { key: '--bd-link-type-icon-color', label: 'リンク種別アイコン', type: 'color' },
       { key: '--bd-gap-siblings',      label: '同階層カード間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
-      { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 30, applyCustom: 'gapLevels' },
+      { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 50, applyCustom: 'gapLevels' },
       { key: '--bd-auto-align',        label: '自動整列',             type: 'checkbox', on: '1', off: '0', defaultOn: true, applyCustom: 'autoAlign' },
     ],
   },
@@ -57062,7 +57742,7 @@ function hideBoardNoteTab() {
 /* === gb-tool-calendar-options.js === */
 ;
 /* ==============================
-   gb-tool-calendar-options.js: Calendar panel option UI and selection helpers
+   gb-tool-calendar-options.js: Calendar option compatibility facade
    ============================== */
 
 (() => {
@@ -57130,6 +57810,40 @@ function hideBoardNoteTab() {
     startInput.dataset.calRawValue = startInput.value;
     endInput.dataset.calRawValue = endInput.value;
   }
+
+
+  window.MeldexCalendarOptions = {
+    EVENT_EDGE_MINUTES,
+    DEFAULT_EVENT_COLOR,
+    CALENDAR_SETTINGS_SCOPE,
+    CALENDAR_DETAIL_TABS,
+    _calEsc,
+    _calIcon,
+    _calCssEscape,
+    _calKeyboardFromEditableTarget,
+    _calLocalInputValue,
+    _calLocalDateInputValue,
+    _calSetEventDateInputMode,
+  };
+})();
+
+;
+
+/* === gb-tool-calendar-option-panel.js === */
+;
+/* ==============================
+   gb-tool-calendar-option-panel.js: Detail shell, settings history, and user helpers
+   ============================== */
+
+(() => {
+  if (typeof CalendarComponent === 'undefined' || !window.MeldexCalendarOptions) return;
+  const {
+    DEFAULT_EVENT_COLOR,
+    CALENDAR_SETTINGS_SCOPE,
+    CALENDAR_DETAIL_TABS,
+    _calEsc,
+    _calIcon,
+  } = window.MeldexCalendarOptions;
 
   function _calFindCalendarComponent() {
     if (typeof GBTabs !== 'undefined' && typeof getComponentInstance === 'function') {
@@ -57427,6 +58141,200 @@ function hideBoardNoteTab() {
       return true;
     });
   };
+
+
+  CalendarComponent.prototype._syncHistoryScope = function() {
+    if (typeof historySetScope !== 'function') return;
+    const embedScope = typeof _meldexProductionEmbedHistoryScope === 'function' ? _meldexProductionEmbedHistoryScope() : '';
+    if (embedScope) { historySetScope(embedScope); return; }
+    if (this._surface !== 'productionTasks' && typeof _schedHistoryScope === 'function') {
+      historySetScope(_schedHistoryScope(this));
+      return;
+    }
+    historySetScope(CALENDAR_SETTINGS_SCOPE);
+  };
+
+  const _origActivate = CalendarComponent.prototype.activate;
+  CalendarComponent.prototype.activate = function() {
+    _origActivate.call(this);
+    this._syncHistoryScope();
+  };
+
+
+  CalendarComponent.prototype._syncCalendarToolbarState = function() {
+    const sideBtn = this.el?.querySelector?.('[data-cal-action="toggleSidebar"]');
+    if (sideBtn) {
+      const mode = this._effectiveSidebarOnly() ? 'only' : (this._sidebarEl?.classList.contains('gb-cal-hidden') ? 'hidden' : 'all');
+      sideBtn.classList.toggle('active', mode !== 'all');
+      sideBtn.dataset.calSidebarMode = mode;
+      sideBtn.title = mode === 'all'
+        ? 'サイドバーを隠す'
+        : mode === 'hidden'
+          ? 'サイドバーのみ'
+          : 'すべて表示';
+      sideBtn.setAttribute('aria-label', sideBtn.title);
+    }
+    const viewSel = this.el?.querySelector?.('.gb-cal-view-select');
+    if (viewSel && viewSel.value !== this._view) viewSel.value = this._view;
+    this._syncEventSelectionBar?.();
+  };
+
+  CalendarComponent.prototype._effectiveSidebarOnly = function() {
+    return !!(this._sidebarMode === 'only' || this._sidebarOnly || this._autoSidebarOnly);
+  };
+
+  CalendarComponent.prototype._bindResponsiveSidebarMode = function() {
+    if (!this.el || this._calResponsiveObserver || this._calResponsiveResizeHandler) return;
+    const update = () => this._applyResponsiveSidebarMode();
+    if (window.ResizeObserver) {
+      this._calResponsiveObserver = new ResizeObserver(update);
+      this._calResponsiveObserver.observe(this.el);
+    } else {
+      this._calResponsiveResizeHandler = update;
+      window.addEventListener('resize', update);
+    }
+    update();
+  };
+
+  CalendarComponent.prototype._applyResponsiveSidebarMode = function() {
+    if (!this.el) return;
+    const width = this.el.getBoundingClientRect?.().width || this.el.offsetWidth || 0;
+    this._autoSidebarOnly = width > 0 && width < 520;
+    if (this._autoSidebarOnly) this._sidebarEl?.classList.remove('gb-cal-hidden');
+    this._applySidebarMode();
+  };
+
+  CalendarComponent.prototype._applySidebarMode = function() {
+    if (!this.el) return;
+    const mode = this._sidebarMode || (this._sidebarOnly ? 'only' : 'all');
+    const effective = this._effectiveSidebarOnly();
+    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden');
+    else this._sidebarEl?.classList.remove('gb-cal-hidden');
+    this.el.classList.toggle('gb-cal-sidebar-only', effective);
+    this.el.classList.toggle('gb-cal-sidebar-auto', !!this._autoSidebarOnly);
+    const resize = this.el.querySelector('.gb-cal-sidebar-resize');
+    if (resize) resize.style.display = (effective || this._sidebarEl?.classList.contains('gb-cal-hidden')) ? 'none' : '';
+    this._syncCalendarToolbarState();
+  };
+
+  CalendarComponent.prototype._setSidebarMode = function(mode) {
+    const normalized = ['all', 'hidden', 'only'].includes(mode) ? mode : 'all';
+    const before = _calCaptureSettingsHistory(['gb:cal-sidebar-mode', 'gb:cal-sidebar-only']);
+    this._sidebarMode = normalized;
+    this._sidebarOnly = normalized === 'only';
+    localStorage.setItem('gb:cal-sidebar-mode', normalized);
+    localStorage.setItem('gb:cal-sidebar-only', this._sidebarOnly ? 'true' : 'false');
+    const detail = normalized === 'hidden' ? 'サイドバーを隠す' : normalized === 'only' ? 'サイドバーのみ' : 'すべて表示';
+    _calPushSettingsHistory('スケジュール: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
+    this._applySidebarMode();
+  };
+
+  CalendarComponent.prototype._setSidebarOnly = function(on) {
+    this._setSidebarMode(on ? 'only' : 'all');
+  };
+
+  CalendarComponent.prototype._toggleSidebar = function() {
+    const mode = this._effectiveSidebarOnly() ? 'only' : (this._sidebarEl?.classList.contains('gb-cal-hidden') ? 'hidden' : 'all');
+    this._setSidebarMode(mode === 'all' ? 'hidden' : mode === 'hidden' ? 'only' : 'all');
+  };
+
+  CalendarComponent.prototype._renderCalendarSettingsPanel = function(body) {
+    if (!body) return;
+    this._calendarSettingsBody = body;
+    const opts = [[0, '日曜始まり'], [1, '月曜始まり'], [2, '火曜始まり'], [3, '水曜始まり'], [4, '木曜始まり'], [5, '金曜始まり'], [6, '土曜始まり']]
+      .map(([v, label]) => `<option value="${v}" ${v === this._startDay ? 'selected' : ''}>${label}</option>`).join('');
+    body.innerHTML = `
+      ${_calField('表示', `<label class="cal-option-check"><input type="checkbox" data-cal-settings-sidebar-only ${this._sidebarOnly ? 'checked' : ''}> サイドバーのみ表示</label>`)}
+      ${_calField('週の開始曜日', `<select class="gb-select" data-cal-settings-start-day>${opts}</select>`)}
+      <div class="cal-option-actions">
+        <button type="button" data-cal-settings-action="template">${_calIcon('layoutTemplate')} テンプレート</button>
+        <button type="button" data-cal-settings-action="sync">${_calIcon('refreshCw')} 同期</button>
+        <button type="button" data-cal-settings-action="timer">${_calIcon('timer')} タイマー</button>
+      </div>`;
+    this._renderAttendanceSourceSettings?.(body);
+    this._renderShiftTemplateSettings?.(body);
+    body.querySelector('[data-cal-settings-sidebar-only]')?.addEventListener('change', e => this._setSidebarOnly(e.currentTarget.checked));
+    body.querySelector('[data-cal-settings-start-day]')?.addEventListener('change', e => {
+      const before = _calCaptureSettingsHistory(['gb-cal-start-day']);
+      this._startDay = parseInt(e.currentTarget.value, 10);
+      localStorage.setItem('gb-cal-start-day', this._startDay);
+      _calPushSettingsHistory('スケジュール: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
+      this._render();
+      this._renderMiniCal();
+    });
+    body.querySelectorAll('[data-cal-settings-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.calSettingsAction;
+        if (action === 'template') this._showScheduleTemplateModal();
+        else if (action === 'sync') this._showSyncModal();
+        else if (action === 'timer') {
+          if (typeof openTimerPanel === 'function') openTimerPanel();
+          else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
+        }
+      });
+    });
+  };
+
+  CalendarComponent.prototype._showCalendarSettingsPanel = function(options = {}) {
+    const body = _calOptionContainer('スケジュール設定', {
+      tabId: 'calendar-settings',
+      select: options.select !== false,
+    });
+    if (!body) return;
+    this._renderCalendarSettingsPanel(body);
+  };
+
+  window.openCalendarSettingsPanel = function() {
+    const component = _calFindCalendarComponent();
+    if (!component || typeof component._showCalendarSettingsPanel !== 'function') {
+      if (typeof showStatus === 'function') showStatus('スケジュールを開いてから設定を開いてください', true);
+      return;
+    }
+    component._showCalendarSettingsPanel();
+  };
+
+  document.addEventListener('meldex:detail-tab-switched', (event) => {
+    if (event.detail?.tab !== 'calendar-settings') return;
+    if (window.__MeldexSuppressCalendarTabAutoRender) return;
+    const component = _calFindCalendarComponent();
+    if (component && typeof component._showCalendarSettingsPanel === 'function') {
+      component._showCalendarSettingsPanel({ select: false });
+    }
+  });
+
+
+  Object.assign(window.MeldexCalendarOptions, {
+    _calFindCalendarComponent,
+    _calOptionContainer,
+    _calField,
+    _calBindSwatch,
+    _calGetSwatchValue,
+    _calCaptureSettingsHistory,
+    _calPushSettingsHistory,
+    _calUserListFromValue,
+    _calEventCreator,
+    _calEventUserNames,
+    _calAvatarHtml,
+  });
+})();
+
+;
+
+/* === gb-tool-calendar-event-selection.js === */
+;
+/* ==============================
+   gb-tool-calendar-event-selection.js: Event selection and bulk actions
+   ============================== */
+
+(() => {
+  if (typeof CalendarComponent === 'undefined' || !window.MeldexCalendarOptions) return;
+  const {
+    DEFAULT_EVENT_COLOR,
+    _calEsc,
+    _calIcon,
+    _calCssEscape,
+    _calKeyboardFromEditableTarget,
+  } = window.MeldexCalendarOptions;
 
   CalendarComponent.prototype._isCalVisible = function(ev) {
     if (this._calendars.length === 0 || !ev?.calendar_id) return true;
@@ -57891,22 +58799,6 @@ function hideBoardNoteTab() {
   // - 埋め込みシート未マウント等でどちらも解決できない場合: 従来どおり 'calendar:settings'
   //   （サイドバー表示・週開始曜日等のスケジュール設定用スコープ。この関数が置き換える前の
   //   activate() が無条件に設定していたのと同じフォールバック値）
-  CalendarComponent.prototype._syncHistoryScope = function() {
-    if (typeof historySetScope !== 'function') return;
-    const embedScope = typeof _meldexProductionEmbedHistoryScope === 'function' ? _meldexProductionEmbedHistoryScope() : '';
-    if (embedScope) { historySetScope(embedScope); return; }
-    if (this._surface !== 'productionTasks' && typeof _schedHistoryScope === 'function') {
-      historySetScope(_schedHistoryScope(this));
-      return;
-    }
-    historySetScope(CALENDAR_SETTINGS_SCOPE);
-  };
-
-  const _origActivate = CalendarComponent.prototype.activate;
-  CalendarComponent.prototype.activate = function() {
-    _origActivate.call(this);
-    this._syncHistoryScope();
-  };
 
   CalendarComponent.prototype._closeEventCardMenu = function() {
     document.querySelectorAll('.gb-cal-event-card-menu').forEach(menu => menu.remove());
@@ -58016,146 +58908,32 @@ function hideBoardNoteTab() {
     this._syncCalendarToolbarState();
   };
 
-  CalendarComponent.prototype._syncCalendarToolbarState = function() {
-    const sideBtn = this.el?.querySelector?.('[data-cal-action="toggleSidebar"]');
-    if (sideBtn) {
-      const mode = this._effectiveSidebarOnly() ? 'only' : (this._sidebarEl?.classList.contains('gb-cal-hidden') ? 'hidden' : 'all');
-      sideBtn.classList.toggle('active', mode !== 'all');
-      sideBtn.dataset.calSidebarMode = mode;
-      sideBtn.title = mode === 'all'
-        ? 'サイドバーを隠す'
-        : mode === 'hidden'
-          ? 'サイドバーのみ'
-          : 'すべて表示';
-      sideBtn.setAttribute('aria-label', sideBtn.title);
-    }
-    const viewSel = this.el?.querySelector?.('.gb-cal-view-select');
-    if (viewSel && viewSel.value !== this._view) viewSel.value = this._view;
-    this._syncEventSelectionBar?.();
-  };
+})();
 
-  CalendarComponent.prototype._effectiveSidebarOnly = function() {
-    return !!(this._sidebarMode === 'only' || this._sidebarOnly || this._autoSidebarOnly);
-  };
+;
 
-  CalendarComponent.prototype._bindResponsiveSidebarMode = function() {
-    if (!this.el || this._calResponsiveObserver || this._calResponsiveResizeHandler) return;
-    const update = () => this._applyResponsiveSidebarMode();
-    if (window.ResizeObserver) {
-      this._calResponsiveObserver = new ResizeObserver(update);
-      this._calResponsiveObserver.observe(this.el);
-    } else {
-      this._calResponsiveResizeHandler = update;
-      window.addEventListener('resize', update);
-    }
-    update();
-  };
+/* === gb-tool-calendar-event-options.js === */
+;
+/* ==============================
+   gb-tool-calendar-event-options.js: Event option form and CRUD
+   ============================== */
 
-  CalendarComponent.prototype._applyResponsiveSidebarMode = function() {
-    if (!this.el) return;
-    const width = this.el.getBoundingClientRect?.().width || this.el.offsetWidth || 0;
-    this._autoSidebarOnly = width > 0 && width < 520;
-    if (this._autoSidebarOnly) this._sidebarEl?.classList.remove('gb-cal-hidden');
-    this._applySidebarMode();
-  };
-
-  CalendarComponent.prototype._applySidebarMode = function() {
-    if (!this.el) return;
-    const mode = this._sidebarMode || (this._sidebarOnly ? 'only' : 'all');
-    const effective = this._effectiveSidebarOnly();
-    if (!effective) this._sidebarEl?.classList.toggle('gb-cal-hidden', mode === 'hidden');
-    else this._sidebarEl?.classList.remove('gb-cal-hidden');
-    this.el.classList.toggle('gb-cal-sidebar-only', effective);
-    this.el.classList.toggle('gb-cal-sidebar-auto', !!this._autoSidebarOnly);
-    const resize = this.el.querySelector('.gb-cal-sidebar-resize');
-    if (resize) resize.style.display = (effective || this._sidebarEl?.classList.contains('gb-cal-hidden')) ? 'none' : '';
-    this._syncCalendarToolbarState();
-  };
-
-  CalendarComponent.prototype._setSidebarMode = function(mode) {
-    const normalized = ['all', 'hidden', 'only'].includes(mode) ? mode : 'all';
-    const before = _calCaptureSettingsHistory(['gb:cal-sidebar-mode', 'gb:cal-sidebar-only']);
-    this._sidebarMode = normalized;
-    this._sidebarOnly = normalized === 'only';
-    localStorage.setItem('gb:cal-sidebar-mode', normalized);
-    localStorage.setItem('gb:cal-sidebar-only', this._sidebarOnly ? 'true' : 'false');
-    const detail = normalized === 'hidden' ? 'サイドバーを隠す' : normalized === 'only' ? 'サイドバーのみ' : 'すべて表示';
-    _calPushSettingsHistory('スケジュール: サイドバー表示変更', before, ['gb:cal-sidebar-mode', 'gb:cal-sidebar-only'], detail);
-    this._applySidebarMode();
-  };
-
-  CalendarComponent.prototype._setSidebarOnly = function(on) {
-    this._setSidebarMode(on ? 'only' : 'all');
-  };
-
-  CalendarComponent.prototype._toggleSidebar = function() {
-    const mode = this._effectiveSidebarOnly() ? 'only' : (this._sidebarEl?.classList.contains('gb-cal-hidden') ? 'hidden' : 'all');
-    this._setSidebarMode(mode === 'all' ? 'hidden' : mode === 'hidden' ? 'only' : 'all');
-  };
-
-  CalendarComponent.prototype._renderCalendarSettingsPanel = function(body) {
-    if (!body) return;
-    this._calendarSettingsBody = body;
-    const opts = [[0, '日曜始まり'], [1, '月曜始まり'], [2, '火曜始まり'], [3, '水曜始まり'], [4, '木曜始まり'], [5, '金曜始まり'], [6, '土曜始まり']]
-      .map(([v, label]) => `<option value="${v}" ${v === this._startDay ? 'selected' : ''}>${label}</option>`).join('');
-    body.innerHTML = `
-      ${_calField('表示', `<label class="cal-option-check"><input type="checkbox" data-cal-settings-sidebar-only ${this._sidebarOnly ? 'checked' : ''}> サイドバーのみ表示</label>`)}
-      ${_calField('週の開始曜日', `<select class="gb-select" data-cal-settings-start-day>${opts}</select>`)}
-      <div class="cal-option-actions">
-        <button type="button" data-cal-settings-action="template">${_calIcon('layoutTemplate')} テンプレート</button>
-        <button type="button" data-cal-settings-action="sync">${_calIcon('refreshCw')} 同期</button>
-        <button type="button" data-cal-settings-action="timer">${_calIcon('timer')} タイマー</button>
-      </div>`;
-    this._renderAttendanceSourceSettings?.(body);
-    this._renderShiftTemplateSettings?.(body);
-    body.querySelector('[data-cal-settings-sidebar-only]')?.addEventListener('change', e => this._setSidebarOnly(e.currentTarget.checked));
-    body.querySelector('[data-cal-settings-start-day]')?.addEventListener('change', e => {
-      const before = _calCaptureSettingsHistory(['gb-cal-start-day']);
-      this._startDay = parseInt(e.currentTarget.value, 10);
-      localStorage.setItem('gb-cal-start-day', this._startDay);
-      _calPushSettingsHistory('スケジュール: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
-      this._render();
-      this._renderMiniCal();
-    });
-    body.querySelectorAll('[data-cal-settings-action]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset.calSettingsAction;
-        if (action === 'template') this._showScheduleTemplateModal();
-        else if (action === 'sync') this._showSyncModal();
-        else if (action === 'timer') {
-          if (typeof openTimerPanel === 'function') openTimerPanel();
-          else if (typeof showStatus === 'function') showStatus('タイマーパネルを初期化できませんでした', true);
-        }
-      });
-    });
-  };
-
-  CalendarComponent.prototype._showCalendarSettingsPanel = function(options = {}) {
-    const body = _calOptionContainer('スケジュール設定', {
-      tabId: 'calendar-settings',
-      select: options.select !== false,
-    });
-    if (!body) return;
-    this._renderCalendarSettingsPanel(body);
-  };
-
-  window.openCalendarSettingsPanel = function() {
-    const component = _calFindCalendarComponent();
-    if (!component || typeof component._showCalendarSettingsPanel !== 'function') {
-      if (typeof showStatus === 'function') showStatus('スケジュールを開いてから設定を開いてください', true);
-      return;
-    }
-    component._showCalendarSettingsPanel();
-  };
-
-  document.addEventListener('meldex:detail-tab-switched', (event) => {
-    if (event.detail?.tab !== 'calendar-settings') return;
-    if (window.__MeldexSuppressCalendarTabAutoRender) return;
-    const component = _calFindCalendarComponent();
-    if (component && typeof component._showCalendarSettingsPanel === 'function') {
-      component._showCalendarSettingsPanel({ select: false });
-    }
-  });
+(() => {
+  if (typeof CalendarComponent === 'undefined' || !window.MeldexCalendarOptions) return;
+  const {
+    DEFAULT_EVENT_COLOR,
+    _calEsc,
+    _calIcon,
+    _calLocalInputValue,
+    _calLocalDateInputValue,
+    _calSetEventDateInputMode,
+    _calOptionContainer,
+    _calField,
+    _calBindSwatch,
+    _calGetSwatchValue,
+    _calEventCreator,
+    _calUserListFromValue,
+  } = window.MeldexCalendarOptions;
 
   CalendarComponent.prototype._createEventQuick = async function(defaultStart, defaultEnd, defaultAllDay) {
     const now = new Date();
@@ -58448,6 +59226,24 @@ function hideBoardNoteTab() {
     }
   };
 
+})();
+
+;
+
+/* === gb-tool-calendar-task-options.js === */
+;
+/* ==============================
+   gb-tool-calendar-task-options.js: ToDo option form and CRUD
+   ============================== */
+
+(() => {
+  if (typeof CalendarComponent === 'undefined' || !window.MeldexCalendarOptions) return;
+  const {
+    _calEsc,
+    _calOptionContainer,
+    _calField,
+  } = window.MeldexCalendarOptions;
+
   CalendarComponent.prototype._createTaskQuick = async function(options) {
     const opts = options || {};
     this._pushUndo('ToDo作成');
@@ -58554,6 +59350,23 @@ function hideBoardNoteTab() {
       if (body) body.innerHTML = '<div class="cal-option-empty">ToDoを削除しました</div>';
     }
   };
+})();
+
+;
+
+/* === gb-tool-calendar-event-resize.js === */
+;
+/* ==============================
+   gb-tool-calendar-event-resize.js: Event resize and detail form routing override
+   ============================== */
+
+(() => {
+  if (typeof CalendarComponent === 'undefined' || !window.MeldexCalendarOptions) return;
+  const {
+    EVENT_EDGE_MINUTES,
+    _calCssEscape,
+    _calFindCalendarComponent,
+  } = window.MeldexCalendarOptions;
 
   CalendarComponent.prototype._calendarHourPx = function(card) {
     const cell = card?.closest?.('.gb-cal-week-cell') || this._contentEl?.querySelector?.('.gb-cal-week-cell');
@@ -61024,7 +61837,9 @@ function hideBoardNoteTab() {
   function yamlPair(text) {
     const match = String(text || '').match(/^([^:#][^:]*):(?:\s*(.*))?$/);
     if (!match) return null;
-    return { key: match[1].trim(), raw: match[2] == null ? '' : match[2].trim() };
+    const rawKey = match[1].trim();
+    const key = rawKey.replace(/^(['"])([\s\S]*)\1$/, '$2');
+    return { key, raw: match[2] == null ? '' : match[2].trim() };
   }
 
   function yamlSplitInline(text) {
@@ -61105,7 +61920,16 @@ function hideBoardNoteTab() {
         index += 1;
         if (pair.raw) out[pair.key] = yamlScalar(pair.raw);
         else {
-          const nested = parseBlock(index, indent + 2);
+          // PyYAML emits block sequences without extra indentation:
+          //   accept:
+          //   - png
+          // Accept that standard form as the value of the preceding key.
+          const indentlessSequence = index < lines.length
+            && lines[index].indent === line.indent
+            && lines[index].text.startsWith('- ');
+          const nested = indentlessSequence
+            ? parseArray(index, line.indent)
+            : parseBlock(index, indent + 2);
           out[pair.key] = nested.value;
           index = nested.index;
         }
@@ -61200,6 +62024,9 @@ function hideBoardNoteTab() {
   // meldex_production_recalculate.py の定数
   const MIN_TASK_MINUTES = 10;
   const PROTECTED_TASK_STATUSES = new Set(['完了', '進行中', '着手中', '作業中']);
+  // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 「完了」以外の進行中系
+  // ステータスは、既に作業予定日時が入っている場合だけ保護する（taskProtected参照）。
+  const IN_PROGRESS_TASK_STATUSES = new Set([...PROTECTED_TASK_STATUSES].filter(status => status !== '完了'));
   // meldex_production_schema.PRIORITY_OPTIONS と同じ値（低<通常<高<最優先）。
   // 別クロージャ（gb-production-management-schema-definitions.js）にも同値の定義があるが、
   // このファイルはCloud本体から独立して読み込み・テストできるよう小さな定数の複製を許容する。
@@ -61357,7 +62184,20 @@ function hideBoardNoteTab() {
   }
 
   function taskProtected(task) {
-    return !!task.manual_locked || !!task.assignee_fixed || PROTECTED_TASK_STATUSES.has(String(task.status || '').trim());
+    const status = String(task.status || '').trim();
+    if (task.manual_locked || status === '完了') return true;
+    if (task.assignee_fixed && !String(task.fixed_user || '').trim()) {
+      // 担当者固定なのに固定先の担当者が空。割り当てようがないため常に保護する。
+      return true;
+    }
+    // Phase 4-2（ユーザー判断: 日程が空なら割り当てる）: 進行中系ステータス・担当者固定は、
+    // 既に作業予定日時が入っている場合だけ保護する。空なら通常どおり割り当て対象にする
+    // (_reserve_slot 相当の reserveSlot は task.fixed_user を尊重するので、担当者固定の
+    // 枠は保たれる)。
+    if (task.assignee_fixed || IN_PROGRESS_TASK_STATUSES.has(status)) {
+      return !!(task.current_start && task.current_end);
+    }
+    return false;
   }
 
   function deadlineDt(task, periodValue) {
@@ -61641,7 +62481,7 @@ function hideBoardNoteTab() {
           if (before.end > before.cursor) segments.push(before);
         }
         seg.cursor = end;
-        return { staff: seg.staff, start, end };
+        return { staff: seg.staff, start, end, overtime: !!seg.overtime };
       }
     }
     return null;
@@ -61724,7 +62564,7 @@ function hideBoardNoteTab() {
     return segments.map(seg => ({ ...seg }));
   }
 
-  function scheduledRow(task, staffName, start, end, durationMs) {
+  function scheduledRow(task, staffName, start, end, durationMs, overtime) {
     const startText = isoMinutes(start);
     const endText = isoMinutes(end);
     const hours = pythonRoundTo(durationMs / 3600000, 2);
@@ -61746,7 +62586,22 @@ function hideBoardNoteTab() {
       color: task.color || '',
     };
     if (task.required_equipment && task.required_equipment.length) row.required_equipment = [...task.required_equipment];
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3-2: Desktop版 _scheduled_row と
+    // 同じ残業区分をrowへ持たせる（案の一覧・カレンダー・比較で残業と分かるようにする）。
+    row.overtime = !!overtime;
+    if (row.overtime) row.overtime_hours = hours;
     return row;
+  }
+
+  function lockedRowReason(task) {
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 保護されて動かさなかった
+    // タスクも、結果一覧の理由欄が空欄で並ばないよう理由を示す(Desktop版 _locked_row_reason)。
+    const status = String(task.status || '').trim();
+    if (task.manual_locked) return '手動でロックされているため、予定を変更していません';
+    if (status === '完了') return '完了済みのため、予定を変更していません';
+    if (IN_PROGRESS_TASK_STATUSES.has(status)) return '進行中のため、予定を変更していません';
+    if (task.assignee_fixed) return '担当者固定のため、予定を変更していません';
+    return '既に予定があるため、変更していません';
   }
 
   function lockedRow(task) {
@@ -61765,6 +62620,7 @@ function hideBoardNoteTab() {
       after_range: task.current_range,
       changed: false,
       color: task.color || '',
+      reason: lockedRowReason(task),
     };
     if (task.current_segments && task.current_segments.length) row.segments = task.current_segments;
     return row;
@@ -61894,7 +62750,7 @@ function hideBoardNoteTab() {
         return;
       }
       reserveEquipment(resources, requiredEquipment, slot.start, slot.end);
-      rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs));
+      rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs, slot.overtime));
       completedById.set(String(task.id || ''), slot.end);
       const current = groupReady.get(groupKey);
       groupReady.set(groupKey, (current && current > slot.end) ? current : slot.end);
@@ -61936,6 +62792,10 @@ function hideBoardNoteTab() {
     }
     if (warnings.some(w => w.type === 'dependency')) result.push('前工程が割り当てられないタスクがあるため、後工程も保留されています');
     if (warnings.some(w => w.type === 'invalid_shift')) result.push('終了時刻がない勤務シフトがあります。シフト表で終了時刻を入力してください');
+    if (warnings.some(w => w.type === 'overtime_used')) {
+      const overtimeMinutes = warnings.filter(w => w.type === 'overtime_used').reduce((sum, w) => sum + (Number(w.minutes) || 0), 0);
+      result.push(`通常の勤務時間だけでは約${formatHoursOneDecimal(overtimeMinutes / 60)}時間分足りず、残業として配置しています`);
+    }
     if (!result.length && rows.some(r => r.changed)) result.push('プレビューを確認して問題なければ適用してください');
     return result;
   }
@@ -61972,6 +62832,7 @@ function hideBoardNoteTab() {
   window.MeldexProductionRecalcEngine = {
     MIN_TASK_MINUTES,
     PROTECTED_TASK_STATUSES,
+    IN_PROGRESS_TASK_STATUSES,
     PRIORITY_OPTIONS,
     safeFloat,
     truthy,
@@ -62034,11 +62895,13 @@ function hideBoardNoteTab() {
    production-management-ux-improvement-plan-2026-08-04.md §4-1。gb-production-recalc-engine.js
    （純粋な割当アルゴリズム）を、Cloudのファイル/カレンダーストレージへ橋渡しする。
 
-   このファイルは gb-production-management.part01.js/part02.js とは別クロージャ（独立IIFE）。
+   このファイルは gb-production-management.part01.js/part02.js とその責務分割先
+   （gb-production-management-cloud-*.js。2026-08-12責務単位分割）とは別クロージャ（独立IIFE）。
    Cloud側の内部ヘルパー（_pmCloudListAllTaskEntries 等）はそのクロージャの外から直接参照でき
    ないため、gb-production-management-task-structure.js と同じ流儀（呼び出し元が deps オブジェクト
    経由で必要な関数だけを注入する）を踏襲する。deps の組み立ては
-   gb-production-management.part01.js の `_pmRecalcEngineDeps()` を参照。
+   gb-production-management-cloud-task-structure-adapter.js（旧 gb-production-management.part02.js
+   の一部）の `_pmRecalcEngineDeps()` を参照。
 
    window.MeldexCloudFrontmatterLite（フロントマター読み書き）は gb-cloud-frontmatter-lite.js が
    window へ公開済みのため、ここでは直接参照する（DI不要）。
@@ -62272,10 +63135,23 @@ function hideBoardNoteTab() {
 
   function frontmatterTaskProtected(frontmatter) {
     const status = propValueFromFrontmatter(frontmatter, '状況');
-    return Engine.PROTECTED_TASK_STATUSES.has(status)
+    if (status === '完了'
       || Engine.truthy(propValueFromFrontmatter(frontmatter, '再計算ロック'))
-      || Engine.truthy(propValueFromFrontmatter(frontmatter, 'シフト固定'))
-      || Engine.truthy(propValueFromFrontmatter(frontmatter, '担当者固定'));
+      || Engine.truthy(propValueFromFrontmatter(frontmatter, 'シフト固定'))) {
+      return true;
+    }
+    const assigneeFixed = Engine.truthy(propValueFromFrontmatter(frontmatter, '担当者固定'));
+    if (assigneeFixed && !String(propValueFromFrontmatter(frontmatter, '担当者') || '').trim()) {
+      // 担当者固定なのに固定先の担当者が空。割り当てようがないため常に保護する。
+      return true;
+    }
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 進行中系ステータス・
+    // 担当者固定は、既に作業予定日時が入っている場合だけ保護する（Desktop版
+    // _frontmatter_task_protected と同じ基準）。
+    if (Engine.IN_PROGRESS_TASK_STATUSES.has(status) || assigneeFixed) {
+      return !!String(propValueFromFrontmatter(frontmatter, '作業予定日時') || '').trim();
+    }
+    return false;
   }
 
   async function preflightRows(provider, rows) {
@@ -62348,7 +63224,9 @@ function hideBoardNoteTab() {
     markUnassignedOnlyLocks(allTasks, unassignedOnly);
     const tasks = allTasks.filter(task => Engine.taskInScope(task, periodValue));
     const { staff, warning: fallbackStaffWarning } = withFallbackSoloStaff(await loadStaff(deps.boundStaffResolver), body);
-    const allowOvertime = (body && body.allow_overtime) === undefined ? true : !!body.allow_overtime;
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3: 全入口の既定を「残業を含めない」
+    // に統一する（Desktop版 preview_production_recalculation と同じ既定へ揃える）。
+    const allowOvertime = !!(body && body.allow_overtime);
     const baseShiftRows = await loadShiftRows(provider, internals, deps, periodValue);
     // 可用時間の計算は期間内の全タスクを対象にする（他リストの担当者が既に埋まっている時間帯を
     // 空きと誤認しないため）。work_titles/task_paths によるスコープ絞り込みは、実際にプラン対象へ
@@ -62365,6 +63243,12 @@ function hideBoardNoteTab() {
     const warnings = [...shiftWarnings, ...planResult.warnings];
     if (fallbackStaffWarning) warnings.unshift(fallbackStaffWarning);
     const rows = planResult.rows;
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3-3: Desktop版と同じく、残業を
+    // 含めた場合も通常勤務時間だけでは何時間足りないかを併せて示す。
+    const overtimeMinutes = Math.round(rows
+      .filter(row => row.status === 'scheduled' && row.overtime)
+      .reduce((sum, row) => sum + (Number(row.overtime_hours) || 0) * 60, 0));
+    if (overtimeMinutes > 0) warnings.push({ type: 'overtime_used', minutes: overtimeMinutes });
     return {
       ok: true,
       rows,
@@ -62375,6 +63259,7 @@ function hideBoardNoteTab() {
         locked: rows.filter(r => r.status === 'locked').length,
         unassigned: rows.filter(r => r.status === 'unassigned').length,
         changed: rows.filter(r => r.changed).length,
+        overtime: rows.filter(r => r.overtime).length,
       },
       cloud: true,
     };
@@ -62614,7 +63499,8 @@ function hideBoardNoteTab() {
    Desktopの meldex_production_task_name_autofill.py（build_task_entry_name の合成規則、
    _should_auto_update_name の判定）と1:1で対応する（production-management-ux-improvement-
    plan-2026-08-04.md §4-3）。この段階では「名前を計算する」純粋な規則だけをここへ置く。
-   実際のリネーム（ファイル移動）は gb-production-management.part01.js の
+   実際のリネーム（ファイル移動）は gb-production-management-cloud-workspace.js（旧
+   gb-production-management.part01.js の一部）の
    _pmCloudRenameManagedEntry（手動リネーム時に「タスク名を固定」を立てる）を使う。
 
    セル編集トリガーの自動リネーム（Desktopの auto_rename_task_entry_after_sheet_edit）は、
@@ -62935,7 +63821,8 @@ function hideBoardNoteTab() {
     return 'pushed';
   }
 
-  // deps は gb-production-management.part02.js の _pmRecalcEngineDeps() をそのまま渡せる
+  // deps は gb-production-management-cloud-task-structure-adapter.js（旧
+  // gb-production-management.part02.js の一部）の _pmRecalcEngineDeps() をそのまま渡せる
   // （readCalendarStore だけを使う）。
   async function syncGoogle(provider, internals, deps, body) {
     const dateFrom = String(body?.date_from || '').trim();
@@ -63525,7 +64412,7 @@ function hideBoardNoteTab() {
   }
 
   // protectionReason はタスク構成更新（apply/preview）専用ではなく、目標作業時間の
-  // 分類変更追従フック（gb-production-management.part02.js の
+  // 分類変更追従フック（gb-production-management-cloud-save-hooks.js の
   // _pmCloudApplyDurationRecalcHook）からも共用する。「タスク構成を更新」と同じ保護条件
   // （状況/実績/予定時間/ロック系チェックボックス/開始・完了・作業予定日時）を単一箇所で判定する。
   window.MeldexProductionCloudTaskStructure = { preview, apply, protectionReason };
@@ -64393,9 +65280,9 @@ function hideBoardNoteTab() {
    列挙された死に列のうち、既存エントリに値が入っているものだけを frontmatter の
    production_schema_cleanup 退避レコードへコピーしてから properties から削除する
    （gb-production-management-schema-migration.js の production_name_migration と同じ
-   非破壊パターン）。呼び出しは gb-production-management.part01.js の _pmCloudInit から、
-   同ファイルの migrateManagedNameProperties と同じ context（_pmCloudManagedNameContext）
-   を再利用する。
+   非破壊パターン）。呼び出しは gb-production-management-cloud-workspace.js（旧
+   gb-production-management.part01.js の一部）の _pmCloudInit から、同ファイルの
+   migrateManagedNameProperties と同じ context（_pmCloudManagedNameContext）を再利用する。
 */
 (function () {
   'use strict';
@@ -64459,7 +65346,8 @@ function hideBoardNoteTab() {
     return true;
   }
 
-  // context: gb-production-management.part01.js の _pmCloudManagedNameContext(provider, internals)
+  // context: gb-production-management-cloud-workspace.js（旧 gb-production-management.part01.js
+  // の一部）の _pmCloudManagedNameContext(provider, internals)
   // が持つ { provider, listEntries(sheet), listTaskSheets(), frontmatterText(fm, body) } を使う。
   async function migrateProductionSchemaCleanup(context) {
     if (!context || typeof context.listEntries !== 'function' || typeof context.frontmatterText !== 'function'
@@ -64556,7 +65444,8 @@ function hideBoardNoteTab() {
     return true;
   }
 
-  // context: gb-production-management.part01.js の _pmCloudManagedNameContext(provider, internals)。
+  // context: gb-production-management-cloud-workspace.js（旧 gb-production-management.part01.js
+  // の一部）の _pmCloudManagedNameContext(provider, internals)。
   // タスクリスト系シート（listTaskSheets が返す「タスクリスト」+作品別「タスクリスト_*」。
   // 「タスクリスト アーカイブ」は列定義を変更していないため対象外 — Desktop側と同じ）のみ対象。
   async function migrateProductionInternalMetadata(context) {
@@ -65042,6 +65931,32 @@ function hideBoardNoteTab() {
 })(window);
 (function () {
   'use strict';
+  // gb-production-management.part01.js: 責務単位分割（2026-08-12）後もこのファイル名を
+  // 維持している。以下の複数の既存テスト（このリファクタの編集許可範囲外）が、対象の関数・
+  // 文字列がこの物理ファイル名の中に存在することを直接検証しているため（ファイル名や
+  // window.MeldexProductionManagement 経由の間接参照ではなく、gb-production-management.js の
+  // ローダー配列を辿らない直読み）:
+  //   - tests/meldex_dialog_inventory.py の COMMON_PATTERN 走査（window.GBUI の
+  //     createModal 呼び出しを含む _pmModal の定義がこのファイルにあることを
+  //     1件のダイアログ経路として検証。この行自体に対象パターンの完全一致文字列を
+  //     書かないこと。走査はコメントも区別せず文字列一致で数えるため誤検出になる）
+  //   - tests/test_meldex_production_phase4_ui.py（_pmInstallCloudHandler 内の
+  //     "window.MeldexProductionExternalSyncCloud?.syncGoogle"）
+  //   - tests/test_meldex_scheduler_frontend.py（_pmInstallCloudHandler 内の
+  //     "_pmCloudWithProductionLease(...) => ...applyCloud"）
+  //   - tests/test_meldex_phase_e_board_timer_quickmemo_viewer.py（_pmCloudCleanupExistingShifts
+  //     内の _pmCloudDeleteScheduleEntry 呼び出し、_pmCloudApplyShifts / _pmCloudRegisterShiftStaff
+  //     の関数本体をNode上でbrace抽出してevalする回帰テストを含む）
+  // そのため、このファイルには以下の4つの責務だけを残す（他の責務は
+  // gb-production-management-cloud-*.js へ分離済み）:
+  //   1. 共有定数・APIリクエストヘルパー・共通ダイアログ部品（_pmModal / _pmFooter 等）
+  //   2. シフト⇔カレンダー同期ヘルパー（_pmCloudCleanupExistingShifts 等）
+  //   3. Cloudルートディスパッチャ（_pmInstallCloudHandler）
+  //   4. シフト取込の確定処理・スタッフ登録・カレンダーからの復旧・書き出しAPI
+  //
+  // IIFEの開始はこのファイル、終了は読み込み順で最後になる
+  // gb-production-management-cloud-save-hooks.js にある（読み込み順は
+  // gb-production-management.js を参照）。
   const PM_ROOT = '制作管理';
   // 「スタッフリスト」シート（制作管理ルートごとのスタッフ一覧）は
   // アカウント一元管理 計画書 Phase 4 で廃止し、全体で1枚の正本
@@ -65292,6 +66207,405 @@ function hideBoardNoteTab() {
     return footer;
   }
 
+  // 制作管理メニューから直接開くダイアログ（開始／タスク一括作成の起点／シフト取込／
+  // 書き出し）と外部カレンダー自動送信タイマーは gb-production-management-cloud-dialogs.js
+  // にある（責務単位分割 2026-08-12）。同一クロージャのため参照は変わらず利用できる。
+
+  function _pmCalendarStorePath(internals, name) {
+    return internals._joinPath('_calendar', name + '.json');
+  }
+
+  async function _pmReadCalendarStore(provider, internals, name) {
+    const rows = await internals._readJsonSafe(provider, _pmCalendarStorePath(internals, name), []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  async function _pmWriteCalendarStore(provider, internals, name, rows) {
+    await internals._directoryHandle(provider, '_calendar', true);
+    await provider.writeJson(_pmCalendarStorePath(internals, name), Array.isArray(rows) ? rows : []);
+  }
+
+  function _pmCloudShiftEndDate(shift) {
+    const startTime = String(shift?.start_time || '');
+    const endTime = String(shift?.end_time || startTime);
+    if (startTime && endTime && endTime <= startTime) return _pmAddDay(shift.date);
+    return String(shift?.date || '');
+  }
+
+  async function _pmEnsureCloudCalendar(provider, internals, name, color, source, user) {
+    const rows = await _pmReadCalendarStore(provider, internals, 'calendars');
+    const owner = user || 'system';
+    const found = rows.find(row => row.name === name && row.source === source && (row.user || 'system') === owner);
+    if (found?.id) return found.id;
+    const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : 'cal_' + Date.now().toString(36);
+    rows.push({ id, name, color, user: owner, source, visible: 1, sort_order: 0, folder: 'シフトカレンダー', edit_role: 'owner', created: new Date().toISOString() });
+    await _pmWriteCalendarStore(provider, internals, 'calendars', rows);
+    return id;
+  }
+
+  async function _pmSyncCloudShiftEvent(provider, shift) {
+    const internals = window.__MeldexPwaDataAccessInternals;
+    const shiftId = String(shift?.id || '');
+    const date = String(shift?.date || '');
+    if (!internals || !shiftId || !date) return;
+    const username = String(shift.user || 'anonymous');
+    const calendarId = await _pmEnsureCloudCalendar(provider, internals, `シフト: ${username}`, '#d19a66', 'shift', username);
+    const startTime = String(shift.start_time || '');
+    const endTime = String(shift.end_time || startTime);
+    const allDay = startTime ? 0 : 1;
+    const start = allDay ? date : `${date}T${startTime}`;
+    const end = allDay ? date : `${_pmCloudShiftEndDate(shift)}T${endTime || startTime}`;
+    const label = { work: '勤務', off: '休み', holiday: '祝日' }[shift.type] || shift.type || 'シフト';
+    const eventId = `shift:${shiftId}`;
+    const rows = (await _pmReadCalendarStore(provider, internals, 'events')).filter(row => String(row.id) !== eventId);
+    rows.push({ id: eventId, title: `シフト ${username}: ${label}`, start, end, all_day: allDay, color: '#d19a66', description: shift.note || '', location: '', url: '', recurrence: '', external_id: shiftId, calendar_source: 'shift', user: username, creator: username, calendar_id: calendarId, alert_minutes: -1, created: shift.created || new Date().toISOString(), modified: new Date().toISOString() });
+    await _pmWriteCalendarStore(provider, internals, 'events', rows);
+  }
+
+  async function _pmRemoveCloudShiftEvent(provider, shiftId) {
+    const internals = window.__MeldexPwaDataAccessInternals;
+    if (!internals) return;
+    const eventId = `shift:${shiftId}`;
+    const rows = await _pmReadCalendarStore(provider, internals, 'events');
+    await _pmWriteCalendarStore(provider, internals, 'events', rows.filter(row => {
+      const id = String(row.id || '');
+      return id !== eventId && !id.startsWith(eventId + ':break:');
+    }));
+  }
+
+  function _pmCloudShiftPairKey(row) {
+    return [String(row?.user || ''), String(row?.date || '')].join('\u0000');
+  }
+
+  async function _pmCloudDeleteScheduleEntry(provider, path) {
+    if (!path || typeof provider?.deletePath !== 'function') return false;
+    await provider.deletePath(path);
+    return true;
+  }
+
+  async function _pmCloudDeleteShiftRecord(provider, internals, shiftId) {
+    try {
+      await window.MeldexDataAccess.requestJson('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
+      return true;
+    } catch {}
+    const rows = await _pmReadCalendarStore(provider, internals, 'shifts');
+    await _pmWriteCalendarStore(provider, internals, 'shifts', rows.filter(row => String(row.id) !== String(shiftId)));
+    await _pmRemoveCloudShiftEvent(provider, shiftId);
+    return true;
+  }
+
+  async function _pmCloudCleanupExistingShifts(provider, internals, rows, journal) {
+    const targetPairs = new Set((rows || []).map(_pmCloudShiftPairKey).filter(key => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
+    if (!targetPairs.size) return { removed_ids: [] };
+    const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => _pmReadCalendarStore(provider, internals, 'shifts'));
+    const removedIds = [];
+    for (const current of currentRows || []) {
+      const id = String(current?.id || '');
+      if (!id.startsWith('pm-shift-')) continue;
+      const normalized = _pmNormalizeIncomingShift(current);
+      if (!normalized || !targetPairs.has(_pmCloudShiftPairKey(normalized))) continue;
+      removedIds.push(id);
+    }
+    for (const shiftId of [...new Set(removedIds)]) {
+      await _pmCloudDeleteShiftRecord(provider, internals, shiftId);
+      const schedulePath = await _pmCloudFindByProp(provider, internals, 'スケジュール', '作成キー', shiftId);
+      if (schedulePath && journal) await _pmCloudJournalText(journal, schedulePath);
+      await _pmCloudDeleteScheduleEntry(provider, schedulePath);
+    }
+    return { removed_ids: [...new Set(removedIds)] };
+  }
+  function _pmInstallCloudHandler() {
+    const internals = window.__MeldexPwaDataAccessInternals;
+    const handlers = window.__MeldexPwaDataAccessExtensions;
+    if (!internals || !Array.isArray(handlers)) return;
+    handlers.push(async function _productionManagementCloudHandler({ method, body, url, pathname }) {
+      if (pathname === '/entity/rename' && method === 'POST'
+        && window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)) {
+        const provider = await internals._requirePwaProvider('readwrite');
+        return _pmCloudRenameManagedEntry(provider, internals, body || {});
+      }
+      if (!/^\/production-management(\/|$)/.test(pathname)) return internals.NOT_HANDLED;
+      const migrateOnFirstDisplay = method === 'GET' && [
+        '/production-management/lists',
+        '/production-management/task-sheets',
+        '/production-management/task-create-catalog',
+      ].includes(pathname);
+      const readOnlyRequest = method === 'GET' || (method === 'POST' && [
+        '/production-management/tasks/query',
+        '/production-management/tasks/preview',
+        '/production-management/tasks/structure/preview',
+        '/production-management/recalculate/preview',
+        '/production-management/assign/preview',
+      ].includes(pathname));
+      const provider = await internals._requirePwaProvider(readOnlyRequest ? 'read' : 'readwrite');
+      let migrationMeta = {};
+      if (migrateOnFirstDisplay) {
+        // コミット前レビュー指摘 #15: provider同一性ではなく管理ルートキーで判定する
+        // （解決できない場合はprovider単位のフォールバックへ。_pmCloudMigrationAlreadyDone参照）。
+        const rootKey = await _pmCloudRootMigrationKey(provider);
+        const alreadyMigrated = _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
+        if (!alreadyMigrated) {
+          let writableProvider = null;
+          try {
+            writableProvider = await internals._requirePwaProvider('readwrite');
+          } catch (error) {
+            migrationMeta = { read_only: true, migration_skipped: true, migration_message: String(error?.message || error) };
+          }
+          if (writableProvider) {
+            try {
+              await _pmCloudWithProductionLease(writableProvider, () => (
+                _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, writableProvider)
+                  ? Promise.resolve() : _pmCloudInit(writableProvider, internals)
+              ));
+              _pmCloudMarkMigrationDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
+            } catch (error) {
+              const readOnly = _pmCloudIsWriteAccessError(error);
+              if (!readOnly && Number(error?.status || 0) !== 423) throw error;
+              migrationMeta = { read_only: readOnly, migration_skipped: true, migration_message: String(error?.message || error) };
+            }
+          }
+        }
+      }
+      if (pathname === '/production-management/status' && method === 'GET') return _pmCloudStatus(provider, internals);
+      if (pathname === '/production-management/summary' && method === 'GET') return _pmCloudSummary(provider, internals);
+      if (pathname === '/production-management/lists' && method === 'GET') return { ...await _pmCloudList(provider, internals, url), ...migrationMeta };
+      if (pathname === '/production-management/task-sheets' && method === 'GET') return { ...await _pmCloudTaskSheets(provider, internals), ...migrationMeta };
+      if (pathname === '/production-management/task-create-catalog' && method === 'GET') return { ...await _pmCloudTaskCreateCatalog(provider, internals), ...migrationMeta };
+      if (pathname === '/production-management/tasks/query' && method === 'POST') return _pmCloudQueryTasks(provider, internals, body || {});
+      if (pathname === '/production-management/entries' && (method === 'POST' || method === 'PATCH')) {
+        return _pmCloudWithProductionLease(provider, () => method === 'POST'
+          ? _pmCloudCreateEntry(provider, internals, body || {})
+          : _pmCloudPatchEntry(provider, internals, body || {}));
+      }
+      if (pathname === '/production-management/task-by-event' && method === 'GET') return _pmCloudTaskByEvent(provider, internals, url);
+      if (pathname === '/production-management/tasks/from-template' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateFromTemplate(provider, internals, body || {}));
+      }
+      if (pathname === '/production-management/task-sheets' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateTaskSheet(provider, internals, body || {}));
+      }
+      if (pathname === '/production-management/init' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudInit(provider, internals, {
+          migrateLegacyWorkspace: true,
+          forceNameMigration: true,
+        }));
+      }
+      if (pathname === '/production-management/tasks/preview' && method === 'POST') return _pmCloudPreviewTasks(provider, internals, body || {});
+      if (pathname === '/production-management/tasks/create' && method === 'POST') return _pmCloudCreateTasks(provider, internals, body || {});
+      if (pathname === '/production-management/tasks/structure/preview' && method === 'POST') return _pmCloudPreviewTaskStructure(provider, internals, body || {});
+      if (pathname === '/production-management/tasks/structure/apply' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyTaskStructure(provider, internals, body || {}));
+      }
+      if (pathname === '/production-management/shifts/apply' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyShifts(provider, internals, body || {}));
+      }
+      if (pathname === '/production-management/staff/add' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => _pmCloudAddStaff(provider, internals, body || {}));
+      }
+      // 「担当者と時間を割り当て」（旧: 簡易割当）はフル再計算エンジンへ一本化した
+      // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。unassigned_only
+      // スコープ（作業予定日時が空で保護されていないタスクだけを新規割当対象にし、他のタスクは
+      // 既存予定を固定扱いで尊重する）でフル再計算を実行する。レスポンス形は互換維持。
+      if (pathname === '/production-management/assign/preview' && method === 'POST') {
+        const result = await window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
+        if (!result.ok) return result;
+        return { ok: true, rows: result.rows || [], count: (result.rows || []).length, cloud: true };
+      }
+      if (pathname === '/production-management/assign/apply' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, async () => {
+          const result = await window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
+          if (!result.ok) return result;
+          return { ok: true, updated: result.applied || 0, rows: [], cloud: true };
+        });
+      }
+      if (pathname === '/production-management/recalculate/preview' && method === 'POST') return window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, body || {}, _pmRecalcEngineDeps());
+      if (pathname === '/production-management/recalculate/apply' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      if (pathname === '/production-management/tasks/lock' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.lockCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      // 制作管理UX改善計画（2026-08-04）§6-4: カレンダー上のタスク予定のドラッグ移動・端リサイズ。
+      if (pathname === '/production-management/task-schedule/update' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.updateTaskScheduleCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      }
+      // 制作管理UX改善計画（2026-08-04）§4-4: Google送信のみCloud対応（Phase 5のブラウザ完結OAuth基盤
+      // に乗る）。CalDAV送信（ローカルサーバー常駐が必要）はDesktop限定のまま。未接続時はエラーで
+      // はなく案内メッセージを返す（gb-production-external-sync-cloud.js の syncGoogle 参照）。
+      // Google APIへのネットワークI/Oはワークスペースの書き込みロックを保持せずに行う
+      // （Desktop sync_production_external_calendars と同じ方針。遅い外部I/Oが他の書き込みを
+      // ブロックしないようにする）。
+      if (pathname === '/production-management/external-sync' && method === 'POST') {
+        if (!window.MeldexProductionExternalSyncCloud?.syncGoogle) {
+          return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
+        }
+        return window.MeldexProductionExternalSyncCloud.syncGoogle(provider, internals, _pmRecalcEngineDeps(), body || {});
+      }
+      if (pathname === '/production-management/export' && method === 'GET') return _pmCloudExport(url);
+      return internals.NOT_HANDLED;
+    });
+  }
+
+  // ワークスペースの状態確認・一覧取得・初期化・シート/フォルダノートのスキーマ整備は
+  // gb-production-management-cloud-workspace.js、タスク一覧セルの合成表示・ページ/コマの
+  // 選択肢整備・初期シード・タスク一括作成のプレビュー/確定は
+  // gb-production-management-cloud-task-generation.js にある（責務単位分割 2026-08-12）。
+  // 同一クロージャのため参照は変わらず利用できる。
+
+  async function _pmCloudApplyShifts(provider, internals, body) {
+    const init = await _pmCloudInit(provider, internals);
+    const rows = (body.rows || body.shifts || []).map(_pmNormalizeIncomingShift).filter(Boolean);
+    const journal = _pmCloudMutationJournal(provider, internals);
+    await _pmCloudJournalCalendar(journal, 'shifts');
+    await _pmCloudJournalCalendar(journal, 'events');
+    await _pmCloudJournalCalendar(journal, 'calendars');
+    try {
+      const registry = await _pmCloudRegisterShiftStaff(rows, journal);
+      const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows, journal);
+      const removed = new Set(cleanup.removed_ids || []);
+      let created = 0;
+      let updated = 0;
+      for (const row of rows) {
+        const id = _pmShiftId(row);
+        const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
+        await _pmCloudUpsertEntry(
+          provider,
+          internals,
+          'スケジュール',
+          scheduleName,
+          _pmScheduleProps(row, id),
+          '作成キー',
+          id,
+          { beforeWrite: path => _pmCloudJournalText(journal, path) },
+        );
+        await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
+        if (removed.has(id)) updated += 1;
+        else created += 1;
+      }
+      return {
+        ok: true,
+        count: rows.length,
+        created,
+        updated,
+        registry_added: registry.added,
+        registry_name_warnings: registry.warnings,
+        cloud: true,
+        ..._pmCloudRecoveryPayload(init.recovered_items),
+      };
+    } catch (error) {
+      return _pmCloudRollbackMutation(journal, error);
+    }
+  }
+
+  async function _pmCloudRegisterShiftStaff(rows, journal) {
+    const names = [...new Set((rows || []).map(row => String(row?.user || '').trim()).filter(Boolean))];
+    if (!names.length) return { added: 0, warnings: [] };
+    const ensured = await window.MeldexDataAccess.requestJson('/staff-registry/ensure', {
+      method: 'POST',
+      body: {},
+    });
+    const current = await window.MeldexDataAccess.requestJson('/staff-registry/list');
+    if (!current || !Array.isArray(current.staff)) {
+      throw new Error('スタッフ台帳を確認できないため、シフト取込を中止しました');
+    }
+    const existing = Array.isArray(current?.staff) ? current.staff : [];
+    const registryRoot = _pmCloudNormalizePath(current.path || ensured?.path || '');
+    if (!registryRoot) throw new Error('スタッフ台帳の保存先を確認できないため、シフト取込を中止しました');
+    const existingPaths = new Set(
+      (await _pmCloudDirectoryEntries(journal.provider, journal.internals, registryRoot))
+        .filter(entry => entry?.handle?.kind === 'file')
+        .map(entry => _pmCloudNormalizePath(journal.internals._joinPath(registryRoot, entry.name))),
+    );
+    for (const path of existingPaths) await _pmCloudJournalText(journal, path);
+    const identities = new Set(existing.flatMap(row => [
+      String(row?.user || '').trim(),
+      String(row?.display || '').trim(),
+      String(row?.entry_name || '').trim(),
+    ]).filter(Boolean));
+    let added = 0;
+    const warnings = [];
+    for (const name of names) {
+      if (identities.has(name)) continue;
+      const result = await window.MeldexDataAccess.requestJson('/staff-registry/upsert', {
+        method: 'POST',
+        body: { user: '', display: name, fill_only: true },
+      });
+      const resultPath = _pmCloudNormalizePath(result?.staff?.path);
+      if (!resultPath) throw new Error('登録したスタッフの保存先を確認できません');
+      if (!existingPaths.has(resultPath)) _pmCloudJournalCreatedPath(journal, resultPath);
+      existingPaths.add(resultPath);
+      identities.add(name);
+      warnings.push(`${name} はDropboxアカウント未連携のスタッフとして登録しました`);
+      added += 1;
+    }
+    return { added, warnings };
+  }
+
+  async function _pmCloudRecoverFromCalendar(provider, internals, missing) {
+    const result = { shifts: 0, tasks: 0 };
+    const needsSchedule = missing.some(item => item.includes('スケジュール') || item === PM_ROOT);
+    const needsTasks = missing.some(item => item.includes('タスクリスト') || item === PM_ROOT);
+    if (needsSchedule) {
+      const shifts = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => []);
+      for (const row of shifts || []) {
+        const normalized = _pmNormalizeIncomingShift(row);
+        if (!normalized) continue;
+        await _pmCloudUpsertEntry(provider, internals, 'スケジュール', `${normalized.date}_${normalized.user}`, _pmScheduleProps(normalized, row.id || _pmShiftId(normalized)), '作成キー', row.id || _pmShiftId(normalized));
+        result.shifts += 1;
+      }
+    }
+    if (needsTasks) {
+      const events = await window.MeldexDataAccess.requestJson('/cal/events').catch(() => []);
+      for (const row of (events || []).filter(event => event.calendar_source === 'production-task')) {
+        const key = 'calendar:' + String(row.external_id || row.id || row.title || '');
+        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.title || '復旧した作業予定', { '担当者': row.user || '', '作業予定日時': row.start && row.end ? `${row.start}|${row.end}` : row.start || '', '状況': '着手待ち', '作成キー': key, '備考': row.description || 'カレンダーから復旧' }, '作成キー', key);
+        result.tasks += 1;
+      }
+    }
+    return result;
+  }
+
+  async function _pmCloudExport(url) {
+    const kind = url.searchParams.get('kind') || 'all';
+    const format = url.searchParams.get('format') || 'csv';
+    const rows = await _pmCollectCloudExportRows(kind, url.searchParams.get('date_from') || '', url.searchParams.get('date_to') || '');
+    if (format === 'xlsx') {
+      const blob = _pmXlsxBlob(rows);
+      return { ok: true, filename: `production_${kind}.xlsx`, mime: blob.type, blob: await _pmBlobBase64(blob) };
+    }
+    return { ok: true, filename: `production_${kind}.csv`, mime: 'text/csv;charset=utf-8', content: _pmRowsCsv(rows) };
+  }
+
+  async function _pmCollectCloudExportRows(kind, dateFrom, dateTo) {
+    const rows = [];
+    if (kind === 'all' || kind === 'shifts') {
+      (await window.MeldexDataAccess.requestJson('/cal/shifts'))
+        .filter(row => _pmDateInRange(row.date || '', dateFrom, dateTo))
+        .forEach(row => rows.push({ '種別': 'シフト', '担当者': row.user || '', '日付': row.date || '', '開始': row.start_time || '', '終了': row.end_time || '', '内容': row.type || '', '備考': row.note || '' }));
+    }
+    if (kind === 'all' || kind === 'attendance') {
+      (await window.MeldexDataAccess.requestJson('/cal/time'))
+        .filter(row => _pmDateInRange(String(row.timestamp || '').slice(0, 10), dateFrom, dateTo))
+        .forEach(row => rows.push({ '種別': '実績', '担当者': row.user || '', '日付': String(row.timestamp || '').slice(0, 10), '開始': String(row.timestamp || '').slice(11, 16), '終了': '', '内容': row.type || '', '備考': row.note || '' }));
+    }
+    if (kind === 'all' || kind === 'work') {
+      (await window.MeldexDataAccess.requestJson('/cal/events'))
+        .filter(row => row.calendar_source === 'production-task' && _pmDateInRange(String(row.start || '').slice(0, 10), dateFrom, dateTo))
+        .forEach(row => rows.push({ '種別': '作業予定', '担当者': row.user || '', '日付': String(row.start || '').slice(0, 10), '開始': String(row.start || '').slice(11, 16), '終了': String(row.end || '').slice(11, 16), '内容': row.title || '', '備考': row.description || '' }));
+    }
+    return rows;
+  }
+
+  function _pmDateInRange(date, from, to) {
+    const value = String(date || '').slice(0, 10);
+    return !!value && (!from || value >= from) && (!to || value <= to);
+  }
+
+  // gb-production-management-cloud-dialogs.js: 制作管理メニューから直接開く
+  // トップレベルダイアログ（開始／タスク一括作成の起点／シフト取込／書き出し）と、
+  // 外部カレンダー自動送信タイマーを担当する（責務単位分割 2026-08-12。旧
+  // gb-production-management.part01.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
+
   async function openProductionManagementStart() {
     if (!_pmEnsureWritable()) return null;
     const result = await _pmRequest('/production-management/init', { method: 'POST', body: {} });
@@ -65422,6 +66736,9 @@ function hideBoardNoteTab() {
   }
 
   function _pmStartExternalSyncTimer() {
+    // デスクトップ付箋の小窓でも自動送信タイマーが動くと、付箋の枚数だけ外部カレンダーへの
+    // 自動送信が並走する。実行中フラグはウィンドウ単位なので窓をまたいだ二重送信は防げない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     if (window.__meldexProductionExternalSyncTimer) return;
     const startupTimer = setTimeout(() => _pmAutoProductionExternalSync().catch(() => {}), 15000);
     if (typeof startupTimer?.unref === 'function') startupTimer.unref();
@@ -65472,242 +66789,23 @@ function hideBoardNoteTab() {
     }
   }
 
-  // コミット前レビュー指摘（2026-08-05、部分行数超過対応）: シフト取込XLSX/ZIP解析
-  // ユーティリティ（_pmParseShiftFile 以下）は gb-production-management.part03.js
-  // （CSV/XLSX/ZIP書き出しユーティリティと同じテーマ）へ移動した。同一クロージャの
-  // raw concatenation のため参照は変わらず利用できる。
-
-  function _pmCalendarStorePath(internals, name) {
-    return internals._joinPath('_calendar', name + '.json');
-  }
-
-  async function _pmReadCalendarStore(provider, internals, name) {
-    const rows = await internals._readJsonSafe(provider, _pmCalendarStorePath(internals, name), []);
-    return Array.isArray(rows) ? rows : [];
-  }
-
-  async function _pmWriteCalendarStore(provider, internals, name, rows) {
-    await internals._directoryHandle(provider, '_calendar', true);
-    await provider.writeJson(_pmCalendarStorePath(internals, name), Array.isArray(rows) ? rows : []);
-  }
-
-  function _pmCloudShiftEndDate(shift) {
-    const startTime = String(shift?.start_time || '');
-    const endTime = String(shift?.end_time || startTime);
-    if (startTime && endTime && endTime <= startTime) return _pmAddDay(shift.date);
-    return String(shift?.date || '');
-  }
-
-  async function _pmEnsureCloudCalendar(provider, internals, name, color, source, user) {
-    const rows = await _pmReadCalendarStore(provider, internals, 'calendars');
-    const owner = user || 'system';
-    const found = rows.find(row => row.name === name && row.source === source && (row.user || 'system') === owner);
-    if (found?.id) return found.id;
-    const id = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : 'cal_' + Date.now().toString(36);
-    rows.push({ id, name, color, user: owner, source, visible: 1, sort_order: 0, folder: 'シフトカレンダー', edit_role: 'owner', created: new Date().toISOString() });
-    await _pmWriteCalendarStore(provider, internals, 'calendars', rows);
-    return id;
-  }
-
-  async function _pmSyncCloudShiftEvent(provider, shift) {
-    const internals = window.__MeldexPwaDataAccessInternals;
-    const shiftId = String(shift?.id || '');
-    const date = String(shift?.date || '');
-    if (!internals || !shiftId || !date) return;
-    const username = String(shift.user || 'anonymous');
-    const calendarId = await _pmEnsureCloudCalendar(provider, internals, `シフト: ${username}`, '#d19a66', 'shift', username);
-    const startTime = String(shift.start_time || '');
-    const endTime = String(shift.end_time || startTime);
-    const allDay = startTime ? 0 : 1;
-    const start = allDay ? date : `${date}T${startTime}`;
-    const end = allDay ? date : `${_pmCloudShiftEndDate(shift)}T${endTime || startTime}`;
-    const label = { work: '勤務', off: '休み', holiday: '祝日' }[shift.type] || shift.type || 'シフト';
-    const eventId = `shift:${shiftId}`;
-    const rows = (await _pmReadCalendarStore(provider, internals, 'events')).filter(row => String(row.id) !== eventId);
-    rows.push({ id: eventId, title: `シフト ${username}: ${label}`, start, end, all_day: allDay, color: '#d19a66', description: shift.note || '', location: '', url: '', recurrence: '', external_id: shiftId, calendar_source: 'shift', user: username, creator: username, calendar_id: calendarId, alert_minutes: -1, created: shift.created || new Date().toISOString(), modified: new Date().toISOString() });
-    await _pmWriteCalendarStore(provider, internals, 'events', rows);
-  }
-
-  async function _pmRemoveCloudShiftEvent(provider, shiftId) {
-    const internals = window.__MeldexPwaDataAccessInternals;
-    if (!internals) return;
-    const eventId = `shift:${shiftId}`;
-    const rows = await _pmReadCalendarStore(provider, internals, 'events');
-    await _pmWriteCalendarStore(provider, internals, 'events', rows.filter(row => {
-      const id = String(row.id || '');
-      return id !== eventId && !id.startsWith(eventId + ':break:');
-    }));
-  }
-
-  function _pmCloudShiftPairKey(row) {
-    return [String(row?.user || ''), String(row?.date || '')].join('\u0000');
-  }
-
-  async function _pmCloudDeleteScheduleEntry(provider, path) {
-    if (!path || typeof provider?.deletePath !== 'function') return false;
-    await provider.deletePath(path);
-    return true;
-  }
-
-  async function _pmCloudDeleteShiftRecord(provider, internals, shiftId) {
-    try {
-      await window.MeldexDataAccess.requestJson('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
-      return true;
-    } catch {}
-    const rows = await _pmReadCalendarStore(provider, internals, 'shifts');
-    await _pmWriteCalendarStore(provider, internals, 'shifts', rows.filter(row => String(row.id) !== String(shiftId)));
-    await _pmRemoveCloudShiftEvent(provider, shiftId);
-    return true;
-  }
-
-  async function _pmCloudCleanupExistingShifts(provider, internals, rows, journal) {
-    const targetPairs = new Set((rows || []).map(_pmCloudShiftPairKey).filter(key => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
-    if (!targetPairs.size) return { removed_ids: [] };
-    const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => _pmReadCalendarStore(provider, internals, 'shifts'));
-    const removedIds = [];
-    for (const current of currentRows || []) {
-      const id = String(current?.id || '');
-      if (!id.startsWith('pm-shift-')) continue;
-      const normalized = _pmNormalizeIncomingShift(current);
-      if (!normalized || !targetPairs.has(_pmCloudShiftPairKey(normalized))) continue;
-      removedIds.push(id);
-    }
-    for (const shiftId of [...new Set(removedIds)]) {
-      await _pmCloudDeleteShiftRecord(provider, internals, shiftId);
-      const schedulePath = await _pmCloudFindByProp(provider, internals, 'スケジュール', '作成キー', shiftId);
-      if (schedulePath && journal) await _pmCloudJournalText(journal, schedulePath);
-      await _pmCloudDeleteScheduleEntry(provider, schedulePath);
-    }
-    return { removed_ids: [...new Set(removedIds)] };
-  }
-
-  function _pmInstallCloudHandler() {
-    const internals = window.__MeldexPwaDataAccessInternals;
-    const handlers = window.__MeldexPwaDataAccessExtensions;
-    if (!internals || !Array.isArray(handlers)) return;
-    handlers.push(async function _productionManagementCloudHandler({ method, body, url, pathname }) {
-      if (pathname === '/entity/rename' && method === 'POST'
-        && window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)) {
-        const provider = await internals._requirePwaProvider('readwrite');
-        return _pmCloudRenameManagedEntry(provider, internals, body || {});
-      }
-      if (!/^\/production-management(\/|$)/.test(pathname)) return internals.NOT_HANDLED;
-      const migrateOnFirstDisplay = method === 'GET' && [
-        '/production-management/lists',
-        '/production-management/task-sheets',
-        '/production-management/task-create-catalog',
-      ].includes(pathname);
-      const readOnlyRequest = method === 'GET' || (method === 'POST' && [
-        '/production-management/tasks/query',
-        '/production-management/tasks/preview',
-        '/production-management/tasks/structure/preview',
-        '/production-management/recalculate/preview',
-        '/production-management/assign/preview',
-      ].includes(pathname));
-      const provider = await internals._requirePwaProvider(readOnlyRequest ? 'read' : 'readwrite');
-      let migrationMeta = {};
-      if (migrateOnFirstDisplay) {
-        // コミット前レビュー指摘 #15: provider同一性ではなく管理ルートキーで判定する
-        // （解決できない場合はprovider単位のフォールバックへ。_pmCloudMigrationAlreadyDone参照）。
-        const rootKey = await _pmCloudRootMigrationKey(provider);
-        const alreadyMigrated = _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
-        if (!alreadyMigrated) {
-          let writableProvider = null;
-          try {
-            writableProvider = await internals._requirePwaProvider('readwrite');
-          } catch (error) {
-            migrationMeta = { read_only: true, migration_skipped: true, migration_message: String(error?.message || error) };
-          }
-          if (writableProvider) {
-            try {
-              await _pmCloudWithProductionLease(writableProvider, () => (
-                _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, writableProvider)
-                  ? Promise.resolve() : _pmCloudInit(writableProvider, internals)
-              ));
-              _pmCloudMarkMigrationDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
-            } catch (error) {
-              const readOnly = _pmCloudIsWriteAccessError(error);
-              if (!readOnly && Number(error?.status || 0) !== 423) throw error;
-              migrationMeta = { read_only: readOnly, migration_skipped: true, migration_message: String(error?.message || error) };
-            }
-          }
-        }
-      }
-      if (pathname === '/production-management/status' && method === 'GET') return _pmCloudStatus(provider, internals);
-      if (pathname === '/production-management/summary' && method === 'GET') return _pmCloudSummary(provider, internals);
-      if (pathname === '/production-management/lists' && method === 'GET') return { ...await _pmCloudList(provider, internals, url), ...migrationMeta };
-      if (pathname === '/production-management/task-sheets' && method === 'GET') return { ...await _pmCloudTaskSheets(provider, internals), ...migrationMeta };
-      if (pathname === '/production-management/task-create-catalog' && method === 'GET') return { ...await _pmCloudTaskCreateCatalog(provider, internals), ...migrationMeta };
-      if (pathname === '/production-management/tasks/query' && method === 'POST') return _pmCloudQueryTasks(provider, internals, body || {});
-      if (pathname === '/production-management/entries' && (method === 'POST' || method === 'PATCH')) {
-        return _pmCloudWithProductionLease(provider, () => method === 'POST'
-          ? _pmCloudCreateEntry(provider, internals, body || {})
-          : _pmCloudPatchEntry(provider, internals, body || {}));
-      }
-      if (pathname === '/production-management/task-by-event' && method === 'GET') return _pmCloudTaskByEvent(provider, internals, url);
-      if (pathname === '/production-management/tasks/from-template' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateFromTemplate(provider, internals, body || {}));
-      }
-      if (pathname === '/production-management/task-sheets' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateTaskSheet(provider, internals, body || {}));
-      }
-      if (pathname === '/production-management/init' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudInit(provider, internals, {
-          migrateLegacyWorkspace: true,
-          forceNameMigration: true,
-        }));
-      }
-      if (pathname === '/production-management/tasks/preview' && method === 'POST') return _pmCloudPreviewTasks(provider, internals, body || {});
-      if (pathname === '/production-management/tasks/create' && method === 'POST') return _pmCloudCreateTasks(provider, internals, body || {});
-      if (pathname === '/production-management/tasks/structure/preview' && method === 'POST') return _pmCloudPreviewTaskStructure(provider, internals, body || {});
-      if (pathname === '/production-management/tasks/structure/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyTaskStructure(provider, internals, body || {}));
-      }
-      if (pathname === '/production-management/shifts/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyShifts(provider, internals, body || {}));
-      }
-      if (pathname === '/production-management/staff/add' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudAddStaff(provider, internals, body || {}));
-      }
-      // 「担当者と時間を割り当て」（旧: 簡易割当）はフル再計算エンジンへ一本化した
-      // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。unassigned_only
-      // スコープ（作業予定日時が空で保護されていないタスクだけを新規割当対象にし、他のタスクは
-      // 既存予定を固定扱いで尊重する）でフル再計算を実行する。レスポンス形は互換維持。
-      if (pathname === '/production-management/assign/preview' && method === 'POST') {
-        const result = await window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
-        if (!result.ok) return result;
-        return { ok: true, rows: result.rows || [], count: (result.rows || []).length, cloud: true };
-      }
-      if (pathname === '/production-management/assign/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, async () => {
-          const result = await window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
-          if (!result.ok) return result;
-          return { ok: true, updated: result.applied || 0, rows: [], cloud: true };
-        });
-      }
-      if (pathname === '/production-management/recalculate/preview' && method === 'POST') return window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, body || {}, _pmRecalcEngineDeps());
-      if (pathname === '/production-management/recalculate/apply' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
-      if (pathname === '/production-management/tasks/lock' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.lockCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
-      // 制作管理UX改善計画（2026-08-04）§6-4: カレンダー上のタスク予定のドラッグ移動・端リサイズ。
-      if (pathname === '/production-management/task-schedule/update' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.updateTaskScheduleCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
-      }
-      // 制作管理UX改善計画（2026-08-04）§4-4: Google送信のみCloud対応（Phase 5のブラウザ完結OAuth基盤
-      // に乗る）。CalDAV送信（ローカルサーバー常駐が必要）はDesktop限定のまま。未接続時はエラーで
-      // はなく案内メッセージを返す（gb-production-external-sync-cloud.js の syncGoogle 参照）。
-      // Google APIへのネットワークI/Oはワークスペースの書き込みロックを保持せずに行う
-      // （Desktop sync_production_external_calendars と同じ方針。遅い外部I/Oが他の書き込みを
-      // ブロックしないようにする）。
-      if (pathname === '/production-management/external-sync' && method === 'POST') {
-        if (!window.MeldexProductionExternalSyncCloud?.syncGoogle) {
-          return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
-        }
-        return window.MeldexProductionExternalSyncCloud.syncGoogle(provider, internals, _pmRecalcEngineDeps(), body || {});
-      }
-      if (pathname === '/production-management/export' && method === 'GET') return _pmCloudExport(url);
-      return internals.NOT_HANDLED;
-    });
-  }
+  // シフト取込XLSX/ZIP解析ユーティリティ（_pmParseShiftFile 以下）と
+  // CSV/XLSX/ZIP書き出しユーティリティは gb-production-management-cloud-spreadsheet-io.js
+  // （旧 gb-production-management.part03.js）にある。同一クロージャの raw concatenation
+  // のため参照は変わらず利用できる。
+  // gb-production-management-cloud-workspace.js: 制作管理ワークスペースの状態確認・
+  // 一覧取得・初期化・シート/フォルダノートのスキーマ整備を担当する（責務単位分割
+  // 2026-08-12。旧 gb-production-management.part01.js の一部）。
+  //
+  // /production-management/status・/summary・/lists・/task-sheets・/init の各Cloudルートの
+  // 実処理本体（_pmCloudStatus / _pmCloudSummary / _pmCloudList / _pmCloudTaskSheets /
+  // _pmCloudInit 等）と、シート作成時のフォルダノート・列タイプ整備（_pmCloudEnsureSheet 等）
+  // をまとめる。ルーティング自体（URLパターン→この呼び出し）は
+  // gb-production-management.part01.js の _pmInstallCloudHandler にある。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   function _pmCloudRoot(internals) {
     return internals._joinPath(PM_ROOT, 'シート');
@@ -66104,6 +67202,14 @@ function hideBoardNoteTab() {
     });
     return merged;
   }
+  // gb-production-management-cloud-task-generation.js: タスク一覧セルの合成表示
+  // （予定時間の併記・保護アイコン）、ページ/コマの選択肢整備、初期シードデータ、
+  // タスク一括作成のプレビュー・確定（作成キー突合を含む）を担当する（責務単位分割
+  // 2026-08-12。旧 gb-production-management.part01.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   // 制作管理UX改善計画（2026-08-04）§5-1: 読み取り専用の自動列（コードが再計算エンジン・
   // 同期フック経由で更新し、ユーザーの直接編集は拒否する）。汎用の計算列基盤
@@ -66390,155 +67496,13 @@ function hideBoardNoteTab() {
     await _pmCloudUpdateEntryAtPath(provider, workPath, { ...workProps, 'タスク生成': '作成済み' });
     return { ok: true, created, skipped: rows.length - created, count: rows.length, references_created: referencesCreated, migrated: migration.copied, legacy_removed: migration.removed, migration_conflicts: migration.conflicts, task_sheet: taskSheet, cloud: true, ..._pmCloudRecoveryPayload(init.recovered_items) };
   }
-
-  async function _pmCloudApplyShifts(provider, internals, body) {
-    const init = await _pmCloudInit(provider, internals);
-    const rows = (body.rows || body.shifts || []).map(_pmNormalizeIncomingShift).filter(Boolean);
-    const journal = _pmCloudMutationJournal(provider, internals);
-    await _pmCloudJournalCalendar(journal, 'shifts');
-    await _pmCloudJournalCalendar(journal, 'events');
-    await _pmCloudJournalCalendar(journal, 'calendars');
-    try {
-      const registry = await _pmCloudRegisterShiftStaff(rows, journal);
-      const cleanup = await _pmCloudCleanupExistingShifts(provider, internals, rows, journal);
-      const removed = new Set(cleanup.removed_ids || []);
-      let created = 0;
-      let updated = 0;
-      for (const row of rows) {
-        const id = _pmShiftId(row);
-        const scheduleName = `${row.date}_${row.user}_${_pmScheduleTypeLabel(row.type)}`;
-        await _pmCloudUpsertEntry(
-          provider,
-          internals,
-          'スケジュール',
-          scheduleName,
-          _pmScheduleProps(row, id),
-          '作成キー',
-          id,
-          { beforeWrite: path => _pmCloudJournalText(journal, path) },
-        );
-        await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
-        if (removed.has(id)) updated += 1;
-        else created += 1;
-      }
-      return {
-        ok: true,
-        count: rows.length,
-        created,
-        updated,
-        registry_added: registry.added,
-        registry_name_warnings: registry.warnings,
-        cloud: true,
-        ..._pmCloudRecoveryPayload(init.recovered_items),
-      };
-    } catch (error) {
-      return _pmCloudRollbackMutation(journal, error);
-    }
-  }
-
-  async function _pmCloudRegisterShiftStaff(rows, journal) {
-    const names = [...new Set((rows || []).map(row => String(row?.user || '').trim()).filter(Boolean))];
-    if (!names.length) return { added: 0, warnings: [] };
-    const ensured = await window.MeldexDataAccess.requestJson('/staff-registry/ensure', {
-      method: 'POST',
-      body: {},
-    });
-    const current = await window.MeldexDataAccess.requestJson('/staff-registry/list');
-    if (!current || !Array.isArray(current.staff)) {
-      throw new Error('スタッフ台帳を確認できないため、シフト取込を中止しました');
-    }
-    const existing = Array.isArray(current?.staff) ? current.staff : [];
-    const registryRoot = _pmCloudNormalizePath(current.path || ensured?.path || '');
-    if (!registryRoot) throw new Error('スタッフ台帳の保存先を確認できないため、シフト取込を中止しました');
-    const existingPaths = new Set(
-      (await _pmCloudDirectoryEntries(journal.provider, journal.internals, registryRoot))
-        .filter(entry => entry?.handle?.kind === 'file')
-        .map(entry => _pmCloudNormalizePath(journal.internals._joinPath(registryRoot, entry.name))),
-    );
-    for (const path of existingPaths) await _pmCloudJournalText(journal, path);
-    const identities = new Set(existing.flatMap(row => [
-      String(row?.user || '').trim(),
-      String(row?.display || '').trim(),
-      String(row?.entry_name || '').trim(),
-    ]).filter(Boolean));
-    let added = 0;
-    const warnings = [];
-    for (const name of names) {
-      if (identities.has(name)) continue;
-      const result = await window.MeldexDataAccess.requestJson('/staff-registry/upsert', {
-        method: 'POST',
-        body: { user: '', display: name, fill_only: true },
-      });
-      const resultPath = _pmCloudNormalizePath(result?.staff?.path);
-      if (!resultPath) throw new Error('登録したスタッフの保存先を確認できません');
-      if (!existingPaths.has(resultPath)) _pmCloudJournalCreatedPath(journal, resultPath);
-      existingPaths.add(resultPath);
-      identities.add(name);
-      warnings.push(`${name} はDropboxアカウント未連携のスタッフとして登録しました`);
-      added += 1;
-    }
-    return { added, warnings };
-  }
-
-  async function _pmCloudRecoverFromCalendar(provider, internals, missing) {
-    const result = { shifts: 0, tasks: 0 };
-    const needsSchedule = missing.some(item => item.includes('スケジュール') || item === PM_ROOT);
-    const needsTasks = missing.some(item => item.includes('タスクリスト') || item === PM_ROOT);
-    if (needsSchedule) {
-      const shifts = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => []);
-      for (const row of shifts || []) {
-        const normalized = _pmNormalizeIncomingShift(row);
-        if (!normalized) continue;
-        await _pmCloudUpsertEntry(provider, internals, 'スケジュール', `${normalized.date}_${normalized.user}`, _pmScheduleProps(normalized, row.id || _pmShiftId(normalized)), '作成キー', row.id || _pmShiftId(normalized));
-        result.shifts += 1;
-      }
-    }
-    if (needsTasks) {
-      const events = await window.MeldexDataAccess.requestJson('/cal/events').catch(() => []);
-      for (const row of (events || []).filter(event => event.calendar_source === 'production-task')) {
-        const key = 'calendar:' + String(row.external_id || row.id || row.title || '');
-        await _pmCloudUpsertEntry(provider, internals, 'タスクリスト', row.title || '復旧した作業予定', { '担当者': row.user || '', '作業予定日時': row.start && row.end ? `${row.start}|${row.end}` : row.start || '', '状況': '着手待ち', '作成キー': key, '備考': row.description || 'カレンダーから復旧' }, '作成キー', key);
-        result.tasks += 1;
-      }
-    }
-    return result;
-  }
-
-  async function _pmCloudExport(url) {
-    const kind = url.searchParams.get('kind') || 'all';
-    const format = url.searchParams.get('format') || 'csv';
-    const rows = await _pmCollectCloudExportRows(kind, url.searchParams.get('date_from') || '', url.searchParams.get('date_to') || '');
-    if (format === 'xlsx') {
-      const blob = _pmXlsxBlob(rows);
-      return { ok: true, filename: `production_${kind}.xlsx`, mime: blob.type, blob: await _pmBlobBase64(blob) };
-    }
-    return { ok: true, filename: `production_${kind}.csv`, mime: 'text/csv;charset=utf-8', content: _pmRowsCsv(rows) };
-  }
-
-  async function _pmCollectCloudExportRows(kind, dateFrom, dateTo) {
-    const rows = [];
-    if (kind === 'all' || kind === 'shifts') {
-      (await window.MeldexDataAccess.requestJson('/cal/shifts'))
-        .filter(row => _pmDateInRange(row.date || '', dateFrom, dateTo))
-        .forEach(row => rows.push({ '種別': 'シフト', '担当者': row.user || '', '日付': row.date || '', '開始': row.start_time || '', '終了': row.end_time || '', '内容': row.type || '', '備考': row.note || '' }));
-    }
-    if (kind === 'all' || kind === 'attendance') {
-      (await window.MeldexDataAccess.requestJson('/cal/time'))
-        .filter(row => _pmDateInRange(String(row.timestamp || '').slice(0, 10), dateFrom, dateTo))
-        .forEach(row => rows.push({ '種別': '実績', '担当者': row.user || '', '日付': String(row.timestamp || '').slice(0, 10), '開始': String(row.timestamp || '').slice(11, 16), '終了': '', '内容': row.type || '', '備考': row.note || '' }));
-    }
-    if (kind === 'all' || kind === 'work') {
-      (await window.MeldexDataAccess.requestJson('/cal/events'))
-        .filter(row => row.calendar_source === 'production-task' && _pmDateInRange(String(row.start || '').slice(0, 10), dateFrom, dateTo))
-        .forEach(row => rows.push({ '種別': '作業予定', '担当者': row.user || '', '日付': String(row.start || '').slice(0, 10), '開始': String(row.start || '').slice(11, 16), '終了': String(row.end || '').slice(11, 16), '内容': row.title || '', '備考': row.description || '' }));
-    }
-    return rows;
-  }
-
-  function _pmDateInRange(date, from, to) {
-    const value = String(date || '').slice(0, 10);
-    return !!value && (!from || value >= from) && (!to || value <= to);
-  }
+  // gb-production-management-cloud-entries.js: エントリ.mdファイルのディレクトリ列挙・
+  // 読み書き（Upsert/Update/Find）と、タスクシート名の列挙を担当する（責務単位分割
+  // 2026-08-12。旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   async function _pmCloudDirectoryEntries(provider, internals, dir) {
     try {
@@ -66658,7 +67622,13 @@ function hideBoardNoteTab() {
     const rows = await _pmCloudMapBounded(files, options.concurrency || 1, async entry => {
       const path = internals._joinPath(dir, entry.name);
       const parsed = await _pmCloudReadFrontmatter(provider, path);
-      return { path, name: entry.name.replace(/\.md$/i, ''), frontmatter: parsed.frontmatter || {}, body: parsed.body || '' };
+      return {
+        path,
+        name: entry.name.replace(/\.md$/i, ''),
+        frontmatter: parsed.frontmatter || {},
+        body: parsed.body || '',
+        transportRevision: await _pmCloudEntryTransportRevision(provider, path, parsed),
+      };
     });
     // ストア汚染の過渡期フォールバック（production-sheet-store-contamination-fix-plan-
     // 2026-08-05.md Phase 3）: 修復（_repairProductionSheetStoreIfNeeded）が走る前の
@@ -66703,6 +67673,13 @@ function hideBoardNoteTab() {
     });
     return [...names];
   }
+  // gb-production-management-cloud-legacy-migration.js: 旧共通「タスクリスト」から
+  // 作品別タスクシートへの移行（重複判定・競合コピー整理・カレンダー予定の付け替えを含む）
+  // を担当する（責務単位分割 2026-08-12。旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   function _pmCloudTaskBelongsToWork(entry, workTitle) {
     const title = String(workTitle || '').trim();
@@ -66937,6 +67914,14 @@ function hideBoardNoteTab() {
     legacyEntries.filter(entry => _pmCloudTaskBelongsToWork(entry, workTitle)).forEach(entry => entries.push(entry));
     return new Set(entries.map(entry => _pmCloudPropValue(entry.frontmatter, '作成キー')).filter(Boolean));
   }
+  // gb-production-management-cloud-task-write.js: タスク行の一括書き込み（バケット分割・
+  // 競合時の再照合）、タスク作成カタログAPI（作品/作業対象/作業内容/作業規模/タスクシート
+  // 一覧の同時取得）、制作管理ワークスペースの書き込みリース（排他制御）を担当する
+  // （責務単位分割 2026-08-12。旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   async function _pmCloudWriteTaskRows(provider, internals, taskSheet, rows) {
     const buckets = Array.from({ length: Math.min(4, Math.max(1, rows.length)) }, () => []);
@@ -67064,6 +68049,14 @@ function hideBoardNoteTab() {
       }
     }
   }
+  // gb-production-management-cloud-entry-format.js: 全タスクシート横断のエントリ列挙、
+  // エントリ→API応答行への整形（production_internal の合流を含む）、シートエイリアス・
+  // タスクシート名判定などの小さな共通ヘルパーを担当する（責務単位分割 2026-08-12。旧
+  // gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   async function _pmCloudListAllTaskEntries(provider, internals) {
     const all = [];
@@ -67110,8 +68103,31 @@ function hideBoardNoteTab() {
       sheet,
       sheet_name: sheet,
       modified: String(entry?.frontmatter?.modified || ''),
+      entry_revision: _pmCloudEntryRevision(entry?.frontmatter),
+      transport_revision: entry?.transportRevision || null,
       properties,
     };
+  }
+
+  function _pmCloudEntryRevision(frontmatter) {
+    const value = Number(frontmatter?.meldex_revision || 0);
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  }
+
+  function _pmCloudTransportName() {
+    return window.MeldexDocumentSaveCoordinator?.currentTransportName?.() || 'browser-local';
+  }
+
+  function _pmCloudFallbackTransportToken(parsed) {
+    return _pmHash(JSON.stringify({ frontmatter: parsed?.frontmatter || {}, body: parsed?.body || '' }));
+  }
+
+  async function _pmCloudEntryTransportRevision(provider, path, parsed) {
+    let token = '';
+    if (typeof provider?.getMetadata === 'function') {
+      try { token = String((await provider.getMetadata(path))?.revision || ''); } catch (_error) {}
+    }
+    return { transport: _pmCloudTransportName(), token: token || _pmCloudFallbackTransportToken(parsed) };
   }
 
   function _pmCloudPropValue(fm, prop) {
@@ -67149,6 +68165,13 @@ function hideBoardNoteTab() {
     return String(item && typeof item === 'object' ? item.value || '' : item == null ? '' : item).trim();
   }
   function _pmCloudClone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
+  // gb-production-management.part02.js: 責務単位分割（2026-08-12）後もこのファイル名を
+  // 維持している。tests/test_meldex_phase_e_board_timer_quickmemo_viewer.py の
+  // ロールバック回帰テストが、_pmCloudRollbackMutation の関数本体をこの物理ファイルから
+  // Node上でbrace抽出してevalする直読み検証を行っているため（このリファクタの編集許可
+  // 範囲外のテスト）。そのため、このファイルには変更のロールバック機構（ミューテーション
+  // ジャーナル）と、それを使う汎用エントリ作成・更新（/production-management/entries）だけを
+  // 残す（他の責務は gb-production-management-cloud-*.js へ分離済み）。
 
   function _pmCloudMutationJournal(provider, internals) {
     return { provider, internals, texts: new Map(), calendars: new Map(), dirs: new Map(), createdPaths: new Set() };
@@ -67163,6 +68186,15 @@ function hideBoardNoteTab() {
     if (journal.texts.has(key)) return;
     const exists = await _pmCloudEntryExists(journal.provider, key, journal.internals);
     journal.texts.set(key, { exists, text: exists ? await journal.provider.readText(key) : '' });
+  }
+  function _pmCloudSetRollbackRevision(journal, path, revision) {
+    const snapshot = journal.texts.get(_pmCloudNormalizePath(path));
+    if (!snapshot) throw new Error('ロールバック対象の保存前状態を確認できません');
+    snapshot.rollbackExpectedRevision = String(revision || '').trim();
+    if (!snapshot.rollbackExpectedRevision) {
+      snapshot.rollbackRevisionUnavailable = true;
+      throw new Error('ロールバック対象の保存後版を確認できません');
+    }
   }
   async function _pmCloudJournalDirectory(journal, path) {
     const key = _pmCloudNormalizePath(path);
@@ -67185,8 +68217,22 @@ function hideBoardNoteTab() {
   async function _pmCloudRollbackMutation(journal, originalError) {
     const failures = [];
     for (const [path, snapshot] of [...journal.texts.entries()].reverse()) {
-      try { if (snapshot.exists) await journal.provider.writeText(path, snapshot.text); else await _pmCloudDeleteRollbackPath(journal, path); }
-      catch (error) { failures.push(error); }
+      try {
+        if (snapshot.rollbackRevisionUnavailable) throw new Error(`条件付き復元に必要な保存後版がありません: ${path}`);
+        if (snapshot.exists && snapshot.rollbackExpectedRevision) {
+          if (typeof journal.provider.uploadBytesConditional !== 'function') throw new Error(`条件付き復元を実行できません: ${path}`);
+          await journal.provider.uploadBytesConditional(path, new TextEncoder().encode(snapshot.text), snapshot.rollbackExpectedRevision);
+        } else if (snapshot.exists) await journal.provider.writeText(path, snapshot.text);
+        else await _pmCloudDeleteRollbackPath(journal, path);
+      }
+      catch (error) {
+        failures.push(error);
+        // 正本のCAS復元に失敗した時点で、後続クライアントが正本とカレンダーを更新した
+        // 可能性がある。共有カレンダーを古いsnapshotへ戻さず、その場で復旧失敗を返す。
+        if (snapshot.rollbackExpectedRevision || snapshot.rollbackRevisionUnavailable) {
+          throw new Error(`制作管理の保存に失敗し、元の状態の復元にも失敗しました: ${error?.message || error}`, { cause: originalError });
+        }
+      }
     }
     for (const [name, snapshot] of [...journal.calendars.entries()].reverse()) {
       try {
@@ -67253,6 +68299,59 @@ function hideBoardNoteTab() {
     }
     return String(value);
   }
+
+  function _pmCloudPatchPreconditions(body) {
+    const hasEntry = Object.prototype.hasOwnProperty.call(body || {}, 'entry_revision')
+      || Object.prototype.hasOwnProperty.call(body || {}, 'entryRevision');
+    const hasTransport = Object.prototype.hasOwnProperty.call(body || {}, 'transport_revision')
+      || Object.prototype.hasOwnProperty.call(body || {}, 'transportRevision');
+    if (!hasEntry || !hasTransport) {
+      const error = _pmCloudError(428, '保存元の版情報がありません。タスクを再読み込みしてから保存してください。');
+      error.code = 'revision_precondition_required';
+      throw error;
+    }
+    const rawEntry = body.entry_revision ?? body.entryRevision;
+    const entryRevision = Number(rawEntry);
+    if (!Number.isInteger(entryRevision) || entryRevision < 0) throw _pmCloudError(400, '保存元のエントリ版が不正です');
+    const rawTransport = body.transport_revision ?? body.transportRevision;
+    let transport = _pmCloudTransportName();
+    let token = '';
+    if (rawTransport && typeof rawTransport === 'object') {
+      transport = String(rawTransport.transport || rawTransport.kind || transport);
+      token = String(rawTransport.token || rawTransport.revision || rawTransport.etag || '');
+    } else {
+      const raw = String(rawTransport || '');
+      const colon = raw.indexOf(':');
+      if (colon > 0) { transport = raw.slice(0, colon); token = raw.slice(colon + 1); }
+      else token = raw;
+    }
+    if (transport !== _pmCloudTransportName()) {
+      const error = _pmCloudError(400, '別の保存先で取得した版情報は使用できません。');
+      error.code = 'transport_mismatch';
+      throw error;
+    }
+    if (!token) throw _pmCloudError(400, '保存元のファイル版が不正です');
+    return { entryRevision, transportRevision: { transport, token } };
+  }
+
+  function _pmCloudAssertPatchCurrent(entry, expected) {
+    const currentEntry = _pmCloudEntryRevision(entry.frontmatter);
+    const currentTransport = entry.transportRevision || { transport: _pmCloudTransportName(), token: '' };
+    if (expected.entryRevision !== currentEntry || expected.transportRevision.token !== String(currentTransport.token || '')) {
+      const error = _pmCloudError(409, 'この項目は別の画面で更新されています。競合内容を確認してから保存してください。');
+      error.code = 'etag_conflict';
+      error.meldexCode = 'etag_conflict';
+      error.currentEntryRevision = currentEntry;
+      error.currentTransportRevision = currentTransport;
+      throw error;
+    }
+    return currentEntry;
+  }
+  function _pmCloudPatchIsNoop(frontmatter, schema, updates) {
+    return Object.entries(updates).every(([name, value]) => (
+      _pmCloudPropValue(frontmatter, name).trim() === _pmCloudNormalizeEntryValue(schema[name] || {}, value).trim()
+    ));
+  }
   function _pmCloudApplyEntryUpdates(frontmatter, schema, updates, logicalSheet) {
     // 内部専用列（production_internal行き）はユーザー向けスキーマに存在しなくても許可する
     // （制作管理UX改善計画 2026-08-04 §5-1）。この経路へ内部列名が来るのは自動追従フック・
@@ -67305,7 +68404,14 @@ function hideBoardNoteTab() {
     fm.id = 'ent_' + _pmHash(path + '|' + seed + '|' + Math.random()).slice(0, 10);
     await _pmCloudJournalText(journal, path);
     await provider.writeText(path, _pmCloudFrontmatterText(fm, ''));
-    return { path, name: internals._basename(path).replace(/\.md$/i, ''), sheet: physicalSheet, frontmatter: fm, body: '' };
+    return {
+      path,
+      name: internals._basename(path).replace(/\.md$/i, ''),
+      sheet: physicalSheet,
+      frontmatter: fm,
+      body: '',
+      transportRevision: await _pmCloudEntryTransportRevision(provider, path, { frontmatter: fm, body: '' }),
+    };
   }
   async function _pmCloudFindWork(provider, internals, title) {
     const wanted = String(title || '').trim();
@@ -67410,6 +68516,8 @@ function hideBoardNoteTab() {
     const sheet = _pmCloudSheetAlias(body?.sheet);
     if (!PM_PROPERTY_TYPES[sheet]) throw _pmCloudError(400, '対象リストが不正です');
     const entry = await _pmCloudResolveEntry(provider, internals, sheet, body);
+    const expected = _pmCloudPatchPreconditions(body);
+    const currentEntryRevision = _pmCloudAssertPatchCurrent(entry, expected);
     const updates = body?.properties && typeof body.properties === 'object' ? { ...body.properties } : {};
     if (sheet === 'タスクリスト') {
       delete updates[PM_TASK_LEGACY_NAME_PROP];
@@ -67425,19 +68533,47 @@ function hideBoardNoteTab() {
     }
     if (!Object.keys(updates).length) throw _pmCloudError(400, '更新内容がありません');
     const schema = await _pmCloudEntrySchema(provider, internals, sheet, entry.sheet, entry.frontmatter);
+    if (_pmCloudPatchIsNoop(entry.frontmatter, schema, updates)) {
+      return { ok: true, row: _pmCloudEntryRow(entry), needs_recalculate: false, unchanged: true, cloud: true };
+    }
     const fm = _pmCloudApplyEntryUpdates(entry.frontmatter, schema, updates, sheet);
     // 制作管理UX改善計画（2026-08-04）§5-1「開始日時・完了日時」: タスク詳細サイドバーの
     // PATCH経路（Desktop _patch_production_entry_locked のCloud対応）でも状況変更を拾う。
     if (sheet === 'タスクリスト') _pmCloudApplyStatusTimestampHook(entry.path, fm);
+    const beforeState = JSON.stringify({ properties: entry.frontmatter?.properties || {}, production_internal: entry.frontmatter?.production_internal || {} });
+    const afterState = JSON.stringify({ properties: fm.properties || {}, production_internal: fm.production_internal || {} });
+    if (beforeState === afterState) {
+      return { ok: true, row: _pmCloudEntryRow(entry), needs_recalculate: false, unchanged: true, cloud: true };
+    }
+    fm.meldex_revision = currentEntryRevision + 1;
+    if (typeof provider.uploadBytesConditional !== 'function') {
+      const error = _pmCloudError(503, 'このCloud保存先では安全な同時更新を利用できません。接続を更新してからやり直してください。');
+      error.code = 'strict_cas_unavailable'; error.meldexCode = 'strict_cas_unavailable'; throw error;
+    }
     const journal = _pmCloudMutationJournal(provider, internals);
     await _pmCloudJournalText(journal, entry.path);
     if (sheet === 'タスクリスト') { await _pmCloudJournalCalendar(journal, 'events'); await _pmCloudJournalCalendar(journal, 'calendars'); }
     try {
-      await provider.writeText(entry.path, _pmCloudFrontmatterText(fm, entry.body || ''));
+      const text = _pmCloudFrontmatterText(fm, entry.body || '');
+      const saved = await provider.uploadBytesConditional(entry.path, new TextEncoder().encode(text), expected.transportRevision.token);
+      const savedRevision = String(saved?.revision || saved?.rev || saved?.etag || '');
+      _pmCloudSetRollbackRevision(journal, entry.path, savedRevision);
       if (sheet === 'タスクリスト') await _pmCloudSyncTaskEvent(provider, internals, entry.path, fm);
-      return { ok: true, row: _pmCloudEntryRow({ ...entry, frontmatter: fm }), needs_recalculate: sheet === 'タスクリスト', cloud: true };
+      const parsed = { frontmatter: fm, body: entry.body || '' };
+      const transportRevision = savedRevision
+        ? { transport: _pmCloudTransportName(), token: savedRevision }
+        : await _pmCloudEntryTransportRevision(provider, entry.path, parsed);
+      return { ok: true, row: _pmCloudEntryRow({ ...entry, frontmatter: fm, transportRevision }), needs_recalculate: sheet === 'タスクリスト', cloud: true };
     } catch (error) { return _pmCloudRollbackMutation(journal, error); }
   }
+  // gb-production-management-cloud-task-event-query.js: タスク⇔カレンダー予定の同期
+  // （区間分割・ロック表示を含む）、カレンダードロップからのテンプレート起点タスク作成、
+  // 予定IDからのタスク逆引き、タスク一覧の絞り込み・並べ替えクエリを担当する
+  // （責務単位分割 2026-08-12。旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   function _pmCloudTaskSegments(value, start, end) {
     let rows = [];
@@ -67599,6 +68735,14 @@ function hideBoardNoteTab() {
     rows = rows.slice(offset, offset + limit);
     return { ok: true, sheet: 'タスクリスト', columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), property_types: PM_PROPERTY_TYPES['タスクリスト'], editable_columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), rows, count: rows.length, total, offset, limit, work_meta: workMeta, generic_classification_labels: ['中分類', '小分類', '詳細分類'], cloud: true };
   }
+  // gb-production-management-cloud-task-hierarchy.js: 目標作業時間の計算（基準時間×
+  // 内容倍率×規模倍率×対象数）と、階層構成（プリセット・階層ラベル・ページ/コマ等の
+  // 単位パス）からタスク行を組み立てる純粋ロジックを担当する（責務単位分割 2026-08-12。
+  // 旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   function _pmCloudDurationNumber(value, fallback = 1) {
     const text = String(value == null ? '' : value).trim();
@@ -67835,6 +68979,15 @@ function hideBoardNoteTab() {
     }))));
     return rows;
   }
+  // gb-production-management-cloud-task-structure-adapter.js: フル再計算エンジン
+  // （gb-production-recalc-engine-cloud-adapter.js）・階層構造編集
+  // （gb-production-management-task-structure.js）向けの依存注入オブジェクトの組み立てと、
+  // シフト/日付整形・ハッシュ・安全なファイル名生成などの共有ユーティリティを担当する
+  // （責務単位分割 2026-08-12。旧 gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。
 
   // フル再計算エンジン（gb-production-recalc-engine-cloud-adapter.js、別クロージャ）向けの依存
   // 注入。_pmCloudTaskStructureDeps() と同じ流儀（part01.js/part02.js は同一IIFEなので、
@@ -67983,6 +69136,21 @@ function hideBoardNoteTab() {
     });
     return (hash >>> 0).toString(16) + Math.abs(String(value || '').length).toString(16);
   }
+  // gb-production-management-cloud-exports.js: 制作管理Cloud機能の公開API
+  // （window.openProductionManagementStart 等のグローバル関数、
+  // window.MeldexProductionManagement）と、Cloudルートハンドラ・外部カレンダー自動送信
+  // タイマーの起動呼び出しを担当する（責務単位分割 2026-08-12。旧
+  // gb-production-management.part02.js の一部）。
+  //
+  // gb-production-management.part01.js から続く共有クロージャ（IIFEの raw
+  // concatenation）に属し、このファイル自体は自前のIIFEを持たない。読み込み順は
+  // gb-production-management.js を参照。ただし、このファイルの
+  // _pmInstallCloudHandler() / _pmStartExternalSyncTimer() 呼び出しは、それらが参照する
+  // 関数（他ファイルの function 宣言）がJSの関数宣言ホイスティングにより読み込み順に
+  // かかわらず解決されるため、読み込み順で最後である必要はない
+  // （gb-production-management-cloud-save-hooks.js だけは閉じ括弧 })(); を持つため
+  // 必ず最後に読み込むこと）。
+
   window.openProductionManagementStart = openProductionManagementStart;
   window.openProductionShiftImport = openProductionShiftImport;
   window.openProductionTaskCreate = openProductionTaskCreate;
@@ -68040,17 +69208,17 @@ function hideBoardNoteTab() {
 
   _pmInstallCloudHandler();
   _pmStartExternalSyncTimer();
-  // gb-production-management.part02.js から分離した CSV/XLSX/ZIP 書き出しユーティリティ
-  // （制作管理UX改善計画 2026-08-04 §5-1 の内部専用列対応で part02.js が1500行制限を超えた
-  // ため切り出した。gb-production-management.part01.js〜.part04.js と同じ共有クロージャに
-  // 属する raw concatenation の1パートで、自前の IIFE は持たない。IIFEの開始は part01.js、
-  // 終了は最後のパート part04.js にある）。
+  // gb-production-management-cloud-spreadsheet-io.js: シフト取込CSV/XLSX解析と
+  // CSV/XLSX/ZIP書き出しユーティリティ（責務単位分割 2026-08-12。旧
+  // gb-production-management.part03.js）。
   //
-  // 2026-08-05 追記: シフト取込側の XLSX/ZIP 解析ユーティリティ（_pmParseShiftFile 以下）も
-  // ここへ集約した（part01.js が項目12/15の追加で1500行制限を再超過したため。同じ
-  // XLSX/ZIP読み書きというテーマのまとまりに合わせて移動。呼び出し元
-  // openProductionShiftImport は part01.js に残っており、同一クロージャなので
-  // 参照は変わらず解決できる）。
+  // gb-production-management.part01.js 〜 gb-production-management-cloud-save-hooks.js は
+  // 同じ共有クロージャ（IIFEの raw concatenation）に属し、このファイル自体は自前のIIFEを
+  // 持たない。IIFEの開始は gb-production-management.part01.js、終了は読み込み順で最後になる
+  // gb-production-management-cloud-save-hooks.js にある（読み込み順は gb-production-management.js
+  // を参照）。同一クロージャのため呼び出し元との参照は変わらず解決できる。
+  //
+  // 呼び出し元 openProductionShiftImport は gb-production-management-cloud-dialogs.js にある。
 
   async function _pmParseShiftFile(file) {
     if (!file) return [];
@@ -68286,15 +69454,21 @@ function hideBoardNoteTab() {
     }
     return (crc ^ -1) >>> 0;
   }
-  // gb-production-management.part02.js から分離したセル保存時の自動追従フック群
-  // （制作管理UX改善計画 2026-08-04 §5-1/§5-3/Stage 4対応で part02.js が1500行制限を
-  // 超えたため切り出した。gb-production-management.part01.js〜.part04.js は同じ共有
-  // クロージャに属する raw concatenation で、自前の IIFE は持たない。ただし part01.js が
-  // 開いたIIFEの閉じ括弧 })(); は、ロード順で最後になるこのファイルの末尾へ移した
-  // （旧: part02.js末尾で閉じていたため、それより後にロードされる part03.js/part04.js の
-  // 宣言がIIFEの外側スコープになり、IIFE内部の _pmCloud* 関数を直接呼べない不具合があった。
-  // JSの関数宣言ホイスティングは「呼び出し元より後で宣言されていても同じスコープ内なら
-  // 見える」だけで、別スコープ（IIFEの外）の宣言までは見えないため、これが必要）。
+  // gb-production-management-cloud-save-hooks.js: セル保存時の自動追従フック群
+  // （開始日時・完了日時の自動記録／タスク名自動リネーム／作業順自動採番／
+  // 目標作業時間再計算。責務単位分割 2026-08-12。旧 gb-production-management.part04.js）。
+  //
+  // 重要: gb-production-management.part01.js 〜 このファイルは同じ共有クロージャ（IIFEの
+  // raw concatenation）に属し、このファイル自体は自前のIIFEを持たない。IIFEの開始は
+  // gb-production-management.part01.js にあり、閉じ括弧 })(); は読み込み順で最後になる
+  // このファイルの末尾に置く（読み込み順は gb-production-management.js を参照。旧: part02.js
+  // 末尾で閉じていたため、それより後にロードされる旧part03.js/part04.jsの宣言がIIFEの
+  // 外側スコープになり、IIFE内部の _pmCloud* 関数を直接呼べない不具合があった。JSの関数宣言
+  // ホイスティングは「呼び出し元より後で宣言されていても同じスコープ内なら見える」だけで、
+  // 別スコープ（IIFEの外）の宣言までは見えないため、この順序契約は厳守すること）。
+  // gb-production-management.js に新しい読み込みファイルを追加する場合、このファイルを
+  // 配列の最後に保つこと。
+
   function _pmCloudTaskSheetEntryInfo(internals, path) {
     if (!internals) return null;
     const root = String(_pmCloudRoot(internals) || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
@@ -68815,7 +69989,10 @@ function hideBoardNoteTab() {
       to.addEventListener(eventName, resetPreview);
     });
 
-    // --- シフト時間内に収める（残業許可の設定。既定OFF=現状どおり残業を許可） ---
+    // --- 残業を含める（既定OFF=残業なし。スケジューラー複数アカウント修正計画2026-08-13
+    // Phase 3: 全入口の既定を「残業を含めない」に統一する。旧ラベル「シフト時間内に収める」は
+    // チェックON＝残業なしという反転した意味で分かりにくかったため、新「自動割り当て」画面と
+    // 同じ「残業を含める」（チェックON＝残業あり）に統一した ---
     const allowOvertimeToggle = document.createElement('input');
     allowOvertimeToggle.type = 'checkbox';
     allowOvertimeToggle.checked = false;
@@ -68823,12 +70000,12 @@ function hideBoardNoteTab() {
     const allowOvertimeLabel = document.createElement('label');
     allowOvertimeLabel.className = 'gb-check gb-production-check';
     const allowOvertimeText = document.createElement('span');
-    allowOvertimeText.textContent = 'シフト時間内に収める';
+    allowOvertimeText.textContent = '残業を含める';
     allowOvertimeLabel.append(allowOvertimeToggle, allowOvertimeText);
     const allowOvertimeRow = document.createElement('div');
     allowOvertimeRow.className = 'gb-check-help-row gb-production-check-help-row';
     allowOvertimeRow.appendChild(allowOvertimeLabel);
-    allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト時間を超える割り当てをしません'));
+    allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト終了後から次の出勤までの時間も割り当て候補に含めます'));
     allowOvertimeRow.querySelector('.gb-field-help').dataset.e2eId = 'production-recalculate-overtime-help';
     allowOvertimeToggle.addEventListener('change', resetPreview);
 
@@ -68968,7 +70145,7 @@ function hideBoardNoteTab() {
       setBusy(true, '自動割り当てのプレビューを作成しています…');
       try {
         const scope = currentScopeBody();
-        const allowOvertime = !allowOvertimeToggle.checked;
+        const allowOvertime = allowOvertimeToggle.checked;
         const unassignedOnly = unassignedOnlyToggle.checked;
         // current_user はスタッフ未登録時のソロフォールバック用（Desktopは認証セッションが
         // あればサーバー側で上書きする）。
@@ -69329,35 +70506,12 @@ function hideBoardNoteTab() {
 (() => {
   if (typeof CalendarComponent === 'undefined') return;
 
-  // 制作管理UX改善計画（2026-08-04）§6-1:
-  // - 「制作管理を始める」ボタンは廃止（未セットアップ時のみ空状態カードとして別途表示する）。
-  // - 「担当者と時間を割り当て」（即時実行）は廃止し、「割当再計算」
-  //   （旧ラベル「再計算」「予定を組み直す」。プレビュー→適用の2段階で unassigned_only スコープも選べる）へ統合した。
-  // - 「メンバーを追加」は正本『スタッフ管理シート』を開く導線へ変更。
-  // 各操作には表示グループ（schedule=スケジュール / data=データ）を持たせる。
-  const ACTIONS = [
-    { label: 'タスクを作成', icon: 'listPlus', fn: 'openProductionTaskCreate', group: 'schedule' },
-    { label: 'シフトを取り込む', icon: 'fileInput', fn: 'openProductionShiftImport', group: 'schedule' },
-    // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
-    // improvement-plan-2026-08-04.md §4-1）。desktopOnlyフラグは撤去した。
-    { label: '自動割り当て', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
-    { label: 'スタッフ管理シートを開く', icon: 'userPlus', fn: 'openProductionStaffRegistrySheet', group: 'data' },
-    // Google送信はCloud（Dropboxモード）にも移植済み（production-management-ux-improvement-
-    // plan-2026-08-04.md §4-4）。CalDAV送信はDesktop限定のままだが、ボタン自体は両方で表示し、
-    // 未接続時は結果メッセージで案内する（「クラウド版では未対応」の行き止まり表示にしない）。
-    { label: '外部カレンダーへ送信', icon: 'send', fn: 'runProductionExternalSync', group: 'data' },
-    { label: '書き出す', icon: 'fileOutput', fn: 'openProductionExport', group: 'data' },
-  ];
-  const ACTION_GROUPS = [
-    { key: 'schedule', label: 'スケジュール' },
-    { key: 'data', label: 'データ' },
-  ];
-  // 中央の一覧や共通ツールバーと重複しない操作だけを右側に残す。
-  // 自動割り当ては共通ツールバーの単一コマンドだけに置き、割り当てタブは
-  // 対象・能力・直近の案を表示し、実行ボタンを重複させない。
-  const MANAGEMENT_ACTIONS = ACTIONS.filter(action => (
-    action.fn !== 'openProductionTaskCreate' && action.fn !== 'openProductionRecalculate'
-  ));
+  // 制作管理UX改善計画（2026-08-04）§6-1で導入した「管理操作」パネル（ACTIONS配列＋
+  // グルーピング描画）は、df82a68f（2026-08-10、サイドバー5モード再編）でカレンダー
+  // ツールバーの「管理操作」ボタンが MeldexProductionSidebar.showActions（allocationモード）
+  // へ差し替えられたことで、到達経路を失った（スケジューラー複数アカウント修正計画
+  // 2026-08-13 追加スコープで確認・削除）。現在の「割り当て」タブは gb-scheduler-ui.js の
+  // renderAllocation が担う。
   const PRODUCTION_SHEET_TABS = [
     { key: 'tasks', id: 'production-task-list', label: 'タスクリスト', icon: 'listTodo' },
     { key: 'works', id: 'production-managed-works', label: 'プロジェクト一覧', icon: 'folderKanban' },
@@ -69370,19 +70524,6 @@ function hideBoardNoteTab() {
   function _pmStatus(message, error) {
     if (typeof showStatus === 'function') showStatus(message, !!error);
     else console[error ? 'error' : 'log'](message);
-  }
-
-  function _pmIsDropboxMode() {
-    return !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
-  }
-
-  function _pmDesktopOnlyReason(action) {
-    if (!action?.desktopOnly || !_pmIsDropboxMode()) return '';
-    return `${action.label}はデスクトップ版で実行してください`;
-  }
-
-  function _pmActionWrites(action) {
-    return action?.fn !== 'openProductionExport';
   }
 
   function _pmOpenOptionPanel(select) {
@@ -69414,51 +70555,6 @@ function hideBoardNoteTab() {
     body.className = 'cal-option-body';
     detailEl.append(header, body);
     return body;
-  }
-
-  function _pmRunAction(action) {
-    const unavailableReason = _pmDesktopOnlyReason(action);
-    if (unavailableReason) {
-      _pmStatus(unavailableReason, true);
-      return;
-    }
-    if (_pmActionWrites(action) && window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
-    const fn = window[action.fn];
-    if (typeof fn !== 'function') {
-      _pmStatus(`${action.label}を初期化できませんでした`, true);
-      return;
-    }
-    try {
-      const result = fn();
-      if (result && typeof result.catch === 'function') {
-        result.catch(error => _pmStatus(error?.message || String(error), true));
-      }
-    } catch (error) {
-      _pmStatus(error?.message || String(error), true);
-    }
-  }
-
-  function _pmActionButton(action) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-cal-production-action';
-    const unavailableReason = _pmDesktopOnlyReason(action);
-    if (typeof window[action.fn] !== 'function' || unavailableReason) button.disabled = true;
-    if (unavailableReason) {
-      button.title = unavailableReason;
-      button.setAttribute('aria-label', `${action.label}（デスクトップ版のみ）`);
-    }
-    const icon = document.createElement('span');
-    icon.className = 'gb-cal-production-action-icon';
-    icon.innerHTML = _pmIcon(action.icon, 14);
-    const label = document.createElement('span');
-    label.textContent = unavailableReason ? `${action.label}（デスクトップ版のみ）` : action.label;
-    button.dataset.productionAction = action.fn;
-    button.dataset.e2eId = 'gb-production-management-action-' + action.fn.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
-    button.append(icon, label);
-    button.addEventListener('click', () => _pmRunAction(action));
-    if (_pmActionWrites(action)) window.MeldexProductionUiAvailability?.markWriteControl?.(button);
-    return button;
   }
 
   // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ時（/production-management/status の
@@ -69497,53 +70593,6 @@ function hideBoardNoteTab() {
     });
     card.append(iconEl, message, button);
     return card;
-  }
-
-  function _pmRenderActionGroups(host) {
-    ACTION_GROUPS.forEach(groupDef => {
-      const groupActions = MANAGEMENT_ACTIONS.filter(action => (action.group || '') === groupDef.key);
-      if (!groupActions.length) return;
-      const section = document.createElement('div');
-      section.className = 'gb-production-actions-group';
-      section.dataset.e2eId = 'gb-production-actions-group-' + groupDef.key;
-      const heading = document.createElement('div');
-      heading.className = 'gb-production-actions-group-label';
-      heading.textContent = groupDef.label;
-      const actions = document.createElement('div');
-      actions.className = 'gb-cal-production-actions gb-production-management-actions';
-      groupActions.forEach(action => actions.appendChild(_pmActionButton(action)));
-      section.append(heading, actions);
-      host.appendChild(section);
-    });
-  }
-
-  function _pmRenderManagementActions(host) {
-    if (!host) return;
-    const renderSeq = (host.__pmActionsRenderSeq = (host.__pmActionsRenderSeq || 0) + 1);
-    host.replaceChildren();
-    const loading = document.createElement('p');
-    loading.className = 'gb-production-management-actions-note';
-    loading.textContent = '読み込み中…';
-    host.appendChild(loading);
-    const readyPromise = window.MeldexProductionApi?.checkReady ? window.MeldexProductionApi.checkReady() : Promise.resolve(true);
-    readyPromise.then(ready => {
-      if (host.__pmActionsRenderSeq !== renderSeq) return;
-      host.replaceChildren();
-      if (!ready) {
-        host.appendChild(_pmEmptyStateCard(() => _pmRenderManagementActions(host)));
-        return;
-      }
-      const intro = document.createElement('p');
-      intro.className = 'gb-production-management-actions-note';
-      const availability = window.MeldexProductionUiAvailability?.current?.() || { blocked: false, reason: '' };
-      if (availability.blocked) {
-        intro.textContent = `${availability.reason}。ここでは内容の確認と書き出しだけを利用できます。`;
-      } else {
-        intro.innerHTML = '管理操作 ' + fieldHelp('初期設定、割り当て、外部連携など、表編集では行えない操作です。');
-      }
-      host.appendChild(intro);
-      _pmRenderActionGroups(host);
-    });
   }
 
   function _pmFindCalendarComponent() {
@@ -69704,15 +70753,6 @@ function hideBoardNoteTab() {
     this._renderProductionManagementPanel(body, options);
   };
 
-  window.openProductionManagementPanel = function () {
-    const component = _pmFindCalendarComponent();
-    if (!component || typeof component._showProductionManagementPanel !== 'function') {
-      _pmStatus('スケジュールを開いてから制作管理を開いてください', true);
-      return;
-    }
-    component._showProductionManagementPanel({ mode: 'actions' });
-  };
-
   window.openProductionTaskListSheet = async function () {
     if (!window.MeldexProductionApi?.summary || typeof selectDatabase !== 'function') {
       _pmStatus('タスクリストシートを開けませんでした', true);
@@ -69759,7 +70799,6 @@ function hideBoardNoteTab() {
   });
 
   window.MeldexProductionManagementActions = Object.freeze({
-    render: _pmRenderManagementActions,
     toolMenuItems: _pmToolMenuItems,
     emptyStateCard: _pmEmptyStateCard,
   });
@@ -71467,7 +72506,9 @@ function hideBoardNoteTab() {
   ];
   const ANNOTATION_ITEMS = [
     { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
-    { id: 'line', label: 'ライン', icon: 'spline', group: 'line' },
+    // 初期アイコンは本体側 _ANN_TOOL_GROUPS.line[0] と同じ activity（折れ線）に揃える。
+    // _ensureAnnotationBar() 直後の _syncAnnotationBarState() で選択中ツールに追従する。
+    { id: 'line', label: 'ライン', icon: 'activity', group: 'line' },
     { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
@@ -71479,6 +72520,29 @@ function hideBoardNoteTab() {
     { id: 'list', label: '一覧', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
+  // 本体（gb-annotations）の _ANN_TOOL_GROUPS と同じ内容のフォールバック。本体側が
+  // 読み込み前で未定義の場合に備える。グループボタンのアイコンを選択中メンバーへ
+  // 追従させるため、本体側と同じアイコン名を持たせる（注釈フロートパレット改修計画
+  // 2026-08-13 §1-2）。
+  const ANNOTATION_GROUP_FALLBACK = {
+    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }, { tool: 'marker', label: 'マーカー', icon: 'highlighter' }],
+    line: [{ tool: 'polyline', label: '折れ線', icon: 'activity' }, { tool: 'ellipse-line', label: '円形', icon: 'circle' }, { tool: 'rect-line', label: '矩形', icon: 'square' }],
+    fill: [{ tool: 'lasso', label: '囲い塗り', icon: 'lasso' }, { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' }, { tool: 'rect', label: '矩形塗り', icon: 'square' }],
+  };
+  const ANNOTATION_GROUP_LABELS = { stroke: 'ストローク', line: 'ライン', fill: '塗りつぶし' };
+
+  function _annMobileGroupMembers(group) {
+    return (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || ANNOTATION_GROUP_FALLBACK[group] || [];
+  }
+
+  // グループボタン（ストローク/ライン/塗りつぶし）のアイコンを選択中メンバーへ追従させる。
+  function _applyAnnMobileGroupIcon(button, group, member) {
+    if (!button || !member) return;
+    const iconSpan = button.querySelector('.cloud-mobile-icon');
+    if (iconSpan && typeof lucide === 'function') iconSpan.innerHTML = lucide(member.icon, 18);
+    const groupLabel = ANNOTATION_GROUP_LABELS[group] || '';
+    button.setAttribute('aria-label', groupLabel ? `${groupLabel}（${member.label}）` : member.label);
+  }
 
   let _mainButton = null;
   let _editBar = null;
@@ -72140,12 +73204,7 @@ function hideBoardNoteTab() {
   }
 
   function _openAnnotationMobileToolMenu(anchor, group) {
-    const fallback = {
-      stroke: [{ tool: 'pen', label: 'ペン' }, { tool: 'marker', label: 'マーカー' }],
-      line: [{ tool: 'polyline', label: '折れ線' }, { tool: 'ellipse-line', label: '円形' }, { tool: 'rect-line', label: '矩形' }],
-      fill: [{ tool: 'lasso', label: '囲い塗り' }, { tool: 'ellipse-fill', label: '円形塗り' }, { tool: 'rect', label: '矩形塗り' }],
-    };
-    const items = (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || fallback[group] || [];
+    const items = _annMobileGroupMembers(group);
     document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
     const menu = document.createElement('div');
     menu.className = 'ann-tool-popup'; menu.setAttribute('role', 'menu');
@@ -72210,9 +73269,13 @@ function hideBoardNoteTab() {
     });
     _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
       const group = button.dataset.annMobileGroup;
-      const members = group === 'stroke' ? ['pen', 'marker']
-        : (group === 'line' ? ['polyline', 'ellipse-line', 'rect-line'] : ['lasso', 'ellipse-fill', 'rect']);
-      button.classList.toggle('active', members.includes(tool));
+      const groupMembers = _annMobileGroupMembers(group);
+      const isActive = groupMembers.some(member => member.tool === tool);
+      button.classList.toggle('active', isActive);
+      // 選択中ツールがこのグループに属する時だけアイコンを更新する。他グループの
+      // ツールへ切り替わっても、直前にこのグループ内で選んでいたツールの見た目を保つ
+      // （本体 gb-annotations の _annotationSelectTool と同じ設計）。
+      if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
     });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
@@ -77702,6 +78765,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
         operation_id: item.operationId,
+        ...(item.confirmationPayload || {}),
       };
       let response;
       let firstError;
@@ -77912,6 +78976,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
             ...entry,
             ctx: options?.ctx || null,
             operationId: operationId('entry-delete'),
+            confirmationPayload: window.MeldexDeleteImpactWarning?.confirmationPayload?.(options?.confirmation) || {},
             subscribers: [],
           };
           item.deleteKeys = item.identityKeys;
@@ -79773,6 +80838,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
           ctx,
           entries: [{ name: entityName, path: ep, entryId }],
           source: 'context-menu',
+          confirmation: confirmed,
         });
         const response = result.responses[0];
         const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
@@ -95562,8 +96628,8 @@ function applyComputedColumnCellStyle(td, dbPath, propName, ctx) {
 // 装飾関数を window.MeldexCellDisplayAugment.decorators に登録すると、その列が計算列
 // （computed_props宣言済み）である時だけ、値表示コンテナが組み上がった直後に呼ばれる。
 // 登録は単純なグローバルオブジェクトへのプロパティ代入のため、このファイルと登録側
-// （例: gb-production-management.part02.js）のスクリプト読込順に依存しない（描画時に
-// 遅延解決するため、登録側が後から読み込まれても動く）。
+// （例: gb-production-management-cloud-task-generation.js）のスクリプト読込順に依存しない
+// （描画時に遅延解決するため、登録側が後から読み込まれても動く）。
 function decorateComputedColumnCell(td, container, dbPath, propName, entityData, ctx) {
   if (!td || !container || !isComputedColumn(dbPath, propName, ctx)) return false;
   const decorator = typeof window !== 'undefined'
@@ -95627,7 +96693,12 @@ if (typeof window !== 'undefined') {
     const selector = tablist.classList.contains('gb-pane-tabs')
       ? ':scope > .gb-pane-tabs-scroll > .gb-tab'
       : ':scope > [role="tab"]';
-    return Array.from(tablist.querySelectorAll(selector));
+    // #detail-tab-bar（オプションパネル）や #smart-db-view-tabs のように、
+    // 複数の対象タイプ用タブを同じタブバーへ同居させ、現在のタイプに合わない
+    // タブを `hidden` 属性で隠す実装がある。ここで hidden を素通りさせると、
+    // スマホ用ドロップダウンに無関係な20件前後のタブが並び、実質的に目的の
+    // タブへ切り替えられなくなる（2026-08-13 バグ報告で確認）。
+    return Array.from(tablist.querySelectorAll(selector)).filter(tab => !tab.hidden);
   }
 
   function activeTab(tabs) {
@@ -95717,7 +96788,18 @@ if (typeof window !== 'undefined') {
     document.addEventListener('pointerdown', dismiss, true);
   }
 
-  function ensureDropdown(tablist) {
+  // 1ペイン内に複数のタブバー（ペイン自体のタブ + 中に埋め込まれたオプション
+  // パネルのタブ等）が入れ子になることがある。祖先ペインのIDだけを優先すると、
+  // 同じペインを共有する別々のタブバーへ同一の data-e2e-id が付いてしまう
+  // （例: オプションパネルの「詳細タブ」）。まず自分自身の id / aria-label を
+  // 優先し、それが無いタブバー（＝ペイン直下のタブバー自身）だけ祖先ペインIDへ
+  // フォールバックする。
+  function _dropdownOwnerKey(tablist) {
+    return tablist.id || tablist.getAttribute?.('aria-label')
+      || tablist.closest?.('[data-pane-id]')?.dataset?.paneId || 'tabs';
+  }
+
+  function ensureDropdown(tablist, usedIds) {
     let trigger = tablist.previousElementSibling;
     if (!trigger?.classList?.contains('gb-mobile-tab-dropdown')) {
       trigger = document.createElement('button');
@@ -95728,30 +96810,51 @@ if (typeof window !== 'undefined') {
       trigger.addEventListener('click', () => openMenu(trigger, tablist));
       tablist.parentNode?.insertBefore(trigger, tablist);
     }
-    const owner = tablist.closest?.('[data-pane-id]')?.dataset?.paneId
-      || tablist.id || tablist.getAttribute?.('aria-label') || 'tabs';
-    trigger.dataset.e2eId = `mobile-tab-dropdown-${String(owner).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'tabs'}`;
+    const owner = _dropdownOwnerKey(tablist);
+    const base = `mobile-tab-dropdown-${String(owner).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'tabs'}`;
+    let e2eId = base;
+    // 上記の優先順位を揃えても、想定していない入れ子構造では同じ owner が
+    // 複数のタブバーへ再び付き得る。同一syncAllパス内での重複だけは、
+    // 安定した通し番号を付けて必ず一意化する（安全網）。
+    if (usedIds) {
+      let n = 2;
+      while (usedIds.has(e2eId) && usedIds.get(e2eId) !== tablist) {
+        e2eId = `${base}-${n}`;
+        n += 1;
+      }
+      usedIds.set(e2eId, tablist);
+    }
+    // 同じ値でも属性へ書けば変更通知は発生する。実際に変わる時だけ書くこと
+    // （この関数を呼んでいる MutationObserver が再発火して無限ループになるため）。
+    if (trigger.dataset.e2eId !== e2eId) trigger.dataset.e2eId = e2eId;
     trigger.__meldexTablist = tablist;
     return trigger;
   }
 
-  function syncOne(tablist) {
+  function syncOne(tablist, usedIds) {
     if (!tablist?.isConnected) return;
-    const trigger = ensureDropdown(tablist);
+    const trigger = ensureDropdown(tablist, usedIds);
     const tabs = tabItems(tablist);
     const active = activeTab(tabs);
     const title = tabTitle(active);
+    const label = `${title}。表示を切り替える`;
+    const disabled = tabs.length === 0;
+    // すべて「変化した時だけ書く」こと。値が同じでも属性への書き込みは変更通知を
+    // 発生させ、下の MutationObserver（disabled を監視対象に含む）が再びこの関数を
+    // 呼ぶ。タブが0個のタブバー（読み込み中のタスクリスト等）では disabled=true を
+    // 毎回書き直すため終わらない連鎖になり、画面全体が停止していた（2026-08-13）。
     if (trigger.textContent !== title) trigger.textContent = title;
-    trigger.title = title;
-    trigger.setAttribute('aria-label', `${title}。表示を切り替える`);
-    trigger.disabled = tabs.length === 0;
+    if (trigger.title !== title) trigger.title = title;
+    if (trigger.getAttribute('aria-label') !== label) trigger.setAttribute('aria-label', label);
+    if (trigger.disabled !== disabled) trigger.disabled = disabled;
   }
 
   function syncAll() {
     const phone = isPhone();
     document.documentElement.toggleAttribute('data-meldex-phone-tabs', phone);
     const tablists = Array.from(document.querySelectorAll('[role="tablist"], .gb-pane-tabs'));
-    tablists.forEach(syncOne);
+    const usedIds = new Map();
+    tablists.forEach((tablist) => syncOne(tablist, usedIds));
     document.querySelectorAll('.gb-mobile-tab-dropdown').forEach((trigger) => {
       if (!trigger.__meldexTablist?.isConnected) trigger.remove();
     });
@@ -95815,12 +96918,52 @@ if (typeof window !== 'undefined') {
     document.addEventListener('pointercancel', () => { gesture = null; }, true);
   }
 
+  // openMenu() が作るドロップダウンメニュー(.gb-mobile-tab-menu)は、位置制御の
+  // 都合上 document.body 直下に付く（ポップアップの位置制御ルール通り）。
+  // そのため、このメニューをタブバーの内側に持つ他のポップアップ・ダイアログ
+  // （例: アイコンピッカー）が「自分の外側を pointerdown/mousedown したら閉じる」を
+  // `!el.contains(event.target)` で判定していると、メニュー項目のタップは
+  // 常に「外側」と誤判定され、タブ切替と同時に親ポップアップごと閉じてしまう
+  // （2026-08-13 バグ報告で確認。iconピッカーの候補タブが選べなくなっていた）。
+  // ここで最初期に capture フェーズの document リスナーを登録しておくと、
+  // 同一ノードへの capture リスナーは登録順に実行されるため、後から各
+  // ポップアップが登録する「外側クリックで閉じる」判定より必ず先に走り、
+  // stopImmediatePropagation() でそれらを止められる。
+  //
+  // 対象は pointerdown/mousedown のみに絞る（click は含めない）。click は
+  // pointerdown/pointerup の後に発火する別イベントで、メニュー項目自身の
+  // click リスナー（tab.click() 実行）はそれを使う。ここで click まで止めると
+  // 伝播が target 手前で完全に止まり、項目自身のクリックハンドラーに一生
+  // 届かなくなる（タブ切替そのものが無効化される）ため、pointerdown/mousedown
+  // だけを対象にして「外側クリックで閉じる」誤爆だけを防ぐ。
+  function _installMenuOutsideClickGuard() {
+    const guard = (event) => {
+      if (event.target?.closest?.('.gb-mobile-tab-menu')) event.stopImmediatePropagation();
+    };
+    ['pointerdown', 'mousedown'].forEach((type) => {
+      document.addEventListener(type, guard, true);
+    });
+  }
+
+  // DOMが変わるたびに全タブバーを走査するため、変更が連続する画面では走査が
+  // 積み上がる。連続した変更は1回の走査にまとめる（実行の順番は従来どおり、
+  // 次の描画より前）。
+  let syncQueued = false;
+  function scheduleSync() {
+    if (syncQueued) return;
+    syncQueued = true;
+    const run = () => { syncQueued = false; syncAll(); };
+    if (typeof queueMicrotask === 'function') queueMicrotask(run);
+    else setTimeout(run, 0);
+  }
+
   function init() {
     syncAll();
     installGestures();
-    observer = new MutationObserver(syncAll);
+    _installMenuOutsideClickGuard();
+    observer = new MutationObserver(scheduleSync);
     observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'aria-selected', 'aria-disabled', 'disabled'] });
-    global.addEventListener('resize', syncAll, { passive: true });
+    global.addEventListener('resize', scheduleSync, { passive: true });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init, { once: true });
@@ -97975,6 +99118,39 @@ function _dbOpenAlignedRelationStatusDropdown(statusDot, ctx) {
   return Boolean(sourceStatusDot);
 }
 
+// ロールアップの行合わせで個々の候補チップ(＋その場の「候補値を追加」導線)が
+// hidden になる際、単独の「＋」(.cell-add-btn) 自体は「元データの候補値が0件の
+// 時だけ出す」設計（2026-08-10 _cellUiShouldShowStandaloneAdd 導入）のため、
+// 既に候補のあるリレーションセルには最初から作られていない。行合わせ表示は
+// チップ側の追加導線を隠す代わりとして単独＋の再利用を前提にしていたため、
+// 無ければここで作る（2026-08-13 行合わせ後に＋ボタンが消える不具合の修正）。
+function _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx) {
+  if (cellValues.querySelector('.cell-add-btn')) return;
+  const dbPath = ctx?.dbPath || (typeof state !== 'undefined' ? state.currentDbPath : '');
+  const ptc = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath)?.[relationProp] : null;
+  if (typeof _cellUiCanAddCandidate !== 'function' || !_cellUiCanAddCandidate(dbPath, relationProp, ptc, ctx)) return;
+  const entityName = relationCell.closest('tr')?.dataset?.entityName || '';
+  if (!entityName || typeof startCellInlineAdd !== 'function') return;
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'cell-add-btn';
+  addBtn.dataset.e2eId = `${relationCell.dataset.e2eId || 'db-table-cell'}-add`;
+  addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
+  addBtn.title = '候補値を追加';
+  addBtn.setAttribute('aria-label', addBtn.title);
+  addBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  addBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const entityPath = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : `${dbPath}/${entityName}.md`;
+    startCellInlineAdd(relationCell, entityPath, entityName, relationProp);
+  });
+  cellValues.appendChild(addBtn);
+}
+
 function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCounts, ctx) {
   const firstRollup = [...rowRecord.rollups.values()][0];
   const relationCell = [...(firstRollup?.td?.closest('tr')?.querySelectorAll('td[data-prop-name]') || [])]
@@ -97984,6 +99160,7 @@ function _dbRenderAlignedRelationCell(rowRecord, relationProp, groups, slotCount
   if (!cellValues) return;
 
   cellValues.querySelector('.db-rollup-relation-lines')?.remove();
+  _dbEnsureAlignedRelationAddButton(relationCell, cellValues, relationProp, ctx);
   [...cellValues.children].forEach(child => {
     if (child.classList?.contains('db-rollup-relation-lines')) return;
     if (child.classList?.contains('cell-add-btn')) {
@@ -101445,7 +102622,9 @@ function _updateBulkEditBar(ctx) {
     bar.className = 'db-bulk-edit-bar gb-selection-float-bar';
     bar.dataset.paneId = paneId;
     bar.dataset.selectionFloatPaneId = paneId;
-    bar.id = 'db-bulk-edit-bar';
+    // ペインごとに一意なidにする（従来は固定文字列で、複数ペイン/分割ビューで
+    // 同時に一括編集バーを表示するとDOM上にid重複が発生していた）。
+    bar.id = 'db-bulk-edit-bar-' + paneId;
     host.appendChild(bar);
   }
   if (window.GBSelectionFloatMenu) {
@@ -102036,6 +103215,7 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     ctx,
     entries,
     source: 'bulk-delete',
+    confirmation: confirmed,
   });
   const deletedItems = result.trashRefs;
   const ok = deletedItems.length;
@@ -120584,6 +121764,10 @@ async function _openSmartDbFolderPicker(def, callback) {
     closeLabel: '対象フォルダ選択を閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
+    // 呼び出し元(#sdf-add-source-btn)は再入防止のため開いている間ボタンを
+    // disabled にする。disabled のまま returnFocus を試みてもフォーカス不能で
+    // 無視されるため、フォーカス復帰(_finishClose内)より前に必ず再有効化する。
+    onBeforeClose: () => { if (restoreTarget) restoreTarget.disabled = false; return true; },
     onClose: reason => resolveClosed(reason),
   });
   modalApi.closed = closed;
@@ -124645,9 +125829,8 @@ function _showSyncModal(dbPath) {
  * サーバー側の判定・カウントは一切行わず、POST /api/references/delete-impact
  * （meldex_api_reference_delete_impact.py）の結果をそのままDOMへ反映する。
  *
- * 重要: 警告は削除を止めない。cfConfirm自体の「キャンセル/削除」確認は
- * 従来どおり必要（計画書§10.1のtoken/409必須確認フローは本Phaseでは実装しない。
- * 詳細は meldex_api_reference_delete_impact.py 冒頭コメント参照）。
+ * 影響照会が完了しtokenを発行できた場合だけ確認操作を有効にする。削除APIは
+ * tokenを再検証するため、UIを迂回しても被参照ありの削除は進まない。
  *
  * [2026-08-01 フェーズB徹底チェック 修正3(b)] 大きなフォルダの削除影響照会は
  * 数百ms〜数秒かかることがある。以前は confirmDeleteWithImpact が照会完了を
@@ -124682,6 +125865,8 @@ function _showSyncModal(dbPath) {
           // 多いが、将来 assetId を持つ呼び出し元が現れてもここで欠落しない）。
           const assetId = t.assetId || t.asset_id;
           if (_isNonEmptyString(assetId)) item.assetId = assetId;
+          const physicalPath = t.physicalPath || t._physicalPath;
+          if (_isNonEmptyString(physicalPath)) item.physicalPath = physicalPath;
           return item;
         }
         return null;
@@ -124691,11 +125876,11 @@ function _showSyncModal(dbPath) {
 
   // サーバーへの照会本体。通信失敗・タイムアウト・ok!==true はすべて
   // failed:true として区別する（「参照なし」と黙って丸め込まない。修正3(b)）。
-  async function _fetchDeleteImpactWithStatus(items) {
+  async function _fetchDeleteImpactWithStatus(items, operation = 'trash', signal = null) {
     if (!items.length) return { impact: null, failed: false };
     if (typeof apiPost !== 'function') return { impact: null, failed: true };
     try {
-      const result = await apiPost('/api/references/delete-impact', { items }, { silentError: true, timeoutMs: 8000 });
+      const result = await apiPost('/api/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
       if (result && result.ok) return { impact: result, failed: false };
       return { impact: null, failed: true };
     } catch (_) {
@@ -124708,7 +125893,7 @@ function _showSyncModal(dbPath) {
   // 区別したい場合は confirmDeleteWithImpact 側の非同期差し替えを使うこと）。
   async function fetchDeleteImpact(targets) {
     const items = _toDeleteImpactItems(targets);
-    const { impact } = await _fetchDeleteImpactWithStatus(items);
+    const { impact } = await _fetchDeleteImpactWithStatus(items, 'trash');
     return impact;
   }
 
@@ -124751,7 +125936,24 @@ function _showSyncModal(dbPath) {
       box.appendChild(note);
     }
 
-    return sourceCount > 0 || incomplete;
+    // インポート・機能生成ファイル保護計画 Phase 2: 削除対象が機能の保存先
+    // （Xブックマーク・Web Clipper・外部インポート・スタッフ管理・クイックメモ・
+    // エクスポート等）またはその祖先フォルダの場合の専用警告。削除はブロック
+    // しない（案1「移動追従＋削除警告」）。
+    const featureSaveDirs = Array.isArray(impact && impact.featureSaveDirs) ? impact.featureSaveDirs : [];
+    const shownLabels = new Set();
+    featureSaveDirs.forEach((item) => {
+      const label = item && item.label;
+      if (!_isNonEmptyString(label) || shownLabels.has(label)) return;
+      shownLabels.add(label);
+      const note = document.createElement('div');
+      note.className = 'gb-delete-impact-warning-feature-save-dir';
+      note.dataset.e2eId = 'delete-impact-warning-feature-save-dir';
+      note.textContent = `このフォルダは${label}の保存先です。削除すると、次にこの機能を使うときに既定の場所へ新しく作り直されます`;
+      box.appendChild(note);
+    });
+
+    return sourceCount > 0 || incomplete || shownLabels.size > 0;
   }
 
   // impact（fetchDeleteImpactの戻り値）から警告DOM要素を組み立てる。
@@ -124820,29 +126022,49 @@ function _showSyncModal(dbPath) {
   // targets が空、cfConfirm未読込の場合は従来どおり確認は出す（警告が出せない
   // ことを理由に確認自体を省略しない）。被参照の照会はダイアログ表示を
   // ブロックしない（修正3(b)）。
+  function confirmationPayload(confirmation) {
+    if (!confirmation || typeof confirmation !== 'object') return {};
+    if (Array.isArray(confirmation.confirmations) && confirmation.confirmations.length) {
+      return { confirmations: confirmation.confirmations };
+    }
+    const confirmationToken = String(confirmation.confirmationToken || '');
+    const graphRevision = String(confirmation.graphRevision || '');
+    return confirmationToken && graphRevision ? { confirmationToken, graphRevision } : {};
+  }
+
   async function confirmDeleteWithImpact(targets, message, options) {
-    if (typeof cfConfirm !== 'function') return true;
+    if (typeof cfConfirm !== 'function') return false;
     const items = _toDeleteImpactItems(targets);
     const opts = Object.assign({}, options || {});
+    const operation = opts.operation === 'permanent' ? 'permanent' : 'trash';
+    delete opts.operation;
     if (!items.length) {
       return cfConfirm(message, opts);
     }
-
-    const placeholder = _buildLoadingNode();
-    opts.extraNode = placeholder;
-    const confirmPromise = cfConfirm(message, opts);
-
-    _fetchDeleteImpactWithStatus(items).then(({ impact, failed }) => {
-      _applyDeleteImpactResult(placeholder, items.length, impact, failed);
-    });
-
-    return confirmPromise;
+    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
+    if (failed || !impact || impact.complete === false) {
+      if (typeof cfAlert === 'function') {
+        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、削除を中止しました。');
+      }
+      return false;
+    }
+    const warning = buildWarningNode(impact, items.length);
+    if (warning) opts.extraNode = warning;
+    if (!await cfConfirm(message, opts)) return false;
+    return {
+      confirmed: true,
+      confirmationToken: impact.confirmationToken,
+      graphRevision: impact.graphRevision,
+      confirmations: impact.confirmations,
+      operation,
+    };
   }
 
   window.MeldexDeleteImpactWarning = {
     fetchDeleteImpact,
     buildWarningNode,
     confirmDeleteWithImpact,
+    confirmationPayload,
   };
 })();
 
@@ -125393,6 +126615,40 @@ function _populateRpAnnotationUsers(items, selected) {
     sel.appendChild(opt);
   });
   if (selected && users.includes(selected)) sel.value = selected;
+  _augmentRpAnnotationUsersWithRoster(selected);
+}
+
+// Phase 6: ユーザー絞り込みを「今読み込めた注釈に登場したユーザー」だけでなく、
+// ワークスペースの参加者名簿(スタッフ管理シート)からも作る。まだ注釈を
+// 書いていないメンバーも選べるようにする。MeldexUserRegistry が使えない環境
+// (単独ボードアプリ等)では黙って何もしない(既存の注釈由来の一覧のまま)。
+// 非同期のため、直前に呼ばれた要求だけを反映する(連続フィルタ変更での
+// 古い応答による上書きを防ぐ)。
+let _rpAnnotationRosterRequestSeq = 0;
+async function _augmentRpAnnotationUsersWithRoster(selected) {
+  if (typeof MeldexUserRegistry === 'undefined' || typeof MeldexUserRegistry.listStaff !== 'function') return;
+  const requestId = ++_rpAnnotationRosterRequestSeq;
+  let staff = [];
+  try { staff = await MeldexUserRegistry.listStaff(); } catch { return; }
+  if (requestId !== _rpAnnotationRosterRequestSeq) return;
+  const sel = document.getElementById('rp-ann-user');
+  if (!sel) return;
+  const existing = new Set([...sel.options].map(o => o.value).filter(Boolean));
+  const additions = (staff || [])
+    .map(row => String(row?.user || '').trim())
+    .filter(name => name && !existing.has(name));
+  if (!additions.length) return;
+  const currentValue = sel.value;
+  const allUsers = [...existing, ...additions].sort((a, b) => String(a).localeCompare(String(b), 'ja'));
+  sel.innerHTML = '<option value="">全ユーザー</option>';
+  allUsers.forEach(user => {
+    const opt = document.createElement('option');
+    opt.value = user;
+    opt.textContent = user;
+    sel.appendChild(opt);
+  });
+  const restore = selected || currentValue;
+  if (restore && allUsers.includes(restore)) sel.value = restore;
 }
 
 function _renderRpAnnotationListView(container, items) {
@@ -125403,35 +126659,156 @@ function _renderRpAnnotationPreviewView(container, items) {
   items.forEach(a => container.appendChild(_buildRpAnnotationPreviewCard(a)));
 }
 
+// Phase 5-b: ファイル名・ユーザー名(生値。ローカル利用時は「local」)に続けて、
+// 作成者アイコン+名前を追加する。DOM要素を返す(文字列だとアイコンを差し込め
+// ないため)。呼び出し側は要素へ appendChild する。
 function _rpAnnotationMeta(a) {
   const rawPath = a.target_ref?.file || a.target_path || '';
   const path = a.target_file_name || rawPath.split('/').pop() || '(不明)';
   const time = _rpAnnotationTime(a, 'modified') || _rpAnnotationTime(a, 'created');
   const flags = [a.resolved ? '解決済み' : '', a.orphan ? '孤児' : '', a.deleted ? '削除済み' : ''].filter(Boolean);
-  return `${path} ・ ${a.user || ''}${time ? ' ・ ' + time : ''}${flags.length ? ' ・ ' + flags.join(' ・ ') : ''}`;
+  const frag = document.createDocumentFragment();
+  frag.append(`${path} ・ ${a.user || ''}`);
+  const badge = _rpAnnotationUserBadge(a.user);
+  if (badge) frag.append(' ・ ', badge);
+  if (time) frag.append(' ・ ' + time);
+  if (flags.length) frag.append(' ・ ' + flags.join(' ・ '));
+  return frag;
+}
+
+// 作成者アイコン+名前のバッジ。getUserAvatarHtml が読めない環境(単独ボード
+// アプリ等でも standalone-profile.js のフォールバックがあれば動くが、念のため
+// 存在確認する)では名前だけのフォールバックにし、例外で一覧を止めない。
+function _rpAnnotationUserBadge(user) {
+  const name = String(user || '').trim();
+  if (!name) return null;
+  const span = document.createElement('span');
+  span.className = 'rp-ann-user-badge';
+  if (typeof getUserAvatarHtml === 'function') {
+    try {
+      const icon = document.createElement('span');
+      icon.className = 'rp-ann-user-badge-icon';
+      icon.innerHTML = getUserAvatarHtml(name, 14);
+      const img = icon.querySelector('img');
+      if (img && !img.alt) img.alt = name;
+      span.appendChild(icon);
+    } catch { /* アイコン描画失敗時は名前だけ表示にフォールバック */ }
+  }
+  const label = document.createElement('span');
+  label.className = 'rp-ann-user-badge-name';
+  label.textContent = name;
+  span.appendChild(label);
+  return span;
+}
+
+// Phase 5-a: 注釈カードのドラッグでクリックの誤爆(ジャンプ)を防ぐ。
+// ネイティブD&Dはドラッグ完了後にclickを発火させないのが通例だが、環境差の
+// 保険として、直前にドラッグしたその要素自身のクリックだけを1回無視する。
+// (グローバルなタイムスタンプにすると、あるカードのドラッグ直後に別の行を
+// クリックしただけでジャンプが無効化されてしまうため、要素単位で持つ。)
+const _rpAnnDraggingElements = new WeakSet();
+function _rpAnnotationDragSkipClick(el) {
+  return _rpAnnDraggingElements.has(el);
+}
+
+// 注釈の対象ファイル(target_path / target_ref.file)を、Meldex内D&D・OS書き出し・
+// 保存ボタンの共通の「ドラッグ対象」として解決する。対象ファイルを持たない
+// 注釈(対象未解決等)は null を返し、呼び出し側はD&D対応をスキップする。
+function _rpAnnotationDragTarget(a) {
+  const path = String(a?.target_ref?.file || a?.target_path || '').trim();
+  if (!path) return null;
+  const name = a.target_file_name || path.split(/[\\/]/).pop() || path;
+  return { path, name };
+}
+
+const _RP_ANN_DOWNLOAD_MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+  pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain',
+  csv: 'text/csv', json: 'application/json',
+};
+
+function _rpAnnotationDownloadMime(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  return _RP_ANN_DOWNLOAD_MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
+function _rpAnnotationFileRawUrl(path) {
+  if (typeof MeldexResourceUrl !== 'undefined' && typeof MeldexResourceUrl.apiUrl === 'function') {
+    try { return MeldexResourceUrl.apiUrl('/file-raw', { path }); } catch { /* フォールバックへ */ }
+  }
+  const base = (typeof API_BASE !== 'undefined' && API_BASE) ? API_BASE : '/api';
+  return new URL(String(base).replace(/\/+$/, '') + '/file-raw?path=' + encodeURIComponent(path), window.location.href).toString();
+}
+
+// Meldex内D&D(gb-dnd の共通ペイロード。フォルダツリー等の既存の受け手が
+// そのまま解釈できる)と、OSへの書き出し用データ(Chrome/Edge系のみ有効な
+// DownloadURL形式)を同時に載せる。他ブラウザ向けの代替は「保存」ボタン
+// (_appendRpAnnotationActions)で提供する。
+function _installRpAnnotationDrag(el, a) {
+  const target = _rpAnnotationDragTarget(a);
+  if (!target || !el || typeof MeldexDnD === 'undefined' || typeof MeldexDnD.writeNodePayload !== 'function') return;
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    const payload = MeldexDnD.writeNodePayload(e.dataTransfer, { path: target.path, name: target.name }, 'rp-annotation');
+    if (!payload) { e.preventDefault(); return; }
+    _rpAnnDraggingElements.add(el);
+    e.stopPropagation();
+    try {
+      const url = _rpAnnotationFileRawUrl(target.path);
+      const mime = _rpAnnotationDownloadMime(target.name);
+      e.dataTransfer.setData('DownloadURL', `${mime}:${target.name}:${url}`);
+    } catch { /* OS書き出し用データの付与失敗は致命的でないため握りつぶす */ }
+  });
+  el.addEventListener('dragend', () => {
+    // ドラッグ完了直後に来得るclickだけを無視したいので、同期的な click
+    // ディスパッチが終わった後の次のタスクでクリアする(即時削除だと
+    // dragend直後に来るclickより先に消えてしまい保険にならない)。
+    setTimeout(() => { _rpAnnDraggingElements.delete(el); }, 0);
+  });
+}
+
+// 「保存」ボタン: DownloadURLに対応しないブラウザ・環境向けの代替導線。
+// /api/file はテキストをJSONに包んで返す(バイナリは400)ため、生バイト
+// そのままを返す /api/file-raw を使う(DownloadURLの書き出しと同じ経路)。
+function _saveRpAnnotationTargetFile(target) {
+  if (!target) return;
+  try {
+    const url = _rpAnnotationFileRawUrl(target.path);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = target.name || '';
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch { if (typeof showStatus === 'function') showStatus('保存に失敗しました', true); }
 }
 
 function _buildRpAnnotationListItem(a) {
   const row = document.createElement('div');
   row.className = 'rp-ann-row';
-  row.addEventListener('click', () => _jumpFromRpAnnotation(a));
+  row.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(row)) return; _jumpFromRpAnnotation(a); });
   const text = _rpAnnotationPreviewText(a);
   row.innerHTML = `
     <span class="rp-ann-row-icon">${_rpAnnotationIcon(a.uiKind, 14)}</span>
     <span class="rp-ann-row-main">
       <span class="rp-ann-row-title">${esc(text.substring(0, 120))}</span>
-      <span class="rp-ann-row-meta">${esc(_rpAnnotationTypeLabel(a.uiKind) + ' ・ ' + _rpAnnotationMeta(a))}</span>
+      <span class="rp-ann-row-meta"></span>
     </span>
     <span class="rp-ann-row-actions"></span>`;
+  const metaEl = row.querySelector('.rp-ann-row-meta');
+  metaEl.append(_rpAnnotationTypeLabel(a.uiKind) + ' ・ ', _rpAnnotationMeta(a));
   row.querySelector('.rp-ann-row-icon').style.color = a.color || 'var(--fg2)';
   _appendRpAnnotationActions(row.querySelector('.rp-ann-row-actions'), a);
+  _installRpAnnotationDrag(row, a);
   return row;
 }
 
 function _buildRpAnnotationPreviewCard(a) {
   const card = document.createElement('div');
   card.className = 'rp-ann-preview-card';
-  card.addEventListener('click', () => _jumpFromRpAnnotation(a));
+  card.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(card)) return; _jumpFromRpAnnotation(a); });
   const head = document.createElement('div');
   head.className = 'rp-ann-preview-head';
   head.innerHTML = `<span>${_rpAnnotationIcon(a.uiKind, 14)} ${esc(_rpAnnotationTypeLabel(a.uiKind))}</span><span class="rp-ann-preview-actions"></span>`;
@@ -125441,8 +126818,9 @@ function _buildRpAnnotationPreviewCard(a) {
   body.appendChild(_buildRpAnnotationPreviewBody(a));
   const meta = document.createElement('div');
   meta.className = 'rp-ann-preview-meta';
-  meta.textContent = _rpAnnotationMeta(a);
+  meta.appendChild(_rpAnnotationMeta(a));
   card.append(head, body, meta);
+  _installRpAnnotationDrag(card, a);
   return card;
 }
 
@@ -125539,6 +126917,17 @@ function _appendRpAnnotationActions(container, a) {
     resolveBtn.dataset.testid = `rp-ann-resolve-${a.id || 'unknown'}`;
     resolveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _toggleResolveComment(a); });
     container.appendChild(resolveBtn);
+  }
+  const dragTarget = _rpAnnotationDragTarget(a);
+  if (dragTarget) {
+    // Phase 5-a: OSへのドラッグ書き出しはChrome/Edge系のみ有効なため、
+    // どのブラウザでも対象ファイルを取り出せる代替導線として必ず併設する。
+    const saveBtn = _rpAnnotationActionButton('download', 'ファイルとして保存');
+    saveBtn.dataset.rpAnnAction = 'save';
+    saveBtn.dataset.annId = a.id || '';
+    saveBtn.dataset.testid = `rp-ann-save-${a.id || 'unknown'}`;
+    saveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _saveRpAnnotationTargetFile(dragTarget); });
+    container.appendChild(saveBtn);
   }
   const delBtn = _rpAnnotationActionButton('trash2', _rpCanDeleteAnnotation(a) ? '削除' : 'ソースフォルダの管理者だけが削除できます');
   delBtn.dataset.rpAnnAction = 'delete';
@@ -128505,7 +129894,8 @@ async function loadTeamRooms() {
       const lastBody = String(r.last?.text ?? '');
       const lastFrom = String(r.last?.from ?? '');
       const lastText = r.last ? esc((lastFrom ? lastFrom + ': ' : '') + lastBody.substring(0, 30)) : '';
-      const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('users',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
+      // Phase 8: 非公開ルーム(グループルーム)は鍵アイコンで通常ルームと区別する。
+      const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('lock',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
       const displayName = _roomDisplayName(r);
       return `<div role="option" aria-selected="${active ? 'true' : 'false'}" data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom" data-args="${esc(JSON.stringify([r.path]))}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
         `<div>${typeIcon} <span class="team-room-name">${esc(displayName)}</span></div>` +
@@ -128563,6 +129953,21 @@ function _renderTeamRoomTitle(room) {
     });
   }
   title.appendChild(nameEl);
+
+  if (room.type === 'group') {
+    const membersBtn = document.createElement('button');
+    membersBtn.type = 'button';
+    membersBtn.dataset.e2eId = 'team-room-members-button';
+    membersBtn.title = '参加者を管理';
+    membersBtn.setAttribute('aria-label', '参加者を管理');
+    membersBtn.innerHTML = lucide('users', 13);
+    membersBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:transparent;color:var(--fg2);border:1px solid transparent;border-radius:4px;cursor:pointer;padding:0;';
+    membersBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      showGroupRoomMembersModal(room);
+    });
+    title.appendChild(membersBtn);
+  }
 
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
@@ -128740,12 +130145,21 @@ function _showChatContextMenu(e, ariaLabel, buildItems) {
 
 // ルーム右クリックメニュー
 function showTeamRoomContextMenu(e, room) {
+  // dataset由来のroomにはmembersが無いため、キャッシュから完全なroomを引き直す。
+  const full = _teamRoomByPath(room?.path) || room;
   _showChatContextMenu(e, 'ルームメニュー', (menu) => {
     if (room.type !== 'dm') {
       _chatAppendContextMenuItem(menu, {
         icon: 'pencil',
         label: 'リネーム',
         action: () => _doRenameTeamRoom(room),
+      });
+    }
+    if (room.type === 'group') {
+      _chatAppendContextMenuItem(menu, {
+        icon: 'users',
+        label: '参加者を管理',
+        action: () => showGroupRoomMembersModal(full),
       });
     }
     _chatAppendContextMenuItem(menu, {
@@ -129467,6 +130881,147 @@ async function showCreateRoomModal() {
   }
 }
 
+// Phase 8 (管理者AIの稼働表示とワークスペースチャットの整理 計画): 自分だけのルーム。
+// 「追加時にダイアログを出さない」原則に従い、押した瞬間に参加者=自分だけのグループ
+// ルームを作成する。実体はグループルーム(参加者名簿を持つ既存の仕組み)で、後から
+// 参加者を追加すればワークスペース全員が見えるルームへ育てられる。
+async function createSoloTeamRoom() {
+  if (!_chatRequireSourceFolder()) return;
+  try {
+    const existing = await apiFetch(_chatApiPath('/collab/rooms')).catch(() => []);
+    const names = new Set((existing || []).filter(r => r.type === 'group').map(r => r.name));
+    let name = '自分だけのルーム';
+    let i = 2;
+    while (names.has(name)) { name = '自分だけのルーム' + i; i++; }
+    const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'group', members: [] }));
+    await loadTeamRooms();
+    const roomPath = res?.path || ('group/' + name);
+    showStatus('「' + name + '」を作成しました。管理者AIに依頼すると1対1で相談できます');
+    await selectTeamRoom(roomPath);
+    // 作成直後にリネームモードに入る（通常ルーム作成と同じ挙動）
+    setTimeout(() => {
+      _beginTeamRoomTitleEdit(_teamRoomByPath(roomPath) || { path: roomPath, name, type: 'group' });
+    }, 50);
+  } catch (e) {
+    showStatus('ルーム作成に失敗: ' + (e.message || ''), true);
+  }
+}
+
+// DM・グループルーム招待の候補ユーザー一覧（正本「スタッフ管理シート」/ ワークスペース
+// メンバー一覧から取得。showDirectMessageModal と同じ取得元・同じ絞り込みに揃える）。
+async function _chatCandidateUsernames(excludeNames) {
+  const seen = new Set((excludeNames || []).filter(Boolean));
+  const users = [];
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId) {
+    try {
+      const payload = await apiFetch('/workspaces/' + encodeURIComponent(workspaceId) + '/members');
+      (payload?.members || []).forEach(member => {
+        const name = String(member?.name || '').trim();
+        if (name && !seen.has(name)) { seen.add(name); users.push(name); }
+      });
+    } catch {}
+  } else {
+    try {
+      const staff = window.MeldexUserRegistry ? await window.MeldexUserRegistry.listStaff() : [];
+      staff.forEach(row => {
+        const name = String(row?.user || '').trim();
+        if (name && !seen.has(name)) { seen.add(name); users.push(name); }
+      });
+    } catch {}
+  }
+  users.sort((a, b) => a.localeCompare(b, 'ja'));
+  return users;
+}
+
+// Phase 8: 非公開ルーム(グループルーム)の参加者を、あとから追加・除名する。
+// 除名された人は以降そのルームを開けなくなるが、過去の発言は消えない(サーバー側は
+// _members.json だけを書き換え、メッセージファイルには一切触れない)。
+async function showGroupRoomMembersModal(room) {
+  if (!room?.path || room.type !== 'group') return;
+  if (!_chatRequireSourceFolder()) return;
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('参加者の管理を初期化できませんでした。');
+  }
+  const me = getUsername();
+  const currentMembers = Array.isArray(room.members) && room.members.length ? room.members : [me];
+  const others = await _chatCandidateUsernames([me]);
+  const content = document.createElement('div');
+  const rowsHtml = [me, ...others].map(name => {
+    const isSelf = name === me;
+    const checked = currentMembers.includes(name) ? 'checked' : '';
+    return `<label class="gb-check" style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+      <input type="checkbox" data-group-member="${esc(name)}" ${checked}>
+      <span>${esc(name)}${isSelf ? '（自分）' : ''}</span>
+    </label>`;
+  }).join('');
+  content.innerHTML = `
+    <div class="gb-section-desc" style="margin-bottom:8px;">チェックした人だけがこのルームを読み書きできます。外した人の過去の発言は消えません。</div>
+    <div style="max-height:260px;overflow:auto;">${rowsHtml || '<div class="gb-section-desc">招待できるメンバーが見つかりません</div>'}</div>
+    <div class="gb-dialog-inline-status" data-group-members-status role="status" aria-live="polite" hidden></div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.dataset.e2eId = 'chat-group-members-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  saveBtn.dataset.e2eId = 'chat-group-members-save';
+  saveBtn.textContent = '保存';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'team-group-members-dialog',
+    titleId: 'team-group-members-title',
+    title: '参加者を管理',
+    body: [...content.childNodes],
+    footer: [cancelBtn, saveBtn],
+    variant: 'standard',
+    geometryKey: 'team-group-members-dialog',
+    minWidth: '0',
+    returnFocus: document.activeElement,
+    closeLabel: '参加者の管理を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !busy || ['saved', 'test-cleanup'].includes(reason),
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.e2eId = 'chat-group-members-overlay';
+  const setBusy = value => {
+    busy = !!value;
+    overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+    cancelBtn.disabled = busy;
+    saveBtn.disabled = busy;
+  };
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  saveBtn.addEventListener('click', async () => {
+    if (busy) return;
+    const members = [...modalApi.body.querySelectorAll('[data-group-member]:checked')].map(el => el.dataset.groupMember);
+    const status = modalApi.body.querySelector('[data-group-members-status]');
+    if (!members.length) {
+      status.hidden = false;
+      status.textContent = '参加者を1人以上選んでください';
+      return;
+    }
+    status.hidden = true;
+    setBusy(true);
+    try {
+      await apiPut(_chatApiPath('/collab/rooms/members'), _chatPostPayload({ path: room.path, members }));
+      await loadTeamRooms();
+      showStatus('参加者を更新しました');
+      modalApi.close('saved');
+    } catch (e) {
+      status.hidden = false;
+      status.textContent = '参加者の更新に失敗しました: ' + (e.message || '');
+    } finally {
+      if (modalApi.isOpen()) setBusy(false);
+    }
+  });
+  modalApi.open();
+  return modalApi;
+}
+
 function openChat() {
   toggleRightPanelTab('chat');
 }
@@ -130114,6 +131669,8 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
 
 (function _bindChatSourceFolderSelector() {
   const run = () => {
+    // デスクトップ付箋の小窓にはチャットが無い。対象フォルダ候補の収集を走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     _initChatSourceFolderSelector();
     const select = document.getElementById('chat-source-folder');
     if (!select || select._chatSourceFolderBound) return;
@@ -133366,21 +134923,34 @@ async function _chatMessageDropFile(file, mode, inputId) {
 }
 
 async function _chatMessageDropMeldexNode(node, mode, inputId) {
+  // 複数選択のドロップでは、選択した項目をひとつ残らず扱う
+  // （画像・PDFは添付として、それ以外は本文リンクとして入力欄へ）。
   const items = Array.isArray(node?.items) && node.items.length ? node.items : [node];
   const linkTexts = [];
+  const seenPaths = new Set();
+  let attachedCount = 0;
   for (const item of items) {
     const name = String(item?.name || '').trim();
     const path = String(item?.path || '').trim();
     const type = String(item?.type || '').trim();
-    if (!path) continue;
+    if (!path || seenPaths.has(path)) continue;
+    seenPaths.add(path);
     const isImage = type === 'image' || (typeof _chatIsImagePath === 'function' && _chatIsImagePath(path));
-    if (isImage) {
-      _chatMessageDropAddImageByPath(name || _chatMessageDropNameFromPath(path, 'image'), path, mode);
+    const isPdf = /\.pdf$/i.test(path);
+    if (isImage || isPdf) {
+      _chatMessageDropAddImageByPath(name || _chatMessageDropNameFromPath(path, isPdf ? 'file' : 'image'), path, mode);
+      attachedCount += 1;
     } else {
       linkTexts.push(_chatMessageDropLinkMarkup(name, path));
     }
   }
   if (linkTexts.length) _chatMessageDropInsertLink(inputId, linkTexts.join('\n'));
+  if (typeof showStatus === 'function' && (attachedCount + linkTexts.length) > 1) {
+    const parts = [];
+    if (attachedCount) parts.push(attachedCount + ' 件を添付');
+    if (linkTexts.length) parts.push(linkTexts.length + ' 件をリンクとして挿入');
+    showStatus(parts.join(' / ') + 'しました');
+  }
 }
 
 function _chatMessageDropNameFromPath(path, fallback = 'リンク') {
@@ -133411,10 +134981,13 @@ function _chatMessageDropLinkMarkup(name, pathOrUrl) {
 }
 
 function _chatMessageDropAddImageByPath(name, path, mode) {
+  const isPdf = /\.pdf$/i.test(String(path || ''));
   const att = {
     name: name || path.split('/').pop() || 'image',
     path,
-    mime: (typeof _chatGuessMimeType === 'function') ? _chatGuessMimeType(path) : 'image/png',
+    mime: isPdf
+      ? 'application/pdf'
+      : ((typeof _chatGuessMimeType === 'function') ? _chatGuessMimeType(path) : 'image/png'),
     dataUrl: (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(path),
   };
   if (mode === 'team') {
@@ -133455,8 +135028,7 @@ function _chatMessageDropUploadDir(mode) {
   if (mode === 'team') {
     return typeof _teamChatUploadDir === 'function' ? _teamChatUploadDir() : '_chat';
   }
-  const chatPath = state.currentPagePath || state.currentEntityPath || '';
-  return chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
+  return _chatAttachmentUploadDir();
 }
 
 // LLM / チーム・DM 両方にバインド
@@ -133701,9 +135273,20 @@ function _chatAttachmentFileName(file) {
   return 'clipboard-image.' + ext;
 }
 
+// AIチャットの添付ファイルの保存先。
+// 以前は「そのとき開いているノートと同じフォルダ」へ書いていたため、
+// ①作業フォルダに添付画像が散らばる ②シート内・管理用フォルダを開いていると
+// 書き込みが拒否されて「アップロードに失敗しました」になる、の2つが起きていた。
+// チーム/DMチャットと同じ考え方で、チャット専用の保存先へまとめる。
 function _chatAttachmentUploadDir() {
-  const chatPath = state.currentPagePath || state.currentEntityPath || '';
-  return chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
+  const base = '_chat/attachments';
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId && Array.isArray(_chatWorkspacesCache)) {
+    const workspace = _chatWorkspacesCache.find(item => item?.id === workspaceId);
+    if (workspace?.folder) return workspace.folder.replace(/[\\/]+$/, '') + '/' + base;
+  }
+  const sourceFolder = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+  return sourceFolder ? (sourceFolder.replace(/[\\/]+$/, '') + '/' + base) : base;
 }
 
 function _chatStartAttachmentUpload(att, gen) {
@@ -138051,7 +139634,39 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
     if (!options.silent && typeof showStatus === 'function') showStatus('CLIの会話継続をリセットしました');
   }
 
+  // Phase 7: AIタブはメンバー個人のAPIキー・個人のCLI専用。Meldex Cloud・スマホは
+  // ローカルCLIを実行するバックエンドを持たないため、動かせない選択肢を並べて
+  // 行き止まりを作らない(Cloud/モバイル品質ゲートの規約)。desktop版でだけCLIを出す。
+  function _isDesktopCliChatSurface() {
+    return !(window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || ''));
+  }
+
+  function _removeUnusableCliChatOptions(select) {
+    if (!select) return;
+    let removedSelected = false;
+    CLI_CHAT_PROVIDERS.forEach(provider => {
+      const option = select.querySelector(`option[value="${provider.key}"]`);
+      if (!option) return;
+      if (option.selected) removedSelected = true;
+      option.remove();
+    });
+    if (removedSelected && select.options.length) {
+      select.value = select.options[0].value;
+      try {
+        if (typeof _chatState !== 'undefined') _chatState.provider = select.value;
+      } catch {}
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
   function ensureCliChatProviderOptions() {
+    const select = document.getElementById('chat-provider');
+    if (!select) return;
+    if (!_isDesktopCliChatSurface()) {
+      _removeUnusableCliChatOptions(select);
+      return;
+    }
     try {
       // CHAT_DEFAULT_MODELS[provider.key] は gb-right-panel-chat.part01.part01.js の
       // CHAT_CLI_MODEL_CATALOG から既に複数候補で定義済みのため、ここで1件だけの配列に
@@ -138063,8 +139678,6 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
         });
       }
     } catch {}
-    const select = document.getElementById('chat-provider');
-    if (!select) return;
     CLI_CHAT_PROVIDERS.forEach(provider => {
       if (select.querySelector(`option[value="${provider.key}"]`)) return;
       const option = document.createElement('option');
@@ -139281,6 +140894,8 @@ window._closeChatGenerationSettingsMenu = _closeChatGenerationSettingsMenu;
   });
 
   document.addEventListener('DOMContentLoaded', () => {
+    // デスクトップ付箋の小窓にはチャットが無い。送信設定の確認まで走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     installCliChatPatches();
     loadCliChatConfig().then(async () => {
       if (window.GBChatProviderDefault?.applyFirstRun) {
@@ -141396,18 +143011,27 @@ let _folderUnifiedSearchPaths = new Set();
 let _folderUnifiedSearchSeq = 0;
 let _folderUnifiedSearchTimer = 0;
 
+function _folderSearchHintEl() {
+  return document.getElementById('folder-panel-search-hint');
+}
+
 function _refreshFolderUnifiedSearch(query) {
   const text = String(query || '').trim();
   const seq = ++_folderUnifiedSearchSeq;
   _folderUnifiedSearchPaths = new Set();
-  if (!text || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
+  const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+  // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+  // 検索結果が返ってから追加で反映する。
+  window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), null, text);
+  if ((!text && !hasTagCondition) || !window.MeldexUnifiedSearch?.search) return Promise.resolve();
   const scopes = window.MeldexUnifiedSearch.active();
-  if (!scopes.some(scope => scope !== 'name')) return Promise.resolve();
+  if (!hasTagCondition && !scopes.some(scope => scope !== 'name')) return Promise.resolve();
   return window.MeldexUnifiedSearch.search(text, { path: _folderPath || '', limit: 100 })
     .then(data => {
       if (seq !== _folderUnifiedSearchSeq) return;
       _folderUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
       if (typeof renderFolderGrid === 'function') renderFolderGrid();
+      window.MeldexUnifiedSearch?.updateHint?.(_folderSearchHintEl(), data, text);
     })
     .catch(() => {});
 }
@@ -141420,10 +143044,14 @@ function _scheduleFolderUnifiedSearch(query) {
   }, 240);
 }
 
+function _folderSearchRowHasTagCondition() {
+  return (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+}
+
 window.addEventListener('meldex:search-scopes-changed', () => {
   const cfg = typeof getFolderDisplayConfig === 'function' ? getFolderDisplayConfig() : {};
   const query = String(cfg.filterText || '');
-  if (query.trim()) _scheduleFolderUnifiedSearch(query);
+  if (query.trim() || _folderSearchRowHasTagCondition()) _scheduleFolderUnifiedSearch(query);
 });
 let _folderSelected = null;
 let _folderSelectedItems = []; // 複数選択
@@ -141827,13 +143455,32 @@ function _folderFilterTagKeys(cfg) {
   return _folderFilterArray(cfg?.filterTags).map(value => String(value || '').toLowerCase()).filter(Boolean);
 }
 
-function _folderMatchesTagFilter(item, selectedTags) {
+// タグの判定方法（すべて含む=AND / どれかを含む=OR）。既定は「すべて含む」。
+// 2026-08系のタグ選択フロートパネル導入までは常にOR固定だった。タグを2件以上
+// 保存していた既存フィルタだけ結果が変わる（CHANGELOGへ明記）。
+function _folderTagFilterMode(cfg) {
+  return (cfg && cfg.filterTagMode === 'any') ? 'any' : 'all';
+}
+
+function _folderMatchesTagFilter(item, selectedTags, mode) {
   if (!selectedTags || selectedTags.size === 0) return true;
-  return _folderItemTags(item).some(tag => {
+  const itemKeys = new Set();
+  _folderItemTags(item).forEach(tag => {
     const id = String(tag.id || '').toLowerCase();
     const name = String(tag.name || '').toLowerCase();
-    return selectedTags.has(id) || selectedTags.has(name);
+    if (id) itemKeys.add(id);
+    if (name) itemKeys.add(name);
   });
+  if (mode === 'any') {
+    for (const key of selectedTags) {
+      if (itemKeys.has(key)) return true;
+    }
+    return false;
+  }
+  for (const key of selectedTags) {
+    if (!itemKeys.has(key)) return false;
+  }
+  return true;
 }
 
 function _folderTagLabel(value) {
@@ -141904,26 +143551,23 @@ async function _folderCreateLinksFromDrop(event, targetItem, payloadOverride) {
     showStatus('リンク登録できる項目がありません', true);
     return 0;
   }
-  let ok = 0;
-  let failed = 0;
-  for (const source of items) {
-    try {
-      if (typeof addFolderLinkWithHistory === 'function') {
-        await addFolderLinkWithHistory(source.path, targetPath);
-      } else {
-        await apiPost('/folder-links/add', { file_path: source.path, folder_path: targetPath });
-      }
-      _folderInvalidateMembershipsForPath(source.path);
-      ok += 1;
-    } catch {
-      failed += 1;
-    }
+  let result;
+  try {
+    result = typeof addFolderLinksBatchWithHistory === 'function'
+      ? await addFolderLinksBatchWithHistory(items, targetPath)
+      : await apiPost('/folder-links/batch/add', { items: items.map(source => ({ file_path: source.path })), folder_path: targetPath });
+  } catch {
+    showStatus('リンク登録に失敗しました', true);
+    return 0;
   }
+  items.forEach(source => _folderInvalidateMembershipsForPath(source.path));
+  const ok = result?.created_count || 0;
+  const failed = result?.failed_count || 0;
   if (ok > 0 && typeof _folderEnsureMemberships === 'function') {
     _folderEnsureMemberships(_folderItems, { rerender: _folderHasActiveFolderFilter(getFolderDisplayConfig()) });
   }
   const suffix = failed > 0 ? `（${failed} 件失敗）` : '';
-  showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にリンク登録しました${suffix}` : 'リンク登録に失敗しました', failed > 0 && ok === 0);
+  showStatus(ok > 0 ? `${ok} 件を「${targetItem.name || targetPath}」にも表示しました${suffix}` : (failed ? 'リンク登録に失敗しました' : 'すでに表示されています'), failed > 0 && ok === 0);
   return ok;
 }
 
@@ -142073,6 +143717,20 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   if (!targetPath || items.length === 0) {
     showStatus('移動できる項目がありません', true);
     return 0;
+  }
+  // シートの中に置けるのはエントリだけ。ボード等を落とすと
+  // 「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+  if (targetItem?.type === 'database') {
+    const rejected = items.filter(source => !(window.MeldexSheetAttachments?.itemFitsInSheet?.(source) ?? true));
+    if (rejected.length) {
+      const first = rejected[0]?.name || rejected[0]?.path || '対象';
+      showStatus(
+        'シートの中にはエントリだけを置けます（' + first +
+        (rejected.length > 1 ? ' ほか ' + (rejected.length - 1) + ' 件' : '') + '）',
+        true
+      );
+      return 0;
+    }
   }
   const progress = window.MeldexImportProgress;
   progress?.beginOperation?.('ファイルを移動中', items.length);
@@ -142615,17 +144273,24 @@ function _getFolderFilteredItems() {
   const exts = new Set(_folderFilterArray(cfg.filterExts).map(ext => ext.toLowerCase()));
   const folders = new Set(_folderFilterFolderKeys(cfg));
   const tags = new Set(_folderFilterTagKeys(cfg));
+  const tagMode = _folderTagFilterMode(cfg);
+  // 検索欄のタグ条件（search側。フィルタの filterTags とは別物）。
+  // 検索文字列が空でもタグ条件だけで絞り込めるようにする（2-F）。
+  const hasSearchTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
   return _folderItems.filter(item => {
     if (typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(item?.path)) return false;
     if (text) {
       const haystack = [item.name, item.path, item.ext, _folderItemTypeLabel(item.type)].join('\n').toLowerCase();
       const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
       if (!(includeName && haystack.includes(text)) && !unifiedMatch) return false;
+    } else if (hasSearchTagCondition) {
+      const unifiedMatch = _folderUnifiedSearchPaths.has(String(item.path || '').replace(/\\/g, '/').toLowerCase());
+      if (!unifiedMatch) return false;
     }
     if (types.size > 0 && !_folderItemTypeKeys(item).some(type => types.has(type))) return false;
     if (exts.size > 0 && !exts.has(_folderItemExt(item))) return false;
     if (!_folderMatchesFolderFilter(item, folders)) return false;
-    if (!_folderMatchesTagFilter(item, tags)) return false;
+    if (!_folderMatchesTagFilter(item, tags, tagMode)) return false;
     return _folderMatchesModifiedFilter(item, cfg);
   });
 }
@@ -143670,6 +145335,16 @@ function showFolderItemContextMenu(e, item, options = {}) {
         showStatus('編集ロック中の項目は削除できません', true);
         return;
       }
+      const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+        refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+      });
+      if (linkedDelete.handled) {
+        if (!linkedDelete.result) return;
+        _folderSelectedItems = [];
+        _folderSelected = null;
+        _updateFolderBulkBar();
+        return;
+      }
       const impactTargets = targets.map(target => ({ path: target.path, kind: target.type === 'folder' ? 'folder' : 'file' }));
       const confirmMessage = targets.length + ' 件を削除しますか？';
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -143677,6 +145352,7 @@ function showFolderItemContextMenu(e, item, options = {}) {
         : await cfConfirm(confirmMessage);
       if (!confirmed) return;
       const result = await deleteOutlinerItemsWithHistory(targets, {
+        confirmation: confirmed,
         label: targets.length + ' 件を削除',
         refresh: async () => {
           if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
@@ -144315,6 +145991,16 @@ async function fvBulkDelete() {
     showStatus('編集ロック中の項目は削除できません', true);
     return;
   }
+  const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+    refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+  });
+  if (linkedDelete.handled) {
+    if (!linkedDelete.result) return;
+    _folderSelectedItems = [];
+    _folderSelected = null;
+    _updateFolderBulkBar();
+    return;
+  }
   const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
   const confirmMessage = targets.length + ' 件を削除しますか？';
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -144322,6 +146008,7 @@ async function fvBulkDelete() {
     : await cfConfirm(confirmMessage);
   if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
+    confirmation: confirmed,
     label: targets.length + ' 件を削除',
     refresh: async () => {
       if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
@@ -144646,6 +146333,121 @@ function applyFvPanelLayout() {
         el._panelType = 'detail';
         _applyPanelSize(el, detailPos, detailSize);
         const r = _resizeEl(detailPos); if (r) r.style.display = '';
+/* One-history batch operations for folder links. */
+function _folderLinkRequestId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function _folderLinkBatchItems(items) {
+  const unique = new Map();
+  (items || []).forEach(item => {
+    const path = item?.file_path || item?.path || '';
+    const fileId = item?.file_id || '';
+    const key = fileId || path;
+    if (key && !unique.has(key)) unique.set(key, { file_path: path, file_id: fileId });
+  });
+  return Array.from(unique.values());
+}
+
+function _refreshFolderLinkBatch(items, folderPath, tagsContainer) {
+  items.forEach(item => {
+    if (typeof _folderInvalidateMembershipsForPath === 'function') _folderInvalidateMembershipsForPath(item.file_path);
+    if (typeof _refreshFolderLinkUi === 'function') _refreshFolderLinkUi(item.file_path, folderPath, tagsContainer);
+  });
+}
+
+function _pushFolderLinkBatchHistory(label, undoPath, redoPath, items, folderPath, folderId, tagsContainer) {
+  if (typeof historyPush !== 'function' || !items.length) return;
+  let undoPending = _folderLinkBatchItems(items);
+  let redoPending = [];
+  const itemKey = item => String(item?.file_id || item?.file_path || item?.path || '');
+  const appendUnique = (target, additions) => _folderLinkBatchItems(target.concat(additions));
+  const run = async (path, takePending, setPending, addOpposite) => {
+    const requested = takePending();
+    if (!requested.length) return;
+    const result = await apiPost(path, {
+      items: requested,
+      ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+      request_id: _folderLinkRequestId('history'),
+    });
+    const rows = new Map((result?.results || []).map(row => [itemKey(row), row]));
+    const failed = [];
+    const transitioned = [];
+    const ownedStatus = path.endsWith('/add') ? 'created' : 'removed';
+    requested.forEach(item => {
+      const row = rows.get(itemKey(item));
+      if (!row || row.status === 'failed') failed.push(item);
+      else if (row.status === ownedStatus) transitioned.push(item);
+    });
+    setPending(failed);
+    addOpposite(transitioned);
+    _refreshFolderLinkBatch(requested, folderPath, tagsContainer);
+    if (failed.length) throw new Error(`${failed.length} 件のリンク操作に失敗しました。成功分を反映し、残りは再試行できます`);
+  };
+  historyPush(label, async () => run(
+    undoPath,
+    () => undoPending,
+    value => { undoPending = value; },
+    value => { redoPending = appendUnique(redoPending, value); },
+  ), async () => run(
+    redoPath,
+    () => redoPending,
+    value => { redoPending = value; },
+    value => { undoPending = appendUnique(undoPending, value); },
+  ), '', `${items.length} 件 → ${folderPath || folderId}`);
+}
+
+async function addFolderLinksBatchWithHistory(items, folderPath, options = {}) {
+  const normalized = _folderLinkBatchItems(items);
+  const folderId = options.folderId || '';
+  const payload = {
+    items: normalized,
+    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+    request_id: options.requestId || _folderLinkRequestId('add'),
+  };
+  const result = await apiPost('/folder-links/batch/add', payload);
+  const created = (result?.results || []).filter(row => row.status === 'created');
+  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括登録', '/folder-links/batch/remove', '/folder-links/batch/add', created, folderPath, folderId, options.tagsContainer || null);
+  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
+  return result;
+}
+
+async function removeFolderLinksBatchWithHistory(items, folderPath, options = {}) {
+  const normalized = _folderLinkBatchItems(items);
+  const folderId = options.folderId || '';
+  const payload = {
+    items: normalized,
+    ...(folderId ? { folder_id: folderId } : { folder_path: folderPath }),
+    request_id: options.requestId || _folderLinkRequestId('remove'),
+  };
+  const result = await apiPost('/folder-links/batch/remove', payload);
+  const removed = (result?.results || []).filter(row => row.status === 'removed');
+  _pushFolderLinkBatchHistory('所属フォルダリンク: 一括解除', '/folder-links/batch/add', '/folder-links/batch/remove', removed, folderPath, folderId, options.tagsContainer || null);
+  _refreshFolderLinkBatch(normalized, folderPath, options.tagsContainer || null);
+  return result;
+}
+
+async function handleDisplayedFolderLinkDelete(items, fallbackFolderPath, options = {}) {
+  const targets = Array.isArray(items) ? items : [];
+  const linked = targets.filter(item => item?.linked);
+  if (!linked.length) return { handled: false, result: null };
+  if (linked.length !== targets.length) {
+    showStatus('リンク解除と実ファイル削除は分けて実行してください', true);
+    return { handled: true, result: null };
+  }
+  const folderPath = linked[0].link_folder_path || fallbackFolderPath || '';
+  if (!folderPath || linked.some(item => (item.link_folder_path || folderPath) !== folderPath)) {
+    showStatus('表示元フォルダを特定できないため、リンク解除を中止しました', true);
+    return { handled: true, result: null };
+  }
+  const confirmed = await cfConfirm(`このフォルダから ${linked.length} 件のリンクを解除します。元ファイルは残ります。`);
+  if (!confirmed) return { handled: true, result: null };
+  const result = await removeFolderLinksBatchWithHistory(linked, folderPath);
+  if (typeof options.refresh === 'function') await options.refresh();
+  const removed = result?.removed_count || 0;
+  showStatus(removed ? `${removed} 件のリンクを解除しました（元ファイルは残ります）` : 'リンクはすでに解除されています');
+  return { handled: true, result };
+}
       }
     }
   }
@@ -145091,7 +146893,7 @@ function showAddFolderLinkModal(filePath, tagsContainer) {
   const content = document.createElement('div');
   content.innerHTML = `
     <div style="margin-bottom:8px;color:var(--fg2);font-size:12px;">${esc(filePath.split('/').pop())}</div>
-    <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『MUDMAN』/第1話登場"></div>
+    <div class="field"><label>フォルダパス（直接入力またはツリーから選択）</label><input id="modal-link-folder" type="text" placeholder="例: 作品/『サンプル作品』/第1話登場"></div>
     <div id="modal-link-tree" style="max-height:250px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;margin-bottom:8px;background:var(--bg);font-size:12px;">
       <div style="color:var(--fg2);padding:4px;">読み込み中...</div>
     </div>
@@ -145508,11 +147310,12 @@ function getFolderDisplayConfig() {
 }
 function saveFolderDisplayConfig(cfg) { localStorage.setItem('folder-display-config', JSON.stringify(cfg)); }
 
-function _fdSection(menu, title, actionNode) {
+function _fdSection(menu, title, actionNode, titleDataset) {
   const head = document.createElement('div');
   head.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 12px 4px;font-size:11px;font-weight:bold;color:var(--accent);cursor:default;';
   const label = document.createElement('span');
   label.textContent = title;
+  if (titleDataset) Object.assign(label.dataset, titleDataset);
   head.appendChild(label);
   if (actionNode) {
     const spacer = document.createElement('span');
@@ -145719,7 +147522,20 @@ function showFolderDisplaySettings(options) {
   searchInput.style.flex = '1 1 auto';
   searchControls.appendChild(searchInput);
   window.MeldexUnifiedSearch?.button?.(searchControls, { e2eId: 'folder-panel-search-scope-trigger' });
+  window.MeldexUnifiedSearch?.tagButton?.(searchControls, {
+    e2eId: 'folder-panel-search-tag-trigger',
+    sourceFolder: () => ((typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || ''),
+    onChange: () => _scheduleFolderUnifiedSearch(searchInput.value),
+  });
   searchRow.appendChild(searchControls);
+  // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+  // テキスト行（1-A追記）。_refreshFolderUnifiedSearch() がIDで参照する。
+  const searchHint = document.createElement('div');
+  searchHint.id = 'folder-panel-search-hint';
+  searchHint.dataset.e2eId = 'folder-panel-search-hint';
+  searchHint.style.cssText = 'display:none;font-size:11px;line-height:1.4;color:var(--fg2);';
+  window.MeldexUnifiedSearch?.updateHint?.(searchHint, null, searchInput.value);
+  searchRow.appendChild(searchHint);
   menu.appendChild(searchRow);
 
   const membershipsPromise = typeof _folderEnsureMemberships === 'function' ? _folderEnsureMemberships(_folderItems) : Promise.resolve(false);
@@ -145790,7 +147606,62 @@ function showFolderDisplaySettings(options) {
   }
   menu.appendChild(folderBox);
 
-  _fdSection(menu, 'タグ');
+  const tagModeLabel = { all: 'すべて含む', any: 'どれかを含む' };
+  const tagSectionAction = document.createElement('div');
+  tagSectionAction.style.cssText = 'display:flex;align-items:center;gap:4px;';
+  const tagModeSelect = document.createElement('select');
+  tagModeSelect.dataset.e2eId = 'folder-filter-tag-mode';
+  tagModeSelect.setAttribute('aria-label', 'タグの判定方法');
+  tagModeSelect.style.cssText = 'font-size:11px;padding:2px 4px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:4px;';
+  [['all', 'すべて含む'], ['any', 'どれかを含む']].forEach(([value, label]) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    tagModeSelect.appendChild(option);
+  });
+  tagModeSelect.value = (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(cfg) : 'all';
+  tagModeSelect.addEventListener('change', () => {
+    const latestCfg = _saveFolderDisplayConfigPatch({ filterTagMode: tagModeSelect.value });
+    renderFolderGrid();
+    refreshTagSectionUi(latestCfg);
+  });
+  tagSectionAction.appendChild(tagModeSelect);
+  const tagPickerBtn = window.GBTagPickerPanel?.createTriggerButton?.({
+    title: 'タグツリーから選ぶ',
+    icon: 'listTree',
+    className: 'gb-btn gb-btn-xs gb-btn-quiet gb-btn-icon',
+    e2eId: 'folder-filter-tag-picker-trigger',
+    onOpen: (btn) => {
+      const existingIds = new Set((choices.tags || []).map(([tag]) => String(tag).toLowerCase()));
+      const latestCfg = getFolderDisplayConfig();
+      window.GBTagPickerPanel.open({
+        ownerKey: 'folder-filter',
+        headerLabel: 'フォルダの絞り込みに使うタグ',
+        sourceFolder: (typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || '',
+        existingTagIds: existingIds,
+        tagIds: _folderFilterArray(latestCfg.filterTags),
+        matchMode: (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(latestCfg) : 'all',
+        onChange: (tagIds, mode) => {
+          const nextCfg = _saveFolderDisplayConfigPatch({
+            filterTags: tagIds.map(id => String(id).toLowerCase()),
+            filterTagMode: mode,
+          });
+          if (typeof _folderEnsureTags === 'function') _folderEnsureTags(_folderItems, { rerender: true });
+          renderFolderGrid();
+          refreshTagSectionUi(nextCfg);
+        },
+      });
+      window.GBTagPickerPanel.syncTriggerButton(btn, 'folder-filter');
+    },
+  });
+  if (tagPickerBtn) tagSectionAction.appendChild(tagPickerBtn);
+  _fdSection(menu, `タグ（${tagModeLabel[tagModeSelect.value] || 'すべて含む'}）`, tagSectionAction, { fdTagSectionTitle: '1' });
+
+  const tagChips = document.createElement('div');
+  tagChips.className = 'fd-tag-filter-chips';
+  tagChips.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:2px 12px 4px;';
+  menu.appendChild(tagChips);
+
   const tagBox = document.createElement('div');
   tagBox.style.maxHeight = '150px';
   tagBox.style.overflowY = 'auto';
@@ -145805,10 +147676,37 @@ function showFolderDisplaySettings(options) {
     choices.tags.forEach(([tag, label]) => {
       tagBox.appendChild(_fdCheckboxRow(label, selectedTags.has(String(tag).toLowerCase()), (enabled) => {
         _fdSetArrayFilter(cfg, 'filterTags', tag, enabled);
+        refreshTagSectionUi(getFolderDisplayConfig());
       }, { dataset: { folderFilterTag: tag } }));
     });
   }
   menu.appendChild(tagBox);
+
+  // ピッカーでの選択・チップの×・チェックボックスのどれで変えても、この3つの
+  // 表示（見出しの判定方法／チップ／チェック状態）が食い違わないようにする。
+  function refreshTagSectionUi(latestCfg) {
+    const mode = (typeof _folderTagFilterMode === 'function') ? _folderTagFilterMode(latestCfg) : 'all';
+    tagModeSelect.value = mode;
+    const heading = menu.querySelector('[data-fd-tag-section-title]');
+    if (heading) heading.textContent = `タグ（${tagModeLabel[mode] || 'すべて含む'}）`;
+    const selectedNow = new Set(typeof _folderFilterTagKeys === 'function' ? _folderFilterTagKeys(latestCfg) : []);
+    tagBox.querySelectorAll('[data-folder-filter-tag]').forEach(row => {
+      const key = String(row.dataset.folderFilterTag || '').toLowerCase();
+      const input = row.querySelector('input[type="checkbox"]');
+      if (input) input.checked = selectedNow.has(key);
+    });
+    if (window.GBTagPickerPanel?.renderSelectedChips) {
+      window.GBTagPickerPanel.renderSelectedChips(tagChips, {
+        tagIds: Array.from(selectedNow),
+        sourceFolder: (typeof _folderPath !== 'undefined' && window.MeldexAutoTagSourceFolder?.(_folderPath)) || '',
+        onRemove: (id) => {
+          _fdSetArrayFilter(getFolderDisplayConfig(), 'filterTags', id, false);
+          refreshTagSectionUi(getFolderDisplayConfig());
+        },
+      });
+    }
+  }
+  refreshTagSectionUi(cfg);
 
   _fdSection(menu, '更新期間');
   const periodRow = document.createElement('div');
@@ -146368,7 +148266,7 @@ function _installFolderBlankContextMenu(container) {
     const currentPath = _folderToolbarCurrentPath();
     const targetLocked = _folderToolbarIsLockedPath(currentPath);
     buttons.copy.disabled = !hasSelection;
-    buttons.cut.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
+    buttons.cut.disabled = !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem);
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
     buttons.paste.disabled = !_folderToolbarClipboard?.items?.length || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
@@ -146508,6 +148406,9 @@ function _installFolderBlankContextMenu(container) {
         path: item.path,
         name: item.name || item.path.split(/[\\/]/).pop() || '',
         type: item.type || 'file',
+        linked: !!item.linked,
+        file_id: item.file_id || '',
+        link_folder_path: item.link_folder_path || '',
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件をコピーしました');
@@ -146519,6 +148420,10 @@ function _installFolderBlankContextMenu(container) {
   }
 
   function folderToolbarCutItems(sourceItems) {
+    if (_folderToolbarOperationItems(sourceItems).some(item => item?.linked)) {
+      showStatus('リンク表示中の項目は切り取りできません。リンク解除を使用してください', true);
+      return;
+    }
     const editable = _folderToolbarOperationItems(sourceItems)
       .filter(item => item?.path && !_folderToolbarIsLockedItem(item));
     if (!editable.length) {
@@ -146532,6 +148437,9 @@ function _installFolderBlankContextMenu(container) {
         name: item.name || item.path.split(/[\\/]/).pop() || '',
         type: item.type || 'file',
         parent: _folderToolbarParentPath(item.path),
+        linked: false,
+        file_id: item.file_id || '',
+        link_folder_path: item.link_folder_path || '',
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件を切り取りました');
@@ -146653,6 +148561,8 @@ function _installFolderBlankContextMenu(container) {
       return;
     }
     const topLevelTargets = _folderToolbarTopLevelItems(targets);
+    const linkedDelete = await handleDisplayedFolderLinkDelete(topLevelTargets, _folderToolbarCurrentPath(), { refresh: _folderToolbarRefresh });
+    if (linkedDelete.handled) return;
     const impactTargets = topLevelTargets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
     const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -146660,6 +148570,7 @@ function _installFolderBlankContextMenu(container) {
       : await cfConfirm(confirmMessage);
     if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
+      confirmation: confirmed,
       label: topLevelTargets.length + ' 件を削除',
       refresh: async () => {
         await _folderToolbarRefresh();
@@ -147994,6 +149905,7 @@ function _shellMenuAppendItem(menu, label, action, options = {}) {
   item.type = 'button';
   item.className = 'gb-context-menu-item' + (options.className ? ' ' + options.className : '');
   item.setAttribute('role', options.role || 'menuitem');
+  if (options.e2eId) item.dataset.e2eId = options.e2eId;
   if (options.disabled) {
     item.disabled = true;
     item.classList.add('disabled');
@@ -148035,8 +149947,8 @@ function _shellMenuCreatePanel(label) {
   return panel;
 }
 
-function _shellMenuAppendSubmenu(menu, label, icon, panel) {
-  const trigger = _shellMenuAppendItem(menu, label, null, { icon, hasSubmenu: true, className: 'tree-ctx-item' });
+function _shellMenuAppendSubmenu(menu, label, icon, panel, e2eId = '') {
+  const trigger = _shellMenuAppendItem(menu, label, null, { icon, hasSubmenu: true, className: 'tree-ctx-item', e2eId });
   const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
   trigger.addEventListener('mouseenter', () => setExpanded(true));
   trigger.addEventListener('mouseleave', () => setTimeout(() => {
@@ -148217,7 +150129,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
     if (!archivePanel) {
       archivePanel = _shellMenuCreatePanel('圧縮/解凍');
       archivePanel.dataset.shellArchivePanel = '1';
-      _shellMenuAppendSubmenu(menu, '圧縮/解凍', 'archive', archivePanel);
+      _shellMenuAppendSubmenu(menu, '圧縮/解凍', 'archive', archivePanel, 'tree-ctx-archive-menu');
     }
     archiveVerbs.forEach(v => {
       _shellMenuAppendItem(archivePanel, v.name, () => {
@@ -148237,7 +150149,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
 
   // サブメニューとして表示
   const shellPanel = _shellMenuCreatePanel('OS メニュー');
-  _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
+  _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel, 'tree-ctx-os-menu');
 
   const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v) && !_isArchiveShellVerb(v));
   if (submenuVerbs.length === 0) {
@@ -151057,16 +152969,16 @@ function createTreeNodeFromBrowse(item, rootPath) {
 
     // Alt+D&D: フォルダリンク登録（移動ではなくリンク）
     if (e.altKey && (isFolder || isDB)) {
-      for (const n of nodes) {
-        const d = n._nodeData;
-        if (d && d.path) {
-          const addLink = typeof addFolderLinkWithHistory === 'function'
-            ? addFolderLinkWithHistory(d.path, item.path)
-            : apiPost('/folder-links/add', { file_path: d.path, folder_path: item.path });
-          Promise.resolve(addLink).then(() => {
-            showStatus(d.name + ' → ' + item.name + ' にリンク登録');
-          }).catch(() => showStatus('リンク登録に失敗', true));
-        }
+      const linkItems = nodes.map(n => n._nodeData).filter(d => d?.path);
+      try {
+        const result = typeof addFolderLinksBatchWithHistory === 'function'
+          ? await addFolderLinksBatchWithHistory(linkItems, item.path)
+          : await apiPost('/folder-links/batch/add', { items: linkItems.map(d => ({ file_path: d.path })), folder_path: item.path });
+        const failed = result?.failed_count || 0;
+        const changed = result?.created_count || 0;
+        showStatus(`${changed} 件を「${item.name}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && changed === 0);
+      } catch {
+        showStatus('リンク登録に失敗', true);
       }
       clearDragIndicators();
       loadOutliner();
@@ -151114,6 +153026,21 @@ function createTreeNodeFromBrowse(item, rootPath) {
     if (destFolder && isItemLocked(destFolder)) {
       showStatus('編集ロック中のフォルダには移動できません', true);
       return;
+    }
+
+    // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
+    // 落とすと「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+    if (position === 'inside' && isDB) {
+      const rejected = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
+      if (rejected.length) {
+        const names = rejected.map(n => n._nodeData?.name || '').filter(Boolean);
+        showStatus(
+          'シートの中にはエントリだけを置けます（' + (names[0] || '対象') +
+          (names.length > 1 ? ' ほか ' + (names.length - 1) + ' 件' : '') + '）',
+          true
+        );
+        return;
+      }
     }
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
@@ -151327,7 +153254,7 @@ function _cloneOutlinerRootsForBase(roots) {
   }
 }
 
-// フォルダツリー右クリック（名前を変更・このソースフォルダを削除・パスを変更）から
+// フォルダツリー右クリック（名前を変更・このソースフォルダの登録を解除・パスを変更）から
 // /outliner-roots を保存する共通ヘルパー。baseRoots には直前のGETで実際に見ていた
 // 一覧のディープコピー（_cloneOutlinerRootsForBase の戻り値）を渡すこと。
 // これを送らないと、共有台帳合流分（他端末・クラウド版が追加したroot）の削除が
@@ -151389,10 +153316,17 @@ function _prepareOutlinerDeleteTargets(items) {
 
 async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
+  const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? MeldexDeleteImpactWarning.confirmationPayload(options.confirmation)
+    : {};
   if (batchTargets.length) {
     try {
       const payload = await apiPost('/outliner/delete-batch', {
-        items: batchTargets.map(item => ({ path: item.path })),
+        items: batchTargets.map(item => ({
+          path: item.path,
+          kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        })),
+        ...confirmationPayload,
       });
       const batchResults = Array.isArray(payload?.results) ? payload.results : [];
       if (batchResults.length === batchTargets.length) {
@@ -151418,7 +153352,11 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const results = [];
   for (const item of targets) {
     try {
-      const value = await apiPost('/outliner/delete', { path: item.path });
+      const value = await apiPost('/outliner/delete', {
+        path: item.path,
+        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        ...confirmationPayload,
+      });
       results.push({ status: 'fulfilled', value });
       const trashRef = _outlinerTrashRefFromResponse(value);
       if (trashRef && typeof options.onSuccess === 'function') {
@@ -151545,6 +153483,10 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
 
 async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
+  if (requestedTargets.some(item => item.linked)) {
+    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
+    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
+  }
   const targets = _prepareOutlinerDeleteTargets(requestedTargets);
   if (!targets.length) {
     return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
@@ -151557,6 +153499,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   }
 
   const results = await _deleteOutlinerTargetsSequentially(targets, {
+    confirmation: options.confirmation,
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
     },
@@ -151820,13 +153763,25 @@ function _outlinerBindContextMenuClose(menu) {
 
 function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   closeTreeContextMenu();
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
+  // シートを選んでいるときは、シートの中に作れる「エントリ」を先頭に出す。
+  // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
+  if (nodeData?.type === 'database' && nodeData.path) {
+    _outlinerAppendMenuItem(menu, {
+      label: 'エントリ',
+      icon: 'plus',
+      action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
+    });
+    _outlinerAppendMenuSeparator(menu);
+  }
   _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
-      action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+      action: async () => {
+        closeTreeContextMenu();
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type);
+      },
     });
   });
   _outlinerPlaceContextMenu(menu);
@@ -151916,6 +153871,17 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showStatus('削除できる項目がありません', true);
       return;
     }
+    const linkedDelete = await handleDisplayedFolderLinkDelete(targets, '', {
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    if (linkedDelete.handled) {
+      if (linkedDelete.result) treeSelection.clear();
+      return;
+    }
     const names = targets.map(item => item.name).join('、');
     const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -151924,6 +153890,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {
+      confirmation: confirmed,
       label: targets.length + ' 件を削除',
       detail: names,
       onItemDeleted: (item) => {
@@ -152451,16 +154418,18 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showSettingsModal({ panel: 'ユーザー' });
     }, null, 'users');
     addSep();
-    addMenuItem('このソースフォルダを削除', async () => {
+    addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」をフォルダツリーから削除しますか？\n（ファイルは削除されません）')) return;
+      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
       const roots = await apiFetch('/outliner-roots');
       const baseRoots = _cloneOutlinerRootsForBase(roots);
       const newRoots = roots.filter(r => r.path !== nodeData.path);
       await _putOutlinerRootsWithBase(newRoots, baseRoots);
       await loadOutliner();
-      showStatus('ソースフォルダを削除しました');
-    }, null, 'trash2');
+      showStatus('ソースフォルダの登録を解除しました');
+    }, null, 'folder-minus');
   }
 
   // --- 作品フォルダ設定（フォルダのみ） ---
@@ -152565,8 +154534,24 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
 }
 
 // 追加先の親パスを決定
+// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
+// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
+function _outlinerContainerAcceptsItemType(nodeData, itemType) {
+  if (nodeData?.type !== 'database') return true;
+  return String(itemType || '') === 'entity';
+}
+
+// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
+// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
+function _outlinerItemFitsInSheet(nodeData) {
+  return window.MeldexSheetAttachments?.itemFitsInSheet
+    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
+    : true;
+}
+
 function getAddParentPath(nodeEl, nodeData, options = {}) {
-  const isContainer = nodeData.type === 'folder' || nodeData.type === 'database';
+  const isContainer = nodeData.type === 'folder'
+    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
@@ -152856,6 +154841,20 @@ async function addItemAt(parentPath, type) {
   }
 }
 
+// シートの中へエントリを追加する（シートに作れるのはエントリだけ）
+async function addSheetEntryAt(sheetPath) {
+  const path = String(sheetPath || '').trim();
+  if (!path) return;
+  try {
+    await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    showStatus('エントリを追加しました');
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
+  } catch (e) {
+    showStatus((e && e.message) || 'エントリの追加に失敗しました', true);
+  }
+}
+
 // ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
 async function showAddOutlinerItem(type) {
   // 選択中のアイテムから追加先を決定
@@ -152864,7 +154863,7 @@ async function showAddOutlinerItem(type) {
     // ホーム内のノードが選択されている場合
     if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
       const nd = treeSelection.lastClicked._nodeData;
-      if (nd.type === 'folder' || nd.type === 'database') {
+      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
         const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
         parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
       } else {
@@ -152872,7 +154871,7 @@ async function showAddOutlinerItem(type) {
         parentPath = pn?._nodeData?.path || _homeFolderPath;
       }
     } else {
-      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData);
+      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
     }
   }
   // 何も選択されていない場合、ホームフォルダにフォールバック
@@ -154828,7 +156827,8 @@ function updateRecentItems() {
     if (treeScroll.scrollTop !== savedScrollTop) treeScroll.scrollTop = savedScrollTop;
   };
   if (recent.length === 0) {
-    container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">なし</div>';
+    // 空のときは何も表示しない（ソースフォルダ・ホームフォルダ・お気に入り
+    // ＝renderFavorites() と同じ扱い。「なし」プレースホルダは出さない）。
     _restoreAfter();
     requestAnimationFrame(_restoreAfter);
     return;
@@ -155373,7 +157373,9 @@ async function renderHomeFolderTree(options = {}) {
   }
 }
 
-loadHomeFolder();
+// デスクトップ付箋の小窓にはフォルダツリーが無い。ホームフォルダの一覧取得は本体側だけで行う
+// （付箋の枚数だけ保存フォルダ全体の走査が並走し、本体の起動が待たされる）。
+if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) loadHomeFolder();
 
 // ホームフォルダへのドロップ対応
 (function() {
@@ -155765,8 +157767,36 @@ function _showDropdownMenu(e, items, btnSelector) {
 const MeldexUnifiedSearch = (() => {
   const STORAGE_KEY = 'meldex-search-scopes-v1';
   const LEGACY_KEY = 'search-scopes';
+  const TAG_CONDITION_KEY = 'meldex-search-tag-condition-v1';
   const defaults = { name: true, content: true, clip: false, tags: false, memo: false };
   const labels = { name: '名前', content: 'ファイル内文字列', clip: '画像の内容', tags: 'タグ', memo: 'メモ' };
+
+  // 検索側のタグ条件（複数タグ・厳密照合・すべて/どれか）。3つの検索入口
+  // （フォルダツリー上部・フォルダ表示の検索欄・コマンドパレット）は同じ
+  // MeldexUnifiedSearch を経由するため、この状態も共有する（1-A）。
+  // フィルタ側の filterTags（フォルダ表示専用・フォルダ内実在タグのみ）とは
+  // 別物。検索文字列には混ぜず、正式なタグ条件として扱う（1-C, 2-F）。
+  function readTagCondition() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TAG_CONDITION_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        const tagIds = Array.isArray(raw.tagIds) ? raw.tagIds.map(String).filter(Boolean) : [];
+        const tagMode = raw.tagMode === 'any' ? 'any' : 'all';
+        return { tagIds, tagMode };
+      }
+    } catch {}
+    return { tagIds: [], tagMode: 'all' };
+  }
+
+  function writeTagCondition(value) {
+    const next = {
+      tagIds: Array.isArray(value?.tagIds) ? [...new Set(value.tagIds.map(String).filter(Boolean))] : [],
+      tagMode: value?.tagMode === 'any' ? 'any' : 'all',
+    };
+    try { localStorage.setItem(TAG_CONDITION_KEY, JSON.stringify(next)); } catch {}
+    window.dispatchEvent(new CustomEvent('meldex:search-tag-condition-changed', { detail: next }));
+    return next;
+  }
 
   function available(key) {
     if (key !== 'clip') return true;
@@ -155809,10 +157839,48 @@ const MeldexUnifiedSearch = (() => {
 
   async function search(query, options = {}) {
     const q = String(query || '').trim();
-    if (!q) return { results: [], scopes: active(), unavailable: [] };
+    const tagCondition = readTagCondition();
+    // 文字列が空でも、タグ条件だけが入っていれば検索を通す（2-F）。
+    if (!q && !tagCondition.tagIds.length) return { results: [], scopes: active(), unavailable: [] };
     const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
     if (options.path) params.set('path', options.path);
+    if (tagCondition.tagIds.length) {
+      params.set('tag_ids', tagCondition.tagIds.join(','));
+      params.set('tag_mode', tagCondition.tagMode);
+    }
     return request('/search-unified?' + params.toString(), { silentError: true });
+  }
+
+  // CLIPのトークナイザは英語のBPEなので、非ASCIIを渡すと意味を持たない断片に
+  // なる（実測: 日本語直と英訳で識別度が大きく変わる）。判定は「ASCII以外を
+  // 含むか」程度の軽いものでよい（1-A追記）。
+  const NON_ASCII_RE = /[^\x00-\x7F]/;
+
+  // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を、3つの検索UI
+  // （コマンドパレット・フォルダツリー検索・フォルダパネル検索）で共通に出す
+  // ためのヒント文言。data は search() の戻り値（unavailable[] を含む）。
+  // data が無くても、非ASCIIクエリの注意だけは即時に出せる。
+  function describeHints(data, query) {
+    const hints = [];
+    const q = String(query || '');
+    if (q && active().includes('clip') && NON_ASCII_RE.test(q)) {
+      hints.push('画像の内容検索は英語で入力してください（例: a red circle）');
+    }
+    const clipIssue = (data?.unavailable || []).find(item => item?.source === 'clip' && item.message);
+    if (clipIssue) hints.push(String(clipIssue.message));
+    return hints;
+  }
+
+  // ヒント文言をDOM要素へ反映する（無ければ非表示）。3つの検索UIはそれぞれ
+  // DOM構造が異なるため、要素の生成・配置は呼び出し側が行い、ここでは
+  // 表示内容の更新だけを共通化する。
+  function updateHint(el, data, query) {
+    const hints = describeHints(data, query);
+    if (el) {
+      el.textContent = hints.join(' ／ ');
+      el.style.display = hints.length ? '' : 'none';
+    }
+    return hints;
   }
 
   function show(anchor) {
@@ -155860,7 +157928,64 @@ const MeldexUnifiedSearch = (() => {
     anchorParent.appendChild(btn); return btn;
   }
 
-  return { STORAGE_KEY, defaults, read, write, active, available, search, show, button };
+  const TAG_BUTTON_OWNER_KEY = 'unified-search';
+
+  // 検索欄の横に置く、タグ選択フロートパネルを開くボタン（2-D）。フォルダツリー
+  // 上部・フォルダ表示の検索欄・コマンドパレットの3か所で同じ見た目・同じ状態を使う。
+  function tagButton(anchorParent, options = {}) {
+    if (!anchorParent || anchorParent.querySelector?.('[data-search-tag-trigger]')) return null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.searchTagTrigger = 'true';
+    btn.dataset.e2eId = options.e2eId || 'search-tag-trigger';
+    btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon';
+    btn.title = 'タグで絞り込み';
+    btn.setAttribute('aria-label', '検索に使うタグを選ぶ');
+
+    const syncBadge = () => {
+      const cond = readTagCondition();
+      btn.replaceChildren();
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'gb-search-tag-trigger-icon';
+      iconSpan.innerHTML = typeof lucide === 'function' ? lucide('listTree', 14) : '🏷';
+      btn.appendChild(iconSpan);
+      if (cond.tagIds.length) {
+        const badge = document.createElement('span');
+        badge.className = 'gb-search-tag-trigger-badge';
+        badge.textContent = String(cond.tagIds.length);
+        btn.appendChild(badge);
+      }
+      window.GBTagPickerPanel?.syncTriggerButton?.(btn, TAG_BUTTON_OWNER_KEY);
+    };
+    syncBadge();
+    window.addEventListener('meldex:search-tag-condition-changed', syncBadge);
+
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!window.GBTagPickerPanel?.open) return;
+      const cond = readTagCondition();
+      window.GBTagPickerPanel.open({
+        ownerKey: TAG_BUTTON_OWNER_KEY,
+        headerLabel: '検索に使うタグ',
+        sourceFolder: typeof options.sourceFolder === 'function' ? (options.sourceFolder() || '') : String(options.sourceFolder || ''),
+        tagIds: cond.tagIds,
+        matchMode: cond.tagMode,
+        onChange: (tagIds, mode) => {
+          writeTagCondition({ tagIds, tagMode: mode });
+          if (typeof options.onChange === 'function') options.onChange(tagIds, mode);
+        },
+      });
+    });
+    anchorParent.appendChild(btn);
+    return btn;
+  }
+
+  return {
+    STORAGE_KEY, defaults, read, write, active, available, search, show, button,
+    TAG_CONDITION_KEY, readTagCondition, writeTagCondition, tagButton,
+    describeHints, updateHint,
+  };
 })();
 window.MeldexUnifiedSearch = MeldexUnifiedSearch;
 
@@ -155869,17 +157994,37 @@ let _treeUnifiedSearchPaths = new Set();
 let _treeUnifiedSearchSeq = 0;
 let _treeUnifiedSearchTimer = 0;
 
+// 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+// テキスト行。検索バー（#sidebar-search-bar）の直後に一度だけ作る（1-A追記）。
+function _ensureTreeSearchHintEl() {
+  const existing = document.getElementById('tree-search-hint');
+  if (existing) return existing;
+  const bar = document.getElementById('sidebar-search-bar');
+  if (!bar?.parentElement) return null;
+  const hint = document.createElement('div');
+  hint.id = 'tree-search-hint';
+  hint.dataset.e2eId = 'tree-search-hint';
+  hint.style.cssText = 'display:none;padding:2px 8px 6px;font-size:11px;line-height:1.4;color:var(--fg2);flex-shrink:0;';
+  bar.insertAdjacentElement('afterend', hint);
+  return hint;
+}
+
 function doTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   const q = (input?.value || '').trim().toLowerCase();
+  const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
   const clearBtn = document.getElementById('btn-tree-search-clear');
-  if (clearBtn) clearBtn.style.display = q ? '' : 'none';
+  if (clearBtn) clearBtn.style.display = (q || hasTagCondition) ? '' : 'none';
   _treeSearchQuery = q;
   const seq = ++_treeUnifiedSearchSeq;
   _treeUnifiedSearchPaths = new Set();
   applyTreeNameSearch();
   const scopes = MeldexUnifiedSearch.active();
-  if (q && scopes.some(scope => scope !== 'name')) {
+  // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+  // 検索結果が返ってから追加で反映する。
+  MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), null, q);
+  // タグ条件だけでも検索を通す（文字列は空でよい。2-F）。
+  if ((q && scopes.some(scope => scope !== 'name')) || hasTagCondition) {
     clearTimeout(_treeUnifiedSearchTimer);
     _treeUnifiedSearchTimer = setTimeout(() => {
       _treeUnifiedSearchTimer = 0;
@@ -155887,6 +158032,7 @@ function doTreeNameSearch() {
         if (seq !== _treeUnifiedSearchSeq) return;
         _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
         applyTreeNameSearch();
+        MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), data, q);
       }).catch(() => {});
     }, 240);
   } else {
@@ -155899,30 +158045,29 @@ function doTreeNameSearch() {
 function clearTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = '';
-  _treeSearchQuery = '';
-  _treeUnifiedSearchSeq++;
-  _treeUnifiedSearchPaths = new Set();
-  const clearBtn = document.getElementById('btn-tree-search-clear');
-  if (clearBtn) clearBtn.style.display = 'none';
-  applyTreeNameSearch();
-  if (typeof saveCurrentLayoutFilterState === 'function') saveCurrentLayoutFilterState();
+  // タグ条件が残っている場合は、文字列だけ消してタグ条件検索を続ける
+  // （doTreeNameSearch() が hasTagCondition を見て判断する。2-F）。
+  doTreeNameSearch();
 }
 
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
+  const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
   const includeName = MeldexUnifiedSearch.read().name;
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
   const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
 
-  if (!q) {
+  if (!q && !hasTagCondition) {
     // 検索クリア: グローバルフィルタのみ適用状態に戻す
     applyGlobalFilter();
     return;
   }
 
-  // パス1: マッチするノードにフラグを立てる
+  // パス1: マッチするノードにフラグを立てる。文字列が空（タグ条件だけ）の
+  // 場合、空文字はどの名前にも一致してしまうため名前マッチは行わず、
+  // 統一検索が返したパス一致だけで判定する。
   allNodes.forEach(node => {
     const d = node._nodeData;
     const baseVisible = node.dataset.baseVisible !== '0';
@@ -155930,18 +158075,20 @@ function applyTreeNameSearch() {
       node._searchMatch = false;
       return;
     }
+    const nameMatch = !!(q && includeName && d.name && d.name.toLowerCase().includes(q));
+    const pathMatch = _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
     // フォルダ/ルートは名前マッチのみ
     if (d.type === 'folder' || d._isRoot || d.type === 'database') {
-      node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
+      node._searchMatch = nameMatch || pathMatch;
       return;
     }
     // エントリ: 設定次第
     if (d.type === 'entity') {
-      node._searchMatch = includeEntities && ((includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase()));
+      node._searchMatch = includeEntities && (nameMatch || pathMatch);
       return;
     }
     // ファイル: 名前マッチ
-    node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
+    node._searchMatch = nameMatch || pathMatch;
   });
 
   // パス2: マッチしたノードの祖先フォルダも表示
@@ -155989,12 +158136,18 @@ function applyTreeNameSearch() {
 
 function _installTreeSearchScopeTrigger() {
   const input = document.getElementById('sidebar-search-input');
-  if (input?.parentElement) MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+  if (!input?.parentElement) return;
+  MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+  MeldexUnifiedSearch.tagButton?.(input.parentElement, { e2eId: 'tree-search-tag-trigger' });
+  _ensureTreeSearchHintEl();
 }
 queueMicrotask(_installTreeSearchScopeTrigger);
 document.addEventListener('DOMContentLoaded', _installTreeSearchScopeTrigger, { once: true });
 window.addEventListener('meldex:search-scopes-changed', () => {
   if (_treeSearchQuery) doTreeNameSearch();
+});
+window.addEventListener('meldex:search-tag-condition-changed', () => {
+  doTreeNameSearch();
 });
 
 const _vaultSearchPanelUi = {
@@ -158725,27 +160878,82 @@ _bindClipSearchResultDelegation();
 
 ;
 
-/* === gb-duplicate-monitor.js === */
+/* === gb-duplicate-monitor-watch-changes-intro.js === */
 ;
-/* 重複ファイルの背景スキャン、保存後アラート、解決ダイアログ。 */
+/* インポート・機能生成ファイル保護計画 Phase 6-2
+   (app/docs/import-and-feature-file-protection-plan-2026-08-12.md §7 6-1):
+   重複検出設定「フォルダの変更をすぐ確認」(watch_changes) は、Meldex外
+   (エクスプローラー等)での移動・改名にタグ・注釈・版履歴・リンクを追従
+   させる監視の起動条件でもある。既定は引き続きオフのまま(黙って常時監視を
+   始めない)だが、その意味を利用者が分かる形で可視提示するための一回限りの
+   案内を、gb-duplicate-monitor.js から分離した小さな補助モジュールとして
+   提供する(1ファイル1000行以内の方針に沿った分割)。 */
 (function () {
   'use strict';
 
-  const ALERT_POLL_MS = 2500;
+  function shouldShow(settings, watcherAvailable) {
+    return !!watcherAvailable && !settings?.watch_changes && !settings?.watch_changes_intro_seen;
+  }
+
+  function html(settings, watcherAvailable) {
+    if (!shouldShow(settings, watcherAvailable)) return '';
+    return `
+      <div class="dup-watch-changes-intro" data-dup-watch-changes-intro role="status">
+        エクスプローラーなど、Meldexの外で行った移動・改名にもタグ・注釈・版履歴・リンクを追従させるには、変更監視が必要です。
+        <div class="dup-watch-changes-intro-actions">
+          <button type="button" class="gb-btn gb-btn-sm primary" data-dup-watch-changes-enable data-e2e-id="duplicate-setting-watch-changes-intro-enable">変更監視を有効にする</button>
+          <button type="button" class="gb-btn gb-btn-sm" data-dup-watch-changes-dismiss data-e2e-id="duplicate-setting-watch-changes-intro-dismiss">今は使わない</button>
+        </div>
+      </div>`;
+  }
+
+  function bind(host, { apiFetch, onSaved, onError }) {
+    if (!host) return;
+    host.querySelector('[data-dup-watch-changes-enable]')?.addEventListener('click', async () => {
+      try {
+        await apiFetch('/duplicate-detection/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ watch_changes: true, watch_changes_intro_seen: true }),
+        });
+        await onSaved?.();
+      } catch (error) {
+        onError?.('変更監視を有効にできませんでした', error);
+      }
+    });
+    host.querySelector('[data-dup-watch-changes-dismiss]')?.addEventListener('click', async () => {
+      try {
+        await apiFetch('/duplicate-detection/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ watch_changes_intro_seen: true }),
+        });
+        await onSaved?.();
+      } catch (error) {
+        onError?.('案内を閉じられませんでした', error);
+      }
+    });
+  }
+
+  window.MeldexDuplicateWatchChangesIntro = { shouldShow, html, bind };
+})();
+
+;
+
+/* === gb-duplicate-monitor-format.js === */
+;
+/* 重複ファイル一覧の表示整形。
+ * ラベル・パス表示・バッジ・グループHTMLの組み立てだけを持ち、
+ * 監視やスキャンの制御は gb-duplicate-monitor.js 側に残す（責務単位の分離）。
+ * esc() は meldex-core のものを呼び出し時に参照する。
+ */
+(function (global) {
+  'use strict';
+
   const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico', 'svg']);
   const TYPE_LABELS = {
     exact_file: ['完全同一ファイル', 'gb-badge-danger'],
     exact_image: ['同一画像', 'gb-badge-danger'],
     similar_image: ['類似画像', 'gb-badge-warn'],
   };
-  const alertQueue = [];
-  const queuedAlertIds = new Set();
-  let activeAlertModal = null;
-  let alertPollTimer = null;
-  let monitorStarted = false;
-  let settingsRenderSeq = 0;
-  const folderStateCache = new Map();
-  const FOLDER_STATE_CACHE_MS = 15000;
 
   function safeText(value) {
     return String(value == null ? '' : value);
@@ -158918,6 +161126,52 @@ _bindClipSearchResultDelegation();
       <div class="dup-group-body">${items}</div>
     </section>`;
   }
+
+  global.MeldexDuplicateFormat = {
+    safeText,
+    filePath,
+    fileName,
+    fileLocation,
+    pathParts,
+    displayPath,
+    targetHtml,
+    isImage,
+    isExisting,
+    modifiedText,
+    normalizeType,
+    normalizeGroup,
+    normalizeGroups,
+    selectedIndex,
+    itemVisual,
+    itemHtml,
+    groupHtml,
+  };
+})(window);
+
+;
+
+/* === gb-duplicate-monitor.js === */
+;
+/* 重複ファイルの背景スキャン、保存後アラート、解決ダイアログ。 */
+(function () {
+  'use strict';
+
+  const ALERT_POLL_MS = 2500;
+  const alertQueue = [];
+  const queuedAlertIds = new Set();
+  let activeAlertModal = null;
+  let alertPollTimer = null;
+  let monitorStarted = false;
+  let settingsRenderSeq = 0;
+  const folderStateCache = new Map();
+  const FOLDER_STATE_CACHE_MS = 15000;
+
+  // 表示整形は gb-duplicate-monitor-format.js が持つ（先に読み込まれる前提）。
+  const {
+    safeText, filePath, fileName, fileLocation, pathParts, displayPath,
+    targetHtml, isImage, isExisting, modifiedText, normalizeType, normalizeGroup,
+    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml,
+  } = window.MeldexDuplicateFormat;
 
   function createOverlay(options) {
     const body = document.createElement('div');
@@ -159545,6 +161799,9 @@ _bindClipSearchResultDelegation();
       if (seq !== settingsRenderSeq || !host.isConnected) return;
       const settings = payload?.settings || {};
       const watcherAvailable = payload?.watcher_available !== false;
+      // Phase 6-2 (6-1): 監視の既定はオフのまま。Meldex外の移動追従に監視が
+      // 必要な旨の一回限りの可視案内は gb-duplicate-monitor-watch-changes-intro.js へ分離。
+      const watchChangesIntroHtml = window.MeldexDuplicateWatchChangesIntro?.html(settings, watcherAvailable) || '';
       host.innerHTML = `<section class="gb-section gb-section--boxed dup-settings-section">
         <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
         <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
@@ -159560,10 +161817,12 @@ _bindClipSearchResultDelegation();
             <option value="30" ${Number(settings.refresh_days) === 30 ? 'selected' : ''}>30日ごと</option>
           </select>
         </label>
+        ${watchChangesIntroHtml}
         <div class="gb-check-help-row">
           <label><input type="checkbox" data-dup-setting="watch_changes" data-e2e-id="duplicate-setting-watch-changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
           ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
         </div>
+        <div class="gb-section-desc">オンにすると、エクスプローラーなどMeldexの外で行った移動・改名にも、タグ・注釈・版履歴・検索索引・編集ロックが追従します。</div>
         <div class="dup-settings-actions">
           <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline data-e2e-id="duplicate-setting-scan-now">${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
           <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>
@@ -159574,6 +161833,12 @@ _bindClipSearchResultDelegation();
         <div class="gb-section-desc">親フォルダの設定は子フォルダへ引き継がれます。必要な場所だけ個別に切り替えられます。</div>
         <div class="dup-folder-target-tree" data-dup-folder-tree><div class="gb-section-desc">フォルダを読み込んでいます…</div></div>
       </section>`;
+
+      window.MeldexDuplicateWatchChangesIntro?.bind(host, {
+        apiFetch,
+        onSaved: async () => { notifyTargetChange(''); await renderSettings(root); },
+        onError: (message, error) => showStatus(`${message}: ${userError(error)}`, true),
+      });
 
       const settingInputs = [...host.querySelectorAll('[data-dup-setting]')];
       const saveSettings = async () => {
@@ -159711,6 +161976,8 @@ _bindClipSearchResultDelegation();
     }));
   });
   window.addEventListener('load', () => setTimeout(() => {
+    // デスクトップ付箋の小窓には重複の通知先もフォルダツリーも無い。監視は本体側だけが行う。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     startMonitor();
     refreshOutlinerBadges(document);
   }, 0), { once: true });
@@ -161703,10 +163970,14 @@ const GBPaneBridge = (() => {
     pane.appendChild(fname);
   }
 
+  // 'chat' はここに含めない。右サイドバーの既定パネルであるチャットに注釈
+  // フロートボタンが出ていた（ユーザー指摘、2026-08-12）。加えて実際の描画・保存を
+  // 担う _ANNOTATION_TARGET_VIEW_TYPES（gb-annotations.js）には元々 'chat' が
+  // 含まれておらず、ボタンを押しても機能しない状態だった。両者を合わせて撤去する。
   const _ANNOTATION_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
-    'board', 'scriptnote', 'calendar', 'chat',
+    'board', 'scriptnote', 'calendar',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
@@ -161777,10 +164048,6 @@ const GBPaneBridge = (() => {
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || statePath('currentBoardPath');
     if (tabType === 'calendar') return 'calendar:panel';
-    if (tabType === 'chat') {
-      return tabPath('chatPath', 'historyPath')
-        || (tab?.state?.sessionId ? `chat:${tab.state.sessionId}` : '');
-    }
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       if (tabType === 'smart-db') {
         return tabPath('smartDbPath', 'dbPath') || statePath('currentSmartDb')?._filePath || statePath('currentDbPath');
@@ -164752,6 +167019,1027 @@ if (typeof window !== 'undefined') window.GBSubPanel = GBSubPanel;
 
 ;
 
+/* === gb-float-panel-base.js === */
+;
+/* ==============================
+   gb-float-panel-base.js — フロートパネルの共通の骨組み（挙動のみ）
+
+   作業領域の上に浮かべる小型パネルに共通する挙動を1つの部品にまとめる。
+   ヘッダードラッグでの移動、8方向の枠ドラッグでのサイズ変更、画面外へ出さない
+   補正、表示倍率（--meldex-ui-zoom）対応、位置とサイズの記憶、Escapeでの
+   閉じる、スマートフォン幅での全幅ボトムシート化を提供する。
+
+   見た目（CSS）は呼び出し側が完全に所有する。この部品はDOM構造と挙動だけを
+   提供し、クラス名は呼び出し側が指定した名前をそのまま使う（既存パネルの
+   CSSセレクタを壊さないため）。
+
+   由来: クイックメモのフロートパネル（v0.7.258, gb-quick-memo-panel.js）から
+   機械的に切り出した。挙動は変えていない。タグ選択パネル（gb-tag-picker-panel.js）
+   が2つ目の利用者。
+   ============================== */
+(function () {
+  'use strict';
+
+  function _zoom() {
+    const z = (typeof _getZoom === 'function')
+      ? Number(_getZoom())
+      : parseFloat(document.documentElement.style.zoom || '1');
+    return Number.isFinite(z) && z > 0 ? z : 1;
+  }
+
+  function create(config) {
+    const cfg = config || {};
+    const MIN_W = Number(cfg.minWidth) || 300;
+    const MIN_H = Number(cfg.minHeight) || 320;
+    const DEFAULT_W = Number(cfg.defaultWidth) || 420;
+    const DEFAULT_H = Number(cfg.defaultHeight) || 620;
+    const MARGIN = Number(cfg.margin) || 8;
+    const STORAGE_KEY = String(cfg.storageKey || ('meldex:float-panel:' + (cfg.id || 'panel') + ':rect:v1'));
+    const MOBILE_BREAKPOINT = Number(cfg.mobileBreakpoint) || 640;
+    const escapeRequiresFocusWithin = cfg.escapeRequiresFocusWithin !== false;
+    const resizable = cfg.resizable !== false;
+
+    let _panel = null;
+    let _header = null;
+    let _body = null;
+    let _dragState = null;
+    let _resizeState = null;
+    let _keyListener = null;
+    let _windowResizeListener = null;
+
+    function _isMobileSheetActive() {
+      if (!cfg.mobileSheet) return false;
+      try { return window.matchMedia('(max-width: ' + MOBILE_BREAKPOINT + 'px)').matches; }
+      catch { return (window.innerWidth || 0) <= MOBILE_BREAKPOINT; }
+    }
+
+    function _viewportCssSize() {
+      const z = _zoom();
+      return {
+        w: Math.max(MIN_W, (window.innerWidth || document.documentElement.clientWidth || MIN_W) / z),
+        h: Math.max(MIN_H, (window.innerHeight || document.documentElement.clientHeight || MIN_H) / z),
+      };
+    }
+
+    function _clampRect(rect) {
+      const viewport = _viewportCssSize();
+      const rawW = Number(rect?.w);
+      const rawH = Number(rect?.h);
+      const w = Math.max(MIN_W, Math.min(Number.isFinite(rawW) ? rawW : DEFAULT_W, viewport.w - MARGIN * 2));
+      const h = Math.max(MIN_H, Math.min(Number.isFinite(rawH) ? rawH : DEFAULT_H, viewport.h - MARGIN * 2));
+      const maxLeft = Math.max(MARGIN, viewport.w - w - MARGIN);
+      const maxTop = Math.max(MARGIN, viewport.h - h - MARGIN);
+      const rawLeft = Number(rect?.left);
+      const rawTop = Number(rect?.top);
+      return {
+        left: Math.max(MARGIN, Math.min(Number.isFinite(rawLeft) ? rawLeft : maxLeft, maxLeft)),
+        top: Math.max(MARGIN, Math.min(Number.isFinite(rawTop) ? rawTop : MARGIN, maxTop)),
+        w,
+        h,
+      };
+    }
+
+    function _applyRect(rect) {
+      if (!_panel) return null;
+      // モバイルシートは位置とサイズをCSSが決めるため、インラインstyleは触らない。
+      if (_isMobileSheetActive()) return null;
+      const next = _clampRect(rect);
+      _panel.style.left = next.left + 'px';
+      _panel.style.top = next.top + 'px';
+      _panel.style.width = next.w + 'px';
+      _panel.style.height = next.h + 'px';
+      return next;
+    }
+
+    function _currentRect() {
+      if (!_panel) return null;
+      const rect = _panel.getBoundingClientRect();
+      const z = _zoom();
+      return { left: rect.left / z, top: rect.top / z, w: rect.width / z, h: rect.height / z };
+    }
+
+    function _readStoredRect() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function _saveRect() {
+      if (_isMobileSheetActive()) return;
+      const rect = _currentRect();
+      if (!rect) return;
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(rect)); } catch {}
+    }
+
+    function _defaultRect() {
+      const viewport = _viewportCssSize();
+      const w = Math.min(DEFAULT_W, Math.max(MIN_W, viewport.w - MARGIN * 2));
+      const h = Math.min(DEFAULT_H, Math.max(MIN_H, viewport.h - MARGIN * 2));
+      const anchor = cfg.anchorSelector ? document.querySelector(cfg.anchorSelector) : null;
+      const z = _zoom();
+      let left = viewport.w - w - MARGIN;
+      if (anchor) {
+        const anchorRect = anchor.getBoundingClientRect();
+        if (anchorRect.width > 0) left = anchorRect.left / z - w - MARGIN;
+      }
+      return _clampRect({ left, top: Math.max(MARGIN, viewport.h - h - MARGIN), w, h });
+    }
+
+    // ドラッグ・リサイズ中はiframe等がポインタを奪うことがあるため、呼び出し側に
+    // 一時的な無効化のタイミングを通知する（quick-memoはiframeのpointer-eventsを切る）。
+    function _notifyDragToggle(enabled) {
+      if (typeof cfg.onDragToggle === 'function') cfg.onDragToggle(enabled);
+    }
+
+    function _startDrag(event) {
+      if (event.button !== 0 || _isMobileSheetActive()) return;
+      const rect = _currentRect();
+      if (!rect) return;
+      event.preventDefault();
+      const z = _zoom();
+      _dragState = {
+        startX: event.clientX,
+        startY: event.clientY,
+        startLeft: rect.left,
+        startTop: rect.top,
+        w: rect.w,
+        h: rect.h,
+        zoom: z,
+      };
+      _notifyDragToggle(false);
+      const onMove = (ev) => {
+        if (!_dragState) return;
+        const dx = (ev.clientX - _dragState.startX) / _dragState.zoom;
+        const dy = (ev.clientY - _dragState.startY) / _dragState.zoom;
+        _applyRect({
+          left: _dragState.startLeft + dx,
+          top: _dragState.startTop + dy,
+          w: _dragState.w,
+          h: _dragState.h,
+        });
+      };
+      const onUp = () => {
+        _dragState = null;
+        _notifyDragToggle(true);
+        document.removeEventListener('pointermove', onMove);
+        document.removeEventListener('pointerup', onUp);
+        _saveRect();
+      };
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+    }
+
+    function _bindResize() {
+      if (!_panel || !resizable) return;
+      _panel.querySelectorAll('.gb-float-panel-resize-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0 || _isMobileSheetActive()) return;
+          const rect = _currentRect();
+          if (!rect) return;
+          event.preventDefault();
+          event.stopPropagation();
+          _resizeState = {
+            dir: handle.dataset.dir || 'se',
+            startX: event.clientX,
+            startY: event.clientY,
+            startW: rect.w,
+            startH: rect.h,
+            startLeft: rect.left,
+            startTop: rect.top,
+            zoom: _zoom(),
+          };
+          _notifyDragToggle(false);
+          const onMove = (ev) => {
+            if (!_resizeState) return;
+            const { dir, startX, startY, startW, startH, startLeft, startTop, zoom } = _resizeState;
+            const dx = (ev.clientX - startX) / zoom;
+            const dy = (ev.clientY - startY) / zoom;
+            let w = startW;
+            let h = startH;
+            let left = startLeft;
+            let top = startTop;
+            if (dir.includes('e')) w = Math.max(MIN_W, startW + dx);
+            if (dir.includes('s')) h = Math.max(MIN_H, startH + dy);
+            if (dir.includes('w')) {
+              w = Math.max(MIN_W, startW - dx);
+              left = startLeft + (startW - w);
+            }
+            if (dir.includes('n')) {
+              h = Math.max(MIN_H, startH - dy);
+              top = startTop + (startH - h);
+            }
+            _applyRect({ left, top, w, h });
+          };
+          const onUp = () => {
+            _resizeState = null;
+            _notifyDragToggle(true);
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            _saveRect();
+          };
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp);
+          // ポインタ捕捉は失敗しても続行する。ここで例外が出ると、操作対象を
+          // 無効化したままリサイズが始まらない状態で止まってしまう。
+          try { handle.setPointerCapture?.(event.pointerId); } catch {}
+        });
+      });
+    }
+
+    function _syncMobileAttr() {
+      if (!_panel) return;
+      _panel.dataset.mobileSheetEligible = cfg.mobileSheet ? '1' : '0';
+    }
+
+    function _build() {
+      const panel = document.createElement('div');
+      if (cfg.id) panel.id = cfg.id;
+      panel.className = ['gb-float-panel', cfg.className].filter(Boolean).join(' ');
+      if (cfg.dataE2eId) panel.dataset.e2eId = cfg.dataE2eId;
+      if (cfg.ariaLabel) panel.setAttribute('aria-label', cfg.ariaLabel);
+      panel.tabIndex = -1;
+
+      const header = document.createElement('div');
+      header.className = ['gb-float-panel-header', cfg.headerClassName].filter(Boolean).join(' ');
+      if (cfg.headerE2eId) header.dataset.e2eId = cfg.headerE2eId;
+      header.addEventListener('pointerdown', (event) => {
+        if (event.target?.closest?.('button,input,select,textarea,a,[data-no-drag]')) return;
+        _startDrag(event);
+      });
+      panel.appendChild(header);
+
+      const body = document.createElement('div');
+      body.className = ['gb-float-panel-body', cfg.bodyClassName].filter(Boolean).join(' ');
+      panel.appendChild(body);
+
+      if (resizable) {
+        ['n', 'e', 's', 'w', 'ne', 'se', 'sw', 'nw'].forEach((dir) => {
+          const handle = document.createElement('div');
+          handle.className = ['gb-float-panel-resize-handle', cfg.resizeHandleClassName].filter(Boolean).join(' ');
+          handle.dataset.dir = dir;
+          panel.appendChild(handle);
+        });
+      }
+
+      _panel = panel;
+      _header = header;
+      _body = body;
+      if (typeof cfg.buildHeader === 'function') cfg.buildHeader(header, controller);
+      if (typeof cfg.buildBody === 'function') cfg.buildBody(body, controller);
+      document.body.appendChild(panel);
+      _syncMobileAttr();
+      _bindResize();
+      return panel;
+    }
+
+    function isOpen() {
+      return !!(_panel && _panel.isConnected);
+    }
+
+    function open(runtimeOptions) {
+      if (isOpen()) {
+        if (typeof cfg.onReopen === 'function') cfg.onReopen(runtimeOptions);
+        focus();
+        return _panel;
+      }
+      _build();
+      _applyRect(_readStoredRect() || _defaultRect());
+      _keyListener = (event) => {
+        if (event.key !== 'Escape' || !isOpen()) return;
+        if (escapeRequiresFocusWithin && !_panel.contains(document.activeElement)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      };
+      document.addEventListener('keydown', _keyListener, true);
+      _windowResizeListener = () => {
+        _syncMobileAttr();
+        if (!isOpen() || _dragState || _resizeState) return;
+        _applyRect(_currentRect());
+      };
+      window.addEventListener('resize', _windowResizeListener);
+      if (typeof cfg.onOpen === 'function') cfg.onOpen(runtimeOptions);
+      syncTriggerButtons();
+      focus();
+      return _panel;
+    }
+
+    function close() {
+      if (!_panel) return false;
+      if (typeof cfg.onBeforeClose === 'function') cfg.onBeforeClose();
+      _saveRect();
+      if (_keyListener) {
+        document.removeEventListener('keydown', _keyListener, true);
+        _keyListener = null;
+      }
+      if (_windowResizeListener) {
+        window.removeEventListener('resize', _windowResizeListener);
+        _windowResizeListener = null;
+      }
+      _panel.remove();
+      _panel = null;
+      _header = null;
+      _body = null;
+      _dragState = null;
+      _resizeState = null;
+      if (typeof cfg.onClose === 'function') cfg.onClose();
+      syncTriggerButtons();
+      return true;
+    }
+
+    function toggle(runtimeOptions) {
+      return isOpen() ? (close(), false) : (open(runtimeOptions), true);
+    }
+
+    function focus() {
+      try {
+        if (typeof cfg.onFocus === 'function') { cfg.onFocus(); return; }
+        _panel?.focus?.({ preventScroll: true });
+      } catch {}
+    }
+
+    // レール/ボタン側は再描画のたびに作り直されることがあるため、描画後に
+    // 開閉状態を貼り直せるよう外部からも呼べるようにする。
+    function syncTriggerButtons() {
+      const raw = cfg.triggerSelectors;
+      const selectors = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      if (!selectors.length) return;
+      const open_ = isOpen();
+      selectors.forEach((selector) => {
+        document.querySelectorAll(selector).forEach((btn) => {
+          btn.classList.toggle('active', open_);
+          btn.setAttribute('aria-pressed', open_ ? 'true' : 'false');
+        });
+      });
+    }
+
+    const controller = {
+      open,
+      close,
+      toggle,
+      isOpen,
+      focus,
+      syncTriggerButtons,
+      getElement: () => _panel,
+      getHeaderElement: () => _header,
+      getBodyElement: () => _body,
+      applyRect: (rect) => _applyRect(rect),
+      saveRect: () => _saveRect(),
+      isMobileSheetActive: _isMobileSheetActive,
+    };
+    return controller;
+  }
+
+  window.GBFloatPanelBase = Object.freeze({ create });
+})();
+
+;
+
+/* === gb-quick-memo-panel.js === */
+;
+/* ==============================
+   gb-quick-memo-panel.js — クイックメモのフロートパネル
+
+   右レール下端のボタンから、クイックメモを作業領域の上へ一時的に浮かべる。
+   メインパネルのタブにも右サイドバーにもならないので、いま開いている作業を
+   崩さずにメモを書ける。
+
+   中身は単独アプリ版と同じ quick-memo.html を iframe で読み込む。保存経路も
+   単独アプリ版と同じ（/api/quick-memo → シートのエントリ）なので、本体側で
+   保存処理を二重に持たない。パネルを閉じても書きかけは quick-memo 側の
+   下書き保存に残り、送信待ちは gb-quick-memo-sync.js が引き取る。
+
+   ダイアログより手前には出さない（z-index はモーダル未満）。
+
+   移動・8方向リサイズ・画面外補正・表示倍率対応・位置記憶・Escape・重なり順の
+   骨組みは gb-float-panel-base.js（v0.7.268期に共通化）に委譲する。見た目・
+   挙動は移行前と変えていない（CSSクラス名・DOM構造・E2E用の data-e2e-id は
+   すべて据え置き）。
+   ============================== */
+(function () {
+  'use strict';
+
+  const PANEL_ID = 'gb-quick-memo-panel';
+  const RECT_KEY = 'meldex:quick-memo-panel:rect:v1';
+  const FRAME_URL = 'quick-memo.html?embed=1';
+  const MIN_W = 300;
+  const MIN_H = 320;
+  const DEFAULT_W = 420;
+  const DEFAULT_H = 620;
+  const MARGIN = 8;
+
+  let _frame = null;
+  let _base = null;
+
+  function _icon(name, size) {
+    return (typeof lucide === 'function') ? lucide(name, size || 16) : '';
+  }
+
+  function _openStandalone() {
+    const url = 'quick-memo.html';
+    if (typeof _open_app_window_js === 'function') {
+      _open_app_window_js(url);
+      return;
+    }
+    window.open(url, '_blank', 'width=480,height=780,menubar=no,toolbar=no,location=no');
+  }
+
+  // 書きかけを取りこぼさないよう、閉じる前にクイックメモ側の保存を促す。
+  // 失敗しても下書きは quick-memo 側の localStorage に残り、送信待ちは
+  // gb-quick-memo-sync.js が後から引き取るので、閉じる操作自体は止めない。
+  function _flushFrame() {
+    try {
+      const api = _frame?.contentWindow?.MeldexQuickMemo;
+      if (api && typeof api.flush === 'function') api.flush();
+    } catch {}
+  }
+
+  function _buildHeader(header) {
+    header.dataset.e2eId = 'quick-memo-float-panel-header';
+    header.innerHTML = `
+      <span class="gb-quick-memo-panel-icon"></span>
+      <span class="gb-quick-memo-panel-title">クイックメモ</span>
+      <button type="button" class="gb-quick-memo-panel-btn" data-role="standalone"
+              data-e2e-id="quick-memo-float-panel-standalone"
+              title="単独アプリとして起動" aria-label="単独アプリとして起動"></button>
+      <button type="button" class="gb-quick-memo-panel-btn" data-role="close"
+              data-e2e-id="quick-memo-float-panel-close"
+              title="閉じる" aria-label="閉じる"></button>
+    `;
+    header.querySelector('.gb-quick-memo-panel-icon').innerHTML = _icon('notebookPen', 16);
+    header.querySelector('[data-role="standalone"]').innerHTML = _icon('externalLink', 14);
+    header.querySelector('[data-role="close"]').innerHTML = _icon('x', 14);
+    header.querySelector('[data-role="standalone"]').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      _openStandalone();
+    });
+    header.querySelector('[data-role="close"]').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    });
+  }
+
+  function _buildBody(body) {
+    const frame = document.createElement('iframe');
+    frame.className = 'gb-quick-memo-panel-frame';
+    frame.title = 'クイックメモ';
+    frame.dataset.e2eId = 'quick-memo-float-panel-frame';
+    frame.src = FRAME_URL;
+    body.appendChild(frame);
+    _frame = frame;
+  }
+
+  function _base_() {
+    if (_base) return _base;
+    _base = window.GBFloatPanelBase.create({
+      id: PANEL_ID,
+      className: 'gb-quick-memo-panel',
+      headerClassName: 'gb-quick-memo-panel-header',
+      bodyClassName: 'gb-quick-memo-panel-body',
+      resizeHandleClassName: 'gb-quick-memo-panel-resize-handle',
+      dataE2eId: 'quick-memo-float-panel',
+      ariaLabel: 'クイックメモ',
+      storageKey: RECT_KEY,
+      minWidth: MIN_W,
+      minHeight: MIN_H,
+      defaultWidth: DEFAULT_W,
+      defaultHeight: DEFAULT_H,
+      margin: MARGIN,
+      anchorSelector: '.gb-dock-fixed-right',
+      triggerSelectors: '.gb-dock-rail-quick-memo',
+      buildHeader: _buildHeader,
+      buildBody: _buildBody,
+      onDragToggle: (enabled) => { if (_frame) _frame.style.pointerEvents = enabled ? '' : 'none'; },
+      onFocus: () => { try { _frame?.contentWindow?.focus?.(); } catch {} },
+      onBeforeClose: () => { _flushFrame(); },
+      onClose: () => { _frame = null; },
+    });
+    return _base;
+  }
+
+  function isOpen() {
+    return !!_base && _base.isOpen();
+  }
+
+  function open() {
+    return _base_().open();
+  }
+
+  function close() {
+    return _base ? _base.close() : false;
+  }
+
+  function toggle() {
+    return _base_().toggle();
+  }
+
+  function focus() {
+    _base?.focus();
+  }
+
+  // レールは再描画のたびに作り直されるので、描画後に開閉状態を貼り直す。
+  function syncRailButton() {
+    _base?.syncTriggerButtons();
+  }
+
+  window.GBQuickMemoPanel = Object.freeze({
+    open,
+    close,
+    toggle,
+    isOpen,
+    focus,
+    syncRailButton,
+  });
+})();
+
+;
+
+/* === gb-tag-picker-panel.js === */
+;
+/* ==============================
+   gb-tag-picker-panel.js — フィルタ・検索から開く「タグ選択」フロートパネル
+
+   フィルタ（フォルダ表示）と検索（フォルダツリー上部・フォルダ表示の検索欄・
+   コマンドパレット）の3系統・4か所から共通で開ける、条件用のタグ選択パネル。
+   中身はタグ辞書全体の階層ツリーで、クリックのたびに条件のオン・オフが
+   切り替わる（右パネルのタグツリーのようなファイルへの付け外しではない）。
+
+   右パネルのタグツリー（gb-tag-management.js）とは別の実装。理由: 右パネル側は
+   「開いているのは常に1本、そのファイルへの付け外し」というモジュール単位の
+   状態を前提にしており、フロートパネルとタグタブを同時に開ける（意味が違う）
+   要件と両立しない。表示に使う仕組み（複数列グリッド = .gb-tag-tree-grid /
+   .gb-tag-tree-row、タグチップ = MeldexGlobalTags.createTagChip）とタグ階層の
+   組み立てロジックは同一のものを直接使い、二重実装は避けている。
+
+   骨組み（移動・8方向リサイズ・画面外補正・表示倍率対応・位置記憶・Escape・
+   スマホのボトムシート化）は gb-float-panel-base.js を使う。
+   ============================== */
+(function () {
+  'use strict';
+
+  const PANEL_ID = 'gb-tag-picker-panel';
+  const RECT_KEY = 'meldex:tag-picker-panel:rect:v1';
+  const MIN_W = 260;
+  const MIN_H = 280;
+  const DEFAULT_W = 340;
+  const DEFAULT_H = 460;
+  const MARGIN = 8;
+  const MOBILE_BREAKPOINT = 640;
+
+  let _base = null;
+  let _listEl = null;
+  let _toolbarEl = null;
+  let _titleEl = null;
+  let _statusEl = null;
+
+  // 現在パネルが向いているコンテキスト。開き直しのたびに丸ごと差し替える。
+  let _ctx = {
+    ownerKey: '',
+    headerLabel: 'タグ',
+    sourceFolder: '',
+    existingTagIds: null, // Set<string> | null。指定時は含まれないタグを薄く表示
+    tagIds: [],
+    matchMode: 'all',
+    onChange: null,
+  };
+  let _selected = new Set();
+  let _catalog = { tags: [], groups: [] };
+  let _loadRevision = 0;
+
+  function icon(name, size) {
+    return typeof lucide === 'function' ? lucide(name, size || 14) : '';
+  }
+
+  function tagsApi() { return window.MeldexGlobalTags || null; }
+
+  function compareTags(a, b) {
+    return Number(a?.sort_index || 0) - Number(b?.sort_index || 0)
+      || String(a?.name || '').localeCompare(String(b?.name || ''), 'ja');
+  }
+
+  // タグ辞書（フラットな tags[] + groups[]）を、既存のタグツリーと同じ
+  // グループ階層＋未分類へ組み立てる。gb-tag-management.js の buildTreeData と
+  // 同じ考え方（グループ→children/tags再帰構築、未分類は別枠）だが、こちら側は
+  // フィルタ・選択状態を持たない単純な純関数として持つ（このパネル専用の
+  // 読み取り専用ツリーのため、編集系状態と結合したくない）。
+  function buildGroupTree(tags, groups) {
+    const groupsById = Object.fromEntries((groups || []).map(g => [g.id, { ...g, children: [], tags: [] }]));
+    const roots = [];
+    (groups || []).forEach(g => {
+      const node = groupsById[g.id];
+      if (g.parent_id && groupsById[g.parent_id]) groupsById[g.parent_id].children.push(node);
+      else roots.push(node);
+    });
+    const uncategorized = [];
+    (tags || []).forEach(tag => {
+      if (tag.group_id && groupsById[tag.group_id]) groupsById[tag.group_id].tags.push(tag);
+      else uncategorized.push(tag);
+    });
+    const sortGroup = node => {
+      node.children.sort(compareTags);
+      node.tags.sort(compareTags);
+      node.children.forEach(sortGroup);
+    };
+    roots.sort(compareTags);
+    roots.forEach(sortGroup);
+    uncategorized.sort(compareTags);
+    return { roots, uncategorized, groupsById };
+  }
+
+  function isDimmed(tag) {
+    if (!(_ctx.existingTagIds instanceof Set) || !_ctx.existingTagIds.size) return false;
+    const id = String(tag?.id || '');
+    const name = String(tag?.name || '').toLocaleLowerCase('ja');
+    return !_ctx.existingTagIds.has(id) && !_ctx.existingTagIds.has(name);
+  }
+
+  function applyChipState(chip, tag) {
+    const on = _selected.has(String(tag?.id || ''));
+    chip.classList.toggle('gb-tag-tree-chip--condition-on', on);
+    const label = chip.querySelector('.gb-tag-chip__label');
+    label?.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+
+  function notifyChange() {
+    if (typeof _ctx.onChange === 'function') {
+      _ctx.onChange(Array.from(_selected), _ctx.matchMode);
+    }
+  }
+
+  function toggleTag(tag, chip) {
+    const id = String(tag?.id || '');
+    if (!id) return;
+    if (_selected.has(id)) _selected.delete(id);
+    else _selected.add(id);
+    if (chip) applyChipState(chip, tag);
+    _renderStatus();
+    notifyChange();
+  }
+
+  function renderTagRow(tag, groupsById) {
+    const row = document.createElement('div');
+    row.className = 'gb-tag-tree-row';
+    row.dataset.tagTreeKind = 'tag';
+    row.dataset.e2eId = 'tag-picker-tag-' + String(tag?.id || '').replace(/[^\p{L}\p{N}_-]+/gu, '-');
+    const api = tagsApi();
+    let chip = null;
+    if (api?.createTagChip) {
+      chip = api.createTagChip(tag, {
+        groupsById,
+        compact: true,
+        className: 'gb-tag-tree-chip' + (isDimmed(tag) ? ' gb-tag-tree-chip--dim' : ''),
+        title: tag?.name || '',
+        onActivate: () => toggleTag(tag, chip),
+        ariaLabel: (tag?.name || 'タグ') + 'を条件に含める',
+      });
+    }
+    if (chip) {
+      applyChipState(chip, tag);
+      row.appendChild(chip);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'gb-tag-tree-label';
+      label.textContent = tag?.name || '';
+      row.appendChild(label);
+    }
+    return row;
+  }
+
+  function renderGroupSection(group, groupsById, depth) {
+    const wrap = document.createElement('div');
+    wrap.style.marginLeft = (depth * 12) + 'px';
+    if (group) {
+      const head = document.createElement('div');
+      head.className = 'gb-tag-tree-row';
+      head.dataset.tagTreeKind = 'group';
+      const label = document.createElement('span');
+      label.className = 'gb-tag-tree-label gb-tag-tree-label--colored';
+      label.style.fontWeight = '600';
+      const groupColor = /^#[0-9a-f]{6}$/i.test(String(group.color || '')) ? group.color : '';
+      if (groupColor) label.style.setProperty('--gb-tag-color', groupColor);
+      label.textContent = group.name || '';
+      head.appendChild(label);
+      wrap.appendChild(head);
+    }
+    const tags = group ? group.tags : null;
+    if (tags && tags.length) {
+      const grid = document.createElement('div');
+      grid.className = 'gb-tag-tree-grid';
+      grid.style.marginLeft = group ? '18px' : '0';
+      tags.forEach(tag => grid.appendChild(renderTagRow(tag, groupsById)));
+      wrap.appendChild(grid);
+    }
+    const children = group ? group.children : null;
+    if (children && children.length) {
+      const childrenBox = document.createElement('div');
+      childrenBox.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
+      children.forEach(child => childrenBox.appendChild(renderGroupSection(child, groupsById, 0)));
+      wrap.appendChild(childrenBox);
+    }
+    return wrap;
+  }
+
+  function _renderStatus() {
+    if (!_statusEl) return;
+    const count = _selected.size;
+    _statusEl.textContent = count ? `${count}件選択中` : '未選択';
+  }
+
+  function _renderList() {
+    if (!_listEl) return;
+    _listEl.replaceChildren();
+    const { roots, uncategorized, groupsById } = buildGroupTree(_catalog.tags, _catalog.groups);
+    if (!_catalog.tags.length) {
+      const empty = document.createElement('div');
+      empty.className = 'gb-section-desc';
+      empty.style.cssText = 'padding:12px;text-align:center;';
+      empty.textContent = _loadRevision ? '（タグがありません）' : '読み込み中…';
+      _listEl.appendChild(empty);
+      return;
+    }
+    if (uncategorized.length) _listEl.appendChild(renderGroupSection({ name: '未分類', tags: uncategorized, children: [] }, groupsById, 0));
+    roots.forEach(group => _listEl.appendChild(renderGroupSection(group, groupsById, 0)));
+  }
+
+  async function _loadCatalog() {
+    const revision = ++_loadRevision;
+    const api = tagsApi();
+    if (!api?.loadTagsCached) return;
+    try {
+      const data = await api.loadTagsCached(_ctx.sourceFolder);
+      if (revision !== _loadRevision) return;
+      _catalog = { tags: Array.isArray(data?.tags) ? data.tags : [], groups: Array.isArray(data?.groups) ? data.groups : [] };
+      _renderList();
+    } catch (_) {
+      if (revision !== _loadRevision) return;
+      _renderList();
+    }
+  }
+
+  function _setMode(mode) {
+    _ctx.matchMode = mode === 'any' ? 'any' : 'all';
+    _toolbarEl?.querySelectorAll('[data-tag-picker-mode]').forEach(btn => {
+      const active = btn.dataset.tagPickerMode === _ctx.matchMode;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    notifyChange();
+  }
+
+  function _buildToolbar(toolbar) {
+    toolbar.className = 'gb-tag-picker-panel-toolbar';
+    toolbar.dataset.e2eId = 'tag-picker-toolbar';
+    const modeGroup = document.createElement('div');
+    modeGroup.className = 'gb-tag-picker-mode-toggle';
+    modeGroup.setAttribute('role', 'group');
+    modeGroup.setAttribute('aria-label', 'タグの絞り込み条件');
+    [['all', 'すべて含む'], ['any', 'どれかを含む']].forEach(([mode, label]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'gb-tag-picker-mode-btn';
+      btn.dataset.tagPickerMode = mode;
+      btn.dataset.e2eId = 'tag-picker-mode-' + mode;
+      btn.textContent = label;
+      btn.addEventListener('click', () => _setMode(mode));
+      modeGroup.appendChild(btn);
+    });
+    toolbar.appendChild(modeGroup);
+
+    const status = document.createElement('span');
+    status.className = 'gb-tag-picker-status';
+    status.dataset.e2eId = 'tag-picker-status';
+    toolbar.appendChild(status);
+    _statusEl = status;
+
+    const clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.className = 'gb-btn gb-btn-sm gb-btn-quiet gb-tag-picker-clear-btn';
+    clearBtn.dataset.e2eId = 'tag-picker-clear-all';
+    clearBtn.textContent = 'すべて解除';
+    clearBtn.addEventListener('click', () => {
+      if (!_selected.size) return;
+      _selected.clear();
+      _renderList();
+      _renderStatus();
+      notifyChange();
+    });
+    toolbar.appendChild(clearBtn);
+    _toolbarEl = toolbar;
+  }
+
+  function _buildHeader(header) {
+    header.dataset.e2eId = 'tag-picker-float-panel-header';
+    header.innerHTML = `
+      <span class="gb-tag-picker-panel-icon"></span>
+      <span class="gb-tag-picker-panel-title" data-e2e-id="tag-picker-float-panel-title"></span>
+      <button type="button" class="gb-tag-picker-panel-btn" data-role="close"
+              data-e2e-id="tag-picker-float-panel-close" title="閉じる" aria-label="閉じる"></button>
+    `;
+    header.querySelector('.gb-tag-picker-panel-icon').innerHTML = icon('tags', 16);
+    header.querySelector('[data-role="close"]').innerHTML = icon('x', 14);
+    header.querySelector('[data-role="close"]').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    });
+    _titleEl = header.querySelector('.gb-tag-picker-panel-title');
+  }
+
+  function _buildBody(body) {
+    const toolbar = document.createElement('div');
+    _buildToolbar(toolbar);
+    body.appendChild(toolbar);
+
+    const list = document.createElement('div');
+    list.className = 'gb-tag-picker-panel-list gb-tag-management-panel';
+    list.setAttribute('role', 'tree');
+    list.setAttribute('aria-label', 'タグ一覧');
+    list.dataset.e2eId = 'tag-picker-list';
+    body.appendChild(list);
+    _listEl = list;
+  }
+
+  function _base_() {
+    if (_base) return _base;
+    _base = window.GBFloatPanelBase.create({
+      id: PANEL_ID,
+      className: 'gb-tag-picker-panel',
+      dataE2eId: 'tag-picker-float-panel',
+      ariaLabel: 'タグ選択',
+      storageKey: RECT_KEY,
+      minWidth: MIN_W,
+      minHeight: MIN_H,
+      defaultWidth: DEFAULT_W,
+      defaultHeight: DEFAULT_H,
+      margin: MARGIN,
+      mobileSheet: true,
+      mobileBreakpoint: MOBILE_BREAKPOINT,
+      buildHeader: _buildHeader,
+      buildBody: _buildBody,
+      onClose: () => {
+        _ctx.ownerKey = '';
+        _listEl = null;
+        _toolbarEl = null;
+        _titleEl = null;
+        _statusEl = null;
+      },
+    });
+    return _base;
+  }
+
+  function _applyContext(options) {
+    const opts = options || {};
+    _ctx = {
+      ownerKey: String(opts.ownerKey || ''),
+      headerLabel: String(opts.headerLabel || 'タグ'),
+      sourceFolder: String(opts.sourceFolder || ''),
+      existingTagIds: opts.existingTagIds instanceof Set ? opts.existingTagIds : null,
+      tagIds: Array.isArray(opts.tagIds) ? opts.tagIds.map(String) : [],
+      matchMode: opts.matchMode === 'any' ? 'any' : 'all',
+      onChange: typeof opts.onChange === 'function' ? opts.onChange : null,
+    };
+    _selected = new Set(_ctx.tagIds);
+    if (_titleEl) _titleEl.textContent = _ctx.headerLabel;
+    if (_toolbarEl) {
+      _toolbarEl.querySelectorAll('[data-tag-picker-mode]').forEach(btn => {
+        const active = btn.dataset.tagPickerMode === _ctx.matchMode;
+        btn.classList.toggle('is-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+    }
+    _renderStatus();
+    _catalog = { tags: [], groups: [] };
+    _loadRevision += 1;
+    _renderList();
+    _loadCatalog();
+  }
+
+  function isOpen() {
+    return !!_base && _base.isOpen();
+  }
+
+  function currentOwnerKey() {
+    return isOpen() ? _ctx.ownerKey : '';
+  }
+
+  // 同時に開くのは1つ。別の入口から開いたら対象を差し替えて開き直す。
+  function open(options) {
+    const base = _base_();
+    const wasOpen = base.isOpen();
+    base.open();
+    _applyContext(options);
+    if (!wasOpen) base.focus();
+    return base.getElement();
+  }
+
+  function close() {
+    return _base ? _base.close() : false;
+  }
+
+  function toggle(options) {
+    if (isOpen() && currentOwnerKey() === String(options?.ownerKey || '')) {
+      close();
+      return false;
+    }
+    open(options);
+    return true;
+  }
+
+  // 呼び出し元のトリガーボタンに開閉状態を反映する（クイックメモのレールボタンと
+  // 同じパターン）。
+  function syncTriggerButton(button, ownerKey) {
+    if (!button) return;
+    const active = isOpen() && currentOwnerKey() === String(ownerKey || '');
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  }
+
+  // ============================================================
+  // 呼び出し元共通ヘルパー: 選択中タグのチップ表示（×で個別解除）
+  // フィルタ側・検索3か所の計4箇所で同じ見せ方にするための共通部品。
+  // ============================================================
+  const _chipRowCatalogCache = new Map(); // sourceFolder -> {tags:[...]}
+
+  async function _chipCatalog(sourceFolder) {
+    const key = String(sourceFolder || '');
+    if (_chipRowCatalogCache.has(key)) return _chipRowCatalogCache.get(key);
+    const api = tagsApi();
+    const data = api?.loadTagsCached ? await api.loadTagsCached(sourceFolder).catch(() => null) : null;
+    const result = { tags: Array.isArray(data?.tags) ? data.tags : [] };
+    _chipRowCatalogCache.set(key, result);
+    return result;
+  }
+
+  function renderSelectedChips(container, options) {
+    if (!container) return;
+    const opts = options || {};
+    const tagIds = Array.isArray(opts.tagIds) ? opts.tagIds.map(String) : [];
+    container.replaceChildren();
+    if (!tagIds.length) return;
+    const api = tagsApi();
+    const render = (tagsById) => {
+      container.replaceChildren();
+      tagIds.forEach(id => {
+        const tag = tagsById.get(id) || { id, name: id };
+        const chip = api?.createTagChip
+          ? api.createTagChip(tag, {
+            compact: true,
+            className: 'gb-tag-picker-selected-chip',
+            onRemove: () => { if (typeof opts.onRemove === 'function') opts.onRemove(id); },
+            removeAriaLabel: (tag.name || 'タグ') + 'の条件を外す',
+          })
+          : null;
+        if (chip) container.appendChild(chip);
+      });
+    };
+    render(new Map(tagIds.map(id => [id, { id, name: id }])));
+    _chipCatalog(opts.sourceFolder).then(data => {
+      if (!container.isConnected) return;
+      const tagsById = new Map((data.tags || []).map(tag => [String(tag.id || ''), tag]));
+      render(tagsById);
+    });
+  }
+
+  // フィルタ・検索の入口ボタン（「タグツリーから選ぶ」/検索欄横のタグアイコン）を
+  // 共通の見た目で作る。フィルタ側は選択チップ（renderSelectedChips）で件数が
+  // 分かるため、このボタン自体にはバッジを付けない。
+  function createTriggerButton(options) {
+    const opts = options || {};
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = opts.className || 'gb-btn gb-btn-sm gb-btn-icon';
+    btn.title = opts.title || 'タグツリーから選ぶ';
+    btn.setAttribute('aria-label', opts.title || 'タグツリーから選ぶ');
+    if (opts.e2eId) btn.dataset.e2eId = opts.e2eId;
+    btn.innerHTML = icon(opts.icon || 'listTree', 14);
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof opts.onOpen === 'function') opts.onOpen(btn);
+    });
+    return btn;
+  }
+
+  window.GBTagPickerPanel = Object.freeze({
+    open,
+    close,
+    toggle,
+    isOpen,
+    currentOwnerKey,
+    syncTriggerButton,
+    renderSelectedChips,
+    createTriggerButton,
+  });
+})();
+
+;
+
 /* === gb-app.js === */
 ;
 /* ==============================
@@ -166318,7 +169606,7 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn, disabled = false) {
+  function addMI(label, fn, disabled = false, e2eId = '') {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
@@ -166326,6 +169614,7 @@ function _handleTabBarContextmenu(e) {
     mi.textContent = label;
     mi.disabled = !!disabled;
     if (disabled) mi.setAttribute('aria-disabled', 'true');
+    if (e2eId) mi.dataset.e2eId = e2eId;
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
   }
@@ -166346,14 +169635,14 @@ function _handleTabBarContextmenu(e) {
       if (ok) closeTab(tab.id);
       else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
     });
-  });
-  addMI('タブを閉じる', () => closeTab(tab.id));
-  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
-  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
+  }, false, 'tab-menu-new-window');
+  addMI('タブを閉じる', () => closeTab(tab.id), false, 'tab-menu-close');
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0, 'tab-menu-close-left');
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1, 'tab-menu-close-right');
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);
-  });
+  }, false, 'tab-menu-close-others');
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
   const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
@@ -167139,12 +170428,21 @@ async function apiPut(path, body, options = {}) {
 }
 
 async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
+  let stableCopyKey = '';
+  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
+      && body && typeof body === 'object' && !body.operation_id) {
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
+      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    body = prepared.body; stableCopyKey = prepared.key;
+  }
+  const result = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     ...(options || {}),
   });
+  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  return result;
 }
 
 /* ==============================
@@ -167625,6 +170923,16 @@ async function init() {
       // ソースフォルダもルートもホームもない場合はウェルカム画面
       // ただしサイドバーは表示したまま（設定ボタンにアクセスできるように）
       showView('welcome');
+    }
+
+    // ホームフォルダの版間共有: 起動時の共有警告・引き継ぎ提案チェック。
+    // オンボーディングウィザードが出る場合はダイアログの重なりを避けて後回しにする
+    // （設定画面を開いた時に loadHomeFolderSharingStatusForSettings() 経由で再チェックされる）。
+    if (!onboardingShown && window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings) {
+      _runStartupBackground(
+        'home-folder-sharing-check',
+        window.MeldexHomeFolderSharing.loadHomeFolderSharingStatusForSettings()
+      );
     }
 
     document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
@@ -169590,14 +172898,49 @@ document.addEventListener('pointerdown', (e) => {
 // 共通コンテキストメニューの閉じる処理
 // ============================================================
 document.addEventListener('pointerdown', (e) => {
-  if (!e.target?.closest?.('.gb-context-menu')) {
+  // gb-mobile-tab-gesture-router.js のスマホ用タブ切替メニュー(.gb-mobile-tab-menu)は
+  // 位置制御の都合で document.body 直下に付き、.gb-context-menu の子ではない。
+  // ここで除外しないと、.gb-context-menu を内側に持つポップアップ（アイコン
+  // ピッカー等）でタブ切替メニューの項目をタップするたびに「外側クリック」と
+  // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
+  // （2026-08-13 バグ報告で確認）。
+  if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   }
 }, true);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  }
+  if (e.key !== 'Escape') return;
+  const menus = document.querySelectorAll('.gb-context-menu');
+  if (!menus.length) return;
+  // ダイアログとして振る舞う要素（アイコンピッカー等）はrole="dialog"/"alertdialog"を
+  // 持ち、自分自身のEscapeキー処理（document への capture 登録）で自分だけを閉じ、
+  // フォーカス復帰やリスナー解除も自前で行う契約を持つ。
+  //
+  // このリスナーはページ読み込み時に document のbubbleフェーズへ登録されるため、
+  // モーダルが開いた時に登録される最前面判定（gb-ui.js の onEscKey、
+  // GBDialogKeyboard.topmostDialog 等）より必ず先に発火する。ここで無条件に
+  // .gb-context-menu を全部 remove() してキー入力をそのまま素通しすると、背後の
+  // 親ダイアログが「ピッカーはもう無い」と誤認して一緒に閉じてしまう
+  // （アイコンピッカー Escape 早期消去バグ）。
+  //
+  // dialog ロールを持つメニューは、このキー入力をそのメニュー自身へ再ディスパッチ
+  // して専用のクローズ処理（フォーカス復帰・リスナー解除を含む）に任せ、元の
+  // キー入力はここで止めて後続の親ダイアログの Escape ハンドラへ渡さない。
+  // 通常のコンテキストメニュー（role=dialog を持たない）は従来どおりここで閉じる
+  // （main-menu 等の既存 Escape 挙動を変えない）。
+  let hasDialogMenu = false;
+  menus.forEach((m) => {
+    const role = m.getAttribute('role');
+    if (role === 'dialog' || role === 'alertdialog') {
+      hasDialogMenu = true;
+      m.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: false, cancelable: true }));
+      // 専用ハンドラが未登録などで閉じられなかった場合の保険（通常は到達しない）
+      if (m.isConnected) m.remove();
+    } else {
+      m.remove();
+    }
+  });
+  if (hasDialogMenu) e.stopImmediatePropagation();
 });
 
 // ============================================================
@@ -171843,6 +175186,7 @@ async function _deleteCurrentFile(toolType) {
   if (!confirmed) return;
   try {
     const result = await deleteOutlinerItemsWithHistory([{ path, name, type: toolType || 'page' }], {
+      confirmation: confirmed,
       label: 'ファイル削除',
       detail: path,
       refresh: async () => {
@@ -172750,6 +176094,7 @@ async function _exportDictFile(options = {}) {
     closeButton: null,
     list: null,
     scope: null,
+    hint: null,
     items: [],
     activeIndex: 0,
     query: '',
@@ -173379,6 +176724,10 @@ async function _exportDictFile(options = {}) {
     if (!buttons.length && state.input) state.input.removeAttribute('aria-activedescendant');
   }
 
+  function _updateSearchHint(data) {
+    window.MeldexUnifiedSearch?.updateHint?.(state.hint, data || null, state.query);
+  }
+
   async function _refreshItems(options = {}) {
     const seq = ++state.seq;
     state.query = state.input?.value || '';
@@ -173387,17 +176736,28 @@ async function _exportDictFile(options = {}) {
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
 
-    if (state.mode !== 'root' || _tokenize(state.query).length < GLOBAL_FILE_MIN_QUERY) return;
-    const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
-    if (seq !== state.seq) return;
+    if (state.mode !== 'root') { _updateSearchHint(null); return; }
+    // タグ条件だけが入っている場合も検索を通す（文字列は空でよい。2-F）。
+    const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+    const hasQueryTokens = _tokenize(state.query).length >= GLOBAL_FILE_MIN_QUERY;
+    // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+    // 検索結果が返ってから追加で反映する。
+    _updateSearchHint(null);
+    if (!hasQueryTokens && !hasTagCondition) return;
+
     const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
-    const fileItems = _globalFileCommands(files, state.query, existingKeys);
-    items = _filterItems([...items, ...fileItems], state.query);
+    if (hasQueryTokens) {
+      const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
+      if (seq !== state.seq) return;
+      const fileItems = _globalFileCommands(files, state.query, existingKeys);
+      items = _filterItems([...items, ...fileItems], state.query);
+    }
     if (window.MeldexUnifiedSearch?.search) {
       try {
         const data = await window.MeldexUnifiedSearch.search(state.query, { limit: MAX_FILE_RESULTS });
         if (seq !== state.seq) return;
         items = [...items, ..._unifiedFileCommands(data.results, existingKeys)];
+        _updateSearchHint(data);
       } catch (error) {
         console.warn('[command-palette] unified search failed', error);
       }
@@ -173527,6 +176887,19 @@ async function _exportDictFile(options = {}) {
     if (window.MeldexUnifiedSearch?.button) {
       window.MeldexUnifiedSearch.button(header, { e2eId: 'command-palette-search-scope-trigger', className: 'cmd-palette-close' });
     }
+    window.MeldexUnifiedSearch?.tagButton?.(header, {
+      e2eId: 'command-palette-search-tag-trigger',
+      className: 'cmd-palette-close',
+      onChange: () => _refreshItems(),
+    });
+
+    // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+    // テキスト行（1-A追記）。
+    const hint = document.createElement('div');
+    hint.id = 'cmd-palette-hint';
+    hint.className = 'cmd-palette-hint';
+    hint.dataset.e2eId = 'command-palette-search-hint';
+    hint.style.cssText = 'display:none;padding:4px 14px 0;font-size:11px;line-height:1.4;color:var(--fg2);';
 
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
@@ -173542,7 +176915,7 @@ async function _exportDictFile(options = {}) {
       footer.appendChild(span);
     });
 
-    palette.append(header, list, footer);
+    palette.append(header, hint, list, footer);
     overlay.appendChild(palette);
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) closeCommandPalette();
@@ -173565,6 +176938,7 @@ async function _exportDictFile(options = {}) {
     state.closeButton = closeButton;
     state.list = list;
     state.scope = scope;
+    state.hint = hint;
   }
 
   function _ensureOverlay() {
@@ -173963,6 +177337,10 @@ async function _exportDictFile(options = {}) {
         key: String(def.key || ''),
         label: String(def.label || id),
         scope: String(def.scope || 'global'),
+        // 参照専用の操作（スペースキー＋ドラッグ、マウスドラッグ等）。
+        // キー割り当ての変更対象にはせず、一覧には必ず出す。
+        readonly: def.readonly === true,
+        display: String(def.display || ''),
         local,
       };
     }
@@ -174346,7 +177724,7 @@ async function _exportDictFile(options = {}) {
     const allowed = Array.isArray(scopes) && scopes.length ? scopes : null;
     const shortcuts = effective();
     for (const [id, def] of Object.entries(shortcuts)) {
-      if (!def.key) continue;
+      if (!def.key || def.readonly) continue;
       if (allowed && !allowed.includes(def.scope)) continue;
       if (normalizeKeyDef(def.key) === pressed) return id;
     }
@@ -174357,7 +177735,7 @@ async function _exportDictFile(options = {}) {
     const shortcuts = effective();
     const selfScope = shortcuts[selfId]?.scope;
     for (const [id, def] of Object.entries(shortcuts)) {
-      if (id === selfId || !def.key) continue;
+      if (id === selfId || !def.key || def.readonly) continue;
       if (normalizeKeyDef(def.key) !== newKey) continue;
       if (def.scope === selfScope || def.scope === 'global' || selfScope === 'global') return def;
     }
@@ -174395,8 +177773,10 @@ async function _exportDictFile(options = {}) {
     const query = (container.querySelector('[data-shortcut-search]')?.value || '').trim().toLowerCase();
     const selectedScope = container.querySelector('[data-shortcut-scope-filter]')?.value || 'all';
     container.querySelectorAll('.shortcut-row').forEach(row => {
+      // 「現在のアプリ」表示では全体（Meldex共通）を混ぜない。
+      // メインパネルのアプリを切り替えたときに、そのアプリの操作だけが並ぶようにする。
       const matchesScope = selectedScope === 'all'
-        || (selectedScope === 'current' && ['global', container.dataset.shortcutCurrentScope].includes(row.dataset.scope))
+        || (selectedScope === 'current' && row.dataset.scope === container.dataset.shortcutCurrentScope)
         || row.dataset.scope === selectedScope;
       const matchesSearch = !query || (row.dataset.search || '').includes(query);
       row.hidden = !(matchesScope && matchesSearch);
@@ -174414,8 +177794,8 @@ async function _exportDictFile(options = {}) {
   function _scopeOptionsHtml(scopeOptions, previousScope, currentScope) {
     let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
     if (currentScope && currentScope !== 'global') {
-      html += '<option value="current"' + (previousScope === 'current' ? ' selected' : '') + '>Meldex共通＋'
-        + _esc(scopeLabel(currentScope)) + '</option>';
+      html += '<option value="current"' + (previousScope === 'current' ? ' selected' : '') + '>'
+        + _esc(scopeLabel(currentScope)) + '（表示中のアプリ）</option>';
     }
     for (const [scope, items] of scopeOptions) {
       html += '<option value="' + _esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>'
@@ -174425,17 +177805,26 @@ async function _exportDictFile(options = {}) {
   }
 
   function _rowHtml(item) {
-    const status = item.isCustom ? 'カスタム' : '既定';
     const label = scopeLabel(item.displayScope);
-    const searchText = [item.label, item.id, item.key, label].join(' ').toLowerCase();
+    const keyText = item.readonly ? (item.display || item.key) : keyDisplay(item.key);
+    const searchText = [item.label, item.id, item.key, item.display, label].join(' ').toLowerCase();
     let html = '<div class="shortcut-row gb-field-row" data-id="' + _esc(item.id) + '" data-scope="' + _esc(item.displayScope)
       + '" data-search="' + _esc(searchText) + '">';
     html += '<span class="shortcut-label gb-label" title="' + _esc(item.id) + '">' + _esc(item.label) + '</span>';
+    if (item.readonly) {
+      // マウス操作を伴うため割り当て変更の対象にしない。一覧には必ず出す。
+      html += '<span class="shortcut-status">操作</span>';
+      html += '<kbd class="shortcut-key is-readonly" data-e2e-id="shortcut-key-' + _esc(item.id) + '">'
+        + _esc(keyText) + '</kbd>';
+      html += '<span class="shortcut-reset-spacer"></span>';
+      return html + '</div>';
+    }
+    const status = item.isCustom ? 'カスタム' : '既定';
     html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     html += '<kbd class="shortcut-key' + (item.isCustom ? ' is-custom' : '') + '" data-id="' + _esc(item.id)
       + '" data-e2e-id="shortcut-key-' + _esc(item.id)
       + '" tabindex="0" role="button" title="クリックして変更" aria-label="' + _esc(item.label) + 'のキーを変更">'
-      + _esc(keyDisplay(item.key)) + '</kbd>';
+      + _esc(keyText) + '</kbd>';
     if (item.isCustom) {
       html += '<button type="button" class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + _esc(item.id)
         + '" data-e2e-id="shortcut-reset-' + _esc(item.id) + '" title="デフォルトに戻す" aria-label="'
@@ -174542,7 +177931,7 @@ async function _exportDictFile(options = {}) {
     html += '</section>';
     container.innerHTML = html;
 
-    container.querySelectorAll('.shortcut-key').forEach(kbd => {
+    container.querySelectorAll('.shortcut-key:not(.is-readonly)').forEach(kbd => {
       kbd.addEventListener('click', () => _startKeyCapture(kbd, container));
       kbd.addEventListener('keydown', event => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -174697,10 +178086,12 @@ const GB_SHORTCUTS = {
   'viewer.fitNone':      { key: '4',                label: 'フィットしない', scope: 'viewer' },
   'viewer.annotation':   { key: 'a',                label: '注釈の切替', scope: 'viewer' },
 
-  // 常駐アプリはこの3 IDをPersonal Preferencesから取得し、OS登録へ反映する。
+  // 常駐アプリはこの5 IDをPersonal Preferencesから取得し、OS登録へ反映する。
   'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
-  'tray.screenshot.region': { key: 'ctrl+shift+r', label: '範囲を撮影', scope: 'tray' },
+  'tray.screenshot.region': { key: 'ctrl+alt+r',   label: '範囲を撮影', scope: 'tray' },
   'tray.screenshot.window': { key: 'ctrl+shift+w', label: 'ウィンドウを撮影', scope: 'tray' },
+  'tray.quickMemo':         { key: 'ctrl+alt+m',   label: 'クイックメモを開く', scope: 'tray' },
+  'tray.sticky.new':        { key: 'ctrl+alt+s',   label: '新規付箋を作成', scope: 'tray' },
 
   // --- ノートエディタ ---
   'note.bold':            { key: 'ctrl+b',       label: '太字',                      scope: 'note' },
@@ -174830,6 +178221,45 @@ const GB_SHORTCUTS = {
   'explorer.open':        { key: 'enter',        label: '選択アイテムを開く',         scope: 'folder' },
   'explorer.rename':      { key: 'f2',           label: 'リネーム',                  scope: 'folder' },
   'explorer.delete':      { key: 'delete',       label: '削除',                      scope: 'folder' },
+
+  // --- マウス操作・スペースキーを使う操作（参照専用。割り当ての変更はできない） ---
+  // 一覧に「キーだけ」が並ぶと、スペースキーやドラッグで行う操作が抜け落ちる。
+  // readonly: true の項目は表示専用で、キー割り当ての競合判定・変更対象にしない。
+  'global.dragPanel':      { key: '', display: 'タブのドラッグ',         label: 'パネルの配置を変える',            scope: 'global', readonly: true },
+  'global.ctrlDropOpen':   { key: '', display: 'Ctrl+ドロップ',          label: 'ドロップ先のパネルで開く',        scope: 'global', readonly: true },
+
+  'board.mouseAddCard':    { key: '', display: 'ダブルクリック',          label: 'カードの追加 / 編集',             scope: 'board', readonly: true },
+  'board.mouseRectSelect': { key: '', display: '左ドラッグ（空白）',      label: '範囲選択',                        scope: 'board', readonly: true },
+  'board.mouseMoveCard':   { key: '', display: '左ドラッグ（カード）',    label: 'カードを移動',                    scope: 'board', readonly: true },
+  'board.mouseRightPan':   { key: '', display: '右ドラッグ（空白）',      label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.mouseLine':       { key: '', display: '右ドラッグ（カード）',    label: 'ラインを引く',                    scope: 'board', readonly: true },
+  'board.wheelZoom':       { key: '', display: 'ホイール',               label: '拡大・縮小',                      scope: 'board', readonly: true },
+  'board.middlePan':       { key: '', display: '中ボタンドラッグ',        label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spacePan':        { key: '', display: 'Space+ドラッグ',         label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spaceZoom':       { key: '', display: 'Ctrl+Space+ドラッグ',    label: '拡大・縮小',                      scope: 'board', readonly: true },
+  'board.spaceRotate':     { key: '', display: 'Shift+Space+ドラッグ',   label: '表示を回転',                      scope: 'board', readonly: true },
+  'board.spaceArrowPan':   { key: '', display: 'Space+矢印',            label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spaceResetView':  { key: '', display: 'Space+ダブルクリック',   label: '表示をリセット',                  scope: 'board', readonly: true },
+  'board.spaceFocus':      { key: '', display: 'Space',                 label: '選択したカードに寄る / 戻す',      scope: 'board', readonly: true },
+
+  'folder.dragRectSelect': { key: '', display: 'ドラッグ（空白）',        label: '範囲選択',                        scope: 'folder', readonly: true },
+  'folder.ctrlDragAdd':    { key: '', display: 'Ctrl+ドラッグ（空白）',   label: '選択に追加',                      scope: 'folder', readonly: true },
+  'folder.ctrlWheelZoom':  { key: '', display: 'Ctrl+ホイール',          label: '表示倍率を変える',                scope: 'folder', readonly: true },
+  'folder.dragItem':       { key: '', display: '項目のドラッグ',          label: '移動 / ほかの画面へ渡す',          scope: 'folder', readonly: true },
+
+  'database.dragRange':    { key: '', display: 'ドラッグ',               label: 'セルの範囲選択',                  scope: 'database', readonly: true },
+  'database.dragRow':      { key: '', display: 'ハンドルのドラッグ',      label: '行の並べ替え',                    scope: 'database', readonly: true },
+  'database.dragColumn':   { key: '', display: '列の境界をドラッグ',      label: '列幅を変える',                    scope: 'database', readonly: true },
+
+  'note.dragBlock':        { key: '', display: 'ハンドルのドラッグ',      label: 'ブロックの並べ替え',              scope: 'note', readonly: true },
+
+  'calendar.dragCreate':   { key: '', display: 'ドラッグ',               label: '予定を作る',                      scope: 'calendar', readonly: true },
+  'calendar.dragMove':     { key: '', display: '予定のドラッグ',          label: '予定を移動',                      scope: 'calendar', readonly: true },
+  'calendar.dragResize':   { key: '', display: '端のドラッグ',            label: '予定の長さを変える',              scope: 'calendar', readonly: true },
+
+  'viewer.dragPan':        { key: '', display: 'ドラッグ',               label: '表示位置を移動',                  scope: 'viewer', readonly: true },
+
+  'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: '注釈を描く',                      scope: 'annotation', readonly: true },
 
   // --- パネルセット ---
   'panelset.group1':      { key: 'ctrl+alt+1',   label: 'パネルセット ドック1',       scope: 'global' },
@@ -175945,6 +179375,7 @@ const _shortcutHandlers = {
     if (!confirmed) return;
     const deletedItems = [..._folderSelectedItems];
     const result = await deleteOutlinerItemsWithHistory(deletedItems, {
+      confirmation: confirmed,
       label: deletedItems.length + ' 件を削除',
       refresh: async () => {
         if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {
@@ -178819,29 +182250,52 @@ if (typeof window !== 'undefined') {
   // 正本の場所解決（自己修復・自動発見・無ダイアログ既定作成）
   //
   // meldex_staff_registry_service.ensure_or_discover_registry_root と同じ
-  // 優先順位（設定済み→自動発見→既定作成）だが、クラウド静的版はワークスペース
-  // ルートが1つしか無いため「複数ソースフォルダを横断」する部分だけ単純化する。
+  // 優先順位・同じ安全設計（設定済みパスは実在確認してから信用する→全階層を
+  // マーカーで再発見→再発見できなければ従来どおり設定済みパスへ新規作成→
+  // 未設定なら既定パス作成）。設定済みパスが移動・改名で実在しなくなっていた
+  // 場合にそのパスを信用しないのがインポート・機能生成ファイル保護計画
+  // Phase 1の本体（旧パスへ空フォルダを再生成する「最高リスク」経路の解消。
+  // クラウド静的版はワークスペースルートが1つしか無いため「複数ソースフォルダを
+  // 横断」する部分だけ単純化する。全階層を辿る部分はデスクトップ版と揃える）。
   // ============================================================
 
-  async function _srtDiscoverExistingRoot(provider) {
-    const schema = _schema();
-    const entries = await _srtDirectoryEntries(provider, '');
+  // meldex_staff_registry_service._discover_existing_registry と同じ安全上限
+  // （巨大なワークスペースで走査が終わらなくなることを防ぐ）。
+  const SRT_DISCOVERY_SCAN_LIMIT = 8000;
+
+  async function _srtDiscoverExistingRootUnder(provider, schema, dir, state) {
+    if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
+    const entries = await _srtDirectoryEntries(provider, dir);
     for (const entry of entries) {
       if (entry?.handle?.kind !== 'directory') continue;
       const name = String(entry.name || '');
+      // 内部管理フォルダ（_trash, _chat, .meldex等）は正本の置き場所になり
+      // 得ないため、無駄な走査を避けるためにスキップする（デスクトップ版の
+      // rglobは全走査するが、意味のある候補だけに絞る安全側の簡略化）。
       if (!name || name.startsWith('.') || name.startsWith('_')) continue;
-      const note = _joinPath(name, name + '.md');
-      if (!await _srtPathExists(provider, note)) continue;
-      let parsed;
-      try { parsed = await _srtReadFrontmatter(provider, note); } catch { continue; }
-      if (schema.isStaffRegistryFrontmatter(parsed.frontmatter)) return name;
+      const folderPath = dir ? _joinPath(dir, name) : name;
+      state.checked += 1;
+      if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
+      const note = _joinPath(folderPath, name + '.md');
+      if (await _srtPathExists(provider, note)) {
+        let parsed = null;
+        try { parsed = await _srtReadFrontmatter(provider, note); } catch { parsed = null; }
+        if (parsed && schema.isStaffRegistryFrontmatter(parsed.frontmatter)) return folderPath;
+      }
+      const nested = await _srtDiscoverExistingRootUnder(provider, schema, folderPath, state);
+      if (nested) return nested;
+      if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
     }
     return null;
   }
 
+  async function _srtDiscoverExistingRoot(provider) {
+    return _srtDiscoverExistingRootUnder(provider, _schema(), '', { checked: 0 });
+  }
+
   async function _srtEnsureOrDiscoverRoot(provider) {
     const configured = _normalizeFolderPath(_srtGetConfig().path || '');
-    if (configured) {
+    if (configured && await _srtIsDirectory(provider, configured)) {
       await _srtEnsureRegistrySheet(provider, configured);
       return configured;
     }
@@ -178850,6 +182304,16 @@ if (typeof window !== 'undefined') {
       _srtSetConfig(discovered);
       await _srtEnsureRegistrySheet(provider, discovered);
       return discovered;
+    }
+    if (configured) {
+      // 設定済みパスは存在しないが再発見もできなかった。初回セットアップ
+      // （一度も作られていない設定パス）と外部で完全に失われたケースを区別する
+      // 手段が無いため、meldex_staff_registry_service.ensure_or_discover_registry_root
+      // と同じ判断で、従来どおり設定済みパスへ新規作成する（既存の挙動・テストを
+      // 壊さない）。Phase 1の移動追従フックが効いている環境では、この分岐へ
+      // 実際に到達するケース自体が減る。
+      await _srtEnsureRegistrySheet(provider, configured);
+      return configured;
     }
     const defaultRoot = _schema().DEFAULT_SHEET_NAME;
     await _directoryHandle(provider, defaultRoot, true);

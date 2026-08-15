@@ -246,6 +246,54 @@
     return INITIAL_BUILTIN_THEME_NAME_MAP[label] || '';
   }
 
+  // 2026-08-12: 「バランス黒」パレット計画（2026-08-09/08-10, DARK_VARS/board更新）より前の
+  // builtin-dark 既定値。既存プロファイルの「初回カスタムテーマ整理」機構が、旧デフォルトの
+  // まるごとスナップショットを「ユーザーが編集した値」と区別できずに永続昇格させてしまい、
+  // 新パレットが常に隠される不具合（app/docs 参照）を修正するためだけに使う参照値。
+  // ここに載っている値と完全一致するキーだけを「未編集（当時のデフォルトそのまま）」とみなして
+  // 昇格対象から除外する。1色でもこの値と異なれば、必ずユーザー編集として残す
+  // （normalizeThemeColor で正規化した後の小文字6桁hexで比較するため、大文字/短縮表記の
+  // 保存値も正しく判定できる）。
+  const STALE_BUILTIN_PALETTE_CSS_VARS = Object.freeze({
+    'builtin-dark': Object.freeze({
+      '--bg': '#1e1e1e', '--bg2': '#252525', '--bg3': '#2d2d2d', '--bg4': '#3e3e3e',
+      '--border': '#333333',
+      '--content-bg': '#252525',
+      '--ui-tooltip-bg': '#2d2d2d', '--ui-tooltip-border': '#555555',
+      '--ui-scrollbar-track-bg': '#252525', '--ui-scrollbar-thumb-bg': '#3e3e3e',
+      '--ui-pane-tabbar-bg': '#252525', '--ui-pane-tab-active-bg': '#1e1e1e',
+      '--ui-panelset-tabbar-bg': '#252525', '--ui-collapsed-tabbar-bg': '#252525', '--ui-dockbar-bg': '#252525',
+      '--ui-header-bg': '#2d2d2d',
+      '--ui-toolbar-bg': '#252525',
+      '--ui-hover-bg': '#3e3e3e',
+      '--ui-accent': '#2563eb',
+      '--db-th-bg': '#2d2d2d', '--db-entity-bg': '#1e1e1e',
+      '--page-text-bg': '#252525',
+    }),
+  });
+  const STALE_BUILTIN_PALETTE_BOARD_VARS = Object.freeze({
+    'builtin-dark': Object.freeze({
+      backgroundColor: '#1e1e1e', nodeBgColor: '#3e3e3e', nodeBorderColor: '#555555',
+    }),
+  });
+
+  function _stripStaleBuiltinPaletteValues(theme, targetId) {
+    if (!theme || !targetId) return theme;
+    const staleCssVars = STALE_BUILTIN_PALETTE_CSS_VARS[targetId];
+    if (staleCssVars && theme.ui && theme.ui.cssVars) {
+      Object.keys(staleCssVars).forEach(key => {
+        if (normalizeThemeColor(theme.ui.cssVars[key]) === staleCssVars[key]) delete theme.ui.cssVars[key];
+      });
+    }
+    const staleBoard = STALE_BUILTIN_PALETTE_BOARD_VARS[targetId];
+    if (staleBoard && theme.board) {
+      Object.keys(staleBoard).forEach(key => {
+        if (normalizeThemeColor(theme.board[key]) === staleBoard[key]) delete theme.board[key];
+      });
+    }
+    return theme;
+  }
+
   function _readRawCustomThemes() {
     try {
       const parsed = JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY) || '[]');
@@ -429,6 +477,7 @@
         || _promotedInitialThemeTargetForStoredId(storedEditorTheme, sourceByTarget);
 
       if (promotedDefault) _mergeActiveThemeSettingsIntoInitialSource(sourceByTarget, promotedDefault);
+      sourceByTarget.forEach((theme, targetId) => _stripStaleBuiltinPaletteValues(theme, targetId));
       if (sourceByTarget.size) {
         _writePromotedInitialThemeSources(Array.from(sourceByTarget, ([targetId, theme]) => ({ targetId, theme })));
       }
@@ -452,6 +501,11 @@
   }
 
   function _promoteCustomInitialTheme(src, target, base) {
+    // src はここでしか消費されない使い捨てのパース結果（呼び出し元を参照）なので、
+    // 破壊的に古いデフォルト値だけを除去してから合成してよい。これにより、
+    // 書き戻し（_ensureInitialCustomThemeCleanup）を経由しない読み出し経路でも
+    // 新しいデフォルトが必ず反映される。
+    _stripStaleBuiltinPaletteValues(src, target && target.id);
     const next = {
       ...clone(base),
       ...clone(src),
@@ -844,57 +898,3 @@
   function _themeUiRuleForProp(selector, target, stateId, propId, colorCss) {
     if (!selector || !colorCss) return '';
     if (target?.vars) return _themeUiVarRule(target, stateId, propId, colorCss);
-    selector = _themeUiExpandChildSelector(selector, target?.childSelector);
-    const targetId = target?.id || '';
-    if (propId === 'fg') {
-      return `${selector}{color:${colorCss}!important}${selector} svg{stroke:${colorCss}!important}`;
-    }
-    if (propId === 'bg') {
-      return `${selector}{background:${colorCss}!important}`;
-    }
-    if (propId === 'underline') {
-      if (targetId === 'section-bar') {
-        return `${selector}{border-left-color:${colorCss}!important}`;
-      }
-      if (targetId === 'note-heading') {
-        return _themeUiNoteHeadingAccentRule(selector, colorCss);
-      }
-      if (targetId !== 'panel-tab' && targetId !== 'inner-tab') {
-        return `${selector}{border-color:${colorCss}!important}`;
-      }
-      return `${selector}{border-bottom-color:${colorCss}!important}`;
-    }
-    return '';
-  }
-
-  function applyThemeUiApplications(cfg, options = {}) {
-    ensurePaletteRuntimeStyle();
-    ensureThemeUiPaletteTargets(options);
-    const config = normalizeThemeUiApplications(cfg || getThemeUiApplications());
-    let style = document.getElementById('meldex-theme-ui-applications-style');
-    if (!style) {
-      style = document.createElement('style');
-      style.id = 'meldex-theme-ui-applications-style';
-      document.head.appendChild(style);
-    }
-    const rules = [];
-    const autoTone = getThemeUiAutoTone();
-    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
-    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
-    THEME_UI_TARGETS.forEach(target => {
-      _themeUiStatesForTarget(target).forEach(state => {
-        const selector = _themeUiStateSelector(target.id, state.id);
-        _themeUiPropsForTarget(target, state.id).forEach(prop => {
-          const value = config[target.id]?.[state.id]?.[prop.id];
-          const backgroundValue = config[target.id]?.[state.id]?.bg;
-          const autoForegroundOnAccent = singleAccentPolicy
-            && prop.id === 'fg'
-            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
-            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
-          const colorCss = autoForegroundOnAccent
-            ? singleAccentText
-            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
-          const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
-          if (rule) rules.push(rule);
-        });
-      });

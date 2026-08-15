@@ -582,6 +582,11 @@ input[type=checkbox].gb-checkbox:focus-visible {
 /* ============================================================
    Dropboxフォルダ選択 (gb-dropbox-folder-picker.js)
    ============================================================ */
+.modal-overlay.meldex-dropbox-folder-picker-overlay {
+  /* スタンドアロンのファイルパネル（z-index: 9996）から開いた場合も前面に置く。 */
+  z-index: 10010;
+}
+
 .meldex-dropbox-folder-picker-modal {
   width: min(620px, calc(100vw - 32px));
   max-height: min(680px, calc(100vh - 32px));

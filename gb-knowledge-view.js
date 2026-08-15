@@ -123,9 +123,16 @@
     container.querySelectorAll('[data-kv-tab]').forEach(btn => {
       btn.addEventListener('click', () => switchTab(container, btn.dataset.kvTab));
     });
-    ensureRole(container).then(() => {
-      if (container.isConnected) renderActiveTab(container);
-    });
+    // roleがまだ未取得の初回表示だけ、取得完了後に再描画して書き込み権限ボタンを反映する。
+    // roleが既に判明しているタブ切替では再描画を予約しない。ここを無条件にすると、
+    // 同期描画（Viewer相当のボタン構成）の直後に非同期の役割確定描画が必ず割り込み、
+    // タブ切替のたびに一覧をボタンごと作り直す・APIを二重に叩く不要な競合状態になる
+    // （記憶継承タブの手動追加ボタン等が再構築中に一瞬掴めなくなる不具合の原因）。
+    if (!state.roleLoaded) {
+      ensureRole(container).then(() => {
+        if (container.isConnected) renderActiveTab(container);
+      });
+    }
     renderActiveTab(container);
   }
 
@@ -470,11 +477,26 @@
   }
 
   function openKnowledgeHomeView(initialTab) {
-    const existing = document.querySelector('.modal-overlay[data-knowledge-home-modal="1"]');
-    if (existing?._knowledgeHomeModalApi?.isOpen?.()) {
-      existing._knowledgeHomeModalApi.modal.focus?.({ preventScroll: true });
-      return existing._knowledgeHomeModalApi;
+    // data-knowledge-home-modal="1" だけで探す(.modal-overlayクラスに依存しない)。
+    // スマホ表示のクローズアニメーション中、共通ダイアログ基盤(gb-modal-shell.js)は
+    // modal-overlay等のクラスだけ先に外して「.modal-overlay」セレクタから除外するが、
+    // dataset(data-knowledge-home-modal / data-e2e-id等)はDOM除去が完了するまで残る。
+    // クラスだけで探すと、閉じ済みなのに残っている要素を見失い、後段で二重に検出できず
+    // 除去し損ねる。
+    const existingOverlays = [...document.querySelectorAll('[data-knowledge-home-modal="1"]')];
+    const openExisting = existingOverlays.find(overlay => overlay?._knowledgeHomeModalApi?.isOpen?.());
+    if (openExisting) {
+      openExisting._knowledgeHomeModalApi.modal.focus?.({ preventScroll: true });
+      return openExisting._knowledgeHomeModalApi;
     }
+    // isOpen()が既にfalse(閉じ済み)の古いオーバーレイがまだDOMに残っている場合がある。
+    // スマホ表示ではモーダル共通基盤がクローズを最大数百msのアニメーション付きで行うため、
+    // 直後に再度開くと新旧2つのオーバーレイが一瞬同居し、data-e2e-id等の識別子が重複して、
+    // 要素選択がフェードアウト中(pointer-events:none)の古い方を掴むことがある。
+    // 論理的には閉じ済みなので、アニメーション完了を待たずここで即時に切り離す。
+    existingOverlays.forEach(overlay => {
+      if (overlay?.isConnected) overlay.parentNode?.removeChild(overlay);
+    });
     if (typeof window.GBUI?.createModal !== 'function') {
       throw new Error('ナレッジを初期化できませんでした。');
     }

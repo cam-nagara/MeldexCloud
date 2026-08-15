@@ -371,7 +371,7 @@ function toggleOverlayVisibility() {
   _forEachStandaloneAnnotationNote(el => { el.style.visibility = (!embedded && _overlayVisible) ? '' : 'hidden'; });
   if (btn) {
     btn.classList.toggle('active', _overlayVisible);
-    btn.innerHTML = lucide(_overlayVisible ? 'eye' : 'eyeOff', 18);
+    _setAnnotationUtilityIcon(btn, _overlayVisible ? 'eye' : 'eyeOff');
     btn.title = _overlayVisible ? '注釈表示中' : '注釈非表示中';
     btn.setAttribute('aria-label', _overlayVisible ? '注釈を非表示にする' : '注釈を表示する');
   }
@@ -1009,7 +1009,9 @@ const _ANN_TOOL_GROUPS = {
     { tool: 'marker', label: 'マーカー', icon: 'highlighter' },
   ],
   line: [
-    { tool: 'polyline', label: '折れ線', icon: 'spline' },
+    // 折れ線のアイコンは spline（曲線。折れ線を表せていなかった）から activity
+    // （角のはっきりした折れ線）へ変更（注釈フロートパレット改修計画2026-08-13 §1-3）。
+    { tool: 'polyline', label: '折れ線', icon: 'activity' },
     { tool: 'ellipse-line', label: '円形', icon: 'circle' },
     { tool: 'rect-line', label: '矩形', icon: 'square' },
   ],
@@ -1020,13 +1022,34 @@ const _ANN_TOOL_GROUPS = {
   ],
 };
 
+// グループボタン（ストローク/ライン/塗りつぶし）の表示名。選択中メンバーの
+// アイコン・ラベルへ追従させる際に「ストローク（マーカー）」のように組み立てる。
+const _ANN_TOOL_GROUP_LABELS = { stroke: 'ストローク', line: 'ライン', fill: '塗りつぶし' };
+
+// グループボタンの中身（アイコン・title・aria-label）を、選択中メンバーへ合わせて描き直す。
+// 注釈フロートパレット改修計画2026-08-13 §1-2: 従来は data-tool 属性だけ書き換えていて
+// ボタンの見た目（アイコン）が選択中ツールに追従しなかった。
+function _applyAnnotationGroupButtonIcon(button, group, member) {
+  if (!button || !member) return;
+  _setAnnotationUtilityIcon(button, member.icon);
+  const groupLabel = _ANN_TOOL_GROUP_LABELS[group] || '';
+  const label = groupLabel ? `${groupLabel}（${member.label}）` : member.label;
+  button.title = label;
+  button.setAttribute('aria-label', label);
+}
+
 function _annotationSelectTool(tool, sourceButton) {
   ann.tool = tool;
   document.querySelectorAll('#ann-toolbar .ann-tool[data-tool]').forEach(button => {
     const group = button.dataset.annToolGroup;
-    const members = group ? (_ANN_TOOL_GROUPS[group] || []).map(item => item.tool) : [button.dataset.tool];
-    button.classList.toggle('active', members.includes(tool));
-    if (members.includes(tool)) button.dataset.tool = tool;
+    const groupMembers = group ? (_ANN_TOOL_GROUPS[group] || []) : null;
+    const members = groupMembers ? groupMembers.map(item => item.tool) : [button.dataset.tool];
+    const isMatch = members.includes(tool);
+    button.classList.toggle('active', isMatch);
+    if (isMatch) {
+      button.dataset.tool = tool;
+      if (groupMembers) _applyAnnotationGroupButtonIcon(button, group, groupMembers.find(item => item.tool === tool));
+    }
   });
   document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
   _updateAnnotationBrushCursor();
@@ -1074,15 +1097,31 @@ function _initAnnotationToolGroups() {
   const rectFill = toolbar?.querySelector('[data-tool="rect"]');
   if (!toolbar || !pen || !fill) return;
   pen.dataset.annToolGroup = 'stroke';
-  pen.title = 'ストローク'; pen.setAttribute('aria-label', 'ストローク');
   marker?.remove();
   const line = document.createElement('button');
-  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = 'polyline'; line.dataset.annToolGroup = 'line';
-  line.title = 'ライン'; line.setAttribute('aria-label', 'ライン');
-  line.innerHTML = typeof lucide === 'function' ? lucide('spline', 14) : '⌁';
+  line.type = 'button'; line.className = 'ann-tool'; line.dataset.tool = _ANN_TOOL_GROUPS.line[0].tool; line.dataset.annToolGroup = 'line';
   fill.before(line);
-  fill.dataset.annToolGroup = 'fill'; fill.title = '塗りつぶし'; fill.setAttribute('aria-label', '塗りつぶし');
+  fill.dataset.annToolGroup = 'fill';
   rectFill?.remove();
+  // 初期表示アイコン・ラベルは各グループの既定メンバー（先頭要素）に合わせる。
+  // ペン/囲い塗りボタンは data-tool が既に既定メンバーと一致しているのでそのまま使う。
+  _applyAnnotationGroupButtonIcon(pen, 'stroke', _ANN_TOOL_GROUPS.stroke[0]);
+  _applyAnnotationGroupButtonIcon(line, 'line', _ANN_TOOL_GROUPS.line[0]);
+  _applyAnnotationGroupButtonIcon(fill, 'fill', _ANN_TOOL_GROUPS.fill[0]);
+}
+
+// 注釈フロートパレットのユーティリティボタン（.vl-lock-icon 相当）のアイコンを、
+// .ico span を使わず JS が直接描いた SVG へ置き換えるための共通ヘルパー。
+// 共通アイコン展開処理（meldex-core の replaceIcons()）は、ツールバー外と判定した
+// .ico span へインラインで width:18px; height:18px; を書き込む。このボタン群は
+// CSS（.vl-lock-icon svg / .vl-lock-icon .ico）でアイコンを14pxに縮めて表示するため、
+// .ico span を残したままだとインラインstyleがCSSに勝ち、枠だけ18pxのまま残って
+// アイコンの中心が上に2pxズレる（注釈フロートパレット改修計画2026-08-13 §1-1）。
+// .ico span 自体を持たせない（button.innerHTML を直接SVGへ置き換える）ことで、
+// replaceIcons() が後から何度走っても影響を受けない構造にする。
+function _setAnnotationUtilityIcon(button, iconName, size = 14) {
+  if (!button || !iconName) return;
+  button.innerHTML = typeof lucide === 'function' ? lucide(iconName, size) : '';
 }
 
 function _styleAnnotationUtilityButtons() {
@@ -1090,7 +1129,17 @@ function _styleAnnotationUtilityButtons() {
   const screenshotButton = toolbar?.querySelector('button[title="スクリーンショット撮影"], button[aria-label="スクリーンショット撮影"]');
   const overlayButton = document.getElementById('btn-overlay-toggle');
   const clearButton = toolbar?.querySelector('button[title="全削除"], button[aria-label="全削除"]');
-  [screenshotButton, overlayButton, clearButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+  const lockButton = document.getElementById('ann-view-lock-btn');
+  [screenshotButton, overlayButton, clearButton, lockButton].forEach(button => button?.classList.add('vl-lock-icon', 'ann-tool'));
+  _setAnnotationUtilityIcon(screenshotButton, 'camera');
+  _setAnnotationUtilityIcon(overlayButton, _overlayVisible ? 'eye' : 'eyeOff');
+  _setAnnotationUtilityIcon(clearButton, 'trash2');
+  // 表示ロックボタンは、実際の施錠状態反映（bindHudIcon/render または
+  // _disableAnnFloatingViewLockButton）が始まるまでの初期表示だけをここで整える。
+  // 既にどちらかが動いた後（viewLockIconId / viewLockState が付いた後）は上書きしない。
+  if (lockButton && !lockButton.dataset.viewLockIconId && !lockButton.dataset.viewLockState) {
+    _setAnnotationUtilityIcon(lockButton, 'unlock');
+  }
 }
 
 function _updateAnnotationBrushCursor() {

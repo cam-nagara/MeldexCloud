@@ -118,6 +118,17 @@
       return `${SYSTEM_ROOT}/${safeKind}/${safeId}.json`;
     }
 
+    describe() {
+      const origin = typeof location !== 'undefined' ? String(location.origin || '') : '';
+      if (!origin) throw new Error('端末内管理データの接続先を一意に識別できません');
+      return {
+        environment: 'browser-local-opfs',
+        boundary: `browser-local:${origin}`,
+        namespace_kind: 'opfs',
+        management_root: `${STORAGE_ROOT_NAME}/${SYSTEM_ROOT}`,
+      };
+    }
+
     async load(kind, documentId) {
       const path = this._path(kind, documentId);
       let text = '';
@@ -237,6 +248,7 @@
 
   class BrowserStorageProvider {
     constructor() {
+      this.confirmationActorKind = 'local-browser';
       this.rootHandle = null;
       this._nativeRoot = null;
       this._writeLocks = new Map();
@@ -364,6 +376,38 @@
       }
     }
 
+    async statPathFresh(relativePath) { return this.statPath(relativePath); }
+
+    async walkEntriesFresh(relativePath, limits = {}) {
+      const maxEntries = Number(limits.maxEntries || 20000);
+      const maxPathBytes = Number(limits.maxPathBytes || 4 * 1024 * 1024);
+      const rootPath = _normalizeRelativePath(relativePath);
+      const root = await this.getDirectoryHandle(rootPath, { create: false });
+      const rows = [];
+      const stack = [[rootPath, root]];
+      let pathBytes = 0;
+      while (stack.length) {
+        const [parentPath, parent] = stack.pop();
+        for await (const [name, handle] of parent.entries()) {
+          const path = _joinPath(parentPath, name);
+          pathBytes += new TextEncoder().encode(path).byteLength;
+          if (rows.length >= maxEntries || pathBytes > maxPathBytes) {
+            throw Object.assign(new Error('フォルダの確認上限を超えました'), { status: 503 });
+          }
+          if (handle.kind === 'directory') {
+            rows.push({ path, kind: 'directory', size: 0, modified: '', modifiedMs: 0 });
+            stack.push([path, handle]);
+          } else {
+            const file = await handle.getFile();
+            rows.push({ path, kind: 'file', size: Number(file.size || 0),
+              modified: file.lastModified ? new Date(file.lastModified).toISOString() : '',
+              modifiedMs: Number(file.lastModified || 0) });
+          }
+        }
+      }
+      return rows;
+    }
+
     async assertDirectory(relativePath) {
       const stat = await this.statPath(relativePath);
       if (!stat || stat.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${relativePath}`);
@@ -476,6 +520,15 @@
 
     async readText(relativePath) {
       return (await this.downloadAsFile(relativePath)).text();
+    }
+
+    async readTextBounded(relativePath, maxBytes) {
+      const handle = await this.getFileHandle(relativePath, { create: false });
+      const file = await handle.getFile();
+      if (!Number.isFinite(maxBytes) || maxBytes < 0 || file.size > maxBytes) {
+        throw Object.assign(new Error('参照影響の読取上限を超えました'), { status: 503 });
+      }
+      return file.slice(0, maxBytes + 1).text();
     }
 
     async readJson(relativePath, fallbackValue) {

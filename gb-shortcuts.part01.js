@@ -58,10 +58,12 @@ const GB_SHORTCUTS = {
   'viewer.fitNone':      { key: '4',                label: 'フィットしない', scope: 'viewer' },
   'viewer.annotation':   { key: 'a',                label: '注釈の切替', scope: 'viewer' },
 
-  // 常駐アプリはこの3 IDをPersonal Preferencesから取得し、OS登録へ反映する。
+  // 常駐アプリはこの5 IDをPersonal Preferencesから取得し、OS登録へ反映する。
   'tray.screenshot.full':   { key: 'ctrl+shift+s', label: '全画面を撮影', scope: 'tray' },
-  'tray.screenshot.region': { key: 'ctrl+shift+r', label: '範囲を撮影', scope: 'tray' },
+  'tray.screenshot.region': { key: 'ctrl+alt+r',   label: '範囲を撮影', scope: 'tray' },
   'tray.screenshot.window': { key: 'ctrl+shift+w', label: 'ウィンドウを撮影', scope: 'tray' },
+  'tray.quickMemo':         { key: 'ctrl+alt+m',   label: 'クイックメモを開く', scope: 'tray' },
+  'tray.sticky.new':        { key: 'ctrl+alt+s',   label: '新規付箋を作成', scope: 'tray' },
 
   // --- ノートエディタ ---
   'note.bold':            { key: 'ctrl+b',       label: '太字',                      scope: 'note' },
@@ -191,6 +193,45 @@ const GB_SHORTCUTS = {
   'explorer.open':        { key: 'enter',        label: '選択アイテムを開く',         scope: 'folder' },
   'explorer.rename':      { key: 'f2',           label: 'リネーム',                  scope: 'folder' },
   'explorer.delete':      { key: 'delete',       label: '削除',                      scope: 'folder' },
+
+  // --- マウス操作・スペースキーを使う操作（参照専用。割り当ての変更はできない） ---
+  // 一覧に「キーだけ」が並ぶと、スペースキーやドラッグで行う操作が抜け落ちる。
+  // readonly: true の項目は表示専用で、キー割り当ての競合判定・変更対象にしない。
+  'global.dragPanel':      { key: '', display: 'タブのドラッグ',         label: 'パネルの配置を変える',            scope: 'global', readonly: true },
+  'global.ctrlDropOpen':   { key: '', display: 'Ctrl+ドロップ',          label: 'ドロップ先のパネルで開く',        scope: 'global', readonly: true },
+
+  'board.mouseAddCard':    { key: '', display: 'ダブルクリック',          label: 'カードの追加 / 編集',             scope: 'board', readonly: true },
+  'board.mouseRectSelect': { key: '', display: '左ドラッグ（空白）',      label: '範囲選択',                        scope: 'board', readonly: true },
+  'board.mouseMoveCard':   { key: '', display: '左ドラッグ（カード）',    label: 'カードを移動',                    scope: 'board', readonly: true },
+  'board.mouseRightPan':   { key: '', display: '右ドラッグ（空白）',      label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.mouseLine':       { key: '', display: '右ドラッグ（カード）',    label: 'ラインを引く',                    scope: 'board', readonly: true },
+  'board.wheelZoom':       { key: '', display: 'ホイール',               label: '拡大・縮小',                      scope: 'board', readonly: true },
+  'board.middlePan':       { key: '', display: '中ボタンドラッグ',        label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spacePan':        { key: '', display: 'Space+ドラッグ',         label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spaceZoom':       { key: '', display: 'Ctrl+Space+ドラッグ',    label: '拡大・縮小',                      scope: 'board', readonly: true },
+  'board.spaceRotate':     { key: '', display: 'Shift+Space+ドラッグ',   label: '表示を回転',                      scope: 'board', readonly: true },
+  'board.spaceArrowPan':   { key: '', display: 'Space+矢印',            label: '表示位置を移動',                  scope: 'board', readonly: true },
+  'board.spaceResetView':  { key: '', display: 'Space+ダブルクリック',   label: '表示をリセット',                  scope: 'board', readonly: true },
+  'board.spaceFocus':      { key: '', display: 'Space',                 label: '選択したカードに寄る / 戻す',      scope: 'board', readonly: true },
+
+  'folder.dragRectSelect': { key: '', display: 'ドラッグ（空白）',        label: '範囲選択',                        scope: 'folder', readonly: true },
+  'folder.ctrlDragAdd':    { key: '', display: 'Ctrl+ドラッグ（空白）',   label: '選択に追加',                      scope: 'folder', readonly: true },
+  'folder.ctrlWheelZoom':  { key: '', display: 'Ctrl+ホイール',          label: '表示倍率を変える',                scope: 'folder', readonly: true },
+  'folder.dragItem':       { key: '', display: '項目のドラッグ',          label: '移動 / ほかの画面へ渡す',          scope: 'folder', readonly: true },
+
+  'database.dragRange':    { key: '', display: 'ドラッグ',               label: 'セルの範囲選択',                  scope: 'database', readonly: true },
+  'database.dragRow':      { key: '', display: 'ハンドルのドラッグ',      label: '行の並べ替え',                    scope: 'database', readonly: true },
+  'database.dragColumn':   { key: '', display: '列の境界をドラッグ',      label: '列幅を変える',                    scope: 'database', readonly: true },
+
+  'note.dragBlock':        { key: '', display: 'ハンドルのドラッグ',      label: 'ブロックの並べ替え',              scope: 'note', readonly: true },
+
+  'calendar.dragCreate':   { key: '', display: 'ドラッグ',               label: '予定を作る',                      scope: 'calendar', readonly: true },
+  'calendar.dragMove':     { key: '', display: '予定のドラッグ',          label: '予定を移動',                      scope: 'calendar', readonly: true },
+  'calendar.dragResize':   { key: '', display: '端のドラッグ',            label: '予定の長さを変える',              scope: 'calendar', readonly: true },
+
+  'viewer.dragPan':        { key: '', display: 'ドラッグ',               label: '表示位置を移動',                  scope: 'viewer', readonly: true },
+
+  'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: '注釈を描く',                      scope: 'annotation', readonly: true },
 
   // --- パネルセット ---
   'panelset.group1':      { key: 'ctrl+alt+1',   label: 'パネルセット ドック1',       scope: 'global' },

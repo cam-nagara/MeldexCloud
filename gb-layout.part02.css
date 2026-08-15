@@ -975,6 +975,16 @@ html[data-meldex-theme-id="builtin-earth"] .gb-dock-bar-fixed .gb-dock-icon[data
   z-index: 10080 !important;
 }
 
+/* サブパネル上でも同じ重なり順を保つ。ドック用ルールは静的契約検査
+   （test_meldex_dock_regressions）がセレクタの並びごと固定しているため、
+   そちらへ追記せず独立したルールとして持つ。 */
+.gb-subpanel ~ .gb-context-menu,
+.gb-subpanel ~ .ab-dropdown,
+.gb-subpanel ~ .bd-style-picker-menu,
+.gb-subpanel ~ #chat-title-dropdown {
+  z-index: 10080 !important;
+}
+
 /* 8方向リサイズハンドル */
 .gb-dock-popup-resize-handle {
   position: absolute;

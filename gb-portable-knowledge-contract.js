@@ -2,15 +2,23 @@
   'use strict';
 
   const SCHEMA = 'meldex-portable-knowledge/v1';
+  // デスクトップ・Cloud・スマホで共有する定義(自動ナレッジ化の対象範囲計画
+  // 2026-08-13 Phase 4-4「3面の定義共有」)。正本は
+  // app/meldex_knowledge_index_definitions.py。値を変更する場合は必ず両方を
+  // 同時に更新すること(app/tests/test_meldex_knowledge_index_definitions_parity.py
+  // が両ファイルの値を静的に比較して固定する)。
+  // `.scriptnote` はファイルの実拡張子ではなく、`extension()` が
+  // `*.scriptnote.json` を正規化した内部トークン(下記参照)。デスクトップ側は
+  // `Path.suffix` が素で `.json` を返すため対応するトークンを持たない。
   const TEXT_EXTENSIONS = new Set([
     '.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.yaml', '.yml',
     '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.scriptnote',
   ]);
-  const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', '.svg']);
-  const SKIP_FOLDERS = new Set([
-    '.git', '.svn', 'node_modules', '__pycache__', '_meldex', '.meldex',
-    'dist', 'build', '_verify', '.cache',
-  ]);
+  const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', '.svg', '.tiff', '.tif']);
+  // `_`/`.`始まりでなくても常に除外するフォルダ名(小文字)。
+  const ALWAYS_EXCLUDED_DIR_NAMES = new Set(['__pycache__', 'node_modules', 'dist', 'build']);
+  // `_`始まりフォルダのうち、例外的に索引対象へ含めるフォルダ名(小文字)。
+  const INDEXABLE_PRIVATE_DIR_NAMES = new Set(['_chat', '_knowledge', '_skills']);
   const SENSITIVE_KEY = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|private[_-]?key|client[_-]?secret)/i;
 
   function normalizePath(value) {
@@ -42,9 +50,23 @@
     return `portable:${hash(`${rootId}\0${normalizePath(path).toLowerCase()}`)}`;
   }
 
+  function isExcludedDirName(name) {
+    const lower = String(name || '').toLowerCase();
+    if (!lower) return false;
+    if (ALWAYS_EXCLUDED_DIR_NAMES.has(lower)) return true;
+    // デスクトップ側(meldex_fts_index._skip_dir_name)と同じ規則: `_`/`.`始まりの
+    // フォルダは既定で除外し、INDEXABLE_PRIVATE_DIR_NAMES だけ例外にする。
+    // これにより `_screenshots`(検証用撮影専用)・`_trash`・`_scheduler_shared`等の
+    // 個人管理フォルダが、Cloud/スマホ側でだけ索引される穴を塞ぐ
+    // (自動ナレッジ化の対象範囲計画 2026-08-13 §2.5「デスクトップとCloudで
+    // 対象範囲が食い違っている」)。
+    if ((lower.startsWith('_') || lower.startsWith('.')) && !INDEXABLE_PRIVATE_DIR_NAMES.has(lower)) return true;
+    return false;
+  }
+
   function shouldSkipPath(path) {
     const normalized = normalizePath(path);
-    if (normalized.split('/').some(part => SKIP_FOLDERS.has(part.toLowerCase()))) return true;
+    if (normalized.split('/').some(part => isExcludedDirName(part))) return true;
     return /(?:^|\/)(?:secrets?|credentials?|tokens?|api[-_]?keys?)(?:\.|\/|$)/i.test(normalized);
   }
 
@@ -226,11 +248,16 @@
 
   global.MeldexPortableKnowledgeContract = Object.freeze({
     SCHEMA,
+    TEXT_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    ALWAYS_EXCLUDED_DIR_NAMES,
+    INDEXABLE_PRIVATE_DIR_NAMES,
     normalizePath,
     basename,
     extension,
     hash,
     documentId,
+    isExcludedDirName,
     shouldSkipPath,
     isSupported,
     kindForPath,

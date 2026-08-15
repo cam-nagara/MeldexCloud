@@ -241,7 +241,7 @@
       if (!items.length) return;
       const details = document.createElement('details');
       details.className = 'file-embedded-group';
-      // 埋め込み情報のグループは既定で全部閉じる（一番上のタグだけ開いた状態にする）。
+      // 埋め込み情報のグループは既定で全部閉じる（タグと主要項目は常に開いた状態のまま）。
       details.open = false;
       const summary = document.createElement('summary');
       summary.textContent = `${group.name || '情報'}（${items.length}）`;
@@ -256,10 +256,11 @@
     });
   }
 
-  function renderEditor(host, path, meta) {
-    if (!host) return;
+  function renderEditor(primaryHost, groupsHost, path, meta) {
+    if (!primaryHost) return;
     _pruneDetachedMemos();
-    host.replaceChildren();
+    primaryHost.replaceChildren();
+    if (groupsHost) groupsHost.replaceChildren();
     if (meta?._metadataLoadError) {
       const error = document.createElement('div');
       error.className = 'file-embedded-empty file-embedded-error';
@@ -274,10 +275,10 @@
       retry.addEventListener('click', async () => {
         retry.disabled = true;
         const refreshed = await load(path, null, { force: true });
-        renderEditor(host, path, refreshed);
+        renderEditor(primaryHost, groupsHost, path, refreshed);
       });
       error.append(message, retry);
-      host.appendChild(error);
+      primaryHost.appendChild(error);
       return;
     }
     const embedded = embeddedOf(meta);
@@ -286,22 +287,22 @@
       const empty = document.createElement('div');
       empty.className = 'file-embedded-empty';
       empty.textContent = '表示できる埋め込み情報はありません';
-      host.appendChild(empty);
+      primaryHost.appendChild(empty);
       return;
     }
 
     if (embedded?.width && embedded?.height) {
-      host.appendChild(row('画像サイズ', dimensionText(embedded)).wrapper);
+      primaryHost.appendChild(row('画像サイズ', dimensionText(embedded)).wrapper);
     }
     if (embedded?.kind === 'image') {
       const ratingRow = row('評価', '');
       ratingRow.content.appendChild(ratingControl(path, meta));
-      host.appendChild(ratingRow.wrapper);
+      primaryHost.appendChild(ratingRow.wrapper);
     }
-    appendLinkRow(host, '元ページ', webclip?.page_url);
-    appendLinkRow(host, '画像URL', webclip?.image_url);
+    appendLinkRow(primaryHost, '元ページ', webclip?.page_url);
+    appendLinkRow(primaryHost, '画像URL', webclip?.image_url);
     if (webclip?.clipped_at) {
-      host.appendChild(row('保存日時', webclip.clipped_at).wrapper);
+      primaryHost.appendChild(row('保存日時', webclip.clipped_at).wrapper);
     }
 
     if (embedded?.kind === 'image') {
@@ -309,11 +310,13 @@
       const memo = document.createElement('div');
       memo.className = 'file-embedded-memo';
       const label = document.createElement('label');
-      label.textContent = webclip ? 'WebClipperメモ' : 'メモ';
+      // 取り込み元（Web Clipper経由か否か）に関わらずどの画像でも使えるメモ欄のため、
+      // 特定機能名を冠したラベルは付けない（用語統一ルール）。
+      label.textContent = 'メモ';
       // 「画像ファイル内へ保存します」の説明は基本UIから外し、ラベル横の
       // ヘルプアイコンのツールチップへ集約する（UI共通ルール）。
       if (editable && typeof fieldHelp === 'function') {
-        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます'));
+        label.insertAdjacentHTML('beforeend', ' ' + fieldHelp('入力をやめると自動で保存されます。内容は画像ファイル自体に書き込まれます', { e2eId: 'file-embedded-memo-help' }));
       }
       const textarea = document.createElement('textarea');
       const initialNote = String(embedded.note || webclip?.note || '');
@@ -331,10 +334,10 @@
       if (!editable) status.textContent = 'この形式のメモは閲覧のみです';
       actions.append(status);
       memo.append(label, textarea, actions);
-      host.appendChild(memo);
+      primaryHost.appendChild(memo);
       if (editable) bindMemoAutosave(textarea, status, path, initialNote);
     }
-    appendMetadataGroups(host, embedded);
+    if (groupsHost) appendMetadataGroups(groupsHost, embedded);
   }
 
   function renderFolderTags(host, item) {

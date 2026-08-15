@@ -1,3 +1,60 @@
+  if (isFolder && !isMulti) {
+    const curWork = getWorkFolder();
+    const isWork = curWork === nodeData.path;
+    const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
+    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
+    [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
+      _outlinerAppendMenuItem(wfPanel, {
+        html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
+        checked: isWork === setIt,
+        action: async () => {
+        closeTreeContextMenu();
+        if (setIt) {
+          setWorkFolder(nodeData.path);
+          showStatus(`「${nodeData.name}」を作品フォルダに設定しました`);
+        } else {
+          setWorkFolder('');
+          showStatus('作品フォルダの設定を解除しました');
+        }
+        await loadLinkDict();
+        tooltipCache = {};
+        await loadOutliner();
+        },
+      });
+    });
+  }
+
+  // --- 並び替え（フォルダ・DB） ---
+  if ((isFolder || isDB || isEntity) && !isMulti) {
+    const sortPath = nodeData.path;
+    const curSort = getSortForFolder(sortPath);
+    // サブメニュー風: 1項目でクリック→展開
+    const sortPanel = _outlinerCreateSubmenu('並び替え');
+    _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
+    const sortOpts = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
+      { label: 'マニュアル', sort: 'manual', order: 'asc' },
+      { label: '名前 ↑', sort: 'name', order: 'asc' },
+      { label: '名前 ↓', sort: 'name', order: 'desc' },
+    ];
+    sortOpts.forEach(o => {
+      const active = curSort.sort === o.sort && curSort.order === o.order;
+      _outlinerAppendMenuItem(sortPanel, {
+        html: radioMark(active) + '<span>' + _outlinerEscHtml(o.label) + '</span>',
+        checked: active,
+        action: async () => {
+        closeTreeContextMenu();
+        const sortHistoryKeys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
+        const before = captureOutlinerSettingsHistory(sortHistoryKeys);
+        setSortSetting(sortPath, o.sort, o.order);
+        pushOutlinerSettingsHistory(
+          'フォルダツリー: 並び替え設定',
+          before,
+          sortPath + ' / ' + o.label,
+          sortHistoryKeys
+        );
+        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
+          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
+            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];
           renderFolderGrid({ preserveSelectedPaths: selectedPaths, resetScrollTop: true });
         }
         const childrenDiv = nodeEl.querySelector(':scope > .tree-children');
@@ -42,8 +99,24 @@
 }
 
 // 追加先の親パスを決定
+// シートの中に入れてよいのはエントリだけ。ボードやノートの作成先としてシートが
+// 選ばれていた場合は、シート自身ではなくその親フォルダを作成先にする。
+function _outlinerContainerAcceptsItemType(nodeData, itemType) {
+  if (nodeData?.type !== 'database') return true;
+  return String(itemType || '') === 'entity';
+}
+
+// シートの中へ移動してよい項目か。規則の正本は gb-sheet-attachments.js
+// （デスクトップ版・クラウド版で共有するシートの共通規則）に置く。
+function _outlinerItemFitsInSheet(nodeData) {
+  return window.MeldexSheetAttachments?.itemFitsInSheet
+    ? window.MeldexSheetAttachments.itemFitsInSheet(nodeData)
+    : true;
+}
+
 function getAddParentPath(nodeEl, nodeData, options = {}) {
-  const isContainer = nodeData.type === 'folder' || nodeData.type === 'database';
+  const isContainer = nodeData.type === 'folder'
+    || (nodeData.type === 'database' && _outlinerContainerAcceptsItemType(nodeData, options.itemType));
   if (isContainer && options.insideTarget && nodeData.path) return nodeData.path;
   if (nodeData._isRoot && nodeData.path) return nodeData.path;
   if (isContainer) {
@@ -333,6 +406,20 @@ async function addItemAt(parentPath, type) {
   }
 }
 
+// シートの中へエントリを追加する（シートに作れるのはエントリだけ）
+async function addSheetEntryAt(sheetPath) {
+  const path = String(sheetPath || '').trim();
+  if (!path) return;
+  try {
+    await apiPost('/entity/create', { parent_path: path, name: '無題' });
+    showStatus('エントリを追加しました');
+    if (typeof loadOutliner === 'function') await loadOutliner();
+    if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
+  } catch (e) {
+    showStatus((e && e.message) || 'エントリの追加に失敗しました', true);
+  }
+}
+
 // ヘッダーボタンからの追加（選択中アイテムのコンテキストを考慮）
 async function showAddOutlinerItem(type) {
   // 選択中のアイテムから追加先を決定
@@ -341,7 +428,7 @@ async function showAddOutlinerItem(type) {
     // ホーム内のノードが選択されている場合
     if (treeSelection.lastClicked.closest('#body-home') && _homeFolderPath) {
       const nd = treeSelection.lastClicked._nodeData;
-      if (nd.type === 'folder' || nd.type === 'database') {
+      if (nd.type === 'folder' || (nd.type === 'database' && _outlinerContainerAcceptsItemType(nd, type))) {
         const toggle = treeSelection.lastClicked.querySelector('.tree-toggle');
         parentPath = (toggle && toggle.dataset.expanded === 'true') ? nd.path : _homeFolderPath;
       } else {
@@ -349,7 +436,7 @@ async function showAddOutlinerItem(type) {
         parentPath = pn?._nodeData?.path || _homeFolderPath;
       }
     } else {
-      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData);
+      parentPath = getAddParentPath(treeSelection.lastClicked, treeSelection.lastClicked._nodeData, { itemType: type });
     }
   }
   // 何も選択されていない場合、ホームフォルダにフォールバック
@@ -811,90 +898,3 @@ function _handleOutlinerTreeKeydown(event) {
   }
   const nodes = _getVisibleTreeNodes(scopeSelector);
   if (!nodes.length) return;
-  const rawIndex = nodes.indexOf(current);
-  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
-  const nextIndex = event.key === 'ArrowUp'
-    ? Math.max(0, currentIndex - 1)
-    : Math.min(nodes.length - 1, currentIndex + 1);
-  _outlinerKeyboardSelectNode(nodes[nextIndex]);
-}
-
-// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
-// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
-// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
-// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
-// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
-// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
-// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
-// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
-// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
-// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
-// （非仮想化フォルダの既存挙動は変更しない）。
-function _outlinerKeyboardVirtualContainerFor(nodeEl) {
-  const childrenDiv = nodeEl && nodeEl.parentElement;
-  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
-}
-
-function _outlinerKeyboardTryVirtualStep(current, key) {
-  const vr = window.GBOutlinerVirtualRender;
-  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
-
-  let childrenDiv = null;
-  let path = null;
-  let recoveringUnmounted = false;
-  if (current) {
-    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
-    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
-    path = current._nodeData && current._nodeData.path;
-  } else {
-    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
-    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
-    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
-    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
-    childrenDiv = vr.containerForPath(lastPath);
-    if (!childrenDiv) return false;
-    path = lastPath;
-    recoveringUnmounted = true;
-  }
-
-  const state = childrenDiv._virtualState;
-  if (!state || !path) return false;
-  const currentIndex = state.flat.findIndex(entry => entry.id === path);
-  if (currentIndex < 0) return false;
-
-  const delta = key === 'ArrowUp' ? -1 : 1;
-  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
-  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
-  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
-  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
-
-  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
-  if (!target) return false;
-  _outlinerKeyboardSelectNode(target);
-  return true;
-}
-
-(function initOutlinerTreeKeyboardNavigation() {
-  const scroller = document.getElementById('tree-scroll-container');
-  if (!scroller) return;
-  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
-  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
-})();
-
-// ドラッグ中のホイールスクロール対応
-(function() {
-  let _isDragging = false;
-  document.addEventListener('dragstart', () => { _isDragging = true; });
-  document.addEventListener('dragend', () => { _isDragging = false; });
-  document.addEventListener('drop', () => { _isDragging = false; });
-  // ドラッグ中にホイールでスクロール可能にする
-  const scrollTargets = ['tree-scroll-container'];
-  scrollTargets.forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.addEventListener('wheel', (e) => {
-      if (!_isDragging) return;
-      e.preventDefault();
-      el.scrollTop += e.deltaY;
-    }, { passive: false });
-  });

@@ -115,16 +115,23 @@ function bdContextMenu(e, nodeId) {
   }
   function addToolbarVisibilityItems(target) {
     const immersive = window.MeldexBoardImmersive;
-    if (!immersive?.getMode || !immersive?.setMode) return false;
-    [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
-      .forEach(([edge, label]) => {
-        const pinned = immersive.getMode(edge) === 'pinned';
-        target.item(label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
-          role: 'menuitemcheckbox',
-          checked: pinned,
+    let added = false;
+    if (immersive?.getMode && immersive?.setMode) {
+      [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
+        .forEach(([edge, label]) => {
+          const pinned = immersive.getMode(edge) === 'pinned';
+          target.item(radioMark(pinned) + label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
+            role: 'menuitemcheckbox',
+            checked: pinned,
+          });
         });
-      });
-    return true;
+      added = true;
+    }
+    if (window.MeldexBoardStandalone?.appendDisplayContextMenuItems) {
+      window.MeldexBoardStandalone.appendDisplayContextMenuItems(target);
+      added = true;
+    }
+    return added;
   }
 
   if (nodeId) _bdPrepareContextMenuSelection(nodeId);
@@ -252,7 +259,11 @@ function bdContextMenu(e, nodeId) {
         });
       bd.connections.push(...newConnections);
       bd.selected = new Set(newNodes.map(node => node.id));
-      bdRender();
+      newNodes.forEach(node => {
+        if (typeof bdAppendFastNode === 'function') bdAppendFastNode(node);
+      });
+      if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: newConnections.map(conn => conn.id), reason: 'duplicate' });
+      if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(newNodes.map(node => node.id), 'duplicate');
       bdDirty();
     });
     if (multi && nd) {
@@ -282,27 +293,19 @@ function bdContextMenu(e, nodeId) {
             const childAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(ch) : { x: ch.x, y: ch.y };
             ch.x = childAbs.x - parentAbs.x; ch.y = childAbs.y - parentAbs.y;
             ch.parent = nodeId; ch.contained = true;
+            document.getElementById('bdn-' + id)?.remove();
           }
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'menu-containerize');
+        else bdRender();
+        bdDirty();
       });
     }
     const hasParentTarget = targetNodeIds.some(id => !!bd.nodes.find(v => v.id === id)?.parent);
     if (nd && hasParentTarget) {
       item('親から切り離す', () => {
         bdPushUndo();
-        const depthOf = (id) => (typeof bdParentDepth === 'function') ? bdParentDepth(id) : (() => {
-          let depth = 0;
-          let cur = bd.nodes.find(v => v.id === id);
-          const seen = new Set();
-          const limit = Math.max(50, (bd.nodes || []).length + 1);
-          while (cur?.parent && depth < limit && !seen.has(cur.id)) {
-            seen.add(cur.id);
-            cur = bd.nodes.find(v => v.id === cur.parent);
-            depth += 1;
-          }
-          return depth;
-        })();
+        const depthOf = id => bdParentDepth(id);
         const ids = (multi ? [...bd.selected] : [nodeId]).sort((a, b) => depthOf(b) - depthOf(a));
         ids.forEach(id => {
           const n = bd.nodes.find(v => v.id === id); if (!n || !n.parent) return;
@@ -310,7 +313,9 @@ function bdContextMenu(e, nodeId) {
           if (typeof bdDetachParentChildRelation === 'function') bdDetachParentChildRelation(parentId, id);
           else n.parent = '';
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'detach-parent');
+        else bdRender();
+        bdDirty();
       });
     }
     // ロックはトグル項目として「複製」の直下に置く
@@ -321,7 +326,9 @@ function bdContextMenu(e, nodeId) {
         const ids = multi ? [...bd.selected] : [nodeId];
         const next = !nd.locked;
         ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.locked = next; });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'menu-lock');
+        else bdRender();
+        bdDirty();
       });
     }
     sep();
@@ -353,15 +360,20 @@ function bdContextMenu(e, nodeId) {
       });
       _bdContextMenuSep(cardStylePanel);
       // 階層別スタイル サブのサブ (有効/無効)
+      // 課題18-案A: 「有効/無効」という文言だけでは、有効にしたカードが「階層別スタイルの
+      // 起点になる」(そのカード自身が深さ0、子孫だけに効く) ことが伝わらないため改善した。
       if (nd) {
-        const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 120);
-        [['有効', true], ['無効', false]].forEach(([label, val]) => {
+        const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 160);
+        [['このカードを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
           const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
             if (val && typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(nd.id);
-            bdRender(); bdDirty();
-            if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'toggle-auto-style');
+            else bdRender();
+            bdDirty();
+            if (nd.structure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(nd.id);
+            else if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
           }, {
             role: 'menuitemradio',
             checked: !!nd._autoStyle === val,
@@ -416,7 +428,9 @@ function bdContextMenu(e, nodeId) {
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
-          bdRender(); bdDirty();
+          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'collapse');
+          else bdRender();
+          bdDirty();
         });
       }
       viewSub.item('フォーカス (Space)', () => bdFocusSelected());
@@ -456,7 +470,10 @@ function bdContextMenu(e, nodeId) {
                 }
               });
             }
-            bdRender(); bdDirty();
+            const childIds = bd.nodes.filter(ch => ch.parent === nodeId).map(ch => ch.id);
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId, ...childIds], 'container-toggle');
+            else bdRender();
+            bdDirty();
           }, {
             role: 'menuitemradio',
             checked: active,
@@ -494,12 +511,15 @@ function bdContextMenu(e, nodeId) {
             });
           }
           // このカードを subroot とする再レイアウト (空への変更でも、ルートから再整列するため呼ぶ)。
-          if (typeof bdAutoLayout === 'function') {
+          if (typeof bdRequestAutoLayout === 'function' || typeof bdAutoLayout === 'function') {
             const targetId = nextValue ? id : (typeof bdRoot === 'function' ? bdRoot(id)?.id : id);
-            if (targetId) bdAutoLayout(targetId);
+            if (targetId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(targetId);
+            else if (targetId) bdAutoLayout(targetId);
           }
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targetNodeIds, 'structure-change');
+        else bdRender();
+        bdDirty();
       };
       if (multi && typeof bdLinkifySelectionToTree === 'function') {
         strSub.item('ラインから親子化', () => { bdLinkifySelectionToTree(nodeId); });
@@ -520,7 +540,9 @@ function bdContextMenu(e, nodeId) {
         bdPushUndo();
         const targets = bd.selected.has(nodeId) ? [...bd.selected] : [nodeId];
         targets.forEach(id => { const n2 = bd.nodes.find(v => v.id === id); if (n2) n2.status = st; });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targets, 'status');
+        else bdRender();
+        bdDirty();
       };
       statusSub.item(radioMark(!curStatus) + 'なし', () => setStatus(''));
       if (typeof bdStatusNames === 'function') {
@@ -561,7 +583,9 @@ function bdContextMenu(e, nodeId) {
             bdPushUndo();
             const n2 = bd.nodes.find(v => v.id === nodeId);
             if (n2) n2.markers = {};
-            bdRender(); bdDirty();
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'clear-markers');
+            else bdRender();
+            bdDirty();
           });
         }
       }
@@ -620,7 +644,9 @@ function bdContextMenu(e, nodeId) {
       item('グループ化', () => {
         bdPushUndo();
         bd.groups.push({ id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds: [...bd.selected] });
-        bdRender(); bdDirty();
+        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
+        else bdRender();
+        bdDirty();
       });
     }
     // 注: ルート直下の「フォーカス (Space)」および「拡張」サブ全体 (ノート編集/チェックボックス/
@@ -634,7 +660,7 @@ function bdContextMenu(e, nodeId) {
     if (nodeGroups.length) {
       nodeGroups.forEach(g => {
         item('グループ「'+esc(g.name)+'」を選択', () => { g.nodeIds.forEach(id=>bd.selected.add(id)); document.querySelectorAll('.bd-node').forEach(el=>el.classList.toggle('bd-selected',bd.selected.has(el.id.replace('bdn-','')))); if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles(); });
-        item('グループ「'+esc(g.name)+'」を解除', () => { bd.groups=bd.groups.filter(gg=>gg.id!==g.id); bdRender(); bdDirty(); showStatus('グループ解除'); });
+        item('グループ「'+esc(g.name)+'」を解除', () => { bd.groups=bd.groups.filter(gg=>gg.id!==g.id); if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-remove'); else bdRender(); bdDirty(); showStatus('グループ解除'); });
       });
     }
     sep();
@@ -648,7 +674,7 @@ function bdContextMenu(e, nodeId) {
 
   } else {
     // --- Blank area menu ---
-    const _stw = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: e.clientX, y: e.clientY };
+    const _stw = bdScreenToWorld(e.clientX, e.clientY);
     const clickWx = _stw.x, clickWy = _stw.y;
     item('カードを追加', () => { bdAddAt(clickWx, clickWy); });
     const newLinkSub = sub('新規リンクカード');
@@ -720,14 +746,6 @@ function bdContextMenu(e, nodeId) {
   imageDropSub.item(imageDropCheck('link') + esc(imageDropLabel('link')), () => {
     if (typeof bdSetImageDropMode === 'function') bdSetImageDropMode('link');
   });
-
-  if (typeof window !== 'undefined' && window.MeldexBoardStandalone?.appendContextMenuItems) {
-    try {
-      window.MeldexBoardStandalone.appendContextMenuItems(menu);
-    } catch (err) {
-      console.warn('[board] standalone context menu extension failed', err);
-    }
-  }
 
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
@@ -1075,7 +1093,8 @@ async function bdLinkifyCardAs(nodeId, type) {
     n.link = path;
     n.linkType = nodeData.type || type;
     n.text = label;
-    bdRender();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-card', { detailPanel: true });
+    else bdRender();
     bdDirty();
     if (typeof _bdOpenEntryInRightSidebar === 'function') _bdOpenEntryInRightSidebar(label, path, n.linkType);
     showStatus('リンクカード化: ' + label);
@@ -1098,7 +1117,8 @@ async function bdLinkifyCardFromExisting(nodeId) {
     const fallback = linkPath.split(/[/\\]/).pop() || linkPath;
     const label = (maybeLabel && maybeLabel.trim()) || fallback;
     if (!n.text || n.text === '無題') n.text = label;
-    bdRender();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-existing', { detailPanel: true });
+    else bdRender();
     bdDirty();
     showStatus('リンクカード化: ' + label);
   };

@@ -452,7 +452,7 @@ td.active-cell .cell-value > .cell-value-more {
 #pivot-table td.col-selected, #pivot-table th.col-selected, .pivot-table td.col-selected, .pivot-table th.col-selected { background-image: none !important; }
 /* 計算列（読み取り専用・コードが更新する列）: 薄い背景で編集不可を示す（gb-db-computed-columns.js） */
 #pivot-table td.db-cell-computed, .pivot-table td.db-cell-computed { background: var(--bg2); }
-/* 制作管理「予定」セルの合成表示（作業予定時間の併記・シフト割当不能理由の警告。gb-production-management.part01.js の _pmDecorateScheduleCell） */
+/* 制作管理「予定」セルの合成表示（作業予定時間の併記・シフト割当不能理由の警告。gb-production-management-cloud-task-generation.js（旧 gb-production-management.part01.js の一部）の _pmDecorateScheduleCell） */
 .pm-schedule-cell-hours { margin-left: 4px; color: var(--fg2); font-size: 12px; }
 #pivot-table td.pm-schedule-cell-warning, .pivot-table td.pm-schedule-cell-warning { background: color-mix(in srgb, var(--orange, #d9822b) 16%, var(--bg2)); }
 .pm-schedule-cell-warning-icon { margin-left: 4px; color: var(--orange, #d9822b); cursor: help; }
@@ -1301,7 +1301,11 @@ html.thumb-fit-contain .gb-image-gallery-card img {
   color: var(--annotation-fg);
   box-shadow: 0 10px 24px rgba(0,0,0,0.32);
   cursor: pointer;
-  z-index: 54;
+  /* ボードの没入表示ツールバー（gb-board-immersive.css の
+     .bd-immersive-root > [data-bd-role="toolbar-bottom"] は z-index:160）に
+     隠れないよう、それより前面へ上げる。170は同ファイルの右サイドバーと同じ段。
+     （注釈フロートパレット改修計画2026-08-13 §3-b） */
+  z-index: 170;
 }
 .annotation-fab svg { pointer-events: none; }
 .annotation-fab:hover { background: var(--annotation-hover-bg); }
@@ -1425,6 +1429,13 @@ body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }
   border-bottom: 1px solid var(--annotation-border); color: var(--annotation-fg); font-size: 12px; cursor: pointer;
 }
 .rp-ann-row:hover { background: var(--annotation-hover-bg); }
+.rp-ann-row[draggable="true"],
+.rp-ann-preview-card[draggable="true"] { cursor: grab; }
+.rp-ann-row[draggable="true"]:active,
+.rp-ann-preview-card[draggable="true"]:active { cursor: grabbing; }
+.rp-ann-user-badge { display: inline-flex; align-items: center; gap: 3px; vertical-align: middle; }
+.rp-ann-user-badge-icon { display: inline-flex; line-height: 0; }
+.rp-ann-user-badge-icon img { display: block; }
 .rp-ann-row-icon { width: 18px; min-width: 18px; display: inline-flex; align-items: center; justify-content: center; }
 .rp-ann-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rp-ann-row-title { color: var(--annotation-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

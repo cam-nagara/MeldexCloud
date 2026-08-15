@@ -72,6 +72,9 @@ class CalendarComponent extends ToolComponent {
     this._initClockPanel();
     if (typeof this._applySidebarMode === 'function') this._applySidebarMode();
     this._syncMultiDayControls();
+    // ツールバーの操作グループ（.gb-cal-toolbar-actions）を、ツールバー自身が狭くなった
+    // ときに優先ボタン＋あふれメニューへ畳む（狭幅ツールバー未対応の残作業）。
+    window.MeldexCalToolbarOverflow?.setup?.(this.el);
     return this.el;
   }
 
@@ -330,6 +333,7 @@ class CalendarComponent extends ToolComponent {
     this._destroyed = true;
     if (this._alarmInterval) clearInterval(this._alarmInterval);
     if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
+    if (this.el) window.MeldexCalToolbarOverflow?.teardown?.(this.el);
     super.destroy();
   }
 

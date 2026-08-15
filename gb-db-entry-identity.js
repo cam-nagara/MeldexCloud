@@ -426,6 +426,7 @@
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
         operation_id: item.operationId,
+        ...(item.confirmationPayload || {}),
       };
       let response;
       let firstError;
@@ -636,6 +637,7 @@
             ...entry,
             ctx: options?.ctx || null,
             operationId: operationId('entry-delete'),
+            confirmationPayload: window.MeldexDeleteImpactWarning?.confirmationPayload?.(options?.confirmation) || {},
             subscribers: [],
           };
           item.deleteKeys = item.identityKeys;

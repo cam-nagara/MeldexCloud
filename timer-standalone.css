@@ -84,7 +84,7 @@
 .timer-calendar-state[data-source="conflict"],
 .timer-calendar-state[data-source="permission"],
 .timer-calendar-state[data-source="error"] {
-  border-color: var(--danger, #d66);
+  border-color: var(--danger, #f44747);
 }
 
 .timer-calendar-state button {

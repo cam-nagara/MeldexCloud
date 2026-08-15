@@ -923,6 +923,29 @@
     });
   }
 
+  // 右レールの一番下に置くクイックメモ。メインパネルや右サイドバーを占領せず、
+  // 作業領域の上へフロートパネルとして一時的に開く。
+  // Cloud静的版はローカルAPIが無く保存できないため、ボタン自体を出さない。
+  function _isQuickMemoRailAvailable() {
+    if (typeof GBQuickMemoPanel === 'undefined') return false;
+    try {
+      return !!document.body && document.body.dataset.cloudMode !== 'dropbox';
+    } catch {
+      return false;
+    }
+  }
+
+  function _appendRightRailQuickMemo(dockBar) {
+    if (!_isQuickMemoRailAvailable()) return;
+    const btn = _railButton('gb-dock-icon gb-dock-rail-quick-memo', 'notebookPen', 'クイックメモ', () => {
+      GBQuickMemoPanel.toggle();
+    });
+    btn.dataset.e2eId = 'fixed-right-rail-quick-memo';
+    btn.setAttribute('aria-pressed', 'false');
+    dockBar.appendChild(btn);
+    if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
+  }
+
   function renderDock(panelsetNode, depth) {
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
@@ -1186,6 +1209,7 @@
       if (optionButton && firstPanelButton && optionButton !== firstPanelButton) {
         dockBar.insertBefore(optionButton, firstPanelButton);
       }
+      _appendRightRailQuickMemo(dockBar);
     }
     // ==== 本体 ====
     const body = document.createElement('div');

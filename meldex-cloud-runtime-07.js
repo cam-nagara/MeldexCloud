@@ -6024,6 +6024,29 @@ const GBLayout = (() => {
     });
   }
 
+  // 右レールの一番下に置くクイックメモ。メインパネルや右サイドバーを占領せず、
+  // 作業領域の上へフロートパネルとして一時的に開く。
+  // Cloud静的版はローカルAPIが無く保存できないため、ボタン自体を出さない。
+  function _isQuickMemoRailAvailable() {
+    if (typeof GBQuickMemoPanel === 'undefined') return false;
+    try {
+      return !!document.body && document.body.dataset.cloudMode !== 'dropbox';
+    } catch {
+      return false;
+    }
+  }
+
+  function _appendRightRailQuickMemo(dockBar) {
+    if (!_isQuickMemoRailAvailable()) return;
+    const btn = _railButton('gb-dock-icon gb-dock-rail-quick-memo', 'notebookPen', 'クイックメモ', () => {
+      GBQuickMemoPanel.toggle();
+    });
+    btn.dataset.e2eId = 'fixed-right-rail-quick-memo';
+    btn.setAttribute('aria-pressed', 'false');
+    dockBar.appendChild(btn);
+    if (typeof GBQuickMemoPanel.syncRailButton === 'function') GBQuickMemoPanel.syncRailButton();
+  }
+
   function renderDock(panelsetNode, depth) {
     const col = document.createElement('div');
     col.className = 'gb-column gb-dock';
@@ -6287,6 +6310,7 @@ const GBLayout = (() => {
       if (optionButton && firstPanelButton && optionButton !== firstPanelButton) {
         dockBar.insertBefore(optionButton, firstPanelButton);
       }
+      _appendRightRailQuickMemo(dockBar);
     }
     // ==== 本体 ====
     const body = document.createElement('div');
@@ -11160,6 +11184,9 @@ class CalendarComponent extends ToolComponent {
     this._initClockPanel();
     if (typeof this._applySidebarMode === 'function') this._applySidebarMode();
     this._syncMultiDayControls();
+    // ツールバーの操作グループ（.gb-cal-toolbar-actions）を、ツールバー自身が狭くなった
+    // ときに優先ボタン＋あふれメニューへ畳む（狭幅ツールバー未対応の残作業）。
+    window.MeldexCalToolbarOverflow?.setup?.(this.el);
     return this.el;
   }
 
@@ -11418,6 +11445,7 @@ class CalendarComponent extends ToolComponent {
     this._destroyed = true;
     if (this._alarmInterval) clearInterval(this._alarmInterval);
     if (typeof this._clearNowLineTimer === 'function') this._clearNowLineTimer();
+    if (this.el) window.MeldexCalToolbarOverflow?.teardown?.(this.el);
     super.destroy();
   }
 
@@ -11998,6 +12026,297 @@ async function _schedRestoreSnapshot(snap, scope) {
 // コンポーネントレジストリ更新
 window.CalendarComponent = CalendarComponent;
 registerToolComponent('calendar', { cls: CalendarComponent, icon: 'calendar', label: 'スケジュール', multi: true, requiresViewLock: true });
+
+;
+
+/* === gb-cal-toolbar-overflow.js === */
+;
+/* gb-cal-toolbar-overflow.js: スケジュールツールバーの操作グループを、ツールバー自身の
+ * 実測幅に応じて優先ボタン＋あふれメニューへ畳む。
+ *
+ * 背景（狭幅ツールバー未対応の残作業）: .gb-cal-toolbar-actions は十数個のアイコン
+ * ボタンと区切り線を並べるが、折返し（.gb-toolbar-cal の flex-wrap）で自分の行へ
+ * 落ちるだけで、行自体の幅がツールバーより狭くなると操作グループごとツールバー右端の
+ * 外側へはみ出し、操作が届かなくなっていた。単独アプリ（standalone-mobile-toolbar.js）
+ * が使う「優先ボタン＋あふれメニュー」と同じ考え方を、ビューポート幅のメディアクエリ
+ * ではなくツールバー自身の実測幅（ResizeObserver）で判定する形で適用する
+ * （ウィンドウは変わらずオプションパネルの分割等でツールバー自体が狭くなるケースにも
+ *   対応するため。単独アプリ側の判定方式はそのまま流用しない＝別モジュールとする）。
+ *
+ * 44px未満へのボタン縮小はしない（タップ領域の既定ルール）。入りきらない分は表示
+ * サイズを変えず、区切り線ごと畳んだうえで丸ごと「その他」メニューへ移す。
+ */
+(function () {
+  'use strict';
+  if (typeof window === 'undefined') return;
+
+  // 優先順位（数字が小さいほど狭幅でも残す）。表に無い data-cal-action は最初に畳む。
+  const RANK = {
+    detail: 0, productionManagement: 1, recalculate: 2,
+    undo: 3, redo: 3, sync: 4,
+    bulkCreateTasks: 5, sheetFilter: 6, reload: 7, sheetSort: 8,
+    template: 9, sheetAutoFit: 10, sheetColumnDisplayOrder: 11, timer: 12,
+  };
+
+  const registry = new Map(); // toolbar要素 -> entry
+
+  function _zoom() {
+    return typeof window._getZoom === 'function' ? (window._getZoom() || 1) : 1;
+  }
+
+  function _isSep(el) { return el.classList.contains('sep'); }
+
+  function _rankFor(el) {
+    const action = el.dataset ? (el.dataset.calAction || '') : '';
+    return Object.prototype.hasOwnProperty.call(RANK, action) ? RANK[action] : 99;
+  }
+
+  function _labelFor(el) {
+    const aria = String(el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    const title = String(el.getAttribute('title') || '').trim();
+    return title || String(el.textContent || '').trim() || '操作';
+  }
+
+  function _iconHtmlFor(el) {
+    const svg = el.querySelector('svg');
+    if (svg) return svg.outerHTML;
+    const ico = el.querySelector('.ico');
+    return ico ? ico.outerHTML : '';
+  }
+
+  function _sumWidth(list, widthOf, gap) {
+    if (!list.length) return 0;
+    return list.reduce((sum, el) => sum + widthOf.get(el), 0) + gap * (list.length - 1);
+  }
+
+  function _createMoreButton() {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tb-icon-btn gb-cto-more-btn';
+    btn.title = 'その他の操作';
+    btn.setAttribute('aria-label', 'その他の操作');
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.dataset.e2eId = 'gb-cal-toolbar-actions-more';
+    btn.hidden = true;
+    if (typeof lucide === 'function') btn.innerHTML = lucide('moreHorizontal', 16);
+    return btn;
+  }
+
+  function _closeMenu(entry) {
+    entry.menu?.remove();
+    entry.menu = null;
+    if (entry.menuKeydown) { document.removeEventListener('keydown', entry.menuKeydown); entry.menuKeydown = null; }
+    if (entry.menuDismiss) { document.removeEventListener('pointerdown', entry.menuDismiss); entry.menuDismiss = null; }
+    entry.moreBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  // あふれた元ボタンは display:none のままなので、代理クリックの瞬間だけ実レイアウトを
+  // 持たせる。並び替えメニュー等はクリックハンドラ内で anchor.getBoundingClientRect() を
+  // 同期的に読んで位置決めする（gb-tool-calendar-production-task-view.part03.js の
+  // _runProductionSheetDisplayAction 等）ため、非表示のままだと (0,0) 相当の矩形しか
+  // 取れずポップアップが左上へ張り付く（standalone-mobile-toolbar.js と同じ手当て）。
+  function _activateOverflowItem(entry, el, rowRect) {
+    if (el.disabled) return;
+    _closeMenu(entry);
+    const prevStyle = el.getAttribute('style');
+    const set = (prop, value) => el.style.setProperty(prop, value, 'important');
+    set('display', 'inline-flex');
+    set('position', 'fixed');
+    set('left', Math.max(0, rowRect.left) + 'px');
+    set('top', Math.max(0, rowRect.top) + 'px');
+    set('width', (rowRect.width || 22) + 'px');
+    set('height', (rowRect.height || 22) + 'px');
+    set('margin', '0');
+    set('visibility', 'hidden');
+    set('pointer-events', 'none');
+    set('z-index', '-1');
+    try { el.click(); }
+    finally {
+      if (prevStyle === null) el.removeAttribute('style');
+      else el.setAttribute('style', prevStyle);
+    }
+    entry.moreBtn.focus?.({ preventScroll: true });
+  }
+
+  function _openMenu(entry) {
+    if (entry.menu) { _closeMenu(entry); return; }
+    const items = entry.overflowItems || [];
+    if (!items.length) return;
+    const menu = document.createElement('div');
+    menu.className = 'gb-context-menu gb-cal-toolbar-overflow-menu';
+    menu.dataset.e2eId = 'gb-cal-toolbar-actions-overflow-menu';
+    menu.setAttribute('role', 'menu');
+    items.forEach(el => {
+      const row = document.createElement('div');
+      row.className = 'gb-context-menu-item' + (el.disabled ? ' disabled' : '');
+      row.setAttribute('role', 'menuitem');
+      if (el.dataset?.e2eId) row.dataset.e2eId = 'gb-cal-toolbar-overflow-' + el.dataset.e2eId;
+      row.innerHTML = _iconHtmlFor(el) + ' ';
+      row.appendChild(document.createTextNode(_labelFor(el)));
+      if (el.disabled) row.setAttribute('aria-disabled', 'true');
+      else row.addEventListener('click', () => _activateOverflowItem(entry, el, row.getBoundingClientRect()));
+      menu.appendChild(row);
+    });
+    entry.menu = menu;
+    if (typeof window.positionPopup === 'function') {
+      window.positionPopup(menu, entry.moreBtn.getBoundingClientRect());
+    } else {
+      document.body.appendChild(menu);
+      window.clampPopupToViewport?.(menu);
+    }
+    entry.moreBtn.setAttribute('aria-expanded', 'true');
+    entry.menuDismiss = event => {
+      if (!menu.contains(event.target) && event.target !== entry.moreBtn) _closeMenu(entry);
+    };
+    entry.menuKeydown = event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      _closeMenu(entry);
+      entry.moreBtn.focus?.();
+    };
+    setTimeout(() => {
+      document.addEventListener('pointerdown', entry.menuDismiss);
+      document.addEventListener('keydown', entry.menuKeydown);
+    }, 0);
+  }
+
+  function _classify(children) {
+    const seps = []; const mandatory = []; const collapsible = [];
+    children.forEach(el => {
+      if (_isSep(el)) { seps.push(el); return; }
+      // ボタン以外（スケジューラーが差し込む表示案セレクタ等）は畳まない。
+      // アクションではなく現在の文脈を示す要素のため、あふれメニューの選択肢にしない。
+      if (el.tagName !== 'BUTTON') { mandatory.push(el); return; }
+      collapsible.push(el);
+    });
+    return { seps, mandatory, collapsible };
+  }
+
+  function _availableWidth(toolbar) {
+    const z = _zoom();
+    const style = window.getComputedStyle(toolbar);
+    const paddingLeft = (parseFloat(style.paddingLeft) || 0) * z;
+    const paddingRight = (parseFloat(style.paddingRight) || 0) * z;
+    return Math.max(0, toolbar.getBoundingClientRect().width - paddingLeft - paddingRight);
+  }
+
+  function _recompute(entry) {
+    const { toolbar, group, moreBtn } = entry;
+    if (!toolbar.isConnected || !group.isConnected) return;
+    _closeMenu(entry); // 判定をやり直すので、開いていたメニューは作り直す
+    const children = Array.from(group.children).filter(el => el !== moreBtn);
+    // 前回の折り畳み状態をいったんリセットし、自然な幅を測れる状態に戻す。
+    children.forEach(el => el.style.removeProperty('display'));
+    moreBtn.hidden = false;
+
+    const available = _availableWidth(toolbar);
+    const groupStyle = window.getComputedStyle(group);
+    const gap = (parseFloat(groupStyle.columnGap || groupStyle.gap) || 0) * _zoom();
+    const moreBtnWidth = moreBtn.getBoundingClientRect().width;
+
+    const { seps, mandatory, collapsible } = _classify(children);
+    const widthOf = new Map();
+    children.forEach(el => widthOf.set(el, el.getBoundingClientRect().width));
+
+    if (_sumWidth([...seps, ...mandatory, ...collapsible], widthOf, gap) <= available + 1) {
+      moreBtn.hidden = true;
+      entry.overflowItems = [];
+      return;
+    }
+
+    // まず区切り線を畳む（操作ではないため、あふれメニューの項目にはしない）。
+    seps.forEach(el => el.style.setProperty('display', 'none', 'important'));
+    if (_sumWidth([...mandatory, ...collapsible], widthOf, gap) <= available + 1) {
+      moreBtn.hidden = true;
+      entry.overflowItems = [];
+      return;
+    }
+
+    // 「その他」ボタン分を確保したうえで、優先順位の高い操作から入るだけ表示する。
+    const budget = available - moreBtnWidth - gap;
+    let used = _sumWidth(mandatory, widthOf, gap);
+    let visibleCount = mandatory.length;
+    const ordered = collapsible.slice().sort((a, b) => _rankFor(a) - _rankFor(b));
+    const shown = new Set();
+    for (const el of ordered) {
+      const addGap = visibleCount > 0 ? gap : 0;
+      const w = widthOf.get(el);
+      if (used + addGap + w > budget) break; // 優先順位順の先着で確定させる
+      used += addGap + w;
+      visibleCount += 1;
+      shown.add(el);
+    }
+    collapsible.forEach(el => {
+      if (shown.has(el)) el.style.removeProperty('display');
+      else el.style.setProperty('display', 'none', 'important');
+    });
+    entry.overflowItems = collapsible.filter(el => !shown.has(el));
+    moreBtn.hidden = entry.overflowItems.length === 0;
+  }
+
+  // ResizeObserver/MutationObserverのコールバックはレイアウト確定後（ペイント直前）に
+  // 走るため、requestAnimationFrame越しに遅延させる必要はない。実測でも、ペインが
+  // 表示されずコンポジット（画面合成）が起きていない環境ではrAF自体が発火しないことが
+  // あり、その場合はいつまで待っても畳み込みが反映されなかった。ResizeObserverの
+  // コールバック内で直接再計算する。
+  function _requestRecompute(entry) {
+    _recompute(entry);
+  }
+
+  function setup(rootEl) {
+    if (!rootEl) return null;
+    const toolbar = rootEl.querySelector('.gb-toolbar-cal');
+    const group = toolbar?.querySelector('.gb-cal-toolbar-actions');
+    if (!toolbar || !group) return null;
+    if (registry.has(toolbar)) return registry.get(toolbar);
+
+    const moreBtn = _createMoreButton();
+    group.appendChild(moreBtn);
+
+    const entry = {
+      toolbar, group, moreBtn, overflowItems: [],
+      menu: null, menuDismiss: null, menuKeydown: null,
+    };
+    registry.set(toolbar, entry);
+    moreBtn.addEventListener('click', () => _openMenu(entry));
+
+    const resizeObserver = new ResizeObserver(() => _requestRecompute(entry));
+    resizeObserver.observe(toolbar);
+    entry.resizeObserver = resizeObserver;
+
+    // サーフェス切替（カレンダー/タスクリスト）は data-cal-surface 属性で表示ボタン群が
+    // 入れ替わるが、ツールバー自身の幅が変わるとは限らずResizeObserverが発火しない
+    // ことがあるため、属性変化と操作グループへの子要素追加（スケジューラーが差し込む
+    // 表示案セレクタ等）も監視して再判定する。
+    const mutationObserver = new MutationObserver(() => _requestRecompute(entry));
+    mutationObserver.observe(rootEl, { attributes: true, attributeFilter: ['data-cal-surface'] });
+    mutationObserver.observe(group, { childList: true });
+    entry.mutationObserver = mutationObserver;
+
+    _requestRecompute(entry);
+    return entry;
+  }
+
+  function refresh(rootEl) {
+    const toolbar = (rootEl?.querySelector?.('.gb-toolbar-cal')) || rootEl;
+    const entry = toolbar && registry.get(toolbar);
+    if (entry) _requestRecompute(entry);
+  }
+
+  function teardown(rootEl) {
+    const toolbar = rootEl?.querySelector?.('.gb-toolbar-cal');
+    const entry = toolbar && registry.get(toolbar);
+    if (!entry) return;
+    _closeMenu(entry);
+    entry.resizeObserver?.disconnect();
+    entry.mutationObserver?.disconnect();
+    registry.delete(toolbar);
+  }
+
+  window.MeldexCalToolbarOverflow = { setup, refresh, teardown };
+})();
 
 ;
 
@@ -15086,7 +15405,16 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       + 'APIのアクセス許可に Calendars.ReadWrite / offline_access を追加してください。');
   }
 
-  CalendarComponent.prototype._showSyncModal = async function() {
+  // triggerEl: このモーダルを開いた「外側の本来のトリガー要素」。省略時（外部からの
+  // 新規オープン）は現在のフォーカス位置を採用する。_googleCalAuth 等が
+  // 「閉じてすぐ作り直す」ため内部再生成する際は、直前のモーダルが保持していた
+  // トリガー要素（o._gbSyncOpener）をそのまま引き継ぐ。再生成の瞬間の
+  // document.activeElement は直前のモーダルごと消える内部要素（認証ボタン等）に
+  // なっており、それを拾うと二度と外側へフォーカスを戻せなくなるため。
+  CalendarComponent.prototype._showSyncModal = async function(triggerEl) {
+    const opener = (triggerEl instanceof HTMLElement && triggerEl.isConnected)
+      ? triggerEl
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const cloud = _calSyncIsDropboxMode();
     let syncStatus = {};
     try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
@@ -15170,12 +15498,19 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       closeLabel: 'カレンダー同期を閉じる',
       closeOnEsc: true,
       closeOnOverlay: true,
+      // 外側の本来のトリガー要素を明示的に指定する。指定した要素が閉じる時点で
+      // 接続済みなら、document.activeElement の暗黙キャプチャより優先される
+      // （gb-ui.js の _restoreOpenerFocus 参照）。
+      returnFocus: () => (opener && opener.isConnected) ? opener : null,
       onClose: () => {
         if (o._msPollTimer) clearTimeout(o._msPollTimer);
         if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
       },
     });
     const o = modalApi.overlay;
+    // 内部再生成（_googleCalAuth 等）が引き継げるよう、解決済みのトリガー要素を
+    // overlay自身へ保持しておく。
+    o._gbSyncOpener = opener;
     o.classList.add('gb-cal-modal-overlay');
     o.dataset.e2eId = 'calendar-sync-overlay';
     modalApi.modal.classList.add('gb-cal-modal');
@@ -15213,7 +15548,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret });
       this._showStatus(res.message || 'Google認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google認証失敗: ' + e.message, true);
     }
@@ -15239,7 +15574,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       const res = await window.MeldexCalCloudSync.authorizeGoogle({ clientId: id, clientSecret: secret, popup });
       this._showStatus(res.message || 'Google認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google認証失敗: ' + e.message, true);
     }
@@ -15342,7 +15677,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       const res = await window.MeldexCalCloudTasks.authorizeGoogleTasks({ clientId: id, clientSecret: secret, popup });
       this._showStatus(res.message || 'Google ToDo認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google ToDo認証失敗: ' + e.message, true);
     }
@@ -15376,7 +15711,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
         if (status?.googleTasks?.connected) {
           this._showStatus('Google ToDo認証成功');
           _closeSyncOverlay(o);
-          this._showSyncModal();
+          this._showSyncModal(o._gbSyncOpener);
           return;
         }
         if (statusEl) statusEl.textContent = 'Googleログイン完了を待っています...';
@@ -15466,7 +15801,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
         }
         this._showStatus('Microsoft認証成功');
         _closeSyncOverlay(o);
-        this._showSyncModal();
+        this._showSyncModal(o._gbSyncOpener);
       } catch (e) {
         this._showStatus('Microsoft認証失敗: ' + e.message, true);
       }
@@ -15492,7 +15827,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       const res = await window.MeldexCalCloudSync.authorizeMicrosoft({ clientId, tenant, popup });
       this._showStatus(res.message || 'Microsoft認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Microsoft認証失敗: ' + e.message, true);
     }
@@ -15782,9 +16117,15 @@ function bdAppendFastNodeAnchors(div, node) {
   ['top', 'bottom', 'left', 'right'].forEach(pos => {
     const anchor = document.createElement('div');
     anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでカード追加 / ドラッグでライン作成';
+    anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
     if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
+    // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
+    // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
     anchor.addEventListener('pointerdown', (ev) => {
+      if (typeof bdHandleAnchorPointerDown === 'function') {
+        bdHandleAnchorPointerDown(ev, div, node, pos);
+        return;
+      }
       if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -16234,14 +16575,61 @@ function bdScheduleAutoLayouts(delayMs) {
   }, delay);
 }
 
-function bdFlushAutoLayouts() {
-  if (_bdFastMutationDepth > 0) {
+function bdSyncConnectionDomOrder() {
+  if (typeof bd === 'undefined' || !Array.isArray(bd.connections)) return;
+  const svg = document.getElementById('bd-svg');
+  if (!svg) return;
+  bd.connections.forEach(conn => {
+    const id = String(conn?.id || '');
+    if (!id) return;
+    [...svg.children].forEach(el => {
+      if (el.tagName?.toLowerCase() === 'defs') return;
+      if (el.dataset?.connId === id || el._connId === id || el._connData?.id === id
+        || el.id === `bd-path-${id}` || el.id === `bd-sel-back-${id}` || el.id === `bd-sel-front-${id}`) {
+        svg.appendChild(el);
+      }
+    });
+    document.querySelectorAll('.bd-conn-label,.bd-line-comment-badge').forEach(el => {
+      if (el.dataset?.connId === id) el.parentNode?.appendChild(el);
+    });
+  });
+}
+
+function bdCancelScheduledAutoLayouts() {
+  clearTimeout(_bdDeferredAutoLayoutTimer);
+  _bdDeferredAutoLayoutTimer = 0;
+  if (_bdDeferredAutoLayoutRaf) {
+    cancelAnimationFrame(_bdDeferredAutoLayoutRaf);
+    _bdDeferredAutoLayoutRaf = 0;
+  }
+}
+
+function bdOutermostAutoLayoutRoots(rootIds) {
+  if (typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return [...new Set(rootIds || [])];
+  const requested = new Set((rootIds || []).filter(Boolean));
+  const byId = new Map(bd.nodes.filter(Boolean).map(node => [node.id, node]));
+  return [...requested].filter(rootId => {
+    const seen = new Set([rootId]);
+    let parentId = byId.get(rootId)?.parent;
+    while (parentId && !seen.has(parentId)) {
+      if (requested.has(parentId)) return false;
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.parent;
+    }
+    return true;
+  });
+}
+
+function bdFlushAutoLayouts(options = {}) {
+  const force = options === true || options?.force === true;
+  if (_bdFastMutationDepth > 0 && !force) {
     const delayMs = _bdDeferredAutoLayoutDelayMs || undefined;
     _bdDeferredAutoLayoutDelayMs = 0;
     bdScheduleAutoLayouts(delayMs);
     return;
   }
-  const roots = [..._bdDeferredAutoLayoutRoots].filter(Boolean);
+  bdCancelScheduledAutoLayouts();
+  const roots = bdOutermostAutoLayoutRoots([..._bdDeferredAutoLayoutRoots]);
   _bdDeferredAutoLayoutRoots.clear();
   _bdDeferredAutoLayoutDelayMs = 0;
   if (!roots.length) {
@@ -16952,6 +17340,78 @@ function bdYamlListObjects(fm, key) {
   }
   return list;
 }
+
+// 旧式ボード互換: フロントマター直下に `nodes:` をカード配列（各要素が
+// id/text/x/y/w/h/color 等をフラットに持つ、YAML block style のリスト）として
+// 直接持つスキーマの読み取り専用パーサ。現行の positions/sizes マップ方式や
+// 本文見出し方式とは別の並存フォーマット（例: 同梱サンプル
+// 「死霊探偵/キャラ相関図.board.md」）向け。
+//
+// bdYamlListObjects は各プロパティが1行で完結する前提（`from: n1, to: n2` 等の
+// フロー形式や単一行スカラー）のため、この関数はそれとは別に、複数行にまたがる
+// 折り畳みスカラー（引用符あり/なしいずれも）を先頭〜終端まで蓄積してから
+// 1つの値へ畳み込む。畳み込み規則は本文見出しパーサ（bdParseMd の "# " 解析）と
+// 揃え、空行は落として残りの行を単一の '\n' で結合する（段落ごとに改行1つ）。
+function bdParseFrontmatterNodeList(fm) {
+  const lines = bdYamlTopLevelBlock(fm, 'nodes');
+  const items = [];
+  let current = null;
+  let openKey = '';
+  let openLines = null;
+
+  const finishOpen = () => {
+    if (!current || !openKey || !openLines) return;
+    const nonEmpty = openLines.filter(l => l.trim().length > 0);
+    let value;
+    if (!nonEmpty.length) {
+      value = '';
+    } else if (nonEmpty.length === 1) {
+      value = bdYamlScalar(nonEmpty[0].trim());
+    } else {
+      const first = nonEmpty[0].trim();
+      const last = nonEmpty[nonEmpty.length - 1].trim();
+      const quoteChar = (first[0] === "'" || first[0] === '"') ? first[0] : '';
+      if (quoteChar && last.endsWith(quoteChar)) {
+        const folded = nonEmpty.map((l, i) => {
+          let t = l.trim();
+          if (i === 0 && t.startsWith(quoteChar)) t = t.slice(1);
+          if (i === nonEmpty.length - 1 && t.endsWith(quoteChar)) t = t.slice(0, -1);
+          if (quoteChar === "'") t = t.replace(/''/g, "'");
+          return t;
+        });
+        value = folded.join('\n');
+      } else {
+        value = nonEmpty.map(l => l.trim()).join('\n');
+      }
+    }
+    current[openKey] = value;
+    openKey = ''; openLines = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    const itemMatch = line.match(/^-\s*(.*)$/);
+    if (itemMatch) {
+      finishOpen();
+      current = {};
+      items.push(current);
+      const pair = itemMatch[1].match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+      if (pair) { openKey = pair[1]; openLines = [pair[2]]; }
+      continue;
+    }
+    if (!current) continue;
+    const propMatch = line.match(/^  ([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (propMatch) {
+      finishOpen();
+      openKey = propMatch[1];
+      openLines = [propMatch[2]];
+      continue;
+    }
+    if (openLines) openLines.push(line);
+  }
+  finishOpen();
+  return items.filter(item => Number.isFinite(+item.x) && Number.isFinite(+item.y));
+}
 /* gb-canvas-engine.part01.js */
 /* gb-canvas-engine.js: Canvas Engine Core (v5.0 Phase C) */
 
@@ -16978,11 +17438,29 @@ const bd = {
 // frontmatter adapter がアクティブなボードキャンバス要素に CSS 変数をセットする。
 // 構造タイプ: mindmap, flowchart, logic, timeline, orgchart, tree, none(親に従う = ルートのstructureを継承)
 const BD_STRUCTURES = {mindmap:'マインドマップ', flowchart:'フローチャート', logic:'ロジック図', timeline:'タイムライン', orgchart:'組織図', tree:'ツリー'};
+const BD_BOARD_ZOOM_MIN = 0.1;
+const BD_BOARD_ZOOM_MAX = 5;
+
+function bdSafeZoom(value) {
+  const zoom = Number(value);
+  return Math.max(BD_BOARD_ZOOM_MIN, Number.isFinite(zoom) && zoom !== 0 ? zoom : 1);
+}
+function bdClampZoom(value) {
+  const zoom = Number(value);
+  const finiteZoom = Number.isFinite(zoom) ? zoom : 1;
+  return Math.max(BD_BOARD_ZOOM_MIN, Math.min(BD_BOARD_ZOOM_MAX, finiteZoom));
+}
 
 // --- ID生成・親子ヘルパー ---
 function bdId() { return 'b' + (++bd._id) + '_' + Date.now().toString(36); }
 function bdNode(text, x, y, w, h, opts) {
-  return { id: bdId(), text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts };
+  // opts.id が明示的に undefined/空で渡された場合（例: フロントマターの ids: に
+  // 該当エントリが無い見出しノード）、`...opts` の展開が `id: bdId()` を
+  // `id: undefined` で上書きしてしまい、bdRenderNode() が id 無しノードとして
+  // 描画をスキップする（カードが1枚も描画されない実害を確認済み）。
+  // opts.id が真値のときだけ採用し、それ以外は必ず新規IDへフォールバックする。
+  const resolvedId = (opts && opts.id) ? opts.id : bdId();
+  return { id: resolvedId, text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts, id: resolvedId };
 }
 function bdGetAppZoom() {
   return (typeof _getZoom === 'function') ? Math.max(0.1, _getZoom()) : 1;
@@ -17385,7 +17863,7 @@ function bdRemoveConnection(connOrId, options = {}) {
     }).catch(() => {});
   }
   if (!options.skipSelection) bdRemoveConnectionFromSelection(conn.id);
-  if (!options.skipRender) bdDrawConns();
+  if (!options.skipRender) bdDrawConns({ connIds: [conn.id], reason: 'remove-connection' });
   if (!options.skipDirty) bdDirty();
   return true;
 }
@@ -17540,6 +18018,8 @@ function bdParseMd(raw) {
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
       if (ispm) {
         try { t.imageSourcePath = String(bdYamlScalar(ispm[1]) || '').replace(/\\/g, '/'); }
@@ -17788,6 +18268,49 @@ function bdParseMd(raw) {
           .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
       }
     }
+    // 旧式ボード互換: フロントマター直下に `nodes:` をカードのフラットなリストとして
+    // 直接持つスキーマ（例: 同梱サンプル「死霊探偵/キャラ相関図.board.md」）。
+    // 現行の positions/sizes マップ方式・本文見出し方式のどちらにも該当しないため、
+    // ここで検出して専用に nodes/connections を組み立てて早期returnする
+    // （```board JSON ブロック方式と同じ位置づけの並存フォーマット）。
+    // これを追加する前は `nodes:` の内容が一切解釈されず、本文の最初の
+    // "# " 見出し1個だけが1枚のノードに折り畳まれ、connections の from/to も
+    // 実在しないIDを指したまま残っていた（v0.7.259相当で確認、カードが0描画になる原因）。
+    if (typeof bdParseFrontmatterNodeList === 'function') {
+      const legacyItems = bdParseFrontmatterNodeList(fm);
+      if (legacyItems.length) {
+        const legacyIdMap = {};
+        const legacyNodes = legacyItems.map(item => {
+          const node = bdNode(
+            String(item.text == null ? '' : item.text),
+            Number(item.x) || 0,
+            Number(item.y) || 0,
+            Number(item.w) || 160,
+            Number(item.h) || 0,
+            {},
+          );
+          if (item.color) node.bgColor = String(item.color);
+          if (item.id) legacyIdMap[String(item.id)] = node.id;
+          return node;
+        });
+        const legacyConnections = connections
+          .map(c => ({ ...c, from: legacyIdMap[c.from] || '', to: legacyIdMap[c.to] || '' }))
+          .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
+        if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(legacyNodes);
+        if (canvasBg) bd._bgColor = canvasBg;
+        const legacyLlmSemantics = typeof bdNormalizeLoadedLlmSemantics === 'function'
+          ? bdNormalizeLoadedLlmSemantics(llmSemantics, legacyIdMap)
+          : llmSemantics;
+        if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(legacyConnections, null, legacyLlmSemantics);
+        return {
+          nodes: legacyNodes,
+          connections: legacyConnections,
+          groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
+          llmSemantics: legacyLlmSemantics,
+          preservedFrontmatter,
+        };
+      }
+    }
     raw = raw.substring(fmMatch[0].length);
   }
   // ```board JSON ブロック形式の検出
@@ -18027,6 +18550,7 @@ function bdToMd() {
     || cardOverrideMetaKeys.some(key => hasOwn(n, key))
     || !!n.imageSourcePath
     || hasOwn(n, '_autoStyle')
+    || hasOwn(n, 'depthStyleRef')
     || hasOwn(n, '_followChildren')
     || hasOwn(n, '_userBgColor')
     || hasOwn(n, '_userFontSize')
@@ -18063,6 +18587,8 @@ function bdToMd() {
       if (hasOwn(n, 'cloudSubHeightRatio')) parts.push('cloudSubHeightRatio: ' + (+n.cloudSubHeightRatio || 0));
       if (hasOwn(n, 'imageSourcePath') && n.imageSourcePath) parts.push('imageSourcePath: ' + fmtJsonString(n.imageSourcePath));
       if (hasOwn(n, '_autoStyle')) parts.push('autoStyle: ' + (n._autoStyle ? 'true' : 'false'));
+      // 課題18-案B: 起点カードに割り当てた階層別スタイルプリセットの参照ID (空=ボード共通)。
+      if (hasOwn(n, 'depthStyleRef') && n.depthStyleRef) parts.push('depthStyleRef: ' + fmtJsonString(n.depthStyleRef));
       if (hasOwn(n, '_followChildren')) parts.push('followChildren: ' + (n._followChildren ? 'true' : 'false'));
       if (hasOwn(n, '_userBgColor')) parts.push('userBgColor: ' + (n._userBgColor ? 'true' : 'false'));
       if (hasOwn(n, '_userFontSize')) parts.push('userFontSize: ' + (n._userFontSize ? 'true' : 'false'));
@@ -18818,13 +19344,59 @@ function bdGetRenderableNodesContainer() {
   return container;
 }
 
+// ボードを開いた直後は showView('board') でのパネルマウントが終わっておらず、
+// bdOpenBoard() が呼ぶ bdRender() の時点でキャンバスがまだ DOM に無いことがある。
+// 以前はここで無音のまま描画をあきらめており、ウィンドウリサイズなど別の再描画契機が
+// 来るまでカードが 1 枚も出なかった（新規作成直後のボードで実測）。
+// マウントが済むまで数回だけ再試行し、成功したらライン・枠・表示位置も描き直す。
+const BD_RENDER_RETRY_LIMIT = 40;
+const BD_RENDER_RETRY_INTERVAL_MS = 50;
+let _bdRenderRetryTimer = null;
+let _bdRenderRetryCount = 0;
+let _bdRenderRetryInFlight = false;
+
+function bdCancelRenderRetry() {
+  if (_bdRenderRetryTimer !== null) {
+    clearTimeout(_bdRenderRetryTimer);
+    _bdRenderRetryTimer = null;
+  }
+  _bdRenderRetryCount = 0;
+}
+
+function bdScheduleRenderRetry() {
+  if (_bdRenderRetryTimer !== null) return;
+  if (typeof setTimeout !== 'function') return;
+  // 外部から呼ばれた描画が失敗したときは、前回の打ち切り回数を引きずらず数え直す。
+  // これがないと、一度上限まで使い切ったあとは二度と再試行が動かなくなる。
+  if (!_bdRenderRetryInFlight) _bdRenderRetryCount = 0;
+  if (_bdRenderRetryCount >= BD_RENDER_RETRY_LIMIT) return;
+  _bdRenderRetryTimer = setTimeout(() => {
+    _bdRenderRetryTimer = null;
+    _bdRenderRetryCount += 1;
+    _bdRenderRetryInFlight = true;
+    let rendered = false;
+    try {
+      rendered = bdRender();
+    } finally {
+      _bdRenderRetryInFlight = false;
+    }
+    if (!rendered) return;
+    // 描画できた回だけ、開いた直後と同じ一式を揃える。
+    if (typeof bdDrawConns === 'function') bdDrawConns();
+    if (typeof bdDrawFrames === 'function') bdDrawFrames();
+    if (typeof bdTransform === 'function') bdTransform();
+  }, BD_RENDER_RETRY_INTERVAL_MS);
+}
+
 function bdRender() {
   const _bdRenderPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdRender') : 0;
   const container = bdGetRenderableNodesContainer();
   if (!container) {
     if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf, 'skip:no-active-board-dom');
+    bdScheduleRenderRetry();
     return false;
   }
+  bdCancelRenderRetry();
   // 全再描画時はミニマップキャッシュも無効化 (ノード数/スタイルが変わっている可能性)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
   container.innerHTML = '';
@@ -18882,6 +19454,20 @@ function bdRender() {
     if (typeof CommentBadges !== 'undefined' && bd.path) {
       try { CommentBadges.refreshBoard(bd.path, container); } catch {}
     }
+    // 課題10-3 (2026-08-14): 同期描画経路 (デバウンス無し) ではミニマップが更新されず、
+    // パン/ズームするまで古い縮小図のまま残っていた。
+    if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
+  }
+  // 課題10-4 (2026-08-14): container.innerHTML='' による全カードDOM再構築で、検索バーが
+  // 付けていたハイライト (<mark>) が検索と無関係な編集のたびに消えていた。検索バーが
+  // 表示中でクエリがあれば、新しい DOM へハイライトを再適用する (デバウンス/非デバウンスの
+  // 両経路で起きるため、分岐の外・関数末尾で行う)。
+  {
+    const _bdFindBarEl = document.getElementById('bd-find-bar');
+    if (_bdFindBarEl && _bdFindBarEl.style.display !== 'none' && bd._findQuery
+      && typeof _bdApplyFindHighlight === 'function') {
+      _bdApplyFindHighlight(bd._findQuery);
+    }
   }
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf);
   return true;
@@ -18903,6 +19489,7 @@ function bdDrawFrames() {
       x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
     });
     const frame = document.createElement('div'); frame.className = 'bd-frame';
+    frame.dataset.groupId = g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
     label.style.cursor = 'move';
@@ -18934,7 +19521,7 @@ function bdDrawFrames() {
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
-      const zoom = Math.max(0.1, bd.zoom || 1);
+      const zoom = bdSafeZoom(bd.zoom);
       // 対象ノード (contained 以外のグループメンバー) の元座標を保存
       const targets = (g.nodeIds || [])
         .map(id => bd.nodes.find(n => n.id === id))
@@ -18965,7 +19552,7 @@ function bdDrawFrames() {
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
-        if (typeof bdDrawFrames === 'function') bdDrawFrames();
+        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       };
       const onUp = () => {
         document.removeEventListener('pointermove', onMove);
@@ -18984,6 +19571,33 @@ function bdDrawFrames() {
     });
     frame.appendChild(label);
     container.appendChild(frame);
+  });
+}
+
+// ドラッグ中は既存フレームの寸法だけを更新し、DOM とリスナーの再構築を避ける。
+function bdUpdateFramesForNodes(nodeIds) {
+  const changed = new Set((nodeIds || []).filter(Boolean));
+  if (!changed.size || !Array.isArray(bd.groups)) return;
+  bd.groups.forEach(group => {
+    if (!(group.nodeIds || []).some(id => changed.has(id))) return;
+    const frame = [...document.querySelectorAll('.bd-frame')]
+      .find(candidate => candidate.dataset.groupId === group.id);
+    if (!frame) return;
+    const nodes = (group.nodeIds || []).map(id => bd.nodes.find(node => node.id === id))
+      .filter(node => node && !node.contained);
+    if (nodes.length < 2) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach(node => {
+      const el = document.getElementById('bdn-' + node.id);
+      const width = node.w || node._rw || el?.offsetWidth || 160;
+      const height = node.h || node._rh || el?.offsetHeight || 36;
+      x0 = Math.min(x0, node.x); y0 = Math.min(y0, node.y);
+      x1 = Math.max(x1, node.x + width); y1 = Math.max(y1, node.y + height);
+    });
+    frame.style.left = `${x0 - 12}px`;
+    frame.style.top = `${y0 - 22}px`;
+    frame.style.width = `${x1 - x0 + 24}px`;
+    frame.style.height = `${y1 - y0 + 34}px`;
   });
 }
 
@@ -19045,9 +19659,6 @@ function _removeConnActionBtn() {
 }
 
 function _bdLinePathType(connStyle, structure) {
-  // マインドマップ構造ではライン形状を「直線」に強制する (色 / 太さ / 矢印 / 破線などの
-  // その他のスタイル設定はユーザー指定通り維持する)。
-  if (structure === 'mindmap') return 'straight';
   // v0.5.320: pathType は 3 種（curve / straight / orthogonal）に統合。旧 free-bezier / orthogonal-curve は
   // ロード時 _bdMigrateConnectionSchema で自動変換されるが、実行中にも防御的に解決する。
   if (connStyle?.pathType === 'free-bezier') return 'curve';
@@ -19247,7 +19858,7 @@ function _bdCubicBezierPoint(p0, p1, p2, p3, t) {
 // 量子化しない方式に変更したため、斜め配置のカード間では真の対角線方向に線が走り、
 // 矢印も SVG auto-start-reverse の接線追従によって斜め方向を向く。
 // 戻り値: { fromPt: {x,y}, toPt: {x,y}, fromOut: {x,y}, toOut: {x,y} } or null
-function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
+function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gapFrom, gapTo, fromShape, toShape) {
   const fcx = fp.x + fw / 2, fcy = fp.y + fh / 2;
   const tcx = tp.x + tw / 2, tcy = tp.y + th / 2;
   const vx = tcx - fcx, vy = tcy - fcy;
@@ -19271,10 +19882,11 @@ function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
   };
   const fBorder = borderHit(fcx, fcy, fw, fh, ux, uy, fromShape);
   const tBorder = borderHit(tcx, tcy, tw, th, -ux, -uy, toShape);
-  const gapLen = Number.isFinite(gap) ? gap : 0;
+  const gapFromLen = Number.isFinite(gapFrom) ? gapFrom : 0;
+  const gapToLen = Number.isFinite(gapTo) ? gapTo : 0;
   return {
-    fromPt: { x: fBorder.x + ux * gapLen, y: fBorder.y + uy * gapLen },
-    toPt:   { x: tBorder.x - ux * gapLen, y: tBorder.y - uy * gapLen },
+    fromPt: { x: fBorder.x + ux * gapFromLen, y: fBorder.y + uy * gapFromLen },
+    toPt:   { x: tBorder.x - ux * gapToLen, y: tBorder.y - uy * gapToLen },
     fromOut: { x: ux, y: uy },
     toOut:   { x: -ux, y: -uy },
   };
@@ -19315,7 +19927,7 @@ function _bdOppositeAnchor(anchor) {
 // ライン選択中のみ表示する (非選択時は誤タップ事故防止のため一切描画しない)。
 function _bdRenderFreeBezierEditOverlay(svg, conn, pathData, fn, tn, fe, te, fp, tp, zoom, anchorHints) {
   if (!svg || !conn || !pathData) return;
-  const z = Math.max(0.1, zoom || 1);
+  const z = bdSafeZoom(zoom);
   const r = Math.max(5 / z, 4);       // アンカー候補点半径
   const handleR = Math.max(6 / z, 5); // ハンドル半径
 
@@ -19510,9 +20122,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       if (hoverCardEl && hoverCardEl !== cardEl) hoverCardEl.classList.remove('bd-drop-target');
       hoverCardEl = cardEl || null;
       if (cardEl) cardEl.classList.add('bd-drop-target');
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       handleEl.setAttribute('cx', w.x);
       handleEl.setAttribute('cy', w.y);
       updateLive(w);
@@ -19530,9 +20140,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       const target = document.elementFromPoint(up.clientX, up.clientY);
       const cardEl = target?.closest?.('.bd-node');
       clearHover();
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(up.clientX, up.clientY)
-        : { x: up.clientX, y: up.clientY };
+      const dropW = bdScreenToWorld(up.clientX, up.clientY);
       if (moved && cardEl && typeof cardEl.id === 'string' && cardEl.id.startsWith('bdn-')) {
         const newCardId = cardEl.id.substring(4);
         const newNode = bd.nodes.find(n => n.id === newCardId);
@@ -19625,9 +20233,7 @@ function _bdBindCurveHandleDrag(handleEl, conn, anchorPoint, cpIndex, otherAncho
         moved = true;
         if (typeof bdPushUndo === 'function') { bdPushUndo(); pushedUndo = true; }
       }
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       // v0.5.322: 自動モードから手動モードへ切替える際、もう片方のハンドル位置を
       // 現在の自動算出値で初期化する。{0,0} で初期化すると未ドラッグ側の cp が端点に
       // 張り付いてハンドルが消えたように見えてしまうため、_bdResolveControlPoints の
@@ -19758,39 +20364,20 @@ function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint)
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
 }
 
-function _bdBuildArrowSpec(tip, neighbor, strokeWidth) {
-  const dx = tip.x - neighbor.x;
-  const dy = tip.y - neighbor.y;
-  const segLength = Math.hypot(dx, dy);
-  if (!segLength || !Number.isFinite(segLength)) return null;
-  const ux = dx / segLength;
-  const uy = dy / segLength;
-  const maxUsableLength = Math.max(4, segLength - 1);
-  const arrowLength = Math.min(Math.max(12, strokeWidth * 4 + 2), maxUsableLength);
-  const centerOffset = Math.min(Math.max(2, arrowLength * 0.5), Math.max(2, segLength - 1));
-  const baseCenterX = tip.x - ux * arrowLength;
-  const baseCenterY = tip.y - uy * arrowLength;
-  const halfWidth = Math.max(5, strokeWidth * 1.8 + 1.5);
-  const px = -uy;
-  const py = ux;
-  const leftX = baseCenterX + px * halfWidth;
-  const leftY = baseCenterY + py * halfWidth;
-  const rightX = baseCenterX - px * halfWidth;
-  const rightY = baseCenterY - py * halfWidth;
-  return {
-    lineEnd: {
-      x: tip.x - ux * centerOffset,
-      y: tip.y - uy * centerOffset,
-    },
-    path: `M${tip.x},${tip.y} L${leftX},${leftY} L${rightX},${rightY} Z`,
-  };
+// 太さから矢印マーカーの寸法 (markerWidth/Height と refX) を算出する共通式。
+// _bdEnsureArrowMarker (矢印そのものの描画) と bdDrawConns (端点の後退量 GAP の逆算) の
+// 両方から使う。太さ上限20 (スタイル管理のスライダー max) まで比例して大きくなる (2026-08-14
+// 上限16px撤廃。旧上限では太さ5.4以上で矢印が頭打ちになり、線の太さが矢印を上回っていた)。
+function _bdArrowMarkerGeometry(strokeWidth) {
+  const size = Math.max(8, strokeWidth * 2.6 + 2);
+  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  return { size, refX };
 }
 
 function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId) {
   if (!defs || !markerId) return '';
   const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  const size = Math.max(8, Math.min(16, strokeWidth * 2.6 + 2));
-  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  const { size, refX } = _bdArrowMarkerGeometry(strokeWidth);
   marker.setAttribute('id', markerId);
   if (connId) marker.dataset.connId = connId;
   marker.setAttribute('markerWidth', size);
@@ -19838,7 +20425,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
     rect.setAttribute('height', size * 2);
     rect.setAttribute('rx', size * 0.4);
     rect.setAttribute('transform', `rotate(45 ${point.x} ${point.y})`);
-    rect.setAttribute('stroke-width', Math.max(1, 2 / Math.max(0.1, zoom || 1)));
+    rect.setAttribute('stroke-width', Math.max(1, 2 / bdSafeZoom(zoom)));
     svg.appendChild(rect);
     return rect;
   }
@@ -19847,7 +20434,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
   circle.setAttribute('cx', point.x);
   circle.setAttribute('cy', point.y);
   circle.setAttribute('r', size);
-  circle.setAttribute('stroke-width', Math.max(1, 1.5 / Math.max(0.1, zoom || 1)));
+  circle.setAttribute('stroke-width', Math.max(1, 1.5 / bdSafeZoom(zoom)));
   svg.appendChild(circle);
   return circle;
 }
@@ -19895,12 +20482,7 @@ function _bdRoundedOrthogonalPath(points, radius) {
 function _bdBuildConnectionPathData(conn, pts, structure, connStyle, bulgeOffset, anchorHints) {
   const start = pts[0];
   const end = pts[pts.length - 1];
-  // マインドマップ構造のラインは常に直線形状にする (呼び出し側で effectiveStructure が ''
-  // に落とされている場合に備え、conn.from の構造もフォールバックで参照する)。
-  const rootStruct = (structure === 'mindmap')
-    ? 'mindmap'
-    : ((typeof bdStructureOf === 'function' && conn?.from) ? bdStructureOf(conn.from) : '');
-  const pathType = _bdLinePathType(connStyle, rootStruct);
+  const pathType = _bdLinePathType(connStyle, structure);
   // v0.5.250: bulgeOffset は同じカードペア間の複数ライン (相関図) で、曲線を反対方向に
   // 膨らませて区別するためのオフセット値 (px)。曲線以外 (直線 / 直角) は無視する。
   const bulge = Number.isFinite(bulgeOffset) ? bulgeOffset : 0;
@@ -20291,7 +20873,7 @@ function bdDrawConns(options) {
     const pathType = _bdLinePathType(connStyle, st);
     const arrow = connStyle.arrow || '';
     const hasArrow = !!arrow;
-    const zoom = Math.max(0.1, bd.zoom || 1);
+    const zoom = bdSafeZoom(bd.zoom);
 
     // 曲線 / 直角線の場合は辺の中央を指す (2026-04-18 フィードバック)
     // 直線の場合は中心ベクトル方向でクリップ
@@ -20301,7 +20883,17 @@ function bdDrawConns(options) {
     // カード端からの gap はパスタイプごとに別経路で適用する (2026-04-18):
     //   - L 字系 (curve / orthogonal): 軸方向のみ (y1=cy1 / x1=cx1 を維持して兄弟ラインの重なりを崩さない)
     //   - 直線系 (straight): 中心ベクトル沿い
-    const GAP = Math.max(6, strokeWidth * 2);
+    // v2026-08-14: 端点の後退量は「その端点に矢印が付くか」で分岐する。
+    // 矢印が付く側は矢印の実サイズ (_bdArrowMarkerGeometry と同じ式) から逆算した量を後退させ、
+    // 矢印なし側は太さに依存しない小さい固定値だけ後退させる (太いラインでも端がカードから離れない)。
+    const arrowOnFromSide = arrow === 'start' || arrow === 'both';
+    const arrowOnToSide = arrow === 'end' || arrow === 'both';
+    const NO_ARROW_GAP = 2;
+    const arrowEndpointGap = (arrowOnFromSide || arrowOnToSide)
+      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.size - g.refX; })()
+      : 0;
+    const GAP_FROM = arrowOnFromSide ? arrowEndpointGap : NO_ARROW_GAP;
+    const GAP_TO = arrowOnToSide ? arrowEndpointGap : NO_ARROW_GAP;
     let effectiveStructure = st;
     let fromA = fn ? _bdConnAnchorName(c, 'from') : null;
     let toA = tn ? _bdConnAnchorName(c, 'to') : null;
@@ -20309,12 +20901,12 @@ function bdDrawConns(options) {
     let autoFromOut = null, autoToOut = null, autoFromPt = null, autoToPt = null;
     const hasFreeEndpoint = !fn || !tn;
     if (hasFreeEndpoint) {
-      const clipCardEndpoint = (node, el, pos, target, anchorName) => {
+      const clipCardEndpoint = (node, el, pos, target, anchorName, gap) => {
         if (!node) return target;
         if (anchorName) {
           const p = _bdGetCardAnchorPoint(node, el, pos, anchorName);
           const vOut = _bdAnchorOutwardVector(anchorName);
-          return { x: p.x + vOut.x * GAP, y: p.y + vOut.y * GAP };
+          return { x: p.x + vOut.x * gap, y: p.y + vOut.y * gap };
         }
         const w = el?.offsetWidth || node.w || 160;
         const h = el?.offsetHeight || node.h || 60;
@@ -20328,12 +20920,12 @@ function bdDrawConns(options) {
         const tx = Math.abs(ux) > 0 ? (w / 2) / Math.abs(ux) : Infinity;
         const ty = Math.abs(uy) > 0 ? (h / 2) / Math.abs(uy) : Infinity;
         const t = Math.min(tx, ty);
-        return { x: cx + ux * (t + GAP), y: cy + uy * (t + GAP) };
+        return { x: cx + ux * (t + gap), y: cy + uy * (t + gap) };
       };
       const freeFrom = rawFromPoint || { x: cx1, y: cy1 };
       const freeTo = rawToPoint || { x: cx2, y: cy2 };
-      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA) : freeFrom;
-      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA) : freeTo;
+      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA, GAP_FROM) : freeFrom;
+      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA, GAP_TO) : freeTo;
       x1 = fromEndpoint.x; y1 = fromEndpoint.y;
       x2 = toEndpoint.x; y2 = toEndpoint.y;
       effectiveStructure = '';
@@ -20358,7 +20950,7 @@ function bdDrawConns(options) {
       if (!HORIZONTAL_FORCED.has(st) && !VERTICAL_FORCED.has(st)) {
         const fromShape = fe?.dataset?.shape || fn?.shape || '';
         const toShape = te?.dataset?.shape || tn?.shape || '';
-        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP, fromShape, toShape);
+        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP_FROM, GAP_TO, fromShape, toShape);
         if (auto) {
           autoFromPt = auto.fromPt;
           autoToPt = auto.toPt;
@@ -20369,12 +20961,12 @@ function bdDrawConns(options) {
     }
     // v0.5.326: アンカー指定時は、アンカー座標 (カード境界上) からカード外向きに
     // GAP 分オフセットして端点を置く。これにより矢印がカードに隠れず、通常作成ラインと
-    // 同等の見え方になる (GAP は上方で strokeWidth に応じて決定済み)。
+    // 同等の見え方になる (GAP_FROM/GAP_TO は上方で矢印の有無・strokeWidth に応じて決定済み)。
     if (fromA) {
       const p = _bdGetCardAnchorPoint(fn, fe, fp, fromA);
       const vOut = _bdAnchorOutwardVector(fromA);
-      x1 = p.x + vOut.x * GAP;
-      y1 = p.y + vOut.y * GAP;
+      x1 = p.x + vOut.x * GAP_FROM;
+      y1 = p.y + vOut.y * GAP_FROM;
     } else if (autoFromPt) {
       // v0.5.330: 連続角度ベースの自動ルートで端点を置く (矢印方向を斜め含む 8+ 方向に)
       x1 = autoFromPt.x; y1 = autoFromPt.y;
@@ -20382,8 +20974,8 @@ function bdDrawConns(options) {
     if (toA) {
       const p = _bdGetCardAnchorPoint(tn, te, tp, toA);
       const vOut = _bdAnchorOutwardVector(toA);
-      x2 = p.x + vOut.x * GAP;
-      y2 = p.y + vOut.y * GAP;
+      x2 = p.x + vOut.x * GAP_TO;
+      y2 = p.y + vOut.y * GAP_TO;
     } else if (autoToPt) {
       x2 = autoToPt.x; y2 = autoToPt.y;
     }
@@ -20403,11 +20995,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -20427,11 +21019,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -20472,14 +21064,14 @@ function bdDrawConns(options) {
       if (useHorizontal) {
         // 左右辺の中央 + 水平方向に軸 gap を適用 (y はカード中心を維持)
         effectiveStructure = 'logic';
-        if (ddx >= 0) { x1 = fp.x + fw + GAP; x2 = tp.x - GAP; }
-        else { x1 = fp.x - GAP; x2 = tp.x + tw + GAP; }
+        if (ddx >= 0) { x1 = fp.x + fw + GAP_FROM; x2 = tp.x - GAP_TO; }
+        else { x1 = fp.x - GAP_FROM; x2 = tp.x + tw + GAP_TO; }
         y1 = cy1; y2 = cy2;
       } else {
         // 上下辺の中央 + 垂直方向に軸 gap を適用 (x はカード中心を維持)
         effectiveStructure = 'flowchart';
-        if (ddy >= 0) { y1 = fp.y + fh + GAP; y2 = tp.y - GAP; }
-        else { y1 = fp.y - GAP; y2 = tp.y + th + GAP; }
+        if (ddy >= 0) { y1 = fp.y + fh + GAP_FROM; y2 = tp.y - GAP_TO; }
+        else { y1 = fp.y - GAP_FROM; y2 = tp.y + th + GAP_TO; }
         x1 = cx1; x2 = cx2;
       }
     } else {
@@ -20501,11 +21093,12 @@ function bdDrawConns(options) {
       if (innerLen > 0) {
         const unitX = (x2 - x1) / innerLen;
         const unitY = (y2 - y1) / innerLen;
-        const gap = Math.min(GAP, Math.max(0, innerLen / 2 - 2));
-        x1 += unitX * gap;
-        y1 += unitY * gap;
-        x2 -= unitX * gap;
-        y2 -= unitY * gap;
+        const gapFrom = Math.min(GAP_FROM, Math.max(0, innerLen / 2 - 2));
+        const gapTo = Math.min(GAP_TO, Math.max(0, innerLen / 2 - 2));
+        x1 += unitX * gapFrom;
+        y1 += unitY * gapFrom;
+        x2 -= unitX * gapTo;
+        y2 -= unitY * gapTo;
       }
     }
     }
@@ -20980,6 +21573,14 @@ function bdEditNode(id) {
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
   txt.contentEditable = 'true'; txt.focus();
+  // 課題8: キャンバス外 (オプションパネル・ツールバー等) をクリックして編集領域から
+  // フォーカスが外れた場合も確定する。従来はキャンバス内の限られた経路 (クリック/
+  // Escape/Enter/Tab) からしか bdFinishEdit() が呼ばれず、確定前に他操作の bdRender() が
+  // 走ると入力内容が無警告で消えていた。{once:true} は bdFinishEdit() 内の
+  // contentEditable='false' 代入が同期的に blur を誘発した場合の多重登録を避けるため。
+  txt.addEventListener('blur', () => {
+    if (bd.editing === id && typeof bdFinishEdit === 'function') bdFinishEdit();
+  }, { once: true });
   const s = window.getSelection(), r = document.createRange();
   r.selectNodeContents(txt); s.removeAllRanges(); s.addRange(r);
   // カスタムキャレット: ネイティブキャレットを透明化 (CSS) し、カーソル太さを変えられる擬似キャレットを重ねる。
@@ -21045,50 +21646,61 @@ function bdEditNode(id) {
   document.addEventListener('selectionchange', updateCaret);
   setTimeout(updateCaret, 0);
 }
+// 課題8: contentEditable='false' への代入がブラウザによっては同期的に blur を誘発し、
+// blur ハンドラ (bdEditNode 側) が bdFinishEdit() を再入呼び出しすることがある。
+// 再入すると bd.editing が途中で null 化され、外側の呼び出しが `bd.nodes.find(...===bd.editing)`
+// で自ノードを見失い、確定処理 (bdPushUndo/text 反映) が丸ごと skip される実害があるため、
+// 実行中フラグで多重実行そのものを防ぐ。
+let _bdFinishEditRunning = false;
 function bdFinishEdit() {
-  if (!bd.editing) return;
-  const el = document.querySelector('.bd-node.bd-editing');
-  let editedNode = null;
-  let changed = false;
-  if (el) {
-    el.classList.remove('bd-editing');
-    const txt = el.querySelector('.bd-text');
-    txt.contentEditable = 'false';
-    editedNode = bd.nodes.find(v=>v.id===bd.editing);
-    if (editedNode) {
-      const beforeText = editedNode.text || '';
-      const nextText = txt.innerText.trim();
-      changed = nextText !== beforeText;
-      if (changed) {
-        bdPushUndo();
-        editedNode.text = nextText;
+  if (!bd.editing || _bdFinishEditRunning) return;
+  _bdFinishEditRunning = true;
+  try {
+    const el = document.querySelector('.bd-node.bd-editing');
+    let editedNode = null;
+    let changed = false;
+    if (el) {
+      el.classList.remove('bd-editing');
+      const txt = el.querySelector('.bd-text');
+      txt.contentEditable = 'false';
+      editedNode = bd.nodes.find(v=>v.id===bd.editing);
+      if (editedNode) {
+        const beforeText = editedNode.text || '';
+        const nextText = txt.innerText.trim();
+        changed = nextText !== beforeText;
+        if (changed) {
+          bdPushUndo();
+          editedNode.text = nextText;
+        }
+        txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
       }
-      txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
+      // カスタムキャレットを削除 + selectionchange リスナー解除
+      if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
+      const caret = el.querySelector(':scope > .bd-custom-caret');
+      if (caret) caret.remove();
     }
-    // カスタムキャレットを削除 + selectionchange リスナー解除
-    if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
-    const caret = el.querySelector(':scope > .bd-custom-caret');
-    if (caret) caret.remove();
-  }
-  bd.editing = null;
-  if (changed) bdDirty();
-  // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
-  if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
-  if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
-  if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
-  if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
-  if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
-  else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-  // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
-  // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
-  if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
-    const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
-    if (_editedRoot?.structure) {
-      if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
-      else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+    bd.editing = null;
+    if (changed) bdDirty();
+    // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
+    if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
+    if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
+    if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
+    if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
+    else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+    // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
+    // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
+    if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
+      const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
+      if (_editedRoot?.structure) {
+        if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
+        else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+      }
     }
+    document.getElementById('bd-canvas').focus();
+  } finally {
+    _bdFinishEditRunning = false;
   }
-  document.getElementById('bd-canvas').focus();
 }
 
 // --- 削除 ---
@@ -21362,7 +21974,7 @@ function _bdArrangeLayoutByWidth(layout, padding, targetWidth) {
     maxItemWidth,
     Number.isFinite(+targetWidth) && +targetWidth > 0
       ? +targetWidth
-      : (canvasEl ? canvasEl.offsetWidth / Math.max(0.1, bd.zoom || 1) : layout.spanW),
+      : (canvasEl ? canvasEl.offsetWidth / bdSafeZoom(bd.zoom) : layout.spanW),
   );
   let x = 0;
   let y = 0;
@@ -21388,7 +22000,7 @@ function _bdArrangeLayoutByHeight(layout, padding, targetHeight) {
     maxItemHeight,
     Number.isFinite(+targetHeight) && +targetHeight > 0
       ? +targetHeight
-      : (canvasEl ? canvasEl.offsetHeight / Math.max(0.1, bd.zoom || 1) : layout.spanH),
+      : (canvasEl ? canvasEl.offsetHeight / bdSafeZoom(bd.zoom) : layout.spanH),
   );
   let x = 0;
   let y = 0;
@@ -21529,7 +22141,7 @@ function bdAddAt(x, y, text, opts) {
 
 // --- ズーム/パン ---
 function bdZoom(delta) {
-  bd.zoom = Math.max(0.1, Math.min(5, bd.zoom+delta));
+  bd.zoom = bdClampZoom(bd.zoom + delta);
   bdTransform();
 }
 function bdTransform() {
@@ -21539,7 +22151,7 @@ function bdTransform() {
   const c = typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
     : document.getElementById('bd-canvas');
-  const zoom = Math.max(0.1, bd.zoom || 1);
+  const zoom = bdSafeZoom(bd.zoom);
   if (c) c.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) w.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) {
@@ -21599,7 +22211,7 @@ function bdFitAll(_retryCount) {
   const c=document.getElementById('bd-canvas');
   if (!c) return; // ボード DOM 未生成時 (非同期タブ切替中など) はスキップ
   // キャンバスがまだレイアウト前 (clientWidth/Height が 0) の場合、
-  // ズーム計算が 0 になり Math.max(0.1, 0) で 10% に張り付く不具合になる。
+  // ズーム計算が 0 になり最小倍率に張り付く不具合になる。
   // 次フレームで再試行する。最大 30 フレーム (約 500ms) で諦める。
   if (c.clientWidth <= 0 || c.clientHeight <= 0) {
     const next = (_retryCount || 0) + 1;
@@ -21619,7 +22231,7 @@ function bdFitAll(_retryCount) {
     fitW = w * cos + h * sin;
     fitH = w * sin + h * cos;
   }
-  bd.zoom = Math.min(cw/fitW, ch/fitH, 1.5); bd.zoom = Math.max(0.1, bd.zoom);
+  bd.zoom = bdSafeZoom(Math.min(cw/fitW, ch/fitH, 1.5));
   bd.panX = (cw-w*bd.zoom)/2 - x0*bd.zoom + 40*bd.zoom;
   bd.panY = (ch-h*bd.zoom)/2 - y0*bd.zoom + 40*bd.zoom;
   bdTransform();
@@ -21709,6 +22321,9 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
+  // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
+  if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
   const savePath = bd.path;
   if (!savePath) return true;
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
@@ -21930,6 +22545,10 @@ function _bdSnapshot() {
     nodes: bd.nodes,
     connections: bd.connections,
     groups: bd.groups,
+    // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
+    // スナップショットへ含めて復元時に再選択する (_bdApplySnapshot 側で現存IDへ絞る)。
+    selectedNodeIds: [...((bd.selected instanceof Set) ? bd.selected : [])],
+    selectedConnIds: typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [],
     cardStyles: bd.cardStyles,
     lineStyles: bd.lineStyles,
     depthStyles: bd.depthStyles,
@@ -21976,6 +22595,11 @@ function bdClearUndoStacks(path) {
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function _bdApplySnapshot(s) {
+  // 課題8: undo/redo は bd.nodes を丸ごと差し替えるため、編集中のカードがあると
+  // contentEditable 側にしか無い未確定のキー入力が確定される機会もないまま消える。
+  // スナップショット適用前に確定しておく（gb-board-find.js の
+  // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
@@ -22010,8 +22634,19 @@ function _bdApplySnapshot(s) {
     if (typeof bdApplyCanvasBackground === 'function') bdApplyCanvasBackground(canvasEl);
     else canvasEl.style.background = bd._bgColor || '';
   }
-  bd.selected = new Set(); bd.editing = null; bdClearConnectionSelection();
+  bd.editing = null;
+  // 課題10-2: 選択集合をスナップショットから復元する。現存しなくなった (削除された等) IDは
+  // 除外する。旧スナップショット (selectedNodeIds 未保存) を undo/redo する場合は空扱いで
+  // 従来どおり全解除になる。
+  const existingNodeIds = new Set(bd.nodes.map(n => n.id));
+  const restoredNodeIds = Array.isArray(s.selectedNodeIds) ? s.selectedNodeIds.filter(id => existingNodeIds.has(id)) : [];
+  bd.selected = new Set(restoredNodeIds);
   bdEnsureConnectionRuntime(bd.connections);
+  if (typeof bdSetConnectionSelection === 'function') {
+    bdSetConnectionSelection(Array.isArray(s.selectedConnIds) ? s.selectedConnIds : []);
+  } else {
+    bdClearConnectionSelection();
+  }
 }
 function bdUndo() {
   if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
@@ -22287,9 +22922,12 @@ async function bdOpenBoard(label, path, opts) {
       const canvasEl = document.getElementById('bd-canvas');
       if (canvasEl) canvasEl.style.background = bd._bgColor;
     }
-    // _autoStyle が有効なルートカードには、レンダリング前に階層別スタイルを適用しておく。
+    // _autoStyle が有効な起点カード (絶対ルートとは限らない。入れ子起点も含め全て) には、
+    // レンダリング前に階層別スタイルを適用しておく。
     // (これをしないと、ボード読込直後は _autoStyle = true だがスタイルが未反映で、
     //  一度チェックを外して再度 ON にするまで反映されない)
+    // 課題18-案A: bdApplyAutoStyle は入れ子起点の子孫を書き換えないため (自分以外の
+    // _autoStyle カードに到達したら打ち切る)、この forEach の処理順に依存せず安全に呼べる。
     if (typeof bdApplyAutoStyle === 'function') {
       bd.nodes.forEach(n => { if (n._autoStyle) bdApplyAutoStyle(n.id); });
     }
@@ -22794,10 +23432,9 @@ function _bdMinimapBounds() {
   }
 
   function defaultImageDropMode() {
-    // 2026-08-01: proprietary-format-sidecar-cleanup-plan-2026-07-31.md §5.1 により、
-    // カード画像は本体・単独版とも埋め込みを既定にする（旧仕様は本体のみリンクが既定だった）。
-    // ユーザーは引き続き明示的に「画像ファイルへのリンク」へ切り替えられる。
-    return MODE_EMBED;
+    // 新しく追加する画像は元ファイルとのつながりを保つ。保存済みの選択値と
+    // 既存の埋め込み画像は変更せず、未設定時だけリンクを既定にする。
+    return MODE_LINK;
   }
 
   function storageKey() {
@@ -23218,6 +23855,7 @@ function _bdMinimapBounds() {
     const state = boardState();
     const node = state?.nodes?.find(item => item && item.id === nodeId);
     if (!node || !node.img) return false;
+    const originalPath = nodeLinkPath(node);
     const picked = source == null ? await promptRelocateImageSource(node) : source;
     if (!picked) return false;
     const token = boardRequestToken();
@@ -23232,6 +23870,11 @@ function _bdMinimapBounds() {
     }
     if (!isSameBoardToken(token)) {
       if (typeof global.showStatus === 'function') global.showStatus('別のボードに切り替わったため、画像の再指定を中止しました', true);
+      return false;
+    }
+    const currentNode = state.nodes?.find(item => item && item.id === nodeId);
+    if (currentNode !== node || nodeLinkPath(currentNode) !== originalPath) {
+      if (typeof global.showStatus === 'function') global.showStatus('カードのリンク先が変わったため、画像の再指定を中止しました', true);
       return false;
     }
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
@@ -23379,14 +24022,7 @@ function _bdMinimapBounds() {
     const canvas = boardCanvas();
     if (!canvas) return { x: 160, y: 140 };
     const rect = canvas.getBoundingClientRect();
-    if (typeof bdScreenToWorld === 'function') {
-      return bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    }
-    const zoom = Math.max(0.1, Number(bd?.zoom) || 1);
-    return {
-      x: ((canvas.clientWidth || 640) / 2 - (Number(bd?.panX) || 0)) / zoom,
-      y: ((canvas.clientHeight || 480) / 2 - (Number(bd?.panY) || 0)) / zoom,
-    };
+    return bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
   }
 
   function pastePoint(explicitPoint) {
@@ -24190,9 +24826,7 @@ function _bdMinimapBounds() {
     document.addEventListener('copy', handleCopyEvent, true);
     document.addEventListener('pointerdown', event => {
       if (!event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]')) return;
-      if (typeof bdScreenToWorld === 'function') {
-        lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
-      }
+      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
     }, { passive: true });
   }
 
@@ -24433,7 +25067,8 @@ function _bdMinimapBounds() {
       if (node.structure) return true;
       return typeof bdStructureOf === 'function' && !!bdStructureOf(id);
     });
-    if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+    if (bd.autoAlign !== false && hasAnyStructure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
+    else if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
     bdRender();
     bdDirty();
     if (assigned === 0) {
@@ -24461,7 +25096,7 @@ function _bdMinimapBounds() {
 // --- 1. Layout Algorithms ---
 // 2026-04-18: デフォルト値 (スタイルタブ未設定時)。実際の値は bdLayoutGaps() 経由で bd.gapSiblings / bd.gapLevels を優先参照する。
 const BD_LAYOUT_GAP_SIBLINGS_DEFAULT = 10;
-const BD_LAYOUT_GAP_LEVELS_DEFAULT = 30;
+const BD_LAYOUT_GAP_LEVELS_DEFAULT = 50;
 function bdLayoutGaps() {
   // 注意: null / undefined を明示的に除外する。+null === 0 かつ null >= 0 === true のため、
   // Number.isFinite(+v) && v >= 0 だけだと null が 0 として採用されてしまい gap=0 になる。
@@ -24617,11 +25252,25 @@ function bdAutoLayout(rootId) {
     return;
   }
   // 自動スタイルが有効なら先にスタイル適用（サイズに影響するため）
-  if (root._autoStyle) { bdApplyAutoStyle(rootId); bdRender(); }
+  if (root._autoStyle) {
+    const changed = bdApplyAutoStyle(rootId) || { nodeIds: [], connIds: [] };
+    const renderContext = typeof bdCreateRenderContext === 'function' ? bdCreateRenderContext() : null;
+    (changed.nodeIds || []).forEach(id => {
+      if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(id, { renderContext });
+      if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'auto-style-layout');
+    });
+    if (changed.connIds?.length && typeof bdDrawConns === 'function') {
+      bdDrawConns({ connIds: changed.connIds, reason: 'auto-style-layout' });
+    }
+  }
   const sizes = {};
   layoutIds.forEach(id => {
     const el = document.getElementById('bdn-'+id);
-    sizes[id] = { w: el?el.offsetWidth:160, h: el?el.offsetHeight:36 };
+    const n = layoutCtx.node(id);
+    sizes[id] = {
+      w: n?.w || n?._rw || el?.offsetWidth || 160,
+      h: n?.h || n?._rh || el?.offsetHeight || 36,
+    };
   });
   // 外側 structure-set ノード (= structureIds の中で、祖先に structure-set ノードがいないもの) を
   // 特定する。これが複数あれば各々独立に扱う。
@@ -24711,8 +25360,8 @@ function bdAutoLayout(rootId) {
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdAutoLayout', _bdLayoutPerf, `layoutNodes=${layoutIds.length}`);
 }
 
-// 水平ツリー (階層=水平、同階層=垂直)。logic レイアウトおよび mindmap 放射状の
-// 各ブランチ (左右方向) で再利用する。
+// 水平ツリー (階層=水平、同階層=垂直)。logic レイアウトおよび mindmap の
+// 左右各ブランチで再利用する。
 function _bdLayoutHorizontalTree(root, sizes, layoutCtx, opts) {
   const G = bdLayoutGaps();
   const direction = opts?.direction === 'left' ? -1 : 1; // 'right'=1, 'left'=-1
@@ -24760,8 +25409,7 @@ function _bdLayoutHorizontalTree(root, sizes, layoutCtx, opts) {
   layout(root.id, root.x, root.y);
 }
 
-// 垂直ツリー (階層=垂直、同階層=水平)。flowchart レイアウトおよび mindmap 放射状の
-// 各ブランチ (上下方向) で再利用する。
+// 垂直ツリー (階層=垂直、同階層=水平)。flowchart レイアウトで再利用する。
 function _bdLayoutVerticalTree(root, sizes, layoutCtx, opts) {
   const G = bdLayoutGaps();
   const direction = opts?.direction === 'up' ? -1 : 1; // 'down'=1, 'up'=-1
@@ -24807,94 +25455,62 @@ function _bdLayoutVerticalTree(root, sizes, layoutCtx, opts) {
   }
   layout(root.id, root.x, root.y);
 }
-
 function bdLayoutMindmap(root, sizes, layoutCtx) {
-  // mindmap (放射状): 子カードを作成順に、時計回りで真右 (0°) 〜 真上の手前まで配置する。
-  //   - 1 枚目は常に真右 (0°)
-  //   - 2 枚目以降は、最後のカードが常に真上のちょうど手前 (360° の直前) に来るよう、
-  //     N 枚あれば 0° から (360/N)° 刻みで時計回りに均等配置する。
-  //     ( N=2:0°/180°、N=3:0°/120°/240°、… N=8:0°/45°/…/315°、N=9:0°/40°/…/320° )
-  //   - 真右のカードは常に固定、カードごとの間隔を詰める形で右上 (ほぼ 360°) に向けて
-  //     追加されていく。真上 (270°) 以降へ追加されて「二周目」に入ることはない。
-  // 各子のサブツリーは方向に応じた水平/垂直ツリーで展開する。
+  // XMind 風の左右 2 方向レイアウト。元の子順序の前半を右、後半を左へ振り分け、
+  // 奇数の場合は右側を 1 枚多くする。各側では部分木の高さを先に測り、
+  // ルート中心に対して縦方向にまとめて中央配置する。
   const G = bdLayoutGaps();
   const rootChildren = layoutCtx.children(root.id);
   if (rootChildren.length === 0) return;
   const rootW = sizes[root.id]?.w || 160;
   const rootH = sizes[root.id]?.h || 36;
-  const rootCx = root.x + rootW / 2;
   const rootCy = root.y + rootH / 2;
-  const N = rootChildren.length;
+  const subtreeHeightCache = new Map();
 
-  // idx 番目 (0-indexed) の子カードの角度を算出する。
-  // 最終インデックス (N-1) の角度が (N-1)/N * 360° = 360° - 360°/N となり、
-  // 真上 (270°) を飛び越えて 360° = 0° の手前 (= 右上〜真右の間) に収まる。
-  const ANGLE_STEP = N > 0 ? 360 / N : 0;
-  function branchInfo(idx) {
-    const angle = ANGLE_STEP * idx; // 0° = 真右、時計回り (下が +y)
-    const rad = angle * Math.PI / 180;
-    const dx = Math.cos(rad);
-    const dy = Math.sin(rad);
-    // サブツリー展開方向 (水平優勢 / 垂直優勢で 4 分割)。対角は水平側に倒す。
-    const dir = (Math.abs(dx) >= Math.abs(dy))
-      ? (dx >= 0 ? 'right' : 'left')
-      : (dy >= 0 ? 'down' : 'up');
-    return { dir, angle };
-  }
-
-  // 子中心までの距離（ルートエッジ〜子エッジ間に G.level の余白が入るよう計算）。
-  // 長方形と原点からの半直線 (cos θ, sin θ) の交点距離は min(W/2/|cos|, H/2/|sin|)。
-  // 真右 (θ=0) 等で sin=0 になる場合に備えて微小値でクランプする。
-  function childCenterDistance(childId, angle) {
-    const cw = sizes[childId]?.w || 160;
-    const ch = sizes[childId]?.h || 36;
-    const rad = angle * Math.PI / 180;
-    const absDx = Math.max(Math.abs(Math.cos(rad)), 1e-3);
-    const absDy = Math.max(Math.abs(Math.sin(rad)), 1e-3);
-    const rootEdge = Math.min(rootW / 2 / absDx, rootH / 2 / absDy);
-    const childEdge = Math.min(cw / 2 / absDx, ch / 2 / absDy);
-    return rootEdge + G.level + childEdge;
-  }
-
-  // 角度差 ANGLE_STEP のときの 2 中心間距離 d* = 2 * r * sin(ANGLE_STEP/2) が
-  // 両側のカード半対角の和 + gap を下回らない r を下限として確保する。
-  // (全子カードのサイズのうち最大のものを基準にすることで、どの隣接ペアも重ならない)
-  let maxHalfDiag = 0;
-  rootChildren.forEach(c => {
-    const cw = sizes[c.id]?.w || 160;
-    const ch = sizes[c.id]?.h || 36;
-    const hd = Math.hypot(cw, ch) / 2;
-    if (hd > maxHalfDiag) maxHalfDiag = hd;
-  });
-  const halfStepRad = (ANGLE_STEP / 2) * Math.PI / 180;
-  // N=1 のときは ANGLE_STEP=0 で sin(0)=0 になるため 0 除算回避で下限なし。
-  const minRadiusForNoOverlap = (N >= 2)
-    ? (maxHalfDiag + G.sibling / 2) / Math.sin(halfStepRad)
-    : 0;
-
-  rootChildren.forEach((child, idx) => {
-    const { dir, angle } = branchInfo(idx);
-    const rad = angle * Math.PI / 180;
-    let dist = childCenterDistance(child.id, angle);
-    // 隣接カード同士が重ならないよう、共通の下限半径を全カードに適用する
-    // (真右のカードを固定しつつ、角度間隔が狭まる高 N でも重なりを回避する)。
-    if (minRadiusForNoOverlap > dist) dist = minRadiusForNoOverlap;
-    const cx = rootCx + Math.cos(rad) * dist;
-    const cy = rootCy + Math.sin(rad) * dist;
-    const cw = sizes[child.id]?.w || 160;
-    const ch = sizes[child.id]?.h || 36;
-    child.x = cx - cw / 2;
-    child.y = cy - ch / 2;
-    // 子が「中間カード」(= 独自 structure 設定済み) なら bbox サイズをここで
-    // 配置しただけで打ち切る。中身は Pass 1 で計測済み、最終位置は Pass 3 で再配置される。
-    if (_bdIsInnerStructureAtomic(child.id, root.id)) return;
-    // 子サブツリーをブランチ方向に展開する（子自身を仮ルートとして使う）
-    if (dir === 'right' || dir === 'left') {
-      _bdLayoutHorizontalTree(child, sizes, layoutCtx, { direction: dir });
-    } else {
-      _bdLayoutVerticalTree(child, sizes, layoutCtx, { direction: dir });
+  function subtreeH(nid) {
+    if (subtreeHeightCache.has(nid)) return subtreeHeightCache.get(nid);
+    if (_bdIsInnerStructureAtomic(nid, root.id)) {
+      const atomicH = sizes[nid]?.h || 36;
+      subtreeHeightCache.set(nid, atomicH);
+      return atomicH;
     }
-  });
+    const children = layoutCtx.children(nid);
+    if (children.length === 0) {
+      const leafH = sizes[nid]?.h || 36;
+      subtreeHeightCache.set(nid, leafH);
+      return leafH;
+    }
+    const childrenH = children.reduce((sum, child) => sum + subtreeH(child.id), 0)
+      + (children.length - 1) * G.sibling;
+    const value = Math.max(sizes[nid]?.h || 36, childrenH);
+    subtreeHeightCache.set(nid, value);
+    return value;
+  }
+
+  const rightCount = Math.ceil(rootChildren.length / 2);
+  const rightChildren = rootChildren.slice(0, rightCount);
+  const leftChildren = rootChildren.slice(rightCount);
+
+  function layoutSide(children, direction) {
+    if (!children.length) return;
+    const totalH = children.reduce((sum, child) => sum + subtreeH(child.id), 0)
+      + (children.length - 1) * G.sibling;
+    let branchTop = rootCy - totalH / 2;
+    children.forEach(child => {
+      const childW = sizes[child.id]?.w || 160;
+      child.x = direction === 'right'
+        ? root.x + rootW + G.level
+        : root.x - G.level - childW;
+      child.y = branchTop;
+      if (!_bdIsInnerStructureAtomic(child.id, root.id)) {
+        _bdLayoutHorizontalTree(child, sizes, layoutCtx, { direction });
+      }
+      branchTop += subtreeH(child.id) + G.sibling;
+    });
+  }
+
+  layoutSide(rightChildren, 'right');
+  layoutSide(leftChildren, 'left');
 }
 
 function bdLayoutFlowchart(root, sizes, layoutCtx) {
@@ -25091,7 +25707,8 @@ function bdSwapSibling(nodeId, dir) {
   else if (typeof bdRender === 'function') bdRender();
   // 中間カード構造 (c33a3a6) も尊重: 兄弟の親に適用される structure があれば再整列。
   const effectiveStructure = (typeof bdStructureOf === 'function') ? bdStructureOf(nodeId) : (root?.structure || '');
-  if (effectiveStructure && typeof bdAutoLayout === 'function' && root) bdAutoLayout(root.id);
+  if (effectiveStructure && typeof bdRequestAutoLayout === 'function' && root) bdRequestAutoLayout(root.id);
+  else if (effectiveStructure && typeof bdAutoLayout === 'function' && root) bdAutoLayout(root.id);
   // 入れ替えた選択カードに resize ハンドル等を追従させる
   if (typeof bdSyncResizeHandleForNode === 'function') {
     bdSyncResizeHandleForNode(n.id);
@@ -25156,11 +25773,22 @@ function bdHandleCtrlArrow(arrow) {
 // 既存のカード群にも隙間変更が即座に反映されるようにする (bd.autoAlign が on のときのみ)。
 // contained カードはスキップ (親相対座標のためワールド座標レイアウトと相性悪)。
 function _bdRelayoutAllStructureTrees() {
-  if (typeof bd === 'undefined' || typeof bdAutoLayout !== 'function') return;
-  (bd.nodes || []).forEach(n => {
-    if (n && n.structure && !n.contained) {
-      bdAutoLayout(n.id);
+  if (typeof bd === 'undefined') return;
+  const structureNodes = (bd.nodes || []).filter(n => n && n.structure && !n.contained);
+  const structureIds = new Set(structureNodes.map(n => n.id));
+  const byId = new Map((bd.nodes || []).filter(Boolean).map(n => [n.id, n]));
+  structureNodes.forEach(node => {
+    const seen = new Set([node.id]);
+    let parentId = node.parent;
+    let hasStructureAncestor = false;
+    while (parentId && !seen.has(parentId)) {
+      if (structureIds.has(parentId)) { hasStructureAncestor = true; break; }
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.parent;
     }
+    if (hasStructureAncestor) return;
+    if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(node.id);
+    else if (typeof bdAutoLayout === 'function') bdAutoLayout(node.id);
   });
 }
 
@@ -25184,8 +25812,8 @@ function _bdSnapNodeToNeighbors(nodeId, excludeIds) {
   if (!n || n.contained) return { dx: 0, dy: 0 };
   const SNAP = 8;
   const el = document.getElementById('bdn-' + nodeId);
-  const w = el?.offsetWidth || n.w || 160;
-  const h = el?.offsetHeight || n.h || 36;
+  const w = n.w || n._rw || el?.offsetWidth || 160;
+  const h = n.h || n._rh || el?.offsetHeight || 36;
   const exclude = new Set(Array.isArray(excludeIds) ? excludeIds : [nodeId]);
   // 自身の 4 辺候補 (left, right, top, bottom)
   const selfXCandidates = [n.x, n.x + w];
@@ -25196,8 +25824,8 @@ function _bdSnapNodeToNeighbors(nodeId, excludeIds) {
     if (!other || exclude.has(other.id)) return;
     if (other.contained) return;
     const oel = document.getElementById('bdn-' + other.id);
-    const ow = oel?.offsetWidth || other.w || 160;
-    const oh = oel?.offsetHeight || other.h || 36;
+    const ow = other.w || other._rw || oel?.offsetWidth || 160;
+    const oh = other.h || other._rh || oel?.offsetHeight || 36;
     const otherXs = [other.x, other.x + ow];
     const otherYs = [other.y, other.y + oh];
     // x 軸 4 通りの組み合わせ (self left/right vs other left/right)
@@ -25253,6 +25881,17 @@ function _bdAnchorAddCard(fromNid, hudPos) {
   if ((action === 'between' || action === 'sibling-before' || action === 'sibling-after') && !n.parent) {
     return false;
   }
+  // 課題6・7-2・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルで作る。
+  // 起点が無いツリーでは fromNid の見た目を継承する (Enter/Ctrl+Enter の子/兄弟追加と同じ扱い)。
+  // 以前は parent すら渡さない (課題7-1 とは別関数だが同型の当て漏れ) 上、継承もしていなかった。
+  // 起点解決の基準ノードはアクションによって異なる: child は fromNid 自身の子孫を作るので
+  // fromNid 起点でよいが、sibling-*/between は fromNid と同じ親を共有するカードを作るため、
+  // fromNid.parent 起点で解決する (fromNid 自身が起点カードだった場合に、fromNid 自身の
+  // 「深さ0」を親を共有するだけの兄弟へ誤って適用してしまうのを防ぐ)。
+  const anchorBasisId = action === 'child' ? fromNid : n.parent;
+  const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(anchorBasisId) : null;
+  const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+  const depthOf = (nodeId) => (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(nodeId, anchor) : 0;
   if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
   try {
     // 前回操作で残っている可能性がある二段階接続モードの残骸をクリア (ユーザー操作混線防止)
@@ -25268,28 +25907,40 @@ function _bdAnchorAddCard(fromNid, hudPos) {
     const makeNode = (text, x, y, opts) => (typeof bdCreateNodeWithStyle === 'function')
       ? bdCreateNodeWithStyle(text, x, y, opts)
       : bdNode(text, x, y, 160, 0, opts);
-    const makeConnection = (fromId, toId, structure) => {
+    // depthStyle が有るときは個別 override を持たせず (直後に深さ別スタイルを直接適用するため)、
+    // 無ければ fromNid (n) の見た目を継承する。
+    const nodeOpts = (parentId, depthStyle) => {
+      const base = (!depthStyle && typeof bdInheritStyleOpts === 'function') ? bdInheritStyleOpts(n) : {};
+      base.parent = parentId;
+      return base;
+    };
+    const makeConnection = (fromId, toId, structure, lineDepthStyle) => {
       const arrow = typeof bdDefaultStructureArrow === 'function'
         ? bdDefaultStructureArrow(structure)
         : (structure === 'flowchart' ? 'end' : '');
-      if (typeof bdCreateStructureConnection === 'function') return bdCreateStructureConnection(fromId, toId, structure);
-      if (typeof bdCreateConnectionWithStyle === 'function') return bdCreateConnectionWithStyle(fromId, toId, { arrow });
-      return {
-        id: typeof bdId === 'function' ? bdId() : '',
-        from: fromId || '',
-        to: toId || '',
-        label: '',
-        style: '',
-        arrow,
-      };
+      const conn = (typeof bdCreateStructureConnection === 'function') ? bdCreateStructureConnection(fromId, toId, structure)
+        : (typeof bdCreateConnectionWithStyle === 'function') ? bdCreateConnectionWithStyle(fromId, toId, { arrow })
+        : {
+            id: typeof bdId === 'function' ? bdId() : '',
+            from: fromId || '',
+            to: toId || '',
+            label: '',
+            style: '',
+            arrow,
+          };
+      if (lineDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') _bdApplyDepthLineFieldsToConn(conn, lineDepthStyle);
+      return conn;
     };
     let newNode = null;
     if (action === 'child') {
       const nx = isTreeStructure ? n.x + G.level : (isVertical ? n.x : n.x + pw + G.level);
       const ny = isTreeStructure ? n.y + ph + G.sibling : (isVertical ? n.y + ph + G.level : n.y);
-      newNode = makeNode('', nx, ny, { parent: fromNid });
+      const childDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid) + 1, anchor) : null;
+      newNode = makeNode('', nx, ny, nodeOpts(fromNid, childDepthStyle));
+      if (childDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, childDepthStyle);
       bd.nodes.push(newNode);
-      bd.connections.push(makeConnection(fromNid, newNode.id, bdStructureOf(fromNid)));
+      const parentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      bd.connections.push(makeConnection(fromNid, newNode.id, bdStructureOf(fromNid), parentDepthStyle));
       if (!initialStructureRootId) {
         const root = bdRoot(fromNid);
         if (root && !root.structure) root.structure = isVertical ? 'flowchart' : 'mindmap';
@@ -25309,7 +25960,10 @@ function _bdAnchorAddCard(fromNid, hudPos) {
         nx = n.x;
         ny = action === 'sibling-before' ? n.y - ph - G.sibling : n.y + ph + G.sibling;
       }
-      newNode = makeNode('', nx, ny, { parent: parentId });
+      // 兄弟は fromNid と同じ深さ。
+      const siblingDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      newNode = makeNode('', nx, ny, nodeOpts(parentId, siblingDepthStyle));
+      if (siblingDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, siblingDepthStyle);
       if (action === 'sibling-before') {
         const g = bd.nodes.findIndex(v => v.id === fromNid);
         if (g >= 0) bd.nodes.splice(g, 0, newNode); else bd.nodes.push(newNode);
@@ -25322,25 +25976,36 @@ function _bdAnchorAddCard(fromNid, hudPos) {
           bd.nodes.push(newNode);
         }
       }
-      bd.connections.push(makeConnection(parentId, newNode.id, bdStructureOf(parentId)));
+      const parentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(parentId), anchor) : null;
+      bd.connections.push(makeConnection(parentId, newNode.id, bdStructureOf(parentId), parentDepthStyle));
     } else if (action === 'between') {
       const oldParentId = n.parent;
+      // 深さは reparent (n.parent への代入) より前に計算する。新規カードは fromNid の
+      // 旧位置 (旧親からの相対深さ) をそのまま引き継ぎ、fromNid 自身が1つ深くなる。
+      const newCardDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      const oldParentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(oldParentId), anchor) : null;
       const nx = isTreeStructure ? n.x - G.level : (isVertical ? n.x : n.x - pw - G.level);
       const ny = isTreeStructure ? n.y - ph - G.sibling : (isVertical ? n.y - ph - G.level : n.y);
-      newNode = makeNode('', nx, ny, { parent: oldParentId });
+      newNode = makeNode('', nx, ny, nodeOpts(oldParentId, newCardDepthStyle));
+      if (newCardDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, newCardDepthStyle);
       const g = bd.nodes.findIndex(v => v.id === fromNid);
       if (g >= 0) bd.nodes.splice(g, 0, newNode); else bd.nodes.push(newNode);
       n.parent = newNode.id;
       let reused = false;
       bd.connections = bd.connections.filter(c => {
         if (c.from === oldParentId && c.to === fromNid) {
-          if (!reused) { c.to = newNode.id; reused = true; return true; }
+          if (!reused) {
+            c.to = newNode.id;
+            if (oldParentDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') _bdApplyDepthLineFieldsToConn(c, oldParentDepthStyle);
+            reused = true;
+            return true;
+          }
           return false;
         }
         return true;
       });
-      if (!reused) bd.connections.push(makeConnection(oldParentId, newNode.id, bdStructureOf(oldParentId)));
-      bd.connections.push(makeConnection(newNode.id, fromNid, bdStructureOf(oldParentId)));
+      if (!reused) bd.connections.push(makeConnection(oldParentId, newNode.id, bdStructureOf(oldParentId), oldParentDepthStyle));
+      bd.connections.push(makeConnection(newNode.id, fromNid, bdStructureOf(oldParentId), newCardDepthStyle));
     }
     if (!newNode) return false;
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
@@ -25581,8 +26246,77 @@ function bdEnsureDepthStyles() {
   return bd.depthStyles;
 }
 
-function bdGetAutoStyleForDepth(depth) {
-  const styles = bdEnsureDepthStyles();
+// 課題18-案A: 自分自身から親方向へ辿り、最初に見つかった _autoStyle 保持カード
+// (= 階層別スタイルの起点) を返す。無ければ null。
+// 「絶対ルート決め打ち」だった各所 (bdAddChildToSelected 等) はこの関数の戻り値を起点として使う。
+function _bdNearestAutoStyleAnchor(nodeId) {
+  if (typeof bd === 'undefined' || !nodeId) return null;
+  let cur = bd.nodes.find(v => v.id === nodeId);
+  const seen = new Set();
+  while (cur) {
+    if (cur._autoStyle) return cur;
+    if (seen.has(cur.id) || !cur.parent) break;
+    seen.add(cur.id);
+    cur = bd.nodes.find(v => v.id === cur.parent);
+  }
+  return null;
+}
+
+// nodeId から anchor (自分自身または祖先の起点カード) までの階層差を返す。
+// anchor は _bdNearestAutoStyleAnchor(nodeId) 等、nodeId の祖先鎖上にあるものを渡すこと。
+function _bdAnchorRelativeDepth(nodeId, anchor) {
+  if (!anchor || !nodeId) return 0;
+  if (nodeId === anchor.id) return 0;
+  if (typeof bdParentDepth !== 'function') return 0;
+  return Math.max(0, bdParentDepth(nodeId) - bdParentDepth(anchor.id));
+}
+
+// 現在唯一選択されているカードが、それ自身「起点」(_autoStyle) であれば返す。それ以外は null。
+// 階層別スタイルタブへ「この起点のプリセット」行を出すかどうかの判定に使う。
+function _bdSelectedSoleAnchorNode() {
+  if (typeof bd === 'undefined' || !(bd.selected instanceof Set) || bd.selected.size !== 1) return null;
+  const id = [...bd.selected][0];
+  const node = bd.nodes.find(n => n.id === id);
+  return node && node._autoStyle ? node : null;
+}
+
+// 課題18-案B: 起点カードの depthStyleRef が指す名前付きプリセットが見つからない場合の
+// フォールバック警告。同一起点・同一参照IDでの重複警告 (カード追加のたびに出る等) を防ぐため
+// bd._depthPresetRefWarned に記録し、初回のみ showStatus する。
+function _bdWarnMissingDepthPresetRef(anchorNode, ref) {
+  if (typeof bd === 'undefined' || !anchorNode?.id || !ref) return;
+  if (!(bd._depthPresetRefWarned instanceof Set)) bd._depthPresetRefWarned = new Set();
+  const key = anchorNode.id + '::' + ref;
+  if (bd._depthPresetRefWarned.has(key)) return;
+  bd._depthPresetRefWarned.add(key);
+  if (typeof showStatus === 'function') {
+    showStatus('階層別スタイルのプリセットが見つからないため、ボード共通の階層別スタイルを使用しています', true);
+  }
+}
+
+// 課題18-案B: anchorNode.depthStyleRef が指す名前付きプリセットのスタイル配列を返す。
+// 参照が空、またはプリセットが見つからない場合はボード共通の bd.depthStyles にフォールバックする
+// (フォールバック時は _bdWarnMissingDepthPresetRef で一度だけ警告)。
+function _bdResolveDepthStylesForAnchor(anchorNode) {
+  const ref = anchorNode && typeof anchorNode === 'object' ? String(anchorNode.depthStyleRef || '') : '';
+  if (ref) {
+    const preset = (typeof MeldexBoardDepthPresets !== 'undefined' && typeof MeldexBoardDepthPresets.find === 'function')
+      ? MeldexBoardDepthPresets.find(ref)
+      : null;
+    if (preset && Array.isArray(preset.styles) && preset.styles.length) {
+      return bdNormalizeDepthStyles(preset.styles);
+    }
+    _bdWarnMissingDepthPresetRef(anchorNode, ref);
+  }
+  return bdEnsureDepthStyles();
+}
+
+// depth (0始まり) に対応する階層別スタイルを返す。
+// anchorNode を渡すと、その起点に割り当てられたプリセット (depthStyleRef) があればそれを優先し、
+// 無ければボード共通の bd.depthStyles にフォールバックする (課題18-案B)。
+// anchorNode を渡さない呼び出し (後方互換) は常にボード共通セットを参照する。
+function bdGetAutoStyleForDepth(depth, anchorNode) {
+  const styles = _bdResolveDepthStylesForAnchor(anchorNode);
   const idx = Math.min(Math.max(0, depth), styles.length - 1);
   const defaults = _bdDefaultDepthStyles();
   return styles[idx] || defaults[defaults.length - 1];
@@ -25682,14 +26416,42 @@ function _bdApplyDepthLineFieldsToConn(conn, depthStyle) {
   if (L.textShadowColor) conn.textShadowColor = L.textShadowColor;
 }
 
+function _bdAutoStyleSignature(value, keys) {
+  return keys.map(key => value?.[key]);
+}
+
 function bdApplyAutoStyle(rootId) {
   const root = bd.nodes.find(n => n.id === rootId);
-  if (!root || !root._autoStyle) return;
+  if (!root || !root._autoStyle) return { nodeIds: [], connIds: [] };
+  // 課題18-案A: この起点に割り当てられたプリセット (無ければボード共通セット) を1回だけ解決する。
+  // 案B の depthStyleRef フォールバック警告もここで1回だけ評価される。
+  const styles = _bdResolveDepthStylesForAnchor(root);
+  const defaults = _bdDefaultDepthStyles();
+  const styleAt = depth => {
+    const idx = Math.min(Math.max(0, depth), styles.length - 1);
+    return styles[idx] || defaults[defaults.length - 1];
+  };
   const nodeDepth = new Map();
+  const changedNodeIds = new Set();
+  const changedConnIds = new Set();
+  const cardKeys = ['cardStyle', 'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+    'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape', 'w',
+    'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset', 'cloudSubWidthRatio',
+    'cloudSubHeightRatio'];
+  const lineKeys = ['color', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio',
+    'cornerRadius', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth', 'labelTextColor',
+    'fontBold', 'fontItalic', 'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth',
+    'textShadowColor'];
   function apply(nid, depth) {
     const n = bd.nodes.find(v => v.id === nid); if (!n) return;
+    // 課題18-案A: 入れ子の起点 (自分以外の _autoStyle カード) に到達したら、そのカード自身の
+    // bdApplyAutoStyle 呼び出しに任せてここで打ち切る。「近い方が勝つ」を、処理順に依存せず
+    // データ上で保証する (祖先側の適用が子孫側の起点の値を上書きすることは無い)。
+    if (nid !== rootId && n._autoStyle) return;
     nodeDepth.set(nid, depth);
-    _bdApplyDepthCardFieldsToNode(n, bdGetAutoStyleForDepth(depth));
+    const before = _bdAutoStyleSignature(n, cardKeys);
+    _bdApplyDepthCardFieldsToNode(n, styleAt(depth));
+    if (_bdAutoStyleSignature(n, cardKeys).some((value, index) => value !== before[index])) changedNodeIds.add(nid);
     bdChildren(nid).forEach(c => apply(c.id, depth + 1));
   }
   apply(rootId, 0);
@@ -25702,9 +26464,12 @@ function bdApplyAutoStyle(rootId) {
       if (d === undefined) return;
       const toNode = bd.nodes.find(n => n.id === c.to);
       if (!toNode || toNode.parent !== c.from || !nodeDepth.has(c.to)) return;
-      _bdApplyDepthLineFieldsToConn(c, bdGetAutoStyleForDepth(d));
+      const before = _bdAutoStyleSignature(c, lineKeys);
+      _bdApplyDepthLineFieldsToConn(c, styleAt(d));
+      if (c.id && _bdAutoStyleSignature(c, lineKeys).some((value, index) => value !== before[index])) changedConnIds.add(c.id);
     });
   }
+  return { nodeIds: [...changedNodeIds], connIds: [...changedConnIds] };
 }
 /* gb-canvas-features.part02.js */
 // --- 2. Focus (Space キーでフォーカス / 解除) ---
@@ -25752,7 +26517,9 @@ function bdMoveZ(direction) {
   } else {
     ids.reverse().forEach(id => { const idx = bd.nodes.findIndex(n => n.id === id); if (idx >= 0) { const n = bd.nodes.splice(idx, 1)[0]; bd.nodes.unshift(n); } });
   }
-  bdRender(); bdDirty();
+  if (typeof bdSyncNodeDomOrder === 'function') bdSyncNodeDomOrder();
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'move-z');
+  bdDirty();
 }
 // --- 4. Lock ---
 function bdToggleLock() {
@@ -25760,7 +26527,9 @@ function bdToggleLock() {
   bdPushUndo();
   const anyLocked = ids.some(id => { const n = bd.nodes.find(v => v.id === id); return n && n.locked; });
   ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.locked = !anyLocked; });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'toggle-lock');
+  else bdRender();
+  bdDirty();
   showStatus(anyLocked ? 'ロック解除' : 'ロックしました');
 }
 // --- 5. Flip / Rotate / Opacity ---
@@ -25772,7 +26541,9 @@ function bdFlip(axis) {
     if (axis === 'h') n.flipH = !n.flipH;
     else n.flipV = !n.flipV;
   });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'flip');
+  else bdRender();
+  bdDirty();
 }
 
 function bdRotate(deg) {
@@ -25782,14 +26553,18 @@ function bdRotate(deg) {
     const n = bd.nodes.find(v => v.id === id); if (!n) return;
     n.rotate = ((n.rotate || 0) + deg) % 360;
   });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'rotate');
+  else bdRender();
+  bdDirty();
 }
 
 function bdSetOpacity(val) {
   const ids = [...bd.selected]; if (!ids.length) return;
   bdPushUndo();
   ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.opacity = val; });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'opacity');
+  else bdRender();
+  bdDirty();
 }
 // --- 8. Color Picker ---
 function bdColorPicker() {
@@ -25834,14 +26609,9 @@ function bdPasteImage() {
             bdPushUndo();
             const canvasEl = document.getElementById('bd-canvas');
             let pos = { x: 200, y: 160 };
-            if (canvasEl && typeof bdScreenToWorld === 'function') {
+            if (canvasEl) {
               const rect = canvasEl.getBoundingClientRect();
               pos = bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-            } else if (canvasEl) {
-              pos = {
-                x: ((canvasEl.offsetWidth || 600) / 2 - (bd.panX || 0)) / (bd.zoom || 1),
-                y: ((canvasEl.offsetHeight || 400) / 2 - (bd.panY || 0)) / (bd.zoom || 1),
-              };
             }
             const n = bdNode('', pos.x - 150, pos.y - 100, 300, 0, { img: reader.result });
             bd.nodes.push(n);
@@ -26042,18 +26812,15 @@ function bdStartSlideshow(interval) {
 function bdStopSlideshow() {
   if (_bdSlideshow) { clearTimeout(_bdSlideshow.timer); _bdSlideshow = null; showStatus('スライドショー停止'); }
 }
-// --- 12. Background Color ---
-function bdSetBackground(color) {
-  document.getElementById('bd-canvas').style.background = color;
-  bd._bgColor = color;
-  bdDirty();
-}
 // --- Find & Replace は gb-board-find.js に分離済み (v0.5.287) ---
 
 // --- Numbering ---
 function bdToggleNumbering() {
   bd._numbering = !bd._numbering;
-  bdRender(); bdDirty();
+  const nodeIds = (bd.nodes || []).map(node => node?.id).filter(Boolean);
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(nodeIds, 'toggle-numbering');
+  else bdRender();
+  bdDirty();
   showStatus(bd._numbering ? '番号付けON' : '番号付けOFF');
 }
 function _bdGetNumber(nodeId) {
@@ -26229,12 +26996,13 @@ function bdEditNote(nodeId) {
     try {
       if (typeof bdPushUndo === 'function') bdPushUndo('カードのノートを編集');
       n.note = textarea.value;
-      bdRender();
+      if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'edit-note', { detailPanel: true });
+      else bdRender();
       bdDirty();
     } catch (error) {
       if (hadOwnNote) n.note = previousNote; else delete n.note;
       _bdDialogRestoreMutationCheckpoint(checkpoint);
-      try { bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
+      try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
       console.error('カードのノートを保存できませんでした:', error);
       try { showStatus('ノートを保存できませんでした', true); } catch {}
       saving = false;
@@ -26248,19 +27016,6 @@ function bdEditNote(nodeId) {
   modalApi.open();
   replaceIcons(modalApi.overlay);
   return modalApi;
-}
-
-// --- Checkbox + Progress ---
-function bdToggleCheck(nodeId) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  if (n.checked === undefined) n.checked = false;
-  n.checked = !n.checked;
-  bdRender(); bdDirty();
-}
-function bdSetProgress(nodeId, pct) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  n.progress = pct;
-  bdRender(); bdDirty();
 }
 
 // --- Summary ---
@@ -26295,7 +27050,12 @@ function bdAddSummary() {
     bd.connections.push(conn);
   });
   // 追加直後のインライン編集は発火させない (F2 / ダブルクリックで編集開始)
-  bdRender(); bdSelect(summary.id); bdDirty();
+  if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(summary)) {
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([summary.id], 'add-summary');
+    else bdRender();
+  }
+  if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: [summary.id], reason: 'add-summary' });
+  bdSelect(summary.id); bdDirty();
 }
 
 // --- Drill Down ---
@@ -26327,7 +27087,9 @@ function bdSetMarker(nodeId, category, markerIdx) {
   const markers = BD_MARKERS[category];
   if (!markers || markerIdx < 0 || markerIdx >= markers.length) { delete n.markers[category]; }
   else { n.markers[category] = markerIdx; }
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'marker');
+  else bdRender();
+  bdDirty();
 }
 
 // --- カードHUD クリック時のサブメニュー (board-card-popup-redesign-plan.md §7) ---
@@ -26420,7 +27182,9 @@ function bdStatusMenuFor(nodeId, rect, trigger) {
   const setStatus = (st) => {
     bdPushUndo();
     targetIds.forEach(id => { const nd = bd.nodes.find(v => v.id === id); if (nd) nd.status = st; });
-    bdRender(); bdDirty();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targetIds, 'status-hud');
+    else bdRender();
+    bdDirty();
   };
   const curStatus = n.status || '';
   // 「なし」項目
@@ -26465,7 +27229,9 @@ function bdMarkerMenuFor(nodeId, rect, trigger) {
       bdPushUndo();
       const n2 = bd.nodes.find(v => v.id === nodeId);
       if (n2) n2.markers = {};
-      bdRender(); bdDirty();
+      if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'clear-markers-hud');
+      else bdRender();
+      bdDirty();
     }));
   }
   _bdRepositionHudMenu(menu, rect);
@@ -26562,18 +27328,9 @@ const BD_SHAPE_LABELS = {rect:'矩形',ellipse:'楕円',pill:'ピル',octagon:'�
 function bdSetShape(nodeId, shape) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
   n.shape = BD_SHAPES.includes(shape) && shape !== 'rect' ? shape : '';
-  bdRender(); bdDirty();
-}
-
-// --- Font Settings ---
-async function bdSetFont(nodeId) {
-  const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  const size = await cfPrompt('フォントサイズ (px)', n.fontSize || '13');
-  if (size === null) return;
-  n.fontSize = parseInt(size) || 13;
-  const bold = await cfConfirm('太字にしますか？');
-  n.fontBold = bold;
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'shape');
+  else bdRender();
+  bdDirty();
 }
 
 // --- Resize Selected ---
@@ -26585,7 +27342,9 @@ async function bdResizeSelected() {
   if(w===null || h===null) return;
   bdPushUndo();
   ids.forEach(id=>{ const n=bd.nodes.find(v=>v.id===id); if(n){n.w=parseInt(w)||160; n.h=parseInt(h)||0;} });
-  bdRender(); bdDirty();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'resize-selected');
+  else bdRender();
+  bdDirty();
 }
 
 // --- 14. Context Menus ---
@@ -26744,7 +27503,8 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
     if (styleId) node._userCardStyle = true;
     else delete node._userCardStyle;
   });
-  bdRender();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'menu-card-style', { detailPanel: true });
+  else bdRender();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
 }
@@ -26755,7 +27515,8 @@ function _bdApplyCardStyleFromMenu(nodeIds, styleId) {
 // - _userCardStyle / _userBgColor / _userFontSize / _userFontBold / _userW フラグを削除
 //   （これらが立っていると bdApplyAutoStyle が深さ別の値で上書きしないため、
 //    フラグを消して階層スタイルが効くようにする）
-// - 対象ノードからルートまで遡り、ルートに _autoStyle: true があれば
+// - 対象ノードから親方向へ辿り、最初に見つかった起点 (_autoStyle: true のカード。
+//   絶対ルートとは限らない。入れ子起点は近い方が優先される) があれば
 //   bdApplyAutoStyle を再実行して深さ別スタイルを再適用する。
 function _bdRestoreCardToHierarchy(nodeIds) {
   const ids = [...new Set((nodeIds || []).filter(Boolean))];
@@ -26772,26 +27533,22 @@ function _bdRestoreCardToHierarchy(nodeIds) {
     delete node._userFontSize;
     delete node._userFontBold;
     delete node._userW;
-    let cur = node;
-    const guard = new Set();
-    while (cur && cur.parent && !guard.has(cur.id)) {
-      guard.add(cur.id);
-      const parent = bd.nodes.find(n => n.id === cur.parent);
-      if (!parent) break;
-      cur = parent;
-    }
-    if (cur && cur._autoStyle) rootsToReapply.add(cur.id);
+    // 課題18-案A: 絶対ルートではなく「最も近い起点」まで遡る。祖先鎖の途中に起点があれば
+    // そちらを優先し (入れ子起点の「近い方が勝つ」)、絶対ルートまで遡らない。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(nodeId) : null;
+    if (anchor) rootsToReapply.add(anchor.id);
   });
   if (typeof bdApplyAutoStyle === 'function') {
     rootsToReapply.forEach(rid => bdApplyAutoStyle(rid));
   }
-  bdRender();
+  if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'restore-depth-style', { detailPanel: true });
+  else bdRender();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   if (typeof showStatus === 'function') {
     showStatus(rootsToReapply.size
       ? '階層別スタイルに戻しました'
-      : '個別スタイルを解除しました（ルートカードで「階層別スタイル」を有効にすると深さ別スタイルが反映されます）');
+      : '個別スタイルを解除しました（カードを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
   }
 }
 
@@ -26920,7 +27677,9 @@ function bdConnContextMenu(e, conn) {
       if (idx >= 0 && idx < bd.connections.length - 1) {
         bd.connections.splice(idx, 1);
         bd.connections.push(conn);
-        bdDrawConns(); bdDirty();
+        if (typeof bdSyncConnectionDomOrder === 'function') bdSyncConnectionDomOrder();
+        else bdDrawConns();
+        bdDirty();
       }
     });
     _bdContextMenuItem(viewPanel, '背面に移動', () => {
@@ -26929,7 +27688,9 @@ function bdConnContextMenu(e, conn) {
       if (idx > 0) {
         bd.connections.splice(idx, 1);
         bd.connections.unshift(conn);
-        bdDrawConns(); bdDirty();
+        if (typeof bdSyncConnectionDomOrder === 'function') bdSyncConnectionDomOrder();
+        else bdDrawConns();
+        bdDirty();
       }
     });
   }
@@ -26954,7 +27715,7 @@ function bdConnContextMenu(e, conn) {
     if (!(await cfConfirm('このラインを削除しますか？'))) return;
     bdPushUndo();
     if (typeof bdRemoveConnection === 'function') bdRemoveConnection(conn);
-    else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns(); bdDirty(); }
+    else { bd.connections = bd.connections.filter(c => c !== conn); bdDrawConns({ connIds: [conn.id], reason: 'remove-connection-fallback' }); bdDirty(); }
   });
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
@@ -27093,16 +27854,23 @@ function bdContextMenu(e, nodeId) {
   }
   function addToolbarVisibilityItems(target) {
     const immersive = window.MeldexBoardImmersive;
-    if (!immersive?.getMode || !immersive?.setMode) return false;
-    [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
-      .forEach(([edge, label]) => {
-        const pinned = immersive.getMode(edge) === 'pinned';
-        target.item(label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
-          role: 'menuitemcheckbox',
-          checked: pinned,
+    let added = false;
+    if (immersive?.getMode && immersive?.setMode) {
+      [['top', '上端ツールバーを常時表示'], ['bottom', '下端ツールバーを常時表示']]
+        .forEach(([edge, label]) => {
+          const pinned = immersive.getMode(edge) === 'pinned';
+          target.item(radioMark(pinned) + label, () => immersive.setMode(edge, pinned ? 'auto' : 'pinned'), {
+            role: 'menuitemcheckbox',
+            checked: pinned,
+          });
         });
-      });
-    return true;
+      added = true;
+    }
+    if (window.MeldexBoardStandalone?.appendDisplayContextMenuItems) {
+      window.MeldexBoardStandalone.appendDisplayContextMenuItems(target);
+      added = true;
+    }
+    return added;
   }
 
   if (nodeId) _bdPrepareContextMenuSelection(nodeId);
@@ -27230,7 +27998,11 @@ function bdContextMenu(e, nodeId) {
         });
       bd.connections.push(...newConnections);
       bd.selected = new Set(newNodes.map(node => node.id));
-      bdRender();
+      newNodes.forEach(node => {
+        if (typeof bdAppendFastNode === 'function') bdAppendFastNode(node);
+      });
+      if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: newConnections.map(conn => conn.id), reason: 'duplicate' });
+      if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(newNodes.map(node => node.id), 'duplicate');
       bdDirty();
     });
     if (multi && nd) {
@@ -27260,27 +28032,19 @@ function bdContextMenu(e, nodeId) {
             const childAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(ch) : { x: ch.x, y: ch.y };
             ch.x = childAbs.x - parentAbs.x; ch.y = childAbs.y - parentAbs.y;
             ch.parent = nodeId; ch.contained = true;
+            document.getElementById('bdn-' + id)?.remove();
           }
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'menu-containerize');
+        else bdRender();
+        bdDirty();
       });
     }
     const hasParentTarget = targetNodeIds.some(id => !!bd.nodes.find(v => v.id === id)?.parent);
     if (nd && hasParentTarget) {
       item('親から切り離す', () => {
         bdPushUndo();
-        const depthOf = (id) => (typeof bdParentDepth === 'function') ? bdParentDepth(id) : (() => {
-          let depth = 0;
-          let cur = bd.nodes.find(v => v.id === id);
-          const seen = new Set();
-          const limit = Math.max(50, (bd.nodes || []).length + 1);
-          while (cur?.parent && depth < limit && !seen.has(cur.id)) {
-            seen.add(cur.id);
-            cur = bd.nodes.find(v => v.id === cur.parent);
-            depth += 1;
-          }
-          return depth;
-        })();
+        const depthOf = id => bdParentDepth(id);
         const ids = (multi ? [...bd.selected] : [nodeId]).sort((a, b) => depthOf(b) - depthOf(a));
         ids.forEach(id => {
           const n = bd.nodes.find(v => v.id === id); if (!n || !n.parent) return;
@@ -27288,7 +28052,9 @@ function bdContextMenu(e, nodeId) {
           if (typeof bdDetachParentChildRelation === 'function') bdDetachParentChildRelation(parentId, id);
           else n.parent = '';
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'detach-parent');
+        else bdRender();
+        bdDirty();
       });
     }
     // ロックはトグル項目として「複製」の直下に置く
@@ -27299,7 +28065,9 @@ function bdContextMenu(e, nodeId) {
         const ids = multi ? [...bd.selected] : [nodeId];
         const next = !nd.locked;
         ids.forEach(id => { const n = bd.nodes.find(v => v.id === id); if (n) n.locked = next; });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(ids, 'menu-lock');
+        else bdRender();
+        bdDirty();
       });
     }
     sep();
@@ -27331,15 +28099,20 @@ function bdContextMenu(e, nodeId) {
       });
       _bdContextMenuSep(cardStylePanel);
       // 階層別スタイル サブのサブ (有効/無効)
+      // 課題18-案A: 「有効/無効」という文言だけでは、有効にしたカードが「階層別スタイルの
+      // 起点になる」(そのカード自身が深さ0、子孫だけに効く) ことが伝わらないため改善した。
       if (nd) {
-        const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 120);
-        [['有効', true], ['無効', false]].forEach(([label, val]) => {
+        const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 160);
+        [['このカードを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
           const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
             if (val && typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(nd.id);
-            bdRender(); bdDirty();
-            if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'toggle-auto-style');
+            else bdRender();
+            bdDirty();
+            if (nd.structure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(nd.id);
+            else if (nd.structure && typeof bdAutoLayout === 'function') bdAutoLayout(nd.id);
           }, {
             role: 'menuitemradio',
             checked: !!nd._autoStyle === val,
@@ -27394,7 +28167,9 @@ function bdContextMenu(e, nodeId) {
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
-          bdRender(); bdDirty();
+          if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nd.id], 'collapse');
+          else bdRender();
+          bdDirty();
         });
       }
       viewSub.item('フォーカス (Space)', () => bdFocusSelected());
@@ -27434,7 +28209,10 @@ function bdContextMenu(e, nodeId) {
                 }
               });
             }
-            bdRender(); bdDirty();
+            const childIds = bd.nodes.filter(ch => ch.parent === nodeId).map(ch => ch.id);
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId, ...childIds], 'container-toggle');
+            else bdRender();
+            bdDirty();
           }, {
             role: 'menuitemradio',
             checked: active,
@@ -27472,12 +28250,15 @@ function bdContextMenu(e, nodeId) {
             });
           }
           // このカードを subroot とする再レイアウト (空への変更でも、ルートから再整列するため呼ぶ)。
-          if (typeof bdAutoLayout === 'function') {
+          if (typeof bdRequestAutoLayout === 'function' || typeof bdAutoLayout === 'function') {
             const targetId = nextValue ? id : (typeof bdRoot === 'function' ? bdRoot(id)?.id : id);
-            if (targetId) bdAutoLayout(targetId);
+            if (targetId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(targetId);
+            else if (targetId) bdAutoLayout(targetId);
           }
         });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targetNodeIds, 'structure-change');
+        else bdRender();
+        bdDirty();
       };
       if (multi && typeof bdLinkifySelectionToTree === 'function') {
         strSub.item('ラインから親子化', () => { bdLinkifySelectionToTree(nodeId); });
@@ -27498,7 +28279,9 @@ function bdContextMenu(e, nodeId) {
         bdPushUndo();
         const targets = bd.selected.has(nodeId) ? [...bd.selected] : [nodeId];
         targets.forEach(id => { const n2 = bd.nodes.find(v => v.id === id); if (n2) n2.status = st; });
-        bdRender(); bdDirty();
+        if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial(targets, 'status');
+        else bdRender();
+        bdDirty();
       };
       statusSub.item(radioMark(!curStatus) + 'なし', () => setStatus(''));
       if (typeof bdStatusNames === 'function') {
@@ -27539,7 +28322,9 @@ function bdContextMenu(e, nodeId) {
             bdPushUndo();
             const n2 = bd.nodes.find(v => v.id === nodeId);
             if (n2) n2.markers = {};
-            bdRender(); bdDirty();
+            if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'clear-markers');
+            else bdRender();
+            bdDirty();
           });
         }
       }
@@ -27598,7 +28383,9 @@ function bdContextMenu(e, nodeId) {
       item('グループ化', () => {
         bdPushUndo();
         bd.groups.push({ id: bdId(), name: 'グループ' + (bd.groups.length + 1), nodeIds: [...bd.selected] });
-        bdRender(); bdDirty();
+        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-create');
+        else bdRender();
+        bdDirty();
       });
     }
     // 注: ルート直下の「フォーカス (Space)」および「拡張」サブ全体 (ノート編集/チェックボックス/
@@ -27612,7 +28399,7 @@ function bdContextMenu(e, nodeId) {
     if (nodeGroups.length) {
       nodeGroups.forEach(g => {
         item('グループ「'+esc(g.name)+'」を選択', () => { g.nodeIds.forEach(id=>bd.selected.add(id)); document.querySelectorAll('.bd-node').forEach(el=>el.classList.toggle('bd-selected',bd.selected.has(el.id.replace('bdn-','')))); if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles(); });
-        item('グループ「'+esc(g.name)+'」を解除', () => { bd.groups=bd.groups.filter(gg=>gg.id!==g.id); bdRender(); bdDirty(); showStatus('グループ解除'); });
+        item('グループ「'+esc(g.name)+'」を解除', () => { bd.groups=bd.groups.filter(gg=>gg.id!==g.id); if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'group-remove'); else bdRender(); bdDirty(); showStatus('グループ解除'); });
       });
     }
     sep();
@@ -27626,7 +28413,7 @@ function bdContextMenu(e, nodeId) {
 
   } else {
     // --- Blank area menu ---
-    const _stw = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: e.clientX, y: e.clientY };
+    const _stw = bdScreenToWorld(e.clientX, e.clientY);
     const clickWx = _stw.x, clickWy = _stw.y;
     item('カードを追加', () => { bdAddAt(clickWx, clickWy); });
     const newLinkSub = sub('新規リンクカード');
@@ -27698,14 +28485,6 @@ function bdContextMenu(e, nodeId) {
   imageDropSub.item(imageDropCheck('link') + esc(imageDropLabel('link')), () => {
     if (typeof bdSetImageDropMode === 'function') bdSetImageDropMode('link');
   });
-
-  if (typeof window !== 'undefined' && window.MeldexBoardStandalone?.appendContextMenuItems) {
-    try {
-      window.MeldexBoardStandalone.appendContextMenuItems(menu);
-    } catch (err) {
-      console.warn('[board] standalone context menu extension failed', err);
-    }
-  }
 
   document.body.appendChild(menu);
   if (typeof positionPopup === 'function') {
@@ -28053,7 +28832,8 @@ async function bdLinkifyCardAs(nodeId, type) {
     n.link = path;
     n.linkType = nodeData.type || type;
     n.text = label;
-    bdRender();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-card', { detailPanel: true });
+    else bdRender();
     bdDirty();
     if (typeof _bdOpenEntryInRightSidebar === 'function') _bdOpenEntryInRightSidebar(label, path, n.linkType);
     showStatus('リンクカード化: ' + label);
@@ -28076,7 +28856,8 @@ async function bdLinkifyCardFromExisting(nodeId) {
     const fallback = linkPath.split(/[/\\]/).pop() || linkPath;
     const label = (maybeLabel && maybeLabel.trim()) || fallback;
     if (!n.text || n.text === '無題') n.text = label;
-    bdRender();
+    if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-existing', { detailPanel: true });
+    else bdRender();
     bdDirty();
     showStatus('リンクカード化: ' + label);
   };
@@ -28726,6 +29507,13 @@ function bdIsAnnotationModeActive() {
   return typeof ann !== 'undefined' && !!ann.active && typeof state !== 'undefined' && state.view === 'board';
 }
 
+function bdRectPathMayIntersect(pathEl, left, top, width, height) {
+  if (!pathEl || typeof pathEl.getBBox !== 'function') return true;
+  const box = pathEl.getBBox();
+  return box.x + box.width >= left && box.x <= left + width
+    && box.y + box.height >= top && box.y <= top + height;
+}
+
 function bdInitInteraction(root) {
   const canvas = root?.querySelector?.('[data-bd-role="canvas"]')
     || (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas', root) : null)
@@ -28763,7 +29551,7 @@ function bdInitInteraction(root) {
       const rx = dx * cos - dy * sin, ry = dx * sin + dy * cos;
       dx = rx; dy = ry;
     }
-    const zoom = Math.max(0.1, bd.zoom || 1);
+    const zoom = bdSafeZoom(bd.zoom);
     return { dx: dx / zoom, dy: dy / zoom };
   }
 
@@ -28826,7 +29614,7 @@ function bdInitInteraction(root) {
       bd.connections = bd.connections.filter(item => item !== conn);
     }
     if (typeof bdRemoveConnectionFromSelection === 'function') bdRemoveConnectionFromSelection(conn.id);
-    bdDrawConns();
+    bdDrawConns({ connIds: [conn.id], reason: 'erase-connection' });
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     bdDirty();
   }
@@ -28910,7 +29698,7 @@ function bdInitInteraction(root) {
     const midLocal = (typeof bdClientToCanvasLocal === 'function')
       ? bdClientToCanvasLocal(mid.clientX, mid.clientY, canvas)
       : { x: mid.clientX, y: mid.clientY };
-    const newZoom = Math.max(0.1, Math.min(5, touchPinch.startZoom * (touchDistance(a, b) / touchPinch.startDist)));
+    const newZoom = bdClampZoom(touchPinch.startZoom * (touchDistance(a, b) / touchPinch.startDist));
     const scale = newZoom / touchPinch.startZoom;
     bd.panX = midLocal.x - (touchPinch.midLocal.x - touchPinch.startPanX) * scale;
     bd.panY = midLocal.y - (touchPinch.midLocal.y - touchPinch.startPanY) * scale;
@@ -28938,7 +29726,9 @@ function bdInitInteraction(root) {
     if (!nodeId || erasedNodeIds.has(nodeId)) return;
     erasedNodeIds.add(nodeId);
     ensureEraseUndoCaptured();
+    const removedConnIds = bd.connections.filter(c => c.from === nodeId || c.to === nodeId).map(c => c.id);
     bd.connections = bd.connections.filter(c => c.from !== nodeId && c.to !== nodeId);
+    const detachedChildIds = [];
     bd.nodes.forEach(n => {
       if (n.parent !== nodeId) return;
       if (n.contained) {
@@ -28948,13 +29738,22 @@ function bdInitInteraction(root) {
         n.contained = false;
       }
       n.parent = '';
+      detachedChildIds.push(n.id);
     });
     if (bd.groups) bd.groups.forEach(g => { if (g.nodeIds) g.nodeIds = g.nodeIds.filter(id => id !== nodeId); });
     bd.nodes = bd.nodes.filter(n => n.id !== nodeId);
     if (typeof bdPruneConnectionSelection === 'function') bdPruneConnectionSelection();
     if (bd.groups) bd.groups = bd.groups.filter(g => g.nodeIds && g.nodeIds.length > 0);
     bd.selected.delete(nodeId);
-    bdRender();
+    document.getElementById('bdn-' + nodeId)?.remove();
+    removedConnIds.forEach(id => bdDrawConns({ connIds: [id], reason: 'erase-node' }));
+    detachedChildIds.forEach(id => {
+      if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'erase-parent');
+    });
+    if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'erase-node');
+    }
     if (!bd.selected.size && typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     bdDirty();
   }
@@ -29128,9 +29927,7 @@ function bdInitInteraction(root) {
 
     if (e.button===0 && bd.tool === 'add-line' && !nodeEl) {
       e.preventDefault();
-      const fromPoint = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : { x: e.clientX, y: e.clientY };
+      const fromPoint = bdScreenToWorld(e.clientX, e.clientY);
       bdSelect(null);
       bd._lineToolDrag = { fromPoint, startX: e.clientX, startY: e.clientY, dragged: false };
       ensureConnPreview();
@@ -29210,33 +30007,19 @@ function bdInitInteraction(root) {
     }
     // Gap-2 §9.7: アンカー由来の接続モードで空白にドロップ → 新規カード作成 + 接続を
     // 1 操作としてまとめる（bdPushUndo 1 回で undo が両方戻る）。
+    // 課題7-1: 以前はここでインラインに bdCreateNodeWithStyle('', x, y, {}) を直接呼んでおり、
+    // parent すら指定していなかった (線でつながって見えるだけで、折りたたみ・自動整列・
+    // 階層別スタイルの対象外になる壊れた構造データを作っていた)。「＋」をドラッグして空白へ
+    // 落とす経路の正しい実装 (_bdCreateAnchorCardAndConnectionCore、親子付け + 階層別スタイル
+    // 適用込み) へ委譲し、2つの経路を同じロジックへ統一する。
     if (bd.connecting && !nodeEl && bd._connOrigin === 'anchor') {
       const fromId = bd.connecting;
+      const fromAnchor = bd._connFromAnchor || '';
       const wc = bdScreenToWorld(e.clientX, e.clientY);
-      bdPushUndo();
-      const newNode = (typeof bdCreateNodeWithStyle === 'function')
-        ? bdCreateNodeWithStyle('', wc.x, wc.y, {})
-        : (typeof bdNode === 'function' ? bdNode('', wc.x, wc.y, 160, 0, {}) : null);
-      if (newNode) {
-        bd.nodes.push(newNode);
-        if (bdCanCreateConnection(fromId, newNode.id)) {
-          bdCreateConnection(fromId, newNode.id, { label: bd._connLabel || '' });
-        }
+      bd.connecting = null; bd._connLabel = ''; bd._connOrigin = null; bd._connFromAnchor = null;
+      if (typeof _bdCreateAnchorCardAndConnectionCore === 'function') {
+        _bdCreateAnchorCardAndConnectionCore(fromId, fromAnchor, wc);
       }
-      bd.connecting=null; bd._connLabel=''; bd._connOrigin=null;
-      if (newNode) {
-        if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
-          if (typeof bdRequestFullRender === 'function') bdRequestFullRender('anchor-mode-empty-add-fallback');
-          else bdRender();
-        }
-        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(newNode.id, 'anchor-mode-empty-add');
-        if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([fromId, newNode.id], 'anchor-mode-empty-add');
-        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [newNode.id] }, 'anchor-mode-empty-add');
-        bdSelect(newNode.id);
-        // 追加直後のインライン編集は発火させない (F2 / ダブルクリックで編集開始)
-      }
-      bdDirty();
-      showStatus('カードとラインを追加しました');
       e.preventDefault();
       return;
     }
@@ -29365,9 +30148,7 @@ function bdInitInteraction(root) {
     if (!nodeEl) {
       if (!e.ctrlKey) bdSelect(null);
       canvas.focus();
-      const startPoint = (typeof bdScreenToWorld === 'function')
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : (() => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - bd.panX) / bd.zoom, y: (e.clientY - r.top - bd.panY) / bd.zoom }; })();
+      const startPoint = bdScreenToWorld(e.clientX, e.clientY);
       selStart = {
         ...startPoint,
         additive: !!e.ctrlKey,
@@ -29414,7 +30195,7 @@ function bdInitInteraction(root) {
     // Ctrl+Space+ドラッグ: 左右でズーム（ドラッグ開始地点を軸）
     if (_cspZoom) {
       const delta = _bdPointerDelta(e.clientX - _cspZoomSX) * 0.005;
-      const newZoom = Math.max(0.1, Math.min(5, _cspZoomOZ + delta));
+      const newZoom = bdClampZoom(_cspZoomOZ + delta);
       // ドラッグ開始地点を軸にズーム（ホイールズームと同じ原理）
       bd.panX = _cspZoomMX - (_cspZoomMX - _cspZoomOPX) * (newZoom / _cspZoomOZ);
       bd.panY = _cspZoomMY - (_cspZoomMY - _cspZoomOPY) * (newZoom / _cspZoomOZ);
@@ -29436,7 +30217,7 @@ function bdInitInteraction(root) {
       if (!start.dragged && Math.sqrt(dx*dx+dy*dy) > 4) start.dragged = true;
       const startPt = lineToolStartPoint(start);
       if (startPt) {
-        const _w = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: (e.clientX - canvas.getBoundingClientRect().left - bd.panX) / bd.zoom, y: (e.clientY - canvas.getBoundingClientRect().top - bd.panY) / bd.zoom };
+        const _w = bdScreenToWorld(e.clientX, e.clientY);
         preview.setAttribute('x1', startPt.x);
         preview.setAttribute('y1', startPt.y);
         preview.setAttribute('x2', _w.x);
@@ -29457,7 +30238,7 @@ function bdInitInteraction(root) {
         if (preview) {
           const n = bd.nodes.find(v=>v.id===rd.nid);
           if (n) {
-            const _w = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: (e.clientX - canvas.getBoundingClientRect().left - bd.panX) / bd.zoom, y: (e.clientY - canvas.getBoundingClientRect().top - bd.panY) / bd.zoom };
+            const _w = bdScreenToWorld(e.clientX, e.clientY);
             const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
             preview.setAttribute('x1', pos.x + (rd.nodeEl.offsetWidth||100)/2);
             preview.setAttribute('y1', pos.y + (rd.nodeEl.offsetHeight||60)/2);
@@ -29515,7 +30296,7 @@ function bdInitInteraction(root) {
       });
       if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
       bdDrawConns({ nodeIds: movedIds, reason: 'drag-move' });
-      bdDrawFrames();
+      if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       // ドロップターゲットのハイライト（ドラッグ中のノードの下にあるノードを検出）
       document.querySelectorAll('.bd-node.bd-drop-target').forEach(el => el.classList.remove('bd-drop-target'));
       const underEl = bdFindNodeDropTargetAtPoint(e.clientX, e.clientY, Object.keys(dragOffsets));
@@ -29535,9 +30316,7 @@ function bdInitInteraction(root) {
     }
     if (selStart) {
       // ワールド座標で矩形選択を計算（bd-world にappendしてズーム/パンに追従）
-      const wp = (typeof bdScreenToWorld === 'function')
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : (() => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - bd.panX) / bd.zoom, y: (e.clientY - r.top - bd.panY) / bd.zoom }; })();
+      const wp = bdScreenToWorld(e.clientX, e.clientY);
       if (!selRect) {
         selRect = document.createElement('div');
         selRect.className = 'bd-select-rect';
@@ -29547,7 +30326,7 @@ function bdInitInteraction(root) {
       const l = Math.min(selStart.x, wp.x), t = Math.min(selStart.y, wp.y);
       const w = Math.abs(wp.x - selStart.x), h = Math.abs(wp.y - selStart.y);
       // 線幅をズームに合わせて補正（見た目を一定に保つ）
-      const zInv = 1 / Math.max(0.1, bd.zoom || 1);
+      const zInv = 1 / bdSafeZoom(bd.zoom);
       selRect.style.cssText = `left:${l}px;top:${t}px;width:${w}px;height:${h}px;position:absolute;border-width:${zInv}px;`;
       // 範囲内のノード / ライン を判定（ワールド座標で判定）
       // Ctrl+ドラッグ (additive): baseSelection XOR rect_items （矩形内のうち既に選択済みだったものは外れ、選択されていなかったものは加わる = トグル）
@@ -29556,7 +30335,8 @@ function bdInitInteraction(root) {
       bd.nodes.forEach(n => {
         const el = document.getElementById('bdn-'+n.id);
         if (!el || !el.isConnected) return;
-        const nw = el.offsetWidth || 100, nh = el.offsetHeight || 30;
+        const nw = n.w || n._rw || el.offsetWidth || 100;
+        const nh = n.h || n._rh || el.offsetHeight || 30;
         const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
         if (pos.x + nw > l && pos.x < l + w && pos.y + nh > t && pos.y < t + h) rectNodeIds.add(n.id);
       });
@@ -29579,6 +30359,8 @@ function bdInitInteraction(root) {
         const pathEl = document.getElementById(`bd-path-${c.id}`);
         if (!pathEl || typeof pathEl.getTotalLength !== 'function') return;
         try {
+          // 安価な bbox で交差し得ないラインを先に除外し、詳細サンプリングを候補だけに限定する。
+          if (!bdRectPathMayIntersect(pathEl, l, t, w, h)) return;
           const total = pathEl.getTotalLength();
           if (!total) return;
           const samples = Math.min(240, Math.max(24, Math.ceil(total / Math.max(6, Math.min(24, w || 6, h || 6)))));
@@ -29632,9 +30414,7 @@ function bdInitInteraction(root) {
       const start = bd._lineToolDrag;
       document.getElementById('bd-conn-preview')?.remove();
       const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : { x: e.clientX, y: e.clientY };
+      const dropW = bdScreenToWorld(e.clientX, e.clientY);
       let created = null;
       if (targetEl) {
         const toId = targetEl.id.replace('bdn-','');
@@ -29666,9 +30446,7 @@ function bdInitInteraction(root) {
           const toId = targetEl.id.replace('bdn-','');
           if (bdCanCreateConnection(rd.nid, toId)) { bdPushUndo(); if (bdCreateConnection(rd.nid, toId)) showStatus('ラインを追加しました'); }
         } else {
-          const dropW = typeof bdScreenToWorld === 'function'
-            ? bdScreenToWorld(e.clientX, e.clientY)
-            : { x: e.clientX, y: e.clientY };
+          const dropW = bdScreenToWorld(e.clientX, e.clientY);
           bdPushUndo();
           if (bdCreateConnection(rd.nid, '', { toPoint: dropW })) showStatus('ラインを追加しました');
         }
@@ -29769,8 +30547,13 @@ function bdInitInteraction(root) {
             n.y = nAbs.y - parentAbs.y;
             n.parent = parentId;
             n.contained = true;
+            document.getElementById('bdn-' + id)?.remove();
           });
-          bdRender();
+          if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(parentId, 'container-drop');
+          else if (typeof bdRender === 'function') bdRender();
+          if (typeof bdMarkConnectionsDirtyByNodes === 'function') {
+            bdMarkConnectionsDirtyByNodes([parentId, ...dragIds], 'container-drop');
+          }
           containerized = true;
           showStatus('コンテナに内包しました');
         }
@@ -29828,7 +30611,8 @@ function bdInitInteraction(root) {
         const _resizedNode = bd.nodes.find(v => v.id === _resizedId);
         if (_resizedNode && !_resizedNode.contained) {
           const rootId = (typeof _bdFindStructureRoot === 'function') ? _bdFindStructureRoot(_resizedId) : null;
-          if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+          if (rootId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
+          else if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
         }
       }
       if (finishedResizeSelection && typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(finishedResizeSelection.items.map(item => item.id), 'resize-end');
@@ -29889,7 +30673,7 @@ function bdInitInteraction(root) {
     const dir = e.deltaY > 0 ? -1 : 1;
     let newZoom = Math.round(oz / step) * step + dir * step;
     newZoom = Math.round(newZoom / step) * step;  // 浮動小数点誤差の正規化
-    newZoom = Math.max(0.1, Math.min(5, newZoom));
+    newZoom = bdClampZoom(newZoom);
     bd.zoom = newZoom;
     bd.panX = mx - anchorWorldX * bd.zoom;
     bd.panY = my - anchorWorldY * bd.zoom;
@@ -31028,14 +31812,12 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-card-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="カードスタイル管理" aria-label="カードスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="add-line" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="ライン追加" aria-label="ライン追加">${_bdIcon('spline', 16)}</button>
       <button type="button" id="${idFor('bd-line-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="line-style-select" data-bd-action="pick-line-style" title="ラインスタイル" aria-label="ラインスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-line-style-preview')}" class="bd-style-preview bd-style-preview-line" data-bd-control="line-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-line-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="ラインスタイル管理" aria-label="ラインスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム" aria-label="消しゴム">${_bdIcon('eraser', 16)}</button>
       <div class="tb-spacer"></div>
@@ -32160,13 +32942,6 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (tabId) GBTabs.activateTab(targetPaneId, tabId, { preserveActivePane });
   if (!preserveActivePane && typeof GBLayout.setActivePane === 'function') GBLayout.setActivePane(targetPaneId, { sync: true });
   return true;
-}
-
-async function bdSyncLinkedSelectionToPane(path, label, linkType) {
-  // 選択は情報表示の更新だけに限定する。以前は選択だけで別ペインへリンク先を
-  // 自動表示しており、クリックやドラッグ終了時にフロートが勝手に開く原因になっていた。
-  _bdLinkedSelectionSyncSeq += 1;
-  return false;
 }
 
 async function bdOpenLinkedPath(path, label, options) {
@@ -33626,18 +34401,20 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     if (link) {
       if (isExternal(link)) {
         return {
+          nodeId: node.id,
           kind: 'embedded',
           label: String(node.text || link),
           typeLabel: 'リンク',
           source: link,
         };
       }
-      return { kind: 'file', path: link, type: node.linkType || '' };
+      return { kind: 'file', nodeId: node.id, path: link, type: node.linkType || '', image: !!node.img };
     }
     const sourcePath = String(node.imageSourcePath || '').trim() || imagePathFromUrl(node.img);
-    if (sourcePath) return { kind: 'file', path: sourcePath, type: 'image' };
+    if (sourcePath) return { kind: 'file', nodeId: node.id, path: sourcePath, type: 'image', image: true };
     if (node.img) {
       return {
+        nodeId: node.id,
         kind: 'embedded',
         label: String(node.text || '埋め込み画像'),
         typeLabel: '埋め込み画像',
@@ -33738,6 +34515,52 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     return String(currentState?.currentBoardPath || '').trim();
   }
 
+  function boardIdentity() {
+    return {
+      path: String((typeof bd !== 'undefined' && bd?.path) || currentBoardPath() || '').trim(),
+      openSeq: Number(typeof bd !== 'undefined' && bd?._openSeq) || 0,
+    };
+  }
+
+  function targetIsCurrent(snapshot, revision, infoHost) {
+    if (revision !== renderRevision || !infoHost?.isConnected || typeof bd === 'undefined') return false;
+    const currentPath = String(bd.path || currentBoardPath() || '').trim();
+    if (currentPath !== snapshot.boardPath || (Number(bd._openSeq) || 0) !== snapshot.openSeq) return false;
+    const node = bd.nodes?.find(candidate => candidate?.id === snapshot.nodeId);
+    const current = resolveTarget(node);
+    return !!current && current.kind === 'file' && current.path === snapshot.targetPath;
+  }
+
+  function relocateLinkedNode(snapshot, revision, infoHost) {
+    if (!targetIsCurrent(snapshot, revision, infoHost)) return;
+    if (snapshot.image && typeof global.bdRelocateImageNode === 'function') {
+      void global.bdRelocateImageNode(snapshot.nodeId);
+      return;
+    }
+    if (typeof global.showLinkInsertModal !== 'function') {
+      global.showStatus?.('ファイル選択画面を開けませんでした', true);
+      return;
+    }
+    global.showLinkInsertModal(null, result => {
+      if (!result || !targetIsCurrent(snapshot, revision, infoHost)) return;
+      const nextPath = result.type === 'file' ? String(result.path || '').trim() : String(result.url || '').trim();
+      if (!nextPath) return;
+      const node = bd.nodes.find(candidate => candidate?.id === snapshot.nodeId);
+      if (!node) return;
+      global.bdPushUndo?.();
+      node.link = nextPath;
+      node.linkType = result.type === 'file' ? String(result.fileType || '') : '';
+      if (!node.text || node.text === '無題') node.text = String(result.name || nextPath.split(/[/\\]/).pop() || nextPath);
+      if (typeof global.bdRefreshNodesPartial === 'function') {
+        global.bdRefreshNodesPartial([node.id], 'relocate-file-link', { detailPanel: true });
+      } else {
+        global.bdRender?.();
+      }
+      global.bdDirty?.();
+      global.showStatus?.('リンク先のファイルを付け替えました');
+    });
+  }
+
   function cancelScheduled() {
     if (scheduledHandle == null) return;
     if (typeof global.cancelIdleCallback === 'function') global.cancelIdleCallback(scheduledHandle);
@@ -33765,13 +34588,14 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     const targets = nodes.map(resolveTarget).filter(Boolean);
     const boardPath = currentBoardPath();
     const renderKey = targets.length
-      ? targets.map(target => `${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
+      ? targets.map(target => `${target.nodeId || ''}:${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
       : (boardPath ? `board:${boardPath}` : 'empty');
     const tabHost = global.document.getElementById('detail-tab-note-editor');
     if (tabHost?.dataset.bdBoardInfoKey === renderKey && tabHost.querySelector('[data-bd-board-file-info]')) {
       return targets.length > 0;
     }
     const revision = ++renderRevision;
+    const identity = boardIdentity();
     const infoHost = ensureShell(renderKey);
     if (!infoHost) return false;
     if (!targets.length) {
@@ -33801,9 +34625,17 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
       }
       const target = targets[0];
       if (target.kind === 'file' && global.MeldexFileInfoPanel?.renderInto) {
+        const snapshot = {
+          nodeId: target.nodeId,
+          openSeq: identity.openSeq,
+          boardPath: identity.path,
+          targetPath: target.path,
+          image: target.image || target.type === 'image',
+        };
         global.MeldexFileInfoPanel.renderInto(infoHost, target.path, {
-          isCurrent: () => revision === renderRevision && infoHost.isConnected,
+          isCurrent: () => targetIsCurrent(snapshot, revision, infoHost),
           showTags: true,
+          onRelocate: () => relocateLinkedNode(snapshot, revision, infoHost),
         });
         return;
       }
@@ -34646,11 +35478,24 @@ function bdAddChildToSelected() {
     else if (dir === 'up') { nx = parentNode.x; ny = parentNode.y - ph - G.level; }
     else if (dir === 'left') { nx = parentNode.x - pw - G.level; ny = parentNode.y; }
     bdPushUndo();
-    const child = bdCreateNodeWithStyle('', nx, ny, { ...bdInheritStyleOpts(parentNode), parent: parentId });
+    // 課題6・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルを
+    // 挿入前に同期適用する。従来は親の見た目をコピーするだけで、220〜420ms 後の自動整列
+    // (bdApplyAutoStyle) が深さ別スタイルへ書き換えるまで「既定→適用」の二段階に見えていた。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
+    const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+    const parentDepth = (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(parentId, anchor) : 0;
+    const childDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(parentDepth + 1, anchor) : null;
+    // 階層別スタイル未使用ツリーでは現行どおり親の見た目を継承する。
+    const childOpts = childDepthStyle ? { parent: parentId } : { ...bdInheritStyleOpts(parentNode), parent: parentId };
+    const child = bdCreateNodeWithStyle('', nx, ny, childOpts);
+    if (childDepthStyle) _bdApplyDepthCardFieldsToNode(child, childDepthStyle);
     bd.nodes.push(child);
     const conn = typeof bdCreateStructureConnection === 'function'
       ? bdCreateStructureConnection(parentId, child.id, effectiveStructure)
       : bdCreateConnectionWithStyle(parentId, child.id, { arrow: effectiveStructure === 'flowchart' ? 'end' : '' });
+    if (childDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+      _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(parentDepth, anchor));
+    }
     bd.connections.push(conn);
     // ツリー全体に構造が一つも無い場合 (= bdStructureOf が '' を返す)、ルートに既定を書き込む。
     // 中間カードの構造設定が既に効いている場合はここには入らない。
@@ -34717,13 +35562,27 @@ function bdAddSiblingToSelected() {
       ny = selNode.y;
     }
     bdPushUndo();
-    const sib = bdCreateNodeWithStyle('', nx, ny, { ...bdInheritStyleOpts(selNode), parent: parentId });
+    // 課題6・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルを
+    // 挿入前に同期適用する。兄弟は selNode と同じ親を共有する = selNode 自身の子孫ではないため、
+    // 起点解決は parentId 起点で行う (selId 起点で解決すると、selNode 自身が起点カードだった
+    // 場合に selNode 自身の「深さ0」を誤って兄弟へ適用してしまう)。無ければ従来どおり
+    // 選択カードの見た目を継承する。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
+    const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+    const parentDepth = (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(parentId, anchor) : 0;
+    const sibDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(parentDepth + 1, anchor) : null;
+    const sibOpts = sibDepthStyle ? { parent: parentId } : { ...bdInheritStyleOpts(selNode), parent: parentId };
+    const sib = bdCreateNodeWithStyle('', nx, ny, sibOpts);
+    if (sibDepthStyle) _bdApplyDepthCardFieldsToNode(sib, sibDepthStyle);
     const insertIndex = bd.nodes.findIndex(node => node.id === selId);
     if (insertIndex >= 0) bd.nodes.splice(insertIndex + 1, 0, sib);
     else bd.nodes.push(sib);
     const conn = typeof bdCreateStructureConnection === 'function'
       ? bdCreateStructureConnection(parentId, sib.id, effectiveStructure)
       : bdCreateConnectionWithStyle(parentId, sib.id, { arrow: effectiveStructure === 'flowchart' ? 'end' : '' });
+    if (sibDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+      _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(parentDepth, anchor));
+    }
     bd.connections.push(conn);
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(sib)) {
       if (typeof bdRequestFullRender === 'function') bdRequestFullRender('add-sibling-fallback');
@@ -35606,6 +36465,26 @@ function _bdEnsureBoardFileStyleTab() {
   if (typeof renderFileStyleTab === 'function') renderFileStyleTab('board');
 }
 
+// 課題3 (2026-08-14): 階層別/カード/ラインスタイルのフィールドを編集すると、その値を反映する
+// ための内部再描画 (bdRender()) が bdSyncBoardUi() 経由で選択タブを強制的に「カード」/「ライン」
+// タブへ切り替えてしまい、スタイル管理タブを開いたまま編集していたユーザーが弾き出される不具合が
+// あった。フィールド編集ハンドラは bdRender() を呼ぶ前後でこのフラグを立て (try/finally で必ず
+// 解除)、_bdSetNodeDetailTabs / _bdSetConnDetailTab の activate 分岐でフラグが立っている間は
+// 強制切替をスキップする。ユーザーが実際にカード/ラインをクリックして選択を変えた場合の強制切替
+// (2026-08-13 導入の E2E 契約) はこの対象外 — canvas 側のクリック処理は bdRefreshSelectionDetails
+// を直接呼ぶため bdRender() の内部同期パスを経由しない。
+let _bdSuppressDetailTabForceActivate = false;
+function _bdRenderKeepingDetailTab() {
+  if (typeof bdRender !== 'function') return undefined;
+  const prev = _bdSuppressDetailTabForceActivate;
+  _bdSuppressDetailTabForceActivate = true;
+  try {
+    return bdRender();
+  } finally {
+    _bdSuppressDetailTabForceActivate = prev;
+  }
+}
+
 // カード選択時: カードタブに集約した HTML を入れ、カードタブを表示してアクティブに。
 // ラインタブは非表示にする (選択中に同時に存在する場合のみライン側が別途上書きする)。
 // スタイル管理タブ (カード/ライン/階層別スタイル) はボード表示中は常に出す。
@@ -35616,14 +36495,16 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
-  const hasInformation = !!(node && window.MeldexBoardInfoPanel?.hasInformation?.(node));
   window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
-  const nextTab = options.activate === true
-    ? (hasInformation ? 'note-editor' : 'board-card')
+  // 以前は「情報」を出せる場合に note-editor を開いていたが、hasInformation() は
+  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「情報」タブへ
+  // 飛んでいた (2026-08-13 ユーザー指摘)。「情報」はタブから明示的に開く。
+  const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
+    ? 'board-card'
     : (typeof _bdResolveCurrentBoardTab === 'function'
       ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
       : 'board-card');
@@ -35641,7 +36522,7 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
-  const nextTab = options.activate === true
+  const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
       ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
@@ -35713,6 +36594,14 @@ function _bdBuildNodeDetailHtml(node) {
     ? ''
     : Object.entries(BD_MARKERS).map(([category, markers]) => _bdMarkerSelectHtml(node, category, markers)).join('');
   const parent = node.parent ? (bd.nodes.find(item => item.id === node.parent)?.text?.split('\n')[0] || node.parent) : 'なし';
+  // 課題18-案A: 「効いている起点」の小さな状態表示。祖先鎖の途中に起点があればそれを示す
+  // (絶対ルートとは限らない)。起点自身なら「このカード自身」と表示する。
+  const effectiveAnchor = typeof _bdNearestAutoStyleAnchor === 'function' ? _bdNearestAutoStyleAnchor(node.id) : null;
+  const effectiveAnchorLabel = !effectiveAnchor
+    ? 'なし (階層別スタイル未適用)'
+    : effectiveAnchor.id === node.id
+      ? 'このカード自身'
+      : ((effectiveAnchor.text || '').split('\n')[0] || effectiveAnchor.id);
   const opacityPct = node.opacity != null ? Math.round(Math.max(0, Math.min(1, node.opacity)) * 100) : 100;
   const title = (node.text || '').split('\n')[0] || '無題カード';
   const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
@@ -35758,7 +36647,11 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field"><span>親カード</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="container" ${node.container ? 'checked' : ''}><span>コンテナ</span></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイル</span></label>
+        <div class="gb-check-help-row">
+          <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
+          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。') : ''}
+        </div>
+        <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
         </div>
@@ -35827,59 +36720,6 @@ function _bdBuildConnectionDetailHtml(conn) {
     </div>`;
 }
 
-function _bdBuildBoardDetailHtml() {
-  // cardStyle/lineStyle は HTML 内で直接使われない（_bdDetailStyleTriggerHtml が
-  // ID から再取得する）。bdGet*StyleById の副作用（bdEnsureBoardUiState 連鎖）を
-  // 避けるため呼ばない。
-  const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
-  const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
-  const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : 'リセット';
-  const exportIcon = typeof lucide === 'function' ? lucide('upload', 14) : '出力';
-  const paletteIcon = typeof lucide === 'function' ? lucide('palette', 14) : '色';
-  return `
-    <div class="bd-detail-panel" data-bd-detail-root="board">
-      <div class="bd-detail-heading">ボード</div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードスタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-board-card-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-card-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-card-style" title="選択中スタイルをデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-card-style" title="スタイルをデフォルトに戻す">${resetIcon}</button>
-        </div>
-        <div class="bd-style-summary-card"><div class="bd-style-editor-fields bd-style-editor-fields--fmt" data-bd-board-card-style-fields></div></div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">ラインスタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDetailStyleTriggerHtml('line', bd.activeLineStyle, 'data-bd-board-line-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-line-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-line-style" title="選択中スタイルをデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-line-style" title="スタイルをデフォルトに戻す">${resetIcon}</button>
-        </div>
-        <div class="bd-style-summary-card"><div class="bd-style-editor-fields bd-style-editor-fields--fmt" data-bd-board-line-style-fields></div></div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">階層別スタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDepthStyleTriggerHtml('data-bd-board-depth-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="apply-depth-theme-colors" title="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-depth-styles" title="階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-depth-styles" title="保存したデフォルトに戻す (未保存ならビルトイン初期値)">${resetIcon}</button>
-        </div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-card-styles" data-bd-action="manage-card-styles">カードスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-line-styles" data-bd-action="manage-line-styles">ラインスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-export-board-styles" data-bd-action="export-board-styles">${exportIcon} スタイル一式を書き出し</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-statuses" data-bd-action="manage-statuses">ステータスを管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
-        </div>
-      </div>
-    </div>`;
-}
-
 function _bdDepthStyleTriggerHtml(pickAttr) {
   const styles = typeof bdEnsureDepthStyles === 'function' ? bdEnsureDepthStyles() : (bd?.depthStyles || []);
   const count = Array.isArray(styles) ? styles.length : 0;
@@ -35911,7 +36751,12 @@ function _bdBindSelectionDetailPanel() {
           _bdAssignCardStyleToNodes(nodeIds, styleId);
         },
         onAfterPick() {
-          bdRender();
+          nodeIds.forEach(id => {
+            if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'selection-detail-style');
+          });
+          if (typeof bdMarkConnectionsDirtyByNodes === 'function') {
+            bdMarkConnectionsDirtyByNodes(nodeIds, 'selection-detail-style');
+          }
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         },
@@ -35930,7 +36775,7 @@ function _bdBindSelectionDetailPanel() {
           _bdAssignLineStyleToConnections(connIds, styleId);
         },
         onAfterPick() {
-          bdDrawConns();
+          bdDrawConns({ connIds, reason: 'selection-detail-style' });
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         },
@@ -35954,7 +36799,7 @@ function _bdBindSelectionDetailPanel() {
          'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth', 'textShadowColor']
           .forEach(key => { if (eff[key] !== undefined) displayStyle[key] = eff[key]; });
         const rerender = () => {
-          bdDrawConns();
+          bdDrawConns({ connIds, reason: 'selection-detail-fields' });
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         };
@@ -36164,6 +37009,20 @@ async function _bdOpenLinkedTarget(node, e) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
+function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
+  const ids = includeSubtree && typeof bdFastSubtreeIds === 'function'
+    ? bdFastSubtreeIds(nodeId)
+    : [nodeId];
+  ids.forEach(id => {
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'node-detail');
+  });
+  if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(ids, 'node-detail');
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'node-detail');
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: true }, 'node-detail');
+  }
+}
+
 function _bdBindNodeDetailPanel(nodeId) {
   const roots = [...document.querySelectorAll('[data-bd-detail-root="node"]')].filter(root => root.dataset.nodeId === nodeId);
   if (!roots.length) return;
@@ -36176,15 +37035,18 @@ function _bdBindNodeDetailPanel(nodeId) {
     if (field === '_autoStyle' && node._autoStyle && typeof bdApplyAutoStyle === 'function') {
       bdApplyAutoStyle(node.id);
     }
-    if (field === 'structure' && typeof bdAutoLayout === 'function') {
+    if (field === 'structure') {
       // 構造設定: 新しい構造 (非空) ならこのカードをサブルートに再レイアウト。
       // 「親に従う」(空) に戻した場合は、親から再レイアウトが必要なのでルートで実行。
       const targetId = node.structure ? node.id : (typeof bdRoot === 'function' ? bdRoot(node.id)?.id : node.id);
-      if (targetId) bdAutoLayout(targetId);
+      if (targetId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(targetId);
+      else if (targetId && typeof bdAutoLayout === 'function') bdAutoLayout(targetId);
     }
-    bdRender();
+    _bdRefreshNodeDetailDirty(nodeId, field === '_autoStyle');
     bdDirty();
-    if (field === 'link') {
+    if (field === 'link' || field === '_autoStyle') {
+      // _autoStyle: 「効いている起点」表示 (課題18-案A) と階層別スタイルタブの起点プリセット行
+      // (課題18-案B) はこのカードの起点状態に依存するため、切り替え直後に再描画する。
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     }
   };
@@ -36214,7 +37076,7 @@ function _bdBindNodeDetailPanel(nodeId) {
   const node = bd.nodes.find(item => item.id === nodeId);
   const rerenderNodeDetail = () => {
     bdDirty();
-    bdRender();
+    _bdRefreshNodeDetailDirty(nodeId, false);
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
@@ -36300,7 +37162,7 @@ function _bdBindNodeDetailPanel(nodeId) {
       if (!target) return;
       bdPushUndo();
       bdClearCardStyleOverrides(target);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     root.querySelector('[data-bd-action="open-link"]')?.addEventListener('click', (e) => {
@@ -36324,7 +37186,7 @@ function _bdBindConnectionDetailPanel(connId) {
     if (!conn) return;
     bdPushUndo();
     _bdUpdateConnectionFromField(conn, field, value);
-    bdDrawConns();
+    bdDrawConns({ connIds: [connId], reason: 'connection-detail' });
     bdDirty();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
@@ -36352,7 +37214,7 @@ function _bdBindConnectionDetailPanel(connId) {
     });
     const rerenderConnDetail = () => {
       bdDirty();
-      bdDrawConns();
+      bdDrawConns({ connIds: [connId], reason: 'connection-detail-style' });
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     };
@@ -36429,189 +37291,33 @@ function _bdBindConnectionDetailPanel(connId) {
     });
   });
 }
-
-function _bdBindBoardDetailPanel() {
-  const roots = [...document.querySelectorAll('[data-bd-detail-root="board"]')];
-  if (!roots.length) return;
-  // 注意: bdGetCardStyleById/bdGetLineStyleById は内部で bdEnsureBoardUiState を呼んで
-  // bd.cardStyles/bd.lineStyles を新配列に置換する。両方を別々に呼ぶと cardStyle 取得後に
-  // bd.cardStyles が再生成され、cardStyle 参照が「古い配列内のオブジェクト」になり、
-  // 編集が bd.cardStyles に反映されない。bdEnsureBoardUiState を1回だけ呼んで直接 find する。
-  bdEnsureBoardUiState();
-  const cardStyle = bd.cardStyles.find(s => s.id === bd.activeCardStyle) || bd.cardStyles[0] || null;
-  const lineStyle = bd.lineStyles.find(s => s.id === bd.activeLineStyle) || bd.lineStyles[0] || null;
-  const rerenderBoardDetail = () => {
-    bdDirty();
-    bdRender();
-    bdRefreshBoardToolbar();
-    if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  };
-  roots.forEach(root => {
-    root.querySelectorAll('[data-bd-board-color-field]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (typeof bdPickBoardBackgroundColor === 'function') bdPickBoardBackgroundColor(btn);
-        else if (typeof openColorPalette === 'function') {
-          const current = bd._bgColor || '';
-          openColorPalette(btn, current, color => {
-            bd._bgColor = color || '';
-            const canvas = document.getElementById('bd-canvas');
-            const swatch = document.getElementById('bd-bg-swatch');
-            if (canvas) canvas.style.background = bd._bgColor || 'var(--bg)';
-            if (swatch) setColorSwatchValue(swatch, bd._bgColor || '');
-            bdDirty();
-            if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-            if (typeof bdMarkExtrasDirty === 'function') {
-              bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-color');
-              if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-            }
-          });
-        }
-      });
-    });
-    root.querySelectorAll('[data-bd-board-reset-field]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (typeof bdSetBoardBackgroundColor === 'function') bdSetBoardBackgroundColor('');
-        else {
-          bd._bgColor = '';
-          const canvas = document.getElementById('bd-canvas');
-          const swatch = document.getElementById('bd-bg-swatch');
-          if (canvas) canvas.style.background = 'var(--bg)';
-          if (swatch) setColorSwatchValue(swatch, '');
-          bdDirty();
-          if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-          if (typeof bdMarkExtrasDirty === 'function') {
-            bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-reset');
-            if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-          }
-        }
-      });
-    });
-    root.querySelector('[data-bd-action="set-bg-image"]')?.addEventListener('click', () => {
-      if (typeof bdChooseBoardBackgroundImage === 'function') bdChooseBoardBackgroundImage();
-    });
-    root.querySelector('[data-bd-action="clear-bg-image"]')?.addEventListener('click', () => {
-      if (typeof bdClearBoardBackgroundImage === 'function') bdClearBoardBackgroundImage();
-    });
-    root.querySelector('[data-bd-board-bg-fit]')?.addEventListener('change', event => {
-      if (typeof bdSetBoardBackgroundImageFit === 'function') bdSetBoardBackgroundImageFit(event.currentTarget.value);
-    });
-    root.querySelector('[data-bd-board-card-style-pick]')?.addEventListener('click', event => {
-      bdOpenStylePicker('card', event.currentTarget, {
-        currentId: bd.activeCardStyle,
-        refreshAnchor: () => document.querySelector('[data-bd-detail-root="board"] [data-bd-board-card-style-pick]'),
-        onPick(styleId) { bd.activeCardStyle = styleId || ''; },
-        onAfterPick() { rerenderBoardDetail(); },
-      });
-    });
-    root.querySelector('[data-bd-board-line-style-pick]')?.addEventListener('click', event => {
-      bdOpenStylePicker('line', event.currentTarget, {
-        currentId: bd.activeLineStyle,
-        refreshAnchor: () => document.querySelector('[data-bd-detail-root="board"] [data-bd-board-line-style-pick]'),
-        onPick(styleId) { bd.activeLineStyle = styleId || ''; },
-        onAfterPick() { rerenderBoardDetail(); },
-      });
-    });
-    const cardFieldsEl = root.querySelector('[data-bd-board-card-style-fields]');
-    if (cardFieldsEl) {
-      const targetCard = cardStyle || bd.cardStyles[0] || null;
-      if (targetCard) {
-        // bdEnsureBoardUiState が bd.cardStyles を都度新オブジェクトに差し替えるため、
-        // バインド時の参照は古くなる。beforeEdit で常に現在の参照を取り直す。
-        _bdBuildStyleFields(cardFieldsEl, 'card', targetCard, rerenderBoardDetail, {
-          beforeEdit: () => bd.cardStyles.find(s => s.id === bd.activeCardStyle) || bd.cardStyles[0] || null,
-        });
-      } else { cardFieldsEl.textContent = 'カードスタイル未設定'; console.warn('[board detail] no card style available'); }
-    }
-    const lineFieldsEl = root.querySelector('[data-bd-board-line-style-fields]');
-    if (lineFieldsEl) {
-      const targetLine = lineStyle || bd.lineStyles[0] || null;
-      if (targetLine) {
-        _bdBuildStyleFields(lineFieldsEl, 'line', targetLine, rerenderBoardDetail, {
-          beforeEdit: () => bd.lineStyles.find(s => s.id === bd.activeLineStyle) || bd.lineStyles[0] || null,
-        });
-      } else { lineFieldsEl.textContent = 'ラインスタイル未設定'; console.warn('[board detail] no line style available'); }
-    }
-    root.querySelector('[data-bd-action="save-card-style-as-new"]')?.addEventListener('click', () => _bdSaveBoardStyleAsNew('card'));
-    root.querySelector('[data-bd-action="save-line-style-as-new"]')?.addEventListener('click', () => _bdSaveBoardStyleAsNew('line'));
-    root.querySelector('[data-bd-action="save-card-style"]')?.addEventListener('click', () => _bdSaveCurrentBoardStyle('card'));
-    root.querySelector('[data-bd-action="save-line-style"]')?.addEventListener('click', () => _bdSaveCurrentBoardStyle('line'));
-    root.querySelector('[data-bd-action="reset-card-style"]')?.addEventListener('click', () => {
-      const style = bd.cardStyles.find(s => s.id === bd.activeCardStyle) || bd.cardStyles[0] || null;
-      if (!style) return;
-      bdPushUndo();
-      _bdResetStyleToDefault('card', style);
-      rerenderBoardDetail();
-      showStatus(`カードスタイル「${style.name}」をデフォルトに戻しました`);
-    });
-    root.querySelector('[data-bd-action="reset-line-style"]')?.addEventListener('click', () => {
-      const style = bd.lineStyles.find(s => s.id === bd.activeLineStyle) || bd.lineStyles[0] || null;
-      if (!style) return;
-      bdPushUndo();
-      _bdResetStyleToDefault('line', style);
-      rerenderBoardDetail();
-      showStatus(`ラインスタイル「${style.name}」をデフォルトに戻しました`);
-    });
-    root.querySelector('[data-bd-action="manage-card-styles"]')?.addEventListener('click', () => bdOpenCardStyleManager());
-    root.querySelector('[data-bd-action="manage-line-styles"]')?.addEventListener('click', () => bdOpenLineStyleManager());
-    root.querySelector('[data-bd-action="export-board-styles"]')?.addEventListener('click', () => {
-      if (typeof bdExportBoardStylePack === 'function') bdExportBoardStylePack();
-      else if (typeof showStatus === 'function') showStatus('ボードスタイル書き出し機能を初期化できませんでした', true);
-    });
-    root.querySelector('[data-bd-action="manage-statuses"]')?.addEventListener('click', () => {
-      if (typeof bdManageStatuses === 'function') bdManageStatuses();
-    });
-    root.querySelector('[data-bd-action="manage-depth-styles"]')?.addEventListener('click', () => {
-      if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
-    });
-    root.querySelector('[data-bd-action="apply-depth-theme-colors"]')?.addEventListener('click', () => {
-      if (typeof bdApplyThemeColorsToDepthStyles !== 'function') return;
-      if (typeof bdPushUndo === 'function') bdPushUndo();
-      bdApplyThemeColorsToDepthStyles({ applyLineColor: true });
-      if (typeof bdApplyAutoStyle === 'function') bd.nodes.filter(node => node._autoStyle).forEach(node => bdApplyAutoStyle(node.id));
-      if (typeof bdRender === 'function') bdRender();
-      bdDirty();
-      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-      showStatus('テーマカラーを階層別スタイルに適用しました');
-    });
-    // 階層別スタイル: 選択した階層を管理ダイアログで開く
-    root.querySelector('[data-bd-board-depth-style-pick]')?.addEventListener('change', event => {
-      const idx = parseInt(event.target.value, 10);
-      if (Number.isFinite(idx)) window._bdPendingDepthStyleIndex = idx;
-      if (typeof bdOpenDepthStyleManager === 'function') bdOpenDepthStyleManager();
-    });
-    // 階層別スタイル: デフォルトとして保存
-    root.querySelector('[data-bd-action="save-depth-styles"]')?.addEventListener('click', () => {
-      if (typeof bdEnsureDepthStyles === 'function') bdEnsureDepthStyles();
-      const snapshot = typeof bdNormalizeDepthStyles === 'function'
-        ? bdNormalizeDepthStyles(bd.depthStyles || [])
-        : (bd.depthStyles || []).slice();
-      if (typeof bdPushUndo === 'function') bdPushUndo();
-      if (typeof _bdSaveGlobalDepthStyles === 'function') _bdSaveGlobalDepthStyles(snapshot);
-      showStatus('階層別スタイルをデフォルトとして保存しました', false, { showSaveDialog: true });
-    });
-    // 階層別スタイル: デフォルトに戻す
-    root.querySelector('[data-bd-action="reset-depth-styles"]')?.addEventListener('click', () => {
-      if (typeof bdPushUndo === 'function') bdPushUndo();
-      const global = typeof _bdReadGlobalDepthStyles === 'function' ? _bdReadGlobalDepthStyles() : null;
-      const globalIsLegacy = typeof _bdIsLegacyDefaultDepthStyles === 'function' && _bdIsLegacyDefaultDepthStyles(global);
-      if (Array.isArray(global) && global.length && !globalIsLegacy) {
-        bd.depthStyles = typeof bdNormalizeDepthStyles === 'function' ? bdNormalizeDepthStyles(global) : global.slice();
-        showStatus('保存したデフォルトに戻しました');
-      } else {
-        bd.depthStyles = typeof bdNormalizeDepthStyles === 'function' ? bdNormalizeDepthStyles([]) : [];
-        showStatus('デフォルトは未保存のため、ビルトイン初期値に戻しました');
-      }
-      if (typeof bdApplyAutoStyle === 'function') bd.nodes.filter(node => node._autoStyle).forEach(node => bdApplyAutoStyle(node.id));
-      if (typeof bdRender === 'function') bdRender();
-      bdDirty();
-      if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-    });
-  });
-}
-
 function _bdHasActiveBoardCanvas() {
   const canvas = document.getElementById('bd-canvas');
   return !!(canvas && canvas.isConnected);
+}
+
+// 課題10-1 (2026-08-14): 以前は選択操作のたびに clearBoardDetailTabContent() が
+// カードスタイル/ラインスタイル/階層別スタイルタブの DOM も無条件で全破棄していたため、
+// カード移動・追加などスタイルタブと無関係な操作でもスクロール位置が先頭へ戻り、
+// フォーカスが失われ、開いていたカラーピッカーの参照が切れていた。カード/ラインタブの
+// 内容だけをクリアし、スタイル管理系3タブは維持したまま各タブ自身の差分描画に任せる。
+function _bdClearBoardCardLineTabContent() {
+  if (typeof setBoardDetailTabContent === 'function') setBoardDetailTabContent({ card: '', line: '' });
+}
+
+// 階層別スタイルタブの「起点プリセット行」(課題18-案B) だけは選択中カードに依存するため、
+// 選択が実際に変わったときだけ明示的に同期する (差分再描画。フォーカス/スクロールは温存)。
+let _bdLastDetailSelectionKey = null;
+function _bdSyncDepthStyleTabForSelectionChange() {
+  const nodeIds = (typeof bd !== 'undefined' && bd.selected) ? [...bd.selected].sort() : [];
+  const connIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds().slice().sort() : [];
+  const key = nodeIds.join(',') + '|' + connIds.join(',');
+  if (key === _bdLastDetailSelectionKey) return;
+  _bdLastDetailSelectionKey = key;
+  const depthEl = document.getElementById('detail-tab-board-depth-style');
+  if (depthEl && depthEl.childElementCount > 0 && typeof _bdRenderDepthStyleInPanel === 'function') {
+    _bdRenderDepthStyleInPanel(depthEl, _bdLastDepthEditIndex);
+  }
 }
 
 function bdRefreshSelectionDetails(forceEmpty) {
@@ -36621,17 +37327,18 @@ function bdRefreshSelectionDetails(forceEmpty) {
   if (!_bdCanRenderDetailPanel()) return;
   const selectedConnIds = typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [];
   const activateSelectionTab = forceEmpty !== true;
+  _bdSyncDepthStyleTabForSelectionChange();
   if (bd.selected.size === 0 && selectedConnIds.length === 0 && !forceEmpty) {
     // 選択が空白クリック等で解除された場合: カード/ライン タブは非表示、
     // テーマタブをアクティブ (ユーザーが明示的に開いている board-note / backlinks は尊重)。
-    if (typeof clearBoardDetailTabContent === 'function') clearBoardDetailTabContent();
+    _bdClearBoardCardLineTabContent();
     _bdRenderBoardPrimaryDetail();
     return;
   }
-  // タブ表示は維持し、コンテンツだけクリアする。作業パネル再アクティブ時に
-  // スタイル/拡張タブが基本へ戻ってしまうのを防ぐため。
-  if (typeof clearBoardDetailTabContent === 'function') clearBoardDetailTabContent();
-  else if (typeof clearBoardDetailTabs === 'function') clearBoardDetailTabs();
+  // タブ表示は維持し、カード/ラインタブのコンテンツだけクリアする。作業パネル再アクティブ時に
+  // スタイル/拡張タブが基本へ戻ってしまうのを防ぐため。スタイル管理系3タブは無条件クリアしない
+  // (課題10-1: 各タブが自分の差分描画で追従する)。
+  _bdClearBoardCardLineTabContent();
   if (bd.selected.size > 1 || selectedConnIds.length > 1 || (bd.selected.size && selectedConnIds.length)) {
     // 複数選択: 概要 HTML はカード側が選択を含むときはカードタブに、
     // ラインのみの複数選択ならラインタブに表示する。
@@ -36743,6 +37450,9 @@ function bdBuildAutoDepthStyleMap(board) {
   const styleCount = Math.max(1, Array.isArray(target.depthStyles) ? target.depthStyles.length : 0);
   const visit = (node, depth, rootId, seen) => {
     if (!node?.id || seen.has(node.id)) return;
+    // 課題18-案A: 入れ子の起点 (自分以外の _autoStyle カード) には触れず、その起点自身の
+    // visit(...,0,...) に任せる。roots.forEach の処理順に依存せず「近い方が勝つ」を保証する。
+    if (node.id !== rootId && node._autoStyle) return;
     seen.add(node.id);
     out.set(node.id, { index: Math.min(Math.max(0, depth), styleCount - 1), rootId });
     (byParent.get(node.id) || []).forEach(child => visit(child, depth + 1, rootId, seen));
@@ -37081,7 +37791,7 @@ function bdAppendCommentHud(div, node) {
 function bdAppendAnchorHud(div, node, pos) {
   const anchor = document.createElement('div');
   anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-  anchor.title = 'クリックでカード追加 / ドラッグでライン作成';
+  anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
   if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
   anchor.addEventListener('pointerdown', ev => bdHandleAnchorPointerDown(ev, div, node, pos));
   anchor.addEventListener('click', ev => { ev.stopPropagation(); });
@@ -37097,7 +37807,7 @@ function bdHandleAnchorPointerDown(ev, div, node, pos) {
   const startX = ev.clientX;
   const startY = ev.clientY;
   let dragged = false;
-  const getWorld = (cx, cy) => (typeof bdScreenToWorld === 'function') ? bdScreenToWorld(cx, cy) : { x: cx, y: cy };
+  const getWorld = (cx, cy) => bdScreenToWorld(cx, cy);
   const onMove = (mv) => {
     if (!dragged && Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 4) return;
     dragged = true;
@@ -37162,7 +37872,12 @@ function bdHandleAnchorDrop(up, fromNid, fromAnchor, getWorld) {
   if (cardEl && typeof cardEl.id === 'string' && cardEl.id.startsWith('bdn-')) {
     bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up, getWorld);
   } else {
-    bdCreateAnchorConnectionToPoint(up, fromNid, fromAnchor, getWorld);
+    // カードが無い場所へのドロップは、ラインの先へ新規カードを作る。
+    // board-card-popup-redesign-plan.md §9.7 (2026-04-18 案α) で決めた挙動で、
+    // 2026-05-04 の自由端ライン追加以降ドラッグ経路だけ自由端になっていたものを戻した
+    // (2026-08-13 ユーザー指示)。端が浮いたラインは、ツールバーの「ライン追加」・
+    // Alt+左ドラッグ・既存ラインの端点ドラッグから従来どおり作れる。
+    bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld);
   }
   bd.connecting = null;
   bd._connLabel = '';
@@ -37197,34 +37912,54 @@ function bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up,
   if (typeof showStatus === 'function') showStatus(toId === fromNid ? '自己ループラインを追加しました' : 'ラインを追加しました');
 }
 
-function bdCreateAnchorConnectionToPoint(up, fromNid, fromAnchor, getWorld) {
-  const wc = getWorld(up.clientX, up.clientY);
-  if (typeof bdPushUndo === 'function') bdPushUndo();
-  const conn = (typeof bdCreateConnection === 'function')
-    ? bdCreateConnection(fromNid, '', { label: '', toPoint: wc })
-    : null;
-  if (!conn) return;
-  if (fromAnchor) conn.fromAnchor = fromAnchor;
-  if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'anchor-connect-free');
-  else if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'anchor-connect-free' });
-  if (typeof bdDirty === 'function') bdDirty();
-  if (typeof showStatus === 'function') showStatus('ラインを追加しました');
-}
+// 課題6・7・11: 深さ算出は共通ユーティリティ bdParentDepth (gb-canvas-engine.part01.part01.js、
+// z-index計算等でも使用) へ一本化する。旧 _bdAnchorNodeDepth は絶対ルートからの深さという同じ
+// 計算を重複実装していただけなので削除した。
 
-function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
-  const wc = getWorld(up.clientX, up.clientY);
+// 課題7-1・課題18-案A: アンカーカードから新規カードを作成しラインで繋ぐ共通コア処理。
+// 「＋」アンカーをドラッグして空白へ落とす経路 (bdCreateAnchorCardAndConnection) と、
+// ラインを選択した状態で「＋」を2段階クリックする経路 (gb-canvas-interact.part01.js の
+// pointerdown ハンドラ) の両方から呼ばれる。旧実装ではクリック経路だけが本関数を経由せず、
+// parent すら指定しない bdCreateNodeWithStyle('', x, y, {}) を直接呼んでいたため、線では
+// つながって見えても親子関係が作られない (折りたたみ・自動整列・階層別スタイルの対象外になる)
+// 壊れたデータが生成されていた。
+// wc: ワールド座標 {x, y}。戻り値は作成したカード (失敗時は null)。
+function _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc) {
+  const fromNode = bd.nodes.find(n => n.id === fromNid) || null;
+  // コンテナ内包カードは親相対座標で扱うため、絶対座標で置く新規カードと親子付けしない。
+  const canParent = !!fromNode && !fromNode.contained;
+  // 課題18-案A: 絶対ルートではなく「最も近い起点」を参照する。入れ子の起点があれば
+  // そちらが優先され、起点を共有しない別系統・祖先には影響しない。
+  const anchor = (canParent && typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(fromNid) : null;
+  // 階層別スタイルが効いているツリーなら、1つ下の階層のスタイルで作る。
+  const useDepthStyle = !!anchor
+    && typeof bdGetAutoStyleForDepth === 'function'
+    && typeof _bdApplyDepthCardFieldsToNode === 'function';
+  const fromDepth = (canParent && typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(fromNid, anchor) : 0;
+  const depthStyle = useDepthStyle ? bdGetAutoStyleForDepth(fromDepth + 1, anchor) : null;
   if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
   try {
     if (typeof bdPushUndo === 'function') bdPushUndo();
+    // 階層別スタイルが無いツリーでは、代わりに起点カードの見た目を引き継ぐ
+    // (Tab / Ctrl+Enter の子カード追加と同じ扱い)。
+    const opts = (!depthStyle && typeof bdInheritStyleOpts === 'function' && fromNode)
+      ? bdInheritStyleOpts(fromNode)
+      : {};
+    if (canParent) opts.parent = fromNid;
     const newNode = (typeof bdCreateNodeWithStyle === 'function')
-      ? bdCreateNodeWithStyle('', wc.x, wc.y, {})
-      : ((typeof bdNode === 'function') ? bdNode('', wc.x, wc.y, 160, 0, {}) : null);
-    if (!newNode) return;
+      ? bdCreateNodeWithStyle('', wc.x, wc.y, opts)
+      : ((typeof bdNode === 'function') ? bdNode('', wc.x, wc.y, 160, 0, opts) : null);
+    if (!newNode) return null;
+    if (depthStyle) _bdApplyDepthCardFieldsToNode(newNode, depthStyle);
     bd.nodes.push(newNode);
     let conn = null;
     if (typeof bdCanCreateConnection !== 'function' || bdCanCreateConnection(fromNid, newNode.id)) {
       conn = (typeof bdCreateConnection === 'function') ? bdCreateConnection(fromNid, newNode.id, { label: '' }) : null;
       if (conn && fromAnchor) conn.fromAnchor = fromAnchor;
+      // 親→子のラインは、親の階層のラインスタイルに合わせる (bdApplyAutoStyle と同じ規則)。
+      if (conn && useDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+        _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(fromDepth, anchor));
+      }
     }
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
       if (typeof bdRequestFullRender === 'function') bdRequestFullRender('anchor-drop-add-fallback');
@@ -37235,10 +37970,20 @@ function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
     else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([fromNid, newNode.id], 'anchor-drop-add');
     if (typeof bdSelect === 'function') bdSelect(newNode.id);
     if (typeof bdDirty === 'function') bdDirty();
+    // 課題7-3: 新規カードが選択状態になるのに、オプションパネルの内容が追従していなかった。
+    if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ boardUi: true }, 'anchor-drop-add');
     if (typeof showStatus === 'function') showStatus('カードとラインを追加しました');
+    return newNode;
   } finally {
     if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
   }
+}
+
+// 「＋」アンカーをドラッグして空白へ落とした時の完了処理 (bdHandleAnchorDrop から呼ばれる)。
+// pointerup イベントとワールド座標変換関数を受け取り、共通コアへ委譲する。
+function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
+  const wc = getWorld(up.clientX, up.clientY);
+  return _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc);
 }
 
 function bdAppendLinkBadge(div, node, showStatus) {
@@ -37421,7 +38166,17 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   txt.className = 'bd-text';
   const numPrefix = (typeof _bdGetNumber === 'function') ? _bdGetNumber(node.id) : '';
   const rawText = (node.img && !options.showImageNames) ? '' : (node.minimized ? String(node.text || '').split('\n')[0] : node.text);
-  const textHtml = esc(numPrefix + (rawText || '')).replace(/\n/g, '<br>');
+  const displayText = numPrefix + (rawText || '');
+  const findBar = document.getElementById('bd-find-bar');
+  const findActive = !!(findBar && findBar.style.display !== 'none' && bd?._findQuery
+    && typeof _bdRenderTextWithHighlight === 'function');
+  const currentMatch = findActive && Array.isArray(bd._findMatches) ? bd._findMatches[bd._findIndex] : null;
+  const currentOccurrence = currentMatch?.type === 'node' && currentMatch?.id === node.id
+    ? (currentMatch.occurrence || 0)
+    : -1;
+  const textHtml = findActive
+    ? _bdRenderTextWithHighlight(displayText, bd._findQuery, currentOccurrence)
+    : esc(displayText).replace(/\n/g, '<br>');
   if (node.link && !node.img) {
     const content = document.createElement('span');
     content.className = 'bd-link-card-content';
@@ -37578,6 +38333,16 @@ function bdUpdateNodePosition(nodeOrId) {
   return true;
 }
 
+function bdSyncNodeDomOrder() {
+  const container = document.getElementById('bd-nodes');
+  if (!container || typeof bd === 'undefined') return;
+  bd.nodes.forEach(node => {
+    if (!node || node.contained) return;
+    const el = document.getElementById('bdn-' + node.id);
+    if (el?.parentNode === container) container.appendChild(el);
+  });
+}
+
 function bdReplaceNodeElement(nodeOrId, options = {}) {
   const node = typeof nodeOrId === 'string' ? bd.nodes.find(n => n.id === nodeOrId) : nodeOrId;
   if (!node || !node.id || typeof document === 'undefined') return false;
@@ -37712,6 +38477,18 @@ function bdMarkNodeMoved(nodeId, reason) {
 
 function bdMarkNodesMoved(nodeIds, reason) {
   [...(nodeIds || [])].filter(Boolean).forEach(id => bdMarkNodeMoved(id, reason));
+}
+
+function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
+  const ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
+  ids.forEach(id => bdMarkNodeDirty(id, reason || 'partial-refresh'));
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, reason || 'partial-refresh');
+  bdMarkExtrasDirty({
+    frames: options.frames !== false,
+    minimap: options.minimap !== false,
+    boardUi: options.boardUi !== false,
+    detailPanel: options.detailPanel === true,
+  }, reason || 'partial-refresh');
 }
 
 function bdMarkConnectionDirty(connId, reason) {
@@ -38930,7 +39707,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   else bd.lineStyles.push(next);
   bd[activeRef] = next.id;
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -39100,7 +39877,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
     node._userCardStyle = true;
   }
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`カードスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -39127,7 +39904,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
   conn.styleRef = next.id;
   if (typeof bdClearConnectionStyleOverrides === 'function') bdClearConnectionStyleOverrides(conn);
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`ラインスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -39163,7 +39940,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   // 保存時も現在値を「ユーザー定義デフォルト」として更新（以降のリセットで戻る先）
   style._default = _bdCloneStyleForDefault(style);
   _bdSaveGlobalStyleDefault('card', style);
-  if (typeof bdRender === 'function') bdRender();
+  if (typeof _bdRenderKeepingDetailTab === 'function') _bdRenderKeepingDetailTab();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
@@ -39605,8 +40382,26 @@ function _bdNextStyle(kind, styles) {
 }
 
 function _bdApplyAllAutoStyles() {
-  if (typeof bdApplyAutoStyle !== 'function') return;
-  bd.nodes.filter(node => node._autoStyle).forEach(node => bdApplyAutoStyle(node.id));
+  if (typeof bdApplyAutoStyle !== 'function') return 0;
+  const anchors = bd.nodes.filter(node => node._autoStyle);
+  anchors.forEach(node => bdApplyAutoStyle(node.id));
+  return anchors.length;
+}
+
+// 課題13 (2026-08-14 実機切り分け): 「テーマカラーを階層別スタイルに適用」ボタンは常に
+// bd.depthStyles 自体を更新するが、盤面上に _autoStyle (階層別スタイルの起点) を持つ
+// カードが1枚もないボードでは、適用対象が無いため盤面の見た目は変わらない
+// (プリセット/スタイル管理タブのスワッチ・次に作る新規カードには反映される)。
+// 「壊れている」と誤解されないよう、対象0件のときは案内を分けて表示する。
+function _bdCountAutoStyleAnchorNodes() {
+  return (typeof bd !== 'undefined' && Array.isArray(bd.nodes))
+    ? bd.nodes.filter(node => node && node._autoStyle).length
+    : 0;
+}
+function _bdDepthThemeApplyStatusMessage(anchorCount) {
+  return anchorCount > 0
+    ? 'テーマカラーを階層別スタイルに適用しました'
+    : '階層別スタイルが適用されているカードがありません（プリセットの色は更新されました。カードに反映するには右クリックメニュー等でカードを階層別スタイルの起点にしてください）';
 }
 /* gb-board-style-manager.part02.js: split from gb-board-style-manager.js */
 // ============================================================
@@ -39635,10 +40430,21 @@ function _bdSetStyleManagerPopupAnchorState(anchor, expanded) {
   anchor.setAttribute('aria-expanded', expanded ? 'true' : 'false');
 }
 
+// 確認ダイアログの中のクリックでポップアップを閉じない。閉じてしまうと、非同期の確認から
+// 戻ったあとの再描画で positionPopup() が「親が無いポップアップ」を document.body へ
+// 自動的に付け直し、追跡変数だけ null のまま DOM に残る = どの操作でも閉じられない
+// ポップアップになる (階層別スタイルの削除で発生していた)。
+// スタイル管理ポップアップ自身は aria-modal="false" なので、この判定には引っかからない。
+// スマホの引き出しパネルも aria-modal="false" のため、確認ダイアログだけを拾える。
+function _bdPointerInsideDialog(target) {
+  return !!target?.closest?.('[aria-modal="true"], dialog[open]');
+}
+
 function _bdCloseStyleManagerPopup(options) {
   const anchor = _bdStyleManagerPopupAnchor;
   _bdSetStyleManagerPopupAnchorState(anchor, false);
-  _bdStyleManagerPopup?.remove();
+  // 追跡中のポップアップだけでなく、過去に取り残された同種のポップアップも必ず片付ける。
+  document.querySelectorAll('.bd-style-manager-popup:not(.bd-depth-preset-popup)').forEach(el => el.remove());
   _bdStyleManagerPopup = null;
   _bdStyleManagerPopupAnchor = null;
   if (_bdStyleManagerPopupCloseHandler) {
@@ -39646,6 +40452,25 @@ function _bdCloseStyleManagerPopup(options) {
     _bdStyleManagerPopupCloseHandler = null;
   }
   if (options?.restoreFocus) _bdFocusStyleManagerPopupAnchor(anchor);
+}
+
+window.MeldexBoardStyleManagerPopup = Object.freeze({
+  close: _bdCloseStyleManagerPopup,
+});
+
+// ポップアップ外の pointerdown で閉じる共通処理。card/line と階層別スタイルの両方で使う。
+function _bdBindStyleManagerPopupOutsideClose(popup, getAnchor) {
+  setTimeout(() => {
+    _bdStyleManagerPopupCloseHandler = event => {
+      if (!_bdStyleManagerPopup || _bdStyleManagerPopup !== popup) return;
+      if (_bdPointerInsideDialog(event.target)) return;
+      if (_bdStyleManagerPopup.contains(event.target)) return;
+      const anchor = typeof getAnchor === 'function' ? getAnchor() : null;
+      if (anchor && anchor.contains(event.target)) return;
+      _bdCloseStyleManagerPopup();
+    };
+    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
+  }, 0);
 }
 
 function _bdConfigureStyleManagerPopup(popup, label, anchorEl) {
@@ -39728,20 +40553,6 @@ function _bdClampStyleManagerPopupToViewport(popup) {
   if (!viewportWidth || !viewportHeight) return;
 
   let rect = popup.getBoundingClientRect();
-  const maxVisibleHeight = Math.max(120, viewportHeight - margin * 2);
-  for (let i = 0; i < 4 && rect.height > maxVisibleHeight + 1; i += 1) {
-    const computedMax = parseFloat(getComputedStyle(popup).maxHeight || '');
-    const currentLimit = Number.isFinite(computedMax) && computedMax > 0 ? computedMax : rect.height;
-    const cssToVisualRatio = Number.isFinite(computedMax) && computedMax > 0
-      ? computedMax / Math.max(1, rect.height)
-      : 1;
-    const nextLimit = Math.min(currentLimit, Math.max(120, maxVisibleHeight * cssToVisualRatio * 0.98));
-    popup.style.maxHeight = nextLimit + 'px';
-    popup.style.height = nextLimit + 'px';
-    popup.style.overflowY = 'auto';
-    rect = popup.getBoundingClientRect();
-  }
-
   const maxVisibleWidth = Math.max(160, viewportWidth - margin * 2);
   for (let i = 0; i < 4 && rect.width > maxVisibleWidth + 1; i += 1) {
     const computedMax = parseFloat(getComputedStyle(popup).maxWidth || '');
@@ -39756,14 +40567,43 @@ function _bdClampStyleManagerPopupToViewport(popup) {
     rect = popup.getBoundingClientRect();
   }
 
-  let left = rect.left;
-  let top = rect.top;
-  if (rect.right > viewportWidth - margin) left = Math.max(margin, viewportWidth - rect.width - margin);
-  if (rect.bottom > viewportHeight - margin) top = Math.max(margin, viewportHeight - rect.height - margin);
-  if (left < margin) left = margin;
-  if (top < margin) top = margin;
-  popup.style.left = left + 'px';
-  popup.style.top = top + 'px';
+  // はみ出し量ぶんだけ「今の位置から動かす」形で補正する。
+  // getBoundingClientRect() は実測(物理)px、style.left/top は CSS px で、UI拡大時は
+  // 単位が食い違う。絶対値を計算して代入すると、その差のぶんだけ画面外に残ってしまう
+  // (階層別スタイルタブでピッカーが下寄りのとき、ポップアップ下端が画面外に出ていた)。
+  // 差分を足し込む形なら、ズーム倍率で割るだけで正しく効く。
+  const zoom = (typeof _getZoom === 'function' && _getZoom() > 0) ? _getZoom() : 1;
+  for (let i = 0; i < 3; i += 1) {
+    const current = popup.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (current.right > viewportWidth - margin) dx = (viewportWidth - margin) - current.right;
+    if (current.left + dx < margin) dx = margin - current.left;
+    if (current.bottom > viewportHeight - margin) dy = (viewportHeight - margin) - current.bottom;
+    if (current.top + dy < margin) dy = margin - current.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+    const currentLeft = Number.parseFloat(popup.style.left) || 0;
+    const currentTop = Number.parseFloat(popup.style.top) || 0;
+    popup.style.left = (currentLeft + dx / zoom) + 'px';
+    popup.style.top = (currentTop + dy / zoom) + 'px';
+  }
+
+  // 2026-08-14 (インボックスP2): CSS の `max-height: 60vh` は画面全体に対する固定割合でしか
+  // 上限をかけないため、アンカーが画面下寄りにあると「上マージンまで押し上げてもなお
+  // 高さが余って下端がビューポートを超える」ケースが残っていた (実測 getBoundingClientRect()
+  // の位置と 60vh という固定上限が噛み合っていなかった)。上の位置補正を終えた実測位置を
+  // 基準に、残りの表示可能高さへ max-height を詰め直すことで、アンカー位置によらず必ず
+  // 画面内へ収まるようにする。getBoundingClientRect() は実測(物理)px なので、
+  // style.height に書き戻す際は上の位置補正と同じくズーム倍率で割って CSS px に変換する
+  // (これを怠ると UI 拡大率が1でない環境で高さが過大になり、はみ出しが再発する)。
+  const finalRect = popup.getBoundingClientRect();
+  const availableHeightPhysical = viewportHeight - margin - finalRect.top;
+  if (finalRect.height > availableHeightPhysical + 1) {
+    const availableHeightLogical = Math.max(120, availableHeightPhysical / zoom);
+    popup.style.maxHeight = availableHeightLogical + 'px';
+    popup.style.height = availableHeightLogical + 'px';
+    popup.style.overflowY = 'auto';
+  }
 }
 
 function _bdPositionStyleManagerPopup(popup, anchorEl) {
@@ -39790,6 +40630,7 @@ function _bdPositionStyleManagerPopup(popup, anchorEl) {
 //   全 0 を返してしまい、ポップアップが画面左上に飛ぶのを防ぐために使う。
 function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   if (!anchorEl) return;
+  window.MeldexBoardDepthPresets?.closePopup?.();
   if (_bdStyleManagerPopup) {
     const same = _bdStyleManagerPopupAnchor === anchorEl;
     _bdCloseStyleManagerPopup();
@@ -39807,6 +40648,9 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const render = () => {
+    // 確認ダイアログ待ちなどで既に閉じられたあとの遅延再描画では何もしない。
+    // ここで描画すると positionPopup() が閉じたはずのポップアップを DOM へ戻してしまう。
+    if (_bdStyleManagerPopup !== popup) return;
     const displayStyles = _bdDisplayedManagedStyles(kind);
     const activeRef = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
     const activeStyleId = bd[activeRef] || '';
@@ -39903,7 +40747,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
         const finalIdx = fromIdx < toIdx ? toIdx - 1 : toIdx;
         arr.splice(finalIdx, 0, moved);
         bdDirty();
-        bdRender();
+        _bdRenderKeepingDetailTab();
         bdRefreshBoardToolbar();
         if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         render();
@@ -39956,7 +40800,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       bdPushUndo();
       _bdResetStyleToDefault(kind, live);
       bdDirty();
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       if (typeof opts.onSelect === 'function') opts.onSelect(live.id);
@@ -39992,7 +40836,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
         _bdReplaceDeletedStyleRefsInDepthStyles(kind, removedId, fallbackId);
       }
       bdDirty();
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       opts.currentId = fallbackId;
@@ -40003,17 +40847,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   };
 
   render();
-
-  setTimeout(() => {
-    _bdStyleManagerPopupCloseHandler = event => {
-      if (!_bdStyleManagerPopup) return;
-      const anchor = _bdStyleManagerPopupAnchor || currentAnchor;
-      if (!_bdStyleManagerPopup.contains(event.target) && !(anchor && anchor.contains(event.target))) {
-        _bdCloseStyleManagerPopup();
-      }
-    };
-    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
-  }, 0);
+  _bdBindStyleManagerPopupOutsideClose(popup, () => _bdStyleManagerPopupAnchor || currentAnchor);
 }
 
 // 指定 kind のスタイル管理をオプションパネルのタブ内にレンダリングする。
@@ -40094,7 +40928,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
     if (field === 'fontFamily') {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
     } else {
-      bdRender();
+      _bdRenderKeepingDetailTab();
     }
     _bdRenderStyleManagerInPanel(kind, container, selected.id, needsFullRebuild ? undefined : 'diff');
     bdRefreshBoardToolbar();
@@ -40215,6 +41049,56 @@ function _bdAppendDepthStyleRefRow(container, kind, selected, liveDepth, onApply
   container.appendChild(row);
 }
 
+// 課題18-案B: 起点カード (node._autoStyle === true) に割り当てるプリセットの選択肢。
+// 先頭は「ボード共通の階層別スタイルを使う」(depthStyleRef 未指定 = 従来どおりの挙動)。
+// currentRef が一覧に無い (プリセットが削除された/他端末で保存された等) 場合は、
+// 見つからない旨の選択肢を追加して選択状態を保つ (勝手に空へ戻さない)。
+function _bdAnchorPresetOptions(currentRef) {
+  const presets = (typeof MeldexBoardDepthPresets !== 'undefined' && typeof MeldexBoardDepthPresets.list === 'function')
+    ? MeldexBoardDepthPresets.list() : [];
+  const opts = [
+    { v: '', l: 'ボード共通の階層別スタイルを使う' },
+    ...presets.map(p => ({ v: p.id, l: `${p.name}${p.builtin ? '（標準搭載）' : ''}` })),
+  ];
+  if (currentRef && !presets.some(p => p.id === currentRef)) {
+    opts.push({ v: currentRef, l: '（見つかりません。ボード共通を使用中）' });
+  }
+  return opts;
+}
+
+// 課題18-案B: 唯一選択中のカードがそれ自身「起点」(_autoStyle) のときだけ、その起点に
+// 割り当てるプリセットの行を追加する。既存の「プリセット行」(先頭、ボード共通の
+// bd.depthStyles 一式を丸ごと入れ替える) とは別物 — こちらは「この起点だけ」に
+// 別プリセットを割り当てる (課題12のプリセット複製と組み合わせて「複製して少し変えて
+// 別の枝に適用」の流れを成立させる)。
+function _bdAppendAnchorPresetRow(container, anchorNode, onApplied) {
+  const fmt = window.gbFmt;
+  if (!container || !fmt || !anchorNode) return;
+  const row = fmt.makeRow({ wrap: true });
+  row.classList.add('bd-depth-anchor-preset-row');
+  const label = fmt.makeLabel('この起点のプリセット');
+  const select = fmt.makeSelect({
+    opts: _bdAnchorPresetOptions(anchorNode.depthStyleRef || ''),
+    value: anchorNode.depthStyleRef || '',
+    onChange: (nextId) => {
+      const live = bd.nodes.find(n => n.id === anchorNode.id);
+      if (!live) return;
+      if (typeof bdPushUndo === 'function') bdPushUndo();
+      live.depthStyleRef = nextId || '';
+      if (typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(live.id);
+      if (typeof onApplied === 'function') onApplied();
+    },
+  });
+  select.setAttribute('data-bd-depth-anchor-preset-ref', 'true');
+  select.setAttribute('data-e2e-id', 'bd-depth-anchor-preset-ref');
+  row.appendChild(label);
+  row.appendChild(select);
+  if (typeof fieldHelp === 'function') {
+    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このカードを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
+  }
+  container.appendChild(row);
+}
+
 // 階層別スタイル用の in-panel 版。mode は _bdRenderStyleManagerInPanel と同じ役割で
 // 'diff' のときは入力中のフォーカスを壊さないよう差分更新のみ行う。
 function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
@@ -40249,6 +41133,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     if (cardRef && document.activeElement !== cardRef) cardRef.value = selected?.cardStyleRef || '';
     const lineRef = container.querySelector('[data-bd-depth-style-ref="line"]');
     if (lineRef && document.activeElement !== lineRef) lineRef.value = selected?.lineStyleRef || '';
+    container._bdDepthPresetRow?.refresh?.();
     return;
   }
 
@@ -40273,6 +41158,21 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
       </div>
     </div>`;
 
+  // プリセット行 (階層別スタイル一式の保存・切り替え) はタブの先頭へ置く。
+  // これで下の「階層一覧を開く」ピッカーが下寄りになるが、そこから下向きに開く
+  // ポップアップは _bdClampStyleManagerPopupToViewport() が画面内へ引き戻す。
+  // 実装は gb-board-depth-presets.js 側に置き、このファイルは呼び出しだけを持つ。
+  container._bdDepthPresetRow = null;
+  const depthPanelEl = container.querySelector('[data-bd-style-in-panel="depth"]');
+  if (depthPanelEl && typeof window.MeldexBoardDepthPresets?.buildRow === 'function') {
+    const presetRow = window.MeldexBoardDepthPresets.buildRow({
+      onApplied: () => _bdRenderDepthStyleInPanel(container, idx),
+      refreshAnchor: () => container.querySelector('[data-bd-depth-preset-picker]'),
+    });
+    depthPanelEl.insertBefore(presetRow.section, depthPanelEl.firstChild);
+    container._bdDepthPresetRow = presetRow;
+  }
+
   const depthFieldsEl = container.querySelector('[data-bd-depth-fields]');
   const applyDepthStyles = (options = {}) => {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
@@ -40281,7 +41181,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     if (options.fontOnly) {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
     } else {
-      bdRender();
+      _bdRenderKeepingDetailTab();
     }
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
@@ -40324,6 +41224,17 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     });
     nameRow.append(nameLbl, nameInp);
     depthFieldsEl.appendChild(nameRow);
+
+    // 課題18-案B: 選択中カードがそれ自身「起点」であれば、この起点専用のプリセット行を出す。
+    // 別カード選択時はタブが全再描画される (bdRefreshSelectionDetails(true)) ため、
+    // diff モードでの追従は不要。
+    const soleAnchor = typeof _bdSelectedSoleAnchorNode === 'function' ? _bdSelectedSoleAnchorNode() : null;
+    if (soleAnchor) {
+      _bdAppendAnchorPresetRow(depthFieldsEl, soleAnchor, () => {
+        applyDepthStyles();
+        _bdRenderDepthStyleInPanel(container, idx);
+      });
+    }
 
     // カードスタイル部
     const cardHeader = document.createElement('div');
@@ -40409,10 +41320,15 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
   container.querySelector('[data-bd-depth-apply-theme]')?.addEventListener('click', () => {
     if (typeof bdApplyThemeColorsToDepthStyles !== 'function') return;
     if (typeof bdPushUndo === 'function') bdPushUndo();
+    const anchorCount = typeof _bdCountAutoStyleAnchorNodes === 'function' ? _bdCountAutoStyleAnchorNodes() : 0;
     bdApplyThemeColorsToDepthStyles({ applyLineColor: true });
     applyDepthStyles();
     _bdRenderDepthStyleInPanel(container, idx);
-    if (typeof showStatus === 'function') showStatus('テーマカラーを階層別スタイルに適用しました');
+    if (typeof showStatus === 'function') {
+      showStatus(typeof _bdDepthThemeApplyStatusMessage === 'function'
+        ? _bdDepthThemeApplyStatusMessage(anchorCount)
+        : 'テーマカラーを階層別スタイルに適用しました');
+    }
   });
   if (typeof bindMeldexDropdownKeySwitch === 'function') {
     bindMeldexDropdownKeySwitch(pickerBtn, {
@@ -40428,6 +41344,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
 let _bdDepthStyleDragIndex = -1;
 function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
   if (!anchorEl) return;
+  window.MeldexBoardDepthPresets?.closePopup?.();
   if (_bdStyleManagerPopup) {
     const same = _bdStyleManagerPopupAnchor === anchorEl;
     _bdCloseStyleManagerPopup();
@@ -40448,16 +41365,19 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
     _bdApplyAllAutoStyles();
     bdDirty();
-    bdRender();
+    _bdRenderKeepingDetailTab();
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     if (typeof renderCb === 'function') renderCb();
   };
 
   const render = () => {
+    // card/line 側と同じ理由で、閉じたあとの遅延再描画では描き直さない。
+    if (_bdStyleManagerPopup !== popup) return;
     const styles = bd.depthStyles || [];
     let currentIndex = Math.max(0, Math.min(Number.isFinite(+opts.currentIndex) ? +opts.currentIndex : 0, styles.length - 1));
     const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
+    const copyIcon = typeof lucide === 'function' ? lucide('copy', 14) : '複製';
     const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
     const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : '戻す';
     const trashIcon = typeof lucide === 'function' ? lucide('trash2', 14) : '削除';
@@ -40476,6 +41396,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       </div>
       <div class="bd-style-manager-popup-actions">
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-add title="階層を追加" aria-label="階層を追加">${plusIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-duplicate title="選択中の階層を複製" aria-label="選択中の階層を複製">${copyIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-theme title="テーマカラーを階層別スタイルに適用" aria-label="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-save title="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存" aria-label="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-reset title="保存したデフォルトに戻す (未保存ならビルトイン初期値)" aria-label="保存したデフォルトに戻す">${resetIcon}</button>
@@ -40549,14 +41470,36 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       applyDepthStyles(render);
     });
 
+    popup.querySelector('[data-bd-popup-depth-duplicate]')?.addEventListener('click', () => {
+      const styles2 = bd.depthStyles || [];
+      const sourceIndex = Math.max(0, Math.min(currentIndex, styles2.length - 1));
+      const source = styles2[sourceIndex];
+      if (!source) return;
+      if (typeof bdPushUndo === 'function') bdPushUndo();
+      const next = _bdClone(source);
+      const baseName = source.name ? `${source.name} 2` : `階層 ${sourceIndex + 1} 2`;
+      next.name = typeof _bdMakeUniqueStyleName === 'function'
+        ? _bdMakeUniqueStyleName(baseName, styles2)
+        : baseName;
+      styles2.splice(sourceIndex + 1, 0, next);
+      opts.currentIndex = sourceIndex + 1;
+      if (typeof opts.onSelect === 'function') opts.onSelect(opts.currentIndex);
+      applyDepthStyles(render);
+    });
+
     popup.querySelector('[data-bd-popup-depth-theme]')?.addEventListener('click', () => {
       if (typeof bdApplyThemeColorsToDepthStyles !== 'function') return;
       if (typeof bdPushUndo === 'function') bdPushUndo();
+      const anchorCount = typeof _bdCountAutoStyleAnchorNodes === 'function' ? _bdCountAutoStyleAnchorNodes() : 0;
       bdApplyThemeColorsToDepthStyles({ applyLineColor: true });
       opts.currentIndex = currentIndex;
       if (typeof opts.onSelect === 'function') opts.onSelect(currentIndex);
       applyDepthStyles(render);
-      if (typeof showStatus === 'function') showStatus('テーマカラーを階層別スタイルに適用しました');
+      if (typeof showStatus === 'function') {
+        showStatus(typeof _bdDepthThemeApplyStatusMessage === 'function'
+          ? _bdDepthThemeApplyStatusMessage(anchorCount)
+          : 'テーマカラーを階層別スタイルに適用しました');
+      }
     });
 
     popup.querySelector('[data-bd-popup-depth-delete]')?.addEventListener('click', async () => {
@@ -40604,16 +41547,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
   };
 
   render();
-  setTimeout(() => {
-    _bdStyleManagerPopupCloseHandler = event => {
-      if (!_bdStyleManagerPopup) return;
-      const anchor = _bdStyleManagerPopupAnchor || currentAnchor;
-      if (!_bdStyleManagerPopup.contains(event.target) && !(anchor && anchor.contains(event.target))) {
-        _bdCloseStyleManagerPopup();
-      }
-    };
-    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
-  }, 0);
+  _bdBindStyleManagerPopupOutsideClose(popup, () => _bdStyleManagerPopupAnchor || currentAnchor);
 }
 
 // 旧モーダルは廃止し、オプションパネルの階層別スタイルタブに切り替える (コミットC)。
@@ -40717,7 +41651,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = !(bd.displayFilters[key] !== false);
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -40735,7 +41669,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd[key] = !bd[key];
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -40752,7 +41686,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = bd.displayFilters[key] !== true;
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -40783,6 +41717,666 @@ function bdOpenFilterMenu(anchor) {
     if (menu.isConnected) menu.querySelector('.gb-context-menu-item')?.focus?.();
   });
 }
+
+;
+
+/* === gb-board-depth-presets.js === */
+;
+/* gb-board-depth-presets.js: 階層別スタイルのプリセット
+   （階層ごとのカードとラインの組み合わせ一式）を保存・適用・名前変更・削除する。 */
+(function (global) {
+  'use strict';
+
+  const STORAGE_KEY = 'meldex-bd-depth-style-presets-v1';
+  const MAX_PRESETS = 60;
+
+  let popupEl = null;
+  let popupAnchor = null;
+  let popupOutsideHandler = null;
+
+  // ============================================================
+  //  小さなユーティリティ
+  // ============================================================
+
+  // ボード側の識別子は `const bd = {...}` のようにグローバル字句スコープにあり、
+  // window のプロパティにはならない。gb-board-immersive.js と同じく素の識別子で参照する。
+  function boardState() {
+    try {
+      if (typeof bd !== 'undefined' && bd && Array.isArray(bd.nodes)) return bd;
+    } catch { /* この画面には bd の字句束縛が無い。 */ }
+    return global.bd && Array.isArray(global.bd.nodes) ? global.bd : null;
+  }
+
+  function status(message, isError) {
+    if (typeof showStatus === 'function') showStatus(message, !!isError);
+  }
+
+  function escText(value) {
+    if (typeof esc === 'function') return esc(value == null ? '' : String(value));
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // 保存済みプリセットの色はユーザー入力由来なので、CSS へ埋める前に形式を限定する。
+  function safeColor(value, fallback) {
+    const raw = String(value == null ? '' : value).trim();
+    if (/^#[0-9a-f]{3,8}$/i.test(raw)) return raw;
+    return fallback;
+  }
+
+  function clone(value) {
+    try { return JSON.parse(JSON.stringify(value)); } catch { return null; }
+  }
+
+  function normalizeStyles(styles) {
+    if (typeof bdNormalizeDepthStyles === 'function') {
+      return bdNormalizeDepthStyles(Array.isArray(styles) ? styles : []);
+    }
+    return Array.isArray(styles) ? clone(styles) || [] : [];
+  }
+
+  function currentStyles() {
+    const state = boardState();
+    if (!state) return [];
+    if (typeof bdEnsureDepthStyles === 'function') bdEnsureDepthStyles();
+    return normalizeStyles(state.depthStyles || []);
+  }
+
+  function makeId() {
+    const stamp = Date.now().toString(36);
+    const salt = Math.floor(Math.random() * 0x10000).toString(36);
+    return `depth-preset-${stamp}-${salt}`;
+  }
+
+  // ============================================================
+  //  ビルトインプリセット
+  // ============================================================
+  // ビルトインは削除・上書きできない土台。ユーザーはここから始めて自分の組み合わせを保存する。
+  // cardStyleRef / lineStyleRef は「どのスタイルから値を取り込んだか」の目印でしかないため、
+  // 値を作り変える派生プリセットでは空にして、実際の値と食い違わないようにする。
+
+  function derive(styles, fn) {
+    return styles.map((style, index) => {
+      const next = fn({ ...style, line: { ...(style.line || {}) } }, index);
+      next.cardStyleRef = '';
+      next.lineStyleRef = '';
+      return next;
+    });
+  }
+
+  const BUILTIN_DEFS = [
+    {
+      id: 'depth-preset-standard',
+      name: '標準',
+      build: base => base,
+    },
+    {
+      id: 'depth-preset-simple',
+      name: 'シンプル（角丸・直角線）',
+      build: base => derive(base, (style, index) => {
+        style.name = `階層${index + 1}`;
+        style.shape = 'rect';
+        style.borderRadius = 8;
+        style.borderWidth = 2;
+        style.fontSize = Math.max(11, 17 - index);
+        style.fontBold = index === 0;
+        style.line.pathType = 'orthogonal';
+        style.line.style = '';
+        style.line.arrow = 'end';
+        style.line.width = 2;
+        return style;
+      }),
+    },
+    {
+      id: 'depth-preset-mindmap',
+      name: 'マインドマップ（曲線）',
+      build: base => derive(base, (style, index) => {
+        style.name = index === 0 ? '中心テーマ' : `枝${index}`;
+        style.shape = index === 0 ? 'rect' : 'pill';
+        style.borderRadius = index === 0 ? 10 : 999;
+        style.borderWidth = index === 0 ? 3 : 2;
+        style.fontSize = Math.max(11, 18 - index * 2);
+        style.fontBold = index <= 1;
+        style.line.pathType = 'curve';
+        style.line.style = '';
+        style.line.arrow = '';
+        style.line.width = Math.max(1, 4 - index);
+        return style;
+      }),
+    },
+  ];
+
+  function builtinPresets() {
+    const base = normalizeStyles([]);
+    if (!base.length) return [];
+    return BUILTIN_DEFS.map(def => ({
+      id: def.id,
+      name: def.name,
+      builtin: true,
+      styles: normalizeStyles(def.build(base.map(style => ({ ...style, line: { ...(style.line || {}) } })))),
+    }));
+  }
+
+  // ============================================================
+  //  保存領域
+  // ============================================================
+
+  function readUserPresets() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+    catch { return []; }
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(entry => entry && typeof entry === 'object' && Array.isArray(entry.styles) && entry.styles.length)
+      .map(entry => ({
+        id: String(entry.id || '') || makeId(),
+        name: String(entry.name || '').trim() || '名前のないプリセット',
+        builtin: false,
+        updatedAt: String(entry.updatedAt || ''),
+        styles: entry.styles,
+      }))
+      .slice(0, MAX_PRESETS);
+  }
+
+  function writeUserPresets(presets) {
+    try {
+      const payload = (presets || []).slice(0, MAX_PRESETS).map(entry => ({
+        id: entry.id,
+        name: entry.name,
+        updatedAt: entry.updatedAt || '',
+        styles: entry.styles,
+      }));
+      if (payload.length) localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      else localStorage.removeItem(STORAGE_KEY);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function listPresets() {
+    return [...builtinPresets(), ...readUserPresets()];
+  }
+
+  function findPreset(id) {
+    return listPresets().find(entry => entry.id === id) || null;
+  }
+
+  function uniqueName(baseName, excludeId) {
+    const trimmed = String(baseName || '').trim() || '階層別スタイル';
+    const taken = new Set(listPresets().filter(entry => entry.id !== excludeId).map(entry => entry.name));
+    if (!taken.has(trimmed)) return trimmed;
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `${trimmed} ${i}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return trimmed;
+  }
+
+  // 現在のボードの階層別スタイルと一致するプリセットを探す。
+  // 「今どれを使っているか」をボードファイルへ書き足さずに示せるようにするための比較。
+  function fingerprint(styles) {
+    return JSON.stringify(normalizeStyles(styles));
+  }
+
+  function matchedPresetId() {
+    const current = fingerprint(currentStyles());
+    if (!current || current === '[]') return '';
+    const hit = listPresets().find(entry => fingerprint(entry.styles) === current);
+    return hit ? hit.id : '';
+  }
+
+  // ============================================================
+  //  操作
+  // ============================================================
+
+  function applyBoardChange() {
+    const state = boardState();
+    if (state && typeof bdNormalizeDepthStyles === 'function') {
+      state.depthStyles = bdNormalizeDepthStyles(state.depthStyles);
+    }
+    if (typeof _bdApplyAllAutoStyles === 'function') _bdApplyAllAutoStyles();
+    if (typeof bdDirty === 'function') bdDirty();
+    if (typeof _bdRenderKeepingDetailTab === 'function') _bdRenderKeepingDetailTab();
+    if (typeof bdRefreshBoardToolbar === 'function') bdRefreshBoardToolbar();
+    if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
+  }
+
+  function applyPreset(id) {
+    const preset = findPreset(id);
+    const state = boardState();
+    if (!preset || !state) return false;
+    if (typeof bdPushUndo === 'function') bdPushUndo();
+    state.depthStyles = normalizeStyles(preset.styles);
+    applyBoardChange();
+    status(`階層別スタイル「${preset.name}」を適用しました`);
+    return true;
+  }
+
+  function saveCurrentAsNew(name) {
+    const styles = currentStyles();
+    if (!styles.length) return null;
+    const presets = readUserPresets();
+    if (presets.length >= MAX_PRESETS) {
+      status(`プリセットは${MAX_PRESETS}件までです。不要なものを削除してください`, true);
+      return null;
+    }
+    const entry = {
+      id: makeId(),
+      name: uniqueName(name),
+      builtin: false,
+      updatedAt: new Date().toISOString(),
+      styles,
+    };
+    presets.push(entry);
+    if (!writeUserPresets(presets)) {
+      if (typeof global.showStatus === 'function') global.showStatus('プリセットを保存できませんでした', true);
+      return null;
+    }
+    return entry;
+  }
+
+  function duplicatePreset(id) {
+    const source = findPreset(id);
+    if (!source) return null;
+    const presets = readUserPresets();
+    if (presets.length >= MAX_PRESETS) {
+      status(`プリセットは${MAX_PRESETS}件までです。不要なものを削除してください`, true);
+      return null;
+    }
+    const entry = {
+      id: makeId(),
+      name: uniqueName(`${source.name} のコピー`),
+      builtin: false,
+      updatedAt: new Date().toISOString(),
+      styles: normalizeStyles(source.styles),
+    };
+    presets.push(entry);
+    if (writeUserPresets(presets)) return entry;
+    status('プリセットを複製できませんでした', true);
+    return null;
+  }
+
+  function overwritePreset(id) {
+    const presets = readUserPresets();
+    const target = presets.find(entry => entry.id === id);
+    if (!target) return false;
+    const styles = currentStyles();
+    if (!styles.length) return false;
+    target.styles = styles;
+    target.updatedAt = new Date().toISOString();
+    return writeUserPresets(presets);
+  }
+
+  function renamePreset(id, name) {
+    const presets = readUserPresets();
+    const target = presets.find(entry => entry.id === id);
+    if (!target) return false;
+    const nextName = String(name || '').trim();
+    if (!nextName) return false;
+    target.name = uniqueName(nextName, id);
+    target.updatedAt = new Date().toISOString();
+    return writeUserPresets(presets);
+  }
+
+  function removePreset(id) {
+    const presets = readUserPresets();
+    const next = presets.filter(entry => entry.id !== id);
+    if (next.length === presets.length) return false;
+    return writeUserPresets(next);
+  }
+
+  // ============================================================
+  //  表示
+  // ============================================================
+
+  function previewHtml(styles) {
+    const chips = (Array.isArray(styles) ? styles : []).slice(0, 7).map((style, index) => {
+      const bg = safeColor(style?.bgColor, 'var(--bg2)');
+      const border = safeColor(style?.borderColor, 'var(--border)');
+      const round = style?.shape === 'pill' || style?.shape === 'ellipse'
+        ? '999px'
+        : `${Math.min(6, Math.max(0, Math.round(+style?.borderRadius || 0)))}px`;
+      const width = Math.max(9, 24 - index * 2);
+      return `<span class="bd-depth-preset-chip" style="background:${bg};border-color:${border};border-radius:${round};width:${width}px"></span>`;
+    }).join('');
+    return `<span class="bd-depth-preset-chips" aria-hidden="true">${chips}</span>`;
+  }
+
+  function presetSummary(preset) {
+    const count = Array.isArray(preset?.styles) ? preset.styles.length : 0;
+    return `${preset?.name || ''}（${count}階層）`;
+  }
+
+  function triggerLabel() {
+    const activeId = matchedPresetId();
+    if (!activeId) return 'プリセット未適用（編集中）';
+    const preset = findPreset(activeId);
+    return preset ? presetSummary(preset) : 'プリセット未適用（編集中）';
+  }
+
+  // ============================================================
+  //  ポップアップ
+  // ============================================================
+
+  function closePopup(options) {
+    const anchor = popupAnchor;
+    if (anchor?.setAttribute) anchor.setAttribute('aria-expanded', 'false');
+    // 取り残された同種のポップアップも必ず片付ける。
+    document.querySelectorAll('.bd-depth-preset-popup').forEach(el => el.remove());
+    popupEl = null;
+    popupAnchor = null;
+    if (popupOutsideHandler) {
+      document.removeEventListener('pointerdown', popupOutsideHandler);
+      popupOutsideHandler = null;
+    }
+    if (options?.restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
+      if (typeof global.focusMeldexDropdownTrigger === 'function') global.focusMeldexDropdownTrigger(anchor);
+      else try { anchor.focus({ preventScroll: true }); } catch { anchor.focus(); }
+    }
+  }
+
+  function positionPopupAt(anchor) {
+    if (!popupEl || !anchor?.getBoundingClientRect) return;
+    const rect = anchor.getBoundingClientRect();
+    if (typeof global.positionPopup === 'function') {
+      global.positionPopup(popupEl, rect, { prefer: 'below', gap: 4 });
+      return;
+    }
+    const zoom = typeof global._getZoom === 'function' ? global._getZoom() : 1;
+    popupEl.style.left = (rect.left / zoom) + 'px';
+    popupEl.style.top = (rect.bottom / zoom + 4) + 'px';
+    if (typeof global.clampPopupToViewport === 'function') global.clampPopupToViewport(popupEl);
+  }
+
+  function closeButtonHtml() {
+    if (typeof global.meldexDropdownCloseButtonHtml === 'function') {
+      return global.meldexDropdownCloseButtonHtml({
+        className: 'bd-detail-style-action bd-style-manager-popup-close',
+        attr: 'data-bd-depth-preset-close',
+      });
+    }
+    const icon = typeof global.lucide === 'function' ? global.lucide('x', 14) : '×';
+    return `<button type="button" class="bd-detail-style-action bd-style-manager-popup-close" data-bd-depth-preset-close title="閉じる" aria-label="閉じる">${icon}</button>`;
+  }
+
+  async function askName(message, defaultValue) {
+    if (typeof global.cfPrompt === 'function') return await global.cfPrompt(message, defaultValue);
+    if (typeof global.prompt === 'function') return global.prompt(message, defaultValue);
+    return defaultValue;
+  }
+
+  async function askConfirm(message) {
+    if (typeof global.cfConfirm === 'function') return await global.cfConfirm(message);
+    if (typeof global.confirm === 'function') return global.confirm(message);
+    return true;
+  }
+
+  function openPopup(anchorEl, options) {
+    if (!anchorEl) return;
+    global.MeldexBoardStyleManagerPopup?.close?.();
+    if (popupEl) {
+      const same = popupAnchor === anchorEl;
+      closePopup();
+      if (same) return;
+    }
+    const opts = options || {};
+    let anchor = anchorEl;
+    popupEl = document.createElement('div');
+    popupEl.className = 'bd-style-manager-popup bd-depth-preset-popup';
+    popupEl.setAttribute('role', 'dialog');
+    popupEl.setAttribute('aria-label', '階層別スタイルのプリセット');
+    popupEl.setAttribute('aria-modal', 'false');
+    popupEl.tabIndex = -1;
+    document.body.appendChild(popupEl);
+    popupAnchor = anchor;
+    anchor.setAttribute('aria-haspopup', 'dialog');
+    anchor.setAttribute('aria-expanded', 'true');
+
+    const notify = () => { if (typeof opts.onChange === 'function') opts.onChange(); };
+
+    const self = popupEl;
+    const render = () => {
+      // 確認ダイアログ待ちなどで既に閉じられたあとの遅延再描画では何もしない。
+      // 描画すると positionPopup() が閉じたはずのポップアップを DOM へ戻してしまう。
+      if (!popupEl || popupEl !== self) return;
+      const presets = listPresets();
+      const activeId = matchedPresetId();
+      const selectedId = presets.some(entry => entry.id === opts.selectedId)
+        ? opts.selectedId
+        : (activeId || presets[0]?.id || '');
+      opts.selectedId = selectedId;
+      const selected = presets.find(entry => entry.id === selectedId) || null;
+      const icon = (name, fallback) => (typeof global.lucide === 'function' ? global.lucide(name, 14) : fallback);
+
+      popupEl.innerHTML = `
+        <div class="bd-style-manager-popup-list" role="listbox" aria-label="階層別スタイルのプリセット一覧">
+          ${presets.map(entry => {
+            const label = presetSummary(entry) + (entry.builtin ? '（標準搭載）' : '');
+            return `<div class="bd-style-list-item bd-depth-preset-item ${entry.id === selectedId ? 'active' : ''} ${entry.id === activeId ? 'is-applied' : ''}"
+              data-bd-depth-preset-id="${escText(entry.id)}" tabindex="0" role="option"
+              aria-selected="${entry.id === selectedId ? 'true' : 'false'}"
+              title="${escText(label)}" aria-label="${escText(label)}">
+              <span class="bd-style-list-preview bd-depth-preset-preview">${previewHtml(entry.styles)}</span>
+              <span class="bd-style-list-name">${escText(entry.name)}</span>
+              ${entry.id === activeId ? '<span class="bd-style-applied-mark">適用中</span>' : ''}
+            </div>`;
+          }).join('')}
+          ${presets.length ? '' : '<div class="bd-depth-preset-empty">保存されたプリセットはありません</div>'}
+        </div>
+        <div class="bd-style-manager-popup-actions">
+          <button type="button" class="bd-detail-style-action" data-bd-depth-preset-add title="今の階層別スタイルを新しいプリセットとして保存" aria-label="今の階層別スタイルを新しいプリセットとして保存">${icon('plus', '+')}</button>
+          <button type="button" class="bd-detail-style-action" data-bd-depth-preset-duplicate title="選択中のプリセットを複製" aria-label="選択中のプリセットを複製" ${selected ? '' : 'disabled'}>${icon('copy', '複製')}</button>
+          <button type="button" class="bd-detail-style-action" data-bd-depth-preset-overwrite title="選択中のプリセットを今の内容で上書き" aria-label="選択中のプリセットを今の内容で上書き" ${selected && !selected.builtin ? '' : 'disabled'}>${icon('save', '保存')}</button>
+          <button type="button" class="bd-detail-style-action" data-bd-depth-preset-rename title="選択中のプリセットの名前を変更" aria-label="選択中のプリセットの名前を変更" ${selected && !selected.builtin ? '' : 'disabled'}>${icon('pencil', '名前')}</button>
+          <button type="button" class="bd-detail-style-action bd-detail-style-action--danger" data-bd-depth-preset-delete title="選択中のプリセットを削除" aria-label="選択中のプリセットを削除" ${selected && !selected.builtin ? '' : 'disabled'}>${icon('trash2', '削除')}</button>
+          ${closeButtonHtml()}
+        </div>`;
+
+      if (typeof opts.refreshAnchor === 'function') {
+        const next = opts.refreshAnchor();
+        if (next) {
+          anchor = next;
+          popupAnchor = next;
+          anchor.setAttribute('aria-haspopup', 'dialog');
+          anchor.setAttribute('aria-expanded', 'true');
+        }
+      }
+      positionPopupAt(anchor);
+
+      popupEl.querySelectorAll('[data-bd-depth-preset-id]').forEach(item => {
+        const activate = () => {
+          const id = item.dataset.bdDepthPresetId || '';
+          opts.selectedId = id;
+          if (applyPreset(id)) notify();
+          render();
+        };
+        item.addEventListener('click', activate);
+        item.addEventListener('keydown', event => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          activate();
+        });
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-add]')?.addEventListener('click', async () => {
+        const suggested = uniqueName('階層別スタイル');
+        const name = await askName('プリセット名を入力してください', suggested);
+        if (name === null || name === undefined) return;
+        const entry = saveCurrentAsNew(name);
+        if (!entry) return;
+        opts.selectedId = entry.id;
+        if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${entry.name}」を保存しました`);
+        notify();
+        render();
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-overwrite]')?.addEventListener('click', async () => {
+        if (!selected || selected.builtin) return;
+        const ok = await askConfirm(`プリセット「${selected.name}」を今の階層別スタイルで上書きしますか？`);
+        if (!ok) return;
+        if (!overwritePreset(selected.id)) {
+          if (typeof global.showStatus === 'function') global.showStatus('プリセットを上書きできませんでした', true);
+          return;
+        }
+        if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${selected.name}」を上書きしました`);
+        notify();
+        render();
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-duplicate]')?.addEventListener('click', () => {
+        if (!selected) return;
+        const entry = duplicatePreset(selected.id);
+        if (!entry) return;
+        opts.selectedId = entry.id;
+        if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${entry.name}」を複製しました`);
+        notify();
+        render();
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-rename]')?.addEventListener('click', async () => {
+        if (!selected || selected.builtin) return;
+        const name = await askName('新しいプリセット名を入力してください', selected.name);
+        if (name === null || name === undefined) return;
+        if (!renamePreset(selected.id, name)) return;
+        notify();
+        render();
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-delete]')?.addEventListener('click', async () => {
+        if (!selected || selected.builtin) return;
+        const ok = await askConfirm(`プリセット「${selected.name}」を削除しますか？`);
+        if (!ok) return;
+        if (!removePreset(selected.id)) return;
+        opts.selectedId = '';
+        if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${selected.name}」を削除しました`);
+        notify();
+        render();
+      });
+
+      popupEl.querySelector('[data-bd-depth-preset-close]')?.addEventListener('click', () => {
+        closePopup({ restoreFocus: true });
+      });
+    };
+
+    popupEl.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePopup({ restoreFocus: true });
+        return;
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      const items = [...popupEl.querySelectorAll('.bd-depth-preset-item')];
+      if (!items.length) return;
+      const target = event.target?.closest?.('.bd-depth-preset-item');
+      if (!target && event.target !== popupEl) return;
+      event.preventDefault();
+      const current = items.indexOf(target);
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const next = current < 0 ? (step > 0 ? 0 : items.length - 1) : (current + step + items.length) % items.length;
+      items[next].focus();
+    });
+
+    render();
+    setTimeout(() => {
+      popupOutsideHandler = event => {
+        if (!popupEl || popupEl !== self) return;
+        // 名前入力や削除確認のダイアログ内クリックでは閉じない。
+        if (event.target?.closest?.('[aria-modal="true"], dialog[open]')) return;
+        if (popupEl.contains(event.target)) return;
+        if (popupAnchor && popupAnchor.contains(event.target)) return;
+        closePopup();
+      };
+      document.addEventListener('pointerdown', popupOutsideHandler);
+    }, 0);
+  }
+
+  // ============================================================
+  //  階層別スタイルタブへ差し込むプリセット行
+  // ============================================================
+
+  function buildRow(options) {
+    const opts = options || {};
+    const section = document.createElement('div');
+    section.className = 'bd-detail-section bd-depth-preset-section';
+    const title = document.createElement('div');
+    title.className = 'bd-detail-section-title';
+    title.textContent = '階層別スタイルプリセット';
+    if (typeof global.fieldHelp === 'function') {
+      title.insertAdjacentHTML('beforeend', ' ' + global.fieldHelp(
+        '階層ごとのカードとラインの組み合わせを一式でまとめたものです。選ぶとこのボードの階層別スタイル全体が入れ替わります。保存したプリセットはどのボードからでも使えます。'
+      ));
+    }
+    const row = document.createElement('div');
+    row.className = 'bd-detail-style-row';
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'bd-style-panel-picker bd-depth-preset-picker';
+    trigger.setAttribute('data-bd-depth-preset-picker', 'depth');
+    trigger.setAttribute('data-e2e-id', 'bd-depth-preset-picker');
+    trigger.setAttribute('aria-label', 'プリセットを選ぶ');
+    trigger.setAttribute('aria-haspopup', 'dialog');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const refresh = () => {
+      const activeId = matchedPresetId();
+      const preset = activeId ? findPreset(activeId) : null;
+      trigger.innerHTML = `<span class="bd-style-picker-preview">${previewHtml(preset ? preset.styles : currentStyles())}</span>`
+        + `<span class="bd-style-picker-label">${escText(triggerLabel())}</span>`
+        + '<span class="bd-style-picker-caret" aria-hidden="true">▾</span>';
+    };
+    refresh();
+
+    trigger.addEventListener('click', () => {
+      openPopup(trigger, {
+        onChange: () => {
+          refresh();
+          if (typeof opts.onApplied === 'function') opts.onApplied();
+        },
+        refreshAnchor: () => (typeof opts.refreshAnchor === 'function' ? opts.refreshAnchor() : trigger),
+      });
+    });
+
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'bd-detail-style-action';
+    saveBtn.setAttribute('data-bd-depth-preset-save', 'true');
+    saveBtn.setAttribute('data-e2e-id', 'bd-depth-preset-save');
+    saveBtn.title = '今の階層別スタイルを新しいプリセットとして保存';
+    saveBtn.setAttribute('aria-label', saveBtn.title);
+    saveBtn.innerHTML = typeof global.lucide === 'function' ? global.lucide('plus', 14) : '+';
+    saveBtn.addEventListener('click', async () => {
+      const name = await askName('プリセット名を入力してください', uniqueName('階層別スタイル'));
+      if (name === null || name === undefined) return;
+      const entry = saveCurrentAsNew(name);
+      if (!entry) return;
+      if (typeof global.showStatus === 'function') global.showStatus(`プリセット「${entry.name}」を保存しました`);
+      refresh();
+    });
+
+    row.append(trigger, saveBtn);
+    section.append(title, row);
+    return { section, refresh };
+  }
+
+  global.MeldexBoardDepthPresets = Object.freeze({
+    list: listPresets,
+    find: findPreset,
+    apply: applyPreset,
+    saveCurrentAsNew,
+    duplicate: duplicatePreset,
+    overwrite: overwritePreset,
+    rename: renamePreset,
+    remove: removePreset,
+    matchedPresetId,
+    buildRow,
+    openPopup,
+    closePopup,
+    storageKey: STORAGE_KEY,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
 
 ;
 
@@ -52566,6 +54160,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       } while (used.has(id));
       return id;
     };
+    // needsNormalizationがfalseの経路（配列としては既に存在するが、要素側でid未設定の項目が
+    // 混入したケース）を通っても、並べ替えグリップ等の安定IDに "undefined" 文字列が漏れないよう、
+    // ここで欠落idを一意な値に補完しておく（複数項目が同一の欠落idを共有し、可視UIの安定id/ data-*
+    // が重複する事故を防ぐ）。
+    doc.scenarioTypes.forEach(item => { if (item && !item.id) item.id = uniqueId('type'); });
+    doc.characters.forEach(item => { if (item && !item.id) item.id = uniqueId('character'); });
     const uniqueName = (base, self = null) => {
       const wanted = String(base || '').trim() || '名称未設定';
       const used = new Set([...doc.scenarioTypes, ...doc.characters]
@@ -52989,7 +54589,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selected = this._detailTypeSelection.has(type.id);
     row.classList.toggle('selected', selected);
     const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer));
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer, index));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -53063,7 +54663,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selected = this._detailCharacterSelection.has(character.id);
     row.classList.toggle('selected', selected);
     const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer));
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer, index));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -53157,11 +54757,16 @@ Object.assign(ScriptNoteEditor.prototype, {
     return row;
   },
 
-  _buildRoleManagementGrip(row, kind, item, adapter, panelContainer) {
+  _buildRoleManagementGrip(row, kind, item, adapter, panelContainer, rowIndex) {
     const grip = document.createElement('button');
     grip.type = 'button';
     grip.className = 'sn2-role-manage-grip';
-    grip.dataset.e2eId = `scriptnote-${kind}-drag-${item.id}`;
+    // item.id は本来 role-model 側の正規化で必ず補完されるが、経路によってはこの描画に
+    // 到達するまでに未設定のまま渡ってくることがある。その場合でも安定id/data-*へ文字列
+    // "undefined" がそのまま漏れて複数要素が同一idを共有しないよう、行インデックスへ
+    // フォールバックして一意性を確保する。
+    const stableSuffix = item?.id || `idx-${rowIndex}`;
+    grip.dataset.e2eId = `scriptnote-${kind}-drag-${stableSuffix}`;
     grip.setAttribute('aria-label', `${item.name || (kind === 'type' ? 'タイプ' : 'キャラ')}を並べ替え`);
     grip.title = 'ドラッグで並べ替え。Alt+上下キーでも移動できます';
     grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
@@ -53169,7 +54774,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
       requestAnimationFrame(() => {
-        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(item.id)}"]`)?.focus();
+        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(stableSuffix)}"]`)?.focus();
       });
     };
     grip.addEventListener('keydown', event => {
@@ -58666,12 +60271,18 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   function serializeImage(item) {
     const path = typeof _imagePropOpenPath === 'function' ? _imagePropOpenPath(item) : '';
-    const url = typeof _imageSrc === 'function' ? _imageSrc(item, false) : (item?.url || item?.src || '');
+    const assetKind = String(item?.asset_kind || item?.assetKind || '').toLowerCase();
+    const rawUrl = typeof _imageSrc === 'function' ? _imageSrc(item, false) : (item?.url || item?.src || '');
+    const previewUrl = assetKind === 'video'
+      ? String(item?.thumb_url || item?.preview_url || item?.preview_image_url || item?.url || '')
+      : (typeof _imageSrc === 'function' ? _imageSrc(item, true) : '');
+    const url = assetKind === 'video' && previewUrl && previewUrl !== rawUrl ? previewUrl : rawUrl;
     return {
       id: String(item?.id || item?.content_hash || item?.hash || path || url || ''),
       name: String(item?.caption || item?.filename || path.split('/').pop() || '画像'),
       path,
       url,
+      asset_kind: assetKind,
       width: Number(item?.width || 0),
       height: Number(item?.height || 0),
     };
@@ -58791,6 +60402,7 @@ Object.assign(ScriptNoteEditor.prototype, {
 
   window.MeldexViewerSheetContext = {
     create,
+    serializeImage,
     viewerUrl(context) {
       return '/viewer?sheetContext=' + encodeURIComponent(context.id);
     },

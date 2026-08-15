@@ -729,16 +729,23 @@
     bindDropTarget(head, null, 'root');
     wrap.appendChild(head);
     if (!collapsed) {
-      const box = document.createElement('div');
-      box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
-      if (!tags.length) box.appendChild(emptyRow('タグなし'));
-      tags.forEach(tag => {
-        if (!window.MeldexTagTreeRuntime?.takeTag
-          || window.MeldexTagTreeRuntime.takeTag(budget)) {
-          box.appendChild(renderTagRow(tag, groupsById, 0));
-        }
-      });
-      wrap.appendChild(box);
+      if (!tags.length) {
+        const emptyWrap = document.createElement('div');
+        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.appendChild(emptyRow('タグなし'));
+        wrap.appendChild(emptyWrap);
+      } else {
+        const tagsGrid = document.createElement('div');
+        tagsGrid.className = 'gb-tag-tree-grid';
+        tagsGrid.style.marginLeft = '18px';
+        tags.forEach(tag => {
+          if (!window.MeldexTagTreeRuntime?.takeTag
+            || window.MeldexTagTreeRuntime.takeTag(budget)) {
+            tagsGrid.appendChild(renderTagRow(tag, groupsById));
+          }
+        });
+        wrap.appendChild(tagsGrid);
+      }
     }
     return wrap;
   }
@@ -786,67 +793,71 @@
     bindDropTarget(head, group.id, 'group');
     wrap.appendChild(head);
     if (!group.collapsed) {
-      const box = document.createElement('div');
-      box.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
-      group.tags.forEach(tag => {
-        if (!window.MeldexTagTreeRuntime?.takeTag
-          || window.MeldexTagTreeRuntime.takeTag(budget)) {
-          box.appendChild(renderTagRow(tag, groupsById, depth + 1));
-        }
-      });
-      group.children.forEach(child => box.appendChild(
-        renderGroupNode(child, groupsById, depth + 1, budget),
-      ));
-      if (!group.tags.length && !group.children.length) box.appendChild(emptyRow('空のグループ'));
-      wrap.appendChild(box);
+      // タグ用の入れ物（格子並び）と子グループ用の入れ物（全幅の縦並び）を分ける。
+      // 表示順は従来どおり「タグ → 子グループ」。
+      if (group.tags.length) {
+        const tagsGrid = document.createElement('div');
+        tagsGrid.className = 'gb-tag-tree-grid';
+        tagsGrid.style.marginLeft = '18px';
+        group.tags.forEach(tag => {
+          if (!window.MeldexTagTreeRuntime?.takeTag
+            || window.MeldexTagTreeRuntime.takeTag(budget)) {
+            tagsGrid.appendChild(renderTagRow(tag, groupsById));
+          }
+        });
+        wrap.appendChild(tagsGrid);
+      }
+      if (group.children.length) {
+        const childrenBox = document.createElement('div');
+        childrenBox.style.cssText = 'margin-left:18px;display:flex;flex-direction:column;gap:2px;';
+        group.children.forEach(child => childrenBox.appendChild(
+          renderGroupNode(child, groupsById, depth + 1, budget),
+        ));
+        wrap.appendChild(childrenBox);
+      }
+      if (!group.tags.length && !group.children.length) {
+        const emptyWrap = document.createElement('div');
+        emptyWrap.style.marginLeft = '18px';
+        emptyWrap.appendChild(emptyRow('空のグループ'));
+        wrap.appendChild(emptyWrap);
+      }
     }
     return wrap;
+  }
+
+  function tagChipTitle(tag) {
+    const name = tag.name || '';
+    const aliases = Array.isArray(tag.aliases) ? tag.aliases.filter(Boolean) : [];
+    return aliases.length ? `${name} / 別名: ${aliases.join(', ')}` : name;
   }
 
   function renderTagRow(tag, groupsById) {
     const key = rowKey('tag', tag.id);
     const row = treeRowBase('tag', key, 0);
-    const assignmentToggle = window.MeldexTagPanelTabs?.createTagToggle?.(tag);
-    if (assignmentToggle) row.appendChild(assignmentToggle);
-    else {
-      const indent = document.createElement('span');
-      indent.style.cssText = 'display:inline-block;flex:0 0 24px;width:24px;';
-      row.appendChild(indent);
-    }
     row.appendChild(api()?.createTagChip?.(tag, {
       groupsById,
       compact: true,
       className: 'gb-tag-tree-chip',
+      title: tagChipTitle(tag),
+      dataset: {
+        tagAssignmentId: String(tag?.id || ''),
+        tagAssignmentName: String(tag?.name || ''),
+      },
     }) || rowLabel(tag.name || '', false, effectiveTagColor(tag, groupsById)));
-    if (Array.isArray(tag.aliases) && tag.aliases.length) {
-      const aliasBadge = document.createElement('span');
-      aliasBadge.className = 'gb-tag-alias-badge';
-      aliasBadge.style.cssText = 'font-size:10px;color:var(--fg2);white-space:nowrap;';
-      aliasBadge.textContent = '別名 ' + tag.aliases.length;
-      aliasBadge.title = '別名: ' + tag.aliases.join(', ');
-      row.appendChild(aliasBadge);
-    }
-    if (tag.auto_assign) {
-      const autoBadge = document.createElement('span');
-      autoBadge.className = 'gb-tag-auto-assign-badge';
-      autoBadge.style.cssText = 'display:inline-flex;align-items:center;color:var(--green,#4bc995);';
-      autoBadge.innerHTML = ic('sparkles', 11);
-      autoBadge.title = '自動付与を許可';
-      autoBadge.setAttribute('aria-label', '自動付与を許可');
-      row.appendChild(autoBadge);
-    }
-    row.appendChild(rowCount(typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : ''));
+    const sourceCount = typeof tag.source_count === 'number' && tag.source_count > 0 ? tag.source_count : 0;
+    if (sourceCount) row.appendChild(rowCount(sourceCount));
     row.appendChild(iconButton('ellipsis', 'タグの操作', event => openTagMenu(event.currentTarget, tag), '', 'tag-management-tag-menu-' + safeKeyPart(tag.id), { menu: true }));
     row.addEventListener('click', event => {
-      if (event.target.closest('button, input, label')) return;
-      setSelectionFromEvent(event, key);
-      if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      refreshTreeContent();
+      if (event.target.closest('button')) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
+        setSelectionFromEvent(event, key);
+        refreshTreeContent();
+        return;
+      }
+      window.MeldexTagPanelTabs?.toggleTagAssignment?.(tag);
     });
-    bindRowKeyboard(row, event => {
-      setSelectionFromEvent(event, key);
-      if (!event.ctrlKey && !event.metaKey && !event.shiftKey) applyTagFilter(tag);
-      refreshTreeContent();
+    bindRowKeyboard(row, () => {
+      window.MeldexTagPanelTabs?.toggleTagAssignment?.(tag);
     }, event => openTagMenu(event.currentTarget, tag));
     bindRowMenu(row, event => openTagMenu(event.currentTarget, tag));
     bindDragSource(row, 'tag', tag.id);
@@ -863,7 +874,7 @@
     row.setAttribute('role', 'treeitem');
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-selected', isSelected(key) ? 'true' : 'false');
-    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:28px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
+    row.style.cssText = 'display:flex;align-items:center;gap:5px;min-height:32px;padding:2px 4px;border-radius:5px;cursor:pointer;user-select:none;';
     if (isSelected(key)) {
       row.style.background = 'rgba(86,156,214,0.22)';
       row.style.outline = '1px solid rgba(86,156,214,0.55)';
@@ -992,15 +1003,18 @@
     row.addEventListener('dragend', () => {
       _dragRows = [];
       row.classList.remove('dragging');
-      document.querySelectorAll('.gb-tag-tree-row.is-drop-target, .gb-tag-tree-row.is-drop-before, .gb-tag-tree-row.is-drop-after')
-        .forEach(clearDropTargetState);
+      document.querySelectorAll(
+        '.gb-tag-tree-row.is-drop-target, .gb-tag-tree-row.is-drop-before, .gb-tag-tree-row.is-drop-after, '
+        + '.gb-tag-tree-row.is-drop-before-h, .gb-tag-tree-row.is-drop-after-h',
+      ).forEach(clearDropTargetState);
     });
   }
 
   function clearDropTargetState(el) {
-    el.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after');
+    el.classList.remove('is-drop-target', 'is-drop-before', 'is-drop-after', 'is-drop-before-h', 'is-drop-after-h');
     el.style.boxShadow = '';
     delete el.dataset.tagDropPlacement;
+    delete el.dataset.tagDropAxis;
   }
 
   function groupDropPlacement(el, event, items, targetGroupId, targetKind) {

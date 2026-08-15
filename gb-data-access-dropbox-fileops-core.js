@@ -52,7 +52,11 @@
     _folderLinksStore,
     _writeFolderLinksStore,
     _readFolderLinks,
+    _readFolderLinksManaged,
     _writeFolderLinks,
+    _updateFolderLinksManaged,
+    _normalizeOutlinerOperations,
+    _managementScopeIdentity,
     _requirePwaProvider,
     _directoryHandle,
     _resolveEntryHandle,
@@ -82,7 +86,23 @@
     _queryBacklinks,
     _queryDeleteImpact,
     _fnvFileId,
+    _databaseKind,
   } = internals;
+
+  async function _consumeCloudDeleteConfirmation(provider, body, items, operation) {
+    const gate = window.MeldexCloudDeleteConfirmation;
+    if (!gate?.consumeProviderDelete) {
+      const error = new Error('削除確認の永続ストレージを利用できません');
+      error.status = 503;
+      throw error;
+    }
+    return gate.consumeProviderDelete({
+      provider, items, operation,
+      confirmations: body?.confirmations,
+      confirmationToken: body?.confirmationToken || body?.confirmation_token,
+      graphRevision: body?.graphRevision || body?.graph_revision,
+    });
+  }
 
   function _productionSheetPathParts(path) {
     return _normalizeFolderPath(path).split('/').filter(Boolean);
@@ -102,6 +122,31 @@
       || _isProductionFolderNotePath(path);
     if (protectedPath) throw new Error(`制作管理のシート構造・列定義は${action}できません`);
   });
+
+  // シートの中には「エントリ」しか置けない。シートの実体はフォルダなので、
+  // ボード・シナリオ・画像などを落とすと「シートの中にボードがある」壊れた
+  // 状態になる。デスクトップ版はサーバー側 meldex_api_outliner.
+  // reject_non_entry_into_sheet が必ず通るが、クラウド版（Dropbox接続時）は
+  // ブラウザが直接ファイル操作を行いサーバーを介さないため、同じ規則を
+  // このIIFE内で明示的に適用する必要がある。判定規則の正本は
+  // gb-sheet-attachments.js の MeldexSheetAttachments.itemFitsInSheet に
+  // 一本化されているので再実装しない。
+  async function _rejectNonEntryIntoSheet(provider, destFolder, sourcePath, isDirectory) {
+    if (typeof _databaseKind !== 'function') return;
+    let kind = '';
+    try {
+      kind = await _databaseKind(provider, destFolder);
+    } catch {
+      return;
+    }
+    if (kind !== 'settings-db') return;
+    const checker = window.MeldexSheetAttachments?.itemFitsInSheet;
+    const fits = typeof checker === 'function'
+      ? checker({ path: sourcePath, type: isDirectory ? 'folder' : '' })
+      : true;
+    if (fits) return;
+    throw new Error(`シートの中にはエントリだけを置けます。「${_basename(sourcePath)}」はシートの外へ移動してください`);
+  }
 
   const PRODUCTION_RESERVED_ENTRY_PROPERTIES = Object.freeze({
     '作品リスト': Object.freeze(['作品タイトル_話数', '作品タイトル']),
@@ -194,10 +239,34 @@
     return typeof _readFolderLinks === 'function' ? _readFolderLinks(provider) : _folderLinksStore();
   }
 
-  async function _writeFolderLinksForProvider(provider, links) {
-    if (typeof _writeFolderLinks === 'function') return _writeFolderLinks(provider, links);
+  async function _writeFolderLinksForProvider(provider, linksOrUpdater) {
+    if (typeof _writeFolderLinks === 'function') return _writeFolderLinks(provider, linksOrUpdater);
+    const current = _folderLinksStore();
+    const links = typeof linksOrUpdater === 'function' ? linksOrUpdater(current) : linksOrUpdater;
     _writeFolderLinksStore(links);
     return links;
+  }
+
+  async function _folderLinksStateForProvider(provider) {
+    if (typeof _readFolderLinksManaged !== 'function') {
+      throw new Error('フォルダリンク管理データを読み込めません');
+    }
+    return _readFolderLinksManaged(provider);
+  }
+
+  async function _updateFolderLinksStateForProvider(provider, updater) {
+    if (typeof _updateFolderLinksManaged !== 'function') {
+      throw new Error('フォルダリンク管理データの原子的更新を利用できません');
+    }
+    return _updateFolderLinksManaged(provider, updater);
+  }
+
+  async function _folderLinksManagementScope(provider) {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!kind || typeof _managementScopeIdentity !== 'function') {
+      throw new Error('フォルダリンク管理データの保存先を識別できません');
+    }
+    return _managementScopeIdentity(provider, kind);
   }
 
   async function _allowedTrashRoots() {
@@ -320,9 +389,21 @@
       if (!await _pathExists(provider, sourcePath)) return;
       await _directoryHandle(provider, _dirname(targetPath), true);
       if (sourcePath !== targetPath) {
+        if (copyFile) {
+          const sourcePayload = await _readJsonSafe(provider, sourcePath, null);
+          if (!sourcePayload || typeof sourcePayload !== 'object') throw new Error('CSV列設定を読み込めません');
+          const expected = { ...sourcePayload, sourcePath: sourceCsvPath };
+          if (await _pathExists(provider, targetPath)) {
+            const current = await _readJsonSafe(provider, targetPath, null);
+            if (JSON.stringify(_canonicalCloudCopyValue(current)) === JSON.stringify(_canonicalCloudCopyValue(expected))) return;
+            throw Object.assign(new Error('CSV列設定の複製先が既存データと競合しています'), { status: 409 });
+          }
+          if (typeof provider.uploadBytesConditional !== 'function') throw new Error('CSV列設定のcreate-only保存を利用できません');
+          await provider.uploadBytesConditional(targetPath, new TextEncoder().encode(JSON.stringify(expected)), null);
+          return;
+        }
         if (await _pathExists(provider, targetPath)) await _removeEntry(provider, targetPath);
-        if (copyFile) await provider.copyPath(sourcePath, targetPath);
-        else await _moveEntry(provider, sourcePath, targetPath);
+        await _moveEntry(provider, sourcePath, targetPath);
       }
       await _rewriteCsvSidecarSource(provider, targetPath, sourceCsvPath);
     }
@@ -361,46 +442,54 @@
     await walk(newNormalized);
   }
 
-  async function _deleteOutlinerPathToTrash(provider, rawPath) {
+  async function _deleteOutlinerPathToTrash(provider, rawPath, confirmation = {}) {
     const targetPath = _normalizeFolderPath(rawPath || '');
     _rejectProductionStructureMutation(targetPath, '削除');
-    // シート保管ファイル（_meldex_sheet.cloud.json）の行を、物理ファイルを動かす前に
-    // 必ず確定させる。この行が「物理.mdを持たない仮想エントリ（sqlite専用取り込み
-    // 由来）はクラウド版から削除できない」「物理.mdありエントリのゴミ箱移動が
-    // シート表示に反映されない」という既知の残作業（AGENT_INBOX.md 2026-08-08、
-    // app/docs/desktop-cloud-sheet-sync-plan-2026-08-07.md）を解消する。
-    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
     const source = await _resolveEntryHandle(provider, targetPath);
-    if (!source) return { ok: true };
     const parsedSource = window.MeldexSourceFolderRegistry?.parseSourcePath?.(targetPath);
     const trashDir = parsedSource
       ? window.MeldexSourceFolderRegistry.sourcePath(parsedSource.sourceId, '_trash')
       : PWA_TRASH_DIR;
-    await _directoryHandle(provider, trashDir, true);
     const originalName = _basename(targetPath);
     const split = _splitNameAndExt(originalName);
     let destName = originalName;
     let destPath = _joinPath(trashDir, destName);
     for (let counter = 1; await _pathExists(provider, destPath); counter += 1) {
-      destName = source.kind === 'file'
+      destName = source?.kind === 'file'
         ? `${split.stem}_${String(counter).padStart(4, '0')}${split.ext}`
         : `${originalName}_${String(counter).padStart(4, '0')}`;
       destPath = _joinPath(trashDir, destName);
     }
     const metaPath = destPath + '._trash_meta.json';
-    const csvSidecarPath = source.kind === 'file' && /\.csv$/i.test(targetPath)
+    const csvSidecarPath = source?.kind === 'file' && /\.csv$/i.test(targetPath)
       ? _csvMetadataPath(targetPath)
       : '';
     const csvSidecarTrashPath = csvSidecarPath && await _pathExists(provider, csvSidecarPath)
       ? destPath + '._csv_meta.json'
       : '';
-    await provider.writeJson(metaPath, {
-      original_path: targetPath,
-      trash_root: trashDir,
-      deleted_at: new Date().toISOString(),
-      csv_sidecar_trash_path: csvSidecarTrashPath,
+    const gate = window.MeldexCloudDeleteConfirmation;
+    if (!gate?.revalidateProviderDelete || !confirmation?.receipt || !confirmation?.item) {
+      throw Object.assign(new Error('削除直前の確認情報がありません'), { status: 409 });
+    }
+    await gate.revalidateProviderDelete({
+      provider, receipt: confirmation.receipt, items: [confirmation.item],
+      queryImpact: confirmation.queryImpact,
+    });
+    // tombstone を含む最初の書き込みは、上のfresh再検証より後に限定する。
+    const sheetTombstone = await internals._deleteSheetStoreEntryIfNeeded?.(provider, targetPath);
+    if (!source) return { ok: true };
+    const annotationPlan = await _prepareAnnotationsForPathMutation(provider, {
+      action: 'delete', oldPath: targetPath, newPath: destPath,
+      isFolder: source.kind === 'directory',
     });
     try {
+      await _directoryHandle(provider, trashDir, true);
+      await provider.writeJson(metaPath, {
+        original_path: targetPath,
+        trash_root: trashDir,
+        deleted_at: new Date().toISOString(),
+        csv_sidecar_trash_path: csvSidecarTrashPath,
+      });
       await _moveEntry(provider, targetPath, destPath);
       if (csvSidecarTrashPath) await _moveEntry(provider, csvSidecarPath, csvSidecarTrashPath);
     } catch (error) {
@@ -431,6 +520,7 @@
       oldPath: targetPath,
       isFolder: source.kind === 'directory',
       trashPath: destPath,
+      annotationPlan,
     }));
     return { ok: true, trash_name: destName, trash_root: trashDir, ..._resultWarnings(warnings) };
   }
@@ -545,21 +635,12 @@
     }
   }
 
-  // 複製・名前を付けて保存でコピーしたファイルへ新しい document_id を発行する。
-  // 対象4形式（.mel-board/.mel-scenario/.mel-timer/.mel-sheet）以外は何もしない。
-  // 固有形式付随物廃止・管理データ一元化計画 Phase 2。
-  async function _regenerateDocumentIdForCopiedEntry(provider, destPath, isFile) {
-    if (!isFile) return;
-    const docIdentity = window.MeldexDocumentIdentity;
-    const fmt = docIdentity?.formatForPath?.(destPath);
-    if (!fmt) return;
-    try {
-      const content = await provider.readText(destPath);
-      const result = docIdentity.regenerateDocumentId(content, fmt);
-      if (result.changed) await provider.writeText(destPath, result.text);
-    } catch (err) {
-      // ID再発行に失敗しても複製自体は成功させる（保存を失敗させない）。
-    }
+  function _providerObjectRevision(value) {
+    const meta = value?.meta || value || {};
+    return {
+      id: String(meta.id || meta.provider_id || ''),
+      rev: String(meta.rev || meta.revision || meta.etag || meta.content_hash || ''),
+    };
   }
 
   // --- 共通ストレージ層への保存先解決(固有形式付随物廃止・管理データ一元化計画 Phase 4) ---

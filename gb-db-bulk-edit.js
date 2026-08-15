@@ -180,7 +180,9 @@ function _updateBulkEditBar(ctx) {
     bar.className = 'db-bulk-edit-bar gb-selection-float-bar';
     bar.dataset.paneId = paneId;
     bar.dataset.selectionFloatPaneId = paneId;
-    bar.id = 'db-bulk-edit-bar';
+    // ペインごとに一意なidにする（従来は固定文字列で、複数ペイン/分割ビューで
+    // 同時に一括編集バーを表示するとDOM上にid重複が発生していた）。
+    bar.id = 'db-bulk-edit-bar-' + paneId;
     host.appendChild(bar);
   }
   if (window.GBSelectionFloatMenu) {
@@ -771,6 +773,7 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     ctx,
     entries,
     source: 'bulk-delete',
+    confirmation: confirmed,
   });
   const deletedItems = result.trashRefs;
   const ok = deletedItems.length;

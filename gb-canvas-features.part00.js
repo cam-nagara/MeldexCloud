@@ -208,7 +208,8 @@
       if (node.structure) return true;
       return typeof bdStructureOf === 'function' && !!bdStructureOf(id);
     });
-    if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+    if (bd.autoAlign !== false && hasAnyStructure && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
+    else if (bd.autoAlign !== false && hasAnyStructure && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
     bdRender();
     bdDirty();
     if (assigned === 0) {

@@ -486,7 +486,12 @@
         const workRow = (data.rows || []).find(item => item.name === work || prop(item, '作品タイトル_話数') === work);
         if (!workRow) throw new Error('作品リストに対象の作品が見つかりません');
         const labels = controls.map(item => item.value().trim()).map((value, index) => value || NEW_LEVEL_NAMES[index]);
-        await api().patchEntry({ sheet: '作品リスト', path: workRow.path, id: workRow.id, properties: { '階層数': '3', '階層ラベル': labels.join(',') } });
+        await api().patchEntry({
+          sheet: '作品リスト', path: workRow.path, id: workRow.id,
+          entry_revision: workRow.entry_revision,
+          transport_revision: workRow.transport_revision,
+          properties: { '階層数': '3', '階層ラベル': labels.join(',') },
+        });
         if (component?._productionTaskState?.workMeta?.[work]) {
           component._productionTaskState.workMeta[work].classification_labels = labels;
           component._productionTaskState.workMeta[work].classification_count = 3;
@@ -712,7 +717,10 @@
       try {
         const result = await api().patchEntry({
           sheet: 'タスクリスト', path: row.path, id: row.id,
-          expectedModified: row.modified || '', properties,
+          expectedModified: row.modified || '',
+          entry_revision: row.entry_revision,
+          transport_revision: row.transport_revision,
+          properties,
         });
         const updated = result.row || row;
         status('タスクを保存しました');

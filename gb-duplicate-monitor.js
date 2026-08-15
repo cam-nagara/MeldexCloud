@@ -3,12 +3,6 @@
   'use strict';
 
   const ALERT_POLL_MS = 2500;
-  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'ico', 'svg']);
-  const TYPE_LABELS = {
-    exact_file: ['完全同一ファイル', 'gb-badge-danger'],
-    exact_image: ['同一画像', 'gb-badge-danger'],
-    similar_image: ['類似画像', 'gb-badge-warn'],
-  };
   const alertQueue = [];
   const queuedAlertIds = new Set();
   let activeAlertModal = null;
@@ -18,177 +12,12 @@
   const folderStateCache = new Map();
   const FOLDER_STATE_CACHE_MS = 15000;
 
-  function safeText(value) {
-    return String(value == null ? '' : value);
-  }
-  function filePath(file) {
-    return safeText(file?.rel_path || file?.path || file?.file_path);
-  }
-
-  function fileName(file) {
-    const path = filePath(file).replace(/\\/g, '/');
-    return safeText(file?.name || path.split('/').pop() || '名前なし');
-  }
-  function fileLocation(file) {
-    const path = filePath(file).replace(/\\/g, '/');
-    const slash = path.lastIndexOf('/');
-    return safeText(file?.location || file?.folder || (slash >= 0 ? path.slice(0, slash) : 'ソースフォルダ'));
-  }
-
-  // 画面へ出すパスは、ドライブ名や共有名を落としてから扱う。保存先の登録内容に
-  // よっては絶対パスが返ってくるため、表示側で必ず均す。
-  function pathParts(value) {
-    const path = safeText(value)
-      .replace(/\\/g, '/')
-      .replace(/^[A-Za-z]:\/+/, '')
-      .replace(/^\/\/[^/]+\/[^/]+\/?/, '')
-      .replace(/^\/+/, '');
-    return path.split('/').filter(Boolean);
-  }
-
-  // 末尾 depth 階層までに詰める（切ったことが分かるよう先頭に … を付ける）。
-  function displayPath(value, depth) {
-    const parts = pathParts(value);
-    const limit = depth || 3;
-    return parts.length > limit ? '…/' + parts.slice(-limit).join('/') : parts.join('/');
-  }
-
-  function targetHtml(folderPath) {
-    const parts = pathParts(folderPath);
-    if (!parts.length) return '';
-    const shown = parts.slice(-3);
-    const name = shown[shown.length - 1];
-    const parent = (parts.length > 3 ? '…/' : '') + shown.slice(0, -1).join('/');
-    return `${lucide('folder', 12)}<span class="dup-progress-target-name">${esc(name)}</span>`
-      + (shown.length > 1 ? `<span class="dup-progress-target-parent">${esc(parent)}</span>` : '');
-  }
-
-  function isImage(file) {
-    if (typeof file?.is_image === 'boolean') return file.is_image;
-    const extension = fileName(file).split('.').pop().toLowerCase();
-    return IMAGE_EXTENSIONS.has(extension);
-  }
-
-  function isExisting(file) {
-    return file?.existing === true
-      || file?.is_existing === true
-      || file?.origin === 'existing'
-      || file?.role === 'existing';
-  }
-
-  function modifiedText(value) {
-    if (!value) return '更新日時不明';
-    const numeric = Number(value);
-    const date = new Date(Number.isFinite(numeric) ? (numeric < 1e12 ? numeric * 1000 : numeric) : value);
-    if (Number.isNaN(date.getTime())) return '更新日時不明';
-    return new Intl.DateTimeFormat('ja-JP', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date);
-  }
-
-  function normalizeType(type) {
-    if (TYPE_LABELS[type]) return type;
-    if (type === 'exact') return 'exact_file';
-    if (type === 'similar') return 'similar_image';
-    return 'exact_file';
-  }
-
-  function normalizeGroup(group) {
-    let files = Array.isArray(group?.files)
-      ? group.files
-      : (Array.isArray(group?.images) ? group.images : (Array.isArray(group?.items) ? group.items : []));
-    if (!files.length && Array.isArray(group?.paths)) {
-      files = group.paths.map(path => ({ path }));
-    }
-    return {
-      ...group,
-      type: normalizeType(group?.match_type || group?.result_type || group?.type),
-      files,
-    };
-  }
-
-  function normalizeGroups(payload) {
-    let groups = Array.isArray(payload?.groups)
-      ? payload.groups
-      : (payload?.group ? [payload.group] : []);
-    if (!groups.length && Array.isArray(payload?.paths)) groups = [payload];
-    return groups.map(normalizeGroup).filter(group => group.files.length > 1);
-  }
-
-  function selectedIndex(group, automatic) {
-    if (automatic) {
-      const existingIndex = group.files.findIndex(isExisting);
-      if (existingIndex >= 0) return existingIndex;
-    }
-    const recommendedIndex = group.files.findIndex(file => file?.recommended === true);
-    return recommendedIndex >= 0 ? recommendedIndex : 0;
-  }
-
-  function itemVisual(file) {
-    const path = filePath(file);
-    const name = fileName(file);
-    if (isImage(file)) {
-      const src = API_BASE + '/thumb?path=' + encodeURIComponent(path) + '&size=180';
-      return `<div class="dup-item-thumb"><img src="${src}" alt="${esc(name)}" data-dup-image></div>`;
-    }
-    return `<div class="dup-item-thumb dup-item-file-icon" aria-hidden="true">${lucide('file', 32)}</div>`;
-  }
-
-  function itemHtml(file, groupIndex, fileIndex, checked, automatic) {
-    const path = filePath(file);
-    const hasSize = file?.size !== undefined && file?.size !== null && Number.isFinite(Number(file.size));
-    const size = hasSize
-      ? (typeof formatFileSize === 'function' ? formatFileSize(Number(file.size)) : `${Number(file.size)} bytes`)
-      : 'サイズ不明';
-    const dimension = isImage(file) && file?.width
-      ? `${Number(file.width)}×${Number(file.height)}`
-      : '';
-    const selectedLabel = automatic && isExisting(file) ? '既存ファイル（初期選択）' : (checked ? '残す' : '選択');
-    return `<div class="dup-item${checked ? ' dup-item-selected' : ''}" role="button" tabindex="0"
-      aria-pressed="${checked ? 'true' : 'false'}" aria-label="${esc(fileName(file))}を残す"
-      data-dup-item data-group="${groupIndex}" data-index="${fileIndex}" data-path="${esc(path)}"
-      data-existing="${isExisting(file) ? '1' : '0'}"
-      data-e2e-id="duplicate-item-${groupIndex}-${fileIndex}">
-      ${itemVisual(file)}
-      <div class="dup-item-info">
-        <div class="dup-item-name" title="${esc(path)}">${esc(fileName(file))}</div>
-        <div class="dup-item-location" title="${esc(fileLocation(file))}">${esc(fileLocation(file))}</div>
-        <div class="dup-item-meta">${dimension ? `${dimension} / ` : ''}${esc(size)}</div>
-        <div class="dup-item-meta">${esc(modifiedText(file?.modified || file?.mtime || file?.updated_at))}</div>
-        <div class="dup-item-radio">
-          <input type="radio" name="dup-keep-${groupIndex}" value="${fileIndex}" ${checked ? 'checked' : ''}
-            data-dup-radio data-group="${groupIndex}" data-index="${fileIndex}"
-            data-e2e-id="duplicate-keep-${groupIndex}-${fileIndex}"
-            aria-label="${esc(fileName(file))}を残す">
-          <span class="${automatic && isExisting(file) ? 'dup-item-rec-label' : 'dup-item-keep-label'}">${selectedLabel}</span>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  function groupHtml(group, groupIndex, automatic) {
-    const type = TYPE_LABELS[group.type] || TYPE_LABELS.exact_file;
-    const initialIndex = selectedIndex(group, automatic);
-    const items = group.files.map((file, fileIndex) => (
-      itemHtml(file, groupIndex, fileIndex, fileIndex === initialIndex, automatic)
-    )).join('');
-    return `<section class="dup-group" data-group="${groupIndex}">
-      <div class="dup-group-header">
-        <span class="gb-badge ${type[1]}">${type[0]}</span>
-        <span class="dup-group-title">グループ ${groupIndex + 1}</span>
-        <span class="dup-group-count">${group.files.length}件</span>
-        <span class="dup-group-spacer"></span>
-        <button type="button" class="gb-btn gb-btn-xs gb-btn-primary" data-dup-resolve data-group="${groupIndex}"
-          data-e2e-id="duplicate-resolve-group-${groupIndex}"
-          aria-label="グループ ${groupIndex + 1} の選択したファイルを残す">選択したファイルを残す</button>
-      </div>
-      <div class="dup-group-body">${items}</div>
-    </section>`;
-  }
+  // 表示整形は gb-duplicate-monitor-format.js が持つ（先に読み込まれる前提）。
+  const {
+    safeText, filePath, fileName, fileLocation, pathParts, displayPath,
+    targetHtml, isImage, isExisting, modifiedText, normalizeType, normalizeGroup,
+    normalizeGroups, selectedIndex, itemVisual, itemHtml, groupHtml,
+  } = window.MeldexDuplicateFormat;
 
   function createOverlay(options) {
     const body = document.createElement('div');
@@ -816,6 +645,9 @@
       if (seq !== settingsRenderSeq || !host.isConnected) return;
       const settings = payload?.settings || {};
       const watcherAvailable = payload?.watcher_available !== false;
+      // Phase 6-2 (6-1): 監視の既定はオフのまま。Meldex外の移動追従に監視が
+      // 必要な旨の一回限りの可視案内は gb-duplicate-monitor-watch-changes-intro.js へ分離。
+      const watchChangesIntroHtml = window.MeldexDuplicateWatchChangesIntro?.html(settings, watcherAvailable) || '';
       host.innerHTML = `<section class="gb-section gb-section--boxed dup-settings-section">
         <div class="gb-section-title">${lucide('copy', 14)} 重複ファイルの検出</div>
         <div class="gb-section-desc">同じファイルや同じ内容の画像を索引化し、追加時に重複を知らせます。自動で削除はしません。</div>
@@ -831,10 +663,12 @@
             <option value="30" ${Number(settings.refresh_days) === 30 ? 'selected' : ''}>30日ごと</option>
           </select>
         </label>
+        ${watchChangesIntroHtml}
         <div class="gb-check-help-row">
           <label><input type="checkbox" data-dup-setting="watch_changes" data-e2e-id="duplicate-setting-watch-changes" ${settings.watch_changes ? 'checked' : ''} ${watcherAvailable ? '' : 'disabled'}> フォルダの変更をすぐ確認</label>
           ${typeof fieldHelp === 'function' ? fieldHelp(watcherAvailable ? 'ファイル追加を監視し、短時間に続いた変更は一つの処理にまとめます。' : 'この環境では変更監視を利用できません。保存や取り込み後の確認と定期更新は利用できます。') : ''}
         </div>
+        <div class="gb-section-desc">オンにすると、エクスプローラーなどMeldexの外で行った移動・改名にも、タグ・注釈・版履歴・検索索引・編集ロックが追従します。</div>
         <div class="dup-settings-actions">
           <button type="button" class="gb-btn gb-btn-sm" data-dup-baseline data-e2e-id="duplicate-setting-scan-now">${lucide('scanSearch', 14)} 今すぐ全体を調べる</button>
           <span class="gb-section-desc" data-dup-settings-message aria-live="polite"></span>
@@ -845,6 +679,12 @@
         <div class="gb-section-desc">親フォルダの設定は子フォルダへ引き継がれます。必要な場所だけ個別に切り替えられます。</div>
         <div class="dup-folder-target-tree" data-dup-folder-tree><div class="gb-section-desc">フォルダを読み込んでいます…</div></div>
       </section>`;
+
+      window.MeldexDuplicateWatchChangesIntro?.bind(host, {
+        apiFetch,
+        onSaved: async () => { notifyTargetChange(''); await renderSettings(root); },
+        onError: (message, error) => showStatus(`${message}: ${userError(error)}`, true),
+      });
 
       const settingInputs = [...host.querySelectorAll('[data-dup-setting]')];
       const saveSettings = async () => {
@@ -982,6 +822,8 @@
     }));
   });
   window.addEventListener('load', () => setTimeout(() => {
+    // デスクトップ付箋の小窓には重複の通知先もフォルダツリーも無い。監視は本体側だけが行う。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     startMonitor();
     refreshOutlinerBadges(document);
   }, 0), { once: true });

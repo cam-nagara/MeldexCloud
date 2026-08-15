@@ -32,7 +32,7 @@
   min-width: 0;
   padding: 3px 8px;
   border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.14));
-  background: var(--bg2, #222);
+  background: var(--bg2, #111419);
 }
 
 .sa-inline-tags-viewer {
@@ -109,14 +109,18 @@
 }
 
 .sa-tags-dialog {
-  --accent: var(--ui-accent, #4ec9b0);
+  /* 単独アプリのダークモード統一計画（app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）:
+     --ui-bg-canvas はどこにも定義されていない変数名（typo）で、常に旧パレットのフォールバック値に
+     落ちていた。--ui-bg-app（gb-ui.css で var(--bg) の別名）に修正し、他のフォールバック値も
+     本体の「ダーク」プリセットの現在値へ揃える。 */
+  --accent: var(--ui-accent, #569cd6);
   --danger: var(--ui-danger, #f44747);
-  --bg: var(--ui-bg-canvas, #181818);
-  --bg2: var(--ui-bg-surface, #222);
-  --bg3: var(--ui-bg-control, #2b2b2b);
-  --fg: var(--ui-fg-default, #e8e8e8);
-  --fg2: var(--ui-fg-muted, #a8a8a8);
-  --border: var(--ui-border, #444);
+  --bg: var(--ui-bg-app, #0b0d10);
+  --bg2: var(--ui-bg-surface, #111419);
+  --bg3: var(--ui-bg-control, #181c22);
+  --fg: var(--ui-fg-default, #d4d4d4);
+  --fg2: var(--ui-fg-muted, #969696);
+  --border: var(--ui-border, #2b323b);
   display: flex;
   flex-direction: column;
   width: min(780px, 100%);

@@ -1,0 +1,236 @@
+/* =========================================================================
+   gb-tag-picker-panel.css — タグ選択フロートパネル
+
+   フィルタ・検索から開く、条件用のタグ選択パネル。骨組み（位置・サイズ・
+   z-index・スマホのボトムシート）は gb-quick-memo-panel.css と同じ考え方で
+   構築するが、DOM構造の共通部分は gb-float-panel-base.js が持つ汎用クラス
+   （.gb-float-panel-header / .gb-float-panel-body / .gb-float-panel-resize-handle）
+   に対して書く。ダイアログより手前には出さない（z-index はモーダル未満）。
+   ========================================================================= */
+
+.gb-tag-picker-panel {
+  position: fixed;
+  z-index: calc(var(--ui-z-modal, 300) - 1);
+  display: flex;
+  flex-direction: column;
+  min-width: 260px;
+  min-height: 280px;
+  background: var(--ui-bg-surface, var(--bg2));
+  border: 1px solid var(--ui-accent, var(--accent));
+  border-radius: var(--ui-radius-sm, 6px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+}
+.gb-tag-picker-panel:focus-visible {
+  outline: none;
+}
+
+.gb-tag-picker-panel .gb-float-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 4px 4px 4px 8px;
+  background: var(--ui-pane-tabbar-bg, var(--bg3, var(--bg2)));
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  cursor: move;
+  user-select: none;
+}
+.gb-tag-picker-panel-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ui-accent, var(--accent));
+}
+.gb-tag-picker-panel-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.gb-tag-picker-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-fg-default, var(--fg));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-tag-picker-panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--ui-radius-xs, 4px);
+  color: var(--ui-fg-muted, var(--fg2));
+  cursor: pointer;
+}
+.gb-tag-picker-panel-btn:hover {
+  background: var(--ui-bg-control-hover, var(--bg-hover));
+  color: var(--ui-fg-default, var(--fg));
+}
+.gb-tag-picker-panel-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.gb-tag-picker-panel .gb-float-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.gb-tag-picker-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  background: var(--ui-bg-surface, var(--bg2));
+}
+.gb-tag-picker-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--ui-border, var(--border));
+  border-radius: var(--ui-radius-xs, 4px);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.gb-tag-picker-mode-btn {
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--ui-border, var(--border));
+  color: var(--ui-fg-muted, var(--fg2));
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.gb-tag-picker-mode-btn:last-child {
+  border-right: none;
+}
+.gb-tag-picker-mode-btn:hover {
+  background: var(--ui-bg-control-hover, var(--bg-hover));
+}
+.gb-tag-picker-mode-btn.is-active {
+  background: var(--ui-accent, var(--accent));
+  color: var(--ui-accent-fg, #fff);
+}
+.gb-tag-picker-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ui-fg-muted, var(--fg2));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gb-tag-picker-clear-btn {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.gb-tag-picker-panel-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+/* タグをクリックすると、このパネルの条件としてオン・オフが切り替わる。
+   右パネルのタグツリー（タグ付け=タグ色の塗りつぶし）とは意味が違うため、
+   区別できるようアクセント色の塗りつぶしにする（2026-08-13 ユーザー決定）。 */
+.gb-tag-picker-panel .gb-tag-tree-chip.gb-tag-tree-chip--condition-on {
+  background: color-mix(in srgb, var(--ui-accent, var(--accent)) 42%, var(--ui-bg-panel, var(--bg2)));
+  border-color: var(--ui-accent, var(--accent));
+  color: var(--fg);
+}
+/* 絞り込み用途で開いたとき、現在のフォルダに1件も無いタグを薄く表示する。
+   opacityではなく文字色・枠線色をトークンへ寄せる（枠線だけ暗くなる副作用回避）。 */
+.gb-tag-picker-panel .gb-tag-tree-chip.gb-tag-tree-chip--dim {
+  color: var(--ui-fg-muted, var(--fg2));
+  border-color: var(--ui-disabled-border, var(--border));
+}
+.gb-tag-picker-panel .gb-tag-tree-chip.gb-tag-tree-chip--dim.gb-tag-tree-chip--condition-on {
+  color: var(--fg);
+}
+
+.gb-tag-picker-selected-chip {
+  font-size: 11px;
+}
+
+/* 検索欄（3か所）に置くタグ選択トリガーボタン。条件が1つ以上入っていると
+   件数バッジを出す（既存のフィルタボタンの件数表示と同じ考え方）。 */
+button[data-search-tag-trigger] {
+  position: relative;
+}
+.gb-search-tag-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+}
+.gb-search-tag-trigger-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ui-accent, var(--accent));
+  color: var(--ui-accent-fg, #fff);
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+button[data-search-tag-trigger].active,
+button[data-search-tag-trigger][aria-pressed="true"] {
+  color: var(--ui-accent, var(--accent));
+}
+
+.gb-tag-picker-panel .gb-float-panel-resize-handle {
+  position: absolute;
+  z-index: 1;
+}
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="n"]  { top: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="s"]  { bottom: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="e"]  { top: 4px; bottom: 4px; right: 0; width: 4px; cursor: ew-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="w"]  { top: 4px; bottom: 4px; left: 0; width: 4px; cursor: ew-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="ne"] { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="nw"] { top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="se"] { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-tag-picker-panel .gb-float-panel-resize-handle[data-dir="sw"] { bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+
+/* スマートフォン幅（640px以下）では浮かせず、画面下から出る全幅のシートにする。
+   枠ドラッグは無し（JS側も gb-float-panel-base.js が mobileSheet 設定時に
+   ドラッグ・リサイズの実処理を無効化する）。 */
+@media (max-width: 640px) {
+  .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] {
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: min(75vh, 560px) !important;
+    max-height: 82vh !important;
+    border-radius: var(--ui-radius-sm, 6px) var(--ui-radius-sm, 6px) 0 0 !important;
+  }
+  .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-float-panel-resize-handle {
+    display: none !important;
+  }
+  .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-float-panel-header,
+  .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-tag-picker-mode-btn,
+  .gb-tag-picker-panel[data-mobile-sheet-eligible="1"] .gb-tag-picker-panel-btn {
+    min-height: 44px;
+  }
+}

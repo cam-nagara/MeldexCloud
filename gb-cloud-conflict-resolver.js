@@ -37,6 +37,24 @@
     return window.MeldexDataAccess;
   }
 
+  // 「シートをマージ」はデスクトップ版のみ実装済み（meldex_conflict_copies.py の
+  // 行単位マージ）。ブラウザ直結のデータアクセス（Dropbox直結 / ローカル
+  // ファイルシステムAPI直結、gb-data-access.part02.js の isBrowserDataMode()
+  // が true になる経路）では /cloud/conflict-resolve がクライアント側実装
+  // （gb-data-access-dropbox-fileops.part01.part02.js）に置き換わり、
+  // keep_original / keep_conflict しか受け付けないため merge_sqlite_sheet は
+  // 常に失敗する。押しても機能しないボタンを残さない（見えるボタンはその環境で
+  // 実際に機能すること、というUI共通ルール）。「Meldex共有サーバーに接続」
+  // （server）は実サーバー側のPython APIを叩くため対象外（デスクトップと同じ
+  // マージが使える）。
+  function _isSqliteSheetMergeSupportedHere() {
+    return !(
+      window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
+      || document.body?.dataset?.cloudMode === 'dropbox'
+      || document.body?.dataset?.cloudMode === 'browser'
+    );
+  }
+
   function _setStatus(text, isError) {
     const el = _overlay?.querySelector?.('.cloud-conflict-status');
     if (!el) return;
@@ -617,11 +635,13 @@
     keepOriginalBtn.dataset.conflictAction = 'keep_original';
     keepOriginalBtn.setAttribute('aria-label', '元ファイルを残して競合を解消');
     keepOriginalBtn.addEventListener('click', () => _resolve('keep_original'));
-    const mergeSqliteBtn = _el('button', 'cloud-conflict-btn', 'シートをマージ');
-    mergeSqliteBtn.type = 'button';
-    mergeSqliteBtn.dataset.conflictAction = 'merge_sqlite_sheet';
-    mergeSqliteBtn.setAttribute('aria-label', 'SQLiteシートをマージして競合を解消');
-    mergeSqliteBtn.addEventListener('click', () => _resolve('merge_sqlite_sheet'));
+    const mergeSqliteBtn = _isSqliteSheetMergeSupportedHere() ? _el('button', 'cloud-conflict-btn', 'シートをマージ') : null;
+    if (mergeSqliteBtn) {
+      mergeSqliteBtn.type = 'button';
+      mergeSqliteBtn.dataset.conflictAction = 'merge_sqlite_sheet';
+      mergeSqliteBtn.setAttribute('aria-label', 'SQLiteシートをマージして競合を解消');
+      mergeSqliteBtn.addEventListener('click', () => _resolve('merge_sqlite_sheet'));
+    }
     const keepConflictBtn = _el('button', 'cloud-conflict-btn primary', '競合コピーを残す');
     keepConflictBtn.type = 'button';
     keepConflictBtn.dataset.conflictAction = 'keep_conflict';
@@ -629,7 +649,7 @@
     keepConflictBtn.addEventListener('click', () => _resolve('keep_conflict'));
     footer.appendChild(deferBtn);
     footer.appendChild(keepOriginalBtn);
-    footer.appendChild(mergeSqliteBtn);
+    if (mergeSqliteBtn) footer.appendChild(mergeSqliteBtn);
     footer.appendChild(keepConflictBtn);
 
     dialog.appendChild(header);

@@ -726,7 +726,7 @@ const _FS_FIELDS = {
       { key: '--bd-anchor-color',      label: 'アンカー色', type: 'color' },
       { key: '--bd-link-type-icon-color', label: 'リンク種別アイコン', type: 'color' },
       { key: '--bd-gap-siblings',      label: '同階層カード間の隙間', type: 'number', unit: 'px', min: 0, max: 400, step: 1, fallback: 10, applyCustom: 'gapSiblings' },
-      { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 30, applyCustom: 'gapLevels' },
+      { key: '--bd-gap-levels',        label: '階層間の隙間',         type: 'number', unit: 'px', min: 0, max: 600, step: 1, fallback: 50, applyCustom: 'gapLevels' },
       { key: '--bd-auto-align',        label: '自動整列',             type: 'checkbox', on: '1', off: '0', defaultOn: true, applyCustom: 'autoAlign' },
     ],
   },

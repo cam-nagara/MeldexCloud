@@ -293,11 +293,12 @@ async function showSettingsModal(opts) {
       </section>
       <div id="settings-cloud-link-card" class="settings-section-wide" data-settings-view="storage"></div>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
-        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります')}</div>
+        <div class="gb-section-title">${lucide('home',14)} ホームフォルダ ${fieldHelp('Meldexのデフォルトフォルダです。新規追加時のフォールバック先になります。ソースフォルダが個人用のDropbox等なら、その直下のMeldexHomeへ自動的に揃います')}</div>
         <div class="gb-field-row" style="flex-wrap:nowrap;">
           <input id="modal-home-folder" type="text" class="gb-input" data-gb-path-input style="flex:1;" value="${esc(_homeFolderPath)}" readonly>
           <button class="gb-btn gb-btn-sm" data-action="_changeHomeFolder()">変更</button>
         </div>
+        <div id="home-folder-sharing-status" class="gb-section-desc" hidden></div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
         <div class="gb-section-title">${lucide('camera',14)} スクリーンショット保存先 ${fieldHelp('撮影した画像を保存するフォルダです。初期値はホームフォルダ内の「スクリーンショット」です')}</div>
@@ -430,11 +431,12 @@ async function showSettingsModal(opts) {
         </label>
       </section>
       <section class="gb-section gb-section--boxed" id="settings-autostart-section" data-settings-view="display">
-        <div class="gb-section-title">自動起動</div>
+        <div class="gb-section-title">自動起動 ${fieldHelp('OSへのサインイン後、画面を開かず常駐アプリとバックグラウンド機能を開始します。いつでも解除できます。')}</div>
         <label class="gb-check">
           <input type="checkbox" id="modal-autostart">
-          <span>OS起動時にMeldexを自動起動する</span>
+          <span>OS起動時にMeldex常駐アプリを開始する</span>
         </label>
+        <div id="modal-autostart-status" class="gb-field-help" role="status" aria-live="polite">自動起動の状態を確認しています</div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
         <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）')}</div>
@@ -1316,16 +1318,25 @@ async function importSettingsTransferBundleFromFile(input) {
 }
 
 async function _loadAutostartStateForSettings() {
+  const cb = document.getElementById('modal-autostart');
+  const section = document.getElementById('settings-autostart-section');
+  const status = document.getElementById('modal-autostart-status');
   try {
     const res = await apiFetch('/autostart');
-    const cb = document.getElementById('modal-autostart');
-    const section = document.getElementById('settings-autostart-section');
     if (!res.supported) {
       if (section) section.hidden = true;
       return;
     }
-    if (cb) cb.checked = res.enabled;
-  } catch {}
+    if (cb) cb.checked = !!res.enabled || (!!res.setupRequired && !!res.recommendedEnabled);
+    if (status) {
+      if (res.setupRequired) status.textContent = '初回設定です。オンのまま保存すると、次回のOS起動時から常駐を開始します。';
+      else if (res.enabled && res.verified === false) status.textContent = '登録を確認できません。オンのまま保存して修復してください。';
+      else if (res.enabled) status.textContent = '有効です。次回のOS起動時に常駐を開始します。';
+      else status.textContent = '無効です。必要な場合はオンにして保存してください。';
+    }
+  } catch {
+    if (status) status.textContent = '状態を確認できませんでした。接続を確認してもう一度お試しください。';
+  }
 }
 
 async function _loadLlmConfigForSettings() {

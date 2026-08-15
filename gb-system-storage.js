@@ -47,6 +47,7 @@
     TAGS: 'tags',
     EDIT_LOCKS: 'edit-locks',
     VIEW_LOCKS: 'view-locks',
+    REFERENCE_CONFIRMATIONS: 'reference-confirmations',
     VERSIONS: 'versions',
     CONFLICT_BACKUPS: 'conflict-backups',
     FOLDER_ASSOCIATIONS: 'folder-associations',
@@ -55,6 +56,7 @@
     WORKSPACE_METADATA: 'workspace-metadata',
     IMPORT_CHECKPOINTS: 'import-checkpoints',
     ASSET_RECOVERY: 'asset-recovery',
+    IDENTITY_CLAIMS: 'identity-claims',
     DIAGNOSTICS: 'diagnostics',
     // テーマなど、同じ人がどの環境で開いても同じであってほしい見た目の設定。
     // 個人管理領域だけで使用する(共有ワークスペースへ置くと他メンバーへ漏れる)。
@@ -220,6 +222,7 @@
     [SystemStorageKind.TAGS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.EDIT_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.VIEW_LOCKS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
+    [SystemStorageKind.REFERENCE_CONFIRMATIONS]: { maxDocumentBytes: 200_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: 1 },
     [SystemStorageKind.VERSIONS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: 20, retentionDays: null },
     [SystemStorageKind.CONFLICT_BACKUPS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.FOLDER_ASSOCIATIONS]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
@@ -228,6 +231,7 @@
     [SystemStorageKind.WORKSPACE_METADATA]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 50_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.IMPORT_CHECKPOINTS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: 100_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.ASSET_RECOVERY]: { maxDocumentBytes: 50_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: 30 },
+    [SystemStorageKind.IDENTITY_CLAIMS]: { maxDocumentBytes: 2_000_000, maxTotalBytes: null, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.DIAGNOSTICS]: { maxDocumentBytes: 10_000_000, maxTotalBytes: 200_000_000, maxGenerations: null, retentionDays: 30 },
     [SystemStorageKind.USER_PREFERENCES]: { maxDocumentBytes: 1_000_000, maxTotalBytes: 20_000_000, maxGenerations: null, retentionDays: null },
     [SystemStorageKind.SCHEDULE_PROPOSALS]: { maxDocumentBytes: 50_000_000, maxTotalBytes: 1_000_000_000, maxGenerations: null, retentionDays: null },
@@ -303,6 +307,7 @@
   const RETENTION_CLEANUP_KINDS = Object.freeze([
     SystemStorageKind.MIGRATION_BACKUPS,
     SystemStorageKind.CONFLICT_BACKUPS,
+    SystemStorageKind.REFERENCE_CONFIRMATIONS,
   ]);
 
   async function runRetentionCleanup(adapter, options) {
@@ -475,6 +480,14 @@
       throw new SystemStorageError('listDocuments() は未実装です');
     }
 
+    async listDocumentHeaders(_kind, _options) {
+      throw new SystemStorageError('listDocumentHeaders() は未実装です');
+    }
+
+    async documentCollectionGeneration(_kind, _options) {
+      throw new SystemStorageError('documentCollectionGeneration() は未実装です');
+    }
+
     async delete(_kind, _documentId) {
       throw new SystemStorageError('delete() は未実装です');
     }
@@ -504,6 +517,14 @@
 
     async listDocuments(kind) {
       return this._inner.listDocuments(kind);
+    }
+
+    async listDocumentHeaders(kind, options) {
+      return this._inner.listDocumentHeaders(kind, options);
+    }
+
+    async documentCollectionGeneration(kind, options) {
+      return this._inner.documentCollectionGeneration(kind, options);
     }
 
     describe() {

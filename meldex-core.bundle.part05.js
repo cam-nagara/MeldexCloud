@@ -1,3 +1,19 @@
+
+  for (const candidate of candidates) {
+    const left = _popupClampValue(candidate.left, gap, maxLeft);
+    const top = _popupClampValue(candidate.top, gap, maxTop);
+    const rect = _popupCandidateRect(left, top, pw, ph);
+    const fitsViewport = left >= gap && top >= gap && rect.right <= vw - gap && rect.bottom <= vh - gap;
+    if (fitsViewport && !_popupRectsOverlap(rect, avoid, 0)) return { left, top };
+  }
+
+  const vertical = candidates
+    .filter(c => c.side === 'below' || c.side === 'above')
+    .filter(c => c.space >= 72)
+    .sort((a, b) => b.space - a.space)[0];
+  if (vertical) {
+    const left = _popupClampValue(vertical.left, gap, maxLeft);
+    const top = vertical.side === 'above'
       ? Math.max(gap, avoid.top - Math.min(ph, vertical.space) - gap)
       : avoid.bottom + gap;
     return { left, top, maxHeight: Math.max(72, vertical.space) };
@@ -202,15 +218,20 @@ function showConfirmDialog(message, onOk, onCancel) {
   buttonRow.className = 'btn-row show-confirm-dialog-actions';
   buttonRow.dataset.e2eId = 'show-confirm-dialog-actions';
 
+  // 2026-08-13: 133ダイアログ統一で外枠が旧 .modal から共通の .gb-modal へ変わり、
+  // .modal button 側にしか無かった見た目（パディング・枠線・サイズ）が当たらなくなって
+  // いた。cancel-btn/ok-btn/primary は既存のE2E・呼び出し側が参照するクラス名なので残し、
+  // 見た目は他の共通ダイアログ（例: db-template-editor-ui の cancel/save ボタン）と揃える
+  // 共通ボタンクラスを追加する。
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
-  cancelBtn.className = 'cancel-btn';
+  cancelBtn.className = 'gb-btn gb-btn-sm cancel-btn';
   cancelBtn.dataset.e2eId = 'show-confirm-dialog-cancel';
   cancelBtn.textContent = 'キャンセル';
 
   const okBtn = document.createElement('button');
   okBtn.type = 'button';
-  okBtn.className = 'primary ok-btn';
+  okBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary ok-btn';
   okBtn.dataset.e2eId = 'show-confirm-dialog-ok';
   okBtn.textContent = 'OK';
 

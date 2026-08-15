@@ -1154,7 +1154,8 @@ function updateRecentItems() {
     if (treeScroll.scrollTop !== savedScrollTop) treeScroll.scrollTop = savedScrollTop;
   };
   if (recent.length === 0) {
-    container.innerHTML = '<div style="padding:4px 12px;font-size:11px;color:var(--fg2);">なし</div>';
+    // 空のときは何も表示しない（ソースフォルダ・ホームフォルダ・お気に入り
+    // ＝renderFavorites() と同じ扱い。「なし」プレースホルダは出さない）。
     _restoreAfter();
     requestAnimationFrame(_restoreAfter);
     return;

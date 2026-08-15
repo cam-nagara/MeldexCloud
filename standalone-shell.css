@@ -1,13 +1,16 @@
 :root {
+  /* 単独アプリのダークモード統一計画（app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）:
+     --sa-* は本体の「ダーク」プリセット（gb-theme.css の --bg 系）が未読込のときだけ効く予備値。
+     新しい配色は作らず、対応するテーマ変数の現在値へ揃える。 */
   color-scheme: dark;
-  --sa-bg: #1b1c1f;
-  --sa-bg2: #222326;
-  --sa-bg3: #2b2d31;
-  --sa-border: #393b40;
-  --sa-fg: #e4e7ec;
-  --sa-muted: #9aa1ad;
-  --sa-accent: #5aa7e8;
-  --sa-danger: #d66161;
+  --sa-bg: var(--bg, #0b0d10);
+  --sa-bg2: var(--bg2, #111419);
+  --sa-bg3: var(--bg3, #181c22);
+  --sa-border: var(--border, #2b323b);
+  --sa-fg: var(--fg, #d4d4d4);
+  --sa-muted: var(--fg2, #969696);
+  --sa-accent: var(--accent, #569cd6);
+  --sa-danger: var(--red, #f44747);
   --sa-radius: 6px;
 }
 
@@ -110,12 +113,12 @@ textarea {
 }
 
 .sa-title-input:hover {
-  border-color: var(--border, #454545);
+  border-color: var(--border, #2b323b);
 }
 
 .sa-title-input:focus {
-  border-color: var(--accent, #6aa9e9);
-  outline: 2px solid color-mix(in srgb, var(--accent, #6aa9e9) 28%, transparent);
+  border-color: var(--accent, #569cd6);
+  outline: 2px solid color-mix(in srgb, var(--accent, #569cd6) 28%, transparent);
   outline-offset: 0;
 }
 
@@ -142,7 +145,7 @@ textarea {
 
 .sa-sync-status[data-status="conflict"],
 .sa-sync-status[data-status="error"] {
-  color: var(--danger, #f87171);
+  color: var(--danger, #f44747);
 }
 
 .sa-menu {
@@ -436,7 +439,7 @@ body.sa-resizing-option-panel * {
 }
 
 .sa-toast.error {
-  border-color: rgba(214, 97, 97, 0.7);
+  border-color: color-mix(in srgb, var(--red, #f44747) 70%, transparent);
 }
 
 .sa-empty {

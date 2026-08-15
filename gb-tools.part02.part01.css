@@ -202,6 +202,13 @@
     max-width: calc(100vw - 16px) !important;
     max-height: calc(100dvh - 16px) !important;
   }
+  /* showConfirmDialog（旧 .modal 構造から共通 .gb-modal へ移行済み）の操作ボタンは
+     既定の .gb-btn-sm だと高さ・幅ともスマホの44pxタップ領域に届かない。
+     「OK」のような短いラベルは幅が特に不足するため min-width も明示する。 */
+  .show-confirm-dialog-actions .gb-btn {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }
 .gb-modal-shell,
 .gb-cal-modal.gb-modal-shell,

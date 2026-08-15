@@ -449,14 +449,12 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-card-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="カードスタイル管理" aria-label="カードスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="add-line" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="ライン追加" aria-label="ライン追加">${_bdIcon('spline', 16)}</button>
       <button type="button" id="${idFor('bd-line-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="line-style-select" data-bd-action="pick-line-style" title="ラインスタイル" aria-label="ラインスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-line-style-preview')}" class="bd-style-preview bd-style-preview-line" data-bd-control="line-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
       </button>
-      <button type="button" data-bd-action="manage-line-styles" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn" title="ラインスタイル管理" aria-label="ラインスタイル管理">${_bdIcon('settings2', 16)}</button>
       <div class="sep"></div>
       <button type="button" data-bd-tool="erase" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="消しゴム" aria-label="消しゴム">${_bdIcon('eraser', 16)}</button>
       <div class="tb-spacer"></div>

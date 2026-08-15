@@ -1,3 +1,90 @@
+  const rawIndex = nodes.indexOf(current);
+  const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
+  const nextIndex = event.key === 'ArrowUp'
+    ? Math.max(0, currentIndex - 1)
+    : Math.min(nodes.length - 1, currentIndex + 1);
+  _outlinerKeyboardSelectNode(nodes[nextIndex]);
+}
+
+// 仮想化フォルダ(150件超)の直下の子は、表示範囲＋オーバースキャン分しか実DOM化されない
+// （gb-outliner-virtual-render.js）。_getVisibleTreeNodes()はDOM実体限定のため、
+// マウント範囲の境界（例: 220件中30件目で止まる）に達すると↓を押し続けても進めなくなり、
+// 選択行がスクロールでアンマウント済みだとcurrent===nullになってnodes[0]（無関係な行）へ
+// 飛んでしまう。この関数はUp/Downで「現在の選択が仮想化コンテナの内側にある」場合に、
+// GBOutlinerVirtualの論理モデルを直接参照して次の論理行を求め、必要なら
+// GBOutlinerVirtualRender.ensureLogicalIndexMounted()でスクロール補正+即時再マウントしてから
+// 選択する。処理した場合はtrueを返し、呼び出し元はDOM実体限定のフォールバックへ進まない。
+// 非仮想化フォルダ、または現在の選択が仮想化コンテナに属さない場合はfalseを返し、
+// 既存の_getVisibleTreeNodes経路（親/兄弟への移動を含む）へそのまま委ねる
+// （非仮想化フォルダの既存挙動は変更しない）。
+function _outlinerKeyboardVirtualContainerFor(nodeEl) {
+  const childrenDiv = nodeEl && nodeEl.parentElement;
+  return (childrenDiv && childrenDiv.dataset && childrenDiv.dataset.virtual === 'true') ? childrenDiv : null;
+}
+
+function _outlinerKeyboardTryVirtualStep(current, key) {
+  const vr = window.GBOutlinerVirtualRender;
+  if (!vr || typeof vr.ensureLogicalIndexMounted !== 'function') return false;
+
+  let childrenDiv = null;
+  let path = null;
+  let recoveringUnmounted = false;
+  if (current) {
+    childrenDiv = _outlinerKeyboardVirtualContainerFor(current);
+    if (!childrenDiv) return false; // 非仮想化行の通常移動は既存経路(_getVisibleTreeNodes)に委ねる
+    path = current._nodeData && current._nodeData.path;
+  } else {
+    // 選択行がアンマウント済み(current===null): treeSelection.lastClickedが保持する
+    // 安定パス(._nodeData.path、DOM接続の有無に依存しない)から所属コンテナを復元する。
+    const lastPath = treeSelection.lastClicked && treeSelection.lastClicked._nodeData && treeSelection.lastClicked._nodeData.path;
+    if (!lastPath || typeof vr.containerForPath !== 'function') return false;
+    childrenDiv = vr.containerForPath(lastPath);
+    if (!childrenDiv) return false;
+    path = lastPath;
+    recoveringUnmounted = true;
+  }
+
+  const state = childrenDiv._virtualState;
+  if (!state || !path) return false;
+  const currentIndex = state.flat.findIndex(entry => entry.id === path);
+  if (currentIndex < 0) return false;
+
+  const delta = key === 'ArrowUp' ? -1 : 1;
+  const nextIndex = Math.max(0, Math.min(state.flat.length - 1, currentIndex + delta));
+  // コンテナの論理先頭/末尾に既に居て、これ以上コンテナ内側では動けない場合
+  // （かつアンマウント復帰中でもない場合）は、親/兄弟への移動を含む既存経路に委ねる。
+  if (nextIndex === currentIndex && !recoveringUnmounted) return false;
+
+  const target = state.mountedByIndex.get(nextIndex) || vr.ensureLogicalIndexMounted(childrenDiv, nextIndex);
+  if (!target) return false;
+  _outlinerKeyboardSelectNode(target);
+  return true;
+}
+
+(function initOutlinerTreeKeyboardNavigation() {
+  const scroller = document.getElementById('tree-scroll-container');
+  if (!scroller) return;
+  if (!scroller.hasAttribute('tabindex')) scroller.tabIndex = 0;
+  scroller.addEventListener('keydown', _handleOutlinerTreeKeydown);
+})();
+
+// ドラッグ中のホイールスクロール対応
+(function() {
+  let _isDragging = false;
+  document.addEventListener('dragstart', () => { _isDragging = true; });
+  document.addEventListener('dragend', () => { _isDragging = false; });
+  document.addEventListener('drop', () => { _isDragging = false; });
+  // ドラッグ中にホイールでスクロール可能にする
+  const scrollTargets = ['tree-scroll-container'];
+  scrollTargets.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('wheel', (e) => {
+      if (!_isDragging) return;
+      e.preventDefault();
+      el.scrollTop += e.deltaY;
+    }, { passive: false });
+  });
 })();
 
 (function initOutlinerLassoSelection() {

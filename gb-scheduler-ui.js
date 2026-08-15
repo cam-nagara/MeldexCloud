@@ -353,8 +353,40 @@
     catch (error) { status(Api().errorMessage(error), true); }
   }
 
+  // df82a68f（2026-08-10）のサイドバー5モード再編で、旧「管理操作」(actions) が
+  // 「割り当て」(allocation) へ統合された際、タスクリスト面（gb-tool-calendar-
+  // production-task-view.part01.js の ensureProductionReadyGate/renderProductionEmptyState）
+  // が持つ MeldexProductionApi.checkReady() への空状態ゲートがここへ引き継がれず、
+  // 未セットアップの保管場所でもこのパネルだけ提案/割り当てUIをそのまま出してしまっていた
+  // （制作管理UX改善計画2026-08-04 §6-1 残作業）。タスクリスト面と同じ共有空状態カード
+  // （gb-production-empty-state）をここでも出し、両面の挙動をそろえる。
+  async function renderAllocationEmptyState(host, renderSeq) {
+    const card = window.MeldexProductionManagementActions?.emptyStateCard?.(() => {
+      window.MeldexProductionApi?.invalidateReady?.();
+      renderAllocation(host);
+    });
+    if (host.__schedulerAllocationSeq !== renderSeq) return true; // 別の描画が追い越した
+    if (!card) return false;
+    host.replaceChildren(card);
+    host.__schedulerRefresh = () => renderAllocation(host);
+    return true;
+  }
+
   async function renderAllocation(host) {
     host.replaceChildren();
+    const renderSeq = (host.__schedulerAllocationSeq = (host.__schedulerAllocationSeq || 0) + 1);
+    const checkReady = window.MeldexProductionApi?.checkReady;
+    if (typeof checkReady === 'function') {
+      const loading = document.createElement('p');
+      loading.className = 'gb-scheduler-panel-status';
+      loading.textContent = '読み込み中…';
+      host.appendChild(loading);
+      let ready = true;
+      try { ready = await checkReady(); } catch { ready = true; } // fail-open: 判定できなければ既存どおり通す
+      if (host.__schedulerAllocationSeq !== renderSeq) return; // 別の描画が追い越した
+      if (!ready && await renderAllocationEmptyState(host, renderSeq)) return;
+      host.replaceChildren();
+    }
     const selector = createProposalSelector();
     const summary = document.createElement('div');
     summary.className = 'gb-scheduler-current-summary';
@@ -576,6 +608,11 @@
     document.addEventListener('meldex:scheduler-proposals-changed', event => {
       syncAllSelectors();
       document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.(event));
+    });
+    // タスクリスト面の空状態カード（同じ「制作管理を始める」導線）から開始した場合も、
+    // 同時に開いているこのパネルの空状態を即座に解除する。
+    document.addEventListener('meldex:production-management-started', () => {
+      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.());
     });
   }
 

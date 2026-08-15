@@ -10,7 +10,6 @@
   let treeRoot = null;
   let context = emptyContext();
   let requestRevision = 0;
-  let patchHandle = 0;
   let filterRenderTimer = 0;
   let mutationQueue = Promise.resolve();
 
@@ -159,20 +158,15 @@
     schedulePatch();
   }
 
+  // タグの付け外し状態はスクロール中も含めて即座に見た目へ反映する必要があるため、
+  // requestAnimationFrame によるバッチ遅延は使わず同期で塗り直す。非表示/非合成の
+  // ブラウザ面ではrAFが発火しないことがあり、決定的な検証・実運用の両方で
+  // 同期反映の方が安全（2026-08-14 タグツリー複数列化での見直し）。
   function schedulePatch() {
-    if (patchHandle) return;
-    const run = () => {
-      patchHandle = 0;
-      patchVisibleTree();
-    };
-    if (typeof requestAnimationFrame === 'function') patchHandle = requestAnimationFrame(run);
-    else {
-      patchHandle = 1;
-      queueMicrotask(run);
-    }
+    patchVisibleTree();
   }
 
-  function checkboxReason(tagId) {
+  function assignmentBlockedReason() {
     if (!context.path) return 'ファイルを1件選択してください';
     if (context.selectionCount !== 1) return 'タグを付け外しするファイルを1件だけ選択してください';
     if (context.recursive) return 'フォルダではなくファイルを1件選択してください';
@@ -187,6 +181,12 @@
     return '';
   }
 
+  function isTagAssigned(tag) {
+    const tagId = String(tag?.id || '');
+    const tagName = String(tag?.name || '').toLocaleLowerCase('ja');
+    return context.assignedIds.has(tagId) || context.assignedNames.has(tagName);
+  }
+
   function isPending(key) {
     return Number(pendingKeyCounts.get(key) || 0) > 0;
   }
@@ -199,24 +199,34 @@
     return false;
   }
 
+  // タグツリーの行に埋め込まれたタグチップ（[data-tag-assignment-id]付き）を、
+  // 現在の付け外し状態・操作可否に合わせて塗り直す。チップの生成そのものは
+  // gb-tag-management.js 側が担当し、ここでは既存要素のクラス/属性だけを更新する。
+  function applyChipVisual(chip) {
+    const tagId = String(chip.dataset.tagAssignmentId || '');
+    const tagName = String(chip.dataset.tagAssignmentName || '');
+    const assigned = context.assignedIds.has(tagId) || context.assignedNames.has(tagName.toLocaleLowerCase('ja'));
+    const reason = assignmentBlockedReason();
+    const pending = isPending(context.signature + '\n' + tagId);
+    chip.classList.toggle('gb-tag-chip--assigned', assigned);
+    chip.classList.toggle('gb-tag-chip--assignment-disabled', !!reason);
+    chip.classList.toggle('gb-tag-chip--assignment-pending', pending);
+    chip.setAttribute('aria-pressed', assigned ? 'true' : 'false');
+    chip.setAttribute(
+      'aria-label',
+      reason
+        ? `${tagName || 'タグ'}（${reason}）`
+        : `${tagName || 'タグ'}を選択ファイルへ${assigned ? '外す' : '付ける'}`,
+    );
+  }
+
   function patchVisibleTree() {
     if (!treeRoot?.isConnected) return;
-    treeRoot.querySelectorAll('[data-tag-assignment-id]').forEach(input => {
-      const tagId = String(input.dataset.tagAssignmentId || '');
-      const tagName = String(input.dataset.tagAssignmentName || '').toLocaleLowerCase('ja');
-      input.checked = context.assignedIds.has(tagId) || context.assignedNames.has(tagName);
-      const reason = checkboxReason(tagId);
-      input.disabled = !!reason;
-      input.title = reason || `${input.dataset.tagAssignmentLabel || 'タグ'}を付け外し`;
-      input.closest('.gb-tag-assignment-toggle')?.classList.toggle(
-        'is-saving',
-        isPending(context.signature + '\n' + tagId),
-      );
-    });
+    treeRoot.querySelectorAll('[data-tag-assignment-id]').forEach(applyChipVisual);
     const status = treeRoot.querySelector('[data-tag-assignment-status]');
     if (!status) return;
     status.classList.toggle('is-error', context.loadFailed);
-    if (!context.path) status.textContent = 'ファイルを1件選択すると、チェックでタグを付け外しできます。';
+    if (!context.path) status.textContent = 'タグをクリックすると、選択中のファイルに付け外しできます。';
     else if (context.selectionCount !== 1) status.textContent = '複数選択中です。タグの付け外しはファイルを1件だけ選択してください。';
     else if (context.recursive) status.textContent = 'フォルダが選択されています。タグの付け外しはファイルを1件だけ選択してください。';
     else if (context.loading) status.textContent = '選択ファイルのタグを読み込んでいます…';
@@ -224,7 +234,7 @@
     else if (context.catalogMutationBlocked || context.targetMutationBlocked) {
       status.textContent = context.warning || 'タグ辞書の同期競合を解消してください。';
     }
-    else status.textContent = 'チェックを切り替えると、選択ファイルのタグをすぐに更新します。';
+    else status.textContent = 'ファイルを1件選択すると、タグをクリックで付け外しできます。';
   }
 
   async function refreshTarget(force) {
@@ -310,7 +320,7 @@
     }
   }
 
-  function queueTagMutation(input, tag, checked) {
+  function queueTagMutation(tag, checked) {
     const captured = {
       path: context.path,
       sourceFolder: context.sourceFolder,
@@ -341,28 +351,16 @@
         && !hasPendingForSignature(captured.signature)
       ) refreshTarget(true);
     });
-    input.checked = checked;
   }
 
-  function createTagToggle(tag) {
-    const label = document.createElement('label');
-    label.className = 'gb-tag-assignment-toggle';
-    const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.dataset.tagAssignmentId = String(tag?.id || '');
-    input.dataset.tagAssignmentName = String(tag?.name || '');
-    input.dataset.tagAssignmentLabel = String(tag?.name || 'タグ');
-    input.dataset.e2eId = 'tag-tree-assignment-' + String(tag?.id || '');
-    input.setAttribute('aria-label', `${tag?.name || 'タグ'}を選択ファイルへ付ける`);
-    input.addEventListener('click', event => event.stopPropagation());
-    input.addEventListener('change', event => {
-      event.stopPropagation();
-      if (input.disabled) return;
-      queueTagMutation(input, tag, input.checked);
-    });
-    label.addEventListener('click', event => event.stopPropagation());
-    label.appendChild(input);
-    return label;
+  // タグ行（チップ）のクリック/Enter/Spaceから呼ばれる、唯一の付け外し入口。
+  // 対象が1件も選べていない・複数選択・フォルダ選択・読込中などは
+  // assignmentBlockedReason() が理由を返し、その間は何も起きない。
+  function toggleTagAssignment(tag) {
+    if (!tag) return false;
+    if (assignmentBlockedReason()) return false;
+    queueTagMutation(tag, !isTagAssigned(tag));
+    return true;
   }
 
   function mountTree(root) {
@@ -401,7 +399,9 @@
     createTabBar,
     setTreeContext,
     createTargetStatus,
-    createTagToggle,
+    isTagAssigned,
+    assignmentBlockedReason,
+    toggleTagAssignment,
     mountTree,
     scheduleTreeFilterRender,
     refreshTarget: () => refreshTarget(true),

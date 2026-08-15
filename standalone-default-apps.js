@@ -59,14 +59,6 @@
     } catch {}
   }
 
-  function hasPromptBeenSeen(status) {
-    try {
-      return localStorage.getItem(promptKey(status)) === '1';
-    } catch {
-      return true;
-    }
-  }
-
   function labelForExtension(appId, ext) {
     const value = String(ext || '').toLowerCase();
     const labels = {
@@ -98,26 +90,29 @@
     if (styleInstalled) return;
     styleInstalled = true;
     const style = document.createElement('style');
+    // 予備値（フォールバック）は本体の「ダーク」プリセットの現在値へ揃える
+    // （単独アプリのダークモード統一計画 app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）。
+    // --bg/--bg2/--bg3/--fg/--fg2/--border/--accent/--red は常に定義済みなので実際には使われない。
     style.textContent = `
-.sa-default-apps-overlay{position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.54);display:flex;align-items:center;justify-content:center;padding:18px;color:var(--fg,#e5e7eb);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
-.sa-default-apps-dialog{width:min(560px,calc(100vw - 24px));max-height:min(760px,88vh);overflow:auto;background:var(--bg2,#1c2028);border:1px solid var(--border,rgba(255,255,255,.16));border-radius:8px;box-shadow:0 18px 54px rgba(0,0,0,.52)}
+.sa-default-apps-overlay{position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.54);display:flex;align-items:center;justify-content:center;padding:18px;color:var(--fg,#d4d4d4);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
+.sa-default-apps-dialog{width:min(560px,calc(100vw - 24px));max-height:min(760px,88vh);overflow:auto;background:var(--bg2,#111419);border:1px solid var(--border,rgba(255,255,255,.16));border-radius:8px;box-shadow:0 18px 54px rgba(0,0,0,.52)}
 .sa-default-apps-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px 10px;border-bottom:1px solid var(--border,rgba(255,255,255,.12))}
 .sa-default-apps-title{font-size:16px;font-weight:650;line-height:1.35}
 .sa-default-apps-close{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border,rgba(255,255,255,.16));background:transparent;color:inherit;border-radius:6px;width:32px;height:32px;cursor:pointer}
 .sa-default-apps-body{padding:14px 18px 16px}
-.sa-default-apps-desc{font-size:13px;line-height:1.65;color:var(--fg2,#a9b0bd);margin:0 0 12px}
+.sa-default-apps-desc{font-size:13px;line-height:1.65;color:var(--fg2,#969696);margin:0 0 12px}
 .sa-default-apps-list{display:grid;gap:8px;margin:10px 0 12px}
 .sa-default-apps-row{display:flex;gap:10px;align-items:flex-start;min-height:44px;box-sizing:border-box;border:1px solid var(--border,rgba(255,255,255,.14));background:rgba(255,255,255,.035);border-radius:7px;padding:10px 11px;cursor:pointer}
-.sa-default-apps-row input{margin-top:3px;accent-color:var(--accent,#00c2a8)}
+.sa-default-apps-row input{margin-top:3px;accent-color:var(--accent,#569cd6)}
 .sa-default-apps-row-main{display:grid;gap:3px;min-width:0}
 .sa-default-apps-row-title{font-size:13px;font-weight:600}
-.sa-default-apps-row-note{font-size:12px;color:var(--fg2,#a9b0bd);line-height:1.4}
-.sa-default-apps-note{font-size:12px;color:var(--fg2,#a9b0bd);line-height:1.55;white-space:pre-wrap}
-.sa-default-apps-message{font-size:12px;line-height:1.55;margin-top:10px;color:var(--fg2,#a9b0bd);white-space:pre-wrap}
-.sa-default-apps-message.error{color:var(--red,#ff6b6b)}
+.sa-default-apps-row-note{font-size:12px;color:var(--fg2,#969696);line-height:1.4}
+.sa-default-apps-note{font-size:12px;color:var(--fg2,#969696);line-height:1.55;white-space:pre-wrap}
+.sa-default-apps-message{font-size:12px;line-height:1.55;margin-top:10px;color:var(--fg2,#969696);white-space:pre-wrap}
+.sa-default-apps-message.error{color:var(--red,#f44747)}
 .sa-default-apps-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:14px}
-.sa-default-apps-actions button{min-height:34px;border:1px solid var(--border,rgba(255,255,255,.16));background:var(--bg3,#2a303a);color:inherit;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer}
-.sa-default-apps-actions button.primary{background:var(--accent,#00c2a8);border-color:var(--accent,#00c2a8);color:#07110f;font-weight:650}
+.sa-default-apps-actions button{min-height:34px;border:1px solid var(--border,rgba(255,255,255,.16));background:var(--bg3,#181c22);color:inherit;border-radius:6px;padding:7px 12px;font-size:13px;cursor:pointer}
+.sa-default-apps-actions button.primary{background:var(--accent,#569cd6);border-color:var(--accent,#569cd6);color:#07110f;font-weight:650}
 .sa-default-apps-actions button:disabled{opacity:.55;cursor:not-allowed}
 @media(max-width:520px){.sa-default-apps-overlay{align-items:flex-end;padding:8px}.sa-default-apps-dialog{width:100%;max-height:92vh}.sa-default-apps-close{width:44px;height:44px}.sa-default-apps-row{min-height:44px}.sa-default-apps-row input{min-width:20px;min-height:20px}.sa-default-apps-actions button{flex:1 1 auto;min-height:44px}}
 `;
@@ -365,20 +360,10 @@
     }
   }
 
-  async function maybeShowFirstRunPrompt() {
-    if (!isNativeStandalone()) return;
-    try {
-      const status = await loadStatus(false);
-      const app = status?.app || {};
-      const rows = Array.isArray(app.extensions) ? app.extensions : [];
-      if (!status?.supported || !app.target_exists || !rows.length || hasPromptBeenSeen(status)) return;
-      if (rows.every(row => row?.default)) {
-        markPromptSeen(status);
-        return;
-      }
-      setTimeout(() => openDialog({ firstRun: true }), 450);
-    } catch {}
-  }
+  // 起動時の自動ダイアログは出さない。Meldexの設計原則「何かを追加する時にダイアログを
+  // 出さない・設定を強要しない」に反し、単独アプリを開くたび既定アプリの確認が割り込んで
+  // いたため（2026-08-14 ユーザー指示）。設定は各アプリのメニュー「既定アプリに設定...」
+  // （`[data-standalone-default-apps-open]`）からいつでも開ける。
 
   function installOpenHandlers() {
     document.addEventListener('click', event => {
@@ -400,7 +385,6 @@
   function init() {
     installOpenHandlers();
     revealNativeControls();
-    maybeShowFirstRunPrompt();
   }
 
   NS.openDialog = openDialog;

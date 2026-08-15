@@ -189,8 +189,8 @@
     const request = {
       date_from: assignDateText(0),
       date_to: assignDateText(AUTO_ASSIGN_DAYS),
-      // 「シフト時間内に収める」をオンにする（ユーザー判断 2026-08-08）。画面のチェックが
-      // オン＝残業させない、なので allow_overtime は false。確認なしで走る自動実行では、
+      // 残業を含めない（ユーザー判断 2026-08-08。スケジューラー複数アカウント修正計画
+      // 2026-08-13 Phase 3で全入口の既定と統一）。確認なしで走る自動実行では、
       // 勤務時間外へ勝手に予定を入れない側を既定にする。
       allow_overtime: false,
       unassigned_only: true,

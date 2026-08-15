@@ -128,18 +128,25 @@
   };
 
   NS.saveAs = async function (content, suggestedName) {
+    const requestBody = {
+      content: String(content || ''),
+      suggestedName: String(suggestedName || NS.defaultFilename()),
+    };
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.('/standalone/save-as', requestBody)
+      || { body: { ...requestBody, operation_id: crypto.randomUUID() }, key: '' };
     try {
       const payload = await _fetchJson('/standalone/save-as', {
         method: 'POST',
-        body: JSON.stringify({
-          content: String(content || ''),
-          suggestedName: String(suggestedName || NS.defaultFilename()),
-        }),
+        body: JSON.stringify(prepared.body),
       });
+      window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
       config = payload;
       return { path: _pathFromConfig(payload), etag: String(payload?.etag || ''), config: payload };
     } catch (error) {
-      if (error?.status === 499) return null;
+      if (error?.status === 499) {
+        window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
+        return null;
+      }
       throw error;
     }
   };

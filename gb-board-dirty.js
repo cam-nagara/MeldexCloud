@@ -86,6 +86,18 @@ function bdMarkNodesMoved(nodeIds, reason) {
   [...(nodeIds || [])].filter(Boolean).forEach(id => bdMarkNodeMoved(id, reason));
 }
 
+function bdRefreshNodesPartial(nodeIds, reason, options = {}) {
+  const ids = [...new Set([...(nodeIds || [])].filter(Boolean))];
+  ids.forEach(id => bdMarkNodeDirty(id, reason || 'partial-refresh'));
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, reason || 'partial-refresh');
+  bdMarkExtrasDirty({
+    frames: options.frames !== false,
+    minimap: options.minimap !== false,
+    boardUi: options.boardUi !== false,
+    detailPanel: options.detailPanel === true,
+  }, reason || 'partial-refresh');
+}
+
 function bdMarkConnectionDirty(connId, reason) {
   if (!connId) return;
   _bdDirtyState.dirtyConnIds.add(connId);

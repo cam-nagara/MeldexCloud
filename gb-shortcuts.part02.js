@@ -198,6 +198,7 @@
     if (!confirmed) return;
     const deletedItems = [..._folderSelectedItems];
     const result = await deleteOutlinerItemsWithHistory(deletedItems, {
+      confirmation: confirmed,
       label: deletedItems.length + ' 件を削除',
       refresh: async () => {
         if (typeof _folderPath !== 'undefined' && _folderPath && typeof openFolder === 'function') {

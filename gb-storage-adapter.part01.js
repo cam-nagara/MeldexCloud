@@ -1399,6 +1399,11 @@
       return payload;
     }
 
+    async movePathNoReplace(oldRelativePath, newRelativePath) {
+      // Dropbox files/move_v2 with autorename:false is an atomic no-replace publish.
+      return this.movePath(oldRelativePath, newRelativePath);
+    }
+
     async copyPath(oldRelativePath, newRelativePath) {
       const source = _normalizeRelativePath(oldRelativePath);
       const target = _normalizeRelativePath(newRelativePath);

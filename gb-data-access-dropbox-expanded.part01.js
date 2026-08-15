@@ -228,6 +228,38 @@
 
   internals._rejectComputedPropertyEdit = _rejectComputedPropertyEdit;
 
+  // 取得列（Xブックマーク・Web Clipper・エクスポート等の source 付き列）:
+  // フォルダノートの property_types[列].source 宣言を読み、Desktop側
+  // reject_import_locked_property_edit()（meldex_sheet_import_lock.py）と同じ
+  // 拒否をCloud保存経路にも掛ける（インポート・機能生成ファイル保護計画
+  // Phase 3。デスクトップだけ強制してクラウドが素通りする片側実装にしない）。
+  async function _importLockedPropsForSheet(provider, dbPath) {
+    try {
+      const note = await _folderFrontmatter(provider, dbPath);
+      const propTypes = note?.frontmatter?.property_types;
+      if (!propTypes || typeof propTypes !== 'object') return [];
+      return Object.keys(propTypes).filter(name => propTypes[name] && propTypes[name].source);
+    } catch {
+      return [];
+    }
+  }
+
+  async function _rejectImportLockedPropertyEdit(provider, dbPath, propNames) {
+    const locked = await _importLockedPropsForSheet(provider, dbPath);
+    if (!locked.length) return;
+    const set = new Set(locked);
+    const names = (Array.isArray(propNames) ? propNames : [propNames])
+      .map(name => String(name || '').trim())
+      .filter(Boolean);
+    if (!names.some(name => set.has(name))) return;
+    const error = new Error('この列は自動取得のため直接編集できません');
+    error.status = 403;
+    error.code = 'IMPORT_PROPERTY_READONLY';
+    throw error;
+  }
+
+  internals._rejectImportLockedPropertyEdit = _rejectImportLockedPropertyEdit;
+
   async function _ensureFolderNote(provider, folderPath, type) {
     const folder = _normalizeFolderPath(folderPath);
     const name = _basename(folder);
@@ -273,6 +305,11 @@
   async function _isDatabaseFolder(provider, folderPath) {
     return !!(await _databaseKind(provider, folderPath));
   }
+
+  // シートの中に置いてよい項目かの判定（デスクトップ版 meldex_api_outliner.
+  // reject_non_entry_into_sheet と同じ規則をクラウド版へ配線するため、
+  // fileopsハンドラ側（別IIFE）から internals 経由で呼べるように公開する。
+  internals._databaseKind = _databaseKind;
 
   async function _findDatabaseFolders(provider, rootPath, maxDepth) {
     const result = [];
@@ -1192,6 +1229,7 @@
     }
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
+    await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
     await _pmSafeApplyDurationRecalcHook(
@@ -1212,6 +1250,7 @@
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(stored.dbPath, prop);
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
+    await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
@@ -1258,6 +1297,7 @@
       return { ok: true };
     }
     await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
+    await _rejectImportLockedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     const applied = _applySettingsEntryValueUpdate(parsed, normalized, body || {});
     await _pmSafeApplyDurationRecalcHook(
       provider, normalized, parsed.frontmatter, String(body?.property || ''),
@@ -1276,6 +1316,7 @@
     if (!prop) throw new Error('property は必須です');
     _rejectProductionReservedLegacyProperties(_dirname(entryPath), prop);
     await _rejectComputedPropertyEdit(provider, _dirname(entryPath), [prop]);
+    await _rejectImportLockedPropertyEdit(provider, _dirname(entryPath), [prop]);
     const entry = await _resolveEntryHandle(provider, entryPath).catch(() => null);
     if (!entry || entry.kind !== 'file') return _addSheetStoreValue(provider, body || {});
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });

@@ -81,7 +81,25 @@
   const autostartCb = document.getElementById('modal-autostart');
   const autostartSection = document.getElementById('settings-autostart-section');
   if (autostartCb && !autostartSection?.hidden) {
-    await apiPost('/autostart', { enabled: autostartCb.checked });
+    let autostartResult = null;
+    try {
+      autostartResult = await apiPost('/autostart', { enabled: autostartCb.checked }, { silentError: true });
+    } catch (err) {
+      autostartResult = null;
+    }
+    // 実際に登録できたかどうかをトグルの見た目へ反映する。オンにしたつもりが
+    // 実際には登録されていない、という食い違いを残さないため。
+    autostartCb.checked = !!(autostartResult && autostartResult.enabled);
+    if (!autostartResult || autostartResult.ok === false) {
+      showStatus('自動起動を設定できませんでした。もう一度お試しください。', true);
+      const status = document.getElementById('modal-autostart-status');
+      if (status) status.textContent = '設定を保存できませんでした。権限とOSの設定を確認してください。';
+      return;
+    }
+    const status = document.getElementById('modal-autostart-status');
+    if (status) status.textContent = autostartResult.enabled
+      ? '有効です。次回のOS起動時に常駐を開始します。'
+      : '無効です。必要な場合はオンにして保存してください。';
   }
 
   // バージョン管理設定
@@ -298,214 +316,6 @@ async function _syncSettingsVaultPathFromOutlinerRoots(roots) {
   return true;
 }
 
-function _settingsCliEsc(value) {
-  return typeof esc === 'function'
-    ? esc(value)
-    : String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
-
-function _settingsCliIcon(name, size) {
-  return typeof lucide === 'function' ? lucide(name, size || 14) : '';
-}
-
-// CLIチャット設定のモデル選択肢。チャットパネルのモデル一覧（CHAT_CLI_MODEL_CATALOG）と
-// 同じ表を使い、設定ダイアログ側だけ候補が古い・少ないという食い違いを作らない。
-// CHAT_CLI_MODEL_CATALOG が未読込の環境向けに、同じ内容のフォールバックを持つ。
-const SETTINGS_CLI_CHAT_MODEL_FALLBACK = {
-  codex: [
-    { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' },
-    { id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra' },
-    { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
-  ],
-  claude_code: [
-    { id: 'claude-fable-5', name: 'Fable 5' },
-    { id: 'claude-opus-5', name: 'Opus 5' },
-    { id: 'claude-opus-4-8', name: 'Opus 4.8' },
-    { id: 'claude-sonnet-5', name: 'Sonnet 5' },
-    { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
-  ],
-  antigravity_cli: [
-    { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash' },
-    { id: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' },
-    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' },
-    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' },
-    { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6' },
-    { id: 'gpt-oss-120b', name: 'GPT-OSS 120B' },
-  ],
-};
-
-function _settingsCliModelChoices(key) {
-  const sentinel = typeof CLI_CHAT_DEFAULT_MODEL_SENTINEL !== 'undefined' ? CLI_CHAT_DEFAULT_MODEL_SENTINEL : '';
-  const shared = (typeof CHAT_CLI_MODEL_CATALOG !== 'undefined' && CHAT_CLI_MODEL_CATALOG[key]) || null;
-  const source = shared || SETTINGS_CLI_CHAT_MODEL_FALLBACK[key] || [];
-  return source
-    .filter(item => item && item.id && item.id !== sentinel)
-    .map(item => ({ id: String(item.id), name: String(item.name || item.id) }));
-}
-
-function _settingsCliProviderRows(config) {
-  const providers = config?.providers || {};
-  const order = ['codex', 'claude_code', 'antigravity_cli'];
-  const labels = {
-    codex: 'Codex CLI',
-    claude_code: 'Claude Code',
-    antigravity_cli: 'Antigravity CLI',
-  };
-  // サーバ側 CLI_CHAT_PROVIDER_DEFAULTS の既定model値と対。この値が入っている＝未設定なので、
-  // 「CLI既定」扱いにする。
-  const defaultModels = {
-    codex: 'CLI既定（推奨）',
-    claude_code: 'Claude Code',
-    antigravity_cli: 'Antigravity CLI',
-  };
-  const modelTitles = {
-    codex: 'CLIへ渡すモデルです。「CLI既定」ならCodex CLI自身の既定モデルを使います',
-    claude_code: 'CLIへ渡すモデルです。「CLI既定」ならClaude Code自身の既定モデルを使います',
-    antigravity_cli: 'CLIへ渡すモデルです。「CLI既定」ならAntigravity CLI自身の既定モデルを使います',
-  };
-  return order.map(key => {
-    const item = providers[key] || {};
-    const label = item.label || labels[key] || key;
-    const command = item.command || (key === 'claude_code' ? 'claude' : key === 'antigravity_cli' ? 'agy' : 'codex');
-    const placeholderModel = defaultModels[key] || label;
-    const rawModel = String(item.model || '').trim();
-    // valueは実設定値のみ（未設定・プレースホルダ既定ラベルと同じ場合は空欄）にし、
-    // ラベルはplaceholder属性へ回す。value側にも既定ラベルを入れてしまうと、datalistの
-    // 絞り込み候補がその文字列でフィルタされ、他候補がほぼ見えなくなる不具合があった。
-    const modelValue = (!rawModel || rawModel === placeholderModel) ? '' : rawModel;
-    const available = item.available !== false;
-    const compatible = item.compatible !== false;
-    const statusText = !available
-      ? '未検出'
-      : !compatible
-        ? '更新必要'
-        : item.version
-          ? `v${item.version}`
-          : '検出済み';
-    // 「検出済み」は実行ファイルの所在確認であり、ログイン状態の確認ではない
-    // （2026-07-31、両者の混同で認証エラーの原因調査が長引いたユーザー報告を踏まえて明記）。
-    const statusTitle = !available || !compatible
-      ? ''
-      : 'これは実行ファイルの検出状態です。ログイン状態とは別に、CLIチャット送信時またはエラー時に確認されます。';
-    const statusColor = available && compatible ? 'var(--accent)' : 'var(--red)';
-    const compatibilityMessage = String(item.compatibility_message || '').trim();
-    // 旧実装は「候補付きテキスト入力（datalist）」だった。ブラウザは入力済みの文字列で候補を
-    // 絞り込むため、一度モデルを保存すると次回から候補が1件しか出ず、他のモデルへ変え直せない
-    // という報告があった（2026-08-07）。常に全候補が見えるドロップダウンにしている。
-    // 一覧に無い保存済みモデル（旧バージョンで保存した別名など）は、黙って別の値へ変わらないよう
-    // そのまま選択肢へ足して選択状態を保つ。別のモデルを選び直せばその選択肢は次回から消える。
-    const choices = _settingsCliModelChoices(key).slice();
-    if (modelValue && !choices.some(choice => choice.id === modelValue)) {
-      choices.push({ id: modelValue, name: modelValue });
-    }
-    const modelOptions = [`<option value=""${modelValue ? '' : ' selected'}>CLI既定（推奨）</option>`]
-      .concat(choices.map(choice => `<option value="${_settingsCliEsc(choice.id)}"${choice.id === modelValue ? ' selected' : ''}>${_settingsCliEsc(choice.name)}</option>`))
-      .join('');
-    return `
-      <div class="settings-cli-chat-row" data-provider="${_settingsCliEsc(key)}" style="display:grid;grid-template-columns:minmax(105px,.9fr) minmax(110px,1fr) minmax(110px,1fr) 72px;gap:8px;align-items:center;margin-top:8px;">
-        <label class="gb-check" style="min-width:0;">
-          <input type="checkbox" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-enabled" data-cli-chat-field="enabled" ${item.enabled === false ? '' : 'checked'}>
-          <span>${_settingsCliEsc(label)}</span>
-        </label>
-        <input class="gb-input" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-command" data-cli-chat-field="command" value="${_settingsCliEsc(command)}" placeholder="${_settingsCliEsc(command)}">
-        <select class="gb-select" style="min-width:0;" data-e2e-id="settings-cli-chat-${_settingsCliEsc(key)}-model" data-cli-chat-field="model" title="${_settingsCliEsc(modelTitles[key] || 'CLIへ渡すモデル')}">${modelOptions}</select>
-        <span style="font-size:11px;color:${statusColor};white-space:nowrap;"${statusTitle ? ` title="${_settingsCliEsc(statusTitle)}"` : ''}>${_settingsCliEsc(statusText)}</span>
-        ${compatibilityMessage ? `<div class="gb-section-desc" style="grid-column:1/-1;color:${compatible ? 'var(--fg2)' : 'var(--red)'};">${_settingsCliEsc(compatibilityMessage)}</div>` : ''}
-      </div>`;
-  }).join('');
-}
-
-function _renderCliChatSettingsContainer(container, config) {
-  if (!container) return;
-  container.innerHTML = `
-    <div class="gb-check-help-row" style="margin-top:4px;">
-      <label class="gb-check">
-        <input id="settings-cli-chat-enabled" type="checkbox" ${config?.enabled === false ? '' : 'checked'}>
-        <span>CLIチャットを有効にする</span>
-      </label>
-      ${fieldHelp('コマンド名は、ターミナルで実行する名前と同じにしてください。例: codex / claude / gemini')}
-    </div>
-    <div style="margin-top:4px;">${_settingsCliProviderRows(config)}</div>
-    <div class="btn-row" style="justify-content:flex-start;gap:8px;margin-top:10px;flex-wrap:wrap;">
-      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-refresh">${_settingsCliIcon('refreshCw',14)} 状態を更新</button>
-      <button type="button" class="gb-btn gb-btn-sm" id="settings-cli-chat-save">${_settingsCliIcon('save',14)} CLIチャット設定を保存</button>
-    </div>
-    <div id="settings-cli-chat-status" class="gb-section-desc" style="margin-top:6px;"></div>
-    <div id="settings-workspace-cli-relay-container"></div>
-  `;
-  container.querySelector('#settings-cli-chat-refresh')?.addEventListener('click', () => renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document));
-  container.querySelector('#settings-cli-chat-save')?.addEventListener('click', () => saveCliChatSettingsFromSettingsDialog(container.closest('.modal-overlay') || document));
-  if (typeof renderWorkspaceCliRelaySettingsForSettings === 'function') {
-    renderWorkspaceCliRelaySettingsForSettings(container.closest('.modal-overlay') || document);
-  }
-  if (typeof replaceIcons === 'function') replaceIcons(container);
-}
-
-async function renderCliChatSettingsForSettings(root) {
-  const scope = root?.querySelector ? root : document;
-  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
-  if (!container) return;
-  container.innerHTML = '<div class="gb-section-desc">CLIチャット設定を読み込み中...</div>';
-  try {
-    const config = await apiFetch('/cli-chat/config');
-    _renderCliChatSettingsContainer(container, config);
-  } catch (e) {
-    container.innerHTML = `<div class="gb-section-desc" style="color:var(--red);">CLIチャット設定を読み込めませんでした: ${_settingsCliEsc(e?.message || e)}</div>`;
-  }
-}
-
-async function saveCliChatSettingsFromSettingsDialog(root, options = {}) {
-  const scope = root?.querySelector ? root : document;
-  const container = scope.querySelector('#settings-cli-chat-container') || document.getElementById('settings-cli-chat-container');
-  if (!container || !container.querySelector('[data-provider]')) return true;
-  const providers = {};
-  container.querySelectorAll('[data-provider]').forEach(row => {
-    const key = row.dataset.provider || '';
-    if (!key) return;
-    const enabled = row.querySelector('[data-cli-chat-field="enabled"]')?.checked !== false;
-    const command = row.querySelector('[data-cli-chat-field="command"]')?.value?.trim() || '';
-    const model = row.querySelector('[data-cli-chat-field="model"]')?.value?.trim() || '';
-    providers[key] = { enabled, command, model };
-  });
-  const body = {
-    cli_chat_enabled: document.getElementById('settings-cli-chat-enabled')?.checked !== false,
-    cli_chat_providers: providers,
-  };
-  const status = container.querySelector('#settings-cli-chat-status');
-  try {
-    if (status) {
-      status.textContent = '保存中...';
-      status.style.color = 'var(--fg2)';
-    }
-    await apiPut('/cli-chat/config', body);
-    if (typeof saveWorkspaceCliRelaySettingsFromSettingsDialog === 'function') {
-      const relayOk = await saveWorkspaceCliRelaySettingsFromSettingsDialog(container.closest('.modal-overlay') || document, { silent: true, skipReload: true });
-      if (relayOk === false) return false;
-    }
-    if (status) {
-      status.textContent = '保存しました。未検出のままならMeldexを再起動してください。';
-      status.style.color = 'var(--fg2)';
-    }
-    if (typeof window.GBChatCli?.loadChatConfig === 'function') {
-      const reload = window.GBChatCli.loadChatConfig().catch(() => {});
-      if (!options.backgroundChatRefresh) await reload;
-    }
-    if (typeof _chatRefreshApiKeyState === 'function') _chatRefreshApiKeyState().catch(() => {});
-    if (!options.skipReload) {
-      await renderCliChatSettingsForSettings(container.closest('.modal-overlay') || document);
-    }
-    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定を保存しました');
-    return true;
-  } catch (e) {
-    if (status) {
-      status.textContent = '保存に失敗しました: ' + (e?.message || e);
-      status.style.color = 'var(--red)';
-    }
-    if (!options.silent && typeof showStatus === 'function') showStatus('CLIチャット設定の保存に失敗しました', true);
-    return false;
-  }
-}
-
 /* Notion同期 → gb-notion-sync.js に分離 */
 /* ==============================
    ゴミ箱
@@ -658,16 +468,23 @@ async function trashDelete(idx) {
   if (!name) return;
   const confirmMessage = `「${name}」を完全に削除しますか？この操作は取り消せません。`;
   const impactPath = item?.original_path || '';
-  const confirmed = (impactPath && typeof MeldexDeleteImpactWarning !== 'undefined')
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file' }],
-        confirmMessage,
-      )
-    : await cfConfirm(confirmMessage);
+  if (!impactPath || typeof MeldexDeleteImpactWarning === 'undefined') {
+    showStatus('削除元情報を確認できないため完全削除できません', true);
+    return;
+  }
+  const confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file', physicalPath: item?.trash_path || '' }],
+    confirmMessage,
+    { operation: 'permanent' },
+  );
   if (!confirmed) return;
   window._setTrashDialogBusy?.(true);
   try {
-    await apiPost('/trash/delete', { name, ...(item.trash_root ? { trash_root: item.trash_root } : {}) });
+    await apiPost('/trash/delete', {
+      name,
+      ...(item.trash_root ? { trash_root: item.trash_root } : {}),
+      ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
+    });
     showStatus(`「${name}」を完全に削除しました`);
     window._trashItems.splice(idx, 1);
     window._setTrashDialogBusy?.(false);
@@ -684,14 +501,23 @@ async function trashEmpty() {
   const confirmMessage = 'ゴミ箱を空にしますか？この操作は取り消せません。';
   const impactTargets = (window._trashItems || [])
     .filter(item => item?.original_path)
-    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file' }));
-  const confirmed = (impactTargets.length && typeof MeldexDeleteImpactWarning !== 'undefined')
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
-    : await cfConfirm(confirmMessage);
+    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file', physicalPath: item.trash_path || '' }));
+  if (!impactTargets.length) {
+    showStatus('ゴミ箱は空です');
+    return;
+  }
+  if (impactTargets.length !== (window._trashItems || []).length
+      || typeof MeldexDeleteImpactWarning === 'undefined') {
+    showStatus('削除元情報を確認できない項目があるためゴミ箱を空にできません', true);
+    return;
+  }
+  const confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+    impactTargets, confirmMessage, { operation: 'permanent' },
+  );
   if (!confirmed) return;
   window._setTrashDialogBusy?.(true);
   try {
-    await apiPost('/trash/empty', {});
+    await apiPost('/trash/empty', window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {});
     showStatus('ゴミ箱を空にしました');
     window._setTrashDialogBusy?.(false);
     await _refreshTrashDialog();
@@ -828,149 +654,6 @@ async function renderDatabaseMaintenanceSettings(root) {
     });
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
-  }
-}
-
-function _formatUsd(value) {
-  const number = Number(value || 0);
-  return '$' + number.toFixed(number >= 1 ? 2 : 4) + '（' + _formatApproxJpyFromUsd(number) + '）';
-}
-
-const CHAT_COST_USD_JPY_APPROX_RATE = 156;
-
-function _formatApproxJpyFromUsd(value) {
-  const amount = Number(value || 0) * CHAT_COST_USD_JPY_APPROX_RATE;
-  if (!Number.isFinite(amount) || amount === 0) return '約0円';
-  if (Math.abs(amount) < 1) {
-    return '約' + amount.toFixed(2).replace(/\.?0+$/, '') + '円';
-  }
-  return '約' + Math.round(amount).toLocaleString('ja-JP') + '円';
-}
-
-const CHAT_COST_DEFAULTS = {
-  monthly_budget_usd: 300,
-  daily_budget_usd: 30,
-  session_budget_usd: 100,
-  max_concurrent_requests: 60,
-  max_tool_iterations: 300,
-  max_retry_attempts: 60,
-  large_context_warning_tokens: 4800000,
-  large_context_block_tokens: 6000000,
-};
-
-function _chatCostRoot(root) {
-  const scope = root?.querySelector ? root : document;
-  if (scope?.matches?.('#chat-cost-settings-container')) return scope;
-  return scope.querySelector('#chat-cost-settings-container');
-}
-
-function _chatCostNumber(container, id, fallback) {
-  const value = String(container?.querySelector?.('#' + id)?.value ?? '').trim();
-  if (!value) return fallback;
-  const number = Number(value);
-  return Number.isFinite(number) ? number : fallback;
-}
-
-function _chatCostFallbackStatus() {
-  return {
-    settings: { ...CHAT_COST_DEFAULTS, pricing_last_reviewed: '' },
-    totals: { day: { cost_usd: 0 }, month: { cost_usd: 0 } },
-  };
-}
-
-async function _chatCostLoadBudgetStatus(timeoutMs = 4500) {
-  if (typeof apiFetch !== 'function') return _chatCostFallbackStatus();
-  let timer = 0;
-  const timeout = new Promise((resolve) => {
-    timer = window.setTimeout(() => resolve(null), timeoutMs);
-  });
-  try {
-    const status = await Promise.race([apiFetch('/chat/budget'), timeout]);
-    return status && typeof status === 'object' ? status : _chatCostFallbackStatus();
-  } catch (_err) {
-    return _chatCostFallbackStatus();
-  } finally {
-    if (timer) window.clearTimeout(timer);
-  }
-}
-
-async function saveChatCostSettingsFromSettingsDialog(root, options = {}) {
-  const container = _chatCostRoot(root);
-  if (!container || !container.querySelector('#chat-budget-monthly')) return true;
-  const statusEl = container.querySelector('#chat-budget-status');
-  try {
-    await apiPut('/chat/budget', {
-      monthly_budget_usd: _chatCostNumber(container, 'chat-budget-monthly', CHAT_COST_DEFAULTS.monthly_budget_usd),
-      daily_budget_usd: _chatCostNumber(container, 'chat-budget-daily', CHAT_COST_DEFAULTS.daily_budget_usd),
-      session_budget_usd: _chatCostNumber(container, 'chat-budget-session', CHAT_COST_DEFAULTS.session_budget_usd),
-      monthly_mode: container.querySelector('#chat-budget-monthly-mode')?.value || 'hard',
-      daily_mode: container.querySelector('#chat-budget-daily-mode')?.value || 'hard',
-      session_mode: container.querySelector('#chat-budget-session-mode')?.value || 'hard',
-      max_concurrent_requests: _chatCostNumber(container, 'chat-budget-concurrency', CHAT_COST_DEFAULTS.max_concurrent_requests),
-      max_tool_iterations: _chatCostNumber(container, 'chat-budget-tool-iterations', CHAT_COST_DEFAULTS.max_tool_iterations),
-      max_retry_attempts: _chatCostNumber(container, 'chat-budget-retry-attempts', CHAT_COST_DEFAULTS.max_retry_attempts),
-      large_context_warning_tokens: _chatCostNumber(container, 'chat-budget-large-warning', CHAT_COST_DEFAULTS.large_context_warning_tokens),
-      large_context_block_tokens: _chatCostNumber(container, 'chat-budget-large-block', CHAT_COST_DEFAULTS.large_context_block_tokens),
-    });
-    if (statusEl) statusEl.textContent = '保存しました';
-    if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
-    if (!options.silent && typeof showStatus === 'function') {
-      showStatus('AI使用量設定を保存しました', false, { showSaveDialog: true });
-    }
-    return true;
-  } catch (error) {
-    if (statusEl) statusEl.textContent = '保存に失敗しました: ' + (error?.message || error);
-    if (!options.silent && typeof showStatus === 'function') showStatus('AI使用量設定の保存に失敗しました: ' + (error?.message || error), true);
-    return false;
-  }
-}
-
-async function renderChatCostSettings(root) {
-  const container = (root?.querySelector ? root : document).querySelector('#chat-cost-settings-container');
-  if (!container) return;
-  container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('walletCards',14)} AI使用量</div><div class="gb-section-desc">読み込み中...</div></section>`;
-  try {
-    const status = await _chatCostLoadBudgetStatus();
-    const settings = status.settings || {};
-    const totals = status.totals || {};
-    const modeOptions = value => ['hard', 'warn', 'off'].map(mode => {
-      const label = mode === 'hard' ? 'ハード停止' : mode === 'warn' ? '警告のみ' : '無効';
-      return `<option value="${mode}" ${String(value || 'hard') === mode ? 'selected' : ''}>${label}</option>`;
-    }).join('');
-    container.innerHTML = `
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('gauge',14)} AI API使用量 ${fieldHelp('Meldex本体の課金ではありません。登録したAI APIキーで各社APIを使った場合の推定使用量です。')}</div>
-        <div class="gb-section-desc">今日: ${_formatUsd(totals.day?.cost_usd)} / 今月: ${_formatUsd(totals.month?.cost_usd)}</div>
-        <div class="gb-section-desc">AI API単価表レビュー日: ${esc(settings.pricing_last_reviewed || '')}</div>
-      </section>
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${lucide('shieldAlert',14)} 予算上限</div>
-        <label class="gb-field-row"><span class="gb-label">月次</span><input id="chat-budget-monthly" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.monthly_budget_usd ?? CHAT_COST_DEFAULTS.monthly_budget_usd)}"><select id="chat-budget-monthly-mode" class="gb-select">${modeOptions(settings.monthly_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">日次</span><input id="chat-budget-daily" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.daily_budget_usd ?? CHAT_COST_DEFAULTS.daily_budget_usd)}"><select id="chat-budget-daily-mode" class="gb-select">${modeOptions(settings.daily_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">1チャット</span><input id="chat-budget-session" type="number" min="0" step="0.1" class="gb-input" style="width:100px;" value="${Number(settings.session_budget_usd ?? CHAT_COST_DEFAULTS.session_budget_usd)}"><select id="chat-budget-session-mode" class="gb-select">${modeOptions(settings.session_mode)}</select></label>
-        <label class="gb-field-row"><span class="gb-label">同時実行</span><input id="chat-budget-concurrency" type="number" min="1" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_concurrent_requests ?? CHAT_COST_DEFAULTS.max_concurrent_requests)}"><span class="gb-section-desc">件まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">ツールループ</span><input id="chat-budget-tool-iterations" type="number" min="5" max="600" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_tool_iterations ?? CHAT_COST_DEFAULTS.max_tool_iterations)}"><span class="gb-section-desc">回まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">リトライ</span><input id="chat-budget-retry-attempts" type="number" min="0" max="120" step="1" class="gb-input" style="width:80px;" value="${Number(settings.max_retry_attempts ?? CHAT_COST_DEFAULTS.max_retry_attempts)}"><span class="gb-section-desc">回まで</span></label>
-        <label class="gb-field-row"><span class="gb-label">長文警告</span><input id="chat-budget-large-warning" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_warning_tokens ?? CHAT_COST_DEFAULTS.large_context_warning_tokens)}"><span class="gb-section-desc">tokens</span></label>
-        <label class="gb-field-row"><span class="gb-label">長文停止</span><input id="chat-budget-large-block" type="number" min="0" step="1000" class="gb-input" style="width:120px;" value="${Number(settings.large_context_block_tokens ?? CHAT_COST_DEFAULTS.large_context_block_tokens)}"><span class="gb-section-desc">tokens</span></label>
-        <div class="gb-field-row" style="justify-content:flex-start;">
-          <button type="button" class="gb-btn gb-btn-sm" id="chat-budget-save">${lucide('save',14)} 保存</button>
-          <button type="button" class="gb-btn gb-btn-sm gb-btn-danger" id="chat-budget-reset">${lucide('rotateCcw',14)} 使用量履歴をリセット</button>
-        </div>
-        <div id="chat-budget-status" class="gb-section-desc"></div>
-      </section>`;
-    const statusEl = container.querySelector('#chat-budget-status');
-    container.querySelector('#chat-budget-save')?.addEventListener('click', () => saveChatCostSettingsFromSettingsDialog(container, { silent: false }));
-    container.querySelector('#chat-budget-reset')?.addEventListener('click', async () => {
-      const ok = typeof cfConfirm === 'function' ? await cfConfirm('LLM使用量履歴をリセットしますか？', { danger: true, okLabel: 'リセット' }) : confirm('LLM使用量履歴をリセットしますか？');
-      if (!ok) return;
-      await apiPost('/chat/usage/reset', {});
-      statusEl.textContent = '使用量履歴をリセットしました';
-      if (typeof renderChatCostSettings === 'function') renderChatCostSettings(root);
-      if (typeof chatRefreshUsageBanner === 'function') chatRefreshUsageBanner();
-    });
-  } catch (error) {
-    container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} AI使用量</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
   }
 }
 

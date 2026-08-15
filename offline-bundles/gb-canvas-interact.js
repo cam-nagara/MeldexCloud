@@ -136,6 +136,13 @@ function bdIsAnnotationModeActive() {
   return typeof ann !== 'undefined' && !!ann.active && typeof state !== 'undefined' && state.view === 'board';
 }
 
+function bdRectPathMayIntersect(pathEl, left, top, width, height) {
+  if (!pathEl || typeof pathEl.getBBox !== 'function') return true;
+  const box = pathEl.getBBox();
+  return box.x + box.width >= left && box.x <= left + width
+    && box.y + box.height >= top && box.y <= top + height;
+}
+
 function bdInitInteraction(root) {
   const canvas = root?.querySelector?.('[data-bd-role="canvas"]')
     || (typeof bdGetBoardElement === 'function' ? bdGetBoardElement('canvas', root) : null)
@@ -173,7 +180,7 @@ function bdInitInteraction(root) {
       const rx = dx * cos - dy * sin, ry = dx * sin + dy * cos;
       dx = rx; dy = ry;
     }
-    const zoom = Math.max(0.1, bd.zoom || 1);
+    const zoom = bdSafeZoom(bd.zoom);
     return { dx: dx / zoom, dy: dy / zoom };
   }
 
@@ -236,7 +243,7 @@ function bdInitInteraction(root) {
       bd.connections = bd.connections.filter(item => item !== conn);
     }
     if (typeof bdRemoveConnectionFromSelection === 'function') bdRemoveConnectionFromSelection(conn.id);
-    bdDrawConns();
+    bdDrawConns({ connIds: [conn.id], reason: 'erase-connection' });
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     bdDirty();
   }
@@ -320,7 +327,7 @@ function bdInitInteraction(root) {
     const midLocal = (typeof bdClientToCanvasLocal === 'function')
       ? bdClientToCanvasLocal(mid.clientX, mid.clientY, canvas)
       : { x: mid.clientX, y: mid.clientY };
-    const newZoom = Math.max(0.1, Math.min(5, touchPinch.startZoom * (touchDistance(a, b) / touchPinch.startDist)));
+    const newZoom = bdClampZoom(touchPinch.startZoom * (touchDistance(a, b) / touchPinch.startDist));
     const scale = newZoom / touchPinch.startZoom;
     bd.panX = midLocal.x - (touchPinch.midLocal.x - touchPinch.startPanX) * scale;
     bd.panY = midLocal.y - (touchPinch.midLocal.y - touchPinch.startPanY) * scale;
@@ -348,7 +355,9 @@ function bdInitInteraction(root) {
     if (!nodeId || erasedNodeIds.has(nodeId)) return;
     erasedNodeIds.add(nodeId);
     ensureEraseUndoCaptured();
+    const removedConnIds = bd.connections.filter(c => c.from === nodeId || c.to === nodeId).map(c => c.id);
     bd.connections = bd.connections.filter(c => c.from !== nodeId && c.to !== nodeId);
+    const detachedChildIds = [];
     bd.nodes.forEach(n => {
       if (n.parent !== nodeId) return;
       if (n.contained) {
@@ -358,13 +367,22 @@ function bdInitInteraction(root) {
         n.contained = false;
       }
       n.parent = '';
+      detachedChildIds.push(n.id);
     });
     if (bd.groups) bd.groups.forEach(g => { if (g.nodeIds) g.nodeIds = g.nodeIds.filter(id => id !== nodeId); });
     bd.nodes = bd.nodes.filter(n => n.id !== nodeId);
     if (typeof bdPruneConnectionSelection === 'function') bdPruneConnectionSelection();
     if (bd.groups) bd.groups = bd.groups.filter(g => g.nodeIds && g.nodeIds.length > 0);
     bd.selected.delete(nodeId);
-    bdRender();
+    document.getElementById('bdn-' + nodeId)?.remove();
+    removedConnIds.forEach(id => bdDrawConns({ connIds: [id], reason: 'erase-node' }));
+    detachedChildIds.forEach(id => {
+      if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'erase-parent');
+    });
+    if (typeof bdRemoveSelectionUiForMissingNodes === 'function') bdRemoveSelectionUiForMissingNodes();
+    if (typeof bdMarkExtrasDirty === 'function') {
+      bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true }, 'erase-node');
+    }
     if (!bd.selected.size && typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
     bdDirty();
   }
@@ -538,9 +556,7 @@ function bdInitInteraction(root) {
 
     if (e.button===0 && bd.tool === 'add-line' && !nodeEl) {
       e.preventDefault();
-      const fromPoint = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : { x: e.clientX, y: e.clientY };
+      const fromPoint = bdScreenToWorld(e.clientX, e.clientY);
       bdSelect(null);
       bd._lineToolDrag = { fromPoint, startX: e.clientX, startY: e.clientY, dragged: false };
       ensureConnPreview();
@@ -620,33 +636,19 @@ function bdInitInteraction(root) {
     }
     // Gap-2 §9.7: アンカー由来の接続モードで空白にドロップ → 新規カード作成 + 接続を
     // 1 操作としてまとめる（bdPushUndo 1 回で undo が両方戻る）。
+    // 課題7-1: 以前はここでインラインに bdCreateNodeWithStyle('', x, y, {}) を直接呼んでおり、
+    // parent すら指定していなかった (線でつながって見えるだけで、折りたたみ・自動整列・
+    // 階層別スタイルの対象外になる壊れた構造データを作っていた)。「＋」をドラッグして空白へ
+    // 落とす経路の正しい実装 (_bdCreateAnchorCardAndConnectionCore、親子付け + 階層別スタイル
+    // 適用込み) へ委譲し、2つの経路を同じロジックへ統一する。
     if (bd.connecting && !nodeEl && bd._connOrigin === 'anchor') {
       const fromId = bd.connecting;
+      const fromAnchor = bd._connFromAnchor || '';
       const wc = bdScreenToWorld(e.clientX, e.clientY);
-      bdPushUndo();
-      const newNode = (typeof bdCreateNodeWithStyle === 'function')
-        ? bdCreateNodeWithStyle('', wc.x, wc.y, {})
-        : (typeof bdNode === 'function' ? bdNode('', wc.x, wc.y, 160, 0, {}) : null);
-      if (newNode) {
-        bd.nodes.push(newNode);
-        if (bdCanCreateConnection(fromId, newNode.id)) {
-          bdCreateConnection(fromId, newNode.id, { label: bd._connLabel || '' });
-        }
+      bd.connecting = null; bd._connLabel = ''; bd._connOrigin = null; bd._connFromAnchor = null;
+      if (typeof _bdCreateAnchorCardAndConnectionCore === 'function') {
+        _bdCreateAnchorCardAndConnectionCore(fromId, fromAnchor, wc);
       }
-      bd.connecting=null; bd._connLabel=''; bd._connOrigin=null;
-      if (newNode) {
-        if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
-          if (typeof bdRequestFullRender === 'function') bdRequestFullRender('anchor-mode-empty-add-fallback');
-          else bdRender();
-        }
-        if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(newNode.id, 'anchor-mode-empty-add');
-        if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([fromId, newNode.id], 'anchor-mode-empty-add');
-        if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [newNode.id] }, 'anchor-mode-empty-add');
-        bdSelect(newNode.id);
-        // 追加直後のインライン編集は発火させない (F2 / ダブルクリックで編集開始)
-      }
-      bdDirty();
-      showStatus('カードとラインを追加しました');
       e.preventDefault();
       return;
     }
@@ -775,9 +777,7 @@ function bdInitInteraction(root) {
     if (!nodeEl) {
       if (!e.ctrlKey) bdSelect(null);
       canvas.focus();
-      const startPoint = (typeof bdScreenToWorld === 'function')
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : (() => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - bd.panX) / bd.zoom, y: (e.clientY - r.top - bd.panY) / bd.zoom }; })();
+      const startPoint = bdScreenToWorld(e.clientX, e.clientY);
       selStart = {
         ...startPoint,
         additive: !!e.ctrlKey,
@@ -824,7 +824,7 @@ function bdInitInteraction(root) {
     // Ctrl+Space+ドラッグ: 左右でズーム（ドラッグ開始地点を軸）
     if (_cspZoom) {
       const delta = _bdPointerDelta(e.clientX - _cspZoomSX) * 0.005;
-      const newZoom = Math.max(0.1, Math.min(5, _cspZoomOZ + delta));
+      const newZoom = bdClampZoom(_cspZoomOZ + delta);
       // ドラッグ開始地点を軸にズーム（ホイールズームと同じ原理）
       bd.panX = _cspZoomMX - (_cspZoomMX - _cspZoomOPX) * (newZoom / _cspZoomOZ);
       bd.panY = _cspZoomMY - (_cspZoomMY - _cspZoomOPY) * (newZoom / _cspZoomOZ);
@@ -846,7 +846,7 @@ function bdInitInteraction(root) {
       if (!start.dragged && Math.sqrt(dx*dx+dy*dy) > 4) start.dragged = true;
       const startPt = lineToolStartPoint(start);
       if (startPt) {
-        const _w = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: (e.clientX - canvas.getBoundingClientRect().left - bd.panX) / bd.zoom, y: (e.clientY - canvas.getBoundingClientRect().top - bd.panY) / bd.zoom };
+        const _w = bdScreenToWorld(e.clientX, e.clientY);
         preview.setAttribute('x1', startPt.x);
         preview.setAttribute('y1', startPt.y);
         preview.setAttribute('x2', _w.x);
@@ -867,7 +867,7 @@ function bdInitInteraction(root) {
         if (preview) {
           const n = bd.nodes.find(v=>v.id===rd.nid);
           if (n) {
-            const _w = typeof bdScreenToWorld === 'function' ? bdScreenToWorld(e.clientX, e.clientY) : { x: (e.clientX - canvas.getBoundingClientRect().left - bd.panX) / bd.zoom, y: (e.clientY - canvas.getBoundingClientRect().top - bd.panY) / bd.zoom };
+            const _w = bdScreenToWorld(e.clientX, e.clientY);
             const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
             preview.setAttribute('x1', pos.x + (rd.nodeEl.offsetWidth||100)/2);
             preview.setAttribute('y1', pos.y + (rd.nodeEl.offsetHeight||60)/2);
@@ -925,7 +925,7 @@ function bdInitInteraction(root) {
       });
       if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
       bdDrawConns({ nodeIds: movedIds, reason: 'drag-move' });
-      bdDrawFrames();
+      if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       // ドロップターゲットのハイライト（ドラッグ中のノードの下にあるノードを検出）
       document.querySelectorAll('.bd-node.bd-drop-target').forEach(el => el.classList.remove('bd-drop-target'));
       const underEl = bdFindNodeDropTargetAtPoint(e.clientX, e.clientY, Object.keys(dragOffsets));
@@ -945,9 +945,7 @@ function bdInitInteraction(root) {
     }
     if (selStart) {
       // ワールド座標で矩形選択を計算（bd-world にappendしてズーム/パンに追従）
-      const wp = (typeof bdScreenToWorld === 'function')
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : (() => { const r = canvas.getBoundingClientRect(); return { x: (e.clientX - r.left - bd.panX) / bd.zoom, y: (e.clientY - r.top - bd.panY) / bd.zoom }; })();
+      const wp = bdScreenToWorld(e.clientX, e.clientY);
       if (!selRect) {
         selRect = document.createElement('div');
         selRect.className = 'bd-select-rect';
@@ -957,7 +955,7 @@ function bdInitInteraction(root) {
       const l = Math.min(selStart.x, wp.x), t = Math.min(selStart.y, wp.y);
       const w = Math.abs(wp.x - selStart.x), h = Math.abs(wp.y - selStart.y);
       // 線幅をズームに合わせて補正（見た目を一定に保つ）
-      const zInv = 1 / Math.max(0.1, bd.zoom || 1);
+      const zInv = 1 / bdSafeZoom(bd.zoom);
       selRect.style.cssText = `left:${l}px;top:${t}px;width:${w}px;height:${h}px;position:absolute;border-width:${zInv}px;`;
       // 範囲内のノード / ライン を判定（ワールド座標で判定）
       // Ctrl+ドラッグ (additive): baseSelection XOR rect_items （矩形内のうち既に選択済みだったものは外れ、選択されていなかったものは加わる = トグル）
@@ -966,7 +964,8 @@ function bdInitInteraction(root) {
       bd.nodes.forEach(n => {
         const el = document.getElementById('bdn-'+n.id);
         if (!el || !el.isConnected) return;
-        const nw = el.offsetWidth || 100, nh = el.offsetHeight || 30;
+        const nw = n.w || n._rw || el.offsetWidth || 100;
+        const nh = n.h || n._rh || el.offsetHeight || 30;
         const pos = typeof bdNodeCanvasPosition === 'function' ? bdNodeCanvasPosition(n) : { x: n.x, y: n.y };
         if (pos.x + nw > l && pos.x < l + w && pos.y + nh > t && pos.y < t + h) rectNodeIds.add(n.id);
       });
@@ -989,6 +988,8 @@ function bdInitInteraction(root) {
         const pathEl = document.getElementById(`bd-path-${c.id}`);
         if (!pathEl || typeof pathEl.getTotalLength !== 'function') return;
         try {
+          // 安価な bbox で交差し得ないラインを先に除外し、詳細サンプリングを候補だけに限定する。
+          if (!bdRectPathMayIntersect(pathEl, l, t, w, h)) return;
           const total = pathEl.getTotalLength();
           if (!total) return;
           const samples = Math.min(240, Math.max(24, Math.ceil(total / Math.max(6, Math.min(24, w || 6, h || 6)))));
@@ -1042,9 +1043,7 @@ function bdInitInteraction(root) {
       const start = bd._lineToolDrag;
       document.getElementById('bd-conn-preview')?.remove();
       const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : { x: e.clientX, y: e.clientY };
+      const dropW = bdScreenToWorld(e.clientX, e.clientY);
       let created = null;
       if (targetEl) {
         const toId = targetEl.id.replace('bdn-','');
@@ -1076,9 +1075,7 @@ function bdInitInteraction(root) {
           const toId = targetEl.id.replace('bdn-','');
           if (bdCanCreateConnection(rd.nid, toId)) { bdPushUndo(); if (bdCreateConnection(rd.nid, toId)) showStatus('ラインを追加しました'); }
         } else {
-          const dropW = typeof bdScreenToWorld === 'function'
-            ? bdScreenToWorld(e.clientX, e.clientY)
-            : { x: e.clientX, y: e.clientY };
+          const dropW = bdScreenToWorld(e.clientX, e.clientY);
           bdPushUndo();
           if (bdCreateConnection(rd.nid, '', { toPoint: dropW })) showStatus('ラインを追加しました');
         }
@@ -1179,8 +1176,13 @@ function bdInitInteraction(root) {
             n.y = nAbs.y - parentAbs.y;
             n.parent = parentId;
             n.contained = true;
+            document.getElementById('bdn-' + id)?.remove();
           });
-          bdRender();
+          if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(parentId, 'container-drop');
+          else if (typeof bdRender === 'function') bdRender();
+          if (typeof bdMarkConnectionsDirtyByNodes === 'function') {
+            bdMarkConnectionsDirtyByNodes([parentId, ...dragIds], 'container-drop');
+          }
           containerized = true;
           showStatus('コンテナに内包しました');
         }
@@ -1238,7 +1240,8 @@ function bdInitInteraction(root) {
         const _resizedNode = bd.nodes.find(v => v.id === _resizedId);
         if (_resizedNode && !_resizedNode.contained) {
           const rootId = (typeof _bdFindStructureRoot === 'function') ? _bdFindStructureRoot(_resizedId) : null;
-          if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+          if (rootId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
+          else if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
         }
       }
       if (finishedResizeSelection && typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(finishedResizeSelection.items.map(item => item.id), 'resize-end');
@@ -1299,7 +1302,7 @@ function bdInitInteraction(root) {
     const dir = e.deltaY > 0 ? -1 : 1;
     let newZoom = Math.round(oz / step) * step + dir * step;
     newZoom = Math.round(newZoom / step) * step;  // 浮動小数点誤差の正規化
-    newZoom = Math.max(0.1, Math.min(5, newZoom));
+    newZoom = bdClampZoom(newZoom);
     bd.zoom = newZoom;
     bd.panX = mx - anchorWorldX * bd.zoom;
     bd.panY = my - anchorWorldY * bd.zoom;

@@ -1,3 +1,57 @@
+    const source = getThemeById(getDefaultThemeId());
+    const colorSet = getThemeColorSet(null, { ignoreOsAccent: true });
+    const useOsAccentColor = getUseOsAccentColor();
+    const standardPaletteAdjust = typeof global.getStandardPaletteAdjust === 'function'
+      ? global.getStandardPaletteAdjust()
+      : null;
+    const next = {
+      id: newCustomThemeId('custom'),
+      name: label,
+      builtIn: false,
+      ui: {
+        cssVars: collectCurrentCssVars(),
+        themeColorSet: colorSet,
+        colorSet,
+        palette: colorSet,
+        useOsAccentColor,
+        standardPaletteAdjust,
+        themeUiApplications: getThemeUiApplications(),
+        themeUiAutoTone: getThemeUiAutoTone(),
+      },
+      board: clone(source.board || {}),
+    };
+    setThemeColorSetOnTheme(next, next.ui.colorSet);
+    setThemeColorSlotSettingsOnTheme(next, readCurrentThemeColorSlotSettings());
+    setThemeColorExtraSlotSettingsOnTheme(next, readCurrentThemeColorExtraSlotSettings());
+    setThemeOsAccentOnTheme(next, useOsAccentColor);
+    setThemeStandardPaletteAdjustOnTheme(next, standardPaletteAdjust);
+    setThemeUiSettingsOnTheme(next, next.ui.themeUiApplications, next.ui.themeUiAutoTone);
+    const list = getCustomThemes();
+    list.push(next);
+    saveCustomThemes(list);
+    return clone(next);
+  }
+
+  function createCustomThemeFromTheme(sourceId, name) {
+    const source = getThemeById(sourceId || getDefaultThemeId());
+    const label = String(name || '').trim() || `${source.name} のコピー`;
+    const next = normalizeCustomThemePayload(source, label);
+    next.id = newCustomThemeId('custom');
+    next.name = label;
+    const list = getCustomThemes();
+    list.push(next);
+    saveCustomThemes(list);
+    return clone(next);
+  }
+
+  function updateCustomThemeFromCurrent(id, name) {
+    const normalized = normalizeThemeId(id);
+    const list = getCustomThemes();
+    const index = list.findIndex(t => t.id === normalized);
+    if (index < 0) return null;
+    const current = list[index];
+    current.name = String(name || current.name || 'カスタムテーマ').trim();
+    current.builtIn = false;
     current.ui = {
       ...(current.ui || {}),
       cssVars: collectCurrentCssVars(),

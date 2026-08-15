@@ -24,6 +24,12 @@ Object.assign(ScriptNoteEditor.prototype, {
       } while (used.has(id));
       return id;
     };
+    // needsNormalizationがfalseの経路（配列としては既に存在するが、要素側でid未設定の項目が
+    // 混入したケース）を通っても、並べ替えグリップ等の安定IDに "undefined" 文字列が漏れないよう、
+    // ここで欠落idを一意な値に補完しておく（複数項目が同一の欠落idを共有し、可視UIの安定id/ data-*
+    // が重複する事故を防ぐ）。
+    doc.scenarioTypes.forEach(item => { if (item && !item.id) item.id = uniqueId('type'); });
+    doc.characters.forEach(item => { if (item && !item.id) item.id = uniqueId('character'); });
     const uniqueName = (base, self = null) => {
       const wanted = String(base || '').trim() || '名称未設定';
       const used = new Set([...doc.scenarioTypes, ...doc.characters]
@@ -447,7 +453,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selected = this._detailTypeSelection.has(type.id);
     row.classList.toggle('selected', selected);
     const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer));
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'type', type, adapter, panelContainer, index));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -521,7 +527,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const selected = this._detailCharacterSelection.has(character.id);
     row.classList.toggle('selected', selected);
     const handleCell = document.createElement('td');
-    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer));
+    handleCell.appendChild(this._buildRoleManagementGrip(row, 'character', character, adapter, panelContainer, index));
     const selectCell = document.createElement('td');
     const check = document.createElement('input');
     check.type = 'checkbox';
@@ -615,11 +621,16 @@ Object.assign(ScriptNoteEditor.prototype, {
     return row;
   },
 
-  _buildRoleManagementGrip(row, kind, item, adapter, panelContainer) {
+  _buildRoleManagementGrip(row, kind, item, adapter, panelContainer, rowIndex) {
     const grip = document.createElement('button');
     grip.type = 'button';
     grip.className = 'sn2-role-manage-grip';
-    grip.dataset.e2eId = `scriptnote-${kind}-drag-${item.id}`;
+    // item.id は本来 role-model 側の正規化で必ず補完されるが、経路によってはこの描画に
+    // 到達するまでに未設定のまま渡ってくることがある。その場合でも安定id/data-*へ文字列
+    // "undefined" がそのまま漏れて複数要素が同一idを共有しないよう、行インデックスへ
+    // フォールバックして一意性を確保する。
+    const stableSuffix = item?.id || `idx-${rowIndex}`;
+    grip.dataset.e2eId = `scriptnote-${kind}-drag-${stableSuffix}`;
     grip.setAttribute('aria-label', `${item.name || (kind === 'type' ? 'タイプ' : 'キャラ')}を並べ替え`);
     grip.title = 'ドラッグで並べ替え。Alt+上下キーでも移動できます';
     grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
@@ -627,7 +638,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
       requestAnimationFrame(() => {
-        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(item.id)}"]`)?.focus();
+        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(stableSuffix)}"]`)?.focus();
       });
     };
     grip.addEventListener('keydown', event => {

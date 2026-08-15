@@ -47,6 +47,7 @@
     || cardOverrideMetaKeys.some(key => hasOwn(n, key))
     || !!n.imageSourcePath
     || hasOwn(n, '_autoStyle')
+    || hasOwn(n, 'depthStyleRef')
     || hasOwn(n, '_followChildren')
     || hasOwn(n, '_userBgColor')
     || hasOwn(n, '_userFontSize')
@@ -83,6 +84,8 @@
       if (hasOwn(n, 'cloudSubHeightRatio')) parts.push('cloudSubHeightRatio: ' + (+n.cloudSubHeightRatio || 0));
       if (hasOwn(n, 'imageSourcePath') && n.imageSourcePath) parts.push('imageSourcePath: ' + fmtJsonString(n.imageSourcePath));
       if (hasOwn(n, '_autoStyle')) parts.push('autoStyle: ' + (n._autoStyle ? 'true' : 'false'));
+      // 課題18-案B: 起点カードに割り当てた階層別スタイルプリセットの参照ID (空=ボード共通)。
+      if (hasOwn(n, 'depthStyleRef') && n.depthStyleRef) parts.push('depthStyleRef: ' + fmtJsonString(n.depthStyleRef));
       if (hasOwn(n, '_followChildren')) parts.push('followChildren: ' + (n._followChildren ? 'true' : 'false'));
       if (hasOwn(n, '_userBgColor')) parts.push('userBgColor: ' + (n._userBgColor ? 'true' : 'false'));
       if (hasOwn(n, '_userFontSize')) parts.push('userFontSize: ' + (n._userFontSize ? 'true' : 'false'));
@@ -838,13 +841,59 @@ function bdGetRenderableNodesContainer() {
   return container;
 }
 
+// ボードを開いた直後は showView('board') でのパネルマウントが終わっておらず、
+// bdOpenBoard() が呼ぶ bdRender() の時点でキャンバスがまだ DOM に無いことがある。
+// 以前はここで無音のまま描画をあきらめており、ウィンドウリサイズなど別の再描画契機が
+// 来るまでカードが 1 枚も出なかった（新規作成直後のボードで実測）。
+// マウントが済むまで数回だけ再試行し、成功したらライン・枠・表示位置も描き直す。
+const BD_RENDER_RETRY_LIMIT = 40;
+const BD_RENDER_RETRY_INTERVAL_MS = 50;
+let _bdRenderRetryTimer = null;
+let _bdRenderRetryCount = 0;
+let _bdRenderRetryInFlight = false;
+
+function bdCancelRenderRetry() {
+  if (_bdRenderRetryTimer !== null) {
+    clearTimeout(_bdRenderRetryTimer);
+    _bdRenderRetryTimer = null;
+  }
+  _bdRenderRetryCount = 0;
+}
+
+function bdScheduleRenderRetry() {
+  if (_bdRenderRetryTimer !== null) return;
+  if (typeof setTimeout !== 'function') return;
+  // 外部から呼ばれた描画が失敗したときは、前回の打ち切り回数を引きずらず数え直す。
+  // これがないと、一度上限まで使い切ったあとは二度と再試行が動かなくなる。
+  if (!_bdRenderRetryInFlight) _bdRenderRetryCount = 0;
+  if (_bdRenderRetryCount >= BD_RENDER_RETRY_LIMIT) return;
+  _bdRenderRetryTimer = setTimeout(() => {
+    _bdRenderRetryTimer = null;
+    _bdRenderRetryCount += 1;
+    _bdRenderRetryInFlight = true;
+    let rendered = false;
+    try {
+      rendered = bdRender();
+    } finally {
+      _bdRenderRetryInFlight = false;
+    }
+    if (!rendered) return;
+    // 描画できた回だけ、開いた直後と同じ一式を揃える。
+    if (typeof bdDrawConns === 'function') bdDrawConns();
+    if (typeof bdDrawFrames === 'function') bdDrawFrames();
+    if (typeof bdTransform === 'function') bdTransform();
+  }, BD_RENDER_RETRY_INTERVAL_MS);
+}
+
 function bdRender() {
   const _bdRenderPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdRender') : 0;
   const container = bdGetRenderableNodesContainer();
   if (!container) {
     if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf, 'skip:no-active-board-dom');
+    bdScheduleRenderRetry();
     return false;
   }
+  bdCancelRenderRetry();
   // 全再描画時はミニマップキャッシュも無効化 (ノード数/スタイルが変わっている可能性)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
   container.innerHTML = '';
@@ -901,6 +950,20 @@ function bdRender() {
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi();
     if (typeof CommentBadges !== 'undefined' && bd.path) {
       try { CommentBadges.refreshBoard(bd.path, container); } catch {}
+    }
+    // 課題10-3 (2026-08-14): 同期描画経路 (デバウンス無し) ではミニマップが更新されず、
+    // パン/ズームするまで古い縮小図のまま残っていた。
+    if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
+  }
+  // 課題10-4 (2026-08-14): container.innerHTML='' による全カードDOM再構築で、検索バーが
+  // 付けていたハイライト (<mark>) が検索と無関係な編集のたびに消えていた。検索バーが
+  // 表示中でクエリがあれば、新しい DOM へハイライトを再適用する (デバウンス/非デバウンスの
+  // 両経路で起きるため、分岐の外・関数末尾で行う)。
+  {
+    const _bdFindBarEl = document.getElementById('bd-find-bar');
+    if (_bdFindBarEl && _bdFindBarEl.style.display !== 'none' && bd._findQuery
+      && typeof _bdApplyFindHighlight === 'function') {
+      _bdApplyFindHighlight(bd._findQuery);
     }
   }
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf);

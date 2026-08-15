@@ -20,6 +20,7 @@
     '/import-csv',
     '/outliner',
     '/property-layout-templates',
+    '/production-management/entries',
     '/quick-memo',
     '/upload-file',
     '/upload-image',

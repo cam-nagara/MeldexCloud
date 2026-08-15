@@ -1112,6 +1112,10 @@ async function _openSmartDbFolderPicker(def, callback) {
     closeLabel: '対象フォルダ選択を閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
+    // 呼び出し元(#sdf-add-source-btn)は再入防止のため開いている間ボタンを
+    // disabled にする。disabled のまま returnFocus を試みてもフォーカス不能で
+    // 無視されるため、フォーカス復帰(_finishClose内)より前に必ず再有効化する。
+    onBeforeClose: () => { if (restoreTarget) restoreTarget.disabled = false; return true; },
     onClose: reason => resolveClosed(reason),
   });
   modalApi.closed = closed;

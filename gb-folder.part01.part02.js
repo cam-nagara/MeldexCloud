@@ -145,6 +145,16 @@
         showStatus('編集ロック中の項目は削除できません', true);
         return;
       }
+      const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+        refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+      });
+      if (linkedDelete.handled) {
+        if (!linkedDelete.result) return;
+        _folderSelectedItems = [];
+        _folderSelected = null;
+        _updateFolderBulkBar();
+        return;
+      }
       const impactTargets = targets.map(target => ({ path: target.path, kind: target.type === 'folder' ? 'folder' : 'file' }));
       const confirmMessage = targets.length + ' 件を削除しますか？';
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -152,6 +162,7 @@
         : await cfConfirm(confirmMessage);
       if (!confirmed) return;
       const result = await deleteOutlinerItemsWithHistory(targets, {
+        confirmation: confirmed,
         label: targets.length + ' 件を削除',
         refresh: async () => {
           if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);
@@ -790,6 +801,16 @@ async function fvBulkDelete() {
     showStatus('編集ロック中の項目は削除できません', true);
     return;
   }
+  const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+    refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+  });
+  if (linkedDelete.handled) {
+    if (!linkedDelete.result) return;
+    _folderSelectedItems = [];
+    _folderSelected = null;
+    _updateFolderBulkBar();
+    return;
+  }
   const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
   const confirmMessage = targets.length + ' 件を削除しますか？';
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -797,6 +818,7 @@ async function fvBulkDelete() {
     : await cfConfirm(confirmMessage);
   if (!confirmed) return;
   const result = await deleteOutlinerItemsWithHistory(targets, {
+    confirmation: confirmed,
     label: targets.length + ' 件を削除',
     refresh: async () => {
       if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath);

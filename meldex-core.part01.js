@@ -182,12 +182,21 @@ async function apiPut(path, body) {
 }
 
 async function apiPost(path, body, options = {}) {
-  return apiFetch(path, {
+  let stableCopyKey = '';
+  if (['/outliner/duplicate', '/outliner/save-as'].includes(String(path || ''))
+      && body && typeof body === 'object' && !body.operation_id) {
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.(path, body)
+      || { body: { ...body, operation_id: crypto.randomUUID() }, key: '' };
+    body = prepared.body; stableCopyKey = prepared.key;
+  }
+  const result = await apiFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     ...(options || {}),
   });
+  window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  return result;
 }
 
 async function apiDelete(path) {
@@ -795,6 +804,10 @@ const LUCIDE = {
   mousePointer: '<path d="M12.586 12.586 19 19"/><path d="M3.688 3.037a.497.497 0 0 0-.651.651l6.5 15.999a.501.501 0 0 0 .947-.062l1.569-6.083a2 2 0 0 1 1.448-1.479l6.124-1.579a.5.5 0 0 0 .063-.947z"/>',
   creditCard: '<rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/>',
   spline: '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
+  // 注釈フロートパレット改修計画2026-08-13 §1-3・§3-a: 折れ線ツールのアイコンを
+  // spline（曲線）から activity（角のはっきりした折れ線）へ差し替えるために追加。
+  // パス値は vendor/lucide-icons.js の LUCIDE_FULL['activity'] と同一。
+  activity: '<path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/>',
   funnel: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
   panelLeft: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>',
   panelRight: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>',
@@ -1169,6 +1182,9 @@ function replaceIcons(root) {
     else if (cls.includes('ico-image')) name = 'image';
     else if (cls.includes('ico-fileCode')) name = 'fileCode';
     else if (cls.includes('ico-clipboardCopy')) name = 'clipboardCopy';
+    // 管理者AIの稼働表示とワークスペースチャットの整理 計画 Phase 4: 「管理者AIに依頼」
+    // ボタン(ico-terminal)が未登録で常に空アイコンになっていたため追加。
+    else if (cls.includes('ico-terminal')) name = 'terminal';
     if (name) {
       // ツールバー内のアイコンは 16px に統一 (toolbar-unification-plan §2-2)
       const inToolbar = el.closest('.gb-toolbar, .tb-icon-btn, .tb-text-btn');

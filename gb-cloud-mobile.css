@@ -1297,7 +1297,15 @@
     padding-bottom: calc(var(--ui-space-4, 12px) + var(--cloud-mobile-safe-bottom, 0px)) !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .mapped-calendar-event-footer {
+  /* マップ済み予定パネルのスマホ用フッター（グリッド・全幅ボタン）は、Cloud/
+     デスクトップのどちらでも .gb-mobile-dialog-sheet（スマホ幅シート表示）が
+     有効なら同じレイアウトにする。data-cloud-mobile / data-mobile-ui-local に
+     絞ると、デスクトップ版をスマホ幅に縮めただけのケース（Dropboxモードでも
+     ローカルモバイルUIフラグでもない場合がある）で条件を満たせず、ボタンが
+     崩れたレイアウトのまま出てしまう（2026-08-13 実測）。Cloud側は常に
+     .gb-mobile-dialog-sheet と data-cloud-mobile が揃うため、この変更で見た目は
+     変わらない。 */
+  body .gb-mobile-dialog-sheet .mapped-calendar-event-footer {
     display: grid !important;
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     gap: 8px !important;
@@ -1305,7 +1313,7 @@
     padding-right: 12px !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .mapped-calendar-event-footer .gb-btn {
+  body .gb-mobile-dialog-sheet .mapped-calendar-event-footer .gb-btn {
     width: 100% !important;
     min-width: 0 !important;
     margin-right: 0 !important;
@@ -1430,7 +1438,7 @@
     min-height: 44px !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .mapped-calendar-event-footer #mapped-cal-save {
+  body .gb-mobile-dialog-sheet .mapped-calendar-event-footer #mapped-cal-save {
     grid-column: 1 / -1;
   }
 

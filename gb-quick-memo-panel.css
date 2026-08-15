@@ -1,0 +1,113 @@
+/* =========================================================================
+   gb-quick-memo-panel.css — クイックメモのフロートパネル
+
+   作業領域の上へ浮かべる一時パネル。ダイアログより手前へは出さないので、
+   パネルを開いたまま設定などのダイアログを開いても操作を邪魔しない。
+   ========================================================================= */
+
+.gb-quick-memo-panel {
+  position: fixed;
+  z-index: calc(var(--ui-z-modal, 300) - 1);
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  min-height: 320px;
+  background: var(--ui-bg-surface, var(--bg2));
+  border: 1px solid var(--ui-accent, var(--accent));
+  border-radius: var(--ui-radius-sm, 6px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+}
+
+.gb-quick-memo-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 4px 4px 4px 8px;
+  background: var(--ui-pane-tabbar-bg, var(--bg3, var(--bg2)));
+  border-bottom: 1px solid var(--ui-border, var(--border));
+  cursor: move;
+  user-select: none;
+}
+
+.gb-quick-memo-panel-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--ui-accent, var(--accent));
+}
+
+.gb-quick-memo-panel-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.gb-quick-memo-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ui-fg-default, var(--fg));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gb-quick-memo-panel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--ui-radius-xs, 4px);
+  color: var(--ui-fg-muted, var(--fg2));
+  cursor: pointer;
+}
+
+.gb-quick-memo-panel-btn:hover {
+  background: var(--ui-bg-control-hover, var(--bg-hover));
+  color: var(--ui-fg-default, var(--fg));
+}
+
+.gb-quick-memo-panel-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.gb-quick-memo-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.gb-quick-memo-panel-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--ui-bg-surface, var(--bg2));
+}
+
+.gb-quick-memo-panel-resize-handle {
+  position: absolute;
+  z-index: 1;
+}
+
+.gb-quick-memo-panel-resize-handle[data-dir="n"]  { top: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="s"]  { bottom: 0; left: 4px; right: 4px; height: 4px; cursor: ns-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="e"]  { top: 4px; bottom: 4px; right: 0; width: 4px; cursor: ew-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="w"]  { top: 4px; bottom: 4px; left: 0; width: 4px; cursor: ew-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="ne"] { top: 0; right: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="nw"] { top: 0; left: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="se"] { bottom: 0; right: 0; width: 8px; height: 8px; cursor: nwse-resize; }
+.gb-quick-memo-panel-resize-handle[data-dir="sw"] { bottom: 0; left: 0; width: 8px; height: 8px; cursor: nesw-resize; }
+
+/* 右レール下端のクイックメモボタン。他のレールアイコンの後ろに置き、
+   余白を吸わせて常に一番下へ寄せる。 */
+.gb-dock-rail-quick-memo {
+  margin-top: auto;
+  background: transparent;
+}

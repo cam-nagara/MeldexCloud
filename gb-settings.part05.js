@@ -463,10 +463,13 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       <div class="gb-section-title">自動色の強さ</div>
       ${typeof renderThemeUiAutoToneControls === 'function' ? renderThemeUiAutoToneControls() : ''}
     </section>
-    <section class="gb-section gb-section--boxed" data-settings-view="theme" data-settings-theme-apply-editor="1">
-      <div class="gb-section-title">テーマカラーの自動適用設定</div>
-      ${renderThemeUiApplicationEditor({ hideLabel: true })}
-    </section>
+    <!-- 「テーマカラーの自動適用設定」の対象別ピッカーは、下の「アプリ別テーマ」タブ群
+         （共通/フォルダ/ノート/シナリオ/シート/ボード/スケジュール/補助パネル）で
+         全ターゲットを重複なく網羅している。以前はここに全ターゲット横断の一覧を
+         フィルタなしで別途表示しており、アプリ別タブと同じ data-e2e-id を持つ行が
+         同時に2つ描画されていた（2026-08-05 v0.7.151でテーマ詳細設定ダイアログを
+         サブタブへ統合した際、旧「連番配色」タブと旧「アプリ別」タブが排他表示
+         ではなくなり重複が顕在化。2026-08-13 バグ報告で確認・削除）。 -->
     <section class="gb-section gb-section--boxed" data-settings-view="theme">
       <div class="gb-section-title">基本の面</div>
       ${_renderSettingsThemeDetailStyleGroups('surface')}

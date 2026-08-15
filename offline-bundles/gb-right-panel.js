@@ -541,6 +541,40 @@ function _populateRpAnnotationUsers(items, selected) {
     sel.appendChild(opt);
   });
   if (selected && users.includes(selected)) sel.value = selected;
+  _augmentRpAnnotationUsersWithRoster(selected);
+}
+
+// Phase 6: ユーザー絞り込みを「今読み込めた注釈に登場したユーザー」だけでなく、
+// ワークスペースの参加者名簿(スタッフ管理シート)からも作る。まだ注釈を
+// 書いていないメンバーも選べるようにする。MeldexUserRegistry が使えない環境
+// (単独ボードアプリ等)では黙って何もしない(既存の注釈由来の一覧のまま)。
+// 非同期のため、直前に呼ばれた要求だけを反映する(連続フィルタ変更での
+// 古い応答による上書きを防ぐ)。
+let _rpAnnotationRosterRequestSeq = 0;
+async function _augmentRpAnnotationUsersWithRoster(selected) {
+  if (typeof MeldexUserRegistry === 'undefined' || typeof MeldexUserRegistry.listStaff !== 'function') return;
+  const requestId = ++_rpAnnotationRosterRequestSeq;
+  let staff = [];
+  try { staff = await MeldexUserRegistry.listStaff(); } catch { return; }
+  if (requestId !== _rpAnnotationRosterRequestSeq) return;
+  const sel = document.getElementById('rp-ann-user');
+  if (!sel) return;
+  const existing = new Set([...sel.options].map(o => o.value).filter(Boolean));
+  const additions = (staff || [])
+    .map(row => String(row?.user || '').trim())
+    .filter(name => name && !existing.has(name));
+  if (!additions.length) return;
+  const currentValue = sel.value;
+  const allUsers = [...existing, ...additions].sort((a, b) => String(a).localeCompare(String(b), 'ja'));
+  sel.innerHTML = '<option value="">全ユーザー</option>';
+  allUsers.forEach(user => {
+    const opt = document.createElement('option');
+    opt.value = user;
+    opt.textContent = user;
+    sel.appendChild(opt);
+  });
+  const restore = selected || currentValue;
+  if (restore && allUsers.includes(restore)) sel.value = restore;
 }
 
 function _renderRpAnnotationListView(container, items) {
@@ -551,35 +585,156 @@ function _renderRpAnnotationPreviewView(container, items) {
   items.forEach(a => container.appendChild(_buildRpAnnotationPreviewCard(a)));
 }
 
+// Phase 5-b: ファイル名・ユーザー名(生値。ローカル利用時は「local」)に続けて、
+// 作成者アイコン+名前を追加する。DOM要素を返す(文字列だとアイコンを差し込め
+// ないため)。呼び出し側は要素へ appendChild する。
 function _rpAnnotationMeta(a) {
   const rawPath = a.target_ref?.file || a.target_path || '';
   const path = a.target_file_name || rawPath.split('/').pop() || '(不明)';
   const time = _rpAnnotationTime(a, 'modified') || _rpAnnotationTime(a, 'created');
   const flags = [a.resolved ? '解決済み' : '', a.orphan ? '孤児' : '', a.deleted ? '削除済み' : ''].filter(Boolean);
-  return `${path} ・ ${a.user || ''}${time ? ' ・ ' + time : ''}${flags.length ? ' ・ ' + flags.join(' ・ ') : ''}`;
+  const frag = document.createDocumentFragment();
+  frag.append(`${path} ・ ${a.user || ''}`);
+  const badge = _rpAnnotationUserBadge(a.user);
+  if (badge) frag.append(' ・ ', badge);
+  if (time) frag.append(' ・ ' + time);
+  if (flags.length) frag.append(' ・ ' + flags.join(' ・ '));
+  return frag;
+}
+
+// 作成者アイコン+名前のバッジ。getUserAvatarHtml が読めない環境(単独ボード
+// アプリ等でも standalone-profile.js のフォールバックがあれば動くが、念のため
+// 存在確認する)では名前だけのフォールバックにし、例外で一覧を止めない。
+function _rpAnnotationUserBadge(user) {
+  const name = String(user || '').trim();
+  if (!name) return null;
+  const span = document.createElement('span');
+  span.className = 'rp-ann-user-badge';
+  if (typeof getUserAvatarHtml === 'function') {
+    try {
+      const icon = document.createElement('span');
+      icon.className = 'rp-ann-user-badge-icon';
+      icon.innerHTML = getUserAvatarHtml(name, 14);
+      const img = icon.querySelector('img');
+      if (img && !img.alt) img.alt = name;
+      span.appendChild(icon);
+    } catch { /* アイコン描画失敗時は名前だけ表示にフォールバック */ }
+  }
+  const label = document.createElement('span');
+  label.className = 'rp-ann-user-badge-name';
+  label.textContent = name;
+  span.appendChild(label);
+  return span;
+}
+
+// Phase 5-a: 注釈カードのドラッグでクリックの誤爆(ジャンプ)を防ぐ。
+// ネイティブD&Dはドラッグ完了後にclickを発火させないのが通例だが、環境差の
+// 保険として、直前にドラッグしたその要素自身のクリックだけを1回無視する。
+// (グローバルなタイムスタンプにすると、あるカードのドラッグ直後に別の行を
+// クリックしただけでジャンプが無効化されてしまうため、要素単位で持つ。)
+const _rpAnnDraggingElements = new WeakSet();
+function _rpAnnotationDragSkipClick(el) {
+  return _rpAnnDraggingElements.has(el);
+}
+
+// 注釈の対象ファイル(target_path / target_ref.file)を、Meldex内D&D・OS書き出し・
+// 保存ボタンの共通の「ドラッグ対象」として解決する。対象ファイルを持たない
+// 注釈(対象未解決等)は null を返し、呼び出し側はD&D対応をスキップする。
+function _rpAnnotationDragTarget(a) {
+  const path = String(a?.target_ref?.file || a?.target_path || '').trim();
+  if (!path) return null;
+  const name = a.target_file_name || path.split(/[\\/]/).pop() || path;
+  return { path, name };
+}
+
+const _RP_ANN_DOWNLOAD_MIME_BY_EXT = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon',
+  pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain',
+  csv: 'text/csv', json: 'application/json',
+};
+
+function _rpAnnotationDownloadMime(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  return _RP_ANN_DOWNLOAD_MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
+function _rpAnnotationFileRawUrl(path) {
+  if (typeof MeldexResourceUrl !== 'undefined' && typeof MeldexResourceUrl.apiUrl === 'function') {
+    try { return MeldexResourceUrl.apiUrl('/file-raw', { path }); } catch { /* フォールバックへ */ }
+  }
+  const base = (typeof API_BASE !== 'undefined' && API_BASE) ? API_BASE : '/api';
+  return new URL(String(base).replace(/\/+$/, '') + '/file-raw?path=' + encodeURIComponent(path), window.location.href).toString();
+}
+
+// Meldex内D&D(gb-dnd の共通ペイロード。フォルダツリー等の既存の受け手が
+// そのまま解釈できる)と、OSへの書き出し用データ(Chrome/Edge系のみ有効な
+// DownloadURL形式)を同時に載せる。他ブラウザ向けの代替は「保存」ボタン
+// (_appendRpAnnotationActions)で提供する。
+function _installRpAnnotationDrag(el, a) {
+  const target = _rpAnnotationDragTarget(a);
+  if (!target || !el || typeof MeldexDnD === 'undefined' || typeof MeldexDnD.writeNodePayload !== 'function') return;
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    const payload = MeldexDnD.writeNodePayload(e.dataTransfer, { path: target.path, name: target.name }, 'rp-annotation');
+    if (!payload) { e.preventDefault(); return; }
+    _rpAnnDraggingElements.add(el);
+    e.stopPropagation();
+    try {
+      const url = _rpAnnotationFileRawUrl(target.path);
+      const mime = _rpAnnotationDownloadMime(target.name);
+      e.dataTransfer.setData('DownloadURL', `${mime}:${target.name}:${url}`);
+    } catch { /* OS書き出し用データの付与失敗は致命的でないため握りつぶす */ }
+  });
+  el.addEventListener('dragend', () => {
+    // ドラッグ完了直後に来得るclickだけを無視したいので、同期的な click
+    // ディスパッチが終わった後の次のタスクでクリアする(即時削除だと
+    // dragend直後に来るclickより先に消えてしまい保険にならない)。
+    setTimeout(() => { _rpAnnDraggingElements.delete(el); }, 0);
+  });
+}
+
+// 「保存」ボタン: DownloadURLに対応しないブラウザ・環境向けの代替導線。
+// /api/file はテキストをJSONに包んで返す(バイナリは400)ため、生バイト
+// そのままを返す /api/file-raw を使う(DownloadURLの書き出しと同じ経路)。
+function _saveRpAnnotationTargetFile(target) {
+  if (!target) return;
+  try {
+    const url = _rpAnnotationFileRawUrl(target.path);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = target.name || '';
+    link.rel = 'noopener';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } catch { if (typeof showStatus === 'function') showStatus('保存に失敗しました', true); }
 }
 
 function _buildRpAnnotationListItem(a) {
   const row = document.createElement('div');
   row.className = 'rp-ann-row';
-  row.addEventListener('click', () => _jumpFromRpAnnotation(a));
+  row.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(row)) return; _jumpFromRpAnnotation(a); });
   const text = _rpAnnotationPreviewText(a);
   row.innerHTML = `
     <span class="rp-ann-row-icon">${_rpAnnotationIcon(a.uiKind, 14)}</span>
     <span class="rp-ann-row-main">
       <span class="rp-ann-row-title">${esc(text.substring(0, 120))}</span>
-      <span class="rp-ann-row-meta">${esc(_rpAnnotationTypeLabel(a.uiKind) + ' ・ ' + _rpAnnotationMeta(a))}</span>
+      <span class="rp-ann-row-meta"></span>
     </span>
     <span class="rp-ann-row-actions"></span>`;
+  const metaEl = row.querySelector('.rp-ann-row-meta');
+  metaEl.append(_rpAnnotationTypeLabel(a.uiKind) + ' ・ ', _rpAnnotationMeta(a));
   row.querySelector('.rp-ann-row-icon').style.color = a.color || 'var(--fg2)';
   _appendRpAnnotationActions(row.querySelector('.rp-ann-row-actions'), a);
+  _installRpAnnotationDrag(row, a);
   return row;
 }
 
 function _buildRpAnnotationPreviewCard(a) {
   const card = document.createElement('div');
   card.className = 'rp-ann-preview-card';
-  card.addEventListener('click', () => _jumpFromRpAnnotation(a));
+  card.addEventListener('click', () => { if (_rpAnnotationDragSkipClick(card)) return; _jumpFromRpAnnotation(a); });
   const head = document.createElement('div');
   head.className = 'rp-ann-preview-head';
   head.innerHTML = `<span>${_rpAnnotationIcon(a.uiKind, 14)} ${esc(_rpAnnotationTypeLabel(a.uiKind))}</span><span class="rp-ann-preview-actions"></span>`;
@@ -589,8 +744,9 @@ function _buildRpAnnotationPreviewCard(a) {
   body.appendChild(_buildRpAnnotationPreviewBody(a));
   const meta = document.createElement('div');
   meta.className = 'rp-ann-preview-meta';
-  meta.textContent = _rpAnnotationMeta(a);
+  meta.appendChild(_rpAnnotationMeta(a));
   card.append(head, body, meta);
+  _installRpAnnotationDrag(card, a);
   return card;
 }
 
@@ -687,6 +843,17 @@ function _appendRpAnnotationActions(container, a) {
     resolveBtn.dataset.testid = `rp-ann-resolve-${a.id || 'unknown'}`;
     resolveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _toggleResolveComment(a); });
     container.appendChild(resolveBtn);
+  }
+  const dragTarget = _rpAnnotationDragTarget(a);
+  if (dragTarget) {
+    // Phase 5-a: OSへのドラッグ書き出しはChrome/Edge系のみ有効なため、
+    // どのブラウザでも対象ファイルを取り出せる代替導線として必ず併設する。
+    const saveBtn = _rpAnnotationActionButton('download', 'ファイルとして保存');
+    saveBtn.dataset.rpAnnAction = 'save';
+    saveBtn.dataset.annId = a.id || '';
+    saveBtn.dataset.testid = `rp-ann-save-${a.id || 'unknown'}`;
+    saveBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _saveRpAnnotationTargetFile(dragTarget); });
+    container.appendChild(saveBtn);
   }
   const delBtn = _rpAnnotationActionButton('trash2', _rpCanDeleteAnnotation(a) ? '削除' : 'ソースフォルダの管理者だけが削除できます');
   delBtn.dataset.rpAnnAction = 'delete';

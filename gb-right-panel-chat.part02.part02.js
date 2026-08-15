@@ -571,21 +571,34 @@ async function _chatMessageDropFile(file, mode, inputId) {
 }
 
 async function _chatMessageDropMeldexNode(node, mode, inputId) {
+  // 複数選択のドロップでは、選択した項目をひとつ残らず扱う
+  // （画像・PDFは添付として、それ以外は本文リンクとして入力欄へ）。
   const items = Array.isArray(node?.items) && node.items.length ? node.items : [node];
   const linkTexts = [];
+  const seenPaths = new Set();
+  let attachedCount = 0;
   for (const item of items) {
     const name = String(item?.name || '').trim();
     const path = String(item?.path || '').trim();
     const type = String(item?.type || '').trim();
-    if (!path) continue;
+    if (!path || seenPaths.has(path)) continue;
+    seenPaths.add(path);
     const isImage = type === 'image' || (typeof _chatIsImagePath === 'function' && _chatIsImagePath(path));
-    if (isImage) {
-      _chatMessageDropAddImageByPath(name || _chatMessageDropNameFromPath(path, 'image'), path, mode);
+    const isPdf = /\.pdf$/i.test(path);
+    if (isImage || isPdf) {
+      _chatMessageDropAddImageByPath(name || _chatMessageDropNameFromPath(path, isPdf ? 'file' : 'image'), path, mode);
+      attachedCount += 1;
     } else {
       linkTexts.push(_chatMessageDropLinkMarkup(name, path));
     }
   }
   if (linkTexts.length) _chatMessageDropInsertLink(inputId, linkTexts.join('\n'));
+  if (typeof showStatus === 'function' && (attachedCount + linkTexts.length) > 1) {
+    const parts = [];
+    if (attachedCount) parts.push(attachedCount + ' 件を添付');
+    if (linkTexts.length) parts.push(linkTexts.length + ' 件をリンクとして挿入');
+    showStatus(parts.join(' / ') + 'しました');
+  }
 }
 
 function _chatMessageDropNameFromPath(path, fallback = 'リンク') {
@@ -616,10 +629,13 @@ function _chatMessageDropLinkMarkup(name, pathOrUrl) {
 }
 
 function _chatMessageDropAddImageByPath(name, path, mode) {
+  const isPdf = /\.pdf$/i.test(String(path || ''));
   const att = {
     name: name || path.split('/').pop() || 'image',
     path,
-    mime: (typeof _chatGuessMimeType === 'function') ? _chatGuessMimeType(path) : 'image/png',
+    mime: isPdf
+      ? 'application/pdf'
+      : ((typeof _chatGuessMimeType === 'function') ? _chatGuessMimeType(path) : 'image/png'),
     dataUrl: (typeof API_BASE === 'string' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(path),
   };
   if (mode === 'team') {
@@ -660,8 +676,7 @@ function _chatMessageDropUploadDir(mode) {
   if (mode === 'team') {
     return typeof _teamChatUploadDir === 'function' ? _teamChatUploadDir() : '_chat';
   }
-  const chatPath = state.currentPagePath || state.currentEntityPath || '';
-  return chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
+  return _chatAttachmentUploadDir();
 }
 
 // LLM / チーム・DM 両方にバインド
@@ -906,9 +921,20 @@ function _chatAttachmentFileName(file) {
   return 'clipboard-image.' + ext;
 }
 
+// AIチャットの添付ファイルの保存先。
+// 以前は「そのとき開いているノートと同じフォルダ」へ書いていたため、
+// ①作業フォルダに添付画像が散らばる ②シート内・管理用フォルダを開いていると
+// 書き込みが拒否されて「アップロードに失敗しました」になる、の2つが起きていた。
+// チーム/DMチャットと同じ考え方で、チャット専用の保存先へまとめる。
 function _chatAttachmentUploadDir() {
-  const chatPath = state.currentPagePath || state.currentEntityPath || '';
-  return chatPath ? chatPath.replace(/\/[^/]+$/, '') : '';
+  const base = '_chat/attachments';
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId && Array.isArray(_chatWorkspacesCache)) {
+    const workspace = _chatWorkspacesCache.find(item => item?.id === workspaceId);
+    if (workspace?.folder) return workspace.folder.replace(/[\\/]+$/, '') + '/' + base;
+  }
+  const sourceFolder = typeof _chatSourceFolderValue === 'function' ? _chatSourceFolderValue() : '';
+  return sourceFolder ? (sourceFolder.replace(/[\\/]+$/, '') + '/' + base) : base;
 }
 
 function _chatStartAttachmentUpload(att, gen) {

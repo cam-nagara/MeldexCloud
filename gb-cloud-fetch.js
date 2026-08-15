@@ -338,6 +338,12 @@
     if (!bytes.length) throw new Error('空のファイルはアップロードできません');
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider?.uploadBytes) throw new Error('ブラウザの保存先が未初期化です');
+    const identityAftercare = window.MeldexCreatedImageIdentityAftercare;
+    if (!identityAftercare?.prepare || !identityAftercare?.record
+        || !identityAftercare?.cancel || !identityAftercare?.drainPrepared) {
+      throw new Error('Cloud画像identity aftercareが読み込まれていません');
+    }
+    const drainedIdentity = await identityAftercare.drainPrepared(provider);
 
     const attachments = window.MeldexSheetAttachments;
     const sheetPath = String(body.get('sheet_path') || '').trim();
@@ -352,7 +358,22 @@
       const probe = await _cloudAttachmentProbe(provider, target.dir, hash, bytes.length);
       const resolved = await attachments.resolveAttachmentFilename(desired, probe);
       const path = target.dir + '/' + resolved.filename;
-      if (!resolved.reused) await provider.uploadBytes(path, bytes);
+      const prepared = kind === 'image' && !resolved.reused
+        ? await identityAftercare.prepare(provider, path, bytes, {
+          source: 'media-upload-attachment', filename: resolved.filename,
+        })
+        : null;
+      if (!resolved.reused && (!prepared || prepared.publish_required)) {
+        try {
+          await provider.uploadBytes(path, bytes);
+        } catch (error) {
+          if (prepared) await identityAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+          throw error;
+        }
+      }
+      const identity = prepared ? await identityAftercare.record(
+        provider, path, bytes, { source: 'media-upload-attachment', prepared },
+      ) : null;
       await _registerCloudAttachmentFolder(target);
       const pixel = await _imagePixelSize(bytes, kind);
       const thumbSize = parseInt(String(body.get('thumbnail_size') || '256'), 10) || 256;
@@ -370,6 +391,7 @@
         width: pixel.width,
         height: pixel.height,
         size: bytes.length,
+        aftercare_pending: !!identity?.aftercare_pending || drainedIdentity.blocked > 0,
       });
     }
 
@@ -378,7 +400,20 @@
     const hash = await _sha256Hex(bytes);
     const shard = hash.slice(0, 2);
     const src = `_media/blobs/${shard}/${hash}.${ext}`;
-    await provider.uploadBytes(src, bytes);
+    const prepared = await identityAftercare.prepare(provider, src, bytes, {
+      source: 'media-upload-blob', filename,
+    });
+    if (prepared.publish_required) {
+      try {
+        await provider.uploadBytes(src, bytes);
+      } catch (error) {
+        await identityAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+        throw error;
+      }
+    }
+    const identity = await identityAftercare.record(
+      provider, src, bytes, { source: 'media-upload-blob', prepared },
+    );
     return jsonResponse({
       ok: true,
       hash,
@@ -391,6 +426,7 @@
       width: null,
       height: null,
       size: bytes.length,
+      aftercare_pending: !!identity.aftercare_pending || drainedIdentity.blocked > 0,
     });
   }
 

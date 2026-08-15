@@ -21,10 +21,9 @@
   }
 
   function defaultImageDropMode() {
-    // 2026-08-01: proprietary-format-sidecar-cleanup-plan-2026-07-31.md §5.1 により、
-    // カード画像は本体・単独版とも埋め込みを既定にする（旧仕様は本体のみリンクが既定だった）。
-    // ユーザーは引き続き明示的に「画像ファイルへのリンク」へ切り替えられる。
-    return MODE_EMBED;
+    // 新しく追加する画像は元ファイルとのつながりを保つ。保存済みの選択値と
+    // 既存の埋め込み画像は変更せず、未設定時だけリンクを既定にする。
+    return MODE_LINK;
   }
 
   function storageKey() {
@@ -445,6 +444,7 @@
     const state = boardState();
     const node = state?.nodes?.find(item => item && item.id === nodeId);
     if (!node || !node.img) return false;
+    const originalPath = nodeLinkPath(node);
     const picked = source == null ? await promptRelocateImageSource(node) : source;
     if (!picked) return false;
     const token = boardRequestToken();
@@ -459,6 +459,11 @@
     }
     if (!isSameBoardToken(token)) {
       if (typeof global.showStatus === 'function') global.showStatus('別のボードに切り替わったため、画像の再指定を中止しました', true);
+      return false;
+    }
+    const currentNode = state.nodes?.find(item => item && item.id === nodeId);
+    if (currentNode !== node || nodeLinkPath(currentNode) !== originalPath) {
+      if (typeof global.showStatus === 'function') global.showStatus('カードのリンク先が変わったため、画像の再指定を中止しました', true);
       return false;
     }
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo();

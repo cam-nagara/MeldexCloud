@@ -24,6 +24,26 @@ function _bdEnsureBoardFileStyleTab() {
   if (typeof renderFileStyleTab === 'function') renderFileStyleTab('board');
 }
 
+// 課題3 (2026-08-14): 階層別/カード/ラインスタイルのフィールドを編集すると、その値を反映する
+// ための内部再描画 (bdRender()) が bdSyncBoardUi() 経由で選択タブを強制的に「カード」/「ライン」
+// タブへ切り替えてしまい、スタイル管理タブを開いたまま編集していたユーザーが弾き出される不具合が
+// あった。フィールド編集ハンドラは bdRender() を呼ぶ前後でこのフラグを立て (try/finally で必ず
+// 解除)、_bdSetNodeDetailTabs / _bdSetConnDetailTab の activate 分岐でフラグが立っている間は
+// 強制切替をスキップする。ユーザーが実際にカード/ラインをクリックして選択を変えた場合の強制切替
+// (2026-08-13 導入の E2E 契約) はこの対象外 — canvas 側のクリック処理は bdRefreshSelectionDetails
+// を直接呼ぶため bdRender() の内部同期パスを経由しない。
+let _bdSuppressDetailTabForceActivate = false;
+function _bdRenderKeepingDetailTab() {
+  if (typeof bdRender !== 'function') return undefined;
+  const prev = _bdSuppressDetailTabForceActivate;
+  _bdSuppressDetailTabForceActivate = true;
+  try {
+    return bdRender();
+  } finally {
+    _bdSuppressDetailTabForceActivate = prev;
+  }
+}
+
 // カード選択時: カードタブに集約した HTML を入れ、カードタブを表示してアクティブに。
 // ラインタブは非表示にする (選択中に同時に存在する場合のみライン側が別途上書きする)。
 // スタイル管理タブ (カード/ライン/階層別スタイル) はボード表示中は常に出す。
@@ -34,14 +54,16 @@ function _bdSetNodeDetailTabs(node, cardHtml, options = {}) {
   if (typeof showNoteTabs === 'function') showNoteTabs(true);
   if (typeof showDbTabs === 'function') showDbTabs(false);
   if (typeof showBoardTabs === 'function') showBoardTabs({ card: true, line: false, cardStyle: true, lineStyle: true, depthStyle: true });
-  const hasInformation = !!(node && window.MeldexBoardInfoPanel?.hasInformation?.(node));
   window.MeldexBoardInfoPanel?.render?.(node);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
   // 選択操作時は必ず「カード」タブへ移動する。スタイル編集などの内部再描画では
   // ユーザーが開いている file-style / backlinks / board-note / スタイル管理タブを維持する。
-  const nextTab = options.activate === true
-    ? (hasInformation ? 'note-editor' : 'board-card')
+  // 以前は「情報」を出せる場合に note-editor を開いていたが、hasInformation() は
+  // 保存済みボードならほぼ常に true になるため、カードを選ぶたび「情報」タブへ
+  // 飛んでいた (2026-08-13 ユーザー指摘)。「情報」はタブから明示的に開く。
+  const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
+    ? 'board-card'
     : (typeof _bdResolveCurrentBoardTab === 'function'
       ? _bdResolveCurrentBoardTab(['note-editor', 'board-card', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-card')
       : 'board-card');
@@ -59,7 +81,7 @@ function _bdSetConnDetailTab(connHtml, options = {}) {
   window.MeldexBoardInfoPanel?.render?.(null);
   _bdEnsureBoardFileStyleTab();
   _bdEnsureBoardStyleManagerTabs();
-  const nextTab = options.activate === true
+  const nextTab = (options.activate === true && !_bdSuppressDetailTabForceActivate)
     ? 'board-line'
     : (typeof _bdResolveCurrentBoardTab === 'function'
       ? _bdResolveCurrentBoardTab(['note-editor', 'board-line', 'board-note', 'board-card-style', 'board-line-style', 'board-depth-style'], 'board-line')
@@ -131,6 +153,14 @@ function _bdBuildNodeDetailHtml(node) {
     ? ''
     : Object.entries(BD_MARKERS).map(([category, markers]) => _bdMarkerSelectHtml(node, category, markers)).join('');
   const parent = node.parent ? (bd.nodes.find(item => item.id === node.parent)?.text?.split('\n')[0] || node.parent) : 'なし';
+  // 課題18-案A: 「効いている起点」の小さな状態表示。祖先鎖の途中に起点があればそれを示す
+  // (絶対ルートとは限らない)。起点自身なら「このカード自身」と表示する。
+  const effectiveAnchor = typeof _bdNearestAutoStyleAnchor === 'function' ? _bdNearestAutoStyleAnchor(node.id) : null;
+  const effectiveAnchorLabel = !effectiveAnchor
+    ? 'なし (階層別スタイル未適用)'
+    : effectiveAnchor.id === node.id
+      ? 'このカード自身'
+      : ((effectiveAnchor.text || '').split('\n')[0] || effectiveAnchor.id);
   const opacityPct = node.opacity != null ? Math.round(Math.max(0, Math.min(1, node.opacity)) * 100) : 100;
   const title = (node.text || '').split('\n')[0] || '無題カード';
   const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
@@ -176,7 +206,11 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-field"><span>親カード</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="container" ${node.container ? 'checked' : ''}><span>コンテナ</span></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイル</span></label>
+        <div class="gb-check-help-row">
+          <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
+          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。') : ''}
+        </div>
+        <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-node-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
         </div>
@@ -245,59 +279,6 @@ function _bdBuildConnectionDetailHtml(conn) {
     </div>`;
 }
 
-function _bdBuildBoardDetailHtml() {
-  // cardStyle/lineStyle は HTML 内で直接使われない（_bdDetailStyleTriggerHtml が
-  // ID から再取得する）。bdGet*StyleById の副作用（bdEnsureBoardUiState 連鎖）を
-  // 避けるため呼ばない。
-  const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
-  const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
-  const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : 'リセット';
-  const exportIcon = typeof lucide === 'function' ? lucide('upload', 14) : '出力';
-  const paletteIcon = typeof lucide === 'function' ? lucide('palette', 14) : '色';
-  return `
-    <div class="bd-detail-panel" data-bd-detail-root="board">
-      <div class="bd-detail-heading">ボード</div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">カードスタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-board-card-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-card-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-card-style" title="選択中スタイルをデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-card-style" title="スタイルをデフォルトに戻す">${resetIcon}</button>
-        </div>
-        <div class="bd-style-summary-card"><div class="bd-style-editor-fields bd-style-editor-fields--fmt" data-bd-board-card-style-fields></div></div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">ラインスタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDetailStyleTriggerHtml('line', bd.activeLineStyle, 'data-bd-board-line-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-line-style-as-new" title="現在の設定を新しいスタイルとして保存">${plusIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-line-style" title="選択中スタイルをデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-line-style" title="スタイルをデフォルトに戻す">${resetIcon}</button>
-        </div>
-        <div class="bd-style-summary-card"><div class="bd-style-editor-fields bd-style-editor-fields--fmt" data-bd-board-line-style-fields></div></div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-section-title">階層別スタイル</div>
-        <div class="bd-detail-style-row">
-          ${_bdDepthStyleTriggerHtml('data-bd-board-depth-style-pick')}
-          <button type="button" class="bd-detail-style-action" data-bd-action="apply-depth-theme-colors" title="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="save-depth-styles" title="階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
-          <button type="button" class="bd-detail-style-action" data-bd-action="reset-depth-styles" title="保存したデフォルトに戻す (未保存ならビルトイン初期値)">${resetIcon}</button>
-        </div>
-      </div>
-      <div class="bd-detail-section">
-        <div class="bd-detail-inline-actions">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-card-styles" data-bd-action="manage-card-styles">カードスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-line-styles" data-bd-action="manage-line-styles">ラインスタイル管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-export-board-styles" data-bd-action="export-board-styles">${exportIcon} スタイル一式を書き出し</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-statuses" data-bd-action="manage-statuses">ステータスを管理</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="bd-board-manage-depth-styles" data-bd-action="manage-depth-styles">階層別スタイルを管理</button>
-        </div>
-      </div>
-    </div>`;
-}
-
 function _bdDepthStyleTriggerHtml(pickAttr) {
   const styles = typeof bdEnsureDepthStyles === 'function' ? bdEnsureDepthStyles() : (bd?.depthStyles || []);
   const count = Array.isArray(styles) ? styles.length : 0;
@@ -329,7 +310,12 @@ function _bdBindSelectionDetailPanel() {
           _bdAssignCardStyleToNodes(nodeIds, styleId);
         },
         onAfterPick() {
-          bdRender();
+          nodeIds.forEach(id => {
+            if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'selection-detail-style');
+          });
+          if (typeof bdMarkConnectionsDirtyByNodes === 'function') {
+            bdMarkConnectionsDirtyByNodes(nodeIds, 'selection-detail-style');
+          }
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         },
@@ -348,7 +334,7 @@ function _bdBindSelectionDetailPanel() {
           _bdAssignLineStyleToConnections(connIds, styleId);
         },
         onAfterPick() {
-          bdDrawConns();
+          bdDrawConns({ connIds, reason: 'selection-detail-style' });
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         },
@@ -372,7 +358,7 @@ function _bdBindSelectionDetailPanel() {
          'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth', 'textShadowColor']
           .forEach(key => { if (eff[key] !== undefined) displayStyle[key] = eff[key]; });
         const rerender = () => {
-          bdDrawConns();
+          bdDrawConns({ connIds, reason: 'selection-detail-fields' });
           bdDirty();
           if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         };
@@ -582,6 +568,20 @@ async function _bdOpenLinkedTarget(node, e) {
   else if (typeof openNative === 'function') openNative(path);
 }
 
+function _bdRefreshNodeDetailDirty(nodeId, includeSubtree) {
+  const ids = includeSubtree && typeof bdFastSubtreeIds === 'function'
+    ? bdFastSubtreeIds(nodeId)
+    : [nodeId];
+  ids.forEach(id => {
+    if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'node-detail');
+  });
+  if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes(ids, 'node-detail');
+  if (typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty(ids, 'node-detail');
+  if (typeof bdMarkExtrasDirty === 'function') {
+    bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, detailPanel: true }, 'node-detail');
+  }
+}
+
 function _bdBindNodeDetailPanel(nodeId) {
   const roots = [...document.querySelectorAll('[data-bd-detail-root="node"]')].filter(root => root.dataset.nodeId === nodeId);
   if (!roots.length) return;
@@ -594,15 +594,18 @@ function _bdBindNodeDetailPanel(nodeId) {
     if (field === '_autoStyle' && node._autoStyle && typeof bdApplyAutoStyle === 'function') {
       bdApplyAutoStyle(node.id);
     }
-    if (field === 'structure' && typeof bdAutoLayout === 'function') {
+    if (field === 'structure') {
       // 構造設定: 新しい構造 (非空) ならこのカードをサブルートに再レイアウト。
       // 「親に従う」(空) に戻した場合は、親から再レイアウトが必要なのでルートで実行。
       const targetId = node.structure ? node.id : (typeof bdRoot === 'function' ? bdRoot(node.id)?.id : node.id);
-      if (targetId) bdAutoLayout(targetId);
+      if (targetId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(targetId);
+      else if (targetId && typeof bdAutoLayout === 'function') bdAutoLayout(targetId);
     }
-    bdRender();
+    _bdRefreshNodeDetailDirty(nodeId, field === '_autoStyle');
     bdDirty();
-    if (field === 'link') {
+    if (field === 'link' || field === '_autoStyle') {
+      // _autoStyle: 「効いている起点」表示 (課題18-案A) と階層別スタイルタブの起点プリセット行
+      // (課題18-案B) はこのカードの起点状態に依存するため、切り替え直後に再描画する。
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     }
   };
@@ -632,7 +635,7 @@ function _bdBindNodeDetailPanel(nodeId) {
   const node = bd.nodes.find(item => item.id === nodeId);
   const rerenderNodeDetail = () => {
     bdDirty();
-    bdRender();
+    _bdRefreshNodeDetailDirty(nodeId, false);
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
@@ -718,7 +721,7 @@ function _bdBindNodeDetailPanel(nodeId) {
       if (!target) return;
       bdPushUndo();
       bdClearCardStyleOverrides(target);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     root.querySelector('[data-bd-action="open-link"]')?.addEventListener('click', (e) => {
@@ -742,7 +745,7 @@ function _bdBindConnectionDetailPanel(connId) {
     if (!conn) return;
     bdPushUndo();
     _bdUpdateConnectionFromField(conn, field, value);
-    bdDrawConns();
+    bdDrawConns({ connIds: [connId], reason: 'connection-detail' });
     bdDirty();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   };
@@ -770,7 +773,7 @@ function _bdBindConnectionDetailPanel(connId) {
     });
     const rerenderConnDetail = () => {
       bdDirty();
-      bdDrawConns();
+      bdDrawConns({ connIds: [connId], reason: 'connection-detail-style' });
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     };
@@ -847,102 +850,3 @@ function _bdBindConnectionDetailPanel(connId) {
     });
   });
 }
-
-function _bdBindBoardDetailPanel() {
-  const roots = [...document.querySelectorAll('[data-bd-detail-root="board"]')];
-  if (!roots.length) return;
-  // 注意: bdGetCardStyleById/bdGetLineStyleById は内部で bdEnsureBoardUiState を呼んで
-  // bd.cardStyles/bd.lineStyles を新配列に置換する。両方を別々に呼ぶと cardStyle 取得後に
-  // bd.cardStyles が再生成され、cardStyle 参照が「古い配列内のオブジェクト」になり、
-  // 編集が bd.cardStyles に反映されない。bdEnsureBoardUiState を1回だけ呼んで直接 find する。
-  bdEnsureBoardUiState();
-  const cardStyle = bd.cardStyles.find(s => s.id === bd.activeCardStyle) || bd.cardStyles[0] || null;
-  const lineStyle = bd.lineStyles.find(s => s.id === bd.activeLineStyle) || bd.lineStyles[0] || null;
-  const rerenderBoardDetail = () => {
-    bdDirty();
-    bdRender();
-    bdRefreshBoardToolbar();
-    if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-  };
-  roots.forEach(root => {
-    root.querySelectorAll('[data-bd-board-color-field]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (typeof bdPickBoardBackgroundColor === 'function') bdPickBoardBackgroundColor(btn);
-        else if (typeof openColorPalette === 'function') {
-          const current = bd._bgColor || '';
-          openColorPalette(btn, current, color => {
-            bd._bgColor = color || '';
-            const canvas = document.getElementById('bd-canvas');
-            const swatch = document.getElementById('bd-bg-swatch');
-            if (canvas) canvas.style.background = bd._bgColor || 'var(--bg)';
-            if (swatch) setColorSwatchValue(swatch, bd._bgColor || '');
-            bdDirty();
-            if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-            if (typeof bdMarkExtrasDirty === 'function') {
-              bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-color');
-              if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-            }
-          });
-        }
-      });
-    });
-    root.querySelectorAll('[data-bd-board-reset-field]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        if (typeof bdSetBoardBackgroundColor === 'function') bdSetBoardBackgroundColor('');
-        else {
-          bd._bgColor = '';
-          const canvas = document.getElementById('bd-canvas');
-          const swatch = document.getElementById('bd-bg-swatch');
-          if (canvas) canvas.style.background = 'var(--bg)';
-          if (swatch) setColorSwatchValue(swatch, '');
-          bdDirty();
-          if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
-          if (typeof bdMarkExtrasDirty === 'function') {
-            bdMarkExtrasDirty({ minimap: true, boardUi: true }, 'bg-reset');
-            if (typeof bdScheduleBoardUpdates === 'function') bdScheduleBoardUpdates();
-          }
-        }
-      });
-    });
-    root.querySelector('[data-bd-action="set-bg-image"]')?.addEventListener('click', () => {
-      if (typeof bdChooseBoardBackgroundImage === 'function') bdChooseBoardBackgroundImage();
-    });
-    root.querySelector('[data-bd-action="clear-bg-image"]')?.addEventListener('click', () => {
-      if (typeof bdClearBoardBackgroundImage === 'function') bdClearBoardBackgroundImage();
-    });
-    root.querySelector('[data-bd-board-bg-fit]')?.addEventListener('change', event => {
-      if (typeof bdSetBoardBackgroundImageFit === 'function') bdSetBoardBackgroundImageFit(event.currentTarget.value);
-    });
-    root.querySelector('[data-bd-board-card-style-pick]')?.addEventListener('click', event => {
-      bdOpenStylePicker('card', event.currentTarget, {
-        currentId: bd.activeCardStyle,
-        refreshAnchor: () => document.querySelector('[data-bd-detail-root="board"] [data-bd-board-card-style-pick]'),
-        onPick(styleId) { bd.activeCardStyle = styleId || ''; },
-        onAfterPick() { rerenderBoardDetail(); },
-      });
-    });
-    root.querySelector('[data-bd-board-line-style-pick]')?.addEventListener('click', event => {
-      bdOpenStylePicker('line', event.currentTarget, {
-        currentId: bd.activeLineStyle,
-        refreshAnchor: () => document.querySelector('[data-bd-detail-root="board"] [data-bd-board-line-style-pick]'),
-        onPick(styleId) { bd.activeLineStyle = styleId || ''; },
-        onAfterPick() { rerenderBoardDetail(); },
-      });
-    });
-    const cardFieldsEl = root.querySelector('[data-bd-board-card-style-fields]');
-    if (cardFieldsEl) {
-      const targetCard = cardStyle || bd.cardStyles[0] || null;
-      if (targetCard) {
-        // bdEnsureBoardUiState が bd.cardStyles を都度新オブジェクトに差し替えるため、
-        // バインド時の参照は古くなる。beforeEdit で常に現在の参照を取り直す。
-        _bdBuildStyleFields(cardFieldsEl, 'card', targetCard, rerenderBoardDetail, {
-          beforeEdit: () => bd.cardStyles.find(s => s.id === bd.activeCardStyle) || bd.cardStyles[0] || null,
-        });
-      } else { cardFieldsEl.textContent = 'カードスタイル未設定'; console.warn('[board detail] no card style available'); }
-    }
-    const lineFieldsEl = root.querySelector('[data-bd-board-line-style-fields]');
-    if (lineFieldsEl) {
-      const targetLine = lineStyle || bd.lineStyles[0] || null;
-      if (targetLine) {
-        _bdBuildStyleFields(lineFieldsEl, 'line', targetLine, rerenderBoardDetail, {
-          beforeEdit: () => bd.lineStyles.find(s => s.id === bd.activeLineStyle) || bd.lineStyles[0] || null,

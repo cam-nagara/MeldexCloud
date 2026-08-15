@@ -49,14 +49,7 @@
     const canvas = boardCanvas();
     if (!canvas) return { x: 160, y: 140 };
     const rect = canvas.getBoundingClientRect();
-    if (typeof bdScreenToWorld === 'function') {
-      return bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    }
-    const zoom = Math.max(0.1, Number(bd?.zoom) || 1);
-    return {
-      x: ((canvas.clientWidth || 640) / 2 - (Number(bd?.panX) || 0)) / zoom,
-      y: ((canvas.clientHeight || 480) / 2 - (Number(bd?.panY) || 0)) / zoom,
-    };
+    return bdScreenToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
   }
 
   function pastePoint(explicitPoint) {
@@ -860,9 +853,7 @@
     document.addEventListener('copy', handleCopyEvent, true);
     document.addEventListener('pointerdown', event => {
       if (!event.target?.closest?.('#bd-canvas,[data-bd-role="canvas"]')) return;
-      if (typeof bdScreenToWorld === 'function') {
-        lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
-      }
+      lastBoardPoint = bdScreenToWorld(event.clientX, event.clientY);
     }, { passive: true });
   }
 

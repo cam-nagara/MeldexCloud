@@ -76,3 +76,43 @@
     min-height: 44px;
   }
 }
+
+/* Phase 3: ワークスペースタブの依頼ボタン隣の管理者AI稼働表示。 */
+.team-workspace-cli-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.team-workspace-cli-presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg2);
+  flex-shrink: 0;
+}
+
+.team-workspace-cli-presence.is-online .team-workspace-cli-presence-dot {
+  background: var(--green);
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .team-workspace-cli-presence-label {
+    display: none;
+  }
+
+  .team-workspace-cli-presence {
+    padding: 4px;
+    min-width: 22px;
+    min-height: 22px;
+    justify-content: center;
+  }
+}

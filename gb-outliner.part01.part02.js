@@ -504,16 +504,16 @@
 
     // Alt+D&D: フォルダリンク登録（移動ではなくリンク）
     if (e.altKey && (isFolder || isDB)) {
-      for (const n of nodes) {
-        const d = n._nodeData;
-        if (d && d.path) {
-          const addLink = typeof addFolderLinkWithHistory === 'function'
-            ? addFolderLinkWithHistory(d.path, item.path)
-            : apiPost('/folder-links/add', { file_path: d.path, folder_path: item.path });
-          Promise.resolve(addLink).then(() => {
-            showStatus(d.name + ' → ' + item.name + ' にリンク登録');
-          }).catch(() => showStatus('リンク登録に失敗', true));
-        }
+      const linkItems = nodes.map(n => n._nodeData).filter(d => d?.path);
+      try {
+        const result = typeof addFolderLinksBatchWithHistory === 'function'
+          ? await addFolderLinksBatchWithHistory(linkItems, item.path)
+          : await apiPost('/folder-links/batch/add', { items: linkItems.map(d => ({ file_path: d.path })), folder_path: item.path });
+        const failed = result?.failed_count || 0;
+        const changed = result?.created_count || 0;
+        showStatus(`${changed} 件を「${item.name}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && changed === 0);
+      } catch {
+        showStatus('リンク登録に失敗', true);
       }
       clearDragIndicators();
       loadOutliner();
@@ -561,6 +561,21 @@
     if (destFolder && isItemLocked(destFolder)) {
       showStatus('編集ロック中のフォルダには移動できません', true);
       return;
+    }
+
+    // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
+    // 落とすと「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+    if (position === 'inside' && isDB) {
+      const rejected = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
+      if (rejected.length) {
+        const names = rejected.map(n => n._nodeData?.name || '').filter(Boolean);
+        showStatus(
+          'シートの中にはエントリだけを置けます（' + (names[0] || '対象') +
+          (names.length > 1 ? ' ほか ' + (names.length - 1) + ' 件' : '') + '）',
+          true
+        );
+        return;
+      }
     }
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）

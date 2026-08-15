@@ -10,8 +10,26 @@
   }
 
   function clearDropState(element) {
-    element?.classList?.remove('is-drop-before', 'is-drop-after', 'is-drop-target');
-    if (element?.dataset) delete element.dataset.tagDropPlacement;
+    element?.classList?.remove('is-drop-before', 'is-drop-after', 'is-drop-before-h', 'is-drop-after-h', 'is-drop-target');
+    if (element?.dataset) {
+      delete element.dataset.tagDropPlacement;
+      delete element.dataset.tagDropAxis;
+    }
+  }
+
+  // タグは列幅に応じて格子（複数列）で並ぶ。2列以上ならドラッグの挿入判定を
+  // 左右（X座標）にし、1列なら従来どおり上下（Y座標）にする。列数はCSSの
+  // 計算済み grid-template-columns から読む（幅の実測やウィンドウサイズ分岐はしない）。
+  function currentColumnCount(container) {
+    if (!container) return 1;
+    try {
+      const template = String(getComputedStyle(container).gridTemplateColumns || '').trim();
+      if (!template || template === 'none') return 1;
+      const count = template.split(/\s+/).filter(Boolean).length;
+      return count > 0 ? count : 1;
+    } catch (_) {
+      return 1;
+    }
   }
 
   function uniqueDraggedTags(items, state, excludedId) {
@@ -110,13 +128,22 @@
       event.stopPropagation();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
       clearDropState(row);
+      const columns = currentColumnCount(row.parentElement);
+      const horizontal = columns >= 2;
       const rect = row.getBoundingClientRect();
-      const placement = Number.isFinite(event.clientY) && rect.height
-        && (event.clientY - rect.top) / rect.height > 0.5
-        ? 'after'
-        : 'before';
+      let placement = 'before';
+      if (horizontal && rect.width && Number.isFinite(event.clientX)) {
+        placement = (event.clientX - rect.left) / rect.width > 0.5 ? 'after' : 'before';
+      } else if (rect.height && Number.isFinite(event.clientY)) {
+        placement = (event.clientY - rect.top) / rect.height > 0.5 ? 'after' : 'before';
+      }
       row.dataset.tagDropPlacement = placement;
-      row.classList.add(placement === 'after' ? 'is-drop-after' : 'is-drop-before');
+      row.dataset.tagDropAxis = horizontal ? 'h' : 'v';
+      row.classList.add(
+        horizontal
+          ? (placement === 'after' ? 'is-drop-after-h' : 'is-drop-before-h')
+          : (placement === 'after' ? 'is-drop-after' : 'is-drop-before'),
+      );
     });
     row.addEventListener('dragleave', event => {
       if (!event.relatedTarget || !row.contains(event.relatedTarget)) clearDropState(row);

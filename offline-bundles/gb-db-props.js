@@ -855,6 +855,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
           ctx,
           entries: [{ name: entityName, path: ep, entryId }],
           source: 'context-menu',
+          confirmation: confirmed,
         });
         const response = result.responses[0];
         const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'

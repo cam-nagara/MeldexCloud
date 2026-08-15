@@ -374,6 +374,51 @@
       return records;
     }
 
+    async listDocumentHeaders(kind, options) {
+      const contract = _contract();
+      const opts = options || {};
+      const limit = Math.max(1, Math.min(200, Number(opts.limit || 50)));
+      let payload;
+      if (opts.cursor) {
+        payload = await _rpc('files/list_folder/continue', { cursor: String(opts.cursor) }, this._namespaceKind);
+      } else {
+        payload = await _rpc('files/list_folder', {
+          path: this._folderFor(kind), recursive: false, limit,
+        }, this._namespaceKind).catch((error) => {
+          if (_isNotFoundError(error)) return { entries: [], has_more: false, cursor: '' };
+          throw error;
+        });
+      }
+      const entries = [];
+      for (const entry of payload.entries || []) {
+        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        const documentId = String(entry.name).slice(0, -5);
+        try { contract.sanitizeDocumentId(documentId); } catch { continue; }
+        entries.push({
+          documentId, revision: String(entry.rev || ''), size: Number(entry.size || 0),
+          modified: String(entry.server_modified || entry.client_modified || ''),
+        });
+      }
+      return {
+        entries, cursor: String(payload.cursor || ''), complete: !payload.has_more,
+        revision: String(payload.cursor || ''),
+      };
+    }
+
+    async documentCollectionGeneration(kind, options) {
+      const contract = _contract();
+      const excluded = new Set((options?.excludeDocumentIds || []).map(String));
+      const headers = [];
+      for (const entry of await this._listFolderEntries(this._folderFor(kind))) {
+        if (entry['.tag'] !== 'file' || !/\.json$/i.test(entry.name || '')) continue;
+        const documentId = String(entry.name).slice(0, -5);
+        try { contract.sanitizeDocumentId(documentId); } catch { continue; }
+        if (!excluded.has(documentId)) headers.push([documentId, String(entry.rev || '')]);
+      }
+      headers.sort((a, b) => a[0].localeCompare(b[0]));
+      return contract.computeRevision(headers);
+    }
+
     async _totalBytesForKind(kind, excludeDocumentId) {
       let entries;
       try {

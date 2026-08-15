@@ -1024,6 +1024,23 @@
     sourceCounts[source] = (sourceCounts[source] || 0) + 1;
   }
 
+  // タグ選択フロートパネル向け: 複数タグ・厳密照合・すべて/どれか判定の結果を
+  // path(正規化・小文字) -> item のMapで返す。デスクトップ版の
+  // search_targets(tags=...) と同じ意味（1件も無ければ空）。
+  async function _cloudTagCondition(tagIds, tagMode, root) {
+    const payload = await window.MeldexDataAccess.requestJson(
+      '/global-tags/search?tags=' + encodeURIComponent(tagIds.join(',')) + '&match_mode=' + encodeURIComponent(tagMode),
+      { method: 'GET' },
+    );
+    const rows = new Map();
+    (payload?.results || []).forEach((row) => {
+      if (!_cloudUnifiedPathMatches(row?.path, root)) return;
+      const key = _normalizeFolderPath(row?.path || '').toLowerCase();
+      if (key) rows.set(key, row);
+    });
+    return rows;
+  }
+
   async function _cloudUnifiedSearch(provider, url) {
     const query = String(url.searchParams.get('q') || '').trim();
     const requested = String(url.searchParams.get('scopes') || '')
@@ -1032,19 +1049,37 @@
     const root = _normalizeFolderPath(url.searchParams.get('path') || '');
     const parsedLimit = Number(url.searchParams.get('limit') || 50);
     const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(100, Math.floor(parsedLimit))) : 50;
-    if (!query) return { results: [], total: 0, limit, scopes, source_counts: {}, unavailable: [], partial: false };
+    const tagIds = String(url.searchParams.get('tag_ids') || '').split(',').map(value => value.trim()).filter(Boolean);
+    const tagMode = String(url.searchParams.get('tag_mode') || 'all').trim().toLowerCase() === 'any' ? 'any' : 'all';
+
+    let tagCondition = null; // null=条件なし。Map=条件を満たすpath(正規化小文字)集合
+    if (tagIds.length) tagCondition = await _cloudTagCondition(tagIds, tagMode, root);
+
+    // 文字列が空でもタグ条件だけなら結果を返す（両方空の時だけ打ち切る）。
+    if (!query && !tagCondition) return { results: [], total: 0, limit, scopes, source_counts: {}, unavailable: [], partial: false };
 
     const needle = query.toLowerCase();
     const merged = new Map();
     const sourceCounts = {};
     const unavailable = [];
 
-    for (const source of scopes) {
+    if (!query && tagCondition) {
+      tagCondition.forEach((row) => {
+        const text = (row.tags || []).map(tag => tag?.name || tag?.label || '').filter(Boolean).join(', ');
+        _cloudUnifiedAdd(merged, sourceCounts, {
+          ...row,
+          matches: [{ line: 1, field: 'タグ', text: text || '', col: 0 }],
+        }, 'tags');
+      });
+    }
+
+    for (const source of query ? scopes : []) {
       try {
         if (source === 'clip') {
-          // CLIPのテキスト埋め込み生成にはデスクトップ側のローカルモデルが必要。
-          // Cloud静的版で見せかけの文字列検索へ落とさず、部分結果として明示する。
-          unavailable.push({ source, message: '画像の内容検索はデスクトップ版のCLIPモデルで利用できます' });
+          // 画像の内容検索のテキスト埋め込み生成にはデスクトップ側のローカルの
+          // 画像認識モデルが必要。Cloud静的版で見せかけの文字列検索へ落とさず、
+          // 部分結果として明示する（内部用語は出さない）。
+          unavailable.push({ source, message: '画像の内容検索はデスクトップ版で利用できます' });
           sourceCounts[source] = 0;
           continue;
         }
@@ -1104,7 +1139,11 @@
       }
     }
 
-    const results = [...merged.values()];
+    let results = [...merged.values()];
+    if (query && tagCondition) {
+      // 文字列とタグ条件の両方がある場合は、両方を満たすものだけに絞る。
+      results = results.filter(row => tagCondition.has(_normalizeFolderPath(row.path || '').toLowerCase()));
+    }
     results.sort((a, b) => (Number(b.score ?? -1) - Number(a.score ?? -1))
       || String(a.name || '').localeCompare(String(b.name || ''), 'ja'));
     return {

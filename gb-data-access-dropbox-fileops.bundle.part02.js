@@ -1,37 +1,847 @@
+      if (previous.state === 'completed') selected = previous.result;
+      else {
+        if (result?.ok !== true || result.operation_id !== operationId) throw new Error('Cloudファイル操作結果が不正です');
+        operations[index] = { ...previous, state: 'completed', result: structuredClone(result),
+          saved_at: new Date().toISOString() };
+      }
+      return { ...state, outliner_operations: _pruneCloudCopyOperations(operations) };
+    });
+    return selected;
+  }
+
+  async function _runCloudCopyAftercare(provider, operationId, operation, payload, record, steps, checkpoint = null) {
+    let intent = structuredClone(record.intent || {});
+    const completed = new Set(Array.isArray(intent.aftercare_completed) ? intent.aftercare_completed : []);
+    intent.aftercare_required = steps.map(step => step.name);
+    intent.aftercare_completed = [...completed];
+    await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    for (const step of steps) {
+      if (completed.has(step.name)) continue;
+      const inProgress = intent.aftercare_in_progress || null;
+      if (inProgress && inProgress.name !== step.name) throw new Error('Cloud aftercareの実行中stepが一致しません');
+      let current = null;
+      if (checkpoint) {
+        current = await checkpoint();
+        const expected = intent.aftercare_manifest_digest || intent.manifest_digest;
+        if (expected && current.manifest_digest !== expected && !inProgress) {
+          throw Object.assign(new Error('Cloud folderがaftercare前に変更されています'), { status: 409 });
+        }
+      }
+      const effect = intent.aftercare_effects?.[step.name] || null;
+      if (inProgress) {
+        const before = String(inProgress.before_manifest_digest || '');
+        const currentDigest = String(current?.manifest_digest || '');
+        if (effect && currentDigest === String(effect.after_manifest_digest || '')) {
+          completed.add(step.name);
+          intent.aftercare_completed = [...completed];
+          if (checkpoint) intent.aftercare_manifest_digest = currentDigest;
+          delete intent.aftercare_in_progress;
+          await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+          continue;
+        }
+        if (checkpoint && currentDigest !== before) {
+          throw Object.assign(new Error('実行中Cloud aftercareの前後manifestを証明できません'), { status: 409 });
+        }
+      }
+      if (!inProgress) {
+        intent.aftercare_in_progress = { name: step.name,
+          before_manifest_digest: String(current?.manifest_digest || '') };
+        await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+      }
+      await step.run();
+      const after = checkpoint ? await checkpoint() : null;
+      intent.aftercare_effects = { ...(intent.aftercare_effects || {}),
+        [step.name]: {
+          before_manifest_digest: String(intent.aftercare_in_progress?.before_manifest_digest || ''),
+          after_manifest_digest: String(after?.manifest_digest || ''),
+        } };
+      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+      completed.add(step.name);
+      intent.aftercare_completed = [...completed];
+      if (checkpoint) intent.aftercare_manifest_digest = after.manifest_digest;
+      delete intent.aftercare_in_progress;
+      await _updateCloudCopyIntent(provider, operationId, operation, payload, intent);
+    }
+    return { ...record, intent };
+  }
+
+  window.MeldexCloudCopyOperationJournal = Object.freeze({
+    withFlight: _withCloudCopyFlight,
+    load: _loadCloudCopyOperation,
+    listPrepared: _listPreparedCloudCopyOperations,
+    listCompleted: _listCompletedCloudCopyOperations,
+    prepare: _prepareCloudCopyOperation,
+    updateIntent: _updateCloudCopyIntent,
+    complete: _completeCloudCopyOperation,
+    fail: _failCloudCopyOperation,
+    rearm: _rearmCloudCopyOperation,
+    runAftercare: _runCloudCopyAftercare,
+  });
+/* Stable identity copy transaction helpers. This continuation file is loaded
+ * inside the gb-data-access-dropbox-fileops IIFE after the operation journal. */
+  async function _freshProviderStat(provider, path) {
+    if (typeof provider?.refreshMetadata === 'function') {
+      return provider.refreshMetadata(path);
+    } else if (typeof provider?.statPathFresh === 'function') {
+      return provider.statPathFresh(path);
+    }
+    const error = new Error('fresh provider identityを取得できないため安全に停止しました');
+    error.status = 503; error.meldexCode = 'fresh_provider_identity_unavailable';
+    throw error;
+  }
+  async function _providerObjectIdentity(provider, path, fallback) {
+    const value = await _freshProviderStat(provider, path);
+    return _providerObjectRevision(value);
+  }
+  async function _freshPathExists(provider, path) {
+    return Boolean(await _freshProviderStat(provider, path));
+  }
+  async function _freshWalkEntries(provider, path, limit = 1000) {
+    if (typeof provider?.walkEntriesFresh !== 'function') {
+      const error = new Error('fresh provider listingを取得できないため安全に停止しました');
+      error.status = 503; error.meldexCode = 'fresh_provider_listing_unavailable';
+      throw error;
+    }
+    return provider.walkEntriesFresh(path, { maxEntries: limit, maxPathBytes: 4 * 1024 * 1024 });
+  }
+  async function _freshDirectEntries(provider, path, limit = 1000) {
+    const normalized = _normalizeFolderPath(path);
+    return (await _freshWalkEntries(provider, normalized, limit))
+      .filter(row => _dirname(row.path) === normalized)
+      .map(row => ({ ...row, name: row.name || _basename(row.path), handle: row.handle || row }));
+  }
+  async function _readIdentityTextPreservingBytes(provider, path) {
+    let bytes = null;
+    if (typeof provider?.readBytesFresh === 'function') {
+      bytes = (await provider.readBytesFresh(path))?.bytes || null;
+    } else if (typeof provider?.downloadAsFile === 'function') {
+      bytes = new Uint8Array(await (await provider.downloadAsFile(path)).arrayBuffer());
+    }
+    if (bytes) return {
+      text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), bytes,
+    };
+    return { text: await provider.readText(path), bytes: null };
+  }
+  function _isIdentityTextPath(path) {
+    return /\.(?:md|mel-board|mel-scenario|mel-timer|mel-sheet)$/i.test(String(path || ''));
+  }
+  function _cloudOrphanPayload(path, ownership, reason) {
+    const providerId = ownership?.id || '';
+    const providerRev = ownership?.rev || '';
+    return {
+      path, provider_id: providerId, provider_rev: providerRev,
+      manifest_digest: '', proof: { provider_id: providerId, provider_rev: providerRev },
+      reason,
+    };
+  }
+  function _attachCloudOrphan(error, path, ownership, reason) {
+    error.meldexOrphanStaging = _cloudOrphanPayload(path, ownership, reason);
+    error.meldexCode = error.meldexCode || 'copy_staging_orphan_retained';
+    return error;
+  }
+  async function _rollbackOwnedCloudCopy(provider, destPath, ownership) {
+    const current = await _providerObjectIdentity(provider, destPath, null);
+    if (!ownership?.id || !ownership?.rev || current.id !== ownership.id || current.rev !== ownership.rev) {
+      const error = new Error('複製先が作成後に変更されたため自動補償を停止しました');
+      error.status = 409; error.meldexCode = 'copy_rollback_ownership_conflict';
+      throw error;
+    }
+    if (typeof provider.deletePathConditional !== 'function') {
+      const error = new Error('revision条件付き削除を利用できないため自動補償を停止しました');
+      error.status = 503; error.meldexCode = 'copy_rollback_strict_cas_unavailable';
+      throw _attachCloudOrphan(error, destPath, ownership, 'strict_conditional_delete_unavailable');
+    }
     try {
-      await scope.adapter.delete(contract.SystemStorageKind.ANNOTATIONS, docId);
+      await provider.deletePathConditional(destPath, ownership.rev);
     } catch (error) {
-      if (!deleteError) deleteError = error;
+      if (Number(error?.status || 0) === 503) {
+        throw _attachCloudOrphan(error, destPath, ownership, 'strict_conditional_delete_failed');
+      }
+      throw error;
     }
   }
-  // 旧パスに実体が残っていると、_readAnnotationRecord のフォールバックが
-  // 削除済みの注釈を復活させてしまう(ゴースト化)。削除時だけは旧パスも消す。
-  await provider.deletePath(_annotationPath(docId)).catch(() => {});
-  if (deleteError) throw deleteError;
+
+  // IDを先に生成し、providerのcreate-only CASで保存してreadbackする。
+  async function _copyFileWithNewIdentityTransaction(provider, sourcePath, destPath, isFile, options = {}) {
+    if (!isFile) return { handled: false };
+    if (!_isIdentityTextPath(destPath)) return { handled: false };
+    const docIdentity = window.MeldexDocumentIdentity;
+    const content = (await _readIdentityTextPreservingBytes(provider, sourcePath)).text;
+    const fmt = docIdentity?.formatForPath?.(destPath, content);
+    if (!fmt) return { handled: false };
+    const result = docIdentity.regenerateDocumentId(content, fmt);
+    if (!result?.changed || !result?.documentId) throw new Error('複製先のdocument_idを生成できません');
+    if (typeof provider?.uploadBytesConditional !== 'function') {
+      const error = new Error('create-only保存を利用できないため複製を中止しました');
+      error.status = 503; error.meldexCode = 'strict_create_cas_unavailable';
+      throw error;
+    }
+    if (typeof provider?.movePathNoReplace !== 'function') {
+      const error = new Error('atomic no-replace publishを利用できないため複製を中止しました');
+      error.status = 503; error.meldexCode = 'strict_move_cas_unavailable';
+      throw error;
+    }
+    const nonce = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stagingPath = _joinPath(_dirname(destPath), `.${_basename(destPath)}.meldex-copy-${nonce}.tmp`);
+    let ownership = null;
+    let published = false;
+    try {
+      const written = await provider.uploadBytesConditional(
+        stagingPath, new TextEncoder().encode(result.text), null,
+      );
+      ownership = await _providerObjectIdentity(provider, stagingPath, written);
+      if (!ownership.id || !ownership.rev) throw new Error('複製先のprovider ID/revisionを確認できません');
+      const readback = (await _readIdentityTextPreservingBytes(provider, stagingPath)).text;
+      const latest = await _providerObjectIdentity(provider, stagingPath, null);
+      const readbackId = docIdentity.readDocumentId(readback, fmt);
+      if (readback !== result.text || readbackId !== result.documentId
+        || latest.id !== ownership.id || latest.rev !== ownership.rev) {
+        throw new Error('複製先のidentity/revision readbackが一致しません');
+      }
+      if (typeof options.persistPublishProof === 'function') {
+        await options.persistPublishProof({ provider_id: ownership.id,
+          provider_rev: ownership.rev, manifest_digest: '', staging_path: stagingPath });
+      }
+      await provider.movePathNoReplace(stagingPath, destPath);
+      published = true;
+      const finalOwnership = await _providerObjectIdentity(provider, destPath, null);
+      if (finalOwnership.id !== ownership.id || finalOwnership.rev !== ownership.rev) {
+        throw new Error('atomic publish後のprovider ID/revisionが一致しません');
+      }
+      return {
+        handled: true, ownership: finalOwnership,
+        rollback: () => _rollbackOwnedCloudCopy(provider, destPath, ownership),
+      };
+    } catch (err) {
+      if (ownership?.id && ownership?.rev) {
+        await _rollbackOwnedCloudCopy(provider, published ? destPath : stagingPath, ownership);
+      }
+      throw err;
+    }
+  }
+
+  async function _boundedCloudFolderManifest(provider, sourcePath, limit = 1000) {
+    const rows = await _freshWalkEntries(provider, sourcePath, limit + 1);
+    if (rows.length > limit) throw new Error('フォルダ複製の上限件数を超えています');
+    return rows.map(row => ({
+      path: row.path, kind: row.kind || row.handle?.kind || 'file', handle: row.handle || row,
+    }));
+  }
+
+  async function _copyCloudManifestFile(provider, row, sourceRoot, destRoot) {
+    const relative = row.path.slice(sourceRoot.length).replace(/^\/+/, '');
+    const destPath = _joinPath(destRoot, relative);
+    let bytes;
+    let expectedText = null;
+    if (_isIdentityTextPath(destPath)) {
+      const sourceText = (await _readIdentityTextPreservingBytes(provider, row.path)).text;
+      const fmt = window.MeldexDocumentIdentity?.formatForPath?.(destPath, sourceText);
+      if (fmt) {
+        const regenerated = window.MeldexDocumentIdentity.regenerateDocumentId(sourceText, fmt);
+        if (!regenerated?.changed || !regenerated?.documentId) throw new Error('複製先のdocument_idを生成できません');
+        expectedText = regenerated.text;
+        bytes = new TextEncoder().encode(expectedText);
+        if (bytes.byteLength > 8 * 1024 * 1024) throw new Error('identity対象textの複製上限を超えています');
+      }
+    }
+    if (!bytes) {
+      if (typeof provider?.copyPath !== 'function') throw new Error('binary streaming copyを利用できません');
+      await provider.copyPath(row.path, destPath);
+      const ownership = await _providerObjectIdentity(provider, destPath, null);
+      if (!ownership.id || !ownership.rev) throw new Error('複製先のprovider ID/revisionを確認できません');
+      return { path: destPath, ownership };
+    }
+    const written = await provider.uploadBytesConditional(destPath, bytes, null);
+    const ownership = await _providerObjectIdentity(provider, destPath, written);
+    if (!ownership.id || !ownership.rev) throw new Error('複製先のprovider ID/revisionを確認できません');
+    if (expectedText != null
+        && (await _readIdentityTextPreservingBytes(provider, destPath)).text !== expectedText) {
+      await _rollbackOwnedCloudCopy(provider, destPath, ownership);
+      throw new Error('複製先のidentity readbackが一致しません');
+    }
+    return { path: destPath, ownership };
+  }
+
+  async function _cloudFolderIdentityProof(provider, rootPath) {
+    const root = await _providerObjectIdentity(provider, rootPath, null);
+    if (!root.id) throw new Error('複製先folder IDを確認できません');
+    const rows = [{ path: '', kind: 'directory', id: root.id, rev: '' }];
+    for (const row of await _boundedCloudFolderManifest(provider, rootPath)) {
+      const identity = await _providerObjectIdentity(provider, row.path, row.handle);
+      if (!identity.id || (row.kind !== 'directory' && !identity.rev)) {
+        throw new Error('複製先folder manifest identityを確認できません');
+      }
+      rows.push({ path: row.path.slice(rootPath.length), kind: row.kind,
+        id: identity.id, rev: row.kind === 'directory' ? '' : identity.rev });
+    }
+    return { provider_id: root.id, provider_rev: '',
+      manifest_digest: await _cloudCopyDigest('', 'manifest', rows) };
+  }
+
+  async function _rollbackOwnedCloudFolder(provider, files, directories) {
+    const errors = [];
+    for (const item of [...files].reverse()) {
+      try { await _rollbackOwnedCloudCopy(provider, item.path, item.ownership); }
+      catch (error) { errors.push(error); }
+    }
+    if (directories.some(item => !item.ownership?.rev)) {
+      const root = directories[0];
+      const orphanPayload = _cloudOrphanPayload(
+        root.path, root.ownership, 'directory_revision_unavailable');
+      if (errors.length) {
+        errors[0].meldexOrphanStaging = orphanPayload;
+        errors[0].meldexCode = errors[0].meldexCode || 'copy_staging_orphan_retained';
+        throw errors[0];
+      }
+      const orphan = new Error('revision条件付きfolder削除を利用できないため孤立一時フォルダを保全しました');
+      orphan.status = 503; orphan.meldexCode = 'copy_staging_orphan_retained';
+      orphan.meldexOrphanStaging = orphanPayload;
+      throw orphan;
+    }
+    for (const item of [...directories].reverse()) {
+      try {
+        const current = await _providerObjectIdentity(provider, item.path, null);
+        const children = await _freshDirectEntries(provider, item.path);
+        if (current.id !== item.ownership.id
+            || (item.ownership.rev && current.rev !== item.ownership.rev) || children.length) {
+          throw new Error('複製先フォルダが変更されたため自動補償を停止しました');
+        }
+        if (!item.ownership.rev || typeof provider.deletePathConditional !== 'function') {
+          const orphan = new Error('revision条件付きfolder削除を利用できないため孤立一時フォルダを保全しました');
+          orphan.status = 503; orphan.meldexCode = 'copy_staging_orphan_retained';
+          orphan.meldexOrphanStaging = _cloudOrphanPayload(
+            item.path, item.ownership, 'directory_revision_unavailable');
+          throw orphan;
+        }
+        await provider.deletePathConditional(item.path, item.ownership.rev);
+      } catch (error) { errors.push(error); }
+    }
+    if (errors.length) throw errors[0];
+  }
+
+  async function _copyFolderWithIdentityTransaction(provider, sourcePath, destPath, isDirectory, options = {}) {
+    if (!isDirectory) return { handled: false };
+    if (typeof provider?.uploadBytesConditional !== 'function') {
+      const error = new Error('create-only保存を利用できないためフォルダ複製を中止しました');
+      error.status = 503; error.meldexCode = 'strict_create_cas_unavailable';
+      throw error;
+    }
+    const manifest = await _boundedCloudFolderManifest(provider, sourcePath);
+    const nonce = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stagingPath = _joinPath(_dirname(destPath), `.${_basename(destPath)}.meldex-copy-${nonce}.tmp`);
+    let files = [];
+    let directories = [];
+    let published = false;
+    try {
+      if (await _freshPathExists(provider, stagingPath) || await _freshPathExists(provider, destPath)) {
+        throw new Error('複製先または一時保存先が既に存在します');
+      }
+      await _directoryHandle(provider, stagingPath, true);
+      const rootOwnership = await _providerObjectIdentity(provider, stagingPath, null);
+      if (!rootOwnership.id) throw new Error('複製先folder IDを確認できません');
+      directories.push({ path: stagingPath, ownership: rootOwnership });
+      for (const row of manifest) {
+        const relative = row.path.slice(sourcePath.length).replace(/^\/+/, '');
+        const target = _joinPath(stagingPath, relative);
+        if (row.kind === 'directory') {
+          await _directoryHandle(provider, target, true);
+          const ownership = await _providerObjectIdentity(provider, target, null);
+          if (!ownership.id) throw new Error('複製先folder IDを確認できません');
+          directories.push({ path: target, ownership });
+        } else {
+          files.push(await _copyCloudManifestFile(provider, row, sourcePath, stagingPath));
+        }
+      }
+      const stagingProof = await _cloudFolderIdentityProof(provider, stagingPath);
+      if (typeof options.persistPublishProof === 'function') {
+        await options.persistPublishProof({ ...stagingProof, staging_path: stagingPath });
+      }
+      if (typeof provider?.movePathNoReplace !== 'function') throw new Error('atomic no-replace folder publishを利用できません');
+      if (await _freshPathExists(provider, destPath)) throw new Error('複製先が同時に作成されました');
+      await provider.movePathNoReplace(stagingPath, destPath);
+      published = true;
+      const rebind = async item => {
+        const path = destPath + item.path.slice(stagingPath.length);
+        const current = await _providerObjectIdentity(provider, path, null);
+        const isFile = Boolean(item.ownership.rev);
+        if (current.id !== item.ownership.id || (isFile && current.rev !== item.ownership.rev)) {
+          throw new Error('atomic publish後のprovider ID/revisionが一致しません');
+        }
+        return { path, ownership: current };
+      };
+      files = await Promise.all(files.map(rebind));
+      directories = await Promise.all(directories.map(rebind));
+      const finalProof = await _cloudFolderIdentityProof(provider, destPath);
+      if (finalProof.provider_id !== stagingProof.provider_id
+          || finalProof.manifest_digest !== stagingProof.manifest_digest) {
+        throw new Error('atomic publish後のfolder manifestが一致しません');
+      }
+      return {
+        handled: true, ownership: directories[0]?.ownership || null,
+        manifest_digest: finalProof.manifest_digest,
+        rollback: () => _rollbackOwnedCloudFolder(provider, files, directories),
+      };
+    } catch (error) {
+      if (published) {
+        files = files.map(item => ({ ...item, path: destPath + item.path.slice(stagingPath.length) }));
+        directories = directories.map(item => ({ ...item, path: destPath + item.path.slice(stagingPath.length) }));
+      }
+      try {
+        await _rollbackOwnedCloudFolder(provider, files, directories);
+      } catch (rollbackError) {
+        if (rollbackError?.meldexOrphanStaging) {
+          error.meldexOrphanStaging = rollbackError.meldexOrphanStaging;
+          error.meldexCode = error.meldexCode || rollbackError.meldexCode;
+        } else {
+          throw rollbackError;
+        }
+      }
+      throw error;
+    }
+  }
+
+  async function _copyPathWithIdentityTransaction(provider, sourcePath, destPath, kind, options = {}) {
+    if (kind === 'directory') {
+      return _copyFolderWithIdentityTransaction(provider, sourcePath, destPath, true, options);
+    }
+    const identityCopy = await _copyFileWithNewIdentityTransaction(
+      provider, sourcePath, destPath, true, options,
+    );
+    if (identityCopy.handled) return identityCopy;
+    if (typeof provider?.copyPath !== 'function' || typeof provider?.movePathNoReplace !== 'function') {
+      throw new Error('atomic binary copyを利用できません');
+    }
+    const nonce = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stagingPath = _joinPath(_dirname(destPath), `.${_basename(destPath)}.meldex-copy-${nonce}.tmp`);
+    await provider.copyPath(sourcePath, stagingPath);
+    const ownership = await _providerObjectIdentity(provider, stagingPath, null);
+    if (!ownership.id || !ownership.rev) throw new Error('binary copyのprovider ID/revisionを確認できません');
+    try {
+      if (typeof options.persistPublishProof === 'function') {
+        await options.persistPublishProof({ provider_id: ownership.id,
+          provider_rev: ownership.rev, manifest_digest: '', staging_path: stagingPath });
+      }
+      await provider.movePathNoReplace(stagingPath, destPath);
+      const published = await _providerObjectIdentity(provider, destPath, null);
+      if (published.id !== ownership.id || published.rev !== ownership.rev) {
+        throw new Error('binary copyのatomic publish結果が一致しません');
+      }
+      return { handled: true, ownership: published,
+        rollback: () => _rollbackOwnedCloudCopy(provider, destPath, published) };
+    } catch (error) {
+      await _rollbackOwnedCloudCopy(provider, stagingPath, ownership);
+      throw error;
+    }
+  }
+/* gb-data-access-dropbox-fileops-conflict-backups.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の②競合バックアップクラスタ(Dropbox自身の競合コピーの検出・
+ * バックアップ)。
+ *
+ * 競合バックアップはファイル／フォルダ内容を管理レコードへ埋め込み、
+ * `SystemStorageKind.CONFLICT_BACKUPS` へ保存する。ユーザーの保存場所に
+ * `_meldex/conflict-backups` を新規作成・更新しない。
+ */
+
+function _isDropboxConflictName(name) {
+  const normalized = String(name || '').toLowerCase();
+  return /\([^)]*\bconflicted\s+copy\b[^)]*\)(?:\.[^.]*)?$/i.test(normalized)
+    || /\([^)]*競合[^)]*コピー[^)]*\)(?:\.[^.]*)?$/.test(normalized);
 }
 
-async function _listAnnotationRecords(provider) {
+function _originalPathForConflict(conflictPath) {
+  const normalized = _normalizeFolderPath(conflictPath);
+  const name = _basename(normalized);
+  const match = /^(.*)\s+\((?:[^)]*conflicted\s+copy[^)]*|[^)]*競合[^)]*コピー[^)]*)\)(\.[^.]*)?$/i.exec(name);
+  if (!match) return '';
+  const originalName = `${match[1]}${match[2] || ''}`.trim();
+  if (!originalName) return '';
+  return _joinPath(_dirname(normalized), originalName);
+}
+
+function _conflictBackupStamp() {
+  return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+}
+
+function _bytesToManagedBase64(bytes) {
+  let binary = '';
+  const data = new Uint8Array(bytes || []);
+  for (let offset = 0; offset < data.length; offset += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function _conflictObject(provider, sourcePath) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  const entry = await _resolveEntryHandle(provider, normalized);
+  if (!entry) return null;
+  if (entry.kind === 'file') {
+    const file = await entry.handle.getFile();
+    return {
+      type: 'file',
+      name: _basename(normalized),
+      bytes_base64: _bytesToManagedBase64(await file.arrayBuffer()),
+    };
+  }
+  const children = [];
+  for (const child of await _listDirectoryEntries(provider, normalized)) {
+    children.push(await _conflictObject(provider, child.path || _joinPath(normalized, child.name)));
+  }
+  return { type: 'folder', name: _basename(normalized), children: children.filter(Boolean) };
+}
+
+async function _backupConflictSide(provider, kind, sourcePath, stamp) {
+  const normalized = _normalizeFolderPath(sourcePath);
+  if (!normalized || !await _pathExists(provider, normalized)) return '';
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS,
+    normalized,
+  );
+  const documentId = `${_fnvFileId(normalized)}-${_randomId('c').replace(/[^a-z0-9]/gi, '').slice(-12)}`;
+  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS, documentId, {
+    kind,
+    original_relative_path: normalized,
+    created_at: stamp || _conflictBackupStamp(),
+    object: await _conflictObject(provider, normalized),
+  });
+  return `${window.MeldexSystemStorage.SystemStorageKind.CONFLICT_BACKUPS}/${documentId}`;
+}
+/* gb-data-access-dropbox-fileops-annotations.js
+ *
+ * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
+ * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
+ *
+ * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
+ * 決定」の③注釈クラスタ。Phase 4でこのクラスタを実際に共通ストレージ層
+ * (gb-system-storage.js、種別 annotations)へ載せ替える。
+ *
+ * ## 保存先の変更
+ *
+ * 旧: `_events/annotations/<id>.json` への直接読み書き。
+ * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
+ *     参加中の共有ワークスペードに接続している場合は `<ワークスペード>/MeldexShare/system/v1`
+ *     (gb-dropbox-management-root-resolver.js が判定)。
+ *
+ * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切
+ * 旧パスへ行わない)。SystemStorage上の削除は対象scope/revisionを一意に確定し、
+ * CAS tombstoneとして保持する。旧パスだけに存在するrecordのみ旧削除経路を使う。
+ */
+
+const ANNOTATION_DIR = '_events/annotations'; // 旧パス読取フォールバック専用(新規書込では使わない)
+const ANNOTATION_EXT_KEYS = [
+  'target_kind', 'target_ref', 'target_file_name', 'target_snapshot',
+  'orphan', 'orphaned_at', 'resolved', 'thread_parent_id', 'body',
+  'copied_to_refs', 'monitor_id', 'monitor_w', 'monitor_h',
+  'desktop_x', 'desktop_y', 'width', 'height', 'always_on_top',
+  'z_order', 'collapsed', 'last_seen_at',
+];
+const ANNOTATION_UPDATE_KEYS = [
+  'data', 'color', 'opacity', 'shape', 'type',
+  ...ANNOTATION_EXT_KEYS,
+];
+
+function _annotationTargetResolver() {
+  const resolver = window.MeldexCloudAnnotationTargetResolver;
+  if (!resolver) throw new Error('gb-cloud-annotation-target-resolver.js が読み込まれていません');
+  return resolver;
+}
+
+async function _migrateAnnotationStoredRecord(provider, adapter, docId) {
+  const contract = window.MeldexSystemStorage;
+  const boundary = adapter?.describe?.().boundary;
+  if (!boundary) throw new Error('注釈のDropbox adapter boundaryを確認できません');
+  return _annotationTargetResolver().migrateRecord({
+    provider, adapter, boundary, kind: contract.SystemStorageKind.ANNOTATIONS,
+    documentId: docId, operationId: `annotation-lazy-migrate:${docId}`,
+  });
+}
+
+function _annotationPath(id) {
+  return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
+}
+
+function _annotationJsonField(value, fallback) {
+  const parsed = _jsonMaybeParse(value, null);
+  if (parsed && typeof parsed === 'object') return parsed;
+  if (value && typeof value !== 'string') return value;
+  return fallback;
+}
+
+function _annotationFlag(value) {
+  if (value === true || value === 1 || value === '1') return 1;
+  if (String(value || '').toLowerCase() === 'true') return 1;
+  return 0;
+}
+
+function _currentUserName(body) {
+  const fromBody = String(body?.user || '').trim();
+  if (fromBody) return fromBody;
+  try {
+    const username = typeof getUsername === 'function' ? getUsername() : '';
+    if (username) return username;
+  } catch {}
+  return 'anonymous';
+}
+
+function _annotationRow(record) {
+  const out = { ...(record || {}) };
+  out.id = String(out.id || '');
+  out.data = typeof out.data === 'string'
+    ? out.data
+    : JSON.stringify(out.data && typeof out.data === 'object' ? out.data : {}, null, 0);
+  if (out.target_ref && typeof out.target_ref !== 'string') out.target_ref = JSON.stringify(out.target_ref, null, 0);
+  if (out.copied_to_refs && typeof out.copied_to_refs !== 'string') out.copied_to_refs = JSON.stringify(out.copied_to_refs, null, 0);
+  out.orphan = _annotationFlag(out.orphan);
+  out.resolved = _annotationFlag(out.resolved);
+  out.created = out.created || out.created_at || '';
+  out.modified = out.modified || out.modified_at || out.created;
+  out.created_at = out.created_at || out.created;
+  out.modified_at = out.modified_at || out.modified;
+  return out;
+}
+
+function _mergeAnnotationRecord(existing, body, options) {
+  const now = options?.now || _nowIso();
+  const record = { ...(existing || {}) };
+  if (!record.id) record.id = options?.id || _randomId('ann');
+  if (!record.created) record.created = now;
+  if (!record.created_at) record.created_at = record.created;
+  record.modified = now;
+  record.modified_at = now;
+  if (!record.target_path && body?.target_path) record.target_path = _normalizeFolderPath(body.target_path);
+  if (!record.target_id && record.target_path) record.target_id = _fnvFileId(record.target_path);
+  if (!record.user) record.user = _currentUserName(body);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_path')) {
+    record.target_path = _normalizeFolderPath(body.target_path || '');
+    record.target_id = body.target_id || (record.target_path ? _fnvFileId(record.target_path) : '');
+  }
+  if (body && Object.prototype.hasOwnProperty.call(body, 'target_id')) record.target_id = String(body.target_id || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'type')) record.type = String(body.type || 'stroke');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'shape')) record.shape = String(body.shape || '');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'data')) record.data = _annotationJsonField(body.data, {});
+  if (body && Object.prototype.hasOwnProperty.call(body, 'color')) record.color = String(body.color || '#ffeb3b');
+  if (body && Object.prototype.hasOwnProperty.call(body, 'opacity')) record.opacity = Number(body.opacity == null ? 1 : body.opacity);
+  if (body && Object.prototype.hasOwnProperty.call(body, 'user')) record.user = _currentUserName(body);
+  ANNOTATION_EXT_KEYS.forEach((key) => {
+    if (!body || !Object.prototype.hasOwnProperty.call(body, key)) return;
+    if (key === 'target_ref' || key === 'copied_to_refs') record[key] = _annotationJsonField(body[key], key === 'copied_to_refs' ? [] : null);
+    else if (key === 'orphan' || key === 'resolved') record[key] = _annotationFlag(body[key]);
+    else record[key] = body[key];
+  });
+  if (!record.type) record.type = 'stroke';
+  if (record.data == null) record.data = {};
+  if (!record.color) record.color = '#ffeb3b';
+  if (record.opacity == null || !Number.isFinite(Number(record.opacity))) record.opacity = 1;
+  return record;
+}
+
+// --- 保存(共通ストレージ層。固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
+//
+// 書込は record.target_path から個人/共有ワークスペースの管理スコープを解決する。
+// 一方、idしか受け取らない読取・削除と全件一覧は書込先スコープを一意に特定
+// できないため、resolveManagementScopesForProvider が返す全スコープ(接続中
+// ルート + 登録ソース由来の共有ワークスペース)を集約して、書込先と読取・
+// 削除先が分裂しないようにする(個人Vault接続のまま共有ソースの文書へ注釈を
+// 付けた場合、共有管理領域に保存されたその注釈を同じセッションで読めること)。
+
+async function _annotationScopes(provider) {
+  const resolver = window.MeldexDropboxManagementRootResolver;
+  if (!resolver || typeof resolver.resolveManagementScopesForProvider !== 'function') {
+    throw new Error('gb-dropbox-management-root-resolver.js が読み込まれていません');
+  }
+  return resolver.resolveManagementScopesForProvider(provider);
+}
+
+function _annotationUnavailable(error, operation) {
+  if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
+  const wrapped = new Error(`注釈SystemStorageの${operation}に失敗しました`);
+  wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
+  return wrapped;
+}
+
+function _annotationDeleted(record) {
+  return record?.deleted === true || record?.tombstone === true
+    || String(record?.state || '') === 'deleted' || String(record?.status || '') === 'tombstoned';
+}
+
+async function _findAnnotationRecordsById(provider, docId) {
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+  const matches = [];
+  for (const scope of scopes) {
+    let stored;
+    try { stored = await scope.adapter.load(kind, docId); } catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) matches.push({ scope, stored });
+  }
+  if (matches.length > 1) {
+    const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+    error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+  }
+  return matches;
+}
+
+async function _readAnnotationRecord(provider, id, targetPathHint) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const hint = _normalizeFolderPath(targetPathHint || '');
+  if (hint) {
+    let scope; let stored;
+    try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, hint); }
+    catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+    try { stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId); }
+    catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) {
+      const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, docId);
+      return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
+    }
+    const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+    return legacy && typeof legacy === 'object' ? legacy : null;
+  }
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const migrated = await _migrateAnnotationStoredRecord(provider, matches[0].scope.adapter, docId);
+    return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  return legacy && typeof legacy === 'object' ? legacy : null;
+}
+
+async function _writeAnnotationRecord(provider, record) {
+  const docId = _safeId(record.id, 'annotation id');
+  const adapter = await _managementAdapterForProvider(
+    provider,
+    window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+    record.target_path || record.path || '',
+  );
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  await adapter.save(kind, docId, record);
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
+}
+
+async function _deleteAnnotationRecordFully(provider, id) {
+  const docId = _safeId(id, 'annotation id');
+  const contract = window.MeldexSystemStorage;
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const match = matches[0];
+    const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
+      adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
+      documentId: docId, expectedRevision: match.stored.revision,
+    });
+    await _annotationTargetResolver().indexTombstone(
+      match.scope.adapter, contract.SystemStorageKind.ANNOTATIONS, tombstoned.payload,
+    );
+    return;
+  }
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  if (legacy) await provider.deletePath(_annotationPath(docId));
+}
+
+async function _coverAnnotationIndexBatch(provider, scope, kind) {
+  const resolver = _annotationTargetResolver();
+  const coverage = await resolver.indexCoverage(scope.adapter, kind);
+  if (typeof scope.adapter.listDocumentHeaders !== 'function'
+      || typeof scope.adapter.documentCollectionGeneration !== 'function') {
+    throw _annotationUnavailable(new Error('metadata generation API unavailable'), '索引coverage確認');
+  }
+  const generation = await scope.adapter.documentCollectionGeneration(kind, {
+    excludeDocumentIds: [resolver.INDEX_ID],
+  });
+  if (coverage.complete && coverage.revision === generation) return coverage;
+  const page = await scope.adapter.listDocumentHeaders(kind, { cursor: coverage.cursor, limit: 50 });
+  const rows = [];
+  for (const header of page.entries || []) {
+    if (header.documentId === resolver.INDEX_ID) continue;
+    const stored = await scope.adapter.load(kind, header.documentId);
+    if (!stored?.payload) continue;
+    if (_annotationDeleted(stored.payload)) { rows.push(stored.payload); continue; }
+    const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, header.documentId);
+    if (migrated.record?.payload) rows.push(migrated.record.payload);
+  }
+  let complete = page.complete === true;
+  if (complete) {
+    const readbackGeneration = await scope.adapter.documentCollectionGeneration(kind, {
+      excludeDocumentIds: [resolver.INDEX_ID],
+    });
+    complete = readbackGeneration === generation;
+  }
+  const next = { cursor: page.cursor || '', revision: generation, complete };
+  await resolver.indexCoverBatch(scope.adapter, kind, rows, next);
+  return next;
+}
+
+async function _listAnnotationRecords(provider, query) {
   const contract = window.MeldexSystemStorage;
   const records = [];
   const seenIds = new Set();
-  let scopes = [];
-  try {
-    scopes = await _annotationScopes(provider);
-  } catch {
-    scopes = []; // 共通ストレージ層が使えない場合も、旧パスの一覧だけで機能を継続する。
-  }
+  const scopeOwnersById = new Map();
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
   for (const scope of scopes) {
     let stored = [];
     try {
-      stored = await scope.adapter.listDocuments(contract.SystemStorageKind.ANNOTATIONS);
-    } catch {
-      continue; // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+      const kind = contract.SystemStorageKind.ANNOTATIONS;
+      if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
+        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        if (!coverage.complete) {
+          const error = new Error('注釈metadata indexを構築中です。再試行してください');
+          error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
+        }
+        const ids = await _annotationTargetResolver().indexedIds(scope.adapter, kind, query);
+        for (const id of ids) {
+          const item = await scope.adapter.load(kind, id);
+          if (item) stored.push(item);
+        }
+      } else {
+        let cursor = '';
+        do {
+          if (typeof scope.adapter.listDocumentHeaders !== 'function') throw new Error('metadata header API unavailable');
+          const page = await scope.adapter.listDocumentHeaders(kind, { cursor, limit: 100 });
+          for (const header of page.entries || []) {
+            if (header.documentId === _annotationTargetResolver().INDEX_ID) continue;
+            const item = await scope.adapter.load(kind, header.documentId);
+            if (item) stored.push(item);
+          }
+          cursor = page.complete ? '' : page.cursor;
+          if (!page.complete && !cursor) throw new Error('metadata cursor missing');
+        } while (cursor);
+      }
+    } catch (error) { throw _annotationUnavailable(error, '一覧読込'); }
+    for (const id of await _annotationTargetResolver().indexedKnownIds(
+      scope.adapter, contract.SystemStorageKind.ANNOTATIONS,
+    )) {
+      const key = String(id);
+      const owners = scopeOwnersById.get(key) || new Set();
+      owners.add(String(scope.scopeKey || scope.adapter?.describe?.().boundary || 'unknown'));
+      scopeOwnersById.set(key, owners);
+      if (owners.size > 1) {
+        const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+        error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+      }
+      seenIds.add(key);
     }
     for (const item of stored) {
-      const payload = item?.payload;
-      if (payload && typeof payload === 'object' && payload.id && !seenIds.has(String(payload.id))) {
-        records.push(payload);
-        seenIds.add(String(payload.id));
+      let payload = item?.payload;
+      if (_annotationDeleted(payload)) continue;
+      if (payload && typeof payload === 'object' && payload.id) {
+        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
+        payload = migrated.record?.payload || payload;
+      }
+      if (payload && typeof payload === 'object' && payload.id) {
+        const id = String(payload.id);
+        if (records.some(existing => String(existing.id) === id)) {
+          const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+          error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+        }
+        records.push(payload); seenIds.add(id);
       }
     }
   }
@@ -88,813 +898,3 @@ function _annotationMatchesOrphan(record, body, cascade) {
     const containerId = container.id || container.lineId || container.cardId || '';
     return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
   }
-  if (targetKind === 'sheet_cell') {
-    return String(container.kind || '') === 'sheet_cell'
-      && String(container.entryId || '') === itemId
-      && (!colId || String(container.colId || '') === colId);
-  }
-  if (targetKind === 'sheet_entry') {
-    return String(container.kind || '') === 'sheet_cell' && String(container.entryId || '') === itemId;
-  }
-  if (targetKind === 'sheet_col') {
-    return String(container.kind || '') === 'sheet_cell' && String(container.colId || '') === itemId;
-  }
-  return false;
-}
-
-function _annotationPathMatches(path, targetPath, isFolder) {
-  const normalized = _normalizeFolderPath(path);
-  const target = _normalizeFolderPath(targetPath);
-  if (!normalized || !target) return false;
-  return normalized === target || (!!isFolder && normalized.startsWith(target + '/'));
-}
-
-function _rewriteAnnotationPath(path, oldPath, newPath, isFolder) {
-  const normalized = _normalizeFolderPath(path);
-  const oldNormalized = _normalizeFolderPath(oldPath);
-  const newNormalized = _normalizeFolderPath(newPath);
-  if (!normalized || !oldNormalized) return normalized;
-  if (normalized === oldNormalized) return newNormalized;
-  if (isFolder && normalized.startsWith(oldNormalized + '/')) return newNormalized + normalized.slice(oldNormalized.length);
-  return normalized;
-}
-
-async function _updateAnnotationsForPathMutation(provider, event) {
-  const action = String(event?.action || '');
-  const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
-  const newPath = _normalizeFolderPath(event?.newPath || '');
-  const isFolder = !!event?.isFolder;
-  if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
-  const now = _nowIso();
-  let updated = 0;
-  const records = await _listAnnotationRecords(provider);
-  for (const record of records) {
-    let changed = false;
-    const ref = _annotationRef(record);
-    const recordPaths = [
-      record.target_path,
-      ref.file,
-      ref.path,
-      ref.targetPath,
-      ref.target_path,
-    ].filter(Boolean);
-    const matches = recordPaths.some(path => _annotationPathMatches(path, oldPath, isFolder));
-    if (!matches) continue;
-
-    if (action === 'delete') {
-      record.orphan = 1;
-      record.orphaned_at = now;
-      record.target_file_name = record.target_file_name || _basename(oldPath);
-      changed = true;
-    } else if (action === 'rename' || action === 'move') {
-      if (record.target_path) {
-        const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
-        if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
-          record.target_path = nextTargetPath;
-          record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
-          changed = true;
-        }
-      }
-      ['file', 'path', 'targetPath', 'target_path'].forEach((key) => {
-        if (!ref[key]) return;
-        const rewritten = _rewriteAnnotationPath(ref[key], oldPath, newPath, isFolder);
-        if (rewritten !== _normalizeFolderPath(ref[key])) {
-          ref[key] = rewritten;
-          changed = true;
-        }
-      });
-      if (changed) record.target_ref = ref;
-    }
-    if (!changed) continue;
-    record.modified = now;
-    record.modified_at = now;
-    await _writeAnnotationRecord(provider, record);
-    updated += 1;
-  }
-  return { ok: true, updated };
-}
-/* gb-data-access-dropbox-fileops-versions.js
- *
- * gb-data-access-dropbox-fileops-core.js の続き(同じ関数スコープに連結される
- * 継続ファイル。IIFEはここでは開かない・閉じない。詳細は core.js 冒頭コメント参照)。
- *
- * 固有形式付随物廃止・管理データ一元化計画 Phase 0 監査ノート§5「切り出し範囲の
- * 決定」の④版クラスタ(ファイル版・フォルダ版の自動作成・一覧・復元・
- * 論理削除/復元)。フォルダ版のヘルパーは兄弟ファイル
- * gb-data-access-dropbox-fileops-folder-versions.js が担当し、このファイルの
- * 旧パス読取ヘルパーと共通管理領域アダプターを共有する。
- *
- * 版履歴は共通ストレージ層（種別 versions）へ内容とメタデータを保存する。
- * `_meldex/versions/files` / `_meldex/versions/folders` は移行時の読取・照合・
- * 検証済み削除にのみ使用し、通常運用では作成・更新しない。
- */
-
-const LEGACY_VERSION_FILE_DIR = '_meldex/versions/files';
-const LEGACY_VERSION_FOLDER_DIR = '_meldex/versions/folders';
-const FOLDER_VERSION_EXCLUDE = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg',
-  '.mp4', '.avi', '.mov', '.wmv', '.mkv', '.webm',
-  '.mp3', '.wav', '.ogg', '.flac', '.aac',
-  '.zip', '.rar', '.7z', '.tar', '.gz',
-  '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
-]);
-const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
-
-function _versionTimestamp() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  const ms = String(d.getMilliseconds()).padStart(3, '0');
-  return `${y}${m}${day}T${hh}${mm}${ss}_${ms}_${_randomId('v').replace(/[^a-z0-9]/gi, '').slice(-6)}`;
-}
-
-function _fileVersionDir(path) {
-  const normalized = _normalizeFolderPath(path);
-  return _joinPath(LEGACY_VERSION_FILE_DIR, _fnvFileId(normalized));
-}
-
-function _folderVersionDir(path) {
-  const normalized = _normalizeFolderPath(path);
-  return _joinPath(LEGACY_VERSION_FOLDER_DIR, _fnvFileId(normalized || '.'));
-}
-
-async function _fileEtag(provider, path, entry, writeMeta) {
-  const meta = writeMeta?.meta || writeMeta || {};
-  const metaToken = meta.rev || meta.content_hash || meta.etag || '';
-  if (metaToken) return String(metaToken);
-  const stat = typeof provider.statPath === 'function' ? await provider.statPath(path).catch(() => null) : null;
-  const statMeta = stat?.meta || {};
-  const statToken = statMeta.rev || statMeta.content_hash || statMeta.etag || '';
-  if (statToken) return String(statToken);
-  const handle = entry?.handle || (await _resolveEntryHandle(provider, path))?.handle;
-  const stats = handle ? await _fileStats(handle).catch(() => null) : null;
-  return stats ? `${Number(stats.modifiedMs || 0)}:${Number(stats.size || 0)}` : '';
-}
-
-function _throwEtagConflict(path, expected, current) {
-  const error = new Error('他のタブまたは別プロセスで更新されたため保存を中止しました');
-  error.status = 409;
-  error.code = 'etag_conflict';
-  error.detail = {
-    code: 'etag_conflict',
-    path: _normalizeFolderPath(path),
-    expected_etag: String(expected || ''),
-    current_etag: String(current || ''),
-  };
-  throw error;
-}
-
-async function _relocateVersionHistory(provider, oldPath, newPath, isFolder) {
-  const normalizedOld = _normalizeFolderPath(oldPath);
-  const normalizedNew = _normalizeFolderPath(newPath);
-  if (!normalizedOld || normalizedOld === normalizedNew) return false;
-  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-  const adapter = await _managementAdapterForProvider(provider, kind, normalizedOld);
-  const records = await adapter.listDocuments(kind);
-  let moved = 0;
-  for (const record of records) {
-    const payload = record?.payload || {};
-    const current = _normalizeFolderPath(payload.original_relative_path || '');
-    const matches = current === normalizedOld || (isFolder && current.startsWith(normalizedOld + '/'));
-    if (!matches) continue;
-    const suffix = current === normalizedOld ? '' : current.slice(normalizedOld.length);
-    await adapter.save(
-      kind,
-      record.documentId,
-      { ...payload, original_relative_path: normalizedNew + suffix },
-      { expectedRevision: record.revision },
-    );
-    moved += 1;
-  }
-  return moved > 0;
-}
-
-async function _countFolderEntriesIncludingTrash(provider, folderPath) {
-  let size = 0;
-  async function walk(current) {
-    for (const entry of await _listDirectoryEntries(provider, current)) {
-      if (entry.handle.kind === 'directory') await walk(entry.path || _joinPath(current, entry.name));
-      else size += 1;
-    }
-  }
-  await walk(folderPath);
-  return size;
-}
-
-function _fileVersionName(path, options) {
-  const split = _splitNameAndExt(_basename(path));
-  const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-  const prefix = options?.auto ? 'auto_' : '';
-  return `${_safeNamePart(split.stem, 'file')}_${prefix}${_versionTimestamp()}${label ? '_' + label : ''}${split.ext || '.txt'}`;
-}
-
-function _fileVersionInfoFromName(name) {
-  const stem = _splitNameAndExt(name).stem;
-  const match = /(?:^|_)(auto_)?(\d{8})T(\d{6})_(\d{3})_[A-Za-z0-9]+(?:_(.*))?$/.exec(stem);
-  if (!match) return { auto: false, label: '', created: '' };
-  const date = match[2];
-  const time = match[3];
-  return {
-    auto: !!match[1],
-    label: match[5] || '',
-    created: `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}.${match[4]}`,
-  };
-}
-
-function _versionLabelFromName(path, name) {
-  return _fileVersionInfoFromName(name).label || '';
-}
-
-function _versionCreatedFromName(name) {
-  return _fileVersionInfoFromName(name).created || '';
-}
-
-async function _listEntriesSafe(provider, dir) {
-  try {
-    return await _listDirectoryEntries(provider, dir);
-  } catch {
-    return [];
-  }
-}
-
-async function _saveFileVersion(provider, path, options) {
-  const normalized = _normalizeFolderPath(path);
-  const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-  if (!_isTextLikePath(normalized)) throw new Error('このファイル形式のバージョン保存にはまだ対応していません');
-  const versionName = _fileVersionName(normalized, options || {});
-  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
-  const expectedRevision = String(options?.expectedRevision || '');
-  const revisionOf = value => String(value?.revision || value?.rev || value?.etag || '');
-  const before = expectedRevision ? await provider.getMetadata(normalized) : null;
-  const content = await provider.readText(normalized);
-  const after = expectedRevision ? await provider.getMetadata(normalized) : null;
-  if (expectedRevision && (revisionOf(before) !== expectedRevision || revisionOf(after) !== expectedRevision)) {
-    throw Object.assign(new Error('Version保存中にCloudファイルが変更されました'), { status: 409 });
-  }
-  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, documentId, {
-    object_type: 'text-file',
-    original_relative_path: normalized,
-    version_name: versionName,
-    content,
-    auto: !!options?.auto,
-    label: String(options?.label || ''),
-    created_at: _nowIso(),
-    deleted_at: '',
-  }, { expectedRevision: null });
-
-  const maxAuto = Number(options?.max_auto || 0);
-  if (options?.auto && maxAuto > 0) {
-    const rows = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-    const autoFiles = rows.filter(row => row.payload?.original_relative_path === normalized && row.payload?.auto)
-      .sort((a, b) => String(a.payload?.created_at || '').localeCompare(String(b.payload?.created_at || '')));
-    while (autoFiles.length > maxAuto) {
-      const old = autoFiles.shift();
-      await adapter.delete(window.MeldexSystemStorage.SystemStorageKind.VERSIONS, old.documentId).catch(() => {});
-    }
-  }
-  return { ok: true, version: versionName };
-}
-
-async function _listFileVersions(provider, path) {
-  const normalized = _normalizeFolderPath(path);
-  const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  const entries = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-  const versions = [];
-  for (const entry of entries) {
-    const payload = entry.payload || {};
-    if (payload.original_relative_path !== normalized || payload.object_type !== 'text-file' || payload.deleted_at) continue;
-    const entryInfo = _fileVersionInfoFromName(payload.version_name);
-    versions.push({
-      name: payload.version_name,
-      auto: !!payload.auto,
-      label: payload.label || entryInfo.label,
-      created: payload.created_at || entryInfo.created || '',
-      modified: payload.created_at || '',
-      size: new TextEncoder().encode(payload.content || '').length,
-      _modifiedMs: Date.parse(payload.created_at || '') || 0,
-    });
-  }
-  const known = new Set(versions.map(row => row.name));
-  for (const entry of await _listEntriesSafe(provider, _fileVersionDir(normalized))) {
-    if (entry.handle.kind !== 'file' || known.has(entry.name)) continue;
-    const entryInfo = _fileVersionInfoFromName(entry.name);
-    if (!entryInfo.created) continue;
-    const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '', modifiedMs: 0 }));
-    versions.push({
-      name: entry.name,
-      auto: entryInfo.auto,
-      label: entryInfo.label,
-      created: entryInfo.created || stats.modified || '',
-      modified: stats.modified || '',
-      size: stats.size || 0,
-      _modifiedMs: stats.modifiedMs || Date.parse(entryInfo.created || '') || 0,
-    });
-  }
-  versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
-  return versions.map(({ _modifiedMs, ...row }) => row);
-}
-
-function _safeVersionName(value) {
-  const name = _decodePathPart(value).trim();
-  if (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..') throw new Error('version が不正です');
-  return name;
-}
-
-function _deletedVersionToken() {
-  return `d_${_versionTimestamp()}`;
-}
-
-async function _findFileVersionRecord(provider, path, version, includeDeleted, migrateLegacy) {
-  const normalized = _normalizeFolderPath(path);
-  const name = _safeVersionName(version);
-  const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-  const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-  const records = await adapter.listDocuments(storageKind);
-  let record = records.find(row => {
-    const payload = row?.payload || {};
-    return payload.object_type === 'text-file'
-      && payload.original_relative_path === normalized
-      && payload.version_name === name
-      && (includeDeleted || !payload.deleted_at);
-  });
-  if (!record) {
-    const legacyPath = _joinPath(_fileVersionDir(normalized), name);
-    const legacyEntry = await _resolveEntryHandle(provider, legacyPath);
-    if (legacyEntry?.kind === 'file') {
-      const info = _fileVersionInfoFromName(name);
-      const stats = await _fileStats(legacyEntry.handle).catch(() => ({ modified: '' }));
-      const payload = {
-        object_type: 'text-file',
-        original_relative_path: normalized,
-        version_name: name,
-        content: await provider.readText(legacyPath),
-        auto: info.auto,
-        label: info.label,
-        created_at: info.created || stats.modified || '',
-        deleted_at: '',
-        deleted_token: '',
-        migrated_from_legacy: true,
-      };
-      if (migrateLegacy) {
-        const documentId = `file-${_fnvFileId(normalized)}-${_fnvFileId(name)}`;
-        record = await adapter.save(storageKind, documentId, payload, { expectedRevision: null });
-      } else {
-        record = { documentId: '', revision: '', payload };
-      }
-    }
-  }
-  return { adapter, storageKind, record, name };
-}
-
-async function _readFileVersion(provider, path, version) {
-  const { record, name } = await _findFileVersionRecord(provider, path, version, false);
-  if (!record || record.payload?.deleted_at) throw new Error('バージョンが見つかりません');
-  return { content: String(record.payload?.content || ''), name };
-}
-
-async function _restoreFileVersion(provider, path, version) {
-  const normalized = _normalizeFolderPath(path);
-  if (_isProductionFolderNotePath(normalized)) {
-    throw new Error('制作管理の列定義ファイルは汎用バージョン履歴から復元できません');
-  }
-  const source = await _resolveEntryHandle(provider, normalized);
-  if (!source || source.kind !== 'file') throw new Error(`ファイルが見つかりません: ${normalized}`);
-  const data = await _readFileVersion(provider, normalized, version);
-  _rejectProductionLegacyEntryContent(normalized, data.content || '');
-  await _saveFileVersion(provider, normalized, { auto: true, label: 'pre_restore', max_auto: 30 });
-  await provider.writeText(normalized, data.content || '');
-  return { ok: true };
-}
-
-async function _deleteFileVersion(provider, path, version) {
-  const { adapter, storageKind, record, name } = await _findFileVersionRecord(provider, path, version, false, true);
-  if (!record) throw new Error('バージョンが見つかりません');
-  const token = _deletedVersionToken();
-  await adapter.save(
-    storageKind,
-    record.documentId,
-    { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
-    { expectedRevision: record.revision },
-  );
-  return { ok: true, token, version: name };
-}
-
-async function _undeleteFileVersion(provider, path, token) {
-  const normalized = _normalizeFolderPath(path);
-  const safeToken = _safeVersionName(token);
-  const adapter = await _managementAdapterForProvider(provider, window.MeldexSystemStorage.SystemStorageKind.VERSIONS, normalized);
-  const records = await adapter.listDocuments(window.MeldexSystemStorage.SystemStorageKind.VERSIONS);
-  const record = records.find(row => row.payload?.original_relative_path === normalized && row.payload?.deleted_token === safeToken);
-  if (!record) throw new Error('削除済みバージョンが見つかりません');
-  await adapter.save(
-    window.MeldexSystemStorage.SystemStorageKind.VERSIONS,
-    record.documentId,
-    { ...record.payload, deleted_at: '', deleted_token: '' },
-    { expectedRevision: record.revision },
-  );
-  return { ok: true, version: record.payload.version_name };
-}
-
-window.MeldexFileVersionProviderOps = Object.freeze({
-  save: (provider, path, options) => _saveFileVersion(provider, path, options || {}),
-  read: (provider, path, version) => _readFileVersion(provider, path, version),
-});
-  /* Folder-version helpers share the enclosing Dropbox file-operations scope. */
-  function _relativeToFolder(folderPath, filePath) {
-    const folder = _normalizeFolderPath(folderPath);
-    const file = _normalizeFolderPath(filePath);
-    if (!folder) return file;
-    return file === folder ? '' : (file.startsWith(folder + '/') ? file.slice(folder.length + 1) : file);
-  }
-
-  function _skipFolderVersionRelPath(relPath) {
-    const normalized = _normalizeFolderPath(relPath);
-    return FOLDER_VERSION_EXCLUDE_PREFIXES.some(prefix => normalized === prefix.replace(/\/$/, '') || normalized.startsWith(prefix));
-  }
-
-  async function _versionFileBase64(provider, path) {
-    const source = await provider.downloadAsFile(path);
-    const bytes = new Uint8Array(await source.arrayBuffer());
-    let binary = '';
-    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-    }
-    return { content_base64: btoa(binary), byte_length: bytes.length };
-  }
-
-  async function _collectFolderVersionFiles(provider, folderPath, options = {}) {
-    const base = _normalizeFolderPath(folderPath);
-    const files = [];
-    async function walk(current) {
-      const entries = await _listDirectoryEntries(provider, current);
-      for (const entry of entries) {
-        if (!entry.name || (!options.includeAll && entry.name.startsWith('.'))) continue;
-        const fullPath = _joinPath(current, entry.name);
-        const relPath = _relativeToFolder(base, fullPath);
-        if (!options.includeAll && _skipFolderVersionRelPath(relPath)) continue;
-        if (entry.handle.kind === 'directory') {
-          files.push({ rel_path: relPath, entry_type: 'directory', size: 0, modified: '', content_base64: null });
-          await walk(fullPath);
-          continue;
-        }
-        const ext = _splitNameAndExt(entry.name).ext.toLowerCase();
-        if (!options.includeAll && FOLDER_VERSION_EXCLUDE.has(ext)) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        const encoded = await _versionFileBase64(provider, fullPath);
-        files.push({
-          rel_path: relPath,
-          entry_type: 'file',
-          size: stats.size || encoded.byte_length,
-          modified: stats.modified || '',
-          content_base64: encoded.content_base64,
-        });
-      }
-    }
-    await walk(base);
-    return files;
-  }
-
-  async function _saveFolderVersion(provider, folderPath, options) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const folder = await _resolveEntryHandle(provider, normalized);
-    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
-    const label = _safeNamePart(options?.label || '', '').replace(/^_+|_+$/g, '');
-    const kind = options?.auto ? 'auto' : 'manual';
-    const versionName = `v_${_versionTimestamp()}_${kind}${label ? '_' + label : ''}`;
-    const files = await _collectFolderVersionFiles(provider, normalized, options || {});
-    const totalSize = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
-    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-    const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(versionName)}`;
-    await adapter.save(storageKind, documentId, {
-      object_type: 'folder',
-      original_relative_path: normalized,
-      version_name: versionName,
-      created_at: _nowIso(),
-      label: options?.label || '',
-      auto: !!options?.auto,
-      files,
-      exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
-      deleted_at: '',
-      deleted_token: '',
-    }, { expectedRevision: null });
-    return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
-  }
-
-  async function _readLegacyFolderVersion(provider, folderPath, version) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const safeVersion = _safeVersionName(version);
-    const versionDir = _joinPath(_folderVersionDir(normalized), safeVersion);
-    const meta = await _readJsonSafe(provider, _joinPath(versionDir, '_meta.json'), null);
-    if (!meta || typeof meta !== 'object') return null;
-    const files = [];
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file?.rel_path || '', 'rel_path');
-      const encoded = await _versionFileBase64(provider, _joinPath(versionDir, 'files', relPath));
-      files.push({
-        rel_path: relPath,
-        size: Number(file?.size || encoded.byte_length),
-        modified: file?.modified || '',
-        content_base64: encoded.content_base64,
-      });
-    }
-    return {
-      object_type: 'folder',
-      original_relative_path: normalized,
-      version_name: safeVersion,
-      created_at: meta.created || _versionCreatedFromName(safeVersion) || '',
-      label: meta.label || '',
-      auto: !!meta.auto,
-      files,
-      exclude_patterns: Array.isArray(meta.exclude_patterns) ? meta.exclude_patterns : [...FOLDER_VERSION_EXCLUDE],
-      deleted_at: '',
-      deleted_token: '',
-      migrated_from_legacy: true,
-    };
-  }
-
-  async function _listFolderVersions(provider, folderPath) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-    const entries = await adapter.listDocuments(storageKind);
-    const versions = [];
-    for (const entry of entries) {
-      const meta = entry?.payload || {};
-      if (meta.object_type !== 'folder' || meta.original_relative_path !== normalized || meta.deleted_at) continue;
-      const files = Array.isArray(meta.files) ? meta.files : [];
-      versions.push({
-        name: meta.version_name,
-        created: meta.created_at || _versionCreatedFromName(meta.version_name) || '',
-        label: meta.label || '',
-        auto: !!meta.auto,
-        file_count: files.length,
-        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
-      });
-    }
-    const known = new Set(versions.map(row => row.name));
-    const legacyDir = _folderVersionDir(normalized);
-    for (const entry of await _listEntriesSafe(provider, legacyDir)) {
-      if (entry.handle.kind !== 'directory' || !entry.name.startsWith('v_') || known.has(entry.name)) continue;
-      const meta = await _readJsonSafe(provider, _joinPath(legacyDir, entry.name, '_meta.json'), null);
-      if (!meta || typeof meta !== 'object') continue;
-      const files = Array.isArray(meta.files) ? meta.files : [];
-      versions.push({
-        name: entry.name,
-        created: meta.created || _versionCreatedFromName(entry.name) || '',
-        label: meta.label || '',
-        auto: !!meta.auto,
-        file_count: files.length,
-        total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
-      });
-    }
-    versions.sort((a, b) => String(b.name).localeCompare(String(a.name)));
-    return versions;
-  }
-
-  async function _findFolderVersionRecord(provider, folderPath, version, includeDeleted, migrateLegacy) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const safeVersion = _safeVersionName(version);
-    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-    const records = await adapter.listDocuments(storageKind);
-    let record = records.find(row => {
-      const payload = row?.payload || {};
-      return payload.object_type === 'folder'
-        && payload.original_relative_path === normalized
-        && payload.version_name === safeVersion
-        && (includeDeleted || !payload.deleted_at);
-    });
-    if (!record) {
-      const legacyPayload = await _readLegacyFolderVersion(provider, normalized, safeVersion);
-      if (legacyPayload && migrateLegacy) {
-        const documentId = `folder-${_fnvFileId(normalized)}-${_fnvFileId(safeVersion)}`;
-        record = await adapter.save(storageKind, documentId, legacyPayload, { expectedRevision: null });
-      } else if (legacyPayload) {
-        record = { documentId: '', revision: '', payload: legacyPayload };
-      }
-    }
-    return { adapter, storageKind, record };
-  }
-
-  async function _readFolderVersion(provider, folderPath, version) {
-    const { record } = await _findFolderVersionRecord(provider, folderPath, version, false);
-    if (!record) throw new Error('フォルダバージョンが見つかりません');
-    return record.payload;
-  }
-
-  async function _readFolderVersionFile(provider, folderPath, version, file) {
-    const relFile = _safeRelativeFile(file, 'file');
-    const meta = await _readFolderVersion(provider, folderPath, version);
-    const snapshot = (Array.isArray(meta.files) ? meta.files : []).find(row => row?.rel_path === relFile);
-    if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
-    const binary = atob(snapshot.content_base64);
-    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-    return { content: new TextDecoder().decode(bytes) };
-  }
-
-  async function _restoreFolderVersion(provider, folderPath, version) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const folder = await _resolveEntryHandle(provider, normalized);
-    if (!folder || folder.kind !== 'directory') throw new Error(`フォルダが見つかりません: ${normalized}`);
-    const safeVersion = _safeVersionName(version);
-    const meta = await _readFolderVersion(provider, normalized, safeVersion);
-    const protectedFile = (Array.isArray(meta.files) ? meta.files : []).find(file => {
-      const relPath = _normalizeFolderPath(file?.rel_path || '');
-      return relPath && _isProductionFolderNotePath(_joinPath(normalized, relPath));
-    });
-    if (protectedFile) {
-      throw new Error('制作管理の列定義を含むフォルダ履歴は汎用復元できません');
-    }
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const dst = _joinPath(normalized, relPath);
-      if (!_productionReservedEntryProperties(dst).length) continue;
-      const snapshot = meta.files.find(row => row?.rel_path === relPath);
-      if (!snapshot?.content_base64) throw new Error('バージョン内のファイルが見つかりません');
-      const binary = atob(snapshot.content_base64);
-      _rejectProductionLegacyEntryContent(dst, new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0))));
-    }
-    await _saveFolderVersion(provider, normalized, { auto: true, label: 'pre_restore' });
-    const snapshotFiles = new Set((Array.isArray(meta.files) ? meta.files : []).map(file => _normalizeFolderPath(file.rel_path)).filter(Boolean));
-    let restored = 0;
-    for (const file of (Array.isArray(meta.files) ? meta.files : [])) {
-      const relPath = _safeRelativeFile(file.rel_path, 'rel_path');
-      const dst = _joinPath(normalized, relPath);
-      if (!file.content_base64) continue;
-      const binary = atob(file.content_base64);
-      await provider.uploadBytes(dst, Uint8Array.from(binary, char => char.charCodeAt(0)));
-      restored += 1;
-    }
-    return { ok: true, restored_count: restored, restored_files: [...snapshotFiles] };
-  }
-
-  async function _deleteFolderVersion(provider, folderPath, version) {
-    const { adapter, storageKind, record } = await _findFolderVersionRecord(provider, folderPath, version, false, true);
-    if (!record) throw new Error('フォルダバージョンが見つかりません');
-    const token = _deletedVersionToken();
-    await adapter.save(
-      storageKind,
-      record.documentId,
-      { ...record.payload, deleted_at: _nowIso(), deleted_token: token },
-      { expectedRevision: record.revision },
-    );
-    return { ok: true, token, version: record.payload.version_name };
-  }
-
-  async function _undeleteFolderVersion(provider, folderPath, token) {
-    const normalized = _normalizeFolderPath(folderPath);
-    const safeToken = _safeVersionName(token);
-    const storageKind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
-    const adapter = await _managementAdapterForProvider(provider, storageKind, normalized);
-    const records = await adapter.listDocuments(storageKind);
-    const record = records.find(row => {
-      const payload = row?.payload || {};
-      return payload.object_type === 'folder'
-        && payload.original_relative_path === normalized
-        && payload.deleted_token === safeToken;
-    });
-    if (!record) throw new Error('削除済みバージョンが見つかりません');
-    await adapter.save(
-      storageKind,
-      record.documentId,
-      { ...record.payload, deleted_at: '', deleted_token: '' },
-      { expectedRevision: record.revision },
-    );
-    return { ok: true, version: record.payload.version_name };
-  }
-
-  window.MeldexFolderVersionProviderOps = Object.freeze({
-    save: (provider, path, options) => _saveFolderVersion(provider, path, options || {}),
-    read: (provider, path, version) => _readFolderVersion(provider, path, version),
-  });
-  async function _findDropboxConflictedCopies(provider, limit) {
-    const maxItems = Math.max(1, Math.min(Number(limit || 50), 200));
-    const maxFiles = 2500;
-    const maxDirs = 500;
-    const items = [];
-    let total = 0;
-    let scannedFiles = 0;
-    let scannedDirs = 0;
-    let scanTruncated = false;
-
-    async function walk(relativePath) {
-      if (scanTruncated) return;
-      scannedDirs += 1;
-      if (scannedDirs > maxDirs) {
-        scanTruncated = true;
-        return;
-      }
-      const entries = await _listDirectoryEntries(provider, relativePath);
-      for (const entry of entries) {
-        const nextPath = entry.path || _joinPath(relativePath, entry.name);
-        if (!entry.name || entry.name.startsWith('.')) continue;
-        if (entry.handle.kind === 'directory') {
-          if (entry.name === '_meldex' || entry.name === '_trash' || entry.name === 'node_modules') continue;
-          await walk(nextPath);
-          if (scanTruncated) return;
-          continue;
-        }
-        scannedFiles += 1;
-        if (scannedFiles > maxFiles) {
-          scanTruncated = true;
-          return;
-        }
-        if (!_isDropboxConflictName(entry.name)) continue;
-        total += 1;
-        if (items.length >= maxItems) continue;
-        const stats = await _fileStats(entry.handle).catch(() => ({ size: 0, modified: '' }));
-        const originalPath = _originalPathForConflict(nextPath);
-        items.push({
-          path: nextPath,
-          name: entry.name,
-          folder: _dirname(nextPath),
-          original_path: originalPath,
-          size: Number(stats.size || 0),
-          modified: stats.modified || '',
-        });
-      }
-    }
-
-    await walk('');
-    return { items, total, truncated: total > items.length || scanTruncated, scannedFiles, scannedDirs };
-  }
-
-  handlers.push(async ({ method, body, url, pathname }) => {
-    if (pathname === '/cloud/space-usage' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      if (typeof provider.refreshSharedSpaceUsage !== 'function') return { ok: false, error: 'Dropbox 容量確認に未対応です' };
-      return provider.refreshSharedSpaceUsage();
-    }
-
-    if (pathname === '/cloud/conflicts' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const result = await _findDropboxConflictedCopies(provider, url.searchParams.get('limit') || 50);
-      return {
-        ok: true,
-        count: result.total,
-        truncated: result.truncated,
-        scanned_files: result.scannedFiles,
-        scanned_dirs: result.scannedDirs,
-        items: result.items,
-      };
-    }
-
-    if (pathname === '/cloud/conflict-detail' && method === 'GET') {
-      const provider = await _requirePwaProvider('read');
-      const conflictPath = _normalizeFolderPath(url.searchParams.get('path') || '');
-      if (!conflictPath || !_isDropboxConflictName(_basename(conflictPath))) throw new Error('競合コピーのパスが不正です');
-      const originalPath = _originalPathForConflict(conflictPath);
-      if (!originalPath) throw new Error('元ファイルの推定に失敗しました');
-      const conflictEntry = await _resolveEntryHandle(provider, conflictPath);
-      if (!conflictEntry || conflictEntry.kind !== 'file') throw new Error(`競合コピーが見つかりません: ${conflictPath}`);
-      const originalEntry = await _resolveEntryHandle(provider, originalPath);
-      const conflictStats = await _fileStats(conflictEntry.handle).catch(() => ({ size: 0, modified: '' }));
-      const originalStats = originalEntry?.kind === 'file'
-        ? await _fileStats(originalEntry.handle).catch(() => ({ size: 0, modified: '' }))
-        : { size: 0, modified: '' };
-      const textLike = _isTextLikePath(conflictPath) && (!originalEntry || _isTextLikePath(originalPath));
-      const payload = {
-        ok: true,
-        text_like: textLike,
-        original: {
-          path: originalPath,
-          name: _basename(originalPath),
-          exists: originalEntry?.kind === 'file',
-          size: Number(originalStats.size || 0),
-          modified: originalStats.modified || '',
-          content: '',
-          truncated: false,
-          length: 0,
-        },
-        conflict: {
-          path: conflictPath,
-          name: _basename(conflictPath),
-          exists: true,
-          size: Number(conflictStats.size || 0),
-          modified: conflictStats.modified || '',
-          content: '',
-          truncated: false,
-          length: 0,
-        },
-      };
-      if (textLike) {
-        const conflictPreview = await _textPreview(provider, conflictPath, 200000);
-        payload.conflict.content = conflictPreview.content;
-        payload.conflict.truncated = conflictPreview.truncated;
-        payload.conflict.length = conflictPreview.length;
-        if (originalEntry?.kind === 'file') {
-          const originalPreview = await _textPreview(provider, originalPath, 200000);
-          payload.original.content = originalPreview.content;
-          payload.original.truncated = originalPreview.truncated;
-          payload.original.length = originalPreview.length;
-        }
-      }

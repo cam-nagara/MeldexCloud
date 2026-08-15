@@ -1,16 +1,19 @@
 /* Shared mobile drawer for standalone Cloud apps. */
 :root {
+  /* 単独アプリのダークモード統一計画（app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）:
+     本体と同じ「ダーク」プリセット（gb-theme.css の --bg 系）へ寄せるための別名。
+     新しい配色は作らず、対応するテーマ変数を参照するだけにする。 */
   --sa-visual-height: 100dvh;
-  --sa-workspace-bg: #1f2024;
-  --sa-workspace-panel: #27292f;
-  --sa-workspace-panel-strong: #30333a;
-  --sa-workspace-border: #454952;
-  --sa-workspace-text: #f3f4f6;
-  --sa-workspace-muted: #b8bdc8;
-  --sa-workspace-accent: #6aa9e9;
-  --sa-workspace-accent-strong: #378bd8;
-  --sa-workspace-danger: #dc6b72;
-  --sa-workspace-focus: #8bc2f4;
+  --sa-workspace-bg: var(--bg);
+  --sa-workspace-panel: var(--bg2);
+  --sa-workspace-panel-strong: var(--bg3);
+  --sa-workspace-border: var(--border);
+  --sa-workspace-text: var(--fg);
+  --sa-workspace-muted: var(--fg2);
+  --sa-workspace-accent: var(--accent);
+  --sa-workspace-accent-strong: color-mix(in srgb, var(--accent) 82%, #000);
+  --sa-workspace-danger: var(--red);
+  --sa-workspace-focus: color-mix(in srgb, var(--accent) 65%, #fff);
   --sa-workspace-shadow: 0 18px 54px rgb(0 0 0 / 48%);
 }
 

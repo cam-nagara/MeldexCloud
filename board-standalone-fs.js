@@ -317,19 +317,26 @@
 
   NS.saveBoardAs = async function (content, suggestedName) {
     if (!_nativeConfig) return null;
+    const requestBody = {
+      content: String(content || ''),
+      suggestedName: String(suggestedName || '無題' + BOARD_FILE_EXTENSION),
+    };
+    const prepared = window.MeldexStableCopyOperationIds?.prepare?.('/board-app/save-as', requestBody)
+      || { body: { ...requestBody, operation_id: crypto.randomUUID() }, key: '' };
     try {
       const config = await _fetchNativeJson('/board-app/save-as', {
         method: 'POST',
-        body: JSON.stringify({
-          content: String(content || ''),
-          suggestedName: String(suggestedName || '無題' + BOARD_FILE_EXTENSION),
-        }),
+        body: JSON.stringify(prepared.body),
       });
+      window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
       _nativeConfig = config;
       _rootHandle = config.root ? { native: true, root: String(config.root || '') } : null;
       return config;
     } catch (e) {
-      if (e?.status === 499) return null;
+      if (e?.status === 499) {
+        window.MeldexStableCopyOperationIds?.complete?.(prepared.key);
+        return null;
+      }
       throw e;
     }
   };
@@ -373,6 +380,101 @@
     return file.text();
   }
 
+  async function _allWorkspaceFilePaths() {
+    if (!_rootHandle || typeof _rootHandle.entries !== 'function') throw Object.assign(new Error('保存先を走査できません'), { status: 503 });
+    const paths = [];
+    let entryCount = 0; let pathBytes = 0;
+    async function walk(dir, prefix) {
+      for await (const [name, entry] of dir.entries()) {
+        if (name === '.meldex' || (!prefix && name === '_trash')) continue;
+        const path = prefix ? `${prefix}/${name}` : name;
+        entryCount += 1; pathBytes += new TextEncoder().encode(path).byteLength;
+        if (entryCount > 20000 || pathBytes > 4 * 1024 * 1024) throw Object.assign(new Error('参照影響の走査上限を超えました'), { status: 503 });
+        if (entry.kind === 'directory') await walk(entry, path);
+        else if (entry.kind === 'file') {
+          if (paths.length >= 20000) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
+          paths.push(path);
+        }
+      }
+    }
+    await walk(_rootHandle, '');
+    return paths.sort((a, b) => a.localeCompare(b));
+  }
+
+  async function _confirmationMetadata(path) {
+    const support = window.MeldexBoardStandaloneDeleteSupport;
+    if (!support?.confirmationMetadata) throw Object.assign(new Error('削除対象の確認機能を利用できません'), { status: 503 });
+    return support.confirmationMetadata({ rootHandle: _rootHandle, path, splitPath: _splitPath });
+  }
+
+  async function _confirmationWalkEntries(path, limits = {}) {
+    const maxEntries = Number(limits.maxEntries || 20000);
+    const maxPathBytes = Number(limits.maxPathBytes || 4 * 1024 * 1024);
+    const split = _splitPath(path);
+    let parent = _rootHandle;
+    for (const part of split.parts) parent = await parent.getDirectoryHandle(part, { create: false });
+    const root = await parent.getDirectoryHandle(split.filename, { create: false });
+    const rows = []; const stack = [[path, root]]; let pathBytes = 0;
+    while (stack.length) {
+      const [prefix, directory] = stack.pop();
+      for await (const [name, handle] of directory.entries()) {
+        const childPath = `${prefix}/${name}`;
+        pathBytes += new TextEncoder().encode(childPath).byteLength;
+        if (rows.length >= maxEntries || pathBytes > maxPathBytes) throw Object.assign(new Error('削除対象フォルダの確認上限を超えました'), { status: 503 });
+        if (handle.kind === 'directory') {
+          rows.push({ path: childPath, kind: 'directory', id: `folder:${childPath}`, revision: 'directory', size: 0 });
+          stack.push([childPath, handle]);
+        } else {
+          const file = await handle.getFile();
+          rows.push({ path: childPath, kind: 'file', id: `file:${childPath}`,
+            revision: `${file.size}:${file.lastModified}`, size: file.size, modifiedMs: file.lastModified });
+        }
+      }
+    }
+    return rows;
+  }
+
+  async function _confirmationProvider() {
+    const rootId = await NS.getRootIdentity();
+    if (!rootId || String(rootId).startsWith('native-root:')) {
+      throw Object.assign(new Error('ブラウザ保存先の安定IDを確認できません'), { status: 503 });
+    }
+    const factory = window.MeldexSystemStorageIndexedDB?.createLocalBrowserAdapter;
+    if (typeof factory !== 'function') throw Object.assign(new Error('確認tokenのCAS保存先を利用できません'), { status: 503 });
+    const adapter = factory({ boundary: `board-root-${rootId}` });
+    return {
+      getConfirmationActor: async () => `board-owner:${rootId}`,
+      statPathFresh: _confirmationMetadata,
+      walkEntriesFresh: _confirmationWalkEntries,
+      getSystemStorageAdapter: () => adapter,
+      resolveConfirmationScope: async () => ({
+        adapter, scopeKey: `board-root:${rootId}`,
+        toCanonicalPath: value => String(value || '').replace(/^\/+|\/+$/g, ''),
+      }),
+    };
+  }
+
+  async function _localReferenceImpact(items) {
+    const scanner = window.MeldexReferenceImpactLiveScan;
+    if (!scanner?.query) throw Object.assign(new Error('参照影響の走査機能を利用できません'), { status: 503 });
+    return scanner.query({
+      items, listFiles: _allWorkspaceFilePaths,
+      readTextBounded: async (path, remaining) => {
+        const file = await (await _getFileHandle(path, { create: false })).getFile();
+        if (file.size > remaining) throw Object.assign(new Error('参照影響の読取上限を超えました'), { status: 503 });
+        return file.slice(0, remaining + 1).text();
+      },
+      statSize: async path => (await (await _getFileHandle(path, { create: false })).getFile()).size,
+      isTextLike: scanner.isTextLikePath,
+    });
+  }
+
+  async function _moveToTrash(relPath, revalidateBeforeRemove) {
+    const support = window.MeldexBoardStandaloneDeleteSupport;
+    if (!support?.moveToTrash) throw Object.assign(new Error('ゴミ箱機能を利用できません'), { status: 503 });
+    return support.moveToTrash({ rootHandle: _rootHandle, path: relPath, splitPath: _splitPath, revalidateBeforeRemove });
+  }
+
   async function _localFileSnapshot(relPath) {
     const handle = await _getFileHandle(relPath, { create: false });
     const file = await handle.getFile();
@@ -380,7 +482,7 @@
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
     const hash = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
     const etag = `${file.lastModified}:${file.size}:${hash}`;
-    const fmt = window.MeldexDocumentIdentity?.formatForPath?.(relPath);
+    const fmt = window.MeldexDocumentIdentity?.formatForPath?.(relPath, content);
     const documentId = fmt
       ? String(window.MeldexDocumentIdentity?.readDocumentId?.(content, fmt) || '')
       : '';
@@ -437,7 +539,7 @@
   async function _writeFileText(relPath, text, preferredDocumentId, overwrite) {
     let content = String(text || '');
     const docIdentity = window.MeldexDocumentIdentity;
-    const fmt = docIdentity?.formatForPath?.(relPath);
+    const fmt = docIdentity?.formatForPath?.(relPath, content);
     if (fmt) {
       content = (overwrite
         ? docIdentity.ensureDocumentIdForOverwrite(content, fmt, preferredDocumentId)
@@ -962,7 +1064,17 @@
   async function _handleLocalApi(apiPath, opts) {
     if (_nativeConfig) return _handleNativeApi(apiPath, opts || {});
     const method = (opts?.method || 'GET').toUpperCase();
-    const endpoint = _endpointHead(apiPath);
+      const endpoint = _endpointHead(apiPath);
+    if (_matchEndpoint(apiPath, '/references/delete-impact') && method === 'POST') {
+      const body = _jsonBody(opts);
+      const provider = await _confirmationProvider();
+      const gate = window.MeldexCloudDeleteConfirmation;
+      if (!gate?.prepareProviderDelete) throw Object.assign(new Error('削除確認機能を利用できません'), { status: 503 });
+      return gate.prepareProviderDelete({
+        provider, items: Array.isArray(body?.items) ? body.items : [], operation: body?.operation,
+        queryImpact: (_provider, items) => _localReferenceImpact(items),
+      });
+    }
     // ファイル読み込み・保存
     if (_matchEndpoint(apiPath, '/file')) {
       const filePath = _parsePathQuery(apiPath);
@@ -1060,12 +1172,25 @@
       const body = _jsonBody(opts);
       const relPath = String(body?.path || '');
       if (!relPath) throw new Error('path は必須です');
-      const { parts, filename } = _splitPath(relPath);
-      if (!filename) throw new Error('ルートフォルダは削除できません');
-      let dir = _rootHandle;
-      for (const part of parts) dir = await dir.getDirectoryHandle(part, { create: false });
-      await dir.removeEntry(filename, { recursive: body?.recursive === true });
-      return { ok: true, path: relPath };
+      const kind = await _directoryExists(relPath) ? 'folder' : 'file';
+      if (body?.kind && body.kind !== kind) throw Object.assign(new Error('削除対象の種類が変更されました'), { status: 409 });
+      const provider = await _confirmationProvider();
+      const gate = window.MeldexCloudDeleteConfirmation;
+      if (!gate?.consumeProviderDelete) throw Object.assign(new Error('削除確認機能を利用できません'), { status: 503 });
+      const consumed = await gate.consumeProviderDelete({
+        provider, items: [{ path: relPath, kind }], operation: 'trash',
+        confirmations: body?.confirmations,
+        confirmationToken: body?.confirmationToken || body?.confirmation_token,
+        graphRevision: body?.graphRevision || body?.graph_revision,
+        queryImpact: (_provider, items) => _localReferenceImpact(items),
+      });
+      const revalidate = () => gate.revalidateProviderDelete({
+        provider, receipt: consumed.receipt,
+        queryImpact: (_provider, items) => _localReferenceImpact(items),
+      });
+      await revalidate();
+      const trashName = await _moveToTrash(relPath, revalidate);
+      return { ok: true, path: relPath, trash_name: trashName };
     }
     if (_matchEndpoint(apiPath, '/annotations') && method === 'GET') {
       const params = _annotationQuery(apiPath);

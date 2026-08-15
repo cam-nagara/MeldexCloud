@@ -553,13 +553,6 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   return true;
 }
 
-async function bdSyncLinkedSelectionToPane(path, label, linkType) {
-  // 選択は情報表示の更新だけに限定する。以前は選択だけで別ペインへリンク先を
-  // 自動表示しており、クリックやドラッグ終了時にフロートが勝手に開く原因になっていた。
-  _bdLinkedSelectionSyncSeq += 1;
-  return false;
-}
-
 async function bdOpenLinkedPath(path, label, options) {
   const opts = options || {};
   const standaloneType = _bdResolveOpenType(_bdInferLinkType(path, opts.linkType));

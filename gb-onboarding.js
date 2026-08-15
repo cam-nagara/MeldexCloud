@@ -278,6 +278,10 @@
     else if (action === 'add-source') {
       _removeOnboardingOverlayNow('add-source');
       await _addSourceFolder();
+      // ソースフォルダ追加でホームフォルダが個人ルート追従の対象になったかもしれない
+      // ため、既存ホームの引き継ぎ提案（見つかれば）をここでも確認する
+      // （gb-home-folder-sharing.js。設定画面と同じ判定・同じダイアログを再利用）。
+      window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings?.();
       render();
       return;
     }

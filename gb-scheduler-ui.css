@@ -78,7 +78,12 @@
 .gb-scheduler-proposal-overlay-active td[data-scheduler-proposal-value]::after { content: attr(data-scheduler-proposal-value); display: inline; color: var(--fg); white-space: normal; overflow-wrap: anywhere; }
 
 @media (max-width: 700px), (pointer: coarse) {
-  .gb-scheduler-modal .gb-scheduler-button,
+  /* .gb-scheduler-button はモーダル内（自動割り当て等）だけでなく、カレンダーの
+     オプションサイドバー（テンプレート編集・配置固定など）にも直接埋め込まれる。
+     .gb-scheduler-modal 配下だけへ44px化を限定すると、サイドバー側の並べ替え・
+     アーカイブ等の小さいアイコンボタンがスマホで押しにくいまま残るため、
+     コンテナを問わず全インスタンスへ適用する。 */
+  .gb-scheduler-button,
   .gb-scheduler-modal .gb-scheduler-scope-item,
   .gb-scheduler-field input,
   .gb-scheduler-field select,

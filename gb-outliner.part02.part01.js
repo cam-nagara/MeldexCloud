@@ -39,7 +39,7 @@ function _cloneOutlinerRootsForBase(roots) {
   }
 }
 
-// フォルダツリー右クリック（名前を変更・このソースフォルダを削除・パスを変更）から
+// フォルダツリー右クリック（名前を変更・このソースフォルダの登録を解除・パスを変更）から
 // /outliner-roots を保存する共通ヘルパー。baseRoots には直前のGETで実際に見ていた
 // 一覧のディープコピー（_cloneOutlinerRootsForBase の戻り値）を渡すこと。
 // これを送らないと、共有台帳合流分（他端末・クラウド版が追加したroot）の削除が
@@ -101,10 +101,17 @@ function _prepareOutlinerDeleteTargets(items) {
 
 async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
+  const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? MeldexDeleteImpactWarning.confirmationPayload(options.confirmation)
+    : {};
   if (batchTargets.length) {
     try {
       const payload = await apiPost('/outliner/delete-batch', {
-        items: batchTargets.map(item => ({ path: item.path })),
+        items: batchTargets.map(item => ({
+          path: item.path,
+          kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        })),
+        ...confirmationPayload,
       });
       const batchResults = Array.isArray(payload?.results) ? payload.results : [];
       if (batchResults.length === batchTargets.length) {
@@ -130,7 +137,11 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const results = [];
   for (const item of targets) {
     try {
-      const value = await apiPost('/outliner/delete', { path: item.path });
+      const value = await apiPost('/outliner/delete', {
+        path: item.path,
+        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        ...confirmationPayload,
+      });
       results.push({ status: 'fulfilled', value });
       const trashRef = _outlinerTrashRefFromResponse(value);
       if (trashRef && typeof options.onSuccess === 'function') {
@@ -257,6 +268,10 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
 
 async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
+  if (requestedTargets.some(item => item.linked)) {
+    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
+    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
+  }
   const targets = _prepareOutlinerDeleteTargets(requestedTargets);
   if (!targets.length) {
     return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
@@ -269,6 +284,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   }
 
   const results = await _deleteOutlinerTargetsSequentially(targets, {
+    confirmation: options.confirmation,
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
     },
@@ -532,13 +548,25 @@ function _outlinerBindContextMenuClose(menu) {
 
 function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   closeTreeContextMenu();
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
+  // シートを選んでいるときは、シートの中に作れる「エントリ」を先頭に出す。
+  // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
+  if (nodeData?.type === 'database' && nodeData.path) {
+    _outlinerAppendMenuItem(menu, {
+      label: 'エントリ',
+      icon: 'plus',
+      action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
+    });
+    _outlinerAppendMenuSeparator(menu);
+  }
   _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
-      action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+      action: async () => {
+        closeTreeContextMenu();
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type);
+      },
     });
   });
   _outlinerPlaceContextMenu(menu);
@@ -628,6 +656,17 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showStatus('削除できる項目がありません', true);
       return;
     }
+    const linkedDelete = await handleDisplayedFolderLinkDelete(targets, '', {
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    if (linkedDelete.handled) {
+      if (linkedDelete.result) treeSelection.clear();
+      return;
+    }
     const names = targets.map(item => item.name).join('、');
     const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -636,6 +675,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {
+      confirmation: confirmed,
       label: targets.length + ' 件を削除',
       detail: names,
       onItemDeleted: (item) => {

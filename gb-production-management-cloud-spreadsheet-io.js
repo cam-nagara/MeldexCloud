@@ -1,14 +1,14 @@
-  // gb-production-management.part02.js から分離した CSV/XLSX/ZIP 書き出しユーティリティ
-  // （制作管理UX改善計画 2026-08-04 §5-1 の内部専用列対応で part02.js が1500行制限を超えた
-  // ため切り出した。gb-production-management.part01.js〜.part04.js と同じ共有クロージャに
-  // 属する raw concatenation の1パートで、自前の IIFE は持たない。IIFEの開始は part01.js、
-  // 終了は最後のパート part04.js にある）。
+  // gb-production-management-cloud-spreadsheet-io.js: シフト取込CSV/XLSX解析と
+  // CSV/XLSX/ZIP書き出しユーティリティ（責務単位分割 2026-08-12。旧
+  // gb-production-management.part03.js）。
   //
-  // 2026-08-05 追記: シフト取込側の XLSX/ZIP 解析ユーティリティ（_pmParseShiftFile 以下）も
-  // ここへ集約した（part01.js が項目12/15の追加で1500行制限を再超過したため。同じ
-  // XLSX/ZIP読み書きというテーマのまとまりに合わせて移動。呼び出し元
-  // openProductionShiftImport は part01.js に残っており、同一クロージャなので
-  // 参照は変わらず解決できる）。
+  // gb-production-management.part01.js 〜 gb-production-management-cloud-save-hooks.js は
+  // 同じ共有クロージャ（IIFEの raw concatenation）に属し、このファイル自体は自前のIIFEを
+  // 持たない。IIFEの開始は gb-production-management.part01.js、終了は読み込み順で最後になる
+  // gb-production-management-cloud-save-hooks.js にある（読み込み順は gb-production-management.js
+  // を参照）。同一クロージャのため呼び出し元との参照は変わらず解決できる。
+  //
+  // 呼び出し元 openProductionShiftImport は gb-production-management-cloud-dialogs.js にある。
 
   async function _pmParseShiftFile(file) {
     if (!file) return [];

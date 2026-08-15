@@ -2,6 +2,8 @@
         const pathEl = document.getElementById(`bd-path-${c.id}`);
         if (!pathEl || typeof pathEl.getTotalLength !== 'function') return;
         try {
+          // 安価な bbox で交差し得ないラインを先に除外し、詳細サンプリングを候補だけに限定する。
+          if (!bdRectPathMayIntersect(pathEl, l, t, w, h)) return;
           const total = pathEl.getTotalLength();
           if (!total) return;
           const samples = Math.min(240, Math.max(24, Math.ceil(total / Math.max(6, Math.min(24, w || 6, h || 6)))));
@@ -55,9 +57,7 @@
       const start = bd._lineToolDrag;
       document.getElementById('bd-conn-preview')?.remove();
       const targetEl = boardNodeFromTarget(document.elementFromPoint(e.clientX, e.clientY));
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(e.clientX, e.clientY)
-        : { x: e.clientX, y: e.clientY };
+      const dropW = bdScreenToWorld(e.clientX, e.clientY);
       let created = null;
       if (targetEl) {
         const toId = targetEl.id.replace('bdn-','');
@@ -89,9 +89,7 @@
           const toId = targetEl.id.replace('bdn-','');
           if (bdCanCreateConnection(rd.nid, toId)) { bdPushUndo(); if (bdCreateConnection(rd.nid, toId)) showStatus('ラインを追加しました'); }
         } else {
-          const dropW = typeof bdScreenToWorld === 'function'
-            ? bdScreenToWorld(e.clientX, e.clientY)
-            : { x: e.clientX, y: e.clientY };
+          const dropW = bdScreenToWorld(e.clientX, e.clientY);
           bdPushUndo();
           if (bdCreateConnection(rd.nid, '', { toPoint: dropW })) showStatus('ラインを追加しました');
         }
@@ -192,8 +190,13 @@
             n.y = nAbs.y - parentAbs.y;
             n.parent = parentId;
             n.contained = true;
+            document.getElementById('bdn-' + id)?.remove();
           });
-          bdRender();
+          if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(parentId, 'container-drop');
+          else if (typeof bdRender === 'function') bdRender();
+          if (typeof bdMarkConnectionsDirtyByNodes === 'function') {
+            bdMarkConnectionsDirtyByNodes([parentId, ...dragIds], 'container-drop');
+          }
           containerized = true;
           showStatus('コンテナに内包しました');
         }
@@ -251,7 +254,8 @@
         const _resizedNode = bd.nodes.find(v => v.id === _resizedId);
         if (_resizedNode && !_resizedNode.contained) {
           const rootId = (typeof _bdFindStructureRoot === 'function') ? _bdFindStructureRoot(_resizedId) : null;
-          if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
+          if (rootId && typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(rootId);
+          else if (rootId && typeof bdAutoLayout === 'function') bdAutoLayout(rootId);
         }
       }
       if (finishedResizeSelection && typeof bdMarkNodesMoved === 'function') bdMarkNodesMoved(finishedResizeSelection.items.map(item => item.id), 'resize-end');
@@ -312,7 +316,7 @@
     const dir = e.deltaY > 0 ? -1 : 1;
     let newZoom = Math.round(oz / step) * step + dir * step;
     newZoom = Math.round(newZoom / step) * step;  // 浮動小数点誤差の正規化
-    newZoom = Math.max(0.1, Math.min(5, newZoom));
+    newZoom = bdClampZoom(newZoom);
     bd.zoom = newZoom;
     bd.panX = mx - anchorWorldX * bd.zoom;
     bd.panY = my - anchorWorldY * bd.zoom;

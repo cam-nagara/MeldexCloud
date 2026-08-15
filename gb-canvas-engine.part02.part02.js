@@ -13,7 +13,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
     rect.setAttribute('height', size * 2);
     rect.setAttribute('rx', size * 0.4);
     rect.setAttribute('transform', `rotate(45 ${point.x} ${point.y})`);
-    rect.setAttribute('stroke-width', Math.max(1, 2 / Math.max(0.1, zoom || 1)));
+    rect.setAttribute('stroke-width', Math.max(1, 2 / bdSafeZoom(zoom)));
     svg.appendChild(rect);
     return rect;
   }
@@ -22,7 +22,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
   circle.setAttribute('cx', point.x);
   circle.setAttribute('cy', point.y);
   circle.setAttribute('r', size);
-  circle.setAttribute('stroke-width', Math.max(1, 1.5 / Math.max(0.1, zoom || 1)));
+  circle.setAttribute('stroke-width', Math.max(1, 1.5 / bdSafeZoom(zoom)));
   svg.appendChild(circle);
   return circle;
 }
@@ -70,12 +70,7 @@ function _bdRoundedOrthogonalPath(points, radius) {
 function _bdBuildConnectionPathData(conn, pts, structure, connStyle, bulgeOffset, anchorHints) {
   const start = pts[0];
   const end = pts[pts.length - 1];
-  // マインドマップ構造のラインは常に直線形状にする (呼び出し側で effectiveStructure が ''
-  // に落とされている場合に備え、conn.from の構造もフォールバックで参照する)。
-  const rootStruct = (structure === 'mindmap')
-    ? 'mindmap'
-    : ((typeof bdStructureOf === 'function' && conn?.from) ? bdStructureOf(conn.from) : '');
-  const pathType = _bdLinePathType(connStyle, rootStruct);
+  const pathType = _bdLinePathType(connStyle, structure);
   // v0.5.250: bulgeOffset は同じカードペア間の複数ライン (相関図) で、曲線を反対方向に
   // 膨らませて区別するためのオフセット値 (px)。曲線以外 (直線 / 直角) は無視する。
   const bulge = Number.isFinite(bulgeOffset) ? bulgeOffset : 0;

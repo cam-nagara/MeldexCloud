@@ -94,7 +94,16 @@
       + 'APIのアクセス許可に Calendars.ReadWrite / offline_access を追加してください。');
   }
 
-  CalendarComponent.prototype._showSyncModal = async function() {
+  // triggerEl: このモーダルを開いた「外側の本来のトリガー要素」。省略時（外部からの
+  // 新規オープン）は現在のフォーカス位置を採用する。_googleCalAuth 等が
+  // 「閉じてすぐ作り直す」ため内部再生成する際は、直前のモーダルが保持していた
+  // トリガー要素（o._gbSyncOpener）をそのまま引き継ぐ。再生成の瞬間の
+  // document.activeElement は直前のモーダルごと消える内部要素（認証ボタン等）に
+  // なっており、それを拾うと二度と外側へフォーカスを戻せなくなるため。
+  CalendarComponent.prototype._showSyncModal = async function(triggerEl) {
+    const opener = (triggerEl instanceof HTMLElement && triggerEl.isConnected)
+      ? triggerEl
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const cloud = _calSyncIsDropboxMode();
     let syncStatus = {};
     try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
@@ -178,12 +187,19 @@
       closeLabel: 'カレンダー同期を閉じる',
       closeOnEsc: true,
       closeOnOverlay: true,
+      // 外側の本来のトリガー要素を明示的に指定する。指定した要素が閉じる時点で
+      // 接続済みなら、document.activeElement の暗黙キャプチャより優先される
+      // （gb-ui.js の _restoreOpenerFocus 参照）。
+      returnFocus: () => (opener && opener.isConnected) ? opener : null,
       onClose: () => {
         if (o._msPollTimer) clearTimeout(o._msPollTimer);
         if (o._gtaskPollTimer) clearTimeout(o._gtaskPollTimer);
       },
     });
     const o = modalApi.overlay;
+    // 内部再生成（_googleCalAuth 等）が引き継げるよう、解決済みのトリガー要素を
+    // overlay自身へ保持しておく。
+    o._gbSyncOpener = opener;
     o.classList.add('gb-cal-modal-overlay');
     o.dataset.e2eId = 'calendar-sync-overlay';
     modalApi.modal.classList.add('gb-cal-modal');
@@ -221,7 +237,7 @@
       const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret });
       this._showStatus(res.message || 'Google認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google認証失敗: ' + e.message, true);
     }
@@ -247,7 +263,7 @@
       const res = await window.MeldexCalCloudSync.authorizeGoogle({ clientId: id, clientSecret: secret, popup });
       this._showStatus(res.message || 'Google認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google認証失敗: ' + e.message, true);
     }
@@ -350,7 +366,7 @@
       const res = await window.MeldexCalCloudTasks.authorizeGoogleTasks({ clientId: id, clientSecret: secret, popup });
       this._showStatus(res.message || 'Google ToDo認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Google ToDo認証失敗: ' + e.message, true);
     }
@@ -384,7 +400,7 @@
         if (status?.googleTasks?.connected) {
           this._showStatus('Google ToDo認証成功');
           _closeSyncOverlay(o);
-          this._showSyncModal();
+          this._showSyncModal(o._gbSyncOpener);
           return;
         }
         if (statusEl) statusEl.textContent = 'Googleログイン完了を待っています...';
@@ -474,7 +490,7 @@
         }
         this._showStatus('Microsoft認証成功');
         _closeSyncOverlay(o);
-        this._showSyncModal();
+        this._showSyncModal(o._gbSyncOpener);
       } catch (e) {
         this._showStatus('Microsoft認証失敗: ' + e.message, true);
       }
@@ -500,7 +516,7 @@
       const res = await window.MeldexCalCloudSync.authorizeMicrosoft({ clientId, tenant, popup });
       this._showStatus(res.message || 'Microsoft認証成功');
       _closeSyncOverlay(o);
-      this._showSyncModal();
+      this._showSyncModal(o._gbSyncOpener);
     } catch (e) {
       this._showStatus('Microsoft認証失敗: ' + e.message, true);
     }

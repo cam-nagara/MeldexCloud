@@ -1,0 +1,45 @@
+/* gb-board-depth-presets.css: 階層別スタイルのプリセット行とプリセット一覧ポップアップ */
+
+.bd-depth-preset-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  height: 100%;
+  justify-content: center;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.bd-depth-preset-chip {
+  display: inline-block;
+  flex: 0 0 auto;
+  height: 14px;
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+}
+
+/* 階層別スタイルタブのカード+ライン用に広げてある枠 (200px) は、
+   色チップだけのプリセットプレビューには広すぎるので上書きする。
+   同点特異度だと読み込み順に左右されるため、クラスを 1 つ多く重ねて確実に勝たせる。 */
+.bd-depth-in-panel .bd-style-panel-picker.bd-depth-preset-picker .bd-style-picker-preview {
+  flex: 0 0 120px;
+  min-width: 120px;
+}
+
+.bd-depth-preset-popup .bd-style-list-preview.bd-depth-preset-preview {
+  width: 120px;
+  min-width: 120px;
+  height: 40px;
+}
+
+.bd-depth-preset-popup .bd-depth-preset-item {
+  cursor: pointer;
+}
+
+.bd-depth-preset-empty {
+  padding: 10px 8px;
+  color: var(--fg2);
+  font-size: 12px;
+  text-align: center;
+}

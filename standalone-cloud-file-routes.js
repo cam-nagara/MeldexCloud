@@ -2,8 +2,8 @@
 (function (root) {
   'use strict';
 
-  function _identityFormat(path) {
-    return root.MeldexDocumentIdentity?.formatForPath?.(path);
+  function _identityFormat(path, content) {
+    return root.MeldexDocumentIdentity?.formatForPath?.(path, content);
   }
 
   function _readDocumentId(content, format) {
@@ -17,11 +17,31 @@
   }
 
   async function regenerateCopiedDocumentIdentity(provider, path) {
-    const format = _identityFormat(path);
-    if (!format) return;
     const source = await provider.readText(path);
+    const format = _identityFormat(path, source);
+    if (!format) return;
     const regenerated = root.MeldexDocumentIdentity.regenerateDocumentId(source, format);
     if (regenerated?.changed) await provider.writeText(path, regenerated.text);
+  }
+
+  async function trashWithConfirmation(context) {
+    const { provider, body, normalizePath, joinPath, sourceRootPath, basename,
+      uniqueProviderPath, requireUnlockedPath } = context;
+    const source = normalizePath(body?.path || '');
+    const stat = await (provider.statPathFresh?.(source) || provider.statPath(source));
+    if (!stat) throw Object.assign(new Error('削除する項目が見つかりません'), { status: 409 });
+    const freshKind = stat.kind === 'directory' ? 'folder' : 'file';
+    if (body?.kind && body.kind !== freshKind) throw Object.assign(new Error('削除対象の種類が変更されました'), { status: 409 });
+    const gate = root.MeldexCloudDeleteConfirmation;
+    if (!gate?.consumeProviderDelete || !gate?.revalidateProviderDelete) throw Object.assign(new Error('削除確認の永続ストレージを利用できません'), { status: 503 });
+    const consumed = await gate.consumeProviderDelete({ provider, items: [{ path: source, kind: freshKind }], operation: 'trash', confirmations: body?.confirmations, confirmationToken: body?.confirmationToken, graphRevision: body?.graphRevision });
+    const trashRoot = joinPath(sourceRootPath(source), '_trash');
+    await provider.ensureDirectory(trashRoot);
+    const target = await uniqueProviderPath(provider, trashRoot, `${Date.now()}-${basename(source)}`, '-');
+    await requireUnlockedPath(target.path, { action: 'delete-trash-destination' }, true);
+    await gate.revalidateProviderDelete({ provider, receipt: consumed.receipt });
+    await provider.movePath(source, target.path);
+    return { ok: true, path: source, trash_path: target.path };
   }
 
   async function handle(context) {
@@ -56,7 +76,7 @@
         };
       }
       const content = await provider.readText(filePath);
-      const documentId = _readDocumentId(content, _identityFormat(filePath));
+      const documentId = _readDocumentId(content, _identityFormat(filePath, content));
       if (documentId) {
         identity = {
           ...identity,
@@ -101,10 +121,15 @@
     }
 
     let content = String(body?.content ?? '');
-    const format = _identityFormat(filePath);
-    const existingDocumentId = format && metadata
-      ? _readDocumentId(await provider.readText(filePath), format)
-      : '';
+    const incomingFormat = _identityFormat(filePath, content);
+    let format = incomingFormat;
+    let existingDocumentId = '';
+    if (incomingFormat && metadata) {
+      const existingContent = await provider.readText(filePath);
+      const existingFormat = _identityFormat(filePath, existingContent);
+      format = existingFormat === incomingFormat ? incomingFormat : null;
+      existingDocumentId = _readDocumentId(existingContent, format);
+    }
     if (format) {
       content = root.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
         content,
@@ -164,10 +189,61 @@
     root.apiDelete = (path) => cloudFetch(path, { method: 'DELETE' });
   }
 
+  async function copyWithJournal(options) {
+    const { provider, operation, body, source, stat, chooseTarget, normalizePath, dirname } = options;
+    const operationId = String(body?.operation_id || '').trim();
+    if (!operationId) throw Object.assign(new Error('operation_id は必須です'), { status: 400 });
+    const journal = root.MeldexCloudCopyOperationJournal;
+    if (!journal) throw Object.assign(new Error('Cloudファイル操作履歴を利用できません'), { status: 503 });
+    const payload = operation === 'duplicate' ? { path: source } : {
+      path: source, new_name: String(body?.new_name || ''),
+      dest_folder: normalizePath(body?.dest_folder || dirname(source)),
+    };
+    return journal.withFlight(provider, operationId, operation, payload, async identity => {
+      let record = await journal.load(provider, operationId, operation, payload, identity);
+      if (record?.state === 'completed') return record.result;
+      const target = record ? { path: record.intent.destination, name: options.basename(record.intent.destination) }
+        : await chooseTarget();
+      if (!record) record = await journal.prepare(provider, operationId, operation, payload, {
+        source, destination: target.path, kind: stat.kind, provider_id: '', provider_rev: '',
+        manifest_digest: '', aftercare_completed: [],
+      }, identity);
+      let current = await provider.statPath(target.path);
+      const currentId = current?.id || current?.meta?.id || '';
+      const currentRev = current?.rev || current?.meta?.rev || '';
+      if (!currentId || !currentRev) {
+        const transaction = await root.MeldexCloudIdentityCopyTransaction.copyPath(
+          provider, source, target.path, stat.kind,
+        );
+        current = transaction.ownership;
+        if (!current?.id || !current?.rev) throw new Error('Cloud複製先のprovider ID/revisionを確認できません');
+        record.intent = { ...record.intent, provider_id: current.id, provider_rev: current.rev,
+          manifest_digest: transaction.manifest_digest || '' };
+        await journal.updateIntent(provider, operationId, operation, payload, record.intent);
+      } else if (currentId !== record.intent.provider_id || currentRev !== record.intent.provider_rev) {
+        throw Object.assign(new Error('prepared Cloud複製先が後続更新と競合しています'), { status: 409 });
+      } else current = { id: currentId, rev: currentRev };
+      record = await journal.load(provider, operationId, operation, payload, identity);
+      const claims = root.MeldexCloudIdentityClaimAftercare;
+      if (!claims?.claimPublished) throw Object.assign(new Error('identity claim aftercareを利用できません'), { status: 503 });
+      record = await journal.runAftercare(provider, operationId, operation, payload, record, [{
+        name: 'identity-claims',
+        run: () => claims.claimPublished(provider, target.path, stat.kind),
+      }]);
+      return journal.complete(provider, operationId, operation, payload, {
+        ok: true, operation_id: operationId, new_path: target.path, new_name: target.name,
+        provider_id: current.id, provider_rev: current.rev,
+        manifest_digest: record.intent.manifest_digest || '',
+      });
+    });
+  }
+
   root.MeldexStandaloneCloudFileRoutes = Object.freeze({
     handle,
     regenerateCopiedDocumentIdentity,
+    trashWithConfirmation,
     fileAsDataUrl,
     installApiGlobals,
+    copyWithJournal,
   });
 })(window);

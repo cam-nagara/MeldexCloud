@@ -1,3 +1,23 @@
+  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
+    ? _getCurrentDbViewConfigEntryFromConfig(cfg)
+    : null;
+  if (view) {
+    if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(view, cfg);
+    view.viewMode = 'timeline';
+    cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
+    saveDbViewConfig(path, cfg, { skipHistory: true });
+  }
+  return selectDatabase(path, openOpts.paneContext || openOpts.paneCtx || null, openOpts);
+}
+
+const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
+const _GB_EXTERNAL_HTML_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
+const _GB_TRUSTED_VIEWER_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
+
+function _gbIsTrustedInternalViewerUrl(rawUrl) {
+  const text = String(rawUrl || '').trim();
+  if (!text) return false;
+  try {
     const parsed = new URL(text, window.location.origin);
     const pathname = parsed.pathname.replace(/\/+$/, '').toLowerCase();
     return parsed.origin === window.location.origin && /\/viewer(?:\.html)?$/.test(pathname);
@@ -342,14 +362,49 @@ document.addEventListener('pointerdown', (e) => {
 // 共通コンテキストメニューの閉じる処理
 // ============================================================
 document.addEventListener('pointerdown', (e) => {
-  if (!e.target?.closest?.('.gb-context-menu')) {
+  // gb-mobile-tab-gesture-router.js のスマホ用タブ切替メニュー(.gb-mobile-tab-menu)は
+  // 位置制御の都合で document.body 直下に付き、.gb-context-menu の子ではない。
+  // ここで除外しないと、.gb-context-menu を内側に持つポップアップ（アイコン
+  // ピッカー等）でタブ切替メニューの項目をタップするたびに「外側クリック」と
+  // 誤判定され、切替と同時に親のコンテキストメニューごと消えてしまう
+  // （2026-08-13 バグ報告で確認）。
+  if (!e.target?.closest?.('.gb-context-menu') && !e.target?.closest?.('.gb-mobile-tab-menu')) {
     document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
   }
 }, true);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.gb-context-menu').forEach(m => m.remove());
-  }
+  if (e.key !== 'Escape') return;
+  const menus = document.querySelectorAll('.gb-context-menu');
+  if (!menus.length) return;
+  // ダイアログとして振る舞う要素（アイコンピッカー等）はrole="dialog"/"alertdialog"を
+  // 持ち、自分自身のEscapeキー処理（document への capture 登録）で自分だけを閉じ、
+  // フォーカス復帰やリスナー解除も自前で行う契約を持つ。
+  //
+  // このリスナーはページ読み込み時に document のbubbleフェーズへ登録されるため、
+  // モーダルが開いた時に登録される最前面判定（gb-ui.js の onEscKey、
+  // GBDialogKeyboard.topmostDialog 等）より必ず先に発火する。ここで無条件に
+  // .gb-context-menu を全部 remove() してキー入力をそのまま素通しすると、背後の
+  // 親ダイアログが「ピッカーはもう無い」と誤認して一緒に閉じてしまう
+  // （アイコンピッカー Escape 早期消去バグ）。
+  //
+  // dialog ロールを持つメニューは、このキー入力をそのメニュー自身へ再ディスパッチ
+  // して専用のクローズ処理（フォーカス復帰・リスナー解除を含む）に任せ、元の
+  // キー入力はここで止めて後続の親ダイアログの Escape ハンドラへ渡さない。
+  // 通常のコンテキストメニュー（role=dialog を持たない）は従来どおりここで閉じる
+  // （main-menu 等の既存 Escape 挙動を変えない）。
+  let hasDialogMenu = false;
+  menus.forEach((m) => {
+    const role = m.getAttribute('role');
+    if (role === 'dialog' || role === 'alertdialog') {
+      hasDialogMenu = true;
+      m.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: false, cancelable: true }));
+      // 専用ハンドラが未登録などで閉じられなかった場合の保険（通常は到達しない）
+      if (m.isConnected) m.remove();
+    } else {
+      m.remove();
+    }
+  });
+  if (hasDialogMenu) e.stopImmediatePropagation();
 });
 
 // ============================================================

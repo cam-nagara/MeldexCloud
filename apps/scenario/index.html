@@ -4,7 +4,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
   <base href="../../">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <meta name="theme-color" content="#181818">
+  <meta name="theme-color" content="#0b0d10">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -81,6 +81,8 @@
     </div>
   </div>
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
+
+  <script defer src="gb-stable-copy-operation-ids.js"></script>
   <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
@@ -90,6 +92,7 @@
   <script src="gb-dropbox-auth.js"></script>
   <script src="gb-system-storage.js"></script>
   <script src="gb-system-storage-dropbox.js"></script>
+  <script src="gb-identity-claims.js"></script>
   <script src="gb-dropbox-management-root-resolver.js"></script>
   <script src="gb-source-folder-registry.js"></script>
   <script src="gb-workspace-shared-ledger.js"></script>
@@ -109,7 +112,7 @@
   <script src="gb-dropbox-asset-identity.js"></script>
   <script src="gb-data-access-dropbox-tag-safety.js"></script>
   <script src="gb-dropbox-tag-catalog-normalizer.js"></script>
-  <script src="gb-data-access-dropbox-tags.js"></script>
+  <script src="gb-data-access-dropbox-tag-managed-json.js"></script><script src="gb-data-access-dropbox-tags.js"></script>
   <script src="gb-dropbox-asset-recovery.js"></script>
   <script src="gb-dropbox-asset-reconciliation.js"></script>
   <script src="vendor/lucide-icons.js"></script>
@@ -139,6 +142,8 @@
 <script src="standalone-cloud-path-policy.js"></script>
 <script src="standalone-cloud-edit-session.js"></script>
   <script src="standalone-cloud-file-routes.js"></script>
+  <script src="gb-reference-impact-live-scan.js"></script>
+  <script src="gb-cloud-delete-confirmation.js"></script>
   <script src="standalone-cloud-runtime.js"></script>
   <script src="standalone-cloud-auth-sync.js"></script>
   <script src="gb-dropbox-profile-sync.js"></script>
@@ -152,6 +157,7 @@
   <script src="gb-tag-tree-dnd.js"></script>
   <script src="gb-tag-management.js"></script>
   <script src="standalone-tags.js"></script>
+  <script src="gb-delete-impact-warning.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="gb-component.js"></script>
   <script src="gb-scriptnote-file-style-contract.js"></script>

@@ -446,6 +446,9 @@
     return { results, total: results.length, truncated: truncated || queue.length > 0, failed, warnings, scanned };
   }
 
+  async function _providerIdentityCopy(provider, operation, body, source, stat, chooseTarget) {
+    return _providerFileRoutes().copyWithJournal({ provider, operation, body, source, stat, chooseTarget, normalizePath, dirname, basename });
+  }
   async function _providerRequest(path, options) {
     const provider = await _provider();
     const url = new URL('http://standalone.local' + String(path || ''));
@@ -478,21 +481,19 @@
       if (!stat) throw new Error('複製する項目が見つかりません');
       const split = _splitName(basename(source));
       const requested = stat.kind === 'file' ? `${split.stem}_copy${split.extension}` : `${split.stem}_copy`;
-      const target = await _uniqueProviderPath(provider, dirname(source), requested, '-');
-      await requireUnlocked(target.path, { action: 'duplicate-destination' });
-      await provider.copyPath(source, target.path);
-      await _providerFileRoutes().regenerateCopiedDocumentIdentity(provider, target.path);
-      return { ok: true, new_path: target.path, new_name: target.name };
+      return _providerIdentityCopy(provider, 'duplicate', body, source, stat, async () => {
+        const target = await _uniqueProviderPath(provider, dirname(source), requested, '-');
+        await requireUnlocked(target.path, { action: 'duplicate-destination' });
+        return target;
+      });
     }
-    if (endpoint === '/outliner/delete' && method === 'POST') {
-      const source = normalizePath(body?.path || '');
-      const trashRoot = joinPath(_sourceRootPath(source), '_trash');
-      await provider.ensureDirectory(trashRoot);
-      const requested = `${Date.now()}-${basename(source)}`;
-      const target = await _uniqueProviderPath(provider, trashRoot, requested, '-');
-      await _requireUnlockedPath(target.path, { action: 'delete-trash-destination' }, true);
-      await provider.movePath(source, target.path);
-      return { ok: true, path: source, trash_path: target.path };
+    if (endpoint === '/references/delete-impact' && method === 'POST') {
+      const gate = window.MeldexCloudDeleteConfirmation; if (!gate?.prepareProviderDelete) throw Object.assign(new Error('削除確認の永続ストレージを利用できません'), { status: 503 });
+      return gate.prepareProviderDelete({ provider, items: Array.isArray(body?.items) ? body.items : [], operation: body?.operation });
+    } if (endpoint === '/outliner/delete' && method === 'POST') {
+      return _providerFileRoutes().trashWithConfirmation({ provider, body, normalizePath, joinPath,
+        sourceRootPath: _sourceRootPath, basename, uniqueProviderPath: _uniqueProviderPath,
+        requireUnlockedPath: _requireUnlockedPath });
     }
     if (endpoint === '/outliner/move' && method === 'POST') {
       const source = normalizePath(body?.path || '');
@@ -509,11 +510,11 @@
       if (!stat) throw new Error('複製する項目が見つかりません');
       const split = _splitName(basename(source));
       const requested = stat.kind === 'file' ? `${String(body?.new_name || split.stem)}${split.extension}` : String(body?.new_name || split.stem);
-      const target = await _uniqueProviderPath(provider, normalizePath(body?.dest_folder || dirname(source)), requested, '-');
-      await requireUnlocked(target.path, { action: 'save-as-destination' });
-      await provider.copyPath(source, target.path);
-      await _providerFileRoutes().regenerateCopiedDocumentIdentity(provider, target.path);
-      return { ok: true, new_path: target.path, new_name: target.name };
+      return _providerIdentityCopy(provider, 'save-as', body, source, stat, async () => {
+        const target = await _uniqueProviderPath(provider, normalizePath(body?.dest_folder || dirname(source)), requested, '-');
+        await requireUnlocked(target.path, { action: 'save-as-destination' });
+        return target;
+      });
     }
     throw Object.assign(new Error('このCloud操作は利用できません: ' + endpoint), { code: 'cloud_route_unwired' });
   }
@@ -609,7 +610,6 @@
     body.path = _pathPolicy().restoreDestination(trashRoot, metadata.original_path);
     body.original_path = body.path;
   }
-
   async function requestJson(path, options) {
     _pathPolicy();
     const endpoint = _endpoint(path);
@@ -620,6 +620,10 @@
     if (write) _requireWriteDependencies();
     let opts = { ...(options || {}), method };
     const originalBody = _bodyObject(opts.body);
+    let stableCopyKey = '';
+    if (method === 'POST' && ['/outliner/duplicate', '/outliner/save-as'].includes(endpoint) && !String(originalBody.operation_id || '').trim()) {
+      const prepared = window.MeldexStableCopyOperationIds?.prepare?.(endpoint, originalBody) || { body: { ...originalBody, operation_id: crypto.randomUUID() }, key: '' };
+      Object.assign(originalBody, prepared.body); stableCopyKey = prepared.key; }
     const mutationSourcePath = normalizePath(originalBody?.old_path || originalBody?.path || '');
     if (endpoint === '/outliner/restore' && method === 'POST') await _resolveRestorePath(originalBody);
     _pathPolicy().authorizeRequest({ endpoint, method, queryPath: _pathQuery(path), body: originalBody });
@@ -648,7 +652,7 @@
       }
       if (endpoint === '/file' && method !== 'GET') {
         const body = _bodyObject(opts.body);
-        const forceOverwrite = !!(body.force_overwrite || body.forceOverwrite);
+        const forceOverwrite = !!(body.force_overwrite || body.forceOverwrite); delete body.force_overwrite; delete body.forceOverwrite;
         const coordinator = window.MeldexDocumentSaveCoordinator;
         const suppliedRevision = body.transport_revision || body.transportRevision || '';
         if (suppliedRevision && coordinator?.revisionTokenForWrite) {
@@ -684,6 +688,7 @@
         );
       }
       if (write) _dispatch('meldex:standalone-workspace-mutated', { endpoint, path: trackedPath, result });
+      window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
       return result;
     } catch (error) {
       throw _asConflictError(error);
@@ -816,12 +821,10 @@
   async function duplicate(path) {
     return requestJson('/outliner/duplicate', { method: 'POST', body: { path: normalizePath(path) } });
   }
-
-  async function deletePath(path) {
+  async function deletePath(path, confirmation) {
     const target = _getEditSession().assertCanDelete(path);
-    return requestJson('/outliner/delete', { method: 'POST', body: { path: target } });
+    return requestJson('/outliner/delete', { method: 'POST', body: { path: target, ...(confirmation || {}) } });
   }
-
   async function move(path, destinationFolder) {
     const source = normalizePath(path);
     const result = await requestJson('/outliner/move', {

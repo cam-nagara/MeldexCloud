@@ -6,8 +6,8 @@
   "start_url": "quick-memo.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#1e1e1e",
-  "theme_color": "#1e1e1e",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
   "share_target": {
     "action": "quick-memo.html",
     "method": "GET",

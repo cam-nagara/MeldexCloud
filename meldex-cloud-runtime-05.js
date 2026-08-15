@@ -773,6 +773,7 @@
         name,
         type: item?.type || 'page',
       }], {
+        confirmation: confirmed,
         label: '削除: ' + name,
         refresh: _refreshAfterMutation,
       });
@@ -780,7 +781,11 @@
       if (result?.failedCount > 0 && typeof showStatus === 'function') showStatus('削除に失敗しました', true);
       return;
     }
-    await apiPost('/outliner/delete', { path });
+    await apiPost('/outliner/delete', {
+      path,
+      kind: impactTarget[0].kind,
+      ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
+    });
     await _refreshAfterMutation();
     if (typeof showStatus === 'function') showStatus('削除しました: ' + name);
   }

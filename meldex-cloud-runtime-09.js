@@ -265,25 +265,40 @@
     return row;
   }
 
+  // 起動直後は接続がまだ整っていないだけで、実際には「未作成」なだけのことがある。
+  // 一度失敗しただけで恒久的な失敗表示にしないよう、確定前に一度だけ再試行する
+  // （「本当に何も無い」と「本当に読み込みに失敗した」を区別するため）。
+  const WORKSPACE_SIDEBAR_LOAD_RETRY_DELAY_MS = 700;
+
+  function _delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function _loadWorkspaceRowsWithRetry() {
+    try {
+      return await window.MeldexWorkspaces.load({ force: true, silentError: true });
+    } catch (firstError) {
+      await _delay(WORKSPACE_SIDEBAR_LOAD_RETRY_DELAY_MS);
+      return await window.MeldexWorkspaces.load({ force: true, silentError: true });
+    }
+  }
+
   async function renderWorkspaceSidebar() {
     const body = _body();
     if (!body || !window.MeldexWorkspaces) return;
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(body);
     body.innerHTML = '<div class="sidebar-empty" style="padding:8px 12px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
     try {
-      const rows = await window.MeldexWorkspaces.load({ force: true, silentError: true });
+      const rows = await _loadWorkspaceRowsWithRetry();
       const activeId = window.MeldexWorkspaces.getActiveId();
       body.innerHTML = '';
-      if (!rows.length) {
-        const empty = document.createElement('div');
-        empty.className = 'sidebar-empty';
-        empty.style.cssText = 'padding:8px 12px;color:var(--fg2);font-size:12px;line-height:1.4;';
-        empty.textContent = 'ワークスペースは未作成です';
-        body.appendChild(empty);
-        return;
-      }
+      // 未作成（空）はソースフォルダ・ホームフォルダと同じく何も表示しない
+      // （「ワークスペースは未作成です」のようなプレースホルダも出さない）。
+      if (!rows.length) return;
       rows.forEach(workspace => body.appendChild(_row(workspace, activeId)));
-    } catch {
+    } catch (error) {
+      // 再試行後も失敗した場合のみ、本当の読み込み失敗として知らせる。
+      console.warn('[Meldex] workspace sidebar load failed', error);
       body.innerHTML = '<div class="sidebar-empty" style="padding:8px 12px;color:var(--fg2);font-size:12px;">ワークスペースを読み込めませんでした</div>';
     }
   }
@@ -325,6 +340,8 @@
   }
 
   function _init() {
+    // デスクトップ付箋の小窓には左サイドバーが無い。ワークスペース取得だけ走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     renderWorkspaceSidebar();
     window.addEventListener('meldex:workspaces-changed', () => renderWorkspaceSidebar());
   }
@@ -396,7 +413,7 @@
     return members.map(member => `<div class="settings-workspace-member" style="display:grid;grid-template-columns:minmax(0,1fr) 120px 44px;gap:6px;align-items:center;margin:4px 0;">
       <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escape(member.name || '')}</span>
       <select class="gb-select" data-workspace-member-role="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-role-${_escape(member.name || '')}" aria-label="${_escape(member.name || '')}の権限">
-        ${['owner','admin','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',member:'メンバー',viewer:'閲覧'}[role]}</option>`).join('')}
+        ${['owner','admin','schedule_manager','member','viewer'].map(role => `<option value="${role}"${member.role === role ? ' selected' : ''}>${{owner:'管理者（作成者）',admin:'管理者',schedule_manager:'スケジュール管理者',member:'メンバー',viewer:'閲覧'}[role]}</option>`).join('')}
       </select>
       <button type="button" class="gb-btn gb-btn-xs gb-btn-quiet" data-workspace-member-remove="${_escape(member.name || '')}" data-e2e-id="settings-workspace-member-remove-${_escape(member.name || '')}" title="メンバーを削除" aria-label="${_escape(member.name || '')}を削除">${_icon('trash2', 14)}</button>
     </div>`).join('');
@@ -854,8 +871,8 @@
     const request = {
       date_from: assignDateText(0),
       date_to: assignDateText(AUTO_ASSIGN_DAYS),
-      // 「シフト時間内に収める」をオンにする（ユーザー判断 2026-08-08）。画面のチェックが
-      // オン＝残業させない、なので allow_overtime は false。確認なしで走る自動実行では、
+      // 残業を含めない（ユーザー判断 2026-08-08。スケジューラー複数アカウント修正計画
+      // 2026-08-13 Phase 3で全入口の既定と統一）。確認なしで走る自動実行では、
       // 勤務時間外へ勝手に予定を入れない側を既定にする。
       allow_overtime: false,
       unassigned_only: true,
@@ -1714,7 +1731,12 @@
       const editorRenderSeq = state.renderSeq;
       save.disabled = true;
       try {
-        if (row) await api().patchTemplate({ path: row.path, id: row.id, properties });
+        if (row) await api().patchTemplate({
+          path: row.path, id: row.id,
+          entry_revision: row.entry_revision,
+          transport_revision: row.transport_revision,
+          properties,
+        });
         else await api().createTemplate({ name, properties });
         state.loaded = false;
         status('タスクテンプレートを保存しました');
@@ -2551,7 +2573,12 @@
         const workRow = (data.rows || []).find(item => item.name === work || prop(item, '作品タイトル_話数') === work);
         if (!workRow) throw new Error('作品リストに対象の作品が見つかりません');
         const labels = controls.map(item => item.value().trim()).map((value, index) => value || NEW_LEVEL_NAMES[index]);
-        await api().patchEntry({ sheet: '作品リスト', path: workRow.path, id: workRow.id, properties: { '階層数': '3', '階層ラベル': labels.join(',') } });
+        await api().patchEntry({
+          sheet: '作品リスト', path: workRow.path, id: workRow.id,
+          entry_revision: workRow.entry_revision,
+          transport_revision: workRow.transport_revision,
+          properties: { '階層数': '3', '階層ラベル': labels.join(',') },
+        });
         if (component?._productionTaskState?.workMeta?.[work]) {
           component._productionTaskState.workMeta[work].classification_labels = labels;
           component._productionTaskState.workMeta[work].classification_count = 3;
@@ -2777,7 +2804,10 @@
       try {
         const result = await api().patchEntry({
           sheet: 'タスクリスト', path: row.path, id: row.id,
-          expectedModified: row.modified || '', properties,
+          expectedModified: row.modified || '',
+          entry_revision: row.entry_revision,
+          transport_revision: row.transport_revision,
+          properties,
         });
         const updated = result.row || row;
         status('タスクを保存しました');
@@ -6970,8 +7000,40 @@
     catch (error) { status(Api().errorMessage(error), true); }
   }
 
+  // df82a68f（2026-08-10）のサイドバー5モード再編で、旧「管理操作」(actions) が
+  // 「割り当て」(allocation) へ統合された際、タスクリスト面（gb-tool-calendar-
+  // production-task-view.part01.js の ensureProductionReadyGate/renderProductionEmptyState）
+  // が持つ MeldexProductionApi.checkReady() への空状態ゲートがここへ引き継がれず、
+  // 未セットアップの保管場所でもこのパネルだけ提案/割り当てUIをそのまま出してしまっていた
+  // （制作管理UX改善計画2026-08-04 §6-1 残作業）。タスクリスト面と同じ共有空状態カード
+  // （gb-production-empty-state）をここでも出し、両面の挙動をそろえる。
+  async function renderAllocationEmptyState(host, renderSeq) {
+    const card = window.MeldexProductionManagementActions?.emptyStateCard?.(() => {
+      window.MeldexProductionApi?.invalidateReady?.();
+      renderAllocation(host);
+    });
+    if (host.__schedulerAllocationSeq !== renderSeq) return true; // 別の描画が追い越した
+    if (!card) return false;
+    host.replaceChildren(card);
+    host.__schedulerRefresh = () => renderAllocation(host);
+    return true;
+  }
+
   async function renderAllocation(host) {
     host.replaceChildren();
+    const renderSeq = (host.__schedulerAllocationSeq = (host.__schedulerAllocationSeq || 0) + 1);
+    const checkReady = window.MeldexProductionApi?.checkReady;
+    if (typeof checkReady === 'function') {
+      const loading = document.createElement('p');
+      loading.className = 'gb-scheduler-panel-status';
+      loading.textContent = '読み込み中…';
+      host.appendChild(loading);
+      let ready = true;
+      try { ready = await checkReady(); } catch { ready = true; } // fail-open: 判定できなければ既存どおり通す
+      if (host.__schedulerAllocationSeq !== renderSeq) return; // 別の描画が追い越した
+      if (!ready && await renderAllocationEmptyState(host, renderSeq)) return;
+      host.replaceChildren();
+    }
     const selector = createProposalSelector();
     const summary = document.createElement('div');
     summary.className = 'gb-scheduler-current-summary';
@@ -7193,6 +7255,11 @@
     document.addEventListener('meldex:scheduler-proposals-changed', event => {
       syncAllSelectors();
       document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.(event));
+    });
+    // タスクリスト面の空状態カード（同じ「制作管理を始める」導線）から開始した場合も、
+    // 同時に開いているこのパネルの空状態を即座に解除する。
+    document.addEventListener('meldex:production-management-started', () => {
+      document.querySelectorAll('.gb-production-sidebar-content').forEach(host => host.__schedulerRefresh?.());
     });
   }
 
@@ -9379,7 +9446,8 @@
   const SEARCH_DEBOUNCE_MS = 300;
 
   // field はサーバー側 FIELD_ALIASES（Desktop: meldex_production_task_query.py、
-  // Cloud: gb-production-management.part02.js の _pmCloudQuerySort）と両方が受理する
+  // Cloud: gb-production-management-cloud-task-event-query.js（旧
+  // gb-production-management.part02.js の一部）の _pmCloudQuerySort）と両方が受理する
   // キー名で揃えている。
   const COLUMN_DEFS = [
     { key: 'work', field: 'work_title', label: '作品', sortable: true },
@@ -10765,15 +10833,23 @@
   'use strict';
 
   const SCHEMA = 'meldex-portable-knowledge/v1';
+  // デスクトップ・Cloud・スマホで共有する定義(自動ナレッジ化の対象範囲計画
+  // 2026-08-13 Phase 4-4「3面の定義共有」)。正本は
+  // app/meldex_knowledge_index_definitions.py。値を変更する場合は必ず両方を
+  // 同時に更新すること(app/tests/test_meldex_knowledge_index_definitions_parity.py
+  // が両ファイルの値を静的に比較して固定する)。
+  // `.scriptnote` はファイルの実拡張子ではなく、`extension()` が
+  // `*.scriptnote.json` を正規化した内部トークン(下記参照)。デスクトップ側は
+  // `Path.suffix` が素で `.json` を返すため対応するトークンを持たない。
   const TEXT_EXTENSIONS = new Set([
     '.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.yaml', '.yml',
     '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer', '.scriptnote',
   ]);
-  const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', '.svg']);
-  const SKIP_FOLDERS = new Set([
-    '.git', '.svn', 'node_modules', '__pycache__', '_meldex', '.meldex',
-    'dist', 'build', '_verify', '.cache',
-  ]);
+  const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.avif', '.svg', '.tiff', '.tif']);
+  // `_`/`.`始まりでなくても常に除外するフォルダ名(小文字)。
+  const ALWAYS_EXCLUDED_DIR_NAMES = new Set(['__pycache__', 'node_modules', 'dist', 'build']);
+  // `_`始まりフォルダのうち、例外的に索引対象へ含めるフォルダ名(小文字)。
+  const INDEXABLE_PRIVATE_DIR_NAMES = new Set(['_chat', '_knowledge', '_skills']);
   const SENSITIVE_KEY = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|passwd|secret|private[_-]?key|client[_-]?secret)/i;
 
   function normalizePath(value) {
@@ -10805,9 +10881,23 @@
     return `portable:${hash(`${rootId}\0${normalizePath(path).toLowerCase()}`)}`;
   }
 
+  function isExcludedDirName(name) {
+    const lower = String(name || '').toLowerCase();
+    if (!lower) return false;
+    if (ALWAYS_EXCLUDED_DIR_NAMES.has(lower)) return true;
+    // デスクトップ側(meldex_fts_index._skip_dir_name)と同じ規則: `_`/`.`始まりの
+    // フォルダは既定で除外し、INDEXABLE_PRIVATE_DIR_NAMES だけ例外にする。
+    // これにより `_screenshots`(検証用撮影専用)・`_trash`・`_scheduler_shared`等の
+    // 個人管理フォルダが、Cloud/スマホ側でだけ索引される穴を塞ぐ
+    // (自動ナレッジ化の対象範囲計画 2026-08-13 §2.5「デスクトップとCloudで
+    // 対象範囲が食い違っている」)。
+    if ((lower.startsWith('_') || lower.startsWith('.')) && !INDEXABLE_PRIVATE_DIR_NAMES.has(lower)) return true;
+    return false;
+  }
+
   function shouldSkipPath(path) {
     const normalized = normalizePath(path);
-    if (normalized.split('/').some(part => SKIP_FOLDERS.has(part.toLowerCase()))) return true;
+    if (normalized.split('/').some(part => isExcludedDirName(part))) return true;
     return /(?:^|\/)(?:secrets?|credentials?|tokens?|api[-_]?keys?)(?:\.|\/|$)/i.test(normalized);
   }
 
@@ -10989,11 +11079,16 @@
 
   global.MeldexPortableKnowledgeContract = Object.freeze({
     SCHEMA,
+    TEXT_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    ALWAYS_EXCLUDED_DIR_NAMES,
+    INDEXABLE_PRIVATE_DIR_NAMES,
     normalizePath,
     basename,
     extension,
     hash,
     documentId,
+    isExcludedDirName,
     shouldSkipPath,
     isSupported,
     kindForPath,

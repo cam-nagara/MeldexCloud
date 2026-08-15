@@ -15,8 +15,8 @@
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
  * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切
- * 旧パスへ行わない)。削除時だけは、フォールバックで存在し続ける「ゴースト
- * 注釈」の復活を防ぐため、旧パスの実体があれば併せて削除する(ベストエフォート)。
+ * 旧パスへ行わない)。SystemStorage上の削除は対象scope/revisionを一意に確定し、
+ * CAS tombstoneとして保持する。旧パスだけに存在するrecordのみ旧削除経路を使う。
  */
 
 const ANNOTATION_DIR = '_events/annotations'; // 旧パス読取フォールバック専用(新規書込では使わない)
@@ -31,6 +31,22 @@ const ANNOTATION_UPDATE_KEYS = [
   'data', 'color', 'opacity', 'shape', 'type',
   ...ANNOTATION_EXT_KEYS,
 ];
+
+function _annotationTargetResolver() {
+  const resolver = window.MeldexCloudAnnotationTargetResolver;
+  if (!resolver) throw new Error('gb-cloud-annotation-target-resolver.js が読み込まれていません');
+  return resolver;
+}
+
+async function _migrateAnnotationStoredRecord(provider, adapter, docId) {
+  const contract = window.MeldexSystemStorage;
+  const boundary = adapter?.describe?.().boundary;
+  if (!boundary) throw new Error('注釈のDropbox adapter boundaryを確認できません');
+  return _annotationTargetResolver().migrateRecord({
+    provider, adapter, boundary, kind: contract.SystemStorageKind.ANNOTATIONS,
+    documentId: docId, operationId: `annotation-lazy-migrate:${docId}`,
+  });
+}
 
 function _annotationPath(id) {
   return _joinPath(ANNOTATION_DIR, _safeId(id, 'annotation id') + '.json');
@@ -128,35 +144,56 @@ async function _annotationScopes(provider) {
   return resolver.resolveManagementScopesForProvider(provider);
 }
 
+function _annotationUnavailable(error, operation) {
+  if (error?.status === 409 || error?.status === 410 || error?.status === 503) return error;
+  const wrapped = new Error(`注釈SystemStorageの${operation}に失敗しました`);
+  wrapped.status = 503; wrapped.code = 'annotation_storage_unavailable'; wrapped.cause = error;
+  return wrapped;
+}
+
+function _annotationDeleted(record) {
+  return record?.deleted === true || record?.tombstone === true
+    || String(record?.state || '') === 'deleted' || String(record?.status || '') === 'tombstoned';
+}
+
+async function _findAnnotationRecordsById(provider, docId) {
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+  const matches = [];
+  for (const scope of scopes) {
+    let stored;
+    try { stored = await scope.adapter.load(kind, docId); } catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) matches.push({ scope, stored });
+  }
+  if (matches.length > 1) {
+    const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+    error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+  }
+  return matches;
+}
+
 async function _readAnnotationRecord(provider, id, targetPathHint) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
-  const triedScopeKeys = new Set();
-  // 対象パスのヒントがある場合は、書込と同じスコープを最初に読む(最短経路)。
   const hint = _normalizeFolderPath(targetPathHint || '');
   if (hint) {
-    try {
-      const resolver = window.MeldexDropboxManagementRootResolver;
-      const scope = await resolver.resolveManagementScopeForPath(provider, hint);
-      triedScopeKeys.add(scope.scopeKey);
-      const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
-      if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
-    } catch {
-      // ヒントのスコープで読めない場合も、全スコープ走査と旧パスで継続する。
+    let scope; let stored;
+    try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, hint); }
+    catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
+    try { stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId); }
+    catch (error) { throw _annotationUnavailable(error, '読込'); }
+    if (stored) {
+      const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, docId);
+      return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
     }
+    const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+    return legacy && typeof legacy === 'object' ? legacy : null;
   }
-  try {
-    for (const scope of await _annotationScopes(provider)) {
-      if (triedScopeKeys.has(scope.scopeKey)) continue;
-      try {
-        const stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
-        if (stored) return stored.payload && typeof stored.payload === 'object' ? stored.payload : null;
-      } catch {
-        // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
-      }
-    }
-  } catch {
-    // 共通ストレージ層が使えない場合も、旧パスへフォールバックして機能を維持する。
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const migrated = await _migrateAnnotationStoredRecord(provider, matches[0].scope.adapter, docId);
+    return migrated.record?.payload && typeof migrated.record.payload === 'object' ? migrated.record.payload : null;
   }
   const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
   return legacy && typeof legacy === 'object' ? legacy : null;
@@ -169,61 +206,128 @@ async function _writeAnnotationRecord(provider, record) {
     window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
     record.target_path || record.path || '',
   );
-  await adapter.save(window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS, docId, record);
+  const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+  await adapter.save(kind, docId, record);
+  const migrated = await _migrateAnnotationStoredRecord(provider, adapter, docId);
+  await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
 
 async function _deleteAnnotationRecordFully(provider, id) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
-  // 書込先スコープはidだけでは特定できないため、全スコープを走査して削除する。
-  // スコープ一覧を確定できない・一部スコープに実体が残った場合に成功扱いに
-  // すると、読取集約が削除済みの注釈を復活させる(ゴースト化)ため、削除は
-  // 安全側で失敗にする(スコープ列挙の失敗はそのまま伝える)。
-  const scopes = await _annotationScopes(provider);
-  let deleteError = null;
-  for (const scope of scopes) {
-    let stored = null;
-    try {
-      stored = await scope.adapter.load(contract.SystemStorageKind.ANNOTATIONS, docId);
-    } catch (error) {
-      if (!deleteError) deleteError = error;
-      continue;
-    }
-    if (!stored) continue;
-    try {
-      await scope.adapter.delete(contract.SystemStorageKind.ANNOTATIONS, docId);
-    } catch (error) {
-      if (!deleteError) deleteError = error;
-    }
+  const matches = await _findAnnotationRecordsById(provider, docId);
+  if (matches.length === 1) {
+    const match = matches[0];
+    const tombstoned = await _annotationTargetResolver().tombstoneStoredRecord({
+      adapter: match.scope.adapter, kind: contract.SystemStorageKind.ANNOTATIONS,
+      documentId: docId, expectedRevision: match.stored.revision,
+    });
+    await _annotationTargetResolver().indexTombstone(
+      match.scope.adapter, contract.SystemStorageKind.ANNOTATIONS, tombstoned.payload,
+    );
+    return;
   }
-  // 旧パスに実体が残っていると、_readAnnotationRecord のフォールバックが
-  // 削除済みの注釈を復活させてしまう(ゴースト化)。削除時だけは旧パスも消す。
-  await provider.deletePath(_annotationPath(docId)).catch(() => {});
-  if (deleteError) throw deleteError;
+  const legacy = await _readJsonSafe(provider, _annotationPath(docId), null);
+  if (legacy) await provider.deletePath(_annotationPath(docId));
 }
 
-async function _listAnnotationRecords(provider) {
+async function _coverAnnotationIndexBatch(provider, scope, kind) {
+  const resolver = _annotationTargetResolver();
+  const coverage = await resolver.indexCoverage(scope.adapter, kind);
+  if (typeof scope.adapter.listDocumentHeaders !== 'function'
+      || typeof scope.adapter.documentCollectionGeneration !== 'function') {
+    throw _annotationUnavailable(new Error('metadata generation API unavailable'), '索引coverage確認');
+  }
+  const generation = await scope.adapter.documentCollectionGeneration(kind, {
+    excludeDocumentIds: [resolver.INDEX_ID],
+  });
+  if (coverage.complete && coverage.revision === generation) return coverage;
+  const page = await scope.adapter.listDocumentHeaders(kind, { cursor: coverage.cursor, limit: 50 });
+  const rows = [];
+  for (const header of page.entries || []) {
+    if (header.documentId === resolver.INDEX_ID) continue;
+    const stored = await scope.adapter.load(kind, header.documentId);
+    if (!stored?.payload) continue;
+    if (_annotationDeleted(stored.payload)) { rows.push(stored.payload); continue; }
+    const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, header.documentId);
+    if (migrated.record?.payload) rows.push(migrated.record.payload);
+  }
+  let complete = page.complete === true;
+  if (complete) {
+    const readbackGeneration = await scope.adapter.documentCollectionGeneration(kind, {
+      excludeDocumentIds: [resolver.INDEX_ID],
+    });
+    complete = readbackGeneration === generation;
+  }
+  const next = { cursor: page.cursor || '', revision: generation, complete };
+  await resolver.indexCoverBatch(scope.adapter, kind, rows, next);
+  return next;
+}
+
+async function _listAnnotationRecords(provider, query) {
   const contract = window.MeldexSystemStorage;
   const records = [];
   const seenIds = new Set();
-  let scopes = [];
-  try {
-    scopes = await _annotationScopes(provider);
-  } catch {
-    scopes = []; // 共通ストレージ層が使えない場合も、旧パスの一覧だけで機能を継続する。
-  }
+  const scopeOwnersById = new Map();
+  let scopes;
+  try { scopes = await _annotationScopes(provider); } catch (error) { throw _annotationUnavailable(error, 'scope解決'); }
   for (const scope of scopes) {
     let stored = [];
     try {
-      stored = await scope.adapter.listDocuments(contract.SystemStorageKind.ANNOTATIONS);
-    } catch {
-      continue; // 到達できないスコープは読み飛ばす(読取はベストエフォート)。
+      const kind = contract.SystemStorageKind.ANNOTATIONS;
+      if (query && (query.bulk || query.annId || query.targetId || query.targetPath)) {
+        const coverage = await _coverAnnotationIndexBatch(provider, scope, kind);
+        if (!coverage.complete) {
+          const error = new Error('注釈metadata indexを構築中です。再試行してください');
+          error.status = 503; error.code = 'annotation_index_incomplete'; throw error;
+        }
+        const ids = await _annotationTargetResolver().indexedIds(scope.adapter, kind, query);
+        for (const id of ids) {
+          const item = await scope.adapter.load(kind, id);
+          if (item) stored.push(item);
+        }
+      } else {
+        let cursor = '';
+        do {
+          if (typeof scope.adapter.listDocumentHeaders !== 'function') throw new Error('metadata header API unavailable');
+          const page = await scope.adapter.listDocumentHeaders(kind, { cursor, limit: 100 });
+          for (const header of page.entries || []) {
+            if (header.documentId === _annotationTargetResolver().INDEX_ID) continue;
+            const item = await scope.adapter.load(kind, header.documentId);
+            if (item) stored.push(item);
+          }
+          cursor = page.complete ? '' : page.cursor;
+          if (!page.complete && !cursor) throw new Error('metadata cursor missing');
+        } while (cursor);
+      }
+    } catch (error) { throw _annotationUnavailable(error, '一覧読込'); }
+    for (const id of await _annotationTargetResolver().indexedKnownIds(
+      scope.adapter, contract.SystemStorageKind.ANNOTATIONS,
+    )) {
+      const key = String(id);
+      const owners = scopeOwnersById.get(key) || new Set();
+      owners.add(String(scope.scopeKey || scope.adapter?.describe?.().boundary || 'unknown'));
+      scopeOwnersById.set(key, owners);
+      if (owners.size > 1) {
+        const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+        error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+      }
+      seenIds.add(key);
     }
     for (const item of stored) {
-      const payload = item?.payload;
-      if (payload && typeof payload === 'object' && payload.id && !seenIds.has(String(payload.id))) {
-        records.push(payload);
-        seenIds.add(String(payload.id));
+      let payload = item?.payload;
+      if (_annotationDeleted(payload)) continue;
+      if (payload && typeof payload === 'object' && payload.id) {
+        const migrated = await _migrateAnnotationStoredRecord(provider, scope.adapter, String(payload.id));
+        payload = migrated.record?.payload || payload;
+      }
+      if (payload && typeof payload === 'object' && payload.id) {
+        const id = String(payload.id);
+        if (records.some(existing => String(existing.id) === id)) {
+          const error = new Error('同じ注釈IDが複数の管理スコープに存在します');
+          error.status = 409; error.code = 'annotation_scope_ambiguous'; throw error;
+        }
+        records.push(payload); seenIds.add(id);
       }
     }
   }
@@ -319,8 +423,11 @@ async function _updateAnnotationsForPathMutation(provider, event) {
   if (!oldPath || (action !== 'delete' && !newPath)) return { ok: true, updated: 0 };
   const now = _nowIso();
   let updated = 0;
-  const records = await _listAnnotationRecords(provider);
-  for (const record of records) {
+  const plan = Array.isArray(event?.annotationPlan)
+    ? event.annotationPlan
+    : await _prepareAnnotationsForPathMutation(provider, { oldPath, newPath, isFolder, action });
+  for (const prepared of plan) {
+    const record = prepared.record;
     let changed = false;
     const ref = _annotationRef(record);
     const recordPaths = [
@@ -334,16 +441,38 @@ async function _updateAnnotationsForPathMutation(provider, event) {
     if (!matches) continue;
 
     if (action === 'delete') {
-      record.orphan = 1;
-      record.orphaned_at = now;
-      record.target_file_name = record.target_file_name || _basename(oldPath);
+      const saved = await _annotationTargetResolver().markStoredRecordOrphan({
+        adapter: prepared.scope.adapter,
+        kind: window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+        documentId: String(record.id), oldPath,
+      });
+      await _annotationTargetResolver().indexUpsert(
+        prepared.scope.adapter, window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS, saved.payload,
+      );
+      Object.assign(record, saved.payload);
       changed = true;
     } else if (action === 'rename' || action === 'move') {
       if (record.target_path) {
         const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
         if (nextTargetPath !== _normalizeFolderPath(record.target_path)) {
-          record.target_path = nextTargetPath;
-          record.target_id = nextTargetPath ? _fnvFileId(nextTargetPath) : '';
+          if (record.target_identity) {
+            await _annotationTargetResolver().rebindClaimAfterMove({
+              provider, adapter: prepared.scope.adapter, boundary: prepared.boundary,
+              targetIdentity: record.target_identity, oldPath: record.target_path,
+              newPath: nextTargetPath, oldProviderIdentity: prepared.oldProviderIdentity,
+            });
+          }
+          const saved = await _annotationTargetResolver().rewriteStoredRecordAfterMove({
+            adapter: prepared.scope.adapter,
+            kind: window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS,
+            documentId: String(record.id), oldPath: record.target_path, newPath: nextTargetPath,
+            targetId: nextTargetPath ? _fnvFileId(nextTargetPath) : '',
+            operationId: `annotation-${action}:${record.id}:${oldPath}`,
+          });
+          await _annotationTargetResolver().indexUpsert(
+            prepared.scope.adapter, window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS, saved.payload,
+          );
+          Object.assign(record, saved.payload);
           changed = true;
         }
       }
@@ -360,8 +489,43 @@ async function _updateAnnotationsForPathMutation(provider, event) {
     if (!changed) continue;
     record.modified = now;
     record.modified_at = now;
-    await _writeAnnotationRecord(provider, record);
     updated += 1;
   }
   return { ok: true, updated };
+}
+
+async function _prepareAnnotationsForPathMutation(provider, event) {
+  const oldPath = _normalizeFolderPath(event?.oldPath || event?.path || '');
+  const newPath = _normalizeFolderPath(event?.newPath || '');
+  const action = String(event?.action || 'move');
+  const isFolder = !!event?.isFolder;
+  if (!oldPath) return [];
+  const records = await _listAnnotationRecords(provider, { targetPath: oldPath, folderPrefix: isFolder });
+  const plan = [];
+  for (const record of records) {
+    if (!_annotationPathMatches(record.target_path, oldPath, isFolder)) continue;
+    let scope;
+    try { scope = await window.MeldexDropboxManagementRootResolver.resolveManagementScopeForPath(provider, record.target_path); }
+    catch (error) { throw _annotationUnavailable(error, '移動scope解決'); }
+    const boundary = scope.adapter?.describe?.().boundary;
+    if (!boundary) throw _annotationUnavailable(new Error('adapter boundary missing'), '移動scope解決');
+    const kind = window.MeldexSystemStorage.SystemStorageKind.ANNOTATIONS;
+    let stored = await scope.adapter.load(kind, String(record.id));
+    if (!stored) {
+      if (!newPath || !new Set(['rename', 'move', 'delete']).has(action)) {
+        throw Object.assign(new Error('legacy注釈を安全に移行できません'), { status: 409 });
+      }
+      const nextTargetPath = _rewriteAnnotationPath(record.target_path, oldPath, newPath, isFolder);
+      stored = await _annotationTargetResolver().prepareLegacyRecordForMove({
+        provider, adapter: scope.adapter, boundary, kind, record,
+        oldPath: record.target_path, newPath: nextTargetPath,
+        operationId: `annotation-${action}:${record.id}:${record.target_path}:${nextTargetPath}`,
+      });
+      await _annotationTargetResolver().indexUpsert(scope.adapter, kind, stored.payload);
+      Object.assign(record, stored.payload);
+    }
+    const oldProviderIdentity = await _annotationTargetResolver().freshProviderIdentity(provider, record.target_path);
+    plan.push({ record, scope, boundary, oldProviderIdentity });
+  }
+  return plan;
 }

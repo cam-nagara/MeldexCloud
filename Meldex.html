@@ -8,7 +8,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta name="application-name" content="Meldex BETA">
-<meta name="theme-color" content="#1e1e1e">
+<meta name="theme-color" content="#0b0d10">
 <meta name="color-scheme" content="dark light">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -168,7 +168,12 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=08df30124f9ded3a"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=157e0992d300f8ce"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=7127638551dc0b93"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=824da1eff1112455"></script>
+
+
+
+
+
 
 
 
@@ -185,12 +190,14 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-db-tree-view.css">
 <link rel="stylesheet" href="gb-mobile-tab-gesture-router.css">
 <link rel="stylesheet" href="gb-subpanel.css">
+<link rel="stylesheet" href="gb-quick-memo-panel.css">
+<link rel="stylesheet" href="gb-tag-picker-panel.css">
 <link rel="stylesheet" href="gb-entity-detail-surface.css">
 <link rel="stylesheet" href="gb-command-palette.css">
 <link rel="stylesheet" href="gb-cloud-mobile.css">
 <link rel="stylesheet" href="gb-cloud-mobile-explorer.css">
 <link rel="stylesheet" href="gb-cloud-conflict-resolver.css">
-<script src="meldex-cloud-runtime-05.js?v=2ba7338c9bb35dc8"></script>
+<script src="meldex-cloud-runtime-05.js?v=de6c4e967e5d88fa"></script>
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-note-block-menu.css">
 <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
@@ -207,6 +214,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-tooltip.css">
 <link rel="stylesheet" href="gb-csv-workbench.css">
 <link rel="stylesheet" href="gb-board-immersive.css">
+<link rel="stylesheet" href="gb-board-depth-presets.css">
 <link rel="stylesheet" href="gb-chat-rules.css">
 <link rel="stylesheet" href="gb-chat-target-controls.css">
 <link rel="stylesheet" href="gb-db-smart-chat-history.css">
@@ -727,12 +735,17 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <div id="chat-team-panel" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
       <div style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
         <div id="team-rooms" style="flex-shrink:0;border-bottom:1px solid var(--border);overflow-y:auto;max-height:30%;background:var(--bg2);">
+          <div class="gb-section-desc" data-e2e-id="team-room-privacy-notice" style="display:flex;align-items:center;gap:4px;padding:4px 8px 0;">
+            <span>DMと非公開ルームは共有フォルダに保存されます</span>
+            <span class="ico ico-helpCircle gb-field-help" tabindex="0" role="img" data-gb-tooltip="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" aria-label="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" style="width:13px;height:13px;flex-shrink:0;"></span>
+          </div>
           <div class="team-room-toolbar" style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;">
             <select id="team-room-select" class="team-room-select" data-e2e-id="team-room-select" title="ルームを選択" aria-label="ルームを選択" style="flex:1;min-width:120px;padding:2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;">
               <option value="">ルームを選択</option>
             </select>
             <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-room-add-button" title="ルームを追加" aria-label="ルームを追加" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;" data-action="showCreateRoomModal()"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
             <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-dm-start-button" title="DMを開始" aria-label="DMを開始" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="showDirectMessageModal()"><span class="ico ico-user" style="width:12px;height:12px;"></span> DM</button>
+            <button type="button" class="team-room-toolbar-btn" data-e2e-id="team-solo-room-button" title="自分専用のルームを作ります。あとから他のメンバーを招待できます" aria-label="自分だけのルーム" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:3px;" data-action="createSoloTeamRoom()"><span class="ico ico-lock" style="width:12px;height:12px;"></span> 自分だけ</button>
           </div>
           <div id="team-room-list" style="font-size:12px;"></div>
         </div>
@@ -752,7 +765,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
             </div>
             <div class="team-composer-controls" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:6px;">
               <button type="button" class="team-composer-inline-btn" data-e2e-id="team-attach-image-button" title="画像を添付" aria-label="画像を添付" data-action="teamAttachmentPick()" style="padding:2px 6px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;"><span class="ico ico-plus" style="width:12px;height:12px;"></span></button>
-              <button id="team-workspace-cli-btn" type="button" class="team-composer-inline-btn" data-e2e-id="team-workspace-cli-button" title="管理者PCのCLIに依頼" aria-label="管理者PCのCLIに依頼" data-action="openWorkspaceCliRelayMenu(event)" style="padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:12px;"><span class="ico ico-terminal" style="width:12px;height:12px;"></span><span>CLIに依頼</span></button>
+              <button id="team-workspace-cli-btn" type="button" class="team-composer-inline-btn" data-e2e-id="team-workspace-cli-button" title="依頼と返答はこのルームの参加者全員に見えます" aria-label="管理者AIに依頼" data-action="sendWorkspaceCliRelayRequestClick(event)" style="padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:4px;font-size:12px;"><span class="ico ico-terminal" style="width:12px;height:12px;"></span><span>管理者AIに依頼</span></button>
+              <span id="team-workspace-cli-presence" class="team-workspace-cli-presence" data-e2e-id="team-workspace-cli-presence" role="status" aria-live="polite" style="display:none;"><span class="team-workspace-cli-presence-dot" aria-hidden="true"></span><span class="team-workspace-cli-presence-label"></span></span>
             </div>
           </div>
         </div>
@@ -796,7 +810,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-07.js?v=d2d62bb2fe8aa4d1"></script>
+<script src="meldex-cloud-runtime-07.js?v=a6945ff90c3f5315"></script>
 
 
 
@@ -804,7 +818,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-08.js?v=6fb6ca254de929f9"></script>
+<script src="meldex-cloud-runtime-08.js?v=6d8944173367525a"></script>
 
 
 
@@ -824,6 +838,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 
 
+  
 
 
 
@@ -836,6 +851,14 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
   }, 12000);
   try {
+    // デスクトップ付箋の小窓は付箋1枚だけを描画する。フォルダツリー・ワークスペース・
+    // 前回の表示復元まで走らせると、付箋の数だけ本体の起動処理が重複して起動が詰まる。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) {
+      if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
+      window._meldexStartupRestoring = false;
+      clearTimeout(bootWatchdog);
+      return;
+    }
     const launchReady = window.MeldexCloudBootstrap
       ? await window.MeldexCloudBootstrap.prepareLaunch()
       : true;
@@ -865,7 +888,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-09.js?v=88df50dce3f9908a"></script>
+<script src="meldex-cloud-runtime-09.js?v=41d78378a3b93c88"></script>
 
 
 

@@ -5,35 +5,12 @@
 (() => {
   if (typeof CalendarComponent === 'undefined') return;
 
-  // 制作管理UX改善計画（2026-08-04）§6-1:
-  // - 「制作管理を始める」ボタンは廃止（未セットアップ時のみ空状態カードとして別途表示する）。
-  // - 「担当者と時間を割り当て」（即時実行）は廃止し、「割当再計算」
-  //   （旧ラベル「再計算」「予定を組み直す」。プレビュー→適用の2段階で unassigned_only スコープも選べる）へ統合した。
-  // - 「メンバーを追加」は正本『スタッフ管理シート』を開く導線へ変更。
-  // 各操作には表示グループ（schedule=スケジュール / data=データ）を持たせる。
-  const ACTIONS = [
-    { label: 'タスクを作成', icon: 'listPlus', fn: 'openProductionTaskCreate', group: 'schedule' },
-    { label: 'シフトを取り込む', icon: 'fileInput', fn: 'openProductionShiftImport', group: 'schedule' },
-    // フル再計算エンジンはCloud（Dropboxモード）にも移植済み（production-management-ux-
-    // improvement-plan-2026-08-04.md §4-1）。desktopOnlyフラグは撤去した。
-    { label: '自動割り当て', icon: 'refreshCw', fn: 'openProductionRecalculate', group: 'schedule' },
-    { label: 'スタッフ管理シートを開く', icon: 'userPlus', fn: 'openProductionStaffRegistrySheet', group: 'data' },
-    // Google送信はCloud（Dropboxモード）にも移植済み（production-management-ux-improvement-
-    // plan-2026-08-04.md §4-4）。CalDAV送信はDesktop限定のままだが、ボタン自体は両方で表示し、
-    // 未接続時は結果メッセージで案内する（「クラウド版では未対応」の行き止まり表示にしない）。
-    { label: '外部カレンダーへ送信', icon: 'send', fn: 'runProductionExternalSync', group: 'data' },
-    { label: '書き出す', icon: 'fileOutput', fn: 'openProductionExport', group: 'data' },
-  ];
-  const ACTION_GROUPS = [
-    { key: 'schedule', label: 'スケジュール' },
-    { key: 'data', label: 'データ' },
-  ];
-  // 中央の一覧や共通ツールバーと重複しない操作だけを右側に残す。
-  // 自動割り当ては共通ツールバーの単一コマンドだけに置き、割り当てタブは
-  // 対象・能力・直近の案を表示し、実行ボタンを重複させない。
-  const MANAGEMENT_ACTIONS = ACTIONS.filter(action => (
-    action.fn !== 'openProductionTaskCreate' && action.fn !== 'openProductionRecalculate'
-  ));
+  // 制作管理UX改善計画（2026-08-04）§6-1で導入した「管理操作」パネル（ACTIONS配列＋
+  // グルーピング描画）は、df82a68f（2026-08-10、サイドバー5モード再編）でカレンダー
+  // ツールバーの「管理操作」ボタンが MeldexProductionSidebar.showActions（allocationモード）
+  // へ差し替えられたことで、到達経路を失った（スケジューラー複数アカウント修正計画
+  // 2026-08-13 追加スコープで確認・削除）。現在の「割り当て」タブは gb-scheduler-ui.js の
+  // renderAllocation が担う。
   const PRODUCTION_SHEET_TABS = [
     { key: 'tasks', id: 'production-task-list', label: 'タスクリスト', icon: 'listTodo' },
     { key: 'works', id: 'production-managed-works', label: 'プロジェクト一覧', icon: 'folderKanban' },
@@ -46,19 +23,6 @@
   function _pmStatus(message, error) {
     if (typeof showStatus === 'function') showStatus(message, !!error);
     else console[error ? 'error' : 'log'](message);
-  }
-
-  function _pmIsDropboxMode() {
-    return !!window.MeldexRuntimeAdapter?.isDropboxMode?.();
-  }
-
-  function _pmDesktopOnlyReason(action) {
-    if (!action?.desktopOnly || !_pmIsDropboxMode()) return '';
-    return `${action.label}はデスクトップ版で実行してください`;
-  }
-
-  function _pmActionWrites(action) {
-    return action?.fn !== 'openProductionExport';
   }
 
   function _pmOpenOptionPanel(select) {
@@ -90,51 +54,6 @@
     body.className = 'cal-option-body';
     detailEl.append(header, body);
     return body;
-  }
-
-  function _pmRunAction(action) {
-    const unavailableReason = _pmDesktopOnlyReason(action);
-    if (unavailableReason) {
-      _pmStatus(unavailableReason, true);
-      return;
-    }
-    if (_pmActionWrites(action) && window.MeldexProductionUiAvailability?.ensureWritable?.() === false) return;
-    const fn = window[action.fn];
-    if (typeof fn !== 'function') {
-      _pmStatus(`${action.label}を初期化できませんでした`, true);
-      return;
-    }
-    try {
-      const result = fn();
-      if (result && typeof result.catch === 'function') {
-        result.catch(error => _pmStatus(error?.message || String(error), true));
-      }
-    } catch (error) {
-      _pmStatus(error?.message || String(error), true);
-    }
-  }
-
-  function _pmActionButton(action) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'gb-cal-production-action';
-    const unavailableReason = _pmDesktopOnlyReason(action);
-    if (typeof window[action.fn] !== 'function' || unavailableReason) button.disabled = true;
-    if (unavailableReason) {
-      button.title = unavailableReason;
-      button.setAttribute('aria-label', `${action.label}（デスクトップ版のみ）`);
-    }
-    const icon = document.createElement('span');
-    icon.className = 'gb-cal-production-action-icon';
-    icon.innerHTML = _pmIcon(action.icon, 14);
-    const label = document.createElement('span');
-    label.textContent = unavailableReason ? `${action.label}（デスクトップ版のみ）` : action.label;
-    button.dataset.productionAction = action.fn;
-    button.dataset.e2eId = 'gb-production-management-action-' + action.fn.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
-    button.append(icon, label);
-    button.addEventListener('click', () => _pmRunAction(action));
-    if (_pmActionWrites(action)) window.MeldexProductionUiAvailability?.markWriteControl?.(button);
-    return button;
   }
 
   // 制作管理UX改善計画（2026-08-04）§6-1: 未セットアップ時（/production-management/status の
@@ -173,53 +92,6 @@
     });
     card.append(iconEl, message, button);
     return card;
-  }
-
-  function _pmRenderActionGroups(host) {
-    ACTION_GROUPS.forEach(groupDef => {
-      const groupActions = MANAGEMENT_ACTIONS.filter(action => (action.group || '') === groupDef.key);
-      if (!groupActions.length) return;
-      const section = document.createElement('div');
-      section.className = 'gb-production-actions-group';
-      section.dataset.e2eId = 'gb-production-actions-group-' + groupDef.key;
-      const heading = document.createElement('div');
-      heading.className = 'gb-production-actions-group-label';
-      heading.textContent = groupDef.label;
-      const actions = document.createElement('div');
-      actions.className = 'gb-cal-production-actions gb-production-management-actions';
-      groupActions.forEach(action => actions.appendChild(_pmActionButton(action)));
-      section.append(heading, actions);
-      host.appendChild(section);
-    });
-  }
-
-  function _pmRenderManagementActions(host) {
-    if (!host) return;
-    const renderSeq = (host.__pmActionsRenderSeq = (host.__pmActionsRenderSeq || 0) + 1);
-    host.replaceChildren();
-    const loading = document.createElement('p');
-    loading.className = 'gb-production-management-actions-note';
-    loading.textContent = '読み込み中…';
-    host.appendChild(loading);
-    const readyPromise = window.MeldexProductionApi?.checkReady ? window.MeldexProductionApi.checkReady() : Promise.resolve(true);
-    readyPromise.then(ready => {
-      if (host.__pmActionsRenderSeq !== renderSeq) return;
-      host.replaceChildren();
-      if (!ready) {
-        host.appendChild(_pmEmptyStateCard(() => _pmRenderManagementActions(host)));
-        return;
-      }
-      const intro = document.createElement('p');
-      intro.className = 'gb-production-management-actions-note';
-      const availability = window.MeldexProductionUiAvailability?.current?.() || { blocked: false, reason: '' };
-      if (availability.blocked) {
-        intro.textContent = `${availability.reason}。ここでは内容の確認と書き出しだけを利用できます。`;
-      } else {
-        intro.innerHTML = '管理操作 ' + fieldHelp('初期設定、割り当て、外部連携など、表編集では行えない操作です。');
-      }
-      host.appendChild(intro);
-      _pmRenderActionGroups(host);
-    });
   }
 
   function _pmFindCalendarComponent() {
@@ -380,15 +252,6 @@
     this._renderProductionManagementPanel(body, options);
   };
 
-  window.openProductionManagementPanel = function () {
-    const component = _pmFindCalendarComponent();
-    if (!component || typeof component._showProductionManagementPanel !== 'function') {
-      _pmStatus('スケジュールを開いてから制作管理を開いてください', true);
-      return;
-    }
-    component._showProductionManagementPanel({ mode: 'actions' });
-  };
-
   window.openProductionTaskListSheet = async function () {
     if (!window.MeldexProductionApi?.summary || typeof selectDatabase !== 'function') {
       _pmStatus('タスクリストシートを開けませんでした', true);
@@ -435,7 +298,6 @@
   });
 
   window.MeldexProductionManagementActions = Object.freeze({
-    render: _pmRenderManagementActions,
     toolMenuItems: _pmToolMenuItems,
     emptyStateCard: _pmEmptyStateCard,
   });

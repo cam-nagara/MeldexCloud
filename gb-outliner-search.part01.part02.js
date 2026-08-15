@@ -112,7 +112,9 @@ async function renderHomeFolderTree(options = {}) {
   }
 }
 
-loadHomeFolder();
+// デスクトップ付箋の小窓にはフォルダツリーが無い。ホームフォルダの一覧取得は本体側だけで行う
+// （付箋の枚数だけ保存フォルダ全体の走査が並走し、本体の起動が待たされる）。
+if (!(typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost())) loadHomeFolder();
 
 // ホームフォルダへのドロップ対応
 (function() {

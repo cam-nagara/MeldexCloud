@@ -15,6 +15,7 @@ function bdDrawFrames() {
       x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
     });
     const frame = document.createElement('div'); frame.className = 'bd-frame';
+    frame.dataset.groupId = g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
     label.style.cursor = 'move';
@@ -46,7 +47,7 @@ function bdDrawFrames() {
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
-      const zoom = Math.max(0.1, bd.zoom || 1);
+      const zoom = bdSafeZoom(bd.zoom);
       // 対象ノード (contained 以外のグループメンバー) の元座標を保存
       const targets = (g.nodeIds || [])
         .map(id => bd.nodes.find(n => n.id === id))
@@ -77,7 +78,7 @@ function bdDrawFrames() {
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
-        if (typeof bdDrawFrames === 'function') bdDrawFrames();
+        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       };
       const onUp = () => {
         document.removeEventListener('pointermove', onMove);
@@ -96,6 +97,33 @@ function bdDrawFrames() {
     });
     frame.appendChild(label);
     container.appendChild(frame);
+  });
+}
+
+// ドラッグ中は既存フレームの寸法だけを更新し、DOM とリスナーの再構築を避ける。
+function bdUpdateFramesForNodes(nodeIds) {
+  const changed = new Set((nodeIds || []).filter(Boolean));
+  if (!changed.size || !Array.isArray(bd.groups)) return;
+  bd.groups.forEach(group => {
+    if (!(group.nodeIds || []).some(id => changed.has(id))) return;
+    const frame = [...document.querySelectorAll('.bd-frame')]
+      .find(candidate => candidate.dataset.groupId === group.id);
+    if (!frame) return;
+    const nodes = (group.nodeIds || []).map(id => bd.nodes.find(node => node.id === id))
+      .filter(node => node && !node.contained);
+    if (nodes.length < 2) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach(node => {
+      const el = document.getElementById('bdn-' + node.id);
+      const width = node.w || node._rw || el?.offsetWidth || 160;
+      const height = node.h || node._rh || el?.offsetHeight || 36;
+      x0 = Math.min(x0, node.x); y0 = Math.min(y0, node.y);
+      x1 = Math.max(x1, node.x + width); y1 = Math.max(y1, node.y + height);
+    });
+    frame.style.left = `${x0 - 12}px`;
+    frame.style.top = `${y0 - 22}px`;
+    frame.style.width = `${x1 - x0 + 24}px`;
+    frame.style.height = `${y1 - y0 + 34}px`;
   });
 }
 
@@ -157,9 +185,6 @@ function _removeConnActionBtn() {
 }
 
 function _bdLinePathType(connStyle, structure) {
-  // マインドマップ構造ではライン形状を「直線」に強制する (色 / 太さ / 矢印 / 破線などの
-  // その他のスタイル設定はユーザー指定通り維持する)。
-  if (structure === 'mindmap') return 'straight';
   // v0.5.320: pathType は 3 種（curve / straight / orthogonal）に統合。旧 free-bezier / orthogonal-curve は
   // ロード時 _bdMigrateConnectionSchema で自動変換されるが、実行中にも防御的に解決する。
   if (connStyle?.pathType === 'free-bezier') return 'curve';
@@ -359,7 +384,7 @@ function _bdCubicBezierPoint(p0, p1, p2, p3, t) {
 // 量子化しない方式に変更したため、斜め配置のカード間では真の対角線方向に線が走り、
 // 矢印も SVG auto-start-reverse の接線追従によって斜め方向を向く。
 // 戻り値: { fromPt: {x,y}, toPt: {x,y}, fromOut: {x,y}, toOut: {x,y} } or null
-function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
+function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gapFrom, gapTo, fromShape, toShape) {
   const fcx = fp.x + fw / 2, fcy = fp.y + fh / 2;
   const tcx = tp.x + tw / 2, tcy = tp.y + th / 2;
   const vx = tcx - fcx, vy = tcy - fcy;
@@ -383,10 +408,11 @@ function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
   };
   const fBorder = borderHit(fcx, fcy, fw, fh, ux, uy, fromShape);
   const tBorder = borderHit(tcx, tcy, tw, th, -ux, -uy, toShape);
-  const gapLen = Number.isFinite(gap) ? gap : 0;
+  const gapFromLen = Number.isFinite(gapFrom) ? gapFrom : 0;
+  const gapToLen = Number.isFinite(gapTo) ? gapTo : 0;
   return {
-    fromPt: { x: fBorder.x + ux * gapLen, y: fBorder.y + uy * gapLen },
-    toPt:   { x: tBorder.x - ux * gapLen, y: tBorder.y - uy * gapLen },
+    fromPt: { x: fBorder.x + ux * gapFromLen, y: fBorder.y + uy * gapFromLen },
+    toPt:   { x: tBorder.x - ux * gapToLen, y: tBorder.y - uy * gapToLen },
     fromOut: { x: ux, y: uy },
     toOut:   { x: -ux, y: -uy },
   };
@@ -427,7 +453,7 @@ function _bdOppositeAnchor(anchor) {
 // ライン選択中のみ表示する (非選択時は誤タップ事故防止のため一切描画しない)。
 function _bdRenderFreeBezierEditOverlay(svg, conn, pathData, fn, tn, fe, te, fp, tp, zoom, anchorHints) {
   if (!svg || !conn || !pathData) return;
-  const z = Math.max(0.1, zoom || 1);
+  const z = bdSafeZoom(zoom);
   const r = Math.max(5 / z, 4);       // アンカー候補点半径
   const handleR = Math.max(6 / z, 5); // ハンドル半径
 
@@ -622,9 +648,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       if (hoverCardEl && hoverCardEl !== cardEl) hoverCardEl.classList.remove('bd-drop-target');
       hoverCardEl = cardEl || null;
       if (cardEl) cardEl.classList.add('bd-drop-target');
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       handleEl.setAttribute('cx', w.x);
       handleEl.setAttribute('cy', w.y);
       updateLive(w);
@@ -642,9 +666,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       const target = document.elementFromPoint(up.clientX, up.clientY);
       const cardEl = target?.closest?.('.bd-node');
       clearHover();
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(up.clientX, up.clientY)
-        : { x: up.clientX, y: up.clientY };
+      const dropW = bdScreenToWorld(up.clientX, up.clientY);
       if (moved && cardEl && typeof cardEl.id === 'string' && cardEl.id.startsWith('bdn-')) {
         const newCardId = cardEl.id.substring(4);
         const newNode = bd.nodes.find(n => n.id === newCardId);
@@ -737,9 +759,7 @@ function _bdBindCurveHandleDrag(handleEl, conn, anchorPoint, cpIndex, otherAncho
         moved = true;
         if (typeof bdPushUndo === 'function') { bdPushUndo(); pushedUndo = true; }
       }
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       // v0.5.322: 自動モードから手動モードへ切替える際、もう片方のハンドル位置を
       // 現在の自動算出値で初期化する。{0,0} で初期化すると未ドラッグ側の cp が端点に
       // 張り付いてハンドルが消えたように見えてしまうため、_bdResolveControlPoints の
@@ -870,39 +890,20 @@ function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint)
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
 }
 
-function _bdBuildArrowSpec(tip, neighbor, strokeWidth) {
-  const dx = tip.x - neighbor.x;
-  const dy = tip.y - neighbor.y;
-  const segLength = Math.hypot(dx, dy);
-  if (!segLength || !Number.isFinite(segLength)) return null;
-  const ux = dx / segLength;
-  const uy = dy / segLength;
-  const maxUsableLength = Math.max(4, segLength - 1);
-  const arrowLength = Math.min(Math.max(12, strokeWidth * 4 + 2), maxUsableLength);
-  const centerOffset = Math.min(Math.max(2, arrowLength * 0.5), Math.max(2, segLength - 1));
-  const baseCenterX = tip.x - ux * arrowLength;
-  const baseCenterY = tip.y - uy * arrowLength;
-  const halfWidth = Math.max(5, strokeWidth * 1.8 + 1.5);
-  const px = -uy;
-  const py = ux;
-  const leftX = baseCenterX + px * halfWidth;
-  const leftY = baseCenterY + py * halfWidth;
-  const rightX = baseCenterX - px * halfWidth;
-  const rightY = baseCenterY - py * halfWidth;
-  return {
-    lineEnd: {
-      x: tip.x - ux * centerOffset,
-      y: tip.y - uy * centerOffset,
-    },
-    path: `M${tip.x},${tip.y} L${leftX},${leftY} L${rightX},${rightY} Z`,
-  };
+// 太さから矢印マーカーの寸法 (markerWidth/Height と refX) を算出する共通式。
+// _bdEnsureArrowMarker (矢印そのものの描画) と bdDrawConns (端点の後退量 GAP の逆算) の
+// 両方から使う。太さ上限20 (スタイル管理のスライダー max) まで比例して大きくなる (2026-08-14
+// 上限16px撤廃。旧上限では太さ5.4以上で矢印が頭打ちになり、線の太さが矢印を上回っていた)。
+function _bdArrowMarkerGeometry(strokeWidth) {
+  const size = Math.max(8, strokeWidth * 2.6 + 2);
+  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  return { size, refX };
 }
 
 function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId) {
   if (!defs || !markerId) return '';
   const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  const size = Math.max(8, Math.min(16, strokeWidth * 2.6 + 2));
-  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  const { size, refX } = _bdArrowMarkerGeometry(strokeWidth);
   marker.setAttribute('id', markerId);
   if (connId) marker.dataset.connId = connId;
   marker.setAttribute('markerWidth', size);

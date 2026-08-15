@@ -369,6 +369,7 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
       if (typeof loadOutlinerRootsForSettings === 'function') loadOutlinerRootsForSettings();
       if (typeof loadStorageInfoForSettings === 'function') loadStorageInfoForSettings();
       if (typeof loadMobileAccessUrlsForSettings === 'function') loadMobileAccessUrlsForSettings();
+      if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
       if (typeof _loadAutostartStateForSettings === 'function') _loadAutostartStateForSettings();
@@ -591,28 +592,57 @@ function _backToSettingsList(root) {
   replaceIcons(modal);
 }
 
+// 拡張機能ごとの手順ノート（配布版でインストールボタンを出せない時の誘導先）。
+const MELDEX_EXTENSION_GUIDES = {
+  pillow: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
+  clip: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
+  caldav: { title: 'CalDAVカレンダー同期の設定', path: 'MeldexHome/マニュアル/03_設定と連携/CalDAVカレンダー同期の設定.md' },
+};
+
+function openExtensionInstallGuide(key) {
+  const guide = MELDEX_EXTENSION_GUIDES[key];
+  if (!guide) return;
+  if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
+  if (typeof openPage === 'function') {
+    openPage(guide.title, guide.path, { fromExplorer: true, skipAutoAppLayout: true });
+  }
+}
+
 async function _loadExtensionStatus() {
   const el = document.getElementById('ext-status');
   if (!el) return;
   el.innerHTML = '<span style="color:var(--fg2);">読み込み中...</span>';
   try {
     const status = await apiFetch('/extensions/status');
+    // 凍結ビルド（配布版のexe）では sys.executable がMeldex本体を指すため
+    // pip installが成立しない。ボタンは出さず、手順ノートへの誘導へ差し替える（③）。
+    const frozen = !!status.frozen;
     const exts = [
       { key: 'pillow', name: 'Pillow（画像処理）', desc: '重複画像検出に必要', size: '~3MB', installed: status.pillow },
       { key: 'clip', name: 'CLIP（画像類似検索）', desc: 'テキストで画像を検索。Pillowも同時にインストールされます', size: '~2GB', installed: status.clip },
       { key: 'caldav', name: 'CalDAV（カレンダー同期）', desc: 'iPhone/Thunderbird等とカレンダーを双方向同期', size: '~5MB', installed: status.caldav },
     ];
-    el.innerHTML = exts.map(ext => `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
+    el.innerHTML = exts.map(ext => {
+      let action;
+      if (ext.installed) {
+        action = `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`;
+      } else if (frozen) {
+        action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+          <span style="font-size:11px;color:var(--fg2);">配布版では自動インストールできません</span>
+          <button data-action="openExtensionInstallGuide('${ext.key}')" style="padding:4px 14px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;">導入手順を見る</button>
+        </div>`;
+      } else {
+        action = `<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button>`;
+      }
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
       <div style="flex:1;">
         <div style="font-weight:bold;font-size:13px;color:var(--fg);">${ext.name}</div>
         <div style="font-size:11px;color:var(--fg2);">${ext.desc}</div>
               <div style="font-size:11px;color:var(--fg2);">ファイルサイズ: ${ext.size}</div>
       </div>
-      ${ext.installed
-        ? `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`
-        : `<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button>`
-      }
-    </div>`).join('');
+      ${action}
+    </div>`;
+    }).join('');
 
     // CalDAVが有効なら接続情報を表示
     if (status.caldav) {

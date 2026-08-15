@@ -49,12 +49,18 @@
 
   function serializeImage(item) {
     const path = typeof _imagePropOpenPath === 'function' ? _imagePropOpenPath(item) : '';
-    const url = typeof _imageSrc === 'function' ? _imageSrc(item, false) : (item?.url || item?.src || '');
+    const assetKind = String(item?.asset_kind || item?.assetKind || '').toLowerCase();
+    const rawUrl = typeof _imageSrc === 'function' ? _imageSrc(item, false) : (item?.url || item?.src || '');
+    const previewUrl = assetKind === 'video'
+      ? String(item?.thumb_url || item?.preview_url || item?.preview_image_url || item?.url || '')
+      : (typeof _imageSrc === 'function' ? _imageSrc(item, true) : '');
+    const url = assetKind === 'video' && previewUrl && previewUrl !== rawUrl ? previewUrl : rawUrl;
     return {
       id: String(item?.id || item?.content_hash || item?.hash || path || url || ''),
       name: String(item?.caption || item?.filename || path.split('/').pop() || '画像'),
       path,
       url,
+      asset_kind: assetKind,
       width: Number(item?.width || 0),
       height: Number(item?.height || 0),
     };
@@ -174,6 +180,7 @@
 
   window.MeldexViewerSheetContext = {
     create,
+    serializeImage,
     viewerUrl(context) {
       return '/viewer?sheetContext=' + encodeURIComponent(context.id);
     },

@@ -254,7 +254,10 @@
       to.addEventListener(eventName, resetPreview);
     });
 
-    // --- シフト時間内に収める（残業許可の設定。既定OFF=現状どおり残業を許可） ---
+    // --- 残業を含める（既定OFF=残業なし。スケジューラー複数アカウント修正計画2026-08-13
+    // Phase 3: 全入口の既定を「残業を含めない」に統一する。旧ラベル「シフト時間内に収める」は
+    // チェックON＝残業なしという反転した意味で分かりにくかったため、新「自動割り当て」画面と
+    // 同じ「残業を含める」（チェックON＝残業あり）に統一した ---
     const allowOvertimeToggle = document.createElement('input');
     allowOvertimeToggle.type = 'checkbox';
     allowOvertimeToggle.checked = false;
@@ -262,12 +265,12 @@
     const allowOvertimeLabel = document.createElement('label');
     allowOvertimeLabel.className = 'gb-check gb-production-check';
     const allowOvertimeText = document.createElement('span');
-    allowOvertimeText.textContent = 'シフト時間内に収める';
+    allowOvertimeText.textContent = '残業を含める';
     allowOvertimeLabel.append(allowOvertimeToggle, allowOvertimeText);
     const allowOvertimeRow = document.createElement('div');
     allowOvertimeRow.className = 'gb-check-help-row gb-production-check-help-row';
     allowOvertimeRow.appendChild(allowOvertimeLabel);
-    allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト時間を超える割り当てをしません'));
+    allowOvertimeRow.insertAdjacentHTML('beforeend', fieldHelp('オンにすると、シフト終了後から次の出勤までの時間も割り当て候補に含めます'));
     allowOvertimeRow.querySelector('.gb-field-help').dataset.e2eId = 'production-recalculate-overtime-help';
     allowOvertimeToggle.addEventListener('change', resetPreview);
 
@@ -407,7 +410,7 @@
       setBusy(true, '自動割り当てのプレビューを作成しています…');
       try {
         const scope = currentScopeBody();
-        const allowOvertime = !allowOvertimeToggle.checked;
+        const allowOvertime = allowOvertimeToggle.checked;
         const unassignedOnly = unassignedOnlyToggle.checked;
         // current_user はスタッフ未登録時のソロフォールバック用（Desktopは認証セッションが
         // あればサーバー側で上書きする）。

@@ -69,6 +69,9 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 - [python-docx](https://github.com/python-openxml/python-docx) — MIT License
 - [Pillow](https://python-pillow.github.io/) — MIT-CMU
 - [python-multipart](https://github.com/Kludex/python-multipart) — Apache License 2.0
+- [watchdog](https://github.com/gorakhargosh/watchdog) — Apache License 2.0
+- [pystray](https://github.com/moses-palmer/pystray) — LGPL v3
+- [pynput](https://github.com/moses-palmer/pynput) — LGPL v3
 
 任意機能/連携:
 
@@ -79,6 +82,6 @@ Twemoji by Twitter, Inc. and contributors, licensed under CC-BY 4.0.
 - [Notion SDK for Python](https://github.com/ramnes/notion-sdk-py) — MIT License
 - [python-dotenv](https://github.com/theskumar/python-dotenv) — BSD 3-Clause
 - [requests](https://requests.readthedocs.io/) — Apache License 2.0
-- Radicale / icalendar / pystray / pynput / PyAutoGUI / pywebview / pywin32 / torch / transformers — 詳細は [THIRD-PARTY.md](THIRD-PARTY.md) を参照してください。
+- Radicale / icalendar / PyAutoGUI / pywebview / pywin32 / torch / transformers — 詳細は [THIRD-PARTY.md](THIRD-PARTY.md) を参照してください。
 
 詳細な同梱形態と権利表記チェック結果は [THIRD-PARTY.md](THIRD-PARTY.md) を参照してください。

@@ -3,13 +3,13 @@
    前提: gb-ui.css / gb-tools.css を先に読み込むこと（.gb-toolbar / .tb-icon-btn / .tb-select /
    .gb-context-menu 系の共通クラス・トークンを利用するため）。旧・独自 .viewer-ctx 系メニューCSSは
    廃止済み（右クリック/長押しメニューは viewer-context-menu.js が .gb-context-menu 系で生成する）。 */
+/* 単独アプリのダークモード統一計画（app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）:
+   --bg / --bg2 / --bg3 / --bg4 / --fg / --fg2 / --border / --accent は、ここで独自の値を再定義せず
+   gb-theme.css（本体と同じ「ダーク」プリセット）の値をそのまま使う。ビューワー固有の値
+   （--fade-ms / --panel-bg）だけをここで定義する。 */
 :root {
   --fade-ms: 300ms;
-  --bg: #0a0e14; --bg2: #151922; --bg3: #1c2230;
   --panel-bg: rgba(20,25,35,0.92);
-  --border: rgba(100,100,120,0.3);
-  --accent: #569cd6; --fg: #e5e7eb; --fg2: #9ca3af;
-  --bg4: #3e3e3e;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -26,13 +26,25 @@ body { position: relative; }
 .bg-layer.show { opacity: 1; }
 
 /* 表示エリア */
-#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; z-index: 1; touch-action: none; }
+/* overflow は visible（auto ではない）。パンは setZoomAt()/panBy() が #layer に transform:translate()
+   を適用するJS制御方式で、ネイティブスクロールは使わない。overflow:auto のままだと、ズームで画像が
+   コンテナよりはみ出した瞬間にスクロールバー分だけ #display の実効サイズがずれ、かつ子要素の
+   flexboxセンタリング（margin:auto）が「はみ出し時はauto marginを0にする」仕様で崩れて画像が
+   左上端へ張り付く（カーソル中心ズームの座標計算とWebブラウザの実描画位置が数百px単位で食い違う
+   バグの実測根拠あり）。センタリングは #display ではなく .layer 側の justify-content/align-items で
+   行う（下記参照）。 */
+#display { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; overflow: visible; z-index: 1; touch-action: none; }
 .viewer-loading-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 12; pointer-events: none; color: var(--fg2); font-size: 13px; }
 .viewer-loading-state.hidden { display: none; }
 .viewer-loading-card { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: rgba(10,14,20,0.82); box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
 .viewer-loading-spinner { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.18); border-top-color: var(--accent); border-radius: 999px; animation: viewer-spin 0.9s linear infinite; }
 @keyframes viewer-spin { to { transform: rotate(360deg); } }
-.layer { position: absolute; inset: 0; display: flex; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; overflow: auto; }
+/* justify-content/align-items:center で直接センタリングする（子の margin:auto に頼らない）。
+   margin:auto によるセンタリングは、ズームでコンテンツが .layer をはみ出した瞬間に
+   auto margin が 0 に潰れる（flexbox仕様）ため、setZoomAt() が想定する「中心固定＋パン量オフセット」
+   というカーソル中心ズームの前提が崩れる。overflow は visible（#display と同じ理由。パンは
+   transform:translate() のJS制御方式で、ネイティブスクロールに依存しない）。 */
+.layer { position: absolute; inset: 0; display: flex; justify-content: center; align-items: center; opacity: 0; transition: opacity var(--fade-ms) ease; pointer-events: none; overflow: visible; }
 .layer.show { opacity: 1; pointer-events: auto; }
 .img-single { max-width: 100%; max-height: 100%; object-fit: contain; user-select: none; margin: auto; }
 .spread { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 8px; margin: auto; }
@@ -44,7 +56,12 @@ body { position: relative; }
    フィット倍率・ズーム・パン・回転・反転を画像と同じCSS変換連鎖にそのまま追従させる
    （JS側で個別に再計算しない）。 */
 .viewer-ann-scene-wrap { position: relative; display: inline-block; line-height: 0; }
-.layer > .viewer-ann-scene-wrap { margin: auto; max-width: 100%; max-height: 100%; }
+/* .layer直下のラップは .layer 側の justify-content/align-items:center でセンタリングする
+   （上記参照）。以前ここにあった margin:auto と max-width/max-height:100% は、ズームでラップの
+   実サイズが .layer をはみ出すたびに margin:auto を0に潰し、かつラップ自身を100%幅/高に
+   クランプして中の img（JS側でmax-width/heightをnoneに上書き済み）だけが実サイズのまま
+   ラップ左上を起点にはみ出す状態を作っていた（=センタリング前提の崩壊）。要素自体は削除せず、
+   跡地として記録する（2026-08-13 カーソル中心ズーム誤差修正）。 */
 .spread > .viewer-ann-scene-wrap { max-height: 100%; }
 .viewer-ann-scene-svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; }
 .viewer-ann-preview { pointer-events: none; }

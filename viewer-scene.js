@@ -167,11 +167,55 @@
     };
   }
 
+  function safeSheetMediaUrl(value) {
+    const text = String(value || '').trim();
+    if (!text || /[\u0000-\u001f]/.test(text)) return '';
+    const inlineImage = text.match(/^data:image\/(png|jpeg|gif|webp|avif);base64,([A-Za-z0-9+/]*={0,2})$/i);
+    if (inlineImage) {
+      const kind = inlineImage[1].toLowerCase();
+      const encoded = inlineImage[2];
+      if (!encoded || encoded.length % 4 !== 0) return '';
+      const padding = encoded.endsWith('==') ? 2 : (encoded.endsWith('=') ? 1 : 0);
+      const decodedBytes = Math.floor(encoded.length * 3 / 4) - padding;
+      if (decodedBytes > 5 * 1024 * 1024) return '';
+      let head = [];
+      try { head = [...atob(encoded.slice(0, 64))].map(ch => ch.charCodeAt(0)); } catch { return ''; }
+      const ascii = String.fromCharCode(...head);
+      const valid = (
+        (kind === 'png' && head.slice(0, 8).join(',') === '137,80,78,71,13,10,26,10')
+        || (kind === 'jpeg' && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff)
+        || (kind === 'gif' && (ascii.startsWith('GIF87a') || ascii.startsWith('GIF89a')))
+        || (kind === 'webp' && ascii.startsWith('RIFF') && ascii.slice(8, 12) === 'WEBP')
+        || (kind === 'avif' && ascii.slice(4, 8) === 'ftyp' && /^(?:avif|avis)$/.test(ascii.slice(8, 12)))
+      );
+      return valid ? text : '';
+    }
+    if (/^(?:https?:|blob:)/i.test(text)) return text;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(text) || text.startsWith('//')) return '';
+    try {
+      const parsed = new URL(text, location.origin);
+      return parsed.origin === location.origin ? text : '';
+    } catch {
+      return '';
+    }
+  }
+
   function makeSheetContextImageItem(source) {
-    const path = String(source?.path || source?.url || '');
-    const item = makeImageItem(path, source?.name || '');
-    if (source?.url) {
-      item.url = String(source.url);
+    const path = String(source?.path || '');
+    const safeUrl = safeSheetMediaUrl(source?.url);
+    const assetKind = String(source?.asset_kind || source?.assetKind || '').toLowerCase();
+    // data: video is never playable. A saved video may however carry a bounded,
+    // validated data:image preview, which is safe to use only as its poster.
+    if (assetKind === 'video' && !path && /^data:/i.test(safeUrl)) return null;
+    if (!path && !safeUrl) return null;
+    const item = makeImageItem(path || safeUrl, source?.name || '');
+    if (assetKind === 'video') item.type = 'video';
+    if (safeUrl && assetKind === 'video' && path) {
+      // X動画はpath=保存済み動画、url=プレビュー画像を同時に持つ。再生URLは
+      // path由来のfile-rawのまま保持し、画像URLはposter用途だけに分離する。
+      item.posterUrl = safeUrl;
+    } else if (safeUrl) {
+      item.url = safeUrl;
       item.rawUrl = item.url;
       item.previewUrl = item.url;
       item.urlCandidates = [item.url];
@@ -179,6 +223,7 @@
     item.w = Number(source?.width || 0);
     item.h = Number(source?.height || 0);
     item.sheetImageId = String(source?.id || '');
+    item.assetKind = assetKind || item.type;
     return item;
   }
 
@@ -198,7 +243,7 @@
       return true;
     }
     const nextItems = Array.isArray(message.images)
-      ? message.images.map(makeSheetContextImageItem).filter(item => item.url || item.path)
+      ? message.images.map(makeSheetContextImageItem).filter(item => item && (item.url || item.path))
       : [];
     if (!nextItems.length) {
       flashStatus(message.message || 'このセルに画像はありません');
@@ -563,6 +608,7 @@
         layer.appendChild(canvas);
       } else if (items[group[0]].type === 'video') {
         const video = window.MeldexViewerVideo.buildVideoElement(items[group[0]], displayItemUrl(items[group[0]]), { className: 'img-single' });
+        if (items[group[0]].posterUrl) video.poster = items[group[0]].posterUrl;
         applyImageFitStyle(video, false);
         layer.appendChild(video);
       } else {

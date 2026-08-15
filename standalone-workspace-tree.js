@@ -620,15 +620,19 @@
   async function _remove() {
     const item = _selectedItem();
     if (!item) return;
-    const confirmed = await _showDialog({
-      title: '削除しますか？',
-      message: `${item.name || _runtime().basename(item.path)} をMeldexのゴミ箱へ移動します。`,
-      confirmLabel: 'ゴミ箱へ移動', danger: true,
-    });
+    const message = `${item.name || _runtime().basename(item.path)} をMeldexのゴミ箱へ移動します。`;
+    const confirmed = window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact
+      ? await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+        [{ path: item.path, kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file' }],
+        message, { operation: 'trash' },
+      )
+      : false;
     if (!confirmed) return;
     _setBusy(true, 'ゴミ箱へ移動しています…');
     try {
-      await _runtime().deletePath(item.path);
+      await _runtime().deletePath(item.path,
+        { ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
+          kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file' });
       state.selectedPath = '';
       await _loadCurrent();
       _setStatus('ゴミ箱へ移動しました。', false);

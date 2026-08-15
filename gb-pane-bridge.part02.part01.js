@@ -365,10 +365,14 @@
     pane.appendChild(fname);
   }
 
+  // 'chat' はここに含めない。右サイドバーの既定パネルであるチャットに注釈
+  // フロートボタンが出ていた（ユーザー指摘、2026-08-12）。加えて実際の描画・保存を
+  // 担う _ANNOTATION_TARGET_VIEW_TYPES（gb-annotations.js）には元々 'chat' が
+  // 含まれておらず、ボタンを押しても機能しない状態だった。両者を合わせて撤去する。
   const _ANNOTATION_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
     'compare', 'entity', 'page', 'folder', 'media', 'html', 'csv',
-    'board', 'scriptnote', 'calendar', 'chat',
+    'board', 'scriptnote', 'calendar',
   ]);
   const _ANNOTATION_DB_HOST_TYPES = new Set([
     'database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db',
@@ -439,10 +443,6 @@
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
     if (tabType === 'board') return tabPath('boardPath') || statePath('currentBoardPath');
     if (tabType === 'calendar') return 'calendar:panel';
-    if (tabType === 'chat') {
-      return tabPath('chatPath', 'historyPath')
-        || (tab?.state?.sessionId ? `chat:${tab.state.sessionId}` : '');
-    }
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       if (tabType === 'smart-db') {
         return tabPath('smartDbPath', 'dbPath') || statePath('currentSmartDb')?._filePath || statePath('currentDbPath');

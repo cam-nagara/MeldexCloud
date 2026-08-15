@@ -919,6 +919,7 @@ async function _deleteCurrentFile(toolType) {
   if (!confirmed) return;
   try {
     const result = await deleteOutlinerItemsWithHistory([{ path, name, type: toolType || 'page' }], {
+      confirmation: confirmed,
       label: 'ファイル削除',
       detail: path,
       refresh: async () => {

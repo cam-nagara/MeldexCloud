@@ -92,9 +92,15 @@ function bdAppendFastNodeAnchors(div, node) {
   ['top', 'bottom', 'left', 'right'].forEach(pos => {
     const anchor = document.createElement('div');
     anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでカード追加 / ドラッグでライン作成';
+    anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
     if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
+    // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
+    // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
     anchor.addEventListener('pointerdown', (ev) => {
+      if (typeof bdHandleAnchorPointerDown === 'function') {
+        bdHandleAnchorPointerDown(ev, div, node, pos);
+        return;
+      }
       if (ev.button !== 0) return;
       ev.preventDefault();
       ev.stopPropagation();
@@ -544,14 +550,61 @@ function bdScheduleAutoLayouts(delayMs) {
   }, delay);
 }
 
-function bdFlushAutoLayouts() {
-  if (_bdFastMutationDepth > 0) {
+function bdSyncConnectionDomOrder() {
+  if (typeof bd === 'undefined' || !Array.isArray(bd.connections)) return;
+  const svg = document.getElementById('bd-svg');
+  if (!svg) return;
+  bd.connections.forEach(conn => {
+    const id = String(conn?.id || '');
+    if (!id) return;
+    [...svg.children].forEach(el => {
+      if (el.tagName?.toLowerCase() === 'defs') return;
+      if (el.dataset?.connId === id || el._connId === id || el._connData?.id === id
+        || el.id === `bd-path-${id}` || el.id === `bd-sel-back-${id}` || el.id === `bd-sel-front-${id}`) {
+        svg.appendChild(el);
+      }
+    });
+    document.querySelectorAll('.bd-conn-label,.bd-line-comment-badge').forEach(el => {
+      if (el.dataset?.connId === id) el.parentNode?.appendChild(el);
+    });
+  });
+}
+
+function bdCancelScheduledAutoLayouts() {
+  clearTimeout(_bdDeferredAutoLayoutTimer);
+  _bdDeferredAutoLayoutTimer = 0;
+  if (_bdDeferredAutoLayoutRaf) {
+    cancelAnimationFrame(_bdDeferredAutoLayoutRaf);
+    _bdDeferredAutoLayoutRaf = 0;
+  }
+}
+
+function bdOutermostAutoLayoutRoots(rootIds) {
+  if (typeof bd === 'undefined' || !Array.isArray(bd.nodes)) return [...new Set(rootIds || [])];
+  const requested = new Set((rootIds || []).filter(Boolean));
+  const byId = new Map(bd.nodes.filter(Boolean).map(node => [node.id, node]));
+  return [...requested].filter(rootId => {
+    const seen = new Set([rootId]);
+    let parentId = byId.get(rootId)?.parent;
+    while (parentId && !seen.has(parentId)) {
+      if (requested.has(parentId)) return false;
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.parent;
+    }
+    return true;
+  });
+}
+
+function bdFlushAutoLayouts(options = {}) {
+  const force = options === true || options?.force === true;
+  if (_bdFastMutationDepth > 0 && !force) {
     const delayMs = _bdDeferredAutoLayoutDelayMs || undefined;
     _bdDeferredAutoLayoutDelayMs = 0;
     bdScheduleAutoLayouts(delayMs);
     return;
   }
-  const roots = [..._bdDeferredAutoLayoutRoots].filter(Boolean);
+  bdCancelScheduledAutoLayouts();
+  const roots = bdOutermostAutoLayoutRoots([..._bdDeferredAutoLayoutRoots]);
   _bdDeferredAutoLayoutRoots.clear();
   _bdDeferredAutoLayoutDelayMs = 0;
   if (!roots.length) {

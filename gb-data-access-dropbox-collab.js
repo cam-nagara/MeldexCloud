@@ -339,6 +339,20 @@
       await _moveEntry(provider, _roomDir(oldPath, sourceFolder), _roomDir(newPath, sourceFolder));
       return { ok: true, path: newPath, name: newName };
     }
+    if (pathname === '/collab/rooms/members' && method === 'PUT') {
+      // Phase 8: 自分だけのルーム(グループルーム)へ、あとから他メンバーを招待・除名する。
+      // _assertRoomAccess が「既にそのルームのメンバーである」ことを先に確認するため、
+      // 部外者はここへ到達できない。除名してもメッセージ本体には触れない(履歴は保全)。
+      const roomPath = _requireRoomPath(body?.path || '');
+      const meta = await _assertRoomAccess(provider, roomPath, user, sourceFolder);
+      if (meta.type !== 'group') throw new Error('グループルームのみ参加者を変更できます');
+      const rawMembers = body?.members;
+      if (!Array.isArray(rawMembers)) throw new Error('members は配列で指定してください');
+      const members = Array.from(new Set(rawMembers.map(member => String(member || '').trim()).filter(Boolean))).sort();
+      if (!members.length) throw new Error('参加者を1人以上指定してください');
+      await provider.writeText(_groupMembersPath(roomPath, sourceFolder), JSON.stringify({ members }, null, 2));
+      return { ok: true, path: roomPath, members };
+    }
     if (pathname === '/collab/rooms' && method === 'DELETE') {
       const roomPath = _requireRoomPath(url.searchParams.get('path') || body?.path || '');
       _assertMutableRoomPath(roomPath);

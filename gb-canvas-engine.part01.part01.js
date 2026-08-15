@@ -24,11 +24,29 @@ const bd = {
 // frontmatter adapter がアクティブなボードキャンバス要素に CSS 変数をセットする。
 // 構造タイプ: mindmap, flowchart, logic, timeline, orgchart, tree, none(親に従う = ルートのstructureを継承)
 const BD_STRUCTURES = {mindmap:'マインドマップ', flowchart:'フローチャート', logic:'ロジック図', timeline:'タイムライン', orgchart:'組織図', tree:'ツリー'};
+const BD_BOARD_ZOOM_MIN = 0.1;
+const BD_BOARD_ZOOM_MAX = 5;
+
+function bdSafeZoom(value) {
+  const zoom = Number(value);
+  return Math.max(BD_BOARD_ZOOM_MIN, Number.isFinite(zoom) && zoom !== 0 ? zoom : 1);
+}
+function bdClampZoom(value) {
+  const zoom = Number(value);
+  const finiteZoom = Number.isFinite(zoom) ? zoom : 1;
+  return Math.max(BD_BOARD_ZOOM_MIN, Math.min(BD_BOARD_ZOOM_MAX, finiteZoom));
+}
 
 // --- ID生成・親子ヘルパー ---
 function bdId() { return 'b' + (++bd._id) + '_' + Date.now().toString(36); }
 function bdNode(text, x, y, w, h, opts) {
-  return { id: bdId(), text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts };
+  // opts.id が明示的に undefined/空で渡された場合（例: フロントマターの ids: に
+  // 該当エントリが無い見出しノード）、`...opts` の展開が `id: bdId()` を
+  // `id: undefined` で上書きしてしまい、bdRenderNode() が id 無しノードとして
+  // 描画をスキップする（カードが1枚も描画されない実害を確認済み）。
+  // opts.id が真値のときだけ採用し、それ以外は必ず新規IDへフォールバックする。
+  const resolvedId = (opts && opts.id) ? opts.id : bdId();
+  return { id: resolvedId, text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts, id: resolvedId };
 }
 function bdGetAppZoom() {
   return (typeof _getZoom === 'function') ? Math.max(0.1, _getZoom()) : 1;
@@ -431,7 +449,7 @@ function bdRemoveConnection(connOrId, options = {}) {
     }).catch(() => {});
   }
   if (!options.skipSelection) bdRemoveConnectionFromSelection(conn.id);
-  if (!options.skipRender) bdDrawConns();
+  if (!options.skipRender) bdDrawConns({ connIds: [conn.id], reason: 'remove-connection' });
   if (!options.skipDirty) bdDirty();
   return true;
 }
@@ -586,6 +604,8 @@ function bdParseMd(raw) {
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
       if (ispm) {
         try { t.imageSourcePath = String(bdYamlScalar(ispm[1]) || '').replace(/\\/g, '/'); }
@@ -832,6 +852,49 @@ function bdParseMd(raw) {
             return c;
           })
           .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
+      }
+    }
+    // 旧式ボード互換: フロントマター直下に `nodes:` をカードのフラットなリストとして
+    // 直接持つスキーマ（例: 同梱サンプル「死霊探偵/キャラ相関図.board.md」）。
+    // 現行の positions/sizes マップ方式・本文見出し方式のどちらにも該当しないため、
+    // ここで検出して専用に nodes/connections を組み立てて早期returnする
+    // （```board JSON ブロック方式と同じ位置づけの並存フォーマット）。
+    // これを追加する前は `nodes:` の内容が一切解釈されず、本文の最初の
+    // "# " 見出し1個だけが1枚のノードに折り畳まれ、connections の from/to も
+    // 実在しないIDを指したまま残っていた（v0.7.259相当で確認、カードが0描画になる原因）。
+    if (typeof bdParseFrontmatterNodeList === 'function') {
+      const legacyItems = bdParseFrontmatterNodeList(fm);
+      if (legacyItems.length) {
+        const legacyIdMap = {};
+        const legacyNodes = legacyItems.map(item => {
+          const node = bdNode(
+            String(item.text == null ? '' : item.text),
+            Number(item.x) || 0,
+            Number(item.y) || 0,
+            Number(item.w) || 160,
+            Number(item.h) || 0,
+            {},
+          );
+          if (item.color) node.bgColor = String(item.color);
+          if (item.id) legacyIdMap[String(item.id)] = node.id;
+          return node;
+        });
+        const legacyConnections = connections
+          .map(c => ({ ...c, from: legacyIdMap[c.from] || '', to: legacyIdMap[c.to] || '' }))
+          .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
+        if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(legacyNodes);
+        if (canvasBg) bd._bgColor = canvasBg;
+        const legacyLlmSemantics = typeof bdNormalizeLoadedLlmSemantics === 'function'
+          ? bdNormalizeLoadedLlmSemantics(llmSemantics, legacyIdMap)
+          : llmSemantics;
+        if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(legacyConnections, null, legacyLlmSemantics);
+        return {
+          nodes: legacyNodes,
+          connections: legacyConnections,
+          groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
+          llmSemantics: legacyLlmSemantics,
+          preservedFrontmatter,
+        };
       }
     }
     raw = raw.substring(fmMatch[0].length);

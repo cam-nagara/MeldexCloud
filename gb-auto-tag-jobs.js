@@ -278,6 +278,16 @@
     return startEndpoint('/global-tags/auto-tag', payload, options);
   }
 
+  // Phase 8(2026-08-14自動タグ付け計画): Web Clipperが保存した画像の
+  // 待ち行列をまとめて処理する。対象は待ち行列のパスに固定されるため、
+  // 呼び出し側はソースフォルダだけを渡す。
+  function startPendingQueue(sourceFolder, options) {
+    return startEndpoint('/auto-tag/pending/run', { source_folder: sourceFolder }, {
+      ...options,
+      label: options?.label || 'Web Clipperの画像認識',
+    });
+  }
+
   function startReset(payload, options) {
     return startEndpoint('/global-tags/reset', payload, {
       ...options,
@@ -325,6 +335,7 @@
   window.MeldexAutoTagJobs = {
     start,
     startReset,
+    startPendingQueue,
     cancel,
     restore,
     snapshot: () => [...jobs.values()].map(job => ({ ...job })),

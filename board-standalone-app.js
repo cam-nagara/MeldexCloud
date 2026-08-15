@@ -24,6 +24,7 @@
   const BOTTOM_TOOLBAR_HIDDEN_KEY = 'meldex-board-toolbar-bottom-hidden';
   const BOARD_FILE_EXTENSION = '.mel-board';
   let localDrafts = null;
+  let boardViewportRefreshRaf = 0;
 
   // -------------------------------------------------------------------------
   // ブラウザ互換性チェック
@@ -613,10 +614,10 @@
   }
 
   function _refreshBoardViewport() {
-    requestAnimationFrame(() => {
+    if (boardViewportRefreshRaf) return;
+    boardViewportRefreshRaf = requestAnimationFrame(() => {
+      boardViewportRefreshRaf = 0;
       if (typeof bdTransform === 'function') bdTransform();
-      if (typeof bdDrawConns === 'function') bdDrawConns();
-      if (typeof bdDrawFrames === 'function') bdDrawFrames();
       if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
     });
   }
@@ -741,46 +742,13 @@
     _layoutControlsInitialized = true;
   }
 
-  function _appendContextMenuAction(menu, label, action) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'gb-context-menu-item';
-    item.setAttribute('role', 'menuitem');
-    item.textContent = label;
-    item.addEventListener('click', () => {
-      document.querySelectorAll('.gb-context-menu').forEach(el => el.remove());
-      action();
-    });
-    menu.appendChild(item);
-  }
-
-  function _appendStandaloneContextMenuItems(menu) {
-    if (!menu) return;
-    const sep = document.createElement('div');
-    sep.className = 'bd-cm-sep gb-context-menu-sep';
-    sep.setAttribute('role', 'separator');
-    menu.appendChild(sep);
-    if (typeof _bdCreateContextSubmenu === 'function' && typeof _bdContextMenuItem === 'function') {
-      const displayMenu = _bdCreateContextSubmenu(menu, '表示', 190);
-      ['top', 'bottom'].forEach(position => {
-        const label = position === 'top' ? '上端ツールバーを常時表示' : '下端ツールバーを常時表示';
-        _bdContextMenuItem(displayMenu, label, () => {
-          _setToolbarVisible(position, !_isToolbarVisible(position));
-        }, {
-          role: 'menuitemcheckbox',
-          checked: _isToolbarVisible(position),
-        });
-      });
-    } else {
-      _appendContextMenuAction(menu, '上端ツールバーを常時表示', () => {
-        _setToolbarVisible('top', !_isToolbarVisible('top'));
-      });
-      _appendContextMenuAction(menu, '下端ツールバーを常時表示', () => {
-        _setToolbarVisible('bottom', !_isToolbarVisible('bottom'));
-      });
-    }
-    _appendContextMenuAction(menu, _isOptionsPanelVisible() ? '右サイドバーを閉じる' : '右サイドバーを開く', () => {
-      _toggleOptionsPanel();
+  function _appendStandaloneDisplayContextMenuItems(target) {
+    if (!target?.item) return;
+    const visible = _isOptionsPanelVisible();
+    const mark = typeof radioMark === 'function' ? radioMark(visible) : (visible ? '✓ ' : '');
+    target.item(mark + (visible ? '右サイドバーを閉じる' : '右サイドバーを開く'), () => _toggleOptionsPanel(), {
+      role: 'menuitemcheckbox',
+      checked: visible,
     });
   }
 
@@ -916,8 +884,7 @@
     }
     requestAnimationFrame(() => {
       if (typeof bdTransform === 'function') bdTransform();
-      if (typeof bdDrawConns === 'function') bdDrawConns();
-      if (typeof bdDrawFrames === 'function') bdDrawFrames();
+      if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
     });
   }
 
@@ -1104,7 +1071,7 @@
     refreshBoardList: _refreshBoardList,
     toggleOptionsPanel: _toggleOptionsPanel,
     isOptionsPanelVisible: _isOptionsPanelVisible,
-    appendContextMenuItems: _appendStandaloneContextMenuItems,
+    appendDisplayContextMenuItems: _appendStandaloneDisplayContextMenuItems,
     setToolbarVisible: _setToolbarVisible,
     isToolbarVisible: _isToolbarVisible,
   };

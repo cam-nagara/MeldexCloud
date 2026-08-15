@@ -18,6 +18,9 @@
   // meldex_production_recalculate.py の定数
   const MIN_TASK_MINUTES = 10;
   const PROTECTED_TASK_STATUSES = new Set(['完了', '進行中', '着手中', '作業中']);
+  // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 「完了」以外の進行中系
+  // ステータスは、既に作業予定日時が入っている場合だけ保護する（taskProtected参照）。
+  const IN_PROGRESS_TASK_STATUSES = new Set([...PROTECTED_TASK_STATUSES].filter(status => status !== '完了'));
   // meldex_production_schema.PRIORITY_OPTIONS と同じ値（低<通常<高<最優先）。
   // 別クロージャ（gb-production-management-schema-definitions.js）にも同値の定義があるが、
   // このファイルはCloud本体から独立して読み込み・テストできるよう小さな定数の複製を許容する。
@@ -175,7 +178,20 @@
   }
 
   function taskProtected(task) {
-    return !!task.manual_locked || !!task.assignee_fixed || PROTECTED_TASK_STATUSES.has(String(task.status || '').trim());
+    const status = String(task.status || '').trim();
+    if (task.manual_locked || status === '完了') return true;
+    if (task.assignee_fixed && !String(task.fixed_user || '').trim()) {
+      // 担当者固定なのに固定先の担当者が空。割り当てようがないため常に保護する。
+      return true;
+    }
+    // Phase 4-2（ユーザー判断: 日程が空なら割り当てる）: 進行中系ステータス・担当者固定は、
+    // 既に作業予定日時が入っている場合だけ保護する。空なら通常どおり割り当て対象にする
+    // (_reserve_slot 相当の reserveSlot は task.fixed_user を尊重するので、担当者固定の
+    // 枠は保たれる)。
+    if (task.assignee_fixed || IN_PROGRESS_TASK_STATUSES.has(status)) {
+      return !!(task.current_start && task.current_end);
+    }
+    return false;
   }
 
   function deadlineDt(task, periodValue) {
@@ -459,7 +475,7 @@
           if (before.end > before.cursor) segments.push(before);
         }
         seg.cursor = end;
-        return { staff: seg.staff, start, end };
+        return { staff: seg.staff, start, end, overtime: !!seg.overtime };
       }
     }
     return null;
@@ -542,7 +558,7 @@
     return segments.map(seg => ({ ...seg }));
   }
 
-  function scheduledRow(task, staffName, start, end, durationMs) {
+  function scheduledRow(task, staffName, start, end, durationMs, overtime) {
     const startText = isoMinutes(start);
     const endText = isoMinutes(end);
     const hours = pythonRoundTo(durationMs / 3600000, 2);
@@ -564,7 +580,22 @@
       color: task.color || '',
     };
     if (task.required_equipment && task.required_equipment.length) row.required_equipment = [...task.required_equipment];
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3-2: Desktop版 _scheduled_row と
+    // 同じ残業区分をrowへ持たせる（案の一覧・カレンダー・比較で残業と分かるようにする）。
+    row.overtime = !!overtime;
+    if (row.overtime) row.overtime_hours = hours;
     return row;
+  }
+
+  function lockedRowReason(task) {
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 保護されて動かさなかった
+    // タスクも、結果一覧の理由欄が空欄で並ばないよう理由を示す(Desktop版 _locked_row_reason)。
+    const status = String(task.status || '').trim();
+    if (task.manual_locked) return '手動でロックされているため、予定を変更していません';
+    if (status === '完了') return '完了済みのため、予定を変更していません';
+    if (IN_PROGRESS_TASK_STATUSES.has(status)) return '進行中のため、予定を変更していません';
+    if (task.assignee_fixed) return '担当者固定のため、予定を変更していません';
+    return '既に予定があるため、変更していません';
   }
 
   function lockedRow(task) {
@@ -583,6 +614,7 @@
       after_range: task.current_range,
       changed: false,
       color: task.color || '',
+      reason: lockedRowReason(task),
     };
     if (task.current_segments && task.current_segments.length) row.segments = task.current_segments;
     return row;
@@ -712,7 +744,7 @@
         return;
       }
       reserveEquipment(resources, requiredEquipment, slot.start, slot.end);
-      rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs));
+      rows.push(scheduledRow(task, slot.staff, slot.start, slot.end, durationMs, slot.overtime));
       completedById.set(String(task.id || ''), slot.end);
       const current = groupReady.get(groupKey);
       groupReady.set(groupKey, (current && current > slot.end) ? current : slot.end);
@@ -754,6 +786,10 @@
     }
     if (warnings.some(w => w.type === 'dependency')) result.push('前工程が割り当てられないタスクがあるため、後工程も保留されています');
     if (warnings.some(w => w.type === 'invalid_shift')) result.push('終了時刻がない勤務シフトがあります。シフト表で終了時刻を入力してください');
+    if (warnings.some(w => w.type === 'overtime_used')) {
+      const overtimeMinutes = warnings.filter(w => w.type === 'overtime_used').reduce((sum, w) => sum + (Number(w.minutes) || 0), 0);
+      result.push(`通常の勤務時間だけでは約${formatHoursOneDecimal(overtimeMinutes / 60)}時間分足りず、残業として配置しています`);
+    }
     if (!result.length && rows.some(r => r.changed)) result.push('プレビューを確認して問題なければ適用してください');
     return result;
   }
@@ -790,6 +826,7 @@
   window.MeldexProductionRecalcEngine = {
     MIN_TASK_MINUTES,
     PROTECTED_TASK_STATUSES,
+    IN_PROGRESS_TASK_STATUSES,
     PRIORITY_OPTIONS,
     safeFloat,
     truthy,

@@ -9,6 +9,7 @@
     disposed: false,
     capabilities: null,
     pendingManifest: null,
+    unification: null,
   };
 
   function sourceFolder() {
@@ -289,14 +290,60 @@
     }
   }
 
+  function renderUnification(preview) {
+    runtime.unification = preview || null;
+    const section = runtime.root?.querySelector('[data-tag-unification]');
+    const summary = runtime.root?.querySelector('[data-tag-unification-summary]');
+    const button = runtime.root?.querySelector('[data-tag-unification-run]');
+    if (!section || !summary || !button) return;
+    section.hidden = !preview?.pending;
+    if (!preview?.pending) return;
+    summary.textContent = `${Number(preview.dictionary_count || 0).toLocaleString('ja-JP')}個の旧辞書（延べ${Number(preview.source_tag_count || 0).toLocaleString('ja-JP')}件）を、${Number(preview.merged_tag_count || 0).toLocaleString('ja-JP')}件へまとめます。定義の相違 ${Number(preview.conflict_count || 0).toLocaleString('ja-JP')}件、付与IDの付け替え ${Number(preview.assignment_remap_count || 0).toLocaleString('ja-JP')}件です。`;
+    button.disabled = isReadonly();
+  }
+
+  async function runUnification() {
+    const preview = runtime.unification;
+    if (!preview?.pending) return;
+    const message = `${preview.dictionary_count}個の旧タグ辞書を個人ホームの1つへまとめます。実行前の辞書はCSV、付与記録はJSONでバックアップします。続行しますか？`;
+    const confirmed = typeof cfConfirm === 'function'
+      ? await cfConfirm(message)
+      : window.confirm(message);
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const result = await apiPost('/global-tags/unification', {
+        confirmed: true,
+        signature: preview.signature,
+      });
+      renderUnification({ pending: false });
+      await refresh();
+      statusText(`タグ辞書を1つにまとめました。バックアップ: ${result.backup_path}`);
+    } catch (error) {
+      statusText(`タグ辞書をまとめられませんでした: ${error?.message || error}`, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function fetchUnification() {
+    try {
+      return await apiFetch('/global-tags/unification', { silentError: true });
+    } catch (_error) {
+      // Cloudは既に接続単位で1辞書のため、Desktop旧辞書の移行APIを持たない。
+      return { pending: false };
+    }
+  }
+
   async function refresh() {
     if (!runtime.root || runtime.disposed) return;
     try {
-      const [status, candidates, events, capabilities] = await Promise.all([
+      const [status, candidates, events, capabilities, unification] = await Promise.all([
         apiFetch(scopedUrl('/tag-maintenance/status'), { silentError: true }),
         apiFetch(scopedUrl('/tag-maintenance/candidates?status=pending&limit=100'), { silentError: true }),
         apiFetch(scopedUrl('/tag-maintenance/events?limit=20'), { silentError: true }),
         apiFetch('/tag-maintenance/portable-uid/capabilities', { silentError: true }),
+        fetchUnification(),
       ]);
       runtime.capabilities = capabilities || { embedding: false, manifest: false };
       const manifestExport = runtime.root?.querySelector('[data-tag-maintenance-manifest-export]');
@@ -304,6 +351,7 @@
       renderSummary(status || {});
       renderCandidates(candidates?.items || []);
       renderEvents(events?.items || []);
+      renderUnification(unification);
       if (!navigator.onLine) statusText('オフラインです。表示中の情報は接続時点の内容です。');
       else statusText(isReadonly() ? '閲覧専用です。候補の確認のみできます。' : '必要な時だけ差分照合を実行します。');
     } catch (error) {
@@ -676,6 +724,14 @@
         </div>
         <div class="gb-section-desc" data-tag-maintenance-message role="status" aria-live="polite"></div>
       </section>
+      <section class="gb-section gb-section--boxed" data-tag-unification hidden>
+        <div class="gb-section-title">タグ辞書を個人ホームへまとめる</div>
+        <div class="gb-section-desc" data-tag-unification-summary></div>
+        <div class="gb-section-desc">実行前の各辞書はCSV、ファイルへの付与記録はJSONで保存します。確認するまで既存データは変更しません。</div>
+        <div class="tag-maintenance-actions">
+          <button type="button" class="gb-btn gb-btn-sm primary" data-tag-unification-run data-tag-maintenance-write>確認した内容でまとめる</button>
+        </div>
+      </section>
       <section class="gb-section gb-section--boxed">
         <div class="gb-section-title">確認すれば復旧できる候補</div>
         <div data-tag-maintenance-candidates><div class="gb-section-desc">読み込み中…</div></div>
@@ -713,6 +769,7 @@
     bind(container, '[data-tag-maintenance-portable-regenerate]', () => writePortableUid(true));
     bind(container, '[data-tag-maintenance-portable-remove]', removePortableUid);
     bind(container, '[data-tag-maintenance-manifest-export]', exportManifest);
+    bind(container, '[data-tag-unification-run]', runUnification);
     bind(container, '[data-tag-maintenance-manifest-select]', () => {
       container.querySelector('[data-tag-maintenance-manifest-input]')?.click();
     });

@@ -14,8 +14,8 @@
   "orientation": "any",
   "lang": "ja",
   "dir": "ltr",
-  "background_color": "#1e1e1e",
-  "theme_color": "#1e1e1e",
+  "background_color": "#0b0d10",
+  "theme_color": "#0b0d10",
   "categories": [
     "productivity",
     "utilities"

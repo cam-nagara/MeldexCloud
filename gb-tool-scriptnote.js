@@ -539,6 +539,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-modal', 'sn2-toolbar-select-modal');
     modalApi.body.classList.add('sn2-preset-modal-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const select = panel.querySelector('.sn2-toolbar-modal-select');
     if (select) select.value = source.value;
     const apply = () => {
@@ -836,6 +837,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-modal');
     modalApi.body.classList.add('sn2-preset-modal-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const input = panel.querySelector('.sn2-preset-name');
     const status = panel.querySelector('.sn2-preset-status');
     const setBusy = next => {
@@ -1002,6 +1004,7 @@ class ScriptNoteComponent extends ToolComponent {
     panel.classList.add('sn2-preset-manager-modal');
     modalApi.body.classList.add('sn2-preset-manager-body');
     modalApi.footer.classList.add('sn2-preset-modal-actions');
+    globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     const list = panel.querySelector('[data-pm-list]');
     const status = panel.querySelector('.sn2-preset-manager-status');
     const addButton = panel.querySelector('[data-pm-add]');
@@ -1040,6 +1043,10 @@ class ScriptNoteComponent extends ToolComponent {
       });
       if (typeof replaceIcons === 'function') replaceIcons(list);
       if (busy) list.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      // render()は一覧行をinnerHTMLごと作り直すため、初期化時に一度だけ行った
+      // applyCompactTargetsではこの後に生成される行内ボタン（複製/上/下/削除）へ
+      // タップ領域クラスが付かない。行を作り直すたびに再適用する。
+      globalThis.GBScriptNoteDialogUI?.applyCompactTargets?.(panel);
     };
     const setBusy = next => {
       busy = next;

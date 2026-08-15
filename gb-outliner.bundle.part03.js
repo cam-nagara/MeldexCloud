@@ -332,16 +332,16 @@
 
     // Alt+D&D: フォルダリンク登録（移動ではなくリンク）
     if (e.altKey && (isFolder || isDB)) {
-      for (const n of nodes) {
-        const d = n._nodeData;
-        if (d && d.path) {
-          const addLink = typeof addFolderLinkWithHistory === 'function'
-            ? addFolderLinkWithHistory(d.path, item.path)
-            : apiPost('/folder-links/add', { file_path: d.path, folder_path: item.path });
-          Promise.resolve(addLink).then(() => {
-            showStatus(d.name + ' → ' + item.name + ' にリンク登録');
-          }).catch(() => showStatus('リンク登録に失敗', true));
-        }
+      const linkItems = nodes.map(n => n._nodeData).filter(d => d?.path);
+      try {
+        const result = typeof addFolderLinksBatchWithHistory === 'function'
+          ? await addFolderLinksBatchWithHistory(linkItems, item.path)
+          : await apiPost('/folder-links/batch/add', { items: linkItems.map(d => ({ file_path: d.path })), folder_path: item.path });
+        const failed = result?.failed_count || 0;
+        const changed = result?.created_count || 0;
+        showStatus(`${changed} 件を「${item.name}」にも表示しました${failed ? `（${failed} 件失敗）` : ''}`, failed > 0 && changed === 0);
+      } catch {
+        showStatus('リンク登録に失敗', true);
       }
       clearDragIndicators();
       loadOutliner();
@@ -389,6 +389,21 @@
     if (destFolder && isItemLocked(destFolder)) {
       showStatus('編集ロック中のフォルダには移動できません', true);
       return;
+    }
+
+    // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
+    // 落とすと「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+    if (position === 'inside' && isDB) {
+      const rejected = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
+      if (rejected.length) {
+        const names = rejected.map(n => n._nodeData?.name || '').filter(Boolean);
+        showStatus(
+          'シートの中にはエントリだけを置けます（' + (names[0] || '対象') +
+          (names.length > 1 ? ' ほか ' + (names.length - 1) + ' 件' : '') + '）',
+          true
+        );
+        return;
+      }
     }
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
@@ -604,7 +619,7 @@ function _cloneOutlinerRootsForBase(roots) {
   }
 }
 
-// フォルダツリー右クリック（名前を変更・このソースフォルダを削除・パスを変更）から
+// フォルダツリー右クリック（名前を変更・このソースフォルダの登録を解除・パスを変更）から
 // /outliner-roots を保存する共通ヘルパー。baseRoots には直前のGETで実際に見ていた
 // 一覧のディープコピー（_cloneOutlinerRootsForBase の戻り値）を渡すこと。
 // これを送らないと、共有台帳合流分（他端末・クラウド版が追加したroot）の削除が
@@ -666,10 +681,17 @@ function _prepareOutlinerDeleteTargets(items) {
 
 async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const batchTargets = (Array.isArray(targets) ? targets : []).filter(item => item && item.path);
+  const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
+    ? MeldexDeleteImpactWarning.confirmationPayload(options.confirmation)
+    : {};
   if (batchTargets.length) {
     try {
       const payload = await apiPost('/outliner/delete-batch', {
-        items: batchTargets.map(item => ({ path: item.path })),
+        items: batchTargets.map(item => ({
+          path: item.path,
+          kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        })),
+        ...confirmationPayload,
       });
       const batchResults = Array.isArray(payload?.results) ? payload.results : [];
       if (batchResults.length === batchTargets.length) {
@@ -695,7 +717,11 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
   const results = [];
   for (const item of targets) {
     try {
-      const value = await apiPost('/outliner/delete', { path: item.path });
+      const value = await apiPost('/outliner/delete', {
+        path: item.path,
+        kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        ...confirmationPayload,
+      });
       results.push({ status: 'fulfilled', value });
       const trashRef = _outlinerTrashRefFromResponse(value);
       if (trashRef && typeof options.onSuccess === 'function') {
@@ -822,6 +848,10 @@ async function _runOutlinerDeleteHistoryRefresh(refresh, phase, result) {
 
 async function deleteOutlinerItemsWithHistory(items, options = {}) {
   const requestedTargets = (Array.isArray(items) ? items : []).filter(item => item && item.path);
+  if (requestedTargets.some(item => item.linked)) {
+    if (typeof showStatus === 'function') showStatus('リンク表示中の項目は実ファイルとして削除できません。表示中のフォルダからリンク解除してください', true);
+    return { targets: [], requestedTargets, succeeded: [], skipped: requestedTargets, failed: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [], trashRefs: [] };
+  }
   const targets = _prepareOutlinerDeleteTargets(requestedTargets);
   if (!targets.length) {
     return { targets: [], requestedTargets, succeeded: [], skipped: [], failedCount: 0, deletedCount: 0, deletedPaths: [], trashNames: [] };
@@ -834,6 +864,7 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
   }
 
   const results = await _deleteOutlinerTargetsSequentially(targets, {
+    confirmation: options.confirmation,
     onSuccess: (item, response) => {
       if (typeof options.onItemDeleted === 'function') options.onItemDeleted(item, response);
     },
@@ -867,34 +898,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
       failed,
       deletedPaths,
       failedPaths: failed.map(item => item.path),
-    });
-  }
-
-  let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
-  let trashNames = _outlinerTrashRefsToNames(trashRefs);
-  if (succeeded.length && typeof historyPush === 'function') {
-    const label = options.label || (succeeded.length + ' 件を削除');
-    const detail = options.detail || succeeded.map(item => item.path).join(', ');
-    historyPush(
-      label,
-      async () => {
-        const restored = await _restoreOutlinerTrashRefs(trashRefs);
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', { succeeded, deletedPaths, trashNames });
-        if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
-      },
-      async () => {
-        const nextTrashRefs = [];
-        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
-        for (const item of succeeded) {
-          const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
-          const ref = _outlinerTrashRefFromResponse(res);
-          if (ref) nextTrashRefs.push(ref);
-        }
-        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
-        trashRefs = nextTrashRefs;
-        trashNames = _outlinerTrashRefsToNames(trashRefs);
-        if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-          purgeAppPathReferences(deletedPaths);
-        }
-        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames });
-        if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');

@@ -344,6 +344,8 @@ async function _setChatSourceFolder(sourceFolder, options = {}) {
 
 (function _bindChatSourceFolderSelector() {
   const run = () => {
+    // デスクトップ付箋の小窓にはチャットが無い。対象フォルダ候補の収集を走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     _initChatSourceFolderSelector();
     const select = document.getElementById('chat-source-folder');
     if (!select || select._chatSourceFolderBound) return;

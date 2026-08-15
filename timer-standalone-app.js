@@ -207,7 +207,7 @@
     const detail = ensureTimerOptionTab();
     if (!detail || !app.component || typeof detail.querySelector !== 'function') return;
     const style = timerFileStyle();
-    const background = timerColorValue(style['--timer-bg'], '#1e1e1e');
+    const background = timerColorValue(style['--timer-bg'], '#0b0d10');
     const foreground = timerColorValue(style['--timer-fg'], '#d4d4d4');
     const accent = timerColorValue(style['--accent'], '#569cd6');
     detail.innerHTML = `
@@ -234,7 +234,7 @@
         </dl>
       </section>
       <section class="timer-option-section" data-e2e-id="timer-option-file-style">
-        <h3>ファイルスタイル</h3>
+        <h3>テーマ</h3>
         <dl class="timer-option-grid">
           <dt>背景</dt><dd><input type="color" aria-label="タイマーの背景色" data-timer-file-style="--timer-bg" value="${background}"></dd>
           <dt>文字</dt><dd><input type="color" aria-label="タイマーの文字色" data-timer-file-style="--timer-fg" value="${foreground}"></dd>

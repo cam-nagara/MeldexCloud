@@ -1097,7 +1097,7 @@
   regAction('dovaultreplace:false', { label: '置換',     desc: 'カーソル位置の一致を一つ置換します' });
   regAction('dovaultreplace:true',  { label: '全置換',   desc: 'すべての一致をまとめて置換します' });
   regAction('closesearchpanel',  { label: '閉じる',     desc: '全文検索パネルを閉じます' });
-  regAction('opensourcefoldersettings', { label: 'ソースフォルダ管理', desc: 'ソースフォルダの追加・削除・並べ替えを行います' });
+  regAction('opensourcefoldersettings', { label: 'ソースフォルダ管理', desc: 'ソースフォルダの追加・登録解除・並べ替えを行います' });
   regAction('addoutlinerrootfromsettings', { label: 'ソースフォルダ追加', desc: '新しいソースフォルダを登録します' });
   regAction('showhomeaddmenu',   { label: 'ホームフォルダへ追加', desc: 'ホームフォルダに表示する項目を選びます' });
   regAction('showfolderdisplaysettings', { label: '表示設定', desc: 'フォルダビューの並び順・表示項目を変更します' });

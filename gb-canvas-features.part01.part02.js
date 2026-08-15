@@ -157,8 +157,77 @@ function bdEnsureDepthStyles() {
   return bd.depthStyles;
 }
 
-function bdGetAutoStyleForDepth(depth) {
-  const styles = bdEnsureDepthStyles();
+// 課題18-案A: 自分自身から親方向へ辿り、最初に見つかった _autoStyle 保持カード
+// (= 階層別スタイルの起点) を返す。無ければ null。
+// 「絶対ルート決め打ち」だった各所 (bdAddChildToSelected 等) はこの関数の戻り値を起点として使う。
+function _bdNearestAutoStyleAnchor(nodeId) {
+  if (typeof bd === 'undefined' || !nodeId) return null;
+  let cur = bd.nodes.find(v => v.id === nodeId);
+  const seen = new Set();
+  while (cur) {
+    if (cur._autoStyle) return cur;
+    if (seen.has(cur.id) || !cur.parent) break;
+    seen.add(cur.id);
+    cur = bd.nodes.find(v => v.id === cur.parent);
+  }
+  return null;
+}
+
+// nodeId から anchor (自分自身または祖先の起点カード) までの階層差を返す。
+// anchor は _bdNearestAutoStyleAnchor(nodeId) 等、nodeId の祖先鎖上にあるものを渡すこと。
+function _bdAnchorRelativeDepth(nodeId, anchor) {
+  if (!anchor || !nodeId) return 0;
+  if (nodeId === anchor.id) return 0;
+  if (typeof bdParentDepth !== 'function') return 0;
+  return Math.max(0, bdParentDepth(nodeId) - bdParentDepth(anchor.id));
+}
+
+// 現在唯一選択されているカードが、それ自身「起点」(_autoStyle) であれば返す。それ以外は null。
+// 階層別スタイルタブへ「この起点のプリセット」行を出すかどうかの判定に使う。
+function _bdSelectedSoleAnchorNode() {
+  if (typeof bd === 'undefined' || !(bd.selected instanceof Set) || bd.selected.size !== 1) return null;
+  const id = [...bd.selected][0];
+  const node = bd.nodes.find(n => n.id === id);
+  return node && node._autoStyle ? node : null;
+}
+
+// 課題18-案B: 起点カードの depthStyleRef が指す名前付きプリセットが見つからない場合の
+// フォールバック警告。同一起点・同一参照IDでの重複警告 (カード追加のたびに出る等) を防ぐため
+// bd._depthPresetRefWarned に記録し、初回のみ showStatus する。
+function _bdWarnMissingDepthPresetRef(anchorNode, ref) {
+  if (typeof bd === 'undefined' || !anchorNode?.id || !ref) return;
+  if (!(bd._depthPresetRefWarned instanceof Set)) bd._depthPresetRefWarned = new Set();
+  const key = anchorNode.id + '::' + ref;
+  if (bd._depthPresetRefWarned.has(key)) return;
+  bd._depthPresetRefWarned.add(key);
+  if (typeof showStatus === 'function') {
+    showStatus('階層別スタイルのプリセットが見つからないため、ボード共通の階層別スタイルを使用しています', true);
+  }
+}
+
+// 課題18-案B: anchorNode.depthStyleRef が指す名前付きプリセットのスタイル配列を返す。
+// 参照が空、またはプリセットが見つからない場合はボード共通の bd.depthStyles にフォールバックする
+// (フォールバック時は _bdWarnMissingDepthPresetRef で一度だけ警告)。
+function _bdResolveDepthStylesForAnchor(anchorNode) {
+  const ref = anchorNode && typeof anchorNode === 'object' ? String(anchorNode.depthStyleRef || '') : '';
+  if (ref) {
+    const preset = (typeof MeldexBoardDepthPresets !== 'undefined' && typeof MeldexBoardDepthPresets.find === 'function')
+      ? MeldexBoardDepthPresets.find(ref)
+      : null;
+    if (preset && Array.isArray(preset.styles) && preset.styles.length) {
+      return bdNormalizeDepthStyles(preset.styles);
+    }
+    _bdWarnMissingDepthPresetRef(anchorNode, ref);
+  }
+  return bdEnsureDepthStyles();
+}
+
+// depth (0始まり) に対応する階層別スタイルを返す。
+// anchorNode を渡すと、その起点に割り当てられたプリセット (depthStyleRef) があればそれを優先し、
+// 無ければボード共通の bd.depthStyles にフォールバックする (課題18-案B)。
+// anchorNode を渡さない呼び出し (後方互換) は常にボード共通セットを参照する。
+function bdGetAutoStyleForDepth(depth, anchorNode) {
+  const styles = _bdResolveDepthStylesForAnchor(anchorNode);
   const idx = Math.min(Math.max(0, depth), styles.length - 1);
   const defaults = _bdDefaultDepthStyles();
   return styles[idx] || defaults[defaults.length - 1];
@@ -258,14 +327,42 @@ function _bdApplyDepthLineFieldsToConn(conn, depthStyle) {
   if (L.textShadowColor) conn.textShadowColor = L.textShadowColor;
 }
 
+function _bdAutoStyleSignature(value, keys) {
+  return keys.map(key => value?.[key]);
+}
+
 function bdApplyAutoStyle(rootId) {
   const root = bd.nodes.find(n => n.id === rootId);
-  if (!root || !root._autoStyle) return;
+  if (!root || !root._autoStyle) return { nodeIds: [], connIds: [] };
+  // 課題18-案A: この起点に割り当てられたプリセット (無ければボード共通セット) を1回だけ解決する。
+  // 案B の depthStyleRef フォールバック警告もここで1回だけ評価される。
+  const styles = _bdResolveDepthStylesForAnchor(root);
+  const defaults = _bdDefaultDepthStyles();
+  const styleAt = depth => {
+    const idx = Math.min(Math.max(0, depth), styles.length - 1);
+    return styles[idx] || defaults[defaults.length - 1];
+  };
   const nodeDepth = new Map();
+  const changedNodeIds = new Set();
+  const changedConnIds = new Set();
+  const cardKeys = ['cardStyle', 'bgColor', 'textColor', 'borderColor', 'borderWidth', 'borderRadius',
+    'fontSize', 'fontBold', 'fontItalic', 'textStrokeColor', 'textStrokeWidth', 'shape', 'w',
+    'cloudBumpWidth', 'cloudBumpHeight', 'cloudSideWidth', 'cloudOffset', 'cloudSubWidthRatio',
+    'cloudSubHeightRatio'];
+  const lineKeys = ['color', 'width', 'style', 'arrow', 'pathType', 'straight', 'branchRatio',
+    'cornerRadius', 'labelBgColor', 'labelBorderColor', 'labelBorderWidth', 'labelTextColor',
+    'fontBold', 'fontItalic', 'textVisible', 'textAlongPath', 'textAutoFlip', 'textShadowWidth',
+    'textShadowColor'];
   function apply(nid, depth) {
     const n = bd.nodes.find(v => v.id === nid); if (!n) return;
+    // 課題18-案A: 入れ子の起点 (自分以外の _autoStyle カード) に到達したら、そのカード自身の
+    // bdApplyAutoStyle 呼び出しに任せてここで打ち切る。「近い方が勝つ」を、処理順に依存せず
+    // データ上で保証する (祖先側の適用が子孫側の起点の値を上書きすることは無い)。
+    if (nid !== rootId && n._autoStyle) return;
     nodeDepth.set(nid, depth);
-    _bdApplyDepthCardFieldsToNode(n, bdGetAutoStyleForDepth(depth));
+    const before = _bdAutoStyleSignature(n, cardKeys);
+    _bdApplyDepthCardFieldsToNode(n, styleAt(depth));
+    if (_bdAutoStyleSignature(n, cardKeys).some((value, index) => value !== before[index])) changedNodeIds.add(nid);
     bdChildren(nid).forEach(c => apply(c.id, depth + 1));
   }
   apply(rootId, 0);
@@ -278,7 +375,10 @@ function bdApplyAutoStyle(rootId) {
       if (d === undefined) return;
       const toNode = bd.nodes.find(n => n.id === c.to);
       if (!toNode || toNode.parent !== c.from || !nodeDepth.has(c.to)) return;
-      _bdApplyDepthLineFieldsToConn(c, bdGetAutoStyleForDepth(d));
+      const before = _bdAutoStyleSignature(c, lineKeys);
+      _bdApplyDepthLineFieldsToConn(c, styleAt(d));
+      if (c.id && _bdAutoStyleSignature(c, lineKeys).some((value, index) => value !== before[index])) changedConnIds.add(c.id);
     });
   }
+  return { nodeIds: [...changedNodeIds], connIds: [...changedConnIds] };
 }

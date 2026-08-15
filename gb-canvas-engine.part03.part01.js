@@ -139,7 +139,7 @@ function bdDrawConns(options) {
     const pathType = _bdLinePathType(connStyle, st);
     const arrow = connStyle.arrow || '';
     const hasArrow = !!arrow;
-    const zoom = Math.max(0.1, bd.zoom || 1);
+    const zoom = bdSafeZoom(bd.zoom);
 
     // 曲線 / 直角線の場合は辺の中央を指す (2026-04-18 フィードバック)
     // 直線の場合は中心ベクトル方向でクリップ
@@ -149,7 +149,17 @@ function bdDrawConns(options) {
     // カード端からの gap はパスタイプごとに別経路で適用する (2026-04-18):
     //   - L 字系 (curve / orthogonal): 軸方向のみ (y1=cy1 / x1=cx1 を維持して兄弟ラインの重なりを崩さない)
     //   - 直線系 (straight): 中心ベクトル沿い
-    const GAP = Math.max(6, strokeWidth * 2);
+    // v2026-08-14: 端点の後退量は「その端点に矢印が付くか」で分岐する。
+    // 矢印が付く側は矢印の実サイズ (_bdArrowMarkerGeometry と同じ式) から逆算した量を後退させ、
+    // 矢印なし側は太さに依存しない小さい固定値だけ後退させる (太いラインでも端がカードから離れない)。
+    const arrowOnFromSide = arrow === 'start' || arrow === 'both';
+    const arrowOnToSide = arrow === 'end' || arrow === 'both';
+    const NO_ARROW_GAP = 2;
+    const arrowEndpointGap = (arrowOnFromSide || arrowOnToSide)
+      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.size - g.refX; })()
+      : 0;
+    const GAP_FROM = arrowOnFromSide ? arrowEndpointGap : NO_ARROW_GAP;
+    const GAP_TO = arrowOnToSide ? arrowEndpointGap : NO_ARROW_GAP;
     let effectiveStructure = st;
     let fromA = fn ? _bdConnAnchorName(c, 'from') : null;
     let toA = tn ? _bdConnAnchorName(c, 'to') : null;
@@ -157,12 +167,12 @@ function bdDrawConns(options) {
     let autoFromOut = null, autoToOut = null, autoFromPt = null, autoToPt = null;
     const hasFreeEndpoint = !fn || !tn;
     if (hasFreeEndpoint) {
-      const clipCardEndpoint = (node, el, pos, target, anchorName) => {
+      const clipCardEndpoint = (node, el, pos, target, anchorName, gap) => {
         if (!node) return target;
         if (anchorName) {
           const p = _bdGetCardAnchorPoint(node, el, pos, anchorName);
           const vOut = _bdAnchorOutwardVector(anchorName);
-          return { x: p.x + vOut.x * GAP, y: p.y + vOut.y * GAP };
+          return { x: p.x + vOut.x * gap, y: p.y + vOut.y * gap };
         }
         const w = el?.offsetWidth || node.w || 160;
         const h = el?.offsetHeight || node.h || 60;
@@ -176,12 +186,12 @@ function bdDrawConns(options) {
         const tx = Math.abs(ux) > 0 ? (w / 2) / Math.abs(ux) : Infinity;
         const ty = Math.abs(uy) > 0 ? (h / 2) / Math.abs(uy) : Infinity;
         const t = Math.min(tx, ty);
-        return { x: cx + ux * (t + GAP), y: cy + uy * (t + GAP) };
+        return { x: cx + ux * (t + gap), y: cy + uy * (t + gap) };
       };
       const freeFrom = rawFromPoint || { x: cx1, y: cy1 };
       const freeTo = rawToPoint || { x: cx2, y: cy2 };
-      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA) : freeFrom;
-      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA) : freeTo;
+      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA, GAP_FROM) : freeFrom;
+      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA, GAP_TO) : freeTo;
       x1 = fromEndpoint.x; y1 = fromEndpoint.y;
       x2 = toEndpoint.x; y2 = toEndpoint.y;
       effectiveStructure = '';
@@ -206,7 +216,7 @@ function bdDrawConns(options) {
       if (!HORIZONTAL_FORCED.has(st) && !VERTICAL_FORCED.has(st)) {
         const fromShape = fe?.dataset?.shape || fn?.shape || '';
         const toShape = te?.dataset?.shape || tn?.shape || '';
-        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP, fromShape, toShape);
+        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP_FROM, GAP_TO, fromShape, toShape);
         if (auto) {
           autoFromPt = auto.fromPt;
           autoToPt = auto.toPt;
@@ -217,12 +227,12 @@ function bdDrawConns(options) {
     }
     // v0.5.326: アンカー指定時は、アンカー座標 (カード境界上) からカード外向きに
     // GAP 分オフセットして端点を置く。これにより矢印がカードに隠れず、通常作成ラインと
-    // 同等の見え方になる (GAP は上方で strokeWidth に応じて決定済み)。
+    // 同等の見え方になる (GAP_FROM/GAP_TO は上方で矢印の有無・strokeWidth に応じて決定済み)。
     if (fromA) {
       const p = _bdGetCardAnchorPoint(fn, fe, fp, fromA);
       const vOut = _bdAnchorOutwardVector(fromA);
-      x1 = p.x + vOut.x * GAP;
-      y1 = p.y + vOut.y * GAP;
+      x1 = p.x + vOut.x * GAP_FROM;
+      y1 = p.y + vOut.y * GAP_FROM;
     } else if (autoFromPt) {
       // v0.5.330: 連続角度ベースの自動ルートで端点を置く (矢印方向を斜め含む 8+ 方向に)
       x1 = autoFromPt.x; y1 = autoFromPt.y;
@@ -230,8 +240,8 @@ function bdDrawConns(options) {
     if (toA) {
       const p = _bdGetCardAnchorPoint(tn, te, tp, toA);
       const vOut = _bdAnchorOutwardVector(toA);
-      x2 = p.x + vOut.x * GAP;
-      y2 = p.y + vOut.y * GAP;
+      x2 = p.x + vOut.x * GAP_TO;
+      y2 = p.y + vOut.y * GAP_TO;
     } else if (autoToPt) {
       x2 = autoToPt.x; y2 = autoToPt.y;
     }
@@ -251,11 +261,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -275,11 +285,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -320,14 +330,14 @@ function bdDrawConns(options) {
       if (useHorizontal) {
         // 左右辺の中央 + 水平方向に軸 gap を適用 (y はカード中心を維持)
         effectiveStructure = 'logic';
-        if (ddx >= 0) { x1 = fp.x + fw + GAP; x2 = tp.x - GAP; }
-        else { x1 = fp.x - GAP; x2 = tp.x + tw + GAP; }
+        if (ddx >= 0) { x1 = fp.x + fw + GAP_FROM; x2 = tp.x - GAP_TO; }
+        else { x1 = fp.x - GAP_FROM; x2 = tp.x + tw + GAP_TO; }
         y1 = cy1; y2 = cy2;
       } else {
         // 上下辺の中央 + 垂直方向に軸 gap を適用 (x はカード中心を維持)
         effectiveStructure = 'flowchart';
-        if (ddy >= 0) { y1 = fp.y + fh + GAP; y2 = tp.y - GAP; }
-        else { y1 = fp.y - GAP; y2 = tp.y + th + GAP; }
+        if (ddy >= 0) { y1 = fp.y + fh + GAP_FROM; y2 = tp.y - GAP_TO; }
+        else { y1 = fp.y - GAP_FROM; y2 = tp.y + th + GAP_TO; }
         x1 = cx1; x2 = cx2;
       }
     } else {
@@ -349,11 +359,12 @@ function bdDrawConns(options) {
       if (innerLen > 0) {
         const unitX = (x2 - x1) / innerLen;
         const unitY = (y2 - y1) / innerLen;
-        const gap = Math.min(GAP, Math.max(0, innerLen / 2 - 2));
-        x1 += unitX * gap;
-        y1 += unitY * gap;
-        x2 -= unitX * gap;
-        y2 -= unitY * gap;
+        const gapFrom = Math.min(GAP_FROM, Math.max(0, innerLen / 2 - 2));
+        const gapTo = Math.min(GAP_TO, Math.max(0, innerLen / 2 - 2));
+        x1 += unitX * gapFrom;
+        y1 += unitY * gapFrom;
+        x2 -= unitX * gapTo;
+        y2 -= unitY * gapTo;
       }
     }
     }
@@ -828,6 +839,14 @@ function bdEditNode(id) {
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
   txt.contentEditable = 'true'; txt.focus();
+  // 課題8: キャンバス外 (オプションパネル・ツールバー等) をクリックして編集領域から
+  // フォーカスが外れた場合も確定する。従来はキャンバス内の限られた経路 (クリック/
+  // Escape/Enter/Tab) からしか bdFinishEdit() が呼ばれず、確定前に他操作の bdRender() が
+  // 走ると入力内容が無警告で消えていた。{once:true} は bdFinishEdit() 内の
+  // contentEditable='false' 代入が同期的に blur を誘発した場合の多重登録を避けるため。
+  txt.addEventListener('blur', () => {
+    if (bd.editing === id && typeof bdFinishEdit === 'function') bdFinishEdit();
+  }, { once: true });
   const s = window.getSelection(), r = document.createRange();
   r.selectNodeContents(txt); s.removeAllRanges(); s.addRange(r);
   // カスタムキャレット: ネイティブキャレットを透明化 (CSS) し、カーソル太さを変えられる擬似キャレットを重ねる。

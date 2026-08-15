@@ -403,7 +403,19 @@ async function restoreVersion(path, versionName, type) {
     if (type === 'db') {
       await apiPost('/version/restore-db', { path, version: versionName });
     } else {
-      await apiPost('/version/restore', { path, version: versionName });
+      const revisionState = await apiFetch('/version/read?path=' + encodeURIComponent(path)
+        + '&version=' + encodeURIComponent(versionName));
+      const transportRevision = revisionState?.transport_revision || null;
+      const revisionToken = String(revisionState?.etag || transportRevision?.token || '').trim();
+      if (!revisionToken || !transportRevision) {
+        throw new Error('復元対象の最新revisionを確認できませんでした');
+      }
+      await apiPost('/version/restore', {
+        path,
+        version: versionName,
+        if_match_etag: revisionToken,
+        transport_revision: transportRevision,
+      });
     }
     showStatus('復元しました');
     const versionModal = [...document.querySelectorAll('.modal-overlay[data-history-version-modal="1"]')]
@@ -898,6 +910,13 @@ async function showFolderVersionFiles(folderPath, versionName) {
     listHtml += '</div>';
     const body = document.createElement('div');
     body.innerHTML = `<div class="gb-section-desc" style="margin-bottom:8px;">${files.length}ファイル</div>${listHtml}`;
+    // initialFocus未指定だと共通ダイアログ既定のfallback（先頭のbutton要素）が
+    // ヘッダーの閉じるアイコンへ合ってしまい、開いた直後にフォーカスイン→
+    // gb-tooltip.jsのネイティブtitle抑制(suppressNativeTitle)が発火してtitleが
+    // 消える（このダイアログを閉じるボタン以外に意味のある初期フォーカス先が
+    // 無いため、内容領域自体をフォーカス対象にする。gb-detail-panel.part01.part01.js
+    // の legacy modal と同じ手法）。
+    body.tabIndex = -1;
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'gb-btn gb-btn-sm';
@@ -913,6 +932,7 @@ async function showFolderVersionFiles(folderPath, versionName) {
       footer: closeBtn,
       variant: 'standard',
       geometryKey: 'history-folder-files',
+      initialFocus: () => body,
     });
     const o = modalApi.overlay;
     o.classList.add('modal-overlay');

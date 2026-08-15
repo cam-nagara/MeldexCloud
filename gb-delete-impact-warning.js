@@ -10,9 +10,8 @@
  * サーバー側の判定・カウントは一切行わず、POST /api/references/delete-impact
  * （meldex_api_reference_delete_impact.py）の結果をそのままDOMへ反映する。
  *
- * 重要: 警告は削除を止めない。cfConfirm自体の「キャンセル/削除」確認は
- * 従来どおり必要（計画書§10.1のtoken/409必須確認フローは本Phaseでは実装しない。
- * 詳細は meldex_api_reference_delete_impact.py 冒頭コメント参照）。
+ * 影響照会が完了しtokenを発行できた場合だけ確認操作を有効にする。削除APIは
+ * tokenを再検証するため、UIを迂回しても被参照ありの削除は進まない。
  *
  * [2026-08-01 フェーズB徹底チェック 修正3(b)] 大きなフォルダの削除影響照会は
  * 数百ms〜数秒かかることがある。以前は confirmDeleteWithImpact が照会完了を
@@ -47,6 +46,8 @@
           // 多いが、将来 assetId を持つ呼び出し元が現れてもここで欠落しない）。
           const assetId = t.assetId || t.asset_id;
           if (_isNonEmptyString(assetId)) item.assetId = assetId;
+          const physicalPath = t.physicalPath || t._physicalPath;
+          if (_isNonEmptyString(physicalPath)) item.physicalPath = physicalPath;
           return item;
         }
         return null;
@@ -56,11 +57,11 @@
 
   // サーバーへの照会本体。通信失敗・タイムアウト・ok!==true はすべて
   // failed:true として区別する（「参照なし」と黙って丸め込まない。修正3(b)）。
-  async function _fetchDeleteImpactWithStatus(items) {
+  async function _fetchDeleteImpactWithStatus(items, operation = 'trash', signal = null) {
     if (!items.length) return { impact: null, failed: false };
     if (typeof apiPost !== 'function') return { impact: null, failed: true };
     try {
-      const result = await apiPost('/api/references/delete-impact', { items }, { silentError: true, timeoutMs: 8000 });
+      const result = await apiPost('/api/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
       if (result && result.ok) return { impact: result, failed: false };
       return { impact: null, failed: true };
     } catch (_) {
@@ -73,7 +74,7 @@
   // 区別したい場合は confirmDeleteWithImpact 側の非同期差し替えを使うこと）。
   async function fetchDeleteImpact(targets) {
     const items = _toDeleteImpactItems(targets);
-    const { impact } = await _fetchDeleteImpactWithStatus(items);
+    const { impact } = await _fetchDeleteImpactWithStatus(items, 'trash');
     return impact;
   }
 
@@ -116,7 +117,24 @@
       box.appendChild(note);
     }
 
-    return sourceCount > 0 || incomplete;
+    // インポート・機能生成ファイル保護計画 Phase 2: 削除対象が機能の保存先
+    // （Xブックマーク・Web Clipper・外部インポート・スタッフ管理・クイックメモ・
+    // エクスポート等）またはその祖先フォルダの場合の専用警告。削除はブロック
+    // しない（案1「移動追従＋削除警告」）。
+    const featureSaveDirs = Array.isArray(impact && impact.featureSaveDirs) ? impact.featureSaveDirs : [];
+    const shownLabels = new Set();
+    featureSaveDirs.forEach((item) => {
+      const label = item && item.label;
+      if (!_isNonEmptyString(label) || shownLabels.has(label)) return;
+      shownLabels.add(label);
+      const note = document.createElement('div');
+      note.className = 'gb-delete-impact-warning-feature-save-dir';
+      note.dataset.e2eId = 'delete-impact-warning-feature-save-dir';
+      note.textContent = `このフォルダは${label}の保存先です。削除すると、次にこの機能を使うときに既定の場所へ新しく作り直されます`;
+      box.appendChild(note);
+    });
+
+    return sourceCount > 0 || incomplete || shownLabels.size > 0;
   }
 
   // impact（fetchDeleteImpactの戻り値）から警告DOM要素を組み立てる。
@@ -185,28 +203,48 @@
   // targets が空、cfConfirm未読込の場合は従来どおり確認は出す（警告が出せない
   // ことを理由に確認自体を省略しない）。被参照の照会はダイアログ表示を
   // ブロックしない（修正3(b)）。
+  function confirmationPayload(confirmation) {
+    if (!confirmation || typeof confirmation !== 'object') return {};
+    if (Array.isArray(confirmation.confirmations) && confirmation.confirmations.length) {
+      return { confirmations: confirmation.confirmations };
+    }
+    const confirmationToken = String(confirmation.confirmationToken || '');
+    const graphRevision = String(confirmation.graphRevision || '');
+    return confirmationToken && graphRevision ? { confirmationToken, graphRevision } : {};
+  }
+
   async function confirmDeleteWithImpact(targets, message, options) {
-    if (typeof cfConfirm !== 'function') return true;
+    if (typeof cfConfirm !== 'function') return false;
     const items = _toDeleteImpactItems(targets);
     const opts = Object.assign({}, options || {});
+    const operation = opts.operation === 'permanent' ? 'permanent' : 'trash';
+    delete opts.operation;
     if (!items.length) {
       return cfConfirm(message, opts);
     }
-
-    const placeholder = _buildLoadingNode();
-    opts.extraNode = placeholder;
-    const confirmPromise = cfConfirm(message, opts);
-
-    _fetchDeleteImpactWithStatus(items).then(({ impact, failed }) => {
-      _applyDeleteImpactResult(placeholder, items.length, impact, failed);
-    });
-
-    return confirmPromise;
+    const { impact, failed } = await _fetchDeleteImpactWithStatus(items, operation, opts.signal || null);
+    if (failed || !impact || impact.complete === false) {
+      if (typeof cfAlert === 'function') {
+        await cfAlert(failed ? '参照の確認ができなかったため、削除を中止しました。' : '参照の確認が不完全なため、削除を中止しました。');
+      }
+      return false;
+    }
+    const warning = buildWarningNode(impact, items.length);
+    if (warning) opts.extraNode = warning;
+    if (!await cfConfirm(message, opts)) return false;
+    return {
+      confirmed: true,
+      confirmationToken: impact.confirmationToken,
+      graphRevision: impact.graphRevision,
+      confirmations: impact.confirmations,
+      operation,
+    };
   }
 
   window.MeldexDeleteImpactWarning = {
     fetchDeleteImpact,
     buildWarningNode,
     confirmDeleteWithImpact,
+    confirmationPayload,
   };
 })();

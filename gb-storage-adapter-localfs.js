@@ -485,9 +485,32 @@
       const normalized = _normalizeRelativePath(relativePath);
       if (!normalized) throw new Error('ローカル vault ルートは削除できません');
       if (normalized.startsWith('_trash/')) {
+        const trash = await _fetchJson('/trash');
+        const matches = (Array.isArray(trash?.items) ? trash.items : []).filter(
+          item => item?.name === _basename(normalized) && item?.original_path,
+        );
+        if (matches.length !== 1) throw new Error('削除元情報を一意に確認できないため完全削除できません');
+        const item = matches[0];
+        const impact = await _fetchJson('/references/delete-impact', {
+          method: 'POST',
+          body: { operation: 'permanent', items: [{
+            path: item.original_path,
+            kind: item.type === 'folder' ? 'folder' : 'file',
+            physicalPath: item.trash_path || normalized,
+          }] },
+        });
+        if (!impact?.confirmationToken || !impact?.graphRevision) {
+          throw new Error('完全削除の確認情報を発行できませんでした');
+        }
         await _fetchJson('/trash/delete', {
           method: 'POST',
-          body: { name: _basename(normalized) },
+          body: {
+            name: item.name,
+            ...(item.trash_root ? { trash_root: item.trash_root } : {}),
+            confirmationToken: impact.confirmationToken,
+            graphRevision: impact.graphRevision,
+            ...(Array.isArray(impact.confirmations) ? { confirmations: impact.confirmations } : {}),
+          },
         });
         return true;
       }

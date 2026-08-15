@@ -120,7 +120,9 @@
   ];
   const ANNOTATION_ITEMS = [
     { id: 'stroke', label: 'ストローク', icon: 'pencil', group: 'stroke' },
-    { id: 'line', label: 'ライン', icon: 'spline', group: 'line' },
+    // 初期アイコンは本体側 _ANN_TOOL_GROUPS.line[0] と同じ activity（折れ線）に揃える。
+    // _ensureAnnotationBar() 直後の _syncAnnotationBarState() で選択中ツールに追従する。
+    { id: 'line', label: 'ライン', icon: 'activity', group: 'line' },
     { id: 'fill', label: '塗りつぶし', icon: 'paintBucket', group: 'fill' },
     { id: 'eraser', label: '消しゴム', icon: 'eraser', tool: 'eraser' },
     { id: 'sticky', label: '付箋', icon: 'stickyNote', tool: 'sticky' },
@@ -132,6 +134,29 @@
     { id: 'list', label: '一覧', icon: 'messagesSquare', action: () => _openToolPanel('annotation') },
     { id: 'close', label: '閉じる', icon: 'x', action: () => _closeAnnotationToolbar() },
   ];
+  // 本体（gb-annotations）の _ANN_TOOL_GROUPS と同じ内容のフォールバック。本体側が
+  // 読み込み前で未定義の場合に備える。グループボタンのアイコンを選択中メンバーへ
+  // 追従させるため、本体側と同じアイコン名を持たせる（注釈フロートパレット改修計画
+  // 2026-08-13 §1-2）。
+  const ANNOTATION_GROUP_FALLBACK = {
+    stroke: [{ tool: 'pen', label: 'ペン', icon: 'pencil' }, { tool: 'marker', label: 'マーカー', icon: 'highlighter' }],
+    line: [{ tool: 'polyline', label: '折れ線', icon: 'activity' }, { tool: 'ellipse-line', label: '円形', icon: 'circle' }, { tool: 'rect-line', label: '矩形', icon: 'square' }],
+    fill: [{ tool: 'lasso', label: '囲い塗り', icon: 'lasso' }, { tool: 'ellipse-fill', label: '円形塗り', icon: 'circle' }, { tool: 'rect', label: '矩形塗り', icon: 'square' }],
+  };
+  const ANNOTATION_GROUP_LABELS = { stroke: 'ストローク', line: 'ライン', fill: '塗りつぶし' };
+
+  function _annMobileGroupMembers(group) {
+    return (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || ANNOTATION_GROUP_FALLBACK[group] || [];
+  }
+
+  // グループボタン（ストローク/ライン/塗りつぶし）のアイコンを選択中メンバーへ追従させる。
+  function _applyAnnMobileGroupIcon(button, group, member) {
+    if (!button || !member) return;
+    const iconSpan = button.querySelector('.cloud-mobile-icon');
+    if (iconSpan && typeof lucide === 'function') iconSpan.innerHTML = lucide(member.icon, 18);
+    const groupLabel = ANNOTATION_GROUP_LABELS[group] || '';
+    button.setAttribute('aria-label', groupLabel ? `${groupLabel}（${member.label}）` : member.label);
+  }
 
   let _mainButton = null;
   let _editBar = null;
@@ -793,12 +818,7 @@
   }
 
   function _openAnnotationMobileToolMenu(anchor, group) {
-    const fallback = {
-      stroke: [{ tool: 'pen', label: 'ペン' }, { tool: 'marker', label: 'マーカー' }],
-      line: [{ tool: 'polyline', label: '折れ線' }, { tool: 'ellipse-line', label: '円形' }, { tool: 'rect-line', label: '矩形' }],
-      fill: [{ tool: 'lasso', label: '囲い塗り' }, { tool: 'ellipse-fill', label: '円形塗り' }, { tool: 'rect', label: '矩形塗り' }],
-    };
-    const items = (typeof _ANN_TOOL_GROUPS !== 'undefined' && _ANN_TOOL_GROUPS[group]) || fallback[group] || [];
+    const items = _annMobileGroupMembers(group);
     document.querySelectorAll('.ann-tool-popup').forEach(menu => menu.remove());
     const menu = document.createElement('div');
     menu.className = 'ann-tool-popup'; menu.setAttribute('role', 'menu');
@@ -863,9 +883,13 @@
     });
     _annotationBar.querySelectorAll('[data-ann-mobile-group]').forEach((button) => {
       const group = button.dataset.annMobileGroup;
-      const members = group === 'stroke' ? ['pen', 'marker']
-        : (group === 'line' ? ['polyline', 'ellipse-line', 'rect-line'] : ['lasso', 'ellipse-fill', 'rect']);
-      button.classList.toggle('active', members.includes(tool));
+      const groupMembers = _annMobileGroupMembers(group);
+      const isActive = groupMembers.some(member => member.tool === tool);
+      button.classList.toggle('active', isActive);
+      // 選択中ツールがこのグループに属する時だけアイコンを更新する。他グループの
+      // ツールへ切り替わっても、直前にこのグループ内で選んでいたツールの見た目を保つ
+      // （本体 gb-annotations の _annotationSelectTool と同じ設計）。
+      if (isActive) _applyAnnMobileGroupIcon(button, group, groupMembers.find(member => member.tool === tool));
     });
     const visible = document.getElementById('btn-overlay-toggle')?.classList?.contains('active') !== false;
     _annotationBar.querySelector('[data-ann-mobile-visibility]')?.classList?.toggle('active', visible);
@@ -874,27 +898,3 @@
   function _saveSelection() {
     const sel = window.getSelection?.();
     if (!sel || !sel.rangeCount) return false;
-    const range = sel.getRangeAt(0);
-    const editable = _editableFromNode(range.commonAncestorContainer);
-    if (!editable) return false;
-    _activeEditable = editable;
-    _savedRange = range.cloneRange();
-    try {
-      if (typeof rtTarget !== 'undefined') rtTarget = editable;
-      if (typeof rtSavedSelection !== 'undefined') rtSavedSelection = _savedRange.cloneRange();
-    } catch (_err) {
-      // rtTarget is a global lexical binding in the legacy editor bundle when available.
-    }
-    return true;
-  }
-
-  function _restoreSelection() {
-    const editable = _activeEditable || _getActiveEditable();
-    if (!editable) return false;
-    editable.focus?.({ preventScroll: true });
-    if (!_savedRange) return true;
-    const sel = window.getSelection?.();
-    if (!sel) return false;
-    sel.removeAllRanges();
-    sel.addRange(_savedRange.cloneRange());
-    try {

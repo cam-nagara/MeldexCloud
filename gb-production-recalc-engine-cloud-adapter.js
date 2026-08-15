@@ -4,11 +4,13 @@
    production-management-ux-improvement-plan-2026-08-04.md §4-1。gb-production-recalc-engine.js
    （純粋な割当アルゴリズム）を、Cloudのファイル/カレンダーストレージへ橋渡しする。
 
-   このファイルは gb-production-management.part01.js/part02.js とは別クロージャ（独立IIFE）。
+   このファイルは gb-production-management.part01.js/part02.js とその責務分割先
+   （gb-production-management-cloud-*.js。2026-08-12責務単位分割）とは別クロージャ（独立IIFE）。
    Cloud側の内部ヘルパー（_pmCloudListAllTaskEntries 等）はそのクロージャの外から直接参照でき
    ないため、gb-production-management-task-structure.js と同じ流儀（呼び出し元が deps オブジェクト
    経由で必要な関数だけを注入する）を踏襲する。deps の組み立ては
-   gb-production-management.part01.js の `_pmRecalcEngineDeps()` を参照。
+   gb-production-management-cloud-task-structure-adapter.js（旧 gb-production-management.part02.js
+   の一部）の `_pmRecalcEngineDeps()` を参照。
 
    window.MeldexCloudFrontmatterLite（フロントマター読み書き）は gb-cloud-frontmatter-lite.js が
    window へ公開済みのため、ここでは直接参照する（DI不要）。
@@ -242,10 +244,23 @@
 
   function frontmatterTaskProtected(frontmatter) {
     const status = propValueFromFrontmatter(frontmatter, '状況');
-    return Engine.PROTECTED_TASK_STATUSES.has(status)
+    if (status === '完了'
       || Engine.truthy(propValueFromFrontmatter(frontmatter, '再計算ロック'))
-      || Engine.truthy(propValueFromFrontmatter(frontmatter, 'シフト固定'))
-      || Engine.truthy(propValueFromFrontmatter(frontmatter, '担当者固定'));
+      || Engine.truthy(propValueFromFrontmatter(frontmatter, 'シフト固定'))) {
+      return true;
+    }
+    const assigneeFixed = Engine.truthy(propValueFromFrontmatter(frontmatter, '担当者固定'));
+    if (assigneeFixed && !String(propValueFromFrontmatter(frontmatter, '担当者') || '').trim()) {
+      // 担当者固定なのに固定先の担当者が空。割り当てようがないため常に保護する。
+      return true;
+    }
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 4-2: 進行中系ステータス・
+    // 担当者固定は、既に作業予定日時が入っている場合だけ保護する（Desktop版
+    // _frontmatter_task_protected と同じ基準）。
+    if (Engine.IN_PROGRESS_TASK_STATUSES.has(status) || assigneeFixed) {
+      return !!String(propValueFromFrontmatter(frontmatter, '作業予定日時') || '').trim();
+    }
+    return false;
   }
 
   async function preflightRows(provider, rows) {
@@ -318,7 +333,9 @@
     markUnassignedOnlyLocks(allTasks, unassignedOnly);
     const tasks = allTasks.filter(task => Engine.taskInScope(task, periodValue));
     const { staff, warning: fallbackStaffWarning } = withFallbackSoloStaff(await loadStaff(deps.boundStaffResolver), body);
-    const allowOvertime = (body && body.allow_overtime) === undefined ? true : !!body.allow_overtime;
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3: 全入口の既定を「残業を含めない」
+    // に統一する（Desktop版 preview_production_recalculation と同じ既定へ揃える）。
+    const allowOvertime = !!(body && body.allow_overtime);
     const baseShiftRows = await loadShiftRows(provider, internals, deps, periodValue);
     // 可用時間の計算は期間内の全タスクを対象にする（他リストの担当者が既に埋まっている時間帯を
     // 空きと誤認しないため）。work_titles/task_paths によるスコープ絞り込みは、実際にプラン対象へ
@@ -335,6 +352,12 @@
     const warnings = [...shiftWarnings, ...planResult.warnings];
     if (fallbackStaffWarning) warnings.unshift(fallbackStaffWarning);
     const rows = planResult.rows;
+    // スケジューラー複数アカウント修正計画2026-08-13 Phase 3-3: Desktop版と同じく、残業を
+    // 含めた場合も通常勤務時間だけでは何時間足りないかを併せて示す。
+    const overtimeMinutes = Math.round(rows
+      .filter(row => row.status === 'scheduled' && row.overtime)
+      .reduce((sum, row) => sum + (Number(row.overtime_hours) || 0) * 60, 0));
+    if (overtimeMinutes > 0) warnings.push({ type: 'overtime_used', minutes: overtimeMinutes });
     return {
       ok: true,
       rows,
@@ -345,6 +368,7 @@
         locked: rows.filter(r => r.status === 'locked').length,
         unassigned: rows.filter(r => r.status === 'unassigned').length,
         changed: rows.filter(r => r.changed).length,
+        overtime: rows.filter(r => r.overtime).length,
       },
       cloud: true,
     };

@@ -1,3 +1,57 @@
+    selector = _themeUiExpandChildSelector(selector, target?.childSelector);
+    const targetId = target?.id || '';
+    if (propId === 'fg') {
+      return `${selector}{color:${colorCss}!important}${selector} svg{stroke:${colorCss}!important}`;
+    }
+    if (propId === 'bg') {
+      return `${selector}{background:${colorCss}!important}`;
+    }
+    if (propId === 'underline') {
+      if (targetId === 'section-bar') {
+        return `${selector}{border-left-color:${colorCss}!important}`;
+      }
+      if (targetId === 'note-heading') {
+        return _themeUiNoteHeadingAccentRule(selector, colorCss);
+      }
+      if (targetId !== 'panel-tab' && targetId !== 'inner-tab') {
+        return `${selector}{border-color:${colorCss}!important}`;
+      }
+      return `${selector}{border-bottom-color:${colorCss}!important}`;
+    }
+    return '';
+  }
+
+  function applyThemeUiApplications(cfg, options = {}) {
+    ensurePaletteRuntimeStyle();
+    ensureThemeUiPaletteTargets(options);
+    const config = normalizeThemeUiApplications(cfg || getThemeUiApplications());
+    let style = document.getElementById('meldex-theme-ui-applications-style');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'meldex-theme-ui-applications-style';
+      document.head.appendChild(style);
+    }
+    const rules = [];
+    const autoTone = getThemeUiAutoTone();
+    const singleAccentPolicy = getThemeAccentPolicy().kind === 'system-or-default';
+    const singleAccentText = singleAccentPolicy ? getAccentTextColor(getEffectiveThemeAccent()) : '';
+    THEME_UI_TARGETS.forEach(target => {
+      _themeUiStatesForTarget(target).forEach(state => {
+        const selector = _themeUiStateSelector(target.id, state.id);
+        _themeUiPropsForTarget(target, state.id).forEach(prop => {
+          const value = config[target.id]?.[state.id]?.[prop.id];
+          const backgroundValue = config[target.id]?.[state.id]?.bg;
+          const autoForegroundOnAccent = singleAccentPolicy
+            && prop.id === 'fg'
+            && THEME_UI_AUTO_VALUES.has(_normalizeThemeUiValue(value))
+            && _normalizeThemeUiValue(backgroundValue) !== THEME_UI_VALUE_NONE;
+          const colorCss = autoForegroundOnAccent
+            ? singleAccentText
+            : _themeUiColorCss(value, autoTone, { rootVars: !!target?.vars });
+          const rule = _themeUiRuleForProp(selector, target, state.id, prop.id, colorCss);
+          if (rule) rules.push(rule);
+        });
+      });
     });
     const css = rules.join('\n');
     if (_themeUiApplicationsCss !== css || style.textContent !== css) {
@@ -844,57 +898,3 @@
   function createCustomThemeFromCurrent(name) {
     const label = String(name || '').trim();
     if (!label) return null;
-    const source = getThemeById(getDefaultThemeId());
-    const colorSet = getThemeColorSet(null, { ignoreOsAccent: true });
-    const useOsAccentColor = getUseOsAccentColor();
-    const standardPaletteAdjust = typeof global.getStandardPaletteAdjust === 'function'
-      ? global.getStandardPaletteAdjust()
-      : null;
-    const next = {
-      id: newCustomThemeId('custom'),
-      name: label,
-      builtIn: false,
-      ui: {
-        cssVars: collectCurrentCssVars(),
-        themeColorSet: colorSet,
-        colorSet,
-        palette: colorSet,
-        useOsAccentColor,
-        standardPaletteAdjust,
-        themeUiApplications: getThemeUiApplications(),
-        themeUiAutoTone: getThemeUiAutoTone(),
-      },
-      board: clone(source.board || {}),
-    };
-    setThemeColorSetOnTheme(next, next.ui.colorSet);
-    setThemeColorSlotSettingsOnTheme(next, readCurrentThemeColorSlotSettings());
-    setThemeColorExtraSlotSettingsOnTheme(next, readCurrentThemeColorExtraSlotSettings());
-    setThemeOsAccentOnTheme(next, useOsAccentColor);
-    setThemeStandardPaletteAdjustOnTheme(next, standardPaletteAdjust);
-    setThemeUiSettingsOnTheme(next, next.ui.themeUiApplications, next.ui.themeUiAutoTone);
-    const list = getCustomThemes();
-    list.push(next);
-    saveCustomThemes(list);
-    return clone(next);
-  }
-
-  function createCustomThemeFromTheme(sourceId, name) {
-    const source = getThemeById(sourceId || getDefaultThemeId());
-    const label = String(name || '').trim() || `${source.name} のコピー`;
-    const next = normalizeCustomThemePayload(source, label);
-    next.id = newCustomThemeId('custom');
-    next.name = label;
-    const list = getCustomThemes();
-    list.push(next);
-    saveCustomThemes(list);
-    return clone(next);
-  }
-
-  function updateCustomThemeFromCurrent(id, name) {
-    const normalized = normalizeThemeId(id);
-    const list = getCustomThemes();
-    const index = list.findIndex(t => t.id === normalized);
-    if (index < 0) return null;
-    const current = list[index];
-    current.name = String(name || current.name || 'カスタムテーマ').trim();
-    current.builtIn = false;

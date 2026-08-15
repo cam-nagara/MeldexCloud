@@ -52,6 +52,9 @@ function bdBuildAutoDepthStyleMap(board) {
   const styleCount = Math.max(1, Array.isArray(target.depthStyles) ? target.depthStyles.length : 0);
   const visit = (node, depth, rootId, seen) => {
     if (!node?.id || seen.has(node.id)) return;
+    // 課題18-案A: 入れ子の起点 (自分以外の _autoStyle カード) には触れず、その起点自身の
+    // visit(...,0,...) に任せる。roots.forEach の処理順に依存せず「近い方が勝つ」を保証する。
+    if (node.id !== rootId && node._autoStyle) return;
     seen.add(node.id);
     out.set(node.id, { index: Math.min(Math.max(0, depth), styleCount - 1), rootId });
     (byParent.get(node.id) || []).forEach(child => visit(child, depth + 1, rootId, seen));
@@ -390,7 +393,7 @@ function bdAppendCommentHud(div, node) {
 function bdAppendAnchorHud(div, node, pos) {
   const anchor = document.createElement('div');
   anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-  anchor.title = 'クリックでカード追加 / ドラッグでライン作成';
+  anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
   if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
   anchor.addEventListener('pointerdown', ev => bdHandleAnchorPointerDown(ev, div, node, pos));
   anchor.addEventListener('click', ev => { ev.stopPropagation(); });
@@ -406,7 +409,7 @@ function bdHandleAnchorPointerDown(ev, div, node, pos) {
   const startX = ev.clientX;
   const startY = ev.clientY;
   let dragged = false;
-  const getWorld = (cx, cy) => (typeof bdScreenToWorld === 'function') ? bdScreenToWorld(cx, cy) : { x: cx, y: cy };
+  const getWorld = (cx, cy) => bdScreenToWorld(cx, cy);
   const onMove = (mv) => {
     if (!dragged && Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 4) return;
     dragged = true;
@@ -471,7 +474,12 @@ function bdHandleAnchorDrop(up, fromNid, fromAnchor, getWorld) {
   if (cardEl && typeof cardEl.id === 'string' && cardEl.id.startsWith('bdn-')) {
     bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up, getWorld);
   } else {
-    bdCreateAnchorConnectionToPoint(up, fromNid, fromAnchor, getWorld);
+    // カードが無い場所へのドロップは、ラインの先へ新規カードを作る。
+    // board-card-popup-redesign-plan.md §9.7 (2026-04-18 案α) で決めた挙動で、
+    // 2026-05-04 の自由端ライン追加以降ドラッグ経路だけ自由端になっていたものを戻した
+    // (2026-08-13 ユーザー指示)。端が浮いたラインは、ツールバーの「ライン追加」・
+    // Alt+左ドラッグ・既存ラインの端点ドラッグから従来どおり作れる。
+    bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld);
   }
   bd.connecting = null;
   bd._connLabel = '';
@@ -506,34 +514,54 @@ function bdCreateAnchorConnectionToCard(target, cardEl, fromNid, fromAnchor, up,
   if (typeof showStatus === 'function') showStatus(toId === fromNid ? '自己ループラインを追加しました' : 'ラインを追加しました');
 }
 
-function bdCreateAnchorConnectionToPoint(up, fromNid, fromAnchor, getWorld) {
-  const wc = getWorld(up.clientX, up.clientY);
-  if (typeof bdPushUndo === 'function') bdPushUndo();
-  const conn = (typeof bdCreateConnection === 'function')
-    ? bdCreateConnection(fromNid, '', { label: '', toPoint: wc })
-    : null;
-  if (!conn) return;
-  if (fromAnchor) conn.fromAnchor = fromAnchor;
-  if (typeof bdMarkConnectionDirty === 'function') bdMarkConnectionDirty(conn.id, 'anchor-connect-free');
-  else if (typeof bdDrawConns === 'function') bdDrawConns({ connIds: [conn.id], reason: 'anchor-connect-free' });
-  if (typeof bdDirty === 'function') bdDirty();
-  if (typeof showStatus === 'function') showStatus('ラインを追加しました');
-}
+// 課題6・7・11: 深さ算出は共通ユーティリティ bdParentDepth (gb-canvas-engine.part01.part01.js、
+// z-index計算等でも使用) へ一本化する。旧 _bdAnchorNodeDepth は絶対ルートからの深さという同じ
+// 計算を重複実装していただけなので削除した。
 
-function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
-  const wc = getWorld(up.clientX, up.clientY);
+// 課題7-1・課題18-案A: アンカーカードから新規カードを作成しラインで繋ぐ共通コア処理。
+// 「＋」アンカーをドラッグして空白へ落とす経路 (bdCreateAnchorCardAndConnection) と、
+// ラインを選択した状態で「＋」を2段階クリックする経路 (gb-canvas-interact.part01.js の
+// pointerdown ハンドラ) の両方から呼ばれる。旧実装ではクリック経路だけが本関数を経由せず、
+// parent すら指定しない bdCreateNodeWithStyle('', x, y, {}) を直接呼んでいたため、線では
+// つながって見えても親子関係が作られない (折りたたみ・自動整列・階層別スタイルの対象外になる)
+// 壊れたデータが生成されていた。
+// wc: ワールド座標 {x, y}。戻り値は作成したカード (失敗時は null)。
+function _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc) {
+  const fromNode = bd.nodes.find(n => n.id === fromNid) || null;
+  // コンテナ内包カードは親相対座標で扱うため、絶対座標で置く新規カードと親子付けしない。
+  const canParent = !!fromNode && !fromNode.contained;
+  // 課題18-案A: 絶対ルートではなく「最も近い起点」を参照する。入れ子の起点があれば
+  // そちらが優先され、起点を共有しない別系統・祖先には影響しない。
+  const anchor = (canParent && typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(fromNid) : null;
+  // 階層別スタイルが効いているツリーなら、1つ下の階層のスタイルで作る。
+  const useDepthStyle = !!anchor
+    && typeof bdGetAutoStyleForDepth === 'function'
+    && typeof _bdApplyDepthCardFieldsToNode === 'function';
+  const fromDepth = (canParent && typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(fromNid, anchor) : 0;
+  const depthStyle = useDepthStyle ? bdGetAutoStyleForDepth(fromDepth + 1, anchor) : null;
   if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
   try {
     if (typeof bdPushUndo === 'function') bdPushUndo();
+    // 階層別スタイルが無いツリーでは、代わりに起点カードの見た目を引き継ぐ
+    // (Tab / Ctrl+Enter の子カード追加と同じ扱い)。
+    const opts = (!depthStyle && typeof bdInheritStyleOpts === 'function' && fromNode)
+      ? bdInheritStyleOpts(fromNode)
+      : {};
+    if (canParent) opts.parent = fromNid;
     const newNode = (typeof bdCreateNodeWithStyle === 'function')
-      ? bdCreateNodeWithStyle('', wc.x, wc.y, {})
-      : ((typeof bdNode === 'function') ? bdNode('', wc.x, wc.y, 160, 0, {}) : null);
-    if (!newNode) return;
+      ? bdCreateNodeWithStyle('', wc.x, wc.y, opts)
+      : ((typeof bdNode === 'function') ? bdNode('', wc.x, wc.y, 160, 0, opts) : null);
+    if (!newNode) return null;
+    if (depthStyle) _bdApplyDepthCardFieldsToNode(newNode, depthStyle);
     bd.nodes.push(newNode);
     let conn = null;
     if (typeof bdCanCreateConnection !== 'function' || bdCanCreateConnection(fromNid, newNode.id)) {
       conn = (typeof bdCreateConnection === 'function') ? bdCreateConnection(fromNid, newNode.id, { label: '' }) : null;
       if (conn && fromAnchor) conn.fromAnchor = fromAnchor;
+      // 親→子のラインは、親の階層のラインスタイルに合わせる (bdApplyAutoStyle と同じ規則)。
+      if (conn && useDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+        _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(fromDepth, anchor));
+      }
     }
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
       if (typeof bdRequestFullRender === 'function') bdRequestFullRender('anchor-drop-add-fallback');
@@ -544,10 +572,20 @@ function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
     else if (typeof bdMarkConnectionsDirtyByNodes === 'function') bdMarkConnectionsDirtyByNodes([fromNid, newNode.id], 'anchor-drop-add');
     if (typeof bdSelect === 'function') bdSelect(newNode.id);
     if (typeof bdDirty === 'function') bdDirty();
+    // 課題7-3: 新規カードが選択状態になるのに、オプションパネルの内容が追従していなかった。
+    if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ boardUi: true }, 'anchor-drop-add');
     if (typeof showStatus === 'function') showStatus('カードとラインを追加しました');
+    return newNode;
   } finally {
     if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
   }
+}
+
+// 「＋」アンカーをドラッグして空白へ落とした時の完了処理 (bdHandleAnchorDrop から呼ばれる)。
+// pointerup イベントとワールド座標変換関数を受け取り、共通コアへ委譲する。
+function bdCreateAnchorCardAndConnection(up, fromNid, fromAnchor, getWorld) {
+  const wc = getWorld(up.clientX, up.clientY);
+  return _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc);
 }
 
 function bdAppendLinkBadge(div, node, showStatus) {
@@ -730,7 +768,17 @@ function bdAppendNodeText(div, node, nodeStyle, options = {}) {
   txt.className = 'bd-text';
   const numPrefix = (typeof _bdGetNumber === 'function') ? _bdGetNumber(node.id) : '';
   const rawText = (node.img && !options.showImageNames) ? '' : (node.minimized ? String(node.text || '').split('\n')[0] : node.text);
-  const textHtml = esc(numPrefix + (rawText || '')).replace(/\n/g, '<br>');
+  const displayText = numPrefix + (rawText || '');
+  const findBar = document.getElementById('bd-find-bar');
+  const findActive = !!(findBar && findBar.style.display !== 'none' && bd?._findQuery
+    && typeof _bdRenderTextWithHighlight === 'function');
+  const currentMatch = findActive && Array.isArray(bd._findMatches) ? bd._findMatches[bd._findIndex] : null;
+  const currentOccurrence = currentMatch?.type === 'node' && currentMatch?.id === node.id
+    ? (currentMatch.occurrence || 0)
+    : -1;
+  const textHtml = findActive
+    ? _bdRenderTextWithHighlight(displayText, bd._findQuery, currentOccurrence)
+    : esc(displayText).replace(/\n/g, '<br>');
   if (node.link && !node.img) {
     const content = document.createElement('span');
     content.className = 'bd-link-card-content';
@@ -885,6 +933,16 @@ function bdUpdateNodePosition(nodeOrId) {
   el.style.left = node.x + 'px';
   el.style.top = node.y + 'px';
   return true;
+}
+
+function bdSyncNodeDomOrder() {
+  const container = document.getElementById('bd-nodes');
+  if (!container || typeof bd === 'undefined') return;
+  bd.nodes.forEach(node => {
+    if (!node || node.contained) return;
+    const el = document.getElementById('bdn-' + node.id);
+    if (el?.parentNode === container) container.appendChild(el);
+  });
 }
 
 function bdReplaceNodeElement(nodeOrId, options = {}) {

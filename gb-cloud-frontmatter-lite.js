@@ -28,7 +28,9 @@
   function yamlPair(text) {
     const match = String(text || '').match(/^([^:#][^:]*):(?:\s*(.*))?$/);
     if (!match) return null;
-    return { key: match[1].trim(), raw: match[2] == null ? '' : match[2].trim() };
+    const rawKey = match[1].trim();
+    const key = rawKey.replace(/^(['"])([\s\S]*)\1$/, '$2');
+    return { key, raw: match[2] == null ? '' : match[2].trim() };
   }
 
   function yamlSplitInline(text) {
@@ -109,7 +111,16 @@
         index += 1;
         if (pair.raw) out[pair.key] = yamlScalar(pair.raw);
         else {
-          const nested = parseBlock(index, indent + 2);
+          // PyYAML emits block sequences without extra indentation:
+          //   accept:
+          //   - png
+          // Accept that standard form as the value of the preceding key.
+          const indentlessSequence = index < lines.length
+            && lines[index].indent === line.indent
+            && lines[index].text.startsWith('- ');
+          const nested = indentlessSequence
+            ? parseArray(index, line.indent)
+            : parseBlock(index, indent + 2);
           out[pair.key] = nested.value;
           index = nested.index;
         }

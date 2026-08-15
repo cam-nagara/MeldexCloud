@@ -1,12 +1,18 @@
-  // gb-production-management.part02.js から分離したセル保存時の自動追従フック群
-  // （制作管理UX改善計画 2026-08-04 §5-1/§5-3/Stage 4対応で part02.js が1500行制限を
-  // 超えたため切り出した。gb-production-management.part01.js〜.part04.js は同じ共有
-  // クロージャに属する raw concatenation で、自前の IIFE は持たない。ただし part01.js が
-  // 開いたIIFEの閉じ括弧 })(); は、ロード順で最後になるこのファイルの末尾へ移した
-  // （旧: part02.js末尾で閉じていたため、それより後にロードされる part03.js/part04.js の
-  // 宣言がIIFEの外側スコープになり、IIFE内部の _pmCloud* 関数を直接呼べない不具合があった。
-  // JSの関数宣言ホイスティングは「呼び出し元より後で宣言されていても同じスコープ内なら
-  // 見える」だけで、別スコープ（IIFEの外）の宣言までは見えないため、これが必要）。
+  // gb-production-management-cloud-save-hooks.js: セル保存時の自動追従フック群
+  // （開始日時・完了日時の自動記録／タスク名自動リネーム／作業順自動採番／
+  // 目標作業時間再計算。責務単位分割 2026-08-12。旧 gb-production-management.part04.js）。
+  //
+  // 重要: gb-production-management.part01.js 〜 このファイルは同じ共有クロージャ（IIFEの
+  // raw concatenation）に属し、このファイル自体は自前のIIFEを持たない。IIFEの開始は
+  // gb-production-management.part01.js にあり、閉じ括弧 })(); は読み込み順で最後になる
+  // このファイルの末尾に置く（読み込み順は gb-production-management.js を参照。旧: part02.js
+  // 末尾で閉じていたため、それより後にロードされる旧part03.js/part04.jsの宣言がIIFEの
+  // 外側スコープになり、IIFE内部の _pmCloud* 関数を直接呼べない不具合があった。JSの関数宣言
+  // ホイスティングは「呼び出し元より後で宣言されていても同じスコープ内なら見える」だけで、
+  // 別スコープ（IIFEの外）の宣言までは見えないため、この順序契約は厳守すること）。
+  // gb-production-management.js に新しい読み込みファイルを追加する場合、このファイルを
+  // 配列の最後に保つこと。
+
   function _pmCloudTaskSheetEntryInfo(internals, path) {
     if (!internals) return null;
     const root = String(_pmCloudRoot(internals) || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');

@@ -200,7 +200,7 @@ function _bdArrangeLayoutByWidth(layout, padding, targetWidth) {
     maxItemWidth,
     Number.isFinite(+targetWidth) && +targetWidth > 0
       ? +targetWidth
-      : (canvasEl ? canvasEl.offsetWidth / Math.max(0.1, bd.zoom || 1) : layout.spanW),
+      : (canvasEl ? canvasEl.offsetWidth / bdSafeZoom(bd.zoom) : layout.spanW),
   );
   let x = 0;
   let y = 0;
@@ -226,7 +226,7 @@ function _bdArrangeLayoutByHeight(layout, padding, targetHeight) {
     maxItemHeight,
     Number.isFinite(+targetHeight) && +targetHeight > 0
       ? +targetHeight
-      : (canvasEl ? canvasEl.offsetHeight / Math.max(0.1, bd.zoom || 1) : layout.spanH),
+      : (canvasEl ? canvasEl.offsetHeight / bdSafeZoom(bd.zoom) : layout.spanH),
   );
   let x = 0;
   let y = 0;
@@ -367,7 +367,7 @@ function bdAddAt(x, y, text, opts) {
 
 // --- ズーム/パン ---
 function bdZoom(delta) {
-  bd.zoom = Math.max(0.1, Math.min(5, bd.zoom+delta));
+  bd.zoom = bdClampZoom(bd.zoom + delta);
   bdTransform();
 }
 function bdTransform() {
@@ -377,7 +377,7 @@ function bdTransform() {
   const c = typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
     : document.getElementById('bd-canvas');
-  const zoom = Math.max(0.1, bd.zoom || 1);
+  const zoom = bdSafeZoom(bd.zoom);
   if (c) c.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) w.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) {
@@ -437,7 +437,7 @@ function bdFitAll(_retryCount) {
   const c=document.getElementById('bd-canvas');
   if (!c) return; // ボード DOM 未生成時 (非同期タブ切替中など) はスキップ
   // キャンバスがまだレイアウト前 (clientWidth/Height が 0) の場合、
-  // ズーム計算が 0 になり Math.max(0.1, 0) で 10% に張り付く不具合になる。
+  // ズーム計算が 0 になり最小倍率に張り付く不具合になる。
   // 次フレームで再試行する。最大 30 フレーム (約 500ms) で諦める。
   if (c.clientWidth <= 0 || c.clientHeight <= 0) {
     const next = (_retryCount || 0) + 1;
@@ -457,7 +457,7 @@ function bdFitAll(_retryCount) {
     fitW = w * cos + h * sin;
     fitH = w * sin + h * cos;
   }
-  bd.zoom = Math.min(cw/fitW, ch/fitH, 1.5); bd.zoom = Math.max(0.1, bd.zoom);
+  bd.zoom = bdSafeZoom(Math.min(cw/fitW, ch/fitH, 1.5));
   bd.panX = (cw-w*bd.zoom)/2 - x0*bd.zoom + 40*bd.zoom;
   bd.panY = (ch-h*bd.zoom)/2 - y0*bd.zoom + 40*bd.zoom;
   bdTransform();
@@ -547,6 +547,9 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
+  // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
+  if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
   const savePath = bd.path;
   if (!savePath) return true;
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {

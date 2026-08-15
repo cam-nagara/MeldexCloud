@@ -1,3 +1,19 @@
+  function _createNoteEditor(data, scheduleSave, noteId) {
+    const editor = document.createElement('div');
+    editor.className = 'ann-note-editor';
+    editor.contentEditable = 'true';
+    if (noteId) editor.dataset.e2eId = `embedded-annotation-note-${noteId}-editor`;
+    editor.setAttribute('role', 'textbox');
+    editor.setAttribute('aria-multiline', 'true');
+    if (data.html) editor.innerHTML = _safeAnnotationHtml(data.html);
+    else editor.textContent = data.text || '';
+    editor.addEventListener('input', scheduleSave);
+    editor.addEventListener('blur', scheduleSave);
+    editor.addEventListener('mouseup', () => _scheduleNoteSelectionPopup(editor, scheduleSave));
+    editor.addEventListener('pointerup', () => _scheduleNoteSelectionPopup(editor, scheduleSave));
+    editor.addEventListener('keyup', (event) => {
+      if (event.shiftKey || ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'a', 'A'].includes(event.key)) {
+        _scheduleNoteSelectionPopup(editor, scheduleSave);
       }
     });
     return editor;
@@ -882,18 +898,3 @@
       }
       if (entry.observedNode !== nodeEl) {
         if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
-        entry.observedNode = nodeEl;
-        _anchoredResizeObserver.observe(nodeEl);
-      }
-      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
-      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
-        * _annotationAnchorScale(anchor);
-      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
-    });
-    _releaseAnchoredMutationObserverIfIdle();
-  }
-
-  function _scheduleAnchoredAnnotationRefresh() {
-    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
-    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
-  }

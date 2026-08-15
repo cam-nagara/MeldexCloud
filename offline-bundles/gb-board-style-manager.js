@@ -506,7 +506,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   else bd.lineStyles.push(next);
   bd[activeRef] = next.id;
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -676,7 +676,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
     node._userCardStyle = true;
   }
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`カードスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -703,7 +703,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
   conn.styleRef = next.id;
   if (typeof bdClearConnectionStyleOverrides === 'function') bdClearConnectionStyleOverrides(conn);
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`ラインスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -739,7 +739,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   // 保存時も現在値を「ユーザー定義デフォルト」として更新（以降のリセットで戻る先）
   style._default = _bdCloneStyleForDefault(style);
   _bdSaveGlobalStyleDefault('card', style);
-  if (typeof bdRender === 'function') bdRender();
+  if (typeof _bdRenderKeepingDetailTab === 'function') _bdRenderKeepingDetailTab();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
@@ -1181,8 +1181,26 @@ function _bdNextStyle(kind, styles) {
 }
 
 function _bdApplyAllAutoStyles() {
-  if (typeof bdApplyAutoStyle !== 'function') return;
-  bd.nodes.filter(node => node._autoStyle).forEach(node => bdApplyAutoStyle(node.id));
+  if (typeof bdApplyAutoStyle !== 'function') return 0;
+  const anchors = bd.nodes.filter(node => node._autoStyle);
+  anchors.forEach(node => bdApplyAutoStyle(node.id));
+  return anchors.length;
+}
+
+// 課題13 (2026-08-14 実機切り分け): 「テーマカラーを階層別スタイルに適用」ボタンは常に
+// bd.depthStyles 自体を更新するが、盤面上に _autoStyle (階層別スタイルの起点) を持つ
+// カードが1枚もないボードでは、適用対象が無いため盤面の見た目は変わらない
+// (プリセット/スタイル管理タブのスワッチ・次に作る新規カードには反映される)。
+// 「壊れている」と誤解されないよう、対象0件のときは案内を分けて表示する。
+function _bdCountAutoStyleAnchorNodes() {
+  return (typeof bd !== 'undefined' && Array.isArray(bd.nodes))
+    ? bd.nodes.filter(node => node && node._autoStyle).length
+    : 0;
+}
+function _bdDepthThemeApplyStatusMessage(anchorCount) {
+  return anchorCount > 0
+    ? 'テーマカラーを階層別スタイルに適用しました'
+    : '階層別スタイルが適用されているカードがありません（プリセットの色は更新されました。カードに反映するには右クリックメニュー等でカードを階層別スタイルの起点にしてください）';
 }
 /* gb-board-style-manager.part02.js: split from gb-board-style-manager.js */
 // ============================================================
@@ -1211,10 +1229,21 @@ function _bdSetStyleManagerPopupAnchorState(anchor, expanded) {
   anchor.setAttribute('aria-expanded', expanded ? 'true' : 'false');
 }
 
+// 確認ダイアログの中のクリックでポップアップを閉じない。閉じてしまうと、非同期の確認から
+// 戻ったあとの再描画で positionPopup() が「親が無いポップアップ」を document.body へ
+// 自動的に付け直し、追跡変数だけ null のまま DOM に残る = どの操作でも閉じられない
+// ポップアップになる (階層別スタイルの削除で発生していた)。
+// スタイル管理ポップアップ自身は aria-modal="false" なので、この判定には引っかからない。
+// スマホの引き出しパネルも aria-modal="false" のため、確認ダイアログだけを拾える。
+function _bdPointerInsideDialog(target) {
+  return !!target?.closest?.('[aria-modal="true"], dialog[open]');
+}
+
 function _bdCloseStyleManagerPopup(options) {
   const anchor = _bdStyleManagerPopupAnchor;
   _bdSetStyleManagerPopupAnchorState(anchor, false);
-  _bdStyleManagerPopup?.remove();
+  // 追跡中のポップアップだけでなく、過去に取り残された同種のポップアップも必ず片付ける。
+  document.querySelectorAll('.bd-style-manager-popup:not(.bd-depth-preset-popup)').forEach(el => el.remove());
   _bdStyleManagerPopup = null;
   _bdStyleManagerPopupAnchor = null;
   if (_bdStyleManagerPopupCloseHandler) {
@@ -1222,6 +1251,25 @@ function _bdCloseStyleManagerPopup(options) {
     _bdStyleManagerPopupCloseHandler = null;
   }
   if (options?.restoreFocus) _bdFocusStyleManagerPopupAnchor(anchor);
+}
+
+window.MeldexBoardStyleManagerPopup = Object.freeze({
+  close: _bdCloseStyleManagerPopup,
+});
+
+// ポップアップ外の pointerdown で閉じる共通処理。card/line と階層別スタイルの両方で使う。
+function _bdBindStyleManagerPopupOutsideClose(popup, getAnchor) {
+  setTimeout(() => {
+    _bdStyleManagerPopupCloseHandler = event => {
+      if (!_bdStyleManagerPopup || _bdStyleManagerPopup !== popup) return;
+      if (_bdPointerInsideDialog(event.target)) return;
+      if (_bdStyleManagerPopup.contains(event.target)) return;
+      const anchor = typeof getAnchor === 'function' ? getAnchor() : null;
+      if (anchor && anchor.contains(event.target)) return;
+      _bdCloseStyleManagerPopup();
+    };
+    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
+  }, 0);
 }
 
 function _bdConfigureStyleManagerPopup(popup, label, anchorEl) {
@@ -1304,20 +1352,6 @@ function _bdClampStyleManagerPopupToViewport(popup) {
   if (!viewportWidth || !viewportHeight) return;
 
   let rect = popup.getBoundingClientRect();
-  const maxVisibleHeight = Math.max(120, viewportHeight - margin * 2);
-  for (let i = 0; i < 4 && rect.height > maxVisibleHeight + 1; i += 1) {
-    const computedMax = parseFloat(getComputedStyle(popup).maxHeight || '');
-    const currentLimit = Number.isFinite(computedMax) && computedMax > 0 ? computedMax : rect.height;
-    const cssToVisualRatio = Number.isFinite(computedMax) && computedMax > 0
-      ? computedMax / Math.max(1, rect.height)
-      : 1;
-    const nextLimit = Math.min(currentLimit, Math.max(120, maxVisibleHeight * cssToVisualRatio * 0.98));
-    popup.style.maxHeight = nextLimit + 'px';
-    popup.style.height = nextLimit + 'px';
-    popup.style.overflowY = 'auto';
-    rect = popup.getBoundingClientRect();
-  }
-
   const maxVisibleWidth = Math.max(160, viewportWidth - margin * 2);
   for (let i = 0; i < 4 && rect.width > maxVisibleWidth + 1; i += 1) {
     const computedMax = parseFloat(getComputedStyle(popup).maxWidth || '');
@@ -1332,14 +1366,43 @@ function _bdClampStyleManagerPopupToViewport(popup) {
     rect = popup.getBoundingClientRect();
   }
 
-  let left = rect.left;
-  let top = rect.top;
-  if (rect.right > viewportWidth - margin) left = Math.max(margin, viewportWidth - rect.width - margin);
-  if (rect.bottom > viewportHeight - margin) top = Math.max(margin, viewportHeight - rect.height - margin);
-  if (left < margin) left = margin;
-  if (top < margin) top = margin;
-  popup.style.left = left + 'px';
-  popup.style.top = top + 'px';
+  // はみ出し量ぶんだけ「今の位置から動かす」形で補正する。
+  // getBoundingClientRect() は実測(物理)px、style.left/top は CSS px で、UI拡大時は
+  // 単位が食い違う。絶対値を計算して代入すると、その差のぶんだけ画面外に残ってしまう
+  // (階層別スタイルタブでピッカーが下寄りのとき、ポップアップ下端が画面外に出ていた)。
+  // 差分を足し込む形なら、ズーム倍率で割るだけで正しく効く。
+  const zoom = (typeof _getZoom === 'function' && _getZoom() > 0) ? _getZoom() : 1;
+  for (let i = 0; i < 3; i += 1) {
+    const current = popup.getBoundingClientRect();
+    let dx = 0;
+    let dy = 0;
+    if (current.right > viewportWidth - margin) dx = (viewportWidth - margin) - current.right;
+    if (current.left + dx < margin) dx = margin - current.left;
+    if (current.bottom > viewportHeight - margin) dy = (viewportHeight - margin) - current.bottom;
+    if (current.top + dy < margin) dy = margin - current.top;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+    const currentLeft = Number.parseFloat(popup.style.left) || 0;
+    const currentTop = Number.parseFloat(popup.style.top) || 0;
+    popup.style.left = (currentLeft + dx / zoom) + 'px';
+    popup.style.top = (currentTop + dy / zoom) + 'px';
+  }
+
+  // 2026-08-14 (インボックスP2): CSS の `max-height: 60vh` は画面全体に対する固定割合でしか
+  // 上限をかけないため、アンカーが画面下寄りにあると「上マージンまで押し上げてもなお
+  // 高さが余って下端がビューポートを超える」ケースが残っていた (実測 getBoundingClientRect()
+  // の位置と 60vh という固定上限が噛み合っていなかった)。上の位置補正を終えた実測位置を
+  // 基準に、残りの表示可能高さへ max-height を詰め直すことで、アンカー位置によらず必ず
+  // 画面内へ収まるようにする。getBoundingClientRect() は実測(物理)px なので、
+  // style.height に書き戻す際は上の位置補正と同じくズーム倍率で割って CSS px に変換する
+  // (これを怠ると UI 拡大率が1でない環境で高さが過大になり、はみ出しが再発する)。
+  const finalRect = popup.getBoundingClientRect();
+  const availableHeightPhysical = viewportHeight - margin - finalRect.top;
+  if (finalRect.height > availableHeightPhysical + 1) {
+    const availableHeightLogical = Math.max(120, availableHeightPhysical / zoom);
+    popup.style.maxHeight = availableHeightLogical + 'px';
+    popup.style.height = availableHeightLogical + 'px';
+    popup.style.overflowY = 'auto';
+  }
 }
 
 function _bdPositionStyleManagerPopup(popup, anchorEl) {
@@ -1366,6 +1429,7 @@ function _bdPositionStyleManagerPopup(popup, anchorEl) {
 //   全 0 を返してしまい、ポップアップが画面左上に飛ぶのを防ぐために使う。
 function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   if (!anchorEl) return;
+  window.MeldexBoardDepthPresets?.closePopup?.();
   if (_bdStyleManagerPopup) {
     const same = _bdStyleManagerPopupAnchor === anchorEl;
     _bdCloseStyleManagerPopup();
@@ -1383,6 +1447,9 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   _bdBindStyleManagerPopupKeys(popup, () => typeof opts.refreshAnchor === 'function' ? (opts.refreshAnchor() || currentAnchor) : currentAnchor);
 
   const render = () => {
+    // 確認ダイアログ待ちなどで既に閉じられたあとの遅延再描画では何もしない。
+    // ここで描画すると positionPopup() が閉じたはずのポップアップを DOM へ戻してしまう。
+    if (_bdStyleManagerPopup !== popup) return;
     const displayStyles = _bdDisplayedManagedStyles(kind);
     const activeRef = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
     const activeStyleId = bd[activeRef] || '';
@@ -1479,7 +1546,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
         const finalIdx = fromIdx < toIdx ? toIdx - 1 : toIdx;
         arr.splice(finalIdx, 0, moved);
         bdDirty();
-        bdRender();
+        _bdRenderKeepingDetailTab();
         bdRefreshBoardToolbar();
         if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
         render();
@@ -1532,7 +1599,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       bdPushUndo();
       _bdResetStyleToDefault(kind, live);
       bdDirty();
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       if (typeof opts.onSelect === 'function') opts.onSelect(live.id);
@@ -1568,7 +1635,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
         _bdReplaceDeletedStyleRefsInDepthStyles(kind, removedId, fallbackId);
       }
       bdDirty();
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdRefreshBoardToolbar();
       if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
       opts.currentId = fallbackId;
@@ -1579,17 +1646,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
   };
 
   render();
-
-  setTimeout(() => {
-    _bdStyleManagerPopupCloseHandler = event => {
-      if (!_bdStyleManagerPopup) return;
-      const anchor = _bdStyleManagerPopupAnchor || currentAnchor;
-      if (!_bdStyleManagerPopup.contains(event.target) && !(anchor && anchor.contains(event.target))) {
-        _bdCloseStyleManagerPopup();
-      }
-    };
-    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
-  }, 0);
+  _bdBindStyleManagerPopupOutsideClose(popup, () => _bdStyleManagerPopupAnchor || currentAnchor);
 }
 
 // 指定 kind のスタイル管理をオプションパネルのタブ内にレンダリングする。
@@ -1670,7 +1727,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
     if (field === 'fontFamily') {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
     } else {
-      bdRender();
+      _bdRenderKeepingDetailTab();
     }
     _bdRenderStyleManagerInPanel(kind, container, selected.id, needsFullRebuild ? undefined : 'diff');
     bdRefreshBoardToolbar();
@@ -1791,6 +1848,56 @@ function _bdAppendDepthStyleRefRow(container, kind, selected, liveDepth, onApply
   container.appendChild(row);
 }
 
+// 課題18-案B: 起点カード (node._autoStyle === true) に割り当てるプリセットの選択肢。
+// 先頭は「ボード共通の階層別スタイルを使う」(depthStyleRef 未指定 = 従来どおりの挙動)。
+// currentRef が一覧に無い (プリセットが削除された/他端末で保存された等) 場合は、
+// 見つからない旨の選択肢を追加して選択状態を保つ (勝手に空へ戻さない)。
+function _bdAnchorPresetOptions(currentRef) {
+  const presets = (typeof MeldexBoardDepthPresets !== 'undefined' && typeof MeldexBoardDepthPresets.list === 'function')
+    ? MeldexBoardDepthPresets.list() : [];
+  const opts = [
+    { v: '', l: 'ボード共通の階層別スタイルを使う' },
+    ...presets.map(p => ({ v: p.id, l: `${p.name}${p.builtin ? '（標準搭載）' : ''}` })),
+  ];
+  if (currentRef && !presets.some(p => p.id === currentRef)) {
+    opts.push({ v: currentRef, l: '（見つかりません。ボード共通を使用中）' });
+  }
+  return opts;
+}
+
+// 課題18-案B: 唯一選択中のカードがそれ自身「起点」(_autoStyle) のときだけ、その起点に
+// 割り当てるプリセットの行を追加する。既存の「プリセット行」(先頭、ボード共通の
+// bd.depthStyles 一式を丸ごと入れ替える) とは別物 — こちらは「この起点だけ」に
+// 別プリセットを割り当てる (課題12のプリセット複製と組み合わせて「複製して少し変えて
+// 別の枝に適用」の流れを成立させる)。
+function _bdAppendAnchorPresetRow(container, anchorNode, onApplied) {
+  const fmt = window.gbFmt;
+  if (!container || !fmt || !anchorNode) return;
+  const row = fmt.makeRow({ wrap: true });
+  row.classList.add('bd-depth-anchor-preset-row');
+  const label = fmt.makeLabel('この起点のプリセット');
+  const select = fmt.makeSelect({
+    opts: _bdAnchorPresetOptions(anchorNode.depthStyleRef || ''),
+    value: anchorNode.depthStyleRef || '',
+    onChange: (nextId) => {
+      const live = bd.nodes.find(n => n.id === anchorNode.id);
+      if (!live) return;
+      if (typeof bdPushUndo === 'function') bdPushUndo();
+      live.depthStyleRef = nextId || '';
+      if (typeof bdApplyAutoStyle === 'function') bdApplyAutoStyle(live.id);
+      if (typeof onApplied === 'function') onApplied();
+    },
+  });
+  select.setAttribute('data-bd-depth-anchor-preset-ref', 'true');
+  select.setAttribute('data-e2e-id', 'bd-depth-anchor-preset-ref');
+  row.appendChild(label);
+  row.appendChild(select);
+  if (typeof fieldHelp === 'function') {
+    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このカードを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
+  }
+  container.appendChild(row);
+}
+
 // 階層別スタイル用の in-panel 版。mode は _bdRenderStyleManagerInPanel と同じ役割で
 // 'diff' のときは入力中のフォーカスを壊さないよう差分更新のみ行う。
 function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
@@ -1825,6 +1932,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     if (cardRef && document.activeElement !== cardRef) cardRef.value = selected?.cardStyleRef || '';
     const lineRef = container.querySelector('[data-bd-depth-style-ref="line"]');
     if (lineRef && document.activeElement !== lineRef) lineRef.value = selected?.lineStyleRef || '';
+    container._bdDepthPresetRow?.refresh?.();
     return;
   }
 
@@ -1849,6 +1957,21 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
       </div>
     </div>`;
 
+  // プリセット行 (階層別スタイル一式の保存・切り替え) はタブの先頭へ置く。
+  // これで下の「階層一覧を開く」ピッカーが下寄りになるが、そこから下向きに開く
+  // ポップアップは _bdClampStyleManagerPopupToViewport() が画面内へ引き戻す。
+  // 実装は gb-board-depth-presets.js 側に置き、このファイルは呼び出しだけを持つ。
+  container._bdDepthPresetRow = null;
+  const depthPanelEl = container.querySelector('[data-bd-style-in-panel="depth"]');
+  if (depthPanelEl && typeof window.MeldexBoardDepthPresets?.buildRow === 'function') {
+    const presetRow = window.MeldexBoardDepthPresets.buildRow({
+      onApplied: () => _bdRenderDepthStyleInPanel(container, idx),
+      refreshAnchor: () => container.querySelector('[data-bd-depth-preset-picker]'),
+    });
+    depthPanelEl.insertBefore(presetRow.section, depthPanelEl.firstChild);
+    container._bdDepthPresetRow = presetRow;
+  }
+
   const depthFieldsEl = container.querySelector('[data-bd-depth-fields]');
   const applyDepthStyles = (options = {}) => {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
@@ -1857,7 +1980,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     if (options.fontOnly) {
       if (typeof bdScheduleFontStyleMapUpdate === 'function') bdScheduleFontStyleMapUpdate();
     } else {
-      bdRender();
+      _bdRenderKeepingDetailTab();
     }
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
@@ -1900,6 +2023,17 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     });
     nameRow.append(nameLbl, nameInp);
     depthFieldsEl.appendChild(nameRow);
+
+    // 課題18-案B: 選択中カードがそれ自身「起点」であれば、この起点専用のプリセット行を出す。
+    // 別カード選択時はタブが全再描画される (bdRefreshSelectionDetails(true)) ため、
+    // diff モードでの追従は不要。
+    const soleAnchor = typeof _bdSelectedSoleAnchorNode === 'function' ? _bdSelectedSoleAnchorNode() : null;
+    if (soleAnchor) {
+      _bdAppendAnchorPresetRow(depthFieldsEl, soleAnchor, () => {
+        applyDepthStyles();
+        _bdRenderDepthStyleInPanel(container, idx);
+      });
+    }
 
     // カードスタイル部
     const cardHeader = document.createElement('div');
@@ -1985,10 +2119,15 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
   container.querySelector('[data-bd-depth-apply-theme]')?.addEventListener('click', () => {
     if (typeof bdApplyThemeColorsToDepthStyles !== 'function') return;
     if (typeof bdPushUndo === 'function') bdPushUndo();
+    const anchorCount = typeof _bdCountAutoStyleAnchorNodes === 'function' ? _bdCountAutoStyleAnchorNodes() : 0;
     bdApplyThemeColorsToDepthStyles({ applyLineColor: true });
     applyDepthStyles();
     _bdRenderDepthStyleInPanel(container, idx);
-    if (typeof showStatus === 'function') showStatus('テーマカラーを階層別スタイルに適用しました');
+    if (typeof showStatus === 'function') {
+      showStatus(typeof _bdDepthThemeApplyStatusMessage === 'function'
+        ? _bdDepthThemeApplyStatusMessage(anchorCount)
+        : 'テーマカラーを階層別スタイルに適用しました');
+    }
   });
   if (typeof bindMeldexDropdownKeySwitch === 'function') {
     bindMeldexDropdownKeySwitch(pickerBtn, {
@@ -2004,6 +2143,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
 let _bdDepthStyleDragIndex = -1;
 function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
   if (!anchorEl) return;
+  window.MeldexBoardDepthPresets?.closePopup?.();
   if (_bdStyleManagerPopup) {
     const same = _bdStyleManagerPopupAnchor === anchorEl;
     _bdCloseStyleManagerPopup();
@@ -2024,16 +2164,19 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
     if (typeof bdNormalizeDepthStyles === 'function') bd.depthStyles = bdNormalizeDepthStyles(bd.depthStyles);
     _bdApplyAllAutoStyles();
     bdDirty();
-    bdRender();
+    _bdRenderKeepingDetailTab();
     bdRefreshBoardToolbar();
     if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
     if (typeof renderCb === 'function') renderCb();
   };
 
   const render = () => {
+    // card/line 側と同じ理由で、閉じたあとの遅延再描画では描き直さない。
+    if (_bdStyleManagerPopup !== popup) return;
     const styles = bd.depthStyles || [];
     let currentIndex = Math.max(0, Math.min(Number.isFinite(+opts.currentIndex) ? +opts.currentIndex : 0, styles.length - 1));
     const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
+    const copyIcon = typeof lucide === 'function' ? lucide('copy', 14) : '複製';
     const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
     const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : '戻す';
     const trashIcon = typeof lucide === 'function' ? lucide('trash2', 14) : '削除';
@@ -2052,6 +2195,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       </div>
       <div class="bd-style-manager-popup-actions">
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-add title="階層を追加" aria-label="階層を追加">${plusIcon}</button>
+        <button type="button" class="bd-detail-style-action" data-bd-popup-depth-duplicate title="選択中の階層を複製" aria-label="選択中の階層を複製">${copyIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-theme title="テーマカラーを階層別スタイルに適用" aria-label="テーマカラーを階層別スタイルに適用">${paletteIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-save title="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存" aria-label="現在の階層別スタイル一式を全ボード共通のデフォルトとして保存">${saveIcon}</button>
         <button type="button" class="bd-detail-style-action" data-bd-popup-depth-reset title="保存したデフォルトに戻す (未保存ならビルトイン初期値)" aria-label="保存したデフォルトに戻す">${resetIcon}</button>
@@ -2125,14 +2269,36 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
       applyDepthStyles(render);
     });
 
+    popup.querySelector('[data-bd-popup-depth-duplicate]')?.addEventListener('click', () => {
+      const styles2 = bd.depthStyles || [];
+      const sourceIndex = Math.max(0, Math.min(currentIndex, styles2.length - 1));
+      const source = styles2[sourceIndex];
+      if (!source) return;
+      if (typeof bdPushUndo === 'function') bdPushUndo();
+      const next = _bdClone(source);
+      const baseName = source.name ? `${source.name} 2` : `階層 ${sourceIndex + 1} 2`;
+      next.name = typeof _bdMakeUniqueStyleName === 'function'
+        ? _bdMakeUniqueStyleName(baseName, styles2)
+        : baseName;
+      styles2.splice(sourceIndex + 1, 0, next);
+      opts.currentIndex = sourceIndex + 1;
+      if (typeof opts.onSelect === 'function') opts.onSelect(opts.currentIndex);
+      applyDepthStyles(render);
+    });
+
     popup.querySelector('[data-bd-popup-depth-theme]')?.addEventListener('click', () => {
       if (typeof bdApplyThemeColorsToDepthStyles !== 'function') return;
       if (typeof bdPushUndo === 'function') bdPushUndo();
+      const anchorCount = typeof _bdCountAutoStyleAnchorNodes === 'function' ? _bdCountAutoStyleAnchorNodes() : 0;
       bdApplyThemeColorsToDepthStyles({ applyLineColor: true });
       opts.currentIndex = currentIndex;
       if (typeof opts.onSelect === 'function') opts.onSelect(currentIndex);
       applyDepthStyles(render);
-      if (typeof showStatus === 'function') showStatus('テーマカラーを階層別スタイルに適用しました');
+      if (typeof showStatus === 'function') {
+        showStatus(typeof _bdDepthThemeApplyStatusMessage === 'function'
+          ? _bdDepthThemeApplyStatusMessage(anchorCount)
+          : 'テーマカラーを階層別スタイルに適用しました');
+      }
     });
 
     popup.querySelector('[data-bd-popup-depth-delete]')?.addEventListener('click', async () => {
@@ -2180,16 +2346,7 @@ function _bdOpenDepthStyleManagerPopup(anchorEl, options) {
   };
 
   render();
-  setTimeout(() => {
-    _bdStyleManagerPopupCloseHandler = event => {
-      if (!_bdStyleManagerPopup) return;
-      const anchor = _bdStyleManagerPopupAnchor || currentAnchor;
-      if (!_bdStyleManagerPopup.contains(event.target) && !(anchor && anchor.contains(event.target))) {
-        _bdCloseStyleManagerPopup();
-      }
-    };
-    document.addEventListener('pointerdown', _bdStyleManagerPopupCloseHandler);
-  }, 0);
+  _bdBindStyleManagerPopupOutsideClose(popup, () => _bdStyleManagerPopupAnchor || currentAnchor);
 }
 
 // 旧モーダルは廃止し、オプションパネルの階層別スタイルタブに切り替える (コミットC)。
@@ -2293,7 +2450,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = !(bd.displayFilters[key] !== false);
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -2311,7 +2468,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd[key] = !bd[key];
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);
@@ -2328,7 +2485,7 @@ function bdOpenFilterMenu(anchor) {
     row.addEventListener('click', () => {
       bd.displayFilters[key] = bd.displayFilters[key] !== true;
       closeMenu(true);
-      bdRender();
+      _bdRenderKeepingDetailTab();
       bdDirty();
     });
     menu.appendChild(row);

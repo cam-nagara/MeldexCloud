@@ -5,9 +5,9 @@
    列挙された死に列のうち、既存エントリに値が入っているものだけを frontmatter の
    production_schema_cleanup 退避レコードへコピーしてから properties から削除する
    （gb-production-management-schema-migration.js の production_name_migration と同じ
-   非破壊パターン）。呼び出しは gb-production-management.part01.js の _pmCloudInit から、
-   同ファイルの migrateManagedNameProperties と同じ context（_pmCloudManagedNameContext）
-   を再利用する。
+   非破壊パターン）。呼び出しは gb-production-management-cloud-workspace.js（旧
+   gb-production-management.part01.js の一部）の _pmCloudInit から、同ファイルの
+   migrateManagedNameProperties と同じ context（_pmCloudManagedNameContext）を再利用する。
 */
 (function () {
   'use strict';
@@ -71,7 +71,8 @@
     return true;
   }
 
-  // context: gb-production-management.part01.js の _pmCloudManagedNameContext(provider, internals)
+  // context: gb-production-management-cloud-workspace.js（旧 gb-production-management.part01.js
+  // の一部）の _pmCloudManagedNameContext(provider, internals)
   // が持つ { provider, listEntries(sheet), listTaskSheets(), frontmatterText(fm, body) } を使う。
   async function migrateProductionSchemaCleanup(context) {
     if (!context || typeof context.listEntries !== 'function' || typeof context.frontmatterText !== 'function'
@@ -168,7 +169,8 @@
     return true;
   }
 
-  // context: gb-production-management.part01.js の _pmCloudManagedNameContext(provider, internals)。
+  // context: gb-production-management-cloud-workspace.js（旧 gb-production-management.part01.js
+  // の一部）の _pmCloudManagedNameContext(provider, internals)。
   // タスクリスト系シート（listTaskSheets が返す「タスクリスト」+作品別「タスクリスト_*」。
   // 「タスクリスト アーカイブ」は列定義を変更していないため対象外 — Desktop側と同じ）のみ対象。
   async function migrateProductionInternalMetadata(context) {

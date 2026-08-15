@@ -281,3 +281,75 @@ function bdYamlListObjects(fm, key) {
   }
   return list;
 }
+
+// 旧式ボード互換: フロントマター直下に `nodes:` をカード配列（各要素が
+// id/text/x/y/w/h/color 等をフラットに持つ、YAML block style のリスト）として
+// 直接持つスキーマの読み取り専用パーサ。現行の positions/sizes マップ方式や
+// 本文見出し方式とは別の並存フォーマット（例: 同梱サンプル
+// 「死霊探偵/キャラ相関図.board.md」）向け。
+//
+// bdYamlListObjects は各プロパティが1行で完結する前提（`from: n1, to: n2` 等の
+// フロー形式や単一行スカラー）のため、この関数はそれとは別に、複数行にまたがる
+// 折り畳みスカラー（引用符あり/なしいずれも）を先頭〜終端まで蓄積してから
+// 1つの値へ畳み込む。畳み込み規則は本文見出しパーサ（bdParseMd の "# " 解析）と
+// 揃え、空行は落として残りの行を単一の '\n' で結合する（段落ごとに改行1つ）。
+function bdParseFrontmatterNodeList(fm) {
+  const lines = bdYamlTopLevelBlock(fm, 'nodes');
+  const items = [];
+  let current = null;
+  let openKey = '';
+  let openLines = null;
+
+  const finishOpen = () => {
+    if (!current || !openKey || !openLines) return;
+    const nonEmpty = openLines.filter(l => l.trim().length > 0);
+    let value;
+    if (!nonEmpty.length) {
+      value = '';
+    } else if (nonEmpty.length === 1) {
+      value = bdYamlScalar(nonEmpty[0].trim());
+    } else {
+      const first = nonEmpty[0].trim();
+      const last = nonEmpty[nonEmpty.length - 1].trim();
+      const quoteChar = (first[0] === "'" || first[0] === '"') ? first[0] : '';
+      if (quoteChar && last.endsWith(quoteChar)) {
+        const folded = nonEmpty.map((l, i) => {
+          let t = l.trim();
+          if (i === 0 && t.startsWith(quoteChar)) t = t.slice(1);
+          if (i === nonEmpty.length - 1 && t.endsWith(quoteChar)) t = t.slice(0, -1);
+          if (quoteChar === "'") t = t.replace(/''/g, "'");
+          return t;
+        });
+        value = folded.join('\n');
+      } else {
+        value = nonEmpty.map(l => l.trim()).join('\n');
+      }
+    }
+    current[openKey] = value;
+    openKey = ''; openLines = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    const itemMatch = line.match(/^-\s*(.*)$/);
+    if (itemMatch) {
+      finishOpen();
+      current = {};
+      items.push(current);
+      const pair = itemMatch[1].match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+      if (pair) { openKey = pair[1]; openLines = [pair[2]]; }
+      continue;
+    }
+    if (!current) continue;
+    const propMatch = line.match(/^  ([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (propMatch) {
+      finishOpen();
+      openKey = propMatch[1];
+      openLines = [propMatch[2]];
+      continue;
+    }
+    if (openLines) openLines.push(line);
+  }
+  finishOpen();
+  return items.filter(item => Number.isFinite(+item.x) && Number.isFinite(+item.y));
+}

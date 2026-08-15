@@ -28,6 +28,7 @@ function _shellMenuAppendItem(menu, label, action, options = {}) {
   item.type = 'button';
   item.className = 'gb-context-menu-item' + (options.className ? ' ' + options.className : '');
   item.setAttribute('role', options.role || 'menuitem');
+  if (options.e2eId) item.dataset.e2eId = options.e2eId;
   if (options.disabled) {
     item.disabled = true;
     item.classList.add('disabled');
@@ -69,8 +70,8 @@ function _shellMenuCreatePanel(label) {
   return panel;
 }
 
-function _shellMenuAppendSubmenu(menu, label, icon, panel) {
-  const trigger = _shellMenuAppendItem(menu, label, null, { icon, hasSubmenu: true, className: 'tree-ctx-item' });
+function _shellMenuAppendSubmenu(menu, label, icon, panel, e2eId = '') {
+  const trigger = _shellMenuAppendItem(menu, label, null, { icon, hasSubmenu: true, className: 'tree-ctx-item', e2eId });
   const setExpanded = (expanded) => trigger.setAttribute('aria-expanded', expanded ? 'true' : 'false');
   trigger.addEventListener('mouseenter', () => setExpanded(true));
   trigger.addEventListener('mouseleave', () => setTimeout(() => {
@@ -251,7 +252,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
     if (!archivePanel) {
       archivePanel = _shellMenuCreatePanel('圧縮/解凍');
       archivePanel.dataset.shellArchivePanel = '1';
-      _shellMenuAppendSubmenu(menu, '圧縮/解凍', 'archive', archivePanel);
+      _shellMenuAppendSubmenu(menu, '圧縮/解凍', 'archive', archivePanel, 'tree-ctx-archive-menu');
     }
     archiveVerbs.forEach(v => {
       _shellMenuAppendItem(archivePanel, v.name, () => {
@@ -271,7 +272,7 @@ async function appendShellVerbsToMenu(menu, path, options = {}) {
 
   // サブメニューとして表示
   const shellPanel = _shellMenuCreatePanel('OS メニュー');
-  _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel);
+  _shellMenuAppendSubmenu(menu, 'OS メニュー', 'monitor', shellPanel, 'tree-ctx-os-menu');
 
   const submenuVerbs = visibleVerbs.filter(v => !isPinnedShellVerb(v) && !_isArchiveShellVerb(v));
   if (submenuVerbs.length === 0) {

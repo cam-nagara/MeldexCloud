@@ -106,6 +106,14 @@
   color: var(--ui-accent, var(--accent));
 }
 
+/* マウス操作・スペースキーの操作は表示専用（割り当ての変更対象にしない） */
+.shortcut-key.is-readonly {
+  cursor: default;
+  background: transparent;
+  border-style: dashed;
+  color: var(--fg2);
+}
+
 .shortcut-key:focus-visible {
   outline: 2px solid var(--ui-accent, var(--accent));
   outline-offset: 1px;

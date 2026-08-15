@@ -221,6 +221,8 @@
   }
 
   function _init() {
+    // デスクトップ付箋の小窓には進捗を出す場所が無い。付箋の枚数だけポーリングを増やさない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     _injectCSS();
     _ensureContainer();
     start();

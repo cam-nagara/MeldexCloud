@@ -126,7 +126,7 @@
     const currentPath = _folderToolbarCurrentPath();
     const targetLocked = _folderToolbarIsLockedPath(currentPath);
     buttons.copy.disabled = !hasSelection;
-    buttons.cut.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
+    buttons.cut.disabled = !hasSelection || selection.some(item => item?.linked) || selection.every(_folderToolbarIsLockedItem);
     buttons.delete.disabled = !hasSelection || selection.every(_folderToolbarIsLockedItem);
     buttons.paste.disabled = !_folderToolbarClipboard?.items?.length || !currentPath || targetLocked;
     buttons.add.disabled = !currentPath || targetLocked;
@@ -266,6 +266,9 @@
         path: item.path,
         name: item.name || item.path.split(/[\\/]/).pop() || '',
         type: item.type || 'file',
+        linked: !!item.linked,
+        file_id: item.file_id || '',
+        link_folder_path: item.link_folder_path || '',
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件をコピーしました');
@@ -277,6 +280,10 @@
   }
 
   function folderToolbarCutItems(sourceItems) {
+    if (_folderToolbarOperationItems(sourceItems).some(item => item?.linked)) {
+      showStatus('リンク表示中の項目は切り取りできません。リンク解除を使用してください', true);
+      return;
+    }
     const editable = _folderToolbarOperationItems(sourceItems)
       .filter(item => item?.path && !_folderToolbarIsLockedItem(item));
     if (!editable.length) {
@@ -290,6 +297,9 @@
         name: item.name || item.path.split(/[\\/]/).pop() || '',
         type: item.type || 'file',
         parent: _folderToolbarParentPath(item.path),
+        linked: false,
+        file_id: item.file_id || '',
+        link_folder_path: item.link_folder_path || '',
       })),
     };
     showStatus(_folderToolbarClipboard.items.length + ' 件を切り取りました');
@@ -411,6 +421,8 @@
       return;
     }
     const topLevelTargets = _folderToolbarTopLevelItems(targets);
+    const linkedDelete = await handleDisplayedFolderLinkDelete(topLevelTargets, _folderToolbarCurrentPath(), { refresh: _folderToolbarRefresh });
+    if (linkedDelete.handled) return;
     const impactTargets = topLevelTargets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
     const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -418,6 +430,7 @@
       : await cfConfirm(confirmMessage);
     if (!confirmed) return;
     const result = await deleteOutlinerItemsWithHistory(topLevelTargets, {
+      confirmation: confirmed,
       label: topLevelTargets.length + ' 件を削除',
       refresh: async () => {
         await _folderToolbarRefresh();

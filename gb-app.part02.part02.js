@@ -288,6 +288,16 @@ async function init() {
       showView('welcome');
     }
 
+    // ホームフォルダの版間共有: 起動時の共有警告・引き継ぎ提案チェック。
+    // オンボーディングウィザードが出る場合はダイアログの重なりを避けて後回しにする
+    // （設定画面を開いた時に loadHomeFolderSharingStatusForSettings() 経由で再チェックされる）。
+    if (!onboardingShown && window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings) {
+      _runStartupBackground(
+        'home-folder-sharing-check',
+        window.MeldexHomeFolderSharing.loadHomeFolderSharingStatusForSettings()
+      );
+    }
+
     document.getElementById('sb-work').textContent = vault.path ? ('ソースフォルダ: ' + vault.name) : '';
     document.getElementById('current-title').textContent = '';
 

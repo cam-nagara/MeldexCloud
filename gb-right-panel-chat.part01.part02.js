@@ -105,7 +105,8 @@ async function loadTeamRooms() {
       const lastBody = String(r.last?.text ?? '');
       const lastFrom = String(r.last?.from ?? '');
       const lastText = r.last ? esc((lastFrom ? lastFrom + ': ' : '') + lastBody.substring(0, 30)) : '';
-      const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('users',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
+      // Phase 8: 非公開ルーム(グループルーム)は鍵アイコンで通常ルームと区別する。
+      const typeIcon = { general: lucide('messagesSquare',12), dm: lucide('user',12), group: lucide('lock',12), file: lucide('paperclip',12) }[r.type] || lucide('messagesSquare',12);
       const displayName = _roomDisplayName(r);
       return `<div role="option" aria-selected="${active ? 'true' : 'false'}" data-room-path="${esc(r.path)}" data-room-name="${esc(r.name)}" data-room-type="${esc(r.type || 'general')}" data-room-display="${esc(displayName)}" data-action="selectTeamRoom" data-args="${esc(JSON.stringify([r.path]))}" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);${active?'background:var(--bg4);':''}" title="${lastText}">` +
         `<div>${typeIcon} <span class="team-room-name">${esc(displayName)}</span></div>` +
@@ -163,6 +164,21 @@ function _renderTeamRoomTitle(room) {
     });
   }
   title.appendChild(nameEl);
+
+  if (room.type === 'group') {
+    const membersBtn = document.createElement('button');
+    membersBtn.type = 'button';
+    membersBtn.dataset.e2eId = 'team-room-members-button';
+    membersBtn.title = '参加者を管理';
+    membersBtn.setAttribute('aria-label', '参加者を管理');
+    membersBtn.innerHTML = lucide('users', 13);
+    membersBtn.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;background:transparent;color:var(--fg2);border:1px solid transparent;border-radius:4px;cursor:pointer;padding:0;';
+    membersBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      showGroupRoomMembersModal(room);
+    });
+    title.appendChild(membersBtn);
+  }
 
   const deleteBtn = document.createElement('button');
   deleteBtn.type = 'button';
@@ -340,12 +356,21 @@ function _showChatContextMenu(e, ariaLabel, buildItems) {
 
 // ルーム右クリックメニュー
 function showTeamRoomContextMenu(e, room) {
+  // dataset由来のroomにはmembersが無いため、キャッシュから完全なroomを引き直す。
+  const full = _teamRoomByPath(room?.path) || room;
   _showChatContextMenu(e, 'ルームメニュー', (menu) => {
     if (room.type !== 'dm') {
       _chatAppendContextMenuItem(menu, {
         icon: 'pencil',
         label: 'リネーム',
         action: () => _doRenameTeamRoom(room),
+      });
+    }
+    if (room.type === 'group') {
+      _chatAppendContextMenuItem(menu, {
+        icon: 'users',
+        label: '参加者を管理',
+        action: () => showGroupRoomMembersModal(full),
       });
     }
     _chatAppendContextMenuItem(menu, {
@@ -1065,6 +1090,147 @@ async function showCreateRoomModal() {
   } catch (e) {
     showStatus('ルーム作成に失敗: ' + (e.message || ''), true);
   }
+}
+
+// Phase 8 (管理者AIの稼働表示とワークスペースチャットの整理 計画): 自分だけのルーム。
+// 「追加時にダイアログを出さない」原則に従い、押した瞬間に参加者=自分だけのグループ
+// ルームを作成する。実体はグループルーム(参加者名簿を持つ既存の仕組み)で、後から
+// 参加者を追加すればワークスペース全員が見えるルームへ育てられる。
+async function createSoloTeamRoom() {
+  if (!_chatRequireSourceFolder()) return;
+  try {
+    const existing = await apiFetch(_chatApiPath('/collab/rooms')).catch(() => []);
+    const names = new Set((existing || []).filter(r => r.type === 'group').map(r => r.name));
+    let name = '自分だけのルーム';
+    let i = 2;
+    while (names.has(name)) { name = '自分だけのルーム' + i; i++; }
+    const res = await apiPost(_chatApiPath('/collab/rooms'), _chatPostPayload({ name, type: 'group', members: [] }));
+    await loadTeamRooms();
+    const roomPath = res?.path || ('group/' + name);
+    showStatus('「' + name + '」を作成しました。管理者AIに依頼すると1対1で相談できます');
+    await selectTeamRoom(roomPath);
+    // 作成直後にリネームモードに入る（通常ルーム作成と同じ挙動）
+    setTimeout(() => {
+      _beginTeamRoomTitleEdit(_teamRoomByPath(roomPath) || { path: roomPath, name, type: 'group' });
+    }, 50);
+  } catch (e) {
+    showStatus('ルーム作成に失敗: ' + (e.message || ''), true);
+  }
+}
+
+// DM・グループルーム招待の候補ユーザー一覧（正本「スタッフ管理シート」/ ワークスペース
+// メンバー一覧から取得。showDirectMessageModal と同じ取得元・同じ絞り込みに揃える）。
+async function _chatCandidateUsernames(excludeNames) {
+  const seen = new Set((excludeNames || []).filter(Boolean));
+  const users = [];
+  const workspaceId = typeof _chatWorkspaceIdValue === 'function' ? _chatWorkspaceIdValue() : '';
+  if (workspaceId) {
+    try {
+      const payload = await apiFetch('/workspaces/' + encodeURIComponent(workspaceId) + '/members');
+      (payload?.members || []).forEach(member => {
+        const name = String(member?.name || '').trim();
+        if (name && !seen.has(name)) { seen.add(name); users.push(name); }
+      });
+    } catch {}
+  } else {
+    try {
+      const staff = window.MeldexUserRegistry ? await window.MeldexUserRegistry.listStaff() : [];
+      staff.forEach(row => {
+        const name = String(row?.user || '').trim();
+        if (name && !seen.has(name)) { seen.add(name); users.push(name); }
+      });
+    } catch {}
+  }
+  users.sort((a, b) => a.localeCompare(b, 'ja'));
+  return users;
+}
+
+// Phase 8: 非公開ルーム(グループルーム)の参加者を、あとから追加・除名する。
+// 除名された人は以降そのルームを開けなくなるが、過去の発言は消えない(サーバー側は
+// _members.json だけを書き換え、メッセージファイルには一切触れない)。
+async function showGroupRoomMembersModal(room) {
+  if (!room?.path || room.type !== 'group') return;
+  if (!_chatRequireSourceFolder()) return;
+  if (typeof window.GBUI?.createModal !== 'function') {
+    throw new Error('参加者の管理を初期化できませんでした。');
+  }
+  const me = getUsername();
+  const currentMembers = Array.isArray(room.members) && room.members.length ? room.members : [me];
+  const others = await _chatCandidateUsernames([me]);
+  const content = document.createElement('div');
+  const rowsHtml = [me, ...others].map(name => {
+    const isSelf = name === me;
+    const checked = currentMembers.includes(name) ? 'checked' : '';
+    return `<label class="gb-check" style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+      <input type="checkbox" data-group-member="${esc(name)}" ${checked}>
+      <span>${esc(name)}${isSelf ? '（自分）' : ''}</span>
+    </label>`;
+  }).join('');
+  content.innerHTML = `
+    <div class="gb-section-desc" style="margin-bottom:8px;">チェックした人だけがこのルームを読み書きできます。外した人の過去の発言は消えません。</div>
+    <div style="max-height:260px;overflow:auto;">${rowsHtml || '<div class="gb-section-desc">招待できるメンバーが見つかりません</div>'}</div>
+    <div class="gb-dialog-inline-status" data-group-members-status role="status" aria-live="polite" hidden></div>`;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'gb-btn gb-btn-sm';
+  cancelBtn.dataset.e2eId = 'chat-group-members-cancel';
+  cancelBtn.textContent = 'キャンセル';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'gb-btn gb-btn-sm gb-btn-primary primary';
+  saveBtn.dataset.e2eId = 'chat-group-members-save';
+  saveBtn.textContent = '保存';
+  let busy = false;
+  const modalApi = window.GBUI.createModal({
+    id: 'team-group-members-dialog',
+    titleId: 'team-group-members-title',
+    title: '参加者を管理',
+    body: [...content.childNodes],
+    footer: [cancelBtn, saveBtn],
+    variant: 'standard',
+    geometryKey: 'team-group-members-dialog',
+    minWidth: '0',
+    returnFocus: document.activeElement,
+    closeLabel: '参加者の管理を閉じる',
+    closeOnEsc: true,
+    closeOnOverlay: true,
+    onBeforeClose: reason => !busy || ['saved', 'test-cleanup'].includes(reason),
+  });
+  const overlay = modalApi.overlay;
+  overlay.classList.add('modal-overlay');
+  overlay.dataset.e2eId = 'chat-group-members-overlay';
+  const setBusy = value => {
+    busy = !!value;
+    overlay.setAttribute('aria-busy', busy ? 'true' : 'false');
+    cancelBtn.disabled = busy;
+    saveBtn.disabled = busy;
+  };
+  cancelBtn.addEventListener('click', () => modalApi.close('cancel'));
+  saveBtn.addEventListener('click', async () => {
+    if (busy) return;
+    const members = [...modalApi.body.querySelectorAll('[data-group-member]:checked')].map(el => el.dataset.groupMember);
+    const status = modalApi.body.querySelector('[data-group-members-status]');
+    if (!members.length) {
+      status.hidden = false;
+      status.textContent = '参加者を1人以上選んでください';
+      return;
+    }
+    status.hidden = true;
+    setBusy(true);
+    try {
+      await apiPut(_chatApiPath('/collab/rooms/members'), _chatPostPayload({ path: room.path, members }));
+      await loadTeamRooms();
+      showStatus('参加者を更新しました');
+      modalApi.close('saved');
+    } catch (e) {
+      status.hidden = false;
+      status.textContent = '参加者の更新に失敗しました: ' + (e.message || '');
+    } finally {
+      if (modalApi.isOpen()) setBusy(false);
+    }
+  });
+  modalApi.open();
+  return modalApi;
 }
 
 function openChat() {

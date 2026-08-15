@@ -16,8 +16,9 @@ Meldex は以下のサードパーティ製ソフトウェア、フォント、�
 | html2canvas | MIT License | 画像書き出しフォールバック | https://github.com/niklasvh/html2canvas | JS同梱 | 必須 | `app/vendor/html2canvas.min.js` header, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | PDF.js | Apache License 2.0 / NOTICE retention | PDFビューア | https://github.com/mozilla/pdf.js | JS/worker同梱 | 必須 | `app/vendor/pdfjs/LICENSE`, `app/vendor/pdfjs/NOTICE`, `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | Radicale | GPLv3 | ローカル CalDAV サーバー | https://github.com/Kozea/Radicale | Pythonパッケージ同梱時はGPL対象 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
-| pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | Pythonパッケージ同梱時は動的利用相当 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
-| pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | Pythonパッケージ同梱時は動的利用相当 | ビルド環境に存在し exe に含まれる場合のみ必須 | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
+| pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | Pythonパッケージ同梱時は動的利用相当 | 必須（`app/requirements-editor.txt` で無条件インストール対象。2026-08-12以降、Windows exe配布では常に同梱） | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
+| pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | Pythonパッケージ同梱時は動的利用相当 | 必須（`app/requirements-editor.txt` で無条件インストール対象。2026-08-12以降、Windows exe配布では常に同梱） | package内または `*.dist-info` の LICENSE/COPYING、`THIRD-PARTY.md`, About | 検証対象 |
+| watchdog | Apache License 2.0 | OSファイル監視（重複検出・アセット追従） | https://github.com/gorakhargosh/watchdog | Pythonパッケージ同梱 | 必須（`app/requirements-editor.txt` で無条件インストール対象。2026-08-12以降、Windows exe配布では常に同梱） | package内または `*.dist-info` の LICENSE、`THIRD-PARTY.md`, About | 表記済み |
 | Python 必須/主要依存 | 各パッケージのライセンス表記 | APIサーバー、ファイル入出力、画像処理 | 各パッケージ公式リポジトリ / PyPI | Pythonパッケージ | 必須 | `THIRD-PARTY.md`, `CREDITS.md`, About | 表記済み |
 | Python 任意機能依存 | 各パッケージのライセンス表記。ビルド環境に存在する場合のみ exe に同梱されるものを含む | LLM、Notion、CalDAV、常駐、ネイティブウィンドウ | 各パッケージ公式リポジトリ / PyPI | Pythonパッケージ | 同梱時のみ必須 | `THIRD-PARTY.md`, `CREDITS.md` | 表記済み |
 
@@ -115,6 +116,7 @@ Meldex バックエンドと同梱サイドカーは、以下の必須/主要依
 | python-docx | MIT | Word 読み書き |
 | Pillow | MIT-CMU | 画像処理 |
 | python-multipart | Apache License 2.0 | ファイルアップロード/フォーム処理 |
+| watchdog | Apache License 2.0 | OSファイル監視（重複検出・アセット追従） |
 | anyio | MIT | ASGI 非同期処理の推移依存 |
 | click | BSD 3-Clause | Uvicorn CLI の推移依存 |
 | colorama | BSD 3-Clause | Uvicorn CLI の推移依存 |
@@ -137,6 +139,8 @@ Meldex バックエンドと同梱サイドカーは、以下の必須/主要依
 
 以下は、拡張機能、連携機能、常駐、または LLM プロバイダで使われます。ソース配布ではユーザー環境に導入された場合のみ利用され、exe ビルドでは `app/build_exe.py` がビルド環境に存在する一部 SDK を同梱対象にします。
 
+**例外（2026-08-12〜）**: pystray / pynput は `app/requirements-editor.txt` で無条件インストール対象になり、`app/build_exe.py` の `REQUIRED_DESKTOP_MODULES` 判定によって Windows exe 配布では常に同梱されます（欠落時はビルド自体が失敗します）。この節では引き続き LGPL 権利表記の追跡目的（`app/meldex_build_legal_check.py` の監視対象）で記載していますが、「ビルド環境に存在する場合のみ」ではなく常時同梱として扱ってください。watchdog（Apache License 2.0、OSファイル監視。同じくこの日から必須化）は Python 必須/主要依存パッケージの節に記載しています。
+
 | パッケージ | ライセンス | 用途 | ソース入手 URL | 同梱要否 |
 |---|---|---|---|---|
 | anthropic | MIT | Claude/Anthropic LLM 連携 | https://github.com/anthropics/anthropic-sdk-python | ビルド環境に存在し exe に含まれる場合 |
@@ -152,8 +156,8 @@ Meldex バックエンドと同梱サイドカーは、以下の必須/主要依
 | requests | Apache License 2.0 | トレイ/デバッグ連携 HTTP クライアント | https://github.com/psf/requests | ビルド環境に存在し exe に含まれる場合 |
 | Radicale | GPLv3 | ローカル CalDAV サーバー | https://github.com/Kozea/Radicale | 同梱時は LICENSE/COPYING 必須、自動検証対象 |
 | icalendar | BSD 3-Clause | iCalendar 形式の読み書き | https://github.com/collective/icalendar | ビルド環境に存在し exe に含まれる場合 |
-| pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | 同梱時は LICENSE/COPYING 必須、自動検証対象 |
-| pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | 同梱時は LICENSE/COPYING 必須、自動検証対象 |
+| pystray | LGPLv3 | 常駐トレイ | https://github.com/moses-palmer/pystray | 常に同梱（requirements-editor.txt で必須指定）。LICENSE/COPYING 必須、自動検証対象 |
+| pynput | LGPLv3 | ホットキー | https://github.com/moses-palmer/pynput | 常に同梱（requirements-editor.txt で必須指定）。LICENSE/COPYING 必須、自動検証対象 |
 | PyAutoGUI | BSD | 旧アクション/RPA互換の任意依存。現行ベータ配布では RPA UI は削除済み | https://github.com/asweigart/pyautogui | ビルド環境に存在し exe に含まれる場合 |
 | pywebview | BSD 3-Clause | ネイティブウィンドウ表示 | https://github.com/r0x0r/pywebview | ビルド環境に存在し exe に含まれる場合 |
 | pywin32 | PSF License | Windows クリップボード連携 | https://github.com/mhammond/pywin32 | ビルド環境に存在し exe に含まれる場合 |

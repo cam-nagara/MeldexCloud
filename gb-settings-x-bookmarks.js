@@ -421,6 +421,16 @@
   function renderXBookmarksSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
+    // OAuth中継を持たないDropbox直結のCloud静的版では、押しても成立しない
+    // デスクトップ専用操作（X接続・差分保存等）を表示しない。gb-external-import.js
+    // が定義する既存判定をそのまま再利用する（新しい判定は作らない）。
+    if (window.isCloudStaticImportSurface?.()) {
+      container.hidden = true;
+      container.dataset.cloudDesktopOnlyHidden = '1';
+      return;
+    }
+    container.hidden = false;
+    delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
       loadStatus();
       return;

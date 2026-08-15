@@ -86,7 +86,7 @@
     };
   }
 
-  function metadataRowsHtml(meta) {
+  function metadataRowsHtml(meta, options) {
     if (!meta) return '';
     const rows = [];
     const dateRow = (label, value) => {
@@ -98,11 +98,19 @@
     dateRow('作成日時', meta.created);
     dateRow('更新日時', meta.modified);
     if (meta.size != null) rows.push(['ファイルサイズ', formatFileSize(meta.size)]);
-    if (meta._metadataLoadError) rows.push(['詳細', '読み込めませんでした']);
+    if (meta._metadataLoadError && meta._metadataLoadStatus !== 404) rows.push(['詳細', '読み込めませんでした']);
+    const brokenRow = meta._metadataLoadStatus === 404
+      ? '<tr data-file-info-broken><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">状態</td>'
+        + '<td style="padding:4px 0;"><span class="gb-badge" style="color:var(--danger);">リンク切れ</span>'
+        + (typeof options?.onRelocate === 'function'
+          ? ' <button type="button" class="btn-small" data-file-info-relocate>新しいファイルを選んで付け替える</button>'
+          : '')
+        + '</td></tr>'
+      : '';
     return rows.map(([label, value]) => (
       `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">${escapeHtml(label)}</td>`
       + `<td style="padding:4px 0;">${escapeHtml(value)}</td></tr>`
-    )).join('');
+    )).join('') + brokenRow;
   }
 
   function panelHtml(filePath, preloadedMeta, options) {
@@ -125,14 +133,16 @@
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
-      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, options)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
       + '</table>'
-      // タグは埋め込み情報の一番上。以前は埋め込み情報の外・下に置いていた。
+      // タグはメモ入力欄の下（埋め込み情報の主要項目と埋め込み情報グループの間）に配置する。
       // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
-      // 描画先を [data-file-embedded-body] に分けている。
+      // 描画先を [data-file-embedded-primary] と [data-file-embedded-groups] の2つに分け、
+      // タグはそのどちらの子要素でもない兄弟要素として置く。
       + `<div class="file-embedded-panel" data-file-embedded-metadata-path="${escapeHtml(filePath)}">`
+      + '<div data-file-embedded-primary></div>'
       + tagsHtml
-      + '<div data-file-embedded-body></div>'
+      + '<div data-file-embedded-groups></div>'
       + '</div>'
       + (info.kind === 'folder' ? `<div data-duplicate-folder-setting data-path="${escapeHtml(filePath)}"></div>` : '')
       + '</div>';
@@ -155,19 +165,25 @@
       return {
         ...(preloaded || {}),
         _metadataLoadError: error?.userMessage || error?.message || String(error),
+        _metadataLoadStatus: Number(error?.status) || 0,
       };
     }
   }
 
-  function applyMetadata(root, filePath, meta) {
+  function applyMetadata(root, filePath, meta, options) {
     const panel = findPanel(root, filePath);
     if (!panel) return false;
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
-    if (rows) rows.innerHTML = metadataRowsHtml(meta);
+    if (rows) rows.innerHTML = metadataRowsHtml(meta, options);
+    rows?.querySelector('[data-file-info-relocate]')?.addEventListener('click', () => {
+      if (options?.isCurrent?.() === false) return;
+      options?.onRelocate?.();
+    });
     const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
-    const embeddedHost = embeddedPanel?.querySelector('[data-file-embedded-body]') || embeddedPanel;
-    global.MeldexEmbeddedMetadata?.renderEditor?.(embeddedHost, filePath, meta);
+    const primaryHost = embeddedPanel?.querySelector('[data-file-embedded-primary]') || embeddedPanel;
+    const groupsHost = embeddedPanel?.querySelector('[data-file-embedded-groups]') || null;
+    global.MeldexEmbeddedMetadata?.renderEditor?.(primaryHost, groupsHost, filePath, meta);
     return true;
   }
 
@@ -192,7 +208,7 @@
     hydrateTags(container, options);
     const meta = await metadataPromise;
     if (renderRevisions.get(container) !== revision || options?.isCurrent?.() === false) return false;
-    return applyMetadata(container, normalizedPath, meta);
+    return applyMetadata(container, normalizedPath, meta, options);
   }
 
   async function showInDetailPanel(filePath, options) {
@@ -207,7 +223,7 @@
     hydrateTags(detailRoot, options);
     const meta = await metadataPromise;
     if (options?.isCurrent?.() === false) return false;
-    return applyMetadata(detailRoot, normalizedPath, meta);
+    return applyMetadata(detailRoot, normalizedPath, meta, options);
   }
 
   function renderEmbedded(container, target) {

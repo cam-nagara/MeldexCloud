@@ -166,29 +166,52 @@
   // 正本の場所解決（自己修復・自動発見・無ダイアログ既定作成）
   //
   // meldex_staff_registry_service.ensure_or_discover_registry_root と同じ
-  // 優先順位（設定済み→自動発見→既定作成）だが、クラウド静的版はワークスペース
-  // ルートが1つしか無いため「複数ソースフォルダを横断」する部分だけ単純化する。
+  // 優先順位・同じ安全設計（設定済みパスは実在確認してから信用する→全階層を
+  // マーカーで再発見→再発見できなければ従来どおり設定済みパスへ新規作成→
+  // 未設定なら既定パス作成）。設定済みパスが移動・改名で実在しなくなっていた
+  // 場合にそのパスを信用しないのがインポート・機能生成ファイル保護計画
+  // Phase 1の本体（旧パスへ空フォルダを再生成する「最高リスク」経路の解消。
+  // クラウド静的版はワークスペースルートが1つしか無いため「複数ソースフォルダを
+  // 横断」する部分だけ単純化する。全階層を辿る部分はデスクトップ版と揃える）。
   // ============================================================
 
-  async function _srtDiscoverExistingRoot(provider) {
-    const schema = _schema();
-    const entries = await _srtDirectoryEntries(provider, '');
+  // meldex_staff_registry_service._discover_existing_registry と同じ安全上限
+  // （巨大なワークスペースで走査が終わらなくなることを防ぐ）。
+  const SRT_DISCOVERY_SCAN_LIMIT = 8000;
+
+  async function _srtDiscoverExistingRootUnder(provider, schema, dir, state) {
+    if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
+    const entries = await _srtDirectoryEntries(provider, dir);
     for (const entry of entries) {
       if (entry?.handle?.kind !== 'directory') continue;
       const name = String(entry.name || '');
+      // 内部管理フォルダ（_trash, _chat, .meldex等）は正本の置き場所になり
+      // 得ないため、無駄な走査を避けるためにスキップする（デスクトップ版の
+      // rglobは全走査するが、意味のある候補だけに絞る安全側の簡略化）。
       if (!name || name.startsWith('.') || name.startsWith('_')) continue;
-      const note = _joinPath(name, name + '.md');
-      if (!await _srtPathExists(provider, note)) continue;
-      let parsed;
-      try { parsed = await _srtReadFrontmatter(provider, note); } catch { continue; }
-      if (schema.isStaffRegistryFrontmatter(parsed.frontmatter)) return name;
+      const folderPath = dir ? _joinPath(dir, name) : name;
+      state.checked += 1;
+      if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
+      const note = _joinPath(folderPath, name + '.md');
+      if (await _srtPathExists(provider, note)) {
+        let parsed = null;
+        try { parsed = await _srtReadFrontmatter(provider, note); } catch { parsed = null; }
+        if (parsed && schema.isStaffRegistryFrontmatter(parsed.frontmatter)) return folderPath;
+      }
+      const nested = await _srtDiscoverExistingRootUnder(provider, schema, folderPath, state);
+      if (nested) return nested;
+      if (state.checked > SRT_DISCOVERY_SCAN_LIMIT) return null;
     }
     return null;
   }
 
+  async function _srtDiscoverExistingRoot(provider) {
+    return _srtDiscoverExistingRootUnder(provider, _schema(), '', { checked: 0 });
+  }
+
   async function _srtEnsureOrDiscoverRoot(provider) {
     const configured = _normalizeFolderPath(_srtGetConfig().path || '');
-    if (configured) {
+    if (configured && await _srtIsDirectory(provider, configured)) {
       await _srtEnsureRegistrySheet(provider, configured);
       return configured;
     }
@@ -197,6 +220,16 @@
       _srtSetConfig(discovered);
       await _srtEnsureRegistrySheet(provider, discovered);
       return discovered;
+    }
+    if (configured) {
+      // 設定済みパスは存在しないが再発見もできなかった。初回セットアップ
+      // （一度も作られていない設定パス）と外部で完全に失われたケースを区別する
+      // 手段が無いため、meldex_staff_registry_service.ensure_or_discover_registry_root
+      // と同じ判断で、従来どおり設定済みパスへ新規作成する（既存の挙動・テストを
+      // 壊さない）。Phase 1の移動追従フックが効いている環境では、この分岐へ
+      // 実際に到達するケース自体が減る。
+      await _srtEnsureRegistrySheet(provider, configured);
+      return configured;
     }
     const defaultRoot = _schema().DEFAULT_SHEET_NAME;
     await _directoryHandle(provider, defaultRoot, true);

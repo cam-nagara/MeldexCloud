@@ -1,3 +1,27 @@
+    const range = sel.getRangeAt(0);
+    const editable = _editableFromNode(range.commonAncestorContainer);
+    if (!editable) return false;
+    _activeEditable = editable;
+    _savedRange = range.cloneRange();
+    try {
+      if (typeof rtTarget !== 'undefined') rtTarget = editable;
+      if (typeof rtSavedSelection !== 'undefined') rtSavedSelection = _savedRange.cloneRange();
+    } catch (_err) {
+      // rtTarget is a global lexical binding in the legacy editor bundle when available.
+    }
+    return true;
+  }
+
+  function _restoreSelection() {
+    const editable = _activeEditable || _getActiveEditable();
+    if (!editable) return false;
+    editable.focus?.({ preventScroll: true });
+    if (!_savedRange) return true;
+    const sel = window.getSelection?.();
+    if (!sel) return false;
+    sel.removeAllRanges();
+    sel.addRange(_savedRange.cloneRange());
+    try {
       if (typeof rtTarget !== 'undefined') rtTarget = editable;
       if (typeof rtSavedSelection !== 'undefined') rtSavedSelection = _savedRange.cloneRange();
     } catch (_err) {

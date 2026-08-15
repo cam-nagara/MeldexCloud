@@ -103,25 +103,40 @@
     return row;
   }
 
+  // 起動直後は接続がまだ整っていないだけで、実際には「未作成」なだけのことがある。
+  // 一度失敗しただけで恒久的な失敗表示にしないよう、確定前に一度だけ再試行する
+  // （「本当に何も無い」と「本当に読み込みに失敗した」を区別するため）。
+  const WORKSPACE_SIDEBAR_LOAD_RETRY_DELAY_MS = 700;
+
+  function _delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function _loadWorkspaceRowsWithRetry() {
+    try {
+      return await window.MeldexWorkspaces.load({ force: true, silentError: true });
+    } catch (firstError) {
+      await _delay(WORKSPACE_SIDEBAR_LOAD_RETRY_DELAY_MS);
+      return await window.MeldexWorkspaces.load({ force: true, silentError: true });
+    }
+  }
+
   async function renderWorkspaceSidebar() {
     const body = _body();
     if (!body || !window.MeldexWorkspaces) return;
     if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(body);
     body.innerHTML = '<div class="sidebar-empty" style="padding:8px 12px;color:var(--fg2);font-size:12px;">読み込み中...</div>';
     try {
-      const rows = await window.MeldexWorkspaces.load({ force: true, silentError: true });
+      const rows = await _loadWorkspaceRowsWithRetry();
       const activeId = window.MeldexWorkspaces.getActiveId();
       body.innerHTML = '';
-      if (!rows.length) {
-        const empty = document.createElement('div');
-        empty.className = 'sidebar-empty';
-        empty.style.cssText = 'padding:8px 12px;color:var(--fg2);font-size:12px;line-height:1.4;';
-        empty.textContent = 'ワークスペースは未作成です';
-        body.appendChild(empty);
-        return;
-      }
+      // 未作成（空）はソースフォルダ・ホームフォルダと同じく何も表示しない
+      // （「ワークスペースは未作成です」のようなプレースホルダも出さない）。
+      if (!rows.length) return;
       rows.forEach(workspace => body.appendChild(_row(workspace, activeId)));
-    } catch {
+    } catch (error) {
+      // 再試行後も失敗した場合のみ、本当の読み込み失敗として知らせる。
+      console.warn('[Meldex] workspace sidebar load failed', error);
       body.innerHTML = '<div class="sidebar-empty" style="padding:8px 12px;color:var(--fg2);font-size:12px;">ワークスペースを読み込めませんでした</div>';
     }
   }
@@ -163,6 +178,8 @@
   }
 
   function _init() {
+    // デスクトップ付箋の小窓には左サイドバーが無い。ワークスペース取得だけ走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     renderWorkspaceSidebar();
     window.addEventListener('meldex:workspaces-changed', () => renderWorkspaceSidebar());
   }

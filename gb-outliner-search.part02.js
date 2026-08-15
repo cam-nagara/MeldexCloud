@@ -237,8 +237,36 @@ function _showDropdownMenu(e, items, btnSelector) {
 const MeldexUnifiedSearch = (() => {
   const STORAGE_KEY = 'meldex-search-scopes-v1';
   const LEGACY_KEY = 'search-scopes';
+  const TAG_CONDITION_KEY = 'meldex-search-tag-condition-v1';
   const defaults = { name: true, content: true, clip: false, tags: false, memo: false };
   const labels = { name: '名前', content: 'ファイル内文字列', clip: '画像の内容', tags: 'タグ', memo: 'メモ' };
+
+  // 検索側のタグ条件（複数タグ・厳密照合・すべて/どれか）。3つの検索入口
+  // （フォルダツリー上部・フォルダ表示の検索欄・コマンドパレット）は同じ
+  // MeldexUnifiedSearch を経由するため、この状態も共有する（1-A）。
+  // フィルタ側の filterTags（フォルダ表示専用・フォルダ内実在タグのみ）とは
+  // 別物。検索文字列には混ぜず、正式なタグ条件として扱う（1-C, 2-F）。
+  function readTagCondition() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(TAG_CONDITION_KEY) || 'null');
+      if (raw && typeof raw === 'object') {
+        const tagIds = Array.isArray(raw.tagIds) ? raw.tagIds.map(String).filter(Boolean) : [];
+        const tagMode = raw.tagMode === 'any' ? 'any' : 'all';
+        return { tagIds, tagMode };
+      }
+    } catch {}
+    return { tagIds: [], tagMode: 'all' };
+  }
+
+  function writeTagCondition(value) {
+    const next = {
+      tagIds: Array.isArray(value?.tagIds) ? [...new Set(value.tagIds.map(String).filter(Boolean))] : [],
+      tagMode: value?.tagMode === 'any' ? 'any' : 'all',
+    };
+    try { localStorage.setItem(TAG_CONDITION_KEY, JSON.stringify(next)); } catch {}
+    window.dispatchEvent(new CustomEvent('meldex:search-tag-condition-changed', { detail: next }));
+    return next;
+  }
 
   function available(key) {
     if (key !== 'clip') return true;
@@ -281,10 +309,48 @@ const MeldexUnifiedSearch = (() => {
 
   async function search(query, options = {}) {
     const q = String(query || '').trim();
-    if (!q) return { results: [], scopes: active(), unavailable: [] };
+    const tagCondition = readTagCondition();
+    // 文字列が空でも、タグ条件だけが入っていれば検索を通す（2-F）。
+    if (!q && !tagCondition.tagIds.length) return { results: [], scopes: active(), unavailable: [] };
     const params = new URLSearchParams({ q, scopes: active().join(','), limit: String(options.limit || 50) });
     if (options.path) params.set('path', options.path);
+    if (tagCondition.tagIds.length) {
+      params.set('tag_ids', tagCondition.tagIds.join(','));
+      params.set('tag_mode', tagCondition.tagMode);
+    }
     return request('/search-unified?' + params.toString(), { silentError: true });
+  }
+
+  // CLIPのトークナイザは英語のBPEなので、非ASCIIを渡すと意味を持たない断片に
+  // なる（実測: 日本語直と英訳で識別度が大きく変わる）。判定は「ASCII以外を
+  // 含むか」程度の軽いものでよい（1-A追記）。
+  const NON_ASCII_RE = /[^\x00-\x7F]/;
+
+  // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を、3つの検索UI
+  // （コマンドパレット・フォルダツリー検索・フォルダパネル検索）で共通に出す
+  // ためのヒント文言。data は search() の戻り値（unavailable[] を含む）。
+  // data が無くても、非ASCIIクエリの注意だけは即時に出せる。
+  function describeHints(data, query) {
+    const hints = [];
+    const q = String(query || '');
+    if (q && active().includes('clip') && NON_ASCII_RE.test(q)) {
+      hints.push('画像の内容検索は英語で入力してください（例: a red circle）');
+    }
+    const clipIssue = (data?.unavailable || []).find(item => item?.source === 'clip' && item.message);
+    if (clipIssue) hints.push(String(clipIssue.message));
+    return hints;
+  }
+
+  // ヒント文言をDOM要素へ反映する（無ければ非表示）。3つの検索UIはそれぞれ
+  // DOM構造が異なるため、要素の生成・配置は呼び出し側が行い、ここでは
+  // 表示内容の更新だけを共通化する。
+  function updateHint(el, data, query) {
+    const hints = describeHints(data, query);
+    if (el) {
+      el.textContent = hints.join(' ／ ');
+      el.style.display = hints.length ? '' : 'none';
+    }
+    return hints;
   }
 
   function show(anchor) {
@@ -332,7 +398,64 @@ const MeldexUnifiedSearch = (() => {
     anchorParent.appendChild(btn); return btn;
   }
 
-  return { STORAGE_KEY, defaults, read, write, active, available, search, show, button };
+  const TAG_BUTTON_OWNER_KEY = 'unified-search';
+
+  // 検索欄の横に置く、タグ選択フロートパネルを開くボタン（2-D）。フォルダツリー
+  // 上部・フォルダ表示の検索欄・コマンドパレットの3か所で同じ見た目・同じ状態を使う。
+  function tagButton(anchorParent, options = {}) {
+    if (!anchorParent || anchorParent.querySelector?.('[data-search-tag-trigger]')) return null;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.searchTagTrigger = 'true';
+    btn.dataset.e2eId = options.e2eId || 'search-tag-trigger';
+    btn.className = options.className || 'gb-btn gb-btn-sm gb-btn-icon';
+    btn.title = 'タグで絞り込み';
+    btn.setAttribute('aria-label', '検索に使うタグを選ぶ');
+
+    const syncBadge = () => {
+      const cond = readTagCondition();
+      btn.replaceChildren();
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'gb-search-tag-trigger-icon';
+      iconSpan.innerHTML = typeof lucide === 'function' ? lucide('listTree', 14) : '🏷';
+      btn.appendChild(iconSpan);
+      if (cond.tagIds.length) {
+        const badge = document.createElement('span');
+        badge.className = 'gb-search-tag-trigger-badge';
+        badge.textContent = String(cond.tagIds.length);
+        btn.appendChild(badge);
+      }
+      window.GBTagPickerPanel?.syncTriggerButton?.(btn, TAG_BUTTON_OWNER_KEY);
+    };
+    syncBadge();
+    window.addEventListener('meldex:search-tag-condition-changed', syncBadge);
+
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!window.GBTagPickerPanel?.open) return;
+      const cond = readTagCondition();
+      window.GBTagPickerPanel.open({
+        ownerKey: TAG_BUTTON_OWNER_KEY,
+        headerLabel: '検索に使うタグ',
+        sourceFolder: typeof options.sourceFolder === 'function' ? (options.sourceFolder() || '') : String(options.sourceFolder || ''),
+        tagIds: cond.tagIds,
+        matchMode: cond.tagMode,
+        onChange: (tagIds, mode) => {
+          writeTagCondition({ tagIds, tagMode: mode });
+          if (typeof options.onChange === 'function') options.onChange(tagIds, mode);
+        },
+      });
+    });
+    anchorParent.appendChild(btn);
+    return btn;
+  }
+
+  return {
+    STORAGE_KEY, defaults, read, write, active, available, search, show, button,
+    TAG_CONDITION_KEY, readTagCondition, writeTagCondition, tagButton,
+    describeHints, updateHint,
+  };
 })();
 window.MeldexUnifiedSearch = MeldexUnifiedSearch;
 
@@ -341,17 +464,37 @@ let _treeUnifiedSearchPaths = new Set();
 let _treeUnifiedSearchSeq = 0;
 let _treeUnifiedSearchTimer = 0;
 
+// 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+// テキスト行。検索バー（#sidebar-search-bar）の直後に一度だけ作る（1-A追記）。
+function _ensureTreeSearchHintEl() {
+  const existing = document.getElementById('tree-search-hint');
+  if (existing) return existing;
+  const bar = document.getElementById('sidebar-search-bar');
+  if (!bar?.parentElement) return null;
+  const hint = document.createElement('div');
+  hint.id = 'tree-search-hint';
+  hint.dataset.e2eId = 'tree-search-hint';
+  hint.style.cssText = 'display:none;padding:2px 8px 6px;font-size:11px;line-height:1.4;color:var(--fg2);flex-shrink:0;';
+  bar.insertAdjacentElement('afterend', hint);
+  return hint;
+}
+
 function doTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   const q = (input?.value || '').trim().toLowerCase();
+  const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
   const clearBtn = document.getElementById('btn-tree-search-clear');
-  if (clearBtn) clearBtn.style.display = q ? '' : 'none';
+  if (clearBtn) clearBtn.style.display = (q || hasTagCondition) ? '' : 'none';
   _treeSearchQuery = q;
   const seq = ++_treeUnifiedSearchSeq;
   _treeUnifiedSearchPaths = new Set();
   applyTreeNameSearch();
   const scopes = MeldexUnifiedSearch.active();
-  if (q && scopes.some(scope => scope !== 'name')) {
+  // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+  // 検索結果が返ってから追加で反映する。
+  MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), null, q);
+  // タグ条件だけでも検索を通す（文字列は空でよい。2-F）。
+  if ((q && scopes.some(scope => scope !== 'name')) || hasTagCondition) {
     clearTimeout(_treeUnifiedSearchTimer);
     _treeUnifiedSearchTimer = setTimeout(() => {
       _treeUnifiedSearchTimer = 0;
@@ -359,6 +502,7 @@ function doTreeNameSearch() {
         if (seq !== _treeUnifiedSearchSeq) return;
         _treeUnifiedSearchPaths = new Set((data.results || []).map(item => String(item.path || '').replace(/\\/g, '/').toLowerCase()));
         applyTreeNameSearch();
+        MeldexUnifiedSearch.updateHint?.(_ensureTreeSearchHintEl(), data, q);
       }).catch(() => {});
     }, 240);
   } else {
@@ -371,30 +515,29 @@ function doTreeNameSearch() {
 function clearTreeNameSearch() {
   const input = document.getElementById('sidebar-search-input');
   if (input) input.value = '';
-  _treeSearchQuery = '';
-  _treeUnifiedSearchSeq++;
-  _treeUnifiedSearchPaths = new Set();
-  const clearBtn = document.getElementById('btn-tree-search-clear');
-  if (clearBtn) clearBtn.style.display = 'none';
-  applyTreeNameSearch();
-  if (typeof saveCurrentLayoutFilterState === 'function') saveCurrentLayoutFilterState();
+  // タグ条件が残っている場合は、文字列だけ消してタグ条件検索を続ける
+  // （doTreeNameSearch() が hasTagCondition を見て判断する。2-F）。
+  doTreeNameSearch();
 }
 
 function applyTreeNameSearch() {
   const q = _treeSearchQuery;
+  const hasTagCondition = (MeldexUnifiedSearch.readTagCondition?.().tagIds || []).length > 0;
   const includeName = MeldexUnifiedSearch.read().name;
   const includeEntities = typeof _getTreeSearchIncludeEntities === 'function'
     ? _getTreeSearchIncludeEntities()
     : localStorage.getItem('tree-search-include-entities') === 'true';
   const allNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
 
-  if (!q) {
+  if (!q && !hasTagCondition) {
     // 検索クリア: グローバルフィルタのみ適用状態に戻す
     applyGlobalFilter();
     return;
   }
 
-  // パス1: マッチするノードにフラグを立てる
+  // パス1: マッチするノードにフラグを立てる。文字列が空（タグ条件だけ）の
+  // 場合、空文字はどの名前にも一致してしまうため名前マッチは行わず、
+  // 統一検索が返したパス一致だけで判定する。
   allNodes.forEach(node => {
     const d = node._nodeData;
     const baseVisible = node.dataset.baseVisible !== '0';
@@ -402,18 +545,20 @@ function applyTreeNameSearch() {
       node._searchMatch = false;
       return;
     }
+    const nameMatch = !!(q && includeName && d.name && d.name.toLowerCase().includes(q));
+    const pathMatch = _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
     // フォルダ/ルートは名前マッチのみ
     if (d.type === 'folder' || d._isRoot || d.type === 'database') {
-      node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
+      node._searchMatch = nameMatch || pathMatch;
       return;
     }
     // エントリ: 設定次第
     if (d.type === 'entity') {
-      node._searchMatch = includeEntities && ((includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase()));
+      node._searchMatch = includeEntities && (nameMatch || pathMatch);
       return;
     }
     // ファイル: 名前マッチ
-    node._searchMatch = (includeName && d.name && d.name.toLowerCase().includes(q)) || _treeUnifiedSearchPaths.has(String(d.path || '').replace(/\\/g, '/').toLowerCase());
+    node._searchMatch = nameMatch || pathMatch;
   });
 
   // パス2: マッチしたノードの祖先フォルダも表示
@@ -461,12 +606,18 @@ function applyTreeNameSearch() {
 
 function _installTreeSearchScopeTrigger() {
   const input = document.getElementById('sidebar-search-input');
-  if (input?.parentElement) MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+  if (!input?.parentElement) return;
+  MeldexUnifiedSearch.button(input.parentElement, { e2eId: 'tree-search-scope-trigger' });
+  MeldexUnifiedSearch.tagButton?.(input.parentElement, { e2eId: 'tree-search-tag-trigger' });
+  _ensureTreeSearchHintEl();
 }
 queueMicrotask(_installTreeSearchScopeTrigger);
 document.addEventListener('DOMContentLoaded', _installTreeSearchScopeTrigger, { once: true });
 window.addEventListener('meldex:search-scopes-changed', () => {
   if (_treeSearchQuery) doTreeNameSearch();
+});
+window.addEventListener('meldex:search-tag-condition-changed', () => {
+  doTreeNameSearch();
 });
 
 const _vaultSearchPanelUi = {

@@ -372,7 +372,12 @@
       const editorRenderSeq = state.renderSeq;
       save.disabled = true;
       try {
-        if (row) await api().patchTemplate({ path: row.path, id: row.id, properties });
+        if (row) await api().patchTemplate({
+          path: row.path, id: row.id,
+          entry_revision: row.entry_revision,
+          transport_revision: row.transport_revision,
+          properties,
+        });
         else await api().createTemplate({ name, properties });
         state.loaded = false;
         status('タスクテンプレートを保存しました');

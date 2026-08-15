@@ -936,6 +936,21 @@
     height: 44px;
     touch-action: manipulation;
   }
+  /* 「…」ボタン見切れ修正 (2026-08-13): タッチにはホバーが無いため上の .bd-card-menu-btn は
+     常時 opacity:1 の 44px になるが、.bd-node 側の overflow:hidden は :hover / .bd-selected の
+     ときしか解除されない (下の 474 行、タッチには効かない) ため、ボタン下端 (top6+height44=50px)
+     が 1 行カードの高さ (min-height 28px + padding ≒ 34px) の外へ出て切り落とされていた。
+     クリップの担当をカード枠から中身側へ移し、ボタン・(将来のカードのしっぽ機能の)しっぽを
+     カード外へ描画できるようにする。楕円カード ([data-shape="ellipse"]) は元々 overflow:visible
+     なので影響なし。通常カードは高さが min-height 由来の auto なので中身が枠外へ溢れることは
+     無いが、.bd-node.bd-minimized だけ max-height で明示的に切っているため、そちらは中身側
+     (.bd-text の white-space:nowrap+ellipsis は既存で自己完結、.bd-missing-image は .bd-img と
+     同様に非表示化) で個別にクリップする。 */
+  .bd-node { overflow: visible; }
+  .bd-node.bd-minimized { overflow: visible; }
+  .bd-node.bd-minimized .bd-missing-image { display: none; }
+  .bd-text { overflow: hidden; max-width: 100%; }
+  .bd-missing-image { overflow: hidden; max-width: 100%; }
 }
 @media (max-width: 900px) {
   .bd-style-manager { grid-template-columns: 1fr; }

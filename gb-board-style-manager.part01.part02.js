@@ -246,6 +246,24 @@ function _bdNextStyle(kind, styles) {
 }
 
 function _bdApplyAllAutoStyles() {
-  if (typeof bdApplyAutoStyle !== 'function') return;
-  bd.nodes.filter(node => node._autoStyle).forEach(node => bdApplyAutoStyle(node.id));
+  if (typeof bdApplyAutoStyle !== 'function') return 0;
+  const anchors = bd.nodes.filter(node => node._autoStyle);
+  anchors.forEach(node => bdApplyAutoStyle(node.id));
+  return anchors.length;
+}
+
+// 課題13 (2026-08-14 実機切り分け): 「テーマカラーを階層別スタイルに適用」ボタンは常に
+// bd.depthStyles 自体を更新するが、盤面上に _autoStyle (階層別スタイルの起点) を持つ
+// カードが1枚もないボードでは、適用対象が無いため盤面の見た目は変わらない
+// (プリセット/スタイル管理タブのスワッチ・次に作る新規カードには反映される)。
+// 「壊れている」と誤解されないよう、対象0件のときは案内を分けて表示する。
+function _bdCountAutoStyleAnchorNodes() {
+  return (typeof bd !== 'undefined' && Array.isArray(bd.nodes))
+    ? bd.nodes.filter(node => node && node._autoStyle).length
+    : 0;
+}
+function _bdDepthThemeApplyStatusMessage(anchorCount) {
+  return anchorCount > 0
+    ? 'テーマカラーを階層別スタイルに適用しました'
+    : '階層別スタイルが適用されているカードがありません（プリセットの色は更新されました。カードに反映するには右クリックメニュー等でカードを階層別スタイルの起点にしてください）';
 }

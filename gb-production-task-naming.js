@@ -4,7 +4,8 @@
    Desktopの meldex_production_task_name_autofill.py（build_task_entry_name の合成規則、
    _should_auto_update_name の判定）と1:1で対応する（production-management-ux-improvement-
    plan-2026-08-04.md §4-3）。この段階では「名前を計算する」純粋な規則だけをここへ置く。
-   実際のリネーム（ファイル移動）は gb-production-management.part01.js の
+   実際のリネーム（ファイル移動）は gb-production-management-cloud-workspace.js（旧
+   gb-production-management.part01.js の一部）の
    _pmCloudRenameManagedEntry（手動リネーム時に「タスク名を固定」を立てる）を使う。
 
    セル編集トリガーの自動リネーム（Desktopの auto_rename_task_entry_after_sheet_edit）は、

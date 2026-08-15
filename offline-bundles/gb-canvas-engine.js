@@ -281,6 +281,78 @@ function bdYamlListObjects(fm, key) {
   }
   return list;
 }
+
+// 旧式ボード互換: フロントマター直下に `nodes:` をカード配列（各要素が
+// id/text/x/y/w/h/color 等をフラットに持つ、YAML block style のリスト）として
+// 直接持つスキーマの読み取り専用パーサ。現行の positions/sizes マップ方式や
+// 本文見出し方式とは別の並存フォーマット（例: 同梱サンプル
+// 「死霊探偵/キャラ相関図.board.md」）向け。
+//
+// bdYamlListObjects は各プロパティが1行で完結する前提（`from: n1, to: n2` 等の
+// フロー形式や単一行スカラー）のため、この関数はそれとは別に、複数行にまたがる
+// 折り畳みスカラー（引用符あり/なしいずれも）を先頭〜終端まで蓄積してから
+// 1つの値へ畳み込む。畳み込み規則は本文見出しパーサ（bdParseMd の "# " 解析）と
+// 揃え、空行は落として残りの行を単一の '\n' で結合する（段落ごとに改行1つ）。
+function bdParseFrontmatterNodeList(fm) {
+  const lines = bdYamlTopLevelBlock(fm, 'nodes');
+  const items = [];
+  let current = null;
+  let openKey = '';
+  let openLines = null;
+
+  const finishOpen = () => {
+    if (!current || !openKey || !openLines) return;
+    const nonEmpty = openLines.filter(l => l.trim().length > 0);
+    let value;
+    if (!nonEmpty.length) {
+      value = '';
+    } else if (nonEmpty.length === 1) {
+      value = bdYamlScalar(nonEmpty[0].trim());
+    } else {
+      const first = nonEmpty[0].trim();
+      const last = nonEmpty[nonEmpty.length - 1].trim();
+      const quoteChar = (first[0] === "'" || first[0] === '"') ? first[0] : '';
+      if (quoteChar && last.endsWith(quoteChar)) {
+        const folded = nonEmpty.map((l, i) => {
+          let t = l.trim();
+          if (i === 0 && t.startsWith(quoteChar)) t = t.slice(1);
+          if (i === nonEmpty.length - 1 && t.endsWith(quoteChar)) t = t.slice(0, -1);
+          if (quoteChar === "'") t = t.replace(/''/g, "'");
+          return t;
+        });
+        value = folded.join('\n');
+      } else {
+        value = nonEmpty.map(l => l.trim()).join('\n');
+      }
+    }
+    current[openKey] = value;
+    openKey = ''; openLines = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, '');
+    const itemMatch = line.match(/^-\s*(.*)$/);
+    if (itemMatch) {
+      finishOpen();
+      current = {};
+      items.push(current);
+      const pair = itemMatch[1].match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+      if (pair) { openKey = pair[1]; openLines = [pair[2]]; }
+      continue;
+    }
+    if (!current) continue;
+    const propMatch = line.match(/^  ([A-Za-z_][\w-]*):\s*(.*)$/);
+    if (propMatch) {
+      finishOpen();
+      openKey = propMatch[1];
+      openLines = [propMatch[2]];
+      continue;
+    }
+    if (openLines) openLines.push(line);
+  }
+  finishOpen();
+  return items.filter(item => Number.isFinite(+item.x) && Number.isFinite(+item.y));
+}
 /* gb-canvas-engine.part01.js */
 /* gb-canvas-engine.js: Canvas Engine Core (v5.0 Phase C) */
 
@@ -307,11 +379,29 @@ const bd = {
 // frontmatter adapter がアクティブなボードキャンバス要素に CSS 変数をセットする。
 // 構造タイプ: mindmap, flowchart, logic, timeline, orgchart, tree, none(親に従う = ルートのstructureを継承)
 const BD_STRUCTURES = {mindmap:'マインドマップ', flowchart:'フローチャート', logic:'ロジック図', timeline:'タイムライン', orgchart:'組織図', tree:'ツリー'};
+const BD_BOARD_ZOOM_MIN = 0.1;
+const BD_BOARD_ZOOM_MAX = 5;
+
+function bdSafeZoom(value) {
+  const zoom = Number(value);
+  return Math.max(BD_BOARD_ZOOM_MIN, Number.isFinite(zoom) && zoom !== 0 ? zoom : 1);
+}
+function bdClampZoom(value) {
+  const zoom = Number(value);
+  const finiteZoom = Number.isFinite(zoom) ? zoom : 1;
+  return Math.max(BD_BOARD_ZOOM_MIN, Math.min(BD_BOARD_ZOOM_MAX, finiteZoom));
+}
 
 // --- ID生成・親子ヘルパー ---
 function bdId() { return 'b' + (++bd._id) + '_' + Date.now().toString(36); }
 function bdNode(text, x, y, w, h, opts) {
-  return { id: bdId(), text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts };
+  // opts.id が明示的に undefined/空で渡された場合（例: フロントマターの ids: に
+  // 該当エントリが無い見出しノード）、`...opts` の展開が `id: bdId()` を
+  // `id: undefined` で上書きしてしまい、bdRenderNode() が id 無しノードとして
+  // 描画をスキップする（カードが1枚も描画されない実害を確認済み）。
+  // opts.id が真値のときだけ採用し、それ以外は必ず新規IDへフォールバックする。
+  const resolvedId = (opts && opts.id) ? opts.id : bdId();
+  return { id: resolvedId, text: text||'', x: x||0, y: y||0, w: w||160, h: h||0, img: opts?.img||'', parent: opts?.parent||'', structure: opts?.structure||'', collapsed: false, ...opts, id: resolvedId };
 }
 function bdGetAppZoom() {
   return (typeof _getZoom === 'function') ? Math.max(0.1, _getZoom()) : 1;
@@ -714,7 +804,7 @@ function bdRemoveConnection(connOrId, options = {}) {
     }).catch(() => {});
   }
   if (!options.skipSelection) bdRemoveConnectionFromSelection(conn.id);
-  if (!options.skipRender) bdDrawConns();
+  if (!options.skipRender) bdDrawConns({ connIds: [conn.id], reason: 'remove-connection' });
   if (!options.skipDirty) bdDirty();
   return true;
 }
@@ -869,6 +959,8 @@ function bdParseMd(raw) {
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
       const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
       if (ispm) {
         try { t.imageSourcePath = String(bdYamlScalar(ispm[1]) || '').replace(/\\/g, '/'); }
@@ -1117,6 +1209,49 @@ function bdParseMd(raw) {
           .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
       }
     }
+    // 旧式ボード互換: フロントマター直下に `nodes:` をカードのフラットなリストとして
+    // 直接持つスキーマ（例: 同梱サンプル「死霊探偵/キャラ相関図.board.md」）。
+    // 現行の positions/sizes マップ方式・本文見出し方式のどちらにも該当しないため、
+    // ここで検出して専用に nodes/connections を組み立てて早期returnする
+    // （```board JSON ブロック方式と同じ位置づけの並存フォーマット）。
+    // これを追加する前は `nodes:` の内容が一切解釈されず、本文の最初の
+    // "# " 見出し1個だけが1枚のノードに折り畳まれ、connections の from/to も
+    // 実在しないIDを指したまま残っていた（v0.7.259相当で確認、カードが0描画になる原因）。
+    if (typeof bdParseFrontmatterNodeList === 'function') {
+      const legacyItems = bdParseFrontmatterNodeList(fm);
+      if (legacyItems.length) {
+        const legacyIdMap = {};
+        const legacyNodes = legacyItems.map(item => {
+          const node = bdNode(
+            String(item.text == null ? '' : item.text),
+            Number(item.x) || 0,
+            Number(item.y) || 0,
+            Number(item.w) || 160,
+            Number(item.h) || 0,
+            {},
+          );
+          if (item.color) node.bgColor = String(item.color);
+          if (item.id) legacyIdMap[String(item.id)] = node.id;
+          return node;
+        });
+        const legacyConnections = connections
+          .map(c => ({ ...c, from: legacyIdMap[c.from] || '', to: legacyIdMap[c.to] || '' }))
+          .filter(c => bdConnectionHasEndpoint(c, 'from') && bdConnectionHasEndpoint(c, 'to'));
+        if (typeof bdNormalizeParentGraph === 'function') bdNormalizeParentGraph(legacyNodes);
+        if (canvasBg) bd._bgColor = canvasBg;
+        const legacyLlmSemantics = typeof bdNormalizeLoadedLlmSemantics === 'function'
+          ? bdNormalizeLoadedLlmSemantics(llmSemantics, legacyIdMap)
+          : llmSemantics;
+        if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(legacyConnections, null, legacyLlmSemantics);
+        return {
+          nodes: legacyNodes,
+          connections: legacyConnections,
+          groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
+          llmSemantics: legacyLlmSemantics,
+          preservedFrontmatter,
+        };
+      }
+    }
     raw = raw.substring(fmMatch[0].length);
   }
   // ```board JSON ブロック形式の検出
@@ -1356,6 +1491,7 @@ function bdToMd() {
     || cardOverrideMetaKeys.some(key => hasOwn(n, key))
     || !!n.imageSourcePath
     || hasOwn(n, '_autoStyle')
+    || hasOwn(n, 'depthStyleRef')
     || hasOwn(n, '_followChildren')
     || hasOwn(n, '_userBgColor')
     || hasOwn(n, '_userFontSize')
@@ -1392,6 +1528,8 @@ function bdToMd() {
       if (hasOwn(n, 'cloudSubHeightRatio')) parts.push('cloudSubHeightRatio: ' + (+n.cloudSubHeightRatio || 0));
       if (hasOwn(n, 'imageSourcePath') && n.imageSourcePath) parts.push('imageSourcePath: ' + fmtJsonString(n.imageSourcePath));
       if (hasOwn(n, '_autoStyle')) parts.push('autoStyle: ' + (n._autoStyle ? 'true' : 'false'));
+      // 課題18-案B: 起点カードに割り当てた階層別スタイルプリセットの参照ID (空=ボード共通)。
+      if (hasOwn(n, 'depthStyleRef') && n.depthStyleRef) parts.push('depthStyleRef: ' + fmtJsonString(n.depthStyleRef));
       if (hasOwn(n, '_followChildren')) parts.push('followChildren: ' + (n._followChildren ? 'true' : 'false'));
       if (hasOwn(n, '_userBgColor')) parts.push('userBgColor: ' + (n._userBgColor ? 'true' : 'false'));
       if (hasOwn(n, '_userFontSize')) parts.push('userFontSize: ' + (n._userFontSize ? 'true' : 'false'));
@@ -2147,13 +2285,59 @@ function bdGetRenderableNodesContainer() {
   return container;
 }
 
+// ボードを開いた直後は showView('board') でのパネルマウントが終わっておらず、
+// bdOpenBoard() が呼ぶ bdRender() の時点でキャンバスがまだ DOM に無いことがある。
+// 以前はここで無音のまま描画をあきらめており、ウィンドウリサイズなど別の再描画契機が
+// 来るまでカードが 1 枚も出なかった（新規作成直後のボードで実測）。
+// マウントが済むまで数回だけ再試行し、成功したらライン・枠・表示位置も描き直す。
+const BD_RENDER_RETRY_LIMIT = 40;
+const BD_RENDER_RETRY_INTERVAL_MS = 50;
+let _bdRenderRetryTimer = null;
+let _bdRenderRetryCount = 0;
+let _bdRenderRetryInFlight = false;
+
+function bdCancelRenderRetry() {
+  if (_bdRenderRetryTimer !== null) {
+    clearTimeout(_bdRenderRetryTimer);
+    _bdRenderRetryTimer = null;
+  }
+  _bdRenderRetryCount = 0;
+}
+
+function bdScheduleRenderRetry() {
+  if (_bdRenderRetryTimer !== null) return;
+  if (typeof setTimeout !== 'function') return;
+  // 外部から呼ばれた描画が失敗したときは、前回の打ち切り回数を引きずらず数え直す。
+  // これがないと、一度上限まで使い切ったあとは二度と再試行が動かなくなる。
+  if (!_bdRenderRetryInFlight) _bdRenderRetryCount = 0;
+  if (_bdRenderRetryCount >= BD_RENDER_RETRY_LIMIT) return;
+  _bdRenderRetryTimer = setTimeout(() => {
+    _bdRenderRetryTimer = null;
+    _bdRenderRetryCount += 1;
+    _bdRenderRetryInFlight = true;
+    let rendered = false;
+    try {
+      rendered = bdRender();
+    } finally {
+      _bdRenderRetryInFlight = false;
+    }
+    if (!rendered) return;
+    // 描画できた回だけ、開いた直後と同じ一式を揃える。
+    if (typeof bdDrawConns === 'function') bdDrawConns();
+    if (typeof bdDrawFrames === 'function') bdDrawFrames();
+    if (typeof bdTransform === 'function') bdTransform();
+  }, BD_RENDER_RETRY_INTERVAL_MS);
+}
+
 function bdRender() {
   const _bdRenderPerf = typeof bdPerfStart === 'function' ? bdPerfStart('bdRender') : 0;
   const container = bdGetRenderableNodesContainer();
   if (!container) {
     if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf, 'skip:no-active-board-dom');
+    bdScheduleRenderRetry();
     return false;
   }
+  bdCancelRenderRetry();
   // 全再描画時はミニマップキャッシュも無効化 (ノード数/スタイルが変わっている可能性)
   if (typeof bdInvalidateMinimapCache === 'function') bdInvalidateMinimapCache();
   container.innerHTML = '';
@@ -2211,6 +2395,20 @@ function bdRender() {
     if (typeof CommentBadges !== 'undefined' && bd.path) {
       try { CommentBadges.refreshBoard(bd.path, container); } catch {}
     }
+    // 課題10-3 (2026-08-14): 同期描画経路 (デバウンス無し) ではミニマップが更新されず、
+    // パン/ズームするまで古い縮小図のまま残っていた。
+    if (typeof bdUpdateMinimap === 'function') bdUpdateMinimap();
+  }
+  // 課題10-4 (2026-08-14): container.innerHTML='' による全カードDOM再構築で、検索バーが
+  // 付けていたハイライト (<mark>) が検索と無関係な編集のたびに消えていた。検索バーが
+  // 表示中でクエリがあれば、新しい DOM へハイライトを再適用する (デバウンス/非デバウンスの
+  // 両経路で起きるため、分岐の外・関数末尾で行う)。
+  {
+    const _bdFindBarEl = document.getElementById('bd-find-bar');
+    if (_bdFindBarEl && _bdFindBarEl.style.display !== 'none' && bd._findQuery
+      && typeof _bdApplyFindHighlight === 'function') {
+      _bdApplyFindHighlight(bd._findQuery);
+    }
   }
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdRender', _bdRenderPerf);
   return true;
@@ -2232,6 +2430,7 @@ function bdDrawFrames() {
       x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
     });
     const frame = document.createElement('div'); frame.className = 'bd-frame';
+    frame.dataset.groupId = g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
     label.style.cursor = 'move';
@@ -2263,7 +2462,7 @@ function bdDrawFrames() {
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
-      const zoom = Math.max(0.1, bd.zoom || 1);
+      const zoom = bdSafeZoom(bd.zoom);
       // 対象ノード (contained 以外のグループメンバー) の元座標を保存
       const targets = (g.nodeIds || [])
         .map(id => bd.nodes.find(n => n.id === id))
@@ -2294,7 +2493,7 @@ function bdDrawFrames() {
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
-        if (typeof bdDrawFrames === 'function') bdDrawFrames();
+        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       };
       const onUp = () => {
         document.removeEventListener('pointermove', onMove);
@@ -2313,6 +2512,33 @@ function bdDrawFrames() {
     });
     frame.appendChild(label);
     container.appendChild(frame);
+  });
+}
+
+// ドラッグ中は既存フレームの寸法だけを更新し、DOM とリスナーの再構築を避ける。
+function bdUpdateFramesForNodes(nodeIds) {
+  const changed = new Set((nodeIds || []).filter(Boolean));
+  if (!changed.size || !Array.isArray(bd.groups)) return;
+  bd.groups.forEach(group => {
+    if (!(group.nodeIds || []).some(id => changed.has(id))) return;
+    const frame = [...document.querySelectorAll('.bd-frame')]
+      .find(candidate => candidate.dataset.groupId === group.id);
+    if (!frame) return;
+    const nodes = (group.nodeIds || []).map(id => bd.nodes.find(node => node.id === id))
+      .filter(node => node && !node.contained);
+    if (nodes.length < 2) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    nodes.forEach(node => {
+      const el = document.getElementById('bdn-' + node.id);
+      const width = node.w || node._rw || el?.offsetWidth || 160;
+      const height = node.h || node._rh || el?.offsetHeight || 36;
+      x0 = Math.min(x0, node.x); y0 = Math.min(y0, node.y);
+      x1 = Math.max(x1, node.x + width); y1 = Math.max(y1, node.y + height);
+    });
+    frame.style.left = `${x0 - 12}px`;
+    frame.style.top = `${y0 - 22}px`;
+    frame.style.width = `${x1 - x0 + 24}px`;
+    frame.style.height = `${y1 - y0 + 34}px`;
   });
 }
 
@@ -2374,9 +2600,6 @@ function _removeConnActionBtn() {
 }
 
 function _bdLinePathType(connStyle, structure) {
-  // マインドマップ構造ではライン形状を「直線」に強制する (色 / 太さ / 矢印 / 破線などの
-  // その他のスタイル設定はユーザー指定通り維持する)。
-  if (structure === 'mindmap') return 'straight';
   // v0.5.320: pathType は 3 種（curve / straight / orthogonal）に統合。旧 free-bezier / orthogonal-curve は
   // ロード時 _bdMigrateConnectionSchema で自動変換されるが、実行中にも防御的に解決する。
   if (connStyle?.pathType === 'free-bezier') return 'curve';
@@ -2576,7 +2799,7 @@ function _bdCubicBezierPoint(p0, p1, p2, p3, t) {
 // 量子化しない方式に変更したため、斜め配置のカード間では真の対角線方向に線が走り、
 // 矢印も SVG auto-start-reverse の接線追従によって斜め方向を向く。
 // 戻り値: { fromPt: {x,y}, toPt: {x,y}, fromOut: {x,y}, toOut: {x,y} } or null
-function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
+function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gapFrom, gapTo, fromShape, toShape) {
   const fcx = fp.x + fw / 2, fcy = fp.y + fh / 2;
   const tcx = tp.x + tw / 2, tcy = tp.y + th / 2;
   const vx = tcx - fcx, vy = tcy - fcy;
@@ -2600,10 +2823,11 @@ function _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, gap, fromShape, toShape) {
   };
   const fBorder = borderHit(fcx, fcy, fw, fh, ux, uy, fromShape);
   const tBorder = borderHit(tcx, tcy, tw, th, -ux, -uy, toShape);
-  const gapLen = Number.isFinite(gap) ? gap : 0;
+  const gapFromLen = Number.isFinite(gapFrom) ? gapFrom : 0;
+  const gapToLen = Number.isFinite(gapTo) ? gapTo : 0;
   return {
-    fromPt: { x: fBorder.x + ux * gapLen, y: fBorder.y + uy * gapLen },
-    toPt:   { x: tBorder.x - ux * gapLen, y: tBorder.y - uy * gapLen },
+    fromPt: { x: fBorder.x + ux * gapFromLen, y: fBorder.y + uy * gapFromLen },
+    toPt:   { x: tBorder.x - ux * gapToLen, y: tBorder.y - uy * gapToLen },
     fromOut: { x: ux, y: uy },
     toOut:   { x: -ux, y: -uy },
   };
@@ -2644,7 +2868,7 @@ function _bdOppositeAnchor(anchor) {
 // ライン選択中のみ表示する (非選択時は誤タップ事故防止のため一切描画しない)。
 function _bdRenderFreeBezierEditOverlay(svg, conn, pathData, fn, tn, fe, te, fp, tp, zoom, anchorHints) {
   if (!svg || !conn || !pathData) return;
-  const z = Math.max(0.1, zoom || 1);
+  const z = bdSafeZoom(zoom);
   const r = Math.max(5 / z, 4);       // アンカー候補点半径
   const handleR = Math.max(6 / z, 5); // ハンドル半径
 
@@ -2839,9 +3063,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       if (hoverCardEl && hoverCardEl !== cardEl) hoverCardEl.classList.remove('bd-drop-target');
       hoverCardEl = cardEl || null;
       if (cardEl) cardEl.classList.add('bd-drop-target');
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       handleEl.setAttribute('cx', w.x);
       handleEl.setAttribute('cy', w.y);
       updateLive(w);
@@ -2859,9 +3081,7 @@ function _bdBindConnectionEndpointDrag(handleEl, conn, side) {
       const target = document.elementFromPoint(up.clientX, up.clientY);
       const cardEl = target?.closest?.('.bd-node');
       clearHover();
-      const dropW = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(up.clientX, up.clientY)
-        : { x: up.clientX, y: up.clientY };
+      const dropW = bdScreenToWorld(up.clientX, up.clientY);
       if (moved && cardEl && typeof cardEl.id === 'string' && cardEl.id.startsWith('bdn-')) {
         const newCardId = cardEl.id.substring(4);
         const newNode = bd.nodes.find(n => n.id === newCardId);
@@ -2954,9 +3174,7 @@ function _bdBindCurveHandleDrag(handleEl, conn, anchorPoint, cpIndex, otherAncho
         moved = true;
         if (typeof bdPushUndo === 'function') { bdPushUndo(); pushedUndo = true; }
       }
-      const w = typeof bdScreenToWorld === 'function'
-        ? bdScreenToWorld(mv.clientX, mv.clientY)
-        : { x: mv.clientX, y: mv.clientY };
+      const w = bdScreenToWorld(mv.clientX, mv.clientY);
       // v0.5.322: 自動モードから手動モードへ切替える際、もう片方のハンドル位置を
       // 現在の自動算出値で初期化する。{0,0} で初期化すると未ドラッグ側の cp が端点に
       // 張り付いてハンドルが消えたように見えてしまうため、_bdResolveControlPoints の
@@ -3087,39 +3305,20 @@ function _bdMeasureConnectionCenter(pathEl, pathPoints, pathType, fallbackPoint)
   return { point: fallbackPoint || { x: 0, y: 0 }, angle: 0 };
 }
 
-function _bdBuildArrowSpec(tip, neighbor, strokeWidth) {
-  const dx = tip.x - neighbor.x;
-  const dy = tip.y - neighbor.y;
-  const segLength = Math.hypot(dx, dy);
-  if (!segLength || !Number.isFinite(segLength)) return null;
-  const ux = dx / segLength;
-  const uy = dy / segLength;
-  const maxUsableLength = Math.max(4, segLength - 1);
-  const arrowLength = Math.min(Math.max(12, strokeWidth * 4 + 2), maxUsableLength);
-  const centerOffset = Math.min(Math.max(2, arrowLength * 0.5), Math.max(2, segLength - 1));
-  const baseCenterX = tip.x - ux * arrowLength;
-  const baseCenterY = tip.y - uy * arrowLength;
-  const halfWidth = Math.max(5, strokeWidth * 1.8 + 1.5);
-  const px = -uy;
-  const py = ux;
-  const leftX = baseCenterX + px * halfWidth;
-  const leftY = baseCenterY + py * halfWidth;
-  const rightX = baseCenterX - px * halfWidth;
-  const rightY = baseCenterY - py * halfWidth;
-  return {
-    lineEnd: {
-      x: tip.x - ux * centerOffset,
-      y: tip.y - uy * centerOffset,
-    },
-    path: `M${tip.x},${tip.y} L${leftX},${leftY} L${rightX},${rightY} Z`,
-  };
+// 太さから矢印マーカーの寸法 (markerWidth/Height と refX) を算出する共通式。
+// _bdEnsureArrowMarker (矢印そのものの描画) と bdDrawConns (端点の後退量 GAP の逆算) の
+// 両方から使う。太さ上限20 (スタイル管理のスライダー max) まで比例して大きくなる (2026-08-14
+// 上限16px撤廃。旧上限では太さ5.4以上で矢印が頭打ちになり、線の太さが矢印を上回っていた)。
+function _bdArrowMarkerGeometry(strokeWidth) {
+  const size = Math.max(8, strokeWidth * 2.6 + 2);
+  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  return { size, refX };
 }
 
 function _bdEnsureArrowMarker(defs, markerId, color, strokeWidth, orientDeg, connId) {
   if (!defs || !markerId) return '';
   const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-  const size = Math.max(8, Math.min(16, strokeWidth * 2.6 + 2));
-  const refX = Math.max(1, Math.min(size * 0.25, Math.max(1.4, strokeWidth * 0.8)));
+  const { size, refX } = _bdArrowMarkerGeometry(strokeWidth);
   marker.setAttribute('id', markerId);
   if (connId) marker.dataset.connId = connId;
   marker.setAttribute('markerWidth', size);
@@ -3167,7 +3366,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
     rect.setAttribute('height', size * 2);
     rect.setAttribute('rx', size * 0.4);
     rect.setAttribute('transform', `rotate(45 ${point.x} ${point.y})`);
-    rect.setAttribute('stroke-width', Math.max(1, 2 / Math.max(0.1, zoom || 1)));
+    rect.setAttribute('stroke-width', Math.max(1, 2 / bdSafeZoom(zoom)));
     svg.appendChild(rect);
     return rect;
   }
@@ -3176,7 +3375,7 @@ function _bdAppendConnectionSelectionHandle(svg, point, size, zoom, kind) {
   circle.setAttribute('cx', point.x);
   circle.setAttribute('cy', point.y);
   circle.setAttribute('r', size);
-  circle.setAttribute('stroke-width', Math.max(1, 1.5 / Math.max(0.1, zoom || 1)));
+  circle.setAttribute('stroke-width', Math.max(1, 1.5 / bdSafeZoom(zoom)));
   svg.appendChild(circle);
   return circle;
 }
@@ -3224,12 +3423,7 @@ function _bdRoundedOrthogonalPath(points, radius) {
 function _bdBuildConnectionPathData(conn, pts, structure, connStyle, bulgeOffset, anchorHints) {
   const start = pts[0];
   const end = pts[pts.length - 1];
-  // マインドマップ構造のラインは常に直線形状にする (呼び出し側で effectiveStructure が ''
-  // に落とされている場合に備え、conn.from の構造もフォールバックで参照する)。
-  const rootStruct = (structure === 'mindmap')
-    ? 'mindmap'
-    : ((typeof bdStructureOf === 'function' && conn?.from) ? bdStructureOf(conn.from) : '');
-  const pathType = _bdLinePathType(connStyle, rootStruct);
+  const pathType = _bdLinePathType(connStyle, structure);
   // v0.5.250: bulgeOffset は同じカードペア間の複数ライン (相関図) で、曲線を反対方向に
   // 膨らませて区別するためのオフセット値 (px)。曲線以外 (直線 / 直角) は無視する。
   const bulge = Number.isFinite(bulgeOffset) ? bulgeOffset : 0;
@@ -3620,7 +3814,7 @@ function bdDrawConns(options) {
     const pathType = _bdLinePathType(connStyle, st);
     const arrow = connStyle.arrow || '';
     const hasArrow = !!arrow;
-    const zoom = Math.max(0.1, bd.zoom || 1);
+    const zoom = bdSafeZoom(bd.zoom);
 
     // 曲線 / 直角線の場合は辺の中央を指す (2026-04-18 フィードバック)
     // 直線の場合は中心ベクトル方向でクリップ
@@ -3630,7 +3824,17 @@ function bdDrawConns(options) {
     // カード端からの gap はパスタイプごとに別経路で適用する (2026-04-18):
     //   - L 字系 (curve / orthogonal): 軸方向のみ (y1=cy1 / x1=cx1 を維持して兄弟ラインの重なりを崩さない)
     //   - 直線系 (straight): 中心ベクトル沿い
-    const GAP = Math.max(6, strokeWidth * 2);
+    // v2026-08-14: 端点の後退量は「その端点に矢印が付くか」で分岐する。
+    // 矢印が付く側は矢印の実サイズ (_bdArrowMarkerGeometry と同じ式) から逆算した量を後退させ、
+    // 矢印なし側は太さに依存しない小さい固定値だけ後退させる (太いラインでも端がカードから離れない)。
+    const arrowOnFromSide = arrow === 'start' || arrow === 'both';
+    const arrowOnToSide = arrow === 'end' || arrow === 'both';
+    const NO_ARROW_GAP = 2;
+    const arrowEndpointGap = (arrowOnFromSide || arrowOnToSide)
+      ? (() => { const g = _bdArrowMarkerGeometry(strokeWidth); return g.size - g.refX; })()
+      : 0;
+    const GAP_FROM = arrowOnFromSide ? arrowEndpointGap : NO_ARROW_GAP;
+    const GAP_TO = arrowOnToSide ? arrowEndpointGap : NO_ARROW_GAP;
     let effectiveStructure = st;
     let fromA = fn ? _bdConnAnchorName(c, 'from') : null;
     let toA = tn ? _bdConnAnchorName(c, 'to') : null;
@@ -3638,12 +3842,12 @@ function bdDrawConns(options) {
     let autoFromOut = null, autoToOut = null, autoFromPt = null, autoToPt = null;
     const hasFreeEndpoint = !fn || !tn;
     if (hasFreeEndpoint) {
-      const clipCardEndpoint = (node, el, pos, target, anchorName) => {
+      const clipCardEndpoint = (node, el, pos, target, anchorName, gap) => {
         if (!node) return target;
         if (anchorName) {
           const p = _bdGetCardAnchorPoint(node, el, pos, anchorName);
           const vOut = _bdAnchorOutwardVector(anchorName);
-          return { x: p.x + vOut.x * GAP, y: p.y + vOut.y * GAP };
+          return { x: p.x + vOut.x * gap, y: p.y + vOut.y * gap };
         }
         const w = el?.offsetWidth || node.w || 160;
         const h = el?.offsetHeight || node.h || 60;
@@ -3657,12 +3861,12 @@ function bdDrawConns(options) {
         const tx = Math.abs(ux) > 0 ? (w / 2) / Math.abs(ux) : Infinity;
         const ty = Math.abs(uy) > 0 ? (h / 2) / Math.abs(uy) : Infinity;
         const t = Math.min(tx, ty);
-        return { x: cx + ux * (t + GAP), y: cy + uy * (t + GAP) };
+        return { x: cx + ux * (t + gap), y: cy + uy * (t + gap) };
       };
       const freeFrom = rawFromPoint || { x: cx1, y: cy1 };
       const freeTo = rawToPoint || { x: cx2, y: cy2 };
-      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA) : freeFrom;
-      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA) : freeTo;
+      const fromEndpoint = fn ? clipCardEndpoint(fn, fe, fp, { x: cx2, y: cy2 }, fromA, GAP_FROM) : freeFrom;
+      const toEndpoint = tn ? clipCardEndpoint(tn, te, tp, { x: cx1, y: cy1 }, toA, GAP_TO) : freeTo;
       x1 = fromEndpoint.x; y1 = fromEndpoint.y;
       x2 = toEndpoint.x; y2 = toEndpoint.y;
       effectiveStructure = '';
@@ -3687,7 +3891,7 @@ function bdDrawConns(options) {
       if (!HORIZONTAL_FORCED.has(st) && !VERTICAL_FORCED.has(st)) {
         const fromShape = fe?.dataset?.shape || fn?.shape || '';
         const toShape = te?.dataset?.shape || tn?.shape || '';
-        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP, fromShape, toShape);
+        const auto = _bdAutoRouteByVector(fp, tp, fw, fh, tw, th, GAP_FROM, GAP_TO, fromShape, toShape);
         if (auto) {
           autoFromPt = auto.fromPt;
           autoToPt = auto.toPt;
@@ -3698,12 +3902,12 @@ function bdDrawConns(options) {
     }
     // v0.5.326: アンカー指定時は、アンカー座標 (カード境界上) からカード外向きに
     // GAP 分オフセットして端点を置く。これにより矢印がカードに隠れず、通常作成ラインと
-    // 同等の見え方になる (GAP は上方で strokeWidth に応じて決定済み)。
+    // 同等の見え方になる (GAP_FROM/GAP_TO は上方で矢印の有無・strokeWidth に応じて決定済み)。
     if (fromA) {
       const p = _bdGetCardAnchorPoint(fn, fe, fp, fromA);
       const vOut = _bdAnchorOutwardVector(fromA);
-      x1 = p.x + vOut.x * GAP;
-      y1 = p.y + vOut.y * GAP;
+      x1 = p.x + vOut.x * GAP_FROM;
+      y1 = p.y + vOut.y * GAP_FROM;
     } else if (autoFromPt) {
       // v0.5.330: 連続角度ベースの自動ルートで端点を置く (矢印方向を斜め含む 8+ 方向に)
       x1 = autoFromPt.x; y1 = autoFromPt.y;
@@ -3711,8 +3915,8 @@ function bdDrawConns(options) {
     if (toA) {
       const p = _bdGetCardAnchorPoint(tn, te, tp, toA);
       const vOut = _bdAnchorOutwardVector(toA);
-      x2 = p.x + vOut.x * GAP;
-      y2 = p.y + vOut.y * GAP;
+      x2 = p.x + vOut.x * GAP_TO;
+      y2 = p.y + vOut.y * GAP_TO;
     } else if (autoToPt) {
       x2 = autoToPt.x; y2 = autoToPt.y;
     }
@@ -3732,11 +3936,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -3756,11 +3960,11 @@ function bdDrawConns(options) {
           useHorizontal = hGap >= vGap;
         }
         if (useHorizontal) {
-          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP : fp.x - GAP; y1 = cy1; }
-          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP : tp.x + tw + GAP; y2 = cy2; }
+          if (!fromA) { x1 = ddx >= 0 ? fp.x + fw + GAP_FROM : fp.x - GAP_FROM; y1 = cy1; }
+          if (!toA)   { x2 = ddx >= 0 ? tp.x - GAP_TO : tp.x + tw + GAP_TO; y2 = cy2; }
         } else {
-          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP : fp.y - GAP; x1 = cx1; }
-          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP : tp.y + th + GAP; x2 = cx2; }
+          if (!fromA) { y1 = ddy >= 0 ? fp.y + fh + GAP_FROM : fp.y - GAP_FROM; x1 = cx1; }
+          if (!toA)   { y2 = ddy >= 0 ? tp.y - GAP_TO : tp.y + th + GAP_TO; x2 = cx2; }
         }
       }
       effectiveStructure = '';
@@ -3801,14 +4005,14 @@ function bdDrawConns(options) {
       if (useHorizontal) {
         // 左右辺の中央 + 水平方向に軸 gap を適用 (y はカード中心を維持)
         effectiveStructure = 'logic';
-        if (ddx >= 0) { x1 = fp.x + fw + GAP; x2 = tp.x - GAP; }
-        else { x1 = fp.x - GAP; x2 = tp.x + tw + GAP; }
+        if (ddx >= 0) { x1 = fp.x + fw + GAP_FROM; x2 = tp.x - GAP_TO; }
+        else { x1 = fp.x - GAP_FROM; x2 = tp.x + tw + GAP_TO; }
         y1 = cy1; y2 = cy2;
       } else {
         // 上下辺の中央 + 垂直方向に軸 gap を適用 (x はカード中心を維持)
         effectiveStructure = 'flowchart';
-        if (ddy >= 0) { y1 = fp.y + fh + GAP; y2 = tp.y - GAP; }
-        else { y1 = fp.y - GAP; y2 = tp.y + th + GAP; }
+        if (ddy >= 0) { y1 = fp.y + fh + GAP_FROM; y2 = tp.y - GAP_TO; }
+        else { y1 = fp.y - GAP_FROM; y2 = tp.y + th + GAP_TO; }
         x1 = cx1; x2 = cx2;
       }
     } else {
@@ -3830,11 +4034,12 @@ function bdDrawConns(options) {
       if (innerLen > 0) {
         const unitX = (x2 - x1) / innerLen;
         const unitY = (y2 - y1) / innerLen;
-        const gap = Math.min(GAP, Math.max(0, innerLen / 2 - 2));
-        x1 += unitX * gap;
-        y1 += unitY * gap;
-        x2 -= unitX * gap;
-        y2 -= unitY * gap;
+        const gapFrom = Math.min(GAP_FROM, Math.max(0, innerLen / 2 - 2));
+        const gapTo = Math.min(GAP_TO, Math.max(0, innerLen / 2 - 2));
+        x1 += unitX * gapFrom;
+        y1 += unitY * gapFrom;
+        x2 -= unitX * gapTo;
+        y2 -= unitY * gapTo;
       }
     }
     }
@@ -4309,6 +4514,14 @@ function bdEditNode(id) {
   const txt = el.querySelector('.bd-text');
   txt.innerHTML = esc(n.text).replace(/\n/g,'<br>');
   txt.contentEditable = 'true'; txt.focus();
+  // 課題8: キャンバス外 (オプションパネル・ツールバー等) をクリックして編集領域から
+  // フォーカスが外れた場合も確定する。従来はキャンバス内の限られた経路 (クリック/
+  // Escape/Enter/Tab) からしか bdFinishEdit() が呼ばれず、確定前に他操作の bdRender() が
+  // 走ると入力内容が無警告で消えていた。{once:true} は bdFinishEdit() 内の
+  // contentEditable='false' 代入が同期的に blur を誘発した場合の多重登録を避けるため。
+  txt.addEventListener('blur', () => {
+    if (bd.editing === id && typeof bdFinishEdit === 'function') bdFinishEdit();
+  }, { once: true });
   const s = window.getSelection(), r = document.createRange();
   r.selectNodeContents(txt); s.removeAllRanges(); s.addRange(r);
   // カスタムキャレット: ネイティブキャレットを透明化 (CSS) し、カーソル太さを変えられる擬似キャレットを重ねる。
@@ -4374,50 +4587,61 @@ function bdEditNode(id) {
   document.addEventListener('selectionchange', updateCaret);
   setTimeout(updateCaret, 0);
 }
+// 課題8: contentEditable='false' への代入がブラウザによっては同期的に blur を誘発し、
+// blur ハンドラ (bdEditNode 側) が bdFinishEdit() を再入呼び出しすることがある。
+// 再入すると bd.editing が途中で null 化され、外側の呼び出しが `bd.nodes.find(...===bd.editing)`
+// で自ノードを見失い、確定処理 (bdPushUndo/text 反映) が丸ごと skip される実害があるため、
+// 実行中フラグで多重実行そのものを防ぐ。
+let _bdFinishEditRunning = false;
 function bdFinishEdit() {
-  if (!bd.editing) return;
-  const el = document.querySelector('.bd-node.bd-editing');
-  let editedNode = null;
-  let changed = false;
-  if (el) {
-    el.classList.remove('bd-editing');
-    const txt = el.querySelector('.bd-text');
-    txt.contentEditable = 'false';
-    editedNode = bd.nodes.find(v=>v.id===bd.editing);
-    if (editedNode) {
-      const beforeText = editedNode.text || '';
-      const nextText = txt.innerText.trim();
-      changed = nextText !== beforeText;
-      if (changed) {
-        bdPushUndo();
-        editedNode.text = nextText;
+  if (!bd.editing || _bdFinishEditRunning) return;
+  _bdFinishEditRunning = true;
+  try {
+    const el = document.querySelector('.bd-node.bd-editing');
+    let editedNode = null;
+    let changed = false;
+    if (el) {
+      el.classList.remove('bd-editing');
+      const txt = el.querySelector('.bd-text');
+      txt.contentEditable = 'false';
+      editedNode = bd.nodes.find(v=>v.id===bd.editing);
+      if (editedNode) {
+        const beforeText = editedNode.text || '';
+        const nextText = txt.innerText.trim();
+        changed = nextText !== beforeText;
+        if (changed) {
+          bdPushUndo();
+          editedNode.text = nextText;
+        }
+        txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
       }
-      txt.innerHTML = applyAutoLinks(esc(editedNode.text).replace(/\n/g,'<br>'), bd.path);
+      // カスタムキャレットを削除 + selectionchange リスナー解除
+      if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
+      const caret = el.querySelector(':scope > .bd-custom-caret');
+      if (caret) caret.remove();
     }
-    // カスタムキャレットを削除 + selectionchange リスナー解除
-    if (el._bdCaretUpdate) { document.removeEventListener('selectionchange', el._bdCaretUpdate); el._bdCaretUpdate = null; }
-    const caret = el.querySelector(':scope > .bd-custom-caret');
-    if (caret) caret.remove();
-  }
-  bd.editing = null;
-  if (changed) bdDirty();
-  // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
-  if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
-  if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
-  if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
-  if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
-  if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
-  else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
-  // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
-  // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
-  if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
-    const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
-    if (_editedRoot?.structure) {
-      if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
-      else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+    bd.editing = null;
+    if (changed) bdDirty();
+    // 編集解除後も `.bd-selection-rect` の `is-editing` を外すため再同期
+    if (editedNode && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(editedNode, el);
+    if (changed && editedNode && typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(editedNode.id, 'finish-edit');
+    if (editedNode && typeof bdMarkSelectionDirty === 'function') bdMarkSelectionDirty([editedNode.id], 'finish-edit');
+    if (changed && editedNode && typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [editedNode.id] }, 'finish-edit');
+    if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(editedNode?.id || '');
+    else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
+    // テキスト編集でカード高さが変わっていた場合は、構造ツリーの全体整列をリクエストする。
+    // 高さ差で周囲のカードと重なるケースを救済するため、autoAlign が on かつ構造ありで実行。
+    if (changed && editedNode && typeof bd !== 'undefined' && bd.autoAlign !== false) {
+      const _editedRoot = (typeof bdRoot === 'function') ? bdRoot(editedNode.id) : null;
+      if (_editedRoot?.structure) {
+        if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(_editedRoot.id);
+        else if (typeof bdAutoLayout === 'function') bdAutoLayout(_editedRoot.id);
+      }
     }
+    document.getElementById('bd-canvas').focus();
+  } finally {
+    _bdFinishEditRunning = false;
   }
-  document.getElementById('bd-canvas').focus();
 }
 
 // --- 削除 ---
@@ -4691,7 +4915,7 @@ function _bdArrangeLayoutByWidth(layout, padding, targetWidth) {
     maxItemWidth,
     Number.isFinite(+targetWidth) && +targetWidth > 0
       ? +targetWidth
-      : (canvasEl ? canvasEl.offsetWidth / Math.max(0.1, bd.zoom || 1) : layout.spanW),
+      : (canvasEl ? canvasEl.offsetWidth / bdSafeZoom(bd.zoom) : layout.spanW),
   );
   let x = 0;
   let y = 0;
@@ -4717,7 +4941,7 @@ function _bdArrangeLayoutByHeight(layout, padding, targetHeight) {
     maxItemHeight,
     Number.isFinite(+targetHeight) && +targetHeight > 0
       ? +targetHeight
-      : (canvasEl ? canvasEl.offsetHeight / Math.max(0.1, bd.zoom || 1) : layout.spanH),
+      : (canvasEl ? canvasEl.offsetHeight / bdSafeZoom(bd.zoom) : layout.spanH),
   );
   let x = 0;
   let y = 0;
@@ -4858,7 +5082,7 @@ function bdAddAt(x, y, text, opts) {
 
 // --- ズーム/パン ---
 function bdZoom(delta) {
-  bd.zoom = Math.max(0.1, Math.min(5, bd.zoom+delta));
+  bd.zoom = bdClampZoom(bd.zoom + delta);
   bdTransform();
 }
 function bdTransform() {
@@ -4868,7 +5092,7 @@ function bdTransform() {
   const c = typeof bdGetBoardElement === 'function'
     ? bdGetBoardElement('canvas')
     : document.getElementById('bd-canvas');
-  const zoom = Math.max(0.1, bd.zoom || 1);
+  const zoom = bdSafeZoom(bd.zoom);
   if (c) c.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) w.style.setProperty('--bd-current-zoom', String(zoom));
   if (w) {
@@ -4928,7 +5152,7 @@ function bdFitAll(_retryCount) {
   const c=document.getElementById('bd-canvas');
   if (!c) return; // ボード DOM 未生成時 (非同期タブ切替中など) はスキップ
   // キャンバスがまだレイアウト前 (clientWidth/Height が 0) の場合、
-  // ズーム計算が 0 になり Math.max(0.1, 0) で 10% に張り付く不具合になる。
+  // ズーム計算が 0 になり最小倍率に張り付く不具合になる。
   // 次フレームで再試行する。最大 30 フレーム (約 500ms) で諦める。
   if (c.clientWidth <= 0 || c.clientHeight <= 0) {
     const next = (_retryCount || 0) + 1;
@@ -4948,7 +5172,7 @@ function bdFitAll(_retryCount) {
     fitW = w * cos + h * sin;
     fitH = w * sin + h * cos;
   }
-  bd.zoom = Math.min(cw/fitW, ch/fitH, 1.5); bd.zoom = Math.max(0.1, bd.zoom);
+  bd.zoom = bdSafeZoom(Math.min(cw/fitW, ch/fitH, 1.5));
   bd.panX = (cw-w*bd.zoom)/2 - x0*bd.zoom + 40*bd.zoom;
   bd.panY = (ch-h*bd.zoom)/2 - y0*bd.zoom + 40*bd.zoom;
   bdTransform();
@@ -5038,6 +5262,9 @@ async function _bdReviewConflict(path, documentKey) {
 }
 
 async function bdSave() {
+  // レイアウト要求を保存より先に同期確定する。タブ／ボード切替も bdSave を経由するため、
+  // デバウンス中の古い座標を保存してから画面を切り替える競合をここで一元的に防ぐ。
+  if (typeof bdFlushAutoLayouts === 'function') bdFlushAutoLayouts({ force: true });
   const savePath = bd.path;
   if (!savePath) return true;
   if (typeof _bdCanSaveCurrentBoardPath === 'function' && !_bdCanSaveCurrentBoardPath(savePath)) {
@@ -5259,6 +5486,10 @@ function _bdSnapshot() {
     nodes: bd.nodes,
     connections: bd.connections,
     groups: bd.groups,
+    // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
+    // スナップショットへ含めて復元時に再選択する (_bdApplySnapshot 側で現存IDへ絞る)。
+    selectedNodeIds: [...((bd.selected instanceof Set) ? bd.selected : [])],
+    selectedConnIds: typeof bdGetSelectedConnectionIds === 'function' ? bdGetSelectedConnectionIds() : [],
     cardStyles: bd.cardStyles,
     lineStyles: bd.lineStyles,
     depthStyles: bd.depthStyles,
@@ -5305,6 +5536,11 @@ function bdClearUndoStacks(path) {
   if (typeof updateUndoRedoButtonStates === 'function') updateUndoRedoButtonStates();
 }
 function _bdApplySnapshot(s) {
+  // 課題8: undo/redo は bd.nodes を丸ごと差し替えるため、編集中のカードがあると
+  // contentEditable 側にしか無い未確定のキー入力が確定される機会もないまま消える。
+  // スナップショット適用前に確定しておく（gb-board-find.js の
+  // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
+  if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
@@ -5339,8 +5575,19 @@ function _bdApplySnapshot(s) {
     if (typeof bdApplyCanvasBackground === 'function') bdApplyCanvasBackground(canvasEl);
     else canvasEl.style.background = bd._bgColor || '';
   }
-  bd.selected = new Set(); bd.editing = null; bdClearConnectionSelection();
+  bd.editing = null;
+  // 課題10-2: 選択集合をスナップショットから復元する。現存しなくなった (削除された等) IDは
+  // 除外する。旧スナップショット (selectedNodeIds 未保存) を undo/redo する場合は空扱いで
+  // 従来どおり全解除になる。
+  const existingNodeIds = new Set(bd.nodes.map(n => n.id));
+  const restoredNodeIds = Array.isArray(s.selectedNodeIds) ? s.selectedNodeIds.filter(id => existingNodeIds.has(id)) : [];
+  bd.selected = new Set(restoredNodeIds);
   bdEnsureConnectionRuntime(bd.connections);
+  if (typeof bdSetConnectionSelection === 'function') {
+    bdSetConnectionSelection(Array.isArray(s.selectedConnIds) ? s.selectedConnIds : []);
+  } else {
+    bdClearConnectionSelection();
+  }
 }
 function bdUndo() {
   if (_bdHasCommonHistory()) { historyUndo(_bdHistoryScope()); return; }
@@ -5616,9 +5863,12 @@ async function bdOpenBoard(label, path, opts) {
       const canvasEl = document.getElementById('bd-canvas');
       if (canvasEl) canvasEl.style.background = bd._bgColor;
     }
-    // _autoStyle が有効なルートカードには、レンダリング前に階層別スタイルを適用しておく。
+    // _autoStyle が有効な起点カード (絶対ルートとは限らない。入れ子起点も含め全て) には、
+    // レンダリング前に階層別スタイルを適用しておく。
     // (これをしないと、ボード読込直後は _autoStyle = true だがスタイルが未反映で、
     //  一度チェックを外して再度 ON にするまで反映されない)
+    // 課題18-案A: bdApplyAutoStyle は入れ子起点の子孫を書き換えないため (自分以外の
+    // _autoStyle カードに到達したら打ち切る)、この forEach の処理順に依存せず安全に呼べる。
     if (typeof bdApplyAutoStyle === 'function') {
       bd.nodes.forEach(n => { if (n._autoStyle) bdApplyAutoStyle(n.id); });
     }

@@ -1,15 +1,17 @@
 :root {
+  /* 単独アプリのダークモード統一計画（app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）:
+     旧パレット（2026-08以前の「ダーク」）を直書きしていた箇所を、本体と同じテーマ変数へ寄せる。 */
   color-scheme: dark;
-  --qm-bg: #1e1e1e;
-  --qm-panel: #252525;
-  --qm-panel-2: #2d2d2d;
-  --qm-border: #3a3a3a;
-  --qm-fg: #d4d4d4;
-  --qm-muted: #969696;
-  --qm-strong: #fff;
-  --qm-accent: #4ec9b0;
-  --qm-blue: #569cd6;
-  --qm-danger: #f44747;
+  --qm-bg: var(--bg);
+  --qm-panel: var(--bg2);
+  --qm-panel-2: var(--bg3);
+  --qm-border: var(--border);
+  --qm-fg: var(--fg);
+  --qm-muted: var(--fg2);
+  --qm-strong: var(--ui-fg-strong, #fff);
+  --qm-accent: var(--accent2);
+  --qm-blue: var(--accent);
+  --qm-danger: var(--red);
   --ui-border-strong: color-mix(in srgb, var(--qm-border) 40%, var(--qm-muted) 45%);
   --ui-popup-border: var(--ui-border-strong);
 }
@@ -186,28 +188,21 @@ button:disabled { cursor: default; opacity: .42; }
   color: var(--qm-fg);
   padding: 7px 9px;
 }
+/* 候補帯: 旧設計(折り返し可・縦スクロール)と新設計(1行・横スクロール)の指定が
+   二重に残り、後勝ちのCSSカスケードで中身のチップ列だけ折り返しが生き残って
+   いた問題を解消(2026-08-14 自動タグ付け計画 Phase 1)。以後は1組の指定のみ。
+   ラベルと追加ボタンは固定し、チップ列だけが横スクロールする。 */
 .qm-tag-selector {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
-  min-height: 38px;
-  max-height: 80px;
-  overflow-y: auto;
-  border: 1px solid var(--qm-border);
-  border-radius: 6px;
-  background: var(--qm-bg);
-  padding: 4px 6px;
-}
-.qm-tag-selector {
   flex: 0 0 auto;
   min-width: 0;
   min-height: 34px;
   max-height: 42px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
+  border: 1px solid var(--qm-border);
   border-radius: 0;
+  background: var(--qm-bg);
   padding: 3px 7px;
 }
 .qm-tag-label {
@@ -222,10 +217,26 @@ button:disabled { cursor: default; opacity: .42; }
   width: 15px;
   height: 15px;
 }
-.qm-tag-chips { flex-wrap: nowrap; }
-.qm-tag-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.qm-tag-chips {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+/* 横スクロールできることが分かるよう、あふれがある時だけ両端をフェードさせる
+   (スクロールバー常時表示だけに頼らない)。JS側でscrollWidth判定して付与。 */
+.qm-tag-chips.qm-tag-chips--overflow {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 10px, black calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, black 10px, black calc(100% - 10px), transparent 100%);
+}
 .qm-tag-chip {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
@@ -238,10 +249,29 @@ button:disabled { cursor: default; opacity: .42; }
   user-select: none;
   cursor: pointer;
 }
+/* 選択中は背景色だけでなく、色に依存しないチェック印(::before)も併用する
+   (グループ色の文字色と「選択中」の塗りつぶしが混ざって見える問題への対処。
+   2026-08-14 自動タグ付け計画 Phase 3)。 ::beforeの生成内容はDOMのtextContent
+   に含まれないため、E2Eの選択判定(el.textContent === タグ名)を壊さない。 */
 .qm-tag-chip.is-selected { background: color-mix(in srgb, var(--qm-accent) 25%, var(--qm-panel-2)); border-color: var(--qm-accent); color: var(--qm-strong); }
+.qm-tag-chip.is-selected::before {
+  content: '✓';
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--qm-accent);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.qm-tag-chip-label { pointer-events: none; }
 .qm-tag-chip-common { border-style: dashed; }
 .qm-tag-chip-swatch { flex-shrink: 0; }
-.qm-tag-add { min-width: 28px; min-height: 28px; padding: 2px 6px; border-radius: 50%; font-size: 16px; }
+.qm-tag-chip-more {
+  color: var(--qm-muted);
+  border-style: dashed;
+  font-weight: 600;
+}
+.qm-tag-add { min-width: 28px; min-height: 28px; padding: 2px 6px; border-radius: 50%; font-size: 16px; flex: 0 0 auto; }
 
 .qm-mode-controls {
   flex: 0 0 auto;

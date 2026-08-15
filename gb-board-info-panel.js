@@ -39,18 +39,20 @@
     if (link) {
       if (isExternal(link)) {
         return {
+          nodeId: node.id,
           kind: 'embedded',
           label: String(node.text || link),
           typeLabel: 'リンク',
           source: link,
         };
       }
-      return { kind: 'file', path: link, type: node.linkType || '' };
+      return { kind: 'file', nodeId: node.id, path: link, type: node.linkType || '', image: !!node.img };
     }
     const sourcePath = String(node.imageSourcePath || '').trim() || imagePathFromUrl(node.img);
-    if (sourcePath) return { kind: 'file', path: sourcePath, type: 'image' };
+    if (sourcePath) return { kind: 'file', nodeId: node.id, path: sourcePath, type: 'image', image: true };
     if (node.img) {
       return {
+        nodeId: node.id,
         kind: 'embedded',
         label: String(node.text || '埋め込み画像'),
         typeLabel: '埋め込み画像',
@@ -151,6 +153,52 @@
     return String(currentState?.currentBoardPath || '').trim();
   }
 
+  function boardIdentity() {
+    return {
+      path: String((typeof bd !== 'undefined' && bd?.path) || currentBoardPath() || '').trim(),
+      openSeq: Number(typeof bd !== 'undefined' && bd?._openSeq) || 0,
+    };
+  }
+
+  function targetIsCurrent(snapshot, revision, infoHost) {
+    if (revision !== renderRevision || !infoHost?.isConnected || typeof bd === 'undefined') return false;
+    const currentPath = String(bd.path || currentBoardPath() || '').trim();
+    if (currentPath !== snapshot.boardPath || (Number(bd._openSeq) || 0) !== snapshot.openSeq) return false;
+    const node = bd.nodes?.find(candidate => candidate?.id === snapshot.nodeId);
+    const current = resolveTarget(node);
+    return !!current && current.kind === 'file' && current.path === snapshot.targetPath;
+  }
+
+  function relocateLinkedNode(snapshot, revision, infoHost) {
+    if (!targetIsCurrent(snapshot, revision, infoHost)) return;
+    if (snapshot.image && typeof global.bdRelocateImageNode === 'function') {
+      void global.bdRelocateImageNode(snapshot.nodeId);
+      return;
+    }
+    if (typeof global.showLinkInsertModal !== 'function') {
+      global.showStatus?.('ファイル選択画面を開けませんでした', true);
+      return;
+    }
+    global.showLinkInsertModal(null, result => {
+      if (!result || !targetIsCurrent(snapshot, revision, infoHost)) return;
+      const nextPath = result.type === 'file' ? String(result.path || '').trim() : String(result.url || '').trim();
+      if (!nextPath) return;
+      const node = bd.nodes.find(candidate => candidate?.id === snapshot.nodeId);
+      if (!node) return;
+      global.bdPushUndo?.();
+      node.link = nextPath;
+      node.linkType = result.type === 'file' ? String(result.fileType || '') : '';
+      if (!node.text || node.text === '無題') node.text = String(result.name || nextPath.split(/[/\\]/).pop() || nextPath);
+      if (typeof global.bdRefreshNodesPartial === 'function') {
+        global.bdRefreshNodesPartial([node.id], 'relocate-file-link', { detailPanel: true });
+      } else {
+        global.bdRender?.();
+      }
+      global.bdDirty?.();
+      global.showStatus?.('リンク先のファイルを付け替えました');
+    });
+  }
+
   function cancelScheduled() {
     if (scheduledHandle == null) return;
     if (typeof global.cancelIdleCallback === 'function') global.cancelIdleCallback(scheduledHandle);
@@ -178,13 +226,14 @@
     const targets = nodes.map(resolveTarget).filter(Boolean);
     const boardPath = currentBoardPath();
     const renderKey = targets.length
-      ? targets.map(target => `${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
+      ? targets.map(target => `${target.nodeId || ''}:${target.kind}:${target.path || target.source || target.label || ''}`).sort().join('\n')
       : (boardPath ? `board:${boardPath}` : 'empty');
     const tabHost = global.document.getElementById('detail-tab-note-editor');
     if (tabHost?.dataset.bdBoardInfoKey === renderKey && tabHost.querySelector('[data-bd-board-file-info]')) {
       return targets.length > 0;
     }
     const revision = ++renderRevision;
+    const identity = boardIdentity();
     const infoHost = ensureShell(renderKey);
     if (!infoHost) return false;
     if (!targets.length) {
@@ -214,9 +263,17 @@
       }
       const target = targets[0];
       if (target.kind === 'file' && global.MeldexFileInfoPanel?.renderInto) {
+        const snapshot = {
+          nodeId: target.nodeId,
+          openSeq: identity.openSeq,
+          boardPath: identity.path,
+          targetPath: target.path,
+          image: target.image || target.type === 'image',
+        };
         global.MeldexFileInfoPanel.renderInto(infoHost, target.path, {
-          isCurrent: () => revision === renderRevision && infoHost.isConnected,
+          isCurrent: () => targetIsCurrent(snapshot, revision, infoHost),
           showTags: true,
+          onRelocate: () => relocateLinkedNode(snapshot, revision, infoHost),
         });
         return;
       }

@@ -38,11 +38,112 @@
   // （フラグ 'm' を使っていないため）。
   const FRONTMATTER_RE = /^(\uFEFF?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$))/;
 
-  function formatForPath(path) {
+  function _classifyMarkdown(path, text) {
+    const normalized = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = normalized.split('/').filter(Boolean);
+    const lowerParts = parts.map(part => part.toLocaleLowerCase());
+    const name = lowerParts[lowerParts.length - 1] || '';
+    const internal = new Set(['_trash', '.trash', '_versions', '.versions', '_history', '.history', '_meldex', '.meldex', '_system', '.system']);
+    if (!name.endsWith('.md')) return { eligible: false, reason: 'not_markdown' };
+    if (typeof text !== 'string') return { eligible: false, reason: 'content_unavailable' };
+    if (parts.includes('制作管理')) return { eligible: false, reason: 'production_managed' };
+    if (lowerParts.slice(0, -1).some(part => internal.has(part))) return { eligible: false, reason: 'internal_path' };
+    if (name.startsWith('.') || name.startsWith('~$') || /\.(?:tmp|temp|partial|download|crdownload)$/.test(name)) {
+      return { eligible: false, reason: 'temporary_path' };
+    }
+    const source = String(text).replace(/^\uFEFF/, '');
+    if (!source.startsWith('---')) return { eligible: true, kind: 'doc', reason: 'general_note' };
+    const match = FRONTMATTER_RE.exec(String(text));
+    if (!match) return { eligible: false, reason: 'malformed_frontmatter' };
+    if (/^---\s*$/m.test(String(text).slice(match[0].length))) {
+      return { eligible: false, reason: 'multiple_frontmatter_delimiters' };
+    }
+    if (match[2].includes('\t') || match[2].includes('#')
+        || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(match[2])
+        || /(^|\s)[&*][^\s]+/.test(match[2])
+        || /(^|\s)![^\s]+/.test(match[2]) || /[\[\]{}]/.test(match[2])
+        || /^\s*-\s+/m.test(match[2])
+        || /^[ ]*[^#\r\n][^:\r\n]*:[ ]*[|>][0-9+-]*[ ]*$/m.test(match[2])
+        || /^[ ]*["'][^\r\n:]*["'][ ]*:/m.test(match[2])
+        || /^[ ]*<<[ ]*:/m.test(match[2])) {
+      return { eligible: false, reason: 'unsupported_yaml_expression' };
+    }
+    const lines = match[2].split(/\r?\n/);
+    let rawType = '';
+    let rawMeldex = null;
+    const topLevelKeys = new Set();
+    const keysByIndent = new Map();
+    const indentStack = [0];
+    let previousOpensMapping = false;
+    const unsupportedPlainScalar = value => {
+      const raw = String(value || '');
+      const trimmed = raw.trim();
+      const quoted = trimmed.length >= 2 && (trimmed[0] === '"' || trimmed[0] === "'")
+        && trimmed[trimmed.length - 1] === trimmed[0];
+      return !quoted && /:(?:\s|$)/.test(raw);
+    };
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const indent = /^( *)/.exec(line)[1].length;
+      const currentIndent = indentStack[indentStack.length - 1];
+      if (indent < currentIndent) {
+        while (indentStack.length > 1 && indent < indentStack[indentStack.length - 1]) {
+          indentStack.pop();
+        }
+        if (indent !== indentStack[indentStack.length - 1]) {
+          return { eligible: false, reason: 'malformed_frontmatter' };
+        }
+      } else if (indent > currentIndent) {
+        if (!previousOpensMapping) return { eligible: false, reason: 'malformed_frontmatter' };
+        indentStack.push(indent);
+      }
+      const nested = /^(\s+)([^:#][^:]*):(?:\s*(.*))?$/.exec(line);
+      if (nested) {
+        if (unsupportedPlainScalar(nested[3])) {
+          return { eligible: false, reason: 'unsupported_yaml_expression' };
+        }
+        const indent = nested[1].replace(/\t/g, '  ').length;
+        for (const depth of [...keysByIndent.keys()]) {
+          if (depth > indent) keysByIndent.delete(depth);
+        }
+        const key = nested[2].trim();
+        const seen = keysByIndent.get(indent) || new Set();
+        if (seen.has(key)) return { eligible: false, reason: 'malformed_frontmatter' };
+        seen.add(key); keysByIndent.set(indent, seen);
+        previousOpensMapping = !String(nested[3] || '').trim();
+        continue;
+      }
+      if (/^\s/.test(line)) return { eligible: false, reason: 'malformed_frontmatter' };
+      keysByIndent.clear();
+      const pair = /^([^:#][^:]*):(?:\s*(.*))?$/.exec(line);
+      if (!pair) return { eligible: false, reason: 'malformed_frontmatter' };
+      const key = pair[1].trim();
+      if (unsupportedPlainScalar(pair[2])) {
+        return { eligible: false, reason: 'unsupported_yaml_expression' };
+      }
+      if (topLevelKeys.has(key)) return { eligible: false, reason: 'malformed_frontmatter' };
+      topLevelKeys.add(key);
+      if (key === 'type') rawType = String(pair[2] || '').trim();
+      if (key === 'meldex') rawMeldex = String(pair[2] || '').trim();
+      previousOpensMapping = !String(pair[2] || '').trim();
+    }
+    if (rawMeldex !== null && rawMeldex !== '') return { eligible: false, reason: 'ambiguous_meldex_metadata' };
+    if (/!![A-Za-z0-9_:-]+/.test(rawType)) return { eligible: false, reason: 'unsupported_yaml_expression' };
+    if (/^[\[{>|]/.test(rawType)) return { eligible: false, reason: 'invalid_type' };
+    const noteType = rawType.replace(/^(['"])([\s\S]*)\1$/, '$2').trim().toLocaleLowerCase();
+    if (!noteType || noteType === 'note') return { eligible: true, kind: 'doc', reason: 'general_note' };
+    if (['settings-db', 'settings-entry', 'calendar-event'].includes(noteType)) {
+      return { eligible: false, reason: noteType.replace(/-/g, '_') };
+    }
+    return { eligible: false, reason: 'managed_or_unknown_type' };
+  }
+
+  function formatForPath(path, text) {
     const lower = String(path || '').toLowerCase();
     for (const [ext, fmt] of CURRENT_FORMAT_EXTENSIONS) {
       if (lower.endsWith(ext)) return fmt;
     }
+    if (lower.endsWith('.md') && _classifyMarkdown(path, text).eligible) return 'note';
     return null;
   }
 
@@ -129,7 +230,7 @@
   }
 
   function readDocumentId(text, fmt) {
-    if (fmt === 'board') return _readBoardDocumentId(text);
+    if (fmt === 'board' || fmt === 'note') return _readBoardDocumentId(text);
     if (JSON_FORMATS.has(fmt)) return _readJsonDocumentId(text);
     return null;
   }
@@ -182,10 +283,15 @@
 
   function _injectBoardDocumentId(text, documentId) {
     const source = String(text || '');
+    if (source.includes('\r\n')) {
+      return _injectBoardDocumentId(source.replace(/\r\n/g, '\n'), documentId).replace(/\n/g, '\r\n');
+    }
     const match = FRONTMATTER_RE.exec(source);
     if (!match) {
       // フロントマター自体が無い（想定外に壊れたファイル）場合は新規付与する。
-      return '---\n' + _boardMeldexBlock(documentId) + '---\n' + source;
+      const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+      const body = bom ? source.slice(1) : source;
+      return bom + '---\n' + _boardMeldexBlock(documentId) + '---\n' + body;
     }
     const headerLen = match[1].length;
     const fmBody = match[2];
@@ -222,7 +328,7 @@
     if (existing) return { text, changed: false, documentId: existing };
     const id = String(preferredDocumentId || '').trim() || newDocumentId();
     let nextText;
-    if (fmt === 'board') {
+    if (fmt === 'board' || fmt === 'note') {
       nextText = _injectBoardDocumentId(text, id);
     } else if (JSON_FORMATS.has(fmt)) {
       nextText = _injectJsonDocumentId(text, id);
@@ -257,7 +363,7 @@
   function regenerateDocumentId(text, fmt) {
     const id = newDocumentId();
     let nextText;
-    if (fmt === 'board') {
+    if (fmt === 'board' || fmt === 'note') {
       nextText = _injectBoardDocumentId(text, id);
     } else if (JSON_FORMATS.has(fmt)) {
       nextText = _injectJsonDocumentId(text, id);
@@ -269,6 +375,7 @@
   }
 
   NS.formatForPath = formatForPath;
+  NS.classifyMarkdown = _classifyMarkdown;
   NS.newDocumentId = newDocumentId;
   NS.readDocumentId = readDocumentId;
   NS.ensureDocumentId = ensureDocumentId;

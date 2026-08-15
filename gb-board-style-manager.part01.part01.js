@@ -506,7 +506,7 @@ async function _bdSaveBoardStyleAsNew(kind) {
   else bd.lineStyles.push(next);
   bd[activeRef] = next.id;
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`${kind === 'card' ? 'カードスタイル' : 'ラインスタイル'}「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -676,7 +676,7 @@ async function _bdSaveNodeCardStyleAsNew(node) {
     node._userCardStyle = true;
   }
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`カードスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -703,7 +703,7 @@ async function _bdSaveConnectionLineStyleAsNew(conn) {
   conn.styleRef = next.id;
   if (typeof bdClearConnectionStyleOverrides === 'function') bdClearConnectionStyleOverrides(conn);
   bdDirty();
-  bdRender();
+  _bdRenderKeepingDetailTab();
   bdRefreshBoardToolbar();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(`ラインスタイル「${name}」として保存しました`, false, { showSaveDialog: true });
@@ -739,7 +739,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   // 保存時も現在値を「ユーザー定義デフォルト」として更新（以降のリセットで戻る先）
   style._default = _bdCloneStyleForDefault(style);
   _bdSaveGlobalStyleDefault('card', style);
-  if (typeof bdRender === 'function') bdRender();
+  if (typeof _bdRenderKeepingDetailTab === 'function') _bdRenderKeepingDetailTab();
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0

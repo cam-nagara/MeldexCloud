@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#1e1e1e">
+  <meta name="theme-color" content="#0b0d10">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Meldex Memo">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -157,6 +157,17 @@
   <script src="standalone-always-on-top.js"></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
+      // Meldex本体のフロートパネルへ埋め込まれている場合は、自分のウィンドウを
+      // 持たないため「常に最前面」を出さない（本体のウィンドウを操作してしまう）。
+      var embedded = false;
+      try { embedded = window.top !== window.self; } catch (e) { embedded = true; }
+      if (!embedded) {
+        embedded = new URLSearchParams(location.search).get("embed") === "1";
+      }
+      if (embedded) {
+        document.body.dataset.quickMemoEmbed = "1";
+        return;
+      }
       window.MeldexAlwaysOnTop?.install({
         appId: "quick-memo",
         host: document.querySelector("#editorView .qm-header-actions"),

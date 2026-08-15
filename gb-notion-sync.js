@@ -89,7 +89,17 @@
   }
 
   // === Notion同期設定UI ===
-  async function showNotionSyncModal() {
+  // triggerEl: このモーダルを開いた「外側の本来のトリガー要素」。
+  // 省略時（外部からの新規オープン）は現在のフォーカス位置を採用する。
+  // _refreshNotionSyncSettings からの内部再生成呼び出しでは、直前のモーダルが
+  // 保持していたトリガー要素をそのまま引き継ぐ（document.activeElement の
+  // 再取得はしない）。再生成は「閉じてすぐ作り直す」ため、その瞬間の
+  // document.activeElement は直前のモーダルごと消える内部要素（フォルダ追加
+  // ボタン等）になっており、それを拾うと二度と外側へフォーカスを戻せなくなる。
+  async function showNotionSyncModal(triggerEl) {
+    const opener = (triggerEl instanceof HTMLElement && triggerEl.isConnected)
+      ? triggerEl
+      : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     _closeModal();
     const body = document.createElement('div');
     body.id = 'notion-sync-modal-body';
@@ -112,6 +122,10 @@
       closeLabel: 'Notion同期を閉じる',
       closeOnEsc: true,
       closeOnOverlay: true,
+      // 外側の本来のトリガー要素を明示的に指定する。指定した要素が閉じる時点で
+      // 接続済みなら、document.activeElement の暗黙キャプチャより優先される
+      // （gb-ui.js の _restoreOpenerFocus 参照）。
+      returnFocus: () => (opener && opener.isConnected) ? opener : null,
       onClose: () => {
         if (_currentModalApi === modalApi) _currentModalApi = null;
         if (_currentOverlay === modalApi.overlay) _currentOverlay = null;
@@ -128,7 +142,7 @@
     _currentOverlay = o;
     closeButton.addEventListener('click', () => modalApi.close('close-button'));
     modalApi.open();
-    await _renderNotionSyncSettings(body, { modal: true, descId });
+    await _renderNotionSyncSettings(body, { modal: true, descId, triggerEl: opener });
     replaceIcons(o);
   }
 
@@ -634,7 +648,9 @@
       _renderNotionSyncSettings(root, options);
       return;
     }
-    if (options.modal) showNotionSyncModal();
+    // 「閉じてすぐ作り直す」再生成。外側の本来のトリガー要素（options.triggerEl）を
+    // そのまま引き継ぎ、新しいモーダルの document.activeElement 再取得に頼らない。
+    if (options.modal) showNotionSyncModal(options.triggerEl);
   }
 
   async function _handleDeleteToken(root, options = {}) {

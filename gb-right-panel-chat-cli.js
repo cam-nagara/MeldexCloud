@@ -351,7 +351,39 @@
     if (!options.silent && typeof showStatus === 'function') showStatus('CLIの会話継続をリセットしました');
   }
 
+  // Phase 7: AIタブはメンバー個人のAPIキー・個人のCLI専用。Meldex Cloud・スマホは
+  // ローカルCLIを実行するバックエンドを持たないため、動かせない選択肢を並べて
+  // 行き止まりを作らない(Cloud/モバイル品質ゲートの規約)。desktop版でだけCLIを出す。
+  function _isDesktopCliChatSurface() {
+    return !(window.MeldexRuntimeAdapter?.isPwaMode?.()
+      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || ''));
+  }
+
+  function _removeUnusableCliChatOptions(select) {
+    if (!select) return;
+    let removedSelected = false;
+    CLI_CHAT_PROVIDERS.forEach(provider => {
+      const option = select.querySelector(`option[value="${provider.key}"]`);
+      if (!option) return;
+      if (option.selected) removedSelected = true;
+      option.remove();
+    });
+    if (removedSelected && select.options.length) {
+      select.value = select.options[0].value;
+      try {
+        if (typeof _chatState !== 'undefined') _chatState.provider = select.value;
+      } catch {}
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
   function ensureCliChatProviderOptions() {
+    const select = document.getElementById('chat-provider');
+    if (!select) return;
+    if (!_isDesktopCliChatSurface()) {
+      _removeUnusableCliChatOptions(select);
+      return;
+    }
     try {
       // CHAT_DEFAULT_MODELS[provider.key] は gb-right-panel-chat.part01.part01.js の
       // CHAT_CLI_MODEL_CATALOG から既に複数候補で定義済みのため、ここで1件だけの配列に
@@ -363,8 +395,6 @@
         });
       }
     } catch {}
-    const select = document.getElementById('chat-provider');
-    if (!select) return;
     CLI_CHAT_PROVIDERS.forEach(provider => {
       if (select.querySelector(`option[value="${provider.key}"]`)) return;
       const option = document.createElement('option');
@@ -1581,6 +1611,8 @@
   });
 
   document.addEventListener('DOMContentLoaded', () => {
+    // デスクトップ付箋の小窓にはチャットが無い。送信設定の確認まで走らせない。
+    if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
     installCliChatPatches();
     loadCliChatConfig().then(async () => {
       if (window.GBChatProviderDefault?.applyFirstRun) {

@@ -18,6 +18,12 @@
     '.gb-fmt-popup',
     '.sn2-header-popup',
     '._note-ctx-menu',
+    // gb-mobile-tab-gesture-router.js のスマホ用タブ切替メニュー。位置制御の
+    // ため document.body 直下に付く(親のタブバーの子ではない)ので、ここに
+    // 加えないとメニュー項目タップの度に他の全ドロップダウン/gb-context-menu
+    // (アイコンピッカー等)が誤って一括で閉じてしまう
+    // （2026-08-13 バグ報告で確認）。
+    '.gb-mobile-tab-menu',
   ];
   const TRIGGER_SELECTORS = [
     '[data-theme-ui-picker]',

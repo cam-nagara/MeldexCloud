@@ -1,3 +1,23 @@
+        backdrop.classList.add('open');
+        backdrop.style.setProperty('display', 'block', 'important');
+      }
+    } else if (dx < 0 && sidebar.classList.contains('open')) {
+      // 左スワイプ → サイドバー閉じる
+      sidebar.classList.remove('open');
+      if (backdrop) {
+        backdrop.classList.remove('open');
+        backdrop.style.setProperty('display', 'none', 'important');
+      }
+    }
+  }, { passive: true });
+})();
+
+/* ==============================
+   ステータスバー
+   ============================== */
+// メッセージ先頭行をタイトル、残りを本文として安全なDOMへ変換する。
+// 単一行メッセージは従来通り本文だけ、複数行のみ先頭行を強調する。
+function _buildCfDialogBodyNodes(message, idBase) {
   const text = String(message ?? '');
   if (!text) return [];
   const lines = text.split('\n');
@@ -878,23 +898,3 @@ function openCalendarFile(label, path, opts) {
   const openOpts = opts || {};
   // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
   const cfg = getDbViewConfig(path);
-  const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
-    ? _getCurrentDbViewConfigEntryFromConfig(cfg)
-    : null;
-  if (view) {
-    if (typeof _ensureDbViewTypeSpecific === 'function') _ensureDbViewTypeSpecific(view, cfg);
-    view.viewMode = 'timeline';
-    cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
-    saveDbViewConfig(path, cfg, { skipHistory: true });
-  }
-  return selectDatabase(path, openOpts.paneContext || openOpts.paneCtx || null, openOpts);
-}
-
-const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
-const _GB_EXTERNAL_HTML_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-const _GB_TRUSTED_VIEWER_IFRAME_SANDBOX = _GB_UNTRUSTED_IFRAME_SANDBOX + ' allow-same-origin';
-
-function _gbIsTrustedInternalViewerUrl(rawUrl) {
-  const text = String(rawUrl || '').trim();
-  if (!text) return false;
-  try {

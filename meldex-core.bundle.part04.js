@@ -1,3 +1,19 @@
+        entry.observedNode = nodeEl;
+        _anchoredResizeObserver.observe(nodeEl);
+      }
+      entry.lastWorldPoints = _anchoredWorldPoints(entry.type, entry.data);
+      entry.lastWorldWidth = (Number(entry.data.width) || _widthDefaults[entry.type === 'marker' ? 'marker' : 'pen'])
+        * _annotationAnchorScale(anchor);
+      _applyAnchoredShape(entry.el, entry.type, entry.data, entry.color, entry.opacity, false);
+    });
+    _releaseAnchoredMutationObserverIfIdle();
+  }
+
+  function _scheduleAnchoredAnnotationRefresh() {
+    if (_anchoredRefreshHandle || !_anchoredAnnotationEntries.size) return;
+    _anchoredRefreshHandle = requestAnimationFrame(_refreshAnchoredAnnotations);
+  }
+
   function _renderStroke(type, points, pressures, color, opacity, annId, width, sourceData) {
     const normalizedOpacity = _normalizeMarkupOpacity(opacity, 1);
     const data = sourceData || { points, pressures, width };
@@ -882,19 +898,3 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
     { left: avoid.right + gap, top: yNearAnchor, side: 'right', space: vw - avoid.right - gap },
     { left: avoid.left - pw - gap, top: yNearAnchor, side: 'left', space: avoid.left - gap },
   ];
-
-  for (const candidate of candidates) {
-    const left = _popupClampValue(candidate.left, gap, maxLeft);
-    const top = _popupClampValue(candidate.top, gap, maxTop);
-    const rect = _popupCandidateRect(left, top, pw, ph);
-    const fitsViewport = left >= gap && top >= gap && rect.right <= vw - gap && rect.bottom <= vh - gap;
-    if (fitsViewport && !_popupRectsOverlap(rect, avoid, 0)) return { left, top };
-  }
-
-  const vertical = candidates
-    .filter(c => c.side === 'below' || c.side === 'above')
-    .filter(c => c.space >= 72)
-    .sort((a, b) => b.space - a.space)[0];
-  if (vertical) {
-    const left = _popupClampValue(vertical.left, gap, maxLeft);
-    const top = vertical.side === 'above'

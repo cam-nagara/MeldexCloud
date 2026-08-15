@@ -176,9 +176,35 @@
     return Array.from(new Uint8Array(digest)).map(v => v.toString(16).padStart(2, '0')).join('');
   }
 
+  // 「名前.種別.拡張子」の複合拡張子。`.board.md` のように末尾が .md でも
+  // エントリではないものがあるため、単純な拡張子判定より先に見る。
+  const COMPOUND_SUFFIXES = [
+    '.scriptnote.json', '.scenario.json', '.smart-db.json',
+    '.dashboard.json', '.timer.json', '.calendar.json', '.board.md',
+  ];
+  // シートの中へ置いてよい項目か。シートの実体はフォルダなので、
+  // ボード・シナリオ・画像などを入れると「シートの中にボードがある」状態になる。
+  // サーバー側 meldex_api_outliner.reject_non_entry_into_sheet と同じ規則。
+  // フォルダは許可する（旧形式のエントリ＝フォルダ、および添付ファイル用サブフォルダ）。
+  // 添付ファイルはシート直下ではなく `<シート>/添付ファイル/` へ入るため対象外。
+  function itemFitsInSheet(item) {
+    const type = String(item?.type || '').toLowerCase();
+    if (['folder', 'database', 'calendar', 'entity'].includes(type)) return true;
+    const raw = String(item?.path || item?.name || '').replace(/\\/g, '/');
+    const name = raw.replace(/\/+$/, '').split('/').pop() || '';
+    if (!name) return true;
+    const lower = name.toLowerCase();
+    if (COMPOUND_SUFFIXES.some(suffix => lower.endsWith(suffix))) return false;
+    const dot = lower.lastIndexOf('.');
+    if (dot <= 0) return true;
+    return lower.slice(dot) === '.md';
+  }
+
   global.MeldexSheetAttachments = {
     ATTACHMENT_FOLDER_NAME,
     ATTACHMENT_FOLDER_FIELD,
+    COMPOUND_SUFFIXES,
+    itemFitsInSheet,
     IMAGE_EXTS,
     VIDEO_EXTS,
     DOCUMENT_EXTS,

@@ -211,7 +211,8 @@
     return 'pushed';
   }
 
-  // deps は gb-production-management.part02.js の _pmRecalcEngineDeps() をそのまま渡せる
+  // deps は gb-production-management-cloud-task-structure-adapter.js（旧
+  // gb-production-management.part02.js の一部）の _pmRecalcEngineDeps() をそのまま渡せる
   // （readCalendarStore だけを使う）。
   async function syncGoogle(provider, internals, deps, body) {
     const dateFrom = String(body?.date_from || '').trim();

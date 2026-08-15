@@ -340,6 +340,7 @@ document.addEventListener('keydown', async (e) => {
       : await cfConfirm(confirmMessage);
     if (!confirmed) return;
     deleteOutlinerItemsWithHistory(items, {
+      confirmation: confirmed,
       label: items.length + ' 件を削除',
       onItemDeleted: (item) => {
         if (typeof _removeOutlinerNodesForPaths === 'function') _removeOutlinerNodesForPaths([item.path]);

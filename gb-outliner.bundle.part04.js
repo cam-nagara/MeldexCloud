@@ -1,3 +1,34 @@
+    });
+  }
+
+  let trashRefs = succeeded.map(_outlinerTrashRefFromResponse).filter(Boolean);
+  let trashNames = _outlinerTrashRefsToNames(trashRefs);
+  if (succeeded.length && typeof historyPush === 'function') {
+    const label = options.label || (succeeded.length + ' 件を削除');
+    const detail = options.detail || succeeded.map(item => item.path).join(', ');
+    historyPush(
+      label,
+      async () => {
+        const restored = await _restoreOutlinerTrashRefs(trashRefs);
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'undo', { succeeded, deletedPaths, trashNames });
+        if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
+      },
+      async () => {
+        const nextTrashRefs = [];
+        if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
+        for (const item of succeeded) {
+          const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
+          const ref = _outlinerTrashRefFromResponse(res);
+          if (ref) nextTrashRefs.push(ref);
+        }
+        if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
+        trashRefs = nextTrashRefs;
+        trashNames = _outlinerTrashRefsToNames(trashRefs);
+        if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
+          purgeAppPathReferences(deletedPaths);
+        }
+        await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames });
+        if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
       },
       options.scope || '',
       detail
@@ -197,13 +228,25 @@ function _outlinerBindContextMenuClose(menu) {
 
 function _showTreeAddMenu(x, y, nodeEl, nodeData) {
   closeTreeContextMenu();
-  const addParent = getAddParentPath(nodeEl, nodeData, { insideTarget: true });
   const menu = _outlinerCreateContextMenu('フォルダツリー新規作成', x, y);
+  // シートを選んでいるときは、シートの中に作れる「エントリ」を先頭に出す。
+  // ほかの項目はシートの中には作らず、シートと同じ階層に作る。
+  if (nodeData?.type === 'database' && nodeData.path) {
+    _outlinerAppendMenuItem(menu, {
+      label: 'エントリ',
+      icon: 'plus',
+      action: async () => { closeTreeContextMenu(); await addSheetEntryAt(nodeData.path); },
+    });
+    _outlinerAppendMenuSeparator(menu);
+  }
   _cloudPhase1CreateItems([['フォルダ','folder','folder'],['ノート','page','page'],['シナリオ','scriptnote','bookOpenText'],['シート','database','db'],['ボード','board','presentation'],['スマートシート','smart-db','databaseSearch']]).forEach(([label,type,icon]) => {
     _outlinerAppendMenuItem(menu, {
       label,
       icon,
-      action: async () => { closeTreeContextMenu(); await addItemAt(addParent, type); },
+      action: async () => {
+        closeTreeContextMenu();
+        await addItemAt(getAddParentPath(nodeEl, nodeData, { insideTarget: true, itemType: type }), type);
+      },
     });
   });
   _outlinerPlaceContextMenu(menu);
@@ -293,6 +336,17 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showStatus('削除できる項目がありません', true);
       return;
     }
+    const linkedDelete = await handleDisplayedFolderLinkDelete(targets, '', {
+      refresh: async () => {
+        if (typeof loadOutliner === 'function') await loadOutliner();
+        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+      },
+    });
+    if (linkedDelete.handled) {
+      if (linkedDelete.result) treeSelection.clear();
+      return;
+    }
     const names = targets.map(item => item.name).join('、');
     const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
@@ -301,6 +355,7 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     if (!confirmed) return;
     treeSelection.clear();
     const result = await deleteOutlinerItemsWithHistory(targets, {
+      confirmation: confirmed,
       label: targets.length + ' 件を削除',
       detail: names,
       onItemDeleted: (item) => {
@@ -828,73 +883,18 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showSettingsModal({ panel: 'ユーザー' });
     }, null, 'users');
     addSep();
-    addMenuItem('このソースフォルダを削除', async () => {
+    addMenuItem('このソースフォルダの登録を解除', async () => {
       closeTreeContextMenu();
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」をフォルダツリーから削除しますか？\n（ファイルは削除されません）')) return;
+      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
       const roots = await apiFetch('/outliner-roots');
       const baseRoots = _cloneOutlinerRootsForBase(roots);
       const newRoots = roots.filter(r => r.path !== nodeData.path);
       await _putOutlinerRootsWithBase(newRoots, baseRoots);
       await loadOutliner();
-      showStatus('ソースフォルダを削除しました');
-    }, null, 'trash2');
+      showStatus('ソースフォルダの登録を解除しました');
+    }, null, 'folder-minus');
   }
 
   // --- 作品フォルダ設定（フォルダのみ） ---
-  if (isFolder && !isMulti) {
-    const curWork = getWorkFolder();
-    const isWork = curWork === nodeData.path;
-    const wfPanel = _outlinerCreateSubmenu('作品フォルダ');
-    _outlinerAppendSubmenu(menu, '作品フォルダ', 'folderDot', wfPanel);
-    [['設定する', true], ['解除する', false]].forEach(([label, setIt]) => {
-      _outlinerAppendMenuItem(wfPanel, {
-        html: radioMark(isWork === setIt) + '<span>' + _outlinerEscHtml(label) + '</span>',
-        checked: isWork === setIt,
-        action: async () => {
-        closeTreeContextMenu();
-        if (setIt) {
-          setWorkFolder(nodeData.path);
-          showStatus(`「${nodeData.name}」を作品フォルダに設定しました`);
-        } else {
-          setWorkFolder('');
-          showStatus('作品フォルダの設定を解除しました');
-        }
-        await loadLinkDict();
-        tooltipCache = {};
-        await loadOutliner();
-        },
-      });
-    });
-  }
-
-  // --- 並び替え（フォルダ・DB） ---
-  if ((isFolder || isDB || isEntity) && !isMulti) {
-    const sortPath = nodeData.path;
-    const curSort = getSortForFolder(sortPath);
-    // サブメニュー風: 1項目でクリック→展開
-    const sortPanel = _outlinerCreateSubmenu('並び替え');
-    _outlinerAppendSubmenu(menu, '並び替え', 'arrowUpDown', sortPanel);
-    const sortOpts = typeof getFolderSortOptions === 'function' ? getFolderSortOptions() : [
-      { label: 'マニュアル', sort: 'manual', order: 'asc' },
-      { label: '名前 ↑', sort: 'name', order: 'asc' },
-      { label: '名前 ↓', sort: 'name', order: 'desc' },
-    ];
-    sortOpts.forEach(o => {
-      const active = curSort.sort === o.sort && curSort.order === o.order;
-      _outlinerAppendMenuItem(sortPanel, {
-        html: radioMark(active) + '<span>' + _outlinerEscHtml(o.label) + '</span>',
-        checked: active,
-        action: async () => {
-        closeTreeContextMenu();
-        const sortHistoryKeys = [SORT_SETTINGS_KEY, MANUAL_ORDER_KEY];
-        const before = captureOutlinerSettingsHistory(sortHistoryKeys);
-        setSortSetting(sortPath, o.sort, o.order);
-        pushOutlinerSettingsHistory(
-          'フォルダツリー: 並び替え設定',
-          before,
-          sortPath + ' / ' + o.label,
-          sortHistoryKeys
-        );
-        if (typeof _folderPath !== 'undefined' && _folderPath === sortPath && typeof renderFolderGrid === 'function') {
-          const selectedPaths = typeof _folderSelectedItems !== 'undefined'
-            ? _folderSelectedItems.map(item => item?.path).filter(Boolean) : [];

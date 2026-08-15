@@ -101,6 +101,10 @@
         key: String(def.key || ''),
         label: String(def.label || id),
         scope: String(def.scope || 'global'),
+        // 参照専用の操作（スペースキー＋ドラッグ、マウスドラッグ等）。
+        // キー割り当ての変更対象にはせず、一覧には必ず出す。
+        readonly: def.readonly === true,
+        display: String(def.display || ''),
         local,
       };
     }
@@ -484,7 +488,7 @@
     const allowed = Array.isArray(scopes) && scopes.length ? scopes : null;
     const shortcuts = effective();
     for (const [id, def] of Object.entries(shortcuts)) {
-      if (!def.key) continue;
+      if (!def.key || def.readonly) continue;
       if (allowed && !allowed.includes(def.scope)) continue;
       if (normalizeKeyDef(def.key) === pressed) return id;
     }
@@ -495,7 +499,7 @@
     const shortcuts = effective();
     const selfScope = shortcuts[selfId]?.scope;
     for (const [id, def] of Object.entries(shortcuts)) {
-      if (id === selfId || !def.key) continue;
+      if (id === selfId || !def.key || def.readonly) continue;
       if (normalizeKeyDef(def.key) !== newKey) continue;
       if (def.scope === selfScope || def.scope === 'global' || selfScope === 'global') return def;
     }
@@ -533,8 +537,10 @@
     const query = (container.querySelector('[data-shortcut-search]')?.value || '').trim().toLowerCase();
     const selectedScope = container.querySelector('[data-shortcut-scope-filter]')?.value || 'all';
     container.querySelectorAll('.shortcut-row').forEach(row => {
+      // 「現在のアプリ」表示では全体（Meldex共通）を混ぜない。
+      // メインパネルのアプリを切り替えたときに、そのアプリの操作だけが並ぶようにする。
       const matchesScope = selectedScope === 'all'
-        || (selectedScope === 'current' && ['global', container.dataset.shortcutCurrentScope].includes(row.dataset.scope))
+        || (selectedScope === 'current' && row.dataset.scope === container.dataset.shortcutCurrentScope)
         || row.dataset.scope === selectedScope;
       const matchesSearch = !query || (row.dataset.search || '').includes(query);
       row.hidden = !(matchesScope && matchesSearch);
@@ -552,8 +558,8 @@
   function _scopeOptionsHtml(scopeOptions, previousScope, currentScope) {
     let html = '<option value="all"' + (previousScope === 'all' ? ' selected' : '') + '>すべて</option>';
     if (currentScope && currentScope !== 'global') {
-      html += '<option value="current"' + (previousScope === 'current' ? ' selected' : '') + '>Meldex共通＋'
-        + _esc(scopeLabel(currentScope)) + '</option>';
+      html += '<option value="current"' + (previousScope === 'current' ? ' selected' : '') + '>'
+        + _esc(scopeLabel(currentScope)) + '（表示中のアプリ）</option>';
     }
     for (const [scope, items] of scopeOptions) {
       html += '<option value="' + _esc(scope) + '"' + (previousScope === scope ? ' selected' : '') + '>'
@@ -563,17 +569,26 @@
   }
 
   function _rowHtml(item) {
-    const status = item.isCustom ? 'カスタム' : '既定';
     const label = scopeLabel(item.displayScope);
-    const searchText = [item.label, item.id, item.key, label].join(' ').toLowerCase();
+    const keyText = item.readonly ? (item.display || item.key) : keyDisplay(item.key);
+    const searchText = [item.label, item.id, item.key, item.display, label].join(' ').toLowerCase();
     let html = '<div class="shortcut-row gb-field-row" data-id="' + _esc(item.id) + '" data-scope="' + _esc(item.displayScope)
       + '" data-search="' + _esc(searchText) + '">';
     html += '<span class="shortcut-label gb-label" title="' + _esc(item.id) + '">' + _esc(item.label) + '</span>';
+    if (item.readonly) {
+      // マウス操作を伴うため割り当て変更の対象にしない。一覧には必ず出す。
+      html += '<span class="shortcut-status">操作</span>';
+      html += '<kbd class="shortcut-key is-readonly" data-e2e-id="shortcut-key-' + _esc(item.id) + '">'
+        + _esc(keyText) + '</kbd>';
+      html += '<span class="shortcut-reset-spacer"></span>';
+      return html + '</div>';
+    }
+    const status = item.isCustom ? 'カスタム' : '既定';
     html += '<span class="shortcut-status' + (item.isCustom ? ' is-custom' : '') + '">' + status + '</span>';
     html += '<kbd class="shortcut-key' + (item.isCustom ? ' is-custom' : '') + '" data-id="' + _esc(item.id)
       + '" data-e2e-id="shortcut-key-' + _esc(item.id)
       + '" tabindex="0" role="button" title="クリックして変更" aria-label="' + _esc(item.label) + 'のキーを変更">'
-      + _esc(keyDisplay(item.key)) + '</kbd>';
+      + _esc(keyText) + '</kbd>';
     if (item.isCustom) {
       html += '<button type="button" class="shortcut-reset gb-btn gb-btn-xs gb-btn-quiet" data-id="' + _esc(item.id)
         + '" data-e2e-id="shortcut-reset-' + _esc(item.id) + '" title="デフォルトに戻す" aria-label="'
@@ -680,7 +695,7 @@
     html += '</section>';
     container.innerHTML = html;
 
-    container.querySelectorAll('.shortcut-key').forEach(kbd => {
+    container.querySelectorAll('.shortcut-key:not(.is-readonly)').forEach(kbd => {
       kbd.addEventListener('click', () => _startKeyCapture(kbd, container));
       kbd.addEventListener('keydown', event => {
         if (event.key !== 'Enter' && event.key !== ' ') return;

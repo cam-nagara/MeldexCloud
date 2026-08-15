@@ -302,6 +302,22 @@
     return resolver.resolveTypedAdapterForProvider(provider, kind);
   }
 
+  async function _managementScopeIdentity(provider, kind) {
+    const adapter = await _managementAdapter(provider, kind);
+    const description = await adapter?.describe?.();
+    const boundary = String(description?.boundary || '').trim();
+    const managementRoot = String(description?.management_root || '').trim();
+    const namespaceKind = String(description?.namespace_kind || '').trim();
+    if (!boundary || !managementRoot || !namespaceKind) {
+      throw new Error('管理データの保存先を一意に識別できません');
+    }
+    return JSON.stringify({
+      boundary,
+      management_root: managementRoot,
+      namespace_kind: namespaceKind,
+    });
+  }
+
   async function _readManagementPayload(provider, kind, documentId) {
     const adapter = await _managementAdapter(provider, kind);
     const record = await adapter.load(kind, documentId);
@@ -469,6 +485,30 @@
     })).filter((link) => link.path && link.folder_path) : [];
   }
 
+  function _validateManagedFolderLinks(raw) {
+    if (!Array.isArray(raw)) throw new Error('フォルダリンク管理データの links が破損しています');
+    const identities = new Set();
+    return raw.map((link) => {
+      if (!link || typeof link !== 'object' || Array.isArray(link)) {
+        throw new Error('フォルダリンク管理データのリンク項目が破損しています');
+      }
+      for (const field of ['file_id', 'path', 'name', 'folder_path', 'folder_id', 'added_at']) {
+        if (typeof link[field] !== 'string') throw new Error(`フォルダリンク管理データの ${field} が不正です`);
+      }
+      const fileId = link.file_id.trim();
+      const path = _normalizeFolderPath(link.path);
+      const folderPath = _normalizeFolderPath(link.folder_path);
+      const folderId = link.folder_id.trim();
+      if (!fileId || !path || !folderPath || path !== link.path || folderPath !== link.folder_path) {
+        throw new Error('フォルダリンク管理データの必須識別情報が不正です');
+      }
+      const identity = `${fileId}\u0000${folderId || folderPath}`;
+      if (identities.has(identity)) throw new Error('フォルダリンク管理データに重複したリンクがあります');
+      identities.add(identity);
+      return { ...link, file_id: fileId, folder_id: folderId };
+    });
+  }
+
   function _folderLinksStore() {
     return _normalizeFolderLinks(_safeReadJson(PWA_FOLDER_LINKS_KEY, []));
   }
@@ -477,38 +517,150 @@
     _safeWriteJson(PWA_FOLDER_LINKS_KEY, _normalizeFolderLinks(links));
   }
 
+  function _normalizeFolderLinkRequests(raw) {
+    if (raw == null) return [];
+    if (!Array.isArray(raw)) throw new Error('フォルダリンクの再試行履歴が破損しています');
+    const requestIds = new Set();
+    return raw.map((record) => {
+      const requestId = String(record?.request_id || '').trim();
+      const operation = String(record?.operation || '').trim();
+      const fingerprint = String(record?.fingerprint || '');
+      const scopeId = String(record?.scope_id || '');
+      const result = record?.result;
+      if (!requestId || !['add', 'remove'].includes(operation) || !fingerprint || !scopeId
+          || typeof record?.saved_at !== 'string' || requestIds.has(requestId)) {
+        throw new Error('フォルダリンクの再試行履歴が破損しています');
+      }
+      requestIds.add(requestId);
+      if (!result || typeof result !== 'object' || Array.isArray(result)
+          || typeof result.ok !== 'boolean' || result.operation !== operation || result.request_id !== requestId
+          || !Array.isArray(result.results)) throw new Error('フォルダリンクの保存結果が破損しています');
+      const counts = { created: 0, removed: 0, unchanged: 0, failed: 0 };
+      result.results.forEach((row) => {
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+            || typeof row.file_path !== 'string' || typeof row.file_id !== 'string'
+            || typeof row.folder_path !== 'string' || typeof row.folder_id !== 'string'
+            || !Object.hasOwn(counts, row.status)
+            || (row.status === 'failed' && typeof row.error !== 'string')) {
+          throw new Error('フォルダリンクの保存結果が破損しています');
+        }
+        counts[row.status] += 1;
+      });
+      for (const status of Object.keys(counts)) {
+        if (result[`${status}_count`] !== counts[status]) throw new Error('フォルダリンクの保存結果件数が不正です');
+      }
+      if (result.ok !== (counts.failed === 0)) throw new Error('フォルダリンクの保存結果状態が不正です');
+      return { request_id: requestId, operation, fingerprint, scope_id: scopeId, result, saved_at: record.saved_at };
+    });
+  }
+
+  function _normalizeOutlinerOperations(raw) {
+    if (raw == null) return [];
+    if (!Array.isArray(raw)) throw new Error('ファイル操作の再試行履歴が破損しています');
+    const ids = new Set();
+    return raw.map(record => {
+      const id = String(record?.operation_id || '').trim();
+      const operation = String(record?.operation || '');
+      const state = String(record?.state || '');
+      if (!id || ids.has(id) || !['duplicate', 'save-as'].includes(operation)
+          || !['prepared', 'completed'].includes(state)
+          || !/^[a-f0-9]{64}$/.test(String(record?.fingerprint || ''))
+          || typeof record?.scope_id !== 'string' || !record.scope_id
+          || !record?.intent || typeof record.intent !== 'object' || Array.isArray(record.intent)
+          || typeof record.saved_at !== 'string') {
+        throw new Error('ファイル操作の再試行履歴が破損しています');
+      }
+      if (state === 'completed' && (!record.result || record.result.ok !== true
+          || record.result.operation_id !== id || typeof record.result.new_path !== 'string')) {
+        throw new Error('ファイル操作の保存結果が破損しています');
+      }
+      ids.add(id);
+      return JSON.parse(JSON.stringify(record));
+    });
+  }
+
   async function _readFolderLinks(provider) {
     let persisted = null;
+    let fromManagedStorage = false;
     if (provider) {
       const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
       if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
       const managed = await _readManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID);
       persisted = managed.payload;
+      fromManagedStorage = persisted != null;
       // 旧付随物は移行期間中の読取専用fallback。新規・更新書込は必ず管理領域へ行う。
       if (!persisted) persisted = await _readJsonSafe(provider, PWA_FOLDER_LINKS_FILE, null);
     }
-    const raw = Array.isArray(persisted) ? persisted : (Array.isArray(persisted?.links) ? persisted.links : null);
-    if (raw) {
-      const links = _normalizeFolderLinks(raw);
+    const raw = Array.isArray(persisted) ? persisted : persisted?.links;
+    if (fromManagedStorage || Array.isArray(raw)) {
+      const links = fromManagedStorage ? _validateManagedFolderLinks(raw) : _normalizeFolderLinks(raw);
       _writeFolderLinksStore(links);
       return links;
     }
     return _folderLinksStore();
   }
 
-  async function _writeFolderLinks(provider, links) {
-    const normalized = _normalizeFolderLinks(links);
-    _writeFolderLinksStore(normalized);
-    if (provider) {
-      const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
-      if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
-      await _writeManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID, () => ({
-          version: 1,
-          updated_at: new Date().toISOString(),
-          links: normalized,
-        }), 1);
+  async function _readFolderLinksManaged(provider) {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!provider || !kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+    const managed = await _readManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID);
+    const current = managed.payload;
+    if (!current) return { links: await _readFolderLinks(provider), requests: [], outliner_operations: [] };
+    const currentRaw = Array.isArray(current) ? current : current?.links;
+    return {
+      links: _validateManagedFolderLinks(currentRaw),
+      requests: _normalizeFolderLinkRequests(Array.isArray(current) ? null : current?.requests),
+      outliner_operations: _normalizeOutlinerOperations(Array.isArray(current) ? null : current?.outliner_operations),
+    };
+  }
+
+  async function _updateFolderLinksManaged(provider, updater) {
+    const kind = window.MeldexSystemStorage?.SystemStorageKind?.FOLDER_ASSOCIATIONS;
+    if (!kind) throw new Error('フォルダ関連付けの管理データ契約が未初期化です');
+    let committed = null;
+    const fallbackLinks = await _readFolderLinks(provider);
+    await _writeManagementPayload(provider, kind, FOLDER_LINKS_DOCUMENT_ID, (current) => {
+      const currentRaw = current == null ? fallbackLinks
+        : (Array.isArray(current) ? current : current?.links);
+      const state = {
+        links: _validateManagedFolderLinks(currentRaw),
+        requests: _normalizeFolderLinkRequests(Array.isArray(current) ? null : current?.requests),
+        outliner_operations: _normalizeOutlinerOperations(Array.isArray(current) ? null : current?.outliner_operations),
+      };
+      const updated = updater(state);
+      committed = {
+        links: _validateManagedFolderLinks(updated?.links),
+        requests: _normalizeFolderLinkRequests(updated?.requests),
+        outliner_operations: _normalizeOutlinerOperations(updated?.outliner_operations),
+        result: updated?.result,
+      };
+      return {
+        ...(current && !Array.isArray(current) ? current : {}),
+        version: 1,
+        updated_at: new Date().toISOString(),
+        links: committed.links,
+        requests: committed.requests,
+        outliner_operations: committed.outliner_operations,
+      };
+    }, 5);
+    _writeFolderLinksStore(committed.links);
+    return committed;
+  }
+
+  async function _writeFolderLinks(provider, linksOrUpdater) {
+    const applyLocalUpdate = (currentLinks) => _normalizeFolderLinks(
+      typeof linksOrUpdater === 'function' ? linksOrUpdater(_normalizeFolderLinks(currentLinks)) : linksOrUpdater
+    );
+    if (!provider) {
+      const normalized = applyLocalUpdate(_folderLinksStore());
+      _writeFolderLinksStore(normalized);
+      return normalized;
     }
-    return normalized;
+    const committed = await _updateFolderLinksManaged(provider, (state) => ({
+      ...state,
+      links: typeof linksOrUpdater === 'function' ? linksOrUpdater(state.links.map(link => ({ ...link }))) : linksOrUpdater,
+    }));
+    return committed.links;
   }
 
   function assertCloudWriteAllowed(mode) {
@@ -918,7 +1070,7 @@
         if (seen.has(normalized)) return;
         seen.add(normalized);
         await callback(normalized, handle);
-      }, rootPath).catch(() => {});
+      }, rootPath);
     }
   }
 
@@ -1011,62 +1163,30 @@
   // 「重複実装リスク」を踏襲）。ライブ全件走査のため coverage は常に complete
   // として返す（Desktopのような部分索引・陳腐化の概念がCloud側には無い）。
   async function _queryDeleteImpact(provider, items) {
-    const requested = (Array.isArray(items) ? items : [])
-      .map((it) => ({
-        path: _normalizeFolderPath(it?.path || ''),
-        kind: it?.kind === 'folder' ? 'folder' : 'file',
-      }))
-      .filter((it) => it.path);
-    if (!requested.length) {
-      return { ok: true, complete: true, sourceFileCount: 0, occurrenceCount: 0, sources: [], truncatedSources: false, unchecked: [], coverage: { status: 'complete', mode: 'live-scan' } };
+    const scanner = window.MeldexReferenceImpactLiveScan;
+    if (!scanner?.query) throw Object.assign(new Error('参照影響の走査機能を利用できません'), { status: 503 });
+    if (typeof provider?.readTextBounded !== 'function' || typeof provider?.statPathFresh !== 'function'
+        || typeof provider?.walkEntriesFresh !== 'function') {
+      throw Object.assign(new Error('bounded参照走査に対応していない保存先です'), { status: 503 });
     }
-    const folderPrefixes = requested.filter((it) => it.kind === 'folder').map((it) => it.path + '/');
-    const deletionTargets = new Set(requested.filter((it) => it.kind === 'file').map((it) => it.path));
-    requested.forEach((it) => { if (it.kind === 'folder') deletionTargets.add(it.path); });
-
-    const allFiles = [];
-    await _iterateAllWorkspaceFiles(provider, async (filePath) => {
-      allFiles.push(filePath);
-      if (folderPrefixes.some((prefix) => filePath.startsWith(prefix))) deletionTargets.add(filePath);
-    });
-
-    const aggregated = new Map();
-    for (const filePath of allFiles) {
-      if (deletionTargets.has(filePath) || !_isTextLikePath(filePath)) continue;
-      const content = await _readTextSafe(provider, filePath, '');
-      if (!content) continue;
-      let matchCount = 0;
-      deletionTargets.forEach((target) => {
-        if (target && content.includes(target)) matchCount += 1;
-      });
-      if (matchCount > 0) {
-        aggregated.set(filePath, {
-          source_path: filePath,
-          source_asset_id: '',
-          display_name: _displayLabelForPath(filePath, ''),
-          exists: true,
-          entry_type: '',
-          occurrence_count: matchCount,
-        });
+    const files = []; const seen = new Set();
+    for (const rootPath of await _workspaceScanRoots()) {
+      const remaining = scanner.MAX_FILES - files.length;
+      if (remaining <= 0) throw Object.assign(new Error('参照影響の走査件数上限を超えました'), { status: 503 });
+      for (const entry of await provider.walkEntriesFresh(rootPath, { maxEntries: remaining, maxPathBytes: 4 * 1024 * 1024 })) {
+        if (entry.kind !== 'file') continue;
+        const path = _normalizeFolderPath(entry.path);
+        if (_isExcludedWorkspacePath(path)) continue;
+        if (!seen.has(path)) { seen.add(path); files.push(path); }
       }
     }
-
-    const sources = [...aggregated.values()].sort((a, b) => (
-      String(a.source_path || '').localeCompare(String(b.source_path || ''), 'ja', { sensitivity: 'base' })
-    ));
-    const sourceFileCount = sources.length;
-    const occurrenceCount = sources.reduce((sum, row) => sum + Number(row.occurrence_count || 0), 0);
-    const visibleSources = sources.slice(0, 50);
-    return {
-      ok: true,
-      complete: true,
-      sourceFileCount,
-      occurrenceCount,
-      sources: visibleSources,
-      truncatedSources: sources.length > visibleSources.length,
-      unchecked: [],
-      coverage: { status: 'complete', mode: 'live-scan' },
-    };
+    return scanner.query({
+      items, listFiles: async () => files,
+      readTextBounded: (path, remaining) => provider.readTextBounded(path, remaining),
+      statSize: async path => Number((await provider.statPathFresh(path))?.size),
+      isTextLike: scanner.isTextLikePath,
+      displayName: path => _displayLabelForPath(path, ''),
+    });
   }
 
   window.__MeldexPwaDataAccessInternals = {
@@ -1089,7 +1209,11 @@
     _folderLinksStore,
     _writeFolderLinksStore,
     _readFolderLinks,
+    _readFolderLinksManaged,
     _writeFolderLinks,
+    _updateFolderLinksManaged,
+    _normalizeOutlinerOperations,
+    _managementScopeIdentity,
     assertCloudWriteAllowed,
     _requirePwaProvider,
     _directoryHandle,

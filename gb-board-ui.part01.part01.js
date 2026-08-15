@@ -814,11 +814,24 @@ function bdAddChildToSelected() {
     else if (dir === 'up') { nx = parentNode.x; ny = parentNode.y - ph - G.level; }
     else if (dir === 'left') { nx = parentNode.x - pw - G.level; ny = parentNode.y; }
     bdPushUndo();
-    const child = bdCreateNodeWithStyle('', nx, ny, { ...bdInheritStyleOpts(parentNode), parent: parentId });
+    // 課題6・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルを
+    // 挿入前に同期適用する。従来は親の見た目をコピーするだけで、220〜420ms 後の自動整列
+    // (bdApplyAutoStyle) が深さ別スタイルへ書き換えるまで「既定→適用」の二段階に見えていた。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
+    const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+    const parentDepth = (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(parentId, anchor) : 0;
+    const childDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(parentDepth + 1, anchor) : null;
+    // 階層別スタイル未使用ツリーでは現行どおり親の見た目を継承する。
+    const childOpts = childDepthStyle ? { parent: parentId } : { ...bdInheritStyleOpts(parentNode), parent: parentId };
+    const child = bdCreateNodeWithStyle('', nx, ny, childOpts);
+    if (childDepthStyle) _bdApplyDepthCardFieldsToNode(child, childDepthStyle);
     bd.nodes.push(child);
     const conn = typeof bdCreateStructureConnection === 'function'
       ? bdCreateStructureConnection(parentId, child.id, effectiveStructure)
       : bdCreateConnectionWithStyle(parentId, child.id, { arrow: effectiveStructure === 'flowchart' ? 'end' : '' });
+    if (childDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+      _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(parentDepth, anchor));
+    }
     bd.connections.push(conn);
     // ツリー全体に構造が一つも無い場合 (= bdStructureOf が '' を返す)、ルートに既定を書き込む。
     // 中間カードの構造設定が既に効いている場合はここには入らない。
@@ -885,13 +898,27 @@ function bdAddSiblingToSelected() {
       ny = selNode.y;
     }
     bdPushUndo();
-    const sib = bdCreateNodeWithStyle('', nx, ny, { ...bdInheritStyleOpts(selNode), parent: parentId });
+    // 課題6・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルを
+    // 挿入前に同期適用する。兄弟は selNode と同じ親を共有する = selNode 自身の子孫ではないため、
+    // 起点解決は parentId 起点で行う (selId 起点で解決すると、selNode 自身が起点カードだった
+    // 場合に selNode 自身の「深さ0」を誤って兄弟へ適用してしまう)。無ければ従来どおり
+    // 選択カードの見た目を継承する。
+    const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(parentId) : null;
+    const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+    const parentDepth = (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(parentId, anchor) : 0;
+    const sibDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(parentDepth + 1, anchor) : null;
+    const sibOpts = sibDepthStyle ? { parent: parentId } : { ...bdInheritStyleOpts(selNode), parent: parentId };
+    const sib = bdCreateNodeWithStyle('', nx, ny, sibOpts);
+    if (sibDepthStyle) _bdApplyDepthCardFieldsToNode(sib, sibDepthStyle);
     const insertIndex = bd.nodes.findIndex(node => node.id === selId);
     if (insertIndex >= 0) bd.nodes.splice(insertIndex + 1, 0, sib);
     else bd.nodes.push(sib);
     const conn = typeof bdCreateStructureConnection === 'function'
       ? bdCreateStructureConnection(parentId, sib.id, effectiveStructure)
       : bdCreateConnectionWithStyle(parentId, sib.id, { arrow: effectiveStructure === 'flowchart' ? 'end' : '' });
+    if (sibDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') {
+      _bdApplyDepthLineFieldsToConn(conn, bdGetAutoStyleForDepth(parentDepth, anchor));
+    }
     bd.connections.push(conn);
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(sib)) {
       if (typeof bdRequestFullRender === 'function') bdRequestFullRender('add-sibling-fallback');

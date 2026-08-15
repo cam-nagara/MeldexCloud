@@ -254,6 +254,24 @@
   gap: var(--ui-space-3);
 }
 
+/* インポート・機能生成ファイル保護計画 Phase 6-2: watch_changes の一回限りの
+   可視案内。同意・プライバシーに関わる開示はツールチップへ隠しきらないため、
+   短い説明文を常時表示のカードとして置く（app/AGENTS.md 参照）。 */
+.dup-watch-changes-intro {
+  display: grid;
+  gap: var(--ui-space-2);
+  padding: var(--ui-space-3);
+  border: 1px solid var(--border, #3b3b3b);
+  border-radius: var(--ui-radius-sm, 8px);
+  background: var(--bg3);
+}
+
+.dup-watch-changes-intro-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-space-2);
+}
+
 .dup-folder-target-tree,
 .dup-folder-target-children {
   display: grid;

@@ -15,6 +15,7 @@
     closeButton: null,
     list: null,
     scope: null,
+    hint: null,
     items: [],
     activeIndex: 0,
     query: '',
@@ -644,6 +645,10 @@
     if (!buttons.length && state.input) state.input.removeAttribute('aria-activedescendant');
   }
 
+  function _updateSearchHint(data) {
+    window.MeldexUnifiedSearch?.updateHint?.(state.hint, data || null, state.query);
+  }
+
   async function _refreshItems(options = {}) {
     const seq = ++state.seq;
     state.query = state.input?.value || '';
@@ -652,17 +657,28 @@
     state.activeIndex = Math.min(state.activeIndex, Math.max(0, items.length - 1));
     _renderList();
 
-    if (state.mode !== 'root' || _tokenize(state.query).length < GLOBAL_FILE_MIN_QUERY) return;
-    const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
-    if (seq !== state.seq) return;
+    if (state.mode !== 'root') { _updateSearchHint(null); return; }
+    // タグ条件だけが入っている場合も検索を通す（文字列は空でよい。2-F）。
+    const hasTagCondition = (window.MeldexUnifiedSearch?.readTagCondition?.().tagIds || []).length > 0;
+    const hasQueryTokens = _tokenize(state.query).length >= GLOBAL_FILE_MIN_QUERY;
+    // クエリの言語チェックだけは通信を待たず即時に出す。使えない理由は
+    // 検索結果が返ってから追加で反映する。
+    _updateSearchHint(null);
+    if (!hasQueryTokens && !hasTagCondition) return;
+
     const existingKeys = new Set(items.filter(item => item.fileKey).map(item => item.fileKey));
-    const fileItems = _globalFileCommands(files, state.query, existingKeys);
-    items = _filterItems([...items, ...fileItems], state.query);
+    if (hasQueryTokens) {
+      const files = await _loadGlobalFiles({ refresh: !!options.refreshGlobalIndex });
+      if (seq !== state.seq) return;
+      const fileItems = _globalFileCommands(files, state.query, existingKeys);
+      items = _filterItems([...items, ...fileItems], state.query);
+    }
     if (window.MeldexUnifiedSearch?.search) {
       try {
         const data = await window.MeldexUnifiedSearch.search(state.query, { limit: MAX_FILE_RESULTS });
         if (seq !== state.seq) return;
         items = [...items, ..._unifiedFileCommands(data.results, existingKeys)];
+        _updateSearchHint(data);
       } catch (error) {
         console.warn('[command-palette] unified search failed', error);
       }
@@ -792,6 +808,19 @@
     if (window.MeldexUnifiedSearch?.button) {
       window.MeldexUnifiedSearch.button(header, { e2eId: 'command-palette-search-scope-trigger', className: 'cmd-palette-close' });
     }
+    window.MeldexUnifiedSearch?.tagButton?.(header, {
+      e2eId: 'command-palette-search-tag-trigger',
+      className: 'cmd-palette-close',
+      onChange: () => _refreshItems(),
+    });
+
+    // 検索対象「画像の内容」が使えない理由・日本語クエリの注意を出す小さな
+    // テキスト行（1-A追記）。
+    const hint = document.createElement('div');
+    hint.id = 'cmd-palette-hint';
+    hint.className = 'cmd-palette-hint';
+    hint.dataset.e2eId = 'command-palette-search-hint';
+    hint.style.cssText = 'display:none;padding:4px 14px 0;font-size:11px;line-height:1.4;color:var(--fg2);';
 
     const list = document.createElement('div');
     list.id = 'cmd-palette-list';
@@ -807,7 +836,7 @@
       footer.appendChild(span);
     });
 
-    palette.append(header, list, footer);
+    palette.append(header, hint, list, footer);
     overlay.appendChild(palette);
     overlay.addEventListener('pointerdown', (event) => {
       if (event.target === overlay) closeCommandPalette();
@@ -830,6 +859,7 @@
     state.closeButton = closeButton;
     state.list = list;
     state.scope = scope;
+    state.hint = hint;
   }
 
   function _ensureOverlay() {

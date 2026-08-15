@@ -627,6 +627,7 @@
     const osSync = document.createElement('button');
     osSync.type = 'button';
     osSync.className = 'gb-btn gb-btn-sm gb-btn-quiet';
+    osSync.dataset.e2eId = editorId + '-os-sync';
     osSync.dataset.globalTagsRole = 'os-sync';
     osSync.setAttribute('aria-label', 'OSタグを再同期');
     osSync.innerHTML = icon('refreshCw', 14) + ' OSタグを再同期';

@@ -21,11 +21,11 @@
         const item = await _buildBrowseItem(provider, linked.path, entry.handle, { allFiles, detail, classifyDirectories: allFiles || detail });
         if (!item) continue;
         if (_isBrowseContainerItem(item)) {
-          items.push({ ...item, linked: true, exists: true });
+          items.push({ ...item, linked: true, exists: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
           continue;
         }
         if (foldersOnly) continue;
-        if (item) items.push({ ...item, linked: true });
+        if (item) items.push({ ...item, linked: true, file_id: linked.file_id, link_folder_path: linked.folder_path || browsePath });
       }
       return items;
     }
@@ -39,7 +39,6 @@
       }
       return { type: (await _classifyFileType(provider, targetPath, {})) || 'unknown', exists: true };
     }
-
     if (pathname === '/images-in-folder' && method === 'GET') {
       const provider = await _requirePwaProvider('read');
       const targetPath = _normalizeFolderPath(url.searchParams.get('path') || '');
@@ -220,21 +219,26 @@
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
-      const docIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath);
-      if (docIdentityFmt) {
+      const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
+      let docIdentityFmt = incomingIdentityFmt;
+      if (incomingIdentityFmt) {
         let existingDocumentId = '';
         if (entry) {
           const currentContent = await provider.readText(filePath);
+          const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
+          docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
           existingDocumentId = String(
-            window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
+            docIdentityFmt && window.MeldexDocumentIdentity?.readDocumentId?.(currentContent, docIdentityFmt)
             || '',
           );
         }
-        content = window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
-          content,
-          docIdentityFmt,
-          existingDocumentId,
-        ).text;
+        if (docIdentityFmt) {
+          content = window.MeldexDocumentIdentity.ensureDocumentIdForOverwrite(
+            content,
+            docIdentityFmt,
+            existingDocumentId,
+          ).text;
+        }
       }
       const writeMeta = await provider.writeText(filePath, content);
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
@@ -246,6 +250,12 @@
 
     if (pathname === '/upload-file' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
+      const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
+      if (!imageAftercare?.prepare || !imageAftercare?.record
+          || !imageAftercare?.cancel || !imageAftercare?.drainPrepared) {
+        throw new Error('Cloud画像identity aftercareが読み込まれていません');
+      }
+      const drainedIdentity = await imageAftercare.drainPrepared(provider);
       const targetDir = _normalizeFolderPath(url.searchParams.get('path') || body?.dir || '');
       const rawName = String(body?.filename || body?.name || 'file').split(/[\\/]/).pop();
       const fileName = _validateItemName(rawName || 'file', 'filename');
@@ -263,8 +273,29 @@
       if (_productionReservedEntryProperties(targetPath).length && /\.md$/i.test(targetPath)) {
         _rejectProductionLegacyEntryContent(targetPath, new TextDecoder().decode(uploadBytes));
       }
-      await _writeBytes(provider, targetPath, uploadBytes);
-      return { ok: true, path: targetPath, name: targetName };
+      let identity = null;
+      if (/\.(?:apng|jpe?g|png|webp)$/i.test(targetPath)) {
+        const prepared = await imageAftercare.prepare(provider, targetPath, uploadBytes, {
+          source: 'upload-file', filename: targetName,
+        });
+        if (prepared.publish_required) {
+          try {
+            await _writeBytes(provider, targetPath, uploadBytes);
+          } catch (error) {
+            await imageAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+            throw error;
+          }
+        }
+        identity = await imageAftercare.record(
+          provider, targetPath, uploadBytes, { source: 'upload-file', prepared },
+        );
+      } else {
+        await _writeBytes(provider, targetPath, uploadBytes);
+      }
+      return {
+        ok: true, path: targetPath, name: targetName,
+        aftercare_pending: !!identity?.aftercare_pending || drainedIdentity.blocked > 0,
+      };
     }
 
     if (pathname === '/file-meta' && method === 'GET') {
@@ -304,51 +335,41 @@
           name: _displayLabelForPath(link.path, ''),
           exists: !!(await _resolveEntryHandle(provider, link.path)),
           linked: true,
+          link_folder_path: link.folder_path || folderPath,
         });
       }
       return result;
     }
 
+    const folderLinkRoute = internals._handleFolderLinkBatchRoute;
+    const folderLinkBatchResult = typeof folderLinkRoute === 'function'
+      ? await folderLinkRoute(pathname, method, body) : undefined;
+    if (folderLinkBatchResult !== undefined) return folderLinkBatchResult;
+
     if (pathname === '/folder-links/add' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
       const filePath = _normalizeFolderPath(body?.file_path || '');
-      let folderPath = _normalizeFolderPath(body?.folder_path || '');
-      let folderId = String(body?.folder_id || '').trim();
-      if (!filePath || (!folderPath && !folderId)) throw new Error('file_path と folder_path/folder_id は必須です');
-      if (!folderPath && folderId) folderPath = await _findPathByFileId(provider, folderId);
-      const folderEntry = await _resolveEntryHandle(provider, folderPath);
-      const fileEntry = await _resolveEntryHandle(provider, filePath);
-      if (!fileEntry) throw new Error('ファイル/フォルダが見つかりません');
-      if (!folderEntry || folderEntry.kind !== 'directory') throw new Error('フォルダが見つかりません');
-      const fileId = _fnvFileId(filePath);
-      folderId = folderId || _fnvFileId(folderPath);
-      const links = await _folderLinksForProvider(provider);
-      let created = false;
-      if (!links.some((link) => link.file_id === fileId && (folderId ? link.folder_id === folderId : link.folder_path === folderPath))) {
-        links.push({
-          file_id: fileId,
-          path: filePath,
-          name: _displayLabelForPath(filePath, ''),
-          folder_path: folderPath,
-          folder_id: folderId,
-          added_at: new Date().toISOString(),
-        });
-        await _writeFolderLinksForProvider(provider, links);
-        created = true;
-      }
-      return { ok: true, file_id: fileId, created };
+      if (typeof folderLinkRoute !== 'function') throw new Error('フォルダリンク一括処理を利用できません');
+      const batch = await folderLinkRoute('/folder-links/batch/add', 'POST', {
+        ...body,
+        items: [{ file_path: filePath }],
+        request_id: String(body?.request_id || `single-add-${Date.now()}-${Math.random()}`),
+      });
+      const row = batch.results[0];
+      if (row?.status === 'failed') throw new Error(row.error || 'リンク登録に失敗しました');
+      return { ok: true, file_id: row.file_id, folder_path: row.folder_path, folder_id: row.folder_id, created: row.status === 'created' };
     }
 
     if (pathname === '/folder-links/remove' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
       const fileId = String(body?.file_id || '').trim();
-      const folderPath = _normalizeFolderPath(body?.folder_path || '');
-      const folderId = String(body?.folder_id || '').trim();
-      if (!fileId || (!folderPath && !folderId)) throw new Error('file_id と folder_path/folder_id は必須です');
-      const links = await _folderLinksForProvider(provider);
-      const nextLinks = links.filter((link) => !(link.file_id === fileId && (folderId ? link.folder_id === folderId : link.folder_path === folderPath)));
-      await _writeFolderLinksForProvider(provider, nextLinks);
-      return { ok: true, removed: nextLinks.length !== links.length };
+      if (typeof folderLinkRoute !== 'function') throw new Error('フォルダリンク一括処理を利用できません');
+      const batch = await folderLinkRoute('/folder-links/batch/remove', 'POST', {
+        ...body,
+        items: [{ file_id: fileId, file_path: _normalizeFolderPath(body?.file_path || '') }],
+        request_id: String(body?.request_id || `single-remove-${Date.now()}-${Math.random()}`),
+      });
+      const row = batch.results[0];
+      if (row?.status === 'failed') throw new Error(row.error || 'リンク解除に失敗しました');
+      return { ok: true, removed: row.status === 'removed' };
     }
 
     if (pathname === '/file-folders' && method === 'GET') {
@@ -382,7 +403,16 @@
       // Desktop側 /api/references/delete-impact の Cloud（Dropbox直結）等価。
       const provider = await _requirePwaProvider('read');
       const items = Array.isArray(body?.items) ? body.items : [];
-      return _queryDeleteImpact(provider, items);
+      const gate = window.MeldexCloudDeleteConfirmation;
+      if (!gate?.prepareProviderDelete) {
+        const error = new Error('削除確認の永続ストレージを利用できません');
+        error.status = 503;
+        throw error;
+      }
+      return gate.prepareProviderDelete({
+        provider, items, operation: body?.operation,
+        queryImpact: (currentProvider, currentItems) => _queryDeleteImpact(currentProvider, currentItems),
+      });
     }
 
     if (pathname === '/annotations' && method === 'GET') {
@@ -394,7 +424,9 @@
       const annType = String(url.searchParams.get('ann_type') || '').trim();
       const limitValue = Number(url.searchParams.get('limit') || 200);
       const limit = Number.isFinite(limitValue) ? Math.floor(limitValue) : 200;
-      let rows = (await _listAnnotationRecords(provider)).map(_annotationRow);
+      let rows = (await _listAnnotationRecords(provider, {
+        annId, targetId, targetPath, user, annType, limit, bulk: true,
+      })).map(_annotationRow);
       if (annId) rows = rows.filter(row => String(row.id || '') === annId);
       else if (targetId) rows = rows.filter(row => String(row.target_id || '') === targetId);
       else if (targetPath) rows = rows.filter(row => _normalizeFolderPath(row.target_path || '') === targetPath);
@@ -452,13 +484,36 @@
     }
     if (pathname === '/annotation/screenshot' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
+      const imageAftercare = window.MeldexCreatedImageIdentityAftercare;
+      if (!imageAftercare?.prepare || !imageAftercare?.record
+          || !imageAftercare?.cancel || !imageAftercare?.drainPrepared) {
+        throw new Error('Cloud画像identity aftercareが読み込まれていません');
+      }
+      const drainedIdentity = await imageAftercare.drainPrepared(provider);
       const dataUrl = String(body?.data || '');
       if (!dataUrl) throw new Error('data は必須です');
       const ts = _versionTimestamp();
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
-      await _writeBytes(provider, targetPath, _decodeUploadData(dataUrl));
-      return { ok: true, path: targetPath };
+      const screenshotBytes = _decodeUploadData(dataUrl);
+      const prepared = await imageAftercare.prepare(provider, targetPath, screenshotBytes, {
+        source: 'annotation-screenshot', filename: _basename(targetPath),
+      });
+      if (prepared.publish_required) {
+        try {
+          await _writeBytes(provider, targetPath, screenshotBytes);
+        } catch (error) {
+          await imageAftercare.cancel(provider, prepared, error?.message).catch(console.warn);
+          throw error;
+        }
+      }
+      const identity = await imageAftercare.record(
+        provider, targetPath, screenshotBytes, { source: 'annotation-screenshot', prepared },
+      );
+      return {
+        ok: true, path: targetPath,
+        aftercare_pending: !!identity.aftercare_pending || drainedIdentity.blocked > 0,
+      };
     }
     if (/^\/annotations\/[^/]+$/.test(pathname) && method === 'PUT') {
       const provider = await _requirePwaProvider('readwrite');
@@ -672,6 +727,10 @@
       if (source.kind === 'directory') {
         const newPath = _joinPath(parentPath, newName);
         if (newPath !== oldPath && await _pathExists(provider, newPath)) throw new Error(`既に存在: ${newName}`);
+        const annotationPlan = newPath !== oldPath
+          ? await _prepareAnnotationsForPathMutation(provider, {
+            action: 'rename', oldPath, newPath, isFolder: true,
+          }) : [];
         const warnings = [];
         if (newPath !== oldPath) {
           await _moveEntry(provider, oldPath, newPath);
@@ -692,7 +751,9 @@
             : Promise.resolve(_rewriteStoredPaths(oldPath, newPath, true))
         ));
         await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath, isFolder: true }, warnings);
-        await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'rename', oldPath, newPath, isFolder: true }));
+        await _updateAnnotationsForPathMutation(provider, {
+          action: 'rename', oldPath, newPath, isFolder: true, annotationPlan,
+        });
         let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
         await _runPostMutationStep(warnings, 'references', async () => {
           relocate = await _relocateReferences(provider, oldPath, newPath, true);
@@ -702,6 +763,10 @@
       const split = _splitNameAndExt(sourceName);
       const nextPath = _joinPath(parentPath, newName + split.ext);
       if (nextPath !== oldPath && await _pathExists(provider, nextPath)) throw new Error(`既に存在: ${newName + split.ext}`);
+      const annotationPlan = nextPath !== oldPath
+        ? await _prepareAnnotationsForPathMutation(provider, {
+          action: 'rename', oldPath, newPath: nextPath, isFolder: false,
+        }) : [];
       if (split.ext === '.md' && String(body?.type || '') === 'page') {
         const original = await provider.readText(oldPath);
         await provider.writeText(oldPath, original.replace(/^# .+/m, '# ' + newName));
@@ -720,7 +785,9 @@
           : Promise.resolve(_rewriteStoredPaths(oldPath, nextPath, false))
       ));
       await _runPathMutationHooksSafe({ action: 'rename', oldPath, newPath: nextPath, isFolder: false }, warnings);
-      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'rename', oldPath, newPath: nextPath, isFolder: false }));
+      await _updateAnnotationsForPathMutation(provider, {
+        action: 'rename', oldPath, newPath: nextPath, isFolder: false, annotationPlan,
+      });
       let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
       await _runPostMutationStep(warnings, 'references', async () => {
         relocate = await _relocateReferences(provider, oldPath, nextPath, false);
@@ -730,16 +797,32 @@
 
     if (pathname === '/outliner/delete' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _deleteOutlinerPathToTrash(provider, body?.path || '');
+      _rejectProductionStructureMutation(body?.path || '', '削除');
+      const confirmationItem = {
+        path: body?.path || '', kind: body?.kind === 'folder' ? 'folder' : 'file',
+      };
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, [confirmationItem], 'trash');
+      return _deleteOutlinerPathToTrash(provider, body?.path || '', {
+        item: confirmationItem, receipt: consumed.receipt,
+        queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+      });
     }
 
     if (pathname === '/outliner/delete-batch' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
       const items = Array.isArray(body?.items) ? body.items : [];
+      for (const item of items) _rejectProductionStructureMutation(item?.path || '', '削除');
+      const confirmationItems = items.map(item => ({
+        path: item?.path || '', kind: item?.kind === 'folder' ? 'folder' : 'file',
+      }));
+      const consumed = await _consumeCloudDeleteConfirmation(provider, body, confirmationItems, 'trash');
       const results = [];
-      for (const item of items) {
+      for (const item of confirmationItems) {
         try {
-          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item?.path || '') });
+          results.push({ ok: true, value: await _deleteOutlinerPathToTrash(provider, item.path, {
+            item, receipt: consumed.receipt,
+            queryImpact: (_provider, targetItems) => _queryDeleteImpact(_provider, targetItems),
+          }) });
         } catch (error) {
           results.push({ ok: false, error: error?.message || String(error) });
         }
@@ -777,117 +860,4 @@
         if (await _pathExists(provider, metaPath)) await _removeEntry(provider, metaPath);
       });
       return { ok: true, restored_path: originalPath, trash_root: trashRoot.path, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/outliner/duplicate' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const sourceName = _basename(sourcePath);
-      const sourceSplit = _splitNameAndExt(sourceName);
-      let destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${sourceSplit.ext}` : `${sourceName}_copy`;
-      let destPath = _joinPath(_dirname(sourcePath), destName);
-      for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
-        destName = source.kind === 'file' ? `${sourceSplit.stem}_copy${counter}${sourceSplit.ext}` : `${sourceName}_copy${counter}`;
-        destPath = _joinPath(_dirname(sourcePath), destName);
-      }
-      const destDirHandle = await _directoryHandle(provider, _dirname(destPath), true);
-      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
-      ));
-      await _runPathMutationHooksSafe({
-        action: 'copy', oldPath: sourcePath, newPath: destPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      return { ok: true, new_path: destPath, new_name: destName, ..._resultWarnings(warnings) };
-    }
-
-    if (pathname === '/outliner/save-as' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      if (!source) throw new Error(`見つかりません: ${sourcePath}`);
-      const sourceName = _basename(sourcePath);
-      const sourceSplit = _splitNameAndExt(sourceName);
-      let newName = String(body?.new_name || (source.kind === 'file' ? sourceSplit.stem : sourceName)).replace(/[\\/]/g, '').replace(/\.\./g, '').trim();
-      newName = _validateItemName(newName, 'new_name');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || _dirname(sourcePath));
-      let destName = source.kind === 'file' ? newName + sourceSplit.ext : newName;
-      let destPath = _joinPath(destFolder, destName);
-      for (let counter = 2; await _pathExists(provider, destPath); counter += 1) {
-        destName = source.kind === 'file' ? `${newName}_${counter}${sourceSplit.ext}` : `${newName}_${counter}`;
-        destPath = _joinPath(destFolder, destName);
-      }
-      const destDirHandle = await _directoryHandle(provider, destFolder, true);
-      await _copyEntryHandle(source.handle, destDirHandle, _basename(destPath));
-      await _regenerateDocumentIdForCopiedEntry(provider, destPath, source.kind === 'file');
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, destPath, source.kind === 'directory', true)
-      ));
-      await _runPathMutationHooksSafe({
-        action: 'copy', oldPath: sourcePath, newPath: destPath,
-        isFolder: source.kind === 'directory',
-      }, warnings);
-      return {
-        ok: true,
-        new_path: destPath,
-        new_name: source.kind === 'file' ? _splitNameAndExt(destName).stem : destName,
-        ..._resultWarnings(warnings),
-      };
-    }
-
-    if (pathname === '/outliner/move' && method === 'POST') {
-      const provider = await _requirePwaProvider('readwrite');
-      const sourcePath = _normalizeFolderPath(body?.path || '');
-      const destFolder = _normalizeFolderPath(body?.dest_folder || '');
-      _rejectProductionStructureMutation(sourcePath, '移動');
-      if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(sourcePath)) {
-        throw new Error('制作管理の管理リストエントリの配置は変更できません');
-      }
-      const source = await _resolveEntryHandle(provider, sourcePath);
-      const destEntry = await _resolveEntryHandle(provider, destFolder);
-      if (!source) throw new Error('見つかりません');
-      if (!destEntry || destEntry.kind !== 'directory') throw new Error(`移動先フォルダが見つかりません: ${destFolder}`);
-      if (source.kind === 'directory' && (destFolder === sourcePath || destFolder.startsWith(sourcePath + '/'))) throw new Error('フォルダ自身の中には移動できません');
-      if (destFolder === _dirname(sourcePath)) {
-        return {
-          ok: true,
-          unchanged: true,
-          new_path: sourcePath,
-          new_name: source.kind === 'file' ? _splitNameAndExt(_basename(sourcePath)).stem : _basename(sourcePath),
-          file_id: _fnvFileId(sourcePath),
-          relocate: { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false },
-        };
-      }
-      const conflict = await _moveConflictName(provider, destFolder, _basename(sourcePath), source.kind === 'file');
-      await _moveEntry(provider, sourcePath, conflict.path);
-      const warnings = [];
-      await _runPostMutationStep(warnings, 'version-history', () => _relocateVersionHistory(provider, sourcePath, conflict.path, source.kind === 'directory'));
-      await _runPostMutationStep(warnings, 'csv-sidecars', () => (
-        _relocateCsvSidecars(provider, sourcePath, conflict.path, source.kind === 'directory', false)
-      ));
-      await _runPostMutationStep(warnings, 'stored-paths', () => (
-        typeof _rewriteStoredPathsForProvider === 'function'
-          ? _rewriteStoredPathsForProvider(provider, sourcePath, conflict.path, source.kind === 'directory')
-          : Promise.resolve(_rewriteStoredPaths(sourcePath, conflict.path, source.kind === 'directory'))
-      ));
-      await _runPathMutationHooksSafe({ action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }, warnings);
-      await _runPostMutationStep(warnings, 'annotations', () => _updateAnnotationsForPathMutation(provider, { action: 'move', oldPath: sourcePath, newPath: conflict.path, isFolder: source.kind === 'directory' }));
-      let relocate = { rewritten_count: 0, failed_count: 0, rewritten_paths: [], truncated: false };
-      await _runPostMutationStep(warnings, 'references', async () => {
-        relocate = await _relocateReferences(provider, sourcePath, conflict.path, source.kind === 'directory');
-      });
-      return {
-        ok: true,
-        new_path: conflict.path,
-        new_name: source.kind === 'file' ? _splitNameAndExt(_basename(conflict.path)).stem : _basename(conflict.path),
-        file_id: _fnvFileId(conflict.path),
-        relocate,
-        ..._resultWarnings(warnings),
-      };
     }

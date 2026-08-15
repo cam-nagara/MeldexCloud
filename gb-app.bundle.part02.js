@@ -666,7 +666,7 @@ function _handleTabBarContextmenu(e) {
     }
   }
   { const z = _getZoom(); menu.style.left = (e.clientX / z) + 'px'; menu.style.top = (e.clientY / z) + 'px'; }
-  function addMI(label, fn, disabled = false) {
+  function addMI(label, fn, disabled = false, e2eId = '') {
     const mi = document.createElement('button');
     mi.type = 'button';
     mi.className = 'gb-context-menu-item';
@@ -674,6 +674,7 @@ function _handleTabBarContextmenu(e) {
     mi.textContent = label;
     mi.disabled = !!disabled;
     if (disabled) mi.setAttribute('aria-disabled', 'true');
+    if (e2eId) mi.dataset.e2eId = e2eId;
     mi.addEventListener('click', () => { closeMenu(false); fn(); });
     menu.appendChild(mi);
   }
@@ -694,16 +695,16 @@ function _handleTabBarContextmenu(e) {
       if (ok) closeTab(tab.id);
       else if (typeof showStatus === 'function') showStatus('新しいウィンドウを開けませんでした', true);
     });
-  });
+  }, false, 'tab-menu-new-window');
 
 /* === gb-app.part02.js === */
-  addMI('タブを閉じる', () => closeTab(tab.id));
-  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0);
-  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1);
+  addMI('タブを閉じる', () => closeTab(tab.id), false, 'tab-menu-close');
+  addMI('左のタブを閉じる', () => closeTabsOnSide('left'), idx <= 0, 'tab-menu-close-left');
+  addMI('右のタブを閉じる', () => closeTabsOnSide('right'), idx >= _tabs.length - 1, 'tab-menu-close-right');
   addMI('他のタブをすべて閉じる', () => {
     _tabs.splice(0, _tabs.length, tab);
     activateTab(tab.id);
-  });
+  }, false, 'tab-menu-close-others');
   document.body.appendChild(menu);
   clampPopupToViewport(menu);
   const focusableItems = () => [...menu.querySelectorAll('.gb-context-menu-item')];
@@ -897,4 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
   dd.className = 'ab-dropdown nav-history-dropdown';
   dd.setAttribute('role', 'menu');
   dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
-  dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';

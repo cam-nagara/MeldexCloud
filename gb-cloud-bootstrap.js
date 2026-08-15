@@ -1312,6 +1312,12 @@
           if (!result?.ok) return false;
           continue;
         }
+        const imageIdentityAftercare = window.MeldexCreatedImageIdentityAftercare;
+        if (!imageIdentityAftercare?.drainPrepared) {
+          throw new Error('Cloud画像identity再開サービスを読み込めません');
+        }
+        await imageIdentityAftercare.drainPrepared(provider)
+          .catch(error => console.warn('[created-image-identity] startup drain failed', error));
         const migrationLock = preflight.access === 'viewer'
           ? null
           : await _runSidecarMigrationOnce(provider);

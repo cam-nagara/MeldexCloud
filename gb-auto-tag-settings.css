@@ -281,6 +281,23 @@
   margin-top: 12px;
 }
 
+/* Web Clipper待ち行列(Phase 8: 2026-08-14自動タグ付け計画) */
+.at-pending-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg2) 82%, transparent);
+  font-size: 12px;
+}
+
+.at-pending-row + .at-pending-row {
+  margin-top: 6px;
+}
+
 .at-install-state {
   margin-top: 9px !important;
   padding: 8px 10px;

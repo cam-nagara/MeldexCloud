@@ -4,7 +4,7 @@
 // --- 1. Layout Algorithms ---
 // 2026-04-18: デフォルト値 (スタイルタブ未設定時)。実際の値は bdLayoutGaps() 経由で bd.gapSiblings / bd.gapLevels を優先参照する。
 const BD_LAYOUT_GAP_SIBLINGS_DEFAULT = 10;
-const BD_LAYOUT_GAP_LEVELS_DEFAULT = 30;
+const BD_LAYOUT_GAP_LEVELS_DEFAULT = 50;
 function bdLayoutGaps() {
   // 注意: null / undefined を明示的に除外する。+null === 0 かつ null >= 0 === true のため、
   // Number.isFinite(+v) && v >= 0 だけだと null が 0 として採用されてしまい gap=0 になる。
@@ -160,11 +160,25 @@ function bdAutoLayout(rootId) {
     return;
   }
   // 自動スタイルが有効なら先にスタイル適用（サイズに影響するため）
-  if (root._autoStyle) { bdApplyAutoStyle(rootId); bdRender(); }
+  if (root._autoStyle) {
+    const changed = bdApplyAutoStyle(rootId) || { nodeIds: [], connIds: [] };
+    const renderContext = typeof bdCreateRenderContext === 'function' ? bdCreateRenderContext() : null;
+    (changed.nodeIds || []).forEach(id => {
+      if (typeof bdReplaceNodeElement === 'function') bdReplaceNodeElement(id, { renderContext });
+      if (typeof bdMarkNodeDirty === 'function') bdMarkNodeDirty(id, 'auto-style-layout');
+    });
+    if (changed.connIds?.length && typeof bdDrawConns === 'function') {
+      bdDrawConns({ connIds: changed.connIds, reason: 'auto-style-layout' });
+    }
+  }
   const sizes = {};
   layoutIds.forEach(id => {
     const el = document.getElementById('bdn-'+id);
-    sizes[id] = { w: el?el.offsetWidth:160, h: el?el.offsetHeight:36 };
+    const n = layoutCtx.node(id);
+    sizes[id] = {
+      w: n?.w || n?._rw || el?.offsetWidth || 160,
+      h: n?.h || n?._rh || el?.offsetHeight || 36,
+    };
   });
   // 外側 structure-set ノード (= structureIds の中で、祖先に structure-set ノードがいないもの) を
   // 特定する。これが複数あれば各々独立に扱う。
@@ -254,8 +268,8 @@ function bdAutoLayout(rootId) {
   if (typeof bdPerfEnd === 'function') bdPerfEnd('bdAutoLayout', _bdLayoutPerf, `layoutNodes=${layoutIds.length}`);
 }
 
-// 水平ツリー (階層=水平、同階層=垂直)。logic レイアウトおよび mindmap 放射状の
-// 各ブランチ (左右方向) で再利用する。
+// 水平ツリー (階層=水平、同階層=垂直)。logic レイアウトおよび mindmap の
+// 左右各ブランチで再利用する。
 function _bdLayoutHorizontalTree(root, sizes, layoutCtx, opts) {
   const G = bdLayoutGaps();
   const direction = opts?.direction === 'left' ? -1 : 1; // 'right'=1, 'left'=-1
@@ -303,8 +317,7 @@ function _bdLayoutHorizontalTree(root, sizes, layoutCtx, opts) {
   layout(root.id, root.x, root.y);
 }
 
-// 垂直ツリー (階層=垂直、同階層=水平)。flowchart レイアウトおよび mindmap 放射状の
-// 各ブランチ (上下方向) で再利用する。
+// 垂直ツリー (階層=垂直、同階層=水平)。flowchart レイアウトで再利用する。
 function _bdLayoutVerticalTree(root, sizes, layoutCtx, opts) {
   const G = bdLayoutGaps();
   const direction = opts?.direction === 'up' ? -1 : 1; // 'down'=1, 'up'=-1
@@ -350,94 +363,62 @@ function _bdLayoutVerticalTree(root, sizes, layoutCtx, opts) {
   }
   layout(root.id, root.x, root.y);
 }
-
 function bdLayoutMindmap(root, sizes, layoutCtx) {
-  // mindmap (放射状): 子カードを作成順に、時計回りで真右 (0°) 〜 真上の手前まで配置する。
-  //   - 1 枚目は常に真右 (0°)
-  //   - 2 枚目以降は、最後のカードが常に真上のちょうど手前 (360° の直前) に来るよう、
-  //     N 枚あれば 0° から (360/N)° 刻みで時計回りに均等配置する。
-  //     ( N=2:0°/180°、N=3:0°/120°/240°、… N=8:0°/45°/…/315°、N=9:0°/40°/…/320° )
-  //   - 真右のカードは常に固定、カードごとの間隔を詰める形で右上 (ほぼ 360°) に向けて
-  //     追加されていく。真上 (270°) 以降へ追加されて「二周目」に入ることはない。
-  // 各子のサブツリーは方向に応じた水平/垂直ツリーで展開する。
+  // XMind 風の左右 2 方向レイアウト。元の子順序の前半を右、後半を左へ振り分け、
+  // 奇数の場合は右側を 1 枚多くする。各側では部分木の高さを先に測り、
+  // ルート中心に対して縦方向にまとめて中央配置する。
   const G = bdLayoutGaps();
   const rootChildren = layoutCtx.children(root.id);
   if (rootChildren.length === 0) return;
   const rootW = sizes[root.id]?.w || 160;
   const rootH = sizes[root.id]?.h || 36;
-  const rootCx = root.x + rootW / 2;
   const rootCy = root.y + rootH / 2;
-  const N = rootChildren.length;
+  const subtreeHeightCache = new Map();
 
-  // idx 番目 (0-indexed) の子カードの角度を算出する。
-  // 最終インデックス (N-1) の角度が (N-1)/N * 360° = 360° - 360°/N となり、
-  // 真上 (270°) を飛び越えて 360° = 0° の手前 (= 右上〜真右の間) に収まる。
-  const ANGLE_STEP = N > 0 ? 360 / N : 0;
-  function branchInfo(idx) {
-    const angle = ANGLE_STEP * idx; // 0° = 真右、時計回り (下が +y)
-    const rad = angle * Math.PI / 180;
-    const dx = Math.cos(rad);
-    const dy = Math.sin(rad);
-    // サブツリー展開方向 (水平優勢 / 垂直優勢で 4 分割)。対角は水平側に倒す。
-    const dir = (Math.abs(dx) >= Math.abs(dy))
-      ? (dx >= 0 ? 'right' : 'left')
-      : (dy >= 0 ? 'down' : 'up');
-    return { dir, angle };
-  }
-
-  // 子中心までの距離（ルートエッジ〜子エッジ間に G.level の余白が入るよう計算）。
-  // 長方形と原点からの半直線 (cos θ, sin θ) の交点距離は min(W/2/|cos|, H/2/|sin|)。
-  // 真右 (θ=0) 等で sin=0 になる場合に備えて微小値でクランプする。
-  function childCenterDistance(childId, angle) {
-    const cw = sizes[childId]?.w || 160;
-    const ch = sizes[childId]?.h || 36;
-    const rad = angle * Math.PI / 180;
-    const absDx = Math.max(Math.abs(Math.cos(rad)), 1e-3);
-    const absDy = Math.max(Math.abs(Math.sin(rad)), 1e-3);
-    const rootEdge = Math.min(rootW / 2 / absDx, rootH / 2 / absDy);
-    const childEdge = Math.min(cw / 2 / absDx, ch / 2 / absDy);
-    return rootEdge + G.level + childEdge;
-  }
-
-  // 角度差 ANGLE_STEP のときの 2 中心間距離 d* = 2 * r * sin(ANGLE_STEP/2) が
-  // 両側のカード半対角の和 + gap を下回らない r を下限として確保する。
-  // (全子カードのサイズのうち最大のものを基準にすることで、どの隣接ペアも重ならない)
-  let maxHalfDiag = 0;
-  rootChildren.forEach(c => {
-    const cw = sizes[c.id]?.w || 160;
-    const ch = sizes[c.id]?.h || 36;
-    const hd = Math.hypot(cw, ch) / 2;
-    if (hd > maxHalfDiag) maxHalfDiag = hd;
-  });
-  const halfStepRad = (ANGLE_STEP / 2) * Math.PI / 180;
-  // N=1 のときは ANGLE_STEP=0 で sin(0)=0 になるため 0 除算回避で下限なし。
-  const minRadiusForNoOverlap = (N >= 2)
-    ? (maxHalfDiag + G.sibling / 2) / Math.sin(halfStepRad)
-    : 0;
-
-  rootChildren.forEach((child, idx) => {
-    const { dir, angle } = branchInfo(idx);
-    const rad = angle * Math.PI / 180;
-    let dist = childCenterDistance(child.id, angle);
-    // 隣接カード同士が重ならないよう、共通の下限半径を全カードに適用する
-    // (真右のカードを固定しつつ、角度間隔が狭まる高 N でも重なりを回避する)。
-    if (minRadiusForNoOverlap > dist) dist = minRadiusForNoOverlap;
-    const cx = rootCx + Math.cos(rad) * dist;
-    const cy = rootCy + Math.sin(rad) * dist;
-    const cw = sizes[child.id]?.w || 160;
-    const ch = sizes[child.id]?.h || 36;
-    child.x = cx - cw / 2;
-    child.y = cy - ch / 2;
-    // 子が「中間カード」(= 独自 structure 設定済み) なら bbox サイズをここで
-    // 配置しただけで打ち切る。中身は Pass 1 で計測済み、最終位置は Pass 3 で再配置される。
-    if (_bdIsInnerStructureAtomic(child.id, root.id)) return;
-    // 子サブツリーをブランチ方向に展開する（子自身を仮ルートとして使う）
-    if (dir === 'right' || dir === 'left') {
-      _bdLayoutHorizontalTree(child, sizes, layoutCtx, { direction: dir });
-    } else {
-      _bdLayoutVerticalTree(child, sizes, layoutCtx, { direction: dir });
+  function subtreeH(nid) {
+    if (subtreeHeightCache.has(nid)) return subtreeHeightCache.get(nid);
+    if (_bdIsInnerStructureAtomic(nid, root.id)) {
+      const atomicH = sizes[nid]?.h || 36;
+      subtreeHeightCache.set(nid, atomicH);
+      return atomicH;
     }
-  });
+    const children = layoutCtx.children(nid);
+    if (children.length === 0) {
+      const leafH = sizes[nid]?.h || 36;
+      subtreeHeightCache.set(nid, leafH);
+      return leafH;
+    }
+    const childrenH = children.reduce((sum, child) => sum + subtreeH(child.id), 0)
+      + (children.length - 1) * G.sibling;
+    const value = Math.max(sizes[nid]?.h || 36, childrenH);
+    subtreeHeightCache.set(nid, value);
+    return value;
+  }
+
+  const rightCount = Math.ceil(rootChildren.length / 2);
+  const rightChildren = rootChildren.slice(0, rightCount);
+  const leftChildren = rootChildren.slice(rightCount);
+
+  function layoutSide(children, direction) {
+    if (!children.length) return;
+    const totalH = children.reduce((sum, child) => sum + subtreeH(child.id), 0)
+      + (children.length - 1) * G.sibling;
+    let branchTop = rootCy - totalH / 2;
+    children.forEach(child => {
+      const childW = sizes[child.id]?.w || 160;
+      child.x = direction === 'right'
+        ? root.x + rootW + G.level
+        : root.x - G.level - childW;
+      child.y = branchTop;
+      if (!_bdIsInnerStructureAtomic(child.id, root.id)) {
+        _bdLayoutHorizontalTree(child, sizes, layoutCtx, { direction });
+      }
+      branchTop += subtreeH(child.id) + G.sibling;
+    });
+  }
+
+  layoutSide(rightChildren, 'right');
+  layoutSide(leftChildren, 'left');
 }
 
 function bdLayoutFlowchart(root, sizes, layoutCtx) {
@@ -634,7 +615,8 @@ function bdSwapSibling(nodeId, dir) {
   else if (typeof bdRender === 'function') bdRender();
   // 中間カード構造 (c33a3a6) も尊重: 兄弟の親に適用される structure があれば再整列。
   const effectiveStructure = (typeof bdStructureOf === 'function') ? bdStructureOf(nodeId) : (root?.structure || '');
-  if (effectiveStructure && typeof bdAutoLayout === 'function' && root) bdAutoLayout(root.id);
+  if (effectiveStructure && typeof bdRequestAutoLayout === 'function' && root) bdRequestAutoLayout(root.id);
+  else if (effectiveStructure && typeof bdAutoLayout === 'function' && root) bdAutoLayout(root.id);
   // 入れ替えた選択カードに resize ハンドル等を追従させる
   if (typeof bdSyncResizeHandleForNode === 'function') {
     bdSyncResizeHandleForNode(n.id);
@@ -699,11 +681,22 @@ function bdHandleCtrlArrow(arrow) {
 // 既存のカード群にも隙間変更が即座に反映されるようにする (bd.autoAlign が on のときのみ)。
 // contained カードはスキップ (親相対座標のためワールド座標レイアウトと相性悪)。
 function _bdRelayoutAllStructureTrees() {
-  if (typeof bd === 'undefined' || typeof bdAutoLayout !== 'function') return;
-  (bd.nodes || []).forEach(n => {
-    if (n && n.structure && !n.contained) {
-      bdAutoLayout(n.id);
+  if (typeof bd === 'undefined') return;
+  const structureNodes = (bd.nodes || []).filter(n => n && n.structure && !n.contained);
+  const structureIds = new Set(structureNodes.map(n => n.id));
+  const byId = new Map((bd.nodes || []).filter(Boolean).map(n => [n.id, n]));
+  structureNodes.forEach(node => {
+    const seen = new Set([node.id]);
+    let parentId = node.parent;
+    let hasStructureAncestor = false;
+    while (parentId && !seen.has(parentId)) {
+      if (structureIds.has(parentId)) { hasStructureAncestor = true; break; }
+      seen.add(parentId);
+      parentId = byId.get(parentId)?.parent;
     }
+    if (hasStructureAncestor) return;
+    if (typeof bdRequestAutoLayout === 'function') bdRequestAutoLayout(node.id);
+    else if (typeof bdAutoLayout === 'function') bdAutoLayout(node.id);
   });
 }
 
@@ -727,8 +720,8 @@ function _bdSnapNodeToNeighbors(nodeId, excludeIds) {
   if (!n || n.contained) return { dx: 0, dy: 0 };
   const SNAP = 8;
   const el = document.getElementById('bdn-' + nodeId);
-  const w = el?.offsetWidth || n.w || 160;
-  const h = el?.offsetHeight || n.h || 36;
+  const w = n.w || n._rw || el?.offsetWidth || 160;
+  const h = n.h || n._rh || el?.offsetHeight || 36;
   const exclude = new Set(Array.isArray(excludeIds) ? excludeIds : [nodeId]);
   // 自身の 4 辺候補 (left, right, top, bottom)
   const selfXCandidates = [n.x, n.x + w];
@@ -739,8 +732,8 @@ function _bdSnapNodeToNeighbors(nodeId, excludeIds) {
     if (!other || exclude.has(other.id)) return;
     if (other.contained) return;
     const oel = document.getElementById('bdn-' + other.id);
-    const ow = oel?.offsetWidth || other.w || 160;
-    const oh = oel?.offsetHeight || other.h || 36;
+    const ow = other.w || other._rw || oel?.offsetWidth || 160;
+    const oh = other.h || other._rh || oel?.offsetHeight || 36;
     const otherXs = [other.x, other.x + ow];
     const otherYs = [other.y, other.y + oh];
     // x 軸 4 通りの組み合わせ (self left/right vs other left/right)
@@ -796,6 +789,17 @@ function _bdAnchorAddCard(fromNid, hudPos) {
   if ((action === 'between' || action === 'sibling-before' || action === 'sibling-after') && !n.parent) {
     return false;
   }
+  // 課題6・7-2・18-案A: 起点 (最も近い _autoStyle カード) が効いていれば深さ別スタイルで作る。
+  // 起点が無いツリーでは fromNid の見た目を継承する (Enter/Ctrl+Enter の子/兄弟追加と同じ扱い)。
+  // 以前は parent すら渡さない (課題7-1 とは別関数だが同型の当て漏れ) 上、継承もしていなかった。
+  // 起点解決の基準ノードはアクションによって異なる: child は fromNid 自身の子孫を作るので
+  // fromNid 起点でよいが、sibling-*/between は fromNid と同じ親を共有するカードを作るため、
+  // fromNid.parent 起点で解決する (fromNid 自身が起点カードだった場合に、fromNid 自身の
+  // 「深さ0」を親を共有するだけの兄弟へ誤って適用してしまうのを防ぐ)。
+  const anchorBasisId = action === 'child' ? fromNid : n.parent;
+  const anchor = (typeof _bdNearestAutoStyleAnchor === 'function') ? _bdNearestAutoStyleAnchor(anchorBasisId) : null;
+  const useDepthStyle = !!anchor && typeof bdGetAutoStyleForDepth === 'function' && typeof _bdApplyDepthCardFieldsToNode === 'function';
+  const depthOf = (nodeId) => (typeof _bdAnchorRelativeDepth === 'function') ? _bdAnchorRelativeDepth(nodeId, anchor) : 0;
   if (typeof bdBeginFastBoardMutation === 'function') bdBeginFastBoardMutation();
   try {
     // 前回操作で残っている可能性がある二段階接続モードの残骸をクリア (ユーザー操作混線防止)
@@ -811,28 +815,40 @@ function _bdAnchorAddCard(fromNid, hudPos) {
     const makeNode = (text, x, y, opts) => (typeof bdCreateNodeWithStyle === 'function')
       ? bdCreateNodeWithStyle(text, x, y, opts)
       : bdNode(text, x, y, 160, 0, opts);
-    const makeConnection = (fromId, toId, structure) => {
+    // depthStyle が有るときは個別 override を持たせず (直後に深さ別スタイルを直接適用するため)、
+    // 無ければ fromNid (n) の見た目を継承する。
+    const nodeOpts = (parentId, depthStyle) => {
+      const base = (!depthStyle && typeof bdInheritStyleOpts === 'function') ? bdInheritStyleOpts(n) : {};
+      base.parent = parentId;
+      return base;
+    };
+    const makeConnection = (fromId, toId, structure, lineDepthStyle) => {
       const arrow = typeof bdDefaultStructureArrow === 'function'
         ? bdDefaultStructureArrow(structure)
         : (structure === 'flowchart' ? 'end' : '');
-      if (typeof bdCreateStructureConnection === 'function') return bdCreateStructureConnection(fromId, toId, structure);
-      if (typeof bdCreateConnectionWithStyle === 'function') return bdCreateConnectionWithStyle(fromId, toId, { arrow });
-      return {
-        id: typeof bdId === 'function' ? bdId() : '',
-        from: fromId || '',
-        to: toId || '',
-        label: '',
-        style: '',
-        arrow,
-      };
+      const conn = (typeof bdCreateStructureConnection === 'function') ? bdCreateStructureConnection(fromId, toId, structure)
+        : (typeof bdCreateConnectionWithStyle === 'function') ? bdCreateConnectionWithStyle(fromId, toId, { arrow })
+        : {
+            id: typeof bdId === 'function' ? bdId() : '',
+            from: fromId || '',
+            to: toId || '',
+            label: '',
+            style: '',
+            arrow,
+          };
+      if (lineDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') _bdApplyDepthLineFieldsToConn(conn, lineDepthStyle);
+      return conn;
     };
     let newNode = null;
     if (action === 'child') {
       const nx = isTreeStructure ? n.x + G.level : (isVertical ? n.x : n.x + pw + G.level);
       const ny = isTreeStructure ? n.y + ph + G.sibling : (isVertical ? n.y + ph + G.level : n.y);
-      newNode = makeNode('', nx, ny, { parent: fromNid });
+      const childDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid) + 1, anchor) : null;
+      newNode = makeNode('', nx, ny, nodeOpts(fromNid, childDepthStyle));
+      if (childDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, childDepthStyle);
       bd.nodes.push(newNode);
-      bd.connections.push(makeConnection(fromNid, newNode.id, bdStructureOf(fromNid)));
+      const parentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      bd.connections.push(makeConnection(fromNid, newNode.id, bdStructureOf(fromNid), parentDepthStyle));
       if (!initialStructureRootId) {
         const root = bdRoot(fromNid);
         if (root && !root.structure) root.structure = isVertical ? 'flowchart' : 'mindmap';
@@ -852,7 +868,10 @@ function _bdAnchorAddCard(fromNid, hudPos) {
         nx = n.x;
         ny = action === 'sibling-before' ? n.y - ph - G.sibling : n.y + ph + G.sibling;
       }
-      newNode = makeNode('', nx, ny, { parent: parentId });
+      // 兄弟は fromNid と同じ深さ。
+      const siblingDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      newNode = makeNode('', nx, ny, nodeOpts(parentId, siblingDepthStyle));
+      if (siblingDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, siblingDepthStyle);
       if (action === 'sibling-before') {
         const g = bd.nodes.findIndex(v => v.id === fromNid);
         if (g >= 0) bd.nodes.splice(g, 0, newNode); else bd.nodes.push(newNode);
@@ -865,25 +884,36 @@ function _bdAnchorAddCard(fromNid, hudPos) {
           bd.nodes.push(newNode);
         }
       }
-      bd.connections.push(makeConnection(parentId, newNode.id, bdStructureOf(parentId)));
+      const parentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(parentId), anchor) : null;
+      bd.connections.push(makeConnection(parentId, newNode.id, bdStructureOf(parentId), parentDepthStyle));
     } else if (action === 'between') {
       const oldParentId = n.parent;
+      // 深さは reparent (n.parent への代入) より前に計算する。新規カードは fromNid の
+      // 旧位置 (旧親からの相対深さ) をそのまま引き継ぎ、fromNid 自身が1つ深くなる。
+      const newCardDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(fromNid), anchor) : null;
+      const oldParentDepthStyle = useDepthStyle ? bdGetAutoStyleForDepth(depthOf(oldParentId), anchor) : null;
       const nx = isTreeStructure ? n.x - G.level : (isVertical ? n.x : n.x - pw - G.level);
       const ny = isTreeStructure ? n.y - ph - G.sibling : (isVertical ? n.y - ph - G.level : n.y);
-      newNode = makeNode('', nx, ny, { parent: oldParentId });
+      newNode = makeNode('', nx, ny, nodeOpts(oldParentId, newCardDepthStyle));
+      if (newCardDepthStyle) _bdApplyDepthCardFieldsToNode(newNode, newCardDepthStyle);
       const g = bd.nodes.findIndex(v => v.id === fromNid);
       if (g >= 0) bd.nodes.splice(g, 0, newNode); else bd.nodes.push(newNode);
       n.parent = newNode.id;
       let reused = false;
       bd.connections = bd.connections.filter(c => {
         if (c.from === oldParentId && c.to === fromNid) {
-          if (!reused) { c.to = newNode.id; reused = true; return true; }
+          if (!reused) {
+            c.to = newNode.id;
+            if (oldParentDepthStyle && typeof _bdApplyDepthLineFieldsToConn === 'function') _bdApplyDepthLineFieldsToConn(c, oldParentDepthStyle);
+            reused = true;
+            return true;
+          }
           return false;
         }
         return true;
       });
-      if (!reused) bd.connections.push(makeConnection(oldParentId, newNode.id, bdStructureOf(oldParentId)));
-      bd.connections.push(makeConnection(newNode.id, fromNid, bdStructureOf(oldParentId)));
+      if (!reused) bd.connections.push(makeConnection(oldParentId, newNode.id, bdStructureOf(oldParentId), oldParentDepthStyle));
+      bd.connections.push(makeConnection(newNode.id, fromNid, bdStructureOf(oldParentId), newCardDepthStyle));
     }
     if (!newNode) return false;
     if (typeof bdAppendFastNode !== 'function' || !bdAppendFastNode(newNode)) {
