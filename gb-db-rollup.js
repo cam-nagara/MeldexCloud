@@ -152,10 +152,13 @@ async function _rollupResolveTargetRelationStrings(values, targetPtc, targetDbPa
 async function _rollupTargetDisplayStrings(entityData, targetProp, targetPtc, targetPropTypes, targetDbPath, filterMode) {
   if (!entityData) return ['—'];
 
-  if (targetPtc?.source) {
-    const sourceValue = entityData['_' + targetPtc.source];
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(targetPtc)
+    : (['created', 'modified', 'modified_by'].includes(targetPtc?.source) ? targetPtc.source : '');
+  if (metadataSource) {
+    const sourceValue = entityData['_' + metadataSource];
     if (sourceValue == null || sourceValue === '') return ['—'];
-    if ((targetPtc.source === 'created' || targetPtc.source === 'modified')
+    if ((metadataSource === 'created' || metadataSource === 'modified')
         && typeof _formatDateDisplay === 'function') {
       return [_formatDateDisplay(String(sourceValue), targetPtc)];
     }

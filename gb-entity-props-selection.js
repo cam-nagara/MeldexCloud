@@ -199,6 +199,7 @@ function _epsInstallGridObserver() {
 // イベントが到達しないようキャプチャフェーズで止める。選択そのものはブラウザ標準の
 // クリック挙動（別位置クリックでの選択解除等）に任せる。
 function _epsHandleCaptureClick(e) {
+  if (e.target?.closest?.('input, button, select, textarea, [role="button"], [role="checkbox"], .row-select-cb, .row-select-all-cb, .col-header-menu-btn, .col-header-menu-item')) return;
   const grid = _epsClosestGrid(e.target);
   if (!grid) return;
   if (_epsPopup && _epsPopup.contains(e.target)) return;

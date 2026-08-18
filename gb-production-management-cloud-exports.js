@@ -45,7 +45,10 @@
     async applyTaskDurationRecalcOnValueUpdate(provider, path, frontmatter, changedProperty) {
       const durationChanged = await _pmCloudApplyDurationRecalcHook(provider, path, frontmatter, changedProperty);
       const timestampChanged = _pmCloudApplyStatusTimestampHook(path, frontmatter);
-      return durationChanged || timestampChanged;
+      const actualTimeChanged = typeof _pmCloudApplyTaskActualTimeHook === 'function'
+        ? await _pmCloudApplyTaskActualTimeHook(provider, path, frontmatter, changedProperty)
+        : false;
+      return durationChanged || timestampChanged || actualTimeChanged;
     },
     // gb-data-access-dropbox-expanded.part01.js の汎用エントリ作成経路（_createEntity）から
     // 呼ばれる、作業内容リストへ行を直接追加した時の作業順自動採番の単一入口

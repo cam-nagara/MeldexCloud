@@ -575,6 +575,7 @@
     delete refs.body.dataset.previewRequestToken;
     refs.body.replaceChildren();
     document.body.dataset.cloudMobileSideDrawerOpen = '1';
+    _clearDismissDrag(refs.drawer);
     refs.backdrop.classList.add('open');
     refs.drawer.classList.add('open');
     refs.drawer.setAttribute('aria-hidden', 'false');

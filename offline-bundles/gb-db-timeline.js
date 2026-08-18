@@ -568,11 +568,12 @@ function _captureTimelineViewState(ctx, dbPath) {
   const currentMode = (dbPath && typeof getCurrentViewMode === 'function')
     ? getCurrentViewMode(dbPath, { ctx })
     : (ctx?.viewMode || 'timeline');
+  const targetStateView = ['calendar', 'tasks', 'shifts'].includes(currentMode) ? 'timeline' : (currentMode || 'timeline');
   return {
     dbPath,
     currentViewIdx: Number.isInteger(ctx?.currentViewIdx) ? ctx.currentViewIdx : ((dbPath && typeof getCurrentViewIdx === 'function') ? getCurrentViewIdx(dbPath) : null),
     viewMode: currentMode || 'timeline',
-    stateView: typeof state !== 'undefined' ? state.view : '',
+    stateView: targetStateView,
   };
 }
 
@@ -582,9 +583,10 @@ function _restoreTimelineViewState(snapshot, ctx) {
   if (Number.isInteger(snapshot.currentViewIdx) && typeof setCurrentViewIdx === 'function') {
     setCurrentViewIdx(snapshot.dbPath, snapshot.currentViewIdx, { skipHistory: true });
   }
-  if (ctx && ctx.dbPath === snapshot.dbPath) ctx.viewMode = snapshot.viewMode || 'timeline';
-  if (snapshot.stateView) state.view = snapshot.stateView;
-  if (typeof showView === 'function') showView(_timelineDisplayViewMode(snapshot.viewMode), ctx);
+  const mode = snapshot.viewMode || 'timeline';
+  if (ctx && ctx.dbPath === snapshot.dbPath) ctx.viewMode = mode;
+  state.view = ['calendar', 'tasks', 'shifts'].includes(mode) ? 'timeline' : mode;
+  if (typeof showView === 'function') showView(_timelineDisplayViewMode(mode), ctx);
   if (typeof renderDbViewTabs === 'function') renderDbViewTabs(ctx);
 }
 

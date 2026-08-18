@@ -470,6 +470,7 @@ function _normalizeAnnotationRow(a) {
 function _rpAnnotationUiKind(a) {
   const type = a?.type || '';
   const data = a?.data || {};
+  if (type === 'screenshot') return 'screenshot';
   if (type === 'sticky') return 'sticky';
   const isSticky = ['comment', 'note', 'sticky'].includes(type)
     && ((a.shape || '') === 'sticky' || data.noteType === 'sticky' || data.x != null || data.y != null || data.width != null || data.height != null);
@@ -489,11 +490,12 @@ function _rpAnnotationTypeLabel(kind) {
     rect: '矩形塗り',
     comment: 'コメント',
     sticky: '付箋',
+    screenshot: 'スクリーンショット',
   })[kind] || kind || '注釈';
 }
 
 function _rpAnnotationIcon(kind, size) {
-  const icon = ({ stroke: 'pencil', marker: 'highlighter', lasso: 'lasso', rect: 'square', comment: 'messageSquareText', sticky: 'stickyNote' })[kind] || 'messageSquare';
+  const icon = ({ stroke: 'pencil', marker: 'highlighter', lasso: 'lasso', rect: 'square', comment: 'messageSquareText', sticky: 'stickyNote', screenshot: 'camera' })[kind] || 'messageSquare';
   return typeof lucide === 'function' ? lucide(icon, size || 14) : '';
 }
 
@@ -505,6 +507,11 @@ function _stripRpAnnotationHtml(html) {
 }
 
 function _rpAnnotationPreviewText(a) {
+  if (a.uiKind === 'screenshot') {
+    if (a.data?.source_file) return `${a.data.source_file} のスクリーンショット`;
+    if (a.data?.path) return a.data.path.split(/[\\/]/).pop() || 'スクリーンショット';
+    return 'スクリーンショット';
+  }
   const text = a.body || a.data?.text || _stripRpAnnotationHtml(a.data?.html || '');
   return text || _rpAnnotationTypeLabel(a.uiKind);
 }
@@ -751,12 +758,43 @@ function _buildRpAnnotationPreviewCard(a) {
 }
 
 function _buildRpAnnotationPreviewBody(a) {
+  if (a.uiKind === 'screenshot') return _buildRpScreenshotPreview(a);
   if (['stroke', 'marker', 'lasso', 'rect'].includes(a.uiKind)) return _buildRpStrokePreview(a);
   if (a.uiKind === 'sticky') return _buildRpStickyPreview(a);
   const el = document.createElement('div');
   el.className = 'rp-ann-comment-preview';
   el.textContent = _rpAnnotationPreviewText(a) || '(空)';
   return el;
+}
+
+function _buildRpScreenshotPreview(a) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rp-ann-screenshot-preview';
+  const imagePath = a.data?.path || a.target_path || '';
+  if (!imagePath) {
+    wrap.textContent = 'スクリーンショット';
+    return wrap;
+  }
+  const img = document.createElement('img');
+  img.className = 'rp-ann-screenshot-thumb';
+  img.src = _rpAnnotationFileRawUrl(imagePath);
+  img.alt = a.data?.source_file || imagePath.split(/[\\/]/).pop() || 'スクリーンショット';
+  img.style.maxWidth = '100%';
+  img.style.maxHeight = '120px';
+  img.style.borderRadius = '4px';
+  img.style.objectFit = 'contain';
+  img.style.display = 'block';
+  img.onerror = () => {
+    img.style.display = 'none';
+    const fallback = document.createElement('div');
+    fallback.className = 'rp-ann-screenshot-fallback';
+    fallback.textContent = img.alt + ' (画像読み込み失敗)';
+    fallback.style.fontSize = '11px';
+    fallback.style.color = 'var(--fg2)';
+    wrap.appendChild(fallback);
+  };
+  wrap.appendChild(img);
+  return wrap;
 }
 
 function _buildRpStickyPreview(a) {
@@ -935,6 +973,21 @@ function _jumpFromRpAnnotation(a) {
     _jumpToCommentTarget(a);
     return;
   }
+  if (a.uiKind === 'screenshot') {
+    const imagePath = a.data?.path || a.target_path || '';
+    if (!imagePath) {
+      showStatus('スクリーンショット画像が見つかりません', true);
+      return;
+    }
+    if (typeof openInViewer === 'function') {
+      openInViewer(imagePath);
+      return;
+    }
+    if (typeof jumpToAnnotation === 'function') {
+      jumpToAnnotation(imagePath);
+      return;
+    }
+  }
   const targetPath = a.target_ref?.file || a.target_path || '';
   if (!targetPath) {
     showStatus('注釈の対象ファイルが見つかりません', true);
@@ -967,7 +1020,10 @@ async function _deleteAnnotationFromPanel(a) {
     showStatus('注釈の削除はソースフォルダの管理者だけが行えます', true);
     return;
   }
-  if (typeof cfConfirm === 'function' && !await cfConfirm('この注釈を削除しますか？')) return;
+  const confirmMsg = a.uiKind === 'screenshot'
+    ? 'このスクリーンショット注釈を削除しますか？\n（注釈レコードのみ削除され、画像ファイルは残ります）'
+    : 'この注釈を削除しますか？';
+  if (typeof cfConfirm === 'function' && !await cfConfirm(confirmMsg)) return;
   try {
     const before = typeof _fetchAnnotationHistoryRow === 'function'
       ? await _fetchAnnotationHistoryRow(a.id).catch(() => null)

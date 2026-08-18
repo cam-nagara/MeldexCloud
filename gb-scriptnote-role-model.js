@@ -292,7 +292,13 @@
     }
     if (resolved.kind === 'type') return clone(resolved.type);
     const character = resolved.character;
-    if (!character.typeId && character.legacyAppearance) return clone(character.legacyAppearance);
+    if (!character.typeId) {
+      if (character.legacyAppearance) return clone(character.legacyAppearance);
+      const appearance = { ...defaultAppearance(doc), ...clone(character) };
+      appearance.roleStyle = { ...plain(appearance.roleStyle) };
+      if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
+      return appearance;
+    }
     const type = findTypeById(doc, character.typeId);
     const appearance = type ? clone(type) : defaultAppearance(doc);
     appearance.roleStyle = { ...plain(appearance.roleStyle) };

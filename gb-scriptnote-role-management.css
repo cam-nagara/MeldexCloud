@@ -156,6 +156,26 @@
   background: var(--ui-bg-app);
   outline: none;
 }
+.sn2-role-manage-name--static {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 4px;
+  color: var(--ui-fg-muted);
+  font: inherit;
+  user-select: none;
+}
+.sn2-role-manage-grip--disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+.sn2-role-manage-row--none {
+  background: color-mix(in srgb, var(--ui-bg-surface) 40%, transparent);
+}
 .sn2-role-name-color {
   width: 28px;
   height: 24px;

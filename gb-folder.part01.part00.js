@@ -675,6 +675,9 @@ async function _folderImportOsNode(node, parentPath, result, progress) {
 
 async function _folderImportOsDrop(event, targetItem) {
   if (!_folderCanAcceptOsDrop(event, targetItem)) return 0;
+  if (targetItem?.type === 'database' && typeof MeldexSheetEntryAttachments !== 'undefined') {
+    return MeldexSheetEntryAttachments.intakeDropToSheet(targetItem.path, event);
+  }
   const nodes = await _folderOsDropNodes(event.dataTransfer);
   const total = _folderCountOsDropFiles(nodes);
   if (!total && !nodes.some(node => node.kind === 'folder')) {
@@ -699,7 +702,7 @@ async function _folderImportOsDrop(event, targetItem) {
   const reason = String(first?.error?.userMessage || first?.error?.message || first?.error || '');
   showStatus(result.failed
     ? `${result.ok}件を取り込み、${result.failed}件は失敗しました${reason ? `（${reason}）` : ''}`
-    : `${result.ok}件を「${targetItem.name || targetItem.path}」へ取り込みました`, result.failed > 0);
+    : `${result.ok}件を取り込みました`, result.failed > 0 && result.ok === 0);
   return result.ok;
 }
 
@@ -721,6 +724,16 @@ async function _folderMoveItemsFromDrop(event, targetItem, payloadOverride) {
   if (!targetPath || items.length === 0) {
     showStatus('移動できる項目がありません', true);
     return 0;
+  }
+  // シートへのドロップ: Altキー押下時、またはエントリ以外のファイル/ボード/画像等は
+  // シート全ファイル取込（MeldexSheetEntryAttachments）へルーティングしてエントリ化する。
+  if (targetItem?.type === 'database') {
+    const nonEntries = items.filter(source => !(window.MeldexSheetAttachments?.itemFitsInSheet?.(source) ?? false));
+    if (event?.altKey || nonEntries.length > 0) {
+      if (typeof MeldexSheetEntryAttachments !== 'undefined') {
+        return MeldexSheetEntryAttachments.intakeDropToSheet(targetPath, event, { payloadOverride });
+      }
+    }
   }
   // シートの中に置けるのはエントリだけ。ボード等を落とすと
   // 「シートの中にボードがある」状態になるため、ドロップ時点で止める。

@@ -89,6 +89,30 @@
   function metadataRowsHtml(meta, options) {
     if (!meta) return '';
     const rows = [];
+    const isLinked = !!(options?.linked || meta?.linked || (options?.link_folder_path && options.link_folder_path !== options?.folderPath));
+    const linkFolderPath = String(options?.link_folder_path || meta?.link_folder_path || '').trim();
+    const linkedFolders = Array.isArray(meta?.linked_folders) ? meta.linked_folders : (Array.isArray(options?.linkedFolders) ? options.linkedFolders : []);
+
+    let storageMethod = '通常のファイル';
+    if (isLinked) {
+      storageMethod = 'リンクファイル';
+    } else if (linkedFolders.length > 0 || Number(meta?.links_count) > 0) {
+      storageMethod = 'リンク元ファイル';
+    }
+    rows.push(['保存方式', storageMethod]);
+
+    if (isLinked) {
+      if (meta?.source_path || options?.sourcePath) {
+        rows.push(['リンク元', meta?.source_path || options?.sourcePath]);
+      }
+      if (linkFolderPath) {
+        rows.push(['このリンクの場所', linkFolderPath]);
+      }
+    } else if (linkedFolders.length > 0 || Number(meta?.links_count) > 0) {
+      const count = linkedFolders.length || Number(meta?.links_count) || 0;
+      rows.push(['登録先', `${count} 件`]);
+    }
+
     const dateRow = (label, value) => {
       if (!value) return;
       const parsed = new Date(value);
@@ -118,6 +142,8 @@
       ...options,
       kind: options?.kind || preloadedMeta?.kind,
     });
+    const isLinked = !!(options?.linked || preloadedMeta?.linked || (options?.link_folder_path && options.link_folder_path !== info.folderPath));
+    const linkFolderPath = String(options?.link_folder_path || preloadedMeta?.link_folder_path || info.folderPath || '').trim();
     const tagsHtml = options?.showTags === false
       ? ''
       : `<div data-global-tags-target-path="${escapeHtml(filePath)}"></div>`;
@@ -125,6 +151,12 @@
     const folderHtml = info.folderPath
       ? `<button type="button" class="auto-link" data-e2e-id="${escapeHtml(folderIdentity)}" data-path="${escapeHtml(info.folderPath)}" data-native-folder="true" style="padding:0;border:0;background:transparent;color:var(--accent);font:inherit;cursor:pointer;">${escapeHtml(info.folderName)}</button>`
       : '—';
+    const linkActionsHtml = isLinked
+      ? `<div class="file-info-link-actions" data-file-info-link-actions style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;">`
+        + `<button type="button" class="gb-btn gb-btn-sm" data-action="promoteCurrentFolderLink" data-e2e-id="file-info-promote-link" style="font-size:12px;">この場所をリンク元にする</button>`
+        + `<button type="button" class="gb-btn gb-btn-sm" data-action="materializeCurrentFolderLink" data-e2e-id="file-info-materialize-link" style="font-size:12px;">実体化</button>`
+        + `</div>`
+      : '';
     return `<div style="padding:12px;" data-file-info-path="${escapeHtml(filePath)}">`
       + `<div style="font-size:15px;font-weight:bold;margin-bottom:12px;display:flex;align-items:center;gap:6px;">${iconHtml(fileIcon(info.ext, info.kind, info.type), 16)} ${escapeHtml(info.fileName)}</div>`
       + '<table style="font-size:13px;color:var(--fg2);width:100%;border-collapse:collapse;">'
@@ -133,8 +165,9 @@
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">フォルダ</td><td style="padding:4px 0;">${folderHtml}</td></tr>`
       + `<tr><td style="padding:4px 8px 4px 0;color:var(--fg2);white-space:nowrap;">パス</td><td style="padding:4px 0;word-break:break-all;font-size:11px;">${escapeHtml(filePath)}</td></tr>`
       + '</tbody>'
-      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, options)}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
+      + `<tbody data-file-info-metadata-rows>${metadataRowsHtml(preloadedMeta, { ...options, isLinked, linkFolderPath })}<tr data-file-info-loading><td style="padding:4px 8px 4px 0;color:var(--fg2);">詳細</td><td style="padding:4px 0;">読み込み中...</td></tr></tbody>`
       + '</table>'
+      + linkActionsHtml
       // タグはメモ入力欄の下（埋め込み情報の主要項目と埋め込み情報グループの間）に配置する。
       // renderEditor は自分の描画先を空にするため、タグが巻き添えで消えないよう
       // 描画先を [data-file-embedded-primary] と [data-file-embedded-groups] の2つに分け、
@@ -173,12 +206,35 @@
   function applyMetadata(root, filePath, meta, options) {
     const panel = findPanel(root, filePath);
     if (!panel) return false;
+    const isLinked = !!(options?.linked || meta?.linked || (options?.link_folder_path && options.link_folder_path !== options?.folderPath));
+    const linkFolderPath = String(options?.link_folder_path || meta?.link_folder_path || options?.folderPath || '').trim();
     const rows = panel.querySelector('[data-file-info-metadata-rows]');
-    if (rows) rows.innerHTML = metadataRowsHtml(meta, options);
+    if (rows) rows.innerHTML = metadataRowsHtml(meta, { ...options, isLinked, linkFolderPath });
     rows?.querySelector('[data-file-info-relocate]')?.addEventListener('click', () => {
       if (options?.isCurrent?.() === false) return;
       options?.onRelocate?.();
     });
+
+    const linkActionsHost = panel.querySelector('[data-file-info-link-actions]');
+    if (linkActionsHost) {
+      const promoteBtn = linkActionsHost.querySelector('[data-e2e-id="file-info-promote-link"]');
+      const matBtn = linkActionsHost.querySelector('[data-e2e-id="file-info-materialize-link"]');
+      if (promoteBtn) {
+        promoteBtn.addEventListener('click', async () => {
+          if (typeof global.promoteFolderLinkToSourceWithHistory === 'function') {
+            await global.promoteFolderLinkToSourceWithHistory(filePath, linkFolderPath, options);
+          }
+        });
+      }
+      if (matBtn) {
+        matBtn.addEventListener('click', async () => {
+          if (typeof global.materializeFolderLinkWithHistory === 'function') {
+            await global.materializeFolderLinkWithHistory(filePath, linkFolderPath, options);
+          }
+        });
+      }
+    }
+
     const embeddedPanel = [...panel.querySelectorAll('[data-file-embedded-metadata-path]')]
       .find(element => element.dataset.fileEmbeddedMetadataPath === filePath);
     const primaryHost = embeddedPanel?.querySelector('[data-file-embedded-primary]') || embeddedPanel;

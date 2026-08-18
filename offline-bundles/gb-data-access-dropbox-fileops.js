@@ -1622,6 +1622,14 @@ async function _writeAnnotationRecord(provider, record) {
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
 
+// created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
+// identity claimと同じ保留/復帰の対象へ注釈書込みを含められるようにする登録。
+// 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
+// (aftercare側は実行時にこのレジストリを参照するため、このファイルが
+// aftercare側より先に読み込まれても後に読み込まれても問題ない)。
+window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
+window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
+
 async function _deleteAnnotationRecordFully(provider, id) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
@@ -3389,8 +3397,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
       const screenshotBytes = _decodeUploadData(dataUrl);
+      const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
+      const annotationTarget = sourceTarget || targetPath;
+      // 注釈recordはbytes publish前に確定させ、identity claimと同じ
+      // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
+      // 管理データ一元化計画 §10.1)。これにより注釈書込みの失敗も
+      // aftercare_pending化され、identity claimと同じdrain/復帰対象になる。
+      const annRecord = _mergeAnnotationRecord(null, {
+        type: 'screenshot',
+        target_path: annotationTarget,
+        user: (typeof _currentUserName !== 'undefined' && _currentUserName) ? _currentUserName : 'local',
+        data: {
+          path: targetPath,
+          mode: String(body?.mode || ''),
+          width: body?.width || null,
+          height: body?.height || null,
+          source_file: sourceTarget ? _basename(sourceTarget) : null,
+        },
+      }, { id: _randomId('ann'), now: _nowIso() });
       const prepared = await imageAftercare.prepare(provider, targetPath, screenshotBytes, {
         source: 'annotation-screenshot', filename: _basename(targetPath),
+        linkedWrite: { kind: 'annotation-record', payload: annRecord },
       });
       if (prepared.publish_required) {
         try {
@@ -3405,6 +3432,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       );
       return {
         ok: true, path: targetPath,
+        id: annRecord.id, annotation_id: annRecord.id,
         aftercare_pending: !!identity.aftercare_pending || drainedIdentity.blocked > 0,
       };
     }

@@ -1180,20 +1180,25 @@ function showFolderItemContextMenu(e, item, options = {}) {
     }, null, 'tags');
   }
   if (!blankTarget && item.path) {
+    const canCompress = typeof _folderCanCompress === 'function' ? _folderCanCompress() : !window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
     const archiveTargets = _folderSelectedItems.length > 1 ? _folderSelectedItems : [item];
     const extractTargets = archiveTargets.filter(target => (
       typeof _folderCanExtractArchive === 'function' && _folderCanExtractArchive(target)
     ));
-    const archiveSub = addSub('圧縮/解凍', 'archive');
-    archiveSub.panel.dataset.shellArchivePanel = '1';
-    archiveSub.item(archiveTargets.length > 1 ? '選択項目を圧縮' : '圧縮', () => {
-      if (typeof compressFolderItems === 'function') compressFolderItems(archiveTargets);
-    }, null, 'archive');
-    if (extractTargets.length) {
-      archiveSub.item(extractTargets.length > 1 ? 'すべて展開' : '解凍', () => {
-        if (typeof extractArchiveItems === 'function') extractArchiveItems(extractTargets);
-        else if (typeof extractArchiveItem === 'function') extractArchiveItem(extractTargets[0]);
-      }, null, 'packageOpen');
+    if (canCompress || extractTargets.length) {
+      const archiveSub = addSub('圧縮/解凍', 'archive');
+      archiveSub.panel.dataset.shellArchivePanel = '1';
+      if (canCompress) {
+        archiveSub.item(archiveTargets.length > 1 ? '選択項目を圧縮' : '圧縮', () => {
+          if (typeof compressFolderItems === 'function') compressFolderItems(archiveTargets);
+        }, null, 'archive');
+      }
+      if (extractTargets.length) {
+        archiveSub.item(extractTargets.length > 1 ? 'すべて展開' : '解凍', () => {
+          if (typeof extractArchiveItems === 'function') extractArchiveItems(extractTargets);
+          else if (typeof extractArchiveItem === 'function') extractArchiveItem(extractTargets[0]);
+        }, null, 'packageOpen');
+      }
     }
   }
 

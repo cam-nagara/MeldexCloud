@@ -8,6 +8,7 @@
 // 詳細パネル タブ切替（gb-scenario-rules.js から移設）
 // ==============================
 let _currentDetailTab = null;
+let _detailSyncSeq = 0;
 
 function _normalizeDetailTab(tab) {
   const validTabs = new Set([
@@ -63,6 +64,9 @@ function _resolveDetailTabForType(type, defaultTab) {
 }
 
 function switchDetailTab(tab) {
+  if (typeof _detailSyncSeq !== 'undefined') {
+    _detailSyncSeq++;
+  }
   tab = _normalizeDetailTab(tab);
   _currentDetailTab = tab;
   const bar = document.getElementById('detail-tab-bar');

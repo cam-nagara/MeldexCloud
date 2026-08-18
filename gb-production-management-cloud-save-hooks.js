@@ -271,4 +271,177 @@
     frontmatter.properties['目標作業時間'] = [{ value: row['目標作業時間'], status: '採用', note: '', created: now }];
     return true;
   }
+
+  function _resolveActorUser(provider) {
+    if (provider && typeof provider.getUsername === 'function') {
+      const u = provider.getUsername();
+      if (u) return String(u).trim();
+    }
+    if (typeof getUsername === 'function') {
+      const u = getUsername();
+      if (u) return String(u).trim();
+    }
+    if (typeof state !== 'undefined' && state && state.currentUser) {
+      return String(state.currentUser).trim();
+    }
+    if (window.GBAuth && typeof window.GBAuth.getUser === 'function') {
+      const u = window.GBAuth.getUser();
+      if (u?.name || u?.username || u?.id) return String(u.name || u.username || u.id).trim();
+    }
+    return 'anonymous';
+  }
+
+  async function _extractCloudShiftsAndBreaks(provider) {
+    const shiftsMap = {};
+    const breaksMap = {};
+    let events = [];
+    if (provider) {
+      const calPath = '_calendar/events.json';
+      try {
+        if (typeof provider.readJson === 'function') {
+          events = await provider.readJson(calPath);
+        } else if (typeof provider.readText === 'function') {
+          const text = await provider.readText(calPath);
+          if (text) events = JSON.parse(text);
+        } else if (typeof _readJsonSafe === 'function') {
+          events = await _readJsonSafe(provider, calPath, []);
+        }
+      } catch (err) {
+        if (!/not[ -]?found|404|no such/i.test(err?.message || '')) {
+          // 404/not found 以外のディスク/通信エラーは握りつぶさず伝播
+          throw err;
+        }
+        events = [];
+      }
+    } else if (Array.isArray(window.calendarEvents)) {
+      events = window.calendarEvents;
+    }
+    if (Array.isArray(events)) {
+      for (const ev of events) {
+        const id = String(ev?.id || '');
+        const user = String(ev?.user || ev?.user_id || '').trim();
+        const start = String(ev?.start || ev?.start_time || '').trim();
+        const end = String(ev?.end || ev?.end_time || '').trim();
+        if (!user || !start) continue;
+        if (id.includes(':break:') || id.endsWith(':break') || ev?.source === 'shift-break') {
+          shiftsMap[user] = shiftsMap[user] || [];
+          breaksMap[user] = breaksMap[user] || [];
+          breaksMap[user].push({ start, end });
+        } else if (id.startsWith('shift:') || ev?.source === 'shift') {
+          shiftsMap[user] = shiftsMap[user] || [];
+          shiftsMap[user].push({ start, end });
+        }
+      }
+    }
+    return { shiftsMap, breaksMap };
+  }
+
+  // 制作タスク実績時間・日次履歴・業務分析（2026-08-15）: Cloud版セーブフック。
+  // タスクリストの状況変更・担当者変更・締切変更時に実績区間（session）と改訂履歴を永続化。
+  async function _pmCloudApplyTaskActualTimeHook(provider, path, frontmatter, changedProperty) {
+    if (!frontmatter) return false;
+    const internals = window.__MeldexPwaDataAccessInternals;
+    if (!_pmCloudTaskSheetEntryInfo(internals, path)) return false;
+
+    const Store = window.MeldexProductionTaskSessionStore;
+    const Engine = window.MeldexProductionTaskActualEngine;
+    if (!Store || !Engine) return false;
+
+    const taskId = String(frontmatter.id || internals._basename(path).replace(/\.md$/i, '')).trim();
+    const workId = String(_pmCloudPropValue(frontmatter, '作品タイトル') || '').trim();
+    const nowIso = Store.nowIsoUtc();
+    const actorUser = _resolveActorUser(provider);
+
+    let timeRecords = frontmatter.production_time_records;
+    if (!timeRecords || !Array.isArray(timeRecords.revisions) || !timeRecords.revisions.length) {
+      timeRecords = Store.migrateTaskTimeRecords(frontmatter, taskId, 'default', workId, nowIso);
+    }
+
+    let modified = false;
+    const statusVal = String(_pmCloudPropValue(frontmatter, '状況') || '').trim();
+    const canonicalStatus = Engine.normalizeTaskStatus(statusVal);
+    const assigneeRaw = _pmCloudPropValue(frontmatter, '担当者');
+    const assigneeIds = typeof assigneeRaw === 'string'
+      ? assigneeRaw.split(/[,、;]+/).map(s => s.trim()).filter(Boolean)
+      : (Array.isArray(assigneeRaw) ? assigneeRaw.map(s => String(s || '').trim()).filter(Boolean) : []);
+
+    if (changedProperty === '状況' || !changedProperty) {
+      const targetUsers = assigneeIds.length ? assigneeIds : (Engine.isActiveWorkingStatus(canonicalStatus) ? [actorUser] : []);
+      const transitionRes = Engine.handleTaskStatusTransition(
+        timeRecords,
+        canonicalStatus,
+        actorUser,
+        targetUsers,
+        nowIso,
+        true
+      );
+      timeRecords = transitionRes.records;
+      modified = true;
+    } else if (changedProperty === '担当者' && Engine.isActiveWorkingStatus(canonicalStatus)) {
+      const changeRes = Engine.handleAssigneeChange(
+        timeRecords,
+        assigneeIds,
+        actorUser,
+        canonicalStatus,
+        nowIso,
+        true
+      );
+      timeRecords = changeRes.records;
+      modified = true;
+    }
+
+    if (changedProperty && ['担当者', '締切', '目標作業時間', '目標作業時間_値', '予定作業時間', '作業予定時間', '割当作業時間'].includes(changedProperty)) {
+      const estRaw = _pmCloudPropValue(frontmatter, '目標作業時間_値') || _pmCloudPropValue(frontmatter, '目標作業時間');
+      const allocRaw = _pmCloudPropValue(frontmatter, '作業予定時間') || _pmCloudPropValue(frontmatter, '割当作業時間');
+      const deadlineRaw = _pmCloudPropValue(frontmatter, '締切');
+      const estSec = Store.hoursToSeconds(estRaw);
+      const allocSec = Store.hoursToSeconds(allocRaw);
+
+      let changeSrc = 'user-edit';
+      if (changedProperty === '締切') changeSrc = 'deadline-extension';
+      else if (changedProperty === '状況') changeSrc = 'status-change';
+
+      const revRes = Store.appendPlanRevision(
+        timeRecords,
+        {
+          workspace_id: 'default',
+          work_id: workId,
+          task_id: taskId,
+          effective_at: nowIso,
+          estimate_seconds: estSec,
+          allocated_seconds: allocSec,
+          assignee_user_ids: assigneeIds,
+          deadline_at: deadlineRaw || null,
+          status: canonicalStatus,
+          estimated_by: actorUser,
+          changed_by: actorUser,
+          change_source: changeSrc,
+          change_reason: `Cloud ${changedProperty} 更新`,
+        },
+        actorUser,
+        true
+      );
+      timeRecords = revRes.records;
+      modified = true;
+    }
+
+    if (modified) {
+      const { shiftsMap, breaksMap } = await _extractCloudShiftsAndBreaks(provider);
+      const recalcRes = Engine.recalculateTaskSummaries(timeRecords, shiftsMap, breaksMap, 1, nowIso);
+      timeRecords = recalcRes.records;
+      frontmatter.production_time_records = timeRecords;
+
+      const totalSummary = recalcRes.summaries && recalcRes.summaries['__total__'];
+      const actualSec = (totalSummary && totalSummary.actual_seconds) || 0;
+      if (actualSec > 0) {
+        const actualHoursStr = String(Math.round((actualSec / 3600) * 100) / 100);
+        frontmatter.properties = frontmatter.properties && typeof frontmatter.properties === 'object' ? frontmatter.properties : {};
+        frontmatter.properties['作業時間_実績'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
+        frontmatter.properties['実績作業時間'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
+      }
+      return true;
+    }
+
+    return false;
+  }
 })();

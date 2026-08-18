@@ -349,7 +349,10 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
       return picked && picked.value != null ? String(picked.value) : '';
     };
     const sortValue = (entityName) => {
-      if (sortPtc.source || sortPtc.type === 'formula') {
+      const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+        ? _dbPropertyMetadataSource(sortPtc)
+        : (['created', 'modified', 'modified_by'].includes(sortPtc?.source) ? sortPtc.source : '');
+      if (metadataSource || sortPtc.type === 'formula') {
         return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath, filterMode);
       }
       const entityData = entitiesMap[entityName] || {};
@@ -779,7 +782,9 @@ function renderPivot(ctx) {
       autoIcon.className = 'th-lock-icon';
       autoIcon.style.cssText = 'opacity:0.5;margin-left:4px;flex-shrink:0;';
       autoIcon.innerHTML = lucide('zap', 12);
-      autoIcon.title = '自動入力（読み取り専用）';
+      autoIcon.title = _ptcHeader2.source === 'import'
+        ? '取り込み列（読み取り専用）'
+        : '自動入力（読み取り専用）';
       th.appendChild(autoIcon);
     } else {
       const _colLock = getColumnLock(dbPath, p);

@@ -84,6 +84,7 @@
     'viewer.rotate':        [() => { Scene.rotate(); Scene.flashStatus('回転: ' + Scene.getRotateDeg() + '°'); }, false],
     'viewer.zoomIn':        [() => Scene.zoomIn(), true],
     'viewer.zoomOut':       [() => Scene.zoomOut(), true],
+    'viewer.fitOriginalContain': [() => Scene.setFitMode('original_contain'), false],
     'viewer.fitContain':    [() => Scene.setFitMode('contain'), false],
     'viewer.fitHeight':     [() => Scene.setFitMode('height'), false],
     'viewer.fitWidth':      [() => Scene.setFitMode('width'), false],

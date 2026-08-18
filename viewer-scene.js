@@ -83,7 +83,7 @@
   let bgBlur = localStorage.getItem('viewer-bg') !== 'false';
   let hudVisible = localStorage.getItem('viewer-hud') === 'true';
   let zoom = 1;
-  let fitMode = 'contain'; // 'contain' | 'width' | 'height' | 'none'
+  let fitMode = localStorage.getItem('viewer-fit') || 'original_contain'; // 'original_contain' | 'contain' | 'width' | 'height' | 'none'
   let flipH = false, flipV = false, rotateDeg = 0;
   let pdfDoc = null;
   let showGroupToken = 0;
@@ -670,6 +670,7 @@
       hideViewerLoading(loadingToken);
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
       window.MeldexViewerAnnotations?.onSceneChanged?.();
+      window.MeldexViewerVideo?.startActiveVideoPlayback?.();
     };
     if (media.length > 0) {
       Promise.all([...media].map(el => el.tagName === 'VIDEO' ? window.MeldexViewerVideo.waitForVideoReady(el) : waitForViewerImage(el))).then(swapLayers);
@@ -776,7 +777,10 @@
       if (!nw || !nh) return;
 
       let w, h;
-      if (fitMode === 'contain') {
+      if (fitMode === 'original_contain') {
+        const scale = Math.min(vw / nw, vh / nh, 1);
+        w = nw * scale; h = nh * scale;
+      } else if (fitMode === 'contain') {
         const scale = Math.min(vw / nw, vh / nh); // 長い方の辺をパネルにフィット
         w = nw * scale; h = nh * scale;
       } else if (fitMode === 'width') {
@@ -857,14 +861,14 @@
   function setFitUI() {
     // モードごとに異なるアイコンを割り当てる（ビューワー残課題修正計画 2026-08-04
     // 「5. フィット切替ボタンのアイコン」）。
-    const fitLabels = {contain:'フィット: 全体',height:'フィット: 高さ',width:'フィット: 幅',none:'フィット: 原寸'};
-    const fitIcons = {contain:'maximize2',height:'moveVertical',width:'moveHorizontal',none:'scanLine'};
+    const fitLabels = {original_contain:'フィット: 原寸（収める）',contain:'フィット: 全体',height:'フィット: 高さ',width:'フィット: 幅',none:'フィット: 原寸'};
+    const fitIcons = {original_contain:'minimize2',contain:'maximize2',height:'moveVertical',width:'moveHorizontal',none:'scanLine'};
     const btn = document.getElementById('btn-fit');
-    btn.classList.toggle('active', fitMode !== 'contain');
+    btn.classList.toggle('active', fitMode !== 'original_contain' && fitMode !== 'contain');
     btn.innerHTML = viewerIcon(fitIcons[fitMode] || 'maximize2');
     btn.title = fitLabels[fitMode] || 'フィット';
     btn.setAttribute('aria-label', btn.title);
-    flashStatus(({contain:'全体フィット',height:'高さフィット',width:'幅フィット',none:'原寸表示'})[fitMode]);
+    flashStatus(({original_contain:'原寸（収める）',contain:'全体フィット',height:'高さフィット',width:'幅フィット',none:'原寸表示'})[fitMode] || fitMode);
   }
 
   function flashStatus(msg, ms=1500) {
@@ -885,7 +889,7 @@
   }
 
   function updateHud() {
-    const fitLabels = {contain:'全体',width:'幅',height:'高さ',none:'原寸'};
+    const fitLabels = {original_contain:'原寸（収める）',contain:'全体',width:'幅',height:'高さ',none:'原寸'};
     const info = [isPdf ? 'PDF: ' + pdfPath.split('/').pop() : isSingle ? singleFile.split('/').pop() : '画像: ' + items.length + '枚'];
     info.push('モード: ' + ({single:'単体',spread:'見開き',manga:'マンガ'}[mode] || mode));
     info.push('フィット: ' + (fitLabels[fitMode] || fitMode));
@@ -905,6 +909,7 @@
 
   function setFitMode(nextFit) {
     fitMode = nextFit;
+    localStorage.setItem('viewer-fit', fitMode);
     if (nextFit === 'none') zoom = 1;
     renderCache.clear();
     applyFit();
@@ -913,7 +918,7 @@
   }
 
   function cycleFit() {
-    const modes = ['contain', 'height', 'width', 'none'];
+    const modes = ['original_contain', 'contain', 'height', 'width', 'none'];
     setFitMode(modes[(modes.indexOf(fitMode) + 1) % modes.length]);
   }
 

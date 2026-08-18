@@ -168,7 +168,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     }
   } catch (e) {}
 })();
-</script><script src="meldex-cloud-runtime-03.js?v=7127638551dc0b93"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=824da1eff1112455"></script>
+</script><script src="meldex-cloud-runtime-03.js?v=c51a92a205438895"></script><script src="gb-cloud-runtime-config.js"></script><script src="meldex-cloud-runtime-04.js?v=b9bb42720d9fad92"></script>
 
 
 
@@ -197,7 +197,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 <link rel="stylesheet" href="gb-cloud-mobile.css">
 <link rel="stylesheet" href="gb-cloud-mobile-explorer.css">
 <link rel="stylesheet" href="gb-cloud-conflict-resolver.css">
-<script src="meldex-cloud-runtime-05.js?v=de6c4e967e5d88fa"></script>
+<script src="meldex-cloud-runtime-05.js?v=2eb878ea0bba98da"></script>
 <link rel="stylesheet" href="gb-tools.css">
 <link rel="stylesheet" href="gb-note-block-menu.css">
 <link rel="stylesheet" href="gb-note-toolbar-block-select.css">
@@ -251,7 +251,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
     <input type="search" id="sidebar-search-input" aria-label="フォルダツリーを検索" placeholder="検索..." autocomplete="off" data-lpignore="true" data-form-type="other" readonly data-onfocus="this.removeAttribute('readonly')" style="flex:1;min-width:0;padding:4px 6px;font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;outline:none;" data-onkeydown="if(event.key==='Escape'){this.value='';doTreeNameSearch();}" data-oninput="doTreeNameSearch()">
     <button type="button" id="btn-tree-search-clear" style="display:none;width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="検索をクリア" aria-label="検索をクリア" data-action="clearTreeNameSearch()"><span class="ico ico-x" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-vault-search" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="全文検索" aria-label="全文検索を開く" data-action="openSearchPanel()"><span class="ico ico-search" style="width:14px;height:14px;"></span></button>
-    <button type="button" id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ表示切替" aria-label="フィルタ表示を切り替える" data-action="toggleGlobalFilterBar()"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-tree-display" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="表示設定" aria-label="フォルダツリーの表示設定" data-action="showTreeDisplaySettings(event)"><span class="ico ico-layoutGrid" style="width:14px;height:14px;"></span></button>
+    <button type="button" id="btn-filter-toggle" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フィルタ" aria-label="フィルタ表示を切り替える" data-action="toggleGlobalFilterPopup(event)"><span class="ico ico-filter" style="width:14px;height:14px;"></span></button>
     <button type="button" id="btn-outliner-refresh" class="outliner-refresh-btn" data-e2e-id="outliner-refresh-button" style="width:24px;height:24px;padding:0;background:none;border:none;color:var(--fg2);cursor:pointer;flex-shrink:0;" title="フォルダツリーを更新" aria-label="フォルダツリーを更新" data-action="refreshOutlinerFromButton(event)"><span class="ico ico-refreshCw" style="width:14px;height:14px;"></span></button>
   </div>
   <div id="search-panel">
@@ -573,8 +574,8 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
           <option value="hflow">横並び（高さ揃え）</option>
           <option value="list">リスト</option>
         </select>
-        <button id="folder-display-btn" type="button" title="表示" aria-label="表示設定" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="showFolderDisplaySettings()"><span id="folder-display-icon" class="ico ico-grid3x3"></span> 表示</button>
-        <button id="folder-filter-btn" type="button" title="フィルタ" aria-label="フィルタ設定" style="font-size:12px;padding:2px 8px;background:var(--bg3);color:var(--fg2);border:1px solid var(--border);border-radius:3px;cursor:pointer;" data-action="showFolderFilterSettings()"><span class="ico ico-filter"></span> フィルタ<span id="folder-filter-count" hidden></span></button>
+        <button id="folder-display-btn" class="tb-icon-btn" type="button" title="表示" aria-label="表示設定" data-action="showFolderDisplaySettings()"><span id="folder-display-icon" class="ico ico-grid3x3"></span></button>
+        <button id="folder-filter-btn" class="tb-icon-btn" type="button" title="フィルタ" aria-label="フィルタ設定" data-action="showFolderFilterSettings()"><span class="ico ico-filter"></span><span id="folder-filter-count" hidden></span></button>
         <button type="button" class="tb-icon-btn" data-e2e-id="folder-reload-current" title="再読み込み" aria-label="再読み込み" data-action="reloadCurrentOpenFile()"><span class="ico ico-refreshCw"></span></button>
         <button type="button" class="tb-icon-btn" title="検索と置換" aria-label="検索と置換" data-action="openCurrentToolbarSearchReplace('folder')"><span class="ico ico-search"></span></button>
         <button type="button" class="tb-icon-btn gb-toolbar-option-panel-btn" title="オプションを開く" aria-label="オプションを開く" data-action="showFolderPanelSettings()"><span class="ico ico-slidersHorizontal"></span></button>
@@ -737,7 +738,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
         <div id="team-rooms" style="flex-shrink:0;border-bottom:1px solid var(--border);overflow-y:auto;max-height:30%;background:var(--bg2);">
           <div class="gb-section-desc" data-e2e-id="team-room-privacy-notice" style="display:flex;align-items:center;gap:4px;padding:4px 8px 0;">
             <span>DMと非公開ルームは共有フォルダに保存されます</span>
-            <span class="ico ico-helpCircle gb-field-help" tabindex="0" role="img" data-gb-tooltip="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" aria-label="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" style="width:13px;height:13px;flex-shrink:0;"></span>
+            <span class="ico ico-helpCircle gb-field-help" tabindex="0" role="img" data-e2e-id="team-room-privacy-help" data-gb-tooltip="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" aria-label="Meldexの画面では当事者以外に表示されませんが、共有フォルダを直接開ける人は読めます。DMの内容は、管理者AIが答えるための材料として使われることがあります。" style="width:13px;height:13px;flex-shrink:0;"></span>
           </div>
           <div class="team-room-toolbar" style="display:flex;align-items:center;padding:4px 8px;border-bottom:1px solid var(--border);flex-shrink:0;gap:4px;">
             <select id="team-room-select" class="team-room-select" data-e2e-id="team-room-select" title="ルームを選択" aria-label="ルームを選択" style="flex:1;min-width:120px;padding:2px 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;">
@@ -784,7 +785,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
       <input id="rp-ann-search" type="text" aria-label="注釈を検索" placeholder="検索..." style="flex:1;min-width:120px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:11px;">
       <select id="rp-ann-view" title="表示" aria-label="表示" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="preview">プレビュー</option><option value="list">リスト</option></select>
       <select id="rp-ann-sort" title="並び替え" aria-label="並び替え" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="modified-desc">更新が新しい順</option><option value="created-desc">作成が新しい順</option><option value="created-asc">作成が古い順</option><option value="path-asc">ファイル名順</option><option value="type-asc">種類順</option><option value="user-asc">ユーザー順</option></select>
-      <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option></select>
+      <select id="rp-ann-type" title="タイプ" aria-label="タイプ" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全タイプ</option><option value="comment">コメント</option><option value="stroke">ストローク</option><option value="marker">マーカー</option><option value="lasso">投げ縄</option><option value="rect">矩形塗り</option><option value="sticky">付箋</option><option value="screenshot">スクリーンショット</option></select>
       <select id="rp-ann-scope" title="対象ファイル" aria-label="対象ファイル" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="current">現在のファイル</option><option value="all">全ファイル</option></select>
       <select id="rp-ann-status" title="状態" aria-label="状態" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="open">未解決</option><option value="all">全て</option><option value="resolved">解決済み</option><option value="orphan">孤児</option><option value="deleted">削除済み</option></select>
       <select id="rp-ann-user" title="ユーザー" aria-label="ユーザー" style="font-size:11px;padding:2px 4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;"><option value="">全ユーザー</option></select>
@@ -810,7 +811,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   <div class="ab-sep"></div>
   <button id="rab-history" type="button" title="履歴" aria-label="履歴" aria-pressed="false" data-action="toggleRightPanelTab('history')"><span class="ico ico-history"></span></button>
 </div>
-<script src="meldex-cloud-runtime-07.js?v=a6945ff90c3f5315"></script>
+<script src="meldex-cloud-runtime-07.js?v=0635ce0f2e3baa29"></script>
 
 
 
@@ -818,7 +819,7 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
 
 <link rel="stylesheet" href="gb-scriptnote-editor.css">
 <link rel="stylesheet" href="gb-scriptnote-text-selection.css">
-<script src="meldex-cloud-runtime-08.js?v=6d8944173367525a"></script>
+<script src="meldex-cloud-runtime-08.js?v=9f0cce1342b203da"></script>
 
 
 
@@ -888,7 +889,13 @@ document.querySelectorAll('link[rel~="icon"]').forEach(function(link) {
   }
 })();
 </script>
-<script src="meldex-cloud-runtime-09.js?v=41d78378a3b93c88"></script>
+<script src="meldex-cloud-runtime-09.js?v=bb44996ebb700cbe"></script>
+
+
+
+
+
+
 
 
 

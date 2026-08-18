@@ -149,8 +149,17 @@
     const type = String(item?.type || 'folder').toLowerCase();
     const name = item.name || item.label || String(path).split(/[\\/]/).pop() || 'フォルダ';
     if (options.closeDrawer !== false) window.MeldexCloudMobile?.suppressNextSidebarOpen?.();
-    if (type === 'database' && typeof window.selectDatabase === 'function') {
-      Promise.resolve(window.selectDatabase(path, null, { fromExplorer: true, skipHighlight: true })).catch(() => {});
+    if (type === 'database') {
+      if (typeof window.openLinkInMainPane !== 'function') {
+        const errorMsg = 'メインパネルでデータベースを開けませんでした';
+        console.error(errorMsg, { path, name, type });
+        if (typeof showStatus === 'function') showStatus(errorMsg, true);
+        return false;
+      }
+      Promise.resolve(window.openLinkInMainPane(path, name, { linkType: 'database' })).catch((error) => {
+        console.error('データベースを開く処理に失敗しました:', error);
+        if (typeof showStatus === 'function') showStatus(error?.message || 'データベースを開けませんでした', true);
+      });
     } else if (typeof window.openFolder === 'function') {
       // gb-folder.js は編集禁止のため、fromExplorer の一体化リダイレクトを
       // skipMobileExplorer で明示的にバイパスし、デスクトップ同様メインパネルへ表示する。

@@ -423,11 +423,11 @@
       GBDockPopup.close();
     }
     const scrollSnap = _saveAllScrollPositions();
+    if (_preRender) _preRender();
     // 全ペインkeep-alive（ビューワー残課題修正計画 2026-08-04「1」）。_renderPreservingActivePane()
     // が既にアクティブペインのcontentElを取り外し済みの場合はGBPaneKeepAlive.detachAll内で
     // 自然にスキップされる（parentNode無しのため）ため、ここでの追加呼び出しは二重処理にならない。
     if (typeof GBPaneKeepAlive !== 'undefined') GBPaneKeepAlive.detachAll(_paneMap);
-    if (_preRender) _preRender();
     _disconnectPaneObservers();
     _paneMap = {};
     _layoutEl.innerHTML = '';

@@ -297,8 +297,20 @@
           } catch (error) { status(Api().errorMessage(error), true); }
         }, { disabled: !writable, e2eId: 'scheduler-template-archive-toggle' }),
       );
-      const open = button('表で詳しく編集', 'tableProperties', () => component?._selectProductionTab?.('targets'), { e2eId: 'scheduler-template-open-table' });
-      host.replaceChildren(field('テンプレート', selector), toolbar, editor, open); renderEditor();
+      const tableTargetSelect = select([
+        ['targets', '作業対象'],
+        ['contents', '作業内容'],
+        ['scales', '作業規模'],
+        ['works', '作品設定'],
+      ], 'targets', 'scheduler-template-table-select');
+      const open = button('表で詳しく編集', 'tableProperties', () => {
+        const targetKey = tableTargetSelect.value || 'targets';
+        component?._selectProductionTab?.(targetKey);
+      }, { e2eId: 'scheduler-template-open-table' });
+      const tableActions = document.createElement('div');
+      tableActions.className = 'gb-scheduler-baseline-controls';
+      tableActions.append(tableTargetSelect, open);
+      host.replaceChildren(field('テンプレート', selector), toolbar, editor, tableActions); renderEditor();
     } catch (error) {
       loading.textContent = Api().errorMessage(error); loading.classList.add('is-error');
     }

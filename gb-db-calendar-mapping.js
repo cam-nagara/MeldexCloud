@@ -447,7 +447,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
 
   const rowSelect = (id, label, options, value, placeholder = '(なし)', help = '') => `
     <div class="field gb-field" style="margin-top:6px;">
-      <label class="gb-label" for="${id}">${label}${help ? ' ' + fieldHelp(help) : ''}</label>
+      <label class="gb-label" for="${id}">${label}${help ? ' ' + fieldHelp(help, { e2eId: `${id}-help` }) : ''}</label>
       <select id="${id}" class="gb-select" data-e2e-id="${id}" style="width:100%;box-sizing:border-box;">
         <option value="">${placeholder}</option>
         ${options.map(p => `<option value="${esc(p)}" ${value===p?'selected':''}>${esc(p)}</option>`).join('')}

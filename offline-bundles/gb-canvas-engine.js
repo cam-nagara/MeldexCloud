@@ -958,7 +958,8 @@ function bdParseMd(raw) {
       const bcm = props.match(/borderColor:\s*'((?:[^'\\]|\\.)*)'/); if (bcm) t.borderColor = bcm[1].replace(/\\'/g, "'");
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
-      const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const csm = props.match(/cardStyle:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (csm) { try { t.cardStyle = String(bdYamlScalar(csm[1]) || ''); } catch { t.cardStyle = csm[1].replace(/^"|"$/g, ''); } }
       const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
       if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
@@ -1518,7 +1519,7 @@ function bdToMd() {
       if (hasOwn(n, 'borderColor')) parts.push('borderColor: ' + fmtJsonString(n.borderColor));
       if (hasOwn(n, 'borderWidth')) parts.push('borderWidth: ' + (+n.borderWidth || 0));
       if (hasOwn(n, 'borderRadius')) parts.push('borderRadius: ' + (+n.borderRadius || 0));
-      if (hasOwn(n, 'cardStyle')) parts.push('cardStyle: ' + fmtJsonString(n.cardStyle));
+      if (hasOwn(n, 'cardStyle') && n.cardStyle) parts.push('cardStyle: ' + n.cardStyle);
       if (hasOwn(n, 'cloudBumpWidth')) parts.push('cloudBumpWidth: ' + (+n.cloudBumpWidth || 0));
       if (hasOwn(n, 'cloudBumpHeight')) parts.push('cloudBumpHeight: ' + (+n.cloudBumpHeight || 0));
       if (hasOwn(n, 'cloudSideWidth')) parts.push('cloudSideWidth: ' + (+n.cloudSideWidth || 0));
@@ -1697,11 +1698,16 @@ function _isLinkTooltipSuppressed(nodeDiv) {
     _linkTooltipSuppressedNode = null;
     return false;
   }
-  return nodeDiv === _linkTooltipSuppressedNode || _linkTooltipSuppressedNode.contains(nodeDiv);
+  return nodeDiv === _linkTooltipSuppressedNode ||
+         _linkTooltipSuppressedNode.contains(nodeDiv) ||
+         (!!nodeDiv?.id && !!_linkTooltipSuppressedNode.id && nodeDiv.id === _linkTooltipSuppressedNode.id);
 }
 
 function _showLinkTooltip(nodeDiv, linkPath, linkType) {
-  if (_linkTooltipSuppressedNode && !_linkTooltipSuppressedNode.contains(nodeDiv)) _linkTooltipSuppressedNode = null;
+  nodeDiv = (nodeDiv?.id && document.getElementById(nodeDiv.id)) || nodeDiv;
+  if (_linkTooltipSuppressedNode && !_linkTooltipSuppressedNode.contains(nodeDiv) && (!_linkTooltipSuppressedNode.id || _linkTooltipSuppressedNode.id !== nodeDiv?.id)) {
+    _linkTooltipSuppressedNode = null;
+  }
   if (_isLinkTooltipSuppressed(nodeDiv)) return;
   const token = ++_linkTooltipToken;
   clearTimeout(_linkTooltipTimer);
@@ -1716,6 +1722,8 @@ function _showLinkTooltip(nodeDiv, linkPath, linkType) {
       text = text.substring(0, 300);
       if (text.length >= 300) text += '\u2026';
 
+      nodeDiv = (nodeDiv?.id && document.getElementById(nodeDiv.id)) || nodeDiv;
+      if (_isLinkTooltipSuppressed(nodeDiv)) return;
       if (token !== _linkTooltipToken || !document.documentElement.contains(nodeDiv)) return;
       if (_linkTooltipOwnerNode && document.documentElement.contains(_linkTooltipOwnerNode)) {
         _linkTooltipOwnerNode.removeAttribute('aria-describedby');

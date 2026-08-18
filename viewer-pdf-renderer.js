@@ -58,6 +58,7 @@
 
   // フィット倍率の純粋計算（viewer-scene.jsのapplyFit/refitPdfForResizeから利用）。
   function computeFitZoom(fitMode, pageW, pageH, viewportW, viewportH) {
+    if (fitMode === 'original_contain') return Math.min(viewportW / pageW, viewportH / pageH, 1);
     if (fitMode === 'contain') return Math.min(viewportW / pageW, viewportH / pageH);
     if (fitMode === 'width') return viewportW / pageW;
     if (fitMode === 'height') return viewportH / pageH;

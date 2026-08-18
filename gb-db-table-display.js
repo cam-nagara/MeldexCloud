@@ -398,8 +398,11 @@ function _dbEstimateWrapLines(text, widthChars) {
 function _dbTextForProp(entityName, propName, data, propTypes, advFilters, dbPath, filterMode) {
   const entityData = data?.entities?.[entityName] || {};
   const ptc = propTypes?.[propName];
-  if (ptc?.source) {
-    const metaVal = entityData['_' + ptc.source] ?? '';
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(ptc)
+    : (['created', 'modified', 'modified_by'].includes(ptc?.source) ? ptc.source : '');
+  if (metadataSource) {
+    const metaVal = entityData['_' + metadataSource] ?? '';
     return metaVal == null ? '' : String(metaVal);
   }
   if (ptc?.type === 'formula' && ptc.formula && typeof formulaEvalForEntity === 'function') {

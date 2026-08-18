@@ -1,3 +1,31 @@
+          title: labelName,
+          layoutMode: 'manga',
+          editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
+          scenarioTypes: [],
+          characters: [],
+          characterDb: [],
+          notes: [],
+          rows: [],
+          source: { importedFrom: '', modeName: 'マンガ縦書き' },
+        });
+        return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
+      }
+      if (type === 'board') {
+        const labelName = await _uniqueName(provider, parent, label, '.mel-board');
+        const targetPath = _joinPath(parent, labelName + '.mel-board');
+        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
+        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
+        await provider.writeText(targetPath, boardContent);
+        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
+      }
+      if (type === 'calendar') {
+        const labelName = await _uniqueName(provider, parent, label, '');
+        const targetPath = _joinPath(parent, labelName);
+        await _directoryHandle(provider, targetPath, true);
+        await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
+        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
+      }
+      if (type === 'smart-db') {
         const labelName = await _uniqueName(provider, parent, label, '.json');
         const targetPath = _joinPath(parent, labelName + '.json');
         await provider.writeJson(targetPath, {

@@ -1,3 +1,7 @@
+    svgIcon.style.display = 'block';
+    svgIcon.style.flex = '0 0 ' + size + 'px';
+  }
+
   function _createNoteEditor(data, scheduleSave, noteId) {
     const editor = document.createElement('div');
     editor.className = 'ann-note-editor';
@@ -894,7 +898,3 @@
       const nodeEl = _boardAnnotationNode(anchor);
       if (!nodeEl) {
         if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
-        return;
-      }
-      if (entry.observedNode !== nodeEl) {
-        if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);

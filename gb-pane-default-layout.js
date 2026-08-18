@@ -127,9 +127,13 @@
     return pick(
       visiblePanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
       visiblePanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      visiblePanes.find(pane => pane.meldexRole === 'main'),
+      visiblePanes.find(pane => pane.id === 'pane-main'),
       visiblePanes.find(_isContentPane),
       allPanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
       allPanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      allPanes.find(pane => pane.meldexRole === 'main'),
+      allPanes.find(pane => pane.id === 'pane-main'),
       allPanes.find(_isContentPane),
       opts.contentOnly ? null : visiblePanes[0],
       opts.contentOnly ? null : allPanes[0],

@@ -1363,6 +1363,7 @@ body[data-statusbar-hidden="1"] #status-bar { display: none !important; }
   .chat-composer-controls > select,
   .team-room-toolbar-btn,
   .team-room-select,
+  .meldex-chat-listbox-trigger,
   .team-composer-controls > button {
     height: 44px !important;
     min-height: 44px !important;

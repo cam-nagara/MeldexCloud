@@ -22,7 +22,7 @@ async function _getDbMetadataCached(dbPath, force) {
   }
   let meta = { property_types: {} };
   try {
-    meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath));
+    meta = await apiFetch('/db-metadata?path=' + encodeURIComponent(dbPath), { cache: 'no-store', skipBrowseCache: true });
   } catch (err) {
     throw new Error('DBメタデータ取得に失敗しました: ' + dbPath);
   }
@@ -260,8 +260,6 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   const isSingle = remotePtc.type === 'relation';
   const targetPath = _relationEntityPathFromMap(remoteDbPath, targetName, map);
   const vals = entData[remotePropName] || [];
-  // 採用/掲載済み値のみを編集対象にする。以前は vals[0] をそのまま書き換えていたため、
-  // 先頭が案/ボツ候補だった場合にその値を破壊していた。
   const adoptedVals = vals.filter(v => {
     const status = v?.status || '採用';
     return status === '採用' || status === '掲載済み';
@@ -281,24 +279,35 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   } else {
     nextIds = nextIds.filter(id => id !== sourceId);
   }
-  if (currentVal && nextIds.join(', ') === currentIds.join(', ')) return null;
+  if (currentVal && nextIds.join(', ') === currentIds.join(', ')) {
+    return null;
+  }
   if (!currentVal && !adding) return null;
   const snapshot = _bidirectionalValueSnapshot(currentVal);
   let changeKind = 'none';
   let createdResult = null;
   if (currentVal) {
+    const valObj = {
+      ...currentVal,
+      property: currentVal.property || remotePropName,
+      entry_path: currentVal.entry_path || targetPath,
+    };
     if (nextIds.length === 0) {
       changeKind = 'deleted';
-      await _apiPutValue(currentVal, { _delete: true });
+      await _apiPutValue(valObj, { _delete: true });
     } else {
       changeKind = 'updated';
-      await _apiPutValue(currentVal, { new_value: nextIds.join(', ') });
+      await _apiPutValue(valObj, { new_value: nextIds.join(', ') });
     }
   } else if (adding) {
     changeKind = 'created';
     createdResult = await _apiPostValue(targetPath, remotePropName, sourceId, '採用', '');
   }
-  _relationCache[remoteDbPath] = null;
+  if (typeof _invalidateRelationTargetCaches === 'function') {
+    _invalidateRelationTargetCaches(remoteDbPath);
+  } else {
+    _relationCache[remoteDbPath] = null;
+  }
   return {
     undo: () => _restoreBidirectionalValueSnapshot(targetPath, remotePropName, snapshot, changeKind, createdResult),
   };
@@ -306,9 +315,13 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
 
 async function _applyBidirectionalRelationSync({ sourceDbPath, entityPath, propName, ptc, oldValue, newValue }) {
   const cfg = _getBidirectionalRelationConfig(sourceDbPath, propName, ptc);
-  if (!cfg || oldValue === newValue) return null;
+  if (!cfg || oldValue === newValue) {
+    return null;
+  }
   const sourceId = await _getRelationEntityId(sourceDbPath, entityPath);
-  if (!sourceId) return null;
+  if (!sourceId) {
+    return null;
+  }
   const oldIds = _splitRelationIdsForSync(oldValue);
   const newIds = _splitRelationIdsForSync(newValue);
   const removed = oldIds.filter(id => !newIds.includes(id));

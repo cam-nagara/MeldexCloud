@@ -155,6 +155,7 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   '拡張機能': { tabId: 'インポート', pageId: 'extensions' },
   'ゴミ箱': { tabId: 'ゴミ箱・データ保守', pageId: 'trash' },
   'DB': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
+  'データ保守': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
   'データ保護': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
   'データベース': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },
   'データベースメンテナンス': { tabId: 'ゴミ箱・データ保守', pageId: 'database' },

@@ -357,16 +357,127 @@
     </div>`;
   }
 
+  function _makePopupNumberRows(def, previewEl) {
+    if (!Array.isArray(def?.numbers) || !def.numbers.length) return [];
+    return def.numbers.map(spec => {
+      const key = spec?.key || '';
+      if (!key) return null;
+      const value = _numberSpecValue(spec);
+      const unit = spec.unit || '';
+      const controlId = _e2eId('settings-theme-number', key);
+      const label = spec.label || key || '数値';
+      const row = document.createElement('div');
+      row.className = 'gb-fmt-popup-row gb-fmt-popup-row--number';
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '6px';
+      row.style.padding = '3px 0';
+
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'gb-fmt-popup-label';
+      labelSpan.textContent = label;
+      labelSpan.style.minWidth = '54px';
+      labelSpan.style.fontSize = '11px';
+      labelSpan.style.color = 'var(--fg2)';
+      row.appendChild(labelSpan);
+
+      const updateValue = (val) => {
+        const strVal = String(val == null ? '' : val).trim();
+        const finalVal = strVal ? strVal + (unit || '') : '';
+        if (typeof applySettingsThemeStyleSetting === 'function') {
+          applySettingsThemeStyleSetting(key, finalVal);
+        } else {
+          _setThemeStyle(key, finalVal);
+        }
+        _refreshSettingsPreviewElement(previewEl, def);
+      };
+
+      if (spec.slider) {
+        const range = document.createElement('input');
+        range.type = 'range';
+        range.className = 'cs-alpha cs-number-range';
+        range.value = String(value);
+        if (spec.min != null) range.min = String(spec.min);
+        if (spec.max != null) range.max = String(spec.max);
+        range.step = String(spec.step ?? 1);
+        range.setAttribute('data-e2e-id', controlId + '-range');
+        range.setAttribute('aria-label', label);
+        range.title = label;
+        range.style.flex = '1';
+        range.style.minWidth = '60px';
+        range.addEventListener('input', () => {
+          numInput.value = range.value;
+          updateValue(range.value);
+        });
+        row.appendChild(range);
+      }
+
+      const numInput = document.createElement('input');
+      numInput.type = 'number';
+      numInput.className = 'gb-fmt-text cs-number-input';
+      numInput.value = String(value);
+      if (spec.min != null) numInput.min = String(spec.min);
+      if (spec.max != null) numInput.max = String(spec.max);
+      numInput.step = String(spec.step ?? 1);
+      numInput.setAttribute('data-e2e-id', controlId + '-input');
+      numInput.setAttribute('aria-label', label);
+      numInput.title = label;
+      numInput.style.width = '48px';
+      numInput.style.textAlign = 'right';
+      numInput.addEventListener('input', () => {
+        const rangeEl = row.querySelector('input[type="range"]');
+        if (rangeEl) rangeEl.value = numInput.value;
+        updateValue(numInput.value);
+      });
+      numInput.addEventListener('change', () => {
+        const rangeEl = row.querySelector('input[type="range"]');
+        if (rangeEl) rangeEl.value = numInput.value;
+        updateValue(numInput.value);
+      });
+      row.appendChild(numInput);
+
+      if (unit) {
+        const unitSpan = document.createElement('span');
+        unitSpan.className = 'cs-number-unit';
+        unitSpan.textContent = unit;
+        unitSpan.style.fontSize = '11px';
+        unitSpan.style.color = 'var(--fg2)';
+        unitSpan.style.marginLeft = '2px';
+        row.appendChild(unitSpan);
+      }
+
+      return row;
+    }).filter(Boolean);
+  }
+
   function renderStyleRowUnified(def) {
     if (Array.isArray(def.numbers) && def.numbers.length) {
+      const styleId = _registerSettingsDef(def);
       const previewText = def.text || def.label || '数値';
-      const previewStyle = /選択背景/.test(def.label || '')
+      const previewStyle = _settingsPreviewStyleForRender(def) || (/選択背景/.test(def.label || '')
         ? 'background:var(--ui-inner-tab-active-bg);color:var(--ui-inner-tab-active-fg);'
-        : 'background:var(--ui-inner-tab-bg);color:var(--ui-inner-tab-fg);';
+        : 'background:var(--ui-inner-tab-bg);color:var(--ui-inner-tab-fg);');
+      const controls = def.numbers.map((n) => {
+        const raw = _cssVar(n.key);
+        const m = String(raw || '').match(/-?\d+(?:\.\d+)?/);
+        const value = m ? parseFloat(m[0]) : (n.fallback ?? n.value ?? n.min ?? 0);
+        const unit = n.unit || '';
+        const attrs = `data-number-key="${_e(n.key)}" data-unit="${_e(unit)}" min="${_e(n.min ?? '')}" max="${_e(n.max ?? '')}" step="${_e(n.step ?? 1)}"`;
+        const controlId = _e2eId('settings-theme-number', n.key);
+        const controlLabel = n.label || def.label || n.key || '数値';
+        const labelAttrs = `aria-label="${_e(controlLabel)}" title="${_e(controlLabel)}"`;
+        const range = n.slider ? `<input type="range" class="cs-alpha cs-number-range" value="${_e(value)}" ${attrs} ${labelAttrs} data-e2e-id="${_e(controlId + '-range')}" data-oninput="setNumericStyleSetting(this)">` : '';
+        return `<div class="cs-row-group cs-row-group--number">
+        <span class="cs-row-group-label">${_e(n.label || '')}</span>
+        ${range}
+        <input type="number" class="cs-width-input cs-number-input" value="${_e(value)}" ${attrs} ${labelAttrs} data-e2e-id="${_e(controlId + '-input')}" data-oninput="setNumericStyleSetting(this)" data-onchange="setNumericStyleSetting(this)">
+        <span class="cs-number-unit">${_e(unit)}</span>
+      </div>`;
+      }).join('');
       return `<div class="cs-row">
       <span class="cs-row-label">${_e(def.label)}</span>
-      <span class="cs-row-preview" data-e2e-id="${_e(_settingsPreviewE2eId(def))}" data-style-preview-label="${_e(def.label || '')}" style="${_e(previewStyle)}">${_e(previewText)}</span>
-      ${def.numbers.map(_renderNumberSpec).join('')}
+      <span class="cs-row-preview" data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" style="${_e(previewStyle)}">${_e(previewText)}</span>
+      ${controls}
     </div>`;
     }
     if (_isBgOnlySettingsDef(def)) {
@@ -392,7 +503,7 @@
     </div>`;
     }
     const mapping = _mapSettingsDef(def);
-    const clickable = mapping.fields.length > 0;
+    const clickable = mapping.fields.length > 0 || (Array.isArray(def.numbers) && def.numbers.length > 0);
     const styleId = clickable ? _registerSettingsDef(def) : '';
     const attrs = clickable
       ? ` data-e2e-id="${_e(_settingsPreviewE2eId(def, styleId))}" data-style-preview-label="${_e(def.label || '')}" data-style-id="${_e(styleId)}" data-style-label="${_e(def.label)}" data-action="openStylePreviewPopup(this)" tabindex="0" role="button" aria-label="${_e(def.label || 'スタイル')}の書式設定" title="クリックで書式設定"`
@@ -417,7 +528,9 @@
     const def = _defByPreview(previewEl);
     if (!def) return;
     const { map, fields } = _mapSettingsDef(def);
-    if (!fields.length) return;
+    const hasNumbers = Array.isArray(def.numbers) && def.numbers.length > 0;
+    if (!fields.length && !hasNumbers) return;
+    const extraNumberRows = _makePopupNumberRows(def, previewEl);
     const stateEntry = def.__themeStateEntry || null;
     const stateTargetKeys = stateEntry && typeof settingsThemeStyleSettingTargetKeys === 'function'
       ? settingsThemeStyleSettingTargetKeys(stateEntry.key)
@@ -472,6 +585,7 @@
       fields,
       values: _settingsValues(def, map),
       bgColorType: def.bgType || '',
+      ...(extraNumberRows.length ? { extraRow2: extraNumberRows } : {}),
       onChange(prop, value) {
         const stateKey = stateEntry && ({
           textColor: map.textColor,
@@ -722,7 +836,8 @@
   }
 
   function _readFile(field, adapter) {
-    return field && adapter && typeof _fsReadFieldValue === 'function' ? _fsReadFieldValue(field, adapter) : '';
+    const reader = typeof window._fsReadFieldValue === 'function' ? window._fsReadFieldValue : (typeof _fsReadFieldValue === 'function' ? _fsReadFieldValue : null);
+    return field && adapter && typeof reader === 'function' ? reader(field, adapter) : '';
   }
 
   function _fileValues(rowData, adapter, map) {
@@ -855,15 +970,19 @@
   }
 
   function renderFileStyleTabUnified(ctx) {
-    const rpDetail = document.getElementById('rp-detail');
-    if (rpDetail && typeof _ensureDetailTabShell === 'function') _ensureDetailTabShell(rpDetail);
-    const el = document.getElementById('detail-tab-file-style');
+    let el = document.getElementById('detail-tab-file-style');
+    if (!el) {
+      const rpDetail = document.getElementById('rp-detail');
+      if (rpDetail) _ensureDetailTabShell(rpDetail);
+      el = document.getElementById('detail-tab-file-style');
+    }
     if (!el) return;
     el.dataset.fileStyleContext = ctx || '';
     if (ctx !== 'calendar') el.removeAttribute('data-calendar-style');
     const ctxLabel = { folder: 'フォルダ', page: 'ノート', db: 'シート', scriptnote: 'シナリオ', board: 'ボード', calendar: 'カレンダー' }[ctx] || '';
     const spec = _FS_FIELDS[ctx] || { display: [], editOps: [] };
-    const adapter = _fsGetAdapter(ctx);
+    const getAdapter = typeof window._fsGetAdapter === 'function' ? window._fsGetAdapter : (typeof _fsGetAdapter === 'function' ? _fsGetAdapter : null);
+    const adapter = getAdapter ? getAdapter(ctx) : null;
     el.innerHTML = '';
 
     const wrap = document.createElement('div');

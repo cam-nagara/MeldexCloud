@@ -839,6 +839,22 @@ function _handleTbodyPointerdown(e) {
   const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
   if (!paneRoot) return;
 
+  let suppressTimer = null;
+  const suppressClick = (ev) => {
+    ev.preventDefault();
+    cleanupSuppress();
+  };
+  cb.addEventListener('click', suppressClick, { once: true, capture: true });
+  const cleanupSuppress = () => {
+    if (suppressTimer) {
+      clearTimeout(suppressTimer);
+      suppressTimer = null;
+    }
+    cb.removeEventListener('click', suppressClick, true);
+    cb._rowSelectPointerdownHandled = false;
+  };
+  suppressTimer = setTimeout(cleanupSuppress, 200);
+
   // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)。
   // 通常行は専用ハンドルだけを draggable にしているため、解除時は true 固定ではなく元の値へ戻す。
   const tr = cb.closest('tr');
@@ -849,15 +865,11 @@ function _handleTbodyPointerdown(e) {
       tr.draggable = wasDraggable;
       document.removeEventListener('pointerup', restore, true);
       document.removeEventListener('pointercancel', restore, true);
+      setTimeout(cleanupSuppress, 60);
     };
     document.addEventListener('pointerup', restore, true);
     document.addEventListener('pointercancel', restore, true);
   }
-
-  // 後続の click ネイティブトグル (cb.checked 反転) を一度だけ抑止
-  const suppressClick = (ev) => { ev.preventDefault(); };
-  cb.addEventListener('click', suppressClick, { once: true, capture: true });
-  setTimeout(() => cb.removeEventListener('click', suppressClick, true), 500);
 
   e.stopPropagation();
 

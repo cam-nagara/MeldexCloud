@@ -424,7 +424,7 @@
 .tb-icon-btn[aria-pressed="true"] {
   background: var(--ui-bg-control-active);
   border-color: var(--ui-accent);
-  color: var(--ui-control-active-fg, var(--ui-selection-fg, var(--ui-fg-strong)));
+  color: var(--ui-control-active-fg, var(--ui-accent));
 }
 .tb-icon-btn svg,
 .tb-icon-btn .ico {
@@ -460,7 +460,7 @@
 .tb-text-btn[aria-pressed="true"] {
   background: var(--ui-bg-control-active);
   border-color: var(--ui-accent);
-  color: var(--ui-accent);
+  color: var(--ui-control-active-fg, var(--ui-accent));
 }
 .tb-text-btn svg,
 .tb-text-btn .ico {

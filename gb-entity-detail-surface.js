@@ -184,11 +184,10 @@
 
     async function save() {
       if (state.disposed) return false;
-      if (state.staticContent) return true;
-      if (!state.editor || state.root.dataset.readOnly === '1') return false;
+      if (state.staticContent || !state.dirty) return true;
+      if (!state.editor || state.root.dataset.readOnly === '1') return state.root.dataset.readOnly === '1';
       clearTimeout(state.timer);
       state.timer = 0;
-      if (!state.dirty) return true;
       const savingSeq = state.changeSeq;
       const markdown = typeof htmlToMd === 'function' ? htmlToMd(state.editor.innerHTML) : state.editor.textContent;
       state.saving = Promise.resolve(_saveEntityFreeText(
@@ -305,7 +304,16 @@
         });
       }
 
+      if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
+        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
+          readOnly: access.readOnly,
+          surface: state.surface,
+          onReload: () => render(),
+        });
+      }
+
       const snapshotPath = htmlSnapshotPath(data);
+
       if (snapshotPath) {
         state.staticContent = true;
         const preview = document.createElement('section');
@@ -359,9 +367,14 @@
       if (!raw.trim() && !access.readOnly) {
         editor.hidden = true;
         toolbar.hidden = true;
+        editor.style.display = 'none';
+        toolbar.style.display = 'none';
         const createNote = button('ノートを作成', 'filePlus', async () => {
           editor.hidden = false;
           toolbar.hidden = false;
+          editor.style.display = 'block';
+          toolbar.style.display = '';
+          editor.dataset.entityNoteCreated = '1';
           editor.innerHTML = '<p><br></p>';
           state.dirty = true;
           await flush();

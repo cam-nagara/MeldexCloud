@@ -51,7 +51,10 @@
   function assertOnlineForLlm() {
     if (!isOffline()) return true;
     const message = offlineMessage();
-    if (typeof showStatus === 'function') showStatus(message, true);
+    const notify = (typeof window !== 'undefined' && typeof window.showStatus === 'function')
+      ? window.showStatus
+      : (typeof showStatus === 'function' ? showStatus : null);
+    if (notify) notify(message, true);
     return false;
   }
 

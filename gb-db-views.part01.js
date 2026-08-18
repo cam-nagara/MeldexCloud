@@ -526,7 +526,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const footerSpacer = document.createElement('span');
   footerSpacer.style.flex = '1';
   const cancelButton = document.createElement('button');
-  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.id = 'dbcfg-save'; saveButton.textContent = '保存';
   let busy = false;
@@ -543,6 +543,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   o._dbConfigApi = modalApi;
   o.dataset.e2eId = 'db-config-overlay';
   modalApi.modal.dataset.e2eId = 'db-config-dialog';
+  modalApi.header?.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'dbcfg-close');
   modalApi.modal.classList.add('db-config-modal');
   modalApi.modal.style.width = 'min(780px, calc(100vw - 24px))';
   modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');

@@ -1338,6 +1338,9 @@
             if (bar && bar.dataset.cloudPersistent !== '1') bar.remove();
           }, 3000);
           _runSystemStorageRetentionCleanupOnce();
+          if (typeof window.MeldexHomeFolderSharing?.checkCloudHomeFolderSharing === 'function') {
+            window.MeldexHomeFolderSharing.checkCloudHomeFolderSharing(preflight).catch(() => {});
+          }
         }
         _startCloudHealthMonitor();
         return true;

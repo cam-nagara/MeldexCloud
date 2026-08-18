@@ -273,6 +273,10 @@
       this._compatibilityLockProvider = compatibilityLockProvider || null;
     }
 
+    get boundary() { return this._boundary; }
+    get environment() { return this._environment; }
+    get namespaceKind() { return this._namespaceKind; }
+
     _pathFor(kind, documentId) {
       return _joinDropboxPath(this._managementRoot, _contract().documentRelativePath(kind, documentId));
     }
@@ -670,12 +674,12 @@
 
   // --- ファクトリ ---------------------------------------------------------------
 
-  function createPersonalAdapter({ accountBoundary, auditSink } = {}) {
+  function createPersonalAdapter({ accountBoundary, auditSink, namespaceKind } = {}) {
     return new DropboxSystemStorageAdapter({
       managementRoot: personalManagementRoot(),
       boundary: `dropbox-personal:${String(accountBoundary || 'unknown').trim()}`,
       environment: 'dropbox-personal',
-      namespaceKind: 'home',
+      namespaceKind: namespaceKind || 'home',
       auditSink,
     });
   }

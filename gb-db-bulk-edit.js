@@ -646,7 +646,7 @@ function _showBulkEditModal(entityNames, ctx) {
       let cascadeClears = [];
       let bidirectionalOp = null;
       try {
-        ep = _entityPath(dbPath, name);
+        ep = _entityPath(dbPath, name, pivotData);
         const entData = pivotData.entities?.[name];
         const existingVals = [...(entData?.[prop] || [])];
         beforeSnapshot = canBatchUndo ? _bulkValueSnapshotFromValues(name, ep, existingVals) : null;
@@ -661,7 +661,7 @@ function _showBulkEditModal(entityNames, ctx) {
               if (v.candidate_index != null && v.file) {
                 await _apiPutValue({ file: v.file, entry_path: ep, property: prop, candidate_index: v.candidate_index }, { _delete: true });
               } else if (v.file) {
-                await apiPost('/outliner/delete', { path: v.file });
+                await _apiPutValue({ file: v.file, entry_path: ep, property: prop }, { _delete: true });
               }
             }
           } else {

@@ -440,7 +440,7 @@ CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
   } catch (error) {
     this._restoreEventLocal(before);
     this._render();
-    this._showStatus(error?.message || 'イベント移動に失敗', true);
+    this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
   }
 };
 
@@ -534,7 +534,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
         } catch (error) {
           this._restoreEventLocal(before);
           this._render();
-          this._showStatus(error?.message || 'イベント移動に失敗', true);
+          this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
         }
         return;
       }
@@ -855,7 +855,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
         .catch((error) => {
           self._restoreEventLocal(before);
           self._render();
-          self._showStatus(error?.message || 'イベント移動に失敗', true);
+          self._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
         });
     });
   });

@@ -1876,6 +1876,2397 @@
 
 ;
 
+/* === gb-production-time-formatter.js === */
+;
+/**
+ * gb-production-time-formatter.js: 制作管理共通時間フォーマッター
+ *
+ * 目的: 整数秒を正本とする時間を、利用者の表示設定（時間・分 / 分 / 小数時間）に合わせて
+ * 正確にフォーマットおよびパースする共通モジュール。
+ *
+ * 計画書: production-task-actual-time-history-and-analysis-plan-2026-08-15.md §6
+ *
+ * 表示設定（localStorage: 'meldex-production-time-format'）:
+ *   - 'hm'      : 時間・分（初期値）例: 5400秒 -> "1時間30分", 2700秒 -> "45分", 7200秒 -> "2時間", 0秒 -> "0分"
+ *   - 'm'       : 分                例: 5400秒 -> "90分", 2700秒 -> "45分", 0秒 -> "0分"
+ *   - 'decimal' : 小数時間          例: 5400秒 -> "1.50時間", 2700秒 -> "0.75時間", 0秒 -> "0.00時間"
+ */
+
+(function () {
+  'use strict';
+
+  const STORAGE_KEY = 'meldex-production-time-format';
+  const DEFAULT_MODE = 'hm';
+
+  const FORMAT_OPTIONS = [
+    { value: 'hm', label: '時間・分', description: '時間と分で表示（例: 1時間30分）' },
+    { value: 'm', label: '分', description: '分単位で表示（例: 90分）' },
+    { value: 'decimal', label: '小数時間', description: '小数時間で表示（例: 1.50時間）' },
+  ];
+
+  function normalizeMode(mode) {
+    const raw = String(mode || '').trim().toLowerCase();
+    if (raw === 'hm' || raw === 'hours_minutes' || raw === '時間・分' || raw === '時間分') return 'hm';
+    if (raw === 'm' || raw === 'minutes' || raw === '分') return 'm';
+    if (raw === 'decimal' || raw === 'hours_decimal' || raw === '小数時間' || raw === '小数') return 'decimal';
+    return DEFAULT_MODE;
+  }
+
+  function getPreference() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return normalizeMode(saved);
+    } catch {}
+    return DEFAULT_MODE;
+  }
+
+  function setPreference(mode) {
+    const norm = normalizeMode(mode);
+    try {
+      localStorage.setItem(STORAGE_KEY, norm);
+      if (typeof document !== 'undefined' && typeof document.dispatchEvent === 'function') {
+        document.dispatchEvent(new CustomEvent('meldex:production-time-format-changed', { detail: { format: norm } }));
+      }
+    } catch {}
+    return norm;
+  }
+
+  /**
+   * 整数秒（または秒数）を表示文字列へフォーマットする。
+   *
+   * @param {number|string|null|undefined} seconds 秒数
+   * @param {string|null} [mode] 表示モード（省略時はユーザー設定を使用）
+   * @param {boolean} [showZero=true] 0秒時に "0分" / "0.00時間" を返すか（falseなら ""）
+   * @returns {string} フォーマット済み文字列
+   */
+  function formatDuration(seconds, mode = null, showZero = true) {
+    if (seconds === null || seconds === undefined || seconds === '') return '';
+    const num = Number(seconds);
+    if (!Number.isFinite(num)) return '';
+
+    const isNegative = num < 0;
+    const absSec = Math.abs(num);
+    const intSec = Math.round(absSec);
+
+    const normMode = mode ? normalizeMode(mode) : getPreference();
+
+    if (intSec === 0) {
+      if (!showZero) return '';
+      return normMode === 'decimal' ? '0.00時間' : '0分';
+    }
+
+    const prefix = isNegative ? '-' : '';
+
+    if (normMode === 'decimal') {
+      const hours = absSec / 3600;
+      return `${prefix}${hours.toFixed(2)}時間`;
+    }
+
+    const totalMinutes = Math.floor(intSec / 60);
+    const adjustedMinutes = (totalMinutes === 0 && intSec >= 30) ? 1 : totalMinutes;
+
+    if (normMode === 'm') {
+      return `${prefix}${adjustedMinutes}分`;
+    }
+
+    // 'hm' モード
+    const hours = Math.floor(adjustedMinutes / 60);
+    const minutes = adjustedMinutes % 60;
+
+    if (hours > 0 && minutes > 0) {
+      return `${prefix}${hours}時間${minutes}分`;
+    }
+    if (hours > 0) {
+      return `${prefix}${hours}時間`;
+    }
+    return `${prefix}${minutes}分`;
+  }
+
+  /**
+   * 入力文字列や数値を整数秒へパースする。
+   *
+   * @param {string|number|null|undefined} text 入力文字列または数値
+   * @returns {number|null} 秒数（整数）、パース不能時は null
+   */
+  function parseToSeconds(text) {
+    if (text === null || text === undefined) return null;
+    if (typeof text === 'number') {
+      if (!Number.isFinite(text)) return null;
+      // 小数または24以下の数値は時間単位と解釈
+      if (!Number.isInteger(text) || text <= 24) {
+        return Math.round(text * 3600);
+      }
+      return Math.round(text);
+    }
+
+    let raw = String(text).trim();
+    if (!raw) return null;
+
+    // 単純な数値文字列
+    if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+      const val = parseFloat(raw);
+      if (!Number.isFinite(val)) return null;
+      if (raw.includes('.') || Math.abs(val) <= 24) {
+        return Math.round(val * 3600);
+      }
+      return Math.round(val);
+    }
+
+    const isNegative = raw.startsWith('-');
+    if (isNegative) raw = raw.slice(1).trim();
+
+    let totalSeconds = 0;
+    let matched = false;
+
+    // 1. 日本語形式: X時間Y分Z秒
+    const jpMatch = raw.match(/^(?:(\d+(?:\.\d+)?)\s*時間)?\s*(?:(\d+(?:\.\d+)?)\s*分)?\s*(?:(\d+(?:\.\d+)?)\s*秒)?$/);
+    if (jpMatch && (jpMatch[1] || jpMatch[2] || jpMatch[3])) {
+      if (jpMatch[1]) totalSeconds += parseFloat(jpMatch[1]) * 3600;
+      if (jpMatch[2]) totalSeconds += parseFloat(jpMatch[2]) * 60;
+      if (jpMatch[3]) totalSeconds += parseFloat(jpMatch[3]);
+      matched = true;
+    }
+
+    // 2. 英語形式: 1h 30m / 1.5h / 90min
+    if (!matched) {
+      const enMatch = raw.match(/^(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hours?))?\s*(?:(\d+(?:\.\d+)?)\s*(?:m|min|minutes?))?\s*(?:(\d+(?:\.\d+)?)\s*(?:s|sec|seconds?))?$/i);
+      if (enMatch && (enMatch[1] || enMatch[2] || enMatch[3])) {
+        if (enMatch[1]) totalSeconds += parseFloat(enMatch[1]) * 3600;
+        if (enMatch[2]) totalSeconds += parseFloat(enMatch[2]) * 60;
+        if (enMatch[3]) totalSeconds += parseFloat(enMatch[3]);
+        matched = true;
+      }
+    }
+
+    // 3. コロン形式: HH:MM または HH:MM:SS
+    if (!matched) {
+      const colonMatch = raw.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+      if (colonMatch) {
+        totalSeconds += parseInt(colonMatch[1], 10) * 3600 + parseInt(colonMatch[2], 10) * 60;
+        if (colonMatch[3]) totalSeconds += parseInt(colonMatch[3], 10);
+        matched = true;
+      }
+    }
+
+    if (!matched) return null;
+    const res = Math.round(totalSeconds);
+    return isNegative ? -res : res;
+  }
+
+  const Formatter = Object.freeze({
+    FORMAT_OPTIONS,
+    DEFAULT_MODE,
+    normalizeMode,
+    getPreference,
+    setPreference,
+    formatDuration,
+    parseToSeconds,
+  });
+
+  window.MeldexProductionTimeFormatter = Formatter;
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Formatter;
+  }
+})();
+
+;
+
+/* === gb-production-task-session-store.js === */
+;
+/**
+ * gb-production-task-session-store.js: 制作管理タスク実績区間・改訂履歴台帳・データ移行
+ *
+ * 目的:
+ *   - タスク別・担当者別の実績区間台帳（production_task_sessions）
+ *   - 予定・担当・締切の追加型改訂履歴（production_task_plan_revisions）
+ *   - 算出結果と根拠（production_task_actual_summaries）
+ *   - 旧データを破壊しない移行（§5.4）
+ *   - CAS（Compare-And-Swap）、整合性、冪等再送、権限検証
+ *
+ * 計画書: production-task-actual-time-history-and-analysis-plan-2026-08-15.md §5, §9
+ */
+
+(function () {
+  'use strict';
+
+  const QUALITY_CONFIRMED = 'confirmed';
+  const QUALITY_INCOMPLETE = 'incomplete';
+  const QUALITY_CONFLICT = 'conflict';
+  const QUALITY_LEGACY_MANUAL = 'legacy-manual';
+  const QUALITY_UNMEASURED = 'unmeasured';
+
+  const VALID_QUALITY_STATUSES = new Set([
+    QUALITY_CONFIRMED,
+    QUALITY_INCOMPLETE,
+    QUALITY_CONFLICT,
+    QUALITY_LEGACY_MANUAL,
+    QUALITY_UNMEASURED,
+  ]);
+
+  const CHANGE_SOURCE_INITIAL_MIGRATION = 'initial-migration';
+  const CHANGE_SOURCE_RECALCULATE = 'recalculate';
+  const CHANGE_SOURCE_USER_EDIT = 'user-edit';
+  const CHANGE_SOURCE_DEADLINE_EXTENSION = 'deadline-extension';
+  const CHANGE_SOURCE_STATUS_CHANGE = 'status-change';
+  const CHANGE_SOURCE_MANUAL_CORRECTION = 'manual-correction';
+
+  const START_REASON_STATUS_CHANGE = 'status-change';
+  const START_REASON_HELP_JOIN = 'help-join';
+  const START_REASON_TASK_SWITCH = 'task-switch';
+  const START_REASON_MANUAL_START = 'manual-start';
+  const START_REASON_MANUAL_CORRECTION = 'manual-correction';
+
+  const END_REASON_STATUS_CHANGE = 'status-change';
+  const END_REASON_HELP_LEAVE = 'help-leave';
+  const END_REASON_TASK_SWITCH = 'task-switch';
+  const END_REASON_MANUAL_STOP = 'manual-stop';
+  const END_REASON_MANUAL_CORRECTION = 'manual-correction';
+
+  const TIME_RECORDS_KEY = 'production_time_records';
+
+  function nowIsoUtc() {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  function generateUuid(prefix = '') {
+    const raw = 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+    return prefix ? `${prefix}_${raw}` : raw;
+  }
+
+  function safeIntSeconds(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') return fallback;
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return fallback;
+    return Math.round(num);
+  }
+
+  function hoursToSeconds(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') return fallback;
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return fallback;
+    return Math.round(num * 3600);
+  }
+
+  function normalizeSessionDict(data) {
+    const src = data || {};
+    const sessionId = String(src.session_id || generateUuid('sess')).trim();
+    return {
+      session_id: sessionId,
+      workspace_id: String(src.workspace_id || '').trim(),
+      work_id: String(src.work_id || '').trim(),
+      task_id: String(src.task_id || '').trim(),
+      participant_user_id: String(src.participant_user_id || '').trim(),
+      participant_display_name: String(src.participant_display_name || '').trim(),
+      started_at: String(src.started_at || nowIsoUtc()).trim(),
+      ended_at: src.ended_at ? String(src.ended_at).trim() : null,
+      timezone: String(src.timezone || 'Asia/Tokyo').trim(),
+      start_reason: String(src.start_reason || START_REASON_STATUS_CHANGE).trim(),
+      end_reason: src.end_reason ? String(src.end_reason).trim() : null,
+      actor_user_id: String(src.actor_user_id || src.participant_user_id || '').trim(),
+      created_at: String(src.created_at || nowIsoUtc()).trim(),
+      modified_at: String(src.modified_at || nowIsoUtc()).trim(),
+      revision: Number(src.revision) || 1,
+      correction_of: src.correction_of ? String(src.correction_of).trim() : null,
+      correction_reason: src.correction_reason ? String(src.correction_reason).trim() : null,
+      deleted_at: src.deleted_at ? String(src.deleted_at).trim() : null,
+    };
+  }
+
+  function normalizePlanRevisionDict(data) {
+    const src = data || {};
+    const revisionId = String(src.revision_id || generateUuid('rev')).trim();
+    let assignees = [];
+    if (Array.isArray(src.assignee_user_ids)) {
+      assignees = src.assignee_user_ids.map(u => String(u || '').trim()).filter(Boolean);
+    } else if (typeof src.assignee_user_ids === 'string' && src.assignee_user_ids.trim()) {
+      assignees = [src.assignee_user_ids.trim()];
+    }
+
+    return {
+      revision_id: revisionId,
+      workspace_id: String(src.workspace_id || '').trim(),
+      work_id: String(src.work_id || '').trim(),
+      task_id: String(src.task_id || '').trim(),
+      effective_at: String(src.effective_at || nowIsoUtc()).trim(),
+      estimate_seconds: safeIntSeconds(src.estimate_seconds),
+      allocated_seconds: safeIntSeconds(src.allocated_seconds),
+      assignee_user_ids: assignees,
+      deadline_at: src.deadline_at ? String(src.deadline_at).trim() : null,
+      status: String(src.status || '').trim(),
+      estimated_by: String(src.estimated_by || '').trim(),
+      changed_by: String(src.changed_by || '').trim(),
+      change_source: String(src.change_source || CHANGE_SOURCE_USER_EDIT).trim(),
+      change_reason: String(src.change_reason || '').trim(),
+      revision: Number(src.revision) || 1,
+    };
+  }
+
+  function normalizeActualSummaryDict(data) {
+    const src = data || {};
+    let qualityStatus = String(src.quality_status || QUALITY_UNMEASURED).trim();
+    if (!VALID_QUALITY_STATUSES.has(qualityStatus)) {
+      qualityStatus = QUALITY_UNMEASURED;
+    }
+
+    let reasons = [];
+    if (Array.isArray(src.quality_reasons)) {
+      reasons = src.quality_reasons.map(r => String(r || '').trim()).filter(Boolean);
+    } else if (typeof src.quality_reasons === 'string' && src.quality_reasons.trim()) {
+      reasons = [src.quality_reasons.trim()];
+    }
+
+    let sessionIds = [];
+    if (Array.isArray(src.session_ids)) {
+      sessionIds = src.session_ids.map(s => String(s || '').trim()).filter(Boolean);
+    }
+
+    return {
+      task_id: String(src.task_id || '').trim(),
+      participant_user_id: String(src.participant_user_id || '__total__').trim(),
+      actual_seconds: safeIntSeconds(src.actual_seconds),
+      calculation_revision: Number(src.calculation_revision) || 1,
+      session_ids: sessionIds,
+      shift_revision: Number(src.shift_revision) || 0,
+      calculated_at: String(src.calculated_at || nowIsoUtc()).trim(),
+      quality_status: qualityStatus,
+      quality_reasons: reasons,
+      source_value: src.source_value !== undefined && src.source_value !== null ? String(src.source_value).trim() : null,
+    };
+  }
+
+  function extractPropertyText(frontmatter, propName) {
+    if (!frontmatter || typeof frontmatter !== 'object') return '';
+    const internal = frontmatter.production_internal;
+    if (internal && typeof internal === 'object' && internal[propName] != null) {
+      const v = String(internal[propName]).trim();
+      if (v) return v;
+    }
+    const props = frontmatter.properties;
+    if (props && typeof props === 'object' && props[propName] != null) {
+      const val = props[propName];
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item && typeof item === 'object' && item.value != null) {
+            const v = String(item.value).trim();
+            if (v) return v;
+          } else if (typeof item === 'string' && item.trim()) {
+            return item.trim();
+          }
+        }
+      } else if (val && typeof val === 'object' && val.value != null) {
+        const v = String(val.value).trim();
+        if (v) return v;
+      } else {
+        const v = String(val).trim();
+        if (v) return v;
+      }
+    }
+    if (frontmatter[propName] != null) {
+      const v = String(frontmatter[propName]).trim();
+      if (v) return v;
+    }
+    return '';
+  }
+
+  function extractAssignees(frontmatter) {
+    const assignees = [];
+    if (!frontmatter || typeof frontmatter !== 'object') return assignees;
+    const props = frontmatter.properties;
+    if (props && typeof props === 'object') {
+      const val = props['担当者'] || props['スタッフリスト'];
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item && typeof item === 'object' && item.value != null) {
+            const v = String(item.value).trim();
+            if (v && !assignees.includes(v)) assignees.push(v);
+          } else if (typeof item === 'string' && item.trim() && !assignees.includes(item.trim())) {
+            assignees.push(item.trim());
+          }
+        }
+      } else if (val && typeof val === 'object' && val.value != null) {
+        const v = String(val.value).trim();
+        if (v && !assignees.includes(v)) assignees.push(v);
+      } else if (val != null) {
+        const v = String(val).trim();
+        if (v && !assignees.includes(v)) assignees.push(v);
+      }
+    }
+    return assignees;
+  }
+
+  function migrateTaskTimeRecords(frontmatter, taskId = '', workspaceId = '', workId = '', nowIso = null) {
+    const existing = frontmatter && frontmatter[TIME_RECORDS_KEY];
+    if (existing && Array.isArray(existing.revisions) && existing.revisions.length > 0) {
+      return JSON.parse(JSON.stringify(existing));
+    }
+
+    const ts = nowIso || nowIsoUtc();
+    const tId = taskId || extractPropertyText(frontmatter, '作成キー') || extractPropertyText(frontmatter, 'タイトル') || generateUuid('task');
+    const wId = workId || extractPropertyText(frontmatter, '作品タイトル') || '';
+
+    const estimateHoursStr = (
+      extractPropertyText(frontmatter, '目標作業時間_値')
+      || extractPropertyText(frontmatter, '目標作業時間')
+      || extractPropertyText(frontmatter, '予定作業時間')
+    );
+    const estimateSeconds = hoursToSeconds(estimateHoursStr);
+
+    const allocatedHoursStr = (
+      extractPropertyText(frontmatter, '作業予定時間')
+      || extractPropertyText(frontmatter, '割当作業時間')
+    );
+    const allocatedSeconds = hoursToSeconds(allocatedHoursStr);
+
+    const assignees = extractAssignees(frontmatter);
+    const deadlineStr = extractPropertyText(frontmatter, '締切') || extractPropertyText(frontmatter, '期限') || extractPropertyText(frontmatter, '作業予定終了');
+    const statusStr = extractPropertyText(frontmatter, '状況') || extractPropertyText(frontmatter, 'status') || '未着手';
+
+    const initialRevision = normalizePlanRevisionDict({
+      revision_id: generateUuid('rev'),
+      workspace_id: workspaceId,
+      work_id: wId,
+      task_id: tId,
+      effective_at: ts,
+      estimate_seconds: estimateSeconds,
+      allocated_seconds: allocatedSeconds,
+      assignee_user_ids: assignees,
+      deadline_at: deadlineStr || null,
+      status: statusStr,
+      estimated_by: 'migration',
+      changed_by: 'migration',
+      change_source: CHANGE_SOURCE_INITIAL_MIGRATION,
+      change_reason: '初期データ移行（現在値の初回改訂記録）',
+      revision: 1,
+    });
+
+    const manualActualStr = extractPropertyText(frontmatter, '作業時間_実績') || extractPropertyText(frontmatter, '実績作業時間');
+    const summaries = {};
+
+    if (manualActualStr) {
+      const num = Number(manualActualStr);
+      if (Number.isFinite(num) && num >= 0) {
+        summaries['__total__'] = normalizeActualSummaryDict({
+          task_id: tId,
+          participant_user_id: '__total__',
+          actual_seconds: Math.round(num * 3600),
+          calculation_revision: 1,
+          session_ids: [],
+          shift_revision: 0,
+          calculated_at: ts,
+          quality_status: QUALITY_LEGACY_MANUAL,
+          quality_reasons: ['手入力された既存実績値を出典付きで保持'],
+          source_value: manualActualStr,
+        });
+      } else {
+        summaries['__total__'] = normalizeActualSummaryDict({
+          task_id: tId,
+          participant_user_id: '__total__',
+          actual_seconds: 0,
+          calculation_revision: 1,
+          session_ids: [],
+          shift_revision: 0,
+          calculated_at: ts,
+          quality_status: QUALITY_UNMEASURED,
+          quality_reasons: ['旧実績値の数値変換失敗'],
+          source_value: manualActualStr,
+        });
+      }
+    } else {
+      summaries['__total__'] = normalizeActualSummaryDict({
+        task_id: tId,
+        participant_user_id: '__total__',
+        actual_seconds: 0,
+        calculation_revision: 1,
+        session_ids: [],
+        shift_revision: 0,
+        calculated_at: ts,
+        quality_status: QUALITY_UNMEASURED,
+        quality_reasons: ['過去の区間根拠なし（未計測）'],
+        source_value: null,
+      });
+    }
+
+    return {
+      version: 1,
+      task_id: tId,
+      sessions: [],
+      revisions: [initialRevision],
+      summaries: summaries,
+    };
+  }
+
+  function checkSessionPermission(session, actorUserId, isAdmin = false, allowDelegate = false) {
+    if (isAdmin || allowDelegate) return;
+    const participant = session && session.participant_user_id;
+    if (!actorUserId || (participant && actorUserId !== participant)) {
+      const err = new Error(`操作者「${actorUserId}」には担当者「${participant}」の実績区間を変更する権限がありません`);
+      err.name = 'ProductionTimeLedgerPermissionDenied';
+      err.code = 'PERMISSION_DENIED';
+      throw err;
+    }
+  }
+
+  function appendOrUpdateSession(records, sessionData, actorUserId, isAdmin = false, expectedRevision = null, allowDelegate = false) {
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const sessions = updated.sessions || [];
+    const session = normalizeSessionDict(sessionData);
+    const sessionId = session.session_id;
+
+    const existingIdx = sessions.findIndex(s => s.session_id === sessionId);
+
+    if (existingIdx >= 0) {
+      const existing = sessions[existingIdx];
+      checkSessionPermission(existing, actorUserId, isAdmin, allowDelegate);
+
+      if (expectedRevision !== null && expectedRevision !== undefined && existing.revision !== expectedRevision) {
+        const err = new Error(`セッション ${sessionId} の競合を検出しました（期待版: ${expectedRevision}, 現在版: ${existing.revision}）`);
+        err.name = 'ProductionTimeLedgerConflict';
+        err.code = 'CONFLICT';
+        throw err;
+      }
+
+      session.revision = (Number(existing.revision) || 1) + 1;
+      session.created_at = existing.created_at || session.created_at;
+      session.modified_at = nowIsoUtc();
+      session.actor_user_id = actorUserId;
+      sessions[existingIdx] = session;
+    } else {
+      checkSessionPermission(session, actorUserId, isAdmin, allowDelegate);
+      session.created_at = session.created_at || nowIsoUtc();
+      session.modified_at = session.created_at;
+      session.revision = 1;
+      session.actor_user_id = actorUserId;
+      sessions.push(session);
+    }
+
+    updated.sessions = sessions;
+    return { records: updated, session };
+  }
+
+  function appendPlanRevision(records, revisionData, actorUserId, isAdmin = false) {
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const revisions = updated.revisions || [];
+    const rev = normalizePlanRevisionDict(revisionData);
+
+    const maxRev = revisions.reduce((max, r) => Math.max(max, Number(r.revision) || 0), 0);
+    rev.revision = maxRev + 1;
+    rev.changed_by = actorUserId || rev.changed_by || 'user';
+    rev.effective_at = rev.effective_at || nowIsoUtc();
+
+    revisions.push(rev);
+    updated.revisions = revisions;
+    return { records: updated, revision: rev };
+  }
+
+  function setActualSummary(records, summaryData) {
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const summaries = updated.summaries || {};
+    const summary = normalizeActualSummaryDict(summaryData);
+    const key = summary.participant_user_id || '__total__';
+
+    summaries[key] = summary;
+    updated.summaries = summaries;
+    return { records: updated, summary };
+  }
+
+  function createTaskRecords(workspaceId, workId, taskId) {
+    return {
+      workspace_id: String(workspaceId || 'default').trim(),
+      work_id: String(workId || '').trim(),
+      task_id: String(taskId || '').trim(),
+      sessions: [],
+      revisions: [],
+      summaries: {},
+    };
+  }
+
+  const Store = Object.freeze({
+    QUALITY_CONFIRMED,
+    QUALITY_INCOMPLETE,
+    QUALITY_CONFLICT,
+    QUALITY_LEGACY_MANUAL,
+    QUALITY_UNMEASURED,
+    VALID_QUALITY_STATUSES,
+    CHANGE_SOURCE_INITIAL_MIGRATION,
+    CHANGE_SOURCE_RECALCULATE,
+    CHANGE_SOURCE_USER_EDIT,
+    CHANGE_SOURCE_DEADLINE_EXTENSION,
+    CHANGE_SOURCE_STATUS_CHANGE,
+    CHANGE_SOURCE_MANUAL_CORRECTION,
+    START_REASON_STATUS_CHANGE,
+    START_REASON_HELP_JOIN,
+    START_REASON_TASK_SWITCH,
+    START_REASON_MANUAL_START,
+    START_REASON_MANUAL_CORRECTION,
+    END_REASON_STATUS_CHANGE,
+    END_REASON_HELP_LEAVE,
+    END_REASON_TASK_SWITCH,
+    END_REASON_MANUAL_STOP,
+    END_REASON_MANUAL_CORRECTION,
+    TIME_RECORDS_KEY,
+    nowIsoUtc,
+    generateUuid,
+    safeIntSeconds,
+    hoursToSeconds,
+    createTaskRecords,
+    normalizeSessionDict,
+    normalizePlanRevisionDict,
+    normalizeActualSummaryDict,
+    extractPropertyText,
+    extractAssignees,
+    migrateTaskTimeRecords,
+    checkSessionPermission,
+    appendOrUpdateSession,
+    appendPlanRevision,
+    setActualSummary,
+  });
+
+  if (typeof window !== 'undefined') {
+    window.MeldexProductionTaskSessionStore = Store;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Store;
+  }
+})();
+
+;
+
+/* === gb-production-task-actual-engine.js === */
+;
+/**
+ * gb-production-task-actual-engine.js: 制作管理実績作業時間・勤怠交差計算エンジン
+ *
+ * 目的:
+ *   - ステータス変更と実績区間の自動開始・終了接続（着手中、保留、確認待ち、完了）
+ *   - 応援参加（help-join）、担当解除（help-leave）、タスク切替（task-switch）
+ *   - 出退勤（勤務区間）・離席区間との半開区間積集合・差集合計算:
+ *       Actual(t, u) = (TaskSessions(t, u) ∩ WorkShifts(u)) - BreakIntervals(u)
+ *   - 日跨ぎ、重複打刻、不完全打刻（退勤なし/離席復帰なし/セッション継続中）、訂正時再計算
+ *   - 二重計上防止
+ *
+ * 計画書: production-task-actual-time-history-and-analysis-plan-2026-08-15.md §4, §5, §10
+ */
+
+(function () {
+  'use strict';
+
+  const Store = (typeof window !== 'undefined' && window.MeldexProductionTaskSessionStore)
+    || (typeof require !== 'undefined' ? require('./gb-production-task-session-store.js') : null);
+
+  const QUALITY_CONFIRMED = Store ? Store.QUALITY_CONFIRMED : 'confirmed';
+  const QUALITY_INCOMPLETE = Store ? Store.QUALITY_INCOMPLETE : 'incomplete';
+  const QUALITY_CONFLICT = Store ? Store.QUALITY_CONFLICT : 'conflict';
+  const QUALITY_LEGACY_MANUAL = Store ? Store.QUALITY_LEGACY_MANUAL : 'legacy-manual';
+  const QUALITY_UNMEASURED = Store ? Store.QUALITY_UNMEASURED : 'unmeasured';
+
+  const START_REASON_STATUS_CHANGE = 'status-change';
+  const START_REASON_HELP_JOIN = 'help-join';
+  const START_REASON_TASK_SWITCH = 'task-switch';
+  const START_REASON_MANUAL_START = 'manual-start';
+
+  const END_REASON_STATUS_CHANGE = 'status-change';
+  const END_REASON_HELP_LEAVE = 'help-leave';
+  const END_REASON_TASK_SWITCH = 'task-switch';
+  const END_REASON_MANUAL_STOP = 'manual-stop';
+
+  const CANONICAL_STATUS_IN_PROGRESS = '着手中';
+  const CANONICAL_STATUS_NOT_STARTED = '未着手';
+  const CANONICAL_STATUS_PENDING = '保留';
+  const CANONICAL_STATUS_REVIEW_WAITING = '確認待ち';
+  const CANONICAL_STATUS_DONE = '完了';
+
+  const LEGACY_STATUS_SYNONYMS = {
+    '作業中': CANONICAL_STATUS_IN_PROGRESS,
+    '進行中': CANONICAL_STATUS_IN_PROGRESS,
+    '着手中': CANONICAL_STATUS_IN_PROGRESS,
+    '未着手': CANONICAL_STATUS_NOT_STARTED,
+    '': CANONICAL_STATUS_NOT_STARTED,
+    '保留': CANONICAL_STATUS_PENDING,
+    '確認待ち': CANONICAL_STATUS_REVIEW_WAITING,
+    '完了': CANONICAL_STATUS_DONE,
+  };
+
+  function normalizeTaskStatus(status) {
+    const raw = String(status || '').trim();
+    return LEGACY_STATUS_SYNONYMS[raw] || raw || CANONICAL_STATUS_NOT_STARTED;
+  }
+
+  function isActiveWorkingStatus(status) {
+    return normalizeTaskStatus(status) === CANONICAL_STATUS_IN_PROGRESS;
+  }
+
+  function parseIsoToEpochSec(isoStr) {
+    if (!isoStr || !String(isoStr).trim()) return null;
+    const raw = String(isoStr).trim();
+    const d = new Date(raw);
+    const time = d.getTime();
+    if (!Number.isFinite(time)) return null;
+    return Math.floor(time / 1000);
+  }
+
+  function formatEpochSecToIso(epochSec) {
+    if (epochSec === null || epochSec === undefined) return null;
+    return new Date(epochSec * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  // =====================================================================
+  // TimeInterval Class & Algebra
+  // =====================================================================
+
+  class TimeInterval {
+    constructor(startSec, endSec) {
+      if (endSec < startSec) {
+        throw new Error(`Invalid interval: start (${startSec}) > end (${endSec})`);
+      }
+      this.start = Math.floor(Number(startSec));
+      this.end = Math.floor(Number(endSec));
+    }
+
+    get duration() {
+      return Math.max(0, this.end - this.start);
+    }
+
+    isEmpty() {
+      return this.start >= this.end;
+    }
+
+    overlaps(other) {
+      return Math.max(this.start, other.start) < Math.min(this.end, other.end);
+    }
+
+    intersect(other) {
+      const s = Math.max(this.start, other.start);
+      const e = Math.min(this.end, other.end);
+      if (s < e) {
+        return new TimeInterval(s, e);
+      }
+      return null;
+    }
+
+    subtract(other) {
+      const inter = this.intersect(other);
+      if (!inter) {
+        return [new TimeInterval(this.start, this.end)];
+      }
+      const result = [];
+      if (this.start < inter.start) {
+        result.append ? result.append(new TimeInterval(this.start, inter.start)) : result.push(new TimeInterval(this.start, inter.start));
+      }
+      if (inter.end < this.end) {
+        result.push(new TimeInterval(inter.end, this.end));
+      }
+      return result;
+    }
+  }
+
+  function mergeIntervals(intervals) {
+    if (!intervals || !intervals.length) return [];
+    const valid = intervals.filter(iv => !iv.isEmpty());
+    if (!valid.length) return [];
+    const sorted = [...valid].sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged = [sorted[0]];
+
+    for (let i = 1; i < sorted.length; i++) {
+      const current = sorted[i];
+      const last = merged[merged.length - 1];
+      if (current.start <= last.end) {
+        merged[merged.length - 1] = new TimeInterval(last.start, Math.max(last.end, current.end));
+      } else {
+        merged.push(current);
+      }
+    }
+    return merged;
+  }
+
+  function intersectIntervalLists(listA, listB) {
+    const mergedA = mergeIntervals(listA);
+    const mergedB = mergeIntervals(listB);
+    const result = [];
+
+    for (const a of mergedA) {
+      for (const b of mergedB) {
+        const inter = a.intersect(b);
+        if (inter && !inter.isEmpty()) {
+          result.push(inter);
+        }
+      }
+    }
+    return mergeIntervals(result);
+  }
+
+  function subtractIntervalLists(sourceList, subtractList) {
+    let current = mergeIntervals(sourceList);
+    const subs = mergeIntervals(subtractList);
+
+    for (const sub of subs) {
+      const nextGen = [];
+      for (const iv of current) {
+        nextGen.push(...iv.subtract(sub));
+      }
+      current = nextGen;
+    }
+    return mergeIntervals(current);
+  }
+
+  function computeUserTaskActualIntersection(sessionIntervals, shiftIntervals, breakIntervals) {
+    const workedIntervals = intersectIntervalLists(sessionIntervals, shiftIntervals);
+    const actualIntervals = subtractIntervalLists(workedIntervals, breakIntervals);
+    const actualSeconds = actualIntervals.reduce((sum, iv) => sum + iv.duration, 0);
+    return { actualSeconds, actualIntervals };
+  }
+
+  // =====================================================================
+  // Status Transitions & Participant Actions
+  // =====================================================================
+
+  function handleTaskStatusTransition(
+    records,
+    newStatus,
+    actorUserId,
+    targetUserIds = null,
+    transitionTimeIso = null,
+    isAdmin = false
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const ts = transitionTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const canonicalStatus = normalizeTaskStatus(newStatus);
+    const sessions = updated.sessions || [];
+    const modified = [];
+
+    if (canonicalStatus === CANONICAL_STATUS_IN_PROGRESS) {
+      let targets = Array.isArray(targetUserIds)
+        ? [...targetUserIds]
+        : (typeof targetUserIds === 'string' && targetUserIds.trim() ? [targetUserIds.trim()] : null);
+      if (targets === null) {
+        const revs = updated.revisions || [];
+        if (revs.length) {
+          targets = [...(revs[revs.length - 1].assignee_user_ids || [])];
+        }
+        if (!targets || !targets.length) {
+          targets = actorUserId ? [actorUserId] : [];
+        }
+      }
+
+      const targetList = targets.map(u => String(u || '').trim()).filter(Boolean);
+
+      // Close open sessions for assignees no longer in targets (if explicit targetUserIds was provided, keeping helper sessions)
+      if (targetUserIds !== null) {
+        for (const sess of [...sessions]) {
+          if (!sess.ended_at && !sess.deleted_at) {
+            if (sess.start_reason === START_REASON_HELP_JOIN) {
+              continue;
+            }
+            if (!targetList.includes(sess.participant_user_id)) {
+              const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
+              const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
+              updated.sessions = res.records.sessions;
+              modified.push(res.session);
+            }
+          }
+        }
+      }
+
+      // Start sessions for target assignees who do not have an open session
+      const currentSessions = updated.sessions || [];
+      for (const uIdStr of targetList) {
+        const hasOpen = currentSessions.some(
+          s => s.participant_user_id === uIdStr && !s.ended_at && !s.deleted_at
+        );
+        if (!hasOpen) {
+          const newSess = {
+            session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
+            task_id: updated.task_id || '',
+            participant_user_id: uIdStr,
+            participant_display_name: uIdStr,
+            started_at: ts,
+            ended_at: null,
+            start_reason: START_REASON_STATUS_CHANGE,
+            actor_user_id: actorUserId,
+          };
+          const res = store.appendOrUpdateSession(updated, newSess, actorUserId, isAdmin, null, true);
+          updated.sessions = res.records.sessions;
+          modified.push(res.session);
+        }
+      }
+    } else {
+      // Close all open sessions unconditionally on non-in-progress status
+      for (const sess of [...sessions]) {
+        if (!sess.ended_at && !sess.deleted_at) {
+          const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
+          const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
+          updated.sessions = res.records.sessions;
+          modified.push(res.session);
+        }
+      }
+    }
+
+    return { records: updated, modifiedSessions: modified };
+  }
+
+  function handleAssigneeChange(
+    records,
+    newAssigneeUserIds,
+    actorUserId,
+    currentStatus = null,
+    transitionTimeIso = null,
+    isAdmin = false
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const ts = transitionTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const canonicalStatus = normalizeTaskStatus(currentStatus || '');
+    if (!isActiveWorkingStatus(canonicalStatus)) {
+      return { records: updated, modifiedSessions: [] };
+    }
+
+    let targets = [];
+    if (Array.isArray(newAssigneeUserIds)) {
+      targets = newAssigneeUserIds.map(u => String(u || '').trim()).filter(Boolean);
+    } else if (typeof newAssigneeUserIds === 'string') {
+      targets = newAssigneeUserIds.split(/[,、;]+/).map(u => u.trim()).filter(Boolean);
+    } else if (newAssigneeUserIds) {
+      targets = [String(newAssigneeUserIds).trim()].filter(Boolean);
+    }
+
+    const sessions = updated.sessions || [];
+    const modified = [];
+
+    // 1. Close open sessions for assignees no longer in targets (keeping helper sessions)
+    for (const sess of [...sessions]) {
+      if (!sess.ended_at && !sess.deleted_at) {
+        if (sess.start_reason === START_REASON_HELP_JOIN) {
+          continue;
+        }
+        if (!targets.includes(sess.participant_user_id)) {
+          const updateSess = { ...sess, ended_at: ts, end_reason: END_REASON_STATUS_CHANGE };
+          const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
+          updated.sessions = res.records.sessions;
+          modified.push(res.session);
+        }
+      }
+    }
+
+    // 2. Start open sessions for new assignees who do not have an open session
+    const currentSessions = updated.sessions || [];
+    for (const uIdStr of targets) {
+      const hasOpen = currentSessions.some(
+        s => s.participant_user_id === uIdStr && !s.ended_at && !s.deleted_at
+      );
+      if (!hasOpen) {
+        const newSess = {
+          session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
+          task_id: updated.task_id || '',
+          participant_user_id: uIdStr,
+          participant_display_name: uIdStr,
+          started_at: ts,
+          ended_at: null,
+          start_reason: START_REASON_STATUS_CHANGE,
+          actor_user_id: actorUserId,
+        };
+        const res = store.appendOrUpdateSession(updated, newSess, actorUserId, isAdmin, null, true);
+        updated.sessions = res.records.sessions;
+        modified.push(res.session);
+      }
+    }
+
+    return { records: updated, modifiedSessions: modified };
+  }
+
+  function handleParticipantJoin(
+    records,
+    participantUserId,
+    participantDisplayName,
+    actorUserId,
+    joinTimeIso = null,
+    isAdmin = false
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const ts = joinTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const pId = String(participantUserId || '').trim();
+    const sessions = updated.sessions || [];
+
+    const existingOpen = sessions.find(
+      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
+    );
+    if (existingOpen) {
+      return { records: updated, session: existingOpen };
+    }
+
+    const newSess = {
+      session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
+      task_id: updated.task_id || '',
+      participant_user_id: pId,
+      participant_display_name: String(participantDisplayName || pId).trim(),
+      started_at: ts,
+      ended_at: null,
+      start_reason: START_REASON_HELP_JOIN,
+      actor_user_id: actorUserId,
+    };
+    const res = store.appendOrUpdateSession(updated, newSess, actorUserId, isAdmin, null, true);
+    return { records: res.records, session: res.session };
+  }
+
+  function handleParticipantLeave(
+    records,
+    participantUserId,
+    actorUserId,
+    leaveTimeIso = null,
+    isAdmin = false
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const ts = leaveTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const pId = String(participantUserId || '').trim();
+    const sessions = updated.sessions || [];
+
+    const openSess = sessions.find(
+      s => s.participant_user_id === pId && !s.ended_at && !s.deleted_at
+    );
+    if (!openSess) {
+      return { records: updated, session: null };
+    }
+
+    const updateSess = { ...openSess, ended_at: ts, end_reason: END_REASON_HELP_LEAVE };
+    const res = store.appendOrUpdateSession(updated, updateSess, actorUserId, isAdmin, null, true);
+    return { records: res.records, session: res.session };
+  }
+
+  function handleTaskSwitch(
+    recordsFrom,
+    recordsTo,
+    userId,
+    userDisplayName,
+    switchTimeIso = null,
+    actorUserId = null,
+    isAdmin = false
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const ts = switchTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const actor = actorUserId || userId;
+
+    let updatedFrom = JSON.parse(JSON.stringify(recordsFrom || { sessions: [], revisions: [], summaries: {} }));
+    const sessionsFrom = updatedFrom.sessions || [];
+    const openSessA = sessionsFrom.find(
+      s => s.participant_user_id === userId && !s.ended_at && !s.deleted_at
+    );
+    let closedA = null;
+    if (openSessA) {
+      const updateA = { ...openSessA, ended_at: ts, end_reason: END_REASON_TASK_SWITCH };
+      const resA = store.appendOrUpdateSession(updatedFrom, updateA, actor, isAdmin);
+      updatedFrom = resA.records;
+      closedA = resA.session;
+    }
+
+    let updatedTo = JSON.parse(JSON.stringify(recordsTo || { sessions: [], revisions: [], summaries: {} }));
+    const newSessB = {
+      session_id: store ? store.generateUuid('sess') : 'sess_' + Math.random().toString(16).slice(2),
+      task_id: updatedTo.task_id || '',
+      participant_user_id: userId,
+      participant_display_name: userDisplayName || userId,
+      started_at: ts,
+      ended_at: null,
+      start_reason: START_REASON_TASK_SWITCH,
+      actor_user_id: actor,
+    };
+    const resB = store.appendOrUpdateSession(updatedTo, newSessB, actor, isAdmin);
+    updatedTo = resB.records;
+    const createdB = resB.session;
+
+    return {
+      recordsFrom: updatedFrom,
+      closedSessionA: closedA,
+      recordsTo: updatedTo,
+      newSessionB: createdB,
+    };
+  }
+
+  function recalculateTaskSummaries(
+    records,
+    userShiftsMap,
+    userBreaksMap,
+    shiftRevision = 0,
+    calculationTimeIso = null
+  ) {
+    const store = Store || (typeof window !== 'undefined' ? window.MeldexProductionTaskSessionStore : null);
+    const updated = JSON.parse(JSON.stringify(records || { sessions: [], revisions: [], summaries: {} }));
+    const calcTs = calculationTimeIso || (store ? store.nowIsoUtc() : new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'));
+    const taskId = updated.task_id || '';
+    const sessions = updated.sessions || [];
+
+    const existingSummaries = updated.summaries || {};
+    if (!sessions.length) {
+      const totalSummary = existingSummaries['__total__'];
+      if (totalSummary && totalSummary.quality_status === QUALITY_LEGACY_MANUAL) {
+        return { records: updated, summaries: existingSummaries };
+      }
+      const unmeasuredSummary = store.normalizeActualSummaryDict({
+        task_id: taskId,
+        participant_user_id: '__total__',
+        actual_seconds: 0,
+        calculation_revision: 1,
+        session_ids: [],
+        shift_revision: shiftRevision,
+        calculated_at: calcTs,
+        quality_status: QUALITY_UNMEASURED,
+        quality_reasons: ['区間根拠なし（未計測）'],
+      });
+      updated.summaries = { '__total__': unmeasuredSummary };
+      return { records: updated, summaries: updated.summaries };
+    }
+
+    const userSessions = {};
+    for (const sess of sessions) {
+      if (sess.deleted_at) continue;
+      const uid = sess.participant_user_id || 'anonymous';
+      if (!userSessions[uid]) userSessions[uid] = [];
+      userSessions[uid].push(sess);
+    }
+
+    const newSummaries = {};
+    let totalSeconds = 0;
+    const allSessionIds = [];
+    let overallQualityStatus = QUALITY_CONFIRMED;
+    const overallReasons = [];
+
+    for (const [uid, uSessList] of Object.entries(userSessions)) {
+      const sessIntervals = [];
+      const userSessionIds = uSessList.map(s => s.session_id).filter(Boolean);
+      allSessionIds.push(...userSessionIds);
+
+      let uQualityStatus = QUALITY_CONFIRMED;
+      const uReasons = [];
+
+      for (const s of uSessList) {
+        const sStart = parseIsoToEpochSec(s.started_at);
+        const sEnd = parseIsoToEpochSec(s.ended_at);
+
+        if (sStart === null) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push(`セッション ${s.session_id} の開始時刻が不正です`);
+          continue;
+        }
+
+        if (sEnd === null) {
+          uQualityStatus = QUALITY_INCOMPLETE;
+          uReasons.push('作業セッションが継続中です（未完了）');
+          continue;
+        }
+
+        if (sEnd < sStart) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push(`セッション ${s.session_id} の終了時刻が開始時刻より前です`);
+          continue;
+        }
+
+        sessIntervals.push(new TimeInterval(sStart, sEnd));
+      }
+
+      const rawShifts = (userShiftsMap && userShiftsMap[uid]) || [];
+      const shiftIntervals = [];
+      for (const sh of rawShifts) {
+        const shStart = parseIsoToEpochSec(sh.start || sh.started_at);
+        const shEnd = parseIsoToEpochSec(sh.end || sh.ended_at);
+
+        if (shStart === null) continue;
+        if (shEnd === null) {
+          uQualityStatus = QUALITY_INCOMPLETE;
+          uReasons.push('退勤打刻がありません');
+          continue;
+        }
+        if (shEnd < shStart) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push('出勤・退勤時刻が逆転しています');
+          continue;
+        }
+        shiftIntervals.push(new TimeInterval(shStart, shEnd));
+      }
+
+      const rawBreaks = (userBreaksMap && userBreaksMap[uid]) || [];
+      const breakIntervals = [];
+      for (const br of rawBreaks) {
+        const brStart = parseIsoToEpochSec(br.start || br.started_at);
+        const brEnd = parseIsoToEpochSec(br.end || br.ended_at);
+
+        if (brStart === null) continue;
+        if (brEnd === null) {
+          uQualityStatus = QUALITY_INCOMPLETE;
+          uReasons.push('離席復帰打刻がありません');
+          continue;
+        }
+        if (brEnd < brStart) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push('離席・復帰時刻が逆転しています');
+          continue;
+        }
+        breakIntervals.push(new TimeInterval(brStart, brEnd));
+      }
+
+      const { actualSeconds } = computeUserTaskActualIntersection(sessIntervals, shiftIntervals, breakIntervals);
+      totalSeconds += actualSeconds;
+
+      if (uQualityStatus === QUALITY_CONFIRMED && !sessIntervals.length && uSessList.length) {
+        uQualityStatus = QUALITY_INCOMPLETE;
+      }
+
+      const prevRev = (updated.summaries && updated.summaries[uid] && updated.summaries[uid].calculation_revision) || 0;
+      const userSummary = store.normalizeActualSummaryDict({
+        task_id: taskId,
+        participant_user_id: uid,
+        actual_seconds: actualSeconds,
+        calculation_revision: prevRev + 1,
+        session_ids: userSessionIds,
+        shift_revision: shiftRevision,
+        calculated_at: calcTs,
+        quality_status: uQualityStatus,
+        quality_reasons: uReasons,
+      });
+      newSummaries[uid] = userSummary;
+
+      if (uQualityStatus === QUALITY_CONFLICT) {
+        overallQualityStatus = QUALITY_CONFLICT;
+      } else if (uQualityStatus === QUALITY_INCOMPLETE && overallQualityStatus !== QUALITY_CONFLICT) {
+        overallQualityStatus = QUALITY_INCOMPLETE;
+      }
+      overallReasons.push(...uReasons);
+    }
+
+    const prevTotalRev = (updated.summaries && updated.summaries['__total__'] && updated.summaries['__total__'].calculation_revision) || 0;
+    const totalSummary = store.normalizeActualSummaryDict({
+      task_id: taskId,
+      participant_user_id: '__total__',
+      actual_seconds: totalSeconds,
+      calculation_revision: prevTotalRev + 1,
+      session_ids: Array.from(new Set(allSessionIds)),
+      shift_revision: shiftRevision,
+      calculated_at: calcTs,
+      quality_status: overallQualityStatus,
+      quality_reasons: Array.from(new Set(overallReasons)),
+    });
+    newSummaries['__total__'] = totalSummary;
+
+    updated.summaries = newSummaries;
+    return { records: updated, summaries: newSummaries };
+  }
+
+  const Engine = Object.freeze({
+    QUALITY_CONFIRMED,
+    QUALITY_INCOMPLETE,
+    QUALITY_CONFLICT,
+    QUALITY_LEGACY_MANUAL,
+    QUALITY_UNMEASURED,
+    CANONICAL_STATUS_IN_PROGRESS,
+    CANONICAL_STATUS_NOT_STARTED,
+    CANONICAL_STATUS_PENDING,
+    CANONICAL_STATUS_REVIEW_WAITING,
+    CANONICAL_STATUS_DONE,
+    normalizeTaskStatus,
+    isActiveWorkingStatus,
+    parseIsoToEpochSec,
+    formatEpochSecToIso,
+    TimeInterval,
+    mergeIntervals,
+    intersectIntervalLists,
+    subtractIntervalLists,
+    computeUserTaskActualIntersection,
+    handleTaskStatusTransition,
+    handleAssigneeChange,
+    handleParticipantJoin,
+    handleParticipantLeave,
+    handleTaskSwitch,
+    recalculateTaskSummaries,
+  });
+
+  if (typeof window !== 'undefined') {
+    window.MeldexProductionTaskActualEngine = Engine;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Engine;
+  }
+})();
+
+;
+
+/* === gb-production-daily-snapshot.js === */
+;
+/* gb-production-daily-snapshot.js: 日次スナップショット（production_daily_snapshots）ストア・エンジン */
+(function() {
+  'use strict';
+
+  class MeldexProductionDailySnapshotStore {
+    constructor(options = {}) {
+      // key: `${workspace_id}::${target_date}` -> snapshot object
+      this._snapshots = new Map();
+      this.provider = options.provider || null;
+      this.baseDir = options.baseDir || '_meldex/production_snapshots';
+    }
+
+    _key(workspaceId, targetDate) {
+      const ws = String(workspaceId || 'default').trim();
+      const dt = String(targetDate || '').trim();
+      return `${ws}::${dt}`;
+    }
+
+    _filePath(workspaceId, targetDate) {
+      const ws = String(workspaceId || 'default').trim().replace(/[^a-zA-Z0-9_\-]/g, '_') || 'default';
+      const dt = String(targetDate || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+      return `${this.baseDir}/${ws}/${dt}.json`;
+    }
+
+    async saveSnapshot(workspaceId, targetDate, snapshotData) {
+      const ws = String(workspaceId || 'default').trim();
+      const dt = String(targetDate || '').trim();
+      if (!dt) return { ok: false, error: 'target_date_required' };
+
+      const record = JSON.parse(JSON.stringify(snapshotData || {}));
+      record.workspace_id = ws;
+      record.target_date = dt;
+      record.snapshot_id = record.snapshot_id || `snapshot:${ws}:${dt}`;
+      record.is_long_term_retention = true;
+      record.saved_at = new Date().toISOString();
+
+      if (this.provider) {
+        const filePath = this._filePath(ws, dt);
+        try {
+          if (typeof this.provider.writeJson === 'function') {
+            await this.provider.writeJson(filePath, record);
+          } else if (typeof this.provider.writeText === 'function') {
+            await this.provider.writeText(filePath, JSON.stringify(record, null, 2));
+          }
+        } catch (err) {
+          return { ok: false, error: `provider_save_failed: ${err?.message || err}` };
+        }
+      }
+
+      this._snapshots.set(this._key(ws, dt), record);
+      return { ok: true, snapshot: JSON.parse(JSON.stringify(record)) };
+    }
+
+    async saveSnapshotAsync(workspaceId, targetDate, snapshotData) {
+      return this.saveSnapshot(workspaceId, targetDate, snapshotData);
+    }
+
+    async loadFromProvider(workspaceId) {
+      if (!this.provider) return { ok: true, count: 0 };
+      const ws = String(workspaceId || 'default').trim();
+      const safeWs = ws.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'default';
+      const wsDir = `${this.baseDir}/${safeWs}`;
+      try {
+        if (typeof this.provider.listDirectory === 'function') {
+          const files = await this.provider.listDirectory(wsDir);
+          let loadedCount = 0;
+          if (Array.isArray(files)) {
+            for (const f of files) {
+              const name = typeof f === 'string' ? f : f?.name;
+              if (name && name.endsWith('.json')) {
+                const snapPath = `${wsDir}/${name}`;
+                let snap = null;
+                if (typeof this.provider.readJson === 'function') {
+                  snap = await this.provider.readJson(snapPath);
+                } else if (typeof this.provider.readText === 'function') {
+                  const text = await this.provider.readText(snapPath);
+                  if (text) {
+                    try {
+                      snap = JSON.parse(text);
+                    } catch (parseErr) {
+                      return { ok: false, error: `provider_parse_failed: ${parseErr?.message || parseErr}` };
+                    }
+                  }
+                }
+                if (snap && snap.target_date) {
+                  this._snapshots.set(this._key(ws, snap.target_date), snap);
+                  loadedCount++;
+                }
+              }
+            }
+          }
+          return { ok: true, count: loadedCount };
+        }
+        return { ok: true, count: 0 };
+      } catch (err) {
+        console.warn('[snapshot-store] loadFromProvider failed:', err);
+        return { ok: false, error: `provider_load_failed: ${err?.message || err}` };
+      }
+    }
+
+    getSnapshot(workspaceId, targetDate) {
+      const key = this._key(workspaceId, targetDate);
+      const record = this._snapshots.get(key);
+      return record ? JSON.parse(JSON.stringify(record)) : null;
+    }
+
+    listSnapshots(workspaceId, startDate, endDate) {
+      const ws = String(workspaceId || 'default').trim();
+      const results = [];
+
+      for (const [key, snap] of this._snapshots.entries()) {
+        const [itemWs, itemDate] = key.split('::');
+        if (itemWs !== ws) continue;
+        if (startDate && itemDate < startDate) continue;
+        if (endDate && itemDate > endDate) continue;
+        results.push(JSON.parse(JSON.stringify(snap)));
+      }
+
+      results.sort((a, b) => String(a.target_date || '').localeCompare(String(b.target_date || '')));
+      return results;
+    }
+
+    async deleteSnapshot(workspaceId, targetDate) {
+      const ws = String(workspaceId || 'default').trim();
+      const dt = String(targetDate || '').trim();
+      const key = this._key(ws, dt);
+      const exists = this._snapshots.has(key);
+
+      if (this.provider) {
+        const filePath = this._filePath(ws, dt);
+        if (typeof this.provider.deletePath === 'function') {
+          try {
+            await this.provider.deletePath(filePath);
+          } catch (err) {
+            // 削除失敗時はメモリ上の記録を失わない
+            return false;
+          }
+        }
+      }
+
+      if (exists) {
+        this._snapshots.delete(key);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  class MeldexProductionDailySnapshotEngine {
+    constructor(options = {}) {
+      this.store = options.snapshotStore || new MeldexProductionDailySnapshotStore();
+      this.actualEngine = options.actualEngine || (typeof window !== 'undefined' ? window.MeldexProductionTaskActualEngine : null);
+      this.formatter = (typeof window !== 'undefined' ? window.MeldexProductionTimeFormatter : null) || options.formatter || null;
+    }
+
+    parseCutoff(cutoffStr) {
+      const s = String(cutoffStr || '04:00').trim();
+      const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+      if (m) return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10) };
+      return { hour: 4, minute: 0 };
+    }
+
+    calculateBusinessDate(dtValue, cutoff = '04:00') {
+      const { hour: cutoffH, minute: cutoffM } = this.parseCutoff(cutoff);
+      let dt = null;
+
+      if (dtValue instanceof Date) {
+        dt = new Date(dtValue.getTime());
+      } else if (typeof dtValue === 'string' && dtValue.trim()) {
+        const str = dtValue.trim();
+        dt = new Date(str);
+        if (isNaN(dt.getTime())) {
+          try {
+            dt = new Date(str.replace(' ', 'T'));
+          } catch (_) {
+            dt = null;
+          }
+        }
+      }
+
+      if (!dt || isNaN(dt.getTime())) {
+        return new Date().toISOString().slice(0, 10);
+      }
+
+      const curMinute = dt.getHours() * 60 + dt.getMinutes();
+      const cutoffMinute = cutoffH * 60 + cutoffM;
+
+      if (curMinute < cutoffMinute) {
+        dt.setDate(dt.getDate() - 1);
+      }
+
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    findMissingDates(workspaceId, startDate, endDate) {
+      const existing = new Set(
+        this.store.listSnapshots(workspaceId, startDate, endDate).map(s => s.target_date)
+      );
+      const missing = [];
+
+      try {
+        const cur = new Date(startDate + 'T00:00:00');
+        const end = new Date(endDate + 'T00:00:00');
+        while (cur <= end) {
+          const y = cur.getFullYear();
+          const m = String(cur.getMonth() + 1).padStart(2, '0');
+          const d = String(cur.getDate()).padStart(2, '0');
+          const curStr = `${y}-${m}-${d}`;
+          if (!existing.has(curStr)) {
+            missing.push(curStr);
+          }
+          cur.setDate(cur.getDate() + 1);
+        }
+      } catch (_) {}
+
+      return missing;
+    }
+
+    _parseSeconds(raw) {
+      if (this.formatter && typeof this.formatter.parseToSeconds === 'function') {
+        return this.formatter.parseToSeconds(raw);
+      }
+      if (raw == null || raw === '') return 0;
+      const num = parseFloat(String(raw).replace(/[^0-9.-]/g, ''));
+      if (isNaN(num)) return 0;
+      return String(raw).includes('h') || num < 24 ? Math.round(num * 3600) : Math.round(num);
+    }
+
+    buildDailySnapshot(args = {}) {
+      const ws = String(args.workspace_id || 'default').trim();
+      const dateStr = String(args.target_date || '').trim();
+      const tasks = args.tasks || [];
+      const sessions = args.sessions || [];
+      const attendances = args.attendances || [];
+      const calendarEvents = args.calendar_events || [];
+      const tzStr = args.tz_str || 'Asia/Tokyo';
+      const dayCutoff = args.day_cutoff || '04:00';
+      const changesSummary = args.changes_summary || [];
+
+      const tasksSnapshot = [];
+
+      // 勤怠リスト/オブジェクトから user_shifts_map と user_breaks_map を構築
+      const userShiftsMap = {};
+      const userBreaksMap = {};
+
+      if (attendances && typeof attendances === 'object' && !Array.isArray(attendances)) {
+        Object.assign(userShiftsMap, attendances.shifts || {});
+        Object.assign(userBreaksMap, attendances.breaks || {});
+      } else if (Array.isArray(attendances)) {
+        for (const att of attendances) {
+          const uid = String(att.user_id || att.user || '').trim();
+          if (!uid) continue;
+          const attType = String(att.type || 'work').toLowerCase();
+          const interval = { start: att.start, end: att.end };
+          if (attType === 'work' || attType === 'shift') {
+            userShiftsMap[uid] = userShiftsMap[uid] || [];
+            userShiftsMap[uid].push(interval);
+          } else if (attType === 'break' || attType === 'rest' || attType === 'lunch') {
+            userBreaksMap[uid] = userBreaksMap[uid] || [];
+            userBreaksMap[uid].push(interval);
+          }
+        }
+      }
+
+      for (const row of tasks) {
+        const taskId = String(row.id || row.task_id || '').trim();
+        const props = row.properties || {};
+        const workTitle = String(props['作品タイトル'] || row.work_title || '').trim();
+        const title = String(row.name || row.title || props['タスク名'] || taskId).trim();
+        const assignee = String(props['担当者'] || row.assignee || '').trim();
+        const status = String(props['状況'] || row.status || '未着手').trim();
+        const deadline = String(props['締切日時'] || props['完了日時'] || row.deadline || '').trim();
+
+        // 予定作業時間
+        const estimateRaw = props['目標作業時間_値'] || props['予定作業時間'] || row.estimate_seconds;
+        const estimateSec = this._parseSeconds(estimateRaw);
+
+        // 割当作業時間
+        const allocatedRaw = props['作業予定時間'] || props['割当作業時間'] || row.allocated_seconds;
+        const allocatedSec = this._parseSeconds(allocatedRaw);
+
+        // 実績作業時間の計算
+        const taskSessions = sessions.filter(s => String(s.task_id || '') === taskId);
+        let actualSec = 0;
+        let qualityStatus = 'unmeasured';
+        let qualityReason = '実績区間なし';
+        let participantActuals = [];
+
+        if (taskSessions.length > 0 && this.actualEngine && typeof this.actualEngine.recalculateTaskSummaries === 'function') {
+          const taskRecords = {
+            task_id: taskId,
+            sessions: taskSessions,
+            revisions: [],
+            summaries: {}
+          };
+          const recalcRes = this.actualEngine.recalculateTaskSummaries(
+            taskRecords,
+            userShiftsMap,
+            userBreaksMap
+          );
+          const summaries = recalcRes.summaries || {};
+          const totalSummary = summaries['__total__'] || {};
+          actualSec = totalSummary.actual_seconds || 0;
+          qualityStatus = totalSummary.quality_status || 'confirmed';
+          const qualityReasons = totalSummary.quality_reasons || [];
+          qualityReason = qualityReasons.join('; ');
+
+          for (const [uid, uSummary] of Object.entries(summaries)) {
+            if (uid === '__total__') continue;
+            participantActuals.push({
+              user_id: uid,
+              display_name: uid,
+              actual_seconds: uSummary.actual_seconds || 0,
+              quality_status: uSummary.quality_status || 'confirmed'
+            });
+          }
+        } else {
+          const legacyManualRaw = props['作業時間_実績'];
+          if (legacyManualRaw != null && String(legacyManualRaw).trim()) {
+            actualSec = this._parseSeconds(legacyManualRaw);
+            qualityStatus = 'legacy-manual';
+            qualityReason = '過去手入力値';
+          } else {
+            actualSec = 0;
+            qualityStatus = 'unmeasured';
+            qualityReason = '実績区間なし';
+          }
+          if (assignee) {
+            participantActuals.push({
+              user_id: assignee,
+              display_name: assignee,
+              actual_seconds: actualSec,
+              quality_status: qualityStatus
+            });
+          }
+        }
+
+        tasksSnapshot.push({
+          task_id: taskId,
+          work_title: workTitle,
+          title: title,
+          assignee: assignee,
+          status: status,
+          deadline: deadline,
+          estimate_seconds: estimateSec,
+          allocated_seconds: allocatedSec,
+          actual_seconds: actualSec,
+          quality_status: qualityStatus,
+          quality_reason: qualityReason,
+          participant_actuals: participantActuals
+        });
+      }
+
+      return {
+        snapshot_id: `snapshot:${ws}:${dateStr}`,
+        workspace_id: ws,
+        target_date: dateStr,
+        timezone: tzStr,
+        day_cutoff: dayCutoff,
+        tasks: tasksSnapshot,
+        calendar_events: JSON.parse(JSON.stringify(calendarEvents)),
+        changes_summary: [...changesSummary],
+        source_revision: 1,
+        created_at: new Date().toISOString(),
+        created_by: 'system',
+        is_long_term_retention: true
+      };
+    }
+  }
+
+  // グローバル公開
+  if (typeof window !== 'undefined') {
+    window.MeldexProductionDailySnapshotStore = MeldexProductionDailySnapshotStore;
+    window.MeldexProductionDailySnapshotEngine = MeldexProductionDailySnapshotEngine;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      MeldexProductionDailySnapshotStore,
+      MeldexProductionDailySnapshotEngine
+    };
+  }
+})();
+
+;
+
+/* === gb-production-daily-snapshot-panel.js === */
+;
+/* gb-production-daily-snapshot-panel.js: バージョン管理・カレンダー向け日次記録（production_daily_snapshots）パネル */
+(function() {
+  'use strict';
+
+  function esc(text) {
+    if (text == null) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatTime(seconds) {
+    if (window.MeldexProductionTimeFormatter?.formatDuration) {
+      return window.MeldexProductionTimeFormatter.formatDuration(seconds);
+    }
+    const s = Number(seconds) || 0;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (h > 0 && m > 0) return `${h}時間${m}分`;
+    if (h > 0) return `${h}時間`;
+    return `${m}分`;
+  }
+
+  class MeldexProductionDailySnapshotPanel {
+    constructor(options = {}) {
+      const defaultProvider = options.provider || (typeof window !== 'undefined' ? (window.meldexFileProvider || window.fileProvider || (window.app && window.app.provider) || (typeof meldexProvider !== 'undefined' ? meldexProvider : null)) : null);
+      if (options.store) {
+        this.store = options.store;
+      } else if (typeof window !== 'undefined' && window.MeldexProductionDailySnapshotStore) {
+        this.store = new window.MeldexProductionDailySnapshotStore({ provider: defaultProvider });
+      } else {
+        this.store = null;
+      }
+      this.engine = options.engine || (typeof window !== 'undefined' && window.MeldexProductionDailySnapshotEngine ? new window.MeldexProductionDailySnapshotEngine({ snapshotStore: this.store }) : null);
+    }
+
+    async fetchSnapshotsFromApi(workspaceId = 'default') {
+      try {
+        if (typeof apiFetch === 'function') {
+          const ws = String(workspaceId || 'default').trim();
+          const endpoint = ws ? `/api/production-management/daily-snapshots?workspace_id=${encodeURIComponent(ws)}` : '/api/production-management/daily-snapshots';
+          const res = await apiFetch(endpoint);
+          if (res && res.ok && Array.isArray(res.snapshots)) {
+            if (this.store) {
+              for (const snap of res.snapshots) {
+                if (snap && snap.target_date) {
+                  await this.store.saveSnapshot(workspaceId, snap.target_date, snap);
+                }
+              }
+            }
+            return res.snapshots;
+          } else {
+            const msg = res?.error || '日次スナップショットの取得に失敗しました';
+            if (typeof showStatus === 'function') showStatus(msg, true);
+          }
+        } else if (this.store && typeof this.store.loadFromProvider === 'function') {
+          const loadRes = await this.store.loadFromProvider(workspaceId);
+          if (loadRes && !loadRes.ok) {
+            if (typeof showStatus === 'function') showStatus(`日次スナップショット読込エラー: ${loadRes.error}`, true);
+          }
+        }
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus(`日次スナップショット読込エラー: ${err?.message || err}`, true);
+      }
+      return this.store ? this.store.listSnapshots(workspaceId) : [];
+    }
+
+    async createSnapshotViaApi(targetDate = '', workspaceId = 'default') {
+      const now = new Date();
+      const dateStr = targetDate || now.toISOString().slice(0, 10);
+      try {
+        if (typeof apiPost === 'function') {
+          const res = await apiPost('/api/production-management/daily-snapshots', { target_date: dateStr, workspace_id: workspaceId });
+          if (res && res.ok && res.snapshot) {
+            if (this.store) await this.store.saveSnapshot(workspaceId, dateStr, res.snapshot);
+            if (typeof showStatus === 'function') showStatus('日次スナップショットを記録しました');
+            return res.snapshot;
+          } else {
+            const msg = res?.error || '日次スナップショットの保存に失敗しました';
+            if (typeof showStatus === 'function') showStatus(msg, true);
+          }
+        } else if (this.store && this.engine) {
+          const built = this.engine.buildDailySnapshot({ workspace_id: workspaceId, target_date: dateStr });
+          const saveRes = await this.store.saveSnapshot(workspaceId, dateStr, built);
+          if (saveRes && saveRes.ok) {
+            if (typeof showStatus === 'function') showStatus('日次スナップショットを記録しました');
+            return saveRes.snapshot;
+          } else {
+            const msg = saveRes?.error || '日次スナップショットの保存に失敗しました';
+            if (typeof showStatus === 'function') showStatus(msg, true);
+          }
+        }
+      } catch (err) {
+        if (typeof showStatus === 'function') showStatus(`日次スナップショット保存エラー: ${err?.message || err}`, true);
+      }
+      return null;
+    }
+
+    _buildSnapshotListDom(container, snapshots, options) {
+      if (!container) return null;
+      container.replaceChildren();
+
+      const wrap = document.createElement('div');
+      wrap.className = 'gb-production-daily-snapshot-list';
+      wrap.dataset.e2eId = 'gb-production-daily-snapshot-list';
+
+      const header = document.createElement('div');
+      header.className = 'gb-production-snapshot-header';
+      header.style.display = 'flex';
+      header.style.justifyContent = 'space-between';
+      header.style.alignItems = 'center';
+      header.innerHTML = `
+        <div>
+          <strong><span class="gb-icon">📅</span> 制作進行の日次記録</strong>
+          <span class="gb-sub-text" style="font-size:12px;color:var(--text-muted, #888);">（過去時点の予定と実績）</span>
+        </div>
+      `;
+
+      const createBtn = document.createElement('button');
+      createBtn.type = 'button';
+      createBtn.className = 'gb-btn gb-btn-sm gb-btn-primary';
+      createBtn.dataset.e2eId = 'gb-production-create-daily-snapshot-btn';
+      createBtn.textContent = '本日分を記録';
+      createBtn.addEventListener('click', async () => {
+        createBtn.disabled = true;
+        createBtn.textContent = '記録中...';
+        await this.createSnapshotViaApi('', options?.workspaceId || 'default');
+        createBtn.disabled = false;
+        createBtn.textContent = '本日分を記録';
+        this.renderSnapshotList(container, options);
+      });
+      header.appendChild(createBtn);
+      wrap.appendChild(header);
+
+      if (!snapshots || snapshots.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'gb-empty-state';
+        empty.style.padding = '12px 8px';
+        empty.style.color = 'var(--text-muted, #888)';
+        empty.textContent = '保存された日次スナップショットはありません。';
+        wrap.appendChild(empty);
+        container.appendChild(wrap);
+        return wrap;
+      }
+
+      const listEl = document.createElement('div');
+      listEl.className = 'gb-snapshot-items';
+      listEl.style.display = 'flex';
+      listEl.style.flexDirection = 'column';
+      listEl.style.gap = '6px';
+      listEl.style.marginTop = '8px';
+
+      snapshots.slice().reverse().forEach(snap => {
+        const item = document.createElement('div');
+        item.className = 'gb-snapshot-item';
+        item.dataset.e2eId = `snapshot-item-${snap.target_date}`;
+        item.dataset.targetDate = snap.target_date;
+        item.style.border = '1px solid var(--border, #ccc)';
+        item.style.borderRadius = '4px';
+        item.style.padding = '6px 8px';
+        item.style.cursor = 'pointer';
+        item.style.background = 'var(--bg-card, rgba(0,0,0,0.02))';
+
+        const taskCount = snap.tasks?.length || 0;
+        const totalEst = snap.tasks?.reduce((sum, t) => sum + (t.estimate_seconds || 0), 0) || 0;
+        const totalAct = snap.tasks?.reduce((sum, t) => sum + (t.actual_seconds || 0), 0) || 0;
+
+        item.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong>${esc(snap.target_date)}</strong>
+            <span class="gb-badge" style="font-size:11px;padding:1px 4px;border-radius:3px;background:var(--accent-subtle, #e0f0ff);color:var(--accent, #0066cc);">
+              ${taskCount}タスク
+            </span>
+          </div>
+          <div style="font-size:12px;color:var(--text-muted, #666);margin-top:2px;">
+            予定: ${esc(formatTime(totalEst))} / 実績: ${esc(formatTime(totalAct))}
+          </div>
+        `;
+
+        item.addEventListener('click', () => {
+          if (typeof options.onSelectSnapshot === 'function') {
+            options.onSelectSnapshot(snap);
+          } else {
+            this.showReadOnlySnapshotModal(snap);
+          }
+        });
+
+        listEl.appendChild(item);
+      });
+
+      wrap.appendChild(listEl);
+      container.appendChild(wrap);
+      return wrap;
+    }
+
+    renderSnapshotList(container, options = {}) {
+      if (!container) return null;
+      const workspaceId = options.workspaceId || 'default';
+      const initialSnapshots = this.store ? this.store.listSnapshots(workspaceId) : [];
+      const wrap = this._buildSnapshotListDom(container, initialSnapshots, options);
+
+      // API非同期更新
+      if (typeof apiFetch === 'function' && options.fetch !== false) {
+        this.fetchSnapshotsFromApi(workspaceId).then(apiSnaps => {
+          if (apiSnaps && apiSnaps.length > 0) {
+            this._buildSnapshotListDom(container, apiSnaps, options);
+          }
+        }).catch(err => {
+          if (typeof showStatus === 'function') showStatus(`日次スナップショット取得エラー: ${err?.message || err}`, true);
+        });
+      }
+
+      return wrap;
+    }
+
+    showReadOnlySnapshotModal(snapshot) {
+      if (!snapshot) return;
+      const modal = document.createElement('div');
+      modal.className = 'gb-modal gb-production-snapshot-modal';
+      modal.dataset.e2eId = 'gb-production-snapshot-modal';
+      modal.style.position = 'fixed';
+      modal.style.top = '0';
+      modal.style.left = '0';
+      modal.style.width = '100vw';
+      modal.style.height = '100vh';
+      modal.style.background = 'rgba(0,0,0,0.5)';
+      modal.style.display = 'flex';
+      modal.style.alignItems = 'center';
+      modal.style.justifyContent = 'center';
+      modal.style.zIndex = '9999';
+
+      const content = document.createElement('div');
+      content.className = 'gb-modal-content';
+      content.style.background = 'var(--bg-main, #fff)';
+      content.style.borderRadius = '8px';
+      content.style.width = '90%';
+      content.style.maxWidth = '640px';
+      content.style.maxHeight = '80vh';
+      content.style.overflow = 'auto';
+      content.style.padding = '16px';
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.justifyContent = 'space-between';
+      header.style.alignItems = 'center';
+      header.style.borderBottom = '1px solid var(--border, #ccc)';
+      header.style.paddingBottom = '8px';
+      header.innerHTML = `
+        <div>
+          <strong style="font-size:16px;">制作日次記録（${esc(snapshot.target_date)}）</strong>
+          <span style="display:inline-block;margin-left:8px;font-size:11px;padding:2px 6px;background:#e2e8f0;border-radius:4px;">読み取り専用</span>
+        </div>
+      `;
+
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'gb-btn gb-btn-sm';
+      closeBtn.textContent = '✕';
+      closeBtn.addEventListener('click', () => modal.remove());
+      header.appendChild(closeBtn);
+      content.appendChild(header);
+
+      const body = document.createElement('div');
+      body.style.marginTop = '12px';
+
+      const tasksList = snapshot.tasks || [];
+      if (tasksList.length === 0) {
+        body.innerHTML = '<p style="color:var(--text-muted, #888);">記録されたタスクはありません。</p>';
+      } else {
+        const table = document.createElement('table');
+        table.style.width = '100%';
+        table.style.fontSize = '12px';
+        table.style.borderCollapse = 'collapse';
+        table.innerHTML = `
+          <thead>
+            <tr style="border-bottom:1px solid var(--border, #ccc);text-align:left;">
+              <th style="padding:4px;">タスク</th>
+              <th style="padding:4px;">担当者</th>
+              <th style="padding:4px;">状況</th>
+              <th style="padding:4px;">予定</th>
+              <th style="padding:4px;">割当</th>
+              <th style="padding:4px;">実績</th>
+              <th style="padding:4px;">品質</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tasksList.map(t => `
+              <tr style="border-bottom:1px solid var(--border-light, #eee);">
+                <td style="padding:4px;">${esc(t.title || t.task_id)}</td>
+                <td style="padding:4px;">${esc(t.assignee || '-')}</td>
+                <td style="padding:4px;">${esc(t.status || '-')}</td>
+                <td style="padding:4px;">${esc(formatTime(t.estimate_seconds))}</td>
+                <td style="padding:4px;">${esc(formatTime(t.allocated_seconds))}</td>
+                <td style="padding:4px;">${esc(formatTime(t.actual_seconds))}</td>
+                <td style="padding:4px;"><span class="gb-quality-badge quality-${esc(t.quality_status)}">${esc(t.quality_status || 'confirmed')}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        `;
+        body.appendChild(table);
+      }
+
+      content.appendChild(body);
+      modal.appendChild(content);
+      document.body.appendChild(modal);
+    }
+
+    static open(options = {}) {
+      const panel = new MeldexProductionDailySnapshotPanel(options);
+      const modal = document.createElement('div');
+      modal.className = 'gb-modal gb-production-snapshot-main-modal';
+      modal.dataset.e2eId = 'gb-production-snapshot-main-modal';
+      modal.style.position = 'fixed';
+      modal.style.top = '0';
+      modal.style.left = '0';
+      modal.style.width = '100vw';
+      modal.style.height = '100vh';
+      modal.style.background = 'rgba(0,0,0,0.5)';
+      modal.style.display = 'flex';
+      modal.style.alignItems = 'center';
+      modal.style.justifyContent = 'center';
+      modal.style.zIndex = '9998';
+
+      const content = document.createElement('div');
+      content.className = 'gb-modal-content';
+      content.style.background = 'var(--bg-main, #fff)';
+      content.style.borderRadius = '8px';
+      content.style.width = '90%';
+      content.style.maxWidth = '680px';
+      content.style.maxHeight = '85vh';
+      content.style.overflow = 'auto';
+      content.style.padding = '16px';
+
+      const closeHeader = document.createElement('div');
+      closeHeader.style.display = 'flex';
+      closeHeader.style.justifyContent = 'flex-end';
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'gb-btn gb-btn-sm';
+      closeBtn.textContent = '✕';
+      closeBtn.addEventListener('click', () => modal.remove());
+      closeHeader.appendChild(closeBtn);
+      content.appendChild(closeHeader);
+
+      const listContainer = document.createElement('div');
+      content.appendChild(listContainer);
+      modal.appendChild(content);
+      document.body.appendChild(modal);
+
+      panel.renderSnapshotList(listContainer, options);
+      return modal;
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MeldexProductionDailySnapshotPanel = MeldexProductionDailySnapshotPanel;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = MeldexProductionDailySnapshotPanel;
+  }
+})();
+
+;
+
+/* === gb-production-task-analysis-engine.js === */
+;
+/* gb-production-task-analysis-engine.js: 制作タスクAI分析・集計・構造化履歴・CSVエンジン */
+(function() {
+  'use strict';
+
+  const ROLE_ADMIN = 'admin';
+  const ROLE_OWNER = 'owner';
+  const ROLE_MEMBER = 'member';
+
+  class MeldexProductionTaskAnalysisEngine {
+    constructor() {}
+
+    isAdminOrOwner(role) {
+      const r = String(role || ROLE_MEMBER).trim().toLowerCase();
+      return r === ROLE_ADMIN || r === ROLE_OWNER;
+    }
+
+    _filterByPermissions(tasks, requesterUserId, requesterRole) {
+      if (this.isAdminOrOwner(requesterRole)) {
+        return tasks;
+      }
+
+      const uid = String(requesterUserId || '').trim();
+      const filtered = [];
+      for (const t of tasks) {
+        const assignee = String(t.assignee || '').trim();
+        const participants = new Set(
+          (t.participant_actuals || []).map(p => String(p.user_id || p.display_name || '').trim())
+        );
+        if (assignee === uid || participants.has(uid)) {
+          filtered.push(t);
+        }
+      }
+      return filtered;
+    }
+
+    queryTaskHistory(args = {}) {
+      const ws = String(args.workspaceId || args.workspace_id || 'default').trim();
+      const requesterUserId = String(args.requesterUserId || args.requester_user_id || '').trim();
+      const requesterRole = String(args.requesterRole || args.requester_role || 'member').trim();
+      const dataset = args.dataset || {};
+      const allTasks = dataset.tasks || [];
+      const filters = args.filters || {};
+      const pagination = args.pagination || {};
+
+      const visibleTasks = this._filterByPermissions(allTasks, requesterUserId, requesterRole);
+
+      const workIdFilter = filters.work_id || filters.workId;
+      const assigneeFilter = filters.assignee;
+      const statusFilter = filters.status;
+      const qualityFilter = filters.quality_status || filters.qualityStatus;
+      const estimatedByFilter = filters.estimated_by || filters.estimatedBy;
+
+      const matched = [];
+      for (const t of visibleTasks) {
+        if (workIdFilter && String(t.work_id || '') !== String(workIdFilter)) continue;
+        if (assigneeFilter && String(t.assignee || '') !== String(assigneeFilter)) continue;
+        if (statusFilter && String(t.status || '') !== String(statusFilter)) continue;
+        if (qualityFilter && String(t.quality_status || '') !== String(qualityFilter)) continue;
+        if (estimatedByFilter && String(t.estimated_by || '') !== String(estimatedByFilter)) continue;
+        matched.push(JSON.parse(JSON.stringify(t)));
+      }
+
+      const totalCount = matched.length;
+      const limit = parseInt(pagination.limit, 10) || 50;
+      const offset = parseInt(pagination.offset, 10) || 0;
+
+      const items = matched.slice(offset, offset + limit);
+      const hasMore = (offset + limit) < totalCount;
+
+      return {
+        ok: true,
+        workspace_id: ws,
+        total_count: totalCount,
+        offset: offset,
+        limit: limit,
+        has_more: hasMore,
+        items: items,
+      };
+    }
+
+    calculateImprovementMetrics(args = {}) {
+      const ws = String(args.workspaceId || args.workspace_id || 'default').trim();
+      const requesterUserId = String(args.requesterUserId || args.requester_user_id || '').trim();
+      const requesterRole = String(args.requesterRole || args.requester_role || 'member').trim();
+      const dataset = args.dataset || {};
+      const allTasks = dataset.tasks || [];
+      const filters = args.filters || {};
+
+      let tasks = this._filterByPermissions(allTasks, requesterUserId, requesterRole);
+
+      const workIdFilter = filters.work_id || filters.workId;
+      if (workIdFilter) {
+        tasks = tasks.filter(t => String(t.work_id || '') === String(workIdFilter));
+      }
+
+      const assigneeGroups = {};
+      const estimatorGroups = {};
+      const qualityCounts = {};
+
+      let totalEstimateSec = 0;
+      let totalActualSec = 0;
+      let totalAllocatedSec = 0;
+      let deadlineExtensionsTotal = 0;
+
+      for (const t of tasks) {
+        const assignee = String(t.assignee || 'unassigned').trim();
+        const estimator = String(t.estimated_by || 'unassigned').trim();
+        const qStatus = String(t.quality_status || 'unmeasured').trim();
+
+        assigneeGroups[assignee] = assigneeGroups[assignee] || [];
+        assigneeGroups[assignee].push(t);
+
+        estimatorGroups[estimator] = estimatorGroups[estimator] || [];
+        estimatorGroups[estimator].push(t);
+
+        qualityCounts[qStatus] = (qualityCounts[qStatus] || 0) + 1;
+
+        const est = parseInt(t.estimate_seconds, 10) || 0;
+        const act = parseInt(t.actual_seconds, 10) || 0;
+        const alloc = parseInt(t.allocated_seconds, 10) || 0;
+        const ext = parseInt(t.deadline_extension_count, 10) || 0;
+
+        totalEstimateSec += est;
+        totalActualSec += act;
+        totalAllocatedSec += alloc;
+        deadlineExtensionsTotal += ext;
+      }
+
+      const assigneeMetrics = {};
+      for (const [assignee, aTasks] of Object.entries(assigneeGroups)) {
+        const confirmedTasks = aTasks.filter(t => t.quality_status === 'confirmed');
+        const confEst = confirmedTasks.reduce((sum, t) => sum + (parseInt(t.estimate_seconds, 10) || 0), 0);
+        const confAct = confirmedTasks.reduce((sum, t) => sum + (parseInt(t.actual_seconds, 10) || 0), 0);
+        const overrunRatio = confEst > 0 ? (confAct / confEst) : (confAct === 0 ? 1.0 : 0.0);
+
+        assigneeMetrics[assignee] = {
+          sample_count: aTasks.length,
+          confirmed_sample_count: confirmedTasks.length,
+          total_estimate_seconds: confEst,
+          total_actual_seconds: confAct,
+          overrun_ratio: Math.round(overrunRatio * 10000) / 10000,
+          help_participated_count: aTasks.filter(t => t.has_help_participant).length,
+          overtime_seconds: aTasks.reduce((sum, t) => sum + (parseInt(t.overtime_seconds, 10) || 0), 0),
+        };
+      }
+
+      const estimatorMetrics = {};
+      for (const [estimator, eTasks] of Object.entries(estimatorGroups)) {
+        const diffs = eTasks
+          .filter(t => t.quality_status === 'confirmed')
+          .map(t => (parseInt(t.actual_seconds, 10) || 0) - (parseInt(t.estimate_seconds, 10) || 0));
+
+        let meanDiff = 0;
+        let medianDiff = 0;
+        let p90Diff = 0;
+
+        if (diffs.length > 0) {
+          diffs.sort((a, b) => a - b);
+          meanDiff = diffs.reduce((sum, v) => sum + v, 0) / diffs.length;
+          medianDiff = diffs[Math.floor(diffs.length / 2)];
+          const idx90 = Math.min(Math.ceil(diffs.length * 0.9) - 1, diffs.length - 1);
+          p90Diff = diffs[Math.max(0, idx90)];
+        }
+
+        estimatorMetrics[estimator] = {
+          sample_count: eTasks.length,
+          confirmed_count: diffs.length,
+          mean_variance_seconds: Math.round(meanDiff * 10) / 10,
+          median_variance_seconds: Math.round(medianDiff * 10) / 10,
+          p90_variance_seconds: Math.round(p90Diff * 10) / 10,
+        };
+      }
+
+      return {
+        ok: true,
+        workspace_id: ws,
+        total_tasks: tasks.length,
+        total_estimate_seconds: totalEstimateSec,
+        total_allocated_seconds: totalAllocatedSec,
+        total_actual_seconds: totalActualSec,
+        deadline_extensions_total: deadlineExtensionsTotal,
+        assignee_metrics: assigneeMetrics,
+        estimator_metrics: estimatorMetrics,
+        quality_counts: qualityCounts,
+      };
+    }
+
+    _formatDuration(seconds) {
+      if (window.MeldexProductionTimeFormatter?.formatDuration) {
+        return window.MeldexProductionTimeFormatter.formatDuration(seconds);
+      }
+      const s = Number(seconds) || 0;
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (h > 0 && m > 0) return `${h}時間${m}分`;
+      if (h > 0) return `${h}時間`;
+      return `${m}分`;
+    }
+
+    exportAnalysisCsv(args = {}) {
+      const res = this.queryTaskHistory({
+        ...args,
+        pagination: { limit: 100000, offset: 0 },
+      });
+      const tasks = res.items || [];
+
+      const escapeCsvCell = (val) => {
+        const s = String(val == null ? '' : val);
+        if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      const headers = [
+        'task_id',
+        'work_id',
+        'work_title',
+        'task_title',
+        'assignee',
+        'estimated_by',
+        'status',
+        'estimate_seconds',
+        'estimate_display',
+        'allocated_seconds',
+        'allocated_display',
+        'actual_seconds',
+        'actual_display',
+        'variance_ratio',
+        'quality_status',
+        'deadline',
+        'completed_at',
+      ];
+
+      const lines = ['\ufeff' + headers.join(',')];
+
+      for (const t of tasks) {
+        const estSec = parseInt(t.estimate_seconds, 10) || 0;
+        const allocSec = parseInt(t.allocated_seconds, 10) || 0;
+        const actSec = parseInt(t.actual_seconds, 10) || 0;
+        const varRatio = estSec > 0 ? (actSec / estSec) : (actSec === 0 ? 1.0 : 0.0);
+
+        const row = [
+          escapeCsvCell(t.task_id || ''),
+          escapeCsvCell(t.work_id || ''),
+          escapeCsvCell(t.work_title || ''),
+          escapeCsvCell(t.title || ''),
+          escapeCsvCell(t.assignee || ''),
+          escapeCsvCell(t.estimated_by || ''),
+          escapeCsvCell(t.status || ''),
+          escapeCsvCell(estSec),
+          escapeCsvCell(this._formatDuration(estSec)),
+          escapeCsvCell(allocSec),
+          escapeCsvCell(this._formatDuration(allocSec)),
+          escapeCsvCell(actSec),
+          escapeCsvCell(this._formatDuration(actSec)),
+          escapeCsvCell(varRatio.toFixed(2)),
+          escapeCsvCell(t.quality_status || ''),
+          escapeCsvCell(t.deadline || ''),
+          escapeCsvCell(t.completed_at || ''),
+        ];
+        lines.push(row.join(','));
+      }
+
+      return lines.join('\n');
+    }
+
+    deleteTaskHistoryExplicitly(args = {}) {
+      const requesterRole = String(args.requesterRole || args.requester_role || 'member').trim();
+      const confirmationToken = String(args.confirmationToken || args.confirmation_token || '').trim();
+
+      if (!this.isAdminOrOwner(requesterRole)) {
+        return {
+          ok: false,
+          error: 'permission_denied',
+          message: 'タスク履歴の明示削除は管理者のみ実行できます',
+        };
+      }
+
+      if (confirmationToken !== 'CONFIRM_DELETE') {
+        return {
+          ok: false,
+          error: 'invalid_confirmation_token',
+          message: '確認トークンが正しくありません',
+        };
+      }
+
+      return {
+        ok: true,
+        workspace_id: args.workspaceId || args.workspace_id || 'default',
+        deleted_by: args.requesterUserId || args.requester_user_id || '',
+        target_filter: args.targetFilter || args.target_filter || {},
+        message: 'タスク履歴を明示的に削除しました',
+      };
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.MeldexProductionTaskAnalysisEngine = MeldexProductionTaskAnalysisEngine;
+    window.ROLE_ADMIN = ROLE_ADMIN;
+    window.ROLE_OWNER = ROLE_OWNER;
+    window.ROLE_MEMBER = ROLE_MEMBER;
+  }
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      MeldexProductionTaskAnalysisEngine,
+      ROLE_ADMIN,
+      ROLE_OWNER,
+      ROLE_MEMBER,
+    };
+  }
+})();
+
+;
+
 /* === gb-production-task-hierarchy-ui.js === */
 ;
 /* Parent-task and checklist controls for production task details. */
@@ -2374,10 +4765,16 @@
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
   }
 
-  // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間
-  // （目標作業時間_値）は再計算エンジン・同期フックが更新する自動列のため読み取り専用表示に
-  // 統一する（タスクリスト側の計算列と同じ扱い。gb-db-computed-columns.js 参照）。
+  // 制作タスク実績時間・日次履歴計画（2026-08-15）Phase 1:
+  // 予定作業時間・割当作業時間・実績作業時間の共通フォーマッター（MeldexProductionTimeFormatter）
+  // を使用してユーザーの表示設定（時間・分 / 分 / 小数時間）を反映する。
   function formatScheduleHoursDisplay(raw) {
+    if (window.MeldexProductionTimeFormatter?.formatDuration) {
+      const sec = window.MeldexProductionTimeFormatter.parseToSeconds(raw);
+      if (sec !== null && sec > 0) {
+        return window.MeldexProductionTimeFormatter.formatDuration(sec);
+      }
+    }
     const num = Number(raw);
     if (!Number.isFinite(num) || num <= 0) return '';
     const rounded = Math.round(num * 10) / 10;
@@ -2660,16 +5057,16 @@
       formatScheduleRangeDisplay(prop(row, '作業予定日時')),
       formatScheduleHoursDisplay(prop(row, '作業予定時間')) ? `（${formatScheduleHoursDisplay(prop(row, '作業予定時間'))}）` : '',
     ].filter(Boolean).join(' ');
-    form.appendChild(readOnlyField('予定', scheduleText, {
+    form.appendChild(readOnlyField('割当作業時間', scheduleText, {
       e2eId: 'gb-production-task-detail-schedule',
       warning: scheduleReason ? `シフト割当不能: ${scheduleReason}` : '',
     }));
-    form.appendChild(readOnlyField('目標時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
+    form.appendChild(readOnlyField('予定作業時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
       e2eId: 'gb-production-task-detail-target-hours',
     }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
-    buildField('作業時間_実績', '実績（時間）', 'number');
+    buildField('作業時間_実績', '実績作業時間', 'number');
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
@@ -2717,7 +5114,13 @@
     const source = button('元シートを開く', 'externalLink', () => {
       if (row.path && typeof openPage === 'function') openPage(row.name || '制作タスク', row.path);
     });
-    actions.append(save, source);
+    const snapshotBtn = button('日次記録', 'calendar', () => {
+      if (window.MeldexProductionDailySnapshotPanel && typeof window.MeldexProductionDailySnapshotPanel.open === 'function') {
+        window.MeldexProductionDailySnapshotPanel.open({ taskRow: row });
+      }
+    });
+    snapshotBtn.dataset.e2eId = 'gb-production-open-daily-snapshot';
+    actions.append(save, source, snapshotBtn);
     const collaboration = document.createElement('div');
     collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
     collaboration.setAttribute('role', 'group');
@@ -6506,8 +8909,20 @@
           } catch (error) { status(Api().errorMessage(error), true); }
         }, { disabled: !writable, e2eId: 'scheduler-template-archive-toggle' }),
       );
-      const open = button('表で詳しく編集', 'tableProperties', () => component?._selectProductionTab?.('targets'), { e2eId: 'scheduler-template-open-table' });
-      host.replaceChildren(field('テンプレート', selector), toolbar, editor, open); renderEditor();
+      const tableTargetSelect = select([
+        ['targets', '作業対象'],
+        ['contents', '作業内容'],
+        ['scales', '作業規模'],
+        ['works', '作品設定'],
+      ], 'targets', 'scheduler-template-table-select');
+      const open = button('表で詳しく編集', 'tableProperties', () => {
+        const targetKey = tableTargetSelect.value || 'targets';
+        component?._selectProductionTab?.(targetKey);
+      }, { e2eId: 'scheduler-template-open-table' });
+      const tableActions = document.createElement('div');
+      tableActions.className = 'gb-scheduler-baseline-controls';
+      tableActions.append(tableTargetSelect, open);
+      host.replaceChildren(field('テンプレート', selector), toolbar, editor, tableActions); renderEditor();
     } catch (error) {
       loading.textContent = Api().errorMessage(error); loading.classList.add('is-error');
     }
@@ -7468,7 +9883,7 @@
   function productionSheetDisplayReady(state) {
     const path = String(state.selection?.path || '');
     const ctx = state.embed?.ctx;
-    return !!path && !state.sheetsLoading
+    return !!path && !state.sheetsLoading && !state.embedLoading
       && state.embed?.getCurrentPath?.() === path
       && ctx?.dbPath === path
       && !!ctx.pivotData;
@@ -7714,21 +10129,39 @@
       && state.embed.ctx?.dbPath === state.selection.path
       && !!state.embed.ctx?.pivotData;
     if (currentReady) {
+      state.embedLoading = false;
       if (options.refreshCurrent === true) {
         const refreshed = !!(await state.embed.refresh());
         syncSheetDisplayToolbar(component, state);
+        renderListBar(component, state);
         return refreshed;
       }
       syncSheetDisplayToolbar(component, state);
+      renderListBar(component, state);
       return true;
     }
     // 先行する open() が後発の選択に追い越された場合、getCurrentPath() だけが
     // 一致して ctx.pivotData が空のまま残ることがある。同一パスでも実データが
     // 揃っていなければ必ず再読込し、空表示を固定化させない。
-    const opened = !!(await state.embed.open(state.selection.path, {
-      forceReload: currentPath === state.selection.path,
-    }));
+    const targetPath = state.selection.path;
+    const reqSeq = (state._openSeq = (state._openSeq || 0) + 1);
+    state.embedLoading = true;
     syncSheetDisplayToolbar(component, state);
+    let opened = false;
+    try {
+      opened = !!(await state.embed.open(targetPath, {
+        forceReload: currentPath === targetPath,
+      }));
+    } finally {
+      if (reqSeq === state._openSeq) {
+        state.embedLoading = false;
+      }
+    }
+    if (reqSeq !== state._openSeq || state.selection?.path !== targetPath) {
+      return false;
+    }
+    syncSheetDisplayToolbar(component, state);
+    renderListBar(component, state);
     return opened;
   }
 
@@ -11048,6 +13481,62 @@
     };
   }
 
+  function createAnnotationArtifact(annotation = {}, options = {}) {
+    const annId = String(annotation.id || '').trim();
+    const targetPath = normalizePath(annotation.target_path || annotation.targetPath || '');
+    const bodyText = String(annotation.body || annotation.text || annotation.content || '').trim();
+    const annType = String(annotation.type || 'comment');
+    const rootId = String(options.rootId || 'active-storage');
+    const docId = `portable:annotation:${hash(`${rootId}\0${targetPath}\0${annId}`)}`;
+    const contentHash = hash(`${annId}:${targetPath}:${bodyText}:${annType}`);
+    const revision = `portable-ann-v1:${contentHash}:${bodyText.length}`;
+
+    const nodes = annId ? [{
+      id: annId,
+      label: (bodyText || annType || '注釈').slice(0, 500),
+      type: 'annotation',
+    }] : [];
+
+    const edges = (annId && targetPath) ? [{
+      from: targetPath,
+      to: annId,
+      label: '注釈',
+      type: 'annotates',
+    }] : [];
+
+    const textChunks = bodyText ? _chunks(bodyText) : [];
+
+    return {
+      schema: SCHEMA,
+      document_id: docId,
+      revision,
+      source_path: targetPath,
+      root_id: rootId,
+      kind: 'annotation',
+      visibility: String(options.visibility || 'workspace'),
+      owner_id: String(options.ownerId || ''),
+      workspace_id: String(options.workspaceId || ''),
+      extractor: 'meldex-portable-browser-annotation',
+      extractor_version: '1',
+      text_chunks: textChunks,
+      nodes,
+      edges,
+      images: [],
+      source_refs: [{ path: targetPath, kind: 'annotation' }],
+      warnings: [],
+      metadata: {
+        title: `注釈 (${basename(targetPath) || targetPath})`,
+        target_path: targetPath,
+        annotation_id: annId,
+        annotation_type: annType,
+        author: String(annotation.user || ''),
+        created_at: String(annotation.created || ''),
+        modified_at: String(annotation.modified || ''),
+        portable: true,
+      },
+    };
+  }
+
   function tokens(value) {
     const normalized = String(value || '').normalize('NFKC').toLowerCase();
     const result = new Set(normalized.match(/[a-z0-9_]{2,}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{1,}/gu) || []);
@@ -11093,6 +13582,7 @@
     isSupported,
     kindForPath,
     createArtifact,
+    createAnnotationArtifact,
     tokens,
     scoreArtifact,
   });
@@ -12089,6 +14579,12 @@
       .uks-count{min-width:88px;padding:8px 10px;border-radius:9px;background:var(--bg);border:1px solid var(--border)}
       .uks-count strong{display:block;font-size:18px;color:var(--fg)}.uks-count span{font-size:11px;color:var(--fg2)}
       .uks-message{font-size:12px;line-height:1.55;color:var(--fg2)}.uks-message[data-error="1"]{color:var(--danger,#c43b3b)}
+      .uks-migration-box{display:grid;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);font-size:12px;line-height:1.5}
+      .uks-migration-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600;color:var(--fg)}
+      .uks-migration-desc{color:var(--fg2);font-size:11.5px}
+      .uks-unindexed-box{display:grid;gap:6px;padding:10px 12px;border:1px solid var(--border-warning, #d97706);border-radius:10px;background:var(--bg3);font-size:12px;line-height:1.5}
+      .uks-unindexed-title{font-weight:600;color:var(--warning, #d97706);display:flex;align-items:center;gap:6px}
+      .uks-unindexed-list{display:grid;gap:4px;font-size:11.5px;color:var(--fg2)}
       .uks-actions .gb-btn{min-height:var(--ui-h-touch,44px)!important;white-space:normal}
       @media (max-width:480px){.uks-card{padding:12px}.uks-head{align-items:flex-start}.uks-actions{display:grid;grid-template-columns:1fr;width:100%}.uks-actions .gb-btn{width:100%}.uks-count{flex:1;min-width:0}}
     `;
@@ -12104,6 +14600,17 @@
         </div>
         <div class="uks-counts" data-uks-counts></div>
         <div class="uks-message" data-uks-message aria-live="polite">状態を確認しています…</div>
+        <div class="uks-unindexed-box" data-uks-unindexed-box hidden>
+          <div class="uks-unindexed-title">${_icon('alertTriangle')} 索引対象外の保存先</div>
+          <div class="uks-unindexed-list" data-uks-unindexed-list></div>
+        </div>
+        <div class="uks-migration-box" data-uks-screenshot-migration hidden>
+          <div class="uks-migration-head">
+            <span data-uks-migration-title>${_icon('folderInput')} 旧スクリーンショットの移行候補</span>
+            <button type="button" class="gb-btn gb-btn-sm" data-uks-action="migrate-screenshots" data-e2e-id="settings-knowledge-migrate-screenshots-btn">${_icon('folderInput')} スクリーンショットを移行</button>
+          </div>
+          <div class="uks-migration-desc" data-uks-migration-desc></div>
+        </div>
         <div class="uks-actions">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" aria-label="自動ナレッジ索引の状態を更新" title="自動ナレッジ索引の状態を更新" data-uks-action="refresh" data-e2e-id="settings-knowledge-index-refresh">${_icon('refreshCw')} 状態を更新</button>
           <button type="button" class="gb-btn gb-btn-sm" aria-label="自動ナレッジ索引をバックグラウンドで再構築" title="自動ナレッジ索引をバックグラウンドで再構築" data-uks-action="rebuild" data-e2e-id="settings-knowledge-index-rebuild">${_icon('rotateCcw')} バックグラウンドで再構築</button>
@@ -12179,6 +14686,74 @@
     }
   }
 
+  async function _checkScreenshotMigration(root, role) {
+    const box = root.querySelector('[data-uks-screenshot-migration]');
+    if (!box) return;
+    if (!['owner', 'admin'].includes(role) || typeof global.apiFetch !== 'function') {
+      box.hidden = true;
+      return;
+    }
+    try {
+      const res = await global.apiFetch('/api/knowledge/screenshot-migration/candidates', { silentError: true });
+      const candidates = Array.isArray(res?.candidates) ? res.candidates : [];
+      if (!candidates.length) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      const desc = box.querySelector('[data-uks-migration-desc]');
+      if (desc) {
+        desc.textContent = `旧スクリーンショットフォルダ（_screenshots）に${candidates.length}件の移行候補があります。「スクリーンショットを移行」を実行すると、ホームフォルダの「スクリーンショット」へ安全に移動してナレッジ索引に含めます。`;
+      }
+      const button = box.querySelector('[data-uks-action="migrate-screenshots"]');
+      if (button && !button.dataset.bound) {
+        button.dataset.bound = '1';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          const origText = button.textContent;
+          button.textContent = '移行中…';
+          try {
+            const paths = candidates.map(c => c.path).filter(Boolean);
+            const execRes = await global.apiFetch('/api/knowledge/screenshot-migration/execute', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ paths }),
+            });
+            const count = execRes?.count ?? execRes?.migrated?.length ?? candidates.length;
+            if (desc) desc.textContent = `${count}件のスクリーンショットを移行しました。`;
+            box.hidden = true;
+            await refresh(root);
+          } catch (err) {
+            if (desc) desc.textContent = `移行に失敗しました: ${err?.message || String(err)}`;
+            button.disabled = false;
+            button.textContent = origText;
+          }
+        });
+      }
+    } catch {
+      box.hidden = true;
+    }
+  }
+
+  function _renderUnindexedLocations(root, locations) {
+    const box = root.querySelector('[data-uks-unindexed-box]');
+    const list = root.querySelector('[data-uks-unindexed-list]');
+    if (!box || !list) return;
+    const items = Array.isArray(locations) ? locations : [];
+    if (!items.length) {
+      box.hidden = true;
+      list.replaceChildren();
+      return;
+    }
+    box.hidden = false;
+    list.replaceChildren(...items.map(item => {
+      const row = document.createElement('div');
+      row.className = 'uks-unindexed-item';
+      row.textContent = `・${item.label || 'カスタム保存先'}（${item.path}）: ${item.reason || '検索ルート外のためナレッジ対象外です'}`;
+      return row;
+    }));
+  }
+
   async function refresh(root) {
     const client = global.MeldexUnifiedKnowledgeClient;
     const portable = !!global.MeldexPortableKnowledge?.isAvailable?.();
@@ -12199,8 +14774,10 @@
       const rebuildButton = root.querySelector('[data-uks-action="rebuild"]');
       if (rebuildButton) rebuildButton.hidden = !['owner', 'admin'].includes(role);
       await _migrateLegacyOnce(role);
+      await _checkScreenshotMigration(root, role);
       const coverage = await client.coverage();
       _renderCounts(root, coverage);
+      _renderUnindexedLocations(root, coverage?.unindexed_locations);
       const job = coverage?.latest_job;
       const partialFailures = Number(job?.result?.artifacts?.failed || 0);
       if (job?.state === 'failed') {

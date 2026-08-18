@@ -217,6 +217,62 @@
     };
   }
 
+  function createAnnotationArtifact(annotation = {}, options = {}) {
+    const annId = String(annotation.id || '').trim();
+    const targetPath = normalizePath(annotation.target_path || annotation.targetPath || '');
+    const bodyText = String(annotation.body || annotation.text || annotation.content || '').trim();
+    const annType = String(annotation.type || 'comment');
+    const rootId = String(options.rootId || 'active-storage');
+    const docId = `portable:annotation:${hash(`${rootId}\0${targetPath}\0${annId}`)}`;
+    const contentHash = hash(`${annId}:${targetPath}:${bodyText}:${annType}`);
+    const revision = `portable-ann-v1:${contentHash}:${bodyText.length}`;
+
+    const nodes = annId ? [{
+      id: annId,
+      label: (bodyText || annType || '注釈').slice(0, 500),
+      type: 'annotation',
+    }] : [];
+
+    const edges = (annId && targetPath) ? [{
+      from: targetPath,
+      to: annId,
+      label: '注釈',
+      type: 'annotates',
+    }] : [];
+
+    const textChunks = bodyText ? _chunks(bodyText) : [];
+
+    return {
+      schema: SCHEMA,
+      document_id: docId,
+      revision,
+      source_path: targetPath,
+      root_id: rootId,
+      kind: 'annotation',
+      visibility: String(options.visibility || 'workspace'),
+      owner_id: String(options.ownerId || ''),
+      workspace_id: String(options.workspaceId || ''),
+      extractor: 'meldex-portable-browser-annotation',
+      extractor_version: '1',
+      text_chunks: textChunks,
+      nodes,
+      edges,
+      images: [],
+      source_refs: [{ path: targetPath, kind: 'annotation' }],
+      warnings: [],
+      metadata: {
+        title: `注釈 (${basename(targetPath) || targetPath})`,
+        target_path: targetPath,
+        annotation_id: annId,
+        annotation_type: annType,
+        author: String(annotation.user || ''),
+        created_at: String(annotation.created || ''),
+        modified_at: String(annotation.modified || ''),
+        portable: true,
+      },
+    };
+  }
+
   function tokens(value) {
     const normalized = String(value || '').normalize('NFKC').toLowerCase();
     const result = new Set(normalized.match(/[a-z0-9_]{2,}|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]{1,}/gu) || []);
@@ -262,6 +318,7 @@
     isSupported,
     kindForPath,
     createArtifact,
+    createAnnotationArtifact,
     tokens,
     scoreArtifact,
   });

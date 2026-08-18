@@ -115,7 +115,10 @@
     if (!dropboxAdapters) throw new Error('gb-system-storage-dropbox.js が読み込まれていません');
     const { rootPath, namespaceKind, connectedRootPath } = await _effectiveRootInfo(provider, options?.targetPath);
     if (options?.personalOnly) {
-      return dropboxAdapters.createPersonalAdapter({ accountBoundary: connectedRootPath || rootPath });
+      return dropboxAdapters.createPersonalAdapter({
+        accountBoundary: connectedRootPath || rootPath,
+        namespaceKind,
+      });
     }
     const classification = _classifyRoot(rootPath);
     if (classification.kind === 'unknown') throw _unknownRootError();
@@ -128,7 +131,10 @@
         compatibilityLockProvider: provider,
       });
     }
-    return dropboxAdapters.createPersonalAdapter({ accountBoundary: connectedRootPath || rootPath });
+    return dropboxAdapters.createPersonalAdapter({
+      accountBoundary: connectedRootPath || rootPath,
+      namespaceKind,
+    });
   }
 
   /**
@@ -260,7 +266,10 @@
       scopeKey: 'personal',
       kind: 'personal',
       workspace: null,
-      adapter: providerAdapter || dropboxAdapters.createPersonalAdapter({ accountBoundary: connected.rootPath }),
+      adapter: providerAdapter || dropboxAdapters.createPersonalAdapter({
+        accountBoundary: connected.rootPath,
+        namespaceKind: connected.namespaceKind,
+      }),
       toCanonicalPath(localPath) {
         const absolute = _absoluteForTarget(registry, connected.rootPath, localPath);
         return absolute.replace(/^\/+/, '');

@@ -486,7 +486,13 @@
     }
     if (resolved.kind === 'type') return clone(resolved.type);
     const character = resolved.character;
-    if (!character.typeId && character.legacyAppearance) return clone(character.legacyAppearance);
+    if (!character.typeId) {
+      if (character.legacyAppearance) return clone(character.legacyAppearance);
+      const appearance = { ...defaultAppearance(doc), ...clone(character) };
+      appearance.roleStyle = { ...plain(appearance.roleStyle) };
+      if (character.nameColor) appearance.roleStyle.textColor = character.nameColor;
+      return appearance;
+    }
     const type = findTypeById(doc, character.typeId);
     const appearance = type ? clone(type) : defaultAppearance(doc);
     appearance.roleStyle = { ...plain(appearance.roleStyle) };
@@ -943,9 +949,22 @@
   // 場合だけ、退避ホストに残った実体を破棄する。
   function pruneStale(existsFn) {
     if (typeof existsFn !== 'function') return;
+    const storage = document.getElementById('legacy-views');
     _registry.forEach((entry, paneId) => {
       if (existsFn(paneId)) return;
-      try { entry.contentEl && entry.contentEl.remove(); } catch {}
+      try {
+        if (entry.contentEl) {
+          if (storage) {
+            Array.from(entry.contentEl.children).forEach((child) => {
+              if (child.id && (child.id.startsWith('rp-') || child.id === 'sidebar' || child.id === 'gb-preview-pane' || child.id === 'gb-subpanel-root' || child.id.endsWith('-view') || child.id.endsWith('-view-container') || child.id.startsWith('ann-') || child.id.startsWith('btn-tb-'))) {
+                child.style.display = 'none';
+                storage.appendChild(child);
+              }
+            });
+          }
+          entry.contentEl.remove();
+        }
+      } catch {}
       _registry.delete(paneId);
     });
   }
@@ -1006,7 +1025,9 @@ const GBLayout = (() => {
   function _paneRoleName(node) {
     const role = String(node?.meldexRole || '').trim();
     if (role) return role;
-    return node?.id === 'pane-main' ? 'main' : '';
+    if (node?.id === 'pane-main') return 'main';
+    if (_root?.type === 'pane' && _root?.id === node?.id) return 'main';
+    return '';
   }
 
   function _paneRoleClassName(role) {
@@ -1025,7 +1046,7 @@ const GBLayout = (() => {
   }
 
   function _isMainPaneNode(node) {
-    return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main');
+    return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main' || (_root?.type === 'pane' && _root?.id === node.id));
   }
 
   function _canReorderMainPaneTabs(node) {
@@ -4085,11 +4106,11 @@ const GBLayout = (() => {
       GBDockPopup.close();
     }
     const scrollSnap = _saveAllScrollPositions();
+    if (_preRender) _preRender();
     // 全ペインkeep-alive（ビューワー残課題修正計画 2026-08-04「1」）。_renderPreservingActivePane()
     // が既にアクティブペインのcontentElを取り外し済みの場合はGBPaneKeepAlive.detachAll内で
     // 自然にスキップされる（parentNode無しのため）ため、ここでの追加呼び出しは二重処理にならない。
     if (typeof GBPaneKeepAlive !== 'undefined') GBPaneKeepAlive.detachAll(_paneMap);
-    if (_preRender) _preRender();
     _disconnectPaneObservers();
     _paneMap = {};
     _layoutEl.innerHTML = '';
@@ -7090,9 +7111,13 @@ const GBTabs = (() => {
     return pick(
       visiblePanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
       visiblePanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      visiblePanes.find(pane => pane.meldexRole === 'main'),
+      visiblePanes.find(pane => pane.id === 'pane-main'),
       visiblePanes.find(_isContentPane),
       allPanes.find(pane => pane.meldexRole === 'main' && _isContentPane(pane)),
       allPanes.find(pane => pane.id === 'pane-main' && _isContentPane(pane)),
+      allPanes.find(pane => pane.meldexRole === 'main'),
+      allPanes.find(pane => pane.id === 'pane-main'),
       allPanes.find(_isContentPane),
       opts.contentOnly ? null : visiblePanes[0],
       opts.contentOnly ? null : allPanes[0],
@@ -12764,7 +12789,7 @@ CalendarComponent.prototype._onMonthDayDrop = async function(e, dateStr) {
   } catch (error) {
     this._restoreEventLocal(before);
     this._render();
-    this._showStatus(error?.message || 'イベント移動に失敗', true);
+    this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
   }
 };
 
@@ -12858,7 +12883,7 @@ CalendarComponent.prototype._bindAllDayStripEvents = function(rootEl) {
         } catch (error) {
           this._restoreEventLocal(before);
           this._render();
-          this._showStatus(error?.message || 'イベント移動に失敗', true);
+          this._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
         }
         return;
       }
@@ -13179,7 +13204,7 @@ CalendarComponent.prototype._initWeekDrag = function(el) {
         .catch((error) => {
           self._restoreEventLocal(before);
           self._render();
-          self._showStatus(error?.message || 'イベント移動に失敗', true);
+          self._showStatus(error?.message ? ('イベント移動に失敗: ' + error.message) : 'イベント移動に失敗', true);
         });
     });
   });
@@ -18017,7 +18042,8 @@ function bdParseMd(raw) {
       const bcm = props.match(/borderColor:\s*'((?:[^'\\]|\\.)*)'/); if (bcm) t.borderColor = bcm[1].replace(/\\'/g, "'");
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
-      const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const csm = props.match(/cardStyle:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (csm) { try { t.cardStyle = String(bdYamlScalar(csm[1]) || ''); } catch { t.cardStyle = csm[1].replace(/^"|"$/g, ''); } }
       const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
       if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);
@@ -18577,7 +18603,7 @@ function bdToMd() {
       if (hasOwn(n, 'borderColor')) parts.push('borderColor: ' + fmtJsonString(n.borderColor));
       if (hasOwn(n, 'borderWidth')) parts.push('borderWidth: ' + (+n.borderWidth || 0));
       if (hasOwn(n, 'borderRadius')) parts.push('borderRadius: ' + (+n.borderRadius || 0));
-      if (hasOwn(n, 'cardStyle')) parts.push('cardStyle: ' + fmtJsonString(n.cardStyle));
+      if (hasOwn(n, 'cardStyle') && n.cardStyle) parts.push('cardStyle: ' + n.cardStyle);
       if (hasOwn(n, 'cloudBumpWidth')) parts.push('cloudBumpWidth: ' + (+n.cloudBumpWidth || 0));
       if (hasOwn(n, 'cloudBumpHeight')) parts.push('cloudBumpHeight: ' + (+n.cloudBumpHeight || 0));
       if (hasOwn(n, 'cloudSideWidth')) parts.push('cloudSideWidth: ' + (+n.cloudSideWidth || 0));
@@ -18756,11 +18782,16 @@ function _isLinkTooltipSuppressed(nodeDiv) {
     _linkTooltipSuppressedNode = null;
     return false;
   }
-  return nodeDiv === _linkTooltipSuppressedNode || _linkTooltipSuppressedNode.contains(nodeDiv);
+  return nodeDiv === _linkTooltipSuppressedNode ||
+         _linkTooltipSuppressedNode.contains(nodeDiv) ||
+         (!!nodeDiv?.id && !!_linkTooltipSuppressedNode.id && nodeDiv.id === _linkTooltipSuppressedNode.id);
 }
 
 function _showLinkTooltip(nodeDiv, linkPath, linkType) {
-  if (_linkTooltipSuppressedNode && !_linkTooltipSuppressedNode.contains(nodeDiv)) _linkTooltipSuppressedNode = null;
+  nodeDiv = (nodeDiv?.id && document.getElementById(nodeDiv.id)) || nodeDiv;
+  if (_linkTooltipSuppressedNode && !_linkTooltipSuppressedNode.contains(nodeDiv) && (!_linkTooltipSuppressedNode.id || _linkTooltipSuppressedNode.id !== nodeDiv?.id)) {
+    _linkTooltipSuppressedNode = null;
+  }
   if (_isLinkTooltipSuppressed(nodeDiv)) return;
   const token = ++_linkTooltipToken;
   clearTimeout(_linkTooltipTimer);
@@ -18775,6 +18806,8 @@ function _showLinkTooltip(nodeDiv, linkPath, linkType) {
       text = text.substring(0, 300);
       if (text.length >= 300) text += '\u2026';
 
+      nodeDiv = (nodeDiv?.id && document.getElementById(nodeDiv.id)) || nodeDiv;
+      if (_isLinkTooltipSuppressed(nodeDiv)) return;
       if (token !== _linkTooltipToken || !document.documentElement.contains(nodeDiv)) return;
       if (_linkTooltipOwnerNode && document.documentElement.contains(_linkTooltipOwnerNode)) {
         _linkTooltipOwnerNode.removeAttribute('aria-describedby');
@@ -32914,6 +32947,14 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!targetPane) return false;
   const forceTargetPane = options?.forceTargetPane === true;
   const preserveActivePane = options?.preserveActivePane === true;
+  if (!preserveActivePane) {
+    if (typeof GBLayout.revealPane === 'function') {
+      GBLayout.revealPane(targetPaneId, { activate: true, deferRender: true });
+    }
+    if (typeof GBLayout.setActivePane === 'function' && GBLayout.activePane !== targetPaneId) {
+      GBLayout.setActivePane(targetPaneId, { sync: true });
+    }
+  }
   const activeTab = (targetPane.tabs || [])[targetPane.activeTabIndex || 0] || null;
   const historyOrigin = options?.historyOrigin
     || (activeTab?.type === 'board' ? _bdBoardHistoryEntry(activeTab) : null);
@@ -33115,6 +33156,9 @@ async function _bdOpenAtTarget(path, label, linkType, target, options) {
   const normalized = _bdNormalizeOpenTarget(target);
   const mapped = _bdIsStandaloneBoardSurface() ? 'main' : normalized;
   if (mapped === 'main') return openLinkedPathInMainPane(path, label, opts);
+  if (typeof window !== 'undefined' && typeof window.openLinkedPathInRightSidebar === 'function') {
+    return window.openLinkedPathInRightSidebar(path, label, opts);
+  }
   return openLinkedPathInRightPane(path, label, opts);
 }
 
@@ -33179,7 +33223,11 @@ const MeldexBoardOpenTarget = Object.freeze({
   },
 });
 
-if (typeof window !== 'undefined') window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
+if (typeof window !== 'undefined') {
+  window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
+  window.openLinkedPathInRightSidebar = openLinkedPathInRightSidebar;
+  window.openLinkedPathInRightPane = openLinkedPathInRightPane;
+}
 
 // 右サイドバー(ビューワータブ)にエントリのプロパティ一覧＋本文を描画する。
 // フルページ/サブパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。
@@ -36649,7 +36697,7 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
         <div class="gb-check-help-row">
           <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
-          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。') : ''}
+          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
         </div>
         <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">
@@ -38079,8 +38127,7 @@ function bdAppendCardMenuButton(div, node) {
   const menuBtn = document.createElement('button');
   menuBtn.type = 'button';
   menuBtn.className = 'bd-card-menu-btn';
-  _bdRenderNodeE2ESeq += 1;
-  menuBtn.dataset.e2eId = `board-card-${node.id}-render-${_bdRenderNodeE2ESeq}-menu`;
+  menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
   menuBtn.textContent = '...';
   menuBtn.title = 'カードメニュー';
   menuBtn.setAttribute('aria-label', 'カードメニュー');
@@ -54480,6 +54527,9 @@ Object.assign(ScriptNoteEditor.prototype, {
           : this._buildScenarioCharacterManagementRow(item, index, adapter, panelContainer));
       });
     }
+    if (isType) {
+      tbody.appendChild(this._buildScenarioNoneTypeManagementRow(adapter, panelContainer));
+    }
     table.appendChild(tbody);
     scroll.appendChild(table);
     section.appendChild(scroll);
@@ -54558,7 +54608,13 @@ Object.assign(ScriptNoteEditor.prototype, {
     styleTargets.forEach(([columnId, label, title]) => {
       menu.appendChild(this._roleManagementButton(label, title, () => {
         menu.remove();
-        this._showCellStylePopup(anchor, type, columnId, panelContainer);
+        const isGutter = columnId === '_gutter' || columnId === '_gutter2';
+        const inheritedStyle = isGutter ? (this.doc.editor?.columnStyles?.[columnId] || {}) : {};
+        this._showCellStylePopup(anchor, type, columnId, panelContainer, isGutter ? {
+          includeCountConfig: false,
+          inheritedStyle,
+          typeOverride: true,
+        } : {});
       }, `scriptnote-type-style-${columnId.replace(/^_/, '')}`));
     });
     menu.appendChild(this._roleManagementButton('機能・詳細設定', 'タイプの機能、区切り、その他の詳細設定を開く', () => {
@@ -54579,6 +54635,79 @@ Object.assign(ScriptNoteEditor.prototype, {
       document.addEventListener('pointerdown', close, true);
       document.addEventListener('keydown', close, true);
     }, 0);
+  },
+
+  _buildScenarioNoneTypeManagementRow(adapter, panelContainer) {
+    const noneType = typeof ensureScriptNoteNoneType === 'function'
+      ? ensureScriptNoteNoneType(this.doc.editor)
+      : (this.doc.editor.noneType = this.doc.editor.noneType || { isRoleNone: true, name: '' });
+    noneType.id = 'none';
+    noneType.isRoleNone = true;
+    noneType.name = '';
+
+    const row = document.createElement('tr');
+    row.className = 'sn2-role-manage-row sn2-role-manage-row--none';
+    row.dataset.roleId = 'none';
+    row.dataset.e2eId = 'scriptnote-type-row-none';
+
+    const handleCell = document.createElement('td');
+    const grip = document.createElement('button');
+    grip.type = 'button';
+    grip.className = 'sn2-role-manage-grip sn2-role-manage-grip--disabled';
+    grip.disabled = true;
+    grip.dataset.e2eId = 'scriptnote-type-drag-none';
+    grip.title = '「（なし）」行は固定表示のため並べ替えできません';
+    grip.setAttribute('aria-label', '（なし）行は並べ替え不可');
+    grip.innerHTML = typeof lucide === 'function' ? lucide('gripVertical', 14) : '⠿';
+    handleCell.appendChild(grip);
+
+    const selectCell = document.createElement('td');
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.disabled = true;
+    check.dataset.e2eId = 'scriptnote-type-select-none';
+    check.title = '「（なし）」行は削除・複製できません';
+    check.setAttribute('aria-label', '（なし）行は選択対象外');
+    selectCell.appendChild(check);
+
+    const nameCell = document.createElement('td');
+    const name = document.createElement('span');
+    name.className = 'sn2-role-manage-name sn2-role-manage-name--static';
+    name.textContent = '（なし）';
+    name.title = 'タイプが未設定の行に適用される共通の書式・オプションです';
+    name.dataset.e2eId = 'scriptnote-type-name-none';
+    name.setAttribute('aria-label', 'タイプ名: （なし）');
+    nameCell.appendChild(name);
+
+    const previewCell = document.createElement('td');
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.className = 'sn2-role-style-preview';
+    preview.title = '「（なし）」行のタイプ列の書式を設定';
+    preview.dataset.e2eId = 'scriptnote-type-style-preview-none';
+    preview.setAttribute('aria-label', '（なし）行の書式を設定');
+    const roleStyle = noneType.roleStyle || {};
+    preview.textContent = `${roleStyle.textBefore || ''}（なし）${roleStyle.textAfter || ''}`;
+    Object.assign(preview.style, {
+      color: roleStyle.textColor || '',
+      background: roleStyle.bgColor || '',
+      fontWeight: roleStyle.fontWeight === 'bold' || roleStyle.bold ? 'bold' : '',
+      fontStyle: roleStyle.fontStyle === 'italic' || roleStyle.italic ? 'italic' : '',
+      fontFamily: roleStyle.fontFamily || '',
+      fontSize: roleStyle.fontSize ? `${roleStyle.fontSize}px` : '',
+    });
+    preview.addEventListener('click', () => this._showCellStylePopup(preview, noneType, '_role', panelContainer));
+    previewCell.appendChild(preview);
+
+    const settingsCell = document.createElement('td');
+    settingsCell.className = 'sn2-role-manage-actions';
+    const options = this._roleManagementButton('設定', '「（なし）」行の機能、ガター、本文書式を設定', () => {
+      this._showTypeManagementSettingsMenu(options, noneType, panelContainer);
+    }, 'scriptnote-type-settings-none');
+    settingsCell.append(options);
+
+    row.append(handleCell, selectCell, nameCell, previewCell, settingsCell);
+    return row;
   },
 
   _buildScenarioTypeManagementRow(type, index, adapter, panelContainer) {
@@ -56301,6 +56430,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         } else {
           style[prop] = value;
         }
+        if (chara?.typeId && Array.isArray(this.doc?.scenarioTypes)) {
+          const linkedType = this.doc.scenarioTypes.find(t => t.id === chara.typeId);
+          if (linkedType) {
+            const typeStyle = this._getColStyle(linkedType, colId);
+            if (value === '' || value == null) delete typeStyle[prop];
+            else typeStyle[prop] = value;
+          }
+        }
         const needRender = (prop === 'textAlign' || prop === 'textValign' || prop === 'textOverflow');
         if (needRender) this._render();
         else this._refreshRowStyles();
@@ -56337,6 +56474,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       onReset: () => {
         this._pushUndo('書式リセット');
         ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete style[p]);
+        if (chara?.typeId && Array.isArray(this.doc?.scenarioTypes)) {
+          const linkedType = this.doc.scenarioTypes.find(t => t.id === chara.typeId);
+          if (linkedType) {
+            const typeStyle = this._getColStyle(linkedType, colId);
+            ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete typeStyle[p]);
+          }
+        }
         if (needsLegacySync) {
           ['fontWeight', 'fontStyle', 'fontSize', 'fontFamily', 'textStrokeColor', 'textStrokeWidth'].forEach((p) => { delete chara[p]; });
         }
@@ -56387,7 +56531,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     let applyAll = !!this.doc.editor.columnAllRules[colId];
     const rule0 = this.doc.editor.columnAllRules[colId] || {};
     const getTargets = () => {
-      const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
+      const types = Array.isArray(this.doc.scenarioTypes) && this.doc.scenarioTypes.length
+        ? this.doc.scenarioTypes
+        : (Array.isArray(this.doc.characters) ? this.doc.characters : []);
       const selectedIds = this._detailTypeSelection || new Set();
       const selected = types.filter(type => selectedIds.has(type.id));
       return selected.length ? selected : types;
@@ -56403,6 +56549,15 @@ Object.assign(ScriptNoteEditor.prototype, {
           if (val === '' || val === null || val === undefined) delete s[prop];
           else s[prop] = val;
         });
+        if (type.id && Array.isArray(this.doc.characters)) {
+          this.doc.characters.filter(c => c && c.typeId === type.id).forEach(c => {
+            const cs = this._getColStyle(c, colId);
+            Object.entries(changes).forEach(([prop, val]) => {
+              if (val === '' || val === null || val === undefined) delete cs[prop];
+              else cs[prop] = val;
+            });
+          });
+        }
       });
       if (applyAll) {
         // undo スナップショット直列化では空の columnAllRules が整理されるため、取得直前に作り直す
@@ -56416,7 +56571,11 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (opts.fullRender) this._render();
       else this._refreshRowStyles();
       this._markDirty();
-      this.renderDetailPanel(panelContainer);
+      if (typeof this._renderLegacyDetailPanel === 'function' && panelContainer?.querySelector('.sn2-detail-table')) {
+        this._renderLegacyDetailPanel(panelContainer);
+      } else {
+        this.renderDetailPanel(panelContainer);
+      }
     };
     const FULL_RENDER_PROPS = new Set(['textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow']);
     const popupValues = {
@@ -56539,7 +56698,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const textShiftColsValue = Number.isFinite(Number(chara.textShiftCols)) ? Math.max(1, Math.min(10, Number(chara.textShiftCols))) : '';
     const outlineWidthValue = Number.isFinite(Number(chara.outlineWidth)) ? Math.max(0.5, Math.min(10, Number(chara.outlineWidth))) : 1;
     // （なし）行: タイプ空欄行はページ採番の対象外のため、区切り/見開き/プロットは表示しない
-    const isNoneType = !!chara.isDefault;
+    const isNoneType = !!chara.isDefault || !!chara.isRoleNone || chara.id === 'none';
     const breakOptsHtml = isNoneType ? '' : `
         <div class="sn2-role-opts-row sn2-role-opts-row--top">
           <label class="sn2-role-opts-check-lbl">
@@ -56609,7 +56768,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     // outlineColor swatch 初期背景 (インライン指定)
     const outlineBtn = popup.querySelector('[data-outline-color]');
     if (outlineBtn) Object.assign(outlineBtn.style, { background: chara.outlineColor || 'var(--border)' });
-    if (chara.isTypeDefault || chara.isDefault) {
+    if (chara.isTypeDefault || chara.isDefault || chara.isRoleNone || chara.id === 'none') {
       popup.querySelector('[data-role-duplicate]')?.setAttribute('disabled', '');
       popup.querySelector('[data-role-delete]')?.setAttribute('disabled', '');
     }
@@ -56627,7 +56786,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     // 複製ボタン
     popup.querySelector('[data-role-duplicate]')?.addEventListener('click', () => {
-      if (chara.isDefault || chara.isTypeDefault) {
+      if (chara.isDefault || chara.isTypeDefault || chara.isRoleNone || chara.id === 'none') {
         if (typeof showStatus === 'function') showStatus('この初期設定は複製できません', true);
         return;
       }
@@ -56652,7 +56811,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     });
     // 削除ボタン
     popup.querySelector('[data-role-delete]')?.addEventListener('click', () => {
-      if (chara.isDefault || chara.isTypeDefault) {
+      if (chara.isDefault || chara.isTypeDefault || chara.isRoleNone || chara.id === 'none') {
         if (typeof showStatus === 'function') showStatus('この初期設定は削除できません', true);
         return;
       }
@@ -59818,11 +59977,10 @@ Object.assign(ScriptNoteEditor.prototype, {
 
     async function save() {
       if (state.disposed) return false;
-      if (state.staticContent) return true;
-      if (!state.editor || state.root.dataset.readOnly === '1') return false;
+      if (state.staticContent || !state.dirty) return true;
+      if (!state.editor || state.root.dataset.readOnly === '1') return state.root.dataset.readOnly === '1';
       clearTimeout(state.timer);
       state.timer = 0;
-      if (!state.dirty) return true;
       const savingSeq = state.changeSeq;
       const markdown = typeof htmlToMd === 'function' ? htmlToMd(state.editor.innerHTML) : state.editor.textContent;
       state.saving = Promise.resolve(_saveEntityFreeText(
@@ -59939,7 +60097,16 @@ Object.assign(ScriptNoteEditor.prototype, {
         });
       }
 
+      if (typeof MeldexSheetEntryAttachments !== 'undefined' && typeof MeldexSheetEntryAttachments.renderEntryAttachmentsSection === 'function') {
+        MeldexSheetEntryAttachments.renderEntryAttachmentsSection(root, data, state.path, {
+          readOnly: access.readOnly,
+          surface: state.surface,
+          onReload: () => render(),
+        });
+      }
+
       const snapshotPath = htmlSnapshotPath(data);
+
       if (snapshotPath) {
         state.staticContent = true;
         const preview = document.createElement('section');
@@ -59993,9 +60160,14 @@ Object.assign(ScriptNoteEditor.prototype, {
       if (!raw.trim() && !access.readOnly) {
         editor.hidden = true;
         toolbar.hidden = true;
+        editor.style.display = 'none';
+        toolbar.style.display = 'none';
         const createNote = button('ノートを作成', 'filePlus', async () => {
           editor.hidden = false;
           toolbar.hidden = false;
+          editor.style.display = 'block';
+          toolbar.style.display = '';
+          editor.dataset.entityNoteCreated = '1';
           editor.innerHTML = '<p><br></p>';
           state.dirty = true;
           await flush();
@@ -60535,7 +60707,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const note = document.createElement('p');
       note.className = 'sn2-ruby-compatibility-note';
       note.dataset.e2eId = `${scope}-ruby-legacy-compatibility`;
-      note.innerHTML = `旧文書の見た目を維持中です ${fieldHelp('サイズまたは間隔を変更すると、その項目だけ新しい方式へ切り替わります')}`;
+      note.innerHTML = `旧文書の見た目を維持中です ${fieldHelp('サイズまたは間隔を変更すると、その項目だけ新しい方式へ切り替わります', { e2eId: `${scope}-ruby-legacy-help` })}`;
       root.appendChild(note);
     }
     const refresh = event => {

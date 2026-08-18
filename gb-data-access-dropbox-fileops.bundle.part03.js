@@ -1,3 +1,11 @@
+  }
+
+  if (!cascade || kind !== 'text_range' || !ref.container) return false;
+  const container = ref.container;
+  if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
+    const containerId = container.id || container.lineId || container.cardId || '';
+    return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
+  }
   if (targetKind === 'sheet_cell') {
     return String(container.kind || '') === 'sheet_cell'
       && String(container.entryId || '') === itemId
@@ -890,10 +898,3 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       const originalEntry = await _resolveEntryHandle(provider, originalPath);
       const backups = {};
       const backupStamp = _conflictBackupStamp();
-
-      if (action === 'keep_original') {
-        if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
-        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
-        await provider.deletePath(conflictPath);
-        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
-      }

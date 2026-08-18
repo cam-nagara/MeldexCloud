@@ -221,6 +221,9 @@ function addLongPressHandler(element, handler, options = {}) {
   };
   const consumeSuppressedActivation = (event) => {
     if (!suppressNextActivation) return false;
+    if (event.target?.closest?.('input[type="checkbox"], input[type="radio"], .row-select-cb, .row-select-all-cb')) {
+      return false;
+    }
     event.preventDefault();
     if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
     else event.stopPropagation();
@@ -895,6 +898,3 @@ function renameAppPathReferences(oldPath, newPath, opts) {
       // 編集は既にリネームAPIと同期済みだが、ツリー側からの単独リネームでは
       // doc.title と表示中の #title-input が追随していなかったため、ここで揃える。
       // mapped === newPath は「このファイル自体がリネームされた」場合のみ真になり、
-      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
-      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
-        editor.doc.title = exactLabel;

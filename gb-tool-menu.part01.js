@@ -149,7 +149,10 @@ function showToolMenu(e, toolType) {
   e.stopPropagation();
   if (window.MeldexCloudMobileEditBar?.openToolMenu?.(toolType, e)) return;
   const btn = _resolveToolMenuButton(e);
-  document.querySelectorAll('.tool-menu-dropdown').forEach(el => el.remove());
+  document.querySelectorAll('.tool-menu-dropdown').forEach(el => {
+    if (typeof el._cleanup === 'function') el._cleanup({ restoreFocus: false });
+    else el.remove();
+  });
 
   const dd = document.createElement('div');
   dd.className = 'gb-context-menu ab-dropdown tool-menu-dropdown';
@@ -188,6 +191,29 @@ function showToolMenu(e, toolType) {
   dd._cleanup = closeAll;
   dd.querySelector('.gb-context-menu-item:not(:disabled)')?.focus?.();
 
+  keyHandler = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeAll({ restoreFocus: true });
+      return;
+    }
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      _toolMenuFocusMove(dd, 1);
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      _toolMenuFocusMove(dd, -1);
+    } else if (ev.key === 'Home') {
+      ev.preventDefault();
+      _toolMenuFocusMove(dd, 'first');
+    } else if (ev.key === 'End') {
+      ev.preventDefault();
+      _toolMenuFocusMove(dd, 'last');
+    }
+  };
+  document.addEventListener('keydown', keyHandler, true);
+
   setTimeout(() => {
     if (!dd.isConnected) return;
     pointerHandler = (ev) => {
@@ -196,29 +222,7 @@ function showToolMenu(e, toolType) {
         closeAll({ restoreFocus: true });
       }
     };
-    keyHandler = (ev) => {
-      if (ev.key === 'Escape') {
-        ev.preventDefault();
-        ev.stopPropagation();
-        closeAll({ restoreFocus: true });
-        return;
-      }
-      if (ev.key === 'ArrowDown') {
-        ev.preventDefault();
-        _toolMenuFocusMove(dd, 1);
-      } else if (ev.key === 'ArrowUp') {
-        ev.preventDefault();
-        _toolMenuFocusMove(dd, -1);
-      } else if (ev.key === 'Home') {
-        ev.preventDefault();
-        _toolMenuFocusMove(dd, 'first');
-      } else if (ev.key === 'End') {
-        ev.preventDefault();
-        _toolMenuFocusMove(dd, 'last');
-      }
-    };
     document.addEventListener('pointerdown', pointerHandler, true);
-    document.addEventListener('keydown', keyHandler, true);
   }, 0);
 }
 

@@ -1,3 +1,8 @@
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
+  }
+  const nodes = _getVisibleTreeNodes(scopeSelector);
+  if (!nodes.length) return;
   const rawIndex = nodes.indexOf(current);
   const currentIndex = rawIndex >= 0 ? rawIndex : (event.key === 'ArrowUp' ? 0 : -1);
   const nextIndex = event.key === 'ArrowUp'

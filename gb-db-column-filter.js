@@ -56,8 +56,11 @@ function _dbColumnFilterValuesForEntity(entityName, entityData, propName, dbPath
   const ptc = typeof getPropertyTypes === 'function'
     ? (getPropertyTypes(dbPath, ctx)?.[propName] || null)
     : null;
-  if (ptc?.source) {
-    return [_dbColumnFilterText(entityData?.['_' + ptc.source])];
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(ptc)
+    : (['created', 'modified', 'modified_by'].includes(ptc?.source) ? ptc.source : '');
+  if (metadataSource) {
+    return [_dbColumnFilterText(entityData?.['_' + metadataSource])];
   }
   const raw = Array.isArray(entityData?.[propName]) ? entityData[propName] : [];
   const visible = typeof filterValues === 'function'

@@ -184,7 +184,8 @@
             const sourceParam = item.sourceId ? '&sourceId=' + encodeURIComponent(item.sourceId) : '';
             const detailParam = needsClientSort && sortCfg.sort !== 'manual' ? '&detail=true' : '';
             const children = await apiFetch('/browse?path=' + encodeURIComponent(item.path) + '&sort=' + apiSort + '&order=' + sortCfg.order + rootParam + sourceParam + detailParam + '&all_files=true');
-            let visibleChildren = children.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
+            const childList = Array.isArray(children) ? children : (Array.isArray(children?.items) ? children.items : []);
+            let visibleChildren = childList.filter(child => !(typeof isOutlinerDeletePendingPath === 'function' && isOutlinerDeletePendingPath(child?.path)));
             registerFileTypes(visibleChildren);
             // フィルタポップアップが開いている場合、新規判明タイプをチェック一覧へ即時反映する
             // （renderGlobalFilterUI自体はクリック時点で常に最新一覧を取り直すため必須ではないが、
@@ -399,6 +400,8 @@
     (draggedNodes || []).forEach(n => n.querySelector('.tree-node-row')?.classList.remove('dragging'));
     clearDragIndicators();
     window.GBOutlinerVirtualRender?.clearDragExempt();
+    draggedNode = null;
+    draggedNodes = null;
     // ペインタブバーに表示されている挿入位置マーカーを確実にクリア
     // （ESC キャンセル等でタブバー側の dragleave が発火しないケースの漏れ対策）
     document.querySelectorAll('.gb-tab.gb-tab-drop-before, .gb-tab.gb-tab-drop-after')
@@ -417,8 +420,6 @@
     }
     window._gbOutlinerDragPayload = null;
     window._gbOutlinerDragNonce = '';
-    draggedNode = null;
-    draggedNodes = null;
   });
 
   row.addEventListener('dragover', (e) => {
@@ -470,6 +471,11 @@
     e.preventDefault();
     e.stopPropagation();
     if (!draggedNode) {
+      if (isDB && typeof MeldexSheetEntryAttachments !== 'undefined' && !isItemLocked(item.path)) {
+        clearDragIndicators();
+        const handled = await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
+        if (handled > 0) return;
+      }
       const resolved = typeof MeldexDnD !== 'undefined' ? await MeldexDnD.resolveDropData(e, 'node') : null;
       const externalItems = _outlinerExternalDragItems(e, resolved?.payload).filter(source => {
         const sourcePath = String(source.path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -564,19 +570,18 @@
     }
 
     // シートの中に置けるのはエントリだけ。ボード・シナリオ・画像などを
-    // 落とすと「シートの中にボードがある」状態になるため、ドロップ時点で止める。
+    // 落とすと「シートの中にボードがある」状態になるため、通常移動ではなく
+    // シート全ファイル取込（MeldexSheetEntryAttachments）へルーティングしてエントリ化する。
     if (position === 'inside' && isDB) {
-      const rejected = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
-      if (rejected.length) {
-        const names = rejected.map(n => n._nodeData?.name || '').filter(Boolean);
-        showStatus(
-          'シートの中にはエントリだけを置けます（' + (names[0] || '対象') +
-          (names.length > 1 ? ' ほか ' + (names.length - 1) + ' 件' : '') + '）',
-          true
-        );
-        return;
+      const nonEntries = nodes.filter(n => !_outlinerItemFitsInSheet(n._nodeData));
+      if (e.altKey || nonEntries.length > 0) {
+        if (typeof MeldexSheetEntryAttachments !== 'undefined') {
+          await MeldexSheetEntryAttachments.intakeDropToSheet(item.path, e);
+          return;
+        }
       }
     }
+
 
     // API移動を先に実行し、成功したノードのみDOMを更新（失敗時にDOMが先行するのを防ぐ）
     (async () => {

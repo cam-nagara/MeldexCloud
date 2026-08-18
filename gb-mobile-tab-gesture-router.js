@@ -168,6 +168,7 @@
 
   function syncOne(tablist, usedIds) {
     if (!tablist?.isConnected) return;
+    if (tablist.classList?.contains('gb-production-list-switch') || tablist.closest?.('.gb-production-list-switch')) return;
     const trigger = ensureDropdown(tablist, usedIds);
     const tabs = tabItems(tablist);
     const active = activeTab(tabs);

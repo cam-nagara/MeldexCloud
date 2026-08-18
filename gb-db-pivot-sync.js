@@ -40,6 +40,7 @@ function _buildRelationMapEntry(data) {
 
 function _setRelationMapCache(relationDbPath, data) {
   if (!relationDbPath || !data) return null;
+  if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(relationDbPath, data);
   const entry = _buildRelationMapEntry(data);
   _relationCache[relationDbPath] = entry;
   return entry;
@@ -267,8 +268,7 @@ function _sortCascadeDeleteValues(values) {
   });
 }
 async function _deleteCascadeValue(valObj) {
-  if (valObj?.candidate_index != null) return _apiPutValue(valObj, { _delete: true });
-  if (valObj?.file) return apiPost('/outliner/delete', { path: valObj.file });
+  if (valObj) return _apiPutValue(valObj, { _delete: true });
   throw new Error('削除対象の参照情報がありません');
 }
 async function _rollbackCascadeValues(entityPath, propName, deletedValues) {
@@ -309,7 +309,8 @@ async function _clearCascadeDependentValues(entityPath, sourcePropName, oldValue
   const nextSourceValues = _splitDbMultiValue(newValue);
   const clears = [];
   try {
-    for (const dep of _getCascadeDependents(sourcePropName, dbPath, options.ctx)) {
+    const deps = _getCascadeDependents(sourcePropName, dbPath, options.ctx);
+    for (const dep of deps) {
       const currentVals = [...(entData[dep.propName] || [])];
       if (currentVals.length === 0) continue;
       const deleteTargets = [];
@@ -319,7 +320,8 @@ async function _clearCascadeDependentValues(entityPath, sourcePropName, oldValue
         if (!ids.length) continue;
         const validIds = [];
         for (const id of ids) {
-          if (await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues, { dbPath, ctx: options.ctx })) validIds.push(id);
+          const isValid = await _validateCascadeValue(id, entityPath, dep.ptc, nextSourceValues, { dbPath, ctx: options.ctx });
+          if (isValid) validIds.push(id);
         }
         if (validIds.length === ids.length) continue;
         if (validIds.length === 0) deleteTargets.push(depVal);
@@ -562,7 +564,9 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
   const clearedRollupTargets = new Set();
   for (const [propName, ptc] of Object.entries(propTypes)) {
     if (!ptc) continue;
-    const isSource = !!ptc.source;
+    const isSource = typeof _dbPropertyMetadataSource === 'function'
+      ? !!_dbPropertyMetadataSource(ptc)
+      : ['created', 'modified', 'modified_by'].includes(ptc?.source);
     const isFormula = ptc.type === 'formula' && ptc.formula;
     const isRollup = ptc.type === 'rollup' && ptc.relationProp;
     if (!isSource && !isFormula && !isRollup) continue;
@@ -596,16 +600,19 @@ function _renderDerivedCellContent(container, ptc, entityName, propName, entityD
   const renderRevision = Number(container._derivedRenderRevision || 0) + 1;
   container._derivedRenderRevision = renderRevision;
   container.innerHTML = '';
-  if (ptc.source) {
-    const metaKey = '_' + ptc.source;
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(ptc)
+    : (['created', 'modified', 'modified_by'].includes(ptc?.source) ? ptc.source : '');
+  if (metadataSource) {
+    const metaKey = '_' + metadataSource;
     const metaVal = entityData[metaKey] || '';
     const span = document.createElement('span');
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
-    if ((ptc.source === 'created' || ptc.source === 'modified') && metaVal) {
+    if ((metadataSource === 'created' || metadataSource === 'modified') && metaVal) {
       span.textContent = typeof _formatDateDisplay === 'function'
         ? _formatDateDisplay(metaVal, ptc)
         : metaVal.replace('T', ' ').substring(0, 16);
-    } else if (ptc.source === 'modified_by' && metaVal) {
+    } else if (metadataSource === 'modified_by' && metaVal) {
       span.innerHTML = (typeof _userAvatarSmall === 'function' ? _userAvatarSmall(metaVal) + ' ' : '') + esc(metaVal);
     } else {
       span.textContent = '—';

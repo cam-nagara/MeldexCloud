@@ -130,6 +130,20 @@
     return value;
   }
 
+  // 呼び出し元(注釈スクリーンショット等)がidentity claimと同じ保留/復帰の対象へ
+  // 連動書込みを含めるためのレジストリ。load順に依存しないよう、window上の
+  // 素のオブジェクトへの代入のみで登録できる形にする(このファイルより後に
+  // 登録側スクリプトが読み込まれても、実際に参照するのはaftercare実行時なので
+  // 問題ない)。
+  function pendingWriteHandler(kind) {
+    const registry = window.MeldexCreatedImageIdentityAftercarePendingWriters;
+    const handler = registry ? registry[kind] : null;
+    if (typeof handler !== 'function') {
+      throw new Error(`Cloud画像aftercareの連動書込み種別 "${kind}" が未登録です`);
+    }
+    return handler;
+  }
+
   function operationPayload(intent) {
     return {
       path: String(intent.idempotency_path || idempotencyPath(intent.source_locator)),
@@ -383,12 +397,19 @@
           provider, current, payload, suppliedAdapter, suppliedScope,
         );
         current = bound.operation;
+        const steps = [{
+          name: 'claim-created-image',
+          run: () => claimPrepared(provider, current.intent, bound.adapter, suppliedScope),
+        }];
+        const linkedWrite = current.intent.linked_write;
+        if (linkedWrite?.kind) {
+          steps.push({
+            name: `linked-write:${linkedWrite.kind}`,
+            run: () => pendingWriteHandler(linkedWrite.kind)(provider, linkedWrite.payload, current.intent),
+          });
+        }
         current = await journal.runAftercare(
-          provider, operation.operation_id, OPERATION, payload, current,
-          [{
-            name: 'claim-created-image',
-            run: () => claimPrepared(provider, current.intent, bound.adapter, suppliedScope),
-          }],
+          provider, operation.operation_id, OPERATION, payload, current, steps,
         );
         return journal.complete(
           provider, operation.operation_id, OPERATION, payload,
@@ -446,6 +467,9 @@
         claim_boundary: '',
         source: String(options?.source || 'cloud-upload'),
         aftercare_completed: [],
+        linked_write: (options?.linkedWrite && options.linkedWrite.kind)
+          ? { kind: String(options.linkedWrite.kind), payload: options.linkedWrite.payload }
+          : null,
       }, identity);
     });
     const publishRequired = operation.state === 'awaiting_proof'

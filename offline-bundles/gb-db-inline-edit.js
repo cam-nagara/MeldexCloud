@@ -2316,18 +2316,43 @@ function _scrollDbActiveCellIntoView(td) {
     ? table.querySelector('tbody tr:not(.group-header-row):not(.new-entity-row):not(.new-entity-spacer-row):not(.db-virtual-spacer-row) td.col-entity')?.getBoundingClientRect?.()
     : null;
   const pad = 4;
-  const topLimit = scrollRect.top + headerHeight + pad;
-  const bottomLimit = scrollRect.bottom - pad;
-  const leftLimit = scrollRect.left + (controlsRect?.width || 0) + (entityRect?.width || 0) + pad;
-  const rightLimit = scrollRect.right - pad;
-  let deltaTop = 0;
-  let deltaLeft = 0;
-  if (cellRect.top < topLimit) deltaTop = cellRect.top - topLimit;
-  else if (cellRect.bottom > bottomLimit) deltaTop = cellRect.bottom - bottomLimit;
-  if (cellRect.left < leftLimit) deltaLeft = cellRect.left - leftLimit;
-  else if (cellRect.right > rightLimit) deltaLeft = cellRect.right - rightLimit;
-  if (deltaTop) scroller.scrollTop += deltaTop;
-  if (deltaLeft) scroller.scrollLeft += deltaLeft;
+  const fixedLeftWidth = (controlsRect?.width || 0) + (entityRect?.width || 0);
+  const cellLeftInScroller = cellRect.left - scrollRect.left + scroller.scrollLeft;
+  const cellRightInScroller = cellRect.right - scrollRect.left + scroller.scrollLeft;
+  const minVisibleLeft = scroller.scrollLeft + fixedLeftWidth + pad;
+  const maxVisibleRight = scroller.scrollLeft + scrollRect.width - pad;
+
+  let targetScrollLeft = scroller.scrollLeft;
+  if (cellRightInScroller > maxVisibleRight) {
+    targetScrollLeft = cellRightInScroller - scrollRect.width + pad;
+    // セル幅が表示領域より広い場合は左端を固定列右端に合わせる
+    if (cellLeftInScroller < targetScrollLeft + fixedLeftWidth + pad) {
+      targetScrollLeft = cellLeftInScroller - fixedLeftWidth - pad;
+    }
+  } else if (cellLeftInScroller < minVisibleLeft) {
+    targetScrollLeft = cellLeftInScroller - fixedLeftWidth - pad;
+  }
+
+  const cellTopInScroller = cellRect.top - scrollRect.top + scroller.scrollTop;
+  const cellBottomInScroller = cellRect.bottom - scrollRect.top + scroller.scrollTop;
+  const minVisibleTop = scroller.scrollTop + headerHeight + pad;
+  const maxVisibleBottom = scroller.scrollTop + scrollRect.height - pad;
+
+  let targetScrollTop = scroller.scrollTop;
+  if (cellBottomInScroller > maxVisibleBottom) {
+    targetScrollTop = cellBottomInScroller - scrollRect.height + pad;
+    // セル高さが表示領域より高い場合は上端をヘッダー下端に合わせる
+    if (cellTopInScroller < targetScrollTop + headerHeight + pad) {
+      targetScrollTop = cellTopInScroller - headerHeight - pad;
+    }
+  } else if (cellTopInScroller < minVisibleTop) {
+    targetScrollTop = cellTopInScroller - headerHeight - pad;
+  }
+
+  targetScrollLeft = Math.max(0, Math.round(targetScrollLeft));
+  targetScrollTop = Math.max(0, Math.round(targetScrollTop));
+  if (scroller.scrollLeft !== targetScrollLeft) scroller.scrollLeft = targetScrollLeft;
+  if (scroller.scrollTop !== targetScrollTop) scroller.scrollTop = targetScrollTop;
 }
 
 function _scheduleDbActiveCellScroll(td) {

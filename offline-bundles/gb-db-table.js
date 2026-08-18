@@ -839,6 +839,22 @@ function _handleTbodyPointerdown(e) {
   const paneRoot = _paneEl(ctx, '#' + tbl) || (!ctx ? document : null);
   if (!paneRoot) return;
 
+  let suppressTimer = null;
+  const suppressClick = (ev) => {
+    ev.preventDefault();
+    cleanupSuppress();
+  };
+  cb.addEventListener('click', suppressClick, { once: true, capture: true });
+  const cleanupSuppress = () => {
+    if (suppressTimer) {
+      clearTimeout(suppressTimer);
+      suppressTimer = null;
+    }
+    cb.removeEventListener('click', suppressClick, true);
+    cb._rowSelectPointerdownHandled = false;
+  };
+  suppressTimer = setTimeout(cleanupSuppress, 200);
+
   // 行の HTML5 ドラッグを一時的に無効化 (cb 操作が行ドラッグを誤起動しないように)。
   // 通常行は専用ハンドルだけを draggable にしているため、解除時は true 固定ではなく元の値へ戻す。
   const tr = cb.closest('tr');
@@ -849,15 +865,11 @@ function _handleTbodyPointerdown(e) {
       tr.draggable = wasDraggable;
       document.removeEventListener('pointerup', restore, true);
       document.removeEventListener('pointercancel', restore, true);
+      setTimeout(cleanupSuppress, 60);
     };
     document.addEventListener('pointerup', restore, true);
     document.addEventListener('pointercancel', restore, true);
   }
-
-  // 後続の click ネイティブトグル (cb.checked 反転) を一度だけ抑止
-  const suppressClick = (ev) => { ev.preventDefault(); };
-  cb.addEventListener('click', suppressClick, { once: true, capture: true });
-  setTimeout(() => cb.removeEventListener('click', suppressClick, true), 500);
 
   e.stopPropagation();
 
@@ -1786,8 +1798,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
   }
 
   // sourceプロパティ: フロントマターのメタデータを読み取り専用で表示
-  if (ptc && ptc.source) {
-    const metaKey = '_' + ptc.source;
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(ptc)
+    : (['created', 'modified', 'modified_by'].includes(ptc?.source) ? ptc.source : '');
+  if (metadataSource) {
+    const metaKey = '_' + metadataSource;
     const metaVal = entityData[metaKey] ?? '';
     let sourceValues = [{ value: String(metaVal), status: '採用' }];
     if (advFilters.length > 0) sourceValues = applyAdvancedFilters(sourceValues, propName, advFilters);
@@ -1797,11 +1812,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     if (sourceValues.length === 0) {
       span.textContent = '';
-    } else if ((ptc.source === 'created' || ptc.source === 'modified') && metaVal) {
+    } else if ((metadataSource === 'created' || metadataSource === 'modified') && metaVal) {
       span.textContent = typeof _formatDateDisplay === 'function'
         ? _formatDateDisplay(metaVal, ptc)
         : metaVal.replace('T', ' ').substring(0, 16);
-    } else if (ptc.source === 'modified_by' && metaVal) {
+    } else if (metadataSource === 'modified_by' && metaVal) {
       span.innerHTML = (typeof _userAvatarSmall === 'function' ? _userAvatarSmall(metaVal) + ' ' : '') + esc(metaVal);
     } else {
       span.textContent = '—';
@@ -2609,7 +2624,10 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
       return picked && picked.value != null ? String(picked.value) : '';
     };
     const sortValue = (entityName) => {
-      if (sortPtc.source || sortPtc.type === 'formula') {
+      const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+        ? _dbPropertyMetadataSource(sortPtc)
+        : (['created', 'modified', 'modified_by'].includes(sortPtc?.source) ? sortPtc.source : '');
+      if (metadataSource || sortPtc.type === 'formula') {
         return _dbTextForProp(entityName, sortCfg.key, data, propTypes, advFilters, dbPath, filterMode);
       }
       const entityData = entitiesMap[entityName] || {};
@@ -3039,7 +3057,9 @@ function renderPivot(ctx) {
       autoIcon.className = 'th-lock-icon';
       autoIcon.style.cssText = 'opacity:0.5;margin-left:4px;flex-shrink:0;';
       autoIcon.innerHTML = lucide('zap', 12);
-      autoIcon.title = '自動入力（読み取り専用）';
+      autoIcon.title = _ptcHeader2.source === 'import'
+        ? '取り込み列（読み取り専用）'
+        : '自動入力（読み取り専用）';
       th.appendChild(autoIcon);
     } else {
       const _colLock = getColumnLock(dbPath, p);

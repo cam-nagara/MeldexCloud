@@ -309,16 +309,21 @@ function _folderListSortValue(item, key) {
 }
 
 function _folderCompareListItems(a, b, key, order) {
-  const folderDiff = (a?.type === 'folder' ? 0 : 1) - (b?.type === 'folder' ? 0 : 1);
-  if (folderDiff !== 0) return folderDiff;
+  if (typeof compareItemsForFolderSort === 'function') {
+    return compareItemsForFolderSort(a, b, key, order);
+  }
+  const folderRank = item => (item?.type === 'folder' || item?.type === 'database' ? 0 : 1);
+  const rankDiff = folderRank(a) - folderRank(b);
+  if (rankDiff) return rankDiff;
   const av = _folderListSortValue(a, key);
   const bv = _folderListSortValue(b, key);
   let diff = 0;
   if (typeof av === 'number' || typeof bv === 'number') diff = Number(av || 0) - Number(bv || 0);
   else diff = FOLDER_LIST_COLLATOR.compare(String(av || ''), String(bv || ''));
-  if (diff === 0 && key !== 'name') diff = FOLDER_LIST_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''));
-  if (diff === 0) diff = FOLDER_LIST_COLLATOR.compare(String(a?.path || ''), String(b?.path || ''));
-  return order === 'desc' ? -diff : diff;
+  if (diff && order === 'desc') diff *= -1;
+  return diff
+    || FOLDER_LIST_COLLATOR.compare(String(a?.name || ''), String(b?.name || ''))
+    || FOLDER_LIST_COLLATOR.compare(String(a?.path || ''), String(b?.path || ''));
 }
 
 function _folderSortVisibleItems(items) {

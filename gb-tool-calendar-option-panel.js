@@ -410,9 +410,16 @@
     this._calendarSettingsBody = body;
     const opts = [[0, '日曜始まり'], [1, '月曜始まり'], [2, '火曜始まり'], [3, '水曜始まり'], [4, '木曜始まり'], [5, '金曜始まり'], [6, '土曜始まり']]
       .map(([v, label]) => `<option value="${v}" ${v === this._startDay ? 'selected' : ''}>${label}</option>`).join('');
+    const currentTimeFormat = window.MeldexProductionTimeFormatter?.getPreference?.() || 'hm';
+    const timeFormatOpts = (window.MeldexProductionTimeFormatter?.FORMAT_OPTIONS || [
+      { value: 'hm', label: '時間・分' },
+      { value: 'm', label: '分' },
+      { value: 'decimal', label: '小数時間' },
+    ]).map(opt => `<option value="${opt.value}" ${opt.value === currentTimeFormat ? 'selected' : ''}>${opt.label}</option>`).join('');
     body.innerHTML = `
       ${_calField('表示', `<label class="cal-option-check"><input type="checkbox" data-cal-settings-sidebar-only ${this._sidebarOnly ? 'checked' : ''}> サイドバーのみ表示</label>`)}
       ${_calField('週の開始曜日', `<select class="gb-select" data-cal-settings-start-day>${opts}</select>`)}
+      ${_calField('時間の表記', `<select class="gb-select" data-cal-settings-time-format>${timeFormatOpts}</select>`)}
       <div class="cal-option-actions">
         <button type="button" data-cal-settings-action="template">${_calIcon('layoutTemplate')} テンプレート</button>
         <button type="button" data-cal-settings-action="sync">${_calIcon('refreshCw')} 同期</button>
@@ -428,6 +435,16 @@
       _calPushSettingsHistory('スケジュール: 週の開始曜日変更', before, ['gb-cal-start-day'], String(this._startDay));
       this._render();
       this._renderMiniCal();
+    });
+    body.querySelector('[data-cal-settings-time-format]')?.addEventListener('change', e => {
+      const val = e.currentTarget.value;
+      if (window.MeldexProductionTimeFormatter?.setPreference) {
+        window.MeldexProductionTimeFormatter.setPreference(val);
+      }
+      this._render?.();
+      if (this._surface === 'productionTasks' && typeof this._renderProductionTaskView === 'function') {
+        this._renderProductionTaskView();
+      }
     });
     body.querySelectorAll('[data-cal-settings-action]').forEach(btn => {
       btn.addEventListener('click', () => {

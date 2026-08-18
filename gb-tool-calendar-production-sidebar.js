@@ -287,10 +287,16 @@
     return { label, value: () => control.value, controls: [control], selectEl: type === 'managed-select' ? control : null };
   }
 
-  // 制作管理UX改善計画（2026-08-04）§6-2: 予定（作業予定日時＋作業予定時間）と目標時間
-  // （目標作業時間_値）は再計算エンジン・同期フックが更新する自動列のため読み取り専用表示に
-  // 統一する（タスクリスト側の計算列と同じ扱い。gb-db-computed-columns.js 参照）。
+  // 制作タスク実績時間・日次履歴計画（2026-08-15）Phase 1:
+  // 予定作業時間・割当作業時間・実績作業時間の共通フォーマッター（MeldexProductionTimeFormatter）
+  // を使用してユーザーの表示設定（時間・分 / 分 / 小数時間）を反映する。
   function formatScheduleHoursDisplay(raw) {
+    if (window.MeldexProductionTimeFormatter?.formatDuration) {
+      const sec = window.MeldexProductionTimeFormatter.parseToSeconds(raw);
+      if (sec !== null && sec > 0) {
+        return window.MeldexProductionTimeFormatter.formatDuration(sec);
+      }
+    }
     const num = Number(raw);
     if (!Number.isFinite(num) || num <= 0) return '';
     const rounded = Math.round(num * 10) / 10;
@@ -573,16 +579,16 @@
       formatScheduleRangeDisplay(prop(row, '作業予定日時')),
       formatScheduleHoursDisplay(prop(row, '作業予定時間')) ? `（${formatScheduleHoursDisplay(prop(row, '作業予定時間'))}）` : '',
     ].filter(Boolean).join(' ');
-    form.appendChild(readOnlyField('予定', scheduleText, {
+    form.appendChild(readOnlyField('割当作業時間', scheduleText, {
       e2eId: 'gb-production-task-detail-schedule',
       warning: scheduleReason ? `シフト割当不能: ${scheduleReason}` : '',
     }));
-    form.appendChild(readOnlyField('目標時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
+    form.appendChild(readOnlyField('予定作業時間', formatScheduleHoursDisplay(prop(row, '目標作業時間_値')), {
       e2eId: 'gb-production-task-detail-target-hours',
     }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
-    buildField('作業時間_実績', '実績（時間）', 'number');
+    buildField('作業時間_実績', '実績作業時間', 'number');
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
@@ -630,7 +636,13 @@
     const source = button('元シートを開く', 'externalLink', () => {
       if (row.path && typeof openPage === 'function') openPage(row.name || '制作タスク', row.path);
     });
-    actions.append(save, source);
+    const snapshotBtn = button('日次記録', 'calendar', () => {
+      if (window.MeldexProductionDailySnapshotPanel && typeof window.MeldexProductionDailySnapshotPanel.open === 'function') {
+        window.MeldexProductionDailySnapshotPanel.open({ taskRow: row });
+      }
+    });
+    snapshotBtn.dataset.e2eId = 'gb-production-open-daily-snapshot';
+    actions.append(save, source, snapshotBtn);
     const collaboration = document.createElement('div');
     collaboration.className = 'gb-production-sidebar-actions gb-production-collaboration-actions';
     collaboration.setAttribute('role', 'group');

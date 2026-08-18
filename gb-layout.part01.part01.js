@@ -33,7 +33,9 @@ const GBLayout = (() => {
   function _paneRoleName(node) {
     const role = String(node?.meldexRole || '').trim();
     if (role) return role;
-    return node?.id === 'pane-main' ? 'main' : '';
+    if (node?.id === 'pane-main') return 'main';
+    if (_root?.type === 'pane' && _root?.id === node?.id) return 'main';
+    return '';
   }
 
   function _paneRoleClassName(role) {
@@ -52,7 +54,7 @@ const GBLayout = (() => {
   }
 
   function _isMainPaneNode(node) {
-    return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main');
+    return !!node && (node.id === 'pane-main' || _paneRoleName(node) === 'main' || (_root?.type === 'pane' && _root?.id === node.id));
   }
 
   function _canReorderMainPaneTabs(node) {

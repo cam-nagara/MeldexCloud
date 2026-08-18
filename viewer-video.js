@@ -52,6 +52,24 @@
     }
   }
 
+  function _reportPlaybackError(error) {
+    if (!error || error.name === 'NotAllowedError' || error.name === 'AbortError') return;
+    console.warn('動画の再生に失敗しました', error);
+  }
+
+  function wireVideoClickToggle(video) {
+    if (!video) return video;
+    video.addEventListener('click', (ev) => {
+      if (!isVideoInActiveLayer(video)) return;
+      if (video.paused || video.ended) {
+        video.play().catch(_reportPlaybackError);
+      } else {
+        video.pause();
+      }
+    });
+    return video;
+  }
+
   // itemはviewer-scene.jsのitems[]要素（type:'video'）。srcは表示用に解決済みのURL
   // （呼び出し側でensureItemUrl/displayItemUrl相当の解決を済ませてから渡すこと）。
   function buildVideoElement(item, src, opts = {}) {
@@ -65,6 +83,7 @@
     video.addEventListener('play', onVideoPlay);
     video.addEventListener('pause', onVideoPause);
     video.addEventListener('ended', onVideoEnded);
+    wireVideoClickToggle(video);
     return video;
   }
 
@@ -97,12 +116,27 @@
     return document.querySelector('.layer.show video');
   }
 
+  function startActiveVideoPlayback() {
+    const video = getCurrentVideoElement();
+    if (!video || typeof video.play !== 'function') return false;
+    try {
+      const result = video.play();
+      if (result && typeof result.catch === 'function') {
+        result.catch(_reportPlaybackError);
+      }
+      return true;
+    } catch (error) {
+      _reportPlaybackError(error);
+      return false;
+    }
+  }
+
   // 現在表示中レイヤーの動画を再生/一時停止する。動画が無ければ false を返す
   // （呼び出し側=viewer-scene.jsのtogglePlay()はfalseならスライドショーの再生/一時停止へフォールバックする）。
   function toggleCurrentVideoPlayback() {
     const video = getCurrentVideoElement();
     if (!video) return false;
-    if (video.paused || video.ended) video.play().catch(() => {});
+    if (video.paused || video.ended) video.play().catch(_reportPlaybackError);
     else video.pause();
     return true;
   }
@@ -111,6 +145,8 @@
     buildVideoElement,
     waitForVideoReady,
     getCurrentVideoElement,
+    startActiveVideoPlayback,
     toggleCurrentVideoPlayback,
+    wireVideoClickToggle,
   };
 })();

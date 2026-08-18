@@ -87,7 +87,8 @@ async function apiFetch(path, opts) {
     requestPromise = (async () => {
       const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
       delete fetchOpts.timeoutMs;
-      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, fetchOpts);
+      const fullUrl = API_BASE.replace(/\/+$/, '') + path;
+      const res = await fetch(fullUrl, fetchOpts);
       if (!res.ok) {
         let detail = '';
         try {
@@ -106,10 +107,12 @@ async function apiFetch(path, opts) {
         error.status = res.status;
         throw error;
       }
-      return await res.json();
+      const json = await res.json();
+      return json;
     })();
     if (cacheKey) _apiFetchBrowseInFlight.set(cacheKey, requestPromise);
     const payload = await requestPromise;
+    clearTimeout(timeoutId);
     if (cacheKey && cacheGeneration === _apiFetchBrowseCacheGeneration) {
       _apiFetchBrowseCache.set(cacheKey, { at: Date.now(), payload: _apiFetchClonePayload(payload) });
       while (_apiFetchBrowseCache.size > 80) {
@@ -749,6 +752,7 @@ function showStatus(msg, isError, options) {
     _queueSaveDialog(text);
   }
 }
+window.showStatus = showStatus;
 
 function getCssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
@@ -894,7 +898,3 @@ const LUCIDE = {
   lightbulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
   mapPin: '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/>',
   bookOpen: '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
-  zap: '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
-  package: '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/>',
-  skull: '<circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><path d="M8 20v2h8v-2"/><path d="m12.5 17-.5-1-.5 1h1z"/><path d="M16 20a2 2 0 0 0 1.56-3.25 8 8 0 1 0-11.12 0A2 2 0 0 0 8 20"/>',
-  alertTriangle: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',

@@ -2287,7 +2287,7 @@ function _bdBuildNodeDetailHtml(node) {
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
         <div class="gb-check-help-row">
           <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
-          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。') : ''}
+          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
         </div>
         <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">

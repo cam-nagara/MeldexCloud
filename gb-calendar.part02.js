@@ -292,10 +292,11 @@ function _showCalendarEventDetailPanel(dbPath, ev) {
     }
   });
   body.querySelector('#cal-detail-delete')?.addEventListener('click', async () => {
-    if (!await cfConfirm((ev.name || 'イベント') + ' を削除しますか？')) return;
+    const eventName = ev.name || ev.title || 'イベント';
+    if (!await cfConfirm(eventName + ' を削除しますか？')) return;
     _calPushUndo('イベント削除');
     try {
-      await apiDelete('/calendar-db/events/' + encodeURIComponent(ev.name) + '?db_path=' + encodeURIComponent(dbPath));
+      await apiDelete('/calendar-db/events/' + encodeURIComponent(eventName) + '?db_path=' + encodeURIComponent(dbPath));
       await _refreshCalendarDb(dbPath);
       if (typeof clearDetailPanel === 'function') await clearDetailPanel();
       showStatus('イベントを削除しました');

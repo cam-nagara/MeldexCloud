@@ -237,13 +237,17 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-sidebar-tab:hover{background:var(--bg3);color:var(--fg);}
       .settings-modal .settings-sidebar-tab.active,.settings-modal .settings-sidebar-tab.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-weight:600;}
       .settings-modal .settings-sidebar-tab svg{flex:0 0 auto;}
+      .settings-modal .settings-sidebar-tree-node{margin:0 0 2px;}
+      .settings-modal .settings-sidebar-subpage{width:100%;display:flex;align-items:center;gap:6px;margin:0 0 2px;padding:4px 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--fg2);font-size:12px;text-align:left;white-space:nowrap;cursor:pointer;}
+      .settings-modal .settings-sidebar-subpage:hover{background:var(--bg3);color:var(--fg);}
+      .settings-modal .settings-sidebar-subpage.active,.settings-modal .settings-sidebar-subpage.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-weight:600;}
       .settings-modal .settings-sidebar-group-label{padding:10px 8px 4px;color:var(--fg2);font-size:11px;font-weight:700;letter-spacing:0;}
       .settings-modal .settings-sidebar-group:first-child .settings-sidebar-group-label{padding-top:0;}
       .settings-modal .settings-nav-group-label{padding:14px 12px 6px;color:var(--fg2);font-size:12px;font-weight:700;}
       .settings-modal .settings-nav-item{width:100%;display:grid;gap:3px;margin:0 0 6px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg2);color:var(--fg);text-align:left;font:inherit;cursor:pointer;}
       .settings-modal .settings-nav-item::after{content:attr(data-desc);display:block;color:var(--fg2);font-size:12px;line-height:1.25;}
       .settings-modal .settings-nav-item:hover,.settings-modal .settings-nav-item:focus-visible{border-color:var(--accent);background:color-mix(in srgb, var(--accent) 10%, var(--bg2));outline:none;}
-      .settings-modal .settings-subtab-header{display:flex;gap:6px;align-items:center;padding:6px 0 8px;flex-wrap:wrap;border-bottom:1px solid var(--border);margin-bottom:8px;}
+      .settings-modal .settings-subtab-header{display:none!important;}
       .settings-modal .settings-subtab-header[hidden]{display:none!important;}
       .settings-modal .settings-subtab{height:30px;display:inline-flex;align-items:center;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2);color:var(--fg2);font:inherit;cursor:pointer;}
       .settings-modal .settings-subtab:hover,.settings-modal .settings-subtab:focus-visible{border-color:var(--accent);color:var(--fg);outline:none;}
@@ -268,15 +272,53 @@ async function showSettingsModal(opts) {
       ).join('')}
     </div>` : ''}
     ${!_isMobile ? `<div class="settings-desktop-layout" style="display:flex;min-height:0;flex:1;overflow:hidden;border-top:1px solid var(--border);">
-      <nav id="settings-tab-header" class="settings-sidebar" aria-label="設定カテゴリ" style="width:176px;flex:0 0 176px;padding:12px 10px 12px 0;margin-right:14px;border-right:1px solid var(--border);overflow-y:auto;">
-      ${settingsTabGroups.map(group =>
-        `<div class="settings-sidebar-group" data-settings-sidebar-group="${esc(group.label)}">
-          <div class="settings-sidebar-group-label">${esc(group.label)}</div>
-          ${group.tabs.map((t) =>
-            `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${t===defaultSettingsTab?' gb-inner-tab-active active':''}" data-tab="${t}" data-e2e-id="settings-tab-${esc(t)}" data-action="switchSettingsTab(this)" title="${settingsTabLabel(t)}" style="width:100%;display:flex;align-items:center;gap:8px;margin:0 0 4px;padding:8px 10px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">${lucide(settingsTabIcon(t),14)}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${settingsTabLabel(t)}</span></button>`
-          ).join('')}
-        </div>`
-      ).join('')}
+      <nav id="settings-tab-header" class="settings-sidebar" aria-label="設定カテゴリ" style="width:196px;flex:0 0 196px;padding:12px 10px 12px 0;margin-right:14px;border-right:1px solid var(--border);overflow-y:auto;">
+      ${settingsNavigationTabs.map(tab => {
+        const hasPages = Array.isArray(tab.pages) && tab.pages.length > 1;
+        const isParentActive = tab.id === defaultSettingsTab;
+        if (hasPages) {
+          return `<div class="settings-sidebar-tree-node${isParentActive ? ' expanded' : ''}" data-tree-tab="${esc(tab.id)}">
+            <button type="button" class="settings-tab settings-sidebar-tab settings-sidebar-parent-tab gb-inner-tab${isParentActive ? ' active' : ''}"
+              data-tab="${esc(tab.id)}"
+              data-e2e-id="settings-tab-${esc(tab.id)}"
+              data-action="switchSettingsTab(this)"
+              title="${esc(settingsTabLabel(tab.id))}"
+              aria-expanded="${isParentActive ? 'true' : 'false'}"
+              style="width:100%;display:flex;align-items:center;gap:6px;margin:0 0 2px;padding:6px 8px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">
+              <span class="settings-tree-chevron" style="display:inline-flex;width:12px;height:12px;align-items:center;justify-content:center;flex-shrink:0;">${lucide(isParentActive ? 'chevronDown' : 'chevronRight', 12)}</span>
+              ${lucide(settingsTabIcon(tab.id), 14)}
+              <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1;">${esc(settingsTabLabel(tab.id))}</span>
+            </button>
+            <div class="settings-sidebar-subpages" style="${isParentActive ? '' : 'display:none;'}padding-left:18px;">
+              ${tab.pages.map(page => `
+                <button type="button" class="settings-sidebar-subpage${(isParentActive && page.id === tab.pages[0]?.id) ? ' active gb-inner-tab-active' : ''}"
+                  data-settings-tab="${esc(tab.id)}"
+                  data-settings-page="${esc(page.id)}"
+                  data-e2e-id="settings-subtab-${esc(tab.id)}-${esc(page.id)}"
+                  data-action="selectSettingsTreeSubpage(this)"
+                  title="${esc(page.label)}"
+                  style="width:100%;display:flex;align-items:center;gap:6px;margin:0 0 2px;padding:4px 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--fg2);font-size:12px;text-align:left;white-space:nowrap;cursor:pointer;">
+                  <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;">${esc(page.label)}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>`;
+        } else {
+          const pageId = tab.pages?.[0]?.id || '';
+          return `<button type="button" class="settings-tab settings-sidebar-tab gb-inner-tab${isParentActive ? ' gb-inner-tab-active active' : ''}"
+            data-tab="${esc(tab.id)}"
+            data-settings-tab="${esc(tab.id)}"
+            data-settings-page="${esc(pageId)}"
+            data-e2e-id="settings-tab-${esc(tab.id)}"
+            data-action="switchSettingsTab(this)"
+            title="${esc(settingsTabLabel(tab.id))}"
+            style="width:100%;display:flex;align-items:center;gap:6px;margin:0 0 2px;padding:6px 8px;border-radius:6px;text-align:left;white-space:nowrap;cursor:pointer;">
+            <span style="display:inline-flex;width:12px;height:12px;flex-shrink:0;"></span>
+            ${lucide(settingsTabIcon(tab.id), 14)}
+            <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1;">${esc(settingsTabLabel(tab.id))}</span>
+          </button>`;
+        }
+      }).join('')}
       </nav>
       <div class="settings-desktop-panel" style="min-width:0;flex:1;display:flex;flex-direction:column;">` : ''}
     <!-- タブ内容 -->
@@ -378,6 +420,10 @@ async function showSettingsModal(opts) {
           <label class="gb-check">
             <input type="checkbox" id="modal-a11y-colorblind-safe" ${(window.MeldexAccessibility?.isPreferenceEnabled?.('colorblindSafe') ?? (localStorage.getItem('meldex-a11y-colorblind-safe') === '1')) ? 'checked' : ''}>
             <span>色以外でも状態を見分けやすくする</span>
+          </label>
+          <label class="gb-check">
+            <input type="checkbox" id="modal-paste-link-prompt-enabled" ${localStorage.getItem('meldex_suppress_folder_paste_link_choice') !== 'true' ? 'checked' : ''}>
+            <span>貼り付け時にリンクファイルを案内</span>
           </label>
         </div>
         ${_treeThumbnailsAvailable ? `<div class="gb-check-help-row" style="margin-top:6px;">

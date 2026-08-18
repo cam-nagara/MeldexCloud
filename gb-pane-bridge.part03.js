@@ -87,7 +87,7 @@
     window.openRightPanelTab = function(tabName, source) {
       if (!_guardRightSidebarTool(tabName, source)) return;
       _syncLegacyRightPanelState(tabName);
-      _openToolPane(tabName, { source });
+      _openToolPane(tabName, { source, userIntent: true });
     };
     window.toggleRightPanel = function(source) {
       if (!_guardRightSidebarTool('chat', source)) return;
@@ -378,6 +378,9 @@
       if (!closeExisting) {
         const restorePaneId = _getContentPane(activePane) || _getFileOpenPane(activePane);
         _activateToolPaneMatch(existing, { preserveActivePane: preserveWorkActive });
+        if (openOpts.userIntent && typeof GBLayout?.revealPane === 'function') {
+          GBLayout.revealPane(paneId, { userIntent: true, activate: !preserveWorkActive });
+        }
         if (toolType === 'detail') _syncDetailForActivePane(restorePaneId || activePane);
         _scheduleContentPaneRestore(restorePaneId);
       } else if (existing.panelsetNode) {
@@ -412,6 +415,9 @@
         const tabId = GBTabs.addTab(reusableToolPane.id, _toolLabel(toolType), toolType, '', null, { preserveActivePane: preserveWorkActive });
         const match = _findTabByIdInAnyGroup(tabId);
         if (match) _activateToolPaneMatch(match, { preserveActivePane: preserveWorkActive });
+        if (openOpts.userIntent && typeof GBLayout?.revealPane === 'function') {
+          GBLayout.revealPane(reusableToolPane.id, { userIntent: true, activate: !preserveWorkActive });
+        }
         if (tabId && typeof _refreshPaneAfterTabSwitch === 'function') {
           _refreshPaneAfterTabSwitch(match?.paneId || reusableToolPane.id, {
             previousActivePane: preserveWorkActive ? null : restorePaneId,
@@ -424,6 +430,9 @@
       const newPaneId = GBLayout.splitPane(sourcePaneId, 'horizontal', 'right', newPane);
       if (newPaneId) {
         if (!preserveWorkActive) GBLayout.setActivePane(newPaneId);
+        if (openOpts.userIntent && typeof GBLayout?.revealPane === 'function') {
+          GBLayout.revealPane(newPaneId, { userIntent: true, activate: !preserveWorkActive });
+        }
         _refreshPaneAfterTabSwitch(newPaneId, { previousActivePane: preserveWorkActive ? null : sourcePaneId });
         _scheduleContentPaneRestore(sourcePaneId);
       }

@@ -473,25 +473,122 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
 function _renderSettingsSubtabs(modal, target) {
   const header = modal?.querySelector?.('#settings-subtab-header');
   if (!header) return;
-  const pages = Array.isArray(target?.tab?.pages) ? target.tab.pages : [];
-  if (pages.length <= 1) {
-    header.hidden = true;
-    header.innerHTML = '';
-    return;
-  }
-  header.hidden = false;
-  header.innerHTML = pages.map(page => `
-    <button type="button" class="settings-subtab${page.id === target.pageId ? ' active' : ''}"
-      data-settings-tab="${esc(target.tabId)}"
-      data-settings-page="${esc(page.id)}"
-      data-e2e-id="settings-subtab-${esc(target.tabId)}-${esc(page.id)}">${esc(page.label)}</button>
-  `).join('');
-  header.querySelectorAll('[data-settings-page]').forEach(button => {
-    button.addEventListener('click', () => {
-      _openSettingsSection(button.dataset.settingsTab, modal, { pageId: button.dataset.settingsPage });
+  header.hidden = true;
+  header.innerHTML = '';
+}
+
+function _syncSettingsTreeSelection(modal, target) {
+  if (!modal || !target) return;
+  const tabHeader = modal.querySelector('#settings-tab-header');
+  if (!tabHeader) return;
+
+  // ツリーノード（子ページを持つカテゴリ）の展開と選択同期
+  tabHeader.querySelectorAll('.settings-sidebar-tree-node').forEach(node => {
+    const isTargetTab = node.dataset.treeTab === target.tabId;
+    const parentBtn = node.querySelector('.settings-sidebar-parent-tab');
+    const subpages = node.querySelector('.settings-sidebar-subpages');
+    const chevron = node.querySelector('.settings-tree-chevron');
+
+    if (isTargetTab) {
+      node.classList.add('expanded');
+      if (parentBtn) {
+        parentBtn.classList.add('active');
+        parentBtn.setAttribute('aria-expanded', 'true');
+      }
+      if (subpages) subpages.style.display = '';
+      if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronDown', 12);
+    } else {
+      if (parentBtn) {
+        parentBtn.classList.remove('active', 'gb-inner-tab-active');
+      }
+    }
+
+    // サブページボタンのアクティブ同期
+    node.querySelectorAll('.settings-sidebar-subpage').forEach(subpage => {
+      const isSubActive = isTargetTab && subpage.dataset.settingsPage === target.pageId;
+      subpage.classList.toggle('active', isSubActive);
+      subpage.classList.toggle('gb-inner-tab-active', isSubActive);
     });
   });
+
+  // 単一ページカテゴリのタブ同期
+  tabHeader.querySelectorAll('.settings-sidebar-tab:not(.settings-sidebar-parent-tab)').forEach(t => {
+    const active = t.dataset.tab === target.tabId;
+    t.classList.toggle('gb-inner-tab-active', active);
+    t.classList.toggle('active', active);
+  });
+
+  // キーボードイベントの初期化
+  _wireSettingsTreeKeyboard(tabHeader);
 }
+
+function _wireSettingsTreeKeyboard(tabHeader) {
+  if (!tabHeader || tabHeader.__gbTreeKeyboardWired) return;
+  tabHeader.__gbTreeKeyboardWired = true;
+
+  tabHeader.addEventListener('keydown', (e) => {
+    const focusable = Array.from(tabHeader.querySelectorAll('.settings-sidebar-tab, .settings-sidebar-subpage')).filter(el => {
+      return el.offsetParent !== null && !el.disabled;
+    });
+    const currentIndex = focusable.indexOf(document.activeElement);
+    if (currentIndex === -1) return;
+
+    const current = focusable[currentIndex];
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = focusable[(currentIndex + 1) % focusable.length];
+      next?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = focusable[(currentIndex - 1 + focusable.length) % focusable.length];
+      prev?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      focusable[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      focusable[focusable.length - 1]?.focus();
+    } else if (e.key === 'ArrowRight') {
+      const node = current.closest('.settings-sidebar-tree-node');
+      if (node && current.classList.contains('settings-sidebar-parent-tab')) {
+        e.preventDefault();
+        node.classList.add('expanded');
+        const subpages = node.querySelector('.settings-sidebar-subpages');
+        if (subpages) subpages.style.display = '';
+        const chevron = node.querySelector('.settings-tree-chevron');
+        if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronDown', 12);
+        current.setAttribute('aria-expanded', 'true');
+        const firstChild = node.querySelector('.settings-sidebar-subpage');
+        firstChild?.focus();
+      }
+    } else if (e.key === 'ArrowLeft') {
+      if (current.classList.contains('settings-sidebar-subpage')) {
+        e.preventDefault();
+        const parentBtn = current.closest('.settings-sidebar-tree-node')?.querySelector('.settings-sidebar-parent-tab');
+        parentBtn?.focus();
+      } else {
+        const node = current.closest('.settings-sidebar-tree-node');
+        if (node && node.classList.contains('expanded')) {
+          e.preventDefault();
+          node.classList.remove('expanded');
+          const subpages = node.querySelector('.settings-sidebar-subpages');
+          if (subpages) subpages.style.display = 'none';
+          const chevron = node.querySelector('.settings-tree-chevron');
+          if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronRight', 12);
+          current.setAttribute('aria-expanded', 'false');
+        }
+      }
+    }
+  });
+}
+
+function selectSettingsTreeSubpage(el) {
+  if (!el) return;
+  const tabId = el.dataset.settingsTab;
+  const pageId = el.dataset.settingsPage;
+  _openSettingsSection(tabId, el.closest('.modal') || el.closest('.settings-modal'), { pageId });
+}
+window.selectSettingsTreeSubpage = selectSettingsTreeSubpage;
 
 function _showSettingsNavigationTarget(modal, target) {
   if (!modal || !target) return;
@@ -504,6 +601,7 @@ function _showSettingsNavigationTarget(modal, target) {
   modal.dataset.settingsActiveTabId = target.tabId || '';
   modal.dataset.settingsActivePageId = target.pageId || '';
   _renderSettingsSubtabs(modal, target);
+  _syncSettingsTreeSelection(modal, target);
   // テーマパネルは遅延描画のため、view フィルタより先に中身を確定させる
   _ensureSettingsThemePanelVisible(target.tabId, modal);
   if (typeof _applySettingsNavigationView === 'function') _applySettingsNavigationView(modal, target);
@@ -519,17 +617,7 @@ function switchSettingsTab(el) {
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
   } catch {}
-  // タブヘッダー (gb-inner-tab-active クラス切替、旧インライン style をクリア)
-  const tabHeader = el.closest('#settings-tab-header') || el.parentElement;
-  tabHeader.querySelectorAll('.settings-tab').forEach(t => {
-    const active = t.dataset.tab === tabName;
-    t.classList.toggle('gb-inner-tab-active', active);
-    t.classList.toggle('active', active);
-    t.style.borderBottomColor = '';
-    t.style.color = '';
-    t.style.fontWeight = '';
-  });
-  _showSettingsNavigationTarget(el.closest('.modal'), target);
+  _showSettingsNavigationTarget(el.closest('.modal') || el.closest('.settings-modal'), target);
 }
 
 // モバイル: セクションドリルダウン
@@ -555,11 +643,6 @@ function _openSettingsSection(panelName, root, options = {}) {
   const navList = modal.querySelector('#settings-nav-list');
   if (navList) navList.hidden = true;
   _showSettingsNavigationTarget(modal, target);
-  modal.querySelectorAll('.settings-tab').forEach(tab => {
-    const active = tab.dataset.tab === target.tabId;
-    tab.classList.toggle('gb-inner-tab-active', active);
-    tab.classList.toggle('active', active);
-  });
   const btnRow = modal.querySelector('.btn-row');
   if (btnRow) btnRow.hidden = false;
   const backBtn = modal.querySelector('#settings-back-btn');

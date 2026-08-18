@@ -292,7 +292,7 @@
   }
 
   async function _managementAdapter(provider, kind) {
-    if (_runtime()?.isBrowserMode?.() && typeof provider?.getSystemStorageAdapter === 'function') {
+    if (typeof provider?.getSystemStorageAdapter === 'function') {
       return provider.getSystemStorageAdapter();
     }
     const resolver = window.MeldexDropboxManagementRootResolver;

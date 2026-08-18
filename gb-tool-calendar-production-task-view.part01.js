@@ -190,7 +190,7 @@
   function productionSheetDisplayReady(state) {
     const path = String(state.selection?.path || '');
     const ctx = state.embed?.ctx;
-    return !!path && !state.sheetsLoading
+    return !!path && !state.sheetsLoading && !state.embedLoading
       && state.embed?.getCurrentPath?.() === path
       && ctx?.dbPath === path
       && !!ctx.pivotData;
@@ -436,21 +436,39 @@
       && state.embed.ctx?.dbPath === state.selection.path
       && !!state.embed.ctx?.pivotData;
     if (currentReady) {
+      state.embedLoading = false;
       if (options.refreshCurrent === true) {
         const refreshed = !!(await state.embed.refresh());
         syncSheetDisplayToolbar(component, state);
+        renderListBar(component, state);
         return refreshed;
       }
       syncSheetDisplayToolbar(component, state);
+      renderListBar(component, state);
       return true;
     }
     // 先行する open() が後発の選択に追い越された場合、getCurrentPath() だけが
     // 一致して ctx.pivotData が空のまま残ることがある。同一パスでも実データが
     // 揃っていなければ必ず再読込し、空表示を固定化させない。
-    const opened = !!(await state.embed.open(state.selection.path, {
-      forceReload: currentPath === state.selection.path,
-    }));
+    const targetPath = state.selection.path;
+    const reqSeq = (state._openSeq = (state._openSeq || 0) + 1);
+    state.embedLoading = true;
     syncSheetDisplayToolbar(component, state);
+    let opened = false;
+    try {
+      opened = !!(await state.embed.open(targetPath, {
+        forceReload: currentPath === targetPath,
+      }));
+    } finally {
+      if (reqSeq === state._openSeq) {
+        state.embedLoading = false;
+      }
+    }
+    if (reqSeq !== state._openSeq || state.selection?.path !== targetPath) {
+      return false;
+    }
+    syncSheetDisplayToolbar(component, state);
+    renderListBar(component, state);
     return opened;
   }
 

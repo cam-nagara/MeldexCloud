@@ -951,7 +951,7 @@
     title.className = 'gb-section-title';
     title.textContent = 'フィードバック';
     if (typeof fieldHelp === 'function') {
-      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します'));
+      title.insertAdjacentHTML('beforeend', ' ' + fieldHelp('ベータ版の不具合・要望・質問を送信するためのフォームと、Meldex内の保管シートを管理します', { e2eId: 'settings-beta-feedback-help' }));
     }
     section.append(title);
 
@@ -1106,7 +1106,7 @@
     debuggerUrlLabel.className = 'gb-label';
     debuggerUrlLabel.textContent = '不具合報告の送信先';
     if (typeof fieldHelp === 'function') {
-      debuggerUrlLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('不具合・要望を受け取る管理システムのアドレスです。空にすると外部への送信を行わず、この端末内の記録だけになります'));
+      debuggerUrlLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('不具合・要望を受け取る管理システムのアドレスです。空にすると外部への送信を行わず、この端末内の記録だけになります', { e2eId: 'settings-debugger-base-url-help' }));
     }
     const debuggerUrlInput = document.createElement('input');
     debuggerUrlInput.id = 'settings-debugger-base-url';
@@ -1121,7 +1121,7 @@
     debuggerSlugLabel.className = 'gb-label';
     debuggerSlugLabel.textContent = 'ソフトの識別名';
     if (typeof fieldHelp === 'function') {
-      debuggerSlugLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('送信先で、このソフトを見分けるための名前です。英小文字・数字・ハイフンで指定します'));
+      debuggerSlugLabel.insertAdjacentHTML('beforeend', ' ' + fieldHelp('送信先で、このソフトを見分けるための名前です。英小文字・数字・ハイフンで指定します', { e2eId: 'settings-debugger-project-slug-help' }));
     }
     const debuggerSlugInput = document.createElement('input');
     debuggerSlugInput.id = 'settings-debugger-project-slug';

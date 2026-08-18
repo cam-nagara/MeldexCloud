@@ -295,9 +295,13 @@
     return Array.from(editor?.childNodes || []).filter(node => node.nodeType === Node.ELEMENT_NODE);
   }
 
-  function _richDirectBlock(editor, node) {
+  function _richDirectBlock(editor, node, offset = 0) {
     if (!editor || !node) return null;
-    if (node === editor) return null;
+    if (node === editor) {
+      const blocks = _richInputBlocks(editor);
+      const childIndex = Math.max(0, Math.min(blocks.length - 1, Number(offset) || 0));
+      return blocks[childIndex] || null;
+    }
     let el = _nodeElement(node);
     while (el && el.parentElement !== editor) el = el.parentElement;
     return el?.parentElement === editor ? el : null;

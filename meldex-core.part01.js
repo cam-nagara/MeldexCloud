@@ -83,7 +83,8 @@ async function apiFetch(path, opts) {
     requestPromise = (async () => {
       const fetchOpts = opts ? { ...opts, signal: controller.signal } : { signal: controller.signal };
       delete fetchOpts.timeoutMs;
-      const res = await fetch(API_BASE.replace(/\/+$/, '') + path, fetchOpts);
+      const fullUrl = API_BASE.replace(/\/+$/, '') + path;
+      const res = await fetch(fullUrl, fetchOpts);
       if (!res.ok) {
         let detail = '';
         try {
@@ -102,10 +103,12 @@ async function apiFetch(path, opts) {
         error.status = res.status;
         throw error;
       }
-      return await res.json();
+      const json = await res.json();
+      return json;
     })();
     if (cacheKey) _apiFetchBrowseInFlight.set(cacheKey, requestPromise);
     const payload = await requestPromise;
+    clearTimeout(timeoutId);
     if (cacheKey && cacheGeneration === _apiFetchBrowseCacheGeneration) {
       _apiFetchBrowseCache.set(cacheKey, { at: Date.now(), payload: _apiFetchClonePayload(payload) });
       while (_apiFetchBrowseCache.size > 80) {
@@ -745,6 +748,7 @@ function showStatus(msg, isError, options) {
     _queueSaveDialog(text);
   }
 }
+window.showStatus = showStatus;
 
 function getCssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 

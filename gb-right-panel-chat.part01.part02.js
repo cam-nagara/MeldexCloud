@@ -142,6 +142,7 @@ function _renderTeamRoomTitle(room) {
   title.style.alignItems = 'center';
   title.style.gap = '6px';
   const nameEl = document.createElement('span');
+  nameEl.dataset.e2eId = 'team-room-title-name';
   nameEl.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
   if (!room) {
     nameEl.textContent = 'ルームを選択';

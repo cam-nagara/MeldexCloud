@@ -1,3 +1,21 @@
+// モバイル: スワイプでサイドバー開閉
+(function() {
+  let touchStartX = 0, touchStartY = 0;
+  document.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchend', (e) => {
+    if (window.innerWidth > 768) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
+      // 左端から右スワイプ → サイドバー開く
+      sidebar.classList.add('open');
+      if (backdrop) {
         backdrop.classList.add('open');
         backdrop.style.setProperty('display', 'block', 'important');
       }
@@ -161,6 +179,9 @@ function cfAlert(message, options) {
 // ファイル参照整合性計画 Phase 4: 削除確認ダイアログへの被参照警告表示に使う
 // （app/gb-delete-impact-warning.js 参照）。
 function cfConfirm(message, options) {
+  if (typeof window.cfConfirm === 'function' && window.cfConfirm !== cfConfirm) {
+    return window.cfConfirm(message, options);
+  }
   const opts = options || {};
   const extraNode = opts.extraNode instanceof Node ? opts.extraNode : null;
   const autoDanger = _cfIsDeleteMessage(message);
@@ -877,24 +898,3 @@ function openMedia(label, path, type, opts) {
     return;
   } else if (!container) {
     return;
-  } else if (type === 'audio') {
-    container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
-    // タブ復帰時、共有コンテナ（media-content）の実内容が対象タブと一致しているか
-    // 検証するための署名（gb-pane-bridge.part02.part01.js の _gbMediaTabExpectedSignature /
-    // _gbVerifyAndFixMediaContainer 参照）。
-    container.dataset.gbMediaPath = path;
-    container.dataset.gbMediaKind = 'audio';
-  } else {
-    container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
-    delete container.dataset.gbMediaPath;
-    delete container.dataset.gbMediaKind;
-    if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
-    return;
-  }
-  if (!openOpts.skipGlobalUi) showStatus(type + ': ' + label);
-}
-
-function openCalendarFile(label, path, opts) {
-  const openOpts = opts || {};
-  // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
-  const cfg = getDbViewConfig(path);

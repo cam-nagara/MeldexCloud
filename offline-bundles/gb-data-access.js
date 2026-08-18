@@ -292,7 +292,7 @@
   }
 
   async function _managementAdapter(provider, kind) {
-    if (_runtime()?.isBrowserMode?.() && typeof provider?.getSystemStorageAdapter === 'function') {
+    if (typeof provider?.getSystemStorageAdapter === 'function') {
       return provider.getSystemStorageAdapter();
     }
     const resolver = window.MeldexDropboxManagementRootResolver;
@@ -1805,6 +1805,9 @@
       const name = pathname.slice('/personal-preferences/'.length);
       if (method === 'GET') return _readPersonalPreference(name);
       if (method === 'PUT') return _writePersonalPreference(name, body);
+    }
+    if (pathname.startsWith('/archive/')) {
+      return { ok: false, supported: false, message: 'クラウド環境ではアーカイブ操作は利用できません' };
     }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {

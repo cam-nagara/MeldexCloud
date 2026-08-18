@@ -107,9 +107,10 @@
   function meldexDropdownCloseButtonHtml(options = {}) {
     const label = options.label || '閉じる';
     const cls = options.className || 'meldex-dropdown-close-btn';
+    const e2eId = options.e2eId || 'meldex-dropdown-close';
     const attr = options.attr ? ' ' + options.attr : '';
     const icon = typeof window.lucide === 'function' ? window.lucide('x', 14) : 'x';
-    return `<button type="button" class="${cls}" data-meldex-dropdown-close${attr} title="${label}" aria-label="${label}">${icon}</button>`;
+    return `<button type="button" class="${cls}" data-meldex-dropdown-close data-e2e-id="${e2eId}"${attr} title="${label}" aria-label="${label}">${icon}</button>`;
   }
 
   function attachMeldexDropdownCloseButton(popup, options = {}) {

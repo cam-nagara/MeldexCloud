@@ -583,10 +583,13 @@ function renderGallery(ctx) {
       const ptcG = propTypes[propName];
       if (ptcG?.type === 'image') continue; // 画像はループの外でまとめて表示する
       let displayVal = '';
-      if (ptcG && ptcG.source) {
-        const metaKey = '_' + ptcG.source;
+      const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+        ? _dbPropertyMetadataSource(ptcG)
+        : (['created', 'modified', 'modified_by'].includes(ptcG?.source) ? ptcG.source : '');
+      if (metadataSource) {
+        const metaKey = '_' + metadataSource;
         const mv = entityData[metaKey] || '';
-        if ((ptcG.source === 'created' || ptcG.source === 'modified') && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
+        if ((metadataSource === 'created' || metadataSource === 'modified') && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
         else displayVal = mv || '';
       } else {
         const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);

@@ -75,3 +75,113 @@
     min-height: 44px;
   }
 }
+
+.meldex-entity-attachments-section {
+  margin: 12px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm, 6px);
+  background: var(--bg2, rgba(0, 0, 0, 0.02));
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.meldex-entity-attachments-section.gb-attachment-dropzone-active {
+  border-color: var(--accent, #3b82f6);
+  background: var(--accent-light, rgba(59, 130, 246, 0.08));
+}
+
+.meldex-entity-attachments-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.meldex-entity-attachments-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.meldex-entity-attachment-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--ui-radius-sm, 4px);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.meldex-entity-attachments-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meldex-entity-attachments-empty {
+  font-size: 12px;
+  color: var(--fg2, #888);
+  padding: 6px 2px;
+}
+
+.meldex-entity-attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--ui-radius-sm, 4px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.meldex-entity-attachment-icon {
+  display: flex;
+  align-items: center;
+  color: var(--fg2, #666);
+}
+
+.meldex-entity-attachment-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent, #3b82f6);
+  cursor: pointer;
+}
+
+.meldex-entity-attachment-name:hover {
+  text-decoration: underline;
+}
+
+.meldex-entity-attachment-size {
+  font-size: 11px;
+  color: var(--fg2, #888);
+  white-space: nowrap;
+}
+
+.meldex-entity-attachment-del-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--fg2, #888);
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.meldex-entity-attachment-del-btn:hover {
+  color: var(--danger, #ef4444);
+  background: rgba(239, 68, 68, 0.1);
+}

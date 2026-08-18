@@ -1,3 +1,24 @@
+  } else if (type === 'audio') {
+    container.innerHTML = '<div style="text-align:center;padding:40px;">' + lucide('audio',48) + '<br><audio src="' + esc(url) + '" controls style="margin-top:16px;width:400px;">音声を再生できません</audio></div>';
+    // タブ復帰時、共有コンテナ（media-content）の実内容が対象タブと一致しているか
+    // 検証するための署名（gb-pane-bridge.part02.part01.js の _gbMediaTabExpectedSignature /
+    // _gbVerifyAndFixMediaContainer 参照）。
+    container.dataset.gbMediaPath = path;
+    container.dataset.gbMediaKind = 'audio';
+  } else {
+    container.innerHTML = '<div class="gb-empty-state"><div class="gb-empty-message">このメディア形式は表示できません</div><div class="gb-empty-hint">' + esc(label || path || '') + '</div></div>';
+    delete container.dataset.gbMediaPath;
+    delete container.dataset.gbMediaKind;
+    if (!openOpts.skipGlobalUi) showStatus('このメディア形式は表示できません: ' + (label || type || path), true);
+    return;
+  }
+  if (!openOpts.skipGlobalUi) showStatus(type + ': ' + label);
+}
+
+function openCalendarFile(label, path, opts) {
+  const openOpts = opts || {};
+  // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
+  const cfg = getDbViewConfig(path);
   const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
     ? _getCurrentDbViewConfigEntryFromConfig(cfg)
     : null;

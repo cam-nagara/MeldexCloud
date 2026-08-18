@@ -47,7 +47,7 @@ function hideScriptnoteDetailTabs() {
   }
 }
 
-let _detailSyncSeq = 0;
+// _detailSyncSeq is declared in gb-detail-panel.part01.part01.js
 // 詳細パネルが表示中なら、現在のコンテンツに合わせて自動更新する
 async function _dpSavePendingBeforeDetailSwitch() {
   const el = document.getElementById('dp-editable');

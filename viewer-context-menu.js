@@ -22,6 +22,7 @@
       { label: 'ズームイン', shortcutId: 'viewer.zoomIn', action: () => scene.zoomIn() },
       { label: 'ズームアウト', shortcutId: 'viewer.zoomOut', action: () => scene.zoomOut() },
       { label: 'フィット', items: [
+        { label: '原寸（収める）', shortcutId: 'viewer.fitOriginalContain', action: () => scene.setFitMode('original_contain') },
         { label: '全体フィット', shortcutId: 'viewer.fitContain', action: () => scene.setFitMode('contain') },
         { label: '高さフィット', shortcutId: 'viewer.fitHeight', action: () => scene.setFitMode('height') },
         { label: '幅フィット', shortcutId: 'viewer.fitWidth', action: () => scene.setFitMode('width') },

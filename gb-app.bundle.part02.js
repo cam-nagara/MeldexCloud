@@ -1,3 +1,6 @@
+      // 親フォルダの移動/リネームでパスだけが変わった場合は除外される。
+      if (editor && editor.doc && mapped === newPath && exactLabel != null && editor.doc.title !== exactLabel) {
+        editor.doc.title = exactLabel;
         const scriptNoteRoot = editor.host && typeof editor.host.closest === 'function'
           ? editor.host.closest('.gb-scriptnote-root')
           : null;
@@ -5,6 +8,12 @@
         // プログラムによる value 代入は change イベントを発火しないため、
         // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
         if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
+      }
+      if (editor && mapped === newPath && (options.etag || options.transport_revision)) {
+        editor._lastSavedEtag = options.etag || options.transport_revision;
+        if (editor._lastSavedTransportRevision) {
+          editor._lastSavedTransportRevision = options.transport_revision || options.etag;
+        }
       }
     });
   }
@@ -889,12 +898,3 @@ function showPaneNavHistoryDropdown(e, paneId, direction) {
   const items = [];
   if (direction === 'back') {
     for (let i = navState.index - 1; i >= Math.max(0, navState.index - 15); i--) items.push({ index: i, entry: navState.history[i] });
-  } else {
-    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
-  }
-  if (items.length === 0) return;
-
-  const dd = document.createElement('div');
-  dd.className = 'ab-dropdown nav-history-dropdown';
-  dd.setAttribute('role', 'menu');
-  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');

@@ -444,9 +444,48 @@
         _bindMobileControlActivation(button, _openSidebarFromMobileControl);
         tabBar.insertBefore(button, tabBar.firstChild);
       }
-      const paneId = tabBar.closest?.('.gb-pane')?.dataset?.paneId || 'pane';
+      const paneEl = tabBar.closest?.('.gb-pane');
+      const paneId = paneEl?.dataset?.paneId || 'pane';
       button.dataset.e2eId = `cloud-mobile-pane-tree-back-${paneId}`;
       button.hidden = !shouldUseSidebarDrawer();
+
+      if (paneEl && (paneEl.classList.contains('gb-pane-role-main') || paneEl.dataset.meldexRole === 'main' || paneEl.id === 'pane-main')) {
+        const isMobile = document.body?.dataset?.cloudMobile === '1' || (typeof isMobileViewport === 'function' && isMobileViewport());
+        let ctrls = tabBar.querySelector('.gb-pane-ctrls');
+        if (isMobile) {
+          if (!ctrls) {
+            ctrls = document.createElement('span');
+            ctrls.className = 'gb-pane-ctrls';
+            tabBar.appendChild(ctrls);
+          }
+          let moreBtn = ctrls.querySelector('.gb-pane-more');
+          if (!moreBtn) {
+            moreBtn = document.createElement('button');
+            moreBtn.type = 'button';
+            moreBtn.className = 'gb-pane-btn gb-pane-more';
+            moreBtn.dataset.e2eId = `pane-${paneId}-actions`;
+            moreBtn.innerHTML = typeof lucide === 'function' ? lucide('moreHorizontal', 12) : '…';
+            moreBtn.addEventListener('pointerdown', (e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              const node = typeof GBLayout !== 'undefined' ? GBLayout.findNode?.(GBLayout.root, paneId)?.node : null;
+              if (node && typeof GBLayout._showPaneMoreButtonMenu === 'function') {
+                GBLayout._showPaneMoreButtonMenu(e, node);
+              }
+            });
+            ctrls.appendChild(moreBtn);
+          }
+          ctrls.classList.add('gb-pane-mobile-main-tab-ctrls');
+          moreBtn.classList.add('gb-pane-mobile-tab-more');
+          if (!moreBtn.getAttribute('aria-label') || moreBtn.getAttribute('aria-label') === 'パネル操作') {
+            moreBtn.setAttribute('aria-label', 'タブ操作');
+          }
+          if (!moreBtn.getAttribute('aria-haspopup')) moreBtn.setAttribute('aria-haspopup', 'menu');
+        } else {
+          const mobileMoreBtn = ctrls?.querySelector('.gb-pane-more.gb-pane-mobile-tab-more');
+          if (mobileMoreBtn) mobileMoreBtn.remove();
+        }
+      }
     });
     _syncPaneSafeTopBars();
   }

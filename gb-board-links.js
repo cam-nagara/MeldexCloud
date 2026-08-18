@@ -523,6 +523,14 @@ function _bdActivateNavEntryInPane(targetPaneId, entry, options) {
   if (!targetPane) return false;
   const forceTargetPane = options?.forceTargetPane === true;
   const preserveActivePane = options?.preserveActivePane === true;
+  if (!preserveActivePane) {
+    if (typeof GBLayout.revealPane === 'function') {
+      GBLayout.revealPane(targetPaneId, { activate: true, deferRender: true });
+    }
+    if (typeof GBLayout.setActivePane === 'function' && GBLayout.activePane !== targetPaneId) {
+      GBLayout.setActivePane(targetPaneId, { sync: true });
+    }
+  }
   const activeTab = (targetPane.tabs || [])[targetPane.activeTabIndex || 0] || null;
   const historyOrigin = options?.historyOrigin
     || (activeTab?.type === 'board' ? _bdBoardHistoryEntry(activeTab) : null);
@@ -724,6 +732,9 @@ async function _bdOpenAtTarget(path, label, linkType, target, options) {
   const normalized = _bdNormalizeOpenTarget(target);
   const mapped = _bdIsStandaloneBoardSurface() ? 'main' : normalized;
   if (mapped === 'main') return openLinkedPathInMainPane(path, label, opts);
+  if (typeof window !== 'undefined' && typeof window.openLinkedPathInRightSidebar === 'function') {
+    return window.openLinkedPathInRightSidebar(path, label, opts);
+  }
   return openLinkedPathInRightPane(path, label, opts);
 }
 
@@ -788,7 +799,11 @@ const MeldexBoardOpenTarget = Object.freeze({
   },
 });
 
-if (typeof window !== 'undefined') window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
+if (typeof window !== 'undefined') {
+  window.MeldexBoardOpenTarget = MeldexBoardOpenTarget;
+  window.openLinkedPathInRightSidebar = openLinkedPathInRightSidebar;
+  window.openLinkedPathInRightPane = openLinkedPathInRightPane;
+}
 
 // 右サイドバー(ビューワータブ)にエントリのプロパティ一覧＋本文を描画する。
 // フルページ/サブパネル/モバイルドロワーと同じ共有レンダラ renderEntityPropsGridInto を使う。

@@ -38,7 +38,9 @@
     let applyAll = !!this.doc.editor.columnAllRules[colId];
     const rule0 = this.doc.editor.columnAllRules[colId] || {};
     const getTargets = () => {
-      const types = Array.isArray(this.doc.scenarioTypes) ? this.doc.scenarioTypes : [];
+      const types = Array.isArray(this.doc.scenarioTypes) && this.doc.scenarioTypes.length
+        ? this.doc.scenarioTypes
+        : (Array.isArray(this.doc.characters) ? this.doc.characters : []);
       const selectedIds = this._detailTypeSelection || new Set();
       const selected = types.filter(type => selectedIds.has(type.id));
       return selected.length ? selected : types;
@@ -54,6 +56,15 @@
           if (val === '' || val === null || val === undefined) delete s[prop];
           else s[prop] = val;
         });
+        if (type.id && Array.isArray(this.doc.characters)) {
+          this.doc.characters.filter(c => c && c.typeId === type.id).forEach(c => {
+            const cs = this._getColStyle(c, colId);
+            Object.entries(changes).forEach(([prop, val]) => {
+              if (val === '' || val === null || val === undefined) delete cs[prop];
+              else cs[prop] = val;
+            });
+          });
+        }
       });
       if (applyAll) {
         // undo スナップショット直列化では空の columnAllRules が整理されるため、取得直前に作り直す
@@ -67,7 +78,11 @@
       if (opts.fullRender) this._render();
       else this._refreshRowStyles();
       this._markDirty();
-      this.renderDetailPanel(panelContainer);
+      if (typeof this._renderLegacyDetailPanel === 'function' && panelContainer?.querySelector('.sn2-detail-table')) {
+        this._renderLegacyDetailPanel(panelContainer);
+      } else {
+        this.renderDetailPanel(panelContainer);
+      }
     };
     const FULL_RENDER_PROPS = new Set(['textBefore', 'textAfter', 'textAlign', 'textValign', 'textOverflow']);
     const popupValues = {
@@ -190,7 +205,7 @@
     const textShiftColsValue = Number.isFinite(Number(chara.textShiftCols)) ? Math.max(1, Math.min(10, Number(chara.textShiftCols))) : '';
     const outlineWidthValue = Number.isFinite(Number(chara.outlineWidth)) ? Math.max(0.5, Math.min(10, Number(chara.outlineWidth))) : 1;
     // （なし）行: タイプ空欄行はページ採番の対象外のため、区切り/見開き/プロットは表示しない
-    const isNoneType = !!chara.isDefault;
+    const isNoneType = !!chara.isDefault || !!chara.isRoleNone || chara.id === 'none';
     const breakOptsHtml = isNoneType ? '' : `
         <div class="sn2-role-opts-row sn2-role-opts-row--top">
           <label class="sn2-role-opts-check-lbl">
@@ -260,7 +275,7 @@
     // outlineColor swatch 初期背景 (インライン指定)
     const outlineBtn = popup.querySelector('[data-outline-color]');
     if (outlineBtn) Object.assign(outlineBtn.style, { background: chara.outlineColor || 'var(--border)' });
-    if (chara.isTypeDefault || chara.isDefault) {
+    if (chara.isTypeDefault || chara.isDefault || chara.isRoleNone || chara.id === 'none') {
       popup.querySelector('[data-role-duplicate]')?.setAttribute('disabled', '');
       popup.querySelector('[data-role-delete]')?.setAttribute('disabled', '');
     }
@@ -278,7 +293,7 @@
     });
     // 複製ボタン
     popup.querySelector('[data-role-duplicate]')?.addEventListener('click', () => {
-      if (chara.isDefault || chara.isTypeDefault) {
+      if (chara.isDefault || chara.isTypeDefault || chara.isRoleNone || chara.id === 'none') {
         if (typeof showStatus === 'function') showStatus('この初期設定は複製できません', true);
         return;
       }
@@ -303,7 +318,7 @@
     });
     // 削除ボタン
     popup.querySelector('[data-role-delete]')?.addEventListener('click', () => {
-      if (chara.isDefault || chara.isTypeDefault) {
+      if (chara.isDefault || chara.isTypeDefault || chara.isRoleNone || chara.id === 'none') {
         if (typeof showStatus === 'function') showStatus('この初期設定は削除できません', true);
         return;
       }

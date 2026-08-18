@@ -95,9 +95,22 @@
   // 場合だけ、退避ホストに残った実体を破棄する。
   function pruneStale(existsFn) {
     if (typeof existsFn !== 'function') return;
+    const storage = document.getElementById('legacy-views');
     _registry.forEach((entry, paneId) => {
       if (existsFn(paneId)) return;
-      try { entry.contentEl && entry.contentEl.remove(); } catch {}
+      try {
+        if (entry.contentEl) {
+          if (storage) {
+            Array.from(entry.contentEl.children).forEach((child) => {
+              if (child.id && (child.id.startsWith('rp-') || child.id === 'sidebar' || child.id === 'gb-preview-pane' || child.id === 'gb-subpanel-root' || child.id.endsWith('-view') || child.id.endsWith('-view-container') || child.id.startsWith('ann-') || child.id.startsWith('btn-tb-'))) {
+                child.style.display = 'none';
+                storage.appendChild(child);
+              }
+            });
+          }
+          entry.contentEl.remove();
+        }
+      } catch {}
       _registry.delete(paneId);
     });
   }

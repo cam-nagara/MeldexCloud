@@ -1,3 +1,8 @@
+      showStatus('ソースフォルダの登録を解除しました');
+    }, null, 'folder-minus');
+  }
+
+  // --- 作品フォルダ設定（フォルダのみ） ---
   if (isFolder && !isMulti) {
     const curWork = getWorkFolder();
     const isWork = curWork === nodeData.path;
@@ -893,8 +898,3 @@ function _handleOutlinerTreeKeydown(event) {
     if (current) _outlinerKeyboardStartRename(current);
     return;
   }
-  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-    if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
-  }
-  const nodes = _getVisibleTreeNodes(scopeSelector);
-  if (!nodes.length) return;

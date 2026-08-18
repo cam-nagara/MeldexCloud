@@ -500,7 +500,7 @@
   }
 
   function setPanelStatus(message, isError = false) {
-    const el = document.getElementById('chat-cli-status');
+    const el = liveElement('chat-cli-status');
     if (!el) return;
     el.textContent = message || '';
     el.style.color = isError ? 'var(--danger)' : 'var(--fg2)';
@@ -521,8 +521,8 @@
   }
 
   function ensureCliPanel() {
-    const panel = document.getElementById('chat-cli-panel');
-    const historyPanel = document.getElementById('chat-history-panel');
+    const panel = liveElement('chat-cli-panel', { allowHidden: true });
+    const historyPanel = liveElement('chat-history-panel', { allowHidden: true });
     if (panel && historyPanel && panel.parentElement !== historyPanel) historyPanel.appendChild(panel);
     if (!panel || panel.dataset.cliReady === '1') return panel;
     panel.dataset.cliReady = '1';
@@ -557,9 +557,9 @@
     return panel;
   }
 
-  function liveElement(id) {
+  function liveElement(id, options = {}) {
     if (typeof _chatLiveElement === 'function') {
-      const live = _chatLiveElement(id, { allowHidden: true });
+      const live = _chatLiveElement(id, options);
       if (live) return live;
     }
     return document.getElementById(id);
@@ -588,15 +588,15 @@
     else if (typeof renderChatHistory === 'function') renderChatHistory();
   }
 
-  function applyConfigToPanel(config) {
+  function applyConfigToPanel(config, options = {}) {
     cliConfig = config || {};
-    const enabled = document.getElementById('chat-cli-enabled');
+    const enabled = liveElement('chat-cli-enabled');
     if (enabled) enabled.checked = !!cliConfig.cli_transcript_import_enabled;
-    renderProviderSettings();
+    if (!options.skipRenderSettings) renderProviderSettings();
   }
 
   function renderProviderSettings() {
-    const container = document.getElementById('chat-cli-provider-settings');
+    const container = liveElement('chat-cli-provider-settings');
     if (!container) return;
     const sources = cliConfig?.cli_transcript_sources || {};
     container.innerHTML = '';
@@ -624,8 +624,9 @@
 
   function readProviderSourcesFromPanel() {
     const sources = {};
+    const container = liveElement('chat-cli-provider-settings');
     CLI_TRANSCRIPT_PROVIDERS.forEach(provider => {
-      const row = document.querySelector(`#chat-cli-provider-settings [data-provider="${provider.key}"]`);
+      const row = container?.querySelector(`[data-provider="${provider.key}"]`);
       const enabled = row?.querySelector('[data-role="enabled"]');
       const watchPath = row?.querySelector('[data-role="watch-path"]');
       sources[provider.key] = {
@@ -652,20 +653,20 @@
   }
 
   async function saveCliConfig(options = {}) {
-    const enabled = document.getElementById('chat-cli-enabled');
+    const enabled = liveElement('chat-cli-enabled');
     const payload = {
       cli_transcript_import_enabled: !!enabled?.checked,
       cli_transcript_sources: readProviderSourcesFromPanel(),
       cli_transcript_extract_to_knowledge: cliConfig?.cli_transcript_extract_to_knowledge !== false,
     };
     const saved = await apiPost('/cli-transcripts/config', payload);
-    applyConfigToPanel(saved);
+    applyConfigToPanel(saved, { skipRenderSettings: true });
     if (!options.silent) setPanelStatus('設定を保存しました');
     return saved;
   }
 
   async function scanCliTranscripts() {
-    const enabled = document.getElementById('chat-cli-enabled');
+    const enabled = liveElement('chat-cli-enabled');
     if (!enabled?.checked) {
       setPanelStatus('外部CLI取り込みが無効です', true);
       return;
@@ -700,7 +701,7 @@
   }
 
   function renderCliSessionList() {
-    const list = document.getElementById('chat-cli-session-list');
+    const list = liveElement('chat-cli-session-list');
     if (!list) return;
     list.innerHTML = '';
     if (!cliSessions.length) {
@@ -736,7 +737,7 @@
   }
 
   function renderCliSessionView(payload) {
-    const view = document.getElementById('chat-cli-session-view');
+    const view = liveElement('chat-cli-session-view');
     if (!view) return;
     view.innerHTML = '';
     if (!payload) {
@@ -764,6 +765,7 @@
 
   function renderCliMessage(message, session) {
     const row = document.createElement('div');
+    const label = providerLabel(session?.provider);
     const role = text(message.role || 'assistant');
     const isUser = role === 'user';
     row.className = 'chat-copy-message chat-cli-transcript-message';

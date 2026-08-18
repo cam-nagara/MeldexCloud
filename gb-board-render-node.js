@@ -681,8 +681,7 @@ function bdAppendCardMenuButton(div, node) {
   const menuBtn = document.createElement('button');
   menuBtn.type = 'button';
   menuBtn.className = 'bd-card-menu-btn';
-  _bdRenderNodeE2ESeq += 1;
-  menuBtn.dataset.e2eId = `board-card-${node.id}-render-${_bdRenderNodeE2ESeq}-menu`;
+  menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
   menuBtn.textContent = '...';
   menuBtn.title = 'カードメニュー';
   menuBtn.setAttribute('aria-label', 'カードメニュー');

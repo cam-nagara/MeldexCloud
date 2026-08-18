@@ -969,8 +969,17 @@ async function captureScreenshot(mode) {
     const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
     const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
     const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: screenshotFolder });
+    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
+    const res = await apiPost('/annotation/screenshot', {
+      data: b64,
+      target_path: screenshotFolder,
+      source_target: currentTarget,
+      mode: mode,
+      width: outputCanvas.width,
+      height: outputCanvas.height,
+    });
     if (res.path) {
+      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
     }
   } catch (e) {
@@ -1162,6 +1171,9 @@ function cfAlert(message, options) {
 // ファイル参照整合性計画 Phase 4: 削除確認ダイアログへの被参照警告表示に使う
 // （app/gb-delete-impact-warning.js 参照）。
 function cfConfirm(message, options) {
+  if (typeof window.cfConfirm === 'function' && window.cfConfirm !== cfConfirm) {
+    return window.cfConfirm(message, options);
+  }
   const opts = options || {};
   const extraNode = opts.extraNode instanceof Node ? opts.extraNode : null;
   const autoDanger = _cfIsDeleteMessage(message);

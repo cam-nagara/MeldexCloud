@@ -117,7 +117,7 @@ function _renderDetailContent(item) {
     b.addEventListener('click', () => openNative(item.path));
     actions.appendChild(b);
   }
-  if (item.path) {
+  if (item.path && _folderCanCompress()) {
     const b = document.createElement('button');
     b.textContent = '圧縮';
     b.addEventListener('click', () => compressFolderItems([item]));
@@ -933,13 +933,16 @@ function _fdButton(label, onClick) {
 
 function showFolderDisplaySettings(options) {
   const filterOnly = options?.filterOnly === true;
+  const isTreeSurface = options?.surface === 'tree';
   // 既存メニューを閉じる
   document.querySelectorAll('.fd-dropdown').forEach(el => el.remove());
 
   const cfg = getFolderDisplayConfig();
-  const btn = document.querySelector(filterOnly
-    ? '[data-action="showFolderFilterSettings()"]'
-    : '[data-action="showFolderDisplaySettings()"]');
+  const btn = options?.triggerEl || document.querySelector(isTreeSurface
+    ? '#btn-tree-display'
+    : (filterOnly
+      ? '[data-action="showFolderFilterSettings()"], #folder-filter-btn'
+      : '[data-action="showFolderDisplaySettings()"], #folder-display-btn'));
   const rect = btn?.getBoundingClientRect?.() || { left: window.innerWidth / 2, bottom: window.innerHeight / 2 };
 
   const menu = document.createElement('div');
@@ -949,6 +952,64 @@ function showFolderDisplaySettings(options) {
   menu.style.maxHeight = 'min(78vh, 680px)';
   menu.style.overflowY = 'auto';
   { const z = _getZoom(); menu.style.left = (rect.left / z) + 'px'; menu.style.top = (rect.bottom / z + 2) + 'px'; }
+
+  if (isTreeSurface) {
+    const treeLayout = localStorage.getItem('tree-layout') || 'list';
+    const treeThumbSize = localStorage.getItem('tree-thumbnail-size') || 'none';
+
+    _fdSection(menu, 'ツリー表示形式');
+    [
+      { key: 'list', label: 'リスト', icon: 'list' },
+      { key: 'grid', label: 'グリッド', icon: 'grid3x3' },
+    ].forEach(item => {
+      const row = document.createElement('div');
+      row.className = 'gb-context-menu-item';
+      row.innerHTML = radioMark(treeLayout === item.key) + (typeof lucide === 'function' ? lucide(item.icon, 14) + ' ' : '') + item.label;
+      row.addEventListener('click', () => {
+        localStorage.setItem('tree-layout', item.key);
+        document.getElementById('outliner-tree')?.classList.toggle('tree-grid-layout', item.key === 'grid');
+        menu.remove();
+      });
+      menu.appendChild(row);
+    });
+
+    _fdSep(menu);
+    _fdSection(menu, 'ツリーサムネイル');
+    [
+      { key: 'none', label: 'なし' },
+      { key: 'sm', label: '小' },
+      { key: 'md', label: '中' },
+      { key: 'lg', label: '大' },
+    ].forEach(it => {
+      const row = document.createElement('div');
+      row.className = 'gb-context-menu-item';
+      row.innerHTML = radioMark(treeThumbSize === it.key) + it.label;
+      row.addEventListener('click', () => {
+        localStorage.setItem('tree-thumbnail-size', it.key);
+        if (typeof loadOutliner === 'function') loadOutliner({ force: true, reason: 'tree-thumbnail-size' });
+        menu.remove();
+      });
+      menu.appendChild(row);
+    });
+
+    _fdSep(menu);
+    _fdSection(menu, '詳細設定');
+    const subfolderChecked = typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled();
+    const subfolderRow = _fdCheckboxRow('サブフォルダの内容を表示', subfolderChecked, async (enabled) => {
+      if (typeof setFolderSubfolderContentsEnabled === 'function') setFolderSubfolderContentsEnabled(enabled);
+      if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
+      if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'tree-subfolder-toggle' });
+    }, { dataset: { e2eId: 'tree-display-subfolder-contents-toggle' } });
+    menu.appendChild(subfolderRow);
+
+    document.body.appendChild(menu);
+    setTimeout(() => document.addEventListener('pointerdown', function closer(pointerEvent) {
+      if (menu.contains(pointerEvent.target) || btn?.contains(pointerEvent.target)) return;
+      document.removeEventListener('pointerdown', closer, true);
+      menu.remove();
+    }, true), 0);
+    return;
+  }
 
   const layoutItems = [
     { key: 'list', label: 'リスト', icon: 'list' },
@@ -975,8 +1036,30 @@ function showFolderDisplaySettings(options) {
 
   _fdSep(menu);
 
+  const thumbSize = cfg.thumbnailSize || (cfg.showThumb === false ? 'none' : 'md');
+  _fdSection(menu, 'サムネイルサイズ');
+  [
+    { key: 'none', label: 'なし' },
+    { key: 'sm', label: '小' },
+    { key: 'md', label: '中' },
+    { key: 'lg', label: '大' },
+  ].forEach(it => {
+    const row = document.createElement('div');
+    row.className = 'gb-context-menu-item';
+    row.innerHTML = radioMark(thumbSize === it.key) + it.label;
+    row.addEventListener('click', () => {
+      cfg.thumbnailSize = it.key;
+      cfg.showThumb = it.key !== 'none';
+      saveFolderDisplayConfig(cfg);
+      renderFolderGrid();
+      menu.remove();
+    });
+    menu.appendChild(row);
+  });
+
+  _fdSep(menu);
+
   const visibilityItems = [
-    {key: 'showThumb', label: 'サムネイル'},
     {key: 'showName', label: 'ファイル名'},
     {key: 'showSize', label: 'ファイルサイズ'},
     {key: 'showDate', label: '更新日時'},
@@ -1036,6 +1119,27 @@ function showFolderDisplaySettings(options) {
   });
   tagLimitRow.append(tagLimitLabel, tagLimitInput);
   menu.appendChild(tagLimitRow);
+
+  _fdSep(menu);
+  _fdSection(menu, '詳細設定');
+  const subfolderChecked = typeof isFolderSubfolderContentsEnabled === 'function' && isFolderSubfolderContentsEnabled();
+  const subfolderRow = _fdCheckboxRow('サブフォルダの内容を表示', subfolderChecked, async (enabled) => {
+    if (typeof setFolderSubfolderContentsEnabled === 'function') setFolderSubfolderContentsEnabled(enabled);
+    if (typeof syncFolderSubfolderContentsButtons === 'function') syncFolderSubfolderContentsButtons();
+    const folderPath = (typeof _folderToolbarCurrentPath === 'function') ? _folderToolbarCurrentPath() : (typeof _folderPath !== 'undefined' ? _folderPath : '');
+    if (folderPath && typeof openFolder === 'function') {
+      const label = document.getElementById('folder-title')?.textContent || folderPath;
+      await openFolder(label, folderPath, {
+        silent: true,
+        skipShowView: true,
+        skipNavPush: true,
+        skipSaveLastView: true,
+        skipHighlight: true,
+        skipGlobalUi: true,
+      });
+    }
+  }, { dataset: { e2eId: 'folder-display-subfolder-contents-toggle' } });
+  menu.appendChild(subfolderRow);
 
   const filterStartIndex = menu.childNodes.length;
   _fdSep(menu);
@@ -1379,6 +1483,10 @@ function showFolderFilterSettings() {
   return showFolderDisplaySettings({ filterOnly: true });
 }
 
+function showTreeDisplaySettings(event) {
+  return showFolderDisplaySettings({ surface: 'tree', triggerEl: event?.currentTarget || document.getElementById('btn-tree-display') });
+}
+
 function openFolderSlideshow() {
   if (!_folderPath) return;
   openViewer('/viewer?folder=' + encodeURIComponent(_folderPath));
@@ -1402,7 +1510,13 @@ function _folderArchiveExtension(path) {
   return index >= 0 ? lower.slice(index) : '';
 }
 
+function _folderCanCompress() {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
+  return true;
+}
+
 function _folderCanExtractArchive(item) {
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
   const ext = _folderArchiveExtension(item?.path || item?.name || '');
   return ['.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz'].includes(ext);
 }
@@ -1410,6 +1524,10 @@ function _folderCanExtractArchive(item) {
 async function compressFolderItems(items) {
   const targets = (Array.isArray(items) ? items : [items]).filter(item => item?.path);
   if (!targets.length) return;
+  if (!_folderCanCompress()) {
+    showStatus('クラウド版では圧縮機能は利用できません', true);
+    return;
+  }
   try {
     showStatus('圧縮しています...');
     const result = await apiPost('/archive/compress', { paths: targets.map(item => item.path) }, { silentError: true });
@@ -1433,6 +1551,10 @@ async function extractArchiveItems(items) {
   const targets = (Array.isArray(items) ? items : [items])
     .filter(item => item?.path && _folderCanExtractArchive(item));
   if (!targets.length) return;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    showStatus('クラウド版では解凍機能は利用できません', true);
+    return { ok: false, results: [], failures: [] };
+  }
   const failures = [];
   const results = [];
   try {

@@ -11,6 +11,17 @@ const DB_CACHE_TTL_MS = {
   rollup: 30000,
 };
 
+// property_types.source は、作成日時などのエントリメタデータ参照と、
+// 外部取り込み列の管理元（例: "import"）の両方で使われている。
+// 表示側が後者まで entityData._<source> と解釈すると、通常の列値を読めず空表示になるため、
+// エントリメタデータを参照する予約値だけをここで明示的に判定する。
+const DB_ENTITY_METADATA_PROPERTY_SOURCES = new Set(['created', 'modified', 'modified_by']);
+
+function _dbPropertyMetadataSource(ptc) {
+  const source = String(ptc?.source || '').trim();
+  return DB_ENTITY_METADATA_PROPERTY_SOURCES.has(source) ? source : '';
+}
+
 function _dbCacheTtl(kind) {
   return DB_CACHE_TTL_MS[kind] || DB_CACHE_TTL_MS.relation;
 }
@@ -57,7 +68,11 @@ function _isAdminUser(filePath) {
 
 function checkColumnEditable(dbPath, propName, ctxOverride) {
   const ptc = dbPath ? getPropertyTypes(dbPath, ctxOverride)[propName] : null;
-  if (ptc && ptc.source) return 'この列は自動入力（読み取り専用）です';
+  if (ptc && ptc.source) {
+    return ptc.source === 'import'
+      ? '取り込み列のため編集できません'
+      : 'この列は自動入力（読み取り専用）です';
+  }
   // 計算列（読み取り専用・コードが更新する列。gb-db-computed-columns.js）
   const computedMsg = typeof window !== 'undefined' ? window.MeldexComputedColumns?.editBlockedMessage?.(dbPath, propName, ctxOverride) : null;
   if (computedMsg) return computedMsg;
@@ -543,7 +558,10 @@ async function _apiPutValue(valObj, updates) {
       body.property = valObj.property;
       body.candidate_index = valObj.candidate_index;
     }
-    const res = await apiPut('/value?path=' + encodeURIComponent(writeEntityPath || valObj.file), body);
+    const targetPath = (valObj.candidate_index != null || !valObj.file || writeEntityPath?.endsWith('.md'))
+      ? (writeEntityPath || valObj.file)
+      : (valObj.file || writeEntityPath);
+    const res = await apiPut('/value?path=' + encodeURIComponent(targetPath), body);
     _dbApplyAutoTaskRenameResult(res);
     if (res?.new_path) valObj.file = _dbNormalizePath(res.new_path);
     if (res?.property) valObj.property = res.property;

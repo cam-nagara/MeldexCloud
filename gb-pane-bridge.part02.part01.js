@@ -6,7 +6,7 @@
       _mountPaneContent(entry.pane, {
         surface: entry.surface,
         preserveLiveOwner: true,
-        claimLive: entry.pane.id === claimPaneId,
+        claimLive: entry.pane.id === claimPaneId && _isPaneActuallyVisible(entry.pane.id),
       });
     }
     window.MeldexStartupTabGuard?.pruneRestoredTabs?.();
@@ -441,21 +441,21 @@
       return '';
     };
     if (tabType === 'scriptnote') return tabPath('scenarioPath', 'scriptnotePath') || '';
-    if (tabType === 'board') return tabPath('boardPath') || statePath('currentBoardPath');
+    if (tabType === 'board') return tabPath('boardPath') || (!tab ? statePath('currentBoardPath') : '');
     if (tabType === 'calendar') return 'calendar:panel';
     if (_ANNOTATION_DB_HOST_TYPES.has(rawType) || _ANNOTATION_DB_HOST_TYPES.has(tabType)) {
       if (tabType === 'smart-db') {
-        return tabPath('smartDbPath', 'dbPath') || statePath('currentSmartDb')?._filePath || statePath('currentDbPath');
+        return tabPath('smartDbPath', 'dbPath') || (!tab ? (statePath('currentSmartDb')?._filePath || statePath('currentDbPath')) : '');
       }
-      return tabPath('dbPath') || statePath('currentDbPath');
+      return tabPath('dbPath') || (!tab ? statePath('currentDbPath') : '');
     }
     if (tabType === 'folder') {
-      return tabPath('folderPath') || (typeof _folderPath !== 'undefined' ? _folderPath : '') || '';
+      return tabPath('folderPath') || (!tab && typeof _folderPath !== 'undefined' ? _folderPath : '') || '';
     }
-    if (tabType === 'entity') return tabPath('entityPath') || statePath('currentEntityPath');
-    if (tabType === 'page') return tabPath('pagePath') || statePath('currentPagePath');
-    if (tabType === 'media' || tabType === 'html') return tabPath('mediaPath', 'pagePath') || statePath('currentPagePath');
-    if (tabType === 'csv') return tabPath('csvPath') || (typeof _csvPath !== 'undefined' ? _csvPath : '');
+    if (tabType === 'entity') return tabPath('entityPath') || (!tab ? statePath('currentEntityPath') : '');
+    if (tabType === 'page') return tabPath('pagePath') || (!tab ? statePath('currentPagePath') : '');
+    if (tabType === 'media' || tabType === 'html') return tabPath('mediaPath', 'pagePath') || (!tab ? statePath('currentPagePath') : '');
+    if (tabType === 'csv') return tabPath('csvPath') || (!tab && typeof _csvPath !== 'undefined' ? _csvPath : '');
     if (tabType === 'compare') {
       const left = tab?.state?.pathA || tab?.state?.leftPath || '';
       const right = tab?.state?.pathB || tab?.state?.rightPath || '';

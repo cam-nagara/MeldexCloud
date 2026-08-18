@@ -1,3 +1,12 @@
+      return value;
+    })
+    .catch((error) => {
+      console.warn(`[Meldex] startup background task failed: ${label}`, error);
+      if (typeof _sendLog === 'function') {
+        _sendLog('warn', {
+          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
+          stack: error?.stack || '',
+        });
       }
       return null;
     });
@@ -868,8 +877,17 @@ async function captureScreenshot(mode) {
     const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
     const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
     const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
-    const res = await apiPost('/annotation/screenshot', { data: b64, target_path: screenshotFolder });
+    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
+    const res = await apiPost('/annotation/screenshot', {
+      data: b64,
+      target_path: screenshotFolder,
+      source_target: currentTarget,
+      mode: mode,
+      width: outputCanvas.width,
+      height: outputCanvas.height,
+    });
     if (res.path) {
+      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
     }
   } catch (e) {
@@ -879,22 +897,3 @@ async function captureScreenshot(mode) {
     if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
   }
 }
-
-// モバイル: スワイプでサイドバー開閉
-(function() {
-  let touchStartX = 0, touchStartY = 0;
-  document.addEventListener('touchstart', (e) => {
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-  }, { passive: true });
-  document.addEventListener('touchend', (e) => {
-    if (window.innerWidth > 768) return;
-    const dx = e.changedTouches[0].clientX - touchStartX;
-    const dy = e.changedTouches[0].clientY - touchStartY;
-    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return; // 横スワイプのみ
-    const sidebar = document.getElementById('sidebar');
-    const backdrop = document.getElementById('sidebar-backdrop');
-    if (dx > 0 && touchStartX < 40 && !sidebar.classList.contains('open')) {
-      // 左端から右スワイプ → サイドバー開く
-      sidebar.classList.add('open');
-      if (backdrop) {

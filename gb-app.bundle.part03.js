@@ -1,3 +1,12 @@
+  } else {
+    for (let i = navState.index + 1; i <= Math.min(navState.history.length - 1, navState.index + 15); i++) items.push({ index: i, entry: navState.history[i] });
+  }
+  if (items.length === 0) return;
+
+  const dd = document.createElement('div');
+  dd.className = 'ab-dropdown nav-history-dropdown';
+  dd.setAttribute('role', 'menu');
+  dd.setAttribute('aria-label', direction === 'back' ? '戻る履歴' : '進む履歴');
   dd.style.cssText = 'position:fixed;z-index:9999;min-width:220px;max-width:360px;max-height:400px;overflow-y:auto;';
   items.forEach(({ index, entry }) => {
     const item = document.createElement('button');
@@ -889,12 +898,3 @@ function _runStartupBackground(label, promise, onReady) {
   Promise.resolve(promise)
     .then((value) => {
       if (typeof onReady === 'function') onReady(value);
-      return value;
-    })
-    .catch((error) => {
-      console.warn(`[Meldex] startup background task failed: ${label}`, error);
-      if (typeof _sendLog === 'function') {
-        _sendLog('warn', {
-          message: `[startup-bg-failed] ${label}: ${error?.message || error}`,
-          stack: error?.stack || '',
-        });

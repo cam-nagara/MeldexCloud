@@ -29,6 +29,12 @@
     if (typeof applyStatusbarHidden === 'function') applyStatusbarHidden(statusbarHiddenCb.checked);
   }
 
+  const pasteLinkPromptCb = document.getElementById('modal-paste-link-prompt-enabled');
+  if (pasteLinkPromptCb) {
+    if (pasteLinkPromptCb.checked) localStorage.removeItem('meldex_suppress_folder_paste_link_choice');
+    else localStorage.setItem('meldex_suppress_folder_paste_link_choice', 'true');
+  }
+
   // フォルダツリーのサムネイル表示（フォルダツリー改修Phase4）。行高・DOM構造が
   // 変わるため反映には再読込が必要だが、submitSettings()は保存の度に無条件で
   // 末尾でloadOutliner()を呼ぶため、ここでは値の保存だけを行い二重リロードを避ける。

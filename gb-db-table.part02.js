@@ -864,8 +864,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
   }
 
   // sourceプロパティ: フロントマターのメタデータを読み取り専用で表示
-  if (ptc && ptc.source) {
-    const metaKey = '_' + ptc.source;
+  const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+    ? _dbPropertyMetadataSource(ptc)
+    : (['created', 'modified', 'modified_by'].includes(ptc?.source) ? ptc.source : '');
+  if (metadataSource) {
+    const metaKey = '_' + metadataSource;
     const metaVal = entityData[metaKey] ?? '';
     let sourceValues = [{ value: String(metaVal), status: '採用' }];
     if (advFilters.length > 0) sourceValues = applyAdvancedFilters(sourceValues, propName, advFilters);
@@ -875,11 +878,11 @@ function renderEntityCell(entityName, propName, ctx, options) {
     span.style.cssText = 'font-size:13px;color:var(--fg2);';
     if (sourceValues.length === 0) {
       span.textContent = '';
-    } else if ((ptc.source === 'created' || ptc.source === 'modified') && metaVal) {
+    } else if ((metadataSource === 'created' || metadataSource === 'modified') && metaVal) {
       span.textContent = typeof _formatDateDisplay === 'function'
         ? _formatDateDisplay(metaVal, ptc)
         : metaVal.replace('T', ' ').substring(0, 16);
-    } else if (ptc.source === 'modified_by' && metaVal) {
+    } else if (metadataSource === 'modified_by' && metaVal) {
       span.innerHTML = (typeof _userAvatarSmall === 'function' ? _userAvatarSmall(metaVal) + ' ' : '') + esc(metaVal);
     } else {
       span.textContent = '—';

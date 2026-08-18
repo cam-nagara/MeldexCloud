@@ -437,20 +437,20 @@ function _globalFilterIsRestricting() {
 }
 
 function _gfFilterPopupTriggerEl() {
-  return document.getElementById('gf-filter-popup-trigger');
+  return document.getElementById('gf-filter-popup-trigger') || document.getElementById('btn-filter-toggle');
 }
 
-// トリガーボタンを#global-filter-bar内に用意する（既存なら再利用。多重生成しない）。
+// トリガーボタンを用意する（#global-filter-bar 内の #gf-filter-popup-trigger）。
 function _ensureGlobalFilterTrigger() {
   const bar = document.getElementById('global-filter-bar');
-  if (!bar) return null;
+  if (!bar) return document.getElementById('btn-filter-toggle');
   let row = bar.querySelector(':scope > .gf-trigger-row');
   if (!row) {
     row = document.createElement('div');
     row.className = 'gf-trigger-row';
     bar.insertBefore(row, bar.firstChild);
   }
-  let trigger = _gfFilterPopupTriggerEl();
+  let trigger = document.getElementById('gf-filter-popup-trigger');
   if (!trigger) {
     trigger = document.createElement('button');
     trigger.type = 'button';
@@ -503,6 +503,7 @@ function _wireGlobalFilterPopupCloseButton(popup) {
   if (typeof attachMeldexDropdownCloseButton === 'function') {
     attachMeldexDropdownCloseButton(popup, {
       label: '閉じる',
+      e2eId: 'global-filter-popup-close',
       trigger: _gfFilterPopupTriggerEl(),
       close: closeGlobalFilterPopup,
     });

@@ -918,6 +918,7 @@ body[data-cloud-mobile-editing-ui="1"] :is(
 }
 
 body[data-cloud-mobile-editing-ui="1"] :is(
+  .gb-production-list-switch-btn,
   .gb-production-list-switch-add-btn,
   .gb-production-list-switch-add-confirm,
   .gb-production-list-switch-add-cancel

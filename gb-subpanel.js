@@ -562,14 +562,18 @@ const GBSubPanel = (() => {
       _showEmptyState();
       return true;
     }
-    const seq = ++_opSeq;
-    return _guardedTransition(seq, () => {
-      _current = null;
-      _navHistory = [];
-      _navIndex = -1;
-      _showEmptyState();
-      return true;
-    });
+    try {
+      const flushResult = await _flushBeforeTransition(_current);
+      if (!flushResult?.ok) return false;
+    } catch {
+      return false;
+    }
+    await _retractCurrentContent({ remount: false });
+    _current = null;
+    _navHistory = [];
+    _navIndex = -1;
+    _showEmptyState();
+    return true;
   }
 
   // ---- 公開API ----

@@ -214,14 +214,14 @@
     bar.className = 'csv-workbench-bar';
     bar.dataset.e2eId = 'csv-workbench-bar';
     bar.innerHTML =
-      '<input class="csv-search-input" type="search" aria-label="CSV内を検索" placeholder="検索">' +
-      '<button type="button" data-csv-command="find-prev" title="前を検索">↑</button>' +
-      '<button type="button" data-csv-command="find-next" title="次を検索">↓</button>' +
-      '<input class="csv-replace-input" type="text" aria-label="置換後の文字" placeholder="置換">' +
-      '<button type="button" data-csv-command="replace">置換</button>' +
-      '<button type="button" data-csv-command="replace-all">すべて置換</button>' +
-      '<label><input type="checkbox" data-csv-option="case">大小</label>' +
-      '<label><input type="checkbox" data-csv-option="exact">完全</label>' +
+      '<input class="csv-search-input" type="search" aria-label="CSV内を検索" placeholder="検索" data-e2e-id="csv-search-input">' +
+      '<button type="button" data-csv-command="find-prev" data-e2e-id="csv-find-prev" title="前を検索">↑</button>' +
+      '<button type="button" data-csv-command="find-next" data-e2e-id="csv-find-next" title="次を検索">↓</button>' +
+      '<input class="csv-replace-input" type="text" aria-label="置換後の文字" placeholder="置換" data-e2e-id="csv-replace-input">' +
+      '<button type="button" data-csv-command="replace" data-e2e-id="csv-replace">置換</button>' +
+      '<button type="button" data-csv-command="replace-all" data-e2e-id="csv-replace-all">すべて置換</button>' +
+      '<label><input type="checkbox" data-csv-option="case" data-e2e-id="csv-case">大小</label>' +
+      '<label><input type="checkbox" data-csv-option="exact" data-e2e-id="csv-exact">完全</label>' +
       '<span class="csv-workbench-status" aria-live="polite"></span>';
     pivot.prepend(bar);
     bar.addEventListener('click', event => {
@@ -354,6 +354,7 @@
     cell.dataset.row = String(rowIndex);
     cell.dataset.csvCol = String(index);
     cell.dataset.col = String(index);
+    cell.dataset.e2eId = `csv-cell-${rowIndex}-${index}`;
     cell.dataset.csvWrap = column.wrap ? '1' : '0';
     cell.style.setProperty('--csv-column-width', `${column.width}px`);
     applyFrozenCell(cell, index);

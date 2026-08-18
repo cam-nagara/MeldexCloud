@@ -115,7 +115,7 @@
       const note = document.createElement('p');
       note.className = 'sn2-ruby-compatibility-note';
       note.dataset.e2eId = `${scope}-ruby-legacy-compatibility`;
-      note.innerHTML = `旧文書の見た目を維持中です ${fieldHelp('サイズまたは間隔を変更すると、その項目だけ新しい方式へ切り替わります')}`;
+      note.innerHTML = `旧文書の見た目を維持中です ${fieldHelp('サイズまたは間隔を変更すると、その項目だけ新しい方式へ切り替わります', { e2eId: `${scope}-ruby-legacy-help` })}`;
       root.appendChild(note);
     }
     const refresh = event => {

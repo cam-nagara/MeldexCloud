@@ -321,6 +321,13 @@
   async function folderToolbarPasteToFolder(destFolder, options = {}) {
     const clip = _folderToolbarClipboard;
     if (!clip?.items?.length || !destFolder) return;
+    if (typeof executeFolderPasteWithChoice === 'function') {
+      await executeFolderPasteWithChoice(clip, destFolder, {
+        ...options,
+        refresh: typeof options.refresh === 'function' ? options.refresh : _folderToolbarRefresh,
+      });
+      return;
+    }
     if (_folderToolbarIsLockedPath(destFolder)) {
       showStatus('編集ロック中のフォルダには貼り付けできません', true);
       return;
@@ -573,27 +580,6 @@
       sortButton.innerHTML = _folderToolbarIcon('arrowUpDown', 16);
       sortButton.addEventListener('click', showFolderToolbarSortMenu);
       layout.parentElement.insertBefore(sortButton, layout);
-      const contentsButton = document.createElement('button');
-      contentsButton.id = 'folder-toolbar-subfolder-contents';
-      contentsButton.type = 'button';
-      contentsButton.className = 'tb-icon-btn';
-      contentsButton.dataset.folderSubfolderContents = '1';
-      contentsButton.dataset.e2eId = 'folder-toolbar-subfolder-contents';
-      contentsButton.innerHTML = _folderToolbarIcon('folderKanban', 16);
-      contentsButton.addEventListener('click', toggleFolderSubfolderContents);
-      layout.parentElement.insertBefore(contentsButton, layout);
-    }
-    const refresh = document.getElementById('btn-outliner-refresh');
-    if (refresh && !document.getElementById('tree-subfolder-contents')) {
-      const treeButton = document.createElement('button');
-      treeButton.id = 'tree-subfolder-contents';
-      treeButton.type = 'button';
-      treeButton.dataset.folderSubfolderContents = '1';
-      treeButton.dataset.e2eId = 'tree-subfolder-contents';
-      treeButton.style.cssText = 'width:24px;height:24px;padding:0;background:none;border:1px solid transparent;border-radius:4px;color:var(--fg2);cursor:pointer;flex-shrink:0;';
-      treeButton.innerHTML = _folderToolbarIcon('folderKanban', 14);
-      treeButton.addEventListener('click', toggleFolderSubfolderContents);
-      refresh.parentElement.insertBefore(treeButton, refresh);
     }
     syncFolderSubfolderContentsButtons();
   }

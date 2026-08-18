@@ -526,7 +526,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const footerSpacer = document.createElement('span');
   footerSpacer.style.flex = '1';
   const cancelButton = document.createElement('button');
-  cancelButton.type = 'button'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
+  cancelButton.type = 'button'; cancelButton.id = 'dbcfg-cancel'; cancelButton.dataset.e2eId = 'dbcfg-cancel'; cancelButton.className = 'gb-btn gb-btn-sm'; cancelButton.textContent = 'キャンセル';
   const saveButton = document.createElement('button');
   saveButton.type = 'button'; saveButton.className = 'gb-btn gb-btn-sm gb-btn-primary primary'; saveButton.id = 'dbcfg-save'; saveButton.textContent = '保存';
   let busy = false;
@@ -543,6 +543,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   o._dbConfigApi = modalApi;
   o.dataset.e2eId = 'db-config-overlay';
   modalApi.modal.dataset.e2eId = 'db-config-dialog';
+  modalApi.header?.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'dbcfg-close');
   modalApi.modal.classList.add('db-config-modal');
   modalApi.modal.style.width = 'min(780px, calc(100vw - 24px))';
   modalApi.body.style.setProperty('overflow-x', 'hidden', 'important');
@@ -1721,10 +1722,13 @@ function renderGallery(ctx) {
       const ptcG = propTypes[propName];
       if (ptcG?.type === 'image') continue; // 画像はループの外でまとめて表示する
       let displayVal = '';
-      if (ptcG && ptcG.source) {
-        const metaKey = '_' + ptcG.source;
+      const metadataSource = typeof _dbPropertyMetadataSource === 'function'
+        ? _dbPropertyMetadataSource(ptcG)
+        : (['created', 'modified', 'modified_by'].includes(ptcG?.source) ? ptcG.source : '');
+      if (metadataSource) {
+        const metaKey = '_' + metadataSource;
         const mv = entityData[metaKey] || '';
-        if ((ptcG.source === 'created' || ptcG.source === 'modified') && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
+        if ((metadataSource === 'created' || metadataSource === 'modified') && mv) displayVal = mv.replace('T', ' ').substring(0, 16);
         else displayVal = mv || '';
       } else {
         const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);

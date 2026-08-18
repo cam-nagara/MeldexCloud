@@ -204,8 +204,36 @@
     controller.open();
   }
 
+  async function checkCloudHomeFolderSharing(vaultInfo = {}) {
+    try {
+      const isTeamRoot = vaultInfo?.namespaceKind === 'team_root' || vaultInfo?.state?.namespaceKind === 'team_root';
+      const rootPath = vaultInfo?.path || vaultInfo?.state?.path || '/';
+      let isWorkspace = false;
+
+      if (window.MeldexWorkspaceFolderDetect?.isWorkspaceFolder) {
+        const detectRes = await window.MeldexWorkspaceFolderDetect.isWorkspaceFolder(rootPath, vaultInfo?.namespaceKind || 'home');
+        if (detectRes?.workspace) isWorkspace = true;
+      }
+
+      const isShared = isTeamRoot || isWorkspace || !!vaultInfo?.isSharedRoot;
+      if (isShared && !_startupWarningShown) {
+        _startupWarningShown = true;
+        const reason = isTeamRoot ? 'チームスペース' : '共有ワークスペース';
+        if (typeof showStatus === 'function') {
+          showStatus(`ホームフォルダが${reason}の中にあります。他の人から内容が見える可能性があります。`, true);
+        }
+      }
+      return { shared: isShared, reason: isTeamRoot ? 'team_root' : (isWorkspace ? 'workspace' : '') };
+    } catch (err) {
+      console.warn('[MeldexHomeFolderSharing] cloud check error', err);
+      return { shared: false, error: err };
+    }
+  }
+
   window.MeldexHomeFolderSharing = {
     loadHomeFolderSharingStatusForSettings,
+    checkCloudHomeFolderSharing,
   };
   window.loadHomeFolderSharingStatusForSettings = loadHomeFolderSharingStatusForSettings;
+  window.checkCloudHomeFolderSharing = checkCloudHomeFolderSharing;
 })();

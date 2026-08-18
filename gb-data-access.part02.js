@@ -581,6 +581,9 @@
       if (method === 'GET') return _readPersonalPreference(name);
       if (method === 'PUT') return _writePersonalPreference(name, body);
     }
+    if (pathname.startsWith('/archive/')) {
+      return { ok: false, supported: false, message: 'クラウド環境ではアーカイブ操作は利用できません' };
+    }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
       const result = await handler({ method, body, url, pathname, headers: opts?.headers });

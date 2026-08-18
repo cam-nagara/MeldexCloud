@@ -1251,6 +1251,14 @@ Object.assign(ScriptNoteEditor.prototype, {
         } else {
           style[prop] = value;
         }
+        if (chara?.typeId && Array.isArray(this.doc?.scenarioTypes)) {
+          const linkedType = this.doc.scenarioTypes.find(t => t.id === chara.typeId);
+          if (linkedType) {
+            const typeStyle = this._getColStyle(linkedType, colId);
+            if (value === '' || value == null) delete typeStyle[prop];
+            else typeStyle[prop] = value;
+          }
+        }
         const needRender = (prop === 'textAlign' || prop === 'textValign' || prop === 'textOverflow');
         if (needRender) this._render();
         else this._refreshRowStyles();
@@ -1287,6 +1295,13 @@ Object.assign(ScriptNoteEditor.prototype, {
       onReset: () => {
         this._pushUndo('書式リセット');
         ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete style[p]);
+        if (chara?.typeId && Array.isArray(this.doc?.scenarioTypes)) {
+          const linkedType = this.doc.scenarioTypes.find(t => t.id === chara.typeId);
+          if (linkedType) {
+            const typeStyle = this._getColStyle(linkedType, colId);
+            ['bgColor','textColor','fontWeight','fontStyle','fontSize','fontFamily','textStrokeColor','textStrokeWidth','leftAccent','underline','accentColor','textBefore','textAfter','textAlign','textValign','textOverflow'].forEach((p) => delete typeStyle[p]);
+          }
+        }
         if (needsLegacySync) {
           ['fontWeight', 'fontStyle', 'fontSize', 'fontFamily', 'textStrokeColor', 'textStrokeWidth'].forEach((p) => { delete chara[p]; });
         }

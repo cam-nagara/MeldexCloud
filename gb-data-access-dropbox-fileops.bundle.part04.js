@@ -1,3 +1,11 @@
+
+      if (action === 'keep_original') {
+        if (originalEntry?.kind !== 'file') throw new Error('元ファイルが見つからないため、元ファイルを残す解消はできません');
+        backups.conflict = await _backupConflictSide(provider, 'discarded-conflict', conflictPath, backupStamp);
+        await provider.deletePath(conflictPath);
+        return { ok: true, action, original_path: originalPath, removed_path: conflictPath, backups };
+      }
+
       backups.conflict = await _backupConflictSide(provider, 'applied-conflict', conflictPath, backupStamp);
       if (originalEntry?.kind === 'file') {
         backups.original = await _backupConflictSide(provider, 'replaced-original', originalPath, backupStamp);
@@ -697,8 +705,27 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const configuredFolder = String(body?.target_path || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const targetPath = _joinPath(configuredFolder || 'スクリーンショット', `screenshot_${ts}.png`);
       const screenshotBytes = _decodeUploadData(dataUrl);
+      const sourceTarget = String(body?.source_target || body?.sourceTarget || '').trim();
+      const annotationTarget = sourceTarget || targetPath;
+      // 注釈recordはbytes publish前に確定させ、identity claimと同じ
+      // prepare済みintentへ連動書込みとして持たせる(固有形式付随物廃止・
+      // 管理データ一元化計画 §10.1)。これにより注釈書込みの失敗も
+      // aftercare_pending化され、identity claimと同じdrain/復帰対象になる。
+      const annRecord = _mergeAnnotationRecord(null, {
+        type: 'screenshot',
+        target_path: annotationTarget,
+        user: (typeof _currentUserName !== 'undefined' && _currentUserName) ? _currentUserName : 'local',
+        data: {
+          path: targetPath,
+          mode: String(body?.mode || ''),
+          width: body?.width || null,
+          height: body?.height || null,
+          source_file: sourceTarget ? _basename(sourceTarget) : null,
+        },
+      }, { id: _randomId('ann'), now: _nowIso() });
       const prepared = await imageAftercare.prepare(provider, targetPath, screenshotBytes, {
         source: 'annotation-screenshot', filename: _basename(targetPath),
+        linkedWrite: { kind: 'annotation-record', payload: annRecord },
       });
       if (prepared.publish_required) {
         try {
@@ -713,6 +740,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       );
       return {
         ok: true, path: targetPath,
+        id: annRecord.id, annotation_id: annRecord.id,
         aftercare_pending: !!identity.aftercare_pending || drainedIdentity.blocked > 0,
       };
     }
@@ -870,31 +898,3 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           fileType: 'meldex-scriptnote',
           schema_version: 3,
           version: 1,
-          title: labelName,
-          layoutMode: 'manga',
-          editor: { viewMode: 'horizontal', wrapMode: true, textWidth: 20, lineHeight: 1.5, letterSpacing: 0.02, fontH: '', fontV: '', colors: null },
-          scenarioTypes: [],
-          characters: [],
-          characterDb: [],
-          notes: [],
-          rows: [],
-          source: { importedFrom: '', modeName: 'マンガ縦書き' },
-        });
-        return { ok: true, node: { type: 'scriptnote', label: labelName, path: targetPath } };
-      }
-      if (type === 'board') {
-        const labelName = await _uniqueName(provider, parent, label, '.mel-board');
-        const targetPath = _joinPath(parent, labelName + '.mel-board');
-        let boardContent = `---\ntype: board\nxmind:\n  n0: {autoStyle: true}\n---\n# ${labelName}\n\n`;
-        if (window.MeldexDocumentIdentity) boardContent = window.MeldexDocumentIdentity.ensureDocumentId(boardContent, 'board').text;
-        await provider.writeText(targetPath, boardContent);
-        return { ok: true, node: { type: _phase1SurfaceType('board', 'file'), label: labelName, path: targetPath } };
-      }
-      if (type === 'calendar') {
-        const labelName = await _uniqueName(provider, parent, label, '');
-        const targetPath = _joinPath(parent, labelName);
-        await _directoryHandle(provider, targetPath, true);
-        await provider.writeText(_joinPath(targetPath, labelName + '.md'), `---\ntype: calendar-db\n---\n# ${labelName}\n\n`);
-        return { ok: true, node: { type: _phase1SurfaceType('calendar', 'directory'), label: labelName, path: targetPath } };
-      }
-      if (type === 'smart-db') {

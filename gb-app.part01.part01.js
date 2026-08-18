@@ -217,6 +217,9 @@ function addLongPressHandler(element, handler, options = {}) {
   };
   const consumeSuppressedActivation = (event) => {
     if (!suppressNextActivation) return false;
+    if (event.target?.closest?.('input[type="checkbox"], input[type="radio"], .row-select-cb, .row-select-all-cb')) {
+      return false;
+    }
     event.preventDefault();
     if (typeof event.stopImmediatePropagation === 'function') event.stopImmediatePropagation();
     else event.stopPropagation();
@@ -901,6 +904,12 @@ function renameAppPathReferences(oldPath, newPath, opts) {
         // プログラムによる value 代入は change イベントを発火しないため、
         // タイトル入力の change ハンドラ（リネームAPI再呼び出し）は起動しない。
         if (titleInput && titleInput.value !== exactLabel) titleInput.value = exactLabel;
+      }
+      if (editor && mapped === newPath && (options.etag || options.transport_revision)) {
+        editor._lastSavedEtag = options.etag || options.transport_revision;
+        if (editor._lastSavedTransportRevision) {
+          editor._lastSavedTransportRevision = options.transport_revision || options.etag;
+        }
       }
     });
   }

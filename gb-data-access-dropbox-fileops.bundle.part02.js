@@ -726,6 +726,14 @@ async function _writeAnnotationRecord(provider, record) {
   await _annotationTargetResolver().indexUpsert(adapter, kind, migrated.record?.payload || record);
 }
 
+// created-image-identity aftercare(gb-created-image-identity-aftercare.js)が
+// identity claimと同じ保留/復帰の対象へ注釈書込みを含められるようにする登録。
+// 素のオブジェクトへの代入のみで行い、2ファイル間の読込順に依存しない
+// (aftercare側は実行時にこのレジストリを参照するため、このファイルが
+// aftercare側より先に読み込まれても後に読み込まれても問題ない)。
+window.MeldexCreatedImageIdentityAftercarePendingWriters = window.MeldexCreatedImageIdentityAftercarePendingWriters || {};
+window.MeldexCreatedImageIdentityAftercarePendingWriters['annotation-record'] = (provider, payload) => _writeAnnotationRecord(provider, payload);
+
 async function _deleteAnnotationRecordFully(provider, id) {
   const docId = _safeId(id, 'annotation id');
   const contract = window.MeldexSystemStorage;
@@ -890,11 +898,3 @@ function _annotationMatchesOrphan(record, body, cascade) {
     if (targetKind === 'sheet_cell' && String(ref.entryId || '') === itemId && (!colId || String(ref.colId || '') === colId)) return true;
     if (targetKind === 'sheet_col' && String(ref.colId || '') === itemId) return true;
     if (targetKind === 'calendar_event' && String(ref.eventId || '') === itemId) return true;
-  }
-
-  if (!cascade || kind !== 'text_range' || !ref.container) return false;
-  const container = ref.container;
-  if ((targetKind === 'note_line' || targetKind === 'scriptnote_line' || targetKind === 'board_card' || targetKind === 'board_line' || targetKind === 'calendar_event')) {
-    const containerId = container.id || container.lineId || container.cardId || '';
-    return String(container.kind || '') === targetKind && String(containerId || '') === itemId;
-  }

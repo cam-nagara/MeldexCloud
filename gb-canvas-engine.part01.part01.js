@@ -603,7 +603,8 @@ function bdParseMd(raw) {
       const bcm = props.match(/borderColor:\s*'((?:[^'\\]|\\.)*)'/); if (bcm) t.borderColor = bcm[1].replace(/\\'/g, "'");
       const bwm = props.match(/borderWidth:\s*(\d+)/); if (bwm) t.borderWidth = +bwm[1];
       const brm = props.match(/borderRadius:\s*(\d+)/); if (brm) t.borderRadius = +brm[1];
-      const csm = props.match(/cardStyle:\s*([^\s,}]+)/); if (csm) t.cardStyle = csm[1];
+      const csm = props.match(/cardStyle:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
+      if (csm) { try { t.cardStyle = String(bdYamlScalar(csm[1]) || ''); } catch { t.cardStyle = csm[1].replace(/^"|"$/g, ''); } }
       const dsrm = props.match(/depthStyleRef:\s*("(?:(?:[^"\\]|\\.)*)"|[^\s,}]+)/);
       if (dsrm) { try { t.depthStyleRef = String(bdYamlScalar(dsrm[1]) || ''); } catch { t.depthStyleRef = dsrm[1].replace(/^"|"$/g, ''); } }
       const ispm = props.match(/imageSourcePath:\s*("(?:(?:[^"\\]|\\.)*)"|'(?:(?:[^'\\]|\\.)*)')/);

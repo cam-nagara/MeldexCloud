@@ -1,3 +1,8 @@
+      succeeded,
+      skipped,
+      failed,
+      deletedPaths,
+      failedPaths: failed.map(item => item.path),
     });
   }
 
@@ -893,8 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       const newRoots = roots.filter(r => r.path !== nodeData.path);
       await _putOutlinerRootsWithBase(newRoots, baseRoots);
       await loadOutliner();
-      showStatus('ソースフォルダの登録を解除しました');
-    }, null, 'folder-minus');
-  }
-
-  // --- 作品フォルダ設定（フォルダのみ） ---

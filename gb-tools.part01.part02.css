@@ -222,7 +222,11 @@
   cursor: pointer;
 }
 #entity-create-note-btn button:hover { background: var(--bg4); border-color: var(--accent); }
-#entity-create-note-btn .entity-create-action-btn {
+/* エントリ画面の作成系アクションボタンは、置かれる場所（未作成エントリの
+   作成ボタン欄／エントリ詳細のアクション欄）に関わらず同じ見た目にする。
+   以前は #entity-create-note-btn 配下だけに指定していたため、同じボタンが
+   詳細側では素のボタンとして描画されていた。 */
+.entity-create-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -231,14 +235,14 @@
   white-space: nowrap;
   line-height: 1.2;
 }
-#entity-create-note-btn .entity-create-action-icon,
-#entity-create-note-btn .entity-create-action-icon svg {
+.entity-create-action-btn .entity-create-action-icon,
+.entity-create-action-btn .entity-create-action-icon svg {
   width: 14px;
   height: 14px;
   flex: 0 0 14px;
 }
 @media (max-width: 430px) {
-  #entity-create-note-btn .entity-create-action-btn {
+  .entity-create-action-btn {
     min-height: 44px;
     padding: 10px 12px;
   }

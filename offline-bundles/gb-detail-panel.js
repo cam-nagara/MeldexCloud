@@ -8,6 +8,7 @@
 // 詳細パネル タブ切替（gb-scenario-rules.js から移設）
 // ==============================
 let _currentDetailTab = null;
+let _detailSyncSeq = 0;
 
 function _normalizeDetailTab(tab) {
   const validTabs = new Set([
@@ -63,6 +64,9 @@ function _resolveDetailTabForType(type, defaultTab) {
 }
 
 function switchDetailTab(tab) {
+  if (typeof _detailSyncSeq !== 'undefined') {
+    _detailSyncSeq++;
+  }
   tab = _normalizeDetailTab(tab);
   _currentDetailTab = tab;
   const bar = document.getElementById('detail-tab-bar');
@@ -2317,11 +2321,17 @@ function _fsBindThemeColorSetEditor(root, ctx) {
 }
 
 function _fsRefreshThemeActionStates(root, ctx) {
+  const targetRoot = (root && root.querySelector) ? root : document;
+  const section = targetRoot.matches?.('.fs-theme-management')
+    ? targetRoot
+    : (ctx ? targetRoot.querySelector?.(`.fs-theme-management[data-file-theme-panel="${ctx}"]`) : null) || targetRoot;
   const adapter = _fsGetAdapter(ctx);
   const id = _fsCurrentThemeId(ctx, adapter);
   const isCustom = _fsIsLocalCustomThemeId(id) || !!(id && typeof MeldexThemeManager !== 'undefined' && MeldexThemeManager.getCustomThemes().some(t => t.id === id));
   ['rename', 'save', 'delete'].forEach(action => {
-    (root || document).querySelectorAll(`[data-fs-theme-action="${action}"]`).forEach(btn => { btn.disabled = !isCustom; });
+    section.querySelectorAll(`[data-fs-theme-action="${action}"]`).forEach(btn => {
+      btn.disabled = !isCustom;
+    });
   });
 }
 
@@ -2483,9 +2493,15 @@ async function fileThemeDelete(ctx) {
 
 // ctx: 'folder' | 'page' | 'db' | 'scriptnote' | 'board' | 'calendar'
 function renderFileStyleTab(ctx) {
-  const rpDetail = document.getElementById('rp-detail');
-  if (rpDetail) _ensureDetailTabShell(rpDetail);
-  const el = document.getElementById('detail-tab-file-style');
+  if (typeof renderFileStyleTabUnified === 'function') {
+    return renderFileStyleTabUnified(ctx);
+  }
+  let el = document.getElementById('detail-tab-file-style');
+  if (!el) {
+    const rpDetail = document.getElementById('rp-detail');
+    if (rpDetail) _ensureDetailTabShell(rpDetail);
+    el = document.getElementById('detail-tab-file-style');
+  }
   if (!el) return;
   el.dataset.fileStyleContext = ctx || '';
   if (ctx !== 'calendar') el.removeAttribute('data-calendar-style');
@@ -2585,7 +2601,7 @@ function hideScriptnoteDetailTabs() {
   }
 }
 
-let _detailSyncSeq = 0;
+// _detailSyncSeq is declared in gb-detail-panel.part01.part01.js
 // 詳細パネルが表示中なら、現在のコンテンツに合わせて自動更新する
 async function _dpSavePendingBeforeDetailSwitch() {
   const el = document.getElementById('dp-editable');

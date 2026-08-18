@@ -315,7 +315,8 @@ function _settingsThemePreviewTarget(section, label, text, className = '', manif
   const style = def ? _settingsThemePreviewStyle(def) : '';
   const stableId = manifestId || `${section}/${label}`;
   const e2eId = `settings-theme-preview-${stableId}`;
-  return `<button type="button" class="settings-theme-preview-target ${className}" data-e2e-id="${esc(e2eId)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}" data-action="openStylePreviewPopup(this)" style="${esc(style)}">${esc(text || label)}</button>`;
+  const actionTitle = `${label}（クリックで書式設定）`;
+  return `<button type="button" class="settings-theme-preview-target ${className}" data-e2e-id="${esc(e2eId)}" data-style-id="${esc(stableId)}" data-style-section="${esc(section)}" data-style-label="${esc(label)}" data-action="openStylePreviewPopup(this)" title="${esc(actionTitle)}" aria-label="${esc(actionTitle)}" style="${esc(style)}">${esc(text || label)}</button>`;
 }
 
 function _settingsThemePreviewStateClass(label) {
@@ -349,11 +350,27 @@ function renderSettingsThemePreview(appId = 'note') {
   return `<section class="gb-section gb-section--boxed settings-theme-preview" data-settings-theme-preview="1">
     <div class="settings-theme-preview-toolbar"><div class="gb-section-title">プレビュー</div><select class="gb-select" data-e2e-id="settings-theme-preview-app" data-settings-theme-preview-select data-onchange="settingsThemePreviewAppChanged(this.value)">${options}</select></div>
     <div class="settings-theme-preview-shell">
-      <aside class="settings-theme-preview-rail">${_settingsThemePreviewTarget('共通', 'アクセント', '◆', '', 'chrome-left/common/accent')}</aside>
-      <aside class="settings-theme-preview-tree">${_settingsThemePreviewTarget('フォルダ', 'カード', 'フォルダ', '', 'chrome-tree/folder/card')}<span>作品</span><span>資料</span></aside>
+      <aside class="settings-theme-preview-rail settings-theme-preview-rail--left" aria-label="アプリ切替">
+        <button type="button" class="settings-theme-rail-btn${appId === 'folder' ? ' active' : ''}" data-rail-app="folder" data-action="settingsThemePreviewAppChanged('folder')" title="フォルダ" aria-label="フォルダ">${typeof lucide === 'function' ? lucide('folder', 14) : '📁'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'note' ? ' active' : ''}" data-rail-app="note" data-action="settingsThemePreviewAppChanged('note')" title="ノート" aria-label="ノート">${typeof lucide === 'function' ? lucide('fileText', 14) : '📝'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'scriptnote' ? ' active' : ''}" data-rail-app="scriptnote" data-action="settingsThemePreviewAppChanged('scriptnote')" title="シナリオ" aria-label="シナリオ">${typeof lucide === 'function' ? lucide('film', 14) : '🎬'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'sheet' ? ' active' : ''}" data-rail-app="sheet" data-action="settingsThemePreviewAppChanged('sheet')" title="シート" aria-label="シート">${typeof lucide === 'function' ? lucide('table', 14) : '📊'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'board' ? ' active' : ''}" data-rail-app="board" data-action="settingsThemePreviewAppChanged('board')" title="ボード" aria-label="ボード">${typeof lucide === 'function' ? lucide('layoutGrid', 14) : '📋'}</button>
+      </aside>
+      <aside class="settings-theme-preview-tree">
+        ${_settingsThemePreviewTarget('フォルダ', 'カード', 'フォルダツリー：トップ階層', '', 'chrome-tree/folder/card')}
+        ${_settingsThemePreviewTarget('フォルダ', 'カード枠線', 'フォルダツリー：子階層', '', 'chrome-tree/folder/sub')}
+      </aside>
       <main class="settings-theme-preview-main" data-settings-theme-preview-main>${_settingsThemePreviewMain(appId)}</main>
-      <aside class="settings-theme-preview-side">${_settingsThemePreviewTarget('補助パネル', 'フォルダツリー', 'オプション', '', 'chrome-side/aux/folder-tree')}<span>プロパティ</span></aside>
-      <aside class="settings-theme-preview-rail">${_settingsThemePreviewTarget('共通', 'アクセント', '●', '', 'chrome-right/common/accent')}</aside>
+      <aside class="settings-theme-preview-side">
+        ${_settingsThemePreviewTarget('補助パネル', 'フォルダツリー', '右サイドバー：通常タブ', '', 'chrome-side/aux/folder-tree')}
+        ${_settingsThemePreviewTarget('補助パネル', 'ビューワーカード', '右サイドバー：選択タブ', 'is-selected', 'chrome-side/aux/viewer-card')}
+      </aside>
+      <aside class="settings-theme-preview-rail settings-theme-preview-rail--right" aria-label="補助アプリ切替">
+        <button type="button" class="settings-theme-rail-btn${appId === 'calendar' ? ' active' : ''}" data-rail-app="calendar" data-action="settingsThemePreviewAppChanged('calendar')" title="スケジュール" aria-label="スケジュール">${typeof lucide === 'function' ? lucide('calendar', 14) : '📅'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'aux' ? ' active' : ''}" data-rail-app="aux" data-action="settingsThemePreviewAppChanged('aux')" title="補助パネル" aria-label="補助パネル">${typeof lucide === 'function' ? lucide('sidebar', 14) : '📑'}</button>
+        <button type="button" class="settings-theme-rail-btn${appId === 'popup' ? ' active' : ''}" data-rail-app="popup" data-action="settingsThemePreviewAppChanged('popup')" title="ポップアップ" aria-label="ポップアップ">${typeof lucide === 'function' ? lucide('layers', 14) : '🗂️'}</button>
+      </aside>
     </div>
   </section>`;
 }
@@ -378,6 +395,9 @@ function settingsThemePreviewAppChanged(appId) {
   root.dataset.settingsThemePreviewApp = appId;
   const panel = root.closest('.settings-panel[data-panel="テーマ"]');
   if (panel) panel.dataset.settingsThemePreviewApp = appId;
+  root.querySelectorAll('.settings-theme-rail-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.railApp === appId);
+  });
 }
 
 function refreshSettingsThemePreview() {
@@ -396,6 +416,9 @@ function refreshSettingsThemePreview() {
     const label = target.dataset.styleLabel;
     const def = (UI_STYLE_SECTIONS?.[section] || []).find(item => item.label === label);
     if (def) target.setAttribute('style', _settingsThemePreviewStyle(def));
+  });
+  root.querySelectorAll('.settings-theme-rail-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.railApp === appId);
   });
 }
 
@@ -453,7 +476,7 @@ function renderSettingsAppearancePanel(currentTheme, options = {}) {
       </div>
     </section>
     <section class="gb-section gb-section--boxed settings-theme-controls" data-settings-view="theme">
-      <div class="gb-section-title">テーマカラー</div>
+      <div class="gb-section-title">共通カラーパレット</div>
       ${typeof renderSettingsThemePaletteEditor === 'function' ? renderSettingsThemePaletteEditor({ id: 'settings-theme-palette-editor' }) : renderThemeColorSetEditor(null, { hideLabel: true })}
       ${renderSettingsThemeAccentEditor()}
     </section>

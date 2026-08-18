@@ -136,7 +136,7 @@
     const range = selection.getRangeAt(0);
     if (!editor.contains(_nodeElement(range.commonAncestorContainer))) return false;
     const blocks = _richInputBlocks(editor);
-    const block = _richDirectBlock(editor, range.startContainer);
+    const block = _richDirectBlock(editor, range.startContainer, range.startOffset);
     const index = blocks.indexOf(block);
     const targetIndex = index + (key === 'ArrowDown' ? 1 : -1);
     if (index < 0 || targetIndex < 0 || targetIndex >= blocks.length) return false;

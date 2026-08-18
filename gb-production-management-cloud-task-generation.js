@@ -35,6 +35,12 @@
   }
 
   function _pmFormatScheduleHours(hoursText) {
+    if (window.MeldexProductionTimeFormatter?.formatDuration) {
+      const sec = window.MeldexProductionTimeFormatter.parseToSeconds(hoursText);
+      if (sec !== null && sec > 0) {
+        return window.MeldexProductionTimeFormatter.formatDuration(sec);
+      }
+    }
     const num = Number(hoursText);
     if (!Number.isFinite(num) || num <= 0) return '';
     const rounded = Math.round(num * 10) / 10;
