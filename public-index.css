@@ -292,6 +292,31 @@ h1 {
   gap: 12px;
   margin-top: 18px;
 }
+.feature-overview {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.feature-details {
+  margin-top: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.feature-details summary {
+  padding: 15px 18px;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.feature-details summary:hover,
+.feature-details summary:focus-visible {
+  color: var(--accent);
+}
+.feature-details[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+.feature-details-body {
+  padding: 0 18px 18px;
+}
 .item {
   min-width: 0;
   padding: 16px;
@@ -334,6 +359,9 @@ h1 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 18px;
+}
+.use-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .mode-card {
   display: flex;
