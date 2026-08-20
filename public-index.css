@@ -292,6 +292,9 @@ h1 {
   gap: 12px;
   margin-top: 18px;
 }
+.philosophy-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .item {
   min-width: 0;
   padding: 16px;
