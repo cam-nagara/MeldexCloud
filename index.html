@@ -211,9 +211,9 @@ var fallbackVersion = 'v0.7.308 BETA';
       <a href="#features">できること</a>
       <a href="#use">利用方法</a>
       <a href="#download">ダウンロード</a>
-      <a href="#changelog">更新履歴</a>
       <a href="#standalone-apps">単独アプリ</a>
-      <a href="#support">サポート</a>
+      <a href="#support">利用上の注意</a>
+      <a href="#changelog">更新履歴</a>
     </nav>
   </header>
   <main>
@@ -241,14 +241,14 @@ var fallbackVersion = 'v0.7.308 BETA';
         <div class="grid">
           <article class="item">
             <h3>作品データを自分のPC・端末に保存</h3>
-            <p>作成したデータは、デスクトップ版ではPCのフォルダに、クラウド版では使っている端末内に保存されます。アカウント登録は不要で、複数端末で共有するときだけDropboxを使います。</p>
+            <p>多くのWebアプリでは、作成したデータはサービスのクラウド上にだけ保存されます。Meldexでは、データを最初から自分のPCや端末内に保存します。複数端末で共有するときだけDropboxを使います。</p>
           </article>
           <article class="item">
             <h3>文書・表・マインドマップを作成</h3>
             <p>ノート、表、マインドマップ、スケジュールを作成できます。Webページ、資料画像、チャット履歴も、作品に紐づけて管理できます。</p>
           </article>
           <article class="item">
-            <h3>情報どうしを自動リンク</h3>
+            <h3>情報同士を自動リンク</h3>
             <p>人物名や用語を文書に書くと、関連する表や資料へのリンクが自動で作られます。作品内の設定や資料を、wikiのようにたどって確認できます。</p>
           </article>
         </div>
@@ -264,11 +264,11 @@ var fallbackVersion = 'v0.7.308 BETA';
           </article>
           <article class="item">
             <h3>集める</h3>
-            <p>Webページ、資料画像、チャット履歴、既存のノートや表を、作品に紐づけて管理できます。</p>
+            <p>Webページ、Xのブックマーク、チャット履歴を取り込み、Webページ内の画像も一括ダウンロードできます。PC内の既存フォルダもソースフォルダとして読み込み、作品に紐づけて管理できます。</p>
           </article>
           <article class="item">
             <h3>整理・探す</h3>
-            <p>自動リンク、全文検索、ファイルへの自動タグ付け、文章による画像検索で、関連する情報を探せます。</p>
+            <p>自動リンク、全文検索、ファイルへの自動タグ付け、文章による画像検索、重複画像検出で、関連する情報を探して整理できます。</p>
           </article>
           <article class="item">
             <h3>AIで活用する</h3>
@@ -571,6 +571,114 @@ var fallbackVersion = 'v0.7.308 BETA';
         </div>
       </div>
     </section>
+    <section class="section" id="standalone-apps">
+      <div class="section-inner">
+        <h2>各ツールを単独アプリとして使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
+        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
+        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
+        <ul class="notes">
+          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
+          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
+          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="scope">
+      <div class="section-inner">
+        <h2>対応範囲</h2>
+        <p>利用形態によって、使える端末と一部の機能が異なります。</p>
+        <div class="table-wrap" aria-label="デバイスやOSへの対応状況">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>環境</th>
+                <th>デスクトップ版</th>
+                <th>クラウド版</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Windows PC</td>
+                <td>対応。Windows用ZIPを利用できます。</td>
+                <td>対応。Chrome / Edge などのブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>Mac / Linux / Chromebook</td>
+                <td>未提供。</td>
+                <td>対応。最新のブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>iPad / タブレット</td>
+                <td>未提供。</td>
+                <td>対応。軽い確認や追記に向いています。</td>
+              </tr>
+              <tr>
+                <td>iPhone / Androidスマホ</td>
+                <td>未提供。</td>
+                <td>対応。狭い画面ではモバイルUIで表示します。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="notes">
+          <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
+          <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
+        </ul>
+        <div class="grid">
+          <article class="item available">
+            <h3>クラウド版で対応</h3>
+            <ul>
+              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジュール</li>
+              <li>スマートシート、クラウド版フルチャット</li>
+              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
+              <li>意見・不具合報告、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
+              <li>シートのセル内テキスト書式とカード内書式表示</li>
+            </ul>
+          </article>
+          <article class="item limited">
+            <h3>クラウド版では使えない端末連携</h3>
+            <ul>
+              <li>打鍵単位のリアルタイム共同編集</li>
+              <li>PC内のコマンドラインツールやOSへの直接アクセス（共有ワークスペースの「管理者AIに依頼」経由の依頼は対応）</li>
+              <li>ローカルCalDAVサーバーとの同期・外部iCal URLの購読（.icsの取り込み/書き出し、Google / Microsoftカレンダー連携、iPhone向け購読URLは対応）</li>
+            </ul>
+          </article>
+          <article class="item important">
+            <h3>注意</h3>
+            <ul>
+              <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
+              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
+              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
+              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section" id="support">
+      <div class="section-inner">
+        <h2>利用上の注意と連絡</h2>
+        <div class="grid feature-overview">
+          <article class="item">
+            <h3>規約とプライバシー</h3>
+            <p><a href="TERMS-OF-USE.html">利用規約</a> と <a href="PRIVACY.html">プライバシーポリシー</a> を確認してください。</p>
+          </article>
+          <article class="item">
+            <h3>サポートについて</h3>
+            <p>開発者による質問対応、導入支援、不具合の個別対応などのサポートは予定していません。</p>
+          </article>
+          <article class="item">
+            <h3>オープンソースで公開予定</h3>
+            <p>将来、Meldexをオープンソースソフトウェアとして公開する予定です。公開後は、適用されるライセンスの範囲で各自が自由に修正・利用・配布できます。開発者も、必要や興味に応じて不定期に更新します。更新時期や継続は保証しません。</p>
+          </article>
+          <article class="item">
+            <h3>意見・不具合を送る</h3>
+            <p>Meldex内から意見や不具合の報告を送れます。内容は今後の更新の参考にしますが、個別の返信や対応は約束しません。送信できなかった場合は端末内に控えが残ります。</p>
+          </article>
+        </div>
+      </div>
+    </section>
     <section class="section" id="changelog">
       <div class="section-inner">
         <h2>更新履歴</h2>
@@ -690,110 +798,6 @@ var fallbackVersion = 'v0.7.308 BETA';
           }
         })();
       </script>
-    </section>
-    <section class="section" id="standalone-apps">
-      <div class="section-inner">
-        <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
-        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
-        <ul class="notes">
-          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
-          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
-          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="scope">
-      <div class="section-inner">
-        <h2>対応範囲</h2>
-        <p>利用形態によって、使える端末と一部の機能が異なります。</p>
-        <div class="table-wrap" aria-label="デバイスやOSへの対応状況">
-          <table class="compare-table">
-            <thead>
-              <tr>
-                <th>環境</th>
-                <th>デスクトップ版</th>
-                <th>クラウド版</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Windows PC</td>
-                <td>対応。Windows用ZIPを利用できます。</td>
-                <td>対応。Chrome / Edge などのブラウザで使えます。</td>
-              </tr>
-              <tr>
-                <td>Mac / Linux / Chromebook</td>
-                <td>未提供。</td>
-                <td>対応。最新のブラウザで使えます。</td>
-              </tr>
-              <tr>
-                <td>iPad / タブレット</td>
-                <td>未提供。</td>
-                <td>対応。軽い確認や追記に向いています。</td>
-              </tr>
-              <tr>
-                <td>iPhone / Androidスマホ</td>
-                <td>未提供。</td>
-                <td>対応。狭い画面ではモバイルUIで表示します。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <ul class="notes">
-          <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
-          <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
-        </ul>
-        <div class="grid">
-          <article class="item available">
-            <h3>クラウド版で対応</h3>
-            <ul>
-              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジュール</li>
-              <li>スマートシート、クラウド版フルチャット</li>
-              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
-              <li>フィードバック送信、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
-              <li>シートのセル内テキスト書式とカード内書式表示</li>
-            </ul>
-          </article>
-          <article class="item limited">
-            <h3>クラウド版では使えない端末連携</h3>
-            <ul>
-              <li>打鍵単位のリアルタイム共同編集</li>
-              <li>PC内のコマンドラインツールやOSへの直接アクセス（共有ワークスペースの「管理者AIに依頼」経由の依頼は対応）</li>
-              <li>ローカルCalDAVサーバーとの同期・外部iCal URLの購読（.icsの取り込み/書き出し、Google / Microsoftカレンダー連携、iPhone向け購読URLは対応）</li>
-            </ul>
-          </article>
-          <article class="item important">
-            <h3>注意</h3>
-            <ul>
-              <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
-              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
-              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
-              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
-            </ul>
-          </article>
-        </div>
-      </div>
-    </section>
-    <section class="section" id="support">
-      <div class="section-inner">
-        <h2>サポートと確認資料</h2>
-        <div class="grid">
-          <article class="item">
-            <h3>規約とプライバシー</h3>
-            <p><a href="TERMS-OF-USE.html">利用規約</a> と <a href="PRIVACY.html">プライバシーポリシー</a> を確認してください。</p>
-          </article>
-          <article class="item">
-            <h3>更新情報</h3>
-            <p><a href="#changelog">更新履歴</a>で各バージョンの変更内容を確認できます。クラウド版は起動時の画面タイトルにもバージョンが表示されます。</p>
-          </article>
-          <article class="item">
-            <h3>フィードバック</h3>
-            <p>Meldex内の設定またはフィードバック導線から送信してください。送信に失敗した場合はローカルに控えが残ります。</p>
-          </article>
-        </div>
-      </div>
     </section>
   </main>
   <footer class="footer">
