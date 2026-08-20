@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="color-scheme" content="dark">
@@ -208,15 +208,11 @@ var fallbackVersion = 'v0.7.308 BETA';
     </a>
     <nav class="nav" aria-label="ページ内ナビゲーション">
       <a href="#philosophy">特徴</a>
-      <a href="#features">機能紹介</a>
-      <a href="#download">デスクトップ版</a>
-      <a href="#cloud">クラウド版</a>
-      <a href="#standalone-apps">単独アプリ</a>
-      <a href="#samples">サンプル</a>
+      <a href="#features">できること</a>
+      <a href="#use">利用方法</a>
+      <a href="#download">ダウンロード</a>
       <a href="#changelog">更新履歴</a>
-      <a href="#compare">版の比較</a>
-      <a href="#speed">速度比較</a>
-      <a href="#scope">対応範囲</a>
+      <a href="#standalone-apps">単独アプリ</a>
       <a href="#support">サポート</a>
     </nav>
   </header>
@@ -233,8 +229,6 @@ var fallbackVersion = 'v0.7.308 BETA';
         <div class="actions">
           <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
           <a class="button primary" href="Meldex.html">クラウド版を起動</a>
-          <a class="button subtle" href="#samples">サンプルの追加方法</a>
-          <a class="button subtle" href="#download" data-runtime-href="desktop-releases">過去版を選ぶ</a>
         </div>
       </div>
       <figure class="hero-shot">
@@ -244,39 +238,46 @@ var fallbackVersion = 'v0.7.308 BETA';
     <section class="section" id="philosophy">
       <div class="section-inner">
         <h2>Meldexの特徴</h2>
-        <p>多くのWebアプリは、作成したデータをサービス側のクラウドへ保存します。Meldexでは、創作の材料と作業記録を自分のPCや端末内に保存します。</p>
         <div class="grid">
           <article class="item">
-            <h3>データはPC・端末内に保存</h3>
-            <ul>
-            <li>デスクトップ版は自分で選んだPCのフォルダへ、クラウド版は最初に開いた端末内へ保存します。</li>
-            <li>Meldexのアカウント作成や、Meldex専用クラウドへの預け入れは、使い始める条件ではありません。</li>
-            <li>別の端末から同じデータを使いたい場合だけ、あとからDropboxへ接続できます。</li>
-            </ul>
+            <h3>作品データを自分のPC・端末に保存</h3>
+            <p>作成したデータは、デスクトップ版ではPCのフォルダに、クラウド版では使っている端末内に保存されます。アカウント登録は不要で、複数端末で共有するときだけDropboxを使います。</p>
           </article>
           <article class="item">
-            <h3>ノートも資料もチャットも、一つの場所へ</h3>
-            <ul>
-            <li>集めたWeb資料や画像だけでなく、ノート、表、マインドマップ、シナリオ、スケジュール、チャット履歴まで、同じ作品の中に置けます。</li>
-            <li>同じ作品の資料と記録をまとめてAIへ渡せるため、AIが作品全体を把握したうえで返答しやすくなります。</li>
-            <li>採用した案だけでなく、迷った案やボツ案も消さずに残せます。</li>
-            </ul>
+            <h3>文書・表・マインドマップを作成</h3>
+            <p>ノート、表、マインドマップ、スケジュールを作成できます。Webページ、資料画像、チャット履歴も、作品に紐づけて管理できます。</p>
           </article>
           <article class="item">
-            <h3>自動リンクで設定資料を参照</h3>
-            <ul>
-            <li>表で管理する人物名や用語は、ノートやシナリオに書くだけで自動リンクになります。</li>
-            <li>リンクをたどって、ノート、表、マインドマップ、関連する資料画像のまとまりを行き来できます。</li>
-            <li>リンクを個別に設定しなくても、wikiのように関連資料をたどれます。</li>
-            </ul>
+            <h3>情報どうしを自動リンク</h3>
+            <p>人物名や用語を文書に書くと、関連する表や資料へのリンクが自動で作られます。作品内の設定や資料を、wikiのようにたどって確認できます。</p>
           </article>
         </div>
-        <p>文章や表は一般的な形式で保存・書き出しできます。バックアップと他ツールへの移行も可能です。</p>
       </div>
     </section>
     <section class="section" id="features">
       <div class="section-inner">
-        <h2>機能紹介</h2>
+        <h2>できること</h2>
+        <div class="grid feature-overview">
+          <article class="item">
+            <h3>作る</h3>
+            <p>文書、表、マインドマップ、スケジュールを作成できます。</p>
+          </article>
+          <article class="item">
+            <h3>集める</h3>
+            <p>Webページ、資料画像、チャット履歴、既存のノートや表を、作品に紐づけて管理できます。</p>
+          </article>
+          <article class="item">
+            <h3>整理・探す</h3>
+            <p>自動リンク、全文検索、ファイルへの自動タグ付け、文章による画像検索で、関連する情報を探せます。</p>
+          </article>
+          <article class="item">
+            <h3>AIで活用する</h3>
+            <p>作品に紐づいた資料や設定をAIが参照し、相談への回答や文書・表・マインドマップの作成と編集に利用できます。</p>
+          </article>
+        </div>
+        <details class="feature-details">
+          <summary>すべての機能を見る</summary>
+          <div class="feature-details-body">
         <h3 class="group-title">メイン機能</h3>
         <div class="grid">
           <article class="item">
@@ -454,6 +455,37 @@ var fallbackVersion = 'v0.7.308 BETA';
             </ul>
           </article>
         </div>
+          </div>
+        </details>
+      </div>
+    </section>
+    <section class="section" id="use">
+      <div class="section-inner">
+        <h2>利用方法を選ぶ</h2>
+        <div class="mode-grid use-grid">
+          <article class="mode-card">
+            <h3>デスクトップ版</h3>
+            <p>Windows PCにダウンロードして使います。データは自分で選んだPCのフォルダへ保存されます。</p>
+            <ul class="mode-list">
+              <li>大きな文書や多くの資料を扱う作業に向いています。</li>
+              <li>PC内のAIツールや外部ツールと連携できます。</li>
+            </ul>
+            <div class="mode-actions">
+              <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
+            </div>
+          </article>
+          <article class="mode-card">
+            <h3>クラウド版</h3>
+            <p>ブラウザで開いて使います。iPad、スマホ、Mac、Windowsに対応し、アカウント登録は不要です。</p>
+            <ul class="mode-list">
+              <li>データは初期状態では使っている端末内に保存されます。</li>
+              <li>複数端末で共有するときだけDropboxへ接続できます。</li>
+            </ul>
+            <div class="mode-actions">
+              <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+            </div>
+          </article>
+        </div>
       </div>
     </section>
     <section class="section" id="download">
@@ -479,26 +511,6 @@ var fallbackVersion = 'v0.7.308 BETA';
             <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
           </div>
         </div>
-        <aside class="status-panel" aria-label="配布状態">
-          <header>
-            <img src="Meldex_icon_128.png" alt="">
-            <div>
-              <h2>デスクトップ版 / クラウド版</h2>
-              <p>Windows desktop / Browser cloud</p>
-            </div>
-          </header>
-          <ul class="facts">
-                <li><strong>ダウンロード版</strong><span data-runtime-text="desktop-version">v0.7.308 BETA</span></li>
-            <li><strong>配布形式</strong><span data-runtime-text="desktop-asset">配布ページ</span></li>
-            <li><strong>公開日</strong><span data-runtime-text="desktop-published">公開日未取得</span></li>
-            <li><strong>クラウド版</strong><span><a href="Meldex.html"><span data-runtime-text="cloud-version">v0.7.308 BETA</span> を起動</a></span></li>
-            <li><strong>クラウド版公開日時</strong><span data-runtime-text="cloud-published">確認中</span></li>
-            <li><strong>ベータテスター登録数</strong><span id="beta-tester-count">更新確認中</span></li>
-            <li><strong>Dropbox接続枠（Development）</strong><span id="dropbox-development-count">更新確認中</span></li>
-            <li><strong>集計状態</strong><span id="beta-status-updated">集計値は更新確認中です</span></li>
-            <li><strong>状態</strong><span>BETA。機能名、配置、挙動は変更される可能性があります。</span></li>
-          </ul>
-        </aside>
         <div class="grid">
           <article class="item available">
             <h3>デスクトップ版</h3>
@@ -555,211 +567,6 @@ var fallbackVersion = 'v0.7.308 BETA';
           <article class="item important">
             <h3>クラウド版のバージョン</h3>
             <p>現在公開中のクラウド版は <strong data-runtime-text="cloud-version">v0.7.308 BETA</strong> です。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
-          </article>
-          <article class="item limited">
-            <h3>正式版でのオンラインストレージ対応</h3>
-            <p>将来の正式版では、Apple App Store / Google Play向けのネイティブアプリを公開し、OSのファイル選択機能を通じてiCloud Drive、Google Drive、OneDriveなどのフォルダーを扱えるようにする見込みです。ストア審査と実機検証が必要なため、開発版では今後の実装予定です。</p>
-          </article>
-        </div>
-      </div>
-    </section>
-    <section class="section" id="standalone-apps">
-      <div class="section-inner">
-        <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
-        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
-        <ul class="notes">
-          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
-          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
-          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="samples">
-      <div class="section-inner">
-        <h2>サンプルデータ</h2>
-        <p>サンプル作品は、デスクトップ版でもクラウド版でも、Meldex内の「サンプルを追加」を明示的に押した場合だけホームフォルダへ追加されます。確認ダイアログは表示されません。クラウド版では <code>MeldexHome/サンプル</code> を開くと、ノート、シナリオ、シート、ボードなどをそのまま閲覧・編集できます。</p>
-        <div class="version-picker" aria-label="サンプルデータを追加">
-          <div class="version-meta">
-            <span>デスクトップ版: <strong>設定から明示的に追加</strong></span>
-            <span>クラウド版: <strong>端末内保存またはDropbox接続後、設定から明示的に追加</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="Meldex.html">クラウド版を起動して追加</a>
-            <a class="button subtle" href="#download">デスクトップ版で追加</a>
-          </div>
-        </div>
-        <ul class="notes">
-          <li>初回起動、Dropbox接続、ホームフォルダ変更、設定復帰の際に、サンプル追加の確認を自動表示しません。</li>
-          <li>「サンプルを追加」を押すと、別の確認を挟まず追加を開始します。</li>
-          <li>クラウド版の初期サンプルには、他作品のトリック分析フォルダや生成画像など、公開配布に向かない参考資料は含めません。</li>
-          <li>既に存在するサンプルファイルは上書きしません。編集前の状態を残したい場合は、コピーを作ってから使ってください。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="compare">
-      <div class="section-inner">
-        <h2>クラウド版とデスクトップ版の違い</h2>
-        <p>同じ作品データを扱えますが、保存経路、速度、使える機能が違います。</p>
-        <div class="mode-grid">
-          <article class="mode-card">
-            <h3>デスクトップ版（ソースフォルダ：ローカル）</h3>
-            <p>Windows上でMeldexを起動し、PC内のローカルフォルダをソースフォルダにします。</p>
-            <ul class="mode-list">
-              <li>ローカル保存のため速度面で有利</li>
-              <li>ネットワークなしでも作業できる</li>
-              <li>大きいボード、長いノート、大量のシート編集に向いている</li>
-            </ul>
-            <ul class="mode-list cons">
-              <li>別端末との自動共有はない</li>
-              <li>バックアップを自分で管理する必要がある</li>
-              <li>PC故障時に備えた外部バックアップが必須</li>
-            </ul>
-          </article>
-          <article class="mode-card">
-            <h3>デスクトップ版（ソースフォルダ：同期フォルダー内）</h3>
-            <p>Windows上でMeldexを起動し、Dropbox、Google Drive、OneDrive、iCloud DriveなどがPC上に作る同期フォルダー内のソースフォルダーを、ローカルファイルとして開きます。</p>
-            <ul class="mode-list">
-              <li>PC連携やローカルファイル操作を使える</li>
-              <li>読み書きはローカルファイルなのでCloud版より速い</li>
-              <li>利用中のオンラインストレージを通じて複数PCとデータを共有できる</li>
-            </ul>
-            <ul class="mode-list cons">
-              <li>同期が終わる前に別端末で開くと競合しやすい</li>
-              <li>大量ファイルの初回同期には時間がかかる</li>
-              <li>オンラインストレージの容量と同期状態の管理が必要</li>
-            </ul>
-          </article>
-          <article class="mode-card">
-            <h3>クラウド版</h3>
-            <p>ブラウザでMeldexを開き、初期状態ではこの端末内に保存します。必要になった時だけDropboxへ接続できます。</p>
-            <ul class="mode-list">
-              <li>iPad、スマホ、Macでも使いやすい</li>
-              <li>インストール不要で使える</li>
-              <li>Dropboxへ接続すれば、同じDropboxを使う端末で続きから使える</li>
-            </ul>
-            <ul class="mode-list cons">
-              <li>端末内保存だけでは別端末へ自動共有されない</li>
-              <li>Dropbox接続時は通信速度とDropboxの応答待ちの影響を受ける</li>
-              <li>PC内のコマンドラインツールやOS連携は使えない</li>
-              <li>オフライン利用を選べば、通信できない時もMeldex本体と端末内データを使える</li>
-            </ul>
-          </article>
-        </div>
-        <p>デスクトップ版では、各オンラインストレージのデスクトップ同期アプリがPC上に作ったフォルダーをそのまま使えます。ブラウザ版からオンラインストレージへ直接接続する機能は現在Dropboxのみで、その他のサービスは正式版のネイティブアプリで対応する予定です。</p>
-      </div>
-    </section>
-    <section class="section" id="speed">
-      <div class="section-inner">
-        <h2>速度比較</h2>
-        <p>実測値ではなく、同じデータ量を扱ったときの一般的な体感目安です。端末性能、回線、オンラインストレージの同期状態、ファイル数で変わります。</p>
-        <div class="table-wrap">
-          <table class="compare-table">
-            <thead>
-              <tr>
-                <th>利用形態</th>
-                <th>速度目安</th>
-                <th>読み込み/保存の特徴</th>
-                <th>向いている作業</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>デスクトップ版（ソースフォルダ：ローカル）</td>
-                <td><span class="speed-rank">最速</span></td>
-                <td>PC内のファイルを直接読むため、通信待ちがありません。</td>
-                <td>大きいボード、長いノート、大量シート編集などの長時間作業。</td>
-              </tr>
-              <tr>
-                <td>デスクトップ版（ソースフォルダ：同期フォルダー内）</td>
-                <td><span class="speed-rank mid">速い</span></td>
-                <td>アプリはPC上の同期フォルダーを読み書きし、同期は各オンラインストレージのデスクトップアプリが後追いします。</td>
-                <td>Windows PCで編集し、他端末やクラウド版でも確認したい場合。</td>
-              </tr>
-              <tr>
-                <td>クラウド版</td>
-                <td><span class="speed-rank low">中〜遅い</span></td>
-                <td>端末内保存は通信待ちなしです。Dropbox接続時は回線とDropboxの応答待ちの影響を受けます。</td>
-                <td>iPad/スマホを含む各端末での確認、編集、外出先の追記。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <ul class="notes">
-          <li>速度重視は「デスクトップ版（ソースフォルダ：ローカル）」、PC間共有重視は「デスクトップ版（ソースフォルダ：同期フォルダー内）」、端末自由度重視は「クラウド版」が目安です。</li>
-          <li>クラウド版とDropbox上のデスクトップ版を併用する場合は、保存直後に別端末で開く前に同期完了を確認してください。</li>
-        </ul>
-      </div>
-    </section>
-    <section class="section" id="scope">
-      <div class="section-inner">
-        <h2>対応範囲</h2>
-        <p>利用形態によって、使える端末と一部の機能が異なります。</p>
-        <div class="table-wrap" aria-label="デバイスやOSへの対応状況">
-          <table class="compare-table">
-            <thead>
-              <tr>
-                <th>環境</th>
-                <th>デスクトップ版</th>
-                <th>クラウド版</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Windows PC</td>
-                <td>対応。Windows用ZIPを利用できます。</td>
-                <td>対応。Chrome / Edge などのブラウザで使えます。</td>
-              </tr>
-              <tr>
-                <td>Mac / Linux / Chromebook</td>
-                <td>未提供。</td>
-                <td>対応。最新のブラウザで使えます。</td>
-              </tr>
-              <tr>
-                <td>iPad / タブレット</td>
-                <td>未提供。</td>
-                <td>対応。軽い確認や追記に向いています。</td>
-              </tr>
-              <tr>
-                <td>iPhone / Androidスマホ</td>
-                <td>未提供。</td>
-                <td>対応。狭い画面ではモバイルUIで表示します。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <ul class="notes">
-          <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
-          <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
-        </ul>
-        <div class="grid">
-          <article class="item available">
-            <h3>クラウド版で対応</h3>
-            <ul>
-              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジュール</li>
-              <li>スマートシート、クラウド版フルチャット</li>
-              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
-              <li>フィードバック送信、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
-              <li>シートのセル内テキスト書式とカード内書式表示</li>
-            </ul>
-          </article>
-          <article class="item limited">
-            <h3>クラウド版では使えない端末連携</h3>
-            <ul>
-              <li>リアルタイム共同編集</li>
-              <li>PC内のコマンドラインツールやOS連携</li>
-              <li>外部カレンダー同期リレー未設定時のGoogle / CalDAV同期</li>
-            </ul>
-          </article>
-          <article class="item important">
-            <h3>注意</h3>
-            <ul>
-              <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
-              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
-              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
-              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
-            </ul>
           </article>
         </div>
       </div>
@@ -884,6 +691,91 @@ var fallbackVersion = 'v0.7.308 BETA';
         })();
       </script>
     </section>
+    <section class="section" id="standalone-apps">
+      <div class="section-inner">
+        <h2>各ツールを単独アプリとして使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
+        <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
+        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
+        <ul class="notes">
+          <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
+          <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
+          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
+        </ul>
+      </div>
+    </section>
+    <section class="section" id="scope">
+      <div class="section-inner">
+        <h2>対応範囲</h2>
+        <p>利用形態によって、使える端末と一部の機能が異なります。</p>
+        <div class="table-wrap" aria-label="デバイスやOSへの対応状況">
+          <table class="compare-table">
+            <thead>
+              <tr>
+                <th>環境</th>
+                <th>デスクトップ版</th>
+                <th>クラウド版</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Windows PC</td>
+                <td>対応。Windows用ZIPを利用できます。</td>
+                <td>対応。Chrome / Edge などのブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>Mac / Linux / Chromebook</td>
+                <td>未提供。</td>
+                <td>対応。最新のブラウザで使えます。</td>
+              </tr>
+              <tr>
+                <td>iPad / タブレット</td>
+                <td>未提供。</td>
+                <td>対応。軽い確認や追記に向いています。</td>
+              </tr>
+              <tr>
+                <td>iPhone / Androidスマホ</td>
+                <td>未提供。</td>
+                <td>対応。狭い画面ではモバイルUIで表示します。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="notes">
+          <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
+          <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
+        </ul>
+        <div class="grid">
+          <article class="item available">
+            <h3>クラウド版で対応</h3>
+            <ul>
+              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジュール</li>
+              <li>スマートシート、クラウド版フルチャット</li>
+              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
+              <li>フィードバック送信、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
+              <li>シートのセル内テキスト書式とカード内書式表示</li>
+            </ul>
+          </article>
+          <article class="item limited">
+            <h3>クラウド版では使えない端末連携</h3>
+            <ul>
+              <li>打鍵単位のリアルタイム共同編集</li>
+              <li>PC内のコマンドラインツールやOSへの直接アクセス（共有ワークスペースの「管理者AIに依頼」経由の依頼は対応）</li>
+              <li>ローカルCalDAVサーバーとの同期・外部iCal URLの購読（.icsの取り込み/書き出し、Google / Microsoftカレンダー連携、iPhone向け購読URLは対応）</li>
+            </ul>
+          </article>
+          <article class="item important">
+            <h3>注意</h3>
+            <ul>
+              <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
+              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
+              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
+              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
     <section class="section" id="support">
       <div class="section-inner">
         <h2>サポートと確認資料</h2>
@@ -901,10 +793,6 @@ var fallbackVersion = 'v0.7.308 BETA';
             <p>Meldex内の設定またはフィードバック導線から送信してください。送信に失敗した場合はローカルに控えが残ります。</p>
           </article>
         </div>
-        <ul class="notes">
-          <li>このページは検索結果に出にくい設定です。</li>
-          <li>リンクを受け取った人は開けるため、必要な相手にだけ共有してください。</li>
-        </ul>
       </div>
     </section>
   </main>
