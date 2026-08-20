@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.308-c5e4ce32237fe10c2033",
+  "version": "0.7.308-94932a80e8bd7f4a2c83",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -3345,7 +3345,7 @@
     },
     {
       "path": "index.html",
-      "sha256": "607404f39110fd06031de2f5f704b6aff6a7281736138a74c2eb5754c9061087"
+      "sha256": "cf15a4609ea59e894179f2c4cadec420e4e89637459751c0a6babd15365ec6e4"
     },
     {
       "path": "manifest.json",
@@ -3777,7 +3777,7 @@
     },
     {
       "path": "public-index.html",
-      "sha256": "5058d6c5ee59ed091f1af79136e86886902dcea43d56cf269daeaad8118c514a"
+      "sha256": "cde80455b300e14c8b4e8bd7fc1b0865539de6357d1267d838eff3247c825cd5"
     },
     {
       "path": "public-legal.css",
