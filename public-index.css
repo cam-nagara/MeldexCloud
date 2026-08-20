@@ -292,9 +292,6 @@ h1 {
   gap: 12px;
   margin-top: 18px;
 }
-.philosophy-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
 .item {
   min-width: 0;
   padding: 16px;
@@ -453,41 +450,6 @@ h1 {
   width: 100%;
   height: auto;
 }
-.showcase {
-  display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 4fr);
-  gap: clamp(18px, 3vw, 36px);
-  align-items: center;
-  margin-top: 26px;
-}
-.showcase-media {
-  margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--surface);
-}
-.showcase-media img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-.showcase.flip .showcase-media {
-  order: 2;
-}
-.showcase.solo {
-  grid-template-columns: 1fr;
-  max-width: 760px;
-}
-.showcase-copy h3 {
-  margin: 0 0 8px;
-  font-size: 20px;
-  letter-spacing: 0;
-}
-.showcase-copy p {
-  color: var(--muted);
-  font-size: 15px;
-}
 .section .status-panel {
   max-width: 560px;
   margin-top: 18px;
@@ -510,12 +472,6 @@ h1 {
   .grid,
   .mode-grid {
     grid-template-columns: 1fr;
-  }
-  .showcase {
-    grid-template-columns: 1fr;
-  }
-  .showcase.flip .showcase-media {
-    order: 0;
   }
 }
 @media (max-width: 520px) {
