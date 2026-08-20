@@ -8,7 +8,7 @@
   <meta name="googlebot" content="noindex,nofollow,noarchive,noimageindex">
   <meta name="color-scheme" content="dark">
   <title>Meldex BETA</title>
-  <meta name="description" content="Meldex BETA の配布ページです。ノート、表、マインドマップ、資料画像、チャット履歴を自分のPCや端末内に保存し、自動リンクでwikiのようにつなぐ創作支援ワークスペースです。">
+  <meta name="description" content="Meldex BETA の配布ページです。マンガ・小説・ゲームなどの制作情報を管理し、文書、表、マインドマップ、資料画像、Webページなどを自動リンクでつなげてAIによる整理や活用に利用できます。">
   <link rel="icon" href="Meldex_icon_64.png" type="image/png">
   <link rel="apple-touch-icon" sizes="180x180" href="Meldex_apple_touch_icon_180.png">
   <link rel="apple-touch-icon" sizes="167x167" href="Meldex_apple_touch_icon_167.png">
@@ -206,8 +206,8 @@ var fallbackVersion = 'v0.7.308 BETA';
       <img src="Meldex_icon_64.png" alt="">
       <span>Meldex BETA</span>
     </a>
-    <nav class="nav" aria-label="ページ内ナビゲーション">
-      <a href="#philosophy">特徴</a>
+    <nav class="nav nav-desktop" aria-label="ページ内ナビゲーション">
+      <a href="#philosophy">Meldexとは</a>
       <a href="#features">できること</a>
       <a href="#use">利用方法</a>
       <a href="#download">ダウンロード</a>
@@ -215,16 +215,44 @@ var fallbackVersion = 'v0.7.308 BETA';
       <a href="#support">利用上の注意</a>
       <a href="#changelog">更新履歴</a>
     </nav>
+    <details class="nav-menu">
+      <summary>ページ内メニュー</summary>
+      <nav class="nav nav-mobile" aria-label="スマートフォン用ページ内ナビゲーション">
+        <a href="#philosophy">Meldexとは</a>
+        <a href="#features">できること</a>
+        <a href="#use">利用方法</a>
+        <a href="#download">ダウンロード</a>
+        <a href="#standalone-apps">単独アプリ</a>
+        <a href="#support">利用上の注意</a>
+        <a href="#changelog">更新履歴</a>
+      </nav>
+    </details>
   </header>
+  <script>
+    (function () {
+      var menu = document.querySelector('.nav-menu');
+      if (!menu) return;
+      menu.addEventListener('click', function (event) {
+        if (!event.target.closest('a')) return;
+        window.setTimeout(function () {
+          menu.open = false;
+        }, 0);
+      });
+      menu.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape' || !menu.open) return;
+        menu.open = false;
+        menu.querySelector('summary')?.focus();
+      });
+    })();
+  </script>
   <main>
     <section class="hero" id="start">
       <div class="hero-copy">
         <p class="eyebrow">制作に関する情報を、つなげて管理。</p>
         <h1>Meldex BETA</h1>
         <p class="lead">
-          Meldexは、マンガ・小説・ゲームなどの制作に関する情報を管理するアプリです。
-          文書、表、マインドマップ、資料画像、チャット履歴、Webページなど、さまざまな形式の情報を自動リンクでつなぎ、AIによる整理や活用ができます。
-          ファイルへの自動タグ付け、文章による画像検索、作品全体の情報を踏まえたAIとの相談などに利用できます。
+          Meldexは、マンガ・小説・ゲームなどの制作情報を管理するアプリです。
+          文書、表、マインドマップ、資料画像、Webページ、Meldex内のチャット履歴などを自動リンクでつなぎ、自動タグ付け、文章による画像検索、作品の情報を踏まえたAIとの相談などに利用できます。
         </p>
         <div class="actions">
           <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
@@ -240,16 +268,16 @@ var fallbackVersion = 'v0.7.308 BETA';
         <h2>Meldexの特徴</h2>
         <div class="grid">
           <article class="item">
-            <h3>作品データを自分のPC・端末に保存</h3>
-            <p>多くのWebアプリでは、作成したデータはサービスのクラウド上にだけ保存されます。Meldexでは、データを最初から自分のPCや端末内に保存します。複数端末で共有するときだけDropboxを使います。</p>
-          </article>
-          <article class="item">
             <h3>文書・表・マインドマップを作成</h3>
-            <p>ノート、表、マインドマップ、スケジュールを作成できます。Webページ、資料画像、チャット履歴も、作品に紐づけて管理できます。</p>
+            <p>ノート、表、マインドマップ、スケジュールを作成できます。Webページ、資料画像、Meldex内のチャット履歴なども、関連する制作資料として管理できます。</p>
           </article>
           <article class="item">
             <h3>情報同士を自動リンク</h3>
             <p>人物名や用語を文書に書くと、関連する表や資料へのリンクが自動で作られます。作品内の設定や資料を、wikiのようにたどって確認できます。</p>
+          </article>
+          <article class="item">
+            <h3>グループウェアとして使う</h3>
+            <p>チャット、スケジュール、ToDo、勤怠管理などを備え、制作チームの連絡、予定、作業状況の管理や、資料の共有に使えます。</p>
           </article>
         </div>
       </div>
@@ -260,23 +288,23 @@ var fallbackVersion = 'v0.7.308 BETA';
         <div class="grid feature-overview">
           <article class="item">
             <h3>作る</h3>
-            <p>文書、表、マインドマップ、スケジュールを作成できます。</p>
+            <p>文章や設定資料を書けます。人物・用語・進行状況などは表で整理でき、アイデアや構成はカードを線でつないだマインドマップやハコ書きとして組み立てられます。</p>
           </article>
           <article class="item">
             <h3>集める</h3>
-            <p>Webページ、Xのブックマーク、チャット履歴を取り込み、Webページ内の画像も一括ダウンロードできます。PC内の既存フォルダもソースフォルダとして読み込み、作品に紐づけて管理できます。</p>
+            <p>WebページやXのブックマークを取り込み、Webページ内の画像を一括保存できます。PC内の既存フォルダも、Meldexから参照する資料の保存場所として登録できます。</p>
           </article>
           <article class="item">
             <h3>整理・探す</h3>
-            <p>自動リンク、全文検索、ファイルへの自動タグ付け、文章による画像検索、重複画像検出で、関連する情報を探して整理できます。</p>
+            <p>自動リンク、全文検索、自動タグ付け、文章による画像検索、重複画像検出を使って、必要な情報を探して整理できます。</p>
           </article>
           <article class="item">
             <h3>AIで活用する</h3>
-            <p>作品に紐づいた資料や設定をAIが参照し、相談への回答や文書・表・マインドマップの作成と編集に利用できます。</p>
+            <p>保存している資料や設定をAIが参照し、相談への回答や、文書・表・マインドマップの作成・編集に利用できます。</p>
           </article>
         </div>
         <details class="feature-details">
-          <summary>すべての機能を見る</summary>
+          <summary>機能の詳細を見る</summary>
           <div class="feature-details-body">
         <h3 class="group-title">メイン機能</h3>
         <div class="grid">
@@ -297,7 +325,7 @@ var fallbackVersion = 'v0.7.308 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>ノートエディタ</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>ノート</h3>
             <ul>
             <li>自動リンク: シートに登録した名前を本文に書くだけで関連資料へのリンクが自動で張られ、バックリンクからつながりを辿れます。</li>
             <li>Markdown形式のリッチテキスト編集。見出し・リスト・画像・コールアウト・目次を扱えます。</li>
@@ -315,9 +343,9 @@ var fallbackVersion = 'v0.7.308 BETA';
           <article class="item">
             <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></svg>シート</h3>
             <ul>
-            <li>リレーション・ロールアップ・数式などの列タイプで、キャラ・設定・伏線・タスクを構造化できます。生年月日から年齢を求めるような数式も書けます。</li>
-            <li>ひとつの項目に複数の案を「採用・案・ボツ」のステータス付きで残せます。没にした案も消えず、いつでも見返せます。</li>
-            <li>ピボット・ギャラリー・カンバン・タイムライン・チャートの表示切り替え、画像サムネイルの拡大表示、スケジュールとの双方向同期に対応します。</li>
+            <li>設定、人物、伏線、タスクなどを表形式で管理できます。</li>
+            <li>リレーション、ロールアップ、数式などの列を利用できます。</li>
+            <li>ピボット、ギャラリー、カンバン、タイムライン、チャートなどの表示に対応します。</li>
             </ul>
           </article>
           <article class="item">
@@ -348,7 +376,7 @@ var fallbackVersion = 'v0.7.308 BETA';
         <h3 class="group-title">補助機能</h3>
         <div class="grid">
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>オプションパネル</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg>編集パネル</h3>
             <ul>
             <li>選択中の対象に応じて内容が自動で切り替わる編集パネルです。</li>
             <li>エントリのプロパティ編集やファイルテーマの設定ができます。</li>
@@ -388,7 +416,7 @@ var fallbackVersion = 'v0.7.308 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>ヒストリー</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>操作履歴</h3>
             <ul>
             <li>直近の操作を一覧から取り消し・やり直しできます。</li>
             <li>ファイル単位の履歴も確認できます。</li>
@@ -415,7 +443,7 @@ var fallbackVersion = 'v0.7.308 BETA';
         <h3 class="group-title">取り込み・外部連携</h3>
         <div class="grid">
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>インポート</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>データの取り込み</h3>
             <ul>
             <li>Notion・Obsidian・Evernote のノートをMeldexへ取り込めます（外部サービス側は変更しません）。</li>
             <li>CSV / Excel の取り込みや、画像・ファイルの貼り付けに対応します。</li>
@@ -439,7 +467,7 @@ var fallbackVersion = 'v0.7.308 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>AIツール連携（CLI / MCP）</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>AIツール連携（デスクトップ版）</h3>
             <ul>
             <li>Claude Code / Codex / Gemini CLI などのAI CLIから、Meldex内のノートやシートを直接読み書きできます（デスクトップ版）。</li>
             <li>手元に貯めた資料・設定・作業ログが、そのままAIの参照資料になります。</li>
@@ -447,11 +475,11 @@ var fallbackVersion = 'v0.7.308 BETA';
             </ul>
           </article>
           <article class="item">
-            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>エクスポート・移行</h3>
+            <h3 class="feature-title"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>書き出し・移行</h3>
             <ul>
             <li>Word文書・HTML・画像・CSV・ICSなど、一般的な形式への書き出しに対応します。</li>
-            <li>作品フォルダを丸ごとコピーするだけで、バックアップや別環境への引っ越しができます。</li>
-            <li>他ツールへ移行するための手順もマニュアルとして用意しています。囲い込まないことを方針にしています。</li>
+            <li>作業フォルダはコピーして、バックアップや別環境への移行に使えます。</li>
+            <li>他のツールへ移行するための手順をマニュアルで確認できます。</li>
             </ul>
           </article>
         </div>
@@ -467,8 +495,9 @@ var fallbackVersion = 'v0.7.308 BETA';
             <h3>デスクトップ版</h3>
             <p>Windows PCにダウンロードして使います。データは自分で選んだPCのフォルダへ保存されます。</p>
             <ul class="mode-list">
-              <li>大きな文書や多くの資料を扱う作業に向いています。</li>
-              <li>PC内のAIツールや外部ツールと連携できます。</li>
+              <li>PC内のファイルを直接扱えます。</li>
+              <li>PC上のAIツールやほかのソフトと連携できます。</li>
+              <li>インターネット接続なしでも使えます。</li>
             </ul>
             <div class="mode-actions">
               <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
@@ -491,7 +520,7 @@ var fallbackVersion = 'v0.7.308 BETA';
     <section class="section" id="download">
       <div class="section-inner">
         <h2>デスクトップ版をダウンロード</h2>
-        <p>Windows PCでローカルファイルとして扱いたい場合は、デスクトップ版を利用できます。PC内のファイルを直接読むため、速度や外部ツール連携の面で有利です。</p>
+        <p>Windows PCで、PC内のファイルを直接扱いたい場合はデスクトップ版を利用できます。外部AIツールなど、PC上のほかのソフトとも連携できます。</p>
         <div class="version-picker" aria-label="ダウンロードするバージョン">
           <label for="desktop-version-select">
             ダウンロードするバージョン
@@ -511,76 +540,41 @@ var fallbackVersion = 'v0.7.308 BETA';
             <a class="button subtle" href="#download" data-runtime-href="desktop-releases">すべての過去版を見る</a>
           </div>
         </div>
-        <div class="grid">
-          <article class="item available">
-            <h3>デスクトップ版</h3>
-            <p>Windowsダウンロード版では、Dropbox、Google Drive、OneDrive、iCloud Driveなど、デスクトップ同期アプリがPC上に作成する同期フォルダーを、ホームフォルダー、ワークスペースフォルダー、ソースフォルダーとして利用できます。Meldex側でサービスごとの接続設定は不要です。PC上に同期フォルダーを作成しないWeb専用サービスは対象外です。</p>
-          </article>
-          <article class="item limited">
-            <h3>古いバージョン</h3>
-            <p>過去版を取得できた場合は、上の選択欄で選べます。表示されない場合は「すべての過去版を見る」から選んでください。</p>
-          </article>
-          <article class="item important">
-            <h3>確認事項</h3>
-            <p>インストール前、または古い版へ戻す前には、作品フォルダをバックアップしてください。</p>
-          </article>
-        </div>
+        <ul class="notes">
+          <li>Dropbox、Google Drive、OneDrive、iCloud DriveなどがPC上に作成する同期フォルダも利用できます。</li>
+          <li>インストール前や古い版へ戻す前には、作業フォルダをバックアップしてください。</li>
+        </ul>
       </div>
     </section>
     <section class="section" id="cloud">
       <div class="section-inner">
         <h2>クラウド版</h2>
-        <p>Meldex Cloudはアカウントなしですぐに開始でき、初期状態ではこの端末内に保存します。Dropboxへの接続とオフライン利用は、起動後いつでも設定できます。</p>
-        <p>端末内保存はブラウザごとに独立しています。別の端末と同じデータを使う場合だけ、設定からDropboxへ接続してください。切り替えても端末内データを自動で移動・削除しません。</p>
-        <div class="version-picker" aria-label="クラウド版を起動">
-          <div class="version-meta">
-            <span>公開中の版: <strong data-runtime-text="cloud-version">v0.7.308 BETA</strong></span>
-            <span>公開日時: <strong data-runtime-text="cloud-published">確認中</strong></span>
-            <span>確認状態: <strong data-runtime-text="cloud-release-state" aria-live="polite">公開情報を確認中</strong></span>
-            <span>初期保存先: <strong>この端末内</strong></span>
-            <span>必要なアカウント: <strong>なし</strong></span>
-          </div>
-          <div class="mode-actions">
-            <a class="button primary" href="Meldex.html">クラウド版を起動</a>
-          </div>
+        <p>Meldex Cloudはブラウザですぐに使えます。アカウント登録は不要で、データは初期状態ではこの端末内に保存されます。別の端末と共有するときだけDropboxへ接続します。</p>
+        <div class="mode-actions cloud-primary-action">
+          <a class="button primary" href="Meldex.html">クラウド版を起動</a>
         </div>
         <div class="grid">
-          <article class="item available">
-            <h3>すぐ開ける</h3>
-            <p>iPad、iPhone、Android、Windows、Macなどの最新ブラウザで、アカウントを作らずに開始できます。</p>
-            <div class="mode-actions">
-              <a class="button" href="Meldex.html">クラウド版を起動</a>
-            </div>
-          </article>
           <article class="item limited">
             <h3>オンライン / オフラインを選べる</h3>
-            <p>初回起動時に、オンライン時だけ使うか、Meldex本体を端末へ保存してオフラインでも使うかを選べます。設定から後で変更できます。</p>
+            <p>ブラウザでそのまま使う方法と、Meldexを端末へ保存してオフラインでも使う方法を選べます。設定は後から変更できます。</p>
           </article>
           <article class="item available">
-            <h3>ホーム画面に追加</h3>
-            <p>Meldex本体とクイックメモは別々に追加できます。本体は作業全体、クイックメモは短いメモや共有URLの保存に使います。</p>
-            <div class="mode-actions">
-              <a class="button" href="Meldex.html">Meldex本体を開く</a>
-              <a class="button subtle" href="quick-memo.html">クイックメモを開く</a>
-            </div>
-          </article>
-          <article class="item important">
-            <h3>クラウド版のバージョン</h3>
-            <p>現在公開中のクラウド版は <strong data-runtime-text="cloud-version">v0.7.308 BETA</strong> です。以前の版で作業したい場合は、デスクトップ版の過去版を選んでください。</p>
+            <h3>アプリのようにすぐ開く</h3>
+            <p>スマホやiPadでは、Meldexをホーム画面に追加できます。追加後はホーム画面のアイコンをタップするだけで、通常のアプリと同じように開けます。</p>
           </article>
         </div>
+        <p class="section-note">Dropboxへ切り替えても、端末内のデータが自動で移動・削除されることはありません。</p>
       </div>
     </section>
     <section class="section" id="standalone-apps">
       <div class="section-inner">
-        <h2>各ツールを単独アプリとして使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは個別に利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadではクラウド版を開いて各アプリを別々にホーム画面へ追加できます。</p>
+        <h2>必要なツールだけを単独で使う</h2>
+        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは、それぞれ単独でも利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadでは各ツールをホーム画面へ追加できます。</p>
         <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
         <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
         <ul class="notes">
           <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
           <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
-          <li>Windows版の個別ダウンロードが準備中の場合は、配布ページを案内します。</li>
         </ul>
       </div>
     </section>
@@ -611,12 +605,12 @@ var fallbackVersion = 'v0.7.308 BETA';
               <tr>
                 <td>iPad / タブレット</td>
                 <td>未提供。</td>
-                <td>対応。軽い確認や追記に向いています。</td>
+                <td>対応。最新のブラウザで使えます。</td>
               </tr>
               <tr>
                 <td>iPhone / Androidスマホ</td>
                 <td>未提供。</td>
-                <td>対応。狭い画面ではモバイルUIで表示します。</td>
+                <td>対応。スマホ向けの画面で使えます。</td>
               </tr>
             </tbody>
           </table>
@@ -625,32 +619,21 @@ var fallbackVersion = 'v0.7.308 BETA';
           <li>デスクトップ版はWindows用ZIPとして配布しています。Mac/Linux用アプリは現時点ではありません。</li>
           <li>クラウド版はブラウザ内保存を初期値とし、必要な場合だけDropboxへ接続します。端末性能、ブラウザ、接続先によって体感が変わります。</li>
         </ul>
-        <div class="grid">
-          <article class="item available">
-            <h3>クラウド版で対応</h3>
-            <ul>
-              <li>フォルダ、ノート、シナリオ、ボード、シート、スケジュール</li>
-              <li>スマートシート、クラウド版フルチャット</li>
-              <li>AI APIキーの暗号化Cloud保存、注釈、バージョン管理</li>
-              <li>意見・不具合報告、Dropbox競合検知/解決、スマホ/タブレットUI、ホーム画面追加</li>
-              <li>シートのセル内テキスト書式とカード内書式表示</li>
-            </ul>
-          </article>
+        <div class="grid scope-notes-grid">
           <article class="item limited">
-            <h3>クラウド版では使えない端末連携</h3>
+            <h3>クラウド版の制限</h3>
             <ul>
               <li>打鍵単位のリアルタイム共同編集</li>
-              <li>PC内のコマンドラインツールやOSへの直接アクセス（共有ワークスペースの「管理者AIに依頼」経由の依頼は対応）</li>
-              <li>ローカルCalDAVサーバーとの同期・外部iCal URLの購読（.icsの取り込み/書き出し、Google / Microsoftカレンダー連携、iPhone向け購読URLは対応）</li>
+              <li>PC内のコマンドラインツールやOSへの直接アクセス</li>
+              <li>ローカルCalDAVサーバーとの同期</li>
             </ul>
           </article>
           <article class="item important">
-            <h3>注意</h3>
+            <h3>利用前の注意</h3>
             <ul>
               <li>AI APIキーのCloud保存は、暗号化パスフレーズを忘れると復元できません。</li>
-              <li>LLM連携では、質問本文と選択した関連コンテキストが各LLMプロバイダへ送信されます。</li>
-              <li>この配布ページやマニュアルは、LLMを利用して作成・更新している箇所があります。開発者がすべてのページと記述を個別に確認できていない場合があります。</li>
-              <li>重要な作品データは作業フォルダごとバックアップしてください。</li>
+              <li>AIを利用すると、質問内容と選択した資料が、使用するAIサービスへ送信されます。</li>
+              <li>重要な制作データは、作業フォルダごとバックアップしてください。</li>
             </ul>
           </article>
         </div>
@@ -673,8 +656,8 @@ var fallbackVersion = 'v0.7.308 BETA';
             <p>Meldexは、将来オープンソースソフトウェアとして公開する予定です。公開後は、適用されるライセンスに従って修正・利用・再配布できます。開発者による更新は不定期に行われ、更新時期や継続は保証されません。</p>
           </article>
           <article class="item">
-            <h3>意見・不具合を送る</h3>
-            <p>Meldex内から意見や不具合の報告を送れます。内容は今後の更新の参考にしますが、個別の返信や対応は約束しません。送信できなかった場合は端末内に控えが残ります。</p>
+            <h3>意見・不具合を記録・送信</h3>
+            <p>デスクトップ版で送信先が設定済みの場合、Meldex内から報告できます。通信に失敗した報告は端末内の送信待ちに保存され、次回起動時に再送されます。送信先が未設定の場合とクラウド版では、端末内への記録のみです。</p>
           </article>
         </div>
       </div>
@@ -682,7 +665,7 @@ var fallbackVersion = 'v0.7.308 BETA';
     <section class="section" id="changelog">
       <div class="section-inner">
         <h2>更新履歴</h2>
-        <p>各バージョンの変更内容の一覧です。ダウンロード欄で版を選んで「この版の変更内容を見る」を押すと、該当バージョンの位置へ移動します。</p>
+        <p>公開した各バージョンの変更内容を確認できます。</p>
         <div class="changelog-box" aria-label="バージョンごとの変更内容">
           <p id="changelog-loading">更新履歴を読み込んでいます…</p>
           <p id="changelog-fallback" hidden>更新履歴を読み込めませんでした。<a href="CHANGELOG.md">更新履歴ファイルを直接開く</a></p>

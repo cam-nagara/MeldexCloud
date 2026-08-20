@@ -1,6 +1,6 @@
 {
   "type": "meldex-cloud-beta-public-readiness-log",
-  "generatedAt": "2026-08-20T09:57:51.213566+00:00",
+  "generatedAt": "2026-08-20T12:53:09.8713348+00:00",
   "semver": "0.7.308",
   "variant": "cloud-beta",
   "publicationDecision": "external-manual-gates-required",
@@ -159,16 +159,16 @@
     }
   ],
   "artifactHashes": {
-    "index.html": "cf15a4609ea59e894179f2c4cadec420e4e89637459751c0a6babd15365ec6e4",
+    "index.html": "b2d444646bd69eaff3525e2f7b05a3f4bf0f4684edc75a948e372908c992ad64",
     "public-standalone-apps.css": "957d0ad118b5ac7880fef917165dc82f8dd08e8c3270df58a09827cbba28e99b",
-    "public-index.css": "db9e31b3a3ae01b905830b64fd476b2ed0f4c3d4c88103843166ee7afc53f8e1",
+    "public-index.css": "62a58af53a33d3ed8f3317c1592148e8b7bdffa0aa5cfe855ac201a04dd18d92",
     "public-standalone-apps.js": "3ba003f9c6447bb2dcd1fa440c29960358026896c5a9873f3eb2516245a30c3b",
     "public-cloud-release-status.js": "8869e99eaa2f323d80e94943d1a49a6871fbccd620ec16bf1b406a1bccbc9eca",
     "Meldex.html": "63549b51e617e71857da79a5c25563475cdd1d8ddeab84c38a928c9ac4331369",
     "manifest.json": "eac8ac5a6991f93f68a08a61b07b555f8421c1be20d4a329a93a88a380ee20c8",
     "sw.js": "f6619dd973b742d32f4576ad9e340a2d182c64f9403afe2e6bb2140b11393a96",
     "beta-status.json": "15aba1a088dd30836b88c780db4e0ddaa661ae43a00a315c879ddef0dfdffc79",
-    "offline-shell-manifest.json": "84b47781f3ecee8d9a503bf6845825cd83bcd18e854e768a50b74f7a764ccaa1",
+    "offline-shell-manifest.json": "4f2139ed4285b192d9e9c92172b6da70faa06e32ddf16e13a098d3fdb8500090",
     "gb-config.js": "885b85dbe7908bd4e07162e5a84eaea8a86be229c05d0a8fda049d9cbe32b9c7",
     "gb-cloud-runtime-config.js": "cb4783cbaaa919fb83709dd9c30c5cf7c93f5558123bf6db9e5c78c4f492b0e0",
     "cloud-samples/manifest.json": "3365a290498bf0dfd83b0e859c97fc8fcb6be491e3629225f44172815629c957",
