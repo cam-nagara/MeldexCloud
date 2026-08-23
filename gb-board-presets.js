@@ -444,7 +444,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <div class="sep"></div>
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="カード追加" aria-label="カード追加">${_bdIcon('credit-card', 16)}</button>
+      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="トピック追加" aria-label="トピック追加">${_bdIcon('credit-card', 16)}</button>
       <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル" aria-label="カードスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>

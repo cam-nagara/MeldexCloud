@@ -5,10 +5,12 @@
    ============================== */
 
 class CanvasComponent extends ToolComponent {
-  constructor(paneId, tabId) {
+  constructor(paneId, tabId, options) {
     super(paneId, tabId);
+    this.options = options || {};
     this._interactionCleanup = null;
     this._keyboardCleanup = null;
+    this._boardLoadPending = null;
     this.idSuffix = _bdComponentIdSuffix(tabId || paneId);
     // multi:true の複数キャンバスタブでグローバル bd を共有しないための dump slot
     this._bdDump = null;
@@ -35,6 +37,10 @@ class CanvasComponent extends ToolComponent {
   }
 
   _isOwnPaneActive() {
+    // TopicViewHost serializes embedded Board runtimes because the current
+    // canvas engine still owns the global `bd` state.  The selected embed is
+    // therefore its own active surface even though it is not a GBLayout pane.
+    if (this.options?.embedded) return true;
     if (typeof GBLayout === 'undefined') return true;
     if (this.paneId === GBLayout.activePane) return true;
     const surface = GBLayout.paneMap?.[this.paneId]?.surface;
@@ -42,12 +48,21 @@ class CanvasComponent extends ToolComponent {
   }
 
   _trackBoardLoad(result) {
-    Promise.resolve(result).then((ok) => {
+    const pending = Promise.resolve(result);
+    this._boardLoadPending = pending;
+    pending.then((ok) => {
       if (!this.el) return;
       if (ok === false) this.el.dataset.loadFailed = '1';
-      else delete this.el.dataset.loadFailed;
+      else {
+        delete this.el.dataset.loadFailed;
+        if (this._isOwnPaneActive() && typeof MeldexBoardTopicIntegration !== 'undefined') {
+          MeldexBoardTopicIntegration.mountToolbar(bd);
+        }
+      }
     }).catch(() => {
       if (this.el) this.el.dataset.loadFailed = '1';
+    }).finally(() => {
+      if (this._boardLoadPending === pending) this._boardLoadPending = null;
     });
   }
 
@@ -108,6 +123,9 @@ class CanvasComponent extends ToolComponent {
       this._bdDump = null;
     } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
       this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
+    }
+    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+      MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }
 
@@ -200,6 +218,31 @@ class CanvasComponent extends ToolComponent {
     }
     if (this.el) delete this.el.dataset.loadFailed;
     this._bdDump = null;
+    return true;
+  }
+
+  onEmbeddedWheel(detail, event) {
+    if (!this.options.embedded || typeof bd === 'undefined') return false;
+    this.activate();
+    if (this._boardLoadPending) return false;
+    if (detail.mode === 'zoom') {
+      const oldZoom = Number(bd.zoom) || 1;
+      const direction = detail.deltaY > 0 ? -0.1 : 0.1;
+      bd.zoom = typeof bdClampZoom === 'function'
+        ? bdClampZoom(Math.round((oldZoom + direction) * 10) / 10)
+        : Math.max(0.1, Math.min(4, oldZoom + direction));
+      const canvas = this.el?.querySelector?.('[data-bd-role="canvas"]');
+      const rect = canvas?.getBoundingClientRect?.();
+      const x = Number(event?.clientX) - Number(rect?.left || 0);
+      const y = Number(event?.clientY) - Number(rect?.top || 0);
+      bd.panX = x - (x - (Number(bd.panX) || 0)) * (bd.zoom / oldZoom);
+      bd.panY = y - (y - (Number(bd.panY) || 0)) * (bd.zoom / oldZoom);
+    } else {
+      bd.panX = (Number(bd.panX) || 0) - Number(detail.deltaX || 0);
+      bd.panY = (Number(bd.panY) || 0) - Number(detail.deltaY || 0);
+    }
+    if (typeof bdTransform === 'function') bdTransform();
+    if (typeof bdDumpState === 'function') this._bdDump = bdDumpState();
     return true;
   }
 }

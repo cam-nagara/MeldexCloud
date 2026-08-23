@@ -1021,6 +1021,9 @@ function renderEntityCell(entityName, propName, ctx, options) {
     // 従来どおり出す（hidesCandidateStatusUi）。
     const _hideStatusUi = typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(dbPath);
     const _forceStatusDot = values.length > 1 && !_hideStatusUi;
+    if (ptc?.type === 'multi-link' && typeof sortDbMultiLinkValues === 'function') {
+      values = sortDbMultiLinkValues(values);
+    }
     values.forEach(val => {
       container.appendChild(
         ptc ? createTypedValueElement(val, _entityPath(dbPath, entityName), propName, thumbSize, ptc, { dbPath, ctx, filter: ctx?.filter, forceStatusDot: _forceStatusDot })
@@ -1059,8 +1062,8 @@ function renderEntityCell(entityName, propName, ctx, options) {
   if (cc) { td.style.background = cc.bg; td.style.color = cc.fg; }
 
   // リンク型: サイドバーD&D（application/x-meldex-node）を受理する
-  if (ptc && ptc.type === 'link' && typeof decorateDbLinkCellDrop === 'function') {
-    decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath);
+  if (ptc && (ptc.type === 'link' || ptc.type === 'multi-link') && typeof decorateDbLinkCellDrop === 'function') {
+    decorateDbLinkCellDrop(td, entityName, propName, ctx, dbPath, { multiple: ptc.type === 'multi-link' });
   }
 
   // click は tbody 委譲で処理 (空セル/アクティブセル切替は _handleTbodyClick 内)
@@ -1103,7 +1106,7 @@ function renderEntityRow(entityName, ctx, options) {
   tdName.dataset.dbColToken = '__entity__';
   tdName.dataset.e2eId = _dbE2eId(ctx, 'entry-name-cell', entityName);
   tdName.setAttribute('role', 'rowheader');
-  tdName.setAttribute('aria-label', `エントリ: ${entityName}`);
+  tdName.setAttribute('aria-label', `トピック: ${entityName}`);
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.width = _entityW + 'px';
   tdName.style.minWidth = _entityW + 'px';
@@ -1122,11 +1125,11 @@ function renderEntityRow(entityName, ctx, options) {
   // ＋ボタン (エントリ追加: クリック=下に追加 / Alt+クリック=上に追加)
   const addRowBtn = document.createElement('span');
   addRowBtn.className = 'row-add-btn';
-  addRowBtn.title = 'クリックで下にエントリを追加 / Alt+クリックで上に追加';
+  addRowBtn.title = 'クリックで下にトピックを追加 / Alt+クリックで上に追加';
   addRowBtn.draggable = false;
   addRowBtn.tabIndex = 0;
   addRowBtn.setAttribute('role', 'button');
-  addRowBtn.setAttribute('aria-label', 'エントリを追加');
+  addRowBtn.setAttribute('aria-label', 'トピックを追加');
   addRowBtn.dataset.e2eId = 'db-row-add-' + String(entityName || '').replace(/[^\w\u3040-\u30ff\u3400-\u9fff-]+/g, '-').slice(0, 60);
   addRowBtn.innerHTML = lucide('plus', 12);
   const triggerAddRow = (e) => {
@@ -1178,7 +1181,7 @@ function renderEntityRow(entityName, ctx, options) {
   cb.className = 'row-select-cb';
   cb.dataset.entityName = entityName;
   cb.dataset.e2eId = `db-row-select-${entityName}`;
-  cb.setAttribute('aria-label', `エントリ選択: ${entityName}`);
+  cb.setAttribute('aria-label', `トピック選択: ${entityName}`);
   // D-5: ctx の Set に含まれていれば checked 状態で生成 (render 跨ぎで選択維持)
   const isSelected = ctx && ctx._selectedEntities && ctx._selectedEntities.has(entityName);
   cb.checked = !!isSelected;
@@ -1214,20 +1217,23 @@ function renderEntityRow(entityName, ctx, options) {
     e.stopPropagation();
   });
   openBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
     e.stopPropagation();
     const ep = typeof _entityPath === 'function' ? _entityPath(dbPath, entityName) : '';
     if (!ep) return;
     const cfg = typeof getDbViewConfig === 'function' ? getDbViewConfig(dbPath) : {};
     const target = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
-      : (cfg.defaultPanel || 'main');
-    const sourcePaneId = e.target.closest('.gb-pane')?.dataset?.paneId || '';
+      : (cfg.defaultPanel || 'right-sidebar');
+    const sourceEl = e.currentTarget;
+    const sourcePaneId = sourceEl.closest('.gb-pane')?.dataset?.paneId || '';
     if (target === 'right-sidebar') {
       // サブパネル内でこの既定パネル設定が「右サイドバー」のままだと
       // 右サイドバー補助操作の制限に触れるため、呼び出し元要素を渡して判定させる
       // （計画書「右サイドバー操作の制限」節）。制限時は openLinkInRightPane 側が
       // 実行を中止し、短いステータス通知を出す。
-      if (typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl: e.target });
+      if (typeof openLinkInRightSidebar === 'function') openLinkInRightSidebar(ep, entityName, { linkType: 'entity', sourcePaneId, sourceEl });
     } else {
       if (typeof openLinkInMainPane === 'function') openLinkInMainPane(ep, entityName, { linkType: 'entity' });
     }
@@ -1299,7 +1305,7 @@ function renderNewEntryRow(ctx, options) {
   tdName.dataset.dbColToken = '__entity__';
   tdName.dataset.e2eId = _dbE2eId(ctx, 'entry-name-new');
   tdName.setAttribute('role', 'cell');
-  tdName.setAttribute('aria-label', '新規エントリを追加');
+  tdName.setAttribute('aria-label', '新規トピックを追加');
   if ((selectedCols || []).includes('__entity__')) tdName.classList.add('col-selected');
   tdName.style.cssText = 'cursor:pointer;color:var(--fg2);width:' + _entityW + 'px;min-width:' + _entityW + 'px;';
   tdName.style.maxWidth = _entityW + 'px';

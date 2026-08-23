@@ -29,7 +29,7 @@ function _setupDbColumnHeaderA11y(th, label) {
 function _dbDefaultEntityColumnLabel(dbPath) {
   const parts = String(dbPath || '').replace(/\\/g, '/').replace(/\/+$/g, '').split('/').filter(Boolean);
   if (parts.length < 3 || parts[parts.length - 3] !== '制作管理' || parts[parts.length - 2] !== 'シート') {
-    return 'エントリ名';
+    return 'トピック名';
   }
   const sheetName = parts[parts.length - 1];
   if (sheetName === 'タスクリスト' || sheetName.startsWith('タスクリスト_')) return 'タスク名';
@@ -39,7 +39,7 @@ function _dbDefaultEntityColumnLabel(dbPath) {
     '作業内容リスト': '作業内容名',
     '作業規模リスト': '作業規模名',
     'スタッフリスト': 'スタッフ名',
-  })[sheetName] || 'エントリ名';
+  })[sheetName] || 'トピック名';
 }
 
 // 表示用ラベル。制作管理以外のシートでは、ユーザーがビュー設定に保存した任意名を優先する。
@@ -56,7 +56,7 @@ function _dbEntityColumnDisplayLabel(dbPath, options) {
 function _dbDefaultEntityColumnWidth(dbPath) {
   // 幅の目安は既定ラベル基準（任意名を付けても既定の幅感を保つ）
   const label = _dbDefaultEntityColumnLabel(dbPath);
-  return label === 'タスク名' ? 260 : (label === 'エントリ名' ? 120 : 180);
+  return label === 'タスク名' ? 260 : (label === 'トピック名' ? 120 : 180);
 }
 
 function _dbE2eToken(value) {
@@ -624,7 +624,7 @@ function renderPivot(ctx) {
   thControls.dataset.e2eId = _dbE2eId(ctx, 'column-header', 'row-controls');
   thControls.setAttribute('role', 'columnheader');
   thControls.setAttribute('scope', 'col');
-  thControls.setAttribute('aria-label', '行操作とエントリ選択');
+  thControls.setAttribute('aria-label', '行操作とトピック選択');
   if (typeof _createPaneRowSelectHeaderCheckbox === 'function') {
     thControls.appendChild(_createPaneRowSelectHeaderCheckbox(ctx));
   }

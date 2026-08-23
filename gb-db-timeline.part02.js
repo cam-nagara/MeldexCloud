@@ -180,5 +180,5 @@ function navigateToEntity(entityName, dbPath, ctx) {
     return;
   }
   // 見つからない場合はステータスバーに表示
-  showStatus('エントリが見つかりません: ' + entityName, true);
+  showStatus('トピックが見つかりません: ' + entityName, true);
 }

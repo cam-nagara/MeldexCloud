@@ -440,14 +440,14 @@ function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
   if (Array.isArray(tmpl.entityTemplates) && tmpl.entityTemplates.length) {
     const entityDiv = document.createElement('div');
     entityDiv.className = 'db-template-preview-pane-entities';
-    entityDiv.textContent = 'エントリ雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
+    entityDiv.textContent = 'トピック雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
     pane.appendChild(entityDiv);
   }
 
   if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
     const layoutsDiv = document.createElement('div');
     layoutsDiv.className = 'db-template-preview-pane-entities';
-    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    layoutsDiv.textContent = 'トピックレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
     pane.appendChild(layoutsDiv);
   }
 

@@ -3,8 +3,8 @@
   };
 }
 const BD_DEFAULT_DEPTH_STYLES = [
-  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'カード', line: _BD_DEPTH_LINE(5) }),
-  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブカード', line: _BD_DEPTH_LINE(3) }),
+  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'トピック', line: _BD_DEPTH_LINE(5) }),
+  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(3) }),
   _BD_DEPTH_CARD(0, { name: '階層3 矩形強調', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-alert', fontSize: 13, fontBold: true, width: 180, shape: 'rect', borderRadius: 8, defaultText: '項目', line: _BD_DEPTH_LINE(0, { width: 4 }) }),
   _BD_DEPTH_CARD(1, { name: '階層4 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-dashed', fontSize: 13, fontBold: false, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '詳細', line: _BD_DEPTH_LINE(1, { width: 2, style: 'dashed' }) }),
   _BD_DEPTH_CARD(4, { name: '階層5 ピル', cardStyleRef: 'card-theme-pill', lineStyleRef: 'line-theme-straight', fontSize: 12, fontBold: true, width: 180, shape: 'pill', borderRadius: 999, defaultText: 'メモ', line: _BD_DEPTH_LINE(4, { pathType: 'straight' }) }),
@@ -132,7 +132,7 @@ function bdNormalizeDepthStyles(styles) {
       cloudOffset: Number.isFinite(+raw.cloudOffset) ? Math.max(0, Math.min(1, +raw.cloudOffset)) : 0.5,
       cloudSubWidthRatio: Number.isFinite(+raw.cloudSubWidthRatio) ? Math.max(0, Math.min(100, +raw.cloudSubWidthRatio)) : 0,
       cloudSubHeightRatio: Number.isFinite(+raw.cloudSubHeightRatio) ? Math.max(0, Math.min(100, +raw.cloudSubHeightRatio)) : 0,
-      defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'カード'),
+    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'トピック'),
       line: _bdNormalizeDepthLine(raw.line, fallback.line),
     };
     return out;

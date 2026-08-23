@@ -253,7 +253,7 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   const entData = map.entities?.[targetName];
   if (!targetName || !entData) {
     if (!adding) return null;
-    throw new Error('参照先エントリが見つかりません: ' + targetId);
+    throw new Error('参照先トピックが見つかりません: ' + targetId);
   }
   const meta = await _getDbMetadataCached(remoteDbPath, true);
   const remotePtc = meta.property_types?.[remotePropName] || {};
@@ -269,7 +269,7 @@ async function _syncBidirectionalRemoteValue(remoteDbPath, targetId, remotePropN
   if (adding && isSingle) {
     const conflictingIds = currentIds.filter(id => id && id !== sourceId);
     if (conflictingIds.length) {
-      throw new Error('参照先エントリは既に別エントリに紐づいています: ' + targetName);
+      throw new Error('参照先トピックは既に別のトピックに紐づいています: ' + targetName);
     }
   }
   let nextIds = currentIds.slice();

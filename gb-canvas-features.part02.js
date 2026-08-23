@@ -320,7 +320,7 @@ async function bdExportImage() {
 let _bdSlideshow = null;
 function bdStartSlideshow(interval) {
   const imgNodes = bd.nodes.filter(n => n.img);
-  if (!imgNodes.length) { showStatus('画像カードがありません', true); return; }
+  if (!imgNodes.length) { showStatus('画像トピックがありません', true); return; }
   let idx = 0;
   _bdSlideshow = { nodes: imgNodes, interval: interval || 5000 };
   const show = () => {
@@ -462,7 +462,7 @@ function _bdDialogHistorySize(checkpoint) {
 // --- Note Panel ---
 function bdEditNote(nodeId) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  if (!window.GBUI?.createModal) throw new Error('カードのノート編集ダイアログを初期化できませんでした');
+  if (!window.GBUI?.createModal) throw new Error('トピックノート編集ダイアログを初期化できませんでした');
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const uid = 'bd-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   const textarea = document.createElement('textarea');
@@ -471,7 +471,7 @@ function bdEditNote(nodeId) {
   textarea.rows = 12;
   textarea.value = n.note || '';
   textarea.dataset.e2eId = 'board-note-text';
-  textarea.setAttribute('aria-label', 'カードのノート');
+  textarea.setAttribute('aria-label', 'トピックノート');
   textarea.style.cssText = 'box-sizing:border-box;width:100%;min-height:180px;resize:vertical;';
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
@@ -499,7 +499,7 @@ function bdEditNote(nodeId) {
     minWidth: '0',
     initialFocus: textarea,
     returnFocus: returnFocus || undefined,
-    closeLabel: 'カードのノートを閉じる',
+    closeLabel: 'トピックノートを閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
     onBeforeClose: reason => !saving || reason === 'saved',
@@ -521,7 +521,7 @@ function bdEditNote(nodeId) {
     const previousNote = n.note;
     const checkpoint = _bdDialogCaptureMutationCheckpoint();
     try {
-      if (typeof bdPushUndo === 'function') bdPushUndo('カードのノートを編集');
+      if (typeof bdPushUndo === 'function') bdPushUndo('トピックノートを編集');
       n.note = textarea.value;
       if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'edit-note', { detailPanel: true });
       else bdRender();
@@ -529,8 +529,8 @@ function bdEditNote(nodeId) {
     } catch (error) {
       if (hadOwnNote) n.note = previousNote; else delete n.note;
       _bdDialogRestoreMutationCheckpoint(checkpoint);
-      try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
-      console.error('カードのノートを保存できませんでした:', error);
+    try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('トピックノート復元後の再描画に失敗しました:', renderError); }
+      console.error('トピックノートを保存できませんでした:', error);
       try { showStatus('ノートを保存できませんでした', true); } catch {}
       saving = false;
       saveButton.disabled = false;
@@ -538,7 +538,7 @@ function bdEditNote(nodeId) {
       return;
     }
     modalApi.close('saved');
-    try { showStatus('ノートを保存しました'); } catch (error) { console.warn('カードのノート保存通知に失敗しました:', error); }
+    try { showStatus('ノートを保存しました'); } catch (error) { console.warn('トピックノート保存通知に失敗しました:', error); }
   });
   modalApi.open();
   replaceIcons(modalApi.overlay);
@@ -547,7 +547,7 @@ function bdEditNote(nodeId) {
 
 // --- Summary ---
 function bdAddSummary() {
-  const ids = [...bd.selected]; if (ids.length < 2) { showStatus('2つ以上のカードを選択してください', true); return; }
+  const ids = [...bd.selected]; if (ids.length < 2) { showStatus('2つ以上のトピックを選択してください', true); return; }
   bdPushUndo();
   let maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   ids.forEach(id => {
@@ -562,7 +562,7 @@ function bdAddSummary() {
     }
   });
   if (!Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
-    showStatus('表示中のカードを選択してください', true);
+    showStatus('表示中のトピックを選択してください', true);
     return;
   }
   const summary = (typeof bdCreateNodeWithStyle === 'function')
@@ -590,7 +590,7 @@ let _bdDrillRoot = null;
 function bdDrillDown(nodeId) {
   _bdDrillRoot = nodeId;
   bdRender();
-  showStatus('ドリルダウン表示中（カードまたはボードのメニューから「ドリルダウン解除」で戻れます）');
+    showStatus('ドリルダウン表示中（トピックまたはボードのメニューから「ドリルダウン解除」で戻れます）');
 }
 function bdDrillUp() {
   _bdDrillRoot = null;
@@ -1075,7 +1075,7 @@ function _bdRestoreCardToHierarchy(nodeIds) {
   if (typeof showStatus === 'function') {
     showStatus(rootsToReapply.size
       ? '階層別スタイルに戻しました'
-      : '個別スタイルを解除しました（カードを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
+      : '個別スタイルを解除しました（トピックを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
   }
 }
 

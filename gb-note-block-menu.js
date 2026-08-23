@@ -24,7 +24,7 @@
 
   const MENU_ID = 'note-block-menu';
   let _menuEl = null;
-  let _state = null; // { items, selectedIndex, editable, range, currentTypeId, onSelect, onClose, query }
+  let _state = null; // { items, selectedIndex, editable, range, currentTypeId, onSelect, onClose, query, removableTextPrefix }
 
   function _icon(name, size) {
     return typeof lucide === 'function' ? lucide(name, size || 16) : '';
@@ -66,7 +66,9 @@
   function _visibleItems() {
     if (!_state) return [];
     const NBT = global.MeldexNoteBlockTypes;
-    return NBT.TYPES.filter((def) => _matchesQuery(def, _state.query));
+    const insertItems = _state.allowInsertItems && global.MeldexNoteEmbedBlock
+      ? global.MeldexNoteEmbedBlock.menuItems() : [];
+    return NBT.TYPES.concat(insertItems).filter((def) => _matchesQuery(def, _state.query));
   }
 
   function _itemAvailability(def) {
@@ -74,7 +76,11 @@
     if (!NBT.isEditableWritable(_state.editable)) {
       return { allowed: false, reason: def.readOnlyState?.reasonText || '読み取り専用のため変更できません' };
     }
-    return NBT.canConvert(def.id, _state.editable, _state.blockInfo);
+    const removableText = _state.removableTextPrefix
+      ? _state.removableTextPrefix + _state.query
+      : '';
+    if (def.insertOnly) return { allowed: true, reason: '' };
+    return NBT.canConvert(def.id, _state.editable, _state.blockInfo, { removableText });
   }
 
   function _render() {
@@ -216,9 +222,11 @@
       blockInfo: opts.blockInfo || null,
       currentTypeId: opts.currentTypeId || null,
       query: opts.query || '',
+      removableTextPrefix: opts.removableTextPrefix || '',
       selectedIndex: 0,
       onSelect: opts.onSelect || null,
       onClose: opts.onClose || null,
+      allowInsertItems: !!opts.allowInsertItems,
     };
     const menu = _ensureMenuEl();
     menu.style.display = '';

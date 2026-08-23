@@ -115,7 +115,8 @@
       runBtn.disabled = true;
       try {
         await apiPost(`/import-schedules/${encodeURIComponent(entry.id)}/run`, {}, { silentError: true });
-        status.textContent = '実行を開始しました。進捗はステータスバーで確認できます。';
+        await window.MeldexImportProgress?.poll?.();
+        status.textContent = '実行を開始しました。進み具合は画面の処理パネルで確認できます。';
       } catch (err) {
         status.textContent = '実行を開始できませんでした: ' + (err.userMessage || err.message || err);
       } finally {

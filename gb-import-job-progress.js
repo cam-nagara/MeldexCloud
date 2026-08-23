@@ -157,7 +157,6 @@
           background: true,
           delayMs: opts.operationDelayMs,
           showInTray: opts.showInTray !== false,
-          showInStatus: opts.showInStatus !== false,
           priority: Number(opts.operationPriority) || 20,
         });
     const userOnStarted = typeof opts.onStarted === 'function' ? opts.onStarted : null;

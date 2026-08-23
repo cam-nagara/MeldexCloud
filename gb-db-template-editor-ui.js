@@ -246,7 +246,7 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
   const layoutCount = Array.isArray(exported.entityLayouts) ? exported.entityLayouts.length : 0;
   const previewText = '含まれる列: ' + exported.properties.map(p => p.name).join(', ')
     + (viewCount ? `（ビュー${viewCount}件を含む）` : '')
-    + (layoutCount ? `（エントリレイアウト${layoutCount}件を含む）` : '');
+    + (layoutCount ? `（トピックレイアウト${layoutCount}件を含む）` : '');
 
   // エントリレイアウト内のアップロード画像は「指定したものだけ」テンプレートへ同梱する（既定OFF）。
   // 同梱しない画像はパス参照のままになり、テンプレート適用先では画像の再設定が必要になる。

@@ -8,6 +8,7 @@
 // --- ボード状態オブジェクト ---
 const bd = {
   path:'', _loadedBoardPath:'', _preservedFrontmatter:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
+  topicViewDocument:null, activeBoardViewId:'', hiddenTopicRefs:[], topicStyleOverrides:{},
   // 工程2-C項目2: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。
   // 未読込/新規ボードでは空文字のまま（従来通りforce相当で保存される）。
   lastSavedEtag:'',
@@ -393,7 +394,7 @@ function _bdSyncGroupAnchors(layer) {
     ['top', 'bottom', 'left', 'right'].forEach(pos => {
       const a = document.createElement('div');
       a.className = 'bd-group-anchor ' + pos;
-      a.title = 'ドラッグでラインを作成 (選択カード群から)';
+  a.title = 'ドラッグでラインを作成（選択トピックから）';
       a.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         ev.preventDefault(); ev.stopPropagation();
@@ -411,7 +412,7 @@ function _bdSyncGroupAnchors(layer) {
         bd._connLabel = '';
         bd._connOrigin = 'anchor';
         if (typeof window.showStatus === 'function') {
-          window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+          window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
         }
       });
       group.appendChild(a);
@@ -502,10 +503,11 @@ function bdParseMd(raw) {
   raw = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'); // 改行コード統一
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
-  let preservedFrontmatter = '';
+  let preservedFrontmatter = '', topicRuntime = null;
   let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') topicRuntime = MeldexBoardTopicIntegration.parseFrontmatter(fm);
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
     if (typeof bdParseLlmSemanticsFrontmatter === 'function') llmSemantics = bdParseLlmSemanticsFrontmatter(fm);
     if (typeof bdYamlNestedMap === 'function') {
@@ -905,7 +907,7 @@ function bdParseMd(raw) {
           connections: legacyConnections,
           groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
           llmSemantics: legacyLlmSemantics,
-          preservedFrontmatter,
+          preservedFrontmatter, topicRuntime,
         };
       }
     }
@@ -1000,7 +1002,7 @@ function bdParseMd(raw) {
         depthStyles,
         boardUi,
         llmSemantics: parsedLlmSemantics,
-        preservedFrontmatter: archivedFrontmatter,
+        preservedFrontmatter: archivedFrontmatter, topicRuntime,
       };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
@@ -1056,7 +1058,7 @@ function bdParseMd(raw) {
     ? bdNormalizeLoadedLlmSemantics(llmSemantics, idMap)
     : llmSemantics;
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(mappedConnections, null, parsedLlmSemantics);
-  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter };
+  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime };
 }
 
 // --- Markdown書き出し ---
@@ -1069,6 +1071,7 @@ function bdToMd() {
   bd.nodes.forEach((n,i) => { if (n.id) fm += `  n${i}: ${fmtJsonString(n.id)}\n`; });
   fm += 'sizes:\n';
   bd.nodes.forEach((n,i) => { if (n.w || n.h) fm += `  n${i}: {w: ${Math.round(n.w||160)}, h: ${Math.round(n.h||0)}}\n`; });
+  if (typeof MeldexBoardTopicIntegration !== 'undefined') fm += MeldexBoardTopicIntegration.serializeFrontmatter(bd);
   // 親子関係
   const m = {}; bd.nodes.forEach((n,i) => { m[n.id]='n'+i; });
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(bd.connections, m, bd.llmSemantics);

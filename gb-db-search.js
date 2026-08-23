@@ -396,9 +396,9 @@ async function _dbFindRenameEntity(match, nextName) {
   const ctx = _dbFindState.ctx;
   const pivotData = _dbFindData(ctx, dbPath);
   const cleanName = String(nextName || '').trim();
-  if (!cleanName) throw new Error('エントリ名を空にはできません');
+  if (!cleanName) throw new Error('トピック名を空にはできません');
   if (cleanName !== match.entityName && pivotData?.entities && Object.prototype.hasOwnProperty.call(pivotData.entities, cleanName)) {
-    throw new Error('同じエントリ名が既にあります: ' + cleanName);
+    throw new Error('同じトピック名が既にあります: ' + cleanName);
   }
   await window.GbDbEntryIdentity.rename({
     dbPath,
@@ -466,10 +466,10 @@ async function _dbFindReplaceAll() {
     const plannedEntityNames = new Set();
     for (const [oldName, rawNewName] of entityTasks.entries()) {
       const newName = String(rawNewName || '').trim();
-      if (!newName) throw new Error('エントリ名を空にはできません');
+      if (!newName) throw new Error('トピック名を空にはできません');
       if (oldName === newName) continue;
-      if (plannedEntityNames.has(newName)) throw new Error('置換後のエントリ名が重複します: ' + newName);
-      if (entityNames.has(newName)) throw new Error('同じエントリ名が既にあります: ' + newName);
+      if (plannedEntityNames.has(newName)) throw new Error('置換後のトピック名が重複します: ' + newName);
+      if (entityNames.has(newName)) throw new Error('同じトピック名が既にあります: ' + newName);
       plannedEntityNames.add(newName);
     }
     for (const item of valueTasks.values()) {
@@ -521,7 +521,7 @@ function showDbSearchModal(options) {
   const input = document.createElement('input');
   input.type = 'text';
   input.dataset.e2eId = 'db-search-input';
-  input.placeholder = 'シート横断検索...（エントリ名・列の値）';
+  input.placeholder = 'シート横断検索...（トピック名・列の値）';
 
   const scopeSelect = document.createElement('select');
   scopeSelect.dataset.e2eId = 'db-search-scope';
@@ -648,7 +648,7 @@ function showDbSearchModal(options) {
 
 function _renderDbSearchResults(container, results, query, onSelect) {
   if (results.length === 0) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">一致するエントリなし</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">一致するトピックなし</div>';
     return;
   }
 
@@ -777,7 +777,7 @@ async function _exportDbSearchCsv(results) {
 
   // CSV生成
   const rows = [];
-  const header = ['エントリ名', 'シート名', 'ルート', ...propList];
+  const header = ['トピック名', 'シート名', 'ルート', ...propList];
   rows.push(header.map(h => _dbSearchCsvCell(h)).join(','));
 
   results.forEach(entry => {

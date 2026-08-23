@@ -357,7 +357,7 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
   const description = document.createElement('div');
   description.id = `mapped-cal-desc-${panelSeq}`;
   description.style.cssText = 'font-size:12px;color:var(--fg2);margin-bottom:8px;';
-  description.innerHTML = `日時のみここで編集できます ${fieldHelp('タイトルや色は元エントリ側で変更してください')}`;
+  description.innerHTML = `日時のみここで編集できます ${fieldHelp('タイトルや色は元トピック側で変更してください')}`;
   const fields = document.createElement('div');
   fields.id = 'mapped-cal-fields';
   fields.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
@@ -370,7 +370,7 @@ function _openMappedCalendarEventPanel(dbPath, ev, triggerEl = null) {
   openBtn.id = 'mapped-cal-open';
   openBtn.dataset.e2eId = 'mapped-cal-open';
   openBtn.style.cssText = 'min-height:44px;margin-right:auto;';
-  openBtn.textContent = 'エントリを開く';
+  openBtn.textContent = 'トピックを開く';
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.className = 'gb-btn gb-btn-sm';
@@ -469,7 +469,7 @@ function _renderCalendarMappingConfigSection(host, dbPath, props, propTypes, cur
     <div id="dbcfg-calendar-mapping-fields" style="margin-top:6px;${current?.startProp ? '' : 'display:none;'}">
       ${rowSelect('dbcfg-calmap-start', '開始列', dateProps, current?.startProp || '', '(必須)')}
       ${rowSelect('dbcfg-calmap-end', '終了列', dateProps, current?.endProp || '', undefined, '開始列が期間付き日時なら、終了列を空にしても終了日時を拾います')}
-      ${rowSelect('dbcfg-calmap-title', 'タイトル列', textLikeProps, current?.titleProp || '', '(エントリ名)')}
+      ${rowSelect('dbcfg-calmap-title', 'タイトル列', textLikeProps, current?.titleProp || '', '(トピック名)')}
       ${rowSelect('dbcfg-calmap-color', '色列', textLikeProps, current?.colorProp || '')}
       ${rowSelect('dbcfg-calmap-desc', '説明列', textLikeProps, current?.descriptionProp || '')}
       ${rowSelect('dbcfg-calmap-location', '場所列', textLikeProps, current?.locationProp || '')}

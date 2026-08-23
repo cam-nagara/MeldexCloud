@@ -305,7 +305,7 @@ function _validateRequired(rule, entitiesMap, entityNames, dbPath) {
       results.push({
         ruleId: rule.id, ruleLabel: rule.label, severity: 'warning',
         entityName: en, entityPath: _entityPath(dbPath, en),
-        message: property + ' が空です（' + (statusFilter || '全') + 'エントリ）',
+        message: property + ' が空です（' + (statusFilter || '全') + 'トピック）',
         property,
       });
     }

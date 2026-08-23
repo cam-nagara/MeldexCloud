@@ -127,9 +127,10 @@ img.meldex-image-load-error {
   position: fixed;
   /* 操作中のメニュー・ダイアログを覆わず、通常のアプリ面より手前に置く。 */
   z-index: 9000;
-  right: 14px;
+  /* 右端レールと、その下寄せクイックメモボタンの左側へ逃がす。 */
+  right: calc(14px + var(--gb-rail-width, 38px) + 8px);
   bottom: calc(34px + env(safe-area-inset-bottom, 0px));
-  width: min(360px, calc(100vw - 28px));
+  width: min(360px, calc(100vw - 28px - var(--gb-rail-width, 38px) - 8px));
   max-height: min(62vh, 520px);
   overflow: hidden;
   color: var(--fg, #e7e9ec);
@@ -267,14 +268,6 @@ img.meldex-image-load-error {
   border: 1px solid var(--border, #59606b);
   border-radius: 6px;
 }
-
-.meldex-operation-status-mirror {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.meldex-operation-status-mirror[hidden] { display: none; }
 
 .meldex-operation-live-region {
   position: fixed;

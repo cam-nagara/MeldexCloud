@@ -97,6 +97,15 @@ function bdDrawConns(options) {
   const autoDepthStyleMap = typeof bdBuildAutoDepthStyleMap === 'function'
     ? bdBuildAutoDepthStyleMap(bd)
     : new Map();
+  const groupEndpointNode = (endpoint) => {
+    if (endpoint?.targetKind !== 'group') return null;
+    const groupId = typeof endpoint.targetRef === 'string' ? endpoint.targetRef : endpoint.targetRef?.groupId;
+    const group = (bd.groups || []).find(item => (item.groupId || item.id) === groupId);
+    if (!group) return null;
+    return { id: groupId, x: Number(group.x) || 0, y: Number(group.y) || 0,
+      w: Math.max(1, Number(group.w) || 160), h: Math.max(1, Number(group.h) || 80),
+      shape: group.shape || 'rounded', _boardGroupEndpoint: true };
+  };
   bd.connections.forEach(c => {
     if (partialConnIds && !partialConnIds.has(c.id)) return;
     // 選択 UI (端点ハンドル / 中央ハンドル) を hit append の後に持ち上げるための一時バッファ。
@@ -108,13 +117,15 @@ function bdDrawConns(options) {
       ? bdGetAutoDepthLineStyleIndexForConnection(c, autoDepthStyleMap)
       : '';
     if (bd.displayFilters && bd.displayFilters.showConnections === false) return; // 非表示
-    const fe = c.from ? document.getElementById('bdn-'+c.from) : null;
-    const te = c.to ? document.getElementById('bdn-'+c.to) : null;
-    const fn = c.from ? bd.nodes.find(n=>n.id===c.from) : null;
-    const tn = c.to ? bd.nodes.find(n=>n.id===c.to) : null;
+    const fromGroup = groupEndpointNode(c.fromEndpoint);
+    const toGroup = groupEndpointNode(c.toEndpoint);
+    const fe = c.from && !fromGroup ? document.getElementById('bdn-'+c.from) : null;
+    const te = c.to && !toGroup ? document.getElementById('bdn-'+c.to) : null;
+    const fn = fromGroup || (c.from ? bd.nodes.find(n=>n.id===c.from) : null);
+    const tn = toGroup || (c.to ? bd.nodes.find(n=>n.id===c.to) : null);
     const rawFromPoint = bdNormalizeConnectionPoint(c.fromPoint);
     const rawToPoint = bdNormalizeConnectionPoint(c.toPoint);
-    if ((c.from && (!fe || !fn)) || (c.to && (!te || !tn))) return;
+    if ((c.from && !fromGroup && (!fe || !fn)) || (c.to && !toGroup && (!te || !tn))) return;
     if (!c.from && !rawFromPoint) return;
     if (!c.to && !rawToPoint) return;
     const fp = fn
@@ -368,6 +379,22 @@ function bdDrawConns(options) {
       }
     }
     }
+
+    const outlineEndpointPoint = (endpoint, node, pos, width, height, gap) => {
+      if (!endpoint?.outlinePosition || !node || typeof MeldexBoardOutlineEndpoints === 'undefined') return null;
+      const point = MeldexBoardOutlineEndpoints.pointAtPathT(
+        node.shape || 'rect', { ...node, x: pos.x, y: pos.y, w: width, h: height },
+        endpoint.outlinePosition.pathT, node,
+      );
+      const cx = pos.x + width / 2; const cy = pos.y + height / 2;
+      const length = Math.hypot(point.x - cx, point.y - cy) || 1;
+      return { x: point.x + ((point.x - cx) / length) * gap,
+        y: point.y + ((point.y - cy) / length) * gap };
+    };
+    const exactFrom = outlineEndpointPoint(c.fromEndpoint, fn, fp, fw, fh, GAP_FROM);
+    const exactTo = outlineEndpointPoint(c.toEndpoint, tn, tp, tw, th, GAP_TO);
+    if (exactFrom) { x1 = exactFrom.x; y1 = exactFrom.y; hasUserAnchor = true; }
+    if (exactTo) { x2 = exactTo.x; y2 = exactTo.y; hasUserAnchor = true; }
 
     // v0.5.250: 同じカードペア間に複数ラインがある場合、各ラインを区別するためのオフセット。
     // - 曲線 (curve): 端点はカード側で固定し、制御点 c1/c2 を垂直にシフトして曲線を上下 (または左右) に膨らませる。

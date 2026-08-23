@@ -377,7 +377,7 @@
         // 保存完了までにページ送り等でシーンが差し替わっていても、要素自体への id 付与は無害
         // （表示から外れたSVGは破棄済みで、以後参照されない）。
         if (res?.id) el.dataset.annId = res.id;
-        window.__viewerAnnotationReportSave?.(true, 'create');
+        window.__viewerAnnotationReportSave?.(true, 'create', null, res);
       } catch (error) {
         el.remove();
         viewerAnnotationSaveFailed(error);
@@ -410,9 +410,9 @@
       if (el.classList.contains('viewer-ann-preview')) continue;
       if (typeof window._coreAnnotationElementHit === 'function' && window._coreAnnotationElementHit(el, local.x, local.y, tolerance)) {
         try {
-          if (el.dataset.annId) await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId));
+          const result = el.dataset.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(el.dataset.annId)) : null;
           el.remove();
-          window.__viewerAnnotationReportSave?.(true, 'delete');
+          window.__viewerAnnotationReportSave?.(true, 'delete', null, result);
         } catch (error) {
           viewerAnnotationSaveFailed(error, '注釈を削除できませんでした');
           window.__viewerAnnotationReportSave?.(false, 'delete', error);
@@ -466,6 +466,10 @@
 
   async function _loadScene(sceneEntry, token) {
     try {
+      if (/^blob:/i.test(String(sceneEntry.path || ''))) {
+        window.MeldexViewerAnnotationLegacy?.setItemsForPath?.(sceneEntry.path, []);
+        return;
+      }
       const items = await window.apiFetch('/annotations?target=' + encodeURIComponent(sceneEntry.path));
       if (token !== _rebuildToken) return;
       const legacyItems = [];

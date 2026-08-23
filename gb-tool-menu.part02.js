@@ -136,22 +136,22 @@ function buildToolMenuItems(toolType) {
     ],
     board: [
       { label: '新規リンクカード: ノート', action: () => {
-        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクカード追加機能を読み込めませんでした', true); return; }
+        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'page');
       } },
       { label: '新規リンクカード: シート', action: () => {
-        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクカード追加機能を読み込めませんでした', true); return; }
+        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'database');
       } },
       { label: '新規リンクカード: ボード', action: () => {
-        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクカード追加機能を読み込めませんでした', true); return; }
+        if (typeof bdCreateLinkedFileCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdCreateLinkedFileCardAt(pos.x, pos.y, 'board');
       } },
       { label: '既存ファイルへのリンクカード...', action: () => {
-        if (typeof bdPromptAddLinkCardAt !== 'function') { showStatus('リンクカード追加機能を読み込めませんでした', true); return; }
+        if (typeof bdPromptAddLinkCardAt !== 'function') { showStatus('リンクトピック追加機能を読み込めませんでした', true); return; }
         const pos = typeof bdGetCanvasCenterWorld === 'function' ? bdGetCanvasCenterWorld() : { x: 120, y: 120 };
         bdPromptAddLinkCardAt(pos.x, pos.y);
       } },
@@ -821,7 +821,6 @@ async function _exportDictFile(options = {}) {
       label: '辞書データを準備しています',
       mode: 'indeterminate',
       showInTray: true,
-      showInStatus: true,
       priority: 35,
     });
     if (!fetchProgress) showStatus('辞書を準備中…');

@@ -1,3 +1,6 @@
+      payload = raw ? JSON.parse(raw) : null;
+    }
+  } catch {
     payload = null;
   }
   if (!payload) payload = window._gbFolderViewDragPayload || null;
@@ -895,6 +898,3 @@ function createTreeNodeFromBrowse(item, rootPath) {
           if (currentIsDB) {
             const pivotData = await apiFetch('/pivot?path=' + encodeURIComponent(item.path));
             // entities が undefined でも TypeError にならないようガード
-            const entityNames = Object.keys(pivotData?.entities || {}).sort();
-            const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
-            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。

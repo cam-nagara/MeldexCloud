@@ -3,7 +3,7 @@
 // fingerprint 済みとして immutable cache に保存する。
 const MELDEX_FINGERPRINT_CACHE = 'meldex-fingerprinted-v1';
 const MELDEX_FINGERPRINT_MAX_ENTRIES = 256;
-const MELDEX_UNIFIED_APP_CACHE = 'meldex-unified-app-shell-v1';
+const MELDEX_UNIFIED_APP_CACHE = 'meldex-unified-app-shell-v2';
 const MELDEX_OFFLINE_META_CACHE = 'meldex-offline-shell-meta-v1';
 const MELDEX_OFFLINE_CACHE_PREFIX = 'meldex-offline-shell-content-';
 const MELDEX_OFFLINE_META_URL = new URL('./__meldex_offline_state__', self.registration.scope).href;
@@ -11,10 +11,7 @@ const MELDEX_OFFLINE_MANIFEST_URL = new URL('./offline-shell-manifest.json', sel
 let activeOfflineCacheName = '';
 let activeOfflineVersion = '';
 const MELDEX_STANDALONE_ROUTES = Object.freeze([
-  './apps/note/',
-  './apps/scenario/',
-  './apps/board/',
-  './apps/sheet/',
+  './apps/viewer/',
   './apps/timer/',
   './apps/quick-memo/',
 ]);
@@ -296,6 +293,12 @@ async function respondOfflineShell(request) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request, { ignoreSearch: true });
   if (cached) return cached;
+  const url = new URL(request.url);
+  if (url.pathname.endsWith('/')) {
+    const indexRequest = new Request(new URL('index.html', url).href, { method: 'GET' });
+    const cachedIndex = await cache.match(indexRequest, { ignoreSearch: true });
+    if (cachedIndex) return cachedIndex;
+  }
   return fetch(request);
 }
 

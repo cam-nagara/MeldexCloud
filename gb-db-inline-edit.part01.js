@@ -258,7 +258,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     ? _dbE2eToken(oldName)
     : String(oldName || 'entry').replace(/\s+/g, '-').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'entry';
   inp.dataset.e2eId = `db-entity-rename-${renameToken}`;
-  inp.setAttribute('aria-label', `エントリ名を変更: ${oldName || '無題'}`);
+  inp.setAttribute('aria-label', `トピック名を変更: ${oldName || '無題'}`);
   inp.style.cssText = 'width:calc(100% - 24px);padding:2px 4px;margin-left:20px;background:var(--bg2);color:var(--fg);border:1px solid var(--accent);border-radius:3px;font-size:13px;';
   const inputHost = nameSpan.parentElement || td;
   inputHost.insertBefore(inp, nameSpan.parentElement ? nameSpan : td.firstChild);
@@ -279,7 +279,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
     const _renEntities = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
       || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
     if (Object.prototype.hasOwnProperty.call(_renEntities, newName)) {
-      if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+      if (typeof showStatus === 'function') showStatus('同じ名前のトピックが既にあります: ' + newName, true);
       renderPivot(_renCtx);
       restoreActiveCellByRow(rowIdx, 'entity', 0, _renCtx);
       return;
@@ -323,7 +323,7 @@ function startEntityInlineRename(td, nameSpan, oldName, dbPath) {
       const _renEntitiesTab = (_renCtx && _renCtx.pivotData && _renCtx.pivotData.entities)
         || (typeof state !== 'undefined' && state.pivotData ? state.pivotData.entities : null) || {};
       if (Object.prototype.hasOwnProperty.call(_renEntitiesTab, newName)) {
-        if (typeof showStatus === 'function') showStatus('同じ名前のエントリが既にあります: ' + newName, true);
+        if (typeof showStatus === 'function') showStatus('同じ名前のトピックが既にあります: ' + newName, true);
         renderPivot(_renCtx); doAfter(); return;
       }
       const stableEntryId = _renEntitiesTab?.[oldName]?._id || _renEntitiesTab?.[oldName]?.entry_id || '';

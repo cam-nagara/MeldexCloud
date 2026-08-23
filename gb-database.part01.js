@@ -280,6 +280,13 @@ async function selectDatabase(dbPath, ctx, opts) {
   ctx.pivotData = null;
   ctx.smartDb = null;
   ctx.smartDbData = null;
+  // Unified Topic migration is additive and intentionally off the Sheet load
+  // critical path. The unchanged legacy Sheet remains the fallback.
+  void window.GbTopicLiveBridge?.migrateOpenedSheet?.(dbPath, {
+    owner: ctx,
+    readOnly: openOpts.readOnly === true,
+    reason: 'open',
+  });
   // グローバルstate同期（非スコープ化コードの互換性）
   if (syncGlobalState) {
     state.currentDbPath = dbPath;
@@ -570,7 +577,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     _restoreDbViewScrollState(ctx, dbViewMode, openOpts.restoreScrollState);
 
     const entityNames = Object.keys(ctx.pivotData.entities || {}).sort();
-    if (!openOpts.skipGlobalUi) showStatus(`${entityNames.length} 件のエントリ`);
+    if (!openOpts.skipGlobalUi) showStatus(`${entityNames.length} 件のトピック`);
 
     // マルチソースリレーション自動収集（fire-and-forget）
     if (hasDbViews && dbViewMode === 'pivot' && typeof _autoCollectAllMsrProps === 'function') {
@@ -669,7 +676,7 @@ async function selectEntity(entityPath, opts) {
     renderEntityPage(data);
     const entityName = _entityDisplayName;
     if (!openOpts.skipGlobalUi) {
-      showStatus(`エントリ: ${entityName}`);
+      showStatus(`トピック: ${entityName}`);
       _syncDetailPanel(entityName, entityPath, 'entity');
     }
   } catch (e) {

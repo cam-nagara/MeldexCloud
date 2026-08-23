@@ -534,7 +534,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
     return row;
   }
 
-  if ((type === 'link' || type === 'url') && typeof createDbLinkValueElement === 'function') {
+  if ((type === 'link' || type === 'multi-link' || type === 'url') && typeof createDbLinkValueElement === 'function') {
     row.appendChild(createDbLinkValueElement(val, entityPath, propName, thumbSize, propTypeConfig, { ...options, dbPath }));
     return row;
   }
@@ -948,7 +948,7 @@ async function _showMsrDropdown(anchor, val, entityPath, propName, ptc) {
 
   // 検索ボックス
   const search = document.createElement('input');
-  search.type = 'text'; search.placeholder = 'エントリを検索...';
+  search.type = 'text'; search.placeholder = 'トピックを検索...';
   search.style.cssText = 'width:100%;padding:4px 6px;margin-bottom:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;';
   dd.appendChild(search);
 
@@ -1288,7 +1288,7 @@ async function _createEntityChat(entityPath, val, propName, dbPath) {
   // 空のチャットファイルを保存
   const entityName = entityPath.replace(/\.md$/, '').split('/').pop();
   try {
-    const message = { role: 'system', content: 'エントリ「' + entityName + '」のチャット' };
+    const message = { role: 'system', content: 'トピック「' + entityName + '」のチャット' };
     if (typeof _ensureChatMessageId === 'function') _ensureChatMessageId(message);
     await apiPost('/chat/save', {
       path: chatPath,
@@ -1313,7 +1313,7 @@ async function _createEntityChat(entityPath, val, propName, dbPath) {
       await _apiPostValue(entityPath, propName, newValue, '採用', '');
     }
   } catch (e) {
-    showStatus('チャットは作成されましたが、エントリへの紐付け保存に失敗: ' + (e?.message || e), true);
+    showStatus('チャットは作成されましたが、トピックへの紐付け保存に失敗: ' + (e?.message || e), true);
     _openEntityChat(chatPath, sourceFolder);
     await _valueEditorReload(sourceDbPath, sourceCtx);
     return;

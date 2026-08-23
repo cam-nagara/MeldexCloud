@@ -209,8 +209,8 @@ async function _sheetArchiveRun() {
   const st = _sheetArchiveModalState;
   if (!st) return;
   const ok = typeof cfConfirm === 'function'
-    ? await cfConfirm('候補のエントリをアーカイブへ移します。元データは削除されず、検索と復元ができます。実行しますか？')
-    : confirm('候補のエントリをアーカイブへ移します。実行しますか？');
+    ? await cfConfirm('候補のトピックをアーカイブへ移します。元データは削除されず、検索と復元ができます。実行しますか？')
+    : confirm('候補のトピックをアーカイブへ移します。実行しますか？');
   if (!ok) return;
   const body = {
     path: st.path,
@@ -236,8 +236,8 @@ async function _sheetArchiveRestore(archiveId) {
   const st = _sheetArchiveModalState;
   if (!st || !archiveId) return;
   const ok = typeof cfConfirm === 'function'
-    ? await cfConfirm('このアーカイブのエントリを表示中のシートへ戻します。同名エントリは復元せず残します。')
-    : confirm('このアーカイブのエントリを表示中のシートへ戻します。');
+    ? await cfConfirm('このアーカイブのトピックを表示中のシートへ戻します。同名トピックは復元せず残します。')
+    : confirm('このアーカイブのトピックを表示中のシートへ戻します。');
   if (!ok) return;
   _sheetArchiveSetStatus('復元しています...');
   _sheetArchiveBeginBusy();

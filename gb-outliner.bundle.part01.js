@@ -151,11 +151,14 @@ async function _appendOutlinerChildrenChunked(container, children, rootPath) {
 async function _appendOrVirtualizeOutlinerChildren(container, children, rootPath, meta) {
   if (!container || !Array.isArray(children)) return;
   if (typeof _registerFileIds === 'function') _registerFileIds(children);
-  if (window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.attachNested(container, children)) {
+  // 仮想スクロールは行を絶対配置するため、CSS Gridの複数列とは両立しない。
+  // グリッド選択中はフレーム分割DOM描画を使い、実際の複数列を優先する。
+  const useVirtualRows = globalThis.localStorage?.getItem?.('tree-layout') !== 'grid';
+  if (useVirtualRows && window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.attachNested(container, children)) {
     return;
   }
   if (!children.length) return;
-  if (window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.mount(container, children, rootPath, meta)) {
+  if (useVirtualRows && window.GBOutlinerVirtualRender && window.GBOutlinerVirtualRender.mount(container, children, rootPath, meta)) {
     return;
   }
   await _appendOutlinerChildrenChunked(container, children, rootPath);
@@ -895,6 +898,3 @@ function _outlinerExternalDragItems(event, payloadOverride) {
   try {
     if (!payload) {
       const raw = event?.dataTransfer?.getData?.('application/x-meldex-node') || '';
-      payload = raw ? JSON.parse(raw) : null;
-    }
-  } catch {

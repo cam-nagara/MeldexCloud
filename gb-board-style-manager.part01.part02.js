@@ -265,5 +265,5 @@ function _bdCountAutoStyleAnchorNodes() {
 function _bdDepthThemeApplyStatusMessage(anchorCount) {
   return anchorCount > 0
     ? 'テーマカラーを階層別スタイルに適用しました'
-    : '階層別スタイルが適用されているカードがありません（プリセットの色は更新されました。カードに反映するには右クリックメニュー等でカードを階層別スタイルの起点にしてください）';
+    : '階層別スタイルが適用されているトピックがありません（プリセットの色は更新されました。トピックに反映するには右クリックメニュー等でトピックを階層別スタイルの起点にしてください）';
 }

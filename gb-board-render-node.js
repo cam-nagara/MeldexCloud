@@ -5,6 +5,15 @@ let _bdRenderNodeE2ESeq = 0;
 function bdCreateRenderContext(options = {}) {
   const hiddenIds = options.hiddenIds instanceof Set ? options.hiddenIds : new Set();
   if (!(options.hiddenIds instanceof Set) && typeof bd !== 'undefined') {
+    const hiddenTopicKeys = new Set((bd.hiddenTopicRefs || []).map(ref => JSON.stringify([
+      String(ref?.sourceId || ''), String(ref?.topicId || ''),
+    ])));
+    bd.nodes.forEach(node => {
+      const ref = node?.topicRef;
+      if (ref && hiddenTopicKeys.has(JSON.stringify([String(ref.sourceId || ''), String(ref.topicId || '')]))) {
+        hiddenIds.add(node.id);
+      }
+    });
     bd.nodes.forEach(node => {
       if (node?.collapsed && typeof bdDescendants === 'function') {
         bdDescendants(node.id).forEach(id => hiddenIds.add(id));
@@ -108,7 +117,7 @@ function bdFindRenderableContainerRoot(node) {
 
 function bdNodeA11yLabel(node) {
   const text = String(node?.text || node?.link || node?.id || '').replace(/\s+/g, ' ').trim();
-  return text ? `ボードカード: ${text}` : 'ボードカード';
+  return text ? `ボードトピック: ${text}` : 'ボードトピック';
 }
 
 function bdSelectNodeForKeyboard(nodeId) {
@@ -137,7 +146,7 @@ function bdHandleNodeKeyboard(ev, nodeId) {
     .map(id => bd.nodes.find(node => node?.id === id))
     .filter(node => node && !node.contained && !node.locked);
   if (!movable.length) {
-    if (typeof showStatus === 'function') showStatus('ロック中のカードは移動できません', true);
+    if (typeof showStatus === 'function') showStatus('ロック中のトピックは移動できません', true);
     return;
   }
   const step = ev.shiftKey ? 40 : 8;
@@ -154,7 +163,7 @@ function bdHandleNodeKeyboard(ev, nodeId) {
     bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, comments: movedIds }, 'keyboard-move');
   }
   if (typeof bdDirty === 'function') bdDirty();
-  if (typeof showStatus === 'function') showStatus('カードを移動しました');
+  if (typeof showStatus === 'function') showStatus('トピックを移動しました');
 }
 
 function bdRenderNode(node, options = {}) {
@@ -395,7 +404,7 @@ function bdAppendCommentHud(div, node) {
 function bdAppendAnchorHud(div, node, pos) {
   const anchor = document.createElement('div');
   anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-  anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
+  anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
   if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
   anchor.addEventListener('pointerdown', ev => bdHandleAnchorPointerDown(ev, div, node, pos));
   anchor.addEventListener('click', ev => { ev.stopPropagation(); });
@@ -464,7 +473,7 @@ function bdHandleAnchorClickAdd(fromNid, pos, fromAnchor) {
     bd._connLabel = '';
     bd._connOrigin = 'anchor';
     bd._connFromAnchor = fromAnchor;
-    if (typeof window.showStatus === 'function') window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+    if (typeof window.showStatus === 'function') window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
     return;
   }
   if (typeof _bdAnchorAddCard === 'function') _bdAnchorAddCard(fromNid, pos);
@@ -576,7 +585,7 @@ function _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc) {
     if (typeof bdDirty === 'function') bdDirty();
     // 課題7-3: 新規カードが選択状態になるのに、オプションパネルの内容が追従していなかった。
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ boardUi: true }, 'anchor-drop-add');
-    if (typeof showStatus === 'function') showStatus('カードとラインを追加しました');
+    if (typeof showStatus === 'function') showStatus('トピックとラインを追加しました');
     return newNode;
   } finally {
     if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
@@ -685,8 +694,8 @@ function bdAppendCardMenuButton(div, node) {
   menuBtn.className = 'bd-card-menu-btn';
   menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
   menuBtn.textContent = '...';
-  menuBtn.title = 'カードメニュー';
-  menuBtn.setAttribute('aria-label', 'カードメニュー');
+  menuBtn.title = 'トピックメニュー';
+  menuBtn.setAttribute('aria-label', 'トピックメニュー');
   menuBtn.setAttribute('aria-haspopup', 'menu');
   menuBtn.setAttribute('aria-expanded', 'false');
   menuBtn.addEventListener('click', ev => {

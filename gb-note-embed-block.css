@@ -1,0 +1,9 @@
+.meldex-note-embed { width:100%; max-width:100%; min-width:0; overflow:hidden; border:1px solid var(--border); border-radius:8px; contain:layout paint; }
+.meldex-note-embed-header { min-width:0; display:flex; align-items:center; gap:6px; padding:6px 8px; background:var(--bg2); }
+.meldex-note-embed-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.meldex-note-embed[data-embed-header="hidden"] .meldex-note-embed-header { display:none; }
+.meldex-note-embed-body { position:relative; height:var(--meldex-embed-height, 420px); max-width:100%; overflow:auto; overscroll-behavior:contain; }
+.meldex-note-embed[data-board-interaction-active="true"] .meldex-note-embed-body { touch-action:pan-x pan-y; }
+.meldex-note-embed:not([data-board-interaction-active="true"]) .meldex-note-embed-body { touch-action:pan-y; }
+.meldex-note-embed-status:not(:empty) { padding:12px; color:var(--fg-muted, var(--fg)); }
+@media (max-width:600px) { .meldex-note-embed { inline-size:100%; max-inline-size:100%; } .meldex-note-embed-header button { min-height:36px; } }

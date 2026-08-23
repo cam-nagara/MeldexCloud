@@ -75,6 +75,7 @@
   }
 
   function fileRawUrlForPath(path) {
+    if (/^(?:blob:|data:)/i.test(String(path || ''))) return String(path);
     if (archiveDisplayPath && path === archiveDisplayPath) {
       return API + '/archive/file?path=' + encodeURIComponent(archivePath)
         + '&member=' + encodeURIComponent(archiveMember);
@@ -83,6 +84,7 @@
   }
 
   function imagePreviewUrlForPath(path) {
+    if (/^(?:blob:|data:)/i.test(String(path || ''))) return String(path);
     if (archiveDisplayPath && path === archiveDisplayPath) {
       return fileRawUrlForPath(path);
     }

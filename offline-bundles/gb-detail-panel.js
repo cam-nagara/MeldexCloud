@@ -2792,6 +2792,7 @@ function _showCalEventInDetailPanel(ev, calendars, defaultStart, defaultEnd, def
   const defaultCalendarId = !isEdit && ownerComponent?._calendarIdForNewEvent ? ownerComponent._calendarIdForNewEvent() : '';
   const calOpts = (calendars || []).map(c => `<option value="${esc(c.id)}" ${(ev?.calendar_id===c.id || (!isEdit && c.id===defaultCalendarId))?'selected':''}>${esc(c.name)}</option>`).join('');
 
+  _removeStaleDpEditables(el);
   el.innerHTML = '';
   el.appendChild(_buildDpHeader(isEdit ? 'イベント編集' : '新規イベント', pos));
 
@@ -3033,10 +3034,13 @@ function _dpLoadFileInto(body, path) {
     window.MeldexNoteSaveAdapter?.registerHost?.(body, path);
     _dpApplyNoteFileStyle(body, fm);
     const html = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '';
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
     body.innerHTML = html || '<span style="color:var(--fg2)">内容がありません</span>';
+    window.MeldexNoteEmbedBlock?.hydrate?.(body, data.content || '');
     body.contentEditable = 'true';
   }).catch(() => {
     if (body.dataset.loadSeq !== String(loadSeq) || body.dataset.path !== path || _splitDirty) return;
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
     body.innerHTML = '<span style="color:var(--fg2)">読み込みに失敗しました</span>';
     body.contentEditable = 'true';
   });
@@ -3076,6 +3080,7 @@ function _removeStaleDpEditables(root) {
   const scope = root || document;
   scope.querySelectorAll('#dp-editable').forEach(n => {
     if (n._autoSaveTimer) { clearTimeout(n._autoSaveTimer); n._autoSaveTimer = null; }
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(n);
     // 工程1: 保存コーディネーターの文書単位参加者リストからも外す（isConnectedで
     // 自然に無害化はされるが、参照が残り続けるのを避ける）。
     if (n.dataset?.path && window.MeldexDocumentSaveCoordinator && window.MeldexNoteSaveAdapter) {
@@ -3259,6 +3264,7 @@ async function openBoardNoteTab(label, path) {
   if (!body) return;
   body.contentEditable = 'false';
   body.dataset.boardNoteLoadSeq = String(loadSeq);
+  window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
   body.innerHTML = '<span style="color:var(--fg2)">読み込み中...</span>';
   body.dataset.frontmatter = '';
   body.dataset.path = path;
@@ -3278,10 +3284,12 @@ async function openBoardNoteTab(label, path) {
     window.MeldexNoteSaveAdapter?.registerHost?.(body, path);
     _dpApplyNoteFileStyle(body, fm);
     body.innerHTML = md.trim() ? applyAutoLinks(mdToHtml(md, { basePath: path }), path) : '<span style="color:var(--fg2)">内容がありません</span>';
+    window.MeldexNoteEmbedBlock?.hydrate?.(body, data.content || '');
     body.contentEditable = 'true';
     _boardNoteDirty = false;
   }).catch(() => {
     if (loadSeq !== _boardNoteLoadSeq || _boardNotePath !== path || body.dataset.boardNoteLoadSeq !== String(loadSeq) || _boardNoteDirty) return;
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
     body.innerHTML = '<span style="color:var(--fg2)">読み込みに失敗しました</span>';
     body.contentEditable = 'true';
   });
@@ -3403,7 +3411,9 @@ async function _reloadBoardNoteAfterConflict(path) {
     body.dataset.lastSavedMd = data.content || '';
     body.dataset.lastSavedEtag = data.etag || '';
     adapter?.bindHostIdentity?.(body, path, data);
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
     body.innerHTML = renderedHtml;
+    window.MeldexNoteEmbedBlock?.hydrate?.(body, data.content || '');
     _boardNoteDirty = false;
     // 同じノートをメイン/詳細パネルにも開いている場合を含め、全ホストのDOM・
     // baselineを同じ最新版へ揃えてから、確認開始時と同じ競合世代だけを解除する。
@@ -3435,6 +3445,7 @@ function hideBoardNoteTab() {
       clearInterval(body._boardNoteSaveTimer);
       body._boardNoteSaveTimer = null;
     }
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(body);
     document.querySelectorAll('.detail-tab-board-note').forEach(t => { t.hidden = true; });
     if (_currentDetailTab === 'board-note') {
       // board-note が閉じられた時、表示中のカード/ライン タブがあればそこへ、

@@ -3,20 +3,20 @@
 function _meldexHelpItems() {
   return [
     { label: '基本', type: 'heading' },
-    { label: 'クイックスタート', icon: 'rocket', type: 'manual', title: 'クイックスタート', path: 'マニュアル/01_はじめに/クイックスタート.md' },
-    { label: 'マニュアル', icon: 'bookOpen', type: 'manual', title: 'Meldex マニュアル', path: 'マニュアル/Meldex マニュアル.md' },
-    { label: 'Q&A', icon: 'helpCircle', type: 'manual', title: 'よくある質問', path: 'マニュアル/04_サポート/よくある質問.md' },
+    { label: 'クイックスタート', icon: 'rocket', type: 'external', path: '01_はじめに/クイックスタート.md' },
+    { label: 'マニュアル', icon: 'bookOpen', type: 'external', path: 'Meldex マニュアル.md' },
+    { label: 'Q&A', icon: 'helpCircle', type: 'external', path: '04_サポート/よくある質問.md' },
     { type: 'separator' },
     { label: 'LLM / チャット', type: 'heading' },
-    { label: 'LLMの必要性とコスト方針', icon: 'fileText', type: 'manual', title: 'LLMの必要性とコスト方針', path: 'マニュアル/03_設定と連携/LLMの必要性とコスト方針.md' },
-    { label: 'チャットLLM ツールガイド', icon: 'fileText', type: 'manual', title: 'チャットLLM ツールガイド', path: 'マニュアル/03_設定と連携/チャットLLM ツールガイド.md' },
-    { label: 'LLMプライバシーガイド', icon: 'eyeOff', type: 'manual', title: 'LLMプライバシーガイド', path: 'マニュアル/03_設定と連携/LLMプライバシーガイド.md' },
+    { label: 'LLMの必要性とコスト方針', icon: 'fileText', type: 'external', path: '03_設定と連携/LLMの必要性とコスト方針.md' },
+    { label: 'チャットLLM ツールガイド', icon: 'fileText', type: 'external', path: '03_設定と連携/チャットLLM ツールガイド.md' },
+    { label: 'LLMプライバシーガイド', icon: 'eyeOff', type: 'external', path: '03_設定と連携/LLMプライバシーガイド.md' },
     { label: 'チャットルール', icon: 'clipboardList', type: 'action', action: 'chatRules' },
     { type: 'separator' },
     { label: '拡張機能', type: 'heading' },
-    { label: 'Chrome拡張機能の設定', icon: 'puzzle', type: 'manual', title: 'Chrome拡張機能の設定', path: 'マニュアル/03_設定と連携/Chrome拡張機能の設定.md' },
-    { label: '画像ツールの設定', icon: 'image', type: 'manual', title: '画像ツールの設定', path: 'マニュアル/03_設定と連携/画像ツールの設定.md' },
-    { label: 'CalDAVカレンダー同期の設定', icon: 'calendarDays', type: 'manual', title: 'CalDAVカレンダー同期の設定', path: 'マニュアル/03_設定と連携/CalDAVカレンダー同期の設定.md' },
+    { label: 'Chrome拡張機能の設定', icon: 'puzzle', type: 'external', path: '03_設定と連携/Chrome拡張機能の設定.md' },
+    { label: '画像ツールの設定', icon: 'image', type: 'external', path: '03_設定と連携/画像ツールの設定.md' },
+    { label: 'CalDAVカレンダー同期の設定', icon: 'calendarDays', type: 'external', path: '03_設定と連携/CalDAVカレンダー同期の設定.md' },
     { type: 'separator' },
     { label: '更新履歴', icon: 'history', type: 'changelog' },
     { label: '診断情報をエクスポート', icon: 'lifeBuoy', type: 'action', action: 'diagnostics' },
@@ -36,17 +36,36 @@ function _meldexHelpDialogOwner(explicitOwner) {
   return _fallbackMeldexHelpMenuAnchor();
 }
 
-function _openMeldexHelpManual(item) {
-  _closeMeldexHelpMenu();
-  const fullPath = (_homeFolderPath || '').replace(/[\\/]$/, '') + '/' + item.path;
-  if (typeof openPage === 'function') openPage(item.title || item.label, fullPath);
+const MELDEX_PUBLIC_MANUAL_FALLBACK_URL = 'https://cam-nagara.github.io/MeldexCloud/manual.html';
+
+function meldexPublicManualUrl(path = '', section = '') {
+  const runtimeRoot = String(window.MeldexCloudRuntimeConfig?.cloudPublicUrl || '').trim();
+  const currentIsPublished = /^https?:$/.test(window.location?.protocol || '')
+    && /(^|\.)cam-nagara\.github\.io$/i.test(window.location?.hostname || '');
+  let base = MELDEX_PUBLIC_MANUAL_FALLBACK_URL;
+  if (runtimeRoot) {
+    try { base = new URL('manual.html', runtimeRoot).href; } catch {}
+  } else if (currentIsPublished) {
+    try { base = new URL('manual.html', window.location.href).href; } catch {}
+  }
+  if (!path) return base;
+  const params = new URLSearchParams();
+  params.set('path', String(path).replace(/^manual\//, ''));
+  if (section) params.set('section', section);
+  return base + '#' + params.toString();
+}
+
+function openMeldexPublicManual(path = '', section = '') {
+  return window.open(meldexPublicManualUrl(path, section), '_blank', 'noopener');
 }
 
 function _openMeldexHelpExternal(item) {
   _closeMeldexHelpMenu();
-  if (!item.url) return;
-  window.open(item.url, '_blank', 'noopener');
+  if (item.path) openMeldexPublicManual(item.path, item.section || '');
+  else if (item.url) window.open(item.url, '_blank', 'noopener');
 }
+
+window.MeldexPublicManual = Object.freeze({ url: meldexPublicManualUrl, open: openMeldexPublicManual });
 
 function _runMeldexHelpAction(item) {
   _closeMeldexHelpMenu();
@@ -219,8 +238,7 @@ function showMeldexHelpMenu(event) {
     row.style.cssText = 'width:100%;border:0;background:transparent;text-align:left;padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;';
     row.innerHTML = `<span style="width:16px;height:16px;display:inline-flex;">${lucide(item.icon, 15)}</span><span>${esc(item.label)}</span>`;
     row.addEventListener('click', () => {
-      if (item.type === 'manual') _openMeldexHelpManual(item);
-      else if (item.type === 'external') _openMeldexHelpExternal(item);
+      if (item.type === 'external') _openMeldexHelpExternal(item);
       else if (item.type === 'action') _runMeldexHelpAction(item);
       else if (item.type === 'changelog') showMeldexChangelogDialog(anchor);
       else if (item.type === 'about') showMeldexAboutDialog(anchor);

@@ -920,7 +920,7 @@ function _dbTemplateAssertProductionPropertyTypesUnchanged(dbPath, nextTypes) {
   }
   for (const name of Object.keys(candidateTypes)) {
     if (window.MeldexProductionSchemaMigration?.reservedLegacyPropertyForPath?.(dbPath, name)) {
-      throw new Error(`制作管理では旧名称列「${name}」を追加できません。エントリ名を使用してください`);
+      throw new Error(`制作管理では旧名称列「${name}」を追加できません。トピック名を使用してください`);
     }
   }
 }

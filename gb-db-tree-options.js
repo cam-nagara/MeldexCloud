@@ -103,7 +103,7 @@ function _dbTreeRenderOptionPanel(ctx) {
   const detailsSection = document.createElement('section');
   detailsSection.className = 'db-tree-option-section';
   const heading = document.createElement('h3');
-  heading.textContent = '選択中のエントリ';
+  heading.textContent = '選択中のトピック';
   const details = document.createElement('div');
   const stateInfo = ctx?._dbTreeViewState;
   const model = ctx?._dbTreeViewModel;

@@ -159,10 +159,10 @@ function _bdBuildNodeDetailHtml(node) {
   const effectiveAnchorLabel = !effectiveAnchor
     ? 'なし (階層別スタイル未適用)'
     : effectiveAnchor.id === node.id
-      ? 'このカード自身'
+      ? 'このトピック自身'
       : ((effectiveAnchor.text || '').split('\n')[0] || effectiveAnchor.id);
   const opacityPct = node.opacity != null ? Math.round(Math.max(0, Math.min(1, node.opacity)) * 100) : 100;
-  const title = (node.text || '').split('\n')[0] || '無題カード';
+  const title = (node.text || '').split('\n')[0] || '無題トピック';
   const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
   const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
   const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : 'リセット';
@@ -203,12 +203,12 @@ function _bdBuildNodeDetailHtml(node) {
         <div class="bd-detail-section-title">配置</div>
         <label class="bd-detail-field"><span>X</span><input type="number" class="gb-fmt-num" value="${Math.round(node.x || 0)}" data-bd-field="x"></label>
         <label class="bd-detail-field"><span>Y</span><input type="number" class="gb-fmt-num" value="${Math.round(node.y || 0)}" data-bd-field="y"></label>
-        <label class="bd-detail-field"><span>親カード</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
+        <label class="bd-detail-field"><span>親トピック</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="container" ${node.container ? 'checked' : ''}><span>コンテナ</span></label>
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
+        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>サブトピック追従</span></label>
         <div class="gb-check-help-row">
           <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
-          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
+          ${typeof fieldHelp === 'function' ? fieldHelp('このトピックを深さ0として、子孫トピックだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のトピックには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
         </div>
         <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">

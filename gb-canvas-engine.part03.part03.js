@@ -73,9 +73,9 @@ async function _bdConfirmDeleteSelection() {
   const nodeCount = bd.selected?.size || 0;
   const lineCount = _bdSelectedConnectionIdsForDelete().length;
   let msg;
-  if (nodeCount && lineCount) msg = `${nodeCount}件のカードと${lineCount}件のラインを削除しますか？`;
-  else if (nodeCount > 1) msg = `${nodeCount}件のカードを削除しますか？`;
-  else if (nodeCount === 1) msg = 'このカードを削除しますか？';
+  if (nodeCount && lineCount) msg = `${nodeCount}件のトピックと${lineCount}件のラインを削除しますか？`;
+  else if (nodeCount > 1) msg = `${nodeCount}件のトピックを削除しますか？`;
+  else if (nodeCount === 1) msg = 'このトピックを削除しますか？';
   else if (lineCount > 1) msg = `${lineCount}件のラインを削除しますか？`;
   else msg = 'このラインを削除しますか？';
   try {

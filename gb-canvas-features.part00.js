@@ -139,7 +139,7 @@
     const containedIds = new Set([...selectedIds].filter(id => !!bd.nodes.find(v => v.id === id)?.contained));
     const eligibleIds = new Set([...selectedIds].filter(id => !containedIds.has(id)));
     if (eligibleIds.size < 2) {
-      showStatus('内包カードはラインから親子化の対象外です', true);
+    showStatus('内包トピックはラインから親子化の対象外です', true);
       return { assigned: 0, unreachable: 0, skippedContained: containedIds.size, skippedUser: false };
     }
     if (!eligibleIds.has(rootId)) rootId = pickFallbackLinkifyRoot(eligibleIds);
@@ -152,7 +152,7 @@
       return !!(node && node.parent);
     });
     if (hasExistingParent) {
-      const ok = await cfConfirm('選択内に既に親子関係が設定されているカードがあります。ラインに基づき上書きしますか？');
+    const ok = await cfConfirm('選択内に既に親子関係が設定されているトピックがあります。ラインに基づき上書きしますか？');
       if (!ok) return { assigned: 0, unreachable: 0, skippedContained: 0, skippedUser: true };
     }
     const adjacency = new Map();
@@ -215,9 +215,9 @@
     if (assigned === 0) {
       showStatus('選択内にラインがないため親子化できませんでした', true);
     } else {
-      const parts = [`親子化: ${assigned} 件のカードに親を設定しました`];
+  const parts = [`親子化: ${assigned} 件のトピックに親を設定しました`];
       if (unreachable) parts.push(`到達不能 ${unreachable} 件`);
-      if (skippedContained) parts.push(`内包カードスキップ ${skippedContained} 件`);
+  if (skippedContained) parts.push(`内包トピックスキップ ${skippedContained} 件`);
       showStatus(parts.join(' / '));
     }
     return { assigned, unreachable, skippedContained, skippedUser: false };

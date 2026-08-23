@@ -138,6 +138,7 @@ class LegacyWrapperComponent extends ToolComponent {
 
 // === コンポーネントレジストリ ===
 const TOOL_REGISTRY = {};
+const TOOL_CAPABILITY_OVERRIDES = {};
 
 // レジストリにコンポーネントクラスを登録
 function registerToolComponent(type, config) {
@@ -148,7 +149,21 @@ function registerToolComponent(type, config) {
     multi: config.multi !== false, // デフォルトtrue
     // Audit-P2 H-7: 表示状態の固定（view_lock）が必要なツールか
     requiresViewLock: !!config.requiresViewLock,
+    embeddable: !!(TOOL_CAPABILITY_OVERRIDES[type]?.embeddable ?? config.embeddable),
   };
+}
+
+// 埋め込み等の能力は型付きキーで登録し、コンポーネント本体の複製判定を避ける。
+function registerToolCapability(type, capability, enabled) {
+  if (capability !== 'embeddable') throw new Error('unsupported ToolComponent capability: ' + capability);
+  if (!TOOL_CAPABILITY_OVERRIDES[type]) TOOL_CAPABILITY_OVERRIDES[type] = {};
+  TOOL_CAPABILITY_OVERRIDES[type][capability] = !!enabled;
+  if (TOOL_REGISTRY[type]) TOOL_REGISTRY[type][capability] = !!enabled;
+}
+
+function getToolCapability(type, capability) {
+  if (capability !== 'embeddable') return false;
+  return !!(TOOL_REGISTRY[type] && TOOL_REGISTRY[type][capability]);
 }
 
 // ViewLock 判定用ヘルパー（gb-view-lock.js から呼び出せるようグローバル公開）

@@ -348,8 +348,17 @@ const _VIEWER_ANN_ERROR_CODE_MESSAGES = {
 const _VIEWER_ANN_ACTION_LABELS = { create: '作成', update: '更新', delete: '削除' };
 function _handleViewerAnnotationSaveResult(msg) {
   if (msg?.ok) {
-    // 成功時は保存済み状態の更新だけ行う（通知は出さない）。現状このUIには
-    // 「未保存」インジケーターが無いため、追加のDOM更新は不要。
+    // チャット側は対象パスが一致するサムネイルだけを再取得する。revisionは
+    // 不透明値として扱い、別画像や元画像のキャッシュは無効化しない。
+    const targets = Array.isArray(msg.invalidatedTargets) && msg.invalidatedTargets.length
+      ? msg.invalidatedTargets : [msg.targetPath];
+    targets.filter(Boolean).forEach(targetPath => {
+      window.MeldexChatViewerAssets?.notifyRevision?.({
+        targetPath,
+        annotationRevision: targetPath === msg.targetPath ? (msg.annotationRevision || '') : '',
+        action: msg.action || '',
+      });
+    });
     return;
   }
   const actionLabel = _VIEWER_ANN_ACTION_LABELS[msg?.action] || '';

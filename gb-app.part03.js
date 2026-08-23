@@ -1092,7 +1092,6 @@ function showLoading(msg) {
       background: false,
       delayMs: 300,
       showInTray: true,
-      showInStatus: true,
       priority: 40,
     }));
     return;

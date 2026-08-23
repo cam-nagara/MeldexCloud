@@ -29,7 +29,7 @@ function _elRenderLayoutBody(grid, data, entityPath, options, dbPath, layoutId, 
   if (!layout) {
     const missing = document.createElement('div');
     missing.className = 'el-empty-hint';
-    missing.textContent = 'このエントリレイアウトは見つかりませんでした';
+    missing.textContent = 'このトピックレイアウトは見つかりませんでした';
     host.appendChild(missing);
     return;
   }
@@ -143,7 +143,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
     ? _elBuildCellContent(cell, ctx, canvas)
     : null;
   if (content) el.appendChild(content);
-  if (typeof _elApplyCellStyle === 'function') _elApplyCellStyle(el, cell);
+  if (typeof _elApplyCellStyle === 'function') _elApplyCellStyle(el, cell, ctx);
 
   if (!ctx.editMode) return el;
 
@@ -198,7 +198,7 @@ function _elBuildCellElement(cell, ctx, canvas) {
   // セル削除は配置の編集操作（データ自体は消えない）なので確認は出さず、取り消し履歴で戻せるようにする
   removeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    ctx.persist('エントリレイアウト: セル削除', '', (layout) => {
+    ctx.persist('トピックレイアウト: セル削除', '', (layout) => {
       const idx = layout.cells.findIndex(c => c.id === cell.id);
       if (idx < 0) return false;
       layout.cells.splice(idx, 1);
@@ -260,7 +260,7 @@ function _elBeginLabelEdit(el, cell, ctx) {
     const next = String(input.value || '').trim();
     el.classList.remove('el-label-editing');
     if (commit && next !== original) {
-      _elPersistCellPatch(ctx, cell, 'エントリレイアウト: 見出し編集', (target) => { target.text = next; });
+      _elPersistCellPatch(ctx, cell, 'トピックレイアウト: 見出し編集', (target) => { target.text = next; });
     }
     ctx.rerender();
   };
@@ -320,7 +320,7 @@ function _elBeginCellPointerOp(e, el, cell, ctx, canvas, mode) {
     const changed = latest.x !== start.x || latest.y !== start.y || latest.w !== start.w || latest.h !== start.h;
     if (!changed) return;
     const persisted = ctx.persist(
-      mode === 'move' ? 'エントリレイアウト: セル移動' : 'エントリレイアウト: セルサイズ変更',
+      mode === 'move' ? 'トピックレイアウト: セル移動' : 'トピックレイアウト: セルサイズ変更',
       '',
       (layout) => {
         const target = layout.cells.find(c => c.id === cell.id);
@@ -404,7 +404,7 @@ function _elNextCellPosition(layout, w, h) {
 function _elAddCell(ctx, partialCell, statusLabel) {
   const w = partialCell.w || 220;
   const h = partialCell.h || 90;
-  ctx.persist('エントリレイアウト: セル追加', statusLabel || '', (layout) => {
+  ctx.persist('トピックレイアウト: セル追加', statusLabel || '', (layout) => {
     const pos = _elNextCellPosition(layout, w, h);
     layout.cells.push(_elNormalizeCell({ ...partialCell, ...pos, w, h }, layout.canvasSize.w, layout.canvasSize.h));
   });
@@ -485,7 +485,7 @@ function _elShowCanvasSizePopup(anchorBtn, ctx) {
     const w = _elClampNum(wInput.value, EL_CANVAS_MIN, EL_CANVAS_MAX, ctx.layout.canvasSize.w);
     const h = _elClampNum(hInput.value, EL_CANVAS_MIN, EL_CANVAS_MAX, ctx.layout.canvasSize.h);
     close();
-    ctx.persist('エントリレイアウト: キャンバスサイズ', w + 'x' + h, (layout) => {
+    ctx.persist('トピックレイアウト: キャンバスサイズ', w + 'x' + h, (layout) => {
       layout.canvasSize = { w, h };
     });
     ctx.rerender();

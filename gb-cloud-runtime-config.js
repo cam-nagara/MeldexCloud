@@ -2,7 +2,7 @@
   'use strict';
   const config = {
   "version": {
-    "semver": "0.7.355",
+    "semver": "0.7.358",
     "variant": "cloud-beta"
   },
   "cloudPublicUrl": "https://cam-nagara.github.io/MeldexCloud/",
@@ -102,25 +102,10 @@
     ]
   },
   "standaloneApps": {
-    "note": {
-      "cloudUrl": "apps/note/",
-      "windowsAsset": "MeldexNote.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexNote.zip"
-    },
-    "scenario": {
-      "cloudUrl": "apps/scenario/",
-      "windowsAsset": "MeldexScenario.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexScenario.zip"
-    },
-    "board": {
-      "cloudUrl": "apps/board/",
-      "windowsAsset": "MeldexBoard.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexBoard.zip"
-    },
-    "sheet": {
-      "cloudUrl": "apps/sheet/",
-      "windowsAsset": "MeldexSheet.zip",
-      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexSheet.zip"
+    "viewer": {
+      "cloudUrl": "apps/viewer/",
+      "windowsAsset": "MeldexViewer.zip",
+      "downloadUrl": "https://github.com/cam-nagara/MeldexCloud/releases/download/v0.7.355/MeldexViewer.zip"
     },
     "timer": {
       "cloudUrl": "apps/timer/",

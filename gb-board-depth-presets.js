@@ -578,7 +578,7 @@
     title.textContent = '階層別スタイルプリセット';
     if (typeof global.fieldHelp === 'function') {
       title.insertAdjacentHTML('beforeend', ' ' + global.fieldHelp(
-        '階層ごとのカードとラインの組み合わせを一式でまとめたものです。選ぶとこのボードの階層別スタイル全体が入れ替わります。保存したプリセットはどのボードからでも使えます。'
+        '階層ごとのトピックとラインの組み合わせを一式でまとめたものです。選ぶとこのボードの階層別スタイル全体が入れ替わります。保存したプリセットはどのボードからでも使えます。'
       ));
     }
     const row = document.createElement('div');

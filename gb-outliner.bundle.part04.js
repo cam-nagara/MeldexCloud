@@ -1,3 +1,6 @@
+      else failed.push(targets[index]);
+      return;
+    }
     succeeded.push({ ...targets[index], ...trashRef });
   });
   const deletedPaths = succeeded.map(item => item.path);
@@ -895,6 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
 
   // --- ルートフォルダのパス変更 ---
   if (nodeData._isRoot && !isMulti && !(nodeData.rootKind === 'workspace' || nodeData.workspaceId)) {
-    addSep();
-    addMenuItem('パスを変更...', async () => {
-      closeTreeContextMenu();

@@ -604,6 +604,9 @@ async function _apiPutValue(valObj, updates) {
       if (updates.new_link && typeof updates.new_link === 'object') valObj.link = { ...updates.new_link };
       else delete valObj.link;
     }
+    window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
+      owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+    });
     return res;
   }, valObj);
 }
@@ -673,6 +676,9 @@ async function _apiPostValue(entityPath, propName, value, status, note, richHtml
         : null;
       if (ptc?.type === 'image') apiPost('/media/rebuild-refs', {}).catch(() => {});
     } catch {}
+    window.GbTopicLiveBridge?.scheduleAfterSave?.(dbPath, {
+      owner: typeof _dbFindPaneContextForPath === 'function' ? _dbFindPaneContextForPath(dbPath) : null,
+    });
     return res;
   }, entryRef);
 }
@@ -805,14 +811,14 @@ async function _apiCreateEntityWithUniqueName(dbPath, existingNames, options = {
       if (_isEntityCreateNameConflict(error)) continue;
       if (!options.silentError && typeof showStatus === 'function') {
         const text = window.MeldexErrorMessages?.toStatusText?.(error, { path: '/entity/create' }) || error.message || String(error);
-        showStatus('エントリ作成に失敗: ' + text, true);
+        showStatus('トピック作成に失敗: ' + text, true);
       }
       throw error;
     }
   }
-  const error = lastError || new Error('同名エントリが多数存在するため作成できません');
+  const error = lastError || new Error('同名トピックが多数存在するため作成できません');
   if (!options.silentError && typeof showStatus === 'function') {
-    showStatus('エントリ作成に失敗: 同名エントリが多数存在します', true);
+    showStatus('トピック作成に失敗: 同名トピックが多数存在します', true);
   }
   throw error;
 }
@@ -978,7 +984,7 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
   btn.className = 'gb-btn primary db-empty-create-entry-btn';
   btn.dataset.e2eId = options.e2eId || 'db-empty-create-entry';
   btn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:7px 12px;';
-  btn.innerHTML = (typeof lucide === 'function' ? lucide('plus', 14) : '+') + '<span>エントリを追加</span>';
+  btn.innerHTML = (typeof lucide === 'function' ? lucide('plus', 14) : '+') + '<span>トピックを追加</span>';
   btn.addEventListener('click', async (ev) => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -1004,21 +1010,21 @@ function _dbRenderEmptyStateWithCreate(container, icon, message, hint, ctx, opti
         await apiPost('/entity/create', { parent_path: dbPath, name: options.baseName || '無題' });
         if (typeof selectDatabase === 'function') await selectDatabase(dbPath, renderCtx, { silent: true, skipRecent: true, skipNavPush: true });
       }
-      if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+      if (typeof showStatus === 'function') showStatus('トピックを追加しました');
     } catch (e) {
       // タイムアウト等でも実際は作成済みのことがあるため、撤去前に確認する
       const recovered = created && typeof _dbRecoverEntityCreateAfterError === 'function'
         ? await _dbRecoverEntityCreateAfterError(created.renderCtx || renderCtx, dbPath, created)
         : null;
       if (recovered) {
-        if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+        if (typeof showStatus === 'function') showStatus('トピックを追加しました');
       } else {
         // 楽観的に追加した未保存エントリを表示から取り除く
         if (created && typeof _dbRemoveCreatedEntitiesLocally === 'function') {
           _dbRemoveCreatedEntitiesLocally(created.renderCtx || renderCtx, dbPath, [created.name]);
         }
-        if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
-        if (label) label.textContent = 'エントリを追加';
+        if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
+        if (label) label.textContent = 'トピックを追加';
         btn.disabled = false;
       }
     }

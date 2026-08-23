@@ -242,7 +242,7 @@ async function _deleteColumn(dbPath, propName, ctx) {
   }
   const renderCtx = _ptContextForDbPath(dbPath, ctx);
   const ok = await cfConfirm(
-    `列「${propName}」を削除します。\n\n既存の候補値データはエントリに残りますが、表示されなくなります。\n（再度同名の列を追加すれば値は復活します）\n\n削除しますか？`
+    `列「${propName}」を削除します。\n\n既存の候補値データはトピックに残りますが、表示されなくなります。\n（再度同名の列を追加すれば値は復活します）\n\n削除しますか？`
   );
   if (!ok) return false;
 
@@ -1426,7 +1426,7 @@ function _renderButtonActions(actions, root) {
     { value: 'set-value', label: '値を設定' },
     { value: 'set-current-user', label: '現在のユーザーを設定' },
     { value: 'set-now', label: '現在の日時を設定' },
-    { value: 'create-dependent', label: '依存エントリを作成' },
+    { value: 'create-dependent', label: '依存トピックを作成' },
   ];
 
   actions.forEach((act, idx) => {

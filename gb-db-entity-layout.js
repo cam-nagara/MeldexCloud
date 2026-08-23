@@ -48,7 +48,9 @@ function _elNormalizeCell(cell, canvasW, canvasH) {
   out.y = _elClampNum(src.y, 0, EL_CANVAS_MAX, 20);
   if (out.type === 'field') out.prop = String(src.prop || '');
   if (!_elIsObj(out.style)) out.style = {};
-  return out;
+  return globalThis.MeldexDbTopicLayoutStyle?.normalizeCellStyleContract
+    ? globalThis.MeldexDbTopicLayoutStyle.normalizeCellStyleContract(out)
+    : out;
 }
 
 // レイアウト1件を正規化する。未知の追加フィールドは温存する。
@@ -204,7 +206,7 @@ function _elSelectTab(grid, entityPath, dbPath, tabId, rerender, options = {}) {
 function _elAddLayout(grid, entityPath, dbPath, rerender) {
   if (!_elCanMutateGrid(grid)) return;
   let newId = '';
-  _elMutateState(dbPath, 'エントリレイアウト: 追加', '', (state) => {
+  _elMutateState(dbPath, 'トピックレイアウト: 追加', '', (state) => {
     const layout = _elNormalizeLayout({ name: _elMakeNewLayoutName(state.layouts) });
     newId = layout.id;
     state.layouts.push(layout);
@@ -215,7 +217,7 @@ function _elAddLayout(grid, entityPath, dbPath, rerender) {
   const session = _elSession(grid, entityPath);
   session.tab = newId;
   session.editMode = true; // 空のレイアウトは編集モードで開き、すぐセルを置ける状態にする
-  if (typeof showStatus === 'function') showStatus('エントリレイアウトを追加しました');
+  if (typeof showStatus === 'function') showStatus('トピックレイアウトを追加しました');
   if (typeof rerender === 'function') rerender();
 }
 
@@ -225,7 +227,7 @@ async function _elRenameLayout(grid, entityPath, dbPath, layoutId, rerender) {
   const layout = state?.layouts.find(l => l.id === layoutId);
   if (!layout) return;
   const input = typeof cfPrompt === 'function'
-    ? await cfPrompt('エントリレイアウト名', layout.name, { okLabel: '変更' })
+    ? await cfPrompt('トピックレイアウト名', layout.name, { okLabel: '変更' })
     : null;
   if (input == null) return;
   if (!_elCanMutateGrid(grid)) return;
@@ -234,7 +236,7 @@ async function _elRenameLayout(grid, entityPath, dbPath, layoutId, rerender) {
     if (typeof showStatus === 'function') showStatus('名前を入力してください', true);
     return;
   }
-  _elMutateState(dbPath, 'エントリレイアウト: 名前変更', layout.name + ' → ' + name, (st) => {
+  _elMutateState(dbPath, 'トピックレイアウト: 名前変更', layout.name + ' → ' + name, (st) => {
     const target = st.layouts.find(l => l.id === layoutId);
     if (!target) return false;
     target.name = name;
@@ -259,7 +261,7 @@ async function _elDuplicateLayout(grid, entityPath, dbPath, layoutId, rerender) 
     return;
   }
   let newId = '';
-  _elMutateState(dbPath, 'エントリレイアウト: 複製', source.name + ' → ' + name, (st) => {
+  _elMutateState(dbPath, 'トピックレイアウト: 複製', source.name + ' → ' + name, (st) => {
     const src = st.layouts.find(l => l.id === layoutId);
     if (!src) return false;
     const clone = _elNormalizeLayout(JSON.parse(JSON.stringify(src)));
@@ -274,7 +276,7 @@ async function _elDuplicateLayout(grid, entityPath, dbPath, layoutId, rerender) 
   }, _elRestoreOption(grid, rerender));
   if (!newId) return;
   _elSession(grid, entityPath).tab = newId;
-  if (typeof showStatus === 'function') showStatus('エントリレイアウトを複製しました: ' + name);
+  if (typeof showStatus === 'function') showStatus('トピックレイアウトを複製しました: ' + name);
   if (typeof rerender === 'function') rerender();
 }
 
@@ -285,11 +287,11 @@ async function _elDeleteLayout(grid, entityPath, dbPath, layoutId, rerender) {
   if (!layout) return;
   // 削除は確認ダイアログ必須（プロジェクト共通ルール）。取り消し履歴からも復元できる。
   const confirmed = typeof cfConfirm === 'function'
-    ? await cfConfirm('エントリレイアウト「' + layout.name + '」を削除しますか？')
+    ? await cfConfirm('トピックレイアウト「' + layout.name + '」を削除しますか？')
     : false;
   if (!confirmed) return;
   if (!_elCanMutateGrid(grid)) return;
-  _elMutateState(dbPath, 'エントリレイアウト: 削除', layout.name, (st) => {
+  _elMutateState(dbPath, 'トピックレイアウト: 削除', layout.name, (st) => {
     const idx = st.layouts.findIndex(l => l.id === layoutId);
     if (idx < 0) return false;
     st.layouts.splice(idx, 1);
@@ -298,14 +300,14 @@ async function _elDeleteLayout(grid, entityPath, dbPath, layoutId, rerender) {
   }, _elRestoreOption(grid, rerender));
   const session = _elSession(grid, entityPath);
   if (session.tab === layoutId) session.tab = null; // 次描画で並び順先頭タブへ戻す
-  if (typeof showStatus === 'function') showStatus('エントリレイアウトを削除しました: ' + layout.name);
+  if (typeof showStatus === 'function') showStatus('トピックレイアウトを削除しました: ' + layout.name);
   if (typeof rerender === 'function') rerender();
 }
 
 function _elReorderTabs(grid, dbPath, fromId, toId, placeAfter, rerender) {
   if (!_elCanMutateGrid(grid)) return;
   if (!fromId || !toId || fromId === toId) return;
-  _elMutateState(dbPath, 'エントリレイアウト: タブ並べ替え', '', (st) => {
+  _elMutateState(dbPath, 'トピックレイアウト: タブ並べ替え', '', (st) => {
     const order = st.tabOrder.filter(id => id !== fromId);
     const targetIdx = order.indexOf(toId);
     if (targetIdx < 0) return false;
@@ -336,7 +338,7 @@ function _elShowTabMenu(anchorBtn, grid, entityPath, dbPath, layoutId, rerender)
 /* 書き出しメニュー（HTML / PNG）。実体は既存の書き出しエンジンへ委譲する。
    複数の面（メイン/サブパネル/右サイドバー）で同時にレイアウトを開いていても、
    押されたタブ行の面が書き出されるよう、対象の grid を書き出しエンジンへ引き渡す。 */
-function _elShowExportMenu(anchorBtn, grid) {
+function _elShowExportMenu(anchorBtn, grid, context) {
   window.__meldexEntityLayoutExportRoot = grid || anchorBtn?.closest?.('.entity-props-grid-container') || null;
   const items = [
     {
@@ -356,7 +358,125 @@ function _elShowExportMenu(anchorBtn, grid) {
       },
     },
   ];
+  if (globalThis.MeldexDbTopicLayoutStyle && context?.layoutId) {
+    items.push(
+      { key: 'export-template', label: 'トピックレイアウトを保存', icon: 'save', run: () => _elDownloadTopicLayoutTemplate(context) },
+      { key: 'import-template', label: 'トピックレイアウトを読み込む', icon: 'upload', run: () => _elChooseTopicLayoutTemplate(context) },
+      { key: 'save-shared-template', label: '共有テンプレートへ保存', icon: 'library', run: () => _elSaveTopicLayoutToSharedLibrary(context) },
+      { key: 'load-shared-template', label: '共有テンプレートから読み込む', icon: 'folderOpen', run: () => _elLoadTopicLayoutFromSharedLibrary(context) },
+    );
+  }
   _elShowActionMenu(anchorBtn, items, 'entity-layout-export-menu');
+}
+
+function _elTopicLayoutColumns(dbPath, pivotData) {
+  const data = pivotData || state?.pivotData || {};
+  const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) || {} : {};
+  return (Array.isArray(data.properties) ? data.properties : []).map(name => ({
+    id: String(types[name]?.id || types[name]?.columnId || ''), name: String(name),
+  }));
+}
+
+function _elDownloadTopicLayoutTemplate(context) {
+  const layout = _elGetState(context.dbPath)?.layouts.find(item => item.id === context.layoutId);
+  if (!layout) return;
+  const api = globalThis.MeldexDbTopicLayoutStyle;
+  const template = api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData));
+  const blob = new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = layout.name.replace(/[\\/:*?"<>|]+/g, '_') + api.TEMPLATE_EXTENSION;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 0);
+}
+
+function _elChooseTopicLayoutTemplate(context) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,.meldex-topic-layout.json,application/json';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const template = JSON.parse(await file.text());
+      let imported = null;
+      _elMutateState(context.dbPath, 'トピックレイアウト: 読み込み', file.name, state => {
+        imported = globalThis.MeldexDbTopicLayoutStyle.importTemplate(template, state.layouts, _elTopicLayoutColumns(context.dbPath, context.pivotData));
+        if (!imported.added) return false;
+        state.layouts.push(imported.layout);
+        state.tabOrder.push(imported.layout.id);
+        state.currentTab = imported.layout.id;
+      }, _elRestoreOption(context.grid, context.rerender));
+      if (!imported?.added) {
+        if (typeof showStatus === 'function') showStatus('同名のトピックレイアウトが既にあります', true);
+        return;
+      }
+      const unresolved = imported.mappings.filter(item => item.match === 'unresolved').length;
+      if (typeof showStatus === 'function') showStatus(unresolved ? `読み込みました（未割り当ての列: ${unresolved}件）` : 'トピックレイアウトを読み込みました');
+      context.rerender?.();
+    } catch (error) {
+      if (typeof showStatus === 'function') showStatus('トピックレイアウトを読み込めません: ' + (error?.message || error), true);
+    }
+  });
+  input.click();
+}
+
+async function _elSaveTopicLayoutToSharedLibrary(context) {
+  const api = globalThis.MeldexDbTopicLayoutStyle;
+  const layout = _elGetState(context.dbPath)?.layouts.find(item => item.id === context.layoutId);
+  if (!api || !layout) return;
+  try {
+    const template = api.exportTemplate(layout, _elTopicLayoutColumns(context.dbPath, context.pivotData));
+    const result = api.saveSharedTemplateToLibrary
+      ? await api.saveSharedTemplateToLibrary(template)
+      : api.saveSharedTemplate(template);
+    if (typeof showStatus === 'function') {
+      const message = !result.saved
+        ? '同名の共有テンプレートが既にあります'
+        : result.shared === false
+          ? '共有先を利用できないため、この端末に保存しました'
+          : '共有テンプレートへ保存しました';
+      showStatus(message, !result.saved || result.shared === false);
+    }
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus('共有テンプレートへ保存できません: ' + (error?.message || error), true);
+  }
+}
+
+async function _elLoadTopicLayoutFromSharedLibrary(context) {
+  const api = globalThis.MeldexDbTopicLayoutStyle;
+  const library = api?.loadSharedTemplateLibrary
+    ? await api.loadSharedTemplateLibrary()
+    : { source: 'device-cache', templates: api?.loadSharedTemplates?.() || [] };
+  const templates = library.templates || [];
+  if (!templates.length) {
+    if (typeof showStatus === 'function') showStatus('保存済みの共有テンプレートはありません', true);
+    return;
+  }
+  const choices = templates.map(item => String(item.layout?.name || '')).filter(Boolean);
+  const selected = typeof cfPrompt === 'function'
+    ? await cfPrompt('読み込む共有テンプレート名', choices[0], { okLabel: '読み込む', description: choices.join(' / ') })
+    : choices[0];
+  if (selected == null) return;
+  const template = templates.find(item => String(item.layout?.name || '') === String(selected).trim());
+  if (!template) {
+    if (typeof showStatus === 'function') showStatus('指定した共有テンプレートが見つかりません', true);
+    return;
+  }
+  let imported = null;
+  _elMutateState(context.dbPath, 'トピックレイアウト: 共有テンプレート読込', template.layout.name, layoutState => {
+    imported = api.importTemplate(template, layoutState.layouts, _elTopicLayoutColumns(context.dbPath, context.pivotData));
+    if (!imported.added) return false;
+    layoutState.layouts.push(imported.layout);
+    layoutState.tabOrder.push(imported.layout.id);
+    layoutState.currentTab = imported.layout.id;
+  }, _elRestoreOption(context.grid, context.rerender));
+  if (!imported?.added) {
+    if (typeof showStatus === 'function') showStatus('同名のトピックレイアウトが既にあります', true);
+    return;
+  }
+  _elSession(context.grid, context.entityPath).tab = imported.layout.id;
+  context.rerender?.();
 }
 
 function _elShowActionMenu(anchorBtn, items, menuE2eId) {
@@ -437,7 +557,7 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
   const tabs = document.createElement('div');
   tabs.className = 'el-tabs';
   tabs.setAttribute('role', 'tablist');
-  tabs.setAttribute('aria-label', 'エントリの表示切替');
+  tabs.setAttribute('aria-label', 'トピックの表示切替');
   bar.appendChild(tabs);
 
   const tabDefs = state.tabOrder.map(id => (
@@ -522,8 +642,8 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     addBtn.type = 'button';
     addBtn.className = 'el-tab-add gb-btn gb-btn-sm gb-btn-icon';
     addBtn.dataset.e2eId = 'entity-layout-add';
-    addBtn.title = 'エントリレイアウトを追加';
-    addBtn.setAttribute('aria-label', 'エントリレイアウトを追加');
+    addBtn.title = 'トピックレイアウトを追加';
+    addBtn.setAttribute('aria-label', 'トピックレイアウトを追加');
     addBtn.innerHTML = typeof lucide === 'function' ? lucide('plus', 14) : '+';
     addBtn.addEventListener('click', () => {
       _elCloseTabMenus();
@@ -549,7 +669,7 @@ function _elBuildTabBar(grid, data, entityPath, options, dbPath, rerender) {
     exportBtn.innerHTML = typeof lucide === 'function' ? lucide('download', 14) : '↓';
     exportBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      _elShowExportMenu(exportBtn, grid);
+      _elShowExportMenu(exportBtn, grid, { grid, entityPath, dbPath, layoutId: activeTab, rerender, pivotData: data });
     });
     actions.appendChild(exportBtn);
 

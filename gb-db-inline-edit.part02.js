@@ -11,7 +11,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
   let ptc = dbPath ? getPropertyTypes(dbPath, ctx)[propName] : null;
   if (ptc?.type) ptc = { ...ptc, type: String(ptc.type).replace(/_/g, '-') };
   const type = ptc?.type || 'text';
-  const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(type);
+  const isPickerReplacementType = ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link'].includes(type);
   const existingInlineEditor = td.querySelector('.cell-inline-input,.cell-inline-select,.cell-inline-dd,.cell-date-editor');
   if (existingInlineEditor) {
     if (isPickerReplacementType) existingInlineEditor.remove();
@@ -953,9 +953,11 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
     return;
   }
   // --- リンク: フォルダツリーのダイアログから選択 ---
-  if (type === 'link') {
-    if (typeof startDbLinkCellEdit === 'function') {
-      startDbLinkCellEdit({
+  if (type === 'link' || type === 'multi-link') {
+    const startLinkEditor = type === 'multi-link' && typeof startDbMultiLinkCellEdit === 'function'
+      ? startDbMultiLinkCellEdit : (typeof startDbLinkCellEdit === 'function' ? startDbLinkCellEdit : null);
+    if (startLinkEditor) {
+      startLinkEditor({
         td, entityPath, entityName, propName, ptc, ctx, dbPath,
         cancel, closeInlineEditorShell, refreshCellDisplayNow,
         restoreCellPos: () => _restoreCellPos(pos, null),
@@ -1193,7 +1195,7 @@ function startCellInlineAdd(td, entityPath, entityName, propName) {
           entryList.sort((a, b) => a.name.localeCompare(b.name));
           selectRelationEntry(newEntry);
         } catch (e) {
-          showStatus('エントリの作成に失敗: ' + (e?.message || e), true);
+          showStatus('トピックの作成に失敗: ' + (e?.message || e), true);
         } finally {
           creatingRelationEntry = false;
         }

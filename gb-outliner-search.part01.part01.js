@@ -437,44 +437,17 @@ function _globalFilterIsRestricting() {
 }
 
 function _gfFilterPopupTriggerEl() {
-  return document.getElementById('gf-filter-popup-trigger') || document.getElementById('btn-filter-toggle');
+  return document.getElementById('btn-filter-toggle');
 }
 
-// トリガーボタンを用意する（#global-filter-bar 内の #gf-filter-popup-trigger）。
+// フィルタポップアップはツリーヘッダーのアイコンボタンだけを起点にする。
+// #global-filter-bar は「エントリも検索」設定専用で、補助トリガー行を増やさない。
 function _ensureGlobalFilterTrigger() {
-  const bar = document.getElementById('global-filter-bar');
-  if (!bar) return document.getElementById('btn-filter-toggle');
-  let row = bar.querySelector(':scope > .gf-trigger-row');
-  if (!row) {
-    row = document.createElement('div');
-    row.className = 'gf-trigger-row';
-    bar.insertBefore(row, bar.firstChild);
-  }
-  let trigger = document.getElementById('gf-filter-popup-trigger');
-  if (!trigger) {
-    trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.id = 'gf-filter-popup-trigger';
-    trigger.className = 'gf-filter-trigger';
-    trigger.dataset.e2eId = 'global-filter-popup-trigger';
-    trigger.setAttribute('aria-haspopup', 'true');
-    trigger.setAttribute('aria-expanded', 'false');
-    const icon = document.createElement('span');
-    icon.className = 'gf-filter-trigger-icon';
-    icon.innerHTML = typeof lucide === 'function' ? lucide('funnel', 14) : '';
-    const label = document.createElement('span');
-    label.className = 'gf-filter-trigger-label';
-    label.textContent = 'フィルタ';
-    trigger.appendChild(icon);
-    trigger.appendChild(label);
-    trigger.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleGlobalFilterPopup();
-    });
-    row.appendChild(trigger);
-  } else if (trigger.parentElement !== row) {
-    row.appendChild(trigger);
-  }
+  const trigger = document.getElementById('btn-filter-toggle');
+  if (!trigger) return null;
+  trigger.dataset.e2eId = 'global-filter-popup-trigger';
+  trigger.setAttribute('aria-haspopup', 'dialog');
+  if (!trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'false');
   return trigger;
 }
 

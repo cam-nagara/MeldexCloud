@@ -71,8 +71,8 @@ function _syncPaneRowSelectHeader(ctx) {
   checkbox.indeterminate = mixed;
   checkbox.setAttribute('aria-checked', mixed ? 'mixed' : (allSelected ? 'true' : 'false'));
   checkbox.setAttribute('aria-label', allSelected
-    ? '表示中のすべてのエントリを選択解除'
-    : '表示中のすべてのエントリを選択');
+      ? '表示中のすべてのトピックを選択解除'
+      : '表示中のすべてのトピックを選択');
   checkbox.title = checkbox.getAttribute('aria-label');
 }
 
@@ -86,7 +86,7 @@ function _createPaneRowSelectHeaderCheckbox(ctx) {
     _setPaneAllRowsSelected(ctx, checkbox.checked);
   });
   checkbox.setAttribute('aria-checked', 'false');
-  checkbox.setAttribute('aria-label', '表示中のすべてのエントリを選択');
+  checkbox.setAttribute('aria-label', '表示中のすべてのトピックを選択');
   checkbox.title = checkbox.getAttribute('aria-label');
   return checkbox;
 }
@@ -213,12 +213,12 @@ function _updateBulkEditBar(ctx) {
   bar.appendChild(editBtn);
 
   const addRowsBtn = window.GBSelectionFloatMenu
-    ? window.GBSelectionFloatMenu.button('下に ' + selected.length + ' エントリ追加')
+    ? window.GBSelectionFloatMenu.button('下に ' + selected.length + ' トピック追加')
     : document.createElement('button');
   if (!window.GBSelectionFloatMenu) {
-    addRowsBtn.textContent = '下に ' + selected.length + ' エントリ追加';
+    addRowsBtn.textContent = '下に ' + selected.length + ' トピック追加';
   }
-  addRowsBtn.title = '選択中の最後のエントリの下に、選択数と同じだけ新規エントリを追加';
+  addRowsBtn.title = '選択中の最後のトピックの下に、選択数と同じだけ新規トピックを追加';
   addRowsBtn.dataset.e2eId = 'db-bulk-add-rows-' + paneId;
   addRowsBtn.addEventListener('click', async () => {
     const c2 = ctx || _currentPaneState();
@@ -368,7 +368,7 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       }
       trashRefs = failedRefs;
       await refresh(true);
-      if (failedRefs.length) throw new Error(`${failedRefs.length} 件のエントリを復元できませんでした`);
+      if (failedRefs.length) throw new Error(`${failedRefs.length} 件のトピックを復元できませんでした`);
     },
     async () => {
       const redoEntries = historyItems.map(item => ({
@@ -384,9 +384,9 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
               kind: 'file',
               ...(entry.assetId ? { assetId: entry.assetId } : {}),
             })),
-            `${redoEntries.length} 件のエントリをもう一度ゴミ箱に移動しますか？`,
+        `${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`,
           )
-        : await cfConfirm(`${redoEntries.length} 件のエントリをもう一度ゴミ箱に移動しますか？`);
+        : await cfConfirm(`${redoEntries.length} 件のトピックをもう一度ゴミ箱に移動しますか？`);
       if (!confirmed) throw new Error('削除のやり直しを取り消しました');
       const result = await window.GbDbEntryIdentity.deleteEntries({
         dbPath,
@@ -534,7 +534,7 @@ function _showBulkEditModal(entityNames, ctx) {
       inp.style.cssText = baseStyle;
       if (ptc.unit) inp.placeholder = '単位: ' + ptc.unit;
       container.appendChild(inp);
-    } else if (ptc.type === 'link' || ptc.type === 'url') {
+    } else if (ptc.type === 'link' || ptc.type === 'multi-link' || ptc.type === 'url') {
       const inp = document.createElement('input');
       inp.type = 'text';
       inp.id = 'bulk-edit-value';
@@ -776,7 +776,7 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     entryId: String(ctx?.pivotData?.entities?.[name]?._id || ''),
     assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
-  const confirmMessage = `${names.length} 件のエントリをゴミ箱に移動しますか？`;
+  const confirmMessage = `${names.length} 件のトピックをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
         entries.map(entry => ({ path: entry.path, kind: 'file', ...(entry.assetId ? { assetId: entry.assetId } : {}) })),

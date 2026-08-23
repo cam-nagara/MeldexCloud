@@ -12262,7 +12262,7 @@
         const resolved = _entityPath(dbPath, entityName, pivotData);
         if (resolved) paths.push(resolved);
       } catch (error) {
-        _logError(instance, '選択エントリのパス解決に失敗しました: ' + entityName, error);
+        _logError(instance, '選択トピックのパス解決に失敗しました: ' + entityName, error);
       }
     });
     return paths;

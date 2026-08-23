@@ -174,14 +174,14 @@
         setStatus('');
         return;
       }
-      setStatus('該当エントリを取得中…');
+      setStatus('該当トピックを取得中…');
       try {
         const entries = await _fetchEntries(target, v);
         if (mySeq !== previewSeq) return; // より新しい refreshPreview が発火済みなら捨てる
         currentEntries = entries;
-        if (!entries || !entries.length) setStatus('該当エントリがありません', true);
+        if (!entries || !entries.length) setStatus('該当トピックがありません', true);
         else {
-          setStatus(`該当エントリ: ${entries.length} 件`);
+          setStatus(`該当トピック: ${entries.length} 件`);
           if (!busy) goBtn.disabled = false;
         }
       } catch (e) {
@@ -202,17 +202,17 @@
     goBtn.addEventListener('click', async () => {
       if (busy) return;
       if (!Array.isArray(currentEntries) || !currentEntries.length) {
-        setStatus('読み込めるエントリがありません', true);
+        setStatus('読み込めるトピックがありません', true);
         return;
       }
       busy = true;
       goBtn.disabled = true;
       cancelBtn.disabled = true;
-      setStatus(`${currentEntries.length} 件のリンクカードを作成中…`);
+      setStatus(`${currentEntries.length} 件のリンクトピックを作成中…`);
       try {
         const created = await _executeImport(currentEntries);
         close({ force: true });
-        if (typeof showStatus === 'function') showStatus(`${created} 件のリンクカードを読み込みました`);
+        if (typeof showStatus === 'function') showStatus(`${created} 件のリンクトピックを読み込みました`);
       } catch (e) {
         setStatus('読み込みに失敗: ' + (e?.message || e), true);
         goBtn.disabled = false;

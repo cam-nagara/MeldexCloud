@@ -7,6 +7,7 @@
   'use strict';
 
   const Scene = window.MeldexViewerScene;
+  const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
 
   // flipHorizontal2 / flipVertical2 / rotateCw は共通アイコン置換表（meldex-core.part01.js の
   // LUCIDE マップ + replaceIcons()）へ登録済み（ビューワー残課題修正計画 2026-08-04）。
@@ -61,8 +62,10 @@
     'viewer.fitHeight':    { key: '2',                label: '高さに合わせる',     scope: 'viewer' },
     'viewer.fitWidth':     { key: '3',                label: '幅に合わせる',       scope: 'viewer' },
     'viewer.fitNone':      { key: '4',                label: 'フィットしない',     scope: 'viewer' },
-    'viewer.annotation':   { key: 'a',                label: '注釈の切替',         scope: 'viewer' },
   };
+  if (annotationsAvailable()) {
+    VIEWER_SHORTCUTS['viewer.annotation'] = { key: 'a', label: '注釈の切替', scope: 'viewer' };
+  }
   window.MeldexShortcutRegistry?.registerLocal(VIEWER_SHORTCUTS);
 
   // [実行内容, 既定動作を抑止するか]
@@ -89,8 +92,10 @@
     'viewer.fitHeight':     [() => Scene.setFitMode('height'), false],
     'viewer.fitWidth':      [() => Scene.setFitMode('width'), false],
     'viewer.fitNone':       [() => Scene.setFitMode('none'), false],
-    'viewer.annotation':    [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false],
   };
+  if (annotationsAvailable()) {
+    VIEWER_ACTIONS['viewer.annotation'] = [() => window.MeldexViewerAnnotations?.toggleFromShortcut?.(), false];
+  }
 
   document.addEventListener('keydown', e => {
     const target = e.target;

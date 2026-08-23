@@ -1,3 +1,6 @@
+    addSep();
+    addMenuItem('パスを変更...', async () => {
+      closeTreeContextMenu();
       showStatus('フォルダ選択ダイアログを開いています...');
       try {
         const res = await apiFetch('/pick-folder');
@@ -382,7 +385,6 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
     origin: pendingNode,
     showImmediately: true,
     showInTray: true,
-    showInStatus: true,
     priority: 60,
   });
   try {
@@ -433,7 +435,6 @@ async function addItemAt(parentPath, type) {
     existingNames = _outlinerSnapshotChildNames(target.container);
     pendingNode = _createOutlinerPendingCreateNode(type, label);
     _insertOutlinerCreateNode(target.container, pendingNode);
-    pendingNode.scrollIntoView({ block: 'nearest' });
   }
   try {
     const res = await apiPost('/outliner/add', { type, label, parent: parentPath });
@@ -464,7 +465,6 @@ async function addItemAt(parentPath, type) {
       if (!newNode.isConnected) loadOutliner();
     }
 
-    if (!insertTarget.deferTreeInsert) newNode.scrollIntoView({ block: 'nearest' });
     // 選択状態にする
     if (!insertTarget.deferTreeInsert) _selectOutlinerCreateNode(newNode);
     // コンテンツを開く
@@ -485,11 +485,11 @@ async function addSheetEntryAt(sheetPath) {
   if (!path) return;
   try {
     await apiPost('/entity/create', { parent_path: path, name: '無題' });
-    showStatus('エントリを追加しました');
+    showStatus('トピックを追加しました');
     if (typeof loadOutliner === 'function') await loadOutliner();
     if (typeof navOpen === 'function') navOpen({ type: 'pivot', label: path.split('/').pop() || 'シート', path });
   } catch (e) {
-    showStatus((e && e.message) || 'エントリの追加に失敗しました', true);
+    showStatus((e && e.message) || 'トピックの追加に失敗しました', true);
   }
 }
 
@@ -606,7 +606,6 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
     origin: labelEl,
     showImmediately: true,
     showInTray: true,
-    showInStatus: true,
     priority: 60,
   });
   try {
@@ -898,3 +897,4 @@ function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
 }
 
 function _outlinerKeyboardToggle(nodeEl, expand) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;

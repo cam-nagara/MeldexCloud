@@ -225,7 +225,7 @@
         return 0;
       }
 
-      progress?.beginOperation?.(isAlt ? 'リンクエントリを作成中' : 'エントリとして取り込み中', validItems.length);
+      progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
       try {
         for (const item of validItems) {
           try {
@@ -267,8 +267,8 @@
     if (typeof showStatus === 'function') {
       showStatus(
         failed > 0
-          ? `${ok}件をエントリとして${actionLabel}し、${failed}件は失敗しました${reason ? `（${reason}）` : ''}`
-          : `${ok}件を「${normSheet.split('/').pop()}」へエントリとして${actionLabel}しました`,
+          ? `${ok}件をトピックとして${actionLabel}し、${failed}件は失敗しました${reason ? `（${reason}）` : ''}`
+          : `${ok}件を「${normSheet.split('/').pop()}」へトピックとして${actionLabel}しました`,
         failed > 0 && ok === 0
       );
     }
@@ -720,7 +720,7 @@
         const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
         const currentRevision = Number(frontmatter?.meldex_revision || 0);
         if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-          throw _httpError(409, 'このエントリは他の端末で更新されています');
+          throw _httpError(409, 'このトピックは他の端末で更新されています');
         }
 
         const attachments = Array.isArray(frontmatter?.entry_attachments) ? frontmatter.entry_attachments : [];
@@ -734,7 +734,7 @@
         if (deleteFile && target && target.mode !== 'link') {
           const validated = _validateAttachmentPathToDelete(target.path, entryPath, frontmatter);
           if (!validated) {
-            throw _httpError(400, 'エントリ専用の添付領域外のファイルは削除できません');
+            throw _httpError(400, 'トピック専用の添付領域外のファイルは削除できません');
           }
           normTargetToDelete = validated;
         }
@@ -832,7 +832,7 @@
       const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-        throw _httpError(409, 'このエントリは他の端末で更新されています');
+        throw _httpError(409, 'このトピックは他の端末で更新されています');
       }
 
       const sheetDir = entryPath.split('/').slice(0, -1).join('/');
@@ -1021,7 +1021,7 @@
       const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-        throw _httpError(409, 'このエントリは他の端末で更新されています');
+        throw _httpError(409, 'このトピックは他の端末で更新されています');
       }
 
       const sheetDir = entryPath.split('/').slice(0, -1).join('/');

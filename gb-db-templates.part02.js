@@ -27,7 +27,7 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
     msg += '）';
   }
   if (result.entityLayoutsResult && (result.entityLayoutsResult.added || result.entityLayoutsResult.skipped)) {
-    msg += `（エントリレイアウト${result.entityLayoutsResult.added || 0}件追加`;
+    msg += `（トピックレイアウト${result.entityLayoutsResult.added || 0}件追加`;
     if (result.entityLayoutsResult.skipped) msg += `/${result.entityLayoutsResult.skipped}件スキップ（同名）`;
     msg += '）';
   }
@@ -65,7 +65,7 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null,
   if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
     const layoutsDiv = document.createElement('div');
     layoutsDiv.className = 'db-template-mode-summary';
-    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    layoutsDiv.textContent = 'トピックレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
     body.appendChild(layoutsDiv);
   }
 

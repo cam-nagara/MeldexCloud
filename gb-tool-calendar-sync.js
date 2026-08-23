@@ -435,7 +435,6 @@
       label: 'Google ToDoと同期しています',
       mode: 'indeterminate',
       showInTray: true,
-      showInStatus: true,
       priority: 35,
     }) : null;
     try {

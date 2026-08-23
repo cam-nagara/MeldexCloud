@@ -4,7 +4,7 @@
     const cascadeOpts = relProps.map(p => `<option value="${esc(p)}"${p===(current.cascadeFrom||'')?'selected':''}>${esc(p)}</option>`).join('');
     // ペア候補: 同DB内の他のリレーションプロパティ
     const pairOpts = relProps.map(p => `<option value="${esc(p)}"${p===(current.pairWith||'')?'selected':''}>${esc(p)}</option>`).join('');
-    optDiv.innerHTML = `<div class="field"><label>参照先シート ${fieldHelp(`指定したシート内のエントリ名がドロップダウンに表示されます。${type==='relation'?'単一選択（1つだけ選べます）':'複数選択（カンマ区切りで複数選べます）'}`)}</label>
+    optDiv.innerHTML = `<div class="field"><label>参照先シート ${fieldHelp(`指定したシート内のトピック名がドロップダウンに表示されます。${type==='relation'?'単一選択（1つだけ選べます）':'複数選択（カンマ区切りで複数選べます）'}`)}</label>
       <input id="pt-relation-db" type="text" value="${esc(current.relationDb||'')}" placeholder="例: 設定/キャラ（空欄 = 自分自身のシート）">
     </div>
     <div class="field"><label>同一シート内の相互反映先の列 ${fieldHelp('同一シート内の自己参照リレーションで、片方を変更したとき相手側の列にも自動反映します')}</label>
@@ -16,8 +16,8 @@
     <div class="field"><label>タイムライン依存方向 ${fieldHelp('タイムラインの依存矢印で、列名に依存せず向きを決めます')}</label>
       <select id="pt-dependency-direction">
         <option value="" ${!current.dependencyDirection?'selected':''}>依存矢印に使わない</option>
-        <option value="target-to-entry" ${current.dependencyDirection==='target-to-entry'?'selected':''}>参照先 → このエントリ</option>
-        <option value="entry-to-target" ${current.dependencyDirection==='entry-to-target'?'selected':''}>このエントリ → 参照先</option>
+        <option value="target-to-entry" ${current.dependencyDirection==='target-to-entry'?'selected':''}>参照先 → このトピック</option>
+        <option value="entry-to-target" ${current.dependencyDirection==='entry-to-target'?'selected':''}>このトピック → 参照先</option>
       </select>
     </div>
     <div class="field">
@@ -38,7 +38,7 @@
         ${cascadeOpts}
       </select>
     </div>
-    <div id="pt-cascade-key-row" class="field"${current.cascadeFrom?'':' style="display:none;"'}><label>参照先シート側の絞り込み列 ${fieldHelp('参照先シートの各エントリについて、この列の値が依存元の選択値と一致するものだけを候補に出します')}</label>
+    <div id="pt-cascade-key-row" class="field"${current.cascadeFrom?'':' style="display:none;"'}><label>参照先シート側の絞り込み列 ${fieldHelp('参照先シートの各トピックについて、この列の値が依存元の選択値と一致するものだけを候補に出します')}</label>
       <input id="pt-cascade-key" type="text" value="${esc(current.cascadeKey||current.cascadeFrom||'')}" placeholder="参照先シート側で照合に使う列名">
     </div>`;
     // DBピッカーを参照先DB入力に取り付け

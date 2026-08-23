@@ -172,7 +172,8 @@
     return { nlIdSpan: nlIdSpan || extracted.nlIdSpan, nodes: extracted.nodes };
   }
 
-  // 引用（出典なし／出典ありの両構造に対応）。出典は失わないよう本文末尾へ合流する。
+  // 引用（出典なし／出典ありの両構造に対応）。本文へ変換しても出典の意味を
+  // data-note-quote-cite マーカーで保持し、引用へ戻した時に cite を復元する。
   function _extractQuoteContent(blockquoteEl) {
     const nlIdSpan = _takeNlIdSpan(blockquoteEl);
     const qBody = blockquoteEl.querySelector('.quote-body');
@@ -182,8 +183,11 @@
       if (qBody) nodes.push(...Array.from(qBody.childNodes));
       if (qCite) {
         if (nodes.length) nodes.push(document.createElement('br'));
-        nodes.push(document.createTextNode('— '));
-        nodes.push(...Array.from(qCite.childNodes));
+        const marker = document.createElement('span');
+        marker.dataset.noteQuoteCite = '1';
+        marker.appendChild(document.createTextNode('— '));
+        Array.from(qCite.childNodes).forEach((child) => marker.appendChild(child));
+        nodes.push(marker);
       }
       nodes.forEach((n) => { if (n.parentNode) n.parentNode.removeChild(n); });
       return { nlIdSpan, nodes };
@@ -216,6 +220,14 @@
     return clone.textContent.trim() === '';
   }
 
+  function _blockVisibleText(block) {
+    if (!block) return '';
+    const clone = block.cloneNode(true);
+    clone.querySelectorAll('._nl-id, input.note-checklist-check').forEach((n) => n.remove());
+    clone.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode('\n')));
+    return clone.textContent.trim();
+  }
+
   // ============================================================
   // 3. 構築ヘルパー
   // ============================================================
@@ -243,6 +255,24 @@
     const el = document.createElement(tag);
     _appendPreserved(el, nlIdSpan, nodes);
     return el;
+  }
+
+  function _buildQuote(nlIdSpan, nodes) {
+    const marker = (nodes || []).find((node) => node.nodeType === 1 && node.dataset?.noteQuoteCite === '1');
+    if (!marker) return _buildSimpleBlock('blockquote', nlIdSpan, nodes);
+    const quote = document.createElement('blockquote');
+    if (nlIdSpan) quote.appendChild(nlIdSpan);
+    const body = document.createElement('div'); body.className = 'quote-body';
+    const cite = document.createElement('cite'); cite.className = 'quote-cite';
+    const markerIndex = nodes.indexOf(marker);
+    let bodyNodes = nodes.slice(0, markerIndex);
+    if (bodyNodes.at(-1)?.nodeType === 1 && bodyNodes.at(-1).tagName === 'BR') bodyNodes = bodyNodes.slice(0, -1);
+    bodyNodes.forEach((node) => body.appendChild(node));
+    const citeNodes = Array.from(marker.childNodes);
+    if (citeNodes[0]?.nodeType === 3) citeNodes[0].textContent = citeNodes[0].textContent.replace(/^—\s*/, '');
+    citeNodes.forEach((node) => cite.appendChild(node));
+    quote.append(body, cite);
+    return quote;
   }
 
   function _buildCallout(nlIdSpan, nodes) {
@@ -635,7 +665,7 @@
       if (info.kind === 'heading') _copyHeadingAnchor(info.block, newRoot);
       focusTarget = newRoot;
     } else if (typeId === 'quote') {
-      newRoot = _buildSimpleBlock('blockquote', extracted.nlIdSpan, nodes);
+      newRoot = _buildQuote(extracted.nlIdSpan, nodes);
       focusTarget = newRoot;
     } else if (typeId === 'callout') {
       newRoot = _buildCallout(extracted.nlIdSpan, nodes);
@@ -678,7 +708,8 @@
   // ============================================================
   const READONLY_STATE = Object.freeze({ disabled: true, reasonKey: 'readonly', reasonText: '読み取り専用のため変更できません' });
 
-  function canConvert(typeId, editable, info) {
+  function canConvert(typeId, editable, info, options) {
+    const opts = options || {};
     if (!isEditableWritable(editable)) return { allowed: false, reason: READONLY_STATE.reasonText };
     if (info && info.kind === 'table' && typeId !== 'table') {
       return { allowed: false, reason: '表からの変換には対応していません' };
@@ -688,8 +719,14 @@
       if (!staysList) return { allowed: false, reason: 'サブリストを含む行は変換できません' };
     }
     if (typeId === 'hr') {
+      const removableText = typeof opts.removableText === 'string' ? opts.removableText.trim() : '';
+      const visibleText = info ? _blockVisibleText(info.block) : '';
+      // スラッシュメニューのトリガーだけがある行は、変換直前にその文字列を
+      // beforeConvertで除去するため空行として扱う。他の本文まである行を誤って
+      // 区切り線へ変換しないよう、行全体との完全一致だけを許可する。
       const empty = info ? _isBlockTextEmpty(info.block) : true;
-      if (!empty) return { allowed: false, reason: 'この行に文字があるため区切り線に変換できません' };
+      const emptyAfterTriggerRemoval = removableText !== '' && visibleText === removableText;
+      if (!empty && !emptyAfterTriggerRemoval) return { allowed: false, reason: 'この行に文字があるため区切り線に変換できません' };
     }
     return { allowed: true, reason: '' };
   }
@@ -794,7 +831,7 @@
       return { ok: true, block: info.block, unchanged: true };
     }
 
-    const check = canConvert(typeId, editable, info);
+    const check = canConvert(typeId, editable, info, { removableText: opts.removableText });
     if (!check.allowed) return { ok: false, reason: check.reason };
 
     // §5工程4-4: 1操作を1回のUndoで戻せるようにする（既存のカスタムUndoスタックへ委譲）。
@@ -857,6 +894,40 @@
     if (input.checked) input.setAttribute('checked', ''); else input.removeAttribute('checked');
     editable.dispatchEvent(new Event('input', { bubbles: true }));
   });
+
+  function _caretAtQuoteStart(quote, range) {
+    if (!range.collapsed) return false;
+    const before = range.cloneRange();
+    before.selectNodeContents(quote); before.setEnd(range.startContainer, range.startOffset);
+    return before.toString().length === 0;
+  }
+
+  function _insertQuoteLineBreak(editable, range) {
+    if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+    range.deleteContents();
+    const br = document.createElement('br'); range.insertNode(br);
+    const next = document.createRange(); next.setStartAfter(br); next.collapse(true);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(next);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function handleQuoteKeydown(e) {
+    if (e.isComposing || e.keyCode === 229 || e.defaultPrevented) return false;
+    if (e.key !== 'Enter' && e.key !== 'Backspace') return false;
+    const editable = e.target?.closest?.(EDITABLE_SELECTOR);
+    if (!isEditableWritable(editable)) return false;
+    const range = currentRangeWithin(editable); if (!range) return false;
+    const info = resolveCurrentBlock(editable, range); if (!info || info.kind !== 'quote') return false;
+    if (e.key === 'Enter' && e.shiftKey) {
+      e.preventDefault(); _insertQuoteLineBreak(editable, range); return true;
+    }
+    const exitEmpty = e.key === 'Enter' && !e.shiftKey && _isBlockTextEmpty(info.block);
+    const exitStart = e.key === 'Backspace' && _caretAtQuoteStart(info.block, range);
+    if (!exitEmpty && !exitStart) return false;
+    e.preventDefault(); convertCurrentLineTo('body', { editable, range }); return true;
+  }
+
+  document.addEventListener('keydown', handleQuoteKeydown, true);
 
   // ============================================================
   // 10. 行種レジストリ本体（正本）
@@ -957,5 +1028,6 @@
     restoreRowSnapshot: _restoreRowSnapshot,
     placeCaretAtStart: _placeCaretAtStart,
     placeCaretAtEnd: _placeCaretAtEnd,
+    handleQuoteKeydown,
   };
 })(window);

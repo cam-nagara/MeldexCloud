@@ -2,6 +2,8 @@
   'use strict';
 
   const rootId = 'x-bookmarks-settings-container';
+  const X_DEVELOPER_CONSOLE_URL = 'https://console.x.com/';
+  const X_DEVELOPER_CONSOLE_HELP = 'X Developer Consoleを開きます。左側の「クレジット」で残高を購入し、「使用状況」で取得件数と費用、「支払い」で支払方法を確認します。自動チャージは任意です。使う場合は利用上限も設定してください。毎月自動補充されるX API無料枠は案内されていません。xAI用の無料クレジットはXブックマーク取得には使えません。';
   let syncInFlight = false;
   let _currentSchedule = null;
   let _scheduleWidget = null;
@@ -15,11 +17,16 @@
     if (el) el.textContent = value == null ? '' : String(value);
   }
 
-  function setStatus(message, isError) {
+  function setStatus(message, isError, options = {}) {
     const el = document.getElementById('x-bookmarks-status-message');
     if (!el) return;
     el.textContent = message || '';
     el.style.color = isError ? 'var(--danger)' : 'var(--fg2)';
+    const action = document.getElementById('x-bookmarks-credits-action');
+    if (!action) return;
+    const actionUrl = String(options?.actionUrl || '').trim();
+    action.hidden = !actionUrl;
+    action.onclick = actionUrl ? () => openUrl(actionUrl) : null;
   }
 
   function getInputValue(id, fallback) {
@@ -101,7 +108,12 @@
       _currentSchedule = config.schedule || null;
       _initScheduleWidget(config.schedule, config.schedule_state);
       if (!options?.preserveStatus) {
-        setStatus(data.message || 'Xブックマーク保存を使えます。', !config.client_id_configured);
+        const alert = data.alert;
+        setStatus(
+          alert?.message || data.message || 'Xブックマーク保存を使えます。',
+          !!alert || !config.client_id_configured,
+          { actionUrl: alert?.action_url }
+        );
       }
     } catch (err) {
       setStatus('X連携の状態を取得できませんでした: ' + (err.userMessage || err.message || err), true);
@@ -203,8 +215,18 @@
     });
   }
 
+  function confirmBookmarkSyncCost(maxResults) {
+    const limit = Math.max(1, Number(maxResults) || 100);
+    const estimatedOwnedUsd = limit * 0.001;
+    const estimatedStandardUsd = limit * 0.005;
+    const message = `Xブックマークを最大${limit.toLocaleString('ja-JP')}件まで確認します。\n現在の公式料金例では、最大取得数分の目安は約$${estimatedOwnedUsd.toFixed(2)}〜$${estimatedStandardUsd.toFixed(2)}です。フォルダ内の確認分は別に加算され、割引条件や料金変更によって実際の費用は変わります。\n\n従量課金で保存を始めますか？`;
+    return window.confirm(message);
+  }
+
   async function sync(mode) {
     if (syncInFlight) return;
+    const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
+    if (!confirmBookmarkSyncCost(maxResults)) return;
     syncInFlight = true;
     setSyncBusy(true);
     try {
@@ -214,7 +236,6 @@
         return;
       }
       setStatus('Xブックマークを保存しています...', false);
-      const maxResults = Number(document.getElementById('x-bookmarks-max-results')?.value || 100);
       const data = await runBackgroundJob(
         '/x-bookmarks/sync',
         { mode: mode || 'incremental', max_results: maxResults },
@@ -228,6 +249,10 @@
       setStatus(syncSummary(data, '保存しました。'), false);
     } catch (err) {
       const payload = err.errorDetail || err.payload?.detail;
+      if (payload?.reason_code === 'x_api_credits_depleted') {
+        setStatus(payload.message, true, { actionUrl: payload.action_url });
+        return;
+      }
       if (payload?.retry_at) {
         setStatus(`${payload.message || 'X APIの取得上限に達しました'} 再実行目安: ${payload.retry_at}`, true);
         return;
@@ -402,6 +427,12 @@
     document.getElementById('x-bookmarks-connect')?.addEventListener('click', connect);
     document.getElementById('x-bookmarks-disconnect')?.addEventListener('click', disconnect);
     document.getElementById('x-bookmarks-sync')?.addEventListener('click', () => sync('incremental'));
+    const consoleLink = document.getElementById('x-bookmarks-console-link');
+    if (consoleLink) {
+      consoleLink.setAttribute('data-gb-tooltip', X_DEVELOPER_CONSOLE_HELP);
+      consoleLink.setAttribute('aria-label', X_DEVELOPER_CONSOLE_HELP);
+      consoleLink.addEventListener('click', () => openUrl(X_DEVELOPER_CONSOLE_URL));
+    }
     const duplicatesButton = document.getElementById('x-bookmarks-duplicates');
     duplicatesButton?.addEventListener('click', () => showDuplicateRepair({ returnFocus: duplicatesButton }));
     document.getElementById('x-bookmarks-save-config')?.addEventListener('click', () => saveConfig({ showSuccess: true }));
@@ -439,6 +470,10 @@
     container.innerHTML = `
       <div class="gb-section-desc">X連携では投稿・フォロー・いいね・DM送信は行いません。 ${fieldHelp('Xに接続すると、自分のXブックマークを画像つきのシートエントリとして保存できます。')}</div>
       <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
+        <span class="gb-section-desc">X APIは従量課金です。手動なら最大5,000件まで取得できます。</span>
+        <button type="button" id="x-bookmarks-console-link" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('externalLink', 14)} X Developer Console</button>
+      </div>
+      <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
         <span id="x-bookmarks-connection" class="gb-section-desc">状態を確認中...</span>
         <span id="x-bookmarks-client-state" class="gb-section-desc"></span>
       </div>
@@ -447,12 +482,12 @@
         <input id="x-bookmarks-save-dir" class="gb-input" type="text" value="Xブックマーク">
       </label>
       <label class="gb-field-row" style="justify-content:flex-start;">
-        <span class="gb-label">取得件数</span>
+        <span class="gb-label">取得件数 ${fieldHelp('手動保存は最大5,000件まで選べます。大量取得は有料です。開始前に費用目安を確認します。定期実行は意図しない課金を避けるため最新100件だけを確認し、フォルダ全体は読み直しません。')}</span>
         <select id="x-bookmarks-max-results" class="gb-select">
           <option value="100">最新100件</option>
           <option value="500">最新500件</option>
           <option value="1000">最新1000件</option>
-          <option value="5000">取得できるところまで（最大5000件）</option>
+          <option value="5000">最大5,000件（有料・大量取得）</option>
         </select>
       </label>
       <label class="gb-field">
@@ -488,6 +523,7 @@
         <button type="button" id="x-bookmarks-disconnect" class="gb-btn gb-btn-sm gb-btn-quiet">${icon('unlink', 14)} 接続を解除</button>
       </div>
       <div id="x-bookmarks-status-message" class="gb-section-desc"></div>
+      <button type="button" id="x-bookmarks-credits-action" class="gb-btn gb-btn-sm gb-btn-quiet" hidden>${icon('externalLink', 14)} X Developer Consoleを開く</button>
     `;
     bind();
     setSyncBusy(syncInFlight);

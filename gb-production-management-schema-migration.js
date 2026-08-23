@@ -78,11 +78,11 @@
 
   function _safeName(context, value) {
     const raw = String(value || '').trim();
-    if (!raw) throw new Error('制作管理のエントリ名を空にはできません');
+    if (!raw) throw new Error('制作管理のトピック名を空にはできません');
     const safe = typeof context.safeName === 'function'
       ? context.safeName(raw)
       : raw.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim().slice(0, 100);
-    if (!safe) throw new Error(`制作管理のエントリ名「${raw}」をファイル名へ変換できません`);
+    if (!safe) throw new Error(`制作管理のトピック名「${raw}」をファイル名へ変換できません`);
     return safe;
   }
 

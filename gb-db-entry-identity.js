@@ -115,9 +115,9 @@
   }
 
   function deletingError() {
-    const error = new Error('このエントリは削除中です');
+    const error = new Error('このトピックは削除中です');
     error.code = 'ENTRY_DELETING';
-    error.userMessage = '削除中のエントリは編集できません';
+    error.userMessage = '削除中のトピックは編集できません';
     return error;
   }
 
@@ -391,7 +391,7 @@
       if (!queue.progressHandle || progressApi.isTerminalStatus(queue.progressHandle.getState()?.status)) {
         queue.progressHandle = progressApi.begin({
           kind: 'sheet-entry-delete',
-          label: 'シートのエントリを削除しています',
+          label: 'シートのトピックを削除しています',
           mode: total > 0 ? 'determinate' : 'indeterminate',
           total: total || null,
           processed: queue.completed.length,

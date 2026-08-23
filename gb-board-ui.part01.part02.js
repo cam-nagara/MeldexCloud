@@ -300,7 +300,7 @@ function bdSetTool(tool) {
   }
   bdRefreshBoardToolbar();
   if (bd.tool === 'select') showStatus('選択ツール');
-  else if (bd.tool === 'add-card') showStatus('カード追加ツール');
+  else if (bd.tool === 'add-card') showStatus('トピック追加ツール');
   else if (bd.tool === 'add-line') showStatus('ライン追加ツール');
   else if (bd.tool === 'erase') showStatus('消しゴムツール');
 }
@@ -638,7 +638,7 @@ function _bdSelectionSummaryHtml() {
   const connCount = connIds.length;
   if (!nodeCount && !connCount) return '';
   const hintParts = [];
-  if (nodeCount) hintParts.push(`${nodeCount} 件のカード`);
+  if (nodeCount) hintParts.push(`${nodeCount} 件のトピック`);
   if (connCount) hintParts.push(`${connCount} 本のライン`);
   const cardStyle = bdGetCardStyleById(bd.activeCardStyle);
   const lineStyle = bdGetLineStyleById(bd.activeLineStyle);
@@ -647,7 +647,7 @@ function _bdSelectionSummaryHtml() {
       <div class="bd-detail-heading">複数選択</div>
       <div class="bd-detail-hint">${hintParts.join(' / ')} が選択されています。</div>
       ${nodeCount ? `<div class="bd-detail-section">
-        <div class="bd-detail-section-title">カード一括変更</div>
+        <div class="bd-detail-section-title">トピック一括変更</div>
         <label class="bd-detail-field bd-detail-field-wide"><span>カードスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
         <div class="bd-detail-field bd-detail-field-wide"><span>スタイル</span>${_bdStyleSummaryHtml('card', cardStyle)}</div>
       </div>` : ''}
@@ -723,8 +723,8 @@ function _bdStructureHintHtml(node) {
   const label = _bdStructureLabel(node);
   const hasOwnStructure = !!String(node?.structure || '');
   const body = hasOwnStructure
-    ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
-    : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
+      ? `このトピック以下のサブツリーに「${esc(label)}」を適用します。親トピックの構造には従いません。`
+      : '親トピックがある場合は親の構造を継承します。親がないトピック、または親側にも設定がない場合は自由配置です。';
   return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body, { e2eId: 'bd-structure-help' })}</div></div>`;
 }
 

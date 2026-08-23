@@ -372,9 +372,9 @@
     guide.className = 'bd-empty-guide';
     guide.setAttribute('aria-hidden', 'true');
     guide.dataset.e2eId = `board-${identity}-empty-guide`;
-    guide.innerHTML = '<div class="bd-empty-guide-title">ダブルクリックでカードを追加</div>'
+    guide.innerHTML = '<div class="bd-empty-guide-title">ダブルクリックでトピックを追加</div>'
       + '<div class="bd-empty-guide-hint">ブラウザやフォルダーから画像をドラッグ＆ドロップ</div>'
-      + '<div class="bd-empty-guide-hint">カードを選んで Tab で子カードを追加</div>';
+      + '<div class="bd-empty-guide-hint">トピックを選んで Tab でサブトピックを追加</div>';
     canvas.appendChild(guide);
     instance.guide = guide;
     addPins(instance);

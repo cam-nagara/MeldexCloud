@@ -1,18 +1,3 @@
-    navPush(_navEntry);
-  }
-  if (!openOpts.skipRecent) addRecent(label, path, 'media');
-  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
-  // 詳細パネルにファイル情報を表示
-  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
-  // ビューワーペインを更新
-  state.currentPagePath = path;
-  const container = document.getElementById('media-content');
-  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
-  if (type === 'image') {
-    openViewer(openOpts.viewerUrl || openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
-    return;
-  } else if (type === 'pdf') {
-    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);
     return;
   } else if (type === 'video') {
     // 動画も画像・PDFと同じくビューワー（viewer.html／#html-iframe）側へ統一する。
@@ -597,7 +582,6 @@ function showLoading(msg) {
       background: false,
       delayMs: 300,
       showInTray: true,
-      showInStatus: true,
       priority: 40,
     }));
     return;

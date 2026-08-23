@@ -97,8 +97,8 @@
   async function _persist(entry) {
     if (!entry.annId) return;
     try {
-      await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: { ...entry.data } });
-      window.__viewerAnnotationReportSave?.(true, 'update');
+      const result = await window.apiPut('/annotations/' + encodeURIComponent(entry.annId), { data: { ...entry.data } });
+      window.__viewerAnnotationReportSave?.(true, 'update', null, result);
     } catch (error) {
       _saveFailed(error);
       window.__viewerAnnotationReportSave?.(false, 'update', error);
@@ -224,14 +224,14 @@
 
   async function _deleteEntry(scene, entry) {
     try {
-      if (entry.annId) await window.apiDelete('/annotations/' + encodeURIComponent(entry.annId));
+      const result = entry.annId ? await window.apiDelete('/annotations/' + encodeURIComponent(entry.annId)) : null;
       entry.resizeObserver?.disconnect();
       entry.fo.remove();
       entry.tailShape.remove();
       entry.handleStart.remove();
       entry.handleEnd.remove();
       scene.notes = (scene.notes || []).filter(n => n !== entry);
-      window.__viewerAnnotationReportSave?.(true, 'delete');
+      window.__viewerAnnotationReportSave?.(true, 'delete', null, result);
     } catch (error) {
       _saveFailed(error, '付箋を削除できませんでした');
       window.__viewerAnnotationReportSave?.(false, 'delete', error);
@@ -270,7 +270,7 @@
         target_path: scene.path, type: 'comment', shape: 'sticky', data, color, opacity: SceneEngine().ann().opacity, user: _user(),
       });
       render(scene, { id: res?.id, color }, data);
-      window.__viewerAnnotationReportSave?.(true, 'create');
+      window.__viewerAnnotationReportSave?.(true, 'create', null, res);
     } catch (error) {
       _saveFailed(error, '付箋作成に失敗しました');
       window.__viewerAnnotationReportSave?.(false, 'create', error);

@@ -3,36 +3,12 @@
 
   const APPS = Object.freeze([
     Object.freeze({
-      id: 'note',
-      name: 'Meldex Note',
-      icon: 'MeldexNote_icon_128.png',
-      windowsAsset: 'MeldexNote.zip',
-      cloudUrl: 'apps/note/',
-      description: 'ノートをすばやく開き、執筆や確認に集中できます。',
-    }),
-    Object.freeze({
-      id: 'scenario',
-      name: 'Meldex Scenario',
-      icon: 'MeldexScenario_icon_128.png',
-      windowsAsset: 'MeldexScenario.zip',
-      cloudUrl: 'apps/scenario/',
-      description: 'シナリオの執筆・構成確認を単独画面で行えます。',
-    }),
-    Object.freeze({
-      id: 'board',
-      name: 'Meldex Board',
-      icon: 'MeldexBoard_icon_128.png',
-      windowsAsset: 'MeldexBoard.zip',
-      cloudUrl: 'apps/board/',
-      description: 'カードや資料を広げて、構成を視覚的に整理できます。',
-    }),
-    Object.freeze({
-      id: 'sheet',
-      name: 'Meldex Sheet',
-      icon: 'MeldexSheet_icon_128.png',
-      windowsAsset: 'MeldexSheet.zip',
-      cloudUrl: 'apps/sheet/',
-      description: '表形式の設定・データを必要な端末ですぐ編集できます。',
+      id: 'viewer',
+      name: 'Meldex Viewer',
+      icon: 'MeldexViewer_icon_128.png',
+      windowsAsset: 'MeldexViewer.zip',
+      cloudUrl: 'apps/viewer/',
+      description: '画像やPDFを選択またはドラッグ＆ドロップして確認できます。',
     }),
     Object.freeze({
       id: 'timer',

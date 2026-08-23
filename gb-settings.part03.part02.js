@@ -485,22 +485,17 @@ function _syncSettingsTreeSelection(modal, target) {
   tabHeader.querySelectorAll('.settings-sidebar-tree-node').forEach(node => {
     const isTargetTab = node.dataset.treeTab === target.tabId;
     const parentBtn = node.querySelector('.settings-sidebar-parent-tab');
-    const subpages = node.querySelector('.settings-sidebar-subpages');
-    const chevron = node.querySelector('.settings-tree-chevron');
 
     if (isTargetTab) {
-      node.classList.add('expanded');
-      if (parentBtn) {
-        parentBtn.classList.add('active');
-        parentBtn.setAttribute('aria-expanded', 'true');
-      }
-      if (subpages) subpages.style.display = '';
-      if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronDown', 12);
+      _setSettingsTreeNodeExpanded(node, true);
     } else {
       if (parentBtn) {
         parentBtn.classList.remove('active', 'gb-inner-tab-active');
       }
     }
+
+    // 親は開閉操作、子は現在ページの選択を表す。同時に強調しない。
+    parentBtn?.classList.remove('active', 'gb-inner-tab-active');
 
     // サブページボタンのアクティブ同期
     node.querySelectorAll('.settings-sidebar-subpage').forEach(subpage => {
@@ -519,6 +514,18 @@ function _syncSettingsTreeSelection(modal, target) {
 
   // キーボードイベントの初期化
   _wireSettingsTreeKeyboard(tabHeader);
+}
+
+function _setSettingsTreeNodeExpanded(node, expanded) {
+  if (!node) return;
+  const open = expanded === true;
+  node.classList.toggle('expanded', open);
+  const parentBtn = node.querySelector('.settings-sidebar-parent-tab');
+  const subpages = node.querySelector('.settings-sidebar-subpages');
+  const chevron = node.querySelector('.settings-tree-chevron');
+  if (parentBtn) parentBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (subpages) subpages.style.display = open ? '' : 'none';
+  if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide(open ? 'chevronDown' : 'chevronRight', 12);
 }
 
 function _wireSettingsTreeKeyboard(tabHeader) {
@@ -551,12 +558,7 @@ function _wireSettingsTreeKeyboard(tabHeader) {
       const node = current.closest('.settings-sidebar-tree-node');
       if (node && current.classList.contains('settings-sidebar-parent-tab')) {
         e.preventDefault();
-        node.classList.add('expanded');
-        const subpages = node.querySelector('.settings-sidebar-subpages');
-        if (subpages) subpages.style.display = '';
-        const chevron = node.querySelector('.settings-tree-chevron');
-        if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronDown', 12);
-        current.setAttribute('aria-expanded', 'true');
+        _setSettingsTreeNodeExpanded(node, true);
         const firstChild = node.querySelector('.settings-sidebar-subpage');
         firstChild?.focus();
       }
@@ -569,12 +571,7 @@ function _wireSettingsTreeKeyboard(tabHeader) {
         const node = current.closest('.settings-sidebar-tree-node');
         if (node && node.classList.contains('expanded')) {
           e.preventDefault();
-          node.classList.remove('expanded');
-          const subpages = node.querySelector('.settings-sidebar-subpages');
-          if (subpages) subpages.style.display = 'none';
-          const chevron = node.querySelector('.settings-tree-chevron');
-          if (chevron && typeof lucide === 'function') chevron.innerHTML = lucide('chevronRight', 12);
-          current.setAttribute('aria-expanded', 'false');
+          _setSettingsTreeNodeExpanded(node, false);
         }
       }
     }
@@ -613,6 +610,12 @@ function switchSettingsTab(el) {
     ? resolveSettingsNavigationTarget(el.dataset.tab)
     : { tabId: (typeof _settingsCanonicalPanelName === 'function' ? _settingsCanonicalPanelName(el.dataset.tab) : el.dataset.tab), panels: [el.dataset.tab] };
   const tabName = target.tabId;
+  const node = el.closest('.settings-sidebar-tree-node');
+  if (node && el.classList.contains('settings-sidebar-parent-tab')) {
+    const expanded = node.classList.contains('expanded');
+    _setSettingsTreeNodeExpanded(node, !expanded);
+    if (expanded) return;
+  }
   try {
     window.MeldexDiagnostics?.recordOperation?.('設定タブを開く', { settingsPanel: tabName });
   } catch {}
@@ -676,18 +679,16 @@ function _backToSettingsList(root) {
 
 // 拡張機能ごとの手順ノート（配布版でインストールボタンを出せない時の誘導先）。
 const MELDEX_EXTENSION_GUIDES = {
-  pillow: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
-  clip: { title: '画像ツールの設定', path: 'MeldexHome/マニュアル/03_設定と連携/画像ツールの設定.md' },
-  caldav: { title: 'CalDAVカレンダー同期の設定', path: 'MeldexHome/マニュアル/03_設定と連携/CalDAVカレンダー同期の設定.md' },
+  pillow: { title: '画像ツールの設定', path: '03_設定と連携/画像ツールの設定.md' },
+  clip: { title: '画像ツールの設定', path: '03_設定と連携/画像ツールの設定.md' },
+  caldav: { title: 'CalDAVカレンダー同期の設定', path: '03_設定と連携/CalDAVカレンダー同期の設定.md' },
 };
 
 function openExtensionInstallGuide(key) {
   const guide = MELDEX_EXTENSION_GUIDES[key];
   if (!guide) return;
   if (typeof closeSettingsModalRestoringTheme === 'function') closeSettingsModalRestoringTheme();
-  if (typeof openPage === 'function') {
-    openPage(guide.title, guide.path, { fromExplorer: true, skipAutoAppLayout: true });
-  }
+  window.MeldexPublicManual?.open?.(guide.path);
 }
 
 async function _loadExtensionStatus() {

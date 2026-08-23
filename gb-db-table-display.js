@@ -434,7 +434,7 @@ function _dbAutoWidthCharsForTexts(texts, headerText) {
   return Math.min(50, Math.max(4, chars));
 }
 
-function _dbAutoWidthCharsForEntryNames(entityNames, headerText = 'エントリ名') {
+function _dbAutoWidthCharsForEntryNames(entityNames, headerText = 'トピック名') {
   const base = _dbAutoWidthCharsForTexts(entityNames, headerText);
   const maxNameLen = entityNames.length
     ? Math.max(...entityNames.map(name => _dbTextLengthForWidth(name)))
@@ -476,7 +476,7 @@ function _dbAutoImageColumnWidth(propName, ptc) {
 function _dbComputeAutoFitColumnWidths(params) {
   const { propTypes, visibleProps, entityNames, advFilters, data, dbPath, ctx } = params || {};
   const widths = {};
-  const entityChars = _dbAutoWidthCharsForEntryNames(entityNames || [], typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'エントリ名');
+  const entityChars = _dbAutoWidthCharsForEntryNames(entityNames || [], typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath) : 'トピック名');
   widths.__entity__ = _dbEntityWidthPxFromChars(entityChars);
   (visibleProps || []).forEach(propName => {
     const ptc = propTypes?.[propName] || {};

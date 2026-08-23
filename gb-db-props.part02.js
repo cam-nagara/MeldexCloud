@@ -56,7 +56,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   const targetDbPath = dbPath || ctx?.dbPath || state.currentDbPath;
   if (!targetDbPath) return;
   if (typeof isProductionManagementSheetPath === 'function' && isProductionManagementSheetPath(targetDbPath)) {
-    showStatus('制作管理シートではエントリ名の自動生成を使用できません', true);
+    showStatus('制作管理シートではトピック名の自動生成を使用できません', true);
     return;
   }
   const props = _getEntryNameAutoPropertyColumns(targetDbPath, ctx);
@@ -66,7 +66,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   }
   document.querySelectorAll('.modal-overlay[data-e2e-id="db-entry-name-autogen-dialog"]').forEach(el => el.remove());
   const defaults = new Set(_getDefaultEntryNameAutoProperties(props));
-  const scopeLabel = entryPath ? (entityName || '選択エントリ') : '列全体';
+  const scopeLabel = entryPath ? (entityName || '選択トピック') : '列全体';
   const body = document.createElement('div');
   body.innerHTML = `
     <div class="gbm-section">
@@ -80,7 +80,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.textContent = 'キャンセル';
-  cancelBtn.setAttribute('aria-label', 'エントリ名の自動生成をキャンセル');
+  cancelBtn.setAttribute('aria-label', 'トピック名の自動生成をキャンセル');
   const runBtn = document.createElement('button');
   runBtn.type = 'button';
   runBtn.className = 'primary';
@@ -88,7 +88,7 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
   runBtn.dataset.e2eId = 'db-entry-name-autogen-run';
   const modalApi = window.GBUI.createModal({
     id: 'db-entry-name-autogen-dialog',
-    title: 'エントリ名を自動生成',
+    title: 'トピック名を自動生成',
     body,
     footer: [cancelBtn, runBtn],
     variant: 'standard',
@@ -140,14 +140,14 @@ function _showEntryNameAutoGeneratePopup({ dbPath, ctx, entityName = '', entryPa
       if (typeof applyDbAutoEntityRenameResponse === 'function') applyDbAutoEntityRenameResponse(res);
       modalApi.close('generated');
       const count = Number(res?.renamed_count || 0);
-      showStatus(count ? `エントリ名を自動生成しました: ${count}件` : '生成できるエントリ名がありませんでした');
+      showStatus(count ? `トピック名を自動生成しました: ${count}件` : '生成できるトピック名がありませんでした');
       if (typeof selectDatabase === 'function') {
         await selectDatabase(targetDbPath, ctx, { silent: true, skipRecent: true, skipNavPush: true });
       } else if (typeof renderPivot === 'function') {
         renderPivot(ctx);
       }
     } catch (err) {
-      showStatus('エントリ名の自動生成に失敗: ' + (err?.message || err), true);
+      showStatus('トピック名の自動生成に失敗: ' + (err?.message || err), true);
       actionButton.disabled = false;
       actionButton.textContent = oldText;
     }
@@ -194,13 +194,13 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
         selectDatabase(targetDbPath, ctx, { silent: true });
       }
     }).catch(() => showStatus('名前の変更に失敗', true));
-  }, { placeholder: 'エントリ名を変更...' });
+  }, { placeholder: 'トピック名を変更...' });
   // 依存関係プロパティの有無を確認
   const pts = getPropertyTypes(targetDbPath);
   const hasDeps = _hasDependencyPairProps(pts);
   const isXBookmarkEntry = !!pts?.['ポストID'];
   const items = [
-    ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'エントリ名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
+    ...(!productionSchemaLocked ? [{ icon: 'sparkles', label: 'トピック名を自動生成...', e2eId: 'db-entry-row-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath: targetDbPath, ctx, entityName, entryPath: ep });
     } }] : []),
     { type: 'sep' },
@@ -226,7 +226,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       }
     } }] : []),
     { type: 'sep' },
-    ...(hasDeps ? [{ icon: 'gitBranch', label: '依存エントリを作成', action: () => _createDependentEntry(targetDbPath, entityName, undefined, ctx) }] : []),
+    ...(hasDeps ? [{ icon: 'gitBranch', label: '依存トピックを作成', action: () => _createDependentEntry(targetDbPath, entityName, undefined, ctx) }] : []),
     // 1セル1値で運用するシート（制作管理）では候補値を追加できないため項目を出さない
     // （シート表・エントリ詳細パネルの＋ボタンと同じ扱い）。
     ...(propName && typeof startCellInlineAdd === 'function'
@@ -243,7 +243,7 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       navigator.clipboard.writeText(copyPath).then(() => showStatus('パスをコピーしました'));
     }},
     { type: 'sep' },
-    { icon: 'trash2', label: 'エントリを削除', danger: true, action: async () => {
+    { icon: 'trash2', label: 'トピックを削除', danger: true, action: async () => {
       const confirmMessage = entityName + ' を削除しますか？';
       const entityData = ctx?.pivotData?.entities?.[entityName]
         || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName] : null);
@@ -455,7 +455,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
   if (dbPath && !productionSchemaLocked) {
     const currentLabel = typeof _dbEntityColumnDisplayLabel === 'function'
       ? _dbEntityColumnDisplayLabel(dbPath, { ctx })
-      : 'エントリ名';
+      : 'トピック名';
     _addMenuRenameInput(menu, currentLabel, async (newName) => {
       const clean = String(newName || '').trim();
       if (!clean) return;
@@ -464,7 +464,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
         showStatus('列名を変更しました');
         _refreshDbColumnMenuView(ctx, dbPath);
       }
-    }, { placeholder: 'エントリ名列の名前を変更...' });
+    }, { placeholder: 'トピック名列の名前を変更...' });
   }
 
   const pinnedRange = _dbPinnedRangeForMenu(ctx, dbPath, e?.target || e?.currentTarget);
@@ -483,7 +483,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
     // 互換テスト用: showUnifiedFilterModal()
     { label: 'すべての条件フィルター...', action: () => showUnifiedFilterModal({ ctx }) },
     { type: 'sep' },
-    ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' エントリ名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
+    ...(!productionSchemaLocked ? [{ label: lucide('sparkles', 14) + ' トピック名を自動生成...', e2eId: 'db-entry-column-autoname', action: () => {
       _showEntryNameAutoGeneratePopup({ dbPath, ctx });
     } }, { type: 'sep' }] : []),
     { type: 'submenu', label: lucide('columns', 14) + ' 列操作', children: [
@@ -523,7 +523,7 @@ function showEntityColMenu(e, ctxOverride, dbPathOverride) {
       children: [
         ...pinnedTokens.map(token => ({
           label: 'ここから解除: ' + esc(token === '__entity__'
-            ? (_dbEntityColumnDisplayLabel(dbPath, { ctx }) || 'エントリ名')
+            ? (_dbEntityColumnDisplayLabel(dbPath, { ctx }) || 'トピック名')
             : token),
           action: () => {
             _dbSetPinnedRangeFromMenu(ctx, dbPath, pinnedRange.renderedCols, token, false);
@@ -566,7 +566,7 @@ async function _addEntityBelow(dbPath, afterEntity) {
       }
     }
     await selectDatabase(dbPath, undefined, { silent: true });
-    showStatus('エントリを追加しました: ' + name);
+    showStatus('トピックを追加しました: ' + name);
     // 行が DOM に出現したらインラインリネームを起動
     const ctx = (typeof _currentPaneState === 'function') ? _currentPaneState() : null;
     if (ctx && typeof _waitForEntityRow === 'function') {
@@ -578,7 +578,7 @@ async function _addEntityBelow(dbPath, afterEntity) {
         }
       });
     }
-  } catch (err) { showStatus('エントリ追加失敗: ' + (err?.message || err), true); }
+  } catch (err) { showStatus('トピック追加失敗: ' + (err?.message || err), true); }
 }
 
 // 依存関係ペアプロパティを一括作成
@@ -605,7 +605,7 @@ async function _createDependentEntry(dbPath, sourceEntityName, overrideCopyProps
   const pivotData = (typeof _dbPivotDataForContext === 'function' ? _dbPivotDataForContext(ctx) : null) || state.pivotData;
   const entities = pivotData?.entities || {};
   const sourceData = entities[sourceEntityName];
-  if (!sourceData) { showStatus('ソースエントリが見つかりません', true); return; }
+  if (!sourceData) { showStatus('元のトピックが見つかりません', true); return; }
 
   // 新しいエントリ名生成（元名_R1, _R2, ...）
   const existingNames = Object.keys(entities);
@@ -620,7 +620,7 @@ async function _createDependentEntry(dbPath, sourceEntityName, overrideCopyProps
   let created = null;
   try {
     created = await apiPost('/entity/create', { parent_path: dbPath, name: newName });
-  } catch (e) { showStatus('エントリ作成に失敗: ' + e, true); return; }
+  } catch (e) { showStatus('トピック作成に失敗: ' + e, true); return; }
 
   const newPath = _entityPath(dbPath, newName, pivotData);
 
@@ -704,9 +704,9 @@ async function _createDependentEntry(dbPath, sourceEntityName, overrideCopyProps
   }
 
   if (dependencyErrors.length) {
-    showStatus('依存エントリを作成しましたが、一部の値保存に失敗: ' + dependencyErrors.slice(0, 3).join(' / '), true);
+    showStatus('依存トピックを作成しましたが、一部の値保存に失敗: ' + dependencyErrors.slice(0, 3).join(' / '), true);
   } else {
-    showStatus('依存エントリを作成: ' + newName);
+    showStatus('依存トピックを作成: ' + newName);
   }
   selectDatabase(dbPath, ctx);
 }

@@ -63,6 +63,10 @@ function _bdSnapshot() {
     nodes: bd.nodes,
     connections: bd.connections,
     groups: bd.groups,
+    topicViewDocument: bd.topicViewDocument,
+    activeBoardViewId: bd.activeBoardViewId,
+    hiddenTopicRefs: bd.hiddenTopicRefs,
+    topicStyleOverrides: bd.topicStyleOverrides,
     // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
     // スナップショットへ含めて復元時に再選択する (_bdApplySnapshot 側で現存IDへ絞る)。
     selectedNodeIds: [...((bd.selected instanceof Set) ? bd.selected : [])],
@@ -119,6 +123,10 @@ function _bdApplySnapshot(s) {
   // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
+  if (s.topicViewDocument !== undefined) bd.topicViewDocument = s.topicViewDocument;
+  if (s.activeBoardViewId !== undefined) bd.activeBoardViewId = s.activeBoardViewId || '';
+  if (s.hiddenTopicRefs !== undefined) bd.hiddenTopicRefs = s.hiddenTopicRefs || [];
+  if (s.topicStyleOverrides !== undefined) bd.topicStyleOverrides = s.topicStyleOverrides || {};
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
   bd.depthStyles = s.depthStyles || bd.depthStyles;
@@ -379,6 +387,9 @@ async function bdOpenBoard(label, path, opts) {
     bd.llmSemantics = parsed.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null);
     bdEnsureConnectionRuntime(bd.connections);
     bd.groups = parsed.groups || [];
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') {
+      MeldexBoardTopicIntegration.hydrate(bd, parsed, nextPath);
+    }
     bd.statuses = parsed.statusDefs || ((typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : []);
     bd.cardStyles = parsed.cardStyles || [];
     bd.lineStyles = parsed.lineStyles || [];
@@ -453,6 +464,7 @@ async function bdOpenBoard(label, path, opts) {
     bdDrawConns();
     bdDrawFrames();
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') MeldexBoardTopicIntegration.mountToolbar(bd);
     // ノードが多い場合のみフィット（少ない場合はズーム100%で表示）
     if (bd.nodes.length > 5) bdFitAll();
     else bdTransform();

@@ -21,6 +21,13 @@
   'use strict';
 
   let _toolbar = null;
+  // Cloud Viewer classification is installed before this controller loads.
+  // Seed the gate synchronously so ?markup=1 and parent messages cannot open the
+  // toolbar during the short interval before DOMContentLoaded applies it again.
+  const _startupAvailability = window.MeldexViewerCloudFileOpen?.annotationCapability?.();
+  let _availability = _startupAvailability
+    ? { available: !!_startupAvailability.available, reason: String(_startupAvailability.reason || '') }
+    : { available: true, reason: '' };
   // 親から最後に受け取った viewer-ann-set-state の完全スナップショット。シーン再構築のたびに
   // 再適用する（ビューワー残課題修正計画 2026-08-04「3. 注釈座標と親画面連携」）。
   let _lastSnapshot = null;
@@ -48,6 +55,13 @@
     return scene && scene.isPdf() ? scene.getIndex() : null;
   }
 
+  function _unavailableReason() {
+    if (!_availability.available) return _availability.reason || 'このファイルでは注釈を保存できません';
+    return /^blob:/i.test(_currentTargetPath())
+      ? 'ブラウザーで直接開いたファイルの注釈は保存できません。Cloud版本体で開いてください'
+      : '';
+  }
+
   // apiPost/apiPut/apiDelete が投げるエラーを機械可読なコードへ分類する（meldex-core.js の
   // apiFetch は HTTP エラーに error.status を付与する）。
   function _classifyErrorCode(error) {
@@ -69,13 +83,15 @@
   // 保存結果側。読み込み結果は setState(true)/onSceneChanged 完了時の viewer-ann-state-changed で
   // 代替する — シーン再構築のたびに現在の active/drawing 状態を親へ通知することで、親側は
   // 「今開いている画像の注釈を読み込み終えた」タイミングを間接的に把握できる）。
-  window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error) {
+  window.__viewerAnnotationReportSave = function reportSaveResult(ok, action, error, result) {
     _postToParent({
       type: 'viewer-ann-save-result',
       ok: !!ok,
       action: action || '',
       targetPath: _currentTargetPath(),
       pageIndex: _currentPageIndex(),
+      annotationRevision: ok ? String(result?.annotationRevision || '') : '',
+      invalidatedTargets: ok && Array.isArray(result?.invalidatedTargets) ? result.invalidatedTargets : [],
       error: error ? String(error?.message || error) : '',
       errorCode: ok ? '' : _classifyErrorCode(error),
     });
@@ -127,6 +143,14 @@
   function setState(active) {
     ensureToolbar();
     const willActivate = !!active;
+    const unavailable = willActivate ? _unavailableReason() : '';
+    if (unavailable) {
+      SceneEngine().setState(false);
+      if (_toolbar) _toolbar.style.display = 'none';
+      if (typeof window.showStatus === 'function') window.showStatus(unavailable, true);
+      _notifyParentStateChanged();
+      return false;
+    }
     if (willActivate === !!SceneEngine().ann().active) return willActivate;
     SceneEngine().setState(willActivate);
     if (_toolbar) _toolbar.style.display = willActivate ? 'flex' : 'none';
@@ -149,6 +173,12 @@
 
   function isActive() { return !!SceneEngine()?.ann?.()?.active; }
   function isDrawing() { return !!SceneEngine()?.ann?.()?.drawing; }
+
+  function setAvailability(available, reason) {
+    _availability = { available: !!available, reason: String(reason || '') };
+    if (!_availability.available && SceneEngine()?.ann?.()?.active) setState(false);
+    return { ..._availability };
+  }
 
   // 明示的な再読み込み要求。path は現在のシーン群のいずれかに一致する場合のみ意味を持つ
   // （新設計ではシーンは「今表示中の画像/ページ」に紐づくため、任意パスの単独読み込みは扱わない）。
@@ -278,6 +308,7 @@
 
   window.MeldexViewerAnnotations = {
     toggle, setState, load, getSceneState,
+    setAvailability,
     toggleFromShortcut, isActive, isDrawing,
     resetPointerPath, onSceneChanged,
   };

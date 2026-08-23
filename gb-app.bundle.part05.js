@@ -1,18 +1,3 @@
-    const b64 = outputCanvas.toDataURL('image/png');
-    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
-    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
-    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
-    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
-    const res = await apiPost('/annotation/screenshot', {
-      data: b64,
-      target_path: screenshotFolder,
-      source_target: currentTarget,
-      mode: mode,
-      width: outputCanvas.width,
-      height: outputCanvas.height,
-    });
-    if (res.path) {
-      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
     }
   } catch (e) {
@@ -898,3 +883,18 @@ function openMedia(label, path, type, opts) {
   if (!openOpts.skipSaveLastView) saveLastView({type:'media', label, path, mediaType: type});
   if (!openOpts.skipNavPush) {
     const _navEntry = {type:'media', label, path, mediaType: type, viewerUrl: openOpts.viewerUrl || ''};
+    navPush(_navEntry);
+  }
+  if (!openOpts.skipRecent) addRecent(label, path, 'media');
+  if (!openOpts.skipHighlight) highlightOutlinerNode(path);
+  // 詳細パネルにファイル情報を表示
+  if (!openOpts.skipGlobalUi && typeof _showFileInfoInDetailPanel === 'function') _showFileInfoInDetailPanel(path);
+  // ビューワーペインを更新
+  state.currentPagePath = path;
+  const container = document.getElementById('media-content');
+  const url = openOpts.rawUrl || (API_BASE + '/file-raw?path=' + encodeURIComponent(path));
+  if (type === 'image') {
+    openViewer(openOpts.viewerUrl || openOpts.rawUrl || ('/viewer?file=' + encodeURIComponent(path)), openOpts);
+    return;
+  } else if (type === 'pdf') {
+    openViewer('/viewer?pdf=' + encodeURIComponent(path), openOpts);

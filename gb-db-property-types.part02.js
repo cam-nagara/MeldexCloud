@@ -63,7 +63,7 @@
   autoFillBlock.className = 'gb-section-head';
   autoFillBlock.style.cssText = 'margin-top:12px;border-top:1px solid var(--border);padding-top:8px;';
   autoFillBlock.innerHTML = `
-    <div class="field"><label>新規エントリ作成時の初期値 ${fieldHelp('$today / $now / $currentUser / $version が使えます。空欄なら自動入力しません')}</label>
+    <div class="field"><label>新規トピック作成時の初期値 ${fieldHelp('$today / $now / $currentUser / $version が使えます。空欄なら自動入力しません')}</label>
       <input id="pt-auto-fill-on-create" type="text" value="${esc(curAutoCreate)}" placeholder="例: $now / $currentUser / $version / 提案">
     </div>
   `;
@@ -473,7 +473,7 @@ function testFormula(root) {
   const data = pivotData || state.pivotData;
   if (!data || !data.entities) { resultEl.textContent = 'データがありません'; return; }
   const firstEntity = Object.keys(data.entities)[0];
-  if (!firstEntity) { resultEl.textContent = 'エントリがありません'; return; }
+  if (!firstEntity) { resultEl.textContent = 'トピックがありません'; return; }
   const entityData = data.entities[firstEntity];
   let result;
   try {
@@ -626,7 +626,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   if (propName === '__entity__') {
     const entityColumnLabel = typeof _dbEntityColumnDisplayLabel === 'function'
       ? _dbEntityColumnDisplayLabel(dbPath, { ctx })
-      : 'エントリ名';
+      : 'トピック名';
     const pinnedRange = typeof _dbPinnedRangeForMenu === 'function'
       ? _dbPinnedRangeForMenu(ctx, dbPath)
       : null;
@@ -640,7 +640,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
       && isProductionManagementSheetPath(dbPath);
     target.innerHTML = `<div class="db-prop-settings" data-db-property-settings-root>
       <div class="gb-section-head">${esc(entityColumnLabel)}列</div>
-      <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="エントリ名"'}></div>
+      <div class="field"><label for="entity-column-name-display">列名</label><input id="entity-column-name-display" type="text" value="${esc(entityColumnLabel)}"${labelLocked ? ' disabled' : ''} aria-label="列名"${labelLocked ? '' : ' placeholder="トピック名"'}></div>
       ${labelLocked ? '<div class="gb-info-box">制作管理に必要な列のため、列名は変更できません。</div>' : ''}
       <div class="field"><label class="pt-check-label">
         <input id="entity-column-pinned" type="checkbox" ${pinned ? 'checked' : ''}>
@@ -729,7 +729,7 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
       </select>
     </div>
     ${_renderPropertyMultiplicityControls(current.type, scopeId)}
-    <div class="field"><label>アイコン ${typeof fieldHelp === 'function' ? fieldHelp('列名の先頭に表示するアイコンです。列一覧とエントリレイアウトのキャプションに使われます。未設定のときは列タイプのアイコンが表示されます') : ''}</label>
+    <div class="field"><label>アイコン ${typeof fieldHelp === 'function' ? fieldHelp('列名の先頭に表示するアイコンです。列一覧とトピックレイアウトのキャプションに使われます。未設定のときは列タイプのアイコンが表示されます') : ''}</label>
       <button type="button" id="pt-icon-btn" class="gb-btn gb-btn-sm pt-icon-btn" data-e2e-id="pt-icon-btn" aria-haspopup="dialog"></button>
     </div>
     <div id="pt-options"></div>

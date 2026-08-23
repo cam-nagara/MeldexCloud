@@ -551,7 +551,7 @@ async function renderSmartDbListWidget(widget, container, resolved) {
     tr.className = 'smart-db-list-row';
     tr.tabIndex = 0;
     tr.dataset.e2eId = 'smart-db-dashboard-list-row';
-    tr.setAttribute('aria-label', 'エントリを開く: ' + en);
+    tr.setAttribute('aria-label', 'トピックを開く: ' + en);
     const openEntry = () => {
       _smartDbDashboardOpenEntity(data, resolved.source, en);
     };
@@ -927,7 +927,7 @@ function _appendSelectField(parent, labelText, options, value, fieldOptions = {}
 function _renderSmartDbWidgetConfig(container, type, cfg) {
   container.innerHTML = '';
   if (type === 'stat') {
-    container.appendChild(_configText('wc-prop', '列（空=エントリ数）', cfg.property || ''));
+    container.appendChild(_configText('wc-prop', '列（空=トピック数）', cfg.property || ''));
     container.appendChild(_configSelect('wc-agg', '集計', ['count', 'sum', 'average', 'min', 'max'], cfg.aggregation || 'count'));
   } else if (type === 'progress') {
     container.appendChild(_configText('wc-done-prop', '完了判定列', cfg.doneFilter?.property || '', '例: ステータス'));

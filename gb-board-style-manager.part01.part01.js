@@ -743,7 +743,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
-    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のカードにも反映)`
+    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
     : `カードスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
 }
 

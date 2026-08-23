@@ -407,7 +407,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       if (liveArr().length <= 1) return;
       const live = currentLive(); if (!live) return;
       const activeRefKey = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
-      const unitLabel = kind === 'card' ? 'カード' : 'ライン';
+      const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
       const usage = _bdCountStyleUsage(kind, live.id);
       const usageMsg = usage > 0 ? `\n\nこのスタイルは ${usage} 個の${unitLabel}で使用中です。削除すると、それらは別のスタイルに切り替わります。` : '';
       const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
@@ -469,7 +469,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   if (kind === 'card') _bdLastCardEditId = selected.id;
   else _bdLastLineEditId = selected.id;
   const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
-  const unitLabel = kind === 'card' ? 'カード' : 'ライン';
+  const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
   const activeStyleId = bd[activeRef] || '';
   const isSelectedActive = selected.id === activeStyleId;
   const usageCount = _bdCountStyleUsage(kind, selected.id);
@@ -689,7 +689,7 @@ function _bdAppendAnchorPresetRow(container, anchorNode, onApplied) {
   row.appendChild(label);
   row.appendChild(select);
   if (typeof fieldHelp === 'function') {
-    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このカードを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
+    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このトピックを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
   }
   container.appendChild(row);
 }
@@ -853,9 +853,9 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const defRow = fmt.makeRow({ wrap: true });
     const defInput = document.createElement('input');
     defInput.type = 'text';
-    defInput.value = selected.defaultText != null ? selected.defaultText : 'カード';
-    defInput.placeholder = 'カード追加時に自動で入る文字';
-    defInput.title = '新規カード追加時のテキスト';
+  defInput.value = selected.defaultText != null ? selected.defaultText : 'トピック';
+    defInput.placeholder = 'トピック追加時に自動で入る文字';
+    defInput.title = '新規トピック追加時のテキスト';
     defInput.style.cssText = 'flex:1;min-width:160px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;';
     defInput.addEventListener('change', () => {
       if (typeof bdPushUndo === 'function') bdPushUndo();
@@ -872,7 +872,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const lineHeader = document.createElement('div');
     lineHeader.className = 'bd-detail-section-title';
     lineHeader.style.marginTop = '12px';
-    lineHeader.textContent = 'ラインスタイル（この階層のカードから出るライン）';
+  lineHeader.textContent = 'ラインスタイル（この階層のトピックから出るライン）';
     depthFieldsEl.appendChild(lineHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'line', selected, liveDepth, () => {
       applyDepthStyles();

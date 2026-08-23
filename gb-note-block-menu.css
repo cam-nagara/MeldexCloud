@@ -18,10 +18,14 @@
 .note-block-menu-item {
   box-sizing: border-box;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .note-block-menu-item-label {
-  overflow-wrap: anywhere;
+  flex: 1 0 auto;
+  min-width: max-content;
+  overflow-wrap: normal;
+  word-break: keep-all;
   white-space: normal;
 }
 
@@ -40,7 +44,8 @@
 
 .note-block-menu-item .note-block-menu-reason {
   display: block;
-  width: 100%;
+  flex: 0 0 100%;
+  width: auto;
   font-size: var(--ui-font-11, 11px);
   color: var(--ui-fg-muted, var(--fg2));
   margin-top: 2px;

@@ -1,3 +1,6 @@
+            const entityNames = Object.keys(pivotData?.entities || {}).sort();
+            const entityItems = entityNames.map(name => ({ name, type: 'entity', path: item.path + '/' + name, _dbPath: item.path }));
+            // 添付フォルダは行ではなく実フォルダ。中の画像・動画へ辿れるよう先頭に出す。
             const attachmentFolder = String(pivotData?.attachment_folder || '').trim();
             if (attachmentFolder) {
               entityItems.unshift({ name: attachmentFolder, type: 'folder', path: item.path + '/' + attachmentFolder });
@@ -322,7 +325,7 @@
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       clearDragIndicators();
-      showStatus('シートのエントリはフォルダツリー内へ移動できません');
+      showStatus('シートのトピックはフォルダツリー内へ移動できません');
       return;
     }
     // Ctrl+ドロップ: ツリー内移動を行わない（ペインで開く操作に委ねる）
@@ -895,6 +898,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
     const trashRef = result.status === 'fulfilled' ? _outlinerTrashRefFromResponse(result.value) : null;
     if (!trashRef) {
       if (result.status === 'fulfilled' && result.value?.ok) skipped.push(targets[index]);
-      else failed.push(targets[index]);
-      return;
-    }

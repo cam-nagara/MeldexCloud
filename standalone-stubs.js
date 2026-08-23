@@ -55,7 +55,6 @@
         label: label,
         mode: 'indeterminate',
         showInTray: true,
-        showInStatus: false,
         priority: 70,
       }));
       return;

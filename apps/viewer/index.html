@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html data-standalone-app="viewer" data-standalone-cloud="viewer" data-meldex-cloud-app="viewer" lang="ja" spellcheck="false">
+<head>
+  <base href="../../">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Meldex BETA">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="MeldexViewer_icon_256.png">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: blob: https:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src 'self' https: blob:; frame-src 'self' blob: data:; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' data: blob:; form-action 'self' https://script.google.com">
+<title>Meldex ビューワー</title>
+<link rel="icon" href="MeldexViewer_icon_64.png" type="image/png">
+<link rel="stylesheet" href="gb-icon-assets.css">
+  <link rel="stylesheet" href="gb-shortcut-registry.css">
+<!-- 本体と同じ「ダーク」プリセット（--bg 系トークン）。他の単独アプリと同じく最初に読み込む
+     （単独アプリのダークモード統一計画 app/docs/standalone-apps-dark-theme-unification-plan-2026-08-13.md）。 -->
+<link rel="stylesheet" href="gb-theme.css">
+<link rel="stylesheet" href="gb-tooltip.css">
+<link rel="stylesheet" href="standalone-secondary-panel.css">
+<!-- 共通UIトークン・共通ツールバー・共通コンテキストメニュー（.gb-toolbar / .tb-icon-btn / .gb-context-menu 系） -->
+<link rel="stylesheet" href="gb-ui.css">
+<link rel="stylesheet" href="gb-tools.css">
+<link rel="stylesheet" href="gb-loading-indicators.css">
+<link rel="stylesheet" href="viewer.css"><script src="gb-escape.js"></script>
+<script src="gb-runtime-adapter.js"></script>
+<script src="gb-resource-url.js"></script>
+<script src="gb-config.js"></script>
+<script src="gb-dropbox-auth.js"></script>
+<script src="gb-system-storage.js"></script>
+<script src="gb-system-storage-dropbox.js"></script>
+<script src="gb-dropbox-management-root-resolver.js"></script>
+<script src="gb-source-folder-registry.js"></script>
+<script src="offline-bundles/gb-storage-adapter.js"></script>
+<script src="gb-storage-adapter-localfs.js"></script>
+<script src="offline-bundles/gb-data-access.js"></script>
+<script src="gb-document-identity.js"></script>
+<script src="offline-bundles/gb-data-access-dropbox-fileops.js"></script>
+<script src="gb-archive-zip-engine.js"></script>
+<script src="gb-cloud-fetch.js"></script>
+<script src="gb-cloud-file-url.js"></script>
+<script src="offline-bundles/meldex-core.js"></script>
+<script src="gb-operation-progress.js"></script>
+<script src="gb-operation-progress-view.js"></script>
+<script src="gb-content-image-loading.js"></script>
+<script src="meldex-app-capabilities.js"></script>
+<script src="gb-dialog-keyboard.js"></script>
+<script src="standalone-default-apps.js"></script>
+<!-- PDF.js — Copyright Mozilla Foundation. Licensed under Apache License 2.0: https://github.com/mozilla/pdf.js/blob/master/LICENSE -->
+<!-- スタイルは viewer.css へ分割済み（責務分割: app/docs/viewer-stability-common-ui-plan-2026-07-31.md） -->
+</head>
+<body>
+<div class="bg-layer" id="bgA"></div>
+<div class="bg-layer" id="bgB"></div>
+<div id="display">
+  <div class="layer" id="layerA"></div>
+  <div class="layer" id="layerB"></div>
+  <div id="viewer-loading" class="viewer-loading-state hidden" aria-live="polite">
+    <div class="viewer-loading-card">
+      <span class="viewer-loading-spinner" aria-hidden="true"></span>
+      <span id="viewer-loading-text">読み込み中...</span>
+    </div>
+  </div>
+  <div class="nav-area left" id="nav-prev-area"><span class="ico ico-chevronLeft" aria-hidden="true"></span></div>
+  <div class="nav-area right" id="nav-next-area"><span class="ico ico-chevronRight" aria-hidden="true"></span></div>
+</div>
+
+<div id="hud">
+  <div id="hud-status">ビューワー</div>
+  <div id="hud-info"></div>
+</div>
+
+<div id="controls" class="gb-toolbar gb-toolbar-viewer">
+  <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ"><span class="ico ico-arrowLeft"></span></button>
+  <button id="btn-open-local-file" class="tb-icon-btn" title="画像またはPDFを開く" aria-label="画像またはPDFを開く" hidden><span class="ico ico-folderOpen"></span></button>
+  <button id="btn-play" class="tb-icon-btn" title="再生/一時停止 (Space)" aria-label="再生"><span class="ico ico-play"></span></button>
+  <button id="btn-next" class="tb-icon-btn" title="次へ (→)" aria-label="次へ"><span class="ico ico-arrowRight"></span></button>
+  <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー">
+  <span id="counter">0 / 0</span>
+  <select id="sel-mode" class="tb-select" title="表示モード">
+    <option value="single" selected>単体</option>
+    <option value="spread">見開き</option>
+    <option value="manga">マンガ（右→左）</option>
+  </select>
+  <button id="btn-zoom-out" class="tb-icon-btn" title="縮小" aria-label="縮小"><span class="ico ico-zoomOut"></span></button>
+  <span class="zoom-label" id="zoom-label">100%</span>
+  <button id="btn-zoom-in" class="tb-icon-btn" title="拡大" aria-label="拡大"><span class="ico ico-zoomIn"></span></button>
+  <button id="btn-fit" class="tb-icon-btn" title="フィット" aria-label="フィット"><span class="ico ico-maximize2"></span></button>
+  <button id="btn-flip-h" class="tb-icon-btn" title="左右反転 (M)" aria-label="左右反転"><span class="ico ico-flipHorizontal2"></span></button>
+  <button id="btn-flip-v" class="tb-icon-btn" title="上下反転" aria-label="上下反転"><span class="ico ico-flipVertical2"></span></button>
+  <button id="btn-rotate" class="tb-icon-btn" title="回転 (Q)" aria-label="回転"><span class="ico ico-rotateCw"></span></button>
+  <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
+  <button id="btn-default-apps" class="tb-icon-btn" title="既定アプリに設定" aria-label="既定アプリに設定" data-standalone-default-apps-open hidden><span class="ico ico-fileCog"></span></button>
+</div>
+<input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
+<!-- 非表示の要素（JS参照用に維持） -->
+<input type="range" id="speed" min="0.5" max="15" step="0.5" value="3" style="display:none;">
+<span id="speed-label" style="display:none;">3.0s</span>
+<button id="btn-prev-folder" style="display:none;"></button>
+<button id="btn-next-folder" style="display:none;"></button>
+<button id="btn-shift-back" style="display:none;"></button>
+<button id="btn-shift-fwd" style="display:none;"></button>
+<button id="btn-bg" style="display:none;"></button>
+<button id="btn-hud" style="display:none;"></button>
+<button id="btn-original" style="display:none;"></button>
+
+<script src="viewer-resize.js"></script>
+<script src="vendor/lucide-icons.js"></script>
+<script src="gb-icon-assets.js"></script>
+<script src="offline-bundles/gb-tooltip.js"></script>
+<script src="gb-shortcut-registry.js"></script>
+<script src="gb-context-menu-ui.js"></script>
+  <script src="standalone-secondary-panel.js"></script>
+<script src="standalone-local-drafts.js"></script>
+<script src="standalone-close-guard.js"></script>
+<script src="standalone-save-queue.js"></script>
+<script src="standalone-offline-outbox.js"></script>
+<script src="viewer-scene-utils.js"></script>
+<script src="viewer-pdf-renderer.js"></script>
+<script src="viewer-video.js"></script>
+<script src="viewer-audio.js"></script>
+<script src="viewer-scene.js"></script>
+<script src="viewer-cloud-file-open.js"></script>
+<script src="viewer-open-request.js"></script>
+<script src="standalone-always-on-top.js"></script>
+<script>
+  // 本体のビューワーパネル内（iframe）では出さない。単独ウィンドウのときだけ。
+  document.addEventListener("DOMContentLoaded", () => {
+    if (window.parent && window.parent !== window) return;
+    window.MeldexAlwaysOnTop?.install({
+      appId: "viewer",
+      host: document.getElementById("controls"),
+      buttonClass: "tb-icon-btn",
+    });
+  });
+</script>
+<script src="viewer-controls.js"></script>
+<script src="viewer-annotation-scene.js"></script>
+<script src="viewer-annotation-notes.js"></script>
+<script src="viewer-annotation-legacy.js"></script>
+<script src="viewer-annotations.js"></script>
+<script src="viewer-context-menu.js"></script>
+</body>
+</html>

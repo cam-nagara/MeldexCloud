@@ -162,7 +162,7 @@ function _bdDrawPreviewMinimap() {
   const pane = document.getElementById('gb-preview-pane');
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
   if (!bd.nodes.length) {
-    pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">カードがありません</div>';
+    pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">トピックがありません</div>';
     return;
   }
   let canvas = pane.querySelector('.bd-minimap');

@@ -149,13 +149,14 @@ function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
   if (_cellUiWriteBlockedMessage(ctx)) return false;
   if (_cellUiColumnLockMessage(dbPath, propName, ctx)) return false;
   if (options.hasExistingValue && typeof getStatusEnabled === 'function' && !getStatusEnabled(dbPath)) {
-    return ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'image'].includes(type);
+    return ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link', 'image'].includes(type);
   }
   return true;
 }
 
 function _cellUiShouldShowStandaloneAdd(rawValues, dbPath, propName, ptc, ctx) {
-  return (!Array.isArray(rawValues) || rawValues.length === 0)
+  const type = String(ptc?.type || '').replace(/_/g, '-');
+  return (type === 'multi-link' || !Array.isArray(rawValues) || rawValues.length === 0)
     && _cellUiCanAddCandidate(dbPath, propName, ptc, ctx);
 }
 
@@ -736,7 +737,7 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
     }
   }
   // link型: 「リンク先を変更」を追加
-  if (_ptc && _ptc.type === 'link') {
+  if (_ptc && (_ptc.type === 'link' || _ptc.type === 'multi-link')) {
     const changeItem = document.createElement('div');
     changeItem.className = 'gb-context-menu-item';
     changeItem.innerHTML = lucide('folderTree', 14) + ' リンク先を変更...';
@@ -748,6 +749,20 @@ function _showValueContextMenu(e, val, entityPath, propName, options = {}) {
       }
     });
     menu.appendChild(changeItem);
+    if (_ptc.type === 'multi-link' && typeof moveDbMultiLinkValue === 'function') {
+      const moveRow = document.createElement('div');
+      moveRow.className = 'gb-context-menu-item-row';
+      [['上へ', -1], ['下へ', 1]].forEach(([label, direction]) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'gb-btn gb-btn-sm'; button.textContent = label;
+        button.addEventListener('click', async () => {
+          menu.remove();
+          await moveDbMultiLinkValue(val, entityPath, propName, currentDbPath, currentCtx, direction);
+        });
+        moveRow.appendChild(button);
+      });
+      menu.appendChild(moveRow);
+    }
     const linkSep = document.createElement('div');
     linkSep.className = 'gb-context-menu-sep';
     menu.appendChild(linkSep);

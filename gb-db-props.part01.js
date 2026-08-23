@@ -18,6 +18,7 @@ const PROP_TYPE_ICON = {
   'multi-relation': 'link2',
   user: 'user',
   'multi-user': 'users',
+  'multi-link': 'link2',
   formula: 'sigma',
   rollup: 'workflow',
   button: 'play',
@@ -227,7 +228,7 @@ function _dbSetPinnedRangeFromMenu(ctx, dbPath, renderedCols, boundaryToken, on)
   if (typeof setPinnedColumnRange === 'function') {
     setPinnedColumnRange(dbPath, renderedCols, boundaryToken, on, {
       ctx,
-      detail: boundaryToken === '__entity__' ? 'エントリ名' : boundaryToken,
+      detail: boundaryToken === '__entity__' ? 'トピック名' : boundaryToken,
     });
   }
   _refreshDbColumnMenuView(ctx, dbPath);

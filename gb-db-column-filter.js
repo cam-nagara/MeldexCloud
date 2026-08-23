@@ -238,12 +238,12 @@ function showDbColumnFilterPopup(source, propName, ctxOverride, dbPathOverride) 
     : -1;
   popover.dataset.viewIndex = String(viewIndex);
   popover.setAttribute('role', 'dialog');
-  popover.setAttribute('aria-label', `${propName === '__entity__' ? 'エントリ名' : propName}列のフィルター`);
+  popover.setAttribute('aria-label', `${propName === '__entity__' ? 'トピック名' : propName}列のフィルター`);
 
   const header = document.createElement('div');
   header.className = 'db-column-filter-header';
   const title = document.createElement('strong');
-  title.textContent = propName === '__entity__' ? 'エントリ名をフィルター' : `${propName}をフィルター`;
+  title.textContent = propName === '__entity__' ? 'トピック名をフィルター' : `${propName}をフィルター`;
   const closeButton = document.createElement('button');
   closeButton.type = 'button';
   closeButton.className = 'db-column-filter-icon-button';

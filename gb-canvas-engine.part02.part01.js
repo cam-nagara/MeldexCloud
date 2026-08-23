@@ -6,17 +6,31 @@ function bdDrawFrames() {
   const container = document.getElementById('bd-nodes');
   if (!bd.groups || !container) return;
   bd.groups.forEach(g => {
-    const gNodes = g.nodeIds.map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
-    if (gNodes.length < 2) return;
+    const gNodes = (g.nodeIds || []).map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
+    if (!gNodes.length && ![g.x, g.y, g.w, g.h].every(Number.isFinite)) return;
     let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
     gNodes.forEach(n => {
       const el=document.getElementById('bdn-'+n.id);
       x0=Math.min(x0,n.x); y0=Math.min(y0,n.y);
       x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
     });
+    if (!gNodes.length) {
+      x0 = +g.x + 12; y0 = +g.y + 22; x1 = x0 + Math.max(1, +g.w - 24); y1 = y0 + Math.max(1, +g.h - 34);
+    }
     const frame = document.createElement('div'); frame.className = 'bd-frame';
-    frame.dataset.groupId = g.id;
+    frame.dataset.groupId = g.groupId || g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
+    g.x = x0 - 12; g.y = y0 - 22; g.w = x1 - x0 + 24; g.h = y1 - y0 + 34;
+    const groupStyle = g.styleOverrides || g.style || {};
+    if (groupStyle.background) frame.style.background = groupStyle.background;
+    if (groupStyle.borderColor) frame.style.borderColor = groupStyle.borderColor;
+    if (Number.isFinite(+groupStyle.borderWidth)) frame.style.borderWidth = Math.max(0, +groupStyle.borderWidth) + 'px';
+    if (groupStyle.borderStyle) frame.style.borderStyle = groupStyle.borderStyle;
+    if (Number.isFinite(+groupStyle.borderRadius)) frame.style.borderRadius = Math.max(0, +groupStyle.borderRadius) + 'px';
+    if (Number.isFinite(+groupStyle.opacity)) frame.style.opacity = Math.max(0, Math.min(1, +groupStyle.opacity));
+    if (groupStyle.shadow) frame.style.boxShadow = groupStyle.shadow;
+    frame.classList.toggle('bd-group-locked', !!g.locked);
+    frame.classList.toggle('bd-group-collapsed', !!g.collapsed);
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
     label.style.cursor = 'move';
     label.ondblclick = (ev) => {
@@ -44,6 +58,7 @@ function bdDrawFrames() {
     // PDRAG_THRESHOLD を超えたら「ドラッグ」と判定し、それ未満のクリックは通常のクリック扱い。
     label.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
+      if (g.locked) return;
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
@@ -74,11 +89,11 @@ function bdDrawFrames() {
           }
         });
         const movedIds = startPositions.map(p => p.node.id);
-        if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: movedIds, reason: 'frame-drag' });
+        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
+        if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'frame-drag' });
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
-        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       };
       const onUp = () => {
         document.removeEventListener('pointermove', onMove);
@@ -124,6 +139,8 @@ function bdUpdateFramesForNodes(nodeIds) {
     frame.style.top = `${y0 - 22}px`;
     frame.style.width = `${x1 - x0 + 24}px`;
     frame.style.height = `${y1 - y0 + 34}px`;
+    group.x = x0 - 12; group.y = y0 - 22;
+    group.w = x1 - x0 + 24; group.h = y1 - y0 + 34;
   });
 }
 

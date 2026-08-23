@@ -66,6 +66,7 @@
   });
 
   const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
+  const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
   const APP_OUT_OF_SCOPE = Object.freeze({
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
@@ -110,7 +111,6 @@
       file_style: 'ビューワーは元ファイルの表示スタイルを編集しない',
       backlinks: 'ビューワーは参照索引を編集・表示する文書画面ではない',
       internal_link_selection: 'ビューワーは内部リンクを挿入・選択しない',
-      drag_drop: 'ビューワーはファイルを取込対象としてD&Dしない',
       clipboard: 'ビューワーは文書内容のコピー・貼り付け編集を行わない',
       multiple_import: 'ビューワーはフォルダー内媒体を閲覧し複数取込を行わない',
       dropbox_sync: '単独ビューワーはローカル媒体を表示しDropbox同期を担当しない',
@@ -212,11 +212,6 @@
     nextAction: 'Cloud版本体で開く',
     execute: route => Object.freeze({ supported: true, route }),
   });
-  _defineAdapter('route:cloud_main:viewer', {
-    strategy: 'route-to-cloud-main-viewer',
-    nextAction: 'Cloud版本体のビューワーで開く',
-    execute: route => Object.freeze({ supported: true, route }),
-  });
   _defineAdapter('route:web-open', {
     strategy: 'web-download-or-associated-app',
     nextAction: 'ダウンロードまたはWebで利用可能なアプリで開く',
@@ -240,6 +235,11 @@
     executable: false,
     strategy: 'preserve-main-version-history',
     nextAction: '同じファイルをMeldex本体で開く',
+  });
+  _defineAdapter('exception:cloud_browser_local_annotations', {
+    executable: false,
+    strategy: 'reject-transient-browser-annotation-target',
+    nextAction: 'Meldex本体またはWindows単独ビューワーで開く',
   });
   _defineAdapter('scope:viewer-read-only', {
     executable: false,
@@ -347,17 +347,15 @@
   }
 
   function _classificationFor(app, environment, capability) {
-    if (environment === 'cloud_standalone' && app === 'viewer') {
+    if (INTEGRATED_ONLY_APPS.has(app)
+        && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
+      const isCloud = environment === 'cloud_standalone';
       return _record(
         STATUS.out_of_scope,
-        'route:cloud_main:viewer',
-        Object.freeze({
-          environment: 'cloud_main',
-          app: 'viewer',
-          reason: 'Cloud単独ビューワーは提供せずCloud版本体のビューワーへ移送する',
-        }),
-        'Cloud単独ビューワーは製品として提供しない',
-        'Cloud版本体のビューワーで開く',
+        isCloud ? 'route:cloud_main' : 'route:desktop_main',
+        _route(environment, app, `${app}はMeldex本体の統合ツールとして開く`),
+        `${app}の単独版は新規提供せずMeldex本体へ統合する`,
+        isCloud ? 'Cloud版本体で開く' : 'デスクトップ版本体で開く',
       );
     }
     if (EXCEPTION_CAPABILITIES.has(capability)
@@ -378,13 +376,24 @@
       return _viewerReadOnlyRecord(environment, app, capability);
     }
     if (app === 'viewer'
+        && environment === 'cloud_standalone'
+        && capability === 'annotations_comments') {
+      return _record(
+        STATUS.exception,
+        'exception:cloud_browser_local_annotations',
+        null,
+        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないため注釈を保存しない',
+        '注釈が必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
+      );
+    }
+    if (app === 'viewer'
         && environment === 'windows_standalone'
         && capability === 'annotations_comments') {
       return _record(
         STATUS.available,
-        'implementation:windows_standalone:annotations_comments',
+        `implementation:${environment}:annotations_comments`,
         null,
-        'Windows単独ビューワーの注釈画面とローカル注釈APIで利用可能',
+        'Windows単独ビューワーの注釈画面で利用可能',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {

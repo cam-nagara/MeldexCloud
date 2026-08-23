@@ -988,10 +988,13 @@ function _renderTeamMessageWithImages(container, text) {
       img.alt = alt;
       img.loading = 'lazy';
       img.style.cssText = 'max-width:240px;max-height:240px;border-radius:4px;margin-top:4px;display:block;object-fit:contain;cursor:zoom-in;';
-      img.addEventListener('click', () => {
-        if (typeof openImageViewer === 'function') openImageViewer(url, alt);
-        else window.open(url, '_blank');
-      });
+      const managedPath = window.MeldexChatViewerAssets?.stablePath?.(url) || '';
+      if (!window.MeldexChatViewerAssets?.bind?.(img, container, managedPath)) {
+        img.addEventListener('click', () => {
+          if (typeof openImageViewer === 'function') openImageViewer(url, alt);
+          else window.open(url, '_blank');
+        });
+      }
       container.appendChild(img);
       window.MeldexImageLoading?.track?.(img);
     } else {
@@ -1321,9 +1324,11 @@ function _chatRenderStructuredMessage(div, content, isUser) {
         img.src = imgUrl;
         img.alt = String(part.name || storedPath || 'image');
         img.style.cssText = 'max-width:min(320px, 100%);max-height:220px;border-radius:8px;display:block;cursor:pointer;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.08);';
-        img.addEventListener('click', () => {
-          if (typeof openViewer === 'function') openViewer(imgUrl);
-        });
+        if (!window.MeldexChatViewerAssets?.bind?.(img, imgWrap, storedPath)) {
+          img.addEventListener('click', () => {
+            if (typeof openViewer === 'function') openViewer(imgUrl);
+          });
+        }
         img.onerror = () => { img.style.display = 'none'; };
         imgWrap.appendChild(img);
         window.MeldexImageLoading?.track?.(img, { errorMode: 'silent' });
@@ -1337,7 +1342,9 @@ function _chatRenderStructuredMessage(div, content, isUser) {
       row.style.cssText = `display:flex;align-items:center;gap:6px;margin-top:4px;font-size:12px;${isUser ? 'color:rgba(255,255,255,0.92);' : 'color:var(--fg2);'}`;
       row.innerHTML = `${lucide('fileText', 14)} <span style="text-decoration:underline;cursor:pointer;">${esc(String(part.name || storedPath || 'PDF'))}</span>`;
       row.querySelector('span')?.addEventListener('click', () => {
-        if (storedPath && typeof openViewer === 'function') openViewer(API_BASE + '/file-raw?path=' + encodeURIComponent(storedPath));
+        if (storedPath && !window.MeldexChatViewerAssets?.open?.(storedPath) && typeof openViewer === 'function') {
+          openViewer('/viewer?pdf=' + encodeURIComponent(storedPath));
+        }
       });
       div.appendChild(row);
     }

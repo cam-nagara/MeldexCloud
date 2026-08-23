@@ -463,7 +463,7 @@
     }
     const currentNode = state.nodes?.find(item => item && item.id === nodeId);
     if (currentNode !== node || nodeLinkPath(currentNode) !== originalPath) {
-      if (typeof global.showStatus === 'function') global.showStatus('カードのリンク先が変わったため、画像の再指定を中止しました', true);
+      if (typeof global.showStatus === 'function') global.showStatus('トピックのリンク先が変わったため、画像の再指定を中止しました', true);
       return false;
     }
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo();

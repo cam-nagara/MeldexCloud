@@ -182,7 +182,7 @@ function _dbTreeCreateColumnHeader({
   const label = document.createElement('span');
   label.className = 'db-tree-header-label';
   label.textContent = propName === '__entity__'
-    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath, { ctx }) : 'エントリ名')
+    ? (typeof _dbEntityColumnDisplayLabel === 'function' ? _dbEntityColumnDisplayLabel(dbPath, { ctx }) : 'トピック名')
     : propName;
   cell.appendChild(label);
 

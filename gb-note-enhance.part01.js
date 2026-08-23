@@ -510,9 +510,17 @@ function _executeSlashCommand(typeId) {
   if (!anchorRange || typeof MeldexNoteBlockTypes === 'undefined') return;
   const range = _currentSlashSelectionRange() || anchorRange;
   const editable = MeldexNoteBlockTypes.resolveEditableHost(range);
+  if (typeof MeldexNoteEmbedBlock !== 'undefined' && MeldexNoteEmbedBlock.isInsertCommand(typeId)) {
+    MeldexNoteEmbedBlock.insertFromCommand(typeId, { editable, range, skipUndo: true, prepareInsert() {
+      if (typeof _pushCustomUndo === 'function') _pushCustomUndo(editable);
+      _removeSlashTriggerAndQuery(anchorRange, query);
+    } });
+    return;
+  }
   const result = MeldexNoteBlockTypes.convertCurrentLineTo(typeId, {
     editable,
     range,
+    removableText: '/' + query,
     // §5工程4-4/5-2: "/"と検索語の削除は、undo push直後・DOM変換の直前に実行する
     // （行頭記法と同じbeforeConvertパターン）。beforeConvertを指定しているため、
     // 同じ行種を選択した場合もconvertCurrentLineTo側のunchanged早期returnは
@@ -544,6 +552,8 @@ function _showSlashMenu() {
     blockInfo,
     currentTypeId,
     query: '',
+    removableTextPrefix: '/',
+    allowInsertItems: true,
     onSelect: (typeId) => _executeSlashCommand(typeId),
     onClose: () => { _slashMenuAnchorRange = null; _slashMenuLastQuery = ''; },
   });

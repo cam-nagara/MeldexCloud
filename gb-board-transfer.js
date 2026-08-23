@@ -410,7 +410,7 @@
     bd.nodes.push(...nodes);
     const ids = finalizeAddedNodes(nodes, options?.reason || 'paste-cards');
     if (typeof showStatus === 'function' && options?.silent !== true) {
-      showStatus(ids.length > 1 ? `${ids.length}件のカードを貼り付けました` : 'カードを貼り付けました');
+      showStatus(ids.length > 1 ? `${ids.length}件のトピックを貼り付けました` : 'トピックを貼り付けました');
     }
     return ids;
   }
@@ -528,7 +528,7 @@
     if (typeof showStatus === 'function') {
       if (ids.length) {
         const suffix = failed ? `（${failed}件は読み込めませんでした）` : '';
-        showStatus(ids.length > 1 ? `${ids.length}件のファイルカードを貼り付けました${suffix}` : `ファイルカードを貼り付けました${suffix}`);
+        showStatus(ids.length > 1 ? `${ids.length}件のファイルトピックを貼り付けました${suffix}` : `ファイルトピックを貼り付けました${suffix}`);
       } else {
         showStatus('貼り付けられるファイルがありませんでした', true);
       }

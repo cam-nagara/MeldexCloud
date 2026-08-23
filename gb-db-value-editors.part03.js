@@ -327,7 +327,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
 
   // 検索ボックス
   const search = document.createElement('input');
-  search.type = 'text'; search.placeholder = 'エントリを検索...';
+  search.type = 'text'; search.placeholder = 'トピックを検索...';
   search.style.cssText = 'width:100%;padding:4px 6px;margin-bottom:4px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;';
   dd.appendChild(search);
 
@@ -496,7 +496,7 @@ async function _showRelationDropdown(el, val, entityPath, propName, ptc, isMulti
       entryList.sort((a, b) => a.name.localeCompare(b.name));
       await selectRelationEntry(newEntry);
     } catch (e) {
-      showStatus('エントリの作成に失敗: ' + (e?.message || e), true);
+      showStatus('トピックの作成に失敗: ' + (e?.message || e), true);
     } finally {
       creatingRelationEntry = false;
     }

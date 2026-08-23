@@ -937,6 +937,51 @@ function _fdButton(label, onClick) {
   return btn;
 }
 
+function _applyTreeLayoutMode(mode) {
+  const resolved = mode === 'grid' ? 'grid' : 'list';
+  const enabled = resolved === 'grid';
+  document.getElementById('outliner-tree')?.classList.toggle('tree-grid-layout', enabled);
+  document.getElementById('tree-scroll-container')?.classList.toggle('tree-grid-layout', enabled);
+  return resolved;
+}
+
+function _treeThumbnailDisplaySize() {
+  const thumbnails = window.GBOutlinerThumbnails;
+  const enabled = typeof thumbnails?.isEnabled === 'function'
+    ? thumbnails.isEnabled()
+    : localStorage.getItem('gb:tree-thumbnails-enabled') !== '0';
+  if (!enabled) return 'none';
+  const mode = typeof thumbnails?.sizeMode === 'function'
+    ? thumbnails.sizeMode()
+    : (localStorage.getItem('gb:tree-thumbnail-size') || 'medium');
+  return mode === 'small' ? 'sm' : (mode === 'large' ? 'lg' : 'md');
+}
+
+function _setTreeThumbnailDisplaySize(displaySize) {
+  const thumbnails = window.GBOutlinerThumbnails;
+  const enabled = displaySize !== 'none';
+  const mode = displaySize === 'sm' ? 'small' : (displaySize === 'lg' ? 'large' : 'medium');
+  if (typeof thumbnails?.setEnabled === 'function') thumbnails.setEnabled(enabled);
+  else localStorage.setItem('gb:tree-thumbnails-enabled', enabled ? '1' : '0');
+  if (enabled) {
+    if (typeof thumbnails?.setSizeMode === 'function') thumbnails.setSizeMode(mode);
+    else if (mode === 'medium') localStorage.removeItem('gb:tree-thumbnail-size');
+    else localStorage.setItem('gb:tree-thumbnail-size', mode);
+    if (typeof applyThumbnailSize === 'function') applyThumbnailSize(mode);
+  }
+  return { enabled, mode };
+}
+
+function _restoreTreeDisplaySettings() {
+  _applyTreeLayoutMode(globalThis.localStorage?.getItem?.('tree-layout') || 'list');
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _restoreTreeDisplaySettings, { once: true });
+} else {
+  _restoreTreeDisplaySettings();
+}
+
 function showFolderDisplaySettings(options) {
   const filterOnly = options?.filterOnly === true;
   const isTreeSurface = options?.surface === 'tree';
@@ -961,7 +1006,7 @@ function showFolderDisplaySettings(options) {
 
   if (isTreeSurface) {
     const treeLayout = localStorage.getItem('tree-layout') || 'list';
-    const treeThumbSize = localStorage.getItem('tree-thumbnail-size') || 'none';
+    const treeThumbSize = _treeThumbnailDisplaySize();
 
     _fdSection(menu, 'ツリー表示形式');
     [
@@ -971,10 +1016,11 @@ function showFolderDisplaySettings(options) {
       const row = document.createElement('div');
       row.className = 'gb-context-menu-item';
       row.innerHTML = radioMark(treeLayout === item.key) + (typeof lucide === 'function' ? lucide(item.icon, 14) + ' ' : '') + item.label;
-      row.addEventListener('click', () => {
+      row.addEventListener('click', async () => {
         localStorage.setItem('tree-layout', item.key);
-        document.getElementById('outliner-tree')?.classList.toggle('tree-grid-layout', item.key === 'grid');
+        _applyTreeLayoutMode(item.key);
         menu.remove();
+        if (typeof loadOutliner === 'function') await loadOutliner({ force: true, reason: 'tree-layout' });
       });
       menu.appendChild(row);
     });
@@ -991,7 +1037,7 @@ function showFolderDisplaySettings(options) {
       row.className = 'gb-context-menu-item';
       row.innerHTML = radioMark(treeThumbSize === it.key) + it.label;
       row.addEventListener('click', () => {
-        localStorage.setItem('tree-thumbnail-size', it.key);
+        _setTreeThumbnailDisplaySize(it.key);
         if (typeof loadOutliner === 'function') loadOutliner({ force: true, reason: 'tree-thumbnail-size' });
         menu.remove();
       });

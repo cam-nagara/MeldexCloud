@@ -96,7 +96,7 @@ function _bdPrepareContextMenuSelection(nodeId) {
 
 function bdContextMenu(e, nodeId) {
   _bdCloseAllContextMenus();
-  const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'カードメニュー' : 'ボードメニュー');
+  const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'トピックメニュー' : 'ボードメニュー');
   _bdTrackContextMenuTrigger(menu, e?.trigger || null);
   { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX/z)+'px'; menu.style.top = (e.clientY/z)+'px'; }
   const contextAnchorEl = { getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY, width: 0, height: 0 }) };
@@ -203,19 +203,19 @@ function bdContextMenu(e, nodeId) {
       item('テキスト編集 (F2)', () => bdEditNode(nodeId));
       // 「同階層カード追加 (Enter)」: ルートカード (親なし) では追加先の階層が不定のため disabled。
       if (isRootCard) {
-        const disabled = _bdContextMenuItem(menu, '同階層カード追加 (Enter)', null, { disabled: true, html: false });
-        disabled.title = 'ルートカードは親が無いため、同階層追加できません';
+        const disabled = _bdContextMenuItem(menu, '同階層トピック追加 (Enter)', null, { disabled: true, html: false });
+        disabled.title = 'メイントピックは親が無いため、同階層追加できません';
       } else {
-        item('同階層カード追加 (Enter)', () => {
+        item('同階層トピック追加 (Enter)', () => {
           bdSelect(nodeId);
           if (typeof bdAddSiblingToSelected === 'function') bdAddSiblingToSelected();
         });
       }
-      item('子カード追加 (Ctrl+Enter)', () => {
+      item('サブトピック追加 (Ctrl+Enter)', () => {
         bdSelect(nodeId);
         if (typeof bdAddChildToSelected === 'function') bdAddChildToSelected();
       });
-      const linkifySub = sub('リンクカード化');
+      const linkifySub = sub('リンクトピック化');
       linkifySub.item('ノート', () => bdLinkifyCardAs(nodeId, 'page'));
       linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
       linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
@@ -223,7 +223,7 @@ function bdContextMenu(e, nodeId) {
       linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
       linkifySub.sep();
       linkifySub.item('既存ファイル...', () => bdLinkifyCardFromExisting(nodeId));
-      item('接続カードを全選択', () => {
+      item('接続トピックを全選択', () => {
         const ids = new Set([nodeId]); let ch = true;
         while (ch) {
           ch = false;
@@ -267,7 +267,7 @@ function bdContextMenu(e, nodeId) {
       bdDirty();
     });
     if (multi && nd) {
-      item('選択カードをこのカードに内包', () => {
+      item('選択トピックをこのトピックに内包', () => {
         const parentAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(nd) : { x: nd.x, y: nd.y };
         const isAncestorOfTarget = (id) => {
           if (typeof bdDescendants === 'function') return bdDescendants(id).includes(nodeId);
@@ -282,7 +282,7 @@ function bdContextMenu(e, nodeId) {
         };
         const targetIds = [...bd.selected].filter(id => id !== nodeId && !isAncestorOfTarget(id));
         if (!targetIds.length) {
-          if (typeof showStatus === 'function') showStatus('内包できるカードがありません', true);
+          if (typeof showStatus === 'function') showStatus('内包できるトピックがありません', true);
           return;
         }
         bdPushUndo();
@@ -364,7 +364,7 @@ function bdContextMenu(e, nodeId) {
       // 起点になる」(そのカード自身が深さ0、子孫だけに効く) ことが伝わらないため改善した。
       if (nd) {
         const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 160);
-        [['このカードを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
+    [['このトピックを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
           const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
@@ -424,7 +424,7 @@ function bdContextMenu(e, nodeId) {
       const viewSub = sub('表示');
       const childNodesForView = typeof bdChildren === 'function' ? bdChildren(nodeId) : [];
       if (!multi && nd && childNodesForView.length > 0) {
-        const collapseLabel = nd.collapsed ? '子カードを展開' : '子カードを折りたたむ';
+  const collapseLabel = nd.collapsed ? 'サブトピックを展開' : 'サブトピックを折りたたむ';
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
@@ -641,7 +641,7 @@ function bdContextMenu(e, nodeId) {
     // --- Multi-select: 整列・サイズ・集約・グループ化 ---
     if (multi) {
       sep();
-      item('集約カードを追加', () => bdAddSummary());
+      item('集約トピックを追加', () => bdAddSummary());
       const alSub = sub('整列');
       alSub.item('左揃え', () => bdAlign('left')); alSub.item('右揃え', () => bdAlign('right'));
       alSub.item('上揃え', () => bdAlign('top')); alSub.item('下揃え', () => bdAlign('bottom'));
@@ -682,7 +682,7 @@ function bdContextMenu(e, nodeId) {
     dangerItem('削除 (Del)', async () => {
       if (!multi) bdSelect(nodeId);
       const count = bd.selected.size;
-      const msg = count > 1 ? `${count}件のカードを削除しますか？` : 'このカードを削除しますか？';
+      const msg = count > 1 ? `${count}件のトピックを削除しますか？` : 'このトピックを削除しますか？';
       if (!(await cfConfirm(msg))) return;
       await bdDeleteSelected({ confirm: false });
     });
@@ -691,8 +691,8 @@ function bdContextMenu(e, nodeId) {
     // --- Blank area menu ---
     const _stw = bdScreenToWorld(e.clientX, e.clientY);
     const clickWx = _stw.x, clickWy = _stw.y;
-    item('カードを追加', () => { bdAddAt(clickWx, clickWy); });
-    const newLinkSub = sub('新規リンクカード');
+    item('トピックを追加', () => { bdAddAt(clickWx, clickWy); });
+    const newLinkSub = sub('新規リンクトピック');
     [
       ['ノート', 'page'],
       ['シート', 'database'],
@@ -702,13 +702,13 @@ function bdContextMenu(e, nodeId) {
     ].forEach(([label, type]) => {
       newLinkSub.item(label, () => {
         if (typeof bdCreateLinkedFileCardAt === 'function') bdCreateLinkedFileCardAt(clickWx, clickWy, type);
-        else showStatus('リンクカード追加機能を読み込めませんでした', true);
+        else showStatus('リンクトピック追加機能を読み込めませんでした', true);
       });
     });
     newLinkSub.sep();
     newLinkSub.item('既存ファイルへのリンク...', () => {
       if (typeof bdPromptAddLinkCardAt === 'function') bdPromptAddLinkCardAt(clickWx, clickWy);
-      else showStatus('リンクカード追加機能を読み込めませんでした', true);
+      else showStatus('リンクトピック追加機能を読み込めませんでした', true);
     });
     item('貼り付け (Ctrl+V)', () => {
       if (window.MeldexBoardTransfer?.requestPaste) {
@@ -749,7 +749,7 @@ function bdContextMenu(e, nodeId) {
     }
     if (_bdDrillRoot) item('ドリルダウン解除', () => bdDrillUp());
     if (bd.selected.size > 1) {
-      item('集約カードを追加', () => bdAddSummary());
+      item('集約トピックを追加', () => bdAddSummary());
     }
   }
 
@@ -1020,22 +1020,22 @@ function bdShowHelp() {
   content.dataset.e2eId = 'board-shortcuts-content';
   content.style.cssText = `box-sizing:border-box;width:100%;max-width:100%;min-width:0;font-size:13px;line-height:2;columns:${window.innerWidth <= 900 ? 1 : 2};column-gap:24px;overflow-wrap:anywhere;`;
   content.innerHTML = `
-      <div><kbd>ダブルクリック</kbd> カード追加/編集</div>
+      <div><kbd>ダブルクリック</kbd> トピック追加/編集</div>
       <div><kbd>左ドラッグ (空白)</kbd> 範囲選択</div>
-      <div><kbd>左ドラッグ (カード)</kbd> 移動</div>
+      <div><kbd>左ドラッグ (トピック)</kbd> 移動</div>
       <div><kbd>右ドラッグ (空白)</kbd> パン</div>
-      <div><kbd>右ドラッグ (カード)</kbd> ライン</div>
+      <div><kbd>右ドラッグ (トピック)</kbd> ライン</div>
       <div><kbd>ホイール</kbd> ズーム</div>
       <div><kbd>中ボタンドラッグ</kbd> パン</div>
       <div><kbd>Space+矢印</kbd> パン</div>
       <div><kbd>Ctrl++/-</kbd> ズーム</div>
-      <div><kbd>Tab</kbd> 子カード追加</div>
-      <div><kbd>Enter</kbd> 同階層カード追加</div>
-      <div><kbd>Shift+Enter</kbd> カード内改行 (編集中)</div>
+      <div><kbd>Tab</kbd> サブトピック追加</div>
+      <div><kbd>Enter</kbd> 同階層トピック追加</div>
+      <div><kbd>Shift+Enter</kbd> トピック内改行 (編集中)</div>
       <div><kbd>F2</kbd> テキスト編集</div>
       <div><kbd>Esc</kbd> 編集完了/選択解除</div>
       <div><kbd>Delete</kbd> 削除</div>
-      <div><kbd>矢印</kbd> カード間移動</div>
+      <div><kbd>矢印</kbd> トピック間移動</div>
       <div><kbd>Ctrl+矢印</kbd> 位置微調整</div>
       <div><kbd>Shift+矢印</kbd> 方向選択追加</div>
       <div><kbd>Ctrl+A</kbd> 全選択</div>
@@ -1094,7 +1094,7 @@ async function bdLinkifyCardAs(nodeId, type) {
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n || !bd.path) { showStatus('先にボードを保存してください', true); return; }
   if (n.link) {
-    if (!(await cfConfirm('このカードには既にリンクが設定されています。上書きしますか？'))) return;
+  if (!(await cfConfirm('このトピックには既にリンクが設定されています。上書きしますか？'))) return;
   }
   const parentDir = typeof _bdBoardDir === 'function' ? _bdBoardDir() : bd.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   const baseLabel = (n.text || '無題').trim() || '無題';
@@ -1112,9 +1112,9 @@ async function bdLinkifyCardAs(nodeId, type) {
     else bdRender();
     bdDirty();
     if (typeof _bdOpenEntryInRightSidebar === 'function') _bdOpenEntryInRightSidebar(label, path, n.linkType);
-    showStatus('リンクカード化: ' + label);
+    showStatus('リンクトピック化: ' + label);
   } catch {
-    showStatus('リンクカード化に失敗しました', true);
+    showStatus('リンクトピック化に失敗しました', true);
   }
 }
 
@@ -1122,7 +1122,7 @@ async function bdLinkifyCardFromExisting(nodeId) {
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n || !bd.path) { showStatus('先にボードを保存してください', true); return; }
   if (n.link) {
-    if (!(await cfConfirm('このカードには既にリンクが設定されています。上書きしますか？'))) return;
+  if (!(await cfConfirm('このトピックには既にリンクが設定されています。上書きしますか？'))) return;
   }
   const applyLink = (linkPath, maybeLabel, linkType) => {
     if (!linkPath) return;
@@ -1135,7 +1135,7 @@ async function bdLinkifyCardFromExisting(nodeId) {
     if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-existing', { detailPanel: true });
     else bdRender();
     bdDirty();
-    showStatus('リンクカード化: ' + label);
+    showStatus('リンクトピック化: ' + label);
   };
   if (typeof showLinkInsertModal === 'function') {
     showLinkInsertModal(null, (result) => {

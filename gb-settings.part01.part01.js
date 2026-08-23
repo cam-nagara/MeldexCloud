@@ -9,8 +9,8 @@ const MELDEX_LLM_API_KEY_URLS = Object.freeze({
   anthropic: 'https://platform.claude.com/settings/keys',
   gemini: 'https://aistudio.google.com/app/apikey',
 });
-const MELDEX_WEBCLIP_GUIDE_PATH = 'MeldexHome/マニュアル/03_設定と連携/Chrome拡張機能の設定.md';
-const MELDEX_DEFAULT_APPS_GUIDE_PATH = 'MeldexHome/マニュアル/04_サポート/Windows 既定アプリの設定.md';
+const MELDEX_WEBCLIP_GUIDE_PATH = '03_設定と連携/Chrome拡張機能の設定.md';
+const MELDEX_DEFAULT_APPS_GUIDE_PATH = '04_サポート/Windows 既定アプリの設定.md';
 
 function _settingsStorageLabel() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
@@ -150,6 +150,7 @@ async function showSettingsModal(opts) {
       window.MeldexCloudMobile?.closeSidebar?.();
     }
   } catch {}
+  const _isMobile = _shouldUseSettingsMobileLayout();
   // 「公開」は各アプリ(ノート/シナリオ/シート/ボード/スマートシート)のメニューボタンから
   // ファイル単位で設定するよう移行 (showPublishSettingsModal)。設定ダイアログには置かない。
   const settingsNavigationTabs = typeof getSettingsNavigationTabs === 'function'
@@ -167,13 +168,27 @@ async function showSettingsModal(opts) {
       { id: 'ゴミ箱・データ保守', desc: 'ゴミ箱、バックアップ、内部データ', icon: 'database' },
       { id: 'フィードバック', desc: 'フィードバック、利用統計、診断', icon: 'messageSquareText' },
     ];
+  if (_isMobile && !settingsNavigationTabs.some(tab => tab.id === 'Web Clipper')) {
+    const importIndex = settingsNavigationTabs.findIndex(tab => tab.id === 'インポート');
+    settingsNavigationTabs.splice(importIndex < 0 ? settingsNavigationTabs.length : importIndex + 1, 0, {
+      id: 'Web Clipper',
+      desc: 'ブラウザの共有からページを保存',
+      icon: 'blocks',
+    });
+  }
   const settingsTabGroups = [
     { label: '設定', tabs: settingsNavigationTabs.map(tab => tab.id) },
   ];
   const settingsTabs = settingsTabGroups.flatMap(group => group.tabs);
-  const settingsTabLabel = (name) => typeof _settingsNavigationTabLabel === 'function' ? _settingsNavigationTabLabel(name) : name;
-  const settingsTabDescription = (name) => typeof _settingsNavigationDescription === 'function' ? _settingsNavigationDescription(name) : '';
-  const settingsTabIcon = (name) => typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle';
+  const settingsTabLabel = (name) => name === 'Web Clipper'
+    ? name
+    : (typeof _settingsNavigationTabLabel === 'function' ? _settingsNavigationTabLabel(name) : name);
+  const settingsTabDescription = (name) => name === 'Web Clipper'
+    ? 'ブラウザの共有からページを保存'
+    : (typeof _settingsNavigationDescription === 'function' ? _settingsNavigationDescription(name) : '');
+  const settingsTabIcon = (name) => name === 'Web Clipper'
+    ? 'blocks'
+    : (typeof _settingsNavigationIcon === 'function' ? _settingsNavigationIcon(name) : 'circle');
   const defaultSettingsTab = typeof _settingsDefaultTabId === 'function' ? _settingsDefaultTabId() : (settingsTabs[0] || '全般');
   const requestedPanel = opts.panel ? (typeof resolveSettingsNavigationTarget === 'function' ? resolveSettingsNavigationTarget(opts.panel).tabId : _settingsCanonicalPanelName(opts.panel || '')) : '';
   _settingsThemeSetDirty(false);
@@ -204,7 +219,6 @@ async function showSettingsModal(opts) {
 
   let o = document.createElement('div');
   o.className = 'settings-build-root';
-  const _isMobile = _shouldUseSettingsMobileLayout();
   const _settingsModalStyle = _settingsModalViewportStyle(_isMobile);
   o.innerHTML = `<div class="settings-content-host" style="${_settingsModalStyle}">
     <h3 id="settings-header" style="flex-shrink:0;display:flex;align-items:center;gap:8px;">
@@ -220,6 +234,7 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-sidebar-tab.active,.settings-modal .settings-sidebar-tab.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-weight:600;}
       .settings-modal .settings-sidebar-tab svg{flex:0 0 auto;}
       .settings-modal .settings-sidebar-tree-node{margin:0 0 2px;}
+      .settings-modal .settings-sidebar-subpages{padding-left:56px;}
       .settings-modal .settings-sidebar-subpage{width:100%;display:flex;align-items:center;gap:6px;margin:0 0 2px;padding:4px 8px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--fg2);font-size:12px;text-align:left;white-space:nowrap;cursor:pointer;}
       .settings-modal .settings-sidebar-subpage:hover{background:var(--bg3);color:var(--fg);}
       .settings-modal .settings-sidebar-subpage.active,.settings-modal .settings-sidebar-subpage.gb-inner-tab-active{background:var(--accent);border-color:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));font-weight:600;}
@@ -240,6 +255,7 @@ async function showSettingsModal(opts) {
       .settings-modal .settings-panel-grid > *{break-inside:avoid;margin:0 0 10px;}
       .settings-modal .settings-panel-grid .settings-section-wide{column-span:all;}
       .settings-modal #settings-cloud-link-card:empty{display:none;}
+      .settings-modal[data-settings-mobile-layout="1"] [data-settings-webclip-desktop]{display:none!important;}
       @media (max-width: 900px){
         .settings-modal .settings-panel.settings-panel-grid{column-count:1;}
       }
@@ -271,7 +287,7 @@ async function showSettingsModal(opts) {
               ${lucide(settingsTabIcon(tab.id), 14)}
               <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1;">${esc(settingsTabLabel(tab.id))}</span>
             </button>
-            <div class="settings-sidebar-subpages" style="${isParentActive ? '' : 'display:none;'}padding-left:18px;">
+            <div class="settings-sidebar-subpages" style="${isParentActive ? '' : 'display:none;'}">
               ${tab.pages.map(page => `
                 <button type="button" class="settings-sidebar-subpage${(isParentActive && page.id === tab.pages[0]?.id) ? ' active gb-inner-tab-active' : ''}"
                   data-settings-tab="${esc(tab.id)}"
@@ -340,10 +356,9 @@ async function showSettingsModal(opts) {
         </div>
       </section>
       <section class="gb-section gb-section--boxed settings-section-wide" id="settings-default-apps-section" data-settings-view="setup">
-        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('Windowsでファイルをダブルクリックした時に、Meldexの単独アプリで開くようにします。Windowsが確認を必要とする場合は、既定アプリ画面を開きます', { e2eId: 'settings-default-apps-help' })}</div>
+        <div class="gb-section-title">${lucide('fileCog',14)} ファイルを開くアプリ ${fieldHelp('画像とPDFはMeldex Viewerを候補登録できます。シナリオ・シート・ボードはMeldex本体から開きます。既存のWindows既定アプリは自動で上書きしません', { e2eId: 'settings-default-apps-help' })}</div>
         <div id="settings-default-apps-status" class="gb-section-desc">読み込み中...</div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-note" data-action="setMeldexDefaultApp" data-args='["note"]'>${lucide('fileText',14)} MarkdownをMeldex Noteにする</button>
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-default-app-viewer" data-action="setMeldexDefaultApp" data-args='["viewer"]'>${lucide('image',14)} 画像/PDFをMeldex Viewerにする</button>
         </div>
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
@@ -679,7 +694,8 @@ async function showSettingsModal(opts) {
     </div>
     <!-- 拡張機能 -->
     <div class="settings-panel" data-panel="拡張機能" hidden>
-      <section class="gb-section gb-section--boxed">
+      ${window.MeldexMobileWebClipSettings?.render?.() || ''}
+      <section class="gb-section gb-section--boxed" data-settings-view="web-clipper" data-settings-webclip-desktop="1">
         <div class="gb-section-title">${lucide('blocks',14)} Web Clipper ${fieldHelp('Webページ・画像・選択テキストをブラウザから直接Meldexに保存できます。初期保存先はホームフォルダ内の「Web Clipper」フォルダです')}</div>
         ${_webClipperDesktopSetupAvailable ? '' : '<div class="gb-section-desc" style="color:var(--fg2);">この設定はデスクトップ版用です。クラウド版では、デスクトップ版を起動してから設定してください。</div>'}
         <div id="settings-webclip-status" class="gb-section-desc">表示時に確認します...</div>
@@ -706,13 +722,13 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="settings-webclip-open-opera" data-action="openWebClipperBrowser" data-args='["opera"]'${_webClipperSetupDisabled}>${lucide('externalLink',14)} Operaで開く</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="notion-sync">
         <div class="gb-section-title"><span class="ico ico-sync"></span> Notion同期</div>
         <div id="notion-sync-settings-container">
           <div class="gb-section-desc">表示時に読み込みます…</div>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed">
+      <section class="gb-section gb-section--boxed" data-settings-view="extensions">
         <div class="gb-section-title">拡張機能 ${fieldHelp('追加機能に必要なパッケージをインストールします。すべての処理はPC上で完結し、画像がAIに学習されることはありません')}</div>
         <div id="ext-status"></div>
       </section>
@@ -831,6 +847,7 @@ async function showSettingsModal(opts) {
     return false;
   };
   dialog.modal.classList.add('modal');
+  dialog.modal.dataset.settingsMobileLayout = _isMobile ? '1' : '0';
   dialog.modal.dataset.e2eId = 'settings-dialog';
   dialog.modal.style.cssText = legacyModal?.style?.cssText || _settingsModalStyle;
   dialog.header.id = 'settings-header';
@@ -1194,7 +1211,7 @@ function _renderDefaultAppAssociations(data) {
     el.style.color = 'var(--fg2)';
     return;
   }
-  const order = ['note', 'viewer'];
+  const order = ['viewer'];
   const apps = data.apps || {};
   const lines = [];
   order.forEach(appId => {
@@ -1241,9 +1258,7 @@ async function setMeldexDefaultApp(appId, event) {
 
 function openDefaultAppsGuide() {
   closeSettingsModalRestoringTheme();
-  if (typeof openPage === 'function') {
-    openPage('Windows 既定アプリの設定', MELDEX_DEFAULT_APPS_GUIDE_PATH, { fromExplorer: true, skipAutoAppLayout: true });
-  }
+  window.MeldexPublicManual?.open?.(MELDEX_DEFAULT_APPS_GUIDE_PATH);
 }
 
 async function openSettingsTransferLocation() {
@@ -1514,11 +1529,7 @@ async function openWebClipperBrowser(browser) {
 
 function openWebClipperGuide() {
   closeSettingsModalRestoringTheme();
-  if (typeof openPage === 'function') {
-    openPage('Chrome拡張機能の設定', MELDEX_WEBCLIP_GUIDE_PATH, { fromExplorer: true, skipAutoAppLayout: true });
-    return;
-  }
-  window.open('docs/meldex-web-clipper-install-explanation-page-2026-05-09.md', '_blank', 'noopener');
+  window.MeldexPublicManual?.open?.(MELDEX_WEBCLIP_GUIDE_PATH);
 }
 
 // --- フォルダツリールート管理 ---

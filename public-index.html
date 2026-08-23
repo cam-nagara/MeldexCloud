@@ -26,7 +26,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-var fallbackVersion = 'v0.7.355 BETA';
+var fallbackVersion = 'v0.7.358 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -208,6 +208,7 @@ var fallbackVersion = 'v0.7.355 BETA';
       <a href="#philosophy">Meldexとは</a>
       <a href="#features">できること</a>
       <a href="#use">利用方法</a>
+      <a href="manual.html">マニュアル</a>
       <a href="#download">ダウンロード</a>
       <a href="#standalone-apps">単独アプリ</a>
       <a href="#support">利用上の注意</a>
@@ -219,6 +220,7 @@ var fallbackVersion = 'v0.7.355 BETA';
         <a href="#philosophy">Meldexとは</a>
         <a href="#features">できること</a>
         <a href="#use">利用方法</a>
+        <a href="manual.html">マニュアル</a>
         <a href="#download">ダウンロード</a>
         <a href="#standalone-apps">単独アプリ</a>
         <a href="#support">利用上の注意</a>
@@ -255,6 +257,7 @@ var fallbackVersion = 'v0.7.355 BETA';
         <div class="actions">
           <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
           <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+          <a class="button subtle" href="manual.html">マニュアルを読む</a>
         </div>
       </div>
       <figure class="hero-shot">
@@ -499,6 +502,7 @@ var fallbackVersion = 'v0.7.355 BETA';
             </ul>
             <div class="mode-actions">
               <a class="button primary" href="#download" data-runtime-href="desktop-download">デスクトップ版をダウンロード</a>
+              <a class="button subtle" href="manual.html">使い方を確認</a>
             </div>
           </article>
           <article class="mode-card">
@@ -510,6 +514,7 @@ var fallbackVersion = 'v0.7.355 BETA';
             </ul>
             <div class="mode-actions">
               <a class="button primary" href="Meldex.html">クラウド版を起動</a>
+              <a class="button subtle" href="manual.html">使い方を確認</a>
             </div>
           </article>
         </div>
@@ -523,11 +528,11 @@ var fallbackVersion = 'v0.7.355 BETA';
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.355 BETA / 最新</option>
+              <option value="0">v0.7.358 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.355 BETA</strong></span>
+              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.358 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -567,9 +572,9 @@ var fallbackVersion = 'v0.7.355 BETA';
     <section class="section" id="standalone-apps">
       <div class="section-inner">
         <h2>必要なツールだけを単独で使う</h2>
-        <p>ノート、シナリオ、ボード、シート、タイマー、クイックメモは、それぞれ単独でも利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadでは各ツールをホーム画面へ追加できます。</p>
+        <p>ビューワー、タイマー、クイックメモは、それぞれ単独でも利用できます。Windowsでは必要なアプリだけをダウンロードでき、スマホやiPadでは各ツールをホーム画面へ追加できます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p>
         <div id="standalone-app-grid" class="grid" aria-label="単独アプリ一覧"></div>
-        <noscript><p><a href="apps/note/">ノート</a> / <a href="apps/scenario/">シナリオ</a> / <a href="apps/board/">ボード</a> / <a href="apps/sheet/">シート</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。</p></noscript>
+        <noscript><p><a href="apps/viewer/">ビューワー</a> / <a href="apps/timer/">タイマー</a> / <a href="apps/quick-memo/">クイックメモ</a> を開けます。ノート、シナリオ、シート、ボードはMeldex本体で利用できます。</p></noscript>
         <ul class="notes">
           <li>iPhone・iPadでは、各クラウド版をSafariで開き、共有メニューの「ホーム画面に追加」を選んでください。</li>
           <li>Androidでは、各クラウド版をChromeで開き、ブラウザの「アプリをインストール」または「ホーム画面に追加」を選んでください。</li>
@@ -647,7 +652,7 @@ var fallbackVersion = 'v0.7.355 BETA';
           </article>
           <article class="item">
             <h3>サポートについて</h3>
-            <p>Meldexは個人開発のソフトウェアです。個別の質問対応、導入支援、利用環境ごとの不具合調査などのサポートは提供していません。不具合や要望は送信できますが、返信や対応を保証するものではありません。</p>
+            <p>Meldexは個人開発のソフトウェアです。<a href="manual.html">Webマニュアル</a>は、Meldexと別ウィンドウで並べて表示できます。個別の質問対応、導入支援、利用環境ごとの不具合調査などのサポートは提供していません。不具合や要望は送信できますが、返信や対応を保証するものではありません。</p>
           </article>
           <article class="item">
             <h3>LLMを利用した内容</h3>

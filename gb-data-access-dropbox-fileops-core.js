@@ -186,7 +186,7 @@
     const reserved = _productionReservedEntryProperties(path)
       .find(property => _frontmatterContainsProperty(text, property));
     if (reserved) {
-      throw new Error(`「${reserved}」列はエントリ名へ統合済みのため再作成できません`);
+      throw new Error(`「${reserved}」列はトピック名へ統合済みのため再作成できません`);
     }
   }
 

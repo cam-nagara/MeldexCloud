@@ -928,7 +928,7 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   if (!entityPath || !pane || typeof apiFetch !== 'function' || typeof renderEntityPropsGridInto !== 'function') return false;
   try {
     await pane._meldexEntityDetailController?.dispose?.();
-    pane.innerHTML = '<div class="gb-preview-entity-loading" style="padding:12px;color:var(--fg2)">エントリを読み込み中...</div>';
+    pane.innerHTML = '<div class="gb-preview-entity-loading" style="padding:12px;color:var(--fg2)">トピックを読み込み中...</div>';
     const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
     if (!data) return false;
     if (window.MeldexEntityDetail?.mount) {
@@ -1135,7 +1135,7 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     return null;
   }
   if (typeof bdAddLinkCardAt !== 'function') {
-    showStatus('リンクカード追加機能を読み込めませんでした', true);
+    showStatus('リンクトピック追加機能を読み込めませんでした', true);
     return null;
   }
   try {
@@ -1149,7 +1149,7 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     return node;
   } catch (error) {
     const detail = error?.message ? ': ' + error.message : '';
-    showStatus('リンクカード作成に失敗しました' + detail, true);
+    showStatus('リンクトピック作成に失敗しました' + detail, true);
     return null;
   }
 }

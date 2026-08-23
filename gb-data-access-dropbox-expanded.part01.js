@@ -912,7 +912,7 @@
       const fileName = candidate + '.md';
       if (!used.has(fileName.toLowerCase()) && !await _pathExists(provider, _joinPath(dbPath, fileName))) return candidate;
     }
-    throw new Error('同名エントリが多すぎます');
+    throw new Error('同名トピックが多すぎます');
   }
 
   function _entityPayloadFromParsed(path, parsed) {
@@ -1839,7 +1839,7 @@
     const names = Array.isArray(propertyNames) ? propertyNames : [propertyNames];
     const matched = names.map(name => String(name || '').trim()).find(name => reserved.includes(name));
     if (matched) {
-      throw new Error(`「${matched}」列はエントリ名へ統合済みのため、${sheet}へ再作成できません`);
+      throw new Error(`「${matched}」列はトピック名へ統合済みのため、${sheet}へ再作成できません`);
     }
   }
 

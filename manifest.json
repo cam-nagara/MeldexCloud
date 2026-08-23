@@ -79,48 +79,12 @@
   ],
   "shortcuts": [
     {
-      "name": "ノート",
-      "short_name": "ノート",
-      "url": "./apps/note/",
+      "name": "ビューワー",
+      "short_name": "ビューワー",
+      "url": "./apps/viewer/",
       "icons": [
         {
-          "src": "./MeldexNote_icon_128.png",
-          "sizes": "128x128",
-          "type": "image/png"
-        }
-      ]
-    },
-    {
-      "name": "シナリオ",
-      "short_name": "シナリオ",
-      "url": "./apps/scenario/",
-      "icons": [
-        {
-          "src": "./MeldexScenario_icon_128.png",
-          "sizes": "128x128",
-          "type": "image/png"
-        }
-      ]
-    },
-    {
-      "name": "ボード",
-      "short_name": "ボード",
-      "url": "./apps/board/",
-      "icons": [
-        {
-          "src": "./MeldexBoard_icon_128.png",
-          "sizes": "128x128",
-          "type": "image/png"
-        }
-      ]
-    },
-    {
-      "name": "シート",
-      "short_name": "シート",
-      "url": "./apps/sheet/",
-      "icons": [
-        {
-          "src": "./MeldexSheet_icon_128.png",
+          "src": "./MeldexViewer_icon_128.png",
           "sizes": "128x128",
           "type": "image/png"
         }

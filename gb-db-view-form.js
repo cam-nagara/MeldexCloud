@@ -209,7 +209,7 @@ function _buildFormEditorFields(dbPath, cfg, propTypes, refresh, ctx) {
   wrap.className = 'gb-form-fields-editor';
   const settings = document.createElement('div');
   settings.className = 'gb-form-field-editor-row gb-form-config-editor';
-  const entityNameLabel = _dbFormEditorLabel('エントリ名にするフィールド', 'gb-form-entity-name-prop');
+  const entityNameLabel = _dbFormEditorLabel('トピック名にするフィールド', 'gb-form-entity-name-prop');
   const entityNameSelect = document.createElement('select');
   entityNameSelect.id = 'gb-form-entity-name-prop';
   entityNameSelect.className = 'gb-select gb-form-select';
@@ -416,10 +416,13 @@ function _buildFormInputRow(prop, cfg, ptc) {
   } else if (type === 'date') {
     input = document.createElement('input');
     input.type = ptc.withTime ? 'datetime-local' : 'date';
-  } else if (type === 'link' || type === 'url') {
+  } else if (type === 'link' || type === 'multi-link' || type === 'url') {
     input = document.createElement('input');
     input.type = 'text';
-    input.placeholder = 'Web URL、Meldex項目、ファイル、フォルダ';
+    input.placeholder = type === 'multi-link'
+      ? '複数リンクはシート表示で1件ずつ追加できます'
+      : 'Web URL、Meldex項目、ファイル、フォルダ';
+    if (type === 'multi-link') input.readOnly = true;
   } else if (type === 'long-text') {
     input = document.createElement('textarea');
     input.rows = 4;

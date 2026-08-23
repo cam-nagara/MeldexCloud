@@ -529,7 +529,7 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
   host.appendChild(pathLabel);
   const meta = document.createElement('dl');
   [
-    ['エントリ', node.entityName],
+    ['トピック', node.entityName],
     ['親', node.parent?.label || '最上位'],
     ['子', `${node.children.length}件`],
     ...(config.orderProp ? [['並び順', String(node.order)]] : []),
@@ -544,7 +544,7 @@ function _dbTreeRenderDetails(host, node, dbPath, ctx, config) {
   host.appendChild(meta);
   const open = document.createElement('button');
   open.type = 'button';
-  open.textContent = 'エントリを開く';
+  open.textContent = 'トピックを開く';
   open.addEventListener('click', () => {
     const pathValue = _entityPath(dbPath, node.entityName, ctx?.pivotData || state.pivotData);
     if (typeof selectEntity === 'function') selectEntity(pathValue);
@@ -836,7 +836,7 @@ function renderDbTreeView(ctx) {
     const title = document.createElement('strong');
     title.textContent = '親を表す列を選択してください';
     const hint = document.createElement('span');
-    hint.textContent = '同じシート内のエントリを参照する列を使って階層を作ります。';
+    hint.textContent = '同じシート内のトピックを参照する列を使って階層を作ります。';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'primary';
@@ -926,7 +926,7 @@ function renderDbTreeView(ctx) {
     [gridLayout.labelKey, ...extraProps].forEach(propName => {
       const column = document.createElement('span');
       column.className = 'db-tree-header-cell';
-      column.textContent = propName === '__entity__' ? 'エントリ名' : propName;
+      column.textContent = propName === '__entity__' ? 'トピック名' : propName;
       header.appendChild(column);
     });
     const actions = document.createElement('span');

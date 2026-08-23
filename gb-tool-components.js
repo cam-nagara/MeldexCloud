@@ -53,6 +53,12 @@ class OutlinerComponent extends ToolComponent {
 
 // === DatabaseComponent ===
 class DatabaseComponent extends ToolComponent {
+  constructor(paneId, tabId, options) {
+    super(paneId, tabId);
+    this.options = options || {};
+    this._embeddedSheet = null;
+  }
+
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-tool-database';
@@ -60,8 +66,26 @@ class DatabaseComponent extends ToolComponent {
     return this.el;
   }
 
+  mount(container) {
+    if (this.options.embedded && window.MeldexProductionSheetEmbed?.create) {
+      this.el = document.createElement('div');
+      this.el.className = 'gb-tool-database gb-tool-database-embedded';
+      this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
+      container.appendChild(this.el);
+      this._mounted = true;
+      this._embeddedSheet = window.MeldexProductionSheetEmbed.create({ idSuffix: this.tabId });
+      this._embeddedSheet.mount(this.el);
+      return;
+    }
+    super.mount(container);
+  }
+
   activate() {
     super.activate();
+    if (this._embeddedSheet && this.state.dbPath) {
+      this._embeddedSheet.open(this.state.dbPath, { silent: true, skipViewPersistence: true });
+      return;
+    }
     if (this.state.dbPath && typeof selectDatabase === 'function') {
       selectDatabase(this.state.dbPath);
     }
@@ -73,7 +97,13 @@ class DatabaseComponent extends ToolComponent {
   }
 
   getState() {
-    return { dbPath: this.state.dbPath || _paneStateRead('dbPath', '') };
+    return { dbPath: this.state.dbPath || this._embeddedSheet?.getCurrentPath?.() || _paneStateRead('dbPath', '') };
+  }
+
+  destroy() {
+    this._embeddedSheet?.destroy?.();
+    this._embeddedSheet = null;
+    super.destroy();
   }
 
   getDetailContent() {

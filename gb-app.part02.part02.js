@@ -415,21 +415,6 @@ async function init() {
       }
     } // if (!restored) from URL params
 
-    // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
-    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
-    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
-      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
-      try {
-        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
-        if (_check && typeof _check.content === 'string') {
-          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
-          openPage('クイックスタート', _qsPath, _qsOpts);
-          localStorage.setItem('meldex-quickstart-shown', '1');
-          restored = true;
-        }
-      } catch (e) {}
-    }
-
     if (!restored && !_isDesktopStartupLaunch()) {
       const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
       if (startupFolder?.path) {

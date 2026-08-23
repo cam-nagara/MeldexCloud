@@ -12,6 +12,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     { type: 'color', label: 'カラー', icon: 'palette' },
     { type: 'date', label: '日時', icon: 'calendar' },
     { type: 'link', label: 'リンク', icon: 'externalLink' },
+    { type: 'multi-link', label: 'リンク（複数）', icon: 'link2' },
     { type: 'image', label: '画像・ファイル', icon: 'image' },
     { type: 'relation', label: 'リレーション', icon: 'link2' },
     { type: 'multi-relation', label: 'リレーション（複数）', icon: 'link2' },
@@ -36,6 +37,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
       'multi-select',
       'multi-relation',
       'multi-user',
+      'multi-link',
       'chat',
     ].includes(t.type));
   };
@@ -50,14 +52,15 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
     if (type === 'multi-select') return 'select';
     if (type === 'multi-relation') return 'relation';
     if (type === 'multi-user') return 'user';
+    if (type === 'multi-link') return 'link';
     if (type === 'chat') return 'text';
     return type || 'text';
   };
   global.getPropertyTypeMultiplicity = function getPropertyTypeMultiplicity(type) {
-    return ['multi-select', 'multi-relation', 'multi-user'].includes(type) ? 'multiple' : 'single';
+    return ['multi-select', 'multi-relation', 'multi-user', 'multi-link'].includes(type) ? 'multiple' : 'single';
   };
   global.isPropertyTypeMultiplicityBase = function isPropertyTypeMultiplicityBase(type) {
-    return ['select', 'relation', 'user'].includes(type);
+    return ['select', 'relation', 'user', 'link'].includes(type);
   };
   global.composePropertyTypeFromUi = function composePropertyTypeFromUi(baseType, multiplicity) {
     const base = global.getPropertyTypeUiBaseType(baseType);
@@ -65,6 +68,7 @@ if (typeof __loadSplitScript !== 'function') throw new Error('gb-split-loader.js
       if (base === 'select') return 'multi-select';
       if (base === 'relation') return 'multi-relation';
       if (base === 'user') return 'multi-user';
+      if (base === 'link') return 'multi-link';
     }
     return base || 'text';
   };

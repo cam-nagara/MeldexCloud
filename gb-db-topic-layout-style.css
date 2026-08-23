@@ -1,0 +1,66 @@
+.el-cell.topic-layout-edit-boundary {
+  outline: 1px dashed color-mix(in srgb, var(--el-accent, var(--accent)) 70%, transparent);
+  outline-offset: -1px;
+}
+
+.el-cell > .el-cell-content {
+  padding: var(--topic-layout-cell-padding, 6px 8px);
+}
+
+.el-cell-caption[data-caption-mode="icon-only"] {
+  justify-content: center;
+  min-height: 20px;
+}
+
+.el-cell-caption[hidden],
+.el-cell-caption-text[hidden] {
+  display: none !important;
+}
+
+.db-card-inline-editor-host {
+  min-width: 0;
+  cursor: text;
+}
+
+.db-card-inline-editor-host[data-read-only="true"] {
+  cursor: default;
+}
+
+.db-card-inline-editor-host.is-editing {
+  position: relative;
+  z-index: 2;
+}
+
+.db-card-inline-editor-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 80px;
+  padding: 2px 5px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.db-card-inline-editor-error {
+  color: var(--red, #d64545);
+  font-size: 11px;
+}
+
+.topic-layout-cell-style-popup {
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(640px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 10px;
+}
+
+.topic-layout-cell-style-controls {
+  display: grid;
+  gap: 6px;
+  margin-block: 8px;
+}
+
+.topic-layout-cell-style-controls .el-popup-row {
+  grid-template-columns: minmax(110px, 1fr) minmax(100px, 1fr);
+}

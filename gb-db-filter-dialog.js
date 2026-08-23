@@ -234,7 +234,7 @@ function _ufColumnFilterSummaryEntries(dbPath, ctx) {
   return Object.entries(filters || {}).filter(([, entry]) => Array.isArray(entry?.selected));
 }
 function _ufColumnFilterLabel(propName) {
-  return propName === '__entity__' ? 'エントリ名' : propName;
+  return propName === '__entity__' ? 'トピック名' : propName;
 }
 function _ufRenderColumnFilterList(container, dbPath, ctx) {
   if (!container) return;

@@ -203,8 +203,8 @@ function _bdDepthLineHasValue(line) {
 function _bdIsLegacyDefaultDepthStyles(styles) {
   if (!Array.isArray(styles) || styles.length !== 5) return false;
   const defaults = [
-    { fontSize: 16, fontBold: true, width: 200, bgColor: 'var(--bg4)', defaultText: 'カード' },
-    { fontSize: 14, fontBold: true, width: 170, bgColor: 'var(--bg3)', defaultText: 'サブカード' },
+    { fontSize: 16, fontBold: true, width: 200, bgColor: 'var(--bg4)', defaultText: 'トピック' },
+    { fontSize: 14, fontBold: true, width: 170, bgColor: 'var(--bg3)', defaultText: 'サブトピック' },
     { fontSize: 13, fontBold: false, width: 150, bgColor: '', defaultText: '項目' },
     { fontSize: 12, fontBold: false, width: 130, bgColor: '', defaultText: '詳細' },
     { fontSize: 11, fontBold: false, width: 120, bgColor: '', defaultText: 'メモ' },
@@ -461,7 +461,7 @@ function bdNormalizeCardStyles(styles) {
     ? styles.map(style => {
         const n = {
           id: style.id || '',
-          name: style.name || 'カード',
+          name: style.name || 'トピック',
           bgColor: style.bgColor || '',
           textColor: style.textColor || '',
           borderColor: style.borderColor || '',
@@ -986,7 +986,7 @@ function bdAddLinkCardAt(x, y, path, label, opts) {
   if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [node.id] }, 'add-link-card');
   bdSelect(node.id);
   bdDirty();
-  showStatus('リンクカードを追加: ' + (label || node.text || path));
+  showStatus('リンクトピックを追加: ' + (label || node.text || path));
   return node;
 }
 
@@ -1003,12 +1003,12 @@ async function bdPromptAddLinkCardAt(x, y) {
     return;
   }
   // フォールバック: モーダルが未ロードの場合
-  const rawPath = await cfPrompt('リンクカードのリンク先パス', '');
+  const rawPath = await cfPrompt('リンクトピックのリンク先パス', '');
   if (rawPath == null) return null;
   const path = rawPath.trim();
   if (!path) return null;
   const fallback = path.split(/[/\\]/).pop() || path;
-  const rawLabel = await cfPrompt('カード名', fallback);
+  const rawLabel = await cfPrompt('トピック名', fallback);
   if (rawLabel == null) return null;
   const label = rawLabel.trim() || fallback;
   return bdAddLinkCardAt(x, y, path, label);

@@ -348,21 +348,6 @@ async function init() {
       }
     } // if (!restored) from URL params
 
-    // 初回起動: lastView もURLパラメータも無く、過去にクイックスタートを開いた履歴が無ければ
-    // マニュアルのクイックスタートをノートとして開く（ファイルが存在する場合のみ）
-    if (!restored && !localStorage.getItem('meldex-quickstart-shown') && _homeFolderPath) {
-      const _qsPath = _homeFolderPath.replace(/[\\/]$/, '') + '/マニュアル/01_はじめに/クイックスタート.md';
-      try {
-        const _check = await apiFetch('/file?path=' + encodeURIComponent(_qsPath), { silentError: true });
-        if (_check && typeof _check.content === 'string') {
-          const _qsOpts = { fromExplorer: true, skipAutoAppLayout: true };
-          openPage('クイックスタート', _qsPath, _qsOpts);
-          localStorage.setItem('meldex-quickstart-shown', '1');
-          restored = true;
-        }
-      } catch (e) {}
-    }
-
     if (!restored && !_isDesktopStartupLaunch()) {
       const startupFolder = _startupFolderCandidate(roots, homeRes, vault);
       if (startupFolder?.path) {
@@ -898,3 +883,18 @@ async function captureScreenshot(mode) {
       if (!region) return;
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
+    const b64 = outputCanvas.toDataURL('image/png');
+    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
+    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
+    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
+    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
+    const res = await apiPost('/annotation/screenshot', {
+      data: b64,
+      target_path: screenshotFolder,
+      source_target: currentTarget,
+      mode: mode,
+      width: outputCanvas.width,
+      height: outputCanvas.height,
+    });
+    if (res.path) {
+      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();

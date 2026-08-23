@@ -828,10 +828,10 @@ async function triggerNewEntity(table, dataRows, focusCol) {
         ? await _dbRecoverEntityCreateAfterError(created.renderCtx || ctx, _db, created)
         : null;
       if (recovered) {
-        if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+        if (typeof showStatus === 'function') showStatus('トピックを追加しました');
       } else {
         if (typeof _dbRemoveCreatedEntitiesLocally === 'function') _dbRemoveCreatedEntitiesLocally(created.renderCtx || ctx, _db, [created.name]);
-        if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+        if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
       }
     }
     return;
@@ -848,7 +848,7 @@ async function triggerNewEntity(table, dataRows, focusCol) {
     if (typeof _shouldRunFrontendAutoFillOnCreate !== 'function' || _shouldRunFrontendAutoFillOnCreate(r)) {
       try { await _autoFillOnCreate(_db, createdPath, {}); } catch {}
     }
-    historyPush('エントリ追加: ' + name,
+    historyPush('トピック追加: ' + name,
       async () => {
         const result = await window.GbDbEntryIdentity.deleteEntries({
           dbPath: _db,

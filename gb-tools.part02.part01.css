@@ -941,6 +941,39 @@ input.gb-middle-ellipsis-input-active {
   opacity: 0.6;
   pointer-events: none;
 }
+/* フォルダツリーのグリッド表示。展開中の親は列全体を使い、その子階層が
+   利用可能なパネル幅に応じて再び複数列になる。 */
+#outliner-tree.tree-grid-layout,
+#tree-scroll-container.tree-grid-layout #outliner-tree {
+  --tree-grid-min-size: 88px;
+}
+#outliner-tree.tree-grid-layout:has(.tree-node-row.thumb-ready),
+#tree-scroll-container.tree-grid-layout #outliner-tree:has(.tree-node-row.thumb-ready) {
+  --tree-grid-min-size: 104px;
+}
+html.thumb-size-large #outliner-tree.tree-grid-layout:has(.tree-node-row.thumb-ready),
+html.thumb-size-large #tree-scroll-container.tree-grid-layout #outliner-tree:has(.tree-node-row.thumb-ready) {
+  --tree-grid-min-size: 120px;
+}
+#outliner-tree.tree-grid-layout,
+#tree-scroll-container.tree-grid-layout #outliner-tree,
+#outliner-tree.tree-grid-layout .tree-children:not(.collapsed),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-children:not(.collapsed) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--tree-grid-min-size, 88px), 100%), 1fr));
+  gap: 4px;
+  align-content: start;
+}
+#outliner-tree.tree-grid-layout > .tree-node:has(> .tree-children:not(.collapsed)),
+#tree-scroll-container.tree-grid-layout #outliner-tree > .tree-node:has(> .tree-children:not(.collapsed)),
+#outliner-tree.tree-grid-layout .tree-children:not(.collapsed) > .tree-node:has(> .tree-children:not(.collapsed)),
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-children:not(.collapsed) > .tree-node:has(> .tree-children:not(.collapsed)) {
+  grid-column: 1 / -1;
+}
+#outliner-tree.tree-grid-layout .tree-node,
+#tree-scroll-container.tree-grid-layout #outliner-tree .tree-node {
+  min-width: 0;
+}
 /* サムネイル行（Phase4で使用開始）向けの寸法変数を先行定義しておく（§4.1-5） */
 :root {
   --tree-row-height-thumbnail: 70px;
@@ -1241,46 +1274,6 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .sp-btn { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; background:none; border:1px solid var(--search-border); border-radius:4px; color:var(--search-muted-fg); cursor:pointer; flex-shrink:0; }
 .sp-btn:hover { background:var(--search-hover-bg); color:var(--search-fg); }
 .sp-btn-label { width:auto; padding:0 8px; font-size:12px; }
-/* フィルタトリガーボタン（#global-filter-bar内、常時表示）。クリックでdocument.body直下に
-   .gf-filter-popupを開く。絞り込み中（フィルタ有効かつ実際に対象を絞っている状態）は
-   アクセント色で視覚的に区別する（長文説明はここに置かず、title属性のみで示す）。 */
-.gf-trigger-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.gf-filter-trigger {
-  box-sizing: border-box;
-  min-height: 22px;
-  padding: 0 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--fg2);
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  appearance: none;
-}
-.gf-filter-trigger:hover,
-.gf-filter-trigger:focus-visible {
-  background: var(--search-hover-bg);
-  color: var(--search-fg);
-}
-.gf-filter-trigger.is-active {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-  color: var(--accent);
-}
-.gf-filter-trigger-icon {
-  display: inline-flex;
-  align-items: center;
-}
-
 /* フィルタポップアップ本体。document.body直下・position:fixedで生成される（共通ルール）。 */
 .gf-filter-popup {
   background: var(--ui-popup-bg, var(--ui-bg-control));
@@ -1347,7 +1340,7 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
 .gf-chip.is-active {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--ui-fg-strong);
+  color: var(--ui-accent-fg, var(--ui-fg-strong, #fff));
 }
 .gf-chip.gf-command,
 .gf-filter-toggle {
@@ -1361,8 +1354,14 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .gf-chip.is-muted {
-  color: var(--fg2);
-  opacity: 0.6;
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg3);
+}
+.gf-chip.is-active.is-muted {
+  color: var(--ui-accent-fg, var(--ui-fg-strong, #fff));
+  border-color: var(--accent);
+  background: var(--accent);
 }
 .gf-filter-popup #gf-modified-days {
   box-sizing: border-box;
@@ -1424,13 +1423,6 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
   #global-filter-bar {
     padding: 6px 8px !important;
     font-size: 14px !important;
-  }
-  .gf-filter-trigger {
-    min-height: 44px;
-    padding: 0 12px;
-    border-radius: 8px;
-    font-size: 14px;
-    touch-action: manipulation;
   }
   .gf-filter-popup {
     min-width: 240px;

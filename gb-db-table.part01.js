@@ -464,10 +464,10 @@ async function _handleNewEntryClick(ctx) {
     // タイムアウト等でも実際は作成済みのことがある。撤去前に必ず確認する
     const recovered = await _dbRecoverEntityCreateAfterError(renderCtx, dbPath, created);
     if (recovered) {
-      if (typeof showStatus === 'function') showStatus('エントリを追加しました');
+      if (typeof showStatus === 'function') showStatus('トピックを追加しました');
     } else {
       _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, [created.name]);
-      if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+      if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
     }
   }
 }
@@ -509,7 +509,7 @@ async function _handleInsertRowRelative(ctx, refEntityName, position, count) {
     try {
       createdRecords.push(_dbCreateEntityOptimistic(ctx, dbPath, { baseName: '無題', skipRender: true }));
     } catch (e) {
-      if (typeof showStatus === 'function') showStatus('エントリ作成に失敗: ' + (e?.message || e), true);
+      if (typeof showStatus === 'function') showStatus('トピック作成に失敗: ' + (e?.message || e), true);
     }
   }
   const created = createdRecords.map(item => item.name);
@@ -531,7 +531,7 @@ async function _handleInsertRowRelative(ctx, refEntityName, position, count) {
   }
   if (failed.length) {
     _dbRemoveCreatedEntitiesLocally(renderCtx, dbPath, failed);
-    if (typeof showStatus === 'function') showStatus('一部のエントリ作成に失敗しました', true);
+    if (typeof showStatus === 'function') showStatus('一部のトピック作成に失敗しました', true);
   }
   _dbScheduleEntityCreatePostSync(dbPath, createdItems, renderCtx);
 }
@@ -775,7 +775,7 @@ async function _handleTbodyClick(e) {
   const propTypes = getPropertyTypes(dbPath);
   const rawPtc = propTypes[propName];
   const ptc = rawPtc?.type ? { ...rawPtc, type: String(rawPtc.type).replace(/_/g, '-') } : rawPtc;
-  const opensInlineDropdown = ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(ptc.type);
+  const opensInlineDropdown = ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link'].includes(ptc.type);
   // セル内の特殊要素は他で処理されている。候補選択型の値は通常クリックで候補を開き、Ctrl/Shift時はセル選択に回す。
   if (target.closest('.status-dot') || target.closest('.cell-checkbox') || target.closest('.chat-prop-cell')) return;
   if (target.closest('.cell-select-val')) {

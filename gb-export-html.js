@@ -735,7 +735,7 @@ ${bodyHtml}
     const canvasEl = document.getElementById('bd-canvas');
     if (!canvasEl) { showStatus('ボードが開かれていません', true); return null; }
     const bounds = (typeof _bdExportImageBounds === 'function') ? _bdExportImageBounds() : null;
-    if (!bounds) { showStatus('ボードにカードがありません', true); return null; }
+    if (!bounds) { showStatus('ボードにトピックがありません', true); return null; }
     return exportToHtml(canvasEl, {
       title: _getViewTitle('board'),
       cssFiles: ['gb-tools.css', 'gb-ui.css'],

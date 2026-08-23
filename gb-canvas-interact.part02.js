@@ -503,7 +503,7 @@
           if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
           if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
           bdDirty();
-          showStatus(addedIds.length > 1 ? `${addedIds.length}件のカードを追加しました` : 'カードを追加しました');
+          showStatus(addedIds.length > 1 ? `${addedIds.length}件のトピックを追加しました` : 'トピックを追加しました');
         }
       } catch(err) {
         console.error('[board] meldex-node drop failed:', err);
@@ -538,7 +538,7 @@
           else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
           if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
           bdDirty();
-          showStatus('テキストカードを追加しました');
+          showStatus('テキストトピックを追加しました');
         }
       } catch {}
       return;
@@ -622,7 +622,7 @@
     Promise.all(jobs).then(results => {
       if (!dropStillTargetsCurrentBoard()) {
         cleanupAbandonedUploads(results);
-        if (typeof showStatus === 'function') showStatus('別のボードに切り替わったため、ファイルカードの追加を中止しました', true);
+        if (typeof showStatus === 'function') showStatus('別のボードに切り替わったため、ファイルトピックの追加を中止しました', true);
         return;
       }
       const nodes = results.filter(Boolean).map(item => {
@@ -683,7 +683,7 @@
           : (embeddedImages && linkedImages ? '（埋め込み/リンク混在）' : (linkedImages ? '（リンク）' : '（埋め込み）'));
         const hasFallback = results.filter(Boolean).some(item => item.linkFallback);
         const fallbackLabel = hasFallback ? '（リンク保存できなかった画像は埋め込み）' : modeLabel;
-        showStatus(nodes.length > 1 ? `${nodes.length}件の${label}カードを追加しました${fallbackLabel}` : `${label}カードを追加しました${fallbackLabel}`);
+        showStatus(nodes.length > 1 ? `${nodes.length}件の${label}トピックを追加しました${fallbackLabel}` : `${label}トピックを追加しました${fallbackLabel}`);
       }
     });
   }

@@ -344,7 +344,7 @@ function bdAddAt(x, y, text, opts) {
     let resolvedText = text;
     if (resolvedText == null || resolvedText === '') {
       const depthStyles = typeof bdEnsureDepthStyles === 'function' ? bdEnsureDepthStyles() : (bd.depthStyles || []);
-      resolvedText = depthStyles[0]?.defaultText || 'カード';
+      resolvedText = depthStyles[0]?.defaultText || 'トピック';
     }
     const n = typeof bdCreateNodeWithStyle === 'function'
       ? bdCreateNodeWithStyle(resolvedText, x, y, opts)

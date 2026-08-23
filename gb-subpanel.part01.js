@@ -113,10 +113,10 @@ const GBSubPanel = (() => {
         && GBLinkRouter.isExternalUrl(entry.path)) {
       entry.external = true;
     }
-    // 比較（compare）は「compare:pathA|pathB」という合成パスを使うため、単一ファイルの
-    // 実在確認には乗らない。実在確認は _mountCompare() 内で両ファイルそれぞれ取得を
-    // 試み、失敗時は自前のエラー表示へ切り替える。
-    if (!entry.external && entry.path && entry.type !== 'unsupported' && entry.type !== 'compare'
+    // 比較（compare）は合成パス、エントリ（entity）はSQLite上の論理.mdパスを取り得るため、
+    // 物理ファイルの実在確認には乗せない。各レンダラーが現役APIで読み込み、そこで
+    // 実在しない場合のエラーを表示する。
+    if (!entry.external && entry.path && entry.type !== 'unsupported' && entry.type !== 'compare' && entry.type !== 'entity'
         && typeof GBLinkRouter !== 'undefined' && typeof GBLinkRouter.checkAvailability === 'function') {
       entry.availability = await GBLinkRouter.checkAvailability(entry.path);
     }

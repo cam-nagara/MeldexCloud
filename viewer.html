@@ -68,6 +68,7 @@
 
 <div id="controls" class="gb-toolbar gb-toolbar-viewer">
   <button id="btn-prev" class="tb-icon-btn" title="前へ (←)" aria-label="前へ"><span class="ico ico-arrowLeft"></span></button>
+  <button id="btn-open-local-file" class="tb-icon-btn" title="画像またはPDFを開く" aria-label="画像またはPDFを開く" hidden><span class="ico ico-folderOpen"></span></button>
   <button id="btn-play" class="tb-icon-btn" title="再生/一時停止 (Space)" aria-label="再生"><span class="ico ico-play"></span></button>
   <button id="btn-next" class="tb-icon-btn" title="次へ (→)" aria-label="次へ"><span class="ico ico-arrowRight"></span></button>
   <input type="range" id="seek-bar" min="0" max="0" value="0" title="シークバー">
@@ -87,6 +88,7 @@
   <button id="btn-fullscreen" class="tb-icon-btn" title="全画面 (F)" aria-label="全画面"><span class="ico ico-maximize"></span></button>
   <button id="btn-default-apps" class="tb-icon-btn" title="既定アプリに設定" aria-label="既定アプリに設定" data-standalone-default-apps-open hidden><span class="ico ico-fileCog"></span></button>
 </div>
+<input id="viewer-local-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
 <!-- 非表示の要素（JS参照用に維持） -->
 <input type="range" id="speed" min="0.5" max="15" step="0.5" value="3" style="display:none;">
 <span id="speed-label" style="display:none;">3.0s</span>
@@ -114,6 +116,7 @@
 <script src="viewer-video.js"></script>
 <script src="viewer-audio.js"></script>
 <script src="viewer-scene.js"></script>
+<script src="viewer-cloud-file-open.js"></script>
 <script src="viewer-open-request.js"></script>
 <script src="standalone-always-on-top.js"></script>
 <script>

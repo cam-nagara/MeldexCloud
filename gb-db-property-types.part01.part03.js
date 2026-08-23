@@ -3,7 +3,7 @@
       <div class="field"><label>タイトルテンプレート ${fieldHelp('利用可能な変数: {entryName} / {entryPath} / {entryId}')}</label>
         <input id="pt-calsync-title-tmpl" type="text" value="${esc(safe.titleTemplate || '{entryName}')}" placeholder="{entryName}">
       </div>
-      <div class="field"><label>説明テンプレート ${fieldHelp('テンプレ変数に加え、エントリの採用列名も {列名} で参照できます')}</label>
+      <div class="field"><label>説明テンプレート ${fieldHelp('テンプレ変数に加え、トピックの採用列名も {列名} で参照できます')}</label>
         <textarea id="pt-calsync-desc-tmpl" rows="3" placeholder="デバッグリストエントリ: {entryPath}">${esc(safe.descriptionTemplate || '')}</textarea>
       </div>
       <div class="field"><label>色ルール (JSON 配列) ${fieldHelp('上から順に評価し、最初にマッチしたルールの color を使います。default ルールがフォールバックになります')}</label>
@@ -12,7 +12,7 @@
   { "default": "#569cd6" }
 ]'>${esc(colorRulesJson)}</textarea>
       </div>
-      <div class="field"><label>エントリ削除時の挙動</label>
+      <div class="field"><label>トピック削除時の挙動</label>
         <select id="pt-calsync-on-entry-delete">
           <option value="deleteEvent" ${(safe.onEntryDelete || 'deleteEvent') === 'deleteEvent' ? 'selected' : ''}>イベントも削除</option>
           <option value="orphan" ${safe.onEntryDelete === 'orphan' ? 'selected' : ''}>孤立マーク（残す）</option>

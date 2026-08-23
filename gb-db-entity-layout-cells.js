@@ -65,6 +65,7 @@ function _elBuildFieldCellContent(cell, ctx) {
     body.appendChild(missing);
   }
   wrap.appendChild(body);
+  globalThis.MeldexDbTopicLayoutStyle?.applyCaptionMode?.(caption, captionText, body, cell, propName || '未設定の列');
   return wrap;
 }
 
@@ -173,7 +174,7 @@ function _elBuildCellContent(cell, ctx, canvasEl) {
 /* --- セルの見た目（書式）の適用 --- */
 
 /* cell.style（openFormatPopup と同じプロパティ名で保存）をセル要素へ反映する。 */
-function _elApplyCellStyle(el, cell) {
+function _elApplyCellStyle(el, cell, ctx) {
   const s = _elIsObj(cell.style) ? cell.style : {};
   if (s.bgColor) el.style.background = s.bgColor;
   if (s.textColor) el.style.color = s.textColor;
@@ -189,6 +190,7 @@ function _elApplyCellStyle(el, cell) {
     el.style.webkitTextStroke = Number(s.textStrokeWidth) + 'px ' + (s.textStrokeColor || 'currentColor');
   }
   if (s.textAlign) el.style.textAlign = s.textAlign;
+  globalThis.MeldexDbTopicLayoutStyle?.applyCellStyle?.(el, cell, { editMode: ctx?.editMode === true });
 }
 
 /* 長文の自動フィット（要望10）: セルに収まらない場合、切り詰めずにフォントサイズを
@@ -239,7 +241,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
       return;
     }
     const snapshot = { ..._elIsObj(cell.style) ? cell.style : {} };
-    _elPersistCellPatch(ctx, cell, 'エントリレイアウト: セル書式', (target) => {
+    _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セル書式', (target) => {
       target.style = snapshot;
     });
   };
@@ -249,7 +251,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
     onReset: () => {
       if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
       if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-      _elPersistCellPatch(ctx, cell, 'エントリレイアウト: セル書式リセット', (target) => { target.style = {}; });
+      _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セル書式リセット', (target) => { target.style = {}; });
       ctx.rerender();
     },
     onChange: (prop, value) => {
@@ -263,7 +265,7 @@ function _elOpenCellFormatPopup(anchorEl, cell, ctx, cellEl) {
         cellEl.style.top = cell.y + 'px';
         cellEl.style.width = cell.w + 'px';
         cellEl.style.height = cell.h + 'px';
-        _elApplyCellStyle(cellEl, cell);
+        _elApplyCellStyle(cellEl, cell, ctx);
         _elAutoFitCellText(cellEl, cell);
       }
       if (persistTimer) clearTimeout(persistTimer);
@@ -308,7 +310,7 @@ function _elShowImageCellPopup(anchorBtn, ctx, existingCell) {
   const applyImage = (imagePatch) => {
     if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
     if (existingCell) {
-      _elPersistCellPatch(ctx, existingCell, 'エントリレイアウト: 画像変更', (target) => {
+      _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: 画像変更', (target) => {
         target.image = _elMergeImagePatch(target.image, imagePatch);
       });
     } else {
@@ -402,7 +404,7 @@ function _elShowDividerColorPopup(anchorBtn, ctx, cell) {
   if (typeof openColorPalette !== 'function') return;
   openColorPalette(anchorBtn, cell.lineColor || '', (color) => {
     if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
-    _elPersistCellPatch(ctx, cell, 'エントリレイアウト: 罫線の色', (target) => {
+    _elPersistCellPatch(ctx, cell, 'トピックレイアウト: 罫線の色', (target) => {
       if (color) target.lineColor = color;
       else delete target.lineColor;
     });
@@ -424,7 +426,47 @@ function _elOpenCellSettings(anchorBtn, cell, ctx, cellEl) {
     if (typeof _elShowChartCellPopup === 'function') _elShowChartCellPopup(anchorBtn, ctx, cell);
     return;
   }
-  _elOpenCellFormatPopup(anchorBtn, cell, ctx, cellEl);
+  if (globalThis.MeldexDbTopicLayoutStyle?.createStyleControls) {
+    _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl);
+  } else {
+    _elOpenCellFormatPopup(anchorBtn, cell, ctx, cellEl);
+  }
+}
+
+function _elShowTopicLayoutCellStylePopup(anchorBtn, cell, ctx, cellEl) {
+  _elCloseEditPopups();
+  const popup = document.createElement('div');
+  popup.className = 'gb-context-menu el-edit-popup topic-layout-cell-style-popup';
+  popup.dataset.e2eId = 'topic-layout-cell-style-popup';
+  const title = document.createElement('div');
+  title.className = 'el-popup-title';
+  title.textContent = 'セルの枠・背景・キャプション';
+  popup.appendChild(title);
+  let latest = globalThis.MeldexDbTopicLayoutStyle.normalizeCellStyleContract(cell);
+  popup.appendChild(globalThis.MeldexDbTopicLayoutStyle.createStyleControls(document, latest, (next) => {
+    latest = next;
+    Object.assign(cell, next);
+    if (cellEl?.isConnected) _elApplyCellStyle(cellEl, cell, ctx);
+    const caption = cellEl?.querySelector?.('.el-cell-caption');
+    const captionText = cellEl?.querySelector?.('.el-cell-caption-text');
+    const body = cellEl?.querySelector?.('.el-cell-body');
+    globalThis.MeldexDbTopicLayoutStyle.applyCaptionMode(caption, captionText, body, cell, cell.prop || '列');
+  }));
+  const textStyleBtn = document.createElement('button');
+  textStyleBtn.type = 'button';
+  textStyleBtn.className = 'gb-btn gb-btn-sm';
+  textStyleBtn.textContent = '文字書式を開く';
+  popup.appendChild(textStyleBtn);
+  const close = _elAttachPopupCommon(popup, anchorBtn);
+  const persist = () => {
+    _elPersistCellPatch(ctx, cell, 'トピックレイアウト: セルの見た目', (target) => {
+      target.frameStyle = latest.frameStyle;
+      target.background = latest.background;
+      target.captionMode = latest.captionMode;
+    });
+  };
+  popup.addEventListener('change', persist);
+  textStyleBtn.addEventListener('click', () => { close(); _elOpenCellFormatPopup(anchorBtn, cell, ctx, cellEl); });
 }
 
 /* --- レイアウト単位の配色テーマ（要望9） --- */
@@ -469,7 +511,7 @@ function _elShowThemePopup(anchorBtn, ctx) {
         if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
         if (!color) return;
         swatch.style.background = color;
-        ctx.persist('エントリレイアウト: 配色', token.label, (layout) => {
+        ctx.persist('トピックレイアウト: 配色', token.label, (layout) => {
           if (!_elIsObj(layout.theme)) layout.theme = {};
           layout.theme[token.key] = color;
         });
@@ -492,7 +534,7 @@ function _elShowThemePopup(anchorBtn, ctx) {
   resetBtn.addEventListener('click', () => {
     if (typeof _elCanMutateGrid === 'function' && !_elCanMutateGrid(ctx.grid, ctx.options)) return;
     close();
-    ctx.persist('エントリレイアウト: 配色リセット', '', (layout) => { layout.theme = null; });
+    ctx.persist('トピックレイアウト: 配色リセット', '', (layout) => { layout.theme = null; });
     ctx.rerender();
   });
   popup.appendChild(resetBtn);

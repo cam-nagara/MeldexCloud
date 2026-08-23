@@ -748,7 +748,7 @@ function getEntityColumnPinned(dbPath, options = {}) {
   return view ? view.entityColumnPinned !== false : true;
 }
 function setEntityColumnPinned(dbPath, on, options = {}) {
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列固定', options.detail || (on ? '固定' : '解除'), options, (v) => { v.entityColumnPinned = on !== false; });
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: トピック名列固定', options.detail || (on ? '固定' : '解除'), options, (v) => { v.entityColumnPinned = on !== false; });
 }
 // エントリ名列の表示名（未設定ならパス由来の既定名を使う）
 function getEntityColumnLabel(dbPath, options = {}) {
@@ -757,7 +757,7 @@ function getEntityColumnLabel(dbPath, options = {}) {
 }
 function setEntityColumnLabel(dbPath, label, options = {}) {
   const clean = String(label == null ? '' : label).trim();
-  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: エントリ名列名', options.detail || clean, options, (v) => {
+  _saveCurrentDbViewField(dbPath, options.label || 'シート表示: トピック名列名', options.detail || clean, options, (v) => {
     if (clean) v.entityColumnLabel = clean; else delete v.entityColumnLabel;
   });
 }

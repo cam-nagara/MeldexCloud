@@ -767,7 +767,7 @@ function renderSmartDbTable() {
   thead.innerHTML = ''; tbody.innerHTML = '';
 
   const filterProps = data.filter_properties || [];
-  const cols = ['エントリ', ...filterProps, 'シート', 'ルート', '更新日'];
+  const cols = ['トピック', ...filterProps, 'シート', 'ルート', '更新日'];
 
   // ヘッダ
   const tr = document.createElement('tr');
@@ -808,7 +808,7 @@ function renderSmartDbTable() {
     nameSpan.style.cursor = 'pointer';
     nameSpan.tabIndex = 0;
     nameSpan.setAttribute('role', 'button');
-    nameSpan.setAttribute('aria-label', 'エントリを開く: ' + (ent.name || '無題'));
+    nameSpan.setAttribute('aria-label', 'トピックを開く: ' + (ent.name || '無題'));
     nameSpan.addEventListener('click', () => selectEntity(ent.path));
     _smartDbBindKeyboardActivate(nameSpan, () => selectEntity(ent.path));
     tdName.appendChild(nameSpan);

@@ -76,7 +76,6 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
     origin: labelEl,
     showImmediately: true,
     showInTray: true,
-    showInStatus: true,
     priority: 60,
   });
   try {
@@ -787,7 +786,6 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     processed: 0,
     origin: document.getElementById('outliner-tree'),
     showInTray: true,
-    showInStatus: true,
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);

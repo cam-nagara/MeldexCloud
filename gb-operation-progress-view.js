@@ -1,11 +1,10 @@
 /* MeldexOperationProgressの共通表示。
-   開始場所、バックグラウンドトレイ、デスクトップのステータスバー要約を同じ状態から描画する。 */
+   開始場所とバックグラウンドトレイを同じ状態から描画する。 */
 (function () {
   'use strict';
 
   const originNodes = new Map();
   let tray = null;
-  let statusMirror = null;
   let liveRegion = null;
 
   function _text(value) { return String(value == null ? '' : value); }
@@ -26,7 +25,11 @@
     if (operation.status === 'partial') return '一部失敗';
     if (operation.status === 'cancelled') return '中止しました';
     if (operation.status === 'succeeded') return '完了';
-    return operation.phase || '処理中';
+    const phase = operation.phase || '処理中';
+    if (operation.mode === 'determinate' && operation.percent != null) {
+      return phase + ' ' + operation.percent + '%';
+    }
+    return phase;
   }
 
   function _detailText(operation) {
@@ -200,48 +203,6 @@
     el.hidden = false;
   }
 
-  function _ensureStatusMirror() {
-    if (statusMirror?.isConnected) return statusMirror;
-    const statusBar = document.getElementById('status-bar');
-    if (!statusBar) return null;
-    statusMirror = document.getElementById('sb-import-progress') || document.createElement('span');
-    statusMirror.id = 'sb-import-progress';
-    statusMirror.className = 'sb-import-progress meldex-operation-status-mirror';
-    statusMirror.hidden = true;
-    statusMirror.setAttribute('role', 'status');
-    if (!statusMirror.parentNode) {
-      const shortcuts = document.getElementById('sb-shortcuts');
-      statusBar.insertBefore(statusMirror, shortcuts?.parentNode === statusBar ? shortcuts : null);
-    }
-    return statusMirror;
-  }
-
-  function _renderStatus(operations) {
-    const el = _ensureStatusMirror();
-    if (!el) return;
-    const candidates = operations.filter(function (operation) { return operation.showInStatus; });
-    if (!candidates.length) {
-      el.hidden = true;
-      el.replaceChildren();
-      return;
-    }
-    const operation = candidates.find(function (op) { return op.status === 'running' || op.status === 'cancelling'; }) || candidates[0];
-    const active = operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling';
-    const label = document.createElement('span');
-    label.className = 'sb-import-progress-label';
-    label.textContent = operation.label + ': ' + _statusLabel(operation)
-      + (active && operation.percent != null ? ' ' + operation.percent + '%' : '');
-    el.replaceChildren(label);
-    if (active) el.appendChild(_createProgressBar(operation, true));
-    if (candidates.length > 1) {
-      const more = document.createElement('span');
-      more.className = 'sb-import-progress-queue';
-      more.textContent = 'ほか' + (candidates.length - 1) + '件';
-      el.appendChild(more);
-    }
-    el.hidden = false;
-  }
-
   function _clearOrigins(activeIds) {
     originNodes.forEach(function (entry, id) {
       if (activeIds.has(id)) return;
@@ -279,7 +240,6 @@
     if (!document.body) return;
     const operations = detail?.operations || window.MeldexOperationProgress.list();
     _renderTray(operations);
-    _renderStatus(operations);
     _renderOrigins(operations);
     if (detail?.operation && (detail.reason === 'failed' || detail.reason === 'partial' || detail.reason === 'succeeded')) {
       const op = detail.operation;

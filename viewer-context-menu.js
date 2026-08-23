@@ -5,6 +5,7 @@
   const Scene = () => window.MeldexViewerScene;
   const Annotations = () => window.MeldexViewerAnnotations;
   const sep = () => ({ type: 'separator' });
+  const annotationsAvailable = () => document.documentElement.dataset.viewerAnnotationCapability !== 'disabled';
 
   function items() {
     const scene = Scene();
@@ -50,8 +51,10 @@
         { label: `HUD ${scene.isHudVisible() ? 'ON' : 'OFF'}`, shortcutId: 'viewer.toggleHud', action: () => scene.toggleHud() },
         { label: '全画面', shortcutId: 'viewer.fullscreen', action: () => scene.toggleFullscreen() },
       ] },
-      sep(),
-      { label: '注釈', shortcutId: 'viewer.annotation', action: () => Annotations().toggle() },
+      ...(annotationsAvailable() ? [
+        sep(),
+        { label: '注釈', shortcutId: 'viewer.annotation', action: () => Annotations()?.toggle?.() },
+      ] : []),
       ...(window.MeldexStandaloneDefaultApps?.isAvailable?.() ? [
         sep(),
         { label: '既定アプリに設定...', action: () => window.MeldexStandaloneDefaultApps.openDialog({ source: 'menu' }) },

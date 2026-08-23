@@ -568,9 +568,9 @@ async function renderGraph(ctx) {
   if (Object.keys(entities).length === 0) {
     _disconnectGraphResizeObserver(container);
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(container, 'share2', 'データがありません', 'エントリを追加するとグラフが表示されます', ctx);
+      _dbRenderEmptyStateWithCreate(container, 'share2', 'データがありません', 'トピックを追加するとグラフが表示されます', ctx);
     } else {
-      renderEmptyState(container, 'share2', 'データがありません', 'エントリを追加するとグラフが表示されます');
+      renderEmptyState(container, 'share2', 'データがありません', 'トピックを追加するとグラフが表示されます');
     }
     return;
   }
@@ -596,7 +596,7 @@ async function renderGraph(ctx) {
   if (nodes.length === 0) {
     const empty = document.createElement('div');
     empty.style.cssText = 'height:100%;display:flex;align-items:center;justify-content:center;color:var(--fg2);font-size:14px;';
-    empty.textContent = '表示するエントリがありません';
+    empty.textContent = '表示するトピックがありません';
     graphArea.appendChild(empty);
     _observeGraphResize(container, ctx, rect);
     return;
@@ -624,7 +624,7 @@ async function renderGraph(ctx) {
       if (typeof openEntityInSplit === 'function') openEntityInSplit(entityPath, nodeName);
       else selectEntity(entityPath);
     } else if (isExt) {
-      if (typeof showStatus === 'function') showStatus('参照先エントリが見つかりません: ' + nodeName, true);
+      if (typeof showStatus === 'function') showStatus('参照先トピックが見つかりません: ' + nodeName, true);
     } else {
       const fallbackPath = _entityPath(nodeDbPath || dbPath, nodeName);
       if (typeof openEntityInSplit === 'function') openEntityInSplit(fallbackPath, nodeName);
@@ -640,7 +640,7 @@ async function renderGraph(ctx) {
     const isExt = circle.dataset.isExternal === '1';
     const entityPath = circle.dataset.entityPath;
     if (isExt && !entityPath) {
-      if (typeof showStatus === 'function') showStatus('参照先エントリが見つかりません: ' + nodeName, true);
+      if (typeof showStatus === 'function') showStatus('参照先トピックが見つかりません: ' + nodeName, true);
       return;
     }
     const resolvedPath = entityPath || _entityPath(nodeDbPath, nodeName);

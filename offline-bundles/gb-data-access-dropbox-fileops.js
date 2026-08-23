@@ -186,7 +186,7 @@
     const reserved = _productionReservedEntryProperties(path)
       .find(property => _frontmatterContainsProperty(text, property));
     if (reserved) {
-      throw new Error(`「${reserved}」列はエントリ名へ統合済みのため再作成できません`);
+      throw new Error(`「${reserved}」列はトピック名へ統合済みのため再作成できません`);
     }
   }
 
@@ -4092,7 +4092,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const oldPath = _normalizeFolderPath(body?.old_path || '');
       _rejectProductionStructureMutation(oldPath, '名前変更');
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
-        throw new Error('制作管理の管理リスト名はシート上のエントリ名から変更してください');
+        throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
       const newName = _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);

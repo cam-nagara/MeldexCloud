@@ -92,7 +92,6 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
     origin: el,
     showImmediately: true,
     showInTray: true,
-    showInStatus: true,
     priority: 60,
   });
   if (!progress) showStatus('リネームに時間がかかっています。結果を確認中…');
@@ -187,9 +186,10 @@ function flushPendingEditorAutosave() {
 
 function _noteMarkdownFromEditor(pc) {
   if (!pc) return '';
-  pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-  pc.normalize();
-  let md = htmlToMd(pc.innerHTML || '');
+  const clone = window.MeldexNoteEmbedBlock?.cloneForMarkdown?.(pc) || pc.cloneNode(true);
+  clone.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
+  clone.normalize();
+  let md = htmlToMd(clone.innerHTML || '');
   const fm = pc.dataset.frontmatter || '';
   if (fm) md = fm + md;
   return md;
@@ -253,7 +253,7 @@ function _noteMarkdownFromEditorNonDestructive(pc) {
   const revision = pc._noteEditRevision || 0;
   const cache = pc._noteEditSerializeCache;
   if (cache && cache.revision === revision) return cache.md;
-  const clone = pc.cloneNode(true);
+  const clone = window.MeldexNoteEmbedBlock?.cloneForMarkdown?.(pc) || pc.cloneNode(true);
   clone.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
   clone.normalize();
   let md = htmlToMd(clone.innerHTML || '');
@@ -370,14 +370,11 @@ async function _runNoteAutoSave(pc, expectedPath) {
   // （flushPendingEditorAutosave()からの直接呼び出しはexpectedPathを渡さず、
   // 従来どおり「今のcurrentPath」で保存する）。
   if (expectedPath !== undefined && expectedPath !== currentPath) return;
-  pc.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-  pc.normalize();
-  let md = htmlToMd(pc.innerHTML || '');
+  let md = _noteMarkdownFromEditor(pc);
   const prevSaved = pc.dataset.lastSavedMd || '';
   const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
   const fm = pc.dataset.frontmatter || '';
   const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
-  if (fm) md = fm + md;
   // 工程1項目2: 内容が保存済みbaselineと完全一致するなら何もしない（PUTを発生させない）
   if (window.MeldexNoteSaveAdapter?.isUnchanged?.(pc, md)) return;
   if (!md.trim() && !prevBody.trim() && fm === prevFm) return;
@@ -488,6 +485,37 @@ function _renderNoteConflictDiff(host, mine, other) {
   summary.style.cssText = 'font-size:12px;color:var(--ui-fg-muted);margin-top:6px;';
   grid.append(left, right);
   host.append(title, grid, summary);
+}
+
+function _captureNoteReloadSnapshot(pc, path) {
+  if (!pc || pc.dataset.path !== path) return null;
+  const frontmatter = pc.dataset.frontmatter || '';
+  const markdown = window.MeldexNoteSaveAdapter?.serialize?.(pc)
+    || frontmatter + htmlToMd(pc.innerHTML || '');
+  return {
+    markdown,
+    bodyMarkdown: frontmatter && markdown.startsWith(frontmatter)
+      ? markdown.slice(frontmatter.length)
+      : markdown,
+    frontmatter,
+    lastSavedMd: pc.dataset.lastSavedMd || '',
+    lastSavedEtag: pc.dataset.lastSavedEtag || '',
+    loadFailed: pc.dataset.loadFailed || '',
+    contentEditable: pc.contentEditable,
+  };
+}
+
+function _restoreNoteReloadSnapshot(pc, path, snapshot) {
+  if (!snapshot || !pc || pc.dataset.path !== path) return false;
+  window.MeldexNoteEmbedBlock?.disposeWithin?.(pc);
+  pc.innerHTML = mdToHtml(snapshot.bodyMarkdown, { basePath: path });
+  window.MeldexNoteEmbedBlock?.hydrate?.(pc, snapshot.markdown);
+  pc.dataset.frontmatter = snapshot.frontmatter;
+  pc.dataset.lastSavedMd = snapshot.lastSavedMd;
+  pc.dataset.lastSavedEtag = snapshot.lastSavedEtag;
+  pc.dataset.loadFailed = snapshot.loadFailed;
+  pc.contentEditable = snapshot.contentEditable;
+  return true;
 }
 
 function _showNoteConflictDialog(path, md, pc) {
@@ -639,14 +667,7 @@ function _showNoteConflictDialog(path, md, pc) {
         showStatus('自分の編集で上書き保存しました');
       } else if (action === 'reload') {
         await window.MeldexDraftRecovery?.saveDraft?.(path, md, pc?.dataset?.lastSavedMd || '');
-        const reloadSnapshot = pc && pc.dataset.path === path ? {
-          html: pc.innerHTML,
-          frontmatter: pc.dataset.frontmatter || '',
-          lastSavedMd: pc.dataset.lastSavedMd || '',
-          lastSavedEtag: pc.dataset.lastSavedEtag || '',
-          loadFailed: pc.dataset.loadFailed || '',
-          contentEditable: pc.contentEditable,
-        } : null;
+        const reloadSnapshot = _captureNoteReloadSnapshot(pc, path);
         const latest = await apiFetch('/file?path=' + encodeURIComponent(path));
         if (window.MeldexNoteSaveAdapter?.getConflictGeneration?.(path) !== conflictGeneration) {
           throw new Error('競合状態が更新されたため、再読込を中止しました');
@@ -661,14 +682,7 @@ function _showNoteConflictDialog(path, md, pc) {
         if (!opened) {
           // 描画失敗時は、取得前のローカル表示とbaselineを戻す。ドラフトは
           // 既に退避済みで、競合状態も解除していない。
-          if (reloadSnapshot && pc?.dataset?.path === path) {
-            pc.innerHTML = reloadSnapshot.html;
-            pc.dataset.frontmatter = reloadSnapshot.frontmatter;
-            pc.dataset.lastSavedMd = reloadSnapshot.lastSavedMd;
-            pc.dataset.lastSavedEtag = reloadSnapshot.lastSavedEtag;
-            pc.dataset.loadFailed = reloadSnapshot.loadFailed;
-            pc.contentEditable = reloadSnapshot.contentEditable;
-          }
+          _restoreNoteReloadSnapshot(pc, path, reloadSnapshot);
           throw new Error('最新版を読み込めませんでした');
         }
         if (pc && pc.dataset.path === path) {
@@ -940,6 +954,9 @@ async function openPage(label, path, opts) {
   // 起きない。あわせてIME合成フラグ・直列化キャッシュ・目次シグネチャも
   // 新しいノートへ持ち越さない。
   _flushNoteDraftReservation(pc, { ignoreComposing: true });
+  // 旧ノートのDOMを後でinnerHTML置換する前に、埋め込みが登録した購読・
+  // capture listener・host entryを解放する。ソースデータ自体は削除しない。
+  window.MeldexNoteEmbedBlock?.disposeWithin?.(pc);
   pc._noteComposing = false;
   pc._noteEditRevision = 0;
   pc._noteEditSerializeCache = null;
@@ -1001,6 +1018,7 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexNoteEmbedBlock?.hydrate?.(pc, raw);
     window.MeldexImageLoading?.trackAll?.(pc);
     _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();
@@ -1039,18 +1057,14 @@ async function openPage(label, path, opts) {
     const currentPath = this.dataset.path;
     if (!currentPath) return;
     if (this.dataset.loadFailed === '1') return;
-    this.querySelectorAll('mark.file-search-highlight').forEach(m => m.replaceWith(...m.childNodes));
-    this.normalize();
-    // auto-linkを除去せずhtmlToMdに渡す（htmlToMd内でMarkdownリンクに変換される）
-    let md = htmlToMd(this.innerHTML);
+    // 保存用clone上で通常Markdownと埋め込みdirectiveを直列化する。
+    const md = _noteMarkdownFromEditor(this);
     // 過去に中身があったノートを全削除した場合は空のまま保存する必要がある。
     // 初回開いて何も編集していないケースだけ保存スキップ。
     const prevSaved = this.dataset.lastSavedMd || '';
     const prevBody = prevSaved.replace(/^---\n[\s\S]*?\n---\n?/, '');
-    // フロントマターを復元
     const fm = this.dataset.frontmatter || '';
     const prevFm = (prevSaved.match(/^(---\n[\s\S]*?\n---\n?)/) || [null, ''])[1] || '';
-    if (fm) md = fm + md;
     // 工程1項目2・4: 内容が保存済みbaselineと完全一致するなら、Markdown再変換以降の
     // 処理（PUT・etag更新・履歴追加）を一切行わない。未変更の非空ノートでも
     // blurのたびにPUTが発生していた回帰の修正（計画書§5工程1-4）。

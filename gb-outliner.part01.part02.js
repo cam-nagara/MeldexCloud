@@ -494,7 +494,7 @@
     }
     if ((draggedNodes || [draggedNode]).some(node => node?._nodeData?.type === 'entity')) {
       clearDragIndicators();
-      showStatus('シートのエントリはフォルダツリー内へ移動できません');
+      showStatus('シートのトピックはフォルダツリー内へ移動できません');
       return;
     }
     // Ctrl+ドロップ: ツリー内移動を行わない（ペインで開く操作に委ねる）

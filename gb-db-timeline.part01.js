@@ -336,10 +336,10 @@ function _showTimelineCardPropsMenu(anchor, dbPath, cfg, props, ctx) {
     });
     renderTimeline(ctx);
   };
-  _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+  _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
     onToggle(checked) {
       showEntryName = checked;
-      saveCardProps('エントリ名');
+      saveCardProps('トピック名');
     },
   });
   _appendDbCardDisplayControls(menu, { cardImageThumbCount, cardPropLineCount }, (next, detail) => {
@@ -704,7 +704,7 @@ function renderTimeline(ctx) {
       ${endPropOptions}
     </select></label>
     <label>行/列軸: <select id="tl-row-prop" class="gb-select">
-      <option value="_entity" ${cfg.rowProp==='_entity'?'selected':''}>エントリ名</option>
+      <option value="_entity" ${cfg.rowProp==='_entity'?'selected':''}>トピック名</option>
       ${timelineProps.map(p => `<option value="${esc(p)}" ${cfg.rowProp===p?'selected':''}>${esc(p)}</option>`).join('')}
     </select></label>
     ${displayStartHtml}
@@ -774,11 +774,11 @@ function renderTimeline(ctx) {
     const emptyHost = document.createElement('div');
     container.appendChild(emptyHost);
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(emptyHost, 'clock', 'エントリがありません', '表示開始と表示終了を入れると、カレンダーだけを先に表示できます。', ctx);
+      _dbRenderEmptyStateWithCreate(emptyHost, 'clock', 'トピックがありません', '表示開始と表示終了を入れると、カレンダーだけを先に表示できます。', ctx);
     } else if (typeof renderEmptyState === 'function') {
-      renderEmptyState(emptyHost, 'clock', 'エントリがありません', '表示開始と表示終了を入れると、カレンダーだけを先に表示できます。');
+      renderEmptyState(emptyHost, 'clock', 'トピックがありません', '表示開始と表示終了を入れると、カレンダーだけを先に表示できます。');
     } else {
-      emptyHost.innerHTML = '<div style="padding:24px;color:var(--fg2);">エントリがありません。表示開始と表示終了を入れると、カレンダーだけを先に表示できます。</div>';
+      emptyHost.innerHTML = '<div style="padding:24px;color:var(--fg2);">トピックがありません。表示開始と表示終了を入れると、カレンダーだけを先に表示できます。</div>';
     }
     return;
   }
@@ -851,7 +851,7 @@ function renderTimeline(ctx) {
   // コーナーセル
   const corner = document.createElement('div');
   corner.className = 'tl-header-cell tl-corner';
-  const cornerLabel = isHorizontal ? (cfg.rowProp === '_entity' ? 'エントリ' : cfg.rowProp) : cfg.timeProp;
+  const cornerLabel = isHorizontal ? (cfg.rowProp === '_entity' ? 'トピック' : cfg.rowProp) : cfg.timeProp;
   if (typeof _setupTimelineHeaderCell === 'function') _setupTimelineHeaderCell(corner, cornerLabel, { dbPath, cfg, ctx, isCorner: true, kind: 'corner', axisValues: rowArr, timeValues: timeArr }, axisColors);
   else corner.textContent = cornerLabel;
   corner.style.gridRow = '1'; corner.style.gridColumn = '1';

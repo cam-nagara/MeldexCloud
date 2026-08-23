@@ -374,7 +374,9 @@
     let html = window.mdToHtml(bodyMd, { basePath: path });
     if (typeof window.applyAutoLinks === 'function') html = window.applyAutoLinks(html, path);
     host.dataset.frontmatter = frontmatter;
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(host);
     host.innerHTML = html;
+    window.MeldexNoteEmbedBlock?.hydrate?.(host, bodyMd);
     host._noteEditRevision = (host._noteEditRevision || 0) + 1;
     host._noteEditSerializeCache = null;
     host._noteTocSignature = undefined;

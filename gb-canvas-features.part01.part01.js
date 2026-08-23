@@ -935,10 +935,10 @@ function _bdAnchorAddCard(fromNid, hudPos) {
     if (typeof bdSelect === 'function') bdSelect(newNode.id);
     if (typeof bdDirty === 'function') bdDirty();
     if (typeof window.showStatus === 'function') {
-      const msg = action === 'child' ? '子カードを追加しました'
-                : action === 'between' ? '親カードとの間にカードを追加しました'
-                : action === 'sibling-before' ? '同階層カードを前に追加しました'
-                : '同階層カードを後に追加しました';
+      const msg = action === 'child' ? 'サブトピックを追加しました'
+                : action === 'between' ? '親トピックとの間にトピックを追加しました'
+                : action === 'sibling-before' ? '同階層トピックを前に追加しました'
+                : '同階層トピックを後に追加しました';
       window.showStatus(msg);
     }
     return true;

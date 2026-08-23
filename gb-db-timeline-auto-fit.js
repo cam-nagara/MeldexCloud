@@ -88,7 +88,7 @@ function autoFitTimelineColumns(ctx, dbPath, options = {}) {
     ? _timelineDisplayGroupValue(value)
     : value;
   if (!targetKey || targetKey === '__rowHeader') {
-    const rowHeader = isHorizontal ? (cfg.rowProp === '_entity' ? 'エントリ' : cfg.rowProp) : cfg.timeProp;
+    const rowHeader = isHorizontal ? (cfg.rowProp === '_entity' ? 'トピック' : cfg.rowProp) : cfg.timeProp;
     next.colWidths.__rowHeader = _timelineAutoWidthPx(rows.map(displayTimelineGroup), rowHeader);
   }
   const colTexts = new Map(cols.map(col => [_timelineColKey(col), []]));

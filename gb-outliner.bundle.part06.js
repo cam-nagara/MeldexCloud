@@ -1,4 +1,3 @@
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
   if (!toggle || toggle.dataset.expanded === undefined) return false;
   const expanded = toggle.dataset.expanded === 'true';
   if (expand === true && !expanded) { toggle.click(); return true; }
@@ -417,7 +416,6 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     processed: 0,
     origin: document.getElementById('outliner-tree'),
     showInTray: true,
-    showInStatus: true,
     priority: 40,
   });
   if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);

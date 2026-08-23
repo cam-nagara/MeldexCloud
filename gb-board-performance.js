@@ -92,7 +92,7 @@ function bdAppendFastNodeAnchors(div, node) {
   ['top', 'bottom', 'left', 'right'].forEach(pos => {
     const anchor = document.createElement('div');
     anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
+    anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
     if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
     // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
     // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
@@ -122,7 +122,7 @@ function bdAppendFastNodeAnchors(div, node) {
           bd._connOrigin = 'anchor';
           bd._connFromAnchor = (typeof _bdHudPosToAnchorName === 'function') ? _bdHudPosToAnchorName(pos) : '';
           if (typeof window.showStatus === 'function') {
-            window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+            window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
           }
           return;
         }

@@ -949,7 +949,7 @@ function _dbCellPropertyType(td, ctx) {
 
 function _dbCellUsesPickerEditor(ptc) {
   const type = String(ptc?.type || '').replace(/_/g, '-');
-  return !!ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link'].includes(type);
+  return !!ptc && ['select', 'multi-select', 'common-tags', 'relation', 'multi-relation', 'user', 'multi-user', 'link', 'multi-link'].includes(type);
 }
 
 function _dbCellHasAnyValue(td, ctx) {
@@ -977,7 +977,7 @@ function _dbOpenExistingCellValueEditorFromData(td, ctx) {
     ? _entityPath(dbPath, entityName, (ctx && ctx.pivotData) || state.pivotData)
     : `${dbPath}/${entityName}.md`;
   const type = String(ptc.type || '').replace(/_/g, '-');
-  if ((type === 'select' || type === 'multi-select' || type === 'link') && typeof startCellInlineAdd === 'function') {
+  if ((type === 'select' || type === 'multi-select' || type === 'link' || type === 'multi-link') && typeof startCellInlineAdd === 'function') {
     startCellInlineAdd(td, entityPath, entityName, propName);
     return true;
   }

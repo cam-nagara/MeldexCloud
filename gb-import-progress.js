@@ -154,7 +154,6 @@
       background: false,
       delayMs: opts.delayMs,
       showInTray: opts.showInTray !== false,
-      showInStatus: opts.showInStatus !== false,
       cancellable: !!opts.cancellable,
       cancel: opts.cancel,
       retry: opts.retry,

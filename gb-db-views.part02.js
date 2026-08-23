@@ -389,6 +389,57 @@ function _galleryDefaultCardProps(visibleProps) {
   return (visibleProps || []).slice(0, 4);
 }
 
+function _attachDbCardInlineEditor(host, options) {
+  const api = globalThis.MeldexDbCardInlineEditor;
+  if (!api?.attach || !host) return null;
+  const opts = options || {};
+  const ptc = opts.propertyConfig || {};
+  const type = String(ptc.type || 'text').replace(/_/g, '-');
+  const values = Array.isArray(opts.values) ? opts.values : [];
+  const valueRef = values[0] || { value: '', status: '採用', property: opts.propName };
+  const entityPath = _entityPath(opts.dbPath, opts.entityName);
+  const canEdit = () => {
+    const message = typeof checkColumnEditable === 'function'
+      ? checkColumnEditable(opts.dbPath, opts.propName, opts.ctx) : '';
+    if (message) { if (typeof showStatus === 'function') showStatus(message, true); return false; }
+    return !(typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(host));
+  };
+  const save = async (newValue) => {
+    const previous = valueRef.value;
+    if (valueRef.file && valueRef.candidate_index != null) {
+      await _apiPutValue(valueRef, { new_value: newValue });
+    } else {
+      const result = await _apiPostValue(entityPath, opts.propName, newValue, '採用', '');
+      valueRef.file = result?.path || result?.file || entityPath;
+      valueRef.candidate_index = result?.candidate_index;
+      if (opts.entityData) {
+        if (!Array.isArray(opts.entityData[opts.propName])) opts.entityData[opts.propName] = [];
+        if (!opts.entityData[opts.propName].includes(valueRef)) opts.entityData[opts.propName].push(valueRef);
+      }
+    }
+    valueRef.value = newValue;
+    return { previous, valueRef };
+  };
+  return api.attach(host, {
+    type, propertyConfig: ptc, propertyName: opts.propName,
+    initialValue: valueRef.value, readOnly: opts.readOnly === true, canEdit, save,
+    render: value => { host.textContent = value == null || value === '' ? '—' : String(value); },
+    rollback: oldValue => { valueRef.value = oldValue; },
+    pushUndo: ({ oldValue, newValue }) => {
+      if (typeof _dbUndoValue === 'function') {
+        _dbUndoValue(`${opts.propName}: ${oldValue} → ${newValue}`, valueRef, oldValue, newValue, undefined, undefined, { dbPath: opts.dbPath, ctx: opts.ctx });
+      }
+    },
+    onError: message => { if (typeof showStatus === 'function') showStatus('保存に失敗: ' + message, true); },
+    mountTypedEditor: root => {
+      if (typeof createTypedValueElement !== 'function') return;
+      root.replaceChildren(createTypedValueElement(valueRef, entityPath, opts.propName,
+        typeof getThumbnailSize === 'function' ? getThumbnailSize(opts.dbPath, { ctx: opts.ctx }) : 80,
+        ptc, { dbPath: opts.dbPath, ctx: opts.ctx, filter: opts.ctx?.filter, entityData: opts.entityData, entityName: opts.entityName }));
+    },
+  });
+}
+
 function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
   document.querySelectorAll('.gallery-card-props-menu').forEach(el => el.remove());
   const menu = document.createElement('div');
@@ -404,10 +455,10 @@ function _showGalleryDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
     renderGallery(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
       onToggle(checked) {
         showEntryName = checked;
-        save('エントリ名');
+        save('トピック名');
       },
     });
     if (typeof _appendDbCardDisplayControls === 'function') {
@@ -502,9 +553,9 @@ function renderGallery(ctx) {
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(container, 'image', 'エントリがありません', 'エントリを追加して開始してください', ctx);
+      _dbRenderEmptyStateWithCreate(container, 'image', 'トピックがありません', 'トピックを追加して開始してください', ctx);
     } else {
-      renderEmptyState(container, 'image', 'エントリがありません', 'エントリを追加して開始してください');
+      renderEmptyState(container, 'image', 'トピックがありません', 'トピックを追加して開始してください');
     }
     return;
   }
@@ -594,10 +645,9 @@ function renderGallery(ctx) {
         else displayVal = mv || '';
       } else {
         const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
-        if (vals.length === 0) continue;
         displayVal = vals.map(v => v.value).join(', ');
       }
-      if (!displayVal) continue;
+      if (!displayVal && metadataSource) continue;
       const propRow = document.createElement('div');
       propRow.className = 'gallery-card-prop';
       const nameSpan = document.createElement('span');
@@ -612,7 +662,12 @@ function renderGallery(ctx) {
       } else {
         valSpan.textContent = displayVal;
       }
+      if (!valSpan.textContent && !valSpan.children.length) valSpan.textContent = '—';
       propRow.appendChild(valSpan);
+      _attachDbCardInlineEditor(valSpan, {
+        dbPath, entityName, propName, propertyConfig: ptcG, values: entityData[propName] || [],
+        entityData, ctx, readOnly: !!metadataSource,
+      });
       propsDiv.appendChild(propRow);
       shown++;
     }
@@ -621,7 +676,17 @@ function renderGallery(ctx) {
     selectedImageCols.forEach(propName => {
       const vals = filterValues(entityData[propName] || [], undefined, ctx?.filter);
       const imageItems = _dbCardImageItemsFromValues(vals);
-      if (!imageItems.length) return;
+      if (!imageItems.length) {
+        const empty = document.createElement('span');
+        empty.className = 'gallery-card-image-preview';
+        empty.textContent = '画像を追加';
+        _attachDbCardInlineEditor(empty, {
+          dbPath, entityName, propName, propertyConfig: propTypes[propName] || {},
+          values: entityData[propName] || [], entityData, ctx,
+        });
+        card.appendChild(empty);
+        return;
+      }
       _appendDbCardImagePreview(card, imageItems, {
         className: 'gallery-card-image-preview',
         thumbCount: galleryCfg.cardImageThumbCount,
@@ -717,7 +782,6 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
   const propTypes = dbPath && typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath) : {};
   propNames.forEach(propName => {
     const vals = filterValues(card.data[propName] || [], undefined, ctx?.filter);
-    if (vals.length === 0) return;
     const ptc = propTypes[propName] || {};
     if (ptc?.type === 'image') {
       const imageItems = _dbCardImageItemsFromValues(vals);
@@ -727,6 +791,15 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
           propName,
           thumbCount: options.cardImageThumbCount,
         });
+      } else {
+        const empty = document.createElement('span');
+        empty.className = 'kanban-card-image-preview';
+        empty.textContent = '画像を追加';
+        _attachDbCardInlineEditor(empty, {
+          dbPath, entityName: card.name, propName, propertyConfig: ptc, values: card.data[propName] || [],
+          entityData: card.data, ctx,
+        });
+        root.appendChild(empty);
       }
       return;
     }
@@ -736,11 +809,18 @@ function _renderKanbanCardProps(root, card, propNames, ctx, options = {}) {
     nameSpan.className = 'kanban-card-prop-name';
     nameSpan.textContent = propName + ': ';
     propRow.appendChild(nameSpan);
-    if (typeof _dbRichAppendValuePreview === 'function') {
-      _dbRichAppendValuePreview(propRow, vals);
+    const valueHost = document.createElement('span');
+    valueHost.className = 'kanban-card-prop-value';
+    if (typeof _dbRichAppendValuePreview === 'function' && vals.length) {
+      _dbRichAppendValuePreview(valueHost, vals);
     } else {
-      propRow.appendChild(document.createTextNode(vals.map(v => v.value).join(', ')));
+      valueHost.textContent = vals.map(v => v.value).join(', ') || '—';
     }
+    propRow.appendChild(valueHost);
+    _attachDbCardInlineEditor(valueHost, {
+      dbPath, entityName: card.name, propName, propertyConfig: ptc, values: card.data[propName] || [],
+      entityData: card.data, ctx,
+    });
     root.appendChild(propRow);
   });
 }
@@ -760,10 +840,10 @@ function _showKanbanDisplayPropsMenu(anchor, dbPath, cfg, props, ctx) {
     renderKanban(ctx);
   };
   if (typeof _appendDbDisplayPropOption === 'function') {
-    _appendDbDisplayPropOption(menu, 'エントリ名', showEntryName, {
+    _appendDbDisplayPropOption(menu, 'トピック名', showEntryName, {
       onToggle(checked) {
         showEntryName = checked;
-        save('エントリ名');
+        save('トピック名');
       },
     });
     if (typeof _appendDbCardDisplayControls === 'function') {
@@ -878,9 +958,9 @@ function renderKanban(ctx) {
   ctx._lastEntityNames = [...entityNames];
   if (entityNames.length === 0) {
     if (typeof _dbRenderEmptyStateWithCreate === 'function') {
-      _dbRenderEmptyStateWithCreate(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください', ctx);
+      _dbRenderEmptyStateWithCreate(container, 'columns', 'トピックがありません', 'トピックを追加して開始してください', ctx);
     } else {
-      renderEmptyState(container, 'columns', 'エントリがありません', 'エントリを追加して開始してください');
+      renderEmptyState(container, 'columns', 'トピックがありません', 'トピックを追加して開始してください');
     }
     return;
   }

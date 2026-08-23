@@ -382,7 +382,7 @@ function _elShowChartCellPopup(anchorBtn, ctx, existingCell) {
     }
     close();
     if (existingCell) {
-      _elPersistCellPatch(ctx, existingCell, 'エントリレイアウト: チャート設定', (target) => {
+      _elPersistCellPatch(ctx, existingCell, 'トピックレイアウト: チャート設定', (target) => {
         target.chart = chart;
       });
       ctx.rerender();

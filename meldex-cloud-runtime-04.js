@@ -8659,7 +8659,7 @@
   // --- 個人設定（テーマなどの見た目）の保存先 ---------------------------------
   // デスクトップ版と同じ「その人自身のDropbox個人管理領域」を読み書きする。
   // どちらの環境から開いても同じ実体を見るため、片方で整えた見た目がもう片方にも届く。
-  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings']);
+  const PERSONAL_PREFERENCE_DOCUMENTS = new Set(['theme-settings', 'shortcut-settings', 'topic-layout-templates']);
 
   function _personalPreferenceKind() {
     const contract = window.MeldexSystemStorage;
@@ -23292,7 +23292,7 @@
       const fileName = candidate + '.md';
       if (!used.has(fileName.toLowerCase()) && !await _pathExists(provider, _joinPath(dbPath, fileName))) return candidate;
     }
-    throw new Error('同名エントリが多すぎます');
+    throw new Error('同名トピックが多すぎます');
   }
 
   function _entityPayloadFromParsed(path, parsed) {
@@ -24219,7 +24219,7 @@
     const names = Array.isArray(propertyNames) ? propertyNames : [propertyNames];
     const matched = names.map(name => String(name || '').trim()).find(name => reserved.includes(name));
     if (matched) {
-      throw new Error(`「${matched}」列はエントリ名へ統合済みのため、${sheet}へ再作成できません`);
+      throw new Error(`「${matched}」列はトピック名へ統合済みのため、${sheet}へ再作成できません`);
     }
   }
 
@@ -27515,7 +27515,7 @@
     const reserved = _productionReservedEntryProperties(path)
       .find(property => _frontmatterContainsProperty(text, property));
     if (reserved) {
-      throw new Error(`「${reserved}」列はエントリ名へ統合済みのため再作成できません`);
+      throw new Error(`「${reserved}」列はトピック名へ統合済みのため再作成できません`);
     }
   }
 
@@ -31421,7 +31421,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const oldPath = _normalizeFolderPath(body?.old_path || '');
       _rejectProductionStructureMutation(oldPath, '名前変更');
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(oldPath)) {
-        throw new Error('制作管理の管理リスト名はシート上のエントリ名から変更してください');
+        throw new Error('制作管理の管理リスト名はシート上のトピック名から変更してください');
       }
       const newName = _validateItemName(body?.new_name || '', 'new_name');
       const source = await _resolveEntryHandle(provider, oldPath);
@@ -36912,7 +36912,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         return 0;
       }
 
-      progress?.beginOperation?.(isAlt ? 'リンクエントリを作成中' : 'エントリとして取り込み中', validItems.length);
+      progress?.beginOperation?.(isAlt ? 'リンクトピックを作成中' : 'トピックとして取り込み中', validItems.length);
       try {
         for (const item of validItems) {
           try {
@@ -36954,8 +36954,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (typeof showStatus === 'function') {
       showStatus(
         failed > 0
-          ? `${ok}件をエントリとして${actionLabel}し、${failed}件は失敗しました${reason ? `（${reason}）` : ''}`
-          : `${ok}件を「${normSheet.split('/').pop()}」へエントリとして${actionLabel}しました`,
+          ? `${ok}件をトピックとして${actionLabel}し、${failed}件は失敗しました${reason ? `（${reason}）` : ''}`
+          : `${ok}件を「${normSheet.split('/').pop()}」へトピックとして${actionLabel}しました`,
         failed > 0 && ok === 0
       );
     }
@@ -37407,7 +37407,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
         const currentRevision = Number(frontmatter?.meldex_revision || 0);
         if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-          throw _httpError(409, 'このエントリは他の端末で更新されています');
+          throw _httpError(409, 'このトピックは他の端末で更新されています');
         }
 
         const attachments = Array.isArray(frontmatter?.entry_attachments) ? frontmatter.entry_attachments : [];
@@ -37421,7 +37421,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (deleteFile && target && target.mode !== 'link') {
           const validated = _validateAttachmentPathToDelete(target.path, entryPath, frontmatter);
           if (!validated) {
-            throw _httpError(400, 'エントリ専用の添付領域外のファイルは削除できません');
+            throw _httpError(400, 'トピック専用の添付領域外のファイルは削除できません');
           }
           normTargetToDelete = validated;
         }
@@ -37519,7 +37519,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-        throw _httpError(409, 'このエントリは他の端末で更新されています');
+        throw _httpError(409, 'このトピックは他の端末で更新されています');
       }
 
       const sheetDir = entryPath.split('/').slice(0, -1).join('/');
@@ -37708,7 +37708,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
       const { frontmatter, body: textBody } = await frontmatterLite.readFrontmatter(provider, entryPath);
       const currentRevision = Number(frontmatter?.meldex_revision || 0);
       if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
-        throw _httpError(409, 'このエントリは他の端末で更新されています');
+        throw _httpError(409, 'このトピックは他の端末で更新されています');
       }
 
       const sheetDir = entryPath.split('/').slice(0, -1).join('/');
@@ -46376,7 +46376,6 @@ document.addEventListener('DOMContentLoaded', () => {
       visible: state.visible,
       background: state.background,
       showInTray: state.showInTray,
-      showInStatus: state.showInStatus,
       origin: state.origin,
       originPlacement: state.originPlacement,
       cancellable: state.cancellable,
@@ -46569,7 +46568,6 @@ document.addEventListener('DOMContentLoaded', () => {
         visible: !!opts.showImmediately,
         background: !!opts.background,
         showInTray: opts.showInTray !== false,
-        showInStatus: opts.showInStatus !== false,
         origin: opts.origin || null,
         originPlacement: String(opts.originPlacement || 'after'),
         cancellable: !!opts.cancellable && typeof opts.cancel === 'function',
@@ -46672,13 +46670,12 @@ document.addEventListener('DOMContentLoaded', () => {
 /* === gb-operation-progress-view.js === */
 ;
 /* MeldexOperationProgressの共通表示。
-   開始場所、バックグラウンドトレイ、デスクトップのステータスバー要約を同じ状態から描画する。 */
+   開始場所とバックグラウンドトレイを同じ状態から描画する。 */
 (function () {
   'use strict';
 
   const originNodes = new Map();
   let tray = null;
-  let statusMirror = null;
   let liveRegion = null;
 
   function _text(value) { return String(value == null ? '' : value); }
@@ -46699,7 +46696,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (operation.status === 'partial') return '一部失敗';
     if (operation.status === 'cancelled') return '中止しました';
     if (operation.status === 'succeeded') return '完了';
-    return operation.phase || '処理中';
+    const phase = operation.phase || '処理中';
+    if (operation.mode === 'determinate' && operation.percent != null) {
+      return phase + ' ' + operation.percent + '%';
+    }
+    return phase;
   }
 
   function _detailText(operation) {
@@ -46873,48 +46874,6 @@ document.addEventListener('DOMContentLoaded', () => {
     el.hidden = false;
   }
 
-  function _ensureStatusMirror() {
-    if (statusMirror?.isConnected) return statusMirror;
-    const statusBar = document.getElementById('status-bar');
-    if (!statusBar) return null;
-    statusMirror = document.getElementById('sb-import-progress') || document.createElement('span');
-    statusMirror.id = 'sb-import-progress';
-    statusMirror.className = 'sb-import-progress meldex-operation-status-mirror';
-    statusMirror.hidden = true;
-    statusMirror.setAttribute('role', 'status');
-    if (!statusMirror.parentNode) {
-      const shortcuts = document.getElementById('sb-shortcuts');
-      statusBar.insertBefore(statusMirror, shortcuts?.parentNode === statusBar ? shortcuts : null);
-    }
-    return statusMirror;
-  }
-
-  function _renderStatus(operations) {
-    const el = _ensureStatusMirror();
-    if (!el) return;
-    const candidates = operations.filter(function (operation) { return operation.showInStatus; });
-    if (!candidates.length) {
-      el.hidden = true;
-      el.replaceChildren();
-      return;
-    }
-    const operation = candidates.find(function (op) { return op.status === 'running' || op.status === 'cancelling'; }) || candidates[0];
-    const active = operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling';
-    const label = document.createElement('span');
-    label.className = 'sb-import-progress-label';
-    label.textContent = operation.label + ': ' + _statusLabel(operation)
-      + (active && operation.percent != null ? ' ' + operation.percent + '%' : '');
-    el.replaceChildren(label);
-    if (active) el.appendChild(_createProgressBar(operation, true));
-    if (candidates.length > 1) {
-      const more = document.createElement('span');
-      more.className = 'sb-import-progress-queue';
-      more.textContent = 'ほか' + (candidates.length - 1) + '件';
-      el.appendChild(more);
-    }
-    el.hidden = false;
-  }
-
   function _clearOrigins(activeIds) {
     originNodes.forEach(function (entry, id) {
       if (activeIds.has(id)) return;
@@ -46952,7 +46911,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!document.body) return;
     const operations = detail?.operations || window.MeldexOperationProgress.list();
     _renderTray(operations);
-    _renderStatus(operations);
     _renderOrigins(operations);
     if (detail?.operation && (detail.reason === 'failed' || detail.reason === 'partial' || detail.reason === 'succeeded')) {
       const op = detail.operation;
@@ -47258,6 +47216,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   const EXCEPTION_CAPABILITIES = new Set(['auto_link', 'version_history']);
+  const INTEGRATED_ONLY_APPS = new Set(['note', 'scenario', 'board', 'sheet']);
   const APP_OUT_OF_SCOPE = Object.freeze({
     note: Object.freeze({
       multiple_import: 'ノートは単一文書編集を正本とし複数ファイル一括取込を扱わない',
@@ -47302,7 +47261,6 @@ document.addEventListener('DOMContentLoaded', () => {
       file_style: 'ビューワーは元ファイルの表示スタイルを編集しない',
       backlinks: 'ビューワーは参照索引を編集・表示する文書画面ではない',
       internal_link_selection: 'ビューワーは内部リンクを挿入・選択しない',
-      drag_drop: 'ビューワーはファイルを取込対象としてD&Dしない',
       clipboard: 'ビューワーは文書内容のコピー・貼り付け編集を行わない',
       multiple_import: 'ビューワーはフォルダー内媒体を閲覧し複数取込を行わない',
       dropbox_sync: '単独ビューワーはローカル媒体を表示しDropbox同期を担当しない',
@@ -47404,11 +47362,6 @@ document.addEventListener('DOMContentLoaded', () => {
     nextAction: 'Cloud版本体で開く',
     execute: route => Object.freeze({ supported: true, route }),
   });
-  _defineAdapter('route:cloud_main:viewer', {
-    strategy: 'route-to-cloud-main-viewer',
-    nextAction: 'Cloud版本体のビューワーで開く',
-    execute: route => Object.freeze({ supported: true, route }),
-  });
   _defineAdapter('route:web-open', {
     strategy: 'web-download-or-associated-app',
     nextAction: 'ダウンロードまたはWebで利用可能なアプリで開く',
@@ -47432,6 +47385,11 @@ document.addEventListener('DOMContentLoaded', () => {
     executable: false,
     strategy: 'preserve-main-version-history',
     nextAction: '同じファイルをMeldex本体で開く',
+  });
+  _defineAdapter('exception:cloud_browser_local_annotations', {
+    executable: false,
+    strategy: 'reject-transient-browser-annotation-target',
+    nextAction: 'Meldex本体またはWindows単独ビューワーで開く',
   });
   _defineAdapter('scope:viewer-read-only', {
     executable: false,
@@ -47539,17 +47497,15 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function _classificationFor(app, environment, capability) {
-    if (environment === 'cloud_standalone' && app === 'viewer') {
+    if (INTEGRATED_ONLY_APPS.has(app)
+        && (environment === 'windows_standalone' || environment === 'cloud_standalone')) {
+      const isCloud = environment === 'cloud_standalone';
       return _record(
         STATUS.out_of_scope,
-        'route:cloud_main:viewer',
-        Object.freeze({
-          environment: 'cloud_main',
-          app: 'viewer',
-          reason: 'Cloud単独ビューワーは提供せずCloud版本体のビューワーへ移送する',
-        }),
-        'Cloud単独ビューワーは製品として提供しない',
-        'Cloud版本体のビューワーで開く',
+        isCloud ? 'route:cloud_main' : 'route:desktop_main',
+        _route(environment, app, `${app}はMeldex本体の統合ツールとして開く`),
+        `${app}の単独版は新規提供せずMeldex本体へ統合する`,
+        isCloud ? 'Cloud版本体で開く' : 'デスクトップ版本体で開く',
       );
     }
     if (EXCEPTION_CAPABILITIES.has(capability)
@@ -47570,13 +47526,24 @@ document.addEventListener('DOMContentLoaded', () => {
       return _viewerReadOnlyRecord(environment, app, capability);
     }
     if (app === 'viewer'
+        && environment === 'cloud_standalone'
+        && capability === 'annotations_comments') {
+      return _record(
+        STATUS.exception,
+        'exception:cloud_browser_local_annotations',
+        null,
+        'Cloud単独ビューワーのブラウザーローカルファイルには永続的な保存先がないため注釈を保存しない',
+        '注釈が必要なファイルはMeldex本体またはWindows単独ビューワーで開く',
+      );
+    }
+    if (app === 'viewer'
         && environment === 'windows_standalone'
         && capability === 'annotations_comments') {
       return _record(
         STATUS.available,
-        'implementation:windows_standalone:annotations_comments',
+        `implementation:${environment}:annotations_comments`,
         null,
-        'Windows単独ビューワーの注釈画面とローカル注釈APIで利用可能',
+        'Windows単独ビューワーの注釈画面で利用可能',
       );
     }
     if (environment === 'windows_standalone' && STANDALONE_MAIN_ALTERNATIVES.has(capability)) {
@@ -53733,7 +53700,9 @@ if (typeof window !== 'undefined') {
     let html = window.mdToHtml(bodyMd, { basePath: path });
     if (typeof window.applyAutoLinks === 'function') html = window.applyAutoLinks(html, path);
     host.dataset.frontmatter = frontmatter;
+    window.MeldexNoteEmbedBlock?.disposeWithin?.(host);
     host.innerHTML = html;
+    window.MeldexNoteEmbedBlock?.hydrate?.(host, bodyMd);
     host._noteEditRevision = (host._noteEditRevision || 0) + 1;
     host._noteEditSerializeCache = null;
     host._noteTocSignature = undefined;

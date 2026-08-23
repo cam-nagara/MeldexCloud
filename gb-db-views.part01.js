@@ -469,7 +469,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   const statusOn = typeof getStatusEnabled === 'function' ? getStatusEnabled(dbPath) : cfg.statusEnabled === true;
     const defaultPanel = cfg.defaultPanel === 'float' || cfg.defaultPanel === 'sidebar'
       ? 'right-sidebar'
-      : (cfg.defaultPanel || 'main');
+      : (cfg.defaultPanel || 'right-sidebar');
 
   if (!globalThis.GBUI?.createModal) throw new Error('シート設定を初期化できませんでした');
   const existingDialog = document.querySelector('[data-e2e-id="db-config-dialog"]');
@@ -478,7 +478,7 @@ async function _showDbConfigModal(dbPath, ctx) {
   content.className = 'db-config-modal-body';
   content.innerHTML = `
       <div class="field">
-        <label>エントリ名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はエントリ名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
+        <label>トピック名テンプレート ${fieldHelp(`列名を {列名} の形で囲むと、採用値で自動置換されます。空の場合はトピック名の自動生成を行いません。使用可能: ${propHints || '(列なし)'}`, { e2eId: 'db-entry-name-template-help' })}</label>
         <input id="dbcfg-name-template" type="text" value="${esc(nameTemplate)}" placeholder="例: {キャラ}_{年齢}">
       </div>
       <div class="field" style="margin-top:8px;">
@@ -490,7 +490,7 @@ async function _showDbConfigModal(dbPath, ctx) {
         <label>表示設定</label>
         <div class="dbcfg-display-grid">
           <label class="dbcfg-check-row"><input id="dbcfg-show-footer" type="checkbox"${showFooter ? ' checked' : ''}> 集計行を表示</label>
-          <label class="dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> エントリ名列を固定</label>
+          <label class="dbcfg-check-row"><input id="dbcfg-entity-pinned" type="checkbox"${entityPinned ? ' checked' : ''}> トピック名列を固定</label>
           <label class="dbcfg-check-row"><input id="dbcfg-status-enabled" type="checkbox"${statusOn ? ' checked' : ''}> ステータス機能</label>
           <label class="dbcfg-inline-field">サムネイル
             <select id="dbcfg-thumbnail-size">
@@ -498,7 +498,7 @@ async function _showDbConfigModal(dbPath, ctx) {
               <option value="large"${thumbnailSize === 'large' ? ' selected' : ''}>大</option>
             </select>
           </label>
-          <div class="dbcfg-inline-field">エントリの開き方 ${fieldHelp('エントリ名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
+          <div class="dbcfg-inline-field">トピックの開き方 ${fieldHelp('トピック名の横のボタンで開く先を指定します', { e2eId: 'db-entry-open-mode-help' })}
             <select id="dbcfg-default-panel">
               <option value="main"${defaultPanel === 'main' ? ' selected' : ''}>メインパネル</option>
               <option value="right-sidebar"${defaultPanel === 'right-sidebar' ? ' selected' : ''}>右サイドバー</option>
@@ -511,7 +511,7 @@ async function _showDbConfigModal(dbPath, ctx) {
         </div>
       </div>
       <div class="field" style="margin-top:8px;">
-        <label>依存エントリ作成時のコピー対象</label>
+        <label>依存トピック作成時のコピー対象</label>
         <div id="dbcfg-copy-props" style="max-height:120px;overflow-y:auto;font-size:12px;"></div>
       </div>
       <div class="field" style="margin-top:8px;">
@@ -696,7 +696,7 @@ async function _showDbConfigModal(dbPath, ctx) {
     viewSettingsTarget.entityColumnPinned = o.querySelector('#dbcfg-entity-pinned')?.checked !== false;
     viewSettingsTarget.thumbnailSize = o.querySelector('#dbcfg-thumbnail-size')?.value || 'small';
     c.statusEnabled = !!o.querySelector('#dbcfg-status-enabled')?.checked;
-    c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'main';
+    c.defaultPanel = o.querySelector('#dbcfg-default-panel')?.value || 'right-sidebar';
     // ステータス一覧の保存
     const statusList = [];
     const statusRenameMap = new Map();

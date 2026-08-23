@@ -190,6 +190,4890 @@
 
 ;
 
+/* === gb-topic-live-bridge.js === */
+;
+/* Thin, non-blocking bridge from legacy Sheet paths to the unified Topic store. */
+(function initMeldexTopicLiveBridge(global) {
+  'use strict';
+
+  if (global.GbTopicLiveBridge) return;
+
+  const DEFAULT_DEBOUNCE_MS = 450;
+  const ROOT_CACHE_MS = 10000;
+  const inflight = new Map();
+  const saveTimers = new Map();
+  const ownerStates = new WeakMap();
+  let rootsCache = null;
+  let rootsLoadedAt = 0;
+  let generation = 0;
+
+  function normalizePath(value) {
+    return String(value || '').trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/\/$/, '');
+  }
+
+  function safeRelative(value) {
+    const relative = normalizePath(value).replace(/^\/+/, '');
+    const parts = relative.split('/').filter(Boolean);
+    if (!parts.length || parts.some((part) => part === '.' || part === '..' || part.includes('\0'))) return '';
+    return parts.join('/');
+  }
+
+  function rootItems(value) {
+    if (Array.isArray(value)) return value;
+    return Array.isArray(value?.roots) ? value.roots : [];
+  }
+
+  async function registeredRoots(force) {
+    const now = Date.now();
+    if (!force && rootsCache && now - rootsLoadedAt < ROOT_CACHE_MS) return rootsCache;
+    if (typeof global.apiFetch !== 'function') return [];
+    const loaded = rootItems(await global.apiFetch('/outliner-roots', { silentError: true }));
+    rootsCache = loaded.filter((root) => root && root.visible !== false && root.deleted !== true);
+    rootsLoadedAt = now;
+    return rootsCache;
+  }
+
+  function sourceIdOf(root) {
+    return String(root?.sourceId || root?.id || '').trim();
+  }
+
+  function rootLocalPath(root) {
+    const candidates = [root?.localPath, root?.path];
+    for (const value of candidates) {
+      const normalized = normalizePath(value);
+      if (/^[a-z]:\//i.test(normalized) || normalized.startsWith('//') || normalized.startsWith('/')) return normalized;
+    }
+    return '';
+  }
+
+  function isBelow(path, root) {
+    const foldedPath = path.toLocaleLowerCase();
+    const foldedRoot = root.toLocaleLowerCase();
+    return foldedPath === foldedRoot || foldedPath.startsWith(foldedRoot + '/');
+  }
+
+  async function resolveRegisteredPath(dbPath, options) {
+    const rawPath = normalizePath(dbPath);
+    if (!rawPath) return null;
+    let roots;
+    try {
+      roots = await registeredRoots(options?.refreshRoots === true);
+    } catch (_) {
+      return null;
+    }
+    const registry = global.MeldexSourceFolderRegistry;
+    const parsed = registry?.parseSourcePath?.(rawPath);
+    if (parsed?.sourceId) {
+      const sourceId = String(parsed.sourceId).trim();
+      const registered = roots.some((root) => sourceIdOf(root) === sourceId);
+      const relativePath = safeRelative(parsed.relativePath);
+      return registered && relativePath ? { sourceId, relativePath, dbPath: rawPath } : null;
+    }
+    const matches = roots.map((root) => ({ root, sourceId: sourceIdOf(root), path: rootLocalPath(root) }))
+      .filter((entry) => entry.sourceId && entry.path && isBelow(rawPath, entry.path))
+      .sort((left, right) => right.path.length - left.path.length);
+    if (!matches.length) return null;
+    const match = matches[0];
+    const relativePath = safeRelative(rawPath.slice(match.path.length));
+    return relativePath ? { sourceId: match.sourceId, relativePath, dbPath: rawPath } : null;
+  }
+
+  function ownerActive(owner, expectedPath) {
+    if (!owner || typeof owner !== 'object') return true;
+    const state = ownerStates.get(owner);
+    if (state?.destroyed || owner.destroyed) return false;
+    return !owner.dbPath || normalizePath(owner.dbPath) === normalizePath(expectedPath);
+  }
+
+  function statusOf(error) {
+    return Number(error?.status || error?.response?.status || error?.payload?.status || 0);
+  }
+
+  async function requestMigration(target, previewOnly) {
+    const key = `${target.sourceId}\n${target.relativePath}\n${previewOnly ? 'preview' : 'commit'}`;
+    if (inflight.has(key)) return inflight.get(key);
+    const request = global.apiPost('/topic-migrations/open', {
+      sourceId: target.sourceId,
+      relativePath: target.relativePath,
+      ...(previewOnly ? { migrationPreview: true } : {}),
+    }, { silentError: true }).finally(() => {
+      if (inflight.get(key) === request) inflight.delete(key);
+    });
+    inflight.set(key, request);
+    return request;
+  }
+
+  async function migrateTarget(target, options) {
+    if (typeof global.apiPost !== 'function') return { ok: false, status: 'offline', target };
+    const previewOnly = options?.readOnly === true || options?.previewOnly === true;
+    try {
+      const response = await requestMigration(target, previewOnly);
+      return { ok: true, mode: previewOnly ? 'preview' : 'commit', response, target };
+    } catch (error) {
+      if (!previewOnly && statusOf(error) === 403) {
+        try {
+          const response = await requestMigration(target, true);
+          return { ok: true, mode: 'preview', response, target };
+        } catch (previewError) {
+          return { ok: false, status: 'fallback', error: previewError, target };
+        }
+      }
+      return { ok: false, status: statusOf(error) === 0 ? 'offline' : 'fallback', error, target };
+    }
+  }
+
+  function recordsFrom(result) {
+    const response = result?.response || {};
+    if (Array.isArray(response?.preview?.topicRecords)) return response.preview.topicRecords;
+    const states = response?.migration?.topicStates;
+    return states && typeof states === 'object'
+      ? Object.values(states).map((state) => state?.record).filter(Boolean)
+      : [];
+  }
+
+  function viewDocumentFrom(result) {
+    return result?.response?.preview?.viewDocument || result?.response?.migration?.viewDocument || null;
+  }
+
+  function publish(result, reason) {
+    const records = recordsFrom(result);
+    const legacyNodeTopicIds = {};
+    records.forEach((record) => {
+      const legacyNodeId = String(record?.legacyNodeId || '').trim();
+      if (legacyNodeId && record?.topicId) legacyNodeTopicIds[legacyNodeId] = String(record.topicId);
+    });
+    const detail = {
+      sourceId: result.target.sourceId,
+      relativePath: result.target.relativePath,
+      dbPath: result.target.dbPath,
+      mode: result.mode,
+      reason: reason || 'open',
+      topicRecords: records,
+      viewDocument: viewDocumentFrom(result),
+      legacyNodeTopicIds,
+    };
+    if (typeof global.dispatchEvent === 'function') {
+      const event = typeof global.CustomEvent === 'function'
+        ? new global.CustomEvent('meldex:topic-records-updated', { detail })
+        : { type: 'meldex:topic-records-updated', detail };
+      global.dispatchEvent(event);
+    }
+    return detail;
+  }
+
+  async function migrateOpenedSheet(dbPath, options) {
+    const owner = options?.owner;
+    const startedGeneration = generation;
+    if (!ownerActive(owner, dbPath)) return { ok: false, status: 'destroyed' };
+    const target = await resolveRegisteredPath(dbPath, options);
+    if (!target) return { ok: false, status: 'unregistered' };
+    const result = await migrateTarget(target, options);
+    if (startedGeneration !== generation || !ownerActive(owner, dbPath)) {
+      return { ok: false, status: 'destroyed', target };
+    }
+    if (result.ok) result.detail = publish(result, options?.reason);
+    return result;
+  }
+
+  function scheduleAfterSave(dbPath, options) {
+    const key = normalizePath(dbPath);
+    if (!key) return null;
+    const previous = saveTimers.get(key);
+    if (previous) clearTimeout(previous.timer);
+    const owner = options?.owner;
+    const delay = Number.isFinite(options?.debounceMs) ? Math.max(0, options.debounceMs) : DEFAULT_DEBOUNCE_MS;
+    const timer = setTimeout(() => {
+      saveTimers.delete(key);
+      if (!ownerActive(owner, dbPath)) return;
+      void migrateOpenedSheet(dbPath, { ...options, reason: 'save', refreshRoots: false });
+    }, delay);
+    saveTimers.set(key, { timer, owner });
+    return timer;
+  }
+
+  function destroyOwner(owner) {
+    if (!owner || typeof owner !== 'object') return;
+    ownerStates.set(owner, { destroyed: true });
+    for (const [key, pending] of saveTimers.entries()) {
+      if (pending.owner !== owner) continue;
+      clearTimeout(pending.timer);
+      saveTimers.delete(key);
+    }
+  }
+
+  function destroy() {
+    generation += 1;
+    for (const pending of saveTimers.values()) clearTimeout(pending.timer);
+    saveTimers.clear();
+    inflight.clear();
+    rootsCache = null;
+    rootsLoadedAt = 0;
+  }
+
+  global.GbTopicLiveBridge = Object.freeze({
+    resolveRegisteredPath,
+    migrateOpenedSheet,
+    scheduleAfterSave,
+    destroyOwner,
+    clearRootsCache() { rootsCache = null; rootsLoadedAt = 0; },
+    destroy,
+  });
+})(window);
+
+;
+
+/* === gb-topic-contract.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicContract = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  class ContractValidationError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = 'ContractValidationError';
+    }
+  }
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function object(value, path) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new ContractValidationError(`${path} must be an object`);
+    }
+    return value;
+  }
+
+  function array(value, path) {
+    if (!Array.isArray(value)) throw new ContractValidationError(`${path} must be an array`);
+    return value;
+  }
+
+  function string(value, path, nonempty) {
+    if (typeof value !== 'string' || (nonempty && !value.trim())) {
+      throw new ContractValidationError(`${path} must be${nonempty ? ' a non-empty string' : ' a string'}`);
+    }
+    return value;
+  }
+
+  function revision(value, path, allowNull) {
+    if (allowNull && value === null) return null;
+    if ((Number.isInteger(value) && value >= 0) || (typeof value === 'string' && value.trim())) return value;
+    throw new ContractValidationError(`${path} must be a non-negative integer or opaque string`);
+  }
+
+  function normalizeTopicRef(value) {
+    const source = object(value, 'TopicRef');
+    return Object.assign(clone(source), {
+      sourceId: string(source.sourceId, 'TopicRef.sourceId', true),
+      topicId: string(source.topicId, 'TopicRef.topicId', true),
+    });
+  }
+
+  function topicRefKey(value) {
+    const ref = normalizeTopicRef(value);
+    return JSON.stringify([ref.sourceId, ref.topicId]);
+  }
+
+  function normalizeTopicRecord(value) {
+    const source = object(value, 'TopicRecord');
+    const result = clone(source);
+    result.topicId = string(source.topicId, 'TopicRecord.topicId', true);
+    result.title = string(source.title, 'TopicRecord.title', false);
+    result.properties = clone(object(source.properties === undefined ? {} : source.properties, 'TopicRecord.properties'));
+    result.note = clone(source.note);
+    result.resources = clone(array(source.resources === undefined ? [] : source.resources, 'TopicRecord.resources'));
+    result.revision = revision(source.revision === undefined ? 0 : source.revision, 'TopicRecord.revision', false);
+    result.schemaVersion = revision(source.schemaVersion === undefined ? 1 : source.schemaVersion, 'TopicRecord.schemaVersion', false);
+    for (const field of ['createdAt', 'updatedAt', 'updatedBy']) result[field] = clone(source[field]);
+    return result;
+  }
+
+  function normalizeRelationSet(value) {
+    const source = object(value, 'RelationSet');
+    const result = clone(source);
+    result.relationSetId = string(source.relationSetId, 'RelationSet.relationSetId', true);
+    result.name = string(source.name, 'RelationSet.name', false);
+    result.constraint = source.constraint === undefined ? 'single-parent' : source.constraint;
+    if (result.constraint !== 'single-parent') {
+      throw new ContractValidationError('RelationSet.constraint must be single-parent');
+    }
+    result.edges = array(source.edges === undefined ? [] : source.edges, 'RelationSet.edges').map((edge, index) => {
+      const item = object(edge, `RelationSet.edges[${index}]`);
+      return Object.assign(clone(item), {
+        parentTopicRef: normalizeTopicRef(item.parentTopicRef),
+        childTopicRef: normalizeTopicRef(item.childTopicRef),
+      });
+    });
+    result.revision = revision(source.revision === undefined ? 0 : source.revision, 'RelationSet.revision', false);
+    result.schemaVersion = revision(source.schemaVersion === undefined ? 1 : source.schemaVersion, 'RelationSet.schemaVersion', false);
+    validateRelationGraph(result.edges);
+    return result;
+  }
+
+  function validateRelationGraph(edges) {
+    const parents = new Map();
+    for (const edge of edges) {
+      const parent = topicRefKey(edge.parentTopicRef);
+      const child = topicRefKey(edge.childTopicRef);
+      if (parent === child) throw new ContractValidationError('RelationSet cannot contain a self-reference');
+      if (parents.has(child) && parents.get(child) !== parent) {
+        throw new ContractValidationError('RelationSet single-parent constraint was violated');
+      }
+      parents.set(child, parent);
+    }
+    const resolved = new Set();
+    for (const start of parents.keys()) {
+      const path = new Set();
+      let node = start;
+      while (parents.has(node) && !resolved.has(node)) {
+        if (path.has(node)) throw new ContractValidationError('RelationSet cannot contain a cycle');
+        path.add(node);
+        node = parents.get(node);
+      }
+      for (const item of path) resolved.add(item);
+    }
+  }
+
+  function normalizeMembership(value) {
+    const source = object(value, 'TopicViewDocument.membership');
+    const result = clone(source);
+    if (!['manual', 'query', 'hybrid'].includes(source.mode)) {
+      throw new ContractValidationError('TopicViewDocument.membership.mode is invalid');
+    }
+    result.mode = source.mode;
+    result.manualTopicRefs = array(source.manualTopicRefs === undefined ? [] : source.manualTopicRefs,
+      'TopicViewDocument.membership.manualTopicRefs').map(normalizeTopicRef);
+    if (['query', 'hybrid'].includes(source.mode)) {
+      result.queryDefinition = clone(object(source.queryDefinition, 'TopicViewDocument.membership.queryDefinition'));
+    } else {
+      result.queryDefinition = clone(source.queryDefinition);
+    }
+    return result;
+  }
+
+  function normalizeTopicViewDocument(value) {
+    const source = object(value, 'TopicViewDocument');
+    const result = clone(source);
+    result.documentId = string(source.documentId, 'TopicViewDocument.documentId', true);
+    result.schemaVersion = revision(source.schemaVersion === undefined ? 1 : source.schemaVersion,
+      'TopicViewDocument.schemaVersion', false);
+    if (!['sheet', 'board'].includes(source.defaultSurface)) {
+      throw new ContractValidationError('TopicViewDocument.defaultSurface must be sheet or board');
+    }
+    result.defaultSurface = source.defaultSurface;
+    result.membership = normalizeMembership(source.membership);
+    for (const field of ['sheetViews', 'boardViews', 'topicLayouts']) {
+      result[field] = clone(array(source[field] === undefined ? [] : source[field], `TopicViewDocument.${field}`));
+    }
+    result.relationSets = array(source.relationSets === undefined ? [] : source.relationSets,
+      'TopicViewDocument.relationSets').map(normalizeRelationSet);
+    result.lastCompleteSnapshot = clone(source.lastCompleteSnapshot);
+    return result;
+  }
+
+  function normalizeMutation(value) {
+    const source = object(value, 'mutation');
+    if (!Object.prototype.hasOwnProperty.call(source, 'baseRevision')) {
+      throw new ContractValidationError('mutation.baseRevision is required');
+    }
+    const result = clone(source);
+    result.mutationId = string(source.mutationId, 'mutation.mutationId', true);
+    result.baseRevision = revision(source.baseRevision, 'mutation.baseRevision', true);
+    result.changes = clone(object(source.changes, 'mutation.changes'));
+    if (source.topicRef !== undefined) result.topicRef = normalizeTopicRef(source.topicRef);
+    return result;
+  }
+
+  function sourceRecordPath(topicId) {
+    string(topicId, 'topicId', true);
+    return `_meldex/topics/v1/records/${encodeURIComponent(topicId)}.json`;
+  }
+
+  return Object.freeze({
+    ContractValidationError,
+    clone,
+    normalizeMutation,
+    normalizeRelationSet,
+    normalizeTopicRecord,
+    normalizeTopicRef,
+    normalizeTopicViewDocument,
+    sourceRecordPath,
+    topicRefKey,
+    validateMutation: normalizeMutation,
+    validateRelationSet: normalizeRelationSet,
+    validateTopicRecord: normalizeTopicRecord,
+    validateTopicRef: normalizeTopicRef,
+    validateTopicViewDocument: normalizeTopicViewDocument,
+  });
+});
+
+;
+
+/* === gb-topic-indexeddb.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const contract = root && root.MeldexTopicContract
+    ? root.MeldexTopicContract
+    : (typeof require === 'function' ? require('./gb-topic-contract.js') : null);
+  const api = factory(contract, root);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicIndexedDB = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (contract, root) {
+  'use strict';
+
+  if (!contract) throw new Error('gb-topic-contract.js が読み込まれていません');
+  const DB_NAME = 'meldex-topic-index-v1';
+  const DB_VERSION = 1;
+  const STORES = ['topics', 'outbox', 'receipts', 'documentMappings', 'checkpoints'];
+
+  function clone(value) { return contract.clone(value); }
+  function refKey(ref) { return contract.topicRefKey(ref); }
+  function documentKey(sourceId, documentId) { return JSON.stringify([String(sourceId), String(documentId)]); }
+  function nowIso(now) { return new Date(now()).toISOString(); }
+
+  function createMemoryBackend() {
+    const stores = Object.fromEntries(STORES.map(name => [name, new Map()]));
+    return {
+      async get(store, key) { return clone(stores[store].get(key) || null); },
+      async put(store, row) { stores[store].set(row.id, clone(row)); },
+      async delete(store, key) { return stores[store].delete(key); },
+      async all(store) { return Array.from(stores[store].values(), clone); },
+      async transaction(storeNames, action) {
+        const names = Array.from(new Set(storeNames));
+        const snapshots = Object.fromEntries(names.map(name => [name, new Map(
+          Array.from(stores[name].entries(), ([key, value]) => [key, clone(value)]),
+        )]));
+        const tx = {
+          async get(store, key) { return clone(stores[store].get(key) || null); },
+          async put(store, row) { stores[store].set(row.id, clone(row)); },
+          async delete(store, key) { return stores[store].delete(key); },
+          async all(store) { return Array.from(stores[store].values(), clone); },
+        };
+        try {
+          return clone(await action(tx));
+        } catch (error) {
+          for (const name of names) stores[name] = snapshots[name];
+          throw error;
+        }
+      },
+      async clear() { for (const store of Object.values(stores)) store.clear(); },
+      _stores: stores,
+    };
+  }
+
+  function createIndexedDbBackend(indexedDb) {
+    let dbPromise = null;
+    function open() {
+      if (dbPromise) return dbPromise;
+      dbPromise = new Promise((resolve, reject) => {
+        if (!indexedDb) return reject(new Error('この端末ではトピック索引を利用できません'));
+        const request = indexedDb.open(DB_NAME, DB_VERSION);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          for (const name of STORES) {
+            if (db.objectStoreNames.contains(name)) continue;
+            const store = db.createObjectStore(name, { keyPath: 'id' });
+            if (name === 'topics') {
+              store.createIndex('sourceId', 'sourceId');
+              store.createIndex('titleLower', 'titleLower');
+            }
+          }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('トピック索引を開けませんでした'));
+      });
+      return dbPromise;
+    }
+    async function request(storeName, mode, action) {
+      const db = await open();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, mode);
+        let pending;
+        try { pending = action(tx.objectStore(storeName)); } catch (error) { reject(error); return; }
+        tx.oncomplete = () => resolve(pending && pending.result);
+        tx.onerror = () => reject(tx.error || (pending && pending.error) || new Error('トピック索引の操作に失敗しました'));
+        tx.onabort = () => reject(tx.error || new Error('トピック索引の操作を中断しました'));
+      });
+    }
+    async function transaction(storeNames, action) {
+      const db = await open();
+      const names = Array.from(new Set(storeNames));
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(names, 'readwrite');
+        let actionResult;
+        let actionError = null;
+        const run = (store, method, ...args) => new Promise((yes, no) => {
+          let pending;
+          try { pending = tx.objectStore(store)[method](...args); } catch (error) { no(error); return; }
+          pending.onsuccess = () => yes(pending.result);
+          pending.onerror = () => no(pending.error || new Error('トピック索引の操作に失敗しました'));
+        });
+        const api = {
+          get: (store, key) => run(store, 'get', key).then(value => value || null),
+          put: (store, row) => run(store, 'put', row).then(() => undefined),
+          delete: (store, key) => run(store, 'delete', key).then(() => true),
+          all: store => run(store, 'getAll').then(value => value || []),
+        };
+        Promise.resolve().then(() => action(api)).then(value => {
+          actionResult = value;
+        }).catch(error => {
+          actionError = error;
+          try { tx.abort(); } catch (_) { reject(error); }
+        });
+        tx.oncomplete = () => resolve(clone(actionResult));
+        tx.onerror = () => reject(actionError || tx.error || new Error('トピック索引の操作に失敗しました'));
+        tx.onabort = () => reject(actionError || tx.error || new Error('トピック索引の操作を中断しました'));
+      });
+    }
+    return {
+      get: (store, key) => request(store, 'readonly', target => target.get(key)).then(value => value || null),
+      put: (store, row) => request(store, 'readwrite', target => target.put(row)).then(() => undefined),
+      delete: (store, key) => request(store, 'readwrite', target => target.delete(key)).then(() => true),
+      all: store => request(store, 'readonly', target => target.getAll()).then(value => value || []),
+      transaction,
+      async clear() { for (const name of STORES) await request(name, 'readwrite', target => target.clear()); },
+    };
+  }
+
+  class TopicIndexedDbAdapter {
+    constructor(options) {
+      const opts = options || {};
+      this.backend = opts.backend || createIndexedDbBackend(opts.indexedDB || (root && root.indexedDB));
+      this.now = opts.now || Date.now;
+    }
+
+    async putTopic(topicRef, record, metadata) {
+      const row = makeTopicRow(topicRef, record, metadata, this.now);
+      await this.backend.put('topics', row);
+      return clone(row);
+    }
+
+    async getTopic(topicRef) { return this.backend.get('topics', refKey(topicRef)); }
+    async deleteTopic(topicRef) { return this.backend.delete('topics', refKey(topicRef)); }
+
+    async queryTopics(query) {
+      const options = query || {};
+      const sourceIds = options.sourceIds ? new Set(options.sourceIds.map(String)) : null;
+      const text = String(options.text || '').trim().toLocaleLowerCase();
+      const where = options.where || {};
+      let rows = await this.backend.all('topics');
+      rows = rows.filter(row => (!sourceIds || sourceIds.has(row.sourceId))
+        && (!text || row.searchable.includes(text)) && propertiesMatch(row.record.properties, where));
+      const sortBy = options.sortBy || 'title';
+      const direction = options.direction === 'desc' ? -1 : 1;
+      rows.sort((a, b) => compareValues(sortValue(a, sortBy), sortValue(b, sortBy)) * direction
+        || a.id.localeCompare(b.id));
+      const offset = Math.max(0, Number(options.offset) || 0);
+      const limit = Math.max(0, Number(options.limit) || rows.length);
+      return clone(rows.slice(offset, offset + limit));
+    }
+
+    async applyLocalMutation(topicRef, mutation) {
+      const ref = contract.normalizeTopicRef(topicRef);
+      const item = contract.normalizeMutation(Object.assign({}, mutation, { topicRef: ref }));
+      const priorReceipt = await this.getReceipt(item.mutationId);
+      if (priorReceipt && priorReceipt.localApplied) {
+        return { duplicate: true, row: await this.getTopic(ref), receipt: priorReceipt };
+      }
+      const current = await this.getTopic(ref);
+      const currentRevision = current ? current.record.revision : null;
+      if (item.baseRevision !== currentRevision) throw casError(item.baseRevision, currentRevision, current);
+      const baseRecord = current ? clone(current.record) : null;
+      const seed = baseRecord || { topicId: ref.topicId, title: '', revision: 0 };
+      const next = Object.assign({}, seed, clone(item.changes));
+      next.topicId = ref.topicId;
+      next.revision = nextRevision(currentRevision);
+      const row = await this.putTopic(ref, next, current ? current.metadata : {});
+      await this.putReceipt(item.mutationId, {
+        mutationId: item.mutationId, topicRef: ref, localApplied: true, remoteApplied: false,
+        mutation: item, baseRecord, appliedAt: nowIso(this.now),
+      });
+      return { duplicate: false, row, baseRecord, mutation: item };
+    }
+
+    async enqueueMutation(topicRef, mutation, baseRecord) {
+      const ref = contract.normalizeTopicRef(topicRef);
+      const item = contract.normalizeMutation(Object.assign({}, mutation, { topicRef: ref }));
+      const receipt = await this.getReceipt(item.mutationId);
+      if (receipt && receipt.remoteApplied) return { duplicate: true, receipt };
+      const id = refKey(ref);
+      const storedPrevious = await this.backend.get('outbox', id);
+      // A terminal row is retained only as a durable error receipt.  A fresh
+      // user edit starts a new queue chain from the now-restored canonical
+      // snapshot instead of coalescing with the rejected mutation.
+      const previous = storedPrevious && !storedPrevious.terminal ? storedPrevious : null;
+      const row = {
+        id, topicRef: ref, mutation: item,
+        baseRecord: previous ? previous.baseRecord : clone(baseRecord),
+        supersededMutationIds: previous
+          ? [...(previous.supersededMutationIds || []), previous.mutation.mutationId]
+          : [],
+        attempts: previous ? previous.attempts : 0,
+        queuedAt: previous ? previous.queuedAt : nowIso(this.now),
+      };
+      if (previous) {
+        row.mutation.baseRevision = previous.mutation.baseRevision;
+        const changes = Object.assign({}, previous.mutation.changes, item.changes);
+        if (previous.mutation.changes && item.changes
+          && isObject(previous.mutation.changes.properties)
+          && isObject(item.changes.properties)) {
+          changes.properties = Object.assign(
+            {}, previous.mutation.changes.properties, item.changes.properties,
+          );
+        }
+        row.mutation.changes = changes;
+      }
+      await this.backend.put('outbox', row);
+      return clone(row);
+    }
+
+    async recoverPendingLocalMutations() {
+      const receipts = await this.backend.all('receipts');
+      let recovered = 0;
+      for (const receipt of receipts) {
+        if (!receipt.localApplied || receipt.remoteApplied || receipt.failed || receipt.conflict
+          || !receipt.mutation || !receipt.topicRef) continue;
+        const current = await this.backend.get('outbox', refKey(receipt.topicRef));
+        if (current) continue;
+        await this.enqueueMutation(receipt.topicRef, receipt.mutation, receipt.baseRecord);
+        recovered += 1;
+      }
+      return recovered;
+    }
+
+    async listOutbox(options) {
+      const includeTerminal = !!(options && options.includeTerminal);
+      const rows = await this.backend.all('outbox');
+      const filtered = includeTerminal ? rows : rows.filter(row => !row.terminal);
+      filtered.sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id.localeCompare(b.id));
+      return clone(filtered);
+    }
+    async getOutbox(topicRef) { return this.backend.get('outbox', refKey(topicRef)); }
+    async updateOutbox(row) { await this.backend.put('outbox', clone(row)); }
+    async updateOutboxIfCurrent(row) {
+      const current = await this.getOutbox(row.topicRef);
+      if (!sameOutboxGeneration(current, row)) {
+        return { updated: false, current: clone(current) };
+      }
+      await this.updateOutbox(row);
+      return { updated: true, current: clone(row) };
+    }
+
+    async prepareOutboxAttempt(outboxRow) {
+      const row = clone(outboxRow);
+      const current = await this.getOutbox(row.topicRef);
+      if (!sameOutboxGeneration(current, row)) {
+        return { prepared: false, current: clone(current) };
+      }
+      row.attempts = (current.attempts || 0) + 1;
+      await this.updateOutbox(row);
+      return { prepared: true, row: clone(row) };
+    }
+    async removeOutbox(topicRef) { return this.backend.delete('outbox', refKey(topicRef)); }
+
+    async removeOutboxIfCurrent(outboxRow) {
+      const current = await this.getOutbox(outboxRow.topicRef);
+      if (!sameOutboxGeneration(current, outboxRow)) {
+        return { removed: false, current: clone(current) };
+      }
+      await this.removeOutbox(outboxRow.topicRef);
+      return { removed: true, current: null };
+    }
+
+    async rebaseOutboxAfterConflict(outboxRow, record, remoteRecord) {
+      const row = clone(outboxRow);
+      return this.backend.transaction(['topics', 'outbox'], async tx => {
+        const queued = await tx.get('outbox', refKey(row.topicRef));
+        if (!sameOutboxGeneration(queued, row)) {
+          return { updated: false, current: clone(queued) };
+        }
+        const local = await tx.get('topics', refKey(row.topicRef));
+        await tx.put('topics', makeTopicRow(
+          row.topicRef, record, local ? local.metadata : {}, this.now,
+        ));
+        row.baseRecord = clone(remoteRecord);
+        row.mutation.baseRevision = remoteRecord.revision;
+        row.attempts = 0;
+        await tx.put('outbox', row);
+        return { updated: true, current: clone(row), record: clone(record) };
+      });
+    }
+
+    async markConflictIfCurrent(outboxRow, record, detail) {
+      const row = clone(outboxRow);
+      const ids = [...(row.supersededMutationIds || []), row.mutation.mutationId];
+      return this.backend.transaction(['topics', 'outbox', 'receipts'], async tx => {
+        const queued = await tx.get('outbox', refKey(row.topicRef));
+        if (!sameOutboxGeneration(queued, row)) {
+          return { recorded: false, current: clone(queued) };
+        }
+        const local = await tx.get('topics', refKey(row.topicRef));
+        await tx.put('topics', makeTopicRow(
+          row.topicRef, record, local ? local.metadata : {}, this.now,
+        ));
+        await tx.delete('outbox', refKey(row.topicRef));
+        for (const mutationId of ids) {
+          await mergeReceiptInTransaction(tx, mutationId, {
+            mutationId, topicRef: row.topicRef, localApplied: true, remoteApplied: false,
+            conflict: true, error: clone(detail), completedAt: nowIso(this.now),
+          });
+        }
+        return { recorded: true, current: null, record: clone(record) };
+      });
+    }
+
+    async getTerminalFailure(topicRef) {
+      const row = await this.backend.get('outbox', refKey(topicRef));
+      return row && row.terminal ? clone(row.terminalError || null) : null;
+    }
+
+    async listTerminalFailures() {
+      const rows = await this.backend.all('outbox');
+      return clone(rows.filter(row => row.terminal && row.terminalError)
+        .map(row => row.terminalError));
+    }
+
+    async markTerminalFailure(outboxRow, detail) {
+      const row = clone(outboxRow);
+      const ids = [...(row.supersededMutationIds || []), row.mutation.mutationId];
+      return this.backend.transaction(['topics', 'outbox', 'receipts'], async tx => {
+        const queued = await tx.get('outbox', refKey(row.topicRef));
+        const current = await tx.get('topics', refKey(row.topicRef));
+        if (!sameOutboxGeneration(queued, row)) {
+          for (const mutationId of ids) {
+            await mergeReceiptInTransaction(tx, mutationId, {
+              mutationId, topicRef: row.topicRef, localApplied: true, remoteApplied: false,
+              lastAttemptFailed: true, lastError: clone(detail), lastAttemptAt: nowIso(this.now),
+            });
+          }
+          return {
+            row: clone(queued), record: clone(current && current.record),
+            rolledBack: false, supersededByNewer: true,
+          };
+        }
+        if (row.baseRecord) {
+          await tx.put('topics', makeTopicRow(
+            row.topicRef, row.baseRecord, current ? current.metadata : {}, this.now,
+          ));
+        } else {
+          await tx.delete('topics', refKey(row.topicRef));
+        }
+        row.terminal = true;
+        row.terminalError = clone(detail);
+        row.failedAt = nowIso(this.now);
+        await tx.put('outbox', row);
+        for (const mutationId of ids) {
+          await mergeReceiptInTransaction(tx, mutationId, {
+            mutationId, topicRef: row.topicRef, localApplied: true, remoteApplied: false,
+            failed: true, error: clone(detail), completedAt: nowIso(this.now),
+          });
+        }
+        return {
+          row: clone(row), record: clone(row.baseRecord),
+          rolledBack: true, supersededByNewer: false,
+        };
+      });
+    }
+
+    async _markAttemptError(outboxRow, detail) {
+      const ids = [...(outboxRow.supersededMutationIds || []), outboxRow.mutation.mutationId];
+      for (const mutationId of ids) {
+        await this.putReceipt(mutationId, {
+          mutationId, topicRef: outboxRow.topicRef, localApplied: true, remoteApplied: false,
+          lastAttemptFailed: true, lastError: clone(detail), lastAttemptAt: nowIso(this.now),
+        });
+      }
+    }
+
+    async getReceipt(mutationId) { return this.backend.get('receipts', String(mutationId)); }
+    async putReceipt(mutationId, receipt) {
+      const current = await this.getReceipt(mutationId);
+      const row = Object.assign({}, current || {}, clone(receipt), { id: String(mutationId) });
+      await this.backend.put('receipts', row);
+      return clone(row);
+    }
+
+    async markRemoteApplied(outboxRow, response) {
+      const ids = [...(outboxRow.supersededMutationIds || []), outboxRow.mutation.mutationId];
+      const remoteRecord = responseRecord(outboxRow, response);
+      return this.backend.transaction(['topics', 'outbox', 'receipts', 'checkpoints'], async tx => {
+        for (const mutationId of ids) {
+          await mergeReceiptInTransaction(tx, mutationId, {
+            mutationId, topicRef: outboxRow.topicRef, localApplied: true, remoteApplied: true,
+            remoteRevision: remoteRecord.revision, completedAt: nowIso(this.now),
+          });
+        }
+        const queued = await tx.get('outbox', refKey(outboxRow.topicRef));
+        const supersededByNewer = !sameOutboxGeneration(queued, outboxRow);
+        let current = queued;
+        let record;
+        if (!supersededByNewer) {
+          const local = await tx.get('topics', refKey(outboxRow.topicRef));
+          await tx.put('topics', makeTopicRow(
+            outboxRow.topicRef, remoteRecord, local ? local.metadata : {}, this.now,
+          ));
+          await tx.delete('outbox', refKey(outboxRow.topicRef));
+          current = null;
+          record = remoteRecord;
+        } else {
+          const local = await tx.get('topics', refKey(outboxRow.topicRef));
+          record = local && local.record;
+          if (queued && !queued.terminal) {
+            current = clone(queued);
+            current.baseRecord = clone(remoteRecord);
+            current.mutation.baseRevision = remoteRecord.revision;
+            current.attempts = 0;
+            await tx.put('outbox', current);
+          }
+        }
+        const checkpoint = {
+          id: String(outboxRow.topicRef.sourceId), sourceId: String(outboxRow.topicRef.sourceId),
+          value: {
+            mutationId: outboxRow.mutation.mutationId, topicRef: clone(outboxRow.topicRef),
+            revision: remoteRecord.revision,
+          },
+          completedAt: nowIso(this.now),
+        };
+        await tx.put('checkpoints', checkpoint);
+        return {
+          checkpoint, supersededByNewer, current: clone(current), record: clone(record),
+        };
+      });
+    }
+
+    async recordCheckpoint(sourceId, value) {
+      const row = { id: String(sourceId), sourceId: String(sourceId), value: clone(value), completedAt: nowIso(this.now) };
+      await this.backend.put('checkpoints', row);
+      return clone(row);
+    }
+    async getCheckpoint(sourceId) { return this.backend.get('checkpoints', String(sourceId)); }
+
+    async putDocumentMapping(sourceId, documentId, mapping) {
+      const row = { id: documentKey(sourceId, documentId), sourceId: String(sourceId), documentId: String(documentId), mapping: clone(mapping) };
+      await this.backend.put('documentMappings', row);
+      return clone(row);
+    }
+    async getDocumentMapping(sourceId, documentId) {
+      return this.backend.get('documentMappings', documentKey(sourceId, documentId));
+    }
+  }
+
+  function makeTopicRow(topicRef, record, metadata, now) {
+    const ref = contract.normalizeTopicRef(topicRef);
+    const normalized = contract.normalizeTopicRecord(record);
+    if (ref.topicId !== normalized.topicId) {
+      throw new Error('TopicRef.topicId と TopicRecord.topicId が一致しません');
+    }
+    return {
+      id: refKey(ref), sourceId: ref.sourceId, topicId: ref.topicId, topicRef: ref,
+      record: normalized, titleLower: normalized.title.toLocaleLowerCase(),
+      searchable: searchableText(normalized), metadata: clone(metadata || {}), updatedAt: nowIso(now),
+    };
+  }
+
+  async function mergeReceiptInTransaction(tx, mutationId, receipt) {
+    const id = String(mutationId);
+    const current = await tx.get('receipts', id);
+    const row = Object.assign({}, current || {}, clone(receipt), { id });
+    await tx.put('receipts', row);
+    return row;
+  }
+
+  function searchableText(record) {
+    const values = [record.title];
+    const walk = (value) => {
+      if (value == null) return;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') values.push(String(value));
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (typeof value === 'object') Object.values(value).forEach(walk);
+    };
+    walk(record.properties);
+    return values.join('\u0000').toLocaleLowerCase();
+  }
+
+  function propertiesMatch(properties, where) {
+    return Object.entries(where).every(([key, expected]) => {
+      const actual = properties && properties[key];
+      return Array.isArray(expected) ? expected.includes(actual) : actual === expected;
+    });
+  }
+
+  function sortValue(row, sortBy) {
+    if (sortBy.startsWith('properties.')) return row.record.properties[sortBy.slice(11)];
+    return row.record[sortBy];
+  }
+  function compareValues(left, right) {
+    if (left === right) return 0;
+    if (left == null) return 1;
+    if (right == null) return -1;
+    if (typeof left === 'number' && typeof right === 'number') return left - right;
+    return String(left).localeCompare(String(right));
+  }
+  function nextRevision(current) { return Number.isInteger(current) ? current + 1 : 1; }
+  function isObject(value) { return !!value && typeof value === 'object' && !Array.isArray(value); }
+  function sameOutboxGeneration(left, right) {
+    return !!left && !!right && !!left.mutation && !!right.mutation
+      && left.mutation.mutationId === right.mutation.mutationId;
+  }
+  function responseRecord(outboxRow, response) {
+    if (response && response.record) return contract.normalizeTopicRecord(response.record);
+    const seed = clone(outboxRow.baseRecord) || {
+      topicId: outboxRow.topicRef.topicId, title: '', properties: {}, resources: [], revision: 0,
+    };
+    const record = Object.assign({}, seed, clone(outboxRow.mutation.changes || {}));
+    record.topicId = outboxRow.topicRef.topicId;
+    if (response && response.revision !== undefined) record.revision = response.revision;
+    return contract.normalizeTopicRecord(record);
+  }
+  function casError(expected, current, row) {
+    const error = new Error('TOPIC_CAS_CONFLICT');
+    error.name = 'TopicCasConflict';
+    error.expectedRevision = expected;
+    error.currentRevision = current;
+    error.current = clone(row);
+    return error;
+  }
+
+  return Object.freeze({ DB_NAME, DB_VERSION, TopicIndexedDbAdapter, createIndexedDbBackend, createMemoryBackend });
+});
+
+;
+
+/* === gb-topic-store.js === */
+;
+(function (root, factory) {
+  'use strict';
+  const contract = root && root.MeldexTopicContract
+    ? root.MeldexTopicContract
+    : (typeof require === 'function' ? require('./gb-topic-contract.js') : null);
+  const indexed = root && root.MeldexTopicIndexedDB
+    ? root.MeldexTopicIndexedDB
+    : (typeof require === 'function' ? require('./gb-topic-indexeddb.js') : null);
+  const api = factory(contract, indexed, root);
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root) root.MeldexTopicStore = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (contract, indexed, root) {
+  'use strict';
+
+  if (!contract || !indexed) throw new Error('トピック契約とIndexedDBアダプターが必要です');
+  const fallbackTopicLocks = new Map();
+
+  class TopicStore {
+    constructor(options) {
+      const opts = options || {};
+      this.index = opts.index || new indexed.TopicIndexedDbAdapter(opts.indexOptions);
+      this.provider = opts.provider || null;
+      this.mutationBus = opts.mutationBus || (root && root.MeldexMutationBus) || null;
+      this.scheduler = opts.scheduler || (callback => setTimeout(callback, 0));
+      this.sourceStates = new Map();
+      this.listeners = new Set();
+      this.syncScheduled = false;
+      this.syncPromise = Promise.resolve();
+      this.lastErrors = new Map();
+      if (this.provider) this.scheduleSync();
+    }
+
+    setProvider(provider) {
+      this.provider = provider || null;
+      this.scheduleSync();
+    }
+
+    setSourceConnected(sourceId, connected) {
+      this.sourceStates.set(String(sourceId), !!connected);
+      if (connected) this.scheduleSync();
+    }
+
+    async isSourceConnected(sourceId) {
+      const key = String(sourceId);
+      if (this.sourceStates.has(key)) return this.sourceStates.get(key);
+      if (!this.provider) return false;
+      if (typeof this.provider.isSourceConnected === 'function') {
+        return !!(await this.provider.isSourceConnected(key));
+      }
+      return true;
+    }
+
+    subscribe(listener) {
+      if (typeof listener !== 'function') throw new TypeError('listener must be a function');
+      this.listeners.add(listener);
+      return () => this.listeners.delete(listener);
+    }
+
+    async loadSnapshot(topicRef, record, options) {
+      const ref = contract.normalizeTopicRef(topicRef);
+      const row = await this.index.putTopic(ref, record, Object.assign({}, options || {}, { snapshot: true }));
+      this._notify('topic', { action: 'snapshot', topicRef: ref, record: row.record });
+      return clone(row.record);
+    }
+
+    async getTopic(topicRef) {
+      const ref = contract.normalizeTopicRef(topicRef);
+      const row = await this.index.getTopic(ref);
+      if (!row) return null;
+      const connected = await this.isSourceConnected(ref.sourceId);
+      const durableError = await this.index.getTerminalFailure?.(ref);
+      return {
+        topicRef: clone(ref), record: clone(row.record), readOnly: !connected,
+        sourceState: connected ? 'connected' : 'snapshot',
+        syncError: clone(this.lastErrors.get(contract.topicRefKey(ref)) || durableError || null),
+      };
+    }
+
+    queryTopics(query) { return this.index.queryTopics(query); }
+
+    async mutateTopic(topicRef, mutation, options) {
+      const ref = contract.normalizeTopicRef(topicRef);
+      if (!(await this.isSourceConnected(ref.sourceId))) {
+        const error = new Error('SOURCE_DISCONNECTED_READ_ONLY');
+        error.name = 'SourceDisconnectedReadOnly';
+        error.topicRef = ref;
+        throw error;
+      }
+      return this._withTopicLock(ref, async () => {
+        const applied = await this.index.applyLocalMutation(ref, mutation);
+        if (applied.duplicate) return { duplicate: true, record: clone(applied.row && applied.row.record) };
+        await this.index.enqueueMutation(ref, applied.mutation, applied.baseRecord);
+        this.lastErrors.delete(contract.topicRefKey(ref));
+        this._notify('topic', {
+          action: 'changed', topicRef: ref, mutation: applied.mutation, record: applied.row.record,
+          origin: options && options.origin,
+        });
+        this.scheduleSync();
+        return { duplicate: false, record: clone(applied.row.record), syncScheduled: true };
+      });
+    }
+
+    scheduleSync() {
+      if (this.syncScheduled || !this.provider) return;
+      this.syncScheduled = true;
+      this.scheduler(() => {
+        this.syncScheduled = false;
+        this.syncPromise = this.syncPromise.then(() => this._drainOutbox()).catch(error => {
+          this._notify('topic', { action: 'sync-runner-error', error: serializableError(error) });
+        });
+      });
+    }
+
+    async flush() {
+      this.syncScheduled = false;
+      this.syncPromise = this.syncPromise.then(() => this._drainOutbox());
+      return this.syncPromise;
+    }
+
+    async getSyncStatus() {
+      const outbox = await this.index.listOutbox();
+      const durable = await this.index.listTerminalFailures?.() || [];
+      const errors = new Map(durable.map(error => [contract.topicRefKey(error.topicRef), error]));
+      for (const error of this.lastErrors.values()) errors.set(contract.topicRefKey(error.topicRef), error);
+      return { pendingCount: outbox.length, errors: clone(Array.from(errors.values())) };
+    }
+
+    async putDocumentMapping(sourceId, documentId, mapping) {
+      const result = await this.index.putDocumentMapping(sourceId, documentId, mapping);
+      this._notify('topic-view', { action: 'mapping-changed', sourceId, documentId, mapping: clone(mapping) });
+      return result;
+    }
+
+    async _drainOutbox() {
+      await this.index.recoverPendingLocalMutations?.();
+      if (!this.provider) return { processed: 0, pending: (await this.index.listOutbox()).length };
+      let processed = 0;
+      const queued = await this.index.listOutbox();
+      for (const row of queued) {
+        if (!(await this.isSourceConnected(row.topicRef.sourceId))) continue;
+        const result = await this._sendRow(row);
+        if (result === 'success' || result === 'conflict' || result === 'failed') processed += 1;
+      }
+      return { processed, pending: (await this.index.listOutbox()).length };
+    }
+
+    async _sendRow(row) {
+      const prepared = await this._withTopicLock(row.topicRef, () => this.index.prepareOutboxAttempt(row));
+      if (!prepared.prepared) {
+        if (prepared.current && !prepared.current.terminal) this.scheduleSync();
+        return 'pending';
+      }
+      row = prepared.row;
+      try {
+        const response = await providerApply(this.provider, row);
+        await this._acceptRemoteSuccess(row, response || {});
+        return 'success';
+      } catch (error) {
+        if (isConflict(error)) return this._handleConflict(row, error);
+        const detail = syncError(row.topicRef, error, isRetryable(error) ? 'retryable' : 'failed');
+        this.lastErrors.set(contract.topicRefKey(row.topicRef), detail);
+        if (!isRetryable(error)) {
+          await this._finishTerminalFailure(row, detail);
+        } else {
+          this._notify('topic', { action: 'sync-error', topicRef: row.topicRef, error: detail });
+        }
+        return isRetryable(error) ? 'pending' : 'failed';
+      }
+    }
+
+    async _acceptRemoteSuccess(row, response) {
+      const outcome = await this._withTopicLock(
+        row.topicRef, () => this.index.markRemoteApplied(row, response),
+      );
+      this.lastErrors.delete(contract.topicRefKey(row.topicRef));
+      this._notify('topic', {
+        action: 'synced', topicRef: row.topicRef, mutationId: row.mutation.mutationId,
+        record: outcome.record, newerChangePending: !!outcome.supersededByNewer,
+      });
+      if (outcome.supersededByNewer) this.scheduleSync();
+    }
+
+    async _handleConflict(row, error) {
+      const remote = error.currentRecord || await providerRead(this.provider, row.topicRef);
+      if (!remote) {
+        const detail = syncError(row.topicRef, error, 'conflict');
+        this.lastErrors.set(contract.topicRefKey(row.topicRef), detail);
+        await this._finishTerminalFailure(row, detail);
+        return 'conflict';
+      }
+      const prepared = await this._withTopicLock(row.topicRef, async () => {
+        const queued = await this.index.getOutbox(row.topicRef);
+        if (!sameOutboxGeneration(queued, row)) {
+          if (!queued || queued.terminal) return { supersededByNewer: true };
+          const localRow = await this.index.getTopic(row.topicRef);
+          const outcome = mergeRemote(
+            queued.baseRecord, localRow && localRow.record, remote, queued.mutation.changes,
+          );
+          if (outcome.conflicts.length) {
+            const detail = conflictDetail(queued, outcome.conflicts);
+            const recorded = await this.index.markConflictIfCurrent(queued, outcome.record, detail);
+            return recorded.recorded
+              ? { conflict: true, detail, record: outcome.record }
+              : { supersededByNewer: true };
+          }
+          const rebased = await this.index.rebaseOutboxAfterConflict(
+            queued, outcome.record, remote,
+          );
+          return rebased.updated
+            ? { row: rebased.current, supersededOldRequest: true }
+            : { supersededByNewer: true };
+        }
+        const localRow = await this.index.getTopic(row.topicRef);
+        const outcome = mergeRemote(row.baseRecord, localRow && localRow.record, remote, row.mutation.changes);
+        if (outcome.conflicts.length) {
+          const detail = conflictDetail(row, outcome.conflicts);
+          const recorded = await this.index.markConflictIfCurrent(row, outcome.record, detail);
+          return recorded.recorded
+            ? { conflict: true, detail, record: outcome.record }
+            : { supersededByNewer: true };
+        }
+        const rebased = await this.index.rebaseOutboxAfterConflict(row, outcome.record, remote);
+        return rebased.updated ? { row: rebased.current } : { supersededByNewer: true };
+      });
+      if (prepared.supersededByNewer) {
+        this.scheduleSync();
+        return 'pending';
+      }
+      if (prepared.conflict) {
+        this.lastErrors.set(contract.topicRefKey(row.topicRef), prepared.detail);
+        this._notify('topic', {
+          action: 'conflict', topicRef: row.topicRef, error: prepared.detail, record: prepared.record,
+        });
+        return 'conflict';
+      }
+      row = prepared.row;
+      try {
+        const response = await providerApply(this.provider, row);
+        await this._acceptRemoteSuccess(row, response || {});
+        return 'success';
+      } catch (retryError) {
+        const detail = syncError(row.topicRef, retryError, isRetryable(retryError) ? 'retryable' : 'failed');
+        this.lastErrors.set(contract.topicRefKey(row.topicRef), detail);
+        if (!isRetryable(retryError)) await this._finishTerminalFailure(row, detail);
+        else this._notify('topic', { action: 'sync-error', topicRef: row.topicRef, error: detail });
+        return isRetryable(retryError) ? 'pending' : 'failed';
+      }
+    }
+
+    async _finishTerminalFailure(row, detail) {
+      const outcome = await this._withTopicLock(
+        row.topicRef, () => this.index.markTerminalFailure(row, detail),
+      );
+      if (outcome.rolledBack) {
+        this._notify('topic', {
+          action: 'rollback', topicRef: row.topicRef, error: detail, record: outcome.record,
+        });
+      } else if (outcome.supersededByNewer) {
+        this.scheduleSync();
+      }
+      this._notify('topic', {
+        action: 'sync-error', topicRef: row.topicRef, error: detail,
+        record: outcome.record, newerChangePending: !!outcome.supersededByNewer,
+      });
+      return outcome;
+    }
+
+    async _withTopicLock(topicRef, work) {
+      const key = contract.topicRefKey(topicRef);
+      const webLocks = root && root.navigator && root.navigator.locks;
+      if (webLocks && typeof webLocks.request === 'function') {
+        return webLocks.request(`meldex-topic:${encodeURIComponent(key)}`, work);
+      }
+      const previous = fallbackTopicLocks.get(key) || Promise.resolve();
+      let release;
+      const gate = new Promise(resolve => { release = resolve; });
+      const tail = previous.catch(() => undefined).then(() => gate);
+      fallbackTopicLocks.set(key, tail);
+      await previous.catch(() => undefined);
+      try {
+        return await work();
+      } finally {
+        release();
+        if (fallbackTopicLocks.get(key) === tail) fallbackTopicLocks.delete(key);
+      }
+    }
+
+    _notify(scope, payload) {
+      const event = Object.assign({ scope, at: new Date().toISOString() }, clone(payload));
+      for (const listener of this.listeners) {
+        try { listener(event); } catch (_) { /* consumer failures must not block persistence */ }
+      }
+      const bus = this.mutationBus;
+      if (!bus) return;
+      try {
+        if (typeof bus.publish === 'function') bus.publish(event);
+        else if (typeof bus.emit === 'function') bus.emit(scope, event);
+        else if (typeof bus.dispatch === 'function') bus.dispatch(scope, event);
+      } catch (_) { /* notification is best-effort; persistence remains authoritative */ }
+    }
+  }
+
+  async function providerApply(provider, row) {
+    const request = {
+      sourceId: row.topicRef.sourceId, topicId: row.topicRef.topicId,
+      path: contract.sourceRecordPath(row.topicRef.topicId), topicRef: clone(row.topicRef),
+      mutation: clone(row.mutation),
+    };
+    if (typeof provider.applyTopicMutation === 'function') return provider.applyTopicMutation(request);
+    if (typeof provider.patchTopic === 'function') return provider.patchTopic(request);
+    if (typeof provider.writeJsonMerged === 'function') {
+      let written = null;
+      await provider.writeJsonMerged(request.path, (current) => {
+        const existing = current && current.topicId ? contract.normalizeTopicRecord(current) : null;
+        const currentRevision = existing ? existing.revision : null;
+        if (currentRevision !== request.mutation.baseRevision) {
+          throw providerConflict(request.mutation.baseRevision, existing);
+        }
+        written = Object.assign(
+          {}, existing || { topicId: request.topicId, title: '', revision: 0 },
+          clone(request.mutation.changes),
+        );
+        written.topicId = request.topicId;
+        written.revision = Number.isInteger(currentRevision) ? currentRevision + 1 : 1;
+        written = contract.normalizeTopicRecord(written);
+        return written;
+      }, { fallbackValue: null });
+      return { revision: written.revision, record: written };
+    }
+    throw new Error('provider does not implement applyTopicMutation');
+  }
+
+  async function providerRead(provider, topicRef) {
+    const request = {
+      sourceId: topicRef.sourceId, topicId: topicRef.topicId,
+      path: contract.sourceRecordPath(topicRef.topicId), topicRef: clone(topicRef),
+    };
+    if (typeof provider.getTopic === 'function') return provider.getTopic(request);
+    if (typeof provider.readTopic === 'function') return provider.readTopic(request);
+    if (typeof provider.readJson === 'function') return provider.readJson(request.path, null);
+    return null;
+  }
+
+  function providerConflict(expectedRevision, currentRecord) {
+    const error = new Error('TOPIC_CAS_CONFLICT');
+    error.name = 'TopicCasConflict';
+    error.status = 409;
+    error.expectedRevision = expectedRevision;
+    error.currentRecord = clone(currentRecord);
+    return error;
+  }
+
+  function conflictDetail(row, fields) {
+    return {
+      kind: 'conflict', topicRef: clone(row.topicRef), mutationId: row.mutation.mutationId,
+      message: '同じ項目が別の場所でも変更されています', fields: clone(fields),
+    };
+  }
+
+  function mergeRemote(base, local, remote, changes) {
+    const result = Object.assign({}, clone(remote));
+    const conflicts = [];
+    for (const [field, localValue] of Object.entries(changes || {})) {
+      const baseValue = base ? base[field] : undefined;
+      const remoteValue = remote[field];
+      if (same(remoteValue, baseValue) || same(remoteValue, localValue)) result[field] = clone(localValue);
+      else {
+        conflicts.push({ field, baseValue: clone(baseValue), localValue: clone(localValue), remoteValue: clone(remoteValue) });
+        result[field] = clone(localValue);
+      }
+    }
+    result.topicId = remote.topicId || (local && local.topicId);
+    if (conflicts.length) result._meldexSyncConflicts = clone(conflicts);
+    return { record: contract.normalizeTopicRecord(result), conflicts };
+  }
+
+  function same(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
+  function sameOutboxGeneration(left, right) {
+    return !!left && !!right && !!left.mutation && !!right.mutation
+      && left.mutation.mutationId === right.mutation.mutationId;
+  }
+  function isConflict(error) { return !!error && (error.status === 409 || error.code === 'CAS_CONFLICT' || error.name === 'TopicCasConflict'); }
+  function isRetryable(error) {
+    if (!error) return false;
+    if (typeof error.retryable === 'boolean') return error.retryable;
+    return error.name === 'NetworkError' || error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  function syncError(topicRef, error, kind) {
+    return { kind, topicRef: clone(topicRef), message: String(error && error.message || error || '同期に失敗しました'), status: error && error.status };
+  }
+  function serializableError(error) { return { name: error && error.name, message: String(error && error.message || error) }; }
+  function clone(value) { return contract.clone(value); }
+  function createTopicStore(options) { return new TopicStore(options); }
+
+  return Object.freeze({ TopicStore, createTopicStore, mergeRemote });
+});
+
+;
+
+/* === gb-topic-view-document.js === */
+;
+/* Unified TopicViewDocument contract and relation visibility helpers. */
+(function initMeldexTopicViewDocument(global) {
+  'use strict';
+
+  const MEMBERSHIP_MODES = new Set(['manual', 'query', 'hybrid']);
+  const SURFACES = new Set(['sheet', 'board']);
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const output = {};
+    Object.keys(value).forEach((key) => {
+      Object.defineProperty(output, key, {
+        value: clone(value[key]), enumerable: true, writable: true, configurable: true,
+      });
+    });
+    return output;
+  }
+
+  function object(value, label) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    return value;
+  }
+
+  function requiredString(value, label) {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new TypeError(`${label} must be a non-empty string`);
+    }
+    return value;
+  }
+
+  function normalizeTopicRef(value) {
+    const source = object(value?.topicRef || value, 'TopicRef');
+    const result = clone(source);
+    result.sourceId = requiredString(source.sourceId, 'TopicRef.sourceId');
+    result.topicId = requiredString(source.topicId, 'TopicRef.topicId');
+    return result;
+  }
+
+  function topicRefKey(value) {
+    const ref = normalizeTopicRef(value);
+    return JSON.stringify([ref.sourceId, ref.topicId]);
+  }
+
+  function uniqueTopicRefs(values) {
+    const byKey = new Map();
+    (Array.isArray(values) ? values : []).forEach((value) => {
+      const ref = normalizeTopicRef(value);
+      const key = topicRefKey(ref);
+      if (!byKey.has(key)) byKey.set(key, ref);
+    });
+    return [...byKey.values()];
+  }
+
+  function normalizeMembership(value) {
+    const source = object(value, 'TopicViewDocument.membership');
+    if (!MEMBERSHIP_MODES.has(source.mode)) throw new TypeError('membership.mode is invalid');
+    const result = clone(source);
+    result.mode = source.mode;
+    result.manualTopicRefs = uniqueTopicRefs(source.manualTopicRefs);
+    if (source.mode !== 'manual') {
+      result.queryDefinition = clone(object(source.queryDefinition, 'membership.queryDefinition'));
+    } else if (!Object.prototype.hasOwnProperty.call(result, 'queryDefinition')) {
+      result.queryDefinition = null;
+    }
+    return result;
+  }
+
+  function normalizeEdge(value, index) {
+    const source = object(value, `RelationSet.edges[${index}]`);
+    const result = clone(source);
+    result.parentTopicRef = normalizeTopicRef(source.parentTopicRef);
+    result.childTopicRef = normalizeTopicRef(source.childTopicRef);
+    if (topicRefKey(result.parentTopicRef) === topicRefKey(result.childTopicRef)) {
+      throw new TypeError('RelationSet cannot contain a self-reference');
+    }
+    return result;
+  }
+
+  function validateRelationGraph(edges) {
+    const parents = new Map();
+    edges.forEach((edge) => {
+      const child = topicRefKey(edge.childTopicRef);
+      const parent = topicRefKey(edge.parentTopicRef);
+      if (parents.has(child) && parents.get(child) !== parent) {
+        throw new TypeError('RelationSet single-parent constraint was violated');
+      }
+      parents.set(child, parent);
+    });
+    const resolved = new Set();
+    for (const start of parents.keys()) {
+      const path = new Set();
+      let current = start;
+      while (parents.has(current) && !resolved.has(current)) {
+        if (path.has(current)) throw new TypeError('RelationSet cannot contain a cycle');
+        path.add(current);
+        current = parents.get(current);
+      }
+      path.forEach((key) => resolved.add(key));
+    }
+  }
+
+  function normalizeRelationSet(value) {
+    const source = object(value, 'RelationSet');
+    const result = clone(source);
+    result.relationSetId = requiredString(source.relationSetId, 'RelationSet.relationSetId');
+    result.name = typeof source.name === 'string' ? source.name : '';
+    result.constraint = source.constraint || 'single-parent';
+    if (result.constraint !== 'single-parent') throw new TypeError('unsupported relation constraint');
+    result.edges = (Array.isArray(source.edges) ? source.edges : []).map(normalizeEdge);
+    result.revision = source.revision ?? 0;
+    validateRelationGraph(result.edges);
+    return result;
+  }
+
+  function normalizeDocument(value) {
+    const source = object(value, 'TopicViewDocument');
+    const result = clone(source);
+    result.documentId = requiredString(source.documentId, 'TopicViewDocument.documentId');
+    if (!SURFACES.has(source.defaultSurface)) throw new TypeError('defaultSurface is invalid');
+    result.schemaVersion = source.schemaVersion ?? 1;
+    result.defaultSurface = source.defaultSurface;
+    result.membership = normalizeMembership(source.membership);
+    result.sheetViews = clone(Array.isArray(source.sheetViews) ? source.sheetViews : []);
+    result.boardViews = clone(Array.isArray(source.boardViews) ? source.boardViews : []);
+    result.relationSets = (Array.isArray(source.relationSets) ? source.relationSets : [])
+      .map(normalizeRelationSet);
+    result.topicLayouts = clone(Array.isArray(source.topicLayouts) ? source.topicLayouts : []);
+    if (!Object.prototype.hasOwnProperty.call(result, 'lastCompleteSnapshot')) {
+      result.lastCompleteSnapshot = null;
+    }
+    return result;
+  }
+
+  function resolveMembership(document, queryTopicRefs) {
+    const membership = normalizeDocument(document).membership;
+    const manual = membership.manualTopicRefs;
+    const queried = uniqueTopicRefs(queryTopicRefs);
+    if (membership.mode === 'manual') return manual;
+    if (membership.mode === 'query') return queried;
+    return uniqueTopicRefs([...manual, ...queried]);
+  }
+
+  function relationSetById(document, relationSetId) {
+    const normalized = normalizeDocument(document);
+    const match = normalized.relationSets.find((item) => item.relationSetId === relationSetId);
+    return match ? clone(match) : null;
+  }
+
+  function boardRelationSet(document, boardViewId) {
+    const normalized = normalizeDocument(document);
+    const view = normalized.boardViews.find((candidate) => (
+      candidate?.boardViewId === boardViewId || candidate?.viewId === boardViewId
+    ));
+    if (!view?.relationSetId) return null;
+    return relationSetById(normalized, view.relationSetId);
+  }
+
+  function relationVisibility(relationSet, membershipTopicRefs, visibleTopicRefs) {
+    const normalized = normalizeRelationSet(relationSet);
+    const members = uniqueTopicRefs(membershipTopicRefs);
+    const visible = new Set(uniqueTopicRefs(visibleTopicRefs ?? members).map(topicRefKey));
+    const parents = new Map();
+    normalized.edges.forEach((edge) => {
+      parents.set(topicRefKey(edge.childTopicRef), clone(edge.parentTopicRef));
+    });
+    const items = members.filter((ref) => visible.has(topicRefKey(ref))).map((ref) => {
+      const parentTopicRef = parents.get(topicRefKey(ref)) || null;
+      return {
+        topicRef: ref,
+        isMainTopic: !parentTopicRef,
+        hasHiddenParent: !!parentTopicRef && !visible.has(topicRefKey(parentTopicRef)),
+        parentTopicRef,
+      };
+    });
+    return {
+      relationSetId: normalized.relationSetId,
+      items,
+      mainTopicRefs: members.filter((ref) => !parents.has(topicRefKey(ref))),
+      visibleMainTopicRefs: items.filter((item) => item.isMainTopic).map((item) => item.topicRef),
+      hiddenParentItems: items.filter((item) => item.hasHiddenParent),
+    };
+  }
+
+  global.MeldexTopicViewDocument = Object.freeze({
+    normalizeTopicRef,
+    topicRefKey,
+    uniqueTopicRefs,
+    normalizeMembership,
+    normalizeRelationSet,
+    normalizeDocument,
+    resolveMembership,
+    relationSetById,
+    boardRelationSet,
+    relationVisibility,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-topic-sheet-board-adapter.js === */
+;
+/* Pure legacy Sheet/Board adapters for the unified topic data layer. */
+(function initMeldexTopicSheetBoardAdapter(global) {
+  'use strict';
+
+  const ViewContract = global.MeldexTopicViewDocument;
+  if (!ViewContract) throw new Error('MeldexTopicViewDocument must be loaded first');
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const output = {};
+    Object.keys(value).forEach((key) => {
+      Object.defineProperty(output, key, {
+        value: clone(value[key]), enumerable: true, writable: true, configurable: true,
+      });
+    });
+    return output;
+  }
+
+  function object(value, label) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    return value;
+  }
+
+  function stableTopicId(value, label) {
+    const source = object(value, label);
+    const candidate = source.topicRef?.topicId ?? source.topicId ?? source.id
+      ?? source.uid ?? source.file_id;
+    if (typeof candidate !== 'string' || !candidate.trim()) {
+      throw new TypeError(`${label} needs an existing stable topic ID`);
+    }
+    return candidate;
+  }
+
+  function sourceIdFor(value, fallback) {
+    const sourceId = value?.topicRef?.sourceId || value?.sourceId || fallback;
+    if (typeof sourceId !== 'string' || !sourceId.trim()) {
+      throw new TypeError('sourceId is required');
+    }
+    return sourceId;
+  }
+
+  function topicRefFromLegacySheetRow(row, sourceId) {
+    const source = object(row, 'legacy Sheet row');
+    if (source.topicRef) return ViewContract.normalizeTopicRef(source.topicRef);
+    return ViewContract.normalizeTopicRef({
+      sourceId: sourceIdFor(source, sourceId),
+      topicId: stableTopicId(source, 'legacy Sheet row'),
+    });
+  }
+
+  function legacySheetTopicRecord(row, topicRef) {
+    const frontmatter = row.frontmatter && typeof row.frontmatter === 'object' ? row.frontmatter : {};
+    const properties = row.properties ?? row.values ?? frontmatter.properties ?? {};
+    return {
+      topicId: topicRef.topicId,
+      title: String(row.title ?? row.name ?? frontmatter.title ?? frontmatter.name ?? ''),
+      properties: clone(properties && typeof properties === 'object' ? properties : {}),
+      note: clone(row.note ?? row.body ?? null),
+      resources: clone(Array.isArray(row.resources) ? row.resources
+        : (frontmatter.resources || frontmatter.entry_attachments || [])),
+      revision: row.revision ?? 0,
+      createdAt: row.createdAt ?? row.created ?? null,
+      updatedAt: row.updatedAt ?? row.updated ?? null,
+      updatedBy: row.updatedBy ?? null,
+    };
+  }
+
+  function legacySheetViewState(row) {
+    const state = {};
+    ['topicLayout', 'layout', 'order', 'selected', 'hidden', 'collapsed'].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(row, key)) state[key] = clone(row[key]);
+    });
+    return state;
+  }
+
+  function adaptLegacySheetRowToTopic(row, sourceId) {
+    const source = object(row, 'legacy Sheet row');
+    const topicRef = topicRefFromLegacySheetRow(source, sourceId);
+    return {
+      topicRef,
+      topicRecord: legacySheetTopicRecord(source, topicRef),
+      sheetRowState: legacySheetViewState(source),
+      legacySheetRow: clone(source),
+    };
+  }
+
+  function sheetRowForTopic(topicRef, topicRecord, sheetRowState, legacySheetRow) {
+    const ref = ViewContract.normalizeTopicRef(topicRef);
+    const topic = object(topicRecord, 'TopicRecord');
+    if (String(topic.topicId) !== ref.topicId) throw new TypeError('TopicRecord topicId mismatch');
+    const output = clone(legacySheetRow || {});
+    Object.assign(output, clone(sheetRowState || {}), {
+      topicRef: ref,
+      topicId: ref.topicId,
+      title: topic.title,
+      properties: clone(topic.properties || {}),
+      note: clone(topic.note ?? null),
+      resources: clone(topic.resources || []),
+      revision: topic.revision ?? 0,
+    });
+    return output;
+  }
+
+  function topicRefFromLegacyBoardNode(node, sourceId, topicIdByLegacyNodeId) {
+    const source = object(node, 'legacy Board node');
+    if (source.topicRef) return ViewContract.normalizeTopicRef(source.topicRef);
+    const mapped = topicIdByLegacyNodeId?.[source.id];
+    const topicId = mapped || source.topicId || source.uid || source.file_id;
+    if (typeof topicId !== 'string' || !topicId.trim()) {
+      throw new TypeError('legacy Board node needs a migrated stable topic ID mapping');
+    }
+    return ViewContract.normalizeTopicRef({
+      sourceId: sourceIdFor(source, sourceId),
+      topicId,
+    });
+  }
+
+  function legacyBoardResources(node) {
+    const resources = clone(Array.isArray(node.resources) ? node.resources : []);
+    if (node.link && !resources.some((item) => item?.href === node.link)) {
+      resources.push({
+        resourceId: `legacy-${String(node.id || 'topic')}-link`,
+        resourceType: 'link', href: node.link, linkType: node.linkType || '',
+        columnType: 'link', legacySingle: true,
+      });
+    }
+    if (node.img && !resources.some((item) => item?.href === node.img || item?.value === node.img)) {
+      resources.push({
+        resourceId: `legacy-${String(node.id || 'topic')}-image`,
+        resourceType: 'image', href: node.img, legacySingle: true,
+      });
+    }
+    return resources;
+  }
+
+  function legacyBoardTopicRecord(node, topicRef) {
+    const text = String(node.text || '');
+    const separator = text.indexOf('\n');
+    const properties = clone(node.properties || {});
+    if (Object.prototype.hasOwnProperty.call(node, 'status') && !('status' in properties)) {
+      properties.status = clone(node.status);
+    }
+    return {
+      topicId: topicRef.topicId,
+      title: String(node.title ?? (separator < 0 ? text : text.slice(0, separator))),
+      properties,
+      note: clone(node.note ?? (separator < 0 ? '' : text.slice(separator + 1))),
+      resources: legacyBoardResources(node),
+      revision: node.revision ?? 0,
+      createdAt: node.createdAt ?? null,
+      updatedAt: node.updatedAt ?? null,
+      updatedBy: node.updatedBy ?? null,
+    };
+  }
+
+  function legacyBoardViewState(node) {
+    const state = clone(node);
+    ['topicRef', 'topicId', 'title', 'text', 'properties', 'status', 'note', 'resources', 'revision',
+      'createdAt', 'updatedAt', 'updatedBy', 'parent', 'link', 'linkType', 'img']
+      .forEach((key) => { delete state[key]; });
+    state.legacyNodeId = String(node.id);
+    return state;
+  }
+
+  function adaptLegacyBoardNodeToTopic(node, sourceId, topicIdByLegacyNodeId) {
+    const source = object(node, 'legacy Board node');
+    const topicRef = topicRefFromLegacyBoardNode(source, sourceId, topicIdByLegacyNodeId);
+    return {
+      topicRef,
+      topicRecord: legacyBoardTopicRecord(source, topicRef),
+      boardNodeState: legacyBoardViewState(source),
+      parentLegacyNodeId: source.parent ? String(source.parent) : null,
+      legacyBoardNode: clone(source),
+    };
+  }
+
+  function boardNodeForTopic(topicRef, boardNodeState, legacyBoardNode) {
+    const ref = ViewContract.normalizeTopicRef(topicRef);
+    const state = clone(boardNodeState || {});
+    const output = { ...state, topicRef: ref, topicId: ref.topicId };
+    output.id = state.legacyNodeId || legacyBoardNode?.id || ref.topicId;
+    delete output.legacyNodeId;
+    return output;
+  }
+
+  function smartSheetViews(rawViews) {
+    if (Array.isArray(rawViews)) return clone(rawViews);
+    if (!rawViews || typeof rawViews !== 'object') return [];
+    return Object.keys(rawViews).filter((key) => rawViews[key] && typeof rawViews[key] === 'object')
+      .map((key) => ({ viewId: key, type: key, ...clone(rawViews[key]) }));
+  }
+
+  function convertLegacySmartSheetToTopicView(definition, options) {
+    const source = object(definition, 'legacy smart Sheet');
+    const settings = options || {};
+    const manualTopicRefs = ViewContract.uniqueTopicRefs(settings.manualTopicRefs || []);
+    const mode = settings.mode || (manualTopicRefs.length ? 'hybrid' : 'query');
+    const queryDefinition = clone(source.queryDefinition || {});
+    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sourceType')) {
+      queryDefinition.sourceType = source.sourceType || 'db-entities';
+    }
+    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'sources')) {
+      queryDefinition.sources = clone(Array.isArray(source.sources) ? source.sources : []);
+    }
+    if (!Object.prototype.hasOwnProperty.call(queryDefinition, 'filters')) {
+      queryDefinition.filters = clone(Array.isArray(source.filters) ? source.filters : []);
+    }
+    if (Object.prototype.hasOwnProperty.call(source, 'query')
+        && !Object.prototype.hasOwnProperty.call(queryDefinition, 'query')) {
+      queryDefinition.query = clone(source.query);
+    }
+    const document = {
+      documentId: String(settings.documentId || source.documentId || source.id || ''),
+      schemaVersion: settings.schemaVersion || 1,
+      defaultSurface: 'sheet',
+      membership: { mode, manualTopicRefs, queryDefinition },
+      sheetViews: smartSheetViews(source.views),
+      boardViews: clone(settings.boardViews || []),
+      relationSets: clone(settings.relationSets || []),
+      topicLayouts: clone(source.topicLayouts || []),
+      lastCompleteSnapshot: clone(settings.lastCompleteSnapshot ?? null),
+      activeView: source.activeView || 'table',
+      legacySmartSheet: clone(source),
+    };
+    return ViewContract.normalizeDocument(document);
+  }
+
+  function normalizeLinkReference(value) {
+    if (typeof value === 'string') return { href: value };
+    return clone(object(value, 'link reference'));
+  }
+
+  function linkReferences(column) {
+    if (column == null || column === '') return [];
+    if (typeof column === 'string') return [normalizeLinkReference(column)];
+    if (Array.isArray(column)) return column.map(normalizeLinkReference);
+    const source = object(column, 'link resource column');
+    if (source.type === 'multi-link' || Array.isArray(source.links)) {
+      return (source.links || []).map(normalizeLinkReference);
+    }
+    const single = source.value ?? source.link ?? source.href ?? source.url ?? source.path;
+    return single == null || single === '' ? [] : [normalizeLinkReference(single)];
+  }
+
+  function linkIdentity(value) {
+    const ref = normalizeLinkReference(value);
+    return String(ref.resourceId ?? ref.id ?? ref.href ?? ref.url ?? ref.path ?? JSON.stringify(ref));
+  }
+
+  function multiLinkColumn(column, links) {
+    const output = (!column || typeof column !== 'object' || Array.isArray(column)) ? {} : clone(column);
+    if (typeof column === 'string' && column) {
+      output.legacySingleLink = column;
+    } else if (output.type !== 'multi-link' && Object.keys(output).length) {
+      output.legacySingleLink = clone(column);
+    }
+    delete output.value;
+    delete output.link;
+    output.type = 'multi-link';
+    output.links = links.map(normalizeLinkReference);
+    return output;
+  }
+
+  function addLinkReference(column, value) {
+    const current = linkReferences(column);
+    const added = normalizeLinkReference(value);
+    if (current.some((item) => linkIdentity(item) === linkIdentity(added))) return clone(column);
+    return multiLinkColumn(column, [...current, added]);
+  }
+
+  function reorderLinkReference(column, fromIndex, toIndex) {
+    const links = linkReferences(column);
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex)
+        || fromIndex < 0 || fromIndex >= links.length || toIndex < 0 || toIndex >= links.length) {
+      throw new RangeError('link reorder index is out of range');
+    }
+    if (links.length < 2 || fromIndex === toIndex) return clone(column);
+    const [moved] = links.splice(fromIndex, 1);
+    links.splice(toIndex, 0, moved);
+    return multiLinkColumn(column, links);
+  }
+
+  function detachLinkReference(column, selector) {
+    const links = linkReferences(column);
+    const index = Number.isInteger(selector)
+      ? selector : links.findIndex((item) => linkIdentity(item) === linkIdentity(selector));
+    if (index < 0 || index >= links.length) throw new RangeError('link reference was not found');
+    const detached = links[index];
+    if (links.length === 1 && typeof column === 'string') {
+      return { column: '', detached, resourceDeletionRequested: false };
+    }
+    if (links.length === 1 && typeof column === 'object' && !Array.isArray(column)
+        && column?.type !== 'multi-link') {
+      const next = clone(column);
+      if ('value' in next) next.value = null;
+      else if ('link' in next) next.link = null;
+      else if ('href' in next) next.href = null;
+      return { column: next, detached, resourceDeletionRequested: false };
+    }
+    links.splice(index, 1);
+    return { column: multiLinkColumn(column, links), detached, resourceDeletionRequested: false };
+  }
+
+  function resourceDeletionPlan(value) {
+    return { resourceRef: normalizeLinkReference(value), deleteResource: true };
+  }
+
+  global.MeldexTopicSheetBoardAdapter = Object.freeze({
+    topicRefFromLegacySheetRow,
+    adaptLegacySheetRowToTopic,
+    sheetRowForTopic,
+    topicRefFromLegacyBoardNode,
+    adaptLegacyBoardNodeToTopic,
+    boardNodeForTopic,
+    convertLegacySmartSheetToTopicView,
+    linkReferences,
+    addLinkReference,
+    reorderLinkReference,
+    detachLinkReference,
+    resourceDeletionPlan,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-topic-views.js === */
+;
+/* Multiple BoardView state, history, and lightweight toolbar controls. */
+(function initMeldexBoardTopicViews(global) {
+  'use strict';
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const result = {};
+    Object.keys(value).forEach((key) => { result[key] = clone(value[key]); });
+    return result;
+  }
+
+  function idOf(view) {
+    return String(view?.boardViewId || view?.viewId || '');
+  }
+
+  function defaultIdFactory(prefix) {
+    if (global.crypto?.randomUUID) return `${prefix}-${global.crypto.randomUUID()}`;
+    return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function newView(viewId, name) {
+    return {
+      boardViewId: viewId,
+      name: name || 'ボードビュー',
+      relationSetId: null,
+      positionsByTopicRef: {},
+      groups: [],
+      lines: [],
+      hiddenTopicRefs: [],
+      collapsedTopicRefs: [],
+      styleOverrides: {},
+      camera: { pan: { x: 0, y: 0 }, zoom: 1, rotation: 0 },
+    };
+  }
+
+  function normalizeDocument(document, idFactory) {
+    const result = clone(document || {});
+    result.boardViews = Array.isArray(result.boardViews) ? result.boardViews : [];
+    result.relationSets = Array.isArray(result.relationSets) ? result.relationSets : [];
+    if (!result.boardViews.length) {
+      const makeId = idFactory || (() => defaultIdFactory('board-view'));
+      result.boardViews.push(newView(makeId('board-view'), '既定ビュー'));
+    }
+    result.boardViews = result.boardViews.map((view, index) => {
+      const next = clone(view || {});
+      next.boardViewId = idOf(next) || `board-view-${index + 1}`;
+      next.name = String(next.name || (index ? `ビュー ${index + 1}` : '既定ビュー'));
+      ['groups', 'lines', 'hiddenTopicRefs', 'collapsedTopicRefs'].forEach((key) => {
+        if (!Array.isArray(next[key])) next[key] = [];
+      });
+      if (!next.positionsByTopicRef || typeof next.positionsByTopicRef !== 'object') {
+        next.positionsByTopicRef = {};
+      }
+      return next;
+    });
+    return result;
+  }
+
+  function addView(document, options) {
+    const settings = options || {};
+    const makeId = settings.idFactory || (() => defaultIdFactory('board-view'));
+    const result = normalizeDocument(document, makeId);
+    const view = newView(makeId('board-view'), settings.name || `ビュー ${result.boardViews.length + 1}`);
+    result.boardViews.push(view);
+    return { document: result, activeBoardViewId: view.boardViewId, boardView: clone(view) };
+  }
+
+  function renameView(document, boardViewId, name) {
+    const result = normalizeDocument(document);
+    const view = result.boardViews.find((item) => idOf(item) === boardViewId);
+    if (!view) throw new RangeError('BoardView was not found');
+    const nextName = String(name || '').trim();
+    if (!nextName) throw new TypeError('BoardView name is required');
+    view.name = nextName;
+    return result;
+  }
+
+  function reorderView(document, boardViewId, toIndex) {
+    const result = normalizeDocument(document);
+    const fromIndex = result.boardViews.findIndex((item) => idOf(item) === boardViewId);
+    if (fromIndex < 0) throw new RangeError('BoardView was not found');
+    if (!Number.isInteger(toIndex) || toIndex < 0 || toIndex >= result.boardViews.length) {
+      throw new RangeError('BoardView reorder index is invalid');
+    }
+    const [view] = result.boardViews.splice(fromIndex, 1);
+    result.boardViews.splice(toIndex, 0, view);
+    return result;
+  }
+
+  function removeView(document, boardViewId, activeBoardViewId) {
+    const result = normalizeDocument(document);
+    if (result.boardViews.length === 1) throw new Error('少なくとも1件のボードビューが必要です');
+    const index = result.boardViews.findIndex((item) => idOf(item) === boardViewId);
+    if (index < 0) throw new RangeError('BoardView was not found');
+    const [removed] = result.boardViews.splice(index, 1);
+    const active = activeBoardViewId === boardViewId
+      ? result.boardViews[Math.min(index, result.boardViews.length - 1)].boardViewId
+      : activeBoardViewId;
+    return { document: result, activeBoardViewId: active, removedBoardView: removed };
+  }
+
+  function copyRelationSet(document, relationSetId, newId) {
+    const source = document.relationSets.find((item) => item?.relationSetId === relationSetId);
+    if (!source) return null;
+    const relation = clone(source);
+    relation.relationSetId = newId;
+    relation.name = `${source.name || '構造'} のコピー`;
+    relation.revision = 0;
+    document.relationSets.push(relation);
+    return relation;
+  }
+
+  function duplicateView(document, boardViewId, options) {
+    const settings = options || {};
+    const makeId = settings.idFactory || ((prefix) => defaultIdFactory(prefix));
+    const result = normalizeDocument(document, makeId);
+    const index = result.boardViews.findIndex((item) => idOf(item) === boardViewId);
+    if (index < 0) throw new RangeError('BoardView was not found');
+    const source = result.boardViews[index];
+    const duplicate = clone(source);
+    duplicate.boardViewId = makeId('board-view');
+    duplicate.name = settings.name || `${source.name} のコピー`;
+    if (source.relationSetId && settings.shareRelationSet !== true) {
+      const relationId = makeId('relation-set');
+      const relation = copyRelationSet(result, source.relationSetId, relationId);
+      if (relation) duplicate.relationSetId = relation.relationSetId;
+    }
+    result.boardViews.splice(index + 1, 0, duplicate);
+    return { document: result, activeBoardViewId: duplicate.boardViewId, boardView: clone(duplicate) };
+  }
+
+  function createController(options) {
+    const settings = options || {};
+    if (typeof settings.getDocument !== 'function' || typeof settings.setDocument !== 'function') {
+      throw new TypeError('getDocument and setDocument are required');
+    }
+    const commit = (label, operation) => {
+      const before = clone(settings.getDocument());
+      const result = operation(before);
+      const next = result?.document || result;
+      if (typeof settings.pushUndo === 'function') settings.pushUndo(label, before, clone(next));
+      settings.setDocument(next);
+      if (typeof settings.onChange === 'function') settings.onChange(clone(next), result);
+      return result;
+    };
+    return Object.freeze({
+      add: (value) => commit('ボードビューを追加', (doc) => addView(doc, value)),
+      rename: (id, name) => commit('ボードビュー名を変更', (doc) => renameView(doc, id, name)),
+      reorder: (id, index) => commit('ボードビューを並べ替え', (doc) => reorderView(doc, id, index)),
+      remove: (id, activeId) => commit('ボードビューを削除', (doc) => removeView(doc, id, activeId)),
+      duplicate: (id, value) => commit('ボードビューを複製', (doc) => duplicateView(doc, id, value)),
+    });
+  }
+
+  function topicRefKey(value) {
+    const ref = value?.topicRef || value;
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function captureViewState(boardView, runtimeState) {
+    const result = clone(boardView || newView('board-view-1', '既定ビュー'));
+    result.positionsByTopicRef = clone(result.positionsByTopicRef || {});
+    (Array.isArray(runtimeState?.nodes) ? runtimeState.nodes : []).forEach((node) => {
+      if (!node?.topicRef) return;
+      const key = topicRefKey(node.topicRef);
+      const previous = result.positionsByTopicRef[key] || { topicRef: clone(node.topicRef) };
+      result.positionsByTopicRef[key] = {
+        ...previous, topicRef: clone(node.topicRef),
+        x: Number(node.x) || 0, y: Number(node.y) || 0,
+        w: Number.isFinite(+node.w) ? +node.w : 160,
+        h: Number.isFinite(+node.h) ? +node.h : 0,
+      };
+    });
+    ['groups', 'lines', 'hiddenTopicRefs', 'collapsedTopicRefs', 'styleOverrides', 'camera']
+      .forEach((key) => {
+        if (runtimeState && Object.prototype.hasOwnProperty.call(runtimeState, key)) {
+          result[key] = clone(runtimeState[key]);
+        }
+      });
+    return result;
+  }
+
+  function applyViewState(boardView, runtimeState) {
+    const view = clone(boardView || {});
+    const result = clone(runtimeState || {});
+    const positions = view.positionsByTopicRef || {};
+    result.nodes = (Array.isArray(result.nodes) ? result.nodes : []).map((node) => {
+      const position = node?.topicRef ? positions[topicRefKey(node.topicRef)] : null;
+      if (!position) return node;
+      const next = { ...node, x: position.x, y: position.y };
+      if (Number.isFinite(+position.w)) next.w = +position.w;
+      if (Number.isFinite(+position.h)) next.h = +position.h;
+      return next;
+    });
+    ['groups', 'lines', 'hiddenTopicRefs', 'collapsedTopicRefs', 'styleOverrides', 'camera']
+      .forEach((key) => { result[key] = clone(view[key] ?? result[key]); });
+    result.activeBoardViewId = idOf(view);
+    return result;
+  }
+
+  function attachToolbar(container, controller, options) {
+    if (!container?.appendChild || !controller) return null;
+    const settings = options || {};
+    const root = document.createElement('div');
+    root.className = 'bd-topic-view-controls';
+    root.dataset.bdTopicViewControls = '1';
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', 'ボードビュー');
+    select.dataset.bdTopicViewControl = 'view-select';
+    select.dataset.bdAction = 'topic-view-select';
+    const refresh = () => {
+      const doc = normalizeDocument(settings.getDocument());
+      select.replaceChildren(...doc.boardViews.map((view) => {
+        const option = document.createElement('option');
+        option.value = view.boardViewId; option.textContent = view.name;
+        option.selected = view.boardViewId === settings.getActiveBoardViewId();
+        return option;
+      }));
+    };
+    select.addEventListener('change', () => settings.setActiveBoardViewId(select.value));
+    root.appendChild(select);
+    const actions = [['add', '＋', '追加', () => controller.add()],
+      ['duplicate', '複製', '複製', () => controller.duplicate(select.value)],
+      ['delete', '削除', '削除', () => controller.remove(select.value, select.value)]];
+    actions.forEach(([actionId, text, label, run]) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = text; button.setAttribute('aria-label', label);
+      button.dataset.bdTopicViewAction = actionId;
+      button.dataset.bdAction = `topic-view-${actionId}`;
+      button.className = text === '＋' ? '' : 'bd-topic-view-wide-action';
+      button.addEventListener('click', () => { run(); refresh(); }); root.appendChild(button);
+    });
+    const overflow = document.createElement('details'); overflow.className = 'bd-topic-view-overflow';
+    const summary = document.createElement('summary'); summary.textContent = '•••';
+    summary.setAttribute('aria-label', 'ボードビュー操作'); overflow.appendChild(summary);
+    const menu = document.createElement('div'); menu.className = 'bd-topic-view-overflow-menu';
+    actions.slice(1).forEach(([actionId, text, label, run]) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+      button.dataset.bdTopicViewAction = `${actionId}-compact`;
+      button.dataset.bdAction = `topic-view-${actionId}-compact`;
+      button.setAttribute('aria-label', label); button.addEventListener('click', () => {
+        run(); overflow.open = false; refresh();
+      }); menu.appendChild(button);
+    });
+    overflow.appendChild(menu); root.appendChild(overflow);
+    refresh(); container.appendChild(root);
+    return { root, refresh };
+  }
+
+  global.MeldexBoardTopicViews = Object.freeze({
+    normalizeDocument, addView, renameView, reorderView, removeView, duplicateView,
+    captureViewState, applyViewState, createController, attachToolbar,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-shuffle.js === */
+;
+/* Deterministic, coordinate-only KJ shuffle planner for BoardView topics. */
+(function initMeldexBoardShuffle(global) {
+  'use strict';
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const result = {};
+    Object.keys(value).forEach((key) => { result[key] = clone(value[key]); });
+    return result;
+  }
+
+  function refKey(value) {
+    const ref = value?.topicRef || value;
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function seedNumber(value) {
+    const text = String(value ?? 'meldex-board-shuffle');
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0 || 0x9e3779b9;
+  }
+
+  function randomFactory(seed) {
+    let state = seedNumber(seed);
+    return () => {
+      state ^= state << 13; state ^= state >>> 17; state ^= state << 5;
+      return (state >>> 0) / 4294967296;
+    };
+  }
+
+  function boundsOf(items, padding) {
+    if (!items.length) return { x: 0, y: 0, width: 800, height: 600 };
+    const left = Math.min(...items.map((item) => Number(item.x) || 0));
+    const top = Math.min(...items.map((item) => Number(item.y) || 0));
+    const right = Math.max(...items.map((item) => (Number(item.x) || 0) + (Number(item.w) || 160)));
+    const bottom = Math.max(...items.map((item) => (Number(item.y) || 0) + (Number(item.h) || 80)));
+    return { x: left - padding, y: top - padding,
+      width: right - left + padding * 2, height: bottom - top + padding * 2 };
+  }
+
+  function intersects(first, second, gap) {
+    return first.x < second.x + second.w + gap && first.x + first.w + gap > second.x
+      && first.y < second.y + second.h + gap && first.y + first.h + gap > second.y;
+  }
+
+  function targetItems(items, selectedKeys) {
+    const eligible = items.filter((item) => item.editable !== false && !item.locked && !item.hidden);
+    const selected = eligible.filter((item) => selectedKeys.has(refKey(item)));
+    return selected.length >= 2 ? selected : eligible.filter((item) => item.visible !== false);
+  }
+
+  function candidate(item, area, random) {
+    const maxX = Math.max(0, area.width - item.w);
+    const maxY = Math.max(0, area.height - item.h);
+    return {
+      x: area.x + Math.round(random() * maxX),
+      y: area.y + Math.round(random() * maxY),
+      w: item.w,
+      h: item.h,
+    };
+  }
+
+  function expandArea(area, item, gap) {
+    const result = { ...area };
+    if (result.width <= result.height) result.width += item.w + gap;
+    else result.height += item.h + gap;
+    return result;
+  }
+
+  function placeItems(targets, obstacles, initialArea, random, gap) {
+    let area = { ...initialArea };
+    const occupied = obstacles.map((item) => ({ x: item.x, y: item.y, w: item.w, h: item.h }));
+    const positions = new Map();
+    const sorted = [...targets].sort((a, b) => (b.w * b.h) - (a.w * a.h) || refKey(a).localeCompare(refKey(b)));
+    sorted.forEach((item) => {
+      let placed = null;
+      while (!placed) {
+        for (let attempt = 0; attempt < 160; attempt += 1) {
+          const next = candidate(item, area, random);
+          if (!occupied.some((other) => intersects(next, other, gap))) { placed = next; break; }
+        }
+        if (!placed) area = expandArea(area, item, gap);
+      }
+      occupied.push(placed);
+      positions.set(refKey(item), { x: placed.x, y: placed.y });
+    });
+    return { positions, area };
+  }
+
+  function normalizeItems(values) {
+    return (Array.isArray(values) ? values : []).map((value) => ({
+      ...clone(value),
+      w: Math.max(1, Number(value.w) || 160),
+      h: Math.max(1, Number(value.h) || 80),
+      x: Number(value.x) || 0,
+      y: Number(value.y) || 0,
+    }));
+  }
+
+  function planShuffle(options) {
+    const settings = options || {};
+    const items = normalizeItems(settings.items);
+    const selected = new Set((settings.selectedTopicRefs || []).map(refKey));
+    const targets = targetItems(items, selected);
+    if (targets.length < 2) return { changed: false, seed: settings.seed, items, movedTopicRefs: [] };
+    const targetKeys = new Set(targets.map(refKey));
+    const obstacles = items.filter((item) => !targetKeys.has(refKey(item)) && !item.hidden);
+    const padding = Math.max(0, Number(settings.padding) || 24);
+    const gap = Math.max(0, Number(settings.gap) || 16);
+    const initialArea = clone(settings.area || boundsOf(targets, padding));
+    const seed = settings.seed ?? `shuffle-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const placement = placeItems(targets, obstacles, initialArea, randomFactory(seed), gap);
+    const output = items.map((item) => {
+      const position = placement.positions.get(refKey(item));
+      return position ? { ...item, x: position.x, y: position.y } : item;
+    });
+    return {
+      changed: true,
+      seed,
+      before: items,
+      items: output,
+      movedTopicRefs: targets.map((item) => clone(item.topicRef)),
+      initialArea,
+      expandedArea: placement.area,
+    };
+  }
+
+  function applyToBoardView(boardView, plan) {
+    if (!plan?.changed) return clone(boardView);
+    const result = clone(boardView || {});
+    result.positionsByTopicRef = clone(result.positionsByTopicRef || {});
+    plan.items.forEach((item) => {
+      const key = refKey(item);
+      const current = result.positionsByTopicRef[key];
+      if (current && plan.movedTopicRefs.some((ref) => refKey(ref) === key)) {
+        result.positionsByTopicRef[key] = { ...current, x: item.x, y: item.y };
+      }
+    });
+    result.lastShuffleSeed = plan.seed;
+    return result;
+  }
+
+  function undoRecord(plan) {
+    if (!plan?.changed) return null;
+    const pick = (items) => Object.fromEntries(items.map((item) => [refKey(item), { x: item.x, y: item.y }]));
+    return { seed: plan.seed, before: pick(plan.before), after: pick(plan.items) };
+  }
+
+  function applyUndoRecord(boardView, record, direction) {
+    const result = clone(boardView || {});
+    const positions = direction === 'redo' ? record.after : record.before;
+    result.positionsByTopicRef = clone(result.positionsByTopicRef || {});
+    Object.entries(positions || {}).forEach(([key, point]) => {
+      if (result.positionsByTopicRef[key]) result.positionsByTopicRef[key] = {
+        ...result.positionsByTopicRef[key], x: point.x, y: point.y,
+      };
+    });
+    result.lastShuffleSeed = record.seed;
+    return result;
+  }
+
+  function attachShuffleAction(container, onShuffle) {
+    if (!container?.appendChild || typeof onShuffle !== 'function') return null;
+    const button = document.createElement('button'); button.type = 'button';
+    button.textContent = 'シャッフル'; button.className = 'bd-board-shuffle-action bd-topic-view-wide-action';
+    button.dataset.bdTopicViewAction = 'shuffle';
+    button.dataset.bdAction = 'topic-view-shuffle';
+    button.setAttribute('aria-label', 'トピックを重ならないようにシャッフル');
+    button.addEventListener('click', () => onShuffle()); container.appendChild(button);
+    const overflow = container.querySelector?.('.bd-topic-view-overflow-menu');
+    if (overflow) {
+      const compact = button.cloneNode(true); compact.className = 'bd-board-shuffle-overflow-action';
+      compact.dataset.bdTopicViewAction = 'shuffle-compact';
+      compact.dataset.bdAction = 'topic-view-shuffle-compact';
+      compact.addEventListener('click', () => onShuffle()); overflow.appendChild(compact);
+    }
+    return button;
+  }
+
+  global.MeldexBoardShuffle = Object.freeze({
+    refKey, planShuffle, applyToBoardView, undoRecord, applyUndoRecord, attachShuffleAction,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-groups.js === */
+;
+/* BoardGroup model, templates, line impact, and options-panel adapter. */
+(function initMeldexBoardGroups(global) {
+  'use strict';
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const result = {};
+    Object.keys(value).forEach((key) => { result[key] = clone(value[key]); });
+    return result;
+  }
+
+  function refKey(value) {
+    const ref = value?.topicRef || value;
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function uniqueRefs(values) {
+    const refs = new Map();
+    (Array.isArray(values) ? values : []).forEach((value) => {
+      const ref = clone(value?.topicRef || value);
+      if (ref?.sourceId && ref?.topicId && !refs.has(refKey(ref))) refs.set(refKey(ref), ref);
+    });
+    return [...refs.values()];
+  }
+
+  function normalizeGroup(value, idFactory) {
+    const source = clone(value || {});
+    source.groupId = String(source.groupId || source.id || idFactory?.('group') || '');
+    if (!source.groupId) throw new TypeError('groupId is required');
+    delete source.id;
+    source.name = String(source.name || 'グループ');
+    source.topicRefs = uniqueRefs(source.topicRefs || []);
+    source.styleRef = source.styleRef == null ? null : String(source.styleRef);
+    source.styleOverrides = clone(source.styleOverrides || source.style || {});
+    source.locked = !!source.locked;
+    source.collapsed = !!source.collapsed;
+    if (Number.isFinite(+source.x)) source.x = +source.x;
+    if (Number.isFinite(+source.y)) source.y = +source.y;
+    if (Number.isFinite(+source.w)) source.w = Math.max(1, +source.w);
+    if (Number.isFinite(+source.h)) source.h = Math.max(1, +source.h);
+    return source;
+  }
+
+  function groupsOf(boardView) {
+    return (Array.isArray(boardView?.groups) ? boardView.groups : []).map(normalizeGroup);
+  }
+
+  function createGroup(boardView, value, idFactory) {
+    const result = clone(boardView || {});
+    result.groups = groupsOf(result);
+    const group = normalizeGroup(value, idFactory);
+    if (result.groups.some((item) => item.groupId === group.groupId)) {
+      throw new Error('groupId already exists');
+    }
+    result.groups.push(group);
+    return { boardView: result, group: clone(group) };
+  }
+
+  function updateGroup(boardView, groupId, changes) {
+    const result = clone(boardView || {});
+    result.groups = groupsOf(result);
+    const index = result.groups.findIndex((item) => item.groupId === groupId);
+    if (index < 0) throw new RangeError('BoardGroup was not found');
+    const current = result.groups[index];
+    if (current.locked && changes?.locked !== false) throw new Error('locked BoardGroup cannot be edited');
+    result.groups[index] = normalizeGroup({ ...current, ...clone(changes || {}), groupId });
+    return result;
+  }
+
+  function moveGroup(boardView, groupId, delta) {
+    const group = groupsOf(boardView).find((item) => item.groupId === groupId);
+    if (!group) throw new RangeError('BoardGroup was not found');
+    return updateGroup(boardView, groupId, {
+      x: (Number(group.x) || 0) + (Number(delta?.x) || 0),
+      y: (Number(group.y) || 0) + (Number(delta?.y) || 0),
+    });
+  }
+
+  function resizeGroup(boardView, groupId, bounds) {
+    const changes = {};
+    ['x', 'y'].forEach((key) => {
+      if (Number.isFinite(+bounds?.[key])) changes[key] = +bounds[key];
+    });
+    ['w', 'h'].forEach((key) => {
+      if (Number.isFinite(+bounds?.[key])) changes[key] = Math.max(1, +bounds[key]);
+    });
+    return updateGroup(boardView, groupId, changes);
+  }
+
+  function endpointTargetsGroup(endpoint, groupId) {
+    if (!endpoint || endpoint.targetKind !== 'group') return false;
+    const target = endpoint.targetRef;
+    return target === groupId || target?.groupId === groupId;
+  }
+
+  function lineImpactForGroup(lines, groupId) {
+    return (Array.isArray(lines) ? lines : []).filter((line) => (
+      endpointTargetsGroup(line?.fromEndpoint, groupId)
+      || endpointTargetsGroup(line?.toEndpoint, groupId)
+    )).map((line) => String(line.id || line.lineId || ''));
+  }
+
+  function planGroupRemoval(boardView, groupId) {
+    const group = groupsOf(boardView).find((item) => item.groupId === groupId);
+    if (!group) throw new RangeError('BoardGroup was not found');
+    const affectedLineIds = lineImpactForGroup(boardView?.lines, groupId);
+    return { group: clone(group), affectedLineIds, affectedLineCount: affectedLineIds.length,
+      deletesTopicRecords: false, deletesLines: false };
+  }
+
+  function removeGroupFrame(boardView, groupId, options) {
+    const plan = planGroupRemoval(boardView, groupId);
+    if (plan.affectedLineCount && options?.confirmed !== true) {
+      return { boardView: clone(boardView), removed: false, confirmationRequired: true, ...plan };
+    }
+    const result = clone(boardView || {});
+    result.groups = groupsOf(result).filter((item) => item.groupId !== groupId);
+    result.lines = clone(Array.isArray(result.lines) ? result.lines : []);
+    return { boardView: result, removed: true, confirmationRequired: false, ...plan };
+  }
+
+  function normalizeLibraries(libraries) {
+    const result = clone(libraries || {});
+    result.file = Array.isArray(result.file) ? result.file : [];
+    result.common = Array.isArray(result.common) ? result.common : [];
+    return result;
+  }
+
+  function templateFromGroup(group, value) {
+    const settings = value || {};
+    return {
+      templateId: String(settings.templateId),
+      name: String(settings.name || group.name || 'グループテンプレート'),
+      styleRef: group.styleRef,
+      styleOverrides: clone(group.styleOverrides),
+      locked: !!group.locked,
+      collapsed: !!group.collapsed,
+      updatedAt: settings.updatedAt || null,
+    };
+  }
+
+  function normalizedTemplateName(value) {
+    return String(value || '').trim().toLocaleLowerCase();
+  }
+
+  function assertUniqueTemplateName(libraries, scope, name, exceptTemplateId) {
+    const wanted = normalizedTemplateName(name);
+    if (!wanted) throw new TypeError('template name is required');
+    const duplicate = normalizeLibraries(libraries)[scope].some((item) => (
+      item.templateId !== exceptTemplateId && normalizedTemplateName(item.name) === wanted
+    ));
+    if (duplicate) throw new Error('同名のグループテンプレートは上書きできません');
+  }
+
+  function saveTemplate(libraries, scope, groupValue, options) {
+    if (!['file', 'common'].includes(scope)) throw new TypeError('template scope is invalid');
+    const result = normalizeLibraries(libraries);
+    const group = normalizeGroup(groupValue);
+    const makeId = options?.idFactory;
+    const templateId = options?.templateId || makeId?.('group-template');
+    if (!templateId) throw new TypeError('templateId is required');
+    const template = templateFromGroup(group, { ...options, templateId });
+    assertUniqueTemplateName(result, scope, template.name);
+    result[scope].push(template);
+    return { libraries: result, template: clone(template) };
+  }
+
+  function updateTemplate(libraries, scope, templateId, changes) {
+    const result = normalizeLibraries(libraries);
+    const index = result[scope]?.findIndex((item) => item.templateId === templateId) ?? -1;
+    if (index < 0) throw new RangeError('group template was not found');
+    if (Object.prototype.hasOwnProperty.call(changes || {}, 'name')) {
+      assertUniqueTemplateName(result, scope, changes.name, templateId);
+    }
+    result[scope][index] = { ...result[scope][index], ...clone(changes || {}), templateId };
+    delete result[scope][index].topicRefs;
+    return result;
+  }
+
+  function duplicateTemplate(libraries, scope, templateId, options) {
+    const source = normalizeLibraries(libraries)[scope]?.find((item) => item.templateId === templateId);
+    if (!source) throw new RangeError('group template was not found');
+    const group = normalizeGroup({ groupId: 'template-source', ...source });
+    return saveTemplate(libraries, scope, group, {
+      ...options, name: options?.name || `${source.name} のコピー`,
+    });
+  }
+
+  function removeTemplate(libraries, scope, templateId) {
+    const result = normalizeLibraries(libraries);
+    const before = result[scope]?.length ?? 0;
+    result[scope] = result[scope].filter((item) => item.templateId !== templateId);
+    if (result[scope].length === before) throw new RangeError('group template was not found');
+    return result;
+  }
+
+  function applyTemplate(boardView, groupId, template) {
+    return updateGroup(boardView, groupId, {
+      styleRef: template?.styleRef ?? null,
+      styleOverrides: clone(template?.styleOverrides || {}),
+      locked: !!template?.locked,
+      collapsed: !!template?.collapsed,
+    });
+  }
+
+  function renderOptionsTab(container, groupValue, callbacks) {
+    if (!container?.appendChild) return null;
+    const group = normalizeGroup(groupValue);
+    const root = document.createElement('section');
+    root.className = 'bd-group-options'; root.dataset.bdOptionsTab = 'group';
+    const heading = document.createElement('h3'); heading.textContent = 'グループ'; root.appendChild(heading);
+    [['名前', 'name', group.name], ['スタイル', 'styleRef', group.styleRef || '']].forEach(([label, key, value]) => {
+      const field = document.createElement('label'); field.textContent = label;
+      const input = document.createElement('input'); input.value = value;
+      input.addEventListener('change', () => callbacks?.onChange?.(group.groupId, { [key]: input.value }));
+      field.appendChild(input); root.appendChild(field);
+    });
+    container.replaceChildren(root);
+    return root;
+  }
+
+  global.MeldexBoardGroups = Object.freeze({
+    normalizeGroup, createGroup, updateGroup, moveGroup, resizeGroup,
+    lineImpactForGroup, planGroupRemoval,
+    removeGroupFrame, normalizeLibraries, saveTemplate, updateTemplate, duplicateTemplate,
+    removeTemplate, applyTemplate, renderOptionsTab, assertUniqueTemplateName,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-outline-endpoints.js === */
+;
+/* Shape-outline LineEndpoint projection and legacy four-anchor compatibility. */
+(function initMeldexBoardOutlineEndpoints(global) {
+  'use strict';
+
+  const LEGACY_PATH_T = Object.freeze({ top: 0, right: 0.25, bottom: 0.5, left: 0.75 });
+
+  function clone(value) {
+    if (Array.isArray(value)) return value.map(clone);
+    if (!value || typeof value !== 'object') return value;
+    const result = {};
+    Object.keys(value).forEach((key) => { result[key] = clone(value[key]); });
+    return result;
+  }
+
+  function normalizedBounds(value) {
+    return {
+      x: Number(value?.x) || 0,
+      y: Number(value?.y) || 0,
+      w: Math.max(1, Number(value?.w ?? value?.width) || 1),
+      h: Math.max(1, Number(value?.h ?? value?.height) || 1),
+    };
+  }
+
+  function arc(points, cx, cy, radius, start, end, steps) {
+    for (let index = 1; index <= steps; index += 1) {
+      const angle = start + ((end - start) * index) / steps;
+      points.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+    }
+  }
+
+  function roundedRectanglePoints(bounds, radiusValue) {
+    const { x, y, w, h } = normalizedBounds(bounds);
+    const radius = Math.max(0, Math.min(Number(radiusValue) || 0, w / 2, h / 2));
+    if (!radius) return [
+      { x: x + w / 2, y }, { x: x + w, y }, { x: x + w, y: y + h },
+      { x, y: y + h }, { x, y }, { x: x + w / 2, y },
+    ];
+    const points = [{ x: x + w / 2, y }, { x: x + w - radius, y }];
+    arc(points, x + w - radius, y + radius, radius, -Math.PI / 2, 0, 6);
+    points.push({ x: x + w, y: y + h - radius });
+    arc(points, x + w - radius, y + h - radius, radius, 0, Math.PI / 2, 6);
+    points.push({ x: x + radius, y: y + h });
+    arc(points, x + radius, y + h - radius, radius, Math.PI / 2, Math.PI, 6);
+    points.push({ x, y: y + radius });
+    arc(points, x + radius, y + radius, radius, Math.PI, Math.PI * 1.5, 6);
+    points.push({ x: x + w / 2, y });
+    return points;
+  }
+
+  function radialPoints(bounds, radiusAt, count) {
+    const { x, y, w, h } = normalizedBounds(bounds);
+    const points = [];
+    for (let index = 0; index <= count; index += 1) {
+      const angle = -Math.PI / 2 + (Math.PI * 2 * index) / count;
+      const factor = radiusAt(angle, index);
+      points.push({ x: x + w / 2 + Math.cos(angle) * w / 2 * factor,
+        y: y + h / 2 + Math.sin(angle) * h / 2 * factor });
+    }
+    return points;
+  }
+
+  function speechPoints(bounds) {
+    const { x, y, w, h } = normalizedBounds(bounds);
+    return [
+      { x: x + w / 2, y }, { x: x + w, y }, { x: x + w, y: y + h * 0.78 },
+      { x: x + w * 0.72, y: y + h * 0.78 }, { x: x + w * 0.62, y: y + h },
+      { x: x + w * 0.5, y: y + h * 0.78 }, { x, y: y + h * 0.78 }, { x, y },
+      { x: x + w / 2, y },
+    ];
+  }
+
+  function outlinePoints(shapeValue, bounds, options) {
+    const shape = String(shapeValue || 'rect');
+    const settings = options || {};
+    const normalized = normalizedBounds(bounds);
+    if (shape === 'ellipse') return radialPoints(bounds, () => 1, 96);
+    if (shape === 'pill') return roundedRectanglePoints(bounds, Math.min(normalized.w, normalized.h) / 2);
+    if (shape === 'octagon') return radialPoints(bounds, () => 1, 8);
+    if (['cloud', 'fluffy'].includes(shape)) {
+      const depth = shape === 'cloud' ? 0.1 : 0.055;
+      return radialPoints(bounds, (angle) => 1 + depth * Math.cos(angle * 10), 160);
+    }
+    if (['thorn', 'spiky'].includes(shape)) {
+      return radialPoints(bounds, (_angle, index) => (index % 2 ? 0.7 : 1), 24);
+    }
+    if (shape === 'thorn-curve') {
+      return radialPoints(bounds, (angle) => 0.84 + 0.16 * Math.cos(angle * 12), 192);
+    }
+    if (['speech', 'speech-bubble', 'balloon'].includes(shape)) return speechPoints(bounds);
+    const radius = shape === 'rounded'
+      ? (settings.borderRadius || Math.min(normalized.w, normalized.h) / 5)
+      : settings.borderRadius;
+    return roundedRectanglePoints(bounds, radius);
+  }
+
+  function pathMetrics(points) {
+    const lengths = [0];
+    for (let index = 1; index < points.length; index += 1) {
+      lengths.push(lengths[index - 1] + Math.hypot(
+        points[index].x - points[index - 1].x, points[index].y - points[index - 1].y,
+      ));
+    }
+    return { lengths, total: lengths[lengths.length - 1] || 1 };
+  }
+
+  function pointAtPathT(shape, bounds, pathT, options) {
+    const points = outlinePoints(shape, bounds, options);
+    const metrics = pathMetrics(points);
+    const normalized = ((Number(pathT) || 0) % 1 + 1) % 1;
+    const distance = normalized * metrics.total;
+    let index = 1;
+    while (index < metrics.lengths.length - 1 && metrics.lengths[index] < distance) index += 1;
+    const before = metrics.lengths[index - 1];
+    const span = Math.max(1e-9, metrics.lengths[index] - before);
+    const ratio = (distance - before) / span;
+    return {
+      x: points[index - 1].x + (points[index].x - points[index - 1].x) * ratio,
+      y: points[index - 1].y + (points[index].y - points[index - 1].y) * ratio,
+      segment: index - 1,
+    };
+  }
+
+  function projectToSegment(point, first, second) {
+    const dx = second.x - first.x; const dy = second.y - first.y;
+    const lengthSquared = dx * dx + dy * dy || 1;
+    const ratio = Math.max(0, Math.min(1, ((point.x - first.x) * dx + (point.y - first.y) * dy) / lengthSquared));
+    const x = first.x + dx * ratio; const y = first.y + dy * ratio;
+    return { x, y, ratio, distanceSquared: (point.x - x) ** 2 + (point.y - y) ** 2 };
+  }
+
+  function projectPointToOutline(shape, boundsValue, pointValue, options) {
+    const bounds = normalizedBounds(boundsValue);
+    const point = { x: Number(pointValue?.x) || 0, y: Number(pointValue?.y) || 0 };
+    const points = outlinePoints(shape, bounds, options);
+    const metrics = pathMetrics(points);
+    let best = null;
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const candidate = { ...projectToSegment(point, points[index], points[index + 1]), segment: index };
+      const tied = best && Math.abs(candidate.distanceSquared - best.distanceSquared) <= 0.25;
+      if (!best || candidate.distanceSquared < best.distanceSquared
+          || (tied && index === options?.previousSegment)) best = candidate;
+    }
+    const length = metrics.lengths[best.segment]
+      + (metrics.lengths[best.segment + 1] - metrics.lengths[best.segment]) * best.ratio;
+    const pathT = length / metrics.total;
+    return {
+      point: { x: best.x, y: best.y },
+      outlinePosition: {
+        mode: 'outline', pathT, segment: best.segment,
+        localHint: { xRatio: (best.x - bounds.x) / bounds.w, yRatio: (best.y - bounds.y) / bounds.h },
+      },
+    };
+  }
+
+  function legacyAnchorToOutline(anchor) {
+    if (!Object.prototype.hasOwnProperty.call(LEGACY_PATH_T, anchor)) return null;
+    return { mode: 'outline', pathT: LEGACY_PATH_T[anchor], legacyAnchor: anchor };
+  }
+
+  function projectLegacyAnchor(shape, boundsValue, anchor, options) {
+    const bounds = normalizedBounds(boundsValue);
+    const points = {
+      top: { x: bounds.x + bounds.w / 2, y: bounds.y },
+      right: { x: bounds.x + bounds.w, y: bounds.y + bounds.h / 2 },
+      bottom: { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h },
+      left: { x: bounds.x, y: bounds.y + bounds.h / 2 },
+    };
+    if (!points[anchor]) return null;
+    const projected = projectPointToOutline(shape, bounds, points[anchor], options);
+    projected.outlinePosition.legacyAnchor = anchor;
+    return projected;
+  }
+
+  function outlineToLegacyAnchor(position, tolerance) {
+    const pathT = ((Number(position?.pathT) || 0) % 1 + 1) % 1;
+    const limit = Number.isFinite(+tolerance) ? +tolerance : 0.06;
+    let best = null;
+    Object.entries(LEGACY_PATH_T).forEach(([name, value]) => {
+      const distance = Math.min(Math.abs(pathT - value), 1 - Math.abs(pathT - value));
+      if (!best || distance < best.distance) best = { name, distance };
+    });
+    return best.distance <= limit ? best.name : null;
+  }
+
+  function normalizeEndpoint(value) {
+    const source = clone(value || {});
+    if (!['topic', 'group', 'point'].includes(source.targetKind)) {
+      throw new TypeError('LineEndpoint.targetKind is invalid');
+    }
+    if (source.targetKind === 'point') {
+      const point = source.targetRef || source.point;
+      source.targetRef = { x: Number(point?.x) || 0, y: Number(point?.y) || 0 };
+    } else if (source.targetRef == null || source.targetRef === '') {
+      throw new TypeError('LineEndpoint.targetRef is required');
+    }
+    if (typeof source.outlinePosition === 'string') {
+      source.outlinePosition = legacyAnchorToOutline(source.outlinePosition);
+    }
+    if (!source.outlinePosition && source.legacyAnchor) {
+      source.outlinePosition = legacyAnchorToOutline(source.legacyAnchor);
+    }
+    return source;
+  }
+
+  function endpointFromLegacy(line, side, topicRefByLegacyId) {
+    const endpoint = line?.[`${side}Endpoint`];
+    if (endpoint) return normalizeEndpoint(endpoint);
+    const point = line?.[`${side}Point`];
+    if (point) return normalizeEndpoint({ targetKind: 'point', targetRef: point });
+    const legacyId = line?.[side];
+    const targetRef = line?.[`${side}TopicRef`] || topicRefByLegacyId?.[legacyId] || legacyId;
+    return normalizeEndpoint({
+      targetKind: 'topic', targetRef,
+      outlinePosition: legacyAnchorToOutline(line?.[`${side}Anchor`]) || undefined,
+      legacyAnchor: line?.[`${side}Anchor`] || undefined,
+    });
+  }
+
+  function legacyEndpointFields(endpointValue) {
+    const endpoint = normalizeEndpoint(endpointValue);
+    if (endpoint.targetKind === 'point') return { point: clone(endpoint.targetRef) };
+    return {
+      id: typeof endpoint.targetRef === 'string'
+        ? endpoint.targetRef : endpoint.targetRef.topicId || endpoint.targetRef.groupId,
+      anchor: endpoint.legacyAnchor || outlineToLegacyAnchor(endpoint.outlinePosition),
+    };
+  }
+
+  function lookupGeometry(endpoint, geometry) {
+    if (endpoint.targetKind === 'group') {
+      const id = typeof endpoint.targetRef === 'string' ? endpoint.targetRef : endpoint.targetRef.groupId;
+      return geometry?.groups instanceof Map ? geometry.groups.get(id) : geometry?.groups?.[id];
+    }
+    const ref = endpoint.targetRef;
+    const key = typeof ref === 'string' ? ref : JSON.stringify([ref?.sourceId, ref?.topicId]);
+    return geometry?.topics instanceof Map ? geometry.topics.get(key) : geometry?.topics?.[key];
+  }
+
+  function resolveEndpoint(endpointValue, geometry) {
+    const endpoint = normalizeEndpoint(endpointValue);
+    if (endpoint.targetKind === 'point') return { status: 'resolved', point: clone(endpoint.targetRef), endpoint };
+    const target = lookupGeometry(endpoint, geometry);
+    if (!target) return { status: 'missing-target', point: null, endpoint };
+    const position = endpoint.outlinePosition || legacyAnchorToOutline(endpoint.legacyAnchor || 'right');
+    if (position?.legacyAnchor) {
+      const projected = projectLegacyAnchor(target.shape || 'rect', target, position.legacyAnchor, target);
+      return { status: 'resolved', point: projected.point,
+        endpoint: { ...endpoint, outlinePosition: projected.outlinePosition } };
+    }
+    const point = pointAtPathT(target.shape || 'rect', target, position.pathT, target);
+    return { status: 'resolved', point: { x: point.x, y: point.y }, endpoint };
+  }
+
+  function normalizeLine(line, topicRefByLegacyId) {
+    const result = clone(line || {});
+    result.fromEndpoint = endpointFromLegacy(result, 'from', topicRefByLegacyId);
+    result.toEndpoint = endpointFromLegacy(result, 'to', topicRefByLegacyId);
+    return result;
+  }
+
+  function nudgeOutlinePosition(position, direction, options) {
+    const step = Math.max(0.001, Number(options?.step) || 0.01);
+    const delta = direction === 'backward' || direction === 'previous' ? -step : step;
+    const result = clone(position || { mode: 'outline', pathT: 0 });
+    result.mode = 'outline'; result.pathT = ((Number(result.pathT) || 0) + delta + 1) % 1;
+    delete result.legacyAnchor;
+    return result;
+  }
+
+  function handleContract(pointerType) {
+    const touch = pointerType === 'touch';
+    return { visualSize: touch ? 28 : 12, hitTargetSize: touch ? 44 : 24,
+      keyboardStep: 0.01, coarsePointer: touch };
+  }
+
+  global.MeldexBoardOutlineEndpoints = Object.freeze({
+    outlinePoints, pointAtPathT, projectPointToOutline, legacyAnchorToOutline, projectLegacyAnchor,
+    outlineToLegacyAnchor, normalizeEndpoint, endpointFromLegacy, legacyEndpointFields,
+    resolveEndpoint, normalizeLine, nudgeOutlinePosition, handleContract,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-board-topic-integration.js === */
+;
+/* Live board bridge for the additive TopicViewDocument frontmatter contract. */
+(function initMeldexBoardTopicIntegration(global) {
+  'use strict';
+
+  const FIELD = 'topicViewDocument';
+  const REFS_FIELD = 'topicRefs';
+  const COMMON_GROUP_TEMPLATES_KEY = 'meldex-board-group-templates-common-v1';
+  const openBoards = new Set();
+  let topicRecordListenerInstalled = false;
+
+  function clone(value) {
+    if (value === undefined) return undefined;
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function hashText(value) {
+    let hash = 2166136261;
+    const text = String(value || '').replace(/\\/g, '/').toLowerCase();
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  }
+
+  function parseScalar(raw) {
+    const value = typeof global.bdYamlScalar === 'function' ? global.bdYamlScalar(raw) : String(raw || '').trim();
+    if (value && typeof value === 'object') return value;
+    try { return JSON.parse(String(value || '')); } catch (_) { return null; }
+  }
+
+  function parseFrontmatter(frontmatter) {
+    const text = String(frontmatter || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const documentMatch = text.match(/^topicViewDocument:\s*(.+)$/m);
+    const topicViewDocument = documentMatch ? parseScalar(documentMatch[1]) : null;
+    const topicRefsByNodeKey = {};
+    const lines = typeof global.bdYamlTopLevelBlock === 'function'
+      ? global.bdYamlTopLevelBlock(text, REFS_FIELD)
+      : [];
+    lines.forEach((line) => {
+      const match = line.match(/^\s+(n\d+):\s*(.*)$/);
+      if (!match) return;
+      const parsed = parseScalar(match[2]);
+      if (parsed?.sourceId && parsed?.topicId) topicRefsByNodeKey[match[1]] = parsed;
+    });
+    return { topicViewDocument, topicRefsByNodeKey };
+  }
+
+  function legacyTopicRef(node, path) {
+    return {
+      sourceId: 'local-vault',
+      topicId: `legacy-board:${hashText(path)}:${encodeURIComponent(String(node?.id || 'topic'))}`,
+    };
+  }
+
+  function ensureTopicRefs(board, parsed, path) {
+    const byKey = parsed?.topicRuntime?.topicRefsByNodeKey || {};
+    (board.nodes || []).forEach((node, index) => {
+      const saved = byKey[`n${index}`];
+      if (saved?.sourceId && saved?.topicId) node.topicRef = clone(saved);
+      else if (!node.topicRef?.sourceId || !node.topicRef?.topicId) node.topicRef = legacyTopicRef(node, path);
+    });
+  }
+
+  function legacyGroupsToView(board) {
+    const byId = new Map((board.nodes || []).map((node) => [node.id, node.topicRef]));
+    return (board.groups || []).map((group, index) => ({
+      ...clone(group),
+      groupId: String(group.groupId || group.id || `group-${index + 1}`),
+      name: String(group.name || 'グループ'),
+      topicRefs: (group.topicRefs || group.nodeIds || []).map((value) => (
+        value?.sourceId ? value : byId.get(value)
+      )).filter(Boolean).map(clone),
+      styleRef: group.styleRef || null,
+      styleOverrides: clone(group.styleOverrides || group.style || {}),
+      locked: !!group.locked,
+      collapsed: !!group.collapsed,
+      x: Number(group.x) || 0,
+      y: Number(group.y) || 0,
+      w: Number(group.w) || undefined,
+      h: Number(group.h) || undefined,
+    }));
+  }
+
+  function legacyLinesToView(board) {
+    const refs = Object.fromEntries((board.nodes || []).map((node) => [node.id, node.topicRef]));
+    return (board.connections || []).map((line) => {
+      if (!global.MeldexBoardOutlineEndpoints) return clone(line);
+      return global.MeldexBoardOutlineEndpoints.normalizeLine(line, refs);
+    });
+  }
+
+  function normalizeTopicDocument(document, board, path) {
+    const refs = (board?.nodes || [])
+      .map((node) => clone(node.topicRef))
+      .filter((ref) => ref?.sourceId && ref?.topicId);
+    const source = clone(document || {});
+    const membership = clone(source.membership || {});
+    if (!Array.isArray(membership.manualTopicRefs)) {
+      membership.manualTopicRefs = clone(Array.isArray(membership.topicRefs) ? membership.topicRefs : refs);
+    }
+    membership.mode = ['manual', 'query', 'hybrid'].includes(membership.mode)
+      ? membership.mode : 'manual';
+    if (membership.mode === 'manual' && !Object.prototype.hasOwnProperty.call(membership, 'queryDefinition')) {
+      membership.queryDefinition = null;
+    }
+    const prepared = {
+      ...source,
+      schemaVersion: source.schemaVersion || 1,
+      documentId: source.documentId || `legacy-board-document:${hashText(path)}`,
+      defaultSurface: 'board',
+      membership,
+      sheetViews: Array.isArray(source.sheetViews) ? source.sheetViews : [],
+      boardViews: Array.isArray(source.boardViews) ? source.boardViews : [],
+      relationSets: Array.isArray(source.relationSets) ? source.relationSets : [],
+      topicLayouts: Array.isArray(source.topicLayouts) ? source.topicLayouts : [],
+      lastCompleteSnapshot: Object.prototype.hasOwnProperty.call(source, 'lastCompleteSnapshot')
+        ? source.lastCompleteSnapshot : null,
+    };
+    const boardNormalized = global.MeldexBoardTopicViews.normalizeDocument(prepared);
+    return global.MeldexTopicViewDocument?.normalizeDocument
+      ? global.MeldexTopicViewDocument.normalizeDocument(boardNormalized)
+      : boardNormalized;
+  }
+
+  function runtimeForCapture(board) {
+    return {
+      nodes: board.nodes || [],
+      groups: legacyGroupsToView(board),
+      lines: legacyLinesToView(board),
+      hiddenTopicRefs: clone(board.hiddenTopicRefs || []),
+      collapsedTopicRefs: (board.nodes || []).filter((node) => node.collapsed).map((node) => clone(node.topicRef)),
+      styleOverrides: clone(board.topicStyleOverrides || {}),
+      camera: { pan: { x: Number(board.panX) || 0, y: Number(board.panY) || 0 },
+        zoom: Number(board.zoom) || 1, rotation: Number(board.rotation) || 0 },
+    };
+  }
+
+  function createDocument(board, path) {
+    const normalized = normalizeTopicDocument({
+      schemaVersion: 1,
+      documentId: `legacy-board-document:${hashText(path)}`,
+      defaultSurface: 'board',
+      membership: {
+        mode: 'manual',
+        manualTopicRefs: (board.nodes || []).map((node) => clone(node.topicRef)),
+        queryDefinition: null,
+      },
+      sources: [{ sourceId: 'local-vault' }],
+      sheetViews: [],
+      relationSets: [],
+      boardViews: [],
+      topicLayouts: [],
+      lastCompleteSnapshot: null,
+    }, board, path);
+    normalized.boardViews[0] = global.MeldexBoardTopicViews.captureViewState(
+      normalized.boardViews[0], runtimeForCapture(board),
+    );
+    return normalized;
+  }
+
+  function activeView(board) {
+    const document = board.topicViewDocument;
+    return document?.boardViews?.find((view) => view.boardViewId === board.activeBoardViewId)
+      || document?.boardViews?.[0] || null;
+  }
+
+  function captureRuntime(board) {
+    if (!global.MeldexBoardTopicViews) return null;
+    if (!board.topicViewDocument) board.topicViewDocument = createDocument(board, board.path);
+    const document = normalizeTopicDocument(board.topicViewDocument, board, board.path);
+    const index = document.boardViews.findIndex((view) => view.boardViewId === board.activeBoardViewId);
+    const targetIndex = index >= 0 ? index : 0;
+    document.boardViews[targetIndex] = global.MeldexBoardTopicViews.captureViewState(
+      document.boardViews[targetIndex], runtimeForCapture(board),
+    );
+    document.membership = document.membership || { mode: 'manual' };
+    document.membership.manualTopicRefs = (board.nodes || []).map((node) => clone(node.topicRef));
+    board.topicViewDocument = document;
+    board.activeBoardViewId = document.boardViews[targetIndex].boardViewId;
+    return document.boardViews[targetIndex];
+  }
+
+  function topicKey(value) {
+    const ref = value?.topicRef || value;
+    return JSON.stringify([String(ref?.sourceId || ''), String(ref?.topicId || '')]);
+  }
+
+  function canonicalRef(sourceId, topicId) {
+    return { sourceId: String(sourceId || ''), topicId: String(topicId || '') };
+  }
+
+  function replaceTopicRef(value, replacements) {
+    const replacement = replacements.get(topicKey(value));
+    return replacement ? clone(replacement) : clone(value);
+  }
+
+  function replaceDocumentTopicRefs(document, replacements) {
+    const next = clone(document || {});
+    const membership = next.membership;
+    if (Array.isArray(membership?.manualTopicRefs)) {
+      membership.manualTopicRefs = membership.manualTopicRefs.map((ref) => replaceTopicRef(ref, replacements));
+    }
+    (next.boardViews || []).forEach((view) => {
+      const positions = {};
+      Object.entries(view.positionsByTopicRef || {}).forEach(([savedKey, position]) => {
+        let savedRef = position?.topicRef;
+        if (!savedRef) {
+          try {
+            const pair = JSON.parse(savedKey);
+            if (Array.isArray(pair) && pair.length === 2) savedRef = canonicalRef(pair[0], pair[1]);
+          } catch (_) {}
+        }
+        const topicRef = replaceTopicRef(savedRef, replacements);
+        const key = topicKey(topicRef);
+        if (!key || key === '["",""]') return;
+        positions[key] = { ...clone(position), topicRef };
+      });
+      view.positionsByTopicRef = positions;
+      (view.groups || []).forEach((group) => {
+        group.topicRefs = (group.topicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
+      });
+      (view.lines || []).forEach((line) => {
+        ['fromTopicRef', 'toTopicRef'].forEach((field) => {
+          if (line[field]) line[field] = replaceTopicRef(line[field], replacements);
+        });
+        ['fromEndpoint', 'toEndpoint'].forEach((field) => {
+          if (line[field]?.targetKind === 'topic') {
+            line[field].targetRef = replaceTopicRef(line[field].targetRef, replacements);
+          }
+        });
+      });
+      view.hiddenTopicRefs = (view.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
+      view.collapsedTopicRefs = (view.collapsedTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
+    });
+    (next.relationSets || []).forEach((relationSet) => {
+      (relationSet.edges || []).forEach((edge) => {
+        if (edge.parentTopicRef) edge.parentTopicRef = replaceTopicRef(edge.parentTopicRef, replacements);
+        if (edge.childTopicRef) edge.childTopicRef = replaceTopicRef(edge.childTopicRef, replacements);
+      });
+    });
+    (next.topicLayouts || []).forEach((layout) => {
+      if (layout.topicRef) layout.topicRef = replaceTopicRef(layout.topicRef, replacements);
+    });
+    return next;
+  }
+
+  function recordText(record) {
+    const title = String(record?.title || '無題');
+    return typeof record?.note === 'string' && record.note ? `${title}\n${record.note}` : title;
+  }
+
+  function updateBoardRecordDisplays(board, detail) {
+    const sourceId = String(detail?.sourceId || '');
+    const byRef = new Map((detail?.topicRecords || []).map((record) => [
+      topicKey(canonicalRef(sourceId, record?.topicId)), record,
+    ]));
+    let changed = false;
+    (board.nodes || []).forEach((node) => {
+      const record = byRef.get(topicKey(node.topicRef));
+      if (!record) return;
+      const nextText = recordText(record);
+      if (node.text !== nextText) { node.text = nextText; changed = true; }
+    });
+    return changed;
+  }
+
+  function canonicalizeBoard(board, detail) {
+    const sourceId = String(detail?.sourceId || '');
+    const mapping = detail?.legacyNodeTopicIds || {};
+    const replacements = new Map();
+    (board.nodes || []).forEach((node) => {
+      const topicId = String(mapping[node.id] || '');
+      if (!sourceId || !topicId) return;
+      replacements.set(topicKey(node.topicRef), canonicalRef(sourceId, topicId));
+      node.topicRef = canonicalRef(sourceId, topicId);
+    });
+    if (replacements.size) {
+      board.topicViewDocument = replaceDocumentTopicRefs(board.topicViewDocument, replacements);
+      board.hiddenTopicRefs = (board.hiddenTopicRefs || []).map((ref) => replaceTopicRef(ref, replacements));
+      applyView(board, activeView(board));
+    }
+    const displayChanged = updateBoardRecordDisplays(board, detail);
+    if (replacements.size || displayChanged) redraw();
+    return { replacementCount: replacements.size, displayChanged };
+  }
+
+  function installTopicRecordListener() {
+    if (topicRecordListenerInstalled || typeof global.addEventListener !== 'function') return;
+    topicRecordListenerInstalled = true;
+    global.addEventListener('meldex:topic-records-updated', (event) => {
+      for (const board of openBoards) {
+        if (!board || board._topicBridgeDestroyed || !board.path) continue;
+        const sourceId = String(event?.detail?.sourceId || '');
+        if (!(board.nodes || []).some((node) => String(node.topicRef?.sourceId || '') === sourceId)) continue;
+        canonicalizeBoard(board, event?.detail || {});
+      }
+    });
+  }
+
+  function installSaveHook(board) {
+    if (typeof global.bdSave !== 'function') return false;
+    if (global.bdSave._meldexTopicSaveHook) {
+      global.bdSave._meldexTopicBoard = board;
+      return true;
+    }
+    const original = global.bdSave;
+    const wrapped = async function meldexTopicAwareBoardSave() {
+      const current = wrapped._meldexTopicBoard;
+      const savedPath = current?.path || '';
+      const result = await original.apply(this, arguments);
+      if (result === true && savedPath && !current?._topicBridgeDestroyed
+          && !current?.readOnly && !current?.readonly && !current?.isReadOnly) {
+        global.GbTopicLiveBridge?.scheduleAfterSave?.(savedPath, { reason: 'board-save' });
+      }
+      return result;
+    };
+    wrapped._meldexTopicSaveHook = true;
+    wrapped._meldexTopicBoard = board;
+    global.bdSave = wrapped;
+    return true;
+  }
+
+  function viewGroupsToLegacy(board, groups) {
+    const nodeByRef = new Map((board.nodes || []).map((node) => [topicKey(node.topicRef), node.id]));
+    return (groups || []).map((group) => ({
+      ...clone(group), id: group.groupId, groupId: group.groupId,
+      nodeIds: (group.topicRefs || []).map((ref) => nodeByRef.get(topicKey(ref))).filter(Boolean),
+    }));
+  }
+
+  function viewLinesToLegacy(board, lines) {
+    const nodeByRef = new Map((board.nodes || []).map((node) => [topicKey(node.topicRef), node.id]));
+    return (lines || []).map((line) => {
+      const result = clone(line);
+      ['from', 'to'].forEach((side) => {
+        const endpoint = result[`${side}Endpoint`];
+        if (!endpoint) return;
+        delete result[side]; delete result[`${side}Point`]; delete result[`${side}Anchor`];
+        if (endpoint.targetKind === 'point') result[`${side}Point`] = clone(endpoint.targetRef);
+        else if (endpoint.targetKind === 'topic') {
+          result[side] = nodeByRef.get(topicKey(endpoint.targetRef)) || '';
+        } else if (endpoint.targetKind === 'group') {
+          result[side] = typeof endpoint.targetRef === 'string'
+            ? endpoint.targetRef : endpoint.targetRef?.groupId || '';
+        }
+        if (global.MeldexBoardOutlineEndpoints) {
+          result[`${side}Anchor`] = endpoint.legacyAnchor
+            || global.MeldexBoardOutlineEndpoints.outlineToLegacyAnchor(endpoint.outlinePosition);
+        }
+      });
+      return result;
+    });
+  }
+
+  function applyView(board, view) {
+    if (!view || !global.MeldexBoardTopicViews) return;
+    const next = global.MeldexBoardTopicViews.applyViewState(view, { nodes: board.nodes || [] });
+    board.nodes = next.nodes;
+    board.groups = viewGroupsToLegacy(board, view.groups);
+    board.connections = viewLinesToLegacy(board, view.lines);
+    board.hiddenTopicRefs = clone(view.hiddenTopicRefs || []);
+    board.topicStyleOverrides = clone(view.styleOverrides || {});
+    board.panX = Number(view.camera?.pan?.x) || 0;
+    board.panY = Number(view.camera?.pan?.y) || 0;
+    board.zoom = Number(view.camera?.zoom) || 1;
+    board.rotation = Number(view.camera?.rotation) || 0;
+    board.activeBoardViewId = view.boardViewId;
+  }
+
+  function hydrate(board, parsed, path) {
+    if (!global.MeldexBoardTopicViews) return;
+    board._topicBridgeDestroyed = false;
+    openBoards.add(board);
+    installTopicRecordListener();
+    installSaveHook(board);
+    ensureTopicRefs(board, parsed, path);
+    board.topicViewDocument = parsed?.topicRuntime?.topicViewDocument
+      ? normalizeTopicDocument(parsed.topicRuntime.topicViewDocument, board, path)
+      : createDocument(board, path);
+    board.activeBoardViewId = board.topicViewDocument.activeBoardViewId
+      || board.topicViewDocument.boardViews[0].boardViewId;
+    applyView(board, activeView(board));
+    const bridge = global.GbTopicLiveBridge;
+    if (bridge?.migrateOpenedSheet) {
+      const expectedPath = path;
+      board._topicMigrationPromise = bridge.migrateOpenedSheet(path, {
+        owner: board,
+        readOnly: !!(board.readOnly || board.readonly || board.isReadOnly),
+        reason: 'board-open',
+      }).then((result) => {
+        if (!result?.ok || board._topicBridgeDestroyed || board.path !== expectedPath) return result;
+        canonicalizeBoard(board, result.detail || {});
+        return result;
+      }).catch(() => ({ ok: false, status: 'fallback' }));
+    } else {
+      board._topicMigrationPromise = Promise.resolve({ ok: false, status: 'offline' });
+    }
+  }
+
+  function destroy(board) {
+    if (!board) return;
+    board._topicBridgeDestroyed = true;
+    openBoards.delete(board);
+    global.GbTopicLiveBridge?.destroyOwner?.(board);
+  }
+
+  function serializeFrontmatter(board) {
+    captureRuntime(board);
+    let output = '';
+    if ((board.nodes || []).some((node) => node.topicRef?.sourceId && node.topicRef?.topicId)) {
+      output += `${REFS_FIELD}:\n`;
+      (board.nodes || []).forEach((node, index) => {
+        if (node.topicRef?.sourceId && node.topicRef?.topicId) {
+          output += `  n${index}: ${JSON.stringify(JSON.stringify(node.topicRef))}\n`;
+        }
+      });
+    }
+    if (board.topicViewDocument) {
+      const document = clone(board.topicViewDocument);
+      document.activeBoardViewId = board.activeBoardViewId;
+      output += `${FIELD}: ${JSON.stringify(JSON.stringify(document))}\n`;
+    }
+    return output;
+  }
+
+  function redraw() {
+    global.bdRender?.();
+    global.bdDrawConns?.();
+    global.bdDrawFrames?.();
+    global.bdTransform?.();
+    global.bdSyncBoardUi?.(false);
+  }
+
+  function switchView(board, boardViewId, options) {
+    captureRuntime(board);
+    const target = board.topicViewDocument.boardViews.find((view) => view.boardViewId === boardViewId);
+    if (!target) return false;
+    if (!options?.skipUndo) global.bdPushUndo?.('ボードビューを切り替え');
+    applyView(board, target);
+    global.bdDirty?.();
+    redraw();
+    return true;
+  }
+
+  function shuffle(board) {
+    const view = captureRuntime(board);
+    if (!view || !global.MeldexBoardShuffle) return false;
+    const selected = new Set(board.selected || []);
+    const hidden = new Set((view.hiddenTopicRefs || []).map(topicKey));
+    const items = (board.nodes || []).map((node) => ({ ...node, topicRef: clone(node.topicRef),
+      editable: !node.readOnly, hidden: hidden.has(topicKey(node.topicRef)), visible: true }));
+    const plan = global.MeldexBoardShuffle.planShuffle({
+      items,
+      selectedTopicRefs: items.filter((node) => selected.has(node.id)).map((node) => node.topicRef),
+    });
+    if (!plan.changed) return false;
+    global.bdPushUndo?.('トピックをシャッフル');
+    const index = board.topicViewDocument.boardViews.findIndex((item) => item.boardViewId === view.boardViewId);
+    board.topicViewDocument.boardViews[index] = global.MeldexBoardShuffle.applyToBoardView(view, plan);
+    applyView(board, board.topicViewDocument.boardViews[index]);
+    global.bdDirty?.();
+    redraw();
+    return true;
+  }
+
+  function readCommonGroupTemplates() {
+    try {
+      const parsed = JSON.parse(global.localStorage?.getItem(COMMON_GROUP_TEMPLATES_KEY) || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function writeCommonGroupTemplates(values) {
+    global.localStorage?.setItem(COMMON_GROUP_TEMPLATES_KEY, JSON.stringify(values || []));
+  }
+
+  function groupTemplateLibraries(board) {
+    const embedded = board?.topicViewDocument?.groupTemplateLibraries || {};
+    const common = readCommonGroupTemplates();
+    return {
+      file: clone(Array.isArray(embedded.file) ? embedded.file : []),
+      common: clone(common.length ? common : (Array.isArray(embedded.common) ? embedded.common : [])),
+    };
+  }
+
+  function setGroupTemplateLibraries(board, libraries, changedScope) {
+    const normalized = global.MeldexBoardGroups.normalizeLibraries(libraries);
+    if (changedScope === 'common') {
+      writeCommonGroupTemplates(normalized.common);
+      return;
+    }
+    const existing = clone(board.topicViewDocument.groupTemplateLibraries || {});
+    board.topicViewDocument.groupTemplateLibraries = { ...existing, file: clone(normalized.file) };
+    global.bdDirty?.();
+  }
+
+  function createTemplateId() {
+    if (global.crypto?.randomUUID) return global.crypto.randomUUID();
+    return `group-template-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function showGroupMessage(message, error) {
+    global.showStatus?.(String(message || ''), !!error);
+  }
+
+  function createGroupUiController(board, options) {
+    const groupsApi = global.MeldexBoardGroups;
+    const readOnly = !!(board?.readOnly || board?.readonly || board?.isReadOnly);
+    const active = () => activeView(board);
+    const selectedGroup = (groupId) => (active()?.groups || []).find((group) => group.groupId === groupId) || null;
+    const rejectReadOnly = () => ({ ok: false, reason: 'read-only' });
+    const commitView = (view, label) => {
+      if (readOnly) return false;
+      const index = board.topicViewDocument.boardViews.findIndex((item) => item.boardViewId === view.boardViewId);
+      if (index < 0) return false;
+      global.bdPushUndo?.(label);
+      board.topicViewDocument.boardViews[index] = view;
+      applyView(board, view);
+      global.bdDirty?.();
+      redraw();
+      return true;
+    };
+    const attempt = (callback) => {
+      try { return callback(); }
+      catch (error) {
+        showGroupMessage(error?.message || 'グループを更新できません', true);
+        return { ok: false, error };
+      }
+    };
+    return {
+      readOnly,
+      listGroups: () => clone(active()?.groups || []),
+      getGroup: (groupId) => clone(selectedGroup(groupId)),
+      updateGroup(groupId, changes) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const view = groupsApi.updateGroup(active(), groupId, changes);
+          return { ok: commitView(view, 'グループ設定を変更'), group: clone(selectedGroup(groupId)) };
+        });
+      },
+      listTemplates() {
+        const libraries = groupTemplateLibraries(board);
+        return ['file', 'common'].flatMap((scope) => libraries[scope].map((template) => ({ scope, ...clone(template) })));
+      },
+      getTemplate(scope, templateId) {
+        return this.listTemplates().find((template) => template.scope === scope && template.templateId === templateId) || null;
+      },
+      saveGroupTemplate(scope, groupId, name) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const group = selectedGroup(groupId);
+          if (!group) throw new Error('グループが見つかりません');
+          const saved = groupsApi.saveTemplate(groupTemplateLibraries(board), scope, group, {
+            idFactory: options?.idFactory || createTemplateId,
+            name: String(name || group.name || 'グループテンプレート').trim(),
+          });
+          setGroupTemplateLibraries(board, saved.libraries, scope);
+          showGroupMessage('グループテンプレートを保存しました');
+          return { ok: true, template: saved.template };
+        });
+      },
+      renameTemplate(scope, templateId, name) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const libraries = groupsApi.updateTemplate(groupTemplateLibraries(board), scope, templateId, { name: String(name || '').trim() });
+          setGroupTemplateLibraries(board, libraries, scope);
+          return { ok: true };
+        });
+      },
+      deleteTemplate(scope, templateId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const libraries = groupsApi.removeTemplate(groupTemplateLibraries(board), scope, templateId);
+          setGroupTemplateLibraries(board, libraries, scope);
+          return { ok: true };
+        });
+      },
+      duplicateTemplate(scope, templateId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const source = this.getTemplate(scope, templateId);
+          const saved = groupsApi.duplicateTemplate(groupTemplateLibraries(board), scope, templateId, {
+            idFactory: options?.idFactory || createTemplateId,
+            name: `${source?.name || 'グループ'} のコピー`,
+          });
+          setGroupTemplateLibraries(board, saved.libraries, scope);
+          return { ok: true, template: saved.template };
+        });
+      },
+      applyGroupTemplate(scope, templateId, groupId) {
+        if (readOnly) return rejectReadOnly();
+        return attempt(() => {
+          const template = this.getTemplate(scope, templateId);
+          if (!template) throw new Error('グループテンプレートが見つかりません');
+          const view = groupsApi.applyTemplate(active(), groupId, template);
+          return { ok: commitView(view, 'グループテンプレートを適用') };
+        });
+      },
+    };
+  }
+
+  function groupStyleField(root, labelText, key, value, type, onChange) {
+    const label = document.createElement('label'); label.textContent = labelText;
+    const input = document.createElement('input'); input.type = type || 'text';
+    if (type === 'checkbox') input.checked = !!value;
+    else input.value = value == null ? '' : String(value);
+    input.dataset.groupStyleField = key;
+    input.addEventListener('change', () => onChange(type === 'checkbox' ? input.checked : input.value));
+    label.appendChild(input); root.appendChild(label);
+  }
+
+  function mountGroupControls(root, board, options) {
+    if (!root?.appendChild || !global.MeldexBoardGroups) return null;
+    const controller = createGroupUiController(board, options);
+    if (controller.readOnly) return null;
+    root.querySelectorAll?.('[data-bd-group-manager]').forEach((element) => element.remove());
+    const details = document.createElement('details');
+    details.className = 'bd-topic-view-overflow bd-group-manager';
+    details.dataset.bdGroupManager = 'true';
+    const summary = document.createElement('summary'); summary.textContent = 'グループ'; details.appendChild(summary);
+    const panel = document.createElement('div'); panel.className = 'bd-topic-view-overflow-menu'; details.appendChild(panel);
+    const groupSelect = document.createElement('select'); groupSelect.setAttribute('aria-label', '編集するグループ');
+    const templateSelect = document.createElement('select'); templateSelect.setAttribute('aria-label', 'グループテンプレート');
+    const templateName = document.createElement('input'); templateName.placeholder = 'テンプレート名';
+    const scopeSelect = document.createElement('select');
+    [['file', 'このファイル'], ['common', '共通']].forEach(([value, label]) => {
+      const option = document.createElement('option'); option.value = value; option.textContent = label; scopeSelect.appendChild(option);
+    });
+    const optionsHost = document.createElement('div');
+    const refreshOptions = () => {
+      const group = controller.getGroup(groupSelect.value);
+      if (!group) { optionsHost.replaceChildren(); return; }
+      const section = global.MeldexBoardGroups.renderOptionsTab(optionsHost, group, {
+        onChange: (groupId, changes) => { controller.updateGroup(groupId, changes); refreshAll(); },
+      });
+      const applyStyle = (key, value) => {
+        const current = controller.getGroup(group.groupId);
+        controller.updateGroup(group.groupId, {
+          styleOverrides: { ...(current?.styleOverrides || {}), [key]: value },
+        });
+      };
+      [['背景色', 'background', group.styleOverrides?.background, 'color'],
+        ['透明度', 'opacity', group.styleOverrides?.opacity, 'number'],
+        ['枠色', 'borderColor', group.styleOverrides?.borderColor, 'color'],
+        ['枠幅', 'borderWidth', group.styleOverrides?.borderWidth, 'number'],
+        ['線種', 'borderStyle', group.styleOverrides?.borderStyle, 'text'],
+        ['角丸', 'borderRadius', group.styleOverrides?.borderRadius, 'number'],
+        ['影', 'shadow', group.styleOverrides?.shadow, 'text'],
+        ['内側余白', 'padding', group.styleOverrides?.padding, 'number'],
+        ['ラベルサイズ', 'labelFontSize', group.styleOverrides?.labelFontSize, 'number']]
+        .forEach(([label, key, value, type]) => groupStyleField(section, label, key, value, type, (next) => applyStyle(key, next)));
+      groupStyleField(section, 'ロック', 'locked', group.locked, 'checkbox', (value) => controller.updateGroup(group.groupId, { locked: value }));
+      groupStyleField(section, '折りたたむ', 'collapsed', group.collapsed, 'checkbox', (value) => controller.updateGroup(group.groupId, { collapsed: value }));
+    };
+    const refreshTemplates = () => {
+      templateSelect.replaceChildren();
+      controller.listTemplates().forEach((template) => {
+        const option = document.createElement('option');
+        option.value = `${template.scope}:${template.templateId}`;
+        option.textContent = `${template.scope === 'file' ? 'ファイル' : '共通'}: ${template.name}`;
+        templateSelect.appendChild(option);
+      });
+      const selected = controller.listTemplates().find((template) => `${template.scope}:${template.templateId}` === templateSelect.value);
+      templateName.value = selected?.name || templateName.value;
+    };
+    const refreshAll = () => {
+      const selectedId = groupSelect.value;
+      groupSelect.replaceChildren();
+      controller.listGroups().forEach((group) => {
+        const option = document.createElement('option'); option.value = group.groupId; option.textContent = group.name;
+        groupSelect.appendChild(option);
+      });
+      if (controller.getGroup(selectedId)) groupSelect.value = selectedId;
+      refreshTemplates(); refreshOptions();
+    };
+    const selectedTemplate = () => {
+      const [scope, ...parts] = String(templateSelect.value || '').split(':');
+      return { scope, templateId: parts.join(':') };
+    };
+    const button = (text, action) => {
+      const element = document.createElement('button'); element.type = 'button'; element.textContent = text;
+      element.addEventListener('click', async () => { await action(); refreshAll(); }); panel.appendChild(element);
+    };
+    panel.append(groupSelect, optionsHost, scopeSelect, templateName, templateSelect);
+    groupSelect.addEventListener('change', refreshOptions);
+    templateSelect.addEventListener('change', () => { templateName.value = controller.getTemplate(selectedTemplate().scope, selectedTemplate().templateId)?.name || ''; });
+    button('現在値を保存', () => controller.saveGroupTemplate(scopeSelect.value, groupSelect.value, templateName.value));
+    button('適用', () => { const value = selectedTemplate(); controller.applyGroupTemplate(value.scope, value.templateId, groupSelect.value); });
+    button('名前変更', () => { const value = selectedTemplate(); controller.renameTemplate(value.scope, value.templateId, templateName.value); });
+    button('複製', () => { const value = selectedTemplate(); controller.duplicateTemplate(value.scope, value.templateId); });
+    button('削除', async () => {
+      const value = selectedTemplate();
+      const template = controller.getTemplate(value.scope, value.templateId);
+      if (!template) return;
+      const confirmed = typeof global.cfConfirm === 'function'
+        ? await global.cfConfirm(`グループテンプレート「${template.name}」を削除しますか？`)
+        : false;
+      if (confirmed) controller.deleteTemplate(value.scope, value.templateId);
+    });
+    root.appendChild(details);
+    refreshAll();
+    return { root: details, controller, refresh: refreshAll };
+  }
+
+  function mountToolbar(board) {
+    const boardRoot = global._bdToolbarRoot?.();
+    const root = boardRoot?.nodeType === 1
+      ? (boardRoot.querySelector?.('[data-bd-role="toolbar-top"]') || boardRoot)
+      : null;
+    const views = global.MeldexBoardTopicViews;
+    if (!root || !views || !board.topicViewDocument) return null;
+    root.querySelectorAll('[data-bd-topic-view-controls]').forEach((element) => element.remove());
+    let toolbar = null;
+    const controller = views.createController({
+      getDocument: () => board.topicViewDocument,
+      setDocument: (document) => { board.topicViewDocument = document; },
+      pushUndo: (label) => global.bdPushUndo?.(label),
+      onChange: (_document, result) => {
+        const nextId = result?.activeBoardViewId || board.activeBoardViewId;
+        if (nextId) switchView(board, nextId, { skipUndo: true });
+        global.bdDirty?.();
+        toolbar?.refresh?.();
+      },
+    });
+    toolbar = views.attachToolbar(root, controller, {
+      getDocument: () => board.topicViewDocument,
+      getActiveBoardViewId: () => board.activeBoardViewId,
+      setActiveBoardViewId: (id) => { switchView(board, id); toolbar?.refresh?.(); },
+    });
+    global.MeldexBoardShuffle?.attachShuffleAction(toolbar?.root, () => shuffle(board));
+    toolbar.groupControls = mountGroupControls(root, board);
+    return toolbar;
+  }
+
+  global.MeldexBoardTopicIntegration = Object.freeze({
+    parseFrontmatter, hydrate, canonicalizeBoard, captureRuntime, serializeFrontmatter,
+    switchView, shuffle, mountToolbar, createGroupUiController, mountGroupControls,
+    installSaveHook, destroy,
+  });
+}(typeof globalThis !== 'undefined' ? globalThis : window));
+
+;
+
+/* === gb-note-embed-serializer.js === */
+;
+/* MeldexEmbedBlock v1: strict validation and safe Markdown round-trip. */
+(function (global) {
+  'use strict';
+
+  const SCHEMA_VERSION = 1;
+  const RESOURCE_TYPES = new Set(['sheet', 'board']);
+  const HEADERS = new Set(['full', 'compact', 'hidden']);
+  const INTERACTIONS = new Set(['editable', 'read-only']);
+  const DIRECTIVE_RE = /<!--meldex-embed:v(\d+):([A-Za-z0-9_-]+)-->/g;
+  const MAX_DIRECTIVE_BYTES = 64 * 1024;
+
+  class EmbedValidationError extends Error {}
+
+  function _plainObject(value, label) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new EmbedValidationError(label + ' must be an object');
+    }
+    return value;
+  }
+
+  function _string(value, label, maximum) {
+    if (typeof value !== 'string' || !value.trim() || /[\u0000-\u001f]/.test(value)) {
+      throw new EmbedValidationError(label + ' must be a non-empty string');
+    }
+    if (value.length > (maximum || 512)) throw new EmbedValidationError(label + ' is too long');
+    return value;
+  }
+
+  function _safeOpenUri(value) {
+    const uri = _string(value, 'fallback.openUri', 2048).trim();
+    if (/^(?:javascript|vbscript|data|file):/i.test(uri)) {
+      throw new EmbedValidationError('fallback.openUri uses an unsafe scheme');
+    }
+    if (!/^(?:https?:\/\/|meldex:|\/|#|\.\.\/|\.\/)/i.test(uri)) {
+      throw new EmbedValidationError('fallback.openUri must be an app, relative, or web URI');
+    }
+    return uri;
+  }
+
+  function _clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalize(block) {
+    const source = _plainObject(block, 'MeldexEmbedBlock');
+    if (source.schemaVersion !== SCHEMA_VERSION) {
+      throw new EmbedValidationError('unsupported MeldexEmbedBlock schemaVersion');
+    }
+    if (!RESOURCE_TYPES.has(source.resourceType)) {
+      throw new EmbedValidationError('resourceType must be sheet or board');
+    }
+    const display = _plainObject(source.display, 'display');
+    const fallback = _plainObject(source.fallback, 'fallback');
+    if (!HEADERS.has(display.header)) throw new EmbedValidationError('display.header is invalid');
+    if (!INTERACTIONS.has(display.interaction)) throw new EmbedValidationError('display.interaction is invalid');
+    if (!Number.isInteger(display.height) || display.height < 160 || display.height > 2400) {
+      throw new EmbedValidationError('display.height must be an integer from 160 to 2400');
+    }
+    const result = _clone(source);
+    result.schemaVersion = SCHEMA_VERSION;
+    result.blockId = _string(source.blockId, 'blockId');
+    result.resourceType = source.resourceType;
+    result.sourceId = _string(source.sourceId, 'sourceId');
+    result.documentId = _string(source.documentId, 'documentId');
+    result.viewId = _string(source.viewId, 'viewId');
+    result.display = Object.assign({}, _clone(display), {
+      header: display.header,
+      height: display.height,
+      interaction: display.interaction,
+    });
+    result.fallback = Object.assign({}, _clone(fallback), {
+      title: _string(fallback.title, 'fallback.title', 500),
+      openUri: _safeOpenUri(fallback.openUri),
+    });
+    return result;
+  }
+
+  function inspect(block) {
+    try {
+      const source = _plainObject(block, 'MeldexEmbedBlock');
+      if (source.schemaVersion !== SCHEMA_VERSION) {
+        return { editable: false, status: 'unsupported-schema', block: _clone(source) };
+      }
+      if (!RESOURCE_TYPES.has(source.resourceType)) {
+        return { editable: false, status: 'unsupported-type', block: _clone(source) };
+      }
+      return { editable: true, status: 'supported', block: normalize(source) };
+    } catch (error) {
+      return { editable: false, status: 'invalid', error: String(error.message || error), block: null };
+    }
+  }
+
+  function _encodeUtf8(value) {
+    const text = JSON.stringify(value);
+    if (typeof Buffer !== 'undefined') return Buffer.from(text, 'utf8').toString('base64url');
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function _decodeUtf8(value) {
+    if (value.length > MAX_DIRECTIVE_BYTES * 2) throw new EmbedValidationError('embed directive is too large');
+    if (typeof Buffer !== 'undefined') return Buffer.from(value, 'base64url').toString('utf8');
+    const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4);
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  }
+
+  function _escapeLinkLabel(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/([\[\]])/g, '\\$1').replace(/[\r\n]+/g, ' ');
+  }
+
+  function _escapeLinkUri(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/\)/g, '\\)');
+  }
+
+  function fallbackMarkdown(block) {
+    const inspected = inspect(block);
+    const source = inspected.block || block || {};
+    const fallback = source.fallback && typeof source.fallback === 'object' ? source.fallback : {};
+    let title = typeof fallback.title === 'string' && fallback.title.trim()
+      ? fallback.title.trim() : '対応していない埋め込みビュー';
+    let uri = '#';
+    try { uri = _safeOpenUri(fallback.openUri || '#'); } catch (_) { uri = '#'; }
+    return '[' + _escapeLinkLabel(title) + '](' + _escapeLinkUri(uri) + ')';
+  }
+
+  function toMarkdown(block) {
+    const normalized = normalize(block);
+    const encoded = _encodeUtf8(normalized);
+    if (encoded.length > MAX_DIRECTIVE_BYTES * 2) throw new EmbedValidationError('embed directive is too large');
+    return '<!--meldex-embed:v1:' + encoded + '-->\n' + fallbackMarkdown(normalized);
+  }
+
+  function parseDirective(version, encoded) {
+    let decoded;
+    try {
+      decoded = JSON.parse(_decodeUtf8(encoded));
+    } catch (error) {
+      return { editable: false, status: 'invalid', error: String(error.message || error), block: null };
+    }
+    if (Number(version) !== SCHEMA_VERSION) {
+      return { editable: false, status: 'unsupported-schema', block: decoded };
+    }
+    return inspect(decoded);
+  }
+
+  function parseMarkdown(markdown) {
+    const source = String(markdown || '');
+    const items = [];
+    DIRECTIVE_RE.lastIndex = 0;
+    let match;
+    while ((match = DIRECTIVE_RE.exec(source))) {
+      const parsed = parseDirective(match[1], match[2]);
+      items.push(Object.assign(parsed, {
+        start: match.index,
+        end: DIRECTIVE_RE.lastIndex,
+        directive: match[0],
+        fallbackMarkdown: fallbackMarkdown(parsed.block),
+      }));
+    }
+    return items;
+  }
+
+  const api = {
+    SCHEMA_VERSION,
+    EmbedValidationError,
+    normalize,
+    inspect,
+    toMarkdown,
+    parseDirective,
+    parseMarkdown,
+    fallbackMarkdown,
+  };
+  global.MeldexNoteEmbedSerializer = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-view-host.js === */
+;
+/* Multiple-instance, visibility-bounded host for embedded sheet/board views. */
+(function (global) {
+  'use strict';
+
+  const RESOURCE_TOOL_TYPES = Object.freeze({ sheet: 'db', board: 'board' });
+
+  function _registerCapabilities() {
+    if (typeof global.registerToolCapability !== 'function') return;
+    global.registerToolCapability('db', 'embeddable', true);
+    global.registerToolCapability('board', 'embeddable', true);
+  }
+
+  function _componentIsEmbeddable(toolType) {
+    if (typeof global.getToolCapability !== 'function') return toolType === 'db' || toolType === 'board';
+    return global.getToolCapability(toolType, 'embeddable');
+  }
+
+  function _defaultFactory(type, paneId, tabId, options) {
+    return typeof global.createToolComponent === 'function'
+      ? global.createToolComponent(type, paneId, tabId, options)
+      : null;
+  }
+
+  function _apiPath(block) {
+    return '/topic-views/' + encodeURIComponent(block.documentId)
+      + '/views/' + encodeURIComponent(block.viewId) + '/snapshot';
+  }
+
+  function _statusForError(error) {
+    const status = Number(error?.status || error?.response?.status || 0);
+    if (status === 403) return 'denied';
+    if (status === 404) return 'missing';
+    if (status === 409) return 'conflict';
+    if (global.navigator?.onLine === false || status === 0) return 'offline';
+    return 'error';
+  }
+
+  async function _defaultLoadView(block, options) {
+    if (typeof global.apiFetch !== 'function') {
+      return { status: 'offline', readOnly: true, reason: 'ビューの読み込みAPIへ接続できません' };
+    }
+    try {
+      const payload = await global.apiFetch(_apiPath(block), {
+        silentError: true,
+        signal: options?.signal,
+      });
+      const permission = String(payload?.permission || '');
+      const readOnly = !!payload?.readOnly || permission === 'read-only';
+      return {
+        status: 'ready', readOnly,
+        reason: readOnly ? 'このビューは読み取り専用です' : '', snapshot: payload,
+        dbPath: block.dbPath || block.legacyPath || '',
+        boardPath: block.boardPath || block.legacyPath || '',
+      };
+    } catch (error) {
+      return {
+        status: _statusForError(error), readOnly: true,
+        reason: String(error?.message || 'ビューを読み込めませんでした'),
+      };
+    }
+  }
+
+  function _defaultSubscribe(_block, callback) {
+    if (typeof global.addEventListener !== 'function') return null;
+    const offline = () => callback({ status: 'offline', reason: 'ソースへ接続できません' });
+    const online = () => callback({ status: 'ready', reconnect: true });
+    global.addEventListener('offline', offline);
+    global.addEventListener('online', online);
+    return () => {
+      global.removeEventListener('offline', offline);
+      global.removeEventListener('online', online);
+    };
+  }
+
+  function _abortController() {
+    return typeof AbortController === 'function'
+      ? new AbortController()
+      : { signal: { aborted: false }, abort() { this.signal.aborted = true; } };
+  }
+
+  class TopicViewHost {
+    constructor(options) {
+      const opts = options || {};
+      this.componentFactory = opts.componentFactory || _defaultFactory;
+      this.loadView = opts.loadView || _defaultLoadView;
+      this.subscribe = opts.subscribe || _defaultSubscribe;
+      this.onStatus = opts.onStatus || null;
+      this.root = opts.root || null;
+      this.entries = [];
+      this.byBlockId = new Map();
+      this.preferredBoardBlockId = null;
+      this.destroyed = false;
+      this._observer = this._createObserver(opts.IntersectionObserver || global.IntersectionObserver);
+      _registerCapabilities();
+    }
+
+    _createObserver(ObserverClass) {
+      if (typeof ObserverClass !== 'function') return null;
+      return new ObserverClass((changes) => {
+        changes.forEach((change) => {
+          const blockId = change.target?.dataset?.meldexEmbedRuntimeId
+            || change.target?.dataset?.meldexEmbedBlockId;
+          const entry = blockId ? this.byBlockId.get(blockId) : null;
+          if (entry) entry.visible = !!change.isIntersecting;
+        });
+        this._reconcile();
+      }, { root: this.root, threshold: 0.01 });
+    }
+
+    register(block, container, options) {
+      if (this.destroyed) throw new Error('TopicViewHost is destroyed');
+      const runtimeBlockId = String(options?.runtimeBlockId || block?.blockId || '');
+      if (!block || !block.blockId || !runtimeBlockId || this.byBlockId.has(runtimeBlockId)) {
+        throw new Error('embedded blockId must be unique');
+      }
+      if (!container || typeof container.appendChild !== 'function') {
+        throw new Error('embedded view container is required');
+      }
+      const mountPoint = (options && options.mountPoint) || container;
+      container.dataset.meldexEmbedBlockId = block.blockId;
+      container.dataset.meldexEmbedRuntimeId = runtimeBlockId;
+      const entry = {
+        block,
+        runtimeBlockId,
+        container,
+        mountPoint,
+        visible: false,
+        mounted: false,
+        mounting: false,
+        component: null,
+        savedState: null,
+        abortController: null,
+        unsubscribe: null,
+        listeners: [],
+        hostListeners: [],
+        boardActive: false,
+        generation: 0,
+      };
+      this.entries.push(entry);
+      this.byBlockId.set(runtimeBlockId, entry);
+      this._bindHostSelection(entry);
+      if (this._observer) this._observer.observe(container);
+      else {
+        entry.visible = this.entries.length === 1;
+        this._reconcile();
+      }
+      return () => this.unregister(runtimeBlockId);
+    }
+
+    unregister(blockId) {
+      const entry = this.byBlockId.get(blockId);
+      if (!entry) return false;
+      if (this._observer) this._observer.unobserve(entry.container);
+      this._unmount(entry);
+      this._releaseHostListeners(entry);
+      this.byBlockId.delete(blockId);
+      this.entries = this.entries.filter((item) => item !== entry);
+      this._reconcile();
+      return true;
+    }
+
+    replaceBlock(blockId, nextBlock) {
+      const entry = this.byBlockId.get(blockId);
+      if (!entry || !nextBlock || nextBlock.blockId !== entry.block.blockId) return false;
+      this._unmount(entry);
+      this._releaseHostListeners(entry);
+      entry.block = nextBlock;
+      this._bindHostSelection(entry);
+      this._reconcile();
+      return true;
+    }
+
+    _wantedEntries() {
+      const wanted = new Set();
+      this.entries.forEach((entry, index) => {
+        if (!entry.visible) return;
+        wanted.add(entry);
+        if (index > 0) wanted.add(this.entries[index - 1]);
+        if (index + 1 < this.entries.length) wanted.add(this.entries[index + 1]);
+      });
+      // CanvasComponent currently owns the legacy global `bd` runtime.  Keep
+      // exactly one embedded Board live while allowing all nearby Sheets to
+      // stay warm; a pointer press transfers that single Board runtime.
+      const visibleBoards = this.entries.filter(entry => entry.visible
+        && entry.block.resourceType === 'board');
+      const preferred = visibleBoards.find(entry => entry.runtimeBlockId === this.preferredBoardBlockId);
+      const selectedBoard = preferred || visibleBoards[0] || null;
+      for (const entry of Array.from(wanted)) {
+        if (entry.block.resourceType === 'board') wanted.delete(entry);
+      }
+      if (selectedBoard) {
+        this.preferredBoardBlockId = selectedBoard.runtimeBlockId;
+        wanted.add(selectedBoard);
+      }
+      return wanted;
+    }
+
+    _reconcile() {
+      if (this.destroyed) return;
+      const wanted = this._wantedEntries();
+      // Release the global Board runtime before mounting its successor.
+      this.entries.forEach((entry) => {
+        if (!wanted.has(entry)) this._unmount(entry);
+      });
+      this.entries.forEach((entry) => { if (wanted.has(entry)) this._mount(entry); });
+    }
+
+    _bindHostSelection(entry) {
+      if (entry.block.resourceType !== 'board') return;
+      const prefer = () => {
+        if (this.preferredBoardBlockId === entry.runtimeBlockId) return;
+        this.preferredBoardBlockId = entry.runtimeBlockId;
+        this._reconcile();
+      };
+      entry.container.addEventListener('pointerdown', prefer);
+      entry.hostListeners.push(['pointerdown', prefer, false]);
+    }
+
+    _releaseHostListeners(entry) {
+      entry.hostListeners.forEach(([type, listener, capture]) => {
+        entry.container.removeEventListener(type, listener, !!capture);
+      });
+      entry.hostListeners = [];
+    }
+
+    async _mount(entry) {
+      if (entry.mounted || entry.mounting || this.destroyed) return;
+      const toolType = RESOURCE_TOOL_TYPES[entry.block.resourceType];
+      if (!toolType || !_componentIsEmbeddable(toolType)) {
+        this._status(entry, 'unsupported', 'この種類のビューは埋め込み表示できません');
+        return;
+      }
+      entry.mounting = true;
+      entry.generation += 1;
+      const generation = entry.generation;
+      const controller = _abortController();
+      entry.abortController = controller;
+      this._status(entry, 'loading', 'ビューを読み込んでいます');
+      try {
+        const loaded = await this.loadView(entry.block, { signal: controller.signal });
+        if (this.destroyed || generation !== entry.generation || controller.signal.aborted) return;
+        const status = loaded && loaded.status ? loaded.status : 'ready';
+        const reason = loaded && loaded.reason ? String(loaded.reason) : '';
+        if (status !== 'ready' && !(loaded && loaded.snapshot)) {
+          this._status(entry, status, reason || 'ビューを読み込めませんでした');
+          return;
+        }
+        const readOnly = entry.block.display.interaction === 'read-only'
+          || !!(loaded && loaded.readOnly)
+          || status !== 'ready';
+        const options = {
+          embedded: true,
+          blockId: entry.runtimeBlockId,
+          persistedBlockId: entry.block.blockId,
+          sourceId: entry.block.sourceId,
+          documentId: entry.block.documentId,
+          viewId: entry.block.viewId,
+          undoScope: 'embed:' + entry.runtimeBlockId + ':' + entry.block.viewId,
+          interaction: readOnly ? 'read-only' : 'editable',
+          snapshot: loaded && loaded.snapshot,
+          dbPath: (loaded && loaded.dbPath) || entry.block.dbPath || entry.block.legacyPath || '',
+          boardPath: (loaded && loaded.boardPath) || entry.block.boardPath || entry.block.legacyPath || '',
+          signal: controller.signal,
+        };
+        const paneId = 'embed:' + entry.runtimeBlockId;
+        const tabId = paneId + ':' + entry.block.viewId;
+        const component = this.componentFactory(toolType, paneId, tabId, options);
+        if (!component || typeof component.mount !== 'function') {
+          throw new Error('埋め込み用コンポーネントを作成できません');
+        }
+        entry.component = component;
+        if (entry.savedState && typeof component.restoreState === 'function') {
+          component.restoreState(entry.savedState);
+        }
+        component.state = Object.assign({}, component.state || {}, options);
+        component.mount(entry.mountPoint);
+        if (typeof component.activate === 'function') component.activate();
+        entry.mounted = true;
+        this._bindInteraction(entry);
+        if (readOnly) this._bindReadOnly(entry);
+        if (typeof this.subscribe === 'function') {
+          const release = this.subscribe(entry.block, (event) => this._onUpdate(entry, event), options);
+          if (typeof release === 'function') entry.unsubscribe = release;
+        }
+        this._status(entry, readOnly ? status === 'ready' ? 'read-only' : status : 'ready', reason);
+      } catch (error) {
+        if (!controller.signal.aborted) this._status(entry, 'error', String(error.message || error));
+        this._releaseRuntime(entry, { preserveState: false });
+      } finally {
+        if (generation === entry.generation) entry.mounting = false;
+      }
+    }
+
+    _bindInteraction(entry) {
+      if (entry.block.resourceType !== 'board') return;
+      const activate = () => {
+        entry.boardActive = true;
+        entry.container.dataset.boardInteractionActive = 'true';
+      };
+      const wheel = (event) => {
+        const mode = (event.ctrlKey || event.metaKey) ? 'zoom' : 'pan';
+        event.meldexEmbedWheelMode = mode;
+        const detail = { mode, deltaX: event.deltaX || 0, deltaY: event.deltaY || 0 };
+        if (typeof entry.component?.onEmbeddedWheel === 'function') {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          entry.component.onEmbeddedWheel(detail, event);
+        }
+        if (typeof CustomEvent === 'function') {
+          entry.container.dispatchEvent(new CustomEvent('meldex-embed-board-wheel', { detail }));
+        }
+      };
+      entry.container.addEventListener('pointerdown', activate);
+      entry.container.addEventListener('wheel', wheel, { passive: false, capture: true });
+      entry.listeners.push(['pointerdown', activate], ['wheel', wheel, true]);
+    }
+
+    _bindReadOnly(entry) {
+      entry.container.dataset.embedReadOnly = 'true';
+      const stopWrite = (event) => { event.preventDefault(); event.stopImmediatePropagation(); };
+      const keydown = (event) => {
+        const navigation = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Tab', 'Escape']);
+        if (!navigation.has(event.key) && !(event.ctrlKey || event.metaKey) && !event.altKey) stopWrite(event);
+      };
+      const pointerdown = (event) => {
+        if (event.target?.closest?.('button,input,select,textarea,[contenteditable="true"],[data-bd-node-id],.bd-node')) stopWrite(event);
+      };
+      ['beforeinput', 'paste', 'drop'].forEach((type) => {
+        entry.container.addEventListener(type, stopWrite, true);
+        entry.listeners.push([type, stopWrite, true]);
+      });
+      entry.container.addEventListener('keydown', keydown, true);
+      entry.container.addEventListener('pointerdown', pointerdown, true);
+      entry.listeners.push(['keydown', keydown, true], ['pointerdown', pointerdown, true]);
+    }
+
+    _onUpdate(entry, event) {
+      if (!entry.mounted || !entry.component) return;
+      if (event?.reconnect) {
+        this.refresh(entry.runtimeBlockId);
+        return;
+      }
+      if (event && event.status && event.status !== 'ready') {
+        this._status(entry, event.status, event.reason || '同期状態を確認してください');
+      }
+      if (typeof entry.component.onEmbeddedViewUpdate === 'function') {
+        entry.component.onEmbeddedViewUpdate(event);
+      }
+    }
+
+    _unmount(entry) {
+      if (!entry.mounted && !entry.mounting && !entry.component && !entry.abortController) return;
+      entry.generation += 1;
+      this._releaseRuntime(entry, { preserveState: true });
+      entry.mounting = false;
+      entry.mounted = false;
+      entry.boardActive = false;
+      delete entry.container.dataset.boardInteractionActive;
+      this._status(entry, 'sleeping', '画面外のビューを一時停止しています');
+    }
+
+    _releaseRuntime(entry, options) {
+      if (entry.abortController) entry.abortController.abort();
+      entry.abortController = null;
+      if (entry.unsubscribe) entry.unsubscribe();
+      entry.unsubscribe = null;
+      entry.listeners.forEach(([type, listener, capture]) => entry.container.removeEventListener(type, listener, !!capture));
+      entry.listeners = [];
+      delete entry.container.dataset.embedReadOnly;
+      if (entry.component) {
+        if (options.preserveState && typeof entry.component.getState === 'function') {
+          entry.savedState = entry.component.getState();
+        }
+        if (typeof entry.component.deactivate === 'function') entry.component.deactivate();
+        if (typeof entry.component.destroy === 'function') entry.component.destroy();
+      }
+      entry.component = null;
+      entry.mounted = false;
+    }
+
+    _status(entry, status, reason) {
+      entry.container.dataset.embedStatus = status;
+      if (typeof this.onStatus === 'function') this.onStatus(entry.block, status, reason || '', entry.container);
+    }
+
+    setVisibilityForTest(blockId, visible) {
+      const entry = this.byBlockId.get(blockId);
+      if (!entry) return false;
+      entry.visible = !!visible;
+      this._reconcile();
+      return true;
+    }
+
+    refresh(blockId) {
+      const selected = blockId ? [this.byBlockId.get(blockId)].filter(Boolean) : this.entries.slice();
+      selected.forEach((entry) => {
+        const visible = entry.visible;
+        this._unmount(entry);
+        entry.visible = visible;
+      });
+      this._reconcile();
+      return selected.length;
+    }
+
+    destroy() {
+      if (this.destroyed) return;
+      this.destroyed = true;
+      if (this._observer) this._observer.disconnect();
+      this.entries.slice().forEach((entry) => {
+        this._unmount(entry);
+        this._releaseHostListeners(entry);
+      });
+      this.entries = [];
+      this.byBlockId.clear();
+    }
+  }
+
+  const api = { TopicViewHost, RESOURCE_TOOL_TYPES, loadView: _defaultLoadView,
+    subscribe: _defaultSubscribe, statusForError: _statusForError };
+  global.MeldexTopicViewHost = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-topic-view-picker.js === */
+;
+/* Existing/new Sheet and Board picker for note embed references. */
+(function initMeldexTopicViewPicker(global) {
+  'use strict';
+
+  const MIME = 'application/x-meldex-topic-view+json';
+  const TYPES = Object.freeze({ sheet: ['database', 'smart-db'], board: ['board'] });
+
+  function _leaf(path) {
+    return String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '無題';
+  }
+
+  function _logicalPath(selection) {
+    return global.GBFolderPicker?.toSourceRelativePath?.(selection) || String(selection?.path || '');
+  }
+
+  function _relativePath(selection) {
+    const path = String(selection?.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    const root = String(selection?.rootPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!root || (path !== root && !path.startsWith(root + '/'))) return '';
+    return path === root ? '' : path.slice(root.length + 1);
+  }
+
+  async function _post(path, body) {
+    if (typeof global.apiFetch !== 'function') throw new Error('ビューの読み込みAPIへ接続できません');
+    return global.apiFetch(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), silentError: true,
+    });
+  }
+
+  function _viewId(document, resourceType) {
+    const rows = resourceType === 'sheet' ? document?.sheetViews : document?.boardViews;
+    const view = Array.isArray(rows) ? rows[0] : null;
+    return String(view?.viewId || view?.sheetViewId || view?.boardViewId || '').trim();
+  }
+
+  function _blockFrom(document, resourceType, selection, archiveRelativePath) {
+    const viewId = _viewId(document, resourceType);
+    if (!document?.documentId || !viewId) {
+      throw new Error('選択した項目には埋め込み可能なビューがありません');
+    }
+    const logicalPath = _logicalPath(selection);
+    const openType = resourceType === 'sheet' ? 'pivot' : 'board';
+    const title = String(selection?.name || _leaf(logicalPath));
+    return {
+      schemaVersion: 1,
+      blockId: global.crypto?.randomUUID?.() || ('embed-' + Date.now().toString(36)),
+      resourceType,
+      sourceId: String(selection.sourceId),
+      documentId: String(document.documentId),
+      viewId,
+      legacyPath: logicalPath,
+      dbPath: resourceType === 'sheet' ? logicalPath : undefined,
+      boardPath: resourceType === 'board' ? logicalPath : undefined,
+      archiveRelativePath: String(archiveRelativePath || ''),
+      display: { header: 'compact', height: 420, interaction: 'editable' },
+      fallback: {
+        title,
+        openUri: '/?open=' + encodeURIComponent(openType) + '&path=' + encodeURIComponent(logicalPath),
+      },
+    };
+  }
+
+  async function resolveSelection(selection, resourceType) {
+    if (!TYPES[resourceType]) throw new Error('選択できるのはシートまたはボードです');
+    if (!selection?.sourceId) throw new Error('ソースフォルダ内の項目を選択してください');
+    const relativePath = _relativePath(selection);
+    if (!relativePath) throw new Error('選択した項目のソース内相対パスを確認できません');
+    if (/\.mel-(?:sheet|board)$/i.test(relativePath)) {
+      try {
+        const opened = await _post('/topic-views/migration/open', {
+          sourceId: selection.sourceId, relativePath,
+        });
+        if (opened?.viewDocument) {
+          return _blockFrom(opened.viewDocument, resourceType, selection, relativePath);
+        }
+      } catch (_) {
+        // Legacy JSON files used the same suffix; the additive migration below is authoritative.
+      }
+    }
+    const migrated = await _post('/topic-migrations/open', {
+      sourceId: selection.sourceId, relativePath,
+    });
+    const migration = migrated?.migration;
+    const document = migration?.viewDocument;
+    const archiveRelativePath = migration?.archiveRelativePath;
+    if (!document || !archiveRelativePath) throw new Error('ビュー参照の作成結果を確認できません');
+    const registered = await _post('/topic-views/migration/open', {
+      sourceId: selection.sourceId, relativePath: archiveRelativePath,
+    });
+    const verified = registered?.viewDocument;
+    if (!verified || verified.documentId !== document.documentId) {
+      throw new Error('作成したビューの読み戻し確認に失敗しました');
+    }
+    return _blockFrom(verified, resourceType, selection, archiveRelativePath);
+  }
+
+  async function _selectionForPath(path) {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    const roots = await global.GBFolderPicker?.loadRoots?.({ includeHome: false, includeSources: true });
+    const matched = (roots || []).find((root) => {
+      const rootPath = String(root.rootPath || root.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      const rootName = String(root.name || _leaf(rootPath));
+      return normalized === rootPath || normalized.startsWith(rootPath + '/')
+        || normalized === rootName || normalized.startsWith(rootName + '/');
+    });
+    if (!matched) throw new Error('項目のソースフォルダを確認できません');
+    const rootPath = String(matched.rootPath || matched.path).replace(/\\/g, '/').replace(/\/+$/, '');
+    const rootName = String(matched.name || _leaf(rootPath));
+    const absolute = normalized === rootName || normalized.startsWith(rootName + '/')
+      ? rootPath + normalized.slice(rootName.length) : normalized;
+    return {
+      path: absolute, name: _leaf(normalized), rootPath,
+      rootName, rootKind: 'source', sourceId: matched.sourceId || '', kind: 'file',
+    };
+  }
+
+  async function resolveTransferPayload(payload) {
+    if (payload?.kind !== 'meldex-topic-view-selection-v1') return null;
+    const selection = await _selectionForPath(payload.path);
+    selection.name = payload.label || selection.name;
+    try {
+      return await resolveSelection(selection, payload.resourceType);
+    } catch (error) {
+      global.showStatus?.(String(error?.message || error), true);
+      return null;
+    }
+  }
+
+  async function openExisting(resourceType, current) {
+    if (!global.GBFolderPicker?.pickFolder) throw new Error('項目選択を開けません');
+    const selection = await global.GBFolderPicker.pickFolder({
+      title: resourceType === 'sheet' ? '埋め込むシートを選択' : '埋め込むボードを選択',
+      selectFiles: true, fileTypes: TYPES[resourceType], includeHome: false,
+      includeSources: true, includeWorkspaces: false,
+      initialPath: current?.legacyPath || '', emptyText: '選択できる項目がありません。',
+    });
+    if (!selection) return null;
+    return resolveSelection(selection, resourceType);
+  }
+
+  async function requestCreate(resourceType) {
+    const folder = await global.GBFolderPicker?.pickFolder?.({
+      title: '作成先フォルダを選択', includeHome: false, includeSources: true,
+      includeWorkspaces: false,
+    });
+    if (!folder) return null;
+    const type = resourceType === 'sheet' ? 'database' : 'board';
+    const parentPath = _logicalPath(folder);
+    const event = new CustomEvent('meldex-note-request-create-view', {
+      cancelable: true,
+      detail: { resourceType, type, parentPath, select: (selection) => resolveSelection(selection, resourceType) },
+    });
+    global.dispatchEvent(event);
+    if (!event.defaultPrevented && typeof global.addItemAt === 'function') {
+      await global.addItemAt(parentPath, type);
+      global.showStatus?.('作成した項目をフォルダツリーで確認してから、もう一度「既存から選択」で指定してください');
+    }
+    return null;
+  }
+
+  function _choice(resourceType) {
+    if (!global.GBUI?.createModal || typeof document === 'undefined') {
+      return Promise.resolve('existing');
+    }
+    return new Promise((resolve) => {
+      const body = document.createElement('div');
+      const help = document.createElement('p');
+      help.textContent = '既存の項目を選ぶか、新しい項目を作成します。元のファイルは変更・削除されません。';
+      body.appendChild(help);
+      const existing = document.createElement('button'); existing.type = 'button';
+      existing.className = 'gb-btn gb-btn-primary'; existing.textContent = '既存から選択';
+      const create = document.createElement('button'); create.type = 'button';
+      create.className = 'gb-btn'; create.textContent = resourceType === 'sheet' ? '新しいシートを作成' : '新しいボードを作成';
+      let settled = false;
+      const modal = global.GBUI.createModal({
+        id: 'meldex-topic-view-picker-choice', title: '埋め込むビュー', body,
+        footer: [existing, create], variant: 'mobile-sheet',
+        onClose: () => { if (!settled) resolve(null); },
+      });
+      const finish = (value) => { settled = true; modal.close('submit'); resolve(value); };
+      existing.addEventListener('click', () => finish('existing'));
+      create.addEventListener('click', () => finish('create'));
+      modal.open();
+    });
+  }
+
+  async function open(options) {
+    const resourceType = options?.resourceType;
+    const choice = await _choice(resourceType);
+    if (choice === 'create') return requestCreate(resourceType);
+    if (choice !== 'existing') return null;
+    try { return await openExisting(resourceType, options?.current); }
+    catch (error) { global.showStatus?.(String(error?.message || error), true); return null; }
+  }
+
+  function transferPayloadForNode(node) {
+    const resourceType = node?.type === 'database' || node?.type === 'smart-db' ? 'sheet'
+      : node?.type === 'board' ? 'board' : '';
+    if (!resourceType || !node?.path) return null;
+    return { kind: 'meldex-topic-view-selection-v1', resourceType, path: node.path, label: node.name || _leaf(node.path) };
+  }
+
+  function _bindDragSource() {
+    document.addEventListener('dragstart', (event) => {
+      const node = event.target?.closest?.('.tree-node')?._nodeData;
+      const payload = transferPayloadForNode(node);
+      if (payload && event.dataTransfer) event.dataTransfer.setData(MIME, JSON.stringify(payload));
+    }, true);
+  }
+
+  if (typeof document !== 'undefined') _bindDragSource();
+  global.MeldexTopicViewPicker = {
+    MIME, open, openExisting, requestCreate, resolveSelection, resolveTransferPayload,
+    transferPayloadForNode, relativePath: _relativePath,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-note-embed-block.js === */
+;
+/* Note inline sheet/board embed controller.  Model data never enters HTML attributes. */
+(function (global) {
+  'use strict';
+
+  const MIME = 'application/x-meldex-topic-view+json';
+  const models = new Map();
+  const disposers = new Map();
+  let host = null;
+
+  function _serializer() { return global.MeldexNoteEmbedSerializer; }
+  function _newId() {
+    if (global.crypto && typeof global.crypto.randomUUID === 'function') return global.crypto.randomUUID();
+    return 'embed-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+  function _normalize(block) { return _serializer().normalize(block); }
+  function _button(label, action) {
+    const el = document.createElement('button');
+    el.type = 'button'; el.textContent = label; el.dataset.embedAction = action;
+    return el;
+  }
+  function _open(block) {
+    const event = new CustomEvent('meldex-open-topic-view', { detail: {
+      sourceId: block.sourceId, documentId: block.documentId, viewId: block.viewId,
+      resourceType: block.resourceType, dbPath: block.dbPath || block.legacyPath || '',
+      boardPath: block.boardPath || block.legacyPath || '', fallback: block.fallback || null,
+    } });
+    global.dispatchEvent(event);
+    return event;
+  }
+  function _setStatus(block, status, reason, container) {
+    const statusEl = container.querySelector('.meldex-note-embed-status');
+    if (!statusEl) return;
+    statusEl.hidden = status === 'ready';
+    statusEl.textContent = reason || ({
+      'read-only': 'スナップショットを読み取り専用で表示しています',
+      missing: '元のビューが削除されています', denied: 'このビューを開く権限がありません',
+      conflict: '更新が競合しています', offline: 'ソースへ接続できません',
+    }[status] || '');
+    if (status !== 'ready' && status !== 'loading' && status !== 'sleeping') {
+      const reconnect = _button('接続し直す', 'reconnect');
+      const open = _button('元を開く', 'open');
+      reconnect.addEventListener('click', () => global.dispatchEvent(new CustomEvent('meldex-reconnect-topic-view', {
+        detail: {
+          blockId: block.blockId,
+          runtimeId: container.dataset?.meldexEmbedRuntimeId || '',
+          sourceId: block.sourceId, documentId: block.documentId, viewId: block.viewId,
+        },
+      })));
+      open.addEventListener('click', () => _open(block));
+      statusEl.append(reconnect, open);
+    }
+  }
+  function _ensureHost(options) {
+    if (options && options.host) return options.host;
+    if (!host && global.MeldexTopicViewHost) {
+      host = new global.MeldexTopicViewHost.TopicViewHost({ onStatus: _setStatus });
+    }
+    return host;
+  }
+  function _runtimeIdForElement(element) {
+    return String(element?.dataset?.meldexEmbedRuntimeId || element?.dataset?.meldexEmbedBlockId || '');
+  }
+  function _resolveRuntimeId(blockOrRuntimeId) {
+    const id = String(blockOrRuntimeId || '');
+    if (models.has(id)) return id;
+    for (const [runtimeId, model] of models) {
+      if (String(model?.blockId || '') === id) return runtimeId;
+    }
+    return _runtimeIdForElement(_findBlockElement(id));
+  }
+  function _disposeBlock(blockOrRuntimeId) {
+    const id = _resolveRuntimeId(blockOrRuntimeId);
+    const dispose = disposers.get(id);
+    try {
+      if (dispose) dispose();
+    } catch (error) {
+      // Cleanup must continue for the remaining blocks even if one component has
+      // already torn itself down.  Surface the fault without retaining stale state.
+      global.console?.warn?.('Meldex note embed cleanup failed', error);
+    } finally {
+      disposers.delete(id);
+      models.delete(id);
+    }
+    return !!dispose;
+  }
+  function createElement(rawBlock, options) {
+    const inspected = _serializer().inspect(rawBlock);
+    const block = inspected.block || rawBlock;
+    const runtimeId = _newId();
+    const wrap = document.createElement('section');
+    wrap.className = 'meldex-note-embed';
+    wrap.contentEditable = 'false';
+    wrap.dataset.meldexEmbedBlockId = block && block.blockId ? block.blockId : _newId();
+    wrap.dataset.meldexEmbedRuntimeId = runtimeId;
+    wrap.setAttribute('aria-label', block?.fallback?.title || '埋め込みビュー');
+    const header = document.createElement('div'); header.className = 'meldex-note-embed-header';
+    const title = document.createElement('span'); title.className = 'meldex-note-embed-title';
+    title.textContent = block?.fallback?.title || '対応していない埋め込みビュー';
+    header.append(title, _button('元を開く', 'open'), _button('差し替え', 'replace'), _button('高さ', 'height'));
+    const body = document.createElement('div'); body.className = 'meldex-note-embed-body';
+    const status = document.createElement('div'); status.className = 'meldex-note-embed-status';
+    status.setAttribute('role', 'status'); body.appendChild(status);
+    wrap.append(header, body);
+    if (!inspected.editable) {
+      wrap.dataset.embedStatus = inspected.status;
+      status.textContent = 'この埋め込み形式は編集できません。リンクから元を開けます。';
+      wrap.addEventListener('click', (event) => {
+        if (event.target.closest?.('[data-embed-action="open"]')) _open(block || {});
+      });
+      return wrap;
+    }
+    models.set(runtimeId, block);
+    wrap.style.setProperty('--meldex-embed-height', block.display.height + 'px');
+    wrap.dataset.embedHeader = block.display.header;
+    wrap.dataset.embedInteraction = block.display.interaction;
+    const viewHost = _ensureHost(options);
+    if (viewHost) {
+      disposers.set(runtimeId, viewHost.register(block, wrap, { mountPoint: body, runtimeBlockId: runtimeId }));
+    }
+    wrap.addEventListener('click', (event) => {
+      const action = event.target.closest?.('[data-embed-action]')?.dataset.embedAction;
+      const current = models.get(runtimeId) || block;
+      if (action === 'open') _open(current);
+      if (action === 'replace') _requestView(current.resourceType, current, (next) => replaceView(runtimeId, next));
+      if (action === 'height') global.dispatchEvent(new CustomEvent('meldex-note-request-embed-height', {
+        detail: {
+          blockId: block.blockId, runtimeId, height: models.get(runtimeId)?.display.height,
+          setHeight: (_blockId, height) => setHeight(runtimeId, height),
+        },
+      }));
+    });
+    return wrap;
+  }
+  function _requestView(resourceType, current, callback) {
+    if (global.MeldexTopicViewPicker && typeof global.MeldexTopicViewPicker.open === 'function') {
+      return global.MeldexTopicViewPicker.open({ resourceType, current })
+        .then((value) => value ? callback(value) : null);
+    }
+    global.dispatchEvent(new CustomEvent('meldex-note-request-view', {
+      detail: { resourceType, current: current || null, select: callback },
+    }));
+  }
+  function _defaultBlock(resourceType, ref) {
+    return _normalize(Object.assign({}, ref, {
+      schemaVersion: 1, blockId: ref.blockId || _newId(), resourceType,
+      display: Object.assign({ header: 'compact', height: 420, interaction: 'editable' }, ref.display),
+      fallback: Object.assign({ title: resourceType === 'sheet' ? 'シート' : 'ボード', openUri: '#' }, ref.fallback),
+    }));
+  }
+  function _findBlockElement(blockId) {
+    const targetId = String(blockId || '');
+    if (typeof document === 'undefined') return null;
+    return Array.from(document.querySelectorAll('[data-meldex-embed-block-id]'))
+      .find((element) => element.dataset.meldexEmbedRuntimeId === targetId
+        || element.dataset.meldexEmbedBlockId === targetId) || null;
+  }
+  function _markEditorChanged(element) {
+    const editable = element?.closest?.('[contenteditable="true"]');
+    editable?.dispatchEvent?.(new Event('input', { bubbles: true }));
+  }
+  function _removedEmbedElements(node) {
+    if (!node || node.nodeType !== 1) return [];
+    const removed = node.matches?.('.meldex-note-embed') ? [node] : [];
+    node.querySelectorAll?.('.meldex-note-embed').forEach((element) => removed.push(element));
+    return removed;
+  }
+  function _ensureRemovalObserver(root) {
+    if (!root || root._meldexNoteEmbedRemovalObserver || typeof global.MutationObserver !== 'function') return;
+    const observer = new global.MutationObserver((records) => {
+      const removed = [];
+      records.forEach((record) => record.removedNodes?.forEach((node) => {
+        removed.push(..._removedEmbedElements(node));
+      }));
+      if (!removed.length) return;
+      // A contenteditable operation may synchronously move a block.  Check after the
+      // mutation batch so a reconnected block is not mistaken for a deletion.
+      queueMicrotask(() => removed.forEach((element) => {
+        if (!element.isConnected) _disposeBlock(_runtimeIdForElement(element));
+      }));
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    root._meldexNoteEmbedRemovalObserver = observer;
+  }
+  function insertEmbed(editable, range, rawBlock, options) {
+    if (!editable || editable.contentEditable !== 'true' || !range) return { ok: false, reason: 'read-only' };
+    const block = _normalize(rawBlock);
+    _ensureRemovalObserver(editable);
+    if (!options?.skipUndo && typeof global._pushCustomUndo === 'function') global._pushCustomUndo(editable);
+    range.deleteContents();
+    const element = createElement(block, options);
+    range.insertNode(element);
+    const trailing = document.createElement('div'); trailing.appendChild(document.createElement('br'));
+    element.after(trailing);
+    editable.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true, block, element };
+  }
+  function replaceView(blockId, ref) {
+    const runtimeId = _resolveRuntimeId(blockId);
+    const old = models.get(runtimeId); if (!old || !ref) return false;
+    const next = _defaultBlock(ref.resourceType || old.resourceType, Object.assign({}, old, ref, { blockId: old.blockId }));
+    models.set(runtimeId, next);
+    const element = _findBlockElement(runtimeId);
+    const title = element?.querySelector?.('.meldex-note-embed-title');
+    if (title) title.textContent = next.fallback.title;
+    if (element) {
+      element.dataset.embedHeader = next.display.header;
+      element.dataset.embedInteraction = next.display.interaction;
+      element.style.setProperty('--meldex-embed-height', next.display.height + 'px');
+    }
+    if (host) host.replaceBlock(runtimeId, next);
+    _markEditorChanged(element);
+    return next;
+  }
+  function setHeight(blockId, height) {
+    const runtimeId = _resolveRuntimeId(blockId);
+    const old = models.get(runtimeId); if (!old) return false;
+    const next = _normalize(Object.assign({}, old, { display: Object.assign({}, old.display, { height }) }));
+    models.set(runtimeId, next);
+    const element = _findBlockElement(runtimeId);
+    element?.style.setProperty('--meldex-embed-height', next.display.height + 'px');
+    _markEditorChanged(element);
+    return next;
+  }
+  function duplicateReference(blockId) {
+    const old = models.get(_resolveRuntimeId(blockId));
+    return old ? _normalize(Object.assign({}, old, { blockId: _newId() })) : null;
+  }
+  function removeReference(blockId) {
+    const runtimeId = _resolveRuntimeId(blockId);
+    const element = _findBlockElement(runtimeId);
+    _disposeBlock(runtimeId); // Deliberately never deletes source data.
+    element?.remove();
+    return true;
+  }
+  // Serialize from a detached copy.  Saving must never replace the live component DOM,
+  // because doing so would destroy the current selection and the mounted TopicView.
+  function cloneForMarkdown(root) {
+    if (!root || typeof root.cloneNode !== 'function') return root;
+    const clone = root.cloneNode(true);
+    clone.querySelectorAll?.('.meldex-note-embed').forEach((element) => {
+      const runtimeId = _runtimeIdForElement(element);
+      const model = models.get(runtimeId);
+      if (!model) return;
+      const ownerDocument = root.ownerDocument || document;
+      element.replaceWith(ownerDocument.createTextNode('\n' + _serializer().toMarkdown(model) + '\n'));
+    });
+    return clone;
+  }
+  function _directiveContainers(root, directive) {
+    const nodes = root?.querySelectorAll?.('div,p') || [];
+    return Array.from(nodes).filter((node) => String(node.textContent || '').trim() === directive);
+  }
+  function _removeRenderedFallback(element, block) {
+    const next = element?.nextElementSibling;
+    if (!next || String(next.textContent || '').trim() !== String(block?.fallback?.title || '').trim()) return;
+    const link = next.querySelector?.('a,.auto-link');
+    if (link) next.remove();
+  }
+  // mdToHtml deliberately renders unknown HTML comments as escaped text.  Once the
+  // normal Markdown renderer has finished, turn only validated Meldex directives
+  // back into live blocks and remove their adjacent human-readable fallback link.
+  function hydrate(root, markdown, options) {
+    if (!root) return [];
+    _ensureRemovalObserver(root);
+    const created = [];
+    _serializer().parseMarkdown(markdown).forEach((item) => {
+      const container = _directiveContainers(root, item.directive)[0];
+      if (!container) return;
+      const element = createElement(item.block, options);
+      if (item.editable) _removeRenderedFallback(container, item.block);
+      container.replaceWith(element);
+      created.push(element);
+    });
+    return created;
+  }
+  function disposeWithin(root) {
+    if (!root?.querySelectorAll) return 0;
+    let count = 0;
+    root.querySelectorAll('.meldex-note-embed').forEach((element) => {
+      if (_disposeBlock(_runtimeIdForElement(element))) count++;
+    });
+    return count;
+  }
+  function menuItems() {
+    return [
+      { id: 'embed-sheet', label: 'シートビュー', icon: 'table2', keywords: ['sheet', 'シート', 'ビュー'], insertOnly: true },
+      { id: 'embed-board', label: 'ボードビュー', icon: 'layoutDashboard', keywords: ['board', 'ボード', 'ビュー'], insertOnly: true },
+    ];
+  }
+  function isInsertCommand(id) { return id === 'embed-sheet' || id === 'embed-board'; }
+  function insertFromCommand(id, context) {
+    if (!isInsertCommand(id)) return false;
+    const type = id === 'embed-sheet' ? 'sheet' : 'board';
+    _requestView(type, null, (ref) => {
+      if (!ref) return;
+      if (typeof context.prepareInsert === 'function') context.prepareInsert();
+      const selection = global.getSelection?.();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : context.range;
+      insertEmbed(context.editable, range, _defaultBlock(type, ref), context);
+    });
+    return true;
+  }
+  function _payload(data) {
+    try { return _serializer().inspect(JSON.parse(data)); } catch (_) { return null; }
+  }
+  async function _transferBlock(data) {
+    let raw;
+    try { raw = JSON.parse(data); } catch (_) { return null; }
+    const inspected = _serializer().inspect(raw);
+    if (inspected.editable) return inspected.block;
+    if (global.MeldexTopicViewPicker?.resolveTransferPayload) {
+      return global.MeldexTopicViewPicker.resolveTransferPayload(raw);
+    }
+    return null;
+  }
+  function _bindTransfer() {
+    document.addEventListener('drop', async (event) => {
+      const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
+      const data = event.dataTransfer?.getData(MIME);
+      if (!editable || !data) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const block = await _transferBlock(data);
+      const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
+      if (block && range) insertEmbed(editable, range, block);
+    });
+    document.addEventListener('paste', (event) => {
+      const editable = event.target.closest?.('#page-content, #entity-freetext, #dp-editable');
+      const custom = event.clipboardData?.getData(MIME);
+      const markdown = event.clipboardData?.getData('text/plain') || '';
+      const parsed = custom ? _payload(custom) : _serializer().parseMarkdown(markdown)[0];
+      const sel = global.getSelection?.();
+      if (!editable || !parsed?.editable || !sel?.rangeCount) return;
+      event.preventDefault(); insertEmbed(editable, sel.getRangeAt(0), parsed.block);
+    });
+  }
+  if (typeof document !== 'undefined') _bindTransfer();
+  const api = { MIME, createElement, insertEmbed, replaceView, setHeight, duplicateReference,
+    removeReference, menuItems, isInsertCommand, insertFromCommand, openOriginal: _open,
+    cloneForMarkdown, hydrate, disposeWithin,
+    reconnect(blockId) { return host ? host.refresh(_resolveRuntimeId(blockId)) : 0; },
+    destroy() {
+      Array.from(disposers.keys()).forEach(_disposeBlock);
+      if (host) host.destroy();
+      host = null; disposers.clear(); models.clear();
+    },
+    getModel: (id) => models.get(_resolveRuntimeId(id)),
+    debugCounts: () => ({ models: models.size, disposers: disposers.size,
+      hostEntries: host?.entries?.length || 0 }) };
+  global.MeldexNoteEmbedBlock = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
+/* === gb-note-embed-live.js === */
+;
+/* Live event bridge for note TopicView embeds. */
+(function initMeldexNoteEmbedLive(global) {
+  'use strict';
+  if (global.MeldexNoteEmbedLive) return;
+
+  function _open(detail) {
+    const resourceType = detail?.resourceType;
+    const path = resourceType === 'sheet' ? detail?.dbPath : detail?.boardPath;
+    const label = detail?.fallback?.title || String(path || '').split(/[\\/]/).pop() || 'ビュー';
+    if (resourceType === 'sheet' && path && typeof global.selectDatabase === 'function') {
+      return global.selectDatabase(path, null, { fromExplorer: true });
+    }
+    if (resourceType === 'board' && path && typeof global.openBoard === 'function') {
+      return global.openBoard(label, path, { fromExplorer: true });
+    }
+    global.showStatus?.('元の項目を開くためのパスを確認できません', true);
+    return false;
+  }
+
+  function _height(detail) {
+    if (!detail?.blockId || typeof detail.setHeight !== 'function') return;
+    if (!global.GBUI?.createModal || typeof document === 'undefined') {
+      global.showStatus?.('高さ設定を開けません', true); return;
+    }
+    const body = document.createElement('div');
+    const label = document.createElement('label'); label.textContent = '埋め込みの高さ（160〜2400 px）';
+    const input = document.createElement('input'); input.type = 'number'; input.min = '160'; input.max = '2400';
+    input.step = '20'; input.value = String(detail.height || 420); input.className = 'gb-input';
+    label.appendChild(input); body.appendChild(label);
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = 'キャンセル';
+    const apply = document.createElement('button'); apply.type = 'button'; apply.textContent = '高さを変更';
+    apply.className = 'gb-btn gb-btn-primary';
+    const modal = global.GBUI.createModal({
+      id: 'meldex-note-embed-height', title: '埋め込みの高さ', body, footer: [cancel, apply],
+      variant: 'mobile-sheet', initialFocus: input,
+    });
+    cancel.addEventListener('click', () => modal.close('cancel'));
+    apply.addEventListener('click', () => {
+      const value = Math.max(160, Math.min(2400, Math.round(Number(input.value) || 420)));
+      detail.setHeight(detail.blockId, value); modal.close('submit');
+    });
+    modal.open();
+  }
+
+  async function _pick(detail) {
+    const ref = await global.MeldexTopicViewPicker?.open?.({
+      resourceType: detail?.resourceType, current: detail?.current || null,
+    });
+    if (ref && typeof detail?.select === 'function') detail.select(ref);
+  }
+
+  const handlers = {
+    request: (event) => { _pick(event.detail); },
+    height: (event) => { _height(event.detail); },
+    reconnect: (event) => {
+      global.MeldexNoteEmbedBlock?.reconnect?.(event.detail?.runtimeId || event.detail?.blockId);
+    },
+    open: (event) => { _open(event.detail); },
+  };
+  global.addEventListener('meldex-note-request-view', handlers.request);
+  global.addEventListener('meldex-note-request-embed-height', handlers.height);
+  global.addEventListener('meldex-reconnect-topic-view', handlers.reconnect);
+  global.addEventListener('meldex-open-topic-view', handlers.open);
+
+  global.MeldexNoteEmbedLive = Object.freeze({
+    openOriginal: _open,
+    destroy() {
+      global.removeEventListener('meldex-note-request-view', handlers.request);
+      global.removeEventListener('meldex-note-request-embed-height', handlers.height);
+      global.removeEventListener('meldex-reconnect-topic-view', handlers.reconnect);
+      global.removeEventListener('meldex-open-topic-view', handlers.open);
+    },
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-scriptnote-role-model.js === */
 ;
 /* gb-scriptnote-role-model.js: ScriptNote schema v3 のキャラ・タイプ共通モデル */
@@ -8860,6 +13744,7 @@ class LegacyWrapperComponent extends ToolComponent {
 
 // === コンポーネントレジストリ ===
 const TOOL_REGISTRY = {};
+const TOOL_CAPABILITY_OVERRIDES = {};
 
 // レジストリにコンポーネントクラスを登録
 function registerToolComponent(type, config) {
@@ -8870,7 +13755,21 @@ function registerToolComponent(type, config) {
     multi: config.multi !== false, // デフォルトtrue
     // Audit-P2 H-7: 表示状態の固定（view_lock）が必要なツールか
     requiresViewLock: !!config.requiresViewLock,
+    embeddable: !!(TOOL_CAPABILITY_OVERRIDES[type]?.embeddable ?? config.embeddable),
   };
+}
+
+// 埋め込み等の能力は型付きキーで登録し、コンポーネント本体の複製判定を避ける。
+function registerToolCapability(type, capability, enabled) {
+  if (capability !== 'embeddable') throw new Error('unsupported ToolComponent capability: ' + capability);
+  if (!TOOL_CAPABILITY_OVERRIDES[type]) TOOL_CAPABILITY_OVERRIDES[type] = {};
+  TOOL_CAPABILITY_OVERRIDES[type][capability] = !!enabled;
+  if (TOOL_REGISTRY[type]) TOOL_REGISTRY[type][capability] = !!enabled;
+}
+
+function getToolCapability(type, capability) {
+  if (capability !== 'embeddable') return false;
+  return !!(TOOL_REGISTRY[type] && TOOL_REGISTRY[type][capability]);
 }
 
 // ViewLock 判定用ヘルパー（gb-view-lock.js から呼び出せるようグローバル公開）
@@ -8973,6 +13872,12 @@ class OutlinerComponent extends ToolComponent {
 
 // === DatabaseComponent ===
 class DatabaseComponent extends ToolComponent {
+  constructor(paneId, tabId, options) {
+    super(paneId, tabId);
+    this.options = options || {};
+    this._embeddedSheet = null;
+  }
+
   create() {
     this.el = document.createElement('div');
     this.el.className = 'gb-tool-database';
@@ -8980,8 +13885,26 @@ class DatabaseComponent extends ToolComponent {
     return this.el;
   }
 
+  mount(container) {
+    if (this.options.embedded && window.MeldexProductionSheetEmbed?.create) {
+      this.el = document.createElement('div');
+      this.el.className = 'gb-tool-database gb-tool-database-embedded';
+      this.el.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
+      container.appendChild(this.el);
+      this._mounted = true;
+      this._embeddedSheet = window.MeldexProductionSheetEmbed.create({ idSuffix: this.tabId });
+      this._embeddedSheet.mount(this.el);
+      return;
+    }
+    super.mount(container);
+  }
+
   activate() {
     super.activate();
+    if (this._embeddedSheet && this.state.dbPath) {
+      this._embeddedSheet.open(this.state.dbPath, { silent: true, skipViewPersistence: true });
+      return;
+    }
     if (this.state.dbPath && typeof selectDatabase === 'function') {
       selectDatabase(this.state.dbPath);
     }
@@ -8993,7 +13916,13 @@ class DatabaseComponent extends ToolComponent {
   }
 
   getState() {
-    return { dbPath: this.state.dbPath || _paneStateRead('dbPath', '') };
+    return { dbPath: this.state.dbPath || this._embeddedSheet?.getCurrentPath?.() || _paneStateRead('dbPath', '') };
+  }
+
+  destroy() {
+    this._embeddedSheet?.destroy?.();
+    this._embeddedSheet = null;
+    super.destroy();
   }
 
   getDetailContent() {
@@ -16011,7 +20940,6 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       label: 'Google ToDoと同期しています',
       mode: 'indeterminate',
       showInTray: true,
-      showInStatus: true,
       priority: 35,
     }) : null;
     try {
@@ -16424,7 +21352,7 @@ function bdAppendFastNodeAnchors(div, node) {
   ['top', 'bottom', 'left', 'right'].forEach(pos => {
     const anchor = document.createElement('div');
     anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-    anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
+    anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
     if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
     // 通常描画と同じ処理へ委譲する。以前はこの高速描画側だけ独自実装で、
     // ドラッグすると何も起きなかった (プレビュー線もライン作成も無し)。
@@ -16454,7 +21382,7 @@ function bdAppendFastNodeAnchors(div, node) {
           bd._connOrigin = 'anchor';
           bd._connFromAnchor = (typeof _bdHudPosToAnchorName === 'function') ? _bdHudPosToAnchorName(pos) : '';
           if (typeof window.showStatus === 'function') {
-            window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+            window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
           }
           return;
         }
@@ -17386,7 +22314,8 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails', 'topicRefs',
+  'topicViewDocument',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -17748,6 +22677,7 @@ function bdParseFrontmatterNodeList(fm) {
 // --- ボード状態オブジェクト ---
 const bd = {
   path:'', _loadedBoardPath:'', _preservedFrontmatter:'', nodes:[], connections:[], llmSemantics:null, selected:new Set(), editing:null,
+  topicViewDocument:null, activeBoardViewId:'', hiddenTopicRefs:[], topicStyleOverrides:{},
   // 工程2-C項目2: 読込時に受け取ったetag（保存コーディネーター経由のif_match_etag送信に使う）。
   // 未読込/新規ボードでは空文字のまま（従来通りforce相当で保存される）。
   lastSavedEtag:'',
@@ -18133,7 +23063,7 @@ function _bdSyncGroupAnchors(layer) {
     ['top', 'bottom', 'left', 'right'].forEach(pos => {
       const a = document.createElement('div');
       a.className = 'bd-group-anchor ' + pos;
-      a.title = 'ドラッグでラインを作成 (選択カード群から)';
+  a.title = 'ドラッグでラインを作成（選択トピックから）';
       a.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         ev.preventDefault(); ev.stopPropagation();
@@ -18151,7 +23081,7 @@ function _bdSyncGroupAnchors(layer) {
         bd._connLabel = '';
         bd._connOrigin = 'anchor';
         if (typeof window.showStatus === 'function') {
-          window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+          window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
         }
       });
       group.appendChild(a);
@@ -18242,10 +23172,11 @@ function bdParseMd(raw) {
   raw = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n'); // 改行コード統一
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
-  let preservedFrontmatter = '';
+  let preservedFrontmatter = '', topicRuntime = null;
   let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') topicRuntime = MeldexBoardTopicIntegration.parseFrontmatter(fm);
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
     if (typeof bdParseLlmSemanticsFrontmatter === 'function') llmSemantics = bdParseLlmSemanticsFrontmatter(fm);
     if (typeof bdYamlNestedMap === 'function') {
@@ -18645,7 +23576,7 @@ function bdParseMd(raw) {
           connections: legacyConnections,
           groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi,
           llmSemantics: legacyLlmSemantics,
-          preservedFrontmatter,
+          preservedFrontmatter, topicRuntime,
         };
       }
     }
@@ -18740,7 +23671,7 @@ function bdParseMd(raw) {
         depthStyles,
         boardUi,
         llmSemantics: parsedLlmSemantics,
-        preservedFrontmatter: archivedFrontmatter,
+        preservedFrontmatter: archivedFrontmatter, topicRuntime,
       };
     } catch (e) {
       console.warn('[bdParseMd] JSON board parse error:', e);
@@ -18796,7 +23727,7 @@ function bdParseMd(raw) {
     ? bdNormalizeLoadedLlmSemantics(llmSemantics, idMap)
     : llmSemantics;
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(mappedConnections, null, parsedLlmSemantics);
-  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter };
+  return { nodes, connections: mappedConnections, groups, statusDefs, fileTheme, cardStyles, lineStyles, depthStyles, boardUi, llmSemantics: parsedLlmSemantics, preservedFrontmatter, topicRuntime };
 }
 
 // --- Markdown書き出し ---
@@ -18809,6 +23740,7 @@ function bdToMd() {
   bd.nodes.forEach((n,i) => { if (n.id) fm += `  n${i}: ${fmtJsonString(n.id)}\n`; });
   fm += 'sizes:\n';
   bd.nodes.forEach((n,i) => { if (n.w || n.h) fm += `  n${i}: {w: ${Math.round(n.w||160)}, h: ${Math.round(n.h||0)}}\n`; });
+  if (typeof MeldexBoardTopicIntegration !== 'undefined') fm += MeldexBoardTopicIntegration.serializeFrontmatter(bd);
   // 親子関係
   const m = {}; bd.nodes.forEach((n,i) => { m[n.id]='n'+i; });
   if (typeof bdEnsureConnectionSemanticIds === 'function') bdEnsureConnectionSemanticIds(bd.connections, m, bd.llmSemantics);
@@ -19852,17 +24784,31 @@ function bdDrawFrames() {
   const container = document.getElementById('bd-nodes');
   if (!bd.groups || !container) return;
   bd.groups.forEach(g => {
-    const gNodes = g.nodeIds.map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
-    if (gNodes.length < 2) return;
+    const gNodes = (g.nodeIds || []).map(id=>bd.nodes.find(n=>n.id===id)).filter(Boolean).filter(n => !n.contained);
+    if (!gNodes.length && ![g.x, g.y, g.w, g.h].every(Number.isFinite)) return;
     let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
     gNodes.forEach(n => {
       const el=document.getElementById('bdn-'+n.id);
       x0=Math.min(x0,n.x); y0=Math.min(y0,n.y);
       x1=Math.max(x1,n.x+(el?el.offsetWidth:160)); y1=Math.max(y1,n.y+(el?el.offsetHeight:36));
     });
+    if (!gNodes.length) {
+      x0 = +g.x + 12; y0 = +g.y + 22; x1 = x0 + Math.max(1, +g.w - 24); y1 = y0 + Math.max(1, +g.h - 34);
+    }
     const frame = document.createElement('div'); frame.className = 'bd-frame';
-    frame.dataset.groupId = g.id;
+    frame.dataset.groupId = g.groupId || g.id;
     frame.style.cssText = `left:${x0-12}px;top:${y0-22}px;width:${x1-x0+24}px;height:${y1-y0+34}px;`;
+    g.x = x0 - 12; g.y = y0 - 22; g.w = x1 - x0 + 24; g.h = y1 - y0 + 34;
+    const groupStyle = g.styleOverrides || g.style || {};
+    if (groupStyle.background) frame.style.background = groupStyle.background;
+    if (groupStyle.borderColor) frame.style.borderColor = groupStyle.borderColor;
+    if (Number.isFinite(+groupStyle.borderWidth)) frame.style.borderWidth = Math.max(0, +groupStyle.borderWidth) + 'px';
+    if (groupStyle.borderStyle) frame.style.borderStyle = groupStyle.borderStyle;
+    if (Number.isFinite(+groupStyle.borderRadius)) frame.style.borderRadius = Math.max(0, +groupStyle.borderRadius) + 'px';
+    if (Number.isFinite(+groupStyle.opacity)) frame.style.opacity = Math.max(0, Math.min(1, +groupStyle.opacity));
+    if (groupStyle.shadow) frame.style.boxShadow = groupStyle.shadow;
+    frame.classList.toggle('bd-group-locked', !!g.locked);
+    frame.classList.toggle('bd-group-collapsed', !!g.collapsed);
     const label = document.createElement('div'); label.className = 'bd-frame-label'; label.textContent = g.name;
     label.style.cursor = 'move';
     label.ondblclick = (ev) => {
@@ -19890,6 +24836,7 @@ function bdDrawFrames() {
     // PDRAG_THRESHOLD を超えたら「ドラッグ」と判定し、それ未満のクリックは通常のクリック扱い。
     label.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0) return;
+      if (g.locked) return;
       if (label.contentEditable === 'true') return; // ラベル編集中はドラッグしない
       ev.preventDefault(); ev.stopPropagation();
       const startX = ev.clientX, startY = ev.clientY;
@@ -19920,11 +24867,11 @@ function bdDrawFrames() {
           }
         });
         const movedIds = startPositions.map(p => p.node.id);
-        if (typeof bdDrawConns === 'function') bdDrawConns({ nodeIds: movedIds, reason: 'frame-drag' });
+        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
+        if (typeof bdDrawConns === 'function') bdDrawConns({ reason: 'frame-drag' });
         movedIds.forEach(id => {
           if (typeof bdSyncResizeHandleForNode === 'function') bdSyncResizeHandleForNode(id);
         });
-        if (typeof bdUpdateFramesForNodes === 'function') bdUpdateFramesForNodes(movedIds);
       };
       const onUp = () => {
         document.removeEventListener('pointermove', onMove);
@@ -19970,6 +24917,8 @@ function bdUpdateFramesForNodes(nodeIds) {
     frame.style.top = `${y0 - 22}px`;
     frame.style.width = `${x1 - x0 + 24}px`;
     frame.style.height = `${y1 - y0 + 34}px`;
+    group.x = x0 - 12; group.y = y0 - 22;
+    group.w = x1 - x0 + 24; group.h = y1 - y0 + 34;
   });
 }
 
@@ -21203,6 +26152,15 @@ function bdDrawConns(options) {
   const autoDepthStyleMap = typeof bdBuildAutoDepthStyleMap === 'function'
     ? bdBuildAutoDepthStyleMap(bd)
     : new Map();
+  const groupEndpointNode = (endpoint) => {
+    if (endpoint?.targetKind !== 'group') return null;
+    const groupId = typeof endpoint.targetRef === 'string' ? endpoint.targetRef : endpoint.targetRef?.groupId;
+    const group = (bd.groups || []).find(item => (item.groupId || item.id) === groupId);
+    if (!group) return null;
+    return { id: groupId, x: Number(group.x) || 0, y: Number(group.y) || 0,
+      w: Math.max(1, Number(group.w) || 160), h: Math.max(1, Number(group.h) || 80),
+      shape: group.shape || 'rounded', _boardGroupEndpoint: true };
+  };
   bd.connections.forEach(c => {
     if (partialConnIds && !partialConnIds.has(c.id)) return;
     // 選択 UI (端点ハンドル / 中央ハンドル) を hit append の後に持ち上げるための一時バッファ。
@@ -21214,13 +26172,15 @@ function bdDrawConns(options) {
       ? bdGetAutoDepthLineStyleIndexForConnection(c, autoDepthStyleMap)
       : '';
     if (bd.displayFilters && bd.displayFilters.showConnections === false) return; // 非表示
-    const fe = c.from ? document.getElementById('bdn-'+c.from) : null;
-    const te = c.to ? document.getElementById('bdn-'+c.to) : null;
-    const fn = c.from ? bd.nodes.find(n=>n.id===c.from) : null;
-    const tn = c.to ? bd.nodes.find(n=>n.id===c.to) : null;
+    const fromGroup = groupEndpointNode(c.fromEndpoint);
+    const toGroup = groupEndpointNode(c.toEndpoint);
+    const fe = c.from && !fromGroup ? document.getElementById('bdn-'+c.from) : null;
+    const te = c.to && !toGroup ? document.getElementById('bdn-'+c.to) : null;
+    const fn = fromGroup || (c.from ? bd.nodes.find(n=>n.id===c.from) : null);
+    const tn = toGroup || (c.to ? bd.nodes.find(n=>n.id===c.to) : null);
     const rawFromPoint = bdNormalizeConnectionPoint(c.fromPoint);
     const rawToPoint = bdNormalizeConnectionPoint(c.toPoint);
-    if ((c.from && (!fe || !fn)) || (c.to && (!te || !tn))) return;
+    if ((c.from && !fromGroup && (!fe || !fn)) || (c.to && !toGroup && (!te || !tn))) return;
     if (!c.from && !rawFromPoint) return;
     if (!c.to && !rawToPoint) return;
     const fp = fn
@@ -21474,6 +26434,22 @@ function bdDrawConns(options) {
       }
     }
     }
+
+    const outlineEndpointPoint = (endpoint, node, pos, width, height, gap) => {
+      if (!endpoint?.outlinePosition || !node || typeof MeldexBoardOutlineEndpoints === 'undefined') return null;
+      const point = MeldexBoardOutlineEndpoints.pointAtPathT(
+        node.shape || 'rect', { ...node, x: pos.x, y: pos.y, w: width, h: height },
+        endpoint.outlinePosition.pathT, node,
+      );
+      const cx = pos.x + width / 2; const cy = pos.y + height / 2;
+      const length = Math.hypot(point.x - cx, point.y - cy) || 1;
+      return { x: point.x + ((point.x - cx) / length) * gap,
+        y: point.y + ((point.y - cy) / length) * gap };
+    };
+    const exactFrom = outlineEndpointPoint(c.fromEndpoint, fn, fp, fw, fh, GAP_FROM);
+    const exactTo = outlineEndpointPoint(c.toEndpoint, tn, tp, tw, th, GAP_TO);
+    if (exactFrom) { x1 = exactFrom.x; y1 = exactFrom.y; hasUserAnchor = true; }
+    if (exactTo) { x2 = exactTo.x; y2 = exactTo.y; hasUserAnchor = true; }
 
     // v0.5.250: 同じカードペア間に複数ラインがある場合、各ラインを区別するためのオフセット。
     // - 曲線 (curve): 端点はカード側で固定し、制御点 c1/c2 を垂直にシフトして曲線を上下 (または左右) に膨らませる。
@@ -22091,9 +27067,9 @@ async function _bdConfirmDeleteSelection() {
   const nodeCount = bd.selected?.size || 0;
   const lineCount = _bdSelectedConnectionIdsForDelete().length;
   let msg;
-  if (nodeCount && lineCount) msg = `${nodeCount}件のカードと${lineCount}件のラインを削除しますか？`;
-  else if (nodeCount > 1) msg = `${nodeCount}件のカードを削除しますか？`;
-  else if (nodeCount === 1) msg = 'このカードを削除しますか？';
+  if (nodeCount && lineCount) msg = `${nodeCount}件のトピックと${lineCount}件のラインを削除しますか？`;
+  else if (nodeCount > 1) msg = `${nodeCount}件のトピックを削除しますか？`;
+  else if (nodeCount === 1) msg = 'このトピックを削除しますか？';
   else if (lineCount > 1) msg = `${lineCount}件のラインを削除しますか？`;
   else msg = 'このラインを削除しますか？';
   try {
@@ -22497,7 +27473,7 @@ function bdAddAt(x, y, text, opts) {
     let resolvedText = text;
     if (resolvedText == null || resolvedText === '') {
       const depthStyles = typeof bdEnsureDepthStyles === 'function' ? bdEnsureDepthStyles() : (bd.depthStyles || []);
-      resolvedText = depthStyles[0]?.defaultText || 'カード';
+      resolvedText = depthStyles[0]?.defaultText || 'トピック';
     }
     const n = typeof bdCreateNodeWithStyle === 'function'
       ? bdCreateNodeWithStyle(resolvedText, x, y, opts)
@@ -22924,6 +27900,10 @@ function _bdSnapshot() {
     nodes: bd.nodes,
     connections: bd.connections,
     groups: bd.groups,
+    topicViewDocument: bd.topicViewDocument,
+    activeBoardViewId: bd.activeBoardViewId,
+    hiddenTopicRefs: bd.hiddenTopicRefs,
+    topicStyleOverrides: bd.topicStyleOverrides,
     // 課題10-2 (2026-08-14): undo/redo のたびに選択が全解除されていたため、選択集合も
     // スナップショットへ含めて復元時に再選択する (_bdApplySnapshot 側で現存IDへ絞る)。
     selectedNodeIds: [...((bd.selected instanceof Set) ? bd.selected : [])],
@@ -22980,6 +27960,10 @@ function _bdApplySnapshot(s) {
   // _bdCommitActiveBoardTextEditBeforeFind と同型のガード）。
   if (bd.editing && typeof bdFinishEdit === 'function') bdFinishEdit();
   bd.nodes = s.nodes; bd.connections = s.connections; bd.groups = s.groups || [];
+  if (s.topicViewDocument !== undefined) bd.topicViewDocument = s.topicViewDocument;
+  if (s.activeBoardViewId !== undefined) bd.activeBoardViewId = s.activeBoardViewId || '';
+  if (s.hiddenTopicRefs !== undefined) bd.hiddenTopicRefs = s.hiddenTopicRefs || [];
+  if (s.topicStyleOverrides !== undefined) bd.topicStyleOverrides = s.topicStyleOverrides || {};
   bd.cardStyles = s.cardStyles || bd.cardStyles;
   bd.lineStyles = s.lineStyles || bd.lineStyles;
   bd.depthStyles = s.depthStyles || bd.depthStyles;
@@ -23240,6 +28224,9 @@ async function bdOpenBoard(label, path, opts) {
     bd.llmSemantics = parsed.llmSemantics || (typeof bdDefaultLlmSemantics === 'function' ? bdDefaultLlmSemantics() : null);
     bdEnsureConnectionRuntime(bd.connections);
     bd.groups = parsed.groups || [];
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') {
+      MeldexBoardTopicIntegration.hydrate(bd, parsed, nextPath);
+    }
     bd.statuses = parsed.statusDefs || ((typeof BD_DEFAULT_STATUSES !== 'undefined') ? [...BD_DEFAULT_STATUSES] : []);
     bd.cardStyles = parsed.cardStyles || [];
     bd.lineStyles = parsed.lineStyles || [];
@@ -23314,6 +28301,7 @@ async function bdOpenBoard(label, path, opts) {
     bdDrawConns();
     bdDrawFrames();
     if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
+    if (typeof MeldexBoardTopicIntegration !== 'undefined') MeldexBoardTopicIntegration.mountToolbar(bd);
     // ノードが多い場合のみフィット（少ない場合はズーム100%で表示）
     if (bd.nodes.length > 5) bdFitAll();
     else bdTransform();
@@ -23620,7 +28608,7 @@ function _bdDrawPreviewMinimap() {
   const pane = document.getElementById('gb-preview-pane');
   if (!bdShouldRenderMinimapInPreviewPane(pane)) return;
   if (!bd.nodes.length) {
-    pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">カードがありません</div>';
+    pane.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:var(--fg2);font-size:13px;">トピックがありません</div>';
     return;
   }
   let canvas = pane.querySelector('.bd-minimap');
@@ -24253,7 +29241,7 @@ function _bdMinimapBounds() {
     }
     const currentNode = state.nodes?.find(item => item && item.id === nodeId);
     if (currentNode !== node || nodeLinkPath(currentNode) !== originalPath) {
-      if (typeof global.showStatus === 'function') global.showStatus('カードのリンク先が変わったため、画像の再指定を中止しました', true);
+      if (typeof global.showStatus === 'function') global.showStatus('トピックのリンク先が変わったため、画像の再指定を中止しました', true);
       return false;
     }
     if (typeof global.bdPushUndo === 'function') global.bdPushUndo();
@@ -24762,7 +29750,7 @@ function _bdMinimapBounds() {
     bd.nodes.push(...nodes);
     const ids = finalizeAddedNodes(nodes, options?.reason || 'paste-cards');
     if (typeof showStatus === 'function' && options?.silent !== true) {
-      showStatus(ids.length > 1 ? `${ids.length}件のカードを貼り付けました` : 'カードを貼り付けました');
+      showStatus(ids.length > 1 ? `${ids.length}件のトピックを貼り付けました` : 'トピックを貼り付けました');
     }
     return ids;
   }
@@ -24880,7 +29868,7 @@ function _bdMinimapBounds() {
     if (typeof showStatus === 'function') {
       if (ids.length) {
         const suffix = failed ? `（${failed}件は読み込めませんでした）` : '';
-        showStatus(ids.length > 1 ? `${ids.length}件のファイルカードを貼り付けました${suffix}` : `ファイルカードを貼り付けました${suffix}`);
+        showStatus(ids.length > 1 ? `${ids.length}件のファイルトピックを貼り付けました${suffix}` : `ファイルトピックを貼り付けました${suffix}`);
       } else {
         showStatus('貼り付けられるファイルがありませんでした', true);
       }
@@ -25377,7 +30365,7 @@ function _bdMinimapBounds() {
     const containedIds = new Set([...selectedIds].filter(id => !!bd.nodes.find(v => v.id === id)?.contained));
     const eligibleIds = new Set([...selectedIds].filter(id => !containedIds.has(id)));
     if (eligibleIds.size < 2) {
-      showStatus('内包カードはラインから親子化の対象外です', true);
+    showStatus('内包トピックはラインから親子化の対象外です', true);
       return { assigned: 0, unreachable: 0, skippedContained: containedIds.size, skippedUser: false };
     }
     if (!eligibleIds.has(rootId)) rootId = pickFallbackLinkifyRoot(eligibleIds);
@@ -25390,7 +30378,7 @@ function _bdMinimapBounds() {
       return !!(node && node.parent);
     });
     if (hasExistingParent) {
-      const ok = await cfConfirm('選択内に既に親子関係が設定されているカードがあります。ラインに基づき上書きしますか？');
+    const ok = await cfConfirm('選択内に既に親子関係が設定されているトピックがあります。ラインに基づき上書きしますか？');
       if (!ok) return { assigned: 0, unreachable: 0, skippedContained: 0, skippedUser: true };
     }
     const adjacency = new Map();
@@ -25453,9 +30441,9 @@ function _bdMinimapBounds() {
     if (assigned === 0) {
       showStatus('選択内にラインがないため親子化できませんでした', true);
     } else {
-      const parts = [`親子化: ${assigned} 件のカードに親を設定しました`];
+  const parts = [`親子化: ${assigned} 件のトピックに親を設定しました`];
       if (unreachable) parts.push(`到達不能 ${unreachable} 件`);
-      if (skippedContained) parts.push(`内包カードスキップ ${skippedContained} 件`);
+  if (skippedContained) parts.push(`内包トピックスキップ ${skippedContained} 件`);
       showStatus(parts.join(' / '));
     }
     return { assigned, unreachable, skippedContained, skippedUser: false };
@@ -26406,10 +31394,10 @@ function _bdAnchorAddCard(fromNid, hudPos) {
     if (typeof bdSelect === 'function') bdSelect(newNode.id);
     if (typeof bdDirty === 'function') bdDirty();
     if (typeof window.showStatus === 'function') {
-      const msg = action === 'child' ? '子カードを追加しました'
-                : action === 'between' ? '親カードとの間にカードを追加しました'
-                : action === 'sibling-before' ? '同階層カードを前に追加しました'
-                : '同階層カードを後に追加しました';
+      const msg = action === 'child' ? 'サブトピックを追加しました'
+                : action === 'between' ? '親トピックとの間にトピックを追加しました'
+                : action === 'sibling-before' ? '同階層トピックを前に追加しました'
+                : '同階層トピックを後に追加しました';
       window.showStatus(msg);
     }
     return true;
@@ -26471,8 +31459,8 @@ function _BD_DEPTH_CARD(themeIndex, overrides = {}) {
   };
 }
 const BD_DEFAULT_DEPTH_STYLES = [
-  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'カード', line: _BD_DEPTH_LINE(5) }),
-  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブカード', line: _BD_DEPTH_LINE(3) }),
+  _BD_DEPTH_CARD(5, { name: '階層1 矩形', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-standard', fontSize: 16, fontBold: true, width: 200, shape: 'rect', defaultText: 'トピック', line: _BD_DEPTH_LINE(5) }),
+  _BD_DEPTH_CARD(3, { name: '階層2 楕円', cardStyleRef: 'card-theme-ellipse', lineStyleRef: 'line-theme-standard', fontSize: 14, fontBold: true, width: 180, shape: 'ellipse', borderRadius: 999, defaultText: 'サブトピック', line: _BD_DEPTH_LINE(3) }),
   _BD_DEPTH_CARD(0, { name: '階層3 矩形強調', cardStyleRef: 'card-theme-rect', lineStyleRef: 'line-theme-alert', fontSize: 13, fontBold: true, width: 180, shape: 'rect', borderRadius: 8, defaultText: '項目', line: _BD_DEPTH_LINE(0, { width: 4 }) }),
   _BD_DEPTH_CARD(1, { name: '階層4 八角', cardStyleRef: 'card-theme-octagon', lineStyleRef: 'line-theme-dashed', fontSize: 13, fontBold: false, width: 180, shape: 'octagon', borderRadius: 0, defaultText: '詳細', line: _BD_DEPTH_LINE(1, { width: 2, style: 'dashed' }) }),
   _BD_DEPTH_CARD(4, { name: '階層5 ピル', cardStyleRef: 'card-theme-pill', lineStyleRef: 'line-theme-straight', fontSize: 12, fontBold: true, width: 180, shape: 'pill', borderRadius: 999, defaultText: 'メモ', line: _BD_DEPTH_LINE(4, { pathType: 'straight' }) }),
@@ -26600,7 +31588,7 @@ function bdNormalizeDepthStyles(styles) {
       cloudOffset: Number.isFinite(+raw.cloudOffset) ? Math.max(0, Math.min(1, +raw.cloudOffset)) : 0.5,
       cloudSubWidthRatio: Number.isFinite(+raw.cloudSubWidthRatio) ? Math.max(0, Math.min(100, +raw.cloudSubWidthRatio)) : 0,
       cloudSubHeightRatio: Number.isFinite(+raw.cloudSubHeightRatio) ? Math.max(0, Math.min(100, +raw.cloudSubHeightRatio)) : 0,
-      defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'カード'),
+    defaultText: raw.defaultText != null ? String(raw.defaultText) : (fallback.defaultText || 'トピック'),
       line: _bdNormalizeDepthLine(raw.line, fallback.line),
     };
     return out;
@@ -27172,7 +32160,7 @@ async function bdExportImage() {
 let _bdSlideshow = null;
 function bdStartSlideshow(interval) {
   const imgNodes = bd.nodes.filter(n => n.img);
-  if (!imgNodes.length) { showStatus('画像カードがありません', true); return; }
+  if (!imgNodes.length) { showStatus('画像トピックがありません', true); return; }
   let idx = 0;
   _bdSlideshow = { nodes: imgNodes, interval: interval || 5000 };
   const show = () => {
@@ -27314,7 +32302,7 @@ function _bdDialogHistorySize(checkpoint) {
 // --- Note Panel ---
 function bdEditNote(nodeId) {
   const n = bd.nodes.find(v => v.id === nodeId); if (!n) return;
-  if (!window.GBUI?.createModal) throw new Error('カードのノート編集ダイアログを初期化できませんでした');
+  if (!window.GBUI?.createModal) throw new Error('トピックノート編集ダイアログを初期化できませんでした');
   const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const uid = 'bd-note-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   const textarea = document.createElement('textarea');
@@ -27323,7 +32311,7 @@ function bdEditNote(nodeId) {
   textarea.rows = 12;
   textarea.value = n.note || '';
   textarea.dataset.e2eId = 'board-note-text';
-  textarea.setAttribute('aria-label', 'カードのノート');
+  textarea.setAttribute('aria-label', 'トピックノート');
   textarea.style.cssText = 'box-sizing:border-box;width:100%;min-height:180px;resize:vertical;';
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
@@ -27351,7 +32339,7 @@ function bdEditNote(nodeId) {
     minWidth: '0',
     initialFocus: textarea,
     returnFocus: returnFocus || undefined,
-    closeLabel: 'カードのノートを閉じる',
+    closeLabel: 'トピックノートを閉じる',
     closeOnEsc: true,
     closeOnOverlay: true,
     onBeforeClose: reason => !saving || reason === 'saved',
@@ -27373,7 +32361,7 @@ function bdEditNote(nodeId) {
     const previousNote = n.note;
     const checkpoint = _bdDialogCaptureMutationCheckpoint();
     try {
-      if (typeof bdPushUndo === 'function') bdPushUndo('カードのノートを編集');
+      if (typeof bdPushUndo === 'function') bdPushUndo('トピックノートを編集');
       n.note = textarea.value;
       if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'edit-note', { detailPanel: true });
       else bdRender();
@@ -27381,8 +32369,8 @@ function bdEditNote(nodeId) {
     } catch (error) {
       if (hadOwnNote) n.note = previousNote; else delete n.note;
       _bdDialogRestoreMutationCheckpoint(checkpoint);
-      try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('カードのノート復元後の再描画に失敗しました:', renderError); }
-      console.error('カードのノートを保存できませんでした:', error);
+    try { if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'restore-note', { detailPanel: true }); else bdRender(); } catch (renderError) { console.error('トピックノート復元後の再描画に失敗しました:', renderError); }
+      console.error('トピックノートを保存できませんでした:', error);
       try { showStatus('ノートを保存できませんでした', true); } catch {}
       saving = false;
       saveButton.disabled = false;
@@ -27390,7 +32378,7 @@ function bdEditNote(nodeId) {
       return;
     }
     modalApi.close('saved');
-    try { showStatus('ノートを保存しました'); } catch (error) { console.warn('カードのノート保存通知に失敗しました:', error); }
+    try { showStatus('ノートを保存しました'); } catch (error) { console.warn('トピックノート保存通知に失敗しました:', error); }
   });
   modalApi.open();
   replaceIcons(modalApi.overlay);
@@ -27399,7 +32387,7 @@ function bdEditNote(nodeId) {
 
 // --- Summary ---
 function bdAddSummary() {
-  const ids = [...bd.selected]; if (ids.length < 2) { showStatus('2つ以上のカードを選択してください', true); return; }
+  const ids = [...bd.selected]; if (ids.length < 2) { showStatus('2つ以上のトピックを選択してください', true); return; }
   bdPushUndo();
   let maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   ids.forEach(id => {
@@ -27414,7 +32402,7 @@ function bdAddSummary() {
     }
   });
   if (!Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
-    showStatus('表示中のカードを選択してください', true);
+    showStatus('表示中のトピックを選択してください', true);
     return;
   }
   const summary = (typeof bdCreateNodeWithStyle === 'function')
@@ -27442,7 +32430,7 @@ let _bdDrillRoot = null;
 function bdDrillDown(nodeId) {
   _bdDrillRoot = nodeId;
   bdRender();
-  showStatus('ドリルダウン表示中（カードまたはボードのメニューから「ドリルダウン解除」で戻れます）');
+    showStatus('ドリルダウン表示中（トピックまたはボードのメニューから「ドリルダウン解除」で戻れます）');
 }
 function bdDrillUp() {
   _bdDrillRoot = null;
@@ -27927,7 +32915,7 @@ function _bdRestoreCardToHierarchy(nodeIds) {
   if (typeof showStatus === 'function') {
     showStatus(rootsToReapply.size
       ? '階層別スタイルに戻しました'
-      : '個別スタイルを解除しました（カードを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
+      : '個別スタイルを解除しました（トピックを右クリックして「階層別スタイルの起点にする」を選ぶと深さ別スタイルが反映されます）');
   }
 }
 
@@ -28214,7 +33202,7 @@ function _bdPrepareContextMenuSelection(nodeId) {
 
 function bdContextMenu(e, nodeId) {
   _bdCloseAllContextMenus();
-  const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'カードメニュー' : 'ボードメニュー');
+  const menu = _bdEnhanceContextMenu(document.createElement('div'), nodeId ? 'トピックメニュー' : 'ボードメニュー');
   _bdTrackContextMenuTrigger(menu, e?.trigger || null);
   { const z = (typeof _getZoom === 'function') ? _getZoom() : (parseFloat(document.documentElement.style.zoom) || 1); menu.style.left = (e.clientX/z)+'px'; menu.style.top = (e.clientY/z)+'px'; }
   const contextAnchorEl = { getBoundingClientRect: () => ({ left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY, width: 0, height: 0 }) };
@@ -28321,19 +33309,19 @@ function bdContextMenu(e, nodeId) {
       item('テキスト編集 (F2)', () => bdEditNode(nodeId));
       // 「同階層カード追加 (Enter)」: ルートカード (親なし) では追加先の階層が不定のため disabled。
       if (isRootCard) {
-        const disabled = _bdContextMenuItem(menu, '同階層カード追加 (Enter)', null, { disabled: true, html: false });
-        disabled.title = 'ルートカードは親が無いため、同階層追加できません';
+        const disabled = _bdContextMenuItem(menu, '同階層トピック追加 (Enter)', null, { disabled: true, html: false });
+        disabled.title = 'メイントピックは親が無いため、同階層追加できません';
       } else {
-        item('同階層カード追加 (Enter)', () => {
+        item('同階層トピック追加 (Enter)', () => {
           bdSelect(nodeId);
           if (typeof bdAddSiblingToSelected === 'function') bdAddSiblingToSelected();
         });
       }
-      item('子カード追加 (Ctrl+Enter)', () => {
+      item('サブトピック追加 (Ctrl+Enter)', () => {
         bdSelect(nodeId);
         if (typeof bdAddChildToSelected === 'function') bdAddChildToSelected();
       });
-      const linkifySub = sub('リンクカード化');
+      const linkifySub = sub('リンクトピック化');
       linkifySub.item('ノート', () => bdLinkifyCardAs(nodeId, 'page'));
       linkifySub.item('シート', () => bdLinkifyCardAs(nodeId, 'database'));
       linkifySub.item('シナリオ', () => bdLinkifyCardAs(nodeId, 'scriptnote'));
@@ -28341,7 +33329,7 @@ function bdContextMenu(e, nodeId) {
       linkifySub.item('タイマー', () => bdLinkifyCardAs(nodeId, 'timer'));
       linkifySub.sep();
       linkifySub.item('既存ファイル...', () => bdLinkifyCardFromExisting(nodeId));
-      item('接続カードを全選択', () => {
+      item('接続トピックを全選択', () => {
         const ids = new Set([nodeId]); let ch = true;
         while (ch) {
           ch = false;
@@ -28385,7 +33373,7 @@ function bdContextMenu(e, nodeId) {
       bdDirty();
     });
     if (multi && nd) {
-      item('選択カードをこのカードに内包', () => {
+      item('選択トピックをこのトピックに内包', () => {
         const parentAbs = typeof bdAbsolutePosition === 'function' ? bdAbsolutePosition(nd) : { x: nd.x, y: nd.y };
         const isAncestorOfTarget = (id) => {
           if (typeof bdDescendants === 'function') return bdDescendants(id).includes(nodeId);
@@ -28400,7 +33388,7 @@ function bdContextMenu(e, nodeId) {
         };
         const targetIds = [...bd.selected].filter(id => id !== nodeId && !isAncestorOfTarget(id));
         if (!targetIds.length) {
-          if (typeof showStatus === 'function') showStatus('内包できるカードがありません', true);
+          if (typeof showStatus === 'function') showStatus('内包できるトピックがありません', true);
           return;
         }
         bdPushUndo();
@@ -28482,7 +33470,7 @@ function bdContextMenu(e, nodeId) {
       // 起点になる」(そのカード自身が深さ0、子孫だけに効く) ことが伝わらないため改善した。
       if (nd) {
         const autoPanel = _bdCreateContextSubmenu(cardStylePanel, '階層別スタイル', 160);
-        [['このカードを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
+    [['このトピックを起点にする', true], ['起点にしない', false]].forEach(([label, val]) => {
           const si = _bdContextMenuItem(autoPanel, radioMark(!!nd._autoStyle === val) + label, () => {
             nd._autoStyle = val;
             if (val) delete nd._userCardStyle;
@@ -28542,7 +33530,7 @@ function bdContextMenu(e, nodeId) {
       const viewSub = sub('表示');
       const childNodesForView = typeof bdChildren === 'function' ? bdChildren(nodeId) : [];
       if (!multi && nd && childNodesForView.length > 0) {
-        const collapseLabel = nd.collapsed ? '子カードを展開' : '子カードを折りたたむ';
+  const collapseLabel = nd.collapsed ? 'サブトピックを展開' : 'サブトピックを折りたたむ';
         viewSub.item(collapseLabel, () => {
           bdPushUndo();
           nd.collapsed = !nd.collapsed;
@@ -28759,7 +33747,7 @@ function bdContextMenu(e, nodeId) {
     // --- Multi-select: 整列・サイズ・集約・グループ化 ---
     if (multi) {
       sep();
-      item('集約カードを追加', () => bdAddSummary());
+      item('集約トピックを追加', () => bdAddSummary());
       const alSub = sub('整列');
       alSub.item('左揃え', () => bdAlign('left')); alSub.item('右揃え', () => bdAlign('right'));
       alSub.item('上揃え', () => bdAlign('top')); alSub.item('下揃え', () => bdAlign('bottom'));
@@ -28800,7 +33788,7 @@ function bdContextMenu(e, nodeId) {
     dangerItem('削除 (Del)', async () => {
       if (!multi) bdSelect(nodeId);
       const count = bd.selected.size;
-      const msg = count > 1 ? `${count}件のカードを削除しますか？` : 'このカードを削除しますか？';
+      const msg = count > 1 ? `${count}件のトピックを削除しますか？` : 'このトピックを削除しますか？';
       if (!(await cfConfirm(msg))) return;
       await bdDeleteSelected({ confirm: false });
     });
@@ -28809,8 +33797,8 @@ function bdContextMenu(e, nodeId) {
     // --- Blank area menu ---
     const _stw = bdScreenToWorld(e.clientX, e.clientY);
     const clickWx = _stw.x, clickWy = _stw.y;
-    item('カードを追加', () => { bdAddAt(clickWx, clickWy); });
-    const newLinkSub = sub('新規リンクカード');
+    item('トピックを追加', () => { bdAddAt(clickWx, clickWy); });
+    const newLinkSub = sub('新規リンクトピック');
     [
       ['ノート', 'page'],
       ['シート', 'database'],
@@ -28820,13 +33808,13 @@ function bdContextMenu(e, nodeId) {
     ].forEach(([label, type]) => {
       newLinkSub.item(label, () => {
         if (typeof bdCreateLinkedFileCardAt === 'function') bdCreateLinkedFileCardAt(clickWx, clickWy, type);
-        else showStatus('リンクカード追加機能を読み込めませんでした', true);
+        else showStatus('リンクトピック追加機能を読み込めませんでした', true);
       });
     });
     newLinkSub.sep();
     newLinkSub.item('既存ファイルへのリンク...', () => {
       if (typeof bdPromptAddLinkCardAt === 'function') bdPromptAddLinkCardAt(clickWx, clickWy);
-      else showStatus('リンクカード追加機能を読み込めませんでした', true);
+      else showStatus('リンクトピック追加機能を読み込めませんでした', true);
     });
     item('貼り付け (Ctrl+V)', () => {
       if (window.MeldexBoardTransfer?.requestPaste) {
@@ -28867,7 +33855,7 @@ function bdContextMenu(e, nodeId) {
     }
     if (_bdDrillRoot) item('ドリルダウン解除', () => bdDrillUp());
     if (bd.selected.size > 1) {
-      item('集約カードを追加', () => bdAddSummary());
+      item('集約トピックを追加', () => bdAddSummary());
     }
   }
 
@@ -29138,22 +34126,22 @@ function bdShowHelp() {
   content.dataset.e2eId = 'board-shortcuts-content';
   content.style.cssText = `box-sizing:border-box;width:100%;max-width:100%;min-width:0;font-size:13px;line-height:2;columns:${window.innerWidth <= 900 ? 1 : 2};column-gap:24px;overflow-wrap:anywhere;`;
   content.innerHTML = `
-      <div><kbd>ダブルクリック</kbd> カード追加/編集</div>
+      <div><kbd>ダブルクリック</kbd> トピック追加/編集</div>
       <div><kbd>左ドラッグ (空白)</kbd> 範囲選択</div>
-      <div><kbd>左ドラッグ (カード)</kbd> 移動</div>
+      <div><kbd>左ドラッグ (トピック)</kbd> 移動</div>
       <div><kbd>右ドラッグ (空白)</kbd> パン</div>
-      <div><kbd>右ドラッグ (カード)</kbd> ライン</div>
+      <div><kbd>右ドラッグ (トピック)</kbd> ライン</div>
       <div><kbd>ホイール</kbd> ズーム</div>
       <div><kbd>中ボタンドラッグ</kbd> パン</div>
       <div><kbd>Space+矢印</kbd> パン</div>
       <div><kbd>Ctrl++/-</kbd> ズーム</div>
-      <div><kbd>Tab</kbd> 子カード追加</div>
-      <div><kbd>Enter</kbd> 同階層カード追加</div>
-      <div><kbd>Shift+Enter</kbd> カード内改行 (編集中)</div>
+      <div><kbd>Tab</kbd> サブトピック追加</div>
+      <div><kbd>Enter</kbd> 同階層トピック追加</div>
+      <div><kbd>Shift+Enter</kbd> トピック内改行 (編集中)</div>
       <div><kbd>F2</kbd> テキスト編集</div>
       <div><kbd>Esc</kbd> 編集完了/選択解除</div>
       <div><kbd>Delete</kbd> 削除</div>
-      <div><kbd>矢印</kbd> カード間移動</div>
+      <div><kbd>矢印</kbd> トピック間移動</div>
       <div><kbd>Ctrl+矢印</kbd> 位置微調整</div>
       <div><kbd>Shift+矢印</kbd> 方向選択追加</div>
       <div><kbd>Ctrl+A</kbd> 全選択</div>
@@ -29212,7 +34200,7 @@ async function bdLinkifyCardAs(nodeId, type) {
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n || !bd.path) { showStatus('先にボードを保存してください', true); return; }
   if (n.link) {
-    if (!(await cfConfirm('このカードには既にリンクが設定されています。上書きしますか？'))) return;
+  if (!(await cfConfirm('このトピックには既にリンクが設定されています。上書きしますか？'))) return;
   }
   const parentDir = typeof _bdBoardDir === 'function' ? _bdBoardDir() : bd.path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   const baseLabel = (n.text || '無題').trim() || '無題';
@@ -29230,9 +34218,9 @@ async function bdLinkifyCardAs(nodeId, type) {
     else bdRender();
     bdDirty();
     if (typeof _bdOpenEntryInRightSidebar === 'function') _bdOpenEntryInRightSidebar(label, path, n.linkType);
-    showStatus('リンクカード化: ' + label);
+    showStatus('リンクトピック化: ' + label);
   } catch {
-    showStatus('リンクカード化に失敗しました', true);
+    showStatus('リンクトピック化に失敗しました', true);
   }
 }
 
@@ -29240,7 +34228,7 @@ async function bdLinkifyCardFromExisting(nodeId) {
   const n = bd.nodes.find(v => v.id === nodeId);
   if (!n || !bd.path) { showStatus('先にボードを保存してください', true); return; }
   if (n.link) {
-    if (!(await cfConfirm('このカードには既にリンクが設定されています。上書きしますか？'))) return;
+  if (!(await cfConfirm('このトピックには既にリンクが設定されています。上書きしますか？'))) return;
   }
   const applyLink = (linkPath, maybeLabel, linkType) => {
     if (!linkPath) return;
@@ -29253,7 +34241,7 @@ async function bdLinkifyCardFromExisting(nodeId) {
     if (typeof bdRefreshNodesPartial === 'function') bdRefreshNodesPartial([nodeId], 'linkify-existing', { detailPanel: true });
     else bdRender();
     bdDirty();
-    showStatus('リンクカード化: ' + label);
+    showStatus('リンクトピック化: ' + label);
   };
   if (typeof showLinkInsertModal === 'function') {
     showLinkInsertModal(null, (result) => {
@@ -31254,7 +36242,7 @@ function bdInitInteraction(root) {
           if (typeof bdSyncResizeHandleForNode !== 'function' && typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
           if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
           bdDirty();
-          showStatus(addedIds.length > 1 ? `${addedIds.length}件のカードを追加しました` : 'カードを追加しました');
+          showStatus(addedIds.length > 1 ? `${addedIds.length}件のトピックを追加しました` : 'トピックを追加しました');
         }
       } catch(err) {
         console.error('[board] meldex-node drop failed:', err);
@@ -31289,7 +36277,7 @@ function bdInitInteraction(root) {
           else if (typeof bdSyncResizeHandles === 'function') bdSyncResizeHandles();
           if (typeof bdSyncBoardUi === 'function') bdSyncBoardUi(true);
           bdDirty();
-          showStatus('テキストカードを追加しました');
+          showStatus('テキストトピックを追加しました');
         }
       } catch {}
       return;
@@ -31373,7 +36361,7 @@ function bdInitInteraction(root) {
     Promise.all(jobs).then(results => {
       if (!dropStillTargetsCurrentBoard()) {
         cleanupAbandonedUploads(results);
-        if (typeof showStatus === 'function') showStatus('別のボードに切り替わったため、ファイルカードの追加を中止しました', true);
+        if (typeof showStatus === 'function') showStatus('別のボードに切り替わったため、ファイルトピックの追加を中止しました', true);
         return;
       }
       const nodes = results.filter(Boolean).map(item => {
@@ -31434,7 +36422,7 @@ function bdInitInteraction(root) {
           : (embeddedImages && linkedImages ? '（埋め込み/リンク混在）' : (linkedImages ? '（リンク）' : '（埋め込み）'));
         const hasFallback = results.filter(Boolean).some(item => item.linkFallback);
         const fallbackLabel = hasFallback ? '（リンク保存できなかった画像は埋め込み）' : modeLabel;
-        showStatus(nodes.length > 1 ? `${nodes.length}件の${label}カードを追加しました${fallbackLabel}` : `${label}カードを追加しました${fallbackLabel}`);
+        showStatus(nodes.length > 1 ? `${nodes.length}件の${label}トピックを追加しました${fallbackLabel}` : `${label}トピックを追加しました${fallbackLabel}`);
       }
     });
   }
@@ -32216,7 +37204,7 @@ function bdBuildBoardShellMarkup(idSuffix = '') {
       <div class="sep"></div>
       <button type="button" data-bd-tool="select" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="選択ツール" aria-label="選択ツール">${_bdIcon('mouse-pointer', 16)}</button>
       <div class="sep"></div>
-      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="カード追加" aria-label="カード追加">${_bdIcon('credit-card', 16)}</button>
+      <button type="button" data-bd-tool="add-card" class="tb-icon-btn bd-toolbar-btn bd-toolbar-icon-btn bd-tool-btn" title="トピック追加" aria-label="トピック追加">${_bdIcon('credit-card', 16)}</button>
       <button type="button" id="${idFor('bd-card-style-select')}" class="bd-toolbar-btn bd-style-picker-trigger" data-bd-control="card-style-select" data-bd-action="pick-card-style" title="カードスタイル" aria-label="カードスタイル" aria-haspopup="menu" aria-expanded="false">
         <span id="${idFor('bd-card-style-preview')}" class="bd-style-preview" data-bd-control="card-style-preview"></span>
         <span class="bd-style-picker-caret">${lucide('chevronDown', 10)}</span>
@@ -33728,7 +38716,7 @@ async function _bdRenderEntityIntoRightPane(entityPath, label, pane) {
   if (!entityPath || !pane || typeof apiFetch !== 'function' || typeof renderEntityPropsGridInto !== 'function') return false;
   try {
     await pane._meldexEntityDetailController?.dispose?.();
-    pane.innerHTML = '<div class="gb-preview-entity-loading" style="padding:12px;color:var(--fg2)">エントリを読み込み中...</div>';
+    pane.innerHTML = '<div class="gb-preview-entity-loading" style="padding:12px;color:var(--fg2)">トピックを読み込み中...</div>';
     const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
     if (!data) return false;
     if (window.MeldexEntityDetail?.mount) {
@@ -33935,7 +38923,7 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     return null;
   }
   if (typeof bdAddLinkCardAt !== 'function') {
-    showStatus('リンクカード追加機能を読み込めませんでした', true);
+    showStatus('リンクトピック追加機能を読み込めませんでした', true);
     return null;
   }
   try {
@@ -33949,7 +38937,7 @@ async function bdCreateLinkedFileCardAt(x, y, type) {
     return node;
   } catch (error) {
     const detail = error?.message ? ': ' + error.message : '';
-    showStatus('リンクカード作成に失敗しました' + detail, true);
+    showStatus('リンクトピック作成に失敗しました' + detail, true);
     return null;
   }
 }
@@ -34395,14 +39383,14 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
         setStatus('');
         return;
       }
-      setStatus('該当エントリを取得中…');
+      setStatus('該当トピックを取得中…');
       try {
         const entries = await _fetchEntries(target, v);
         if (mySeq !== previewSeq) return; // より新しい refreshPreview が発火済みなら捨てる
         currentEntries = entries;
-        if (!entries || !entries.length) setStatus('該当エントリがありません', true);
+        if (!entries || !entries.length) setStatus('該当トピックがありません', true);
         else {
-          setStatus(`該当エントリ: ${entries.length} 件`);
+          setStatus(`該当トピック: ${entries.length} 件`);
           if (!busy) goBtn.disabled = false;
         }
       } catch (e) {
@@ -34423,17 +39411,17 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     goBtn.addEventListener('click', async () => {
       if (busy) return;
       if (!Array.isArray(currentEntries) || !currentEntries.length) {
-        setStatus('読み込めるエントリがありません', true);
+        setStatus('読み込めるトピックがありません', true);
         return;
       }
       busy = true;
       goBtn.disabled = true;
       cancelBtn.disabled = true;
-      setStatus(`${currentEntries.length} 件のリンクカードを作成中…`);
+      setStatus(`${currentEntries.length} 件のリンクトピックを作成中…`);
       try {
         const created = await _executeImport(currentEntries);
         close({ force: true });
-        if (typeof showStatus === 'function') showStatus(`${created} 件のリンクカードを読み込みました`);
+        if (typeof showStatus === 'function') showStatus(`${created} 件のリンクトピックを読み込みました`);
       } catch (e) {
         setStatus('読み込みに失敗: ' + (e?.message || e), true);
         goBtn.disabled = false;
@@ -35034,12 +40022,12 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
         `<option value="${escapeHtml(item.value)}"${selected === item.value ? ' selected' : ''}>${escapeHtml(item.label)}</option>`
       )).join('')
       + '</select></label>'
-      + '<p class="gb-section-desc">ダブルクリックとカード右端の開くボタンに適用されます。</p>'
+      + '<p class="gb-section-desc">ダブルクリックとトピック右端の開くボタンに適用されます。</p>'
       + '<div class="gb-check-help-row">'
       + '<label class="bd-detail-check"><input type="checkbox" data-bd-select-auto-subpanel'
-      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>カードを選ぶと右サイドバーに表示する</span></label>`
+      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>トピックを選ぶと右サイドバーに表示する</span></label>`
       + (typeof fieldHelp === 'function' ? fieldHelp(
-        'リンクを持つカードを1枚だけ選ぶと、右サイドバー（サブパネル）が開いている場合にかぎり、その中身を選んだカードのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・カードの文字を編集中は切り替わりません。',
+        'リンクを持つトピックを1件だけ選ぶと、右サイドバー（サブパネル）が開いている場合にかぎり、その中身を選んだトピックのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・トピックの文字を編集中は切り替わりません。',
         { e2eId: 'bd-select-auto-subpanel-help' },
       ) : '')
       + '</div>'
@@ -35438,8 +40426,8 @@ function _bdDepthLineHasValue(line) {
 function _bdIsLegacyDefaultDepthStyles(styles) {
   if (!Array.isArray(styles) || styles.length !== 5) return false;
   const defaults = [
-    { fontSize: 16, fontBold: true, width: 200, bgColor: 'var(--bg4)', defaultText: 'カード' },
-    { fontSize: 14, fontBold: true, width: 170, bgColor: 'var(--bg3)', defaultText: 'サブカード' },
+    { fontSize: 16, fontBold: true, width: 200, bgColor: 'var(--bg4)', defaultText: 'トピック' },
+    { fontSize: 14, fontBold: true, width: 170, bgColor: 'var(--bg3)', defaultText: 'サブトピック' },
     { fontSize: 13, fontBold: false, width: 150, bgColor: '', defaultText: '項目' },
     { fontSize: 12, fontBold: false, width: 130, bgColor: '', defaultText: '詳細' },
     { fontSize: 11, fontBold: false, width: 120, bgColor: '', defaultText: 'メモ' },
@@ -35696,7 +40684,7 @@ function bdNormalizeCardStyles(styles) {
     ? styles.map(style => {
         const n = {
           id: style.id || '',
-          name: style.name || 'カード',
+          name: style.name || 'トピック',
           bgColor: style.bgColor || '',
           textColor: style.textColor || '',
           borderColor: style.borderColor || '',
@@ -36221,7 +41209,7 @@ function bdAddLinkCardAt(x, y, path, label, opts) {
   if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ minimap: true, boardUi: true, comments: [node.id] }, 'add-link-card');
   bdSelect(node.id);
   bdDirty();
-  showStatus('リンクカードを追加: ' + (label || node.text || path));
+  showStatus('リンクトピックを追加: ' + (label || node.text || path));
   return node;
 }
 
@@ -36238,12 +41226,12 @@ async function bdPromptAddLinkCardAt(x, y) {
     return;
   }
   // フォールバック: モーダルが未ロードの場合
-  const rawPath = await cfPrompt('リンクカードのリンク先パス', '');
+  const rawPath = await cfPrompt('リンクトピックのリンク先パス', '');
   if (rawPath == null) return null;
   const path = rawPath.trim();
   if (!path) return null;
   const fallback = path.split(/[/\\]/).pop() || path;
-  const rawLabel = await cfPrompt('カード名', fallback);
+  const rawLabel = await cfPrompt('トピック名', fallback);
   if (rawLabel == null) return null;
   const label = rawLabel.trim() || fallback;
   return bdAddLinkCardAt(x, y, path, label);
@@ -36566,7 +41554,7 @@ function bdSetTool(tool) {
   }
   bdRefreshBoardToolbar();
   if (bd.tool === 'select') showStatus('選択ツール');
-  else if (bd.tool === 'add-card') showStatus('カード追加ツール');
+  else if (bd.tool === 'add-card') showStatus('トピック追加ツール');
   else if (bd.tool === 'add-line') showStatus('ライン追加ツール');
   else if (bd.tool === 'erase') showStatus('消しゴムツール');
 }
@@ -36904,7 +41892,7 @@ function _bdSelectionSummaryHtml() {
   const connCount = connIds.length;
   if (!nodeCount && !connCount) return '';
   const hintParts = [];
-  if (nodeCount) hintParts.push(`${nodeCount} 件のカード`);
+  if (nodeCount) hintParts.push(`${nodeCount} 件のトピック`);
   if (connCount) hintParts.push(`${connCount} 本のライン`);
   const cardStyle = bdGetCardStyleById(bd.activeCardStyle);
   const lineStyle = bdGetLineStyleById(bd.activeLineStyle);
@@ -36913,7 +41901,7 @@ function _bdSelectionSummaryHtml() {
       <div class="bd-detail-heading">複数選択</div>
       <div class="bd-detail-hint">${hintParts.join(' / ')} が選択されています。</div>
       ${nodeCount ? `<div class="bd-detail-section">
-        <div class="bd-detail-section-title">カード一括変更</div>
+        <div class="bd-detail-section-title">トピック一括変更</div>
         <label class="bd-detail-field bd-detail-field-wide"><span>カードスタイル</span>${_bdDetailStyleTriggerHtml('card', bd.activeCardStyle, 'data-bd-selection-card-style-pick')}</label>
         <div class="bd-detail-field bd-detail-field-wide"><span>スタイル</span>${_bdStyleSummaryHtml('card', cardStyle)}</div>
       </div>` : ''}
@@ -36989,8 +41977,8 @@ function _bdStructureHintHtml(node) {
   const label = _bdStructureLabel(node);
   const hasOwnStructure = !!String(node?.structure || '');
   const body = hasOwnStructure
-    ? `このカード以下のサブツリーに「${esc(label)}」を適用します。親カードの構造には従いません。`
-    : '親カードがある場合は親の構造を継承します。親がないカード、または親側にも設定がない場合は自由配置です。';
+      ? `このトピック以下のサブツリーに「${esc(label)}」を適用します。親トピックの構造には従いません。`
+      : '親トピックがある場合は親の構造を継承します。親がないトピック、または親側にも設定がない場合は自由配置です。';
   return `<div class="bd-detail-hint bd-detail-structure-hint"><div class="bd-detail-hint-current">現在の選択: ${esc(label)} ${fieldHelp(body, { e2eId: 'bd-structure-help' })}</div></div>`;
 }
 
@@ -37177,10 +42165,10 @@ function _bdBuildNodeDetailHtml(node) {
   const effectiveAnchorLabel = !effectiveAnchor
     ? 'なし (階層別スタイル未適用)'
     : effectiveAnchor.id === node.id
-      ? 'このカード自身'
+      ? 'このトピック自身'
       : ((effectiveAnchor.text || '').split('\n')[0] || effectiveAnchor.id);
   const opacityPct = node.opacity != null ? Math.round(Math.max(0, Math.min(1, node.opacity)) * 100) : 100;
-  const title = (node.text || '').split('\n')[0] || '無題カード';
+  const title = (node.text || '').split('\n')[0] || '無題トピック';
   const plusIcon = typeof lucide === 'function' ? lucide('plus', 14) : '+';
   const saveIcon = typeof lucide === 'function' ? lucide('save', 14) : '保存';
   const resetIcon = typeof lucide === 'function' ? lucide('rotateCcw', 14) : 'リセット';
@@ -37221,12 +42209,12 @@ function _bdBuildNodeDetailHtml(node) {
         <div class="bd-detail-section-title">配置</div>
         <label class="bd-detail-field"><span>X</span><input type="number" class="gb-fmt-num" value="${Math.round(node.x || 0)}" data-bd-field="x"></label>
         <label class="bd-detail-field"><span>Y</span><input type="number" class="gb-fmt-num" value="${Math.round(node.y || 0)}" data-bd-field="y"></label>
-        <label class="bd-detail-field"><span>親カード</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
+        <label class="bd-detail-field"><span>親トピック</span><input type="text" value="${_bdEscAttr(parent)}" readonly data-e2e-id="bd-node-parent-label"></label>
         <label class="bd-detail-check"><input type="checkbox" data-bd-field="container" ${node.container ? 'checked' : ''}><span>コンテナ</span></label>
-        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>子カード追従</span></label>
+        <label class="bd-detail-check"><input type="checkbox" data-bd-field="_followChildren" ${node._followChildren ? 'checked' : ''}><span>サブトピック追従</span></label>
         <div class="gb-check-help-row">
           <label class="bd-detail-check"><input type="checkbox" data-bd-field="_autoStyle" ${node._autoStyle ? 'checked' : ''}><span>階層別スタイルの起点にする</span></label>
-          ${typeof fieldHelp === 'function' ? fieldHelp('このカードを深さ0として、子孫カードだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のカードには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
+          ${typeof fieldHelp === 'function' ? fieldHelp('このトピックを深さ0として、子孫トピックだけに階層別スタイルを適用します。祖先や、起点を共有しない別系統のトピックには影響しません。', { e2eId: 'bd-node-auto-style-help' }) : ''}
         </div>
         <div class="bd-detail-hint" data-e2e-id="bd-node-effective-anchor-hint">効いている起点: ${esc(effectiveAnchorLabel)}</div>
         <div class="bd-detail-inline-actions">
@@ -37980,6 +42968,15 @@ let _bdRenderNodeE2ESeq = 0;
 function bdCreateRenderContext(options = {}) {
   const hiddenIds = options.hiddenIds instanceof Set ? options.hiddenIds : new Set();
   if (!(options.hiddenIds instanceof Set) && typeof bd !== 'undefined') {
+    const hiddenTopicKeys = new Set((bd.hiddenTopicRefs || []).map(ref => JSON.stringify([
+      String(ref?.sourceId || ''), String(ref?.topicId || ''),
+    ])));
+    bd.nodes.forEach(node => {
+      const ref = node?.topicRef;
+      if (ref && hiddenTopicKeys.has(JSON.stringify([String(ref.sourceId || ''), String(ref.topicId || '')]))) {
+        hiddenIds.add(node.id);
+      }
+    });
     bd.nodes.forEach(node => {
       if (node?.collapsed && typeof bdDescendants === 'function') {
         bdDescendants(node.id).forEach(id => hiddenIds.add(id));
@@ -38083,7 +43080,7 @@ function bdFindRenderableContainerRoot(node) {
 
 function bdNodeA11yLabel(node) {
   const text = String(node?.text || node?.link || node?.id || '').replace(/\s+/g, ' ').trim();
-  return text ? `ボードカード: ${text}` : 'ボードカード';
+  return text ? `ボードトピック: ${text}` : 'ボードトピック';
 }
 
 function bdSelectNodeForKeyboard(nodeId) {
@@ -38112,7 +43109,7 @@ function bdHandleNodeKeyboard(ev, nodeId) {
     .map(id => bd.nodes.find(node => node?.id === id))
     .filter(node => node && !node.contained && !node.locked);
   if (!movable.length) {
-    if (typeof showStatus === 'function') showStatus('ロック中のカードは移動できません', true);
+    if (typeof showStatus === 'function') showStatus('ロック中のトピックは移動できません', true);
     return;
   }
   const step = ev.shiftKey ? 40 : 8;
@@ -38129,7 +43126,7 @@ function bdHandleNodeKeyboard(ev, nodeId) {
     bdMarkExtrasDirty({ frames: true, minimap: true, boardUi: true, comments: movedIds }, 'keyboard-move');
   }
   if (typeof bdDirty === 'function') bdDirty();
-  if (typeof showStatus === 'function') showStatus('カードを移動しました');
+  if (typeof showStatus === 'function') showStatus('トピックを移動しました');
 }
 
 function bdRenderNode(node, options = {}) {
@@ -38370,7 +43367,7 @@ function bdAppendCommentHud(div, node) {
 function bdAppendAnchorHud(div, node, pos) {
   const anchor = document.createElement('div');
   anchor.className = 'bd-anchor-hud bd-hud ' + pos;
-  anchor.title = 'クリックでカード追加 / ドラッグでライン作成（何もない所へ落とすとカードも追加）';
+  anchor.title = 'クリックでトピック追加 / ドラッグでライン作成（何もない所へ落とすとトピックも追加）';
   if (typeof lucide === 'function') anchor.innerHTML = lucide('circlePlus', 18);
   anchor.addEventListener('pointerdown', ev => bdHandleAnchorPointerDown(ev, div, node, pos));
   anchor.addEventListener('click', ev => { ev.stopPropagation(); });
@@ -38439,7 +43436,7 @@ function bdHandleAnchorClickAdd(fromNid, pos, fromAnchor) {
     bd._connLabel = '';
     bd._connOrigin = 'anchor';
     bd._connFromAnchor = fromAnchor;
-    if (typeof window.showStatus === 'function') window.showStatus('接続先カードをクリック (空白クリックで新規カード作成)');
+    if (typeof window.showStatus === 'function') window.showStatus('接続先トピックをクリック (空白クリックで新規トピック作成)');
     return;
   }
   if (typeof _bdAnchorAddCard === 'function') _bdAnchorAddCard(fromNid, pos);
@@ -38551,7 +43548,7 @@ function _bdCreateAnchorCardAndConnectionCore(fromNid, fromAnchor, wc) {
     if (typeof bdDirty === 'function') bdDirty();
     // 課題7-3: 新規カードが選択状態になるのに、オプションパネルの内容が追従していなかった。
     if (typeof bdMarkExtrasDirty === 'function') bdMarkExtrasDirty({ boardUi: true }, 'anchor-drop-add');
-    if (typeof showStatus === 'function') showStatus('カードとラインを追加しました');
+    if (typeof showStatus === 'function') showStatus('トピックとラインを追加しました');
     return newNode;
   } finally {
     if (typeof bdEndFastBoardMutation === 'function') bdEndFastBoardMutation();
@@ -38660,8 +43657,8 @@ function bdAppendCardMenuButton(div, node) {
   menuBtn.className = 'bd-card-menu-btn';
   menuBtn.dataset.e2eId = `board-card-${node.id}-menu`;
   menuBtn.textContent = '...';
-  menuBtn.title = 'カードメニュー';
-  menuBtn.setAttribute('aria-label', 'カードメニュー');
+  menuBtn.title = 'トピックメニュー';
+  menuBtn.setAttribute('aria-label', 'トピックメニュー');
   menuBtn.setAttribute('aria-haspopup', 'menu');
   menuBtn.setAttribute('aria-expanded', 'false');
   menuBtn.addEventListener('click', ev => {
@@ -40531,7 +45528,7 @@ function _bdSaveCurrentNodeCardStyle(node) {
   bdDirty();
   if (typeof bdRefreshSelectionDetails === 'function') bdRefreshSelectionDetails(true);
   showStatus(copied > 0
-    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のカードにも反映)`
+    ? `カードスタイル「${style.name}」をデフォルトとして保存しました (同じスタイルの他のトピックにも反映)`
     : `カードスタイル「${style.name}」は既に保存済みです`, false, { showSaveDialog: true });
 }
 
@@ -40988,7 +45985,7 @@ function _bdCountAutoStyleAnchorNodes() {
 function _bdDepthThemeApplyStatusMessage(anchorCount) {
   return anchorCount > 0
     ? 'テーマカラーを階層別スタイルに適用しました'
-    : '階層別スタイルが適用されているカードがありません（プリセットの色は更新されました。カードに反映するには右クリックメニュー等でカードを階層別スタイルの起点にしてください）';
+    : '階層別スタイルが適用されているトピックがありません（プリセットの色は更新されました。トピックに反映するには右クリックメニュー等でトピックを階層別スタイルの起点にしてください）';
 }
 /* gb-board-style-manager.part02.js: split from gb-board-style-manager.js */
 // ============================================================
@@ -41399,7 +46396,7 @@ function _bdOpenStyleManagerPopup(kind, anchorEl, options) {
       if (liveArr().length <= 1) return;
       const live = currentLive(); if (!live) return;
       const activeRefKey = kind === 'card' ? 'activeCardStyle' : 'activeLineStyle';
-      const unitLabel = kind === 'card' ? 'カード' : 'ライン';
+      const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
       const usage = _bdCountStyleUsage(kind, live.id);
       const usageMsg = usage > 0 ? `\n\nこのスタイルは ${usage} 個の${unitLabel}で使用中です。削除すると、それらは別のスタイルに切り替わります。` : '';
       const ok = typeof cfConfirm === 'function' ? await cfConfirm(`${kind === 'card' ? 'カード' : 'ライン'}スタイル「${live.name}」を削除しますか？${usageMsg}`) : true;
@@ -41461,7 +46458,7 @@ function _bdRenderStyleManagerInPanel(kind, container, selectedId, mode) {
   if (kind === 'card') _bdLastCardEditId = selected.id;
   else _bdLastLineEditId = selected.id;
   const itemLabel = kind === 'card' ? 'カードスタイル' : 'ラインスタイル';
-  const unitLabel = kind === 'card' ? 'カード' : 'ライン';
+  const unitLabel = kind === 'card' ? 'トピック' : 'ライン';
   const activeStyleId = bd[activeRef] || '';
   const isSelectedActive = selected.id === activeStyleId;
   const usageCount = _bdCountStyleUsage(kind, selected.id);
@@ -41681,7 +46678,7 @@ function _bdAppendAnchorPresetRow(container, anchorNode, onApplied) {
   row.appendChild(label);
   row.appendChild(select);
   if (typeof fieldHelp === 'function') {
-    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このカードを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
+    row.insertAdjacentHTML('beforeend', ' ' + fieldHelp('このトピックを起点とする階層別スタイルに、ボード共通とは別のプリセットを割り当てます。別の起点や、プリセットを割り当てていない起点には影響しません。'));
   }
   container.appendChild(row);
 }
@@ -41845,9 +46842,9 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const defRow = fmt.makeRow({ wrap: true });
     const defInput = document.createElement('input');
     defInput.type = 'text';
-    defInput.value = selected.defaultText != null ? selected.defaultText : 'カード';
-    defInput.placeholder = 'カード追加時に自動で入る文字';
-    defInput.title = '新規カード追加時のテキスト';
+  defInput.value = selected.defaultText != null ? selected.defaultText : 'トピック';
+    defInput.placeholder = 'トピック追加時に自動で入る文字';
+    defInput.title = '新規トピック追加時のテキスト';
     defInput.style.cssText = 'flex:1;min-width:160px;padding:3px 6px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:3px;font-size:12px;';
     defInput.addEventListener('change', () => {
       if (typeof bdPushUndo === 'function') bdPushUndo();
@@ -41864,7 +46861,7 @@ function _bdRenderDepthStyleInPanel(container, selectedIndex, mode) {
     const lineHeader = document.createElement('div');
     lineHeader.className = 'bd-detail-section-title';
     lineHeader.style.marginTop = '12px';
-    lineHeader.textContent = 'ラインスタイル（この階層のカードから出るライン）';
+  lineHeader.textContent = 'ラインスタイル（この階層のトピックから出るライン）';
     depthFieldsEl.appendChild(lineHeader);
     _bdAppendDepthStyleRefRow(depthFieldsEl, 'line', selected, liveDepth, () => {
       applyDepthStyles();
@@ -42889,7 +47886,7 @@ function bdOpenFilterMenu(anchor) {
     title.textContent = '階層別スタイルプリセット';
     if (typeof global.fieldHelp === 'function') {
       title.insertAdjacentHTML('beforeend', ' ' + global.fieldHelp(
-        '階層ごとのカードとラインの組み合わせを一式でまとめたものです。選ぶとこのボードの階層別スタイル全体が入れ替わります。保存したプリセットはどのボードからでも使えます。'
+        '階層ごとのトピックとラインの組み合わせを一式でまとめたものです。選ぶとこのボードの階層別スタイル全体が入れ替わります。保存したプリセットはどのボードからでも使えます。'
       ));
     }
     const row = document.createElement('div');
@@ -42973,10 +47970,12 @@ function bdOpenFilterMenu(anchor) {
    ============================== */
 
 class CanvasComponent extends ToolComponent {
-  constructor(paneId, tabId) {
+  constructor(paneId, tabId, options) {
     super(paneId, tabId);
+    this.options = options || {};
     this._interactionCleanup = null;
     this._keyboardCleanup = null;
+    this._boardLoadPending = null;
     this.idSuffix = _bdComponentIdSuffix(tabId || paneId);
     // multi:true の複数キャンバスタブでグローバル bd を共有しないための dump slot
     this._bdDump = null;
@@ -43003,6 +48002,10 @@ class CanvasComponent extends ToolComponent {
   }
 
   _isOwnPaneActive() {
+    // TopicViewHost serializes embedded Board runtimes because the current
+    // canvas engine still owns the global `bd` state.  The selected embed is
+    // therefore its own active surface even though it is not a GBLayout pane.
+    if (this.options?.embedded) return true;
     if (typeof GBLayout === 'undefined') return true;
     if (this.paneId === GBLayout.activePane) return true;
     const surface = GBLayout.paneMap?.[this.paneId]?.surface;
@@ -43010,12 +48013,21 @@ class CanvasComponent extends ToolComponent {
   }
 
   _trackBoardLoad(result) {
-    Promise.resolve(result).then((ok) => {
+    const pending = Promise.resolve(result);
+    this._boardLoadPending = pending;
+    pending.then((ok) => {
       if (!this.el) return;
       if (ok === false) this.el.dataset.loadFailed = '1';
-      else delete this.el.dataset.loadFailed;
+      else {
+        delete this.el.dataset.loadFailed;
+        if (this._isOwnPaneActive() && typeof MeldexBoardTopicIntegration !== 'undefined') {
+          MeldexBoardTopicIntegration.mountToolbar(bd);
+        }
+      }
     }).catch(() => {
       if (this.el) this.el.dataset.loadFailed = '1';
+    }).finally(() => {
+      if (this._boardLoadPending === pending) this._boardLoadPending = null;
     });
   }
 
@@ -43076,6 +48088,9 @@ class CanvasComponent extends ToolComponent {
       this._bdDump = null;
     } else if (!this._activatingForReload && this.state.boardPath && bd.path !== this.state.boardPath) {
       this._trackBoardLoad(bdOpenBoard(this.state.label || '', this.state.boardPath));
+    }
+    if (!this._boardLoadPending && isPaneActive && typeof MeldexBoardTopicIntegration !== 'undefined') {
+      MeldexBoardTopicIntegration.mountToolbar(bd);
     }
   }
 
@@ -43168,6 +48183,31 @@ class CanvasComponent extends ToolComponent {
     }
     if (this.el) delete this.el.dataset.loadFailed;
     this._bdDump = null;
+    return true;
+  }
+
+  onEmbeddedWheel(detail, event) {
+    if (!this.options.embedded || typeof bd === 'undefined') return false;
+    this.activate();
+    if (this._boardLoadPending) return false;
+    if (detail.mode === 'zoom') {
+      const oldZoom = Number(bd.zoom) || 1;
+      const direction = detail.deltaY > 0 ? -0.1 : 0.1;
+      bd.zoom = typeof bdClampZoom === 'function'
+        ? bdClampZoom(Math.round((oldZoom + direction) * 10) / 10)
+        : Math.max(0.1, Math.min(4, oldZoom + direction));
+      const canvas = this.el?.querySelector?.('[data-bd-role="canvas"]');
+      const rect = canvas?.getBoundingClientRect?.();
+      const x = Number(event?.clientX) - Number(rect?.left || 0);
+      const y = Number(event?.clientY) - Number(rect?.top || 0);
+      bd.panX = x - (x - (Number(bd.panX) || 0)) * (bd.zoom / oldZoom);
+      bd.panY = y - (y - (Number(bd.panY) || 0)) * (bd.zoom / oldZoom);
+    } else {
+      bd.panX = (Number(bd.panX) || 0) - Number(detail.deltaX || 0);
+      bd.panY = (Number(bd.panY) || 0) - Number(detail.deltaY || 0);
+    }
+    if (typeof bdTransform === 'function') bdTransform();
+    if (typeof bdDumpState === 'function') this._bdDump = bdDumpState();
     return true;
   }
 }
