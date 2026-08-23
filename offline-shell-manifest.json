@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.355-acdfe8f68122a45f8713",
+  "version": "0.7.355-a65c9d5f16a81687b02f",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -3469,7 +3469,7 @@
     },
     {
       "path": "meldex-cloud-runtime-08.js",
-      "sha256": "e0141edf9bc192a10249c9f38d18508691ab8aff7e844e627075304d75cd864b"
+      "sha256": "f3c020cd9b8ddb7502449b503a460bbb300a2dff9d781797a468d19b299f5698"
     },
     {
       "path": "meldex-cloud-runtime-09.js",
@@ -3525,7 +3525,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "c01eac34d326fad1c0d9db1a0d43853b691087f575452c86149c3aa31f0f16bb"
+      "sha256": "c6063093fc88b07bae174b552633575c9bb5b9fa5f12a44c39a0d48c85a99eb4"
     },
     {
       "path": "Meldex.ico",

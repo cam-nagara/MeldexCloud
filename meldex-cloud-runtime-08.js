@@ -33305,8 +33305,7 @@ function resetLayoutToDefault() {
   window.MeldexGoogleImportSettings = { mount, canManage, isCloudSurface, TARGET_LABELS };
 })();
 
-if (typeof window.__loadSplitScript === 'function') {
-  window./* Google data import for the static Cloud surface. Secrets stay in IndexedDB. */
+/* Google data import for the static Cloud surface. Secrets stay in IndexedDB. */
 (function () {
   'use strict';
 
@@ -33607,8 +33606,6 @@ if (typeof window.__loadSplitScript === 'function') {
 
   window.MeldexGoogleImportCloud = { getPayload, patchConfig, authorize, disconnect, run, listSharedDrives, _internal: { listDriveFiles, writeSheet, writeManagedNote, accessToken } };
 })();
-;
-}
 
 ;
 
