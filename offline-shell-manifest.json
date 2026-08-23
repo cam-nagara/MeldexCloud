@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.355-a65c9d5f16a81687b02f",
+  "version": "0.7.355-d856becdfc2b485ee802",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -757,7 +757,7 @@
     },
     {
       "path": "gb-cloud-runtime-config.js",
-      "sha256": "8db4ae104903d9d902949a3d6f5f89e48882635f7bee278dce5bca477b6c8493"
+      "sha256": "d952158a97af0d9b7897bab6a057414da7f00f745a16642a81c9b8923260b37f"
     },
     {
       "path": "gb-color-palette.js",
@@ -2209,7 +2209,7 @@
     },
     {
       "path": "gb-production-daily-snapshot-panel.js",
-      "sha256": "81d5bc373098447aab621802acc297175211ff45801735218ae3c54e465f35b0"
+      "sha256": "ea4fe612d81daf36f2dc96b41ac19bc1960e86865830e449db608931c0799b59"
     },
     {
       "path": "gb-production-daily-snapshot.js",
@@ -3473,7 +3473,7 @@
     },
     {
       "path": "meldex-cloud-runtime-09.js",
-      "sha256": "9e0d8a6601708050eafb9b09dddcffb724f95afef893b1082cac25b7a814088f"
+      "sha256": "4dc7f5b3f7949491a6143e1bd42d2af9105fc60a48235def080b5baf35c77e74"
     },
     {
       "path": "meldex-core.bundle.js",
@@ -3525,7 +3525,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "c6063093fc88b07bae174b552633575c9bb5b9fa5f12a44c39a0d48c85a99eb4"
+      "sha256": "fb403cb34ee8325e2f6d6d7506ae58f6a91a607904071388c73631dc66349de0"
     },
     {
       "path": "Meldex.ico",

@@ -31,6 +31,22 @@
     return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   }
 
+  async function automaticStorageReady() {
+    const runtime = window.MeldexRuntimeAdapter;
+    if (!runtime?.isBrowserDataMode?.()) return true;
+
+    const mode = String(runtime.getMode?.() || '');
+    const workspaceState = runtime.getWorkspaceState?.();
+    if (!workspaceState || String(workspaceState.kind || '') !== mode) return false;
+    if (workspaceState.access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') return false;
+
+    if (runtime.isDropboxMode?.()) {
+      const session = await window.MeldexDropboxAuth?.getSession?.().catch(() => null);
+      if (!session?.refreshToken) return false;
+    }
+    return true;
+  }
+
   function formatTime(seconds) {
     if (window.MeldexProductionTimeFormatter?.formatDuration) {
       return window.MeldexProductionTimeFormatter.formatDuration(seconds);
@@ -646,31 +662,49 @@
 
     static async ensureCurrentBusinessDaySnapshot(options = {}) {
       if (typeof apiFetch !== 'function' || typeof apiPost !== 'function') return { ok: false, skipped: true };
-      const status = await apiFetch('/production-management/status');
-      if (!status?.ok || !status.ready) return { ok: false, skipped: true, reason: 'production-not-ready' };
-      const workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
-      const workspaceId = String(
-        options.workspaceId || workspaceState.workspaceId || workspaceState.workspace_id || 'default',
-      ).trim() || 'default';
-      const targetDate = currentBusinessDate(options.dayCutoff || '04:00');
-      const existing = await apiFetch(
-        `/production-management/daily-snapshots?workspace_id=${encodeURIComponent(workspaceId)}&target_date=${encodeURIComponent(targetDate)}`,
-      );
-      if (!existing?.ok) return existing || { ok: false };
-      if (existing.snapshot) return { ok: true, snapshot: existing.snapshot, replayed: true };
-      return apiPost('/production-management/daily-snapshots', {
-        workspace_id: workspaceId,
-        target_date: targetDate,
-        day_cutoff: options.dayCutoff || '04:00',
-        only_if_missing: true,
-      });
+      const automatic = options.automatic === true;
+      if (automatic && !await automaticStorageReady()) {
+        return { ok: false, skipped: true, reason: 'storage-not-ready' };
+      }
+      const requestOptions = automatic ? { silentError: true } : undefined;
+      try {
+        const status = await apiFetch('/production-management/status', requestOptions);
+        if (!status?.ok || !status.ready) return { ok: false, skipped: true, reason: 'production-not-ready' };
+        const workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+        const workspaceId = String(
+          options.workspaceId || workspaceState.workspaceId || workspaceState.workspace_id || 'default',
+        ).trim() || 'default';
+        const targetDate = currentBusinessDate(options.dayCutoff || '04:00');
+        const existing = await apiFetch(
+          `/production-management/daily-snapshots?workspace_id=${encodeURIComponent(workspaceId)}&target_date=${encodeURIComponent(targetDate)}`,
+          requestOptions,
+        );
+        if (!existing?.ok) return existing || { ok: false };
+        if (existing.snapshot) return { ok: true, snapshot: existing.snapshot, replayed: true };
+        return apiPost('/production-management/daily-snapshots', {
+          workspace_id: workspaceId,
+          target_date: targetDate,
+          day_cutoff: options.dayCutoff || '04:00',
+          only_if_missing: true,
+        }, requestOptions);
+      } catch (error) {
+        if (automatic) return { ok: false, skipped: true, reason: 'automatic-check-failed' };
+        throw error;
+      }
     }
   }
 
   if (typeof window !== 'undefined') {
     window.MeldexProductionDailySnapshotPanel = MeldexProductionDailySnapshotPanel;
-    const ensureDaily = () => MeldexProductionDailySnapshotPanel.ensureCurrentBusinessDaySnapshot()
-      .catch(error => console.warn('[production-daily-snapshot] automatic snapshot failed:', error));
+    let automaticDailyPromise = null;
+    const ensureDaily = () => {
+      if (automaticDailyPromise) return automaticDailyPromise;
+      automaticDailyPromise = MeldexProductionDailySnapshotPanel
+        .ensureCurrentBusinessDaySnapshot({ automatic: true })
+        .catch(error => console.warn('[production-daily-snapshot] automatic snapshot failed:', error))
+        .finally(() => { automaticDailyPromise = null; });
+      return automaticDailyPromise;
+    };
     const bootDaily = () => {
       window.setTimeout(ensureDaily, 3000);
       if (!window.__meldexProductionDailySnapshotTimer) {
@@ -683,6 +717,7 @@
         && !(typeof module !== 'undefined' && module.exports)) {
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootDaily, { once: true });
       else bootDaily();
+      document.addEventListener('meldex:mode-changed', ensureDaily);
       document.addEventListener('meldex:production-management-started', ensureDaily);
     }
   }
