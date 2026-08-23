@@ -47,8 +47,7 @@
   }
 
   function _cssEscape(value) {
-    if (global.CSS?.escape) return global.CSS.escape(value);
-    return String(value).replace(/["\\]/g, '\\$&');
+    return global.MeldexEscape.cssIdent(value);
   }
 
   function _tabs(bar) {

@@ -26,16 +26,12 @@
     return _runtime()?.isBrowserMode?.() || document.body?.dataset?.cloudMode === 'browser';
   }
 
-  function _isServerMode() {
-    return _runtime()?.isServerMode?.() || document.body?.dataset?.cloudMode === 'server';
-  }
-
   function _localDataModeForPage() {
     return _isHostedCloudPage() || _isBrowserMode() ? 'browser' : 'legacy';
   }
 
   function _isLocalConflictMonitorHost() {
-    return !_isDropboxMode() && !_isBrowserMode() && !_isServerMode() && _isLocalAppHost();
+    return !_isDropboxMode() && !_isBrowserMode() && _isLocalAppHost();
   }
 
   function _phase1FeatureLabel(type) {
@@ -84,12 +80,7 @@
   }
 
   function _esc(text) {
-    return String(text == null ? '' : text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return MeldexEscape.html(text);
   }
 
   function _showBanner(message, isError, options) {
@@ -597,17 +588,13 @@
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
             <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
-          <button id="choose-server" data-e2e-id="cloud-mode-server" type="button" class="meldex-cloud-choice meldex-cloud-choice--server" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #3d6f86;background:#17242b;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Meldex共有サーバーに接続</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c8d7;">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。Meldex公式のサーバー契約は不要です。</div>
-          </button>
           <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
             <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
         <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
-          <div><strong>共有したい場合:</strong> 同じDropboxを使う端末間ではDropbox、常時稼働PCやNASへ集約する場合は自分で管理するMeldex共有サーバーを選べます。どちらもMeldex公式のサーバーを必要としません。</div>
+          <div><strong>共同作業:</strong> メンバー、権限、スケジュールを同じワークスペースで使う場合はDropboxを選びます。NAS内のファイルは、デスクトップ版でソースフォルダとして参照できます。</div>
         </div>`;
       const cancelButton = document.createElement('button');
       cancelButton.id = 'choose-cancel';
@@ -642,178 +629,62 @@
         dialogApi.close('select-' + mode);
       };
       body.querySelector('#choose-dropbox').addEventListener('click', () => choose('dropbox'));
-      body.querySelector('#choose-server').addEventListener('click', () => choose('server'));
       body.querySelector('#choose-legacy').addEventListener('click', () => choose(localMode));
       cancelButton.addEventListener('click', () => dialogApi.close('cancel'));
       dialogApi.open();
     });
   }
 
-  function _serverConnectionUrlFromInput(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-      const url = new URL(raw);
-      if (!['http:', 'https:'].includes(url.protocol)) return '';
-      url.hash = '';
-      url.search = '';
-      if (/\/api\/?$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\/api\/?$/i, '/');
-      if (!url.pathname.endsWith('/')) url.pathname += '/';
-      return url.toString();
-    } catch {
-      return '';
-    }
-  }
-
-  function _serverApiUrl(baseUrl, path) {
-    const base = _serverConnectionUrlFromInput(baseUrl);
-    if (!base) return '';
-    return new URL('api/' + String(path || '').replace(/^\/+/, ''), base).toString();
-  }
-
-  async function _testSharedServerConnection(baseUrl) {
-    const normalized = _serverConnectionUrlFromInput(baseUrl);
-    if (!normalized) throw new Error('接続先URLを確認してください');
-    const response = await fetch(_serverApiUrl(normalized, '/server-info'), {
-      method: 'GET',
-      cache: 'no-store',
-      credentials: 'omit',
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      if (response.status === 403 && /local API token/i.test(detail)) {
-        throw new Error('接続先は見つかりましたが、共有サーバーとしての公開設定が有効ではありません。管理者に、ユーザー認証の準備と MELDEX_DISABLE_LOCAL_API_TOKEN=1 の明示設定を確認してください。');
-      }
-      throw new Error(`接続できませんでした（HTTP ${response.status}）`);
-    }
-    const info = await response.json();
-    return { normalized, info };
-  }
-
-  async function _showSharedServerSetupModal(message) {
+  function _showRetiredServerMigrationNotice() {
     _hideStartupSplashForBlockingCloudUi();
-    const current = _runtime().getServerConnection?.();
-    const initialUrl = current?.url || '';
     const localMode = _localDataModeForPage();
-    const canSwitchLegacy = true;
     return new Promise((resolve) => {
       const body = document.createElement('div');
-      body.className = 'meldex-shared-server-body';
-      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。ノート、画像、ユーザー、ワークスペースはこの接続先から読み込みます。Meldex公式による常設サーバーは不要です。</div>
-        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">接続先URL</label>
-          <input id="shared-server-url" data-e2e-id="shared-server-url" class="gb-input" type="url" value="${_esc(initialUrl)}" placeholder="https://example.com/ または http://192.168.1.10:8001/" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">インターネット経由で使う場合はHTTPSまたはVPN経由のURLを指定してください。LAN内HTTPは閉じたネットワークでの利用に限ってください。</div>
-        </section>
-        <div id="shared-server-status" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#263644;color:#b7d7ee;font-size:12px;line-height:1.6;"></div>
-        <div id="shared-server-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
-      `;
+      body.className = 'meldex-retired-server-body';
+      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">Meldex共有サーバー機能は終了しました。共同ワークスペースはDropboxへ一本化されます。</div>
+        <div style="margin-top:12px;padding:10px 12px;border:1px solid #4b4433;border-radius:8px;background:#2d291f;color:#e1cf9b;font-size:12px;line-height:1.7;">
+          管理者PCやNASにある既存ファイルは移動・削除されません。NAS内のファイルは、デスクトップ版のソースフォルダとして引き続き参照できます。
+        </div>`;
       const localButton = document.createElement('button');
-      localButton.id = 'shared-server-switch-legacy';
       localButton.type = 'button';
       localButton.className = 'gb-btn gb-btn-quiet';
-      localButton.dataset.e2eId = 'shared-server-local';
-      localButton.textContent = 'この端末に保存して使う';
-      const testButton = document.createElement('button');
-      testButton.id = 'shared-server-test';
-      testButton.type = 'button';
-      testButton.className = 'gb-btn gb-btn-quiet';
-      testButton.dataset.e2eId = 'shared-server-test';
-      testButton.textContent = '接続を確認';
-      const continueButton = document.createElement('button');
-      continueButton.id = 'shared-server-continue';
-      continueButton.type = 'button';
-      continueButton.className = 'gb-btn gb-btn-primary';
-      continueButton.dataset.e2eId = 'shared-server-continue';
-      continueButton.textContent = 'この接続先で開始';
+      localButton.dataset.e2eId = 'retired-server-local';
+      localButton.textContent = 'この端末に保存';
+      const dropboxButton = document.createElement('button');
+      dropboxButton.type = 'button';
+      dropboxButton.className = 'gb-btn gb-btn-primary';
+      dropboxButton.dataset.e2eId = 'retired-server-dropbox';
+      dropboxButton.textContent = 'Dropboxを使う';
       let resultValue = { ok: false, cancelled: true };
       let settled = false;
-      let busy = false;
-      let dialogApi = null;
-      const setBusy = value => {
-        busy = !!value;
-        dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
-        body.querySelectorAll('input,button').forEach(control => { control.disabled = busy; });
-        [localButton, testButton, continueButton].forEach(button => { button.disabled = busy; });
-      };
-      dialogApi = window.GBUI.createModal({
-        id: 'shared-server-setup',
-        title: 'Meldex共有サーバーに接続',
+      const dialogApi = window.GBUI.createModal({
+        id: 'retired-server-migration',
+        title: '保存先を選び直してください',
         body,
-        footer: canSwitchLegacy ? [localButton, testButton, continueButton] : [testButton, continueButton],
+        footer: [localButton, dropboxButton],
         variant: 'standard',
         extraClass: 'meldex-cloud-setup-modal',
-        geometryKey: 'cloud-shared-server',
-        initialFocus: '#shared-server-url',
-        onBeforeClose: () => !busy,
+        geometryKey: 'cloud-retired-server-migration',
+        initialFocus: '[data-e2e-id="retired-server-dropbox"]',
         onClose: () => {
           if (settled) return;
           settled = true;
           resolve(resultValue);
         },
       });
-      dialogApi.modal.classList.add('meldex-shared-server-modal');
-      const overlay = dialogApi.overlay;
-      overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
-      overlay.style.zIndex = '10030';
-      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'shared-server-close');
-
-      function setStatus(text, isError) {
-        const statusEl = overlay.querySelector('#shared-server-status');
-        const errorEl = overlay.querySelector('#shared-server-error');
-        if (isError) {
-          statusEl.style.display = 'none';
-          statusEl.textContent = '';
-          errorEl.style.display = '';
-          errorEl.textContent = text || '';
-          return;
-        }
-        errorEl.style.display = 'none';
-        errorEl.textContent = '';
-        statusEl.style.display = text ? '' : 'none';
-        statusEl.textContent = text || '';
-      }
-
-      async function confirmConnection() {
-        const input = overlay.querySelector('#shared-server-url');
-        const result = await _testSharedServerConnection(input?.value || '');
-        input.value = result.normalized;
-        const info = result.info || {};
-        const port = info.port ? `:${info.port}` : '';
-        setStatus(`接続できました。サーバー: ${info.host || 'Meldex'}${port}`, false);
-        return result;
-      }
-
-      testButton.addEventListener('click', async () => {
-        setBusy(true);
-        try {
-          await confirmConnection();
-        } catch (err) {
-          setStatus(err?.message || String(err), true);
-        } finally {
-          setBusy(false);
-        }
-      });
-      localButton.addEventListener('click', () => {
-        resultValue = { ok: false, switchToLegacy: true };
-        _runtime().setMode(localMode);
-        dialogApi.close('switch-local');
-      });
-      continueButton.addEventListener('click', async () => {
-        setBusy(true);
-        try {
-          const result = await confirmConnection();
-          _runtime().setServerConnection?.({ url: result.normalized });
-          _runtime().setMode('server');
-          resultValue = { ok: true, mode: 'server', server: result };
-          setBusy(false);
-          dialogApi.close('complete');
-        } catch (err) {
-          setStatus(err?.message || String(err), true);
-          setBusy(false);
-        }
-      });
+      dialogApi.modal.classList.add('meldex-retired-server-modal');
+      dialogApi.overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
+      dialogApi.overlay.style.zIndex = '10030';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'retired-server-close');
+      const choose = mode => {
+        // 端末保存は追加設定なしで確定できる。一方、Dropbox は OAuth や
+        // 保存先確認が完了するまで旧接続設定を残し、失敗・取消後の再案内に使う。
+        if (mode === localMode) _runtime().completeRetiredServerMigration?.(mode);
+        resultValue = { ok: true, mode, switchToLegacy: mode === localMode };
+        dialogApi.close('select-' + mode);
+      };
+      localButton.addEventListener('click', () => choose(localMode));
+      dropboxButton.addEventListener('click', () => choose('dropbox'));
       dialogApi.open();
     });
   }
@@ -1137,7 +1008,8 @@
           return;
         }
         resultValue = { ok: false, switchToLegacy: true };
-        _runtime().setMode(localMode);
+        if (_runtime().hasRetiredServerConfig?.()) _runtime().completeRetiredServerMigration?.(localMode);
+        else _runtime().setMode(localMode);
         dialogApi.close('switch-local');
       });
 
@@ -1178,42 +1050,6 @@
     return _localDataModeForPage() === 'browser' ? _enterBrowserMode() : _enterLegacyMode();
   }
 
-  async function _enterServerMode(message) {
-    document.body.dataset.cloudMode = 'server';
-    delete document.body.dataset.cloudReadonly;
-    while (true) {
-      const connection = _runtime().getServerConnection?.();
-      if (!connection?.url) {
-        const result = await _showSharedServerSetupModal(message || 'Meldex共有サーバーの接続先を設定してください。');
-        if (result?.switchToLegacy) return _enterLocalModeForPage();
-        if (!result?.ok) return false;
-        continue;
-      }
-      try {
-        await _testSharedServerConnection(connection.url);
-        await window.MeldexStorageAdapter?.describeWorkspace?.().catch(() => null);
-        _showBanner(`Meldex共有サーバー 接続済み: ${connection.url}`, false);
-        setTimeout(() => {
-          const bar = document.getElementById('cloud-mode-banner');
-          if (bar && bar.dataset.cloudPersistent !== '1') bar.remove();
-        }, 3000);
-        return true;
-      } catch (err) {
-        const result = await _showSharedServerSetupModal(err?.message || String(err));
-        if (result?.switchToLegacy) return _enterLocalModeForPage();
-        if (!result?.ok) return false;
-      }
-    }
-  }
-
-  function _isDesktopLaunch() {
-    try {
-      return new URLSearchParams(window.location.search).get('desktop') === '1';
-    } catch {
-      return false;
-    }
-  }
-
   function _isLocalAppHost() {
     try {
       const host = String(window.location.hostname || '').toLowerCase();
@@ -1235,17 +1071,20 @@
   function _isHostedCloudLaunch() {
     try {
       const params = new URLSearchParams(window.location.search);
-      if (params.has('dataAccessMode') || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
+      const requestedMode = params.get('dataAccessMode');
+      if (['legacy', 'browser', 'dropbox'].includes(requestedMode) || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
     } catch {}
     return _isHostedCloudPage();
   }
 
   async function prepareLaunch() {
     const callback = await _auth().handleRedirectCallback();
+    let migrationMode = null;
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
     } else if (callback.handled && callback.ok) {
-      _runtime().setMode('dropbox');
+      if (_runtime().hasRetiredServerConfig?.()) migrationMode = 'dropbox';
+      else _runtime().setMode('dropbox');
     }
     try {
       const params = new URLSearchParams(window.location.search);
@@ -1256,11 +1095,17 @@
     } catch {}
     const cloudHomeReady = await window.MeldexBetaRelease?.prepareCloudHomeLaunch?.();
     if (cloudHomeReady === false) return false;
-    let mode = _runtime().getMode();
+    if (_runtime().hasRetiredServerConfig?.() && !migrationMode) {
+      const migration = await _showRetiredServerMigrationNotice();
+      if (!migration?.ok) return false;
+      if (migration.switchToLegacy) return _enterLocalModeForPage();
+      migrationMode = migration.mode;
+    }
+    let mode = migrationMode || _runtime().getMode();
     let hasExplicitMode = false;
     try {
       const params = new URLSearchParams(window.location.search);
-      hasExplicitMode = params.has('dataAccessMode') || params.get('safeMode') === '1';
+      hasExplicitMode = ['legacy', 'browser', 'dropbox'].includes(params.get('dataAccessMode')) || params.get('safeMode') === '1';
     } catch {}
     const hasStoredMode = _runtime().hasStoredMode?.();
     if (_isHostedCloudLaunch() && !hasExplicitMode) {
@@ -1268,14 +1113,10 @@
         _runtime().setMode('browser');
         mode = 'browser';
       }
-    } else if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
-      _runtime().setMode('legacy');
-      mode = 'legacy';
-    } else if (!hasStoredMode && !hasExplicitMode) {
-      mode = await _showModeChooser();
-    }
-    if (mode === 'server') {
-      return _enterServerMode();
+    } else if (!migrationMode && !hasStoredMode && !hasExplicitMode) {
+      const localMode = _localDataModeForPage();
+      _runtime().setMode(localMode);
+      mode = localMode;
     }
     if (mode === 'browser') {
       return _enterBrowserMode();
@@ -1291,6 +1132,12 @@
         if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
         continue;
+      }
+
+      // OAuth セッションと保存先が揃った時点を Dropbox 移行の確定点とする。
+      // ここより前で失敗・取消した場合、旧共有サーバー設定は保持される。
+      if (_runtime().hasRetiredServerConfig?.()) {
+        _runtime().completeRetiredServerMigration?.('dropbox');
       }
 
       try {
@@ -1357,13 +1204,10 @@
     let result = null;
     if (beforeMode === 'dropbox') {
       result = await _showDropboxSetupModal(message || '');
-    } else if (beforeMode === 'server') {
-      result = await _showSharedServerSetupModal(message || '');
     } else {
       const choice = await _showModeChooser();
       if (!choice || choice === beforeMode) result = { cancelled: true };
       else if (choice === 'dropbox') result = await _showDropboxSetupModal(message || '');
-      else if (choice === 'server') result = await _showSharedServerSetupModal(message || '');
       else result = { switchToLegacy: true };
     }
     const afterMode = _runtime().getMode();
@@ -1388,8 +1232,8 @@
     openSetupModal(message) {
       return _showDropboxSetupModal(message || '');
     },
-    openSharedServerSetupModal(message) {
-      return _showSharedServerSetupModal(message || '');
+    openRetiredServerMigrationNotice() {
+      return _showRetiredServerMigrationNotice();
     },
   };
 })();

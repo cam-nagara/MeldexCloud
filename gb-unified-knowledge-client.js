@@ -12,7 +12,6 @@
     if (_portable()) return true;
     const runtime = global.MeldexRuntimeAdapter;
     if (!runtime) return typeof global.apiFetch === 'function';
-    if (runtime.isServerMode?.()) return !!runtime.getServerApiBaseUrl?.();
     return !runtime.isBrowserDataMode?.();
   }
 

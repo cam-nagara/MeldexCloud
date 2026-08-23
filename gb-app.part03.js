@@ -537,6 +537,10 @@ function openMedia(label, path, type, opts) {
 
 function openCalendarFile(label, path, opts) {
   const openOpts = opts || {};
+  const paneContext = openOpts.paneContext || openOpts.paneCtx || null;
+  if (paneContext?.embedded || openOpts.skipViewPersistence) {
+    return selectDatabase(path, paneContext, { ...openOpts, requestedViewMode: 'timeline' });
+  }
   // カレンダーDBをタイムラインビュー（カレンダーモード）で開く
   const cfg = getDbViewConfig(path);
   const view = typeof _getCurrentDbViewConfigEntryFromConfig === 'function'
@@ -548,7 +552,7 @@ function openCalendarFile(label, path, opts) {
     cfg.currentViewIdx = Math.max(0, cfg.currentViewIdx || 0);
     saveDbViewConfig(path, cfg, { skipHistory: true });
   }
-  return selectDatabase(path, openOpts.paneContext || openOpts.paneCtx || null, openOpts);
+  return selectDatabase(path, paneContext, openOpts);
 }
 
 const _GB_UNTRUSTED_IFRAME_SANDBOX = 'allow-scripts allow-forms allow-popups allow-downloads';
@@ -601,15 +605,15 @@ function _gbNormalizeHtmlViewerUrl(rawUrl) {
   }
 }
 
-function _gbSetHtmlViewerSrc(rawUrl) {
+function _gbSetHtmlViewerSrc(rawUrl, iframeEl, options) {
   const url = _gbNormalizeHtmlViewerUrl(rawUrl);
   if (!url) {
     if (typeof showStatus === 'function') showStatus('HTMLビューワーで開けないURLです', true);
     return false;
   }
-  const iframe = _gbPrepareUntrustedIframe(document.getElementById('html-iframe'), url);
+  const iframe = _gbPrepareUntrustedIframe(iframeEl || document.getElementById('html-iframe'), url);
   if (iframe) iframe.src = url;
-  const urlBar = document.getElementById('html-url-bar');
+  const urlBar = options?.skipUrlBar ? null : document.getElementById('html-url-bar');
   if (urlBar) urlBar.value = url;
   return true;
 }
@@ -620,7 +624,7 @@ function openHtmlFile(label, path, opts) {
   const openOpts = opts || {};
   if (!openOpts.skipShowView) showView('html');
   else if (!openOpts.skipStateView) state.view = 'html';
-  state.currentPagePath = path;
+  if (!openOpts.skipGlobalState) state.currentPagePath = path;
   const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
   if (!openOpts.skipSaveLastView) saveLastView({type:'html', label, path});
@@ -631,10 +635,11 @@ function openHtmlFile(label, path, opts) {
   if (!openOpts.skipRecent) addRecent(label, path, 'html');
   if (!openOpts.skipHighlight) highlightOutlinerNode(path);
   const url = API_BASE + '/file-raw?path=' + encodeURIComponent(path);
+  const iframe = openOpts.iframeEl || document.getElementById('html-iframe');
   if (typeof trackIframeLoading === 'function') {
-    trackIframeLoading(document.getElementById('html-iframe'), 'HTMLを読み込み中...', openOpts);
+    trackIframeLoading(iframe, 'HTMLを読み込み中...', openOpts);
   }
-  _gbSetHtmlViewerSrc(url);
+  _gbSetHtmlViewerSrc(url, iframe, { skipUrlBar: !!openOpts.iframeEl });
   if (!openOpts.skipGlobalUi) showStatus('HTML: ' + label);
 }
 /* LUCIDE, lucide(), fileTypeIcon() は meldex-core.js で定義済み */
@@ -967,6 +972,13 @@ let _loadingCount = 0;
 let _loadingTimer = null;
 let _loadingVisible = false;
 let _loadingMessage = '';
+const _loadingOperations = [];
+
+function _commonLoadingProgress() {
+  return window.MeldexOperationProgress && typeof window.MeldexOperationProgress.begin === 'function'
+    ? window.MeldexOperationProgress
+    : null;
+}
 
 function _loadingText(msg) {
   return String(msg || _loadingMessage || '読み込み中...');
@@ -1049,6 +1061,15 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
     ? sizeOrText
     : String(sizeOrText || '').length;
   if (size < threshold) return;
+  if (_commonLoadingProgress()) {
+    const current = _loadingOperations[_loadingOperations.length - 1];
+    if (!current) return;
+    _loadingMessage = _loadingText(msg);
+    current.update({ label: _loadingMessage });
+    current.showNow();
+    await _loadingPaintDelay();
+    return;
+  }
   if (_loadingCount <= 0 && !_loadingVisible) return;
   _loadingMessage = _loadingText(msg);
   if (_loadingTimer) {
@@ -1062,6 +1083,20 @@ async function showLoadingBeforeHeavyWork(sizeOrText, msg, opts) {
 function showLoading(msg) {
   _loadingCount++;
   _loadingMessage = _loadingText(msg);
+  const common = _commonLoadingProgress();
+  if (common) {
+    _loadingOperations.push(common.begin({
+      kind: 'loading',
+      label: _loadingMessage,
+      mode: 'indeterminate',
+      background: false,
+      delayMs: 300,
+      showInTray: true,
+      showInStatus: true,
+      priority: 40,
+    }));
+    return;
+  }
   if (_loadingVisible) {
     _renderLoadingUi(_loadingMessage);
     return;
@@ -1076,6 +1111,12 @@ function showLoading(msg) {
 
 function hideLoading() {
   _loadingCount = Math.max(0, _loadingCount - 1);
+  if (_commonLoadingProgress()) {
+    const current = _loadingOperations.pop();
+    current?.succeed({ dismissMs: 0 });
+    if (_loadingCount === 0) _loadingMessage = '';
+    return;
+  }
   if (_loadingCount === 0) {
     clearTimeout(_loadingTimer);
     _loadingTimer = null;
@@ -1086,6 +1127,18 @@ function hideLoading() {
 
 function hideLoadingMessage(msg) {
   const expected = _loadingText(msg);
+  if (_commonLoadingProgress()) {
+    for (let index = _loadingOperations.length - 1; index >= 0; index -= 1) {
+      const operation = _loadingOperations[index];
+      if (operation.getState()?.label !== expected) continue;
+      _loadingOperations.splice(index, 1);
+      operation.dispose();
+      _loadingCount = Math.max(0, _loadingCount - 1);
+      if (_loadingCount === 0) _loadingMessage = '';
+      return true;
+    }
+    return false;
+  }
   if (!_loadingVisible && !_loadingTimer) return false;
   if (_loadingMessage && _loadingMessage !== expected) return false;
   const floatingEl = document.getElementById('gb-global-loading');

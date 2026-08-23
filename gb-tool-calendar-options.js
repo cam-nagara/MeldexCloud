@@ -11,9 +11,7 @@
   const CALENDAR_DETAIL_TABS = new Set(['calendar-today', 'calendar-settings', 'calendar-production']);
 
   function _calEsc(v) {
-    return typeof esc === 'function' ? esc(v) : String(v ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(v);
   }
 
   function _calIcon(name, size = 14) {
@@ -21,8 +19,7 @@
   }
 
   function _calCssEscape(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _calKeyboardFromEditableTarget(event) {

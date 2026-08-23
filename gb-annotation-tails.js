@@ -8,7 +8,7 @@ const AnnotationStickyTail = (() => {
   let safetyTimer = null;
 
   function _cssEscape(value) {
-    return (window.CSS && CSS.escape) ? CSS.escape(String(value || '')) : String(value || '').replace(/["\\]/g, '\\$&');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _boardCanvasFor(el) {
@@ -297,8 +297,16 @@ const AnnotationStickyTail = (() => {
     const nextTarget = tail?.target || null;
     const targetChanged = JSON.stringify(prevTarget || null) !== JSON.stringify(nextTarget || null);
     ctx.data.tail = tail;
-    delete ctx.data.tailX;
-    delete ctx.data.tailY;
+    // legacyFallback が false の起点 (ボードのカード等) では、data.tailX/tailY を
+    // 旧形式のしっぽ跡地として一切扱わない。ここで無条件に delete すると、
+    // 同じフィールド名を使う別概念「バルーン」(n.balloon + n.tailX/n.tailY) を
+    // 持つカードで、しっぽを1回作る/消すだけでバルーンのデータが消えてしまう
+    // (install 時点では legacyFallback:false で誤変換を防いでいても、
+    //  最初の操作でここに来ると同じ事故が起きるため、ここでも同じ条件が必要)。
+    if (ctx.legacyFallback) {
+      delete ctx.data.tailX;
+      delete ctx.data.tailY;
+    }
     ctx.lastTargetClient = null;
     ctx.lastNoteClient = null;
     if (targetChanged) ctx.lastTargetLayout = null;
@@ -310,8 +318,12 @@ const AnnotationStickyTail = (() => {
     const ctx = note._annTailCtx;
     if (!ctx) return;
     delete ctx.data.tail;
-    delete ctx.data.tailX;
-    delete ctx.data.tailY;
+    // 上の _setTail と同じ理由: legacyFallback が false の起点ではバルーンの
+    // tailX/tailY に触れない。
+    if (ctx.legacyFallback) {
+      delete ctx.data.tailX;
+      delete ctx.data.tailY;
+    }
     ctx.lastTargetClient = null;
     ctx.lastNoteClient = null;
     ctx.lastTargetLayout = null;
@@ -324,19 +336,30 @@ const AnnotationStickyTail = (() => {
     return !!toolbar && toolbar.classList.contains('visible');
   }
 
-  function _installDrag(note, persist) {
+  // 起点が注釈の付箋以外（例: ボードのカード）の場合、端点ハンドルをドラッグしてよい条件が
+  // 「注釈ツールバーが開いている」では意味を持たない。install() の canDragHandles オプションで
+  // 差し替え可能にし、未指定時は注釈の現行挙動 (_isAnnotationToolbarActive) をそのまま使う。
+  function _installDrag(note, persist, options = {}) {
+    const canDragHandles = typeof options.canDragHandles === 'function' ? options.canDragHandles : _isAnnotationToolbarActive;
+    const dragExcludeSelector = options.dragExcludeSelector || 'button,.ann-note-resize-handle,.gb-fmt-popup';
+    const onDragStart = typeof options.onDragStart === 'function' ? options.onDragStart : null;
     note.addEventListener('pointerdown', (e) => {
       const handle = e.target.closest?.('.ann-tail-handle');
       if (handle && e.button === 0) {
-        if (!_isAnnotationToolbarActive()) return;
+        if (!canDragHandles()) return;
         e.preventDefault();
         e.stopPropagation();
+        onDragStart?.({ kind: 'handle', which: handle.dataset.tailHandle });
         _dragHandle(note, handle.dataset.tailHandle, e, persist);
         return;
       }
-      if (!e.altKey || e.button !== 0 || e.target.closest?.('button,.ann-note-resize-handle,.gb-fmt-popup')) return;
+      // しっぽの新規作成は Alt+Shift+ドラッグに統一する (2026-08-13 ユーザー確定)。
+      // ボードの Alt+左ドラッグ (ライン作成) と衝突しないための変更。Shift なしの単独 Alt+ドラッグは
+      // 何もしない（既存のボード操作へそのままバブルする）。
+      if (!e.altKey || !e.shiftKey || e.button !== 0 || e.target.closest?.(dragExcludeSelector)) return;
       e.preventDefault();
       e.stopPropagation();
+      onDragStart?.({ kind: 'create' });
       const start = _localPoint(note, e.clientX, e.clientY);
       const draft = { startX: start.x, startY: start.y, endX: start.x, endY: start.y, target: null };
       _setTail(note, draft, null);
@@ -452,7 +475,10 @@ const AnnotationStickyTail = (() => {
       if (targetLayout && ctx.lastTargetLayout) {
         const layoutDx = targetLayout.x - ctx.lastTargetLayout.x;
         const layoutDy = targetLayout.y - ctx.lastTargetLayout.y;
-        if (Math.abs(layoutDx) > 0.5 || Math.abs(layoutDy) > 0.5) {
+        // followTarget が false の起点 (ボードのカード等) は、追従先が動いても
+        // 自分自身の位置・保存データは一切変更しない。カードが勝手に動くと
+        // データ破壊になるため (しっぽの終点だけを下の client 座標経由で再計算する)。
+        if (ctx.followTarget && (Math.abs(layoutDx) > 0.5 || Math.abs(layoutDy) > 0.5)) {
           // note.style.left/top および data.x/y は表示座標ではなくコンテンツ座標で管理する。
           // ここで client 座標を使うとパン、ズーム、スクロールだけで保存位置が汚れる。
           note.style.left = (note.offsetLeft + layoutDx) + 'px';
@@ -501,16 +527,32 @@ const AnnotationStickyTail = (() => {
   function install(note, options) {
     if (!note || note._annTailInstalled) return;
     note._annTailInstalled = true;
+    // legacyFallback: data.tailX/data.tailY だけがある場合に旧形式のしっぽとみなして
+    // data.tail へ変換するか。注釈の付箋は既定 true (現行どおり)。ボードのカードは
+    // false を渡す。ボードには tailX/tailY を使う別概念「バルーン」が既にあり、
+    // 変換すると誤ってしっぽ扱いになり保存時にバルーンのデータが消える。
+    // install() 時点だけの判定にせず ctx へ保持する: _setTail/_removeTail も
+    // 無条件に data.tailX/tailY を delete していたため、install 直後は無事でも
+    // 最初にしっぽを作る/消す操作をした瞬間にバルーンのデータが消える事故があった
+    // (2026-08-19 レビューで指摘・修正)。
+    const legacyFallback = options.legacyFallback !== false;
     note._annTailCtx = {
       data: options.data,
       persist: options.persist,
       getColor: options.getColor,
+      // followTarget: 追従先が移動したとき起点要素自身も一緒に動かすか。
+      // 注釈の付箋は既定 true (現行どおり)。ボードのカードは false を渡し、
+      // カードが追従先の移動につられて勝手に動くのを防ぐ。
+      followTarget: options.followTarget !== false,
+      legacyFallback,
     };
-    const tail = _tailFromLegacy(note, options.data);
-    if (tail) options.data.tail = tail;
+    if (legacyFallback) {
+      const tail = _tailFromLegacy(note, options.data);
+      if (tail) options.data.tail = tail;
+    }
     tracked.add(note);
     _ensureTimer();
-    _installDrag(note, options.persist);
+    _installDrag(note, options.persist, options);
     _updateDom(note);
   }
 

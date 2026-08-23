@@ -161,6 +161,63 @@
     return { ok: true, skipped: result?.skipped === true || !wrote };
   }
 
+  // 統合したプロフィールの旧名の行を、新しい名前の行へ移してから消す
+  // (デスクトップ版 /api/team/merge と同じ契約)。
+  //
+  // 安全側の契約:
+  //   - 権限は残る側の行の値をそのまま維持し、旧行が owner/admin でも継承しない。
+  //   - 旧行が自分以外の accountId を持つ場合は他人の行なので触らない。
+  //   - 「新しい行を書いてから旧行を消す」の順で2回書き込む。途中で失敗しても
+  //     行が消えたままになることはない。
+  async function _mergeTeamMember(folder, body) {
+    const name = String(body?.name || '').trim();
+    const previousName = String(body?.previousName || body?.previous_name || '').trim();
+    if (!name) throw new Error('name は必須です');
+    if (!previousName || previousName === name) return { ok: true, skipped: true };
+    const accountId = String(body?.accountId || body?.account_id || '').trim();
+
+    let moved = false;
+    let blocked = false;
+    await _writeTeamFileMerged(folder, team => {
+      const members = team.members || {};
+      const old = members[previousName];
+      if (!old || typeof old !== 'object') return false;
+      const oldAccountId = String(old.accountId || '').trim();
+      // 旧行が別のDropboxアカウントに紐づいているなら他人の行なので触らない。
+      // 自分のaccountIdを名乗れない状態でも、accountId付きの行は消さない。
+      if (oldAccountId && oldAccountId !== accountId) {
+        blocked = true;
+        return false;
+      }
+      const existing = members[name] && typeof members[name] === 'object' ? { ...members[name] } : {};
+      const next = { ...existing };
+      // role は残る側の値を維持する。旧行からの owner/admin 継承は行わない。
+      if (!next.role) next.role = 'editor';
+      if (!next.avatar) next.avatar = old.avatar || '';
+      if (accountId) next.accountId = accountId;
+      else if (!next.accountId && oldAccountId) next.accountId = oldAccountId;
+      const lastSeen = [String(next.last_seen || ''), String(old.last_seen || ''), _nowIso()]
+        .reduce((a, b) => (a > b ? a : b), '');
+      next.last_seen = lastSeen;
+      members[name] = next;
+      team.members = members;
+      moved = true;
+      return team;
+    });
+    if (blocked) throw new Error('他のメンバーの行は移動できません');
+    if (!moved) return { ok: true, skipped: true };
+
+    // 新しい行の書き込みが成功してから、旧行を別の書き込みで消す。
+    await _writeTeamFileMerged(folder, team => {
+      const members = team.members || {};
+      if (!members[previousName]) return false;
+      delete members[previousName];
+      team.members = members;
+      return team;
+    });
+    return { ok: true, merged: true, from: previousName, to: name };
+  }
+
   function _workspaceRole(role, fallback) {
     const value = String(role || '').trim().toLowerCase();
     return ['owner', 'admin', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
@@ -470,6 +527,340 @@
     return { available: true, ok: true, revision: record?.revision || null };
   }
 
+  // ---- クラウド直結（端末内保存／Dropboxの両バックエンド）の圧縮・解凍・ZIP閲覧 ----
+  // デスクトップ版 app/meldex_archive_service.py と同じ安全上限・巻き戻し方針を
+  // gb-archive-zip-engine.js（自己完結ZIPエンジン）+ 既存のfileops抽象で実現する。
+
+  async function _collectFolderFilesForZip(provider, folderPath, arcPrefix, entries) {
+    const dirEntries = await _listDirectoryEntries(provider, folderPath);
+    for (const entry of dirEntries) {
+      const childPath = _joinPath(folderPath, entry.name);
+      const childArcName = arcPrefix ? `${arcPrefix}/${entry.name}` : entry.name;
+      if (entry.handle.kind === 'directory') {
+        await _collectFolderFilesForZip(provider, childPath, childArcName, entries);
+      } else {
+        const file = await entry.handle.getFile();
+        entries.push({ name: childArcName, data: new Uint8Array(await file.arrayBuffer()) });
+      }
+    }
+  }
+
+  function _requireArchiveEngine() {
+    const engine = window.MeldexArchiveZipEngine;
+    if (!engine) throw _httpError(500, '圧縮・解凍機能を読み込めませんでした。ページを再読み込みしてください');
+    return engine;
+  }
+
+  async function _archiveCompress(provider, body) {
+    const engine = _requireArchiveEngine();
+    const rawPaths = Array.isArray(body?.paths) ? body.paths : [body?.path];
+    const sourcePaths = rawPaths.map((value) => _normalizeFolderPath(String(value || ''))).filter(Boolean);
+    if (!sourcePaths.length) throw _httpError(400, '圧縮対象を指定してください');
+
+    const entries = [];
+    for (const sourcePath of sourcePaths) {
+      const resolved = await _resolveEntryHandle(provider, sourcePath);
+      if (!resolved) throw _httpError(404, '圧縮対象が見つかりません');
+      const baseName = _basename(sourcePath);
+      if (resolved.kind === 'file') {
+        const file = await resolved.handle.getFile();
+        entries.push({ name: baseName, data: new Uint8Array(await file.arrayBuffer()) });
+      } else {
+        await _collectFolderFilesForZip(provider, sourcePath, baseName, entries);
+      }
+    }
+
+    // 完成したZIPだけを最終名で置く。生成途中のZIPが保存先に残ることはない。
+    const zipBytes = await engine.buildZip(entries);
+
+    const rawOutput = String(body?.output_path || body?.outputPath || '').trim();
+    let outputDir;
+    let outputStem;
+    if (rawOutput) {
+      const normalizedOutput = _normalizeFolderPath(rawOutput);
+      outputDir = _dirname(normalizedOutput);
+      outputStem = _splitNameAndExt(_basename(normalizedOutput)).stem || _basename(normalizedOutput);
+    } else {
+      const first = sourcePaths[0];
+      outputDir = _dirname(first);
+      const firstStem = _splitNameAndExt(_basename(first)).stem || _basename(first);
+      outputStem = firstStem + (sourcePaths.length > 1 ? '_他' : '');
+    }
+    const finalStem = await _uniqueName(provider, outputDir, outputStem, '.zip');
+    const finalName = `${finalStem}.zip`;
+    const outputPath = _joinPath(outputDir, finalName);
+    await _writeBytes(provider, outputPath, zipBytes);
+    return { ok: true, path: outputPath, name: finalName, count: sourcePaths.length };
+  }
+
+  async function _archiveReadArchiveBytes(provider, rawArchivePath) {
+    const normalizedArchivePath = _normalizeFolderPath(rawArchivePath);
+    if (_splitNameAndExt(_basename(normalizedArchivePath)).ext.toLowerCase() !== '.zip') {
+      throw _httpError(404, 'ZIPファイルが見つかりません');
+    }
+    const resolved = await _resolveEntryHandle(provider, normalizedArchivePath);
+    if (!resolved || resolved.kind !== 'file') throw _httpError(404, 'ZIPファイルが見つかりません');
+    const file = await resolved.handle.getFile();
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return { normalizedArchivePath, bytes };
+  }
+
+  async function _archiveBrowse(provider, url) {
+    const engine = _requireArchiveEngine();
+    const { normalizedArchivePath, bytes } = await _archiveReadArchiveBytes(provider, url.searchParams.get('path') || '');
+    let parsed;
+    try {
+      parsed = await engine.parseZip(bytes);
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIPを読み込めませんでした');
+    }
+    let member;
+    try {
+      member = engine.normalizeMemberPath(url.searchParams.get('member') || '', { allowRoot: true });
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || '安全でないZIP内パスです');
+    }
+    const prefix = member ? `${member}/` : '';
+    const childrenByKey = new Map();
+    for (const info of parsed.members.values()) {
+      if (prefix && !info.name.startsWith(prefix)) continue;
+      const remainder = info.name.slice(prefix.length);
+      if (!remainder) continue;
+      const slashIndex = remainder.indexOf('/');
+      const leaf = slashIndex >= 0 ? remainder.slice(0, slashIndex) : remainder;
+      const isDir = slashIndex >= 0 || info.isDir;
+      const childMember = prefix + leaf;
+      const key = leaf.toLowerCase();
+      const existing = childrenByKey.get(key);
+      if (existing && existing.is_dir !== isDir) {
+        throw _httpError(400, `ファイルとフォルダが衝突しています: ${leaf}`);
+      }
+      if (existing) continue;
+      childrenByKey.set(key, {
+        name: leaf,
+        path: `zip:${normalizedArchivePath}!/${childMember}`,
+        type: engine.entryType(leaf, isDir),
+        is_dir: isDir,
+        size: isDir ? null : info.size,
+        modified: info.modifiedIso,
+        ext: isDir ? '' : _splitNameAndExt(leaf).ext.toLowerCase(),
+        archive_path: normalizedArchivePath,
+        archive_member: childMember,
+        read_only: true,
+      });
+    }
+    const items = Array.from(childrenByKey.values()).sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' });
+    });
+    return {
+      ok: true,
+      archive_path: normalizedArchivePath,
+      member,
+      name: member ? (member.split('/').pop() || member) : _basename(normalizedArchivePath),
+      read_only: true,
+      message: 'ZIP内は読み取り専用です',
+      items,
+    };
+  }
+
+  function _archiveBytesToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  async function _archiveFile(provider, url) {
+    const engine = _requireArchiveEngine();
+    try {
+      const result = await engine.readArchiveMemberViaProvider(
+        provider,
+        url.searchParams.get('path') || '',
+        url.searchParams.get('member') || '',
+      );
+      return {
+        ok: true,
+        name: result.name,
+        mime: result.mime,
+        size: result.bytes.length,
+        data: `data:${result.mime};base64,${_archiveBytesToBase64(result.bytes)}`,
+      };
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIP内のファイルを読み込めませんでした');
+    }
+  }
+
+  function _archiveExtractDirName(archivePath) {
+    const base = _basename(archivePath);
+    if (base.toLowerCase().endsWith('.zip')) return base.slice(0, -4);
+    return _splitNameAndExt(base).stem || base;
+  }
+
+  // 圧縮ファイルからの制作管理シート定義の上書き保護（Cloud版）。
+  //
+  // デスクトップ版 meldex_api_shell._check_managed_sheet は
+  // meldex_production_management_support.production_sheet_folder_note_name を
+  // archive_service.extract_zip_archive の target_check に渡し、ZIP内の各メンバーの
+  // 「解凍先での最終パス」が「…/制作管理/シート/<シート名>/<シート名>.md」に一致したら
+  // 実際の書き込み（一時展開すら）を始める前に 409 で拒否する。ここではその判定規則を
+  // JSへ移植し、_archiveExtract でも書き込み開始前（decode/write より前）に同じ判定を行う。
+  //
+  // 正規化はデスクトップ版 normalized_path_segments / path_segments_match と揃える:
+  // 区切り記号の統一（\ → /）、先頭・途中の "."、末尾スラッシュ、".." の字句解決、
+  // Unicode NFC正規化、英字の大文字小文字を無視した比較。判定はパスの「末尾4要素」
+  // （制作管理/シート/<name>/<name>.md）で行い、vaultのどの階層に制作管理があっても
+  // 検出できるようにする（デスクトップ版と同じ仕様）。
+  //
+  // 既存の gb-data-access-dropbox-fileops-core.js の _isProductionFolderNotePath と
+  // gb-data-access-dropbox-expanded.part01.js の _isProductionProtectedStructurePath は
+  // どちらも「先頭からの4要素・単純な===比較」で判定しており、(1) 別ファイルのIIFE内に
+  // ローカル定義されているためここから参照できない、(2) NFC正規化・大文字小文字無視を
+  // 行っていない、という理由でここでは再利用せず、デスクトップ版と厳密に揃えた実装を
+  // 別名で用意する（二重実装ではあるが、既存2箇所も既に同種の理由でそれぞれ独立している）。
+  const _PM_ROOT_NAME = '制作管理';
+  const _PM_SHEETS_DIR = 'シート';
+
+  function _pmNormalizedPathSegments(path) {
+    const text = String(path || '').replace(/\\/g, '/');
+    const segments = [];
+    for (const raw of text.split('/')) {
+      const part = raw.trim().normalize('NFC');
+      if (!part || part === '.') continue;
+      if (part === '..') { segments.pop(); continue; }
+      segments.push(part);
+    }
+    return segments;
+  }
+
+  function _pmSegmentsMatch(actual, expected) {
+    // Python版の str.casefold() 相当が無いため toLowerCase() で代用する。
+    // 比較対象は日本語のフォルダ名（大文字小文字の概念が無い）と ".md" 拡張子のみのため、
+    // casefold と toLowerCase の差（一部の特殊文字での展開規則差）は実用上影響しない。
+    return String(actual || '').normalize('NFC').toLowerCase()
+      === String(expected || '').normalize('NFC').toLowerCase();
+  }
+
+  function _pmManagedSheetFolderNoteName(path) {
+    const segments = _pmNormalizedPathSegments(path);
+    if (segments.length < 4) return '';
+    const note = segments[segments.length - 1];
+    const sheet = segments[segments.length - 2];
+    const sheetsDir = segments[segments.length - 3];
+    const root = segments[segments.length - 4];
+    if (!sheet) return '';
+    if (!_pmSegmentsMatch(root, _PM_ROOT_NAME)) return '';
+    if (!_pmSegmentsMatch(sheetsDir, _PM_SHEETS_DIR)) return '';
+    return _pmSegmentsMatch(note, `${sheet}.md`) ? sheet : '';
+  }
+
+  function _pmIsManagedSheetFolderNotePath(path) {
+    return !!_pmManagedSheetFolderNoteName(path);
+  }
+
+  async function _archiveExtract(provider, body) {
+    const engine = _requireArchiveEngine();
+    const rawPath = String(body?.path || '').trim();
+    if (!rawPath) throw _httpError(400, '解凍対象を指定してください');
+    const normalizedArchivePath = _normalizeFolderPath(rawPath);
+    const archiveExt = _splitNameAndExt(_basename(normalizedArchivePath)).ext.toLowerCase();
+    if (archiveExt !== '.zip') {
+      throw _httpError(400, 'クラウド版ではZIP形式以外の圧縮ファイルは解凍できません。デスクトップ版をご利用ください');
+    }
+    const archiveHandle = await _resolveEntryHandle(provider, normalizedArchivePath);
+    if (!archiveHandle || archiveHandle.kind !== 'file') throw _httpError(404, '圧縮ファイルが見つかりません');
+    const archiveFile = await archiveHandle.handle.getFile();
+    const archiveBytes = new Uint8Array(await archiveFile.arrayBuffer());
+
+    let parsed;
+    try {
+      parsed = await engine.parseZip(archiveBytes);
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIPを読み込めませんでした');
+    }
+
+    const rawOutputDir = String(body?.output_dir || body?.outputDir || '').trim();
+    const outputDir = rawOutputDir
+      ? _normalizeFolderPath(rawOutputDir)
+      : _joinPath(_dirname(normalizedArchivePath), _archiveExtractDirName(normalizedArchivePath));
+    if (!outputDir) throw _httpError(400, '解凍先を決められませんでした');
+
+    const existingOutput = await _resolveEntryHandle(provider, outputDir);
+    if (existingOutput) {
+      if (existingOutput.kind !== 'directory') throw _httpError(409, `解凍先が既に存在します: ${_basename(outputDir)}`);
+      const existingChildren = await _listDirectoryEntries(provider, outputDir);
+      if (existingChildren.length) throw _httpError(409, `解凍先が既に存在します: ${_basename(outputDir)}`);
+    }
+    const outputPreexisted = !!existingOutput;
+
+    // デスクトップ版と同じ保護: 解凍先での最終パスが制作管理シートのフォルダノート
+    // （…/制作管理/シート/<シート名>/<シート名>.md）に一致するメンバーが1件でもあれば、
+    // 一時展開・書き込みを一切始める前に拒否する。
+    for (const info of parsed.members.values()) {
+      const finalPath = _joinPath(outputDir, info.name);
+      if (_pmIsManagedSheetFolderNotePath(finalPath)) {
+        throw _httpError(409, '圧縮ファイルから制作管理のシート定義は上書きできません');
+      }
+    }
+
+    // 全メンバーを先に検証・復元してから書き込みを始める
+    // （壊れたZIP・上限超過なら書き込みを一切始めない）。
+    const members = Array.from(parsed.members.values());
+    const decodedFiles = [];
+    for (const info of members) {
+      if (info.isDir) continue;
+      let data;
+      try {
+        data = await engine.extractMember(archiveBytes, info);
+      } catch (error) {
+        throw _httpError(error?.status || 400, error?.message || 'ZIPの展開に失敗しました');
+      }
+      decodedFiles.push({ name: info.name, data });
+    }
+
+    async function rollback() {
+      try {
+        if (outputPreexisted) {
+          const leftovers = await _listDirectoryEntries(provider, outputDir);
+          for (const leftover of leftovers) {
+            await _removeEntry(provider, _joinPath(outputDir, leftover.name));
+          }
+        } else {
+          await _removeEntry(provider, outputDir);
+        }
+      } catch (_) {
+        // 巻き戻し自体の失敗は、呼び出し元へ伝える元のエラーを優先する
+      }
+    }
+
+    try {
+      for (const info of members) {
+        if (!info.isDir) continue;
+        await _directoryHandle(provider, _joinPath(outputDir, info.name), true);
+      }
+      if (!members.length) await _directoryHandle(provider, outputDir, true);
+      for (const file of decodedFiles) {
+        await _writeBytes(provider, _joinPath(outputDir, file.name), file.data);
+      }
+    } catch (error) {
+      await rollback();
+      throw _httpError(500, `解凍中にエラーが発生しました: ${error?.message || error}`);
+    }
+
+    return { ok: true, path: outputDir, name: _basename(outputDir), count: decodedFiles.length };
+  }
+
+  async function _handleArchiveRoute(pathname, method, body, url) {
+    const provider = await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite');
+    if (pathname === '/archive/compress' && method === 'POST') return _archiveCompress(provider, body);
+    if (pathname === '/archive/extract' && method === 'POST') return _archiveExtract(provider, body);
+    if (pathname === '/archive/browse' && method === 'GET') return _archiveBrowse(provider, url);
+    if (pathname === '/archive/file' && method === 'GET') return _archiveFile(provider, url);
+    throw _httpError(404, '未対応のアーカイブ操作です');
+  }
+
   async function _pwaJsonRequest(path, opts) {
     const method = String(opts?.method || 'GET').toUpperCase();
     const body = opts?.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : (opts?.body || {});
@@ -536,6 +927,10 @@
       const folder = body?.folder || '';
       return _syncTeamMember(folder, body);
     }
+    if (pathname === '/team/merge' && method === 'POST') {
+      const folder = body?.folder || '';
+      return _mergeTeamMember(folder, body);
+    }
     if (pathname === '/team/remove' && method === 'POST') {
       const folder = body?.folder || '';
       const name = String(body?.name || '').trim();
@@ -582,7 +977,7 @@
       if (method === 'PUT') return _writePersonalPreference(name, body);
     }
     if (pathname.startsWith('/archive/')) {
-      return { ok: false, supported: false, message: 'クラウド環境ではアーカイブ操作は利用できません' };
+      return _handleArchiveRoute(pathname, method, body, url);
     }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {

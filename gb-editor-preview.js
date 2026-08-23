@@ -33,8 +33,9 @@ function _updateLinkedPreview(filePath, preloadedData) {
   const imgExts = ['jpg','jpeg','png','gif','webp','svg','bmp','ico','avif'];
   if (imgExts.includes(ext)) {
     const url = (typeof API_BASE !== 'undefined' ? API_BASE : '') + '/file-raw?path=' + encodeURIComponent(filePath);
-    pane.innerHTML = `<img src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview">
+    pane.innerHTML = `<span class="meldex-content-image-host" data-meldex-image-host><img data-meldex-content-image src="${url}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview"></span>
       <div style="margin-top:8px;font-size:12px;color:var(--fg2);word-break:break-all;">${esc(fileName)}</div>`;
+    window.MeldexImageLoading?.trackAll?.(pane);
   } else {
     const dataPromise = preloadedData ? Promise.resolve(preloadedData) : fetch(API_BASE + '/file?path=' + encodeURIComponent(filePath)).then(r => r.ok ? r.json() : Promise.reject());
     dataPromise.then(data => {

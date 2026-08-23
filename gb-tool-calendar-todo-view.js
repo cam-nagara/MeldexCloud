@@ -9,9 +9,7 @@
   const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 
   function _todoEsc(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _todoIcon(name, size) {

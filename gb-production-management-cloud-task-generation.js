@@ -15,7 +15,10 @@
   // コミット前レビュー指摘 #13: 目標作業時間_値（数値の実体列）にもcomputed_props宣言が
   // 必要（表示文字列の目標作業時間だけ保護しても、裏の数値列を表示に戻すと直接編集できる
   // 抜け道になる）。Desktop meldex_production_management.COMPUTED_PROPS と同じ集合。
-  const PM_TASK_COMPUTED_PROPS = ['作業予定日時', '作業予定時間', '目標作業時間', '目標作業時間_値', 'シフト割当不能理由'];
+  const PM_TASK_COMPUTED_PROPS = [
+    '作業予定日時', '作業予定時間', '目標作業時間', '目標作業時間_値',
+    '作業時間_実績', '実績作業時間', 'シフト割当不能理由',
+  ];
   function _pmCloudApplyComputedProps(frontmatter) {
     const current = Array.isArray(frontmatter.computed_props) ? frontmatter.computed_props : [];
     frontmatter.computed_props = [...new Set([...current, ...PM_TASK_COMPUTED_PROPS])];
@@ -224,7 +227,7 @@
     PM_TASK_CREATE_QUEUE = current;
     await previous;
     try {
-      return await _pmCloudWithProductionLease(provider, () => _pmCloudCreateTasksUnlocked(provider, internals, body));
+      return await _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudCreateTasksUnlocked(leasedProvider, internals, body));
     } finally {
       release();
       if (PM_TASK_CREATE_QUEUE === current) PM_TASK_CREATE_QUEUE = Promise.resolve();

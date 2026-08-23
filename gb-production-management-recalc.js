@@ -319,15 +319,22 @@
     scopeFieldset.append(legend, scopeActions, scopeList, scopeHint);
 
     let sheetCheckboxes = [];
+    let scopeLoadState = 'loading';
 
     function updateScopeValidity() {
       const usingSelection = !!(selectedOnlyToggle && selectedOnlyToggle.checked);
       const noneSelected = !usingSelection && sheetCheckboxes.length > 0 && !sheetCheckboxes.some(item => item.checkbox.checked);
+      const scopeUnavailable = !usingSelection && scopeLoadState !== 'ready';
       scopeHint.hidden = !noneSelected;
-      previewButton.disabled = noneSelected;
+      previewButton.disabled = noneSelected || scopeUnavailable;
+      selectAllBtn.disabled = scopeLoadState !== 'ready';
+      selectNoneBtn.disabled = scopeLoadState !== 'ready';
     }
 
     async function loadScopeSheets() {
+      scopeLoadState = 'loading';
+      sheetCheckboxes = [];
+      updateScopeValidity();
       scopeList.replaceChildren();
       const loading = document.createElement('span');
       loading.className = 'gb-production-recalc-scope-loading';
@@ -336,6 +343,7 @@
       try {
         const data = await window.MeldexProductionApi.taskSheets();
         const sheets = Array.isArray(data?.sheets) ? data.sheets : [];
+        scopeLoadState = 'ready';
         scopeList.replaceChildren();
         sheetCheckboxes = sheets.map(sheet => {
           const sheetWorkTitle = sheet.work_title || sheet.sheet_name;
@@ -361,10 +369,14 @@
       } catch (error) {
         scopeList.replaceChildren();
         sheetCheckboxes = [];
+        scopeLoadState = 'error';
         const errorText = document.createElement('span');
         errorText.className = 'gb-production-recalc-scope-error';
-        errorText.textContent = 'タスクリストの一覧を取得できませんでした。全リストを対象に実行します。';
-        scopeList.appendChild(errorText);
+        errorText.textContent = 'タスクリストの一覧を取得できませんでした。再読み込みしてから実行してください。';
+        const retry = _pmButton('再読み込み');
+        retry.dataset.e2eId = 'production-recalculate-scope-retry';
+        retry.addEventListener('click', () => { void loadScopeSheets(); });
+        scopeList.append(errorText, retry);
       }
       updateScopeValidity();
     }
@@ -400,12 +412,14 @@
     function currentScopeBody() {
       if (selectedOnlyToggle?.checked) return { task_paths: selectedTaskPaths };
       const checked = sheetCheckboxes.filter(item => item.checkbox.checked).map(item => item.workTitle);
-      // 全選択(既定)、または一覧取得に失敗した場合は絞り込みなし(=従来どおり期間内全件)。
+      // 全選択（既定）のときだけ絞り込みなし（期間内全件）にする。一覧取得失敗時は
+      // previewButton自体を無効化し、失敗を「全件対象」として扱わない。
       if (sheetCheckboxes.length && checked.length < sheetCheckboxes.length) return { work_titles: checked };
       return {};
     }
 
     previewButton.addEventListener('click', async () => {
+      if (previewButton.disabled) return;
       const requestId = ++previewRequestId;
       setBusy(true, '自動割り当てのプレビューを作成しています…');
       try {

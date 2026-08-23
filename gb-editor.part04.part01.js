@@ -164,9 +164,51 @@ function _refreshFileSearchAfterSingleReplace(editable, replacedIndex) {
   document.getElementById('fsb-count').textContent = `${_fileSearchIdx + 1}/${marks.length}`;
 }
 
-function _commitFileSearchReplacement(editable) {
+async function _commitFileSearchReplacement(editable) {
   editable.dispatchEvent(new Event('input', { bubbles: true }));
-  editable.dispatchEvent(new Event('blur'));
+  // エントリ自由記述は専用のrevision契約（_saveEntityFreeText）を持つため、
+  // 従来どおりそのblurハンドラへ委譲する。通常ノートはinput+blurを重ねず、
+  // inputで予約された2秒自動保存と同じ保存コーディネーターへ直接合流させる。
+  if (editable.id === 'entity-freetext' || !window.MeldexNoteSaveAdapter) {
+    editable.dispatchEvent(new Event('blur'));
+    return null;
+  }
+  const path = editable.dataset?.path || '';
+  if (!path) return null;
+  const md = window.MeldexNoteSaveAdapter.serialize(editable);
+  const previousMd = editable.dataset.lastSavedMd || '';
+  window.MeldexDraftRecovery?.queueDraft?.(path, md, previousMd);
+  try {
+    const res = await window.MeldexNoteSaveAdapter.performSave(
+      editable, path, md, { reason: 'file-replace' },
+    );
+    if (_noteSaveConflictPending(res)) return res;
+    if (_handleNoteSkippedMissingSave(res, path, md, editable)) return res;
+    _orphanRemovedNoteLines(previousMd, md, path);
+    // 保存待ちの間に別ノートへ切り替わった場合は、その新しいノートの
+    // baselineを古い応答で汚染しない。
+    if (editable.dataset.path === path) {
+      editable.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
+      editable.dataset.lastSavedEtag = (res && res.etag) || editable.dataset.lastSavedEtag || '';
+    }
+    // 応答待ち中に別ノートへ切り替わっていても、成功済みの旧pathのドラフトは
+    // 同期済みにする。dataset更新だけを現表示pathでガードし、旧ノートを次回
+    // 起動時に未保存候補として誤復元しない。
+    await window.MeldexDraftRecovery?.markSynced?.(path);
+    if (typeof historyPush === 'function') {
+      const detail = typeof summarizeHistoryTextChange === 'function'
+        ? summarizeHistoryTextChange(previousMd, md)
+        : '内容を置換';
+      historyPush('ページ編集', null, null, 'page:' + path.split('/').pop(), detail);
+    }
+    showStatus('ノートを保存しました', false, { passiveSave: true });
+    return res;
+  } catch (saveError) {
+    if (!_handleNoteSaveFailure(saveError, path, md, editable)) {
+      showStatus('ノートの保存に失敗しました。ネットワークを確認してください', true);
+    }
+    return null;
+  }
 }
 
 function doFileReplace(all) {
@@ -195,8 +237,7 @@ function doFileReplace(all) {
     editable.normalize();
     _refreshFileSearchAfterSingleReplace(editable, replacedIndex);
     document.getElementById('fsb-count').textContent = '1件置換';
-    _commitFileSearchReplacement(editable);
-    return;
+    return _commitFileSearchReplacement(editable);
   }
 
   clearFileSearchHighlights();
@@ -223,7 +264,7 @@ function doFileReplace(all) {
   }
 
   document.getElementById('fsb-count').textContent = `${count}件置換`;
-  if (count > 0) _commitFileSearchReplacement(editable);
+  if (count > 0) return _commitFileSearchReplacement(editable);
 }
 
 /* ==============================
@@ -333,7 +374,11 @@ document.addEventListener('keydown', async (e) => {
   if (e.key === 'Delete' && !isEditing && (inTreeByFocus || inTreeByPointer) && treeSelection.items.size > 0 && state.view !== 'folder' && state.view !== 'board') {
     const items = [...treeSelection.items].map(n => n._nodeData).filter(d => d && !d._isRoot && !(d.path && isItemLocked(d.path)));
     if (items.length === 0) return;
-    const impactTargets = items.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = items.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmMessage = items.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)

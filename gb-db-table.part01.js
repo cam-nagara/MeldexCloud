@@ -289,9 +289,7 @@ function _dbEntityCreateIsEditing(renderCtx) {
   if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
   if (renderCtx?.paneId) {
-    const paneId = globalThis.CSS?.escape
-      ? CSS.escape(renderCtx.paneId)
-      : String(renderCtx.paneId).replace(/["\\]/g, '\\$&');
+    const paneId = MeldexEscape.cssIdent(renderCtx.paneId);
     return !!document.querySelector(
       `.cell-inline-dd[data-db-pane-id="${paneId}"],.status-dropdown[data-db-pane-id="${paneId}"],.user-dropdown[data-db-pane-id="${paneId}"]`
     );
@@ -309,7 +307,7 @@ function _dbFindEntityRow(ctx, entityName) {
   const root = typeof _paneEl === 'function'
     ? (_paneEl(ctx, '#' + tblId) || (!ctx ? document : null))
     : (!ctx ? document : null);
-  return root?.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`) || null;
+  return root?.querySelector(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`) || null;
 }
 
 function _dbStartEntityInlineRenameWhenVisible(ctx, entityName, dbPath) {
@@ -406,9 +404,9 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         // 選択中セルを再描画後のDOMへ復元する
         if (activeInfo?.entityName && typeof setActiveCell === 'function') {
           const tableAfter = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
-          const rowAfter = tableAfter?.querySelector?.(`tbody tr[data-entity-name="${CSS.escape(activeInfo.entityName)}"]`);
+          const rowAfter = tableAfter?.querySelector?.(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(activeInfo.entityName)}"]`);
           const cellAfter = activeInfo.propName
-            ? rowAfter?.querySelector?.(`td[data-prop-name="${CSS.escape(activeInfo.propName)}"]`)
+            ? rowAfter?.querySelector?.(`td[data-prop-name="${MeldexEscape.cssIdent(activeInfo.propName)}"]`)
             : (activeInfo.isEntity ? rowAfter?.querySelector?.('td.col-entity') : null);
           if (cellAfter) setActiveCell(cellAfter, { scroll: false });
         }
@@ -851,7 +849,16 @@ function _handleTbodyPointerdown(e) {
       suppressTimer = null;
     }
     cb.removeEventListener('click', suppressClick, true);
-    cb._rowSelectPointerdownHandled = false;
+    // Chrome は同一要素上でも capture リスナー (このハンドラ) を bubble リスナー
+    // (行生成時の直接 click リスナー・tbody 委譲の _handleCheckboxClick) より
+    // 先に実行する。ここで _rowSelectPointerdownHandled を同期的に false へ
+    // 戻すと、まだ伝播中の同じ click イベントを bubble 側が「pointerdown 未処理」
+    // と誤認し、preventDefault によるロールバック前の cb.checked（一時的に
+    // 反転した値）を読んで選択状態を再トグルしてしまう
+    // (2026-08-20 micro E2E targeted-sheet-micro-entry-plus-position-repeat で
+    // 行選択チェックボックスのクリックが選択直後に取り消される実バグとして確認)。
+    // 同じ click の伝播が完了した後のタスクまでリセットを遅らせる。
+    setTimeout(() => { cb._rowSelectPointerdownHandled = false; }, 0);
   };
   suppressTimer = setTimeout(cleanupSuppress, 200);
 

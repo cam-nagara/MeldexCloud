@@ -513,8 +513,15 @@
     if (Array.isArray(data?.generic_classification_labels) && data.generic_classification_labels.length) {
       instance._genericLabels = data.generic_classification_labels;
     }
-    // フィルタドロップダウンの候補は取得済みの行から累積する（読み込み済みページの範囲でしか
-    // 分からないが、追加読み込み・再取得のたびに増えていくため実用上は十分機能する）。
+    // APIが全件走査から返すfacetを正本にする。これにより初回200件より後にしか現れない
+    // 状況・担当者も、追加読み込み前から絞り込み候補として選べる。
+    const responseStatuses = Array.isArray(data?.facets?.statuses) ? data.facets.statuses : null;
+    const responseAssignees = Array.isArray(data?.facets?.assignees) ? data.facets.assignees : null;
+    if (responseStatuses) instance._facets.statuses = new Set(responseStatuses.map(String).filter(Boolean));
+    else if (!append) instance._facets.statuses = new Set();
+    if (responseAssignees) instance._facets.assignees = new Set(responseAssignees.map(String).filter(Boolean));
+    else if (!append) instance._facets.assignees = new Set();
+    // 旧サーバーとの互換用に、応答行の値も合流する。
     rows.forEach(row => {
       const status = row?.properties?.['状況'];
       const assignee = row?.properties?.['担当者'];

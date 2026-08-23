@@ -27,7 +27,7 @@
   }
 
   function _hasBlockingStartupDialog() {
-    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, .meldex-sample-install-overlay');
+    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay');
   }
 
   function _scheduleRecoveryRetry() {

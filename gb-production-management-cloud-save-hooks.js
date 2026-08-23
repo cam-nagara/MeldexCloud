@@ -137,8 +137,8 @@
     if (safeName !== currentName) {
       let renameResult = null;
       try {
-        renameResult = await _pmCloudWithProductionLease(provider, () => migration.renameManagedEntry(
-          _pmCloudManagedNameContext(provider, internals), path, generatedName, {},
+        renameResult = await _pmCloudWithProductionLease(provider, leasedProvider => migration.renameManagedEntry(
+          _pmCloudManagedNameContext(leasedProvider, internals), path, generatedName, {},
         ));
       } catch (err) {
         // sheet-store専用行（物理ミラー無し）はここで失敗し得る。行の直接付け替えへ
@@ -292,48 +292,82 @@
   }
 
   async function _extractCloudShiftsAndBreaks(provider) {
-    const shiftsMap = {};
-    const breaksMap = {};
-    let events = [];
+    let entries = [];
     if (provider) {
-      const calPath = '_calendar/events.json';
+      const calPath = '_calendar/time.json';
       try {
         if (typeof provider.readJson === 'function') {
-          events = await provider.readJson(calPath);
+          entries = await provider.readJson(calPath);
         } else if (typeof provider.readText === 'function') {
           const text = await provider.readText(calPath);
-          if (text) events = JSON.parse(text);
+          if (text) entries = JSON.parse(text);
         } else if (typeof _readJsonSafe === 'function') {
-          events = await _readJsonSafe(provider, calPath, []);
+          entries = await _readJsonSafe(provider, calPath, []);
         }
       } catch (err) {
         if (!/not[ -]?found|404|no such/i.test(err?.message || '')) {
           // 404/not found 以外のディスク/通信エラーは握りつぶさず伝播
           throw err;
         }
-        events = [];
+        entries = [];
       }
-    } else if (Array.isArray(window.calendarEvents)) {
-      events = window.calendarEvents;
+    } else if (Array.isArray(window.calendarTimeEntries)) {
+      entries = window.calendarTimeEntries;
     }
-    if (Array.isArray(events)) {
-      for (const ev of events) {
-        const id = String(ev?.id || '');
-        const user = String(ev?.user || ev?.user_id || '').trim();
-        const start = String(ev?.start || ev?.start_time || '').trim();
-        const end = String(ev?.end || ev?.end_time || '').trim();
-        if (!user || !start) continue;
-        if (id.includes(':break:') || id.endsWith(':break') || ev?.source === 'shift-break') {
-          shiftsMap[user] = shiftsMap[user] || [];
-          breaksMap[user] = breaksMap[user] || [];
-          breaksMap[user].push({ start, end });
-        } else if (id.startsWith('shift:') || ev?.source === 'shift') {
-          shiftsMap[user] = shiftsMap[user] || [];
-          shiftsMap[user].push({ start, end });
+    const maps = window.MeldexCloudCalendarAttendance?.intervalMaps?.(Array.isArray(entries) ? entries : []);
+    if (!maps) throw new Error('Cloud勤怠の実打刻区間を解析できません');
+    return { shiftsMap: maps.workMap || {}, breaksMap: maps.breakMap || {}, attendanceEntries: entries };
+  }
+
+  async function _pmCloudCloseOtherTaskSessions(provider, currentPath, userIds, nowIso, actorUser) {
+    const internals = window.__MeldexPwaDataAccessInternals;
+    const Store = window.MeldexProductionTaskSessionStore;
+    const Engine = window.MeldexProductionTaskActualEngine;
+    if (!internals || !Store || !Engine || typeof internals._listDirectoryEntries !== 'function') return [];
+    const targets = new Set((userIds || []).map(value => String(value || '').trim()).filter(Boolean));
+    if (!targets.size) return [];
+    const normalizedCurrent = String(currentPath || '').replace(/\\/g, '/');
+    const switched = new Set();
+    const { shiftsMap, breaksMap } = await _extractCloudShiftsAndBreaks(provider);
+    for (const sheet of await _pmCloudTaskSheetNames(provider, internals)) {
+      const sheetDir = internals._joinPath(_pmCloudRoot(internals), sheet);
+      for (const entry of await _pmCloudListEntries(provider, internals, sheet)) {
+        if (String(entry.path || '').replace(/\\/g, '/') === normalizedCurrent) continue;
+        const records = entry.frontmatter?.production_time_records;
+        if (!records || !Array.isArray(records.sessions)) continue;
+        let nextRecords = records;
+        let changed = false;
+        for (const session of records.sessions) {
+          const participant = String(session?.participant_user_id || '').trim();
+          if (!targets.has(participant) || session?.ended_at || session?.deleted_at) continue;
+          const result = Store.appendOrUpdateSession(nextRecords, {
+            ...session,
+            ended_at: nowIso,
+            end_reason: 'task-switch',
+          }, actorUser, true, null, true);
+          nextRecords = result.records;
+          switched.add(participant);
+          changed = true;
         }
+        if (!changed) continue;
+        const previousTotal = nextRecords.summaries?.['__total__'] || {};
+        const recalc = Engine.recalculateTaskSummaries(
+          nextRecords, shiftsMap, breaksMap, Number(previousTotal.shift_revision || 0) + 1, nowIso,
+        );
+        const fm = entry.frontmatter;
+        fm.production_time_records = recalc.records;
+        fm.properties = fm.properties && typeof fm.properties === 'object' ? fm.properties : {};
+        const actualHours = String(Math.round((Number(recalc.summaries?.['__total__']?.actual_seconds || 0) / 3600) * 100) / 100);
+        const actualValue = [{ value: actualHours, status: '採用', note: '', created: nowIso }];
+        fm.properties['作業時間_実績'] = JSON.parse(JSON.stringify(actualValue));
+        fm.properties['実績作業時間'] = JSON.parse(JSON.stringify(actualValue));
+        const stored = await _pmCloudRenameSheetStoreRow(
+          provider, internals, sheetDir, entry.name, entry.name, fm,
+        );
+        if (!stored) await provider.writeText(entry.path, _pmCloudFrontmatterText(fm, entry.body || ''));
       }
     }
-    return { shiftsMap, breaksMap };
+    return [...switched];
   }
 
   // 制作タスク実績時間・日次履歴・業務分析（2026-08-15）: Cloud版セーブフック。
@@ -390,6 +424,47 @@
       modified = true;
     }
 
+    if (changedProperty === '作業参加者') {
+      const requested = String(_pmCloudPropValue(frontmatter, '作業参加者') || '')
+        .split(/[,、;]+/).map(value => value.trim()).filter(Boolean);
+      const requestedSet = new Set(requested);
+      const openHelpers = (timeRecords.sessions || []).filter(session => session?.start_reason === 'help-join'
+        && !session.ended_at && !session.deleted_at);
+      openHelpers.filter(session => !requestedSet.has(String(session.participant_user_id || ''))).forEach((session) => {
+        timeRecords = Engine.handleParticipantLeave(
+          timeRecords, session.participant_user_id, actorUser, nowIso, true,
+        ).records;
+      });
+      if (Engine.isActiveWorkingStatus(canonicalStatus)) {
+        const openIds = new Set(openHelpers.map(session => String(session.participant_user_id || '')));
+        requested.filter(userId => !openIds.has(userId)).forEach((userId) => {
+          timeRecords = Engine.handleParticipantJoin(
+            timeRecords, userId, userId, actorUser, nowIso, true,
+          ).records;
+        });
+      }
+      modified = true;
+    }
+
+    if (Engine.isActiveWorkingStatus(canonicalStatus)
+        && ['状況', '担当者', '作業参加者'].includes(changedProperty)) {
+      const activeUsers = (timeRecords.sessions || []).filter(session => !session?.ended_at && !session?.deleted_at)
+        .map(session => String(session?.participant_user_id || '').trim()).filter(Boolean);
+      const switchedUsers = new Set(await _pmCloudCloseOtherTaskSessions(
+        provider, path, activeUsers, nowIso, actorUser,
+      ));
+      if (switchedUsers.size) {
+        for (const session of [...(timeRecords.sessions || [])]) {
+          const participant = String(session?.participant_user_id || '').trim();
+          if (!switchedUsers.has(participant) || session?.ended_at || session?.deleted_at) continue;
+          timeRecords = Store.appendOrUpdateSession(timeRecords, {
+            ...session,
+            start_reason: 'task-switch',
+          }, actorUser, true, null, true).records;
+        }
+      }
+    }
+
     if (changedProperty && ['担当者', '締切', '目標作業時間', '目標作業時間_値', '予定作業時間', '作業予定時間', '割当作業時間'].includes(changedProperty)) {
       const estRaw = _pmCloudPropValue(frontmatter, '目標作業時間_値') || _pmCloudPropValue(frontmatter, '目標作業時間');
       const allocRaw = _pmCloudPropValue(frontmatter, '作業予定時間') || _pmCloudPropValue(frontmatter, '割当作業時間');
@@ -427,21 +502,99 @@
 
     if (modified) {
       const { shiftsMap, breaksMap } = await _extractCloudShiftsAndBreaks(provider);
-      const recalcRes = Engine.recalculateTaskSummaries(timeRecords, shiftsMap, breaksMap, 1, nowIso);
+      const previousTotal = timeRecords.summaries?.['__total__'] || {};
+      const recalcRes = Engine.recalculateTaskSummaries(
+        timeRecords, shiftsMap, breaksMap, Number(previousTotal.shift_revision || 0) + 1, nowIso,
+      );
       timeRecords = recalcRes.records;
       frontmatter.production_time_records = timeRecords;
 
       const totalSummary = recalcRes.summaries && recalcRes.summaries['__total__'];
       const actualSec = (totalSummary && totalSummary.actual_seconds) || 0;
-      if (actualSec > 0) {
-        const actualHoursStr = String(Math.round((actualSec / 3600) * 100) / 100);
-        frontmatter.properties = frontmatter.properties && typeof frontmatter.properties === 'object' ? frontmatter.properties : {};
-        frontmatter.properties['作業時間_実績'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
-        frontmatter.properties['実績作業時間'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
-      }
+      const actualHoursStr = String(Math.round((actualSec / 3600) * 100) / 100);
+      frontmatter.properties = frontmatter.properties && typeof frontmatter.properties === 'object' ? frontmatter.properties : {};
+      frontmatter.properties['作業時間_実績'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
+      frontmatter.properties['実績作業時間'] = [{ value: actualHoursStr, status: '採用', note: '', created: nowIso }];
       return true;
     }
 
     return false;
+  }
+
+  async function _pmCloudRecalculateTaskActualsForAttendance(provider, affectedUserIds, reason = '打刻更新') {
+    const internals = window.__MeldexPwaDataAccessInternals;
+    const Store = window.MeldexProductionTaskSessionStore;
+    const Engine = window.MeldexProductionTaskActualEngine;
+    if (!internals || !Store || !Engine) throw new Error('制作タスク実績時間の再計算機能を利用できません');
+    const affected = new Set((affectedUserIds || []).map(value => String(value || '').trim()).filter(Boolean));
+    const { shiftsMap, breaksMap, attendanceEntries } = await _extractCloudShiftsAndBreaks(provider);
+    const nowIso = Store.nowIsoUtc();
+    const actorUser = _resolveActorUser(provider);
+    const relevantEntries = (attendanceEntries || []).filter(entry => !affected.size || affected.has(String(entry?.user || '').trim()));
+    const attendanceEntryIds = relevantEntries.map(entry => String(entry?.id || '')).filter(Boolean).sort();
+    const attendanceRevision = typeof _pmHash === 'function'
+      ? _pmHash(JSON.stringify(relevantEntries.slice().sort((a, b) => String(a?.id || '').localeCompare(String(b?.id || '')))))
+      : JSON.stringify(attendanceEntryIds);
+    let updatedTaskCount = 0;
+    const journal = _pmCloudMutationJournal(provider, internals);
+    try {
+      for (const sheet of await _pmCloudTaskSheetNames(provider, internals)) {
+        const sheetDir = internals._joinPath(_pmCloudRoot(internals), sheet);
+        for (const entry of await _pmCloudListEntries(provider, internals, sheet)) {
+        const fm = entry.frontmatter || {};
+        const records = fm.production_time_records;
+        const sessions = Array.isArray(records?.sessions) ? records.sessions : [];
+        if (!sessions.length) continue;
+        const participants = new Set(sessions.filter(session => !session?.deleted_at)
+          .map(session => String(session?.participant_user_id || '').trim()).filter(Boolean));
+        if (affected.size && ![...participants].some(userId => affected.has(userId))) continue;
+        const previousAuditRows = Array.isArray(records.attendance_recalculations) ? records.attendance_recalculations : [];
+        const previousAudit = previousAuditRows.at(-1);
+        if (previousAudit?.attendance_revision === attendanceRevision
+          && JSON.stringify([...(previousAudit?.affected_user_ids || [])].sort()) === JSON.stringify([...affected].sort())) continue;
+        const previousTotal = records.summaries?.['__total__'] || {};
+        const recalc = Engine.recalculateTaskSummaries(
+          records,
+          shiftsMap,
+          breaksMap,
+          Number(previousTotal.shift_revision || 0) + 1,
+          nowIso,
+        );
+        const nextTotal = recalc.summaries?.['__total__'] || {};
+        const audit = Array.isArray(recalc.records.attendance_recalculations)
+          ? recalc.records.attendance_recalculations.slice() : [];
+        audit.push({
+          recalculated_at: nowIso,
+          actor_user_id: actorUser,
+          reason,
+          affected_user_ids: [...affected].sort(),
+          attendance_entry_ids: attendanceEntryIds,
+          attendance_revision: attendanceRevision,
+          before_actual_seconds: Number(previousTotal.actual_seconds || 0),
+          after_actual_seconds: Number(nextTotal.actual_seconds || 0),
+          before_quality_status: String(previousTotal.quality_status || 'unmeasured'),
+          after_quality_status: String(nextTotal.quality_status || 'unmeasured'),
+        });
+        recalc.records.attendance_recalculations = audit;
+        fm.production_time_records = recalc.records;
+        fm.properties = fm.properties && typeof fm.properties === 'object' ? fm.properties : {};
+        const actualHours = String(Math.round((Number(nextTotal.actual_seconds || 0) / 3600) * 100) / 100);
+        const actualValue = [{ value: actualHours, status: '採用', note: '', created: nowIso }];
+        fm.properties['作業時間_実績'] = JSON.parse(JSON.stringify(actualValue));
+        fm.properties['実績作業時間'] = JSON.parse(JSON.stringify(actualValue));
+          const storePath = internals._joinPath(sheetDir, '_meldex_sheet.cloud.json');
+          await _pmCloudJournalText(journal, storePath);
+          await _pmCloudJournalText(journal, entry.path);
+          const stored = await _pmCloudRenameSheetStoreRow(
+            provider, internals, sheetDir, entry.name, entry.name, fm,
+          );
+          if (!stored) await provider.writeText(entry.path, _pmCloudFrontmatterText(fm, entry.body || ''));
+          updatedTaskCount += 1;
+        }
+      }
+    } catch (error) {
+      return _pmCloudRollbackMutation(journal, error);
+    }
+    return { ok: true, updated_task_count: updatedTaskCount, affected_users: [...affected].sort() };
   }
 })();

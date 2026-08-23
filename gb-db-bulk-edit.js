@@ -333,6 +333,7 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       trash_root: src.trash_root || '',
       path: item?.path || '',
       name: item?.name || '',
+      asset_id: item?.asset_id || item?.assetId || '',
     } : null;
   };
   const historyItems = deletedItems.filter(item => toTrashRef(item));
@@ -370,15 +371,29 @@ function _dbUndoBulkDeleteEntities(dbPath, deletedItems, ctx) {
       if (failedRefs.length) throw new Error(`${failedRefs.length} 件のエントリを復元できませんでした`);
     },
     async () => {
+      const redoEntries = historyItems.map(item => ({
+        name: item.name,
+        path: item.path,
+        entryId: item.entry_id || '',
+        assetId: item.asset_id || item.assetId || '',
+      }));
+      const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+            redoEntries.map(entry => ({
+              path: entry.path,
+              kind: 'file',
+              ...(entry.assetId ? { assetId: entry.assetId } : {}),
+            })),
+            `${redoEntries.length} 件のエントリをもう一度ゴミ箱に移動しますか？`,
+          )
+        : await cfConfirm(`${redoEntries.length} 件のエントリをもう一度ゴミ箱に移動しますか？`);
+      if (!confirmed) throw new Error('削除のやり直しを取り消しました');
       const result = await window.GbDbEntryIdentity.deleteEntries({
         dbPath,
         ctx,
-        entries: historyItems.map(item => ({
-          name: item.name,
-          path: item.path,
-          entryId: item.entry_id || '',
-        })),
+        entries: redoEntries,
         source: 'bulk-delete-redo',
+        confirmation: confirmed,
       });
       trashRefs = result.trashRefs.map(toTrashRef).filter(Boolean);
       const calendarWarning = typeof _dbDeleteCalendarSyncWarningMessage === 'function'
@@ -759,11 +774,12 @@ async function _bulkDeleteEntities(entityNames, ctx) {
     name,
     path: _entityPath(dbPath, name),
     entryId: String(ctx?.pivotData?.entities?.[name]?._id || ''),
+    assetId: String(ctx?.pivotData?.entities?.[name]?.asset_id || ctx?.pivotData?.entities?.[name]?.assetId || ''),
   }));
   const confirmMessage = `${names.length} 件のエントリをゴミ箱に移動しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        entries.map(entry => ({ path: entry.path, kind: 'file' })),
+        entries.map(entry => ({ path: entry.path, kind: 'file', ...(entry.assetId ? { assetId: entry.assetId } : {}) })),
         confirmMessage,
       )
     : await cfConfirm(confirmMessage);

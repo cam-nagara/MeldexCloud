@@ -48,8 +48,7 @@
   }
   function ic(name, size) { return typeof lucide === 'function' ? lucide(name, size || 14) : ''; }
   function esc(value) {
-    if (typeof window.esc === 'function') return window.esc(value);
-    return String(value == null ? '' : value).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+    return window.MeldexEscape.html(value);
   }
   function rowKey(kind, id) { return String(kind || '') + ':' + String(id || ''); }
   function safeKeyPart(value) { return String(value || '').replace(/[^\p{L}\p{N}_:-]+/gu, '-').replace(/^-+|-+$/g, '') || 'item'; }

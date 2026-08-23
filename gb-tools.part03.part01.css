@@ -242,7 +242,11 @@
 [data-bd-role="canvas"].bd-tool-erase .bd-resize,
 [data-bd-role="canvas"].bd-tool-erase .bd-card-menu-btn,
 [data-bd-role="canvas"].bd-tool-erase [data-bd-role="svg"] path.bd-conn-hit { cursor: cell !important; }
-.bd-node { position: absolute; min-width: 40px; min-height: 28px; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); background: var(--bd-node-bg, var(--bg4)); border: 2px solid transparent; color: var(--fg); cursor: grab; user-select: none; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; overflow: hidden; isolation: isolate; }
+/* overflow: visible が基底 (2026-08-19、board-card-menu-button-mobile-clip-plan の案Aを全環境へ拡張)。
+   はみ出してはいけない中身 (.bd-text / .bd-img / .bd-missing-image / .bd-minimized) 側で
+   個別にクリップする。カード枠側でクリップすると、カードのしっぽ・カードメニューボタン・
+   リンクを開くボタンがカード外に出た瞬間に切り落とされてしまうため。 */
+.bd-node { position: absolute; min-width: 40px; min-height: 28px; padding: 8px 12px; border-radius: 6px; font-size: 13px; font-family: var(--bd-style-font-family, var(--bd-default-font-family, var(--bd-theme-font-family, var(--ui-font, inherit)))); background: var(--bd-node-bg, var(--bg4)); border: 2px solid transparent; color: var(--fg); cursor: grab; user-select: none; white-space: pre-wrap; word-break: break-word; box-sizing: border-box; overflow: visible; isolation: isolate; }
 .bd-node:has(.bd-img) { padding: 0; border-width: 0; }
 /* hover 時のフィードバックは「カードメニューボタン」(.bd-card-menu-btn) の表示のみとし、
    カードを囲う矩形 (旧 box-shadow 1px outline) は出さない (v0.5.246)。z-index は前面化のため維持。 */
@@ -317,16 +321,14 @@
   pointer-events: none;
   z-index: 12;
   animation: bd-caret-blink 1s step-end infinite;
-  /* 親の overflow: hidden でも見切れないよう、編集中のカードは overflow: visible に (下の規則で指定) */
   will-change: left, top, height;
 }
-/* 編集中のカードは overflow: visible にして、カード端ぎりぎりのキャレットが
-   clip されないようにする。元の bd-node.overflow は hover/非編集時のみ hidden。 */
-.bd-node.bd-editing { overflow: visible; }
 @keyframes bd-caret-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 /* 影オン時は SVG 全体に drop-shadow を適用してラインに影を付ける (カードと同じ色を共有) */
 [data-bd-role="canvas"].bd-shadow-on [data-bd-role="svg"] { filter: drop-shadow(0 3px 5px var(--bd-shadow-color, rgba(0,0,0,0.25))); }
-.bd-text { position: relative; z-index: 9; display: block; pointer-events: none; line-height: 1.5; }
+/* .bd-node 自体は overflow: visible が基底のため、本文はここで自前にクリップする
+   (長い1続きの文字列がカード枠を超えて隣のカードへ被さらないようにする安全策)。 */
+.bd-text { position: relative; z-index: 9; display: block; pointer-events: none; line-height: 1.5; overflow: hidden; max-width: 100%; }
 .bd-link-card-content { display: grid; grid-template-columns: 24px minmax(0, 1fr); align-items: start; gap: 6px; min-width: 0; }
 .bd-link-card-icon {
   display: inline-flex;
@@ -365,7 +367,18 @@
   color: var(--bd-link-type-icon-color, var(--fg));
   box-shadow: 0 1px 4px rgba(0,0,0,0.24);
   cursor: pointer;
-  opacity: 0.82;
+  /* ボードのリンクカード計画 (2026-08-13) A: 同じカードにある「…」(.bd-card-menu-btn) は
+     ホバー時のみ表示なのに、この「開く」だけ常時表示で挙動が揃っていなかった。
+     .bd-card-menu-btn と同じ書き方（opacity:0 + :hover で 1）へ揃える。
+     本文の padding-right は詰まったり広がったりしないようそのまま残す。 */
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+/* マウス環境はカーソルオーバー時。キーボードで到達したときも見えている必要がある。
+   タッチ環境（カーソルオーバーが無い）は下の @media で「選択中のカード」に出す。 */
+.bd-node:hover .bd-link-open-btn,
+.bd-link-open-btn:focus-visible {
+  opacity: 1;
 }
 .bd-link-open-btn:hover,
 .bd-link-open-btn:focus-visible {
@@ -378,7 +391,11 @@
 .bd-link-open-btn svg { width: 16px; height: 16px; display: block; pointer-events: none; }
 @media (pointer: coarse), (max-width: 768px) {
   .bd-link-node > .bd-text { padding-right: 50px; }
-  .bd-link-open-btn { right: 2px; width: 44px; height: 44px; opacity: 1; }
+  /* タッチにはカーソルオーバーが無いため、隠したままだとボタンへ到達できない。
+     選択中のカードでだけ出す（.bd-node.bd-selected は既に overflow: visible なので
+     ボタンの見切れも同時に解消される）。 */
+  .bd-link-open-btn { right: 2px; width: 44px; height: 44px; opacity: 0; touch-action: manipulation; }
+  .bd-node.bd-selected .bd-link-open-btn { opacity: 1; }
 }
 .bd-link-tooltip { position: fixed; z-index: 9999; background: var(--ui-popup-bg, var(--bg2)); color: var(--fg2); border: 1px solid var(--ui-popup-border, var(--ui-border-strong, var(--border))); border-radius: 4px; padding: 8px 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.3); pointer-events: none; }
 .bd-node.bd-selected .bd-text, .bd-node.bd-editing .bd-text { pointer-events: auto; }
@@ -401,6 +418,8 @@
   background: color-mix(in srgb, var(--bg3) 92%, var(--warn, #f59e0b) 8%);
   color: var(--fg);
   pointer-events: auto;
+  overflow: hidden;
+  max-width: 100%;
 }
 .bd-node .bd-missing-image-title { font-weight: 700; font-size: 13px; line-height: 1.4; }
 .bd-node .bd-missing-image-path { color: var(--fg2); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; word-break: break-word; max-height: 3.9em; overflow: hidden; }
@@ -431,9 +450,12 @@
    text-shadow によるテキストフチがハイライトの背景を覆い隠すため、mark 部分のフチを無効化する。 */
 .bd-find-hl { background: rgba(255, 220, 50, 0.50); color: inherit; padding: 0 1px; border-radius: 2px; text-shadow: none !important; }
 .bd-find-hl-current { background: rgba(255, 140, 0, 0.80); color: #1a1a1a; text-shadow: none !important; }
-.bd-node.bd-minimized { max-height: 32px; overflow: hidden; opacity: 0.8; }
+/* overflow は visible (基底に合わせる)。高さの制御は下の中身側クリップだけで完結する:
+   本文は nowrap+ellipsis で常に1行、画像・見つからない画像プレースホルダーは非表示にする。 */
+.bd-node.bd-minimized { max-height: 32px; overflow: visible; opacity: 0.8; }
 .bd-node.bd-minimized .bd-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bd-node.bd-minimized .bd-img { display: none; }
+.bd-node.bd-minimized .bd-missing-image { display: none; }
 .bd-node.bd-minimized .bd-resize { display: none; }
 /* `.bd-conn-action-btn` (ライン用「...」ボタン) と同じ明度に揃える: color: var(--fg) (v0.5.246) */
 /* v0.5.250: z-index を 8 → 11 に引き上げて bd-text (z-index:9) の上に出す。
@@ -441,14 +463,17 @@
    z-index が下だと bd-text にイベントを奪われ、ボタン左側が押せなくなる現象が発生していた。 */
 .bd-card-menu-btn { position: absolute; top: 4px; right: 12px; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--bg2) 96%, transparent); color: var(--fg); font-size: 11px; line-height: 1; cursor: pointer; opacity: 0; pointer-events: auto; z-index: 11; transition: opacity 0.15s ease, background 0.15s ease; }
 .bd-card-menu-btn:hover { background: var(--bg3); color: var(--fg); }
-/* 楕円カードは雲・トゲと同じく overflow: visible にして、メニューボタン (.bd-card-menu-btn) を
-   bbox の右上角 (= ellipse の外側) に配置できるようにする (v0.5.248)。
-   画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く。
-   背景色は `background-clip: border-box` 既定 + `border-radius: 50%` で楕円形にクリップされるため、
-   overflow: visible にしても bg は楕円形のまま保たれる。 */
-.bd-node[data-shape="ellipse"] { overflow: visible; }
+/* 画像 (.bd-img) は border-radius 50% を継承させて image 自体を楕円に切り抜く (v0.5.248)。
+   背景色は `background-clip: border-box` 既定 + `border-radius: 50%` で楕円形にクリップされる。 */
 .bd-node[data-shape="ellipse"] .bd-img { border-radius: 50%; }
-.bd-node:hover .bd-card-menu-btn { opacity: 1; }
+.bd-node:hover .bd-card-menu-btn,
+.bd-card-menu-btn:focus-visible { opacity: 1; }
+/* カードのしっぽの端点ハンドル (.ann-tail-handle は gb-tools.part01.part01.css の注釈と共有)。
+   注釈の付箋と違い、ボードには「注釈ツールバーが開いている」に相当する概念が無いため、
+   ホバー中・選択中・編集中のカードだけで表示 + 操作可能にする。 */
+.bd-node:hover > .ann-tail-handle,
+.bd-node.bd-selected > .ann-tail-handle,
+.bd-node.bd-editing > .ann-tail-handle { opacity: 1; pointer-events: auto; }
 
 /* ============================================================================
    カードHUD 新仕様
@@ -456,7 +481,6 @@
    左下: コメント (.bd-comment-hud)、カード外 4 点: アンカー (.bd-anchor-hud)。
    - ステータス/マーカー/コメントは設定済みのときのみ描画 + 常時表示 (カードテキスト背面)。
    - アンカーだけは非ホバー時に opacity:0 で隠し、未選択カードのインタラクト時だけ露出。
-   - カード外に張り出すアンカーのため、選択/ホバー時は overflow: visible に切り替える。
    ============================================================================ */
 /* アンカー HUD だけは非ホバー/非選択時に隠す (カード追加ボタンなので
    インタラクト時にのみ露出させる)。
@@ -471,7 +495,6 @@
 .bd-node:not(:hover):not(.bd-selected) .bd-anchor-hud { opacity: 0; pointer-events: none; }
 .bd-node.bd-selected:not(:hover) .bd-anchor-hud { display: none !important; }
 .bd-node .bd-anchor-hud { transition: opacity 0.15s ease; }
-.bd-node:hover, .bd-node.bd-selected { overflow: visible; }
 .bd-node.bd-editing .bd-anchor-hud { opacity: 1; pointer-events: auto; }
 
 /* 左上: ステータスドット (旧 8px ドットを HUD 化して 14px に拡大)。
@@ -936,21 +959,10 @@
     height: 44px;
     touch-action: manipulation;
   }
-  /* 「…」ボタン見切れ修正 (2026-08-13): タッチにはホバーが無いため上の .bd-card-menu-btn は
-     常時 opacity:1 の 44px になるが、.bd-node 側の overflow:hidden は :hover / .bd-selected の
-     ときしか解除されない (下の 474 行、タッチには効かない) ため、ボタン下端 (top6+height44=50px)
-     が 1 行カードの高さ (min-height 28px + padding ≒ 34px) の外へ出て切り落とされていた。
-     クリップの担当をカード枠から中身側へ移し、ボタン・(将来のカードのしっぽ機能の)しっぽを
-     カード外へ描画できるようにする。楕円カード ([data-shape="ellipse"]) は元々 overflow:visible
-     なので影響なし。通常カードは高さが min-height 由来の auto なので中身が枠外へ溢れることは
-     無いが、.bd-node.bd-minimized だけ max-height で明示的に切っているため、そちらは中身側
-     (.bd-text の white-space:nowrap+ellipsis は既存で自己完結、.bd-missing-image は .bd-img と
-     同様に非表示化) で個別にクリップする。 */
-  .bd-node { overflow: visible; }
-  .bd-node.bd-minimized { overflow: visible; }
-  .bd-node.bd-minimized .bd-missing-image { display: none; }
-  .bd-text { overflow: hidden; max-width: 100%; }
-  .bd-missing-image { overflow: hidden; max-width: 100%; }
+  /* 「…」ボタン見切れ修正 (2026-08-13導入、2026-08-19に .bd-node の overflow: visible を
+     全環境の基底へ引き上げたため、このブロック専用の対処だったクリップ振り替え
+     (.bd-node / .bd-node.bd-minimized / .bd-text / .bd-missing-image) は不要になった。
+     タッチ固有で残るのはボタン自体のタップ領域拡大のみ。 */
 }
 @media (max-width: 900px) {
   .bd-style-manager { grid-template-columns: 1fr; }

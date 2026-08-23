@@ -798,6 +798,13 @@ function bdSelect(id, add) {
     if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
     if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
   }
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 1枚だけの選択になったら、開いていれば
+  // サブパネルの中身を選択中カードのリンク先へ差し替える予約をする（デバウンス）。
+  // 複数選択・全解除では予約を取り消す。実際に発火してよいかの判定
+  // （リンクの有無・編集中・ドラッグ中等）は bdRequestLinkedSelectionAutoSubpanel 側で行う。
+  if (typeof bdRequestLinkedSelectionAutoSubpanel === 'function') {
+    bdRequestLinkedSelectionAutoSubpanel(bd.selected instanceof Set && bd.selected.size === 1 ? [...bd.selected][0] : null);
+  }
   if (deferExtras) {
     if (typeof bdMarkBoardUiDirty === 'function') bdMarkBoardUiDirty('select');
     else if (typeof bdRequestBoardExtras === 'function') bdRequestBoardExtras();

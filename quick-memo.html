@@ -28,8 +28,8 @@
   <main class="qm-shell" id="editorView">
     <header class="qm-header sa-toolbar">
       <div class="qm-menu-wrap">
-        <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false"><span class="ico ico-menu"></span></button>
-        <div id="quickMemoMenu" class="qm-menu" role="menu" hidden>
+        <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false" aria-controls="quickMemoMenu"><span class="ico ico-menu"></span></button>
+        <div id="quickMemoMenu" class="qm-menu" role="dialog" aria-label="クイックメモの操作" hidden>
           <button id="newMemoBtn" type="button"><span class="ico ico-filePlus"></span>新規メモ</button>
           <button id="saveBtn" type="button"><span class="ico ico-save"></span>端末へ保存</button>
           <button id="menuListBtn" type="button"><span class="ico ico-history"></span>過去のメモ</button>
@@ -126,7 +126,7 @@
 
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
 
-  <script src="gb-split-loader.js"></script>
+  <script src="gb-split-loader.js"></script><script src="gb-escape.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="meldex-core.js"></script>
   <script src="standalone-profile.js"></script>
@@ -175,35 +175,7 @@
       });
     });
   </script>
-  <script src="quick-memo.js"></script>
-  <!-- 共通カラーパレット（ビューワー残課題修正計画 2026-08-04「4. 共通カラーパレット」）。
-       quick-memo-drawing.js は本タスクの編集対象外のため、色スウォッチボタンのクリック挙動を
-       クローン置換で差し替えて共通パレット(openColorPalette)を開くよう配線する（下記スクリプト）。 -->
   <script src="gb-color-palette.js"></script>
-  <script>
-  (function () {
-    'use strict';
-    // colorInput.value が既存コード全体（quick-memo-drawing.js）の唯一の真値なので、
-    // 選択色はそこへ書き戻し、既存のinputリスナー（スウォッチ表示・設定保存）をそのまま動かす。
-    window.addEventListener('load', function () {
-      var swatchBtn = document.getElementById('colorSwatchBtn');
-      var colorInput = document.getElementById('colorInput');
-      var popover = document.getElementById('colorPopover');
-      if (!swatchBtn || !colorInput || typeof openColorPalette !== 'function') return;
-      // 既存のポップオーバートグル用リスナー（quick-memo-drawing.js）を完全に外すため、
-      // ボタンをクローン置換してから独自ハンドラだけを付け直す。
-      var freshBtn = swatchBtn.cloneNode(true);
-      swatchBtn.replaceWith(freshBtn);
-      freshBtn.addEventListener('click', function () {
-        if (popover) popover.hidden = true;
-        openColorPalette(freshBtn, colorInput.value, function (color) {
-          if (!color || color === 'transparent') return;
-          colorInput.value = color;
-          colorInput.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-      });
-    });
-  })();
-  </script>
+  <script src="quick-memo.js"></script>
 </body>
 </html>

@@ -3,9 +3,7 @@
 let _discordBotSettingsCache = null;
 
 function _discordBotEsc(value) {
-  return typeof esc === 'function'
-    ? esc(value)
-    : String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return MeldexEscape.html(value);
 }
 
 function _discordBotIcon(name, size) {

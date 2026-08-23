@@ -213,6 +213,7 @@ const GB_SHORTCUTS = {
   'board.spaceArrowPan':   { key: '', display: 'Space+矢印',            label: '表示位置を移動',                  scope: 'board', readonly: true },
   'board.spaceResetView':  { key: '', display: 'Space+ダブルクリック',   label: '表示をリセット',                  scope: 'board', readonly: true },
   'board.spaceFocus':      { key: '', display: 'Space',                 label: '選択したカードに寄る / 戻す',      scope: 'board', readonly: true },
+  'board.dragTail':        { key: '', display: 'Alt+Shift+ドラッグ（カード）', label: 'フキダシのしっぽを追加',     scope: 'board', readonly: true },
 
   'folder.dragRectSelect': { key: '', display: 'ドラッグ（空白）',        label: '範囲選択',                        scope: 'folder', readonly: true },
   'folder.ctrlDragAdd':    { key: '', display: 'Ctrl+ドラッグ（空白）',   label: '選択に追加',                      scope: 'folder', readonly: true },
@@ -232,6 +233,7 @@ const GB_SHORTCUTS = {
   'viewer.dragPan':        { key: '', display: 'ドラッグ',               label: '表示位置を移動',                  scope: 'viewer', readonly: true },
 
   'annotation.dragDraw':   { key: '', display: 'ドラッグ',               label: '注釈を描く',                      scope: 'annotation', readonly: true },
+  'annotation.dragTail':   { key: '', display: 'Alt+Shift+ドラッグ',     label: 'フキダシのしっぽを追加',           scope: 'annotation', readonly: true },
 
   // --- パネルセット ---
   'panelset.group1':      { key: 'ctrl+alt+1',   label: 'パネルセット ドック1',       scope: 'global' },
@@ -1339,7 +1341,11 @@ const _shortcutHandlers = {
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;
     if (typeof _folderSelectedItems === 'undefined' || _folderSelectedItems.length === 0) return;
-    const impactTargets = _folderSelectedItems.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = _folderSelectedItems.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmMessage = _folderSelectedItems.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)

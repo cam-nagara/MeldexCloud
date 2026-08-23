@@ -185,7 +185,7 @@ function _refreshDbColumnMenuView(ctx, dbPath) {
 
 function _dbRenderedColumnTokensForPinning(ctx, dbPath, eventTarget) {
   const table = eventTarget?.closest?.('table')
-    || (ctx?.containerEl && ctx.containerEl.querySelector?.(`#${CSS.escape(ctx.tableId || 'pivot-table')}`))
+    || (ctx?.containerEl && ctx.containerEl.querySelector?.(`#${MeldexEscape.cssIdent(ctx.tableId || 'pivot-table')}`))
     || document.getElementById(ctx?.tableId || 'pivot-table');
   const domTokens = table
     ? [...table.querySelectorAll('thead th[data-db-col-token]')]

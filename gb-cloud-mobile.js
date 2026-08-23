@@ -477,9 +477,7 @@
           }
           ctrls.classList.add('gb-pane-mobile-main-tab-ctrls');
           moreBtn.classList.add('gb-pane-mobile-tab-more');
-          if (!moreBtn.getAttribute('aria-label') || moreBtn.getAttribute('aria-label') === 'パネル操作') {
-            moreBtn.setAttribute('aria-label', 'タブ操作');
-          }
+          moreBtn.setAttribute('aria-label', 'タブ操作');
           if (!moreBtn.getAttribute('aria-haspopup')) moreBtn.setAttribute('aria-haspopup', 'menu');
         } else {
           const mobileMoreBtn = ctrls?.querySelector('.gb-pane-more.gb-pane-mobile-tab-more');

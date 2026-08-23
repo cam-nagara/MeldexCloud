@@ -187,9 +187,7 @@
 
   function _findPaneElement(paneId) {
     if (!paneId) return null;
-    const escapedId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-      ? CSS.escape(paneId)
-      : String(paneId).replace(/["\\]/g, '\\$&');
+    const escapedId = MeldexEscape.cssIdent(paneId);
     return document.querySelector(`.gb-pane[data-pane-id="${escapedId}"]`);
   }
 

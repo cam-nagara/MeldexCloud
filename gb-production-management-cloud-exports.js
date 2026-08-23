@@ -50,6 +50,11 @@
         : false;
       return durationChanged || timestampChanged || actualTimeChanged;
     },
+    async recalculateTaskActualsForAttendance(provider, affectedUserIds, reason) {
+      return _pmCloudWithProductionLease(provider, leasedProvider => (
+        _pmCloudRecalculateTaskActualsForAttendance(leasedProvider, affectedUserIds, reason)
+      ));
+    },
     // gb-data-access-dropbox-expanded.part01.js の汎用エントリ作成経路（_createEntity）から
     // 呼ばれる、作業内容リストへ行を直接追加した時の作業順自動採番の単一入口
     // （production-management-ux-improvement-plan-2026-08-04.md §5-3）。対象外シート・

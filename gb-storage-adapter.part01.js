@@ -1294,8 +1294,19 @@
 
     supportsStrictConditionalDelete() { return false; }
     folderRestoreCapabilities() {
-      return Object.freeze({ createFileCas: true, updateFileCas: true, deleteFileCas: false, deleteEmptyDirectoryCas: false });
+      // deleteFileCas/deleteEmptyDirectoryCas は false のまま(Dropbox APIにrev条件付き削除が無い事実は変わらない)。
+      // deleteFileToTrash/deleteDirectoryToTrash は、ゴミ箱退避方式(実Dropbox完全復元の実行可能化計画
+      // 2026-08-20)による2モード受け入れの2つめのモードで使う。
+      return Object.freeze({
+        createFileCas: true, updateFileCas: true, freshRead: true,
+        deleteFileCas: false, deleteEmptyDirectoryCas: false,
+        deleteFileToTrash: true, deleteDirectoryToTrash: true,
+      });
     }
+
+    // evacuatePathToTrash() は gb-storage-adapter-trash-evacuation.js が
+    // プロトタイプへ追加する(part01.js を1500行未満に保つための分離。
+    // 実Dropbox完全復元の削除全廃(ゴミ箱退避方式)計画 2026-08-20)。
 
     async overwriteBytes(relativePath, bytes) {
       const normalized = _normalizeRelativePath(relativePath);

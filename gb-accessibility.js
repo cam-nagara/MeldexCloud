@@ -65,8 +65,7 @@
   }
 
   function _cssEscape(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _labelFromElement(el) {

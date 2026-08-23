@@ -239,14 +239,14 @@
       path = picked?.path || '';
     } catch {}
     if (!path) {
-      path = prompt('Obsidianの保管庫フォルダを入力してください', '');
+      path = prompt('Obsidianフォルダを入力してください', '');
     }
     if (!path) return;
     try {
       const preview = await apiPost('/external-import/obsidian/pick-vault', { path }, { silentError: true });
       await createSet('obsidian', { source_path: preview.vault_path, name: preview.name });
     } catch (err) {
-      setStatus('保管庫を確認できませんでした: ' + (err.userMessage || err.message || err), true);
+      setStatus('Obsidianフォルダを確認できませんでした: ' + (err.userMessage || err.message || err), true);
     }
   }
 
@@ -685,84 +685,96 @@
     document.getElementById('external-import-eagle-reference-add')?.addEventListener('click', () => addEagleSet('reference'));
     document.getElementById('external-import-pureref-button')?.addEventListener('click', () => document.getElementById('external-import-pureref-input')?.click());
     document.getElementById('external-import-pureref-input')?.addEventListener('change', event => importPureRef(event.target.files?.[0], event.target));
+    document.querySelectorAll('[data-external-import-toggle]').forEach(button => {
+      button.addEventListener('click', () => {
+        const details = document.getElementById(button.getAttribute('aria-controls'));
+        if (!details) return;
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        button.setAttribute('aria-label', expanded ? '詳細を開く' : '詳細を閉じる');
+        details.hidden = expanded;
+      });
+    });
   }
 
   function renderExternalImportSettings(scope) {
     const container = (scope || document).querySelector?.('#' + rootId) || document.getElementById(rootId);
     if (!container) return;
-    // OAuth中継、ローカル保管庫走査、定期ジョブを持たないDropbox直結の
-    // Cloud静的版では、押しても成立しないデスクトップ専用操作を表示しない。
-    if (isCloudStaticImportSurface()) {
-      container.hidden = true;
-      container.dataset.cloudDesktopOnlyHidden = '1';
-      return;
-    }
+    // Google行は能力判定を表示するためCloudにも残し、ローカルフォルダ走査・
+    // 定期ジョブを要する既存サービスだけをCloudで隠す。
+    const cloudSurface = isCloudStaticImportSurface();
     container.hidden = false;
     delete container.dataset.cloudDesktopOnlyHidden;
     if (container.dataset.rendered === '1') {
-      refresh();
+      window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
+      if (!cloudSurface) refresh();
       // 定期実行一覧（インポート予定）は毎回最新化する。mount()は初回描画済みなら
       // 内部でrefresh()のみ行う（二重追加はしない）。
-      window.MeldexImportScheduleSettings?.mount(rootId);
+      if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
       return;
     }
     container.dataset.rendered = '1';
     container.innerHTML = `
-      <section class="gb-section gb-section--boxed">
-        <div class="gb-section-title">${icon('download', 14)} 外部ノート取り込み</div>
-        <div class="gb-section-desc">Notion、Obsidian、EvernoteのノートをMeldexへ取り込みます。外部サービス側は変更しません。</div>
+      <section class="external-import-heading">
+        <div class="gb-section-title">${icon('download', 14)} 外部データ取り込み</div>
+        <div class="gb-section-desc">サービスごとに必要な設定だけを開けます。</div>
       </section>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${icon('notebookText', 14)} Notionから取り込む</div>
-          <div class="gb-section-desc">状態: <span id="external-import-notion-state">確認中...</span></div>
-          <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-            <button type="button" id="external-import-notion-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Notionに接続</button>
-            <button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button>
+      <div id="google-import-provider-slot"></div>
+      <div id="external-import-local-providers" class="external-import-provider-list"${cloudSurface ? ' hidden' : ''}>
+        <section class="external-import-provider" data-provider="notion">
+          <div class="external-import-provider-row">
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('notebookText', 16)}</span><div><strong>Notion</strong><span class="external-import-provider-state" id="external-import-notion-state">確認中...</span></div></div>
+            <span class="external-import-provider-last">ノート</span>
+            <div class="external-import-provider-actions"><button type="button" id="external-import-notion-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Notionに接続</button><button type="button" id="external-import-notion-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-notion-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
+          <div id="external-import-notion-details" class="external-import-provider-details" hidden><div class="gb-section-desc">接続後、取り込む範囲をセットとして追加します。</div><button type="button" id="external-import-notion-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button></div>
         </section>
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${icon('folderOpen', 14)} Obsidianから取り込む</div>
-          <div class="gb-section-desc">保管庫フォルダ内のMarkdownを読み取り専用で取り込みます。</div>
-          <button type="button" id="external-import-obsidian-add" class="gb-btn gb-btn-sm">${icon('folder', 14)} 保管庫を選ぶ</button>
-        </section>
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${icon('archive', 14)} Evernoteから取り込む</div>
-          <div class="gb-section-desc">状態: <span id="external-import-evernote-state">確認中...</span></div>
-          <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-            <button type="button" id="external-import-evernote-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Evernoteに接続</button>
-            <button type="button" id="external-import-evernote-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button>
-            <button type="button" id="external-import-enex-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} ENEXファイルを選ぶ</button>
-            <input id="external-import-enex-input" type="file" accept=".enex" aria-label="ENEXファイル" hidden>
+        <section class="external-import-provider" data-provider="obsidian">
+          <div class="external-import-provider-row">
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('folderOpen', 16)}</span><div><strong>Obsidian</strong><span class="external-import-provider-state">Markdown</span></div></div>
+            <span class="external-import-provider-last">読み取り専用</span>
+            <div class="external-import-provider-actions"><button type="button" id="external-import-obsidian-add" class="gb-btn gb-btn-sm">${icon('folder', 14)} Obsidianフォルダを選ぶ</button><button type="button" id="external-import-obsidian-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-obsidian-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
+          <div id="external-import-obsidian-details" class="external-import-provider-details" hidden><div class="gb-section-desc">Obsidianフォルダ内のMarkdownをMeldexへコピーします。</div></div>
         </section>
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${icon('images', 14)} Eagleから取り込む</div>
-          <div class="gb-section-desc">ライブラリをソースフォルダへコピー、または参照ノートとして取り込みます。</div>
-          <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-            <button type="button" id="external-import-eagle-copy-add" class="gb-btn gb-btn-sm">${icon('copy', 14)} コピー型を追加</button>
-            <button type="button" id="external-import-eagle-reference-add" class="gb-btn gb-btn-sm">${icon('link', 14)} 参照型を追加</button>
+        <section class="external-import-provider" data-provider="evernote">
+          <div class="external-import-provider-row">
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('archive', 16)}</span><div><strong>Evernote</strong><span class="external-import-provider-state" id="external-import-evernote-state">確認中...</span></div></div>
+            <span class="external-import-provider-last">ノート / ENEX</span>
+            <div class="external-import-provider-actions"><button type="button" id="external-import-evernote-connect" class="gb-btn gb-btn-sm">${icon('externalLink', 14)} Evernoteに接続</button><button type="button" id="external-import-evernote-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-evernote-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
           </div>
+          <div id="external-import-evernote-details" class="external-import-provider-details" hidden><div class="external-import-provider-detail-actions"><button type="button" id="external-import-evernote-add" class="gb-btn gb-btn-sm">${icon('plus', 14)} 取り込みセットを追加</button><button type="button" id="external-import-enex-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} ENEXファイルを選ぶ</button><input id="external-import-enex-input" type="file" accept=".enex" aria-label="ENEXファイル" hidden></div></div>
         </section>
-        <section class="gb-section gb-section--boxed">
-          <div class="gb-section-title">${icon('galleryHorizontal', 14)} PureRefから取り込む</div>
-          <div class="gb-section-desc">PureRefファイルから画像ボードを作成します。</div>
-          <button type="button" id="external-import-pureref-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} PureRefファイルを選ぶ</button>
-          <input id="external-import-pureref-input" type="file" accept=".pur" aria-label="PureRefファイル" hidden>
+        <section class="external-import-provider" data-provider="eagle">
+          <div class="external-import-provider-row">
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('images', 16)}</span><div><strong>Eagle</strong><span class="external-import-provider-state">ライブラリ</span></div></div>
+            <span class="external-import-provider-last">コピー / 参照</span>
+            <div class="external-import-provider-actions"><button type="button" id="external-import-eagle-copy-add" class="gb-btn gb-btn-sm">${icon('copy', 14)} コピー型を追加</button><button type="button" id="external-import-eagle-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-eagle-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
+          </div>
+          <div id="external-import-eagle-details" class="external-import-provider-details" hidden><div class="gb-section-desc">ライブラリをソースフォルダへコピー、または参照ノートとして取り込みます。</div><button type="button" id="external-import-eagle-reference-add" class="gb-btn gb-btn-sm">${icon('link', 14)} 参照型を追加</button></div>
+        </section>
+        <section class="external-import-provider" data-provider="pureref">
+          <div class="external-import-provider-row">
+            <div class="external-import-provider-identity"><span class="external-import-provider-icon">${icon('galleryHorizontal', 16)}</span><div><strong>PureRef</strong><span class="external-import-provider-state">画像ボード</span></div></div>
+            <span class="external-import-provider-last">.pur</span>
+            <div class="external-import-provider-actions"><button type="button" id="external-import-pureref-button" class="gb-btn gb-btn-sm">${icon('fileUp', 14)} PureRefファイルを選ぶ</button><button type="button" id="external-import-pureref-toggle" class="gb-btn gb-btn-sm gb-btn-quiet external-import-provider-toggle" data-external-import-toggle aria-expanded="false" aria-controls="external-import-pureref-details" aria-label="詳細を開く">${icon('chevronDown', 16)}</button></div>
+          </div>
+          <div id="external-import-pureref-details" class="external-import-provider-details" hidden><div class="gb-section-desc">PureRefファイルから画像ボードを作成します。</div><input id="external-import-pureref-input" type="file" accept=".pur" aria-label="PureRefファイル" hidden></div>
         </section>
       </div>
-      <section class="gb-section gb-section--boxed">
+      <section id="external-import-set-section" class="gb-section gb-section--boxed"${cloudSurface ? ' hidden' : ''}>
         <div class="gb-section-title">${icon('listChecks', 14)} 取り込みセット</div>
         <div id="external-import-set-list"><div class="gb-section-desc">読み込み中...</div></div>
       </section>
       <div id="external-import-status" class="gb-section-desc" role="status" aria-live="polite" aria-atomic="true"></div>
     `;
     bind();
-    refresh();
+    window.MeldexGoogleImportSettings?.mount('#google-import-provider-slot');
+    if (!cloudSurface) refresh();
     // 定期実行の一覧・管理（Notion同期/Xブックマーク/Xアカウント投稿/外部取り込みを横断）を
     // この設定画面の末尾へ追加する。Meldex.html への新規コンテナ追加はレーン外のため、
     // 既存コンテナへランタイムでマウントする。
-    window.MeldexImportScheduleSettings?.mount(rootId);
+    if (!cloudSurface) window.MeldexImportScheduleSettings?.mount(rootId);
   }
 
   window.renderExternalImportSettings = renderExternalImportSettings;

@@ -166,10 +166,15 @@ const MeldexPublicRuntime = (() => {
           + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n';
       return {
         el,
-        cssFiles: ['gb-tools.css', 'gb-ui.css'],
+        // エントリはエントリレイアウト（自由配置キャンバス）を表示している場合があるため、
+        // そのスタイルも同梱する（無ければ未使用のCSSが増えるだけで無害）
+        cssFiles: viewType === 'entity'
+          ? ['gb-tools.css', 'gb-ui.css', 'gb-db-entity-layout.css']
+          : ['gb-tools.css', 'gb-ui.css'],
         extraCss:
           noteCss + '\n'
           + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
+        preTransform: viewType === 'entity' ? _preTransformEntityViewForPublish : undefined,
         notFound: 'ノートが開かれていません',
       };
     }
@@ -285,6 +290,17 @@ const MeldexPublicRuntime = (() => {
 
   // DB テーブル: 列幅とステータスバッジ色を computed value でインライン化
   // (これがないとクローン側では getComputedStyle が効かない)
+  // エントリのフルページにエントリレイアウトが表示されている場合の公開用静的化。
+  // タブ行・編集ツールバー・セルの編集チロームは公開HTMLでは操作できないため取り除く。
+  // キャンバスは表示時点のフィット縮尺のまま静的スナップショットとして残す。
+  function _preTransformEntityViewForPublish(originalEl, clone) {
+    clone.querySelectorAll(
+      '[data-e2e-id="entity-layout-tabbar"], .el-edit-toolbar, .el-cell-remove, .el-cell-settings, .el-cell-resize'
+    ).forEach(node => node.remove());
+    clone.querySelectorAll('.el-cell.el-editable').forEach(node => node.classList.remove('el-editable'));
+    clone.querySelectorAll('.el-viewport.el-editing').forEach(node => node.classList.remove('el-editing'));
+  }
+
   function _preTransformDatabaseTable(originalEl, clone) {
     if (!originalEl || !clone) return;
     const origCells = originalEl.querySelectorAll('th, td');

@@ -1,19 +1,10 @@
-// gb-import-progress.js — ステータスバーのインポート進捗表示（進捗率・プログレスバー・待機件数）。
-// WebClipper・インポート定期実行計画 2026-08-04「バックグラウンドジョブと進捗」節で実装。
-//
-// 既存の #status-bar DOM（Meldex.html/Meldex-dev.html。meldex-core編集禁止のため
-// ランタイムでのみ挿入する）へ、通常メッセージ（#sb-msg）とは独立した進捗欄を追加する。
-// 手動実行・定期実行・追いつき実行のいずれも共通ジョブランナー（/api/jobs、
-// category=import）を通るため、ここでは種類を問わずポーリングして表示する。
-//
-// 画面移動・再読み込み後もアクティブなジョブ（queued/running/cancelling）を
-// /api/jobs?category=import&active_only=1 から復元できるようにする。
+// 既存のインポート進捗APIをMeldexOperationProgressへ接続する互換ファサード。
+// importジョブの再読込復元と、既存のbegin/update/finish呼び出しを共通状態へ統合する。
 (function () {
   'use strict';
 
   const POLL_INTERVAL_MS = 1500;
   const CATEGORY = 'import';
-
   const KIND_LABELS = {
     'notion-sync': 'Notion同期',
     'x-bookmarks': 'Xブックマーク',
@@ -22,224 +13,203 @@
     'pureref-import': 'PureRef取り込み',
     'enex-import': 'ENEX取り込み',
   };
+  const restoredJobs = new Map();
+  const foregroundStack = [];
+  let pollTimer = null;
 
-  let _container = null;
-  let _pollTimer = null;
-  let _lastRenderedJobId = null;
-  let _foregroundOperation = null;
+  function _progressApi() { return window.MeldexOperationProgress || null; }
+  function _kindLabel(kind) { return KIND_LABELS[kind] || kind || 'インポート'; }
+  function _apiAvailable() { return typeof apiFetch === 'function'; }
 
-  function _kindLabel(kind) {
-    return KIND_LABELS[kind] || kind || 'インポート';
+  function _jobLabel(job) {
+    const kind = _kindLabel(job?.kind);
+    return job?.label ? kind + ': ' + job.label : kind;
   }
 
-  function _apiAvailable() {
-    return typeof apiFetch === 'function';
-  }
-
-  function _ensureContainer() {
-    if (_container && _container.isConnected) return _container;
-    const statusBar = document.getElementById('status-bar');
-    if (!statusBar) return null;
-    const existing = document.getElementById('sb-import-progress');
-    if (existing) {
-      _container = existing;
-      return _container;
-    }
-    const wrap = document.createElement('span');
-    wrap.id = 'sb-import-progress';
-    wrap.className = 'sb-import-progress';
-    wrap.style.display = 'none';
-    wrap.setAttribute('role', 'status');
-    wrap.setAttribute('aria-live', 'polite');
-    wrap.innerHTML = `
-      <span class="sb-import-progress-label" data-e2e-id="import-progress-label"></span>
-      <span class="sb-import-progress-bar-track"><span class="sb-import-progress-bar-fill" data-e2e-id="import-progress-bar"></span></span>
-      <span class="sb-import-progress-queue" data-e2e-id="import-progress-queue"></span>
-    `;
-    const shortcuts = document.getElementById('sb-shortcuts');
-    if (shortcuts && shortcuts.parentNode === statusBar) {
-      statusBar.insertBefore(wrap, shortcuts);
-    } else {
-      statusBar.appendChild(wrap);
-    }
-    _container = wrap;
-    return _container;
-  }
-
-  function _percent(progress) {
-    if (!progress) return null;
-    const total = Number(progress.total);
-    const processed = Number(progress.processed) || 0;
-    if (!Number.isFinite(total) || total <= 0) return null;
-    return Math.max(0, Math.min(100, Math.round((processed / total) * 100)));
-  }
-
-  // 進捗率は単調増加で表示し、保存完了時のみ100%にする
-  // （WebClipper・インポート定期実行計画 2026-08-04「バックグラウンドジョブと進捗」節）。
-  let _lastPercentByJob = {};
-
-  function _monotonicPercent(jobId, rawPercent, status) {
-    if (status === 'done') {
-      _lastPercentByJob[jobId] = 100;
-      return 100;
-    }
-    if (rawPercent == null) return _lastPercentByJob[jobId] != null ? _lastPercentByJob[jobId] : null;
-    const previous = _lastPercentByJob[jobId];
-    const next = previous != null ? Math.max(previous, rawPercent) : rawPercent;
-    // 完了前は100%を先取りしない（保存完了時のみ100%にする）
-    _lastPercentByJob[jobId] = Math.min(next, 99);
-    return _lastPercentByJob[jobId];
-  }
-
-  function _renderJob(job, queuedCount) {
-    const el = _ensureContainer();
-    if (!el) return;
-    const label = el.querySelector('.sb-import-progress-label');
-    const fill = el.querySelector('.sb-import-progress-bar-fill');
-    const queue = el.querySelector('.sb-import-progress-queue');
-    if (_foregroundOperation) {
-      const operation = _foregroundOperation;
-      const total = Math.max(1, Number(operation.total) || 1);
-      const processed = Math.max(0, Math.min(total, Number(operation.processed) || 0));
-      const percent = Math.round((processed / total) * 100);
-      el.style.display = '';
-      label.textContent = `${operation.label || '処理中'} ${percent}%`;
-      if (fill) {
-        fill.style.width = percent + '%';
-        fill.classList.remove('sb-import-progress-bar-indeterminate');
-      }
-      queue.textContent = `${processed}/${total}件`;
-      return;
-    }
-    if (!job) {
-      el.style.display = 'none';
-      _lastRenderedJobId = null;
-      return;
-    }
-    el.style.display = '';
-    const kindText = _kindLabel(job.kind);
-    const target = job.label ? `${kindText}: ${job.label}` : kindText;
-    const isQueued = job.status === 'queued';
-    const rawPercent = _percent(job.progress);
-    const percent = isQueued ? 0 : _monotonicPercent(job.id, rawPercent, job.status);
-    if (isQueued) {
-      label.textContent = `取り込み待ち: ${target}`;
-    } else if (percent == null) {
-      const phase = job.progress?.phase || '準備中';
-      label.textContent = `取り込み: ${target} ${phase}`;
-    } else {
-      label.textContent = `取り込み: ${target} ${percent}%`;
-    }
-    if (fill) {
-      fill.style.width = (percent == null ? 0 : percent) + '%';
-      fill.classList.toggle('sb-import-progress-bar-indeterminate', percent == null && !isQueued);
-    }
-    queue.textContent = queuedCount > 0 ? `待機中 ${queuedCount}件` : '';
-    _lastRenderedJobId = job.id;
-  }
-
-  function _pickActiveJob(jobs) {
-    // running優先、次にcancelling、最後にqueued。複数あれば開始が早いものを表示。
+  function _activeJobs(jobs) {
     const priority = { running: 0, cancelling: 1, queued: 2 };
-    const active = jobs.filter(j => j.status === 'running' || j.status === 'cancelling' || j.status === 'queued');
-    active.sort((a, b) => {
-      const pa = priority[a.status] ?? 9;
-      const pb = priority[b.status] ?? 9;
-      if (pa !== pb) return pa - pb;
-      return (a.started_at || a.queued_at || 0) - (b.started_at || b.queued_at || 0);
-    });
-    return active;
+    return jobs
+      .filter(function (job) { return job.status === 'running' || job.status === 'cancelling' || job.status === 'queued'; })
+      .sort(function (a, b) {
+        const diff = (priority[a.status] ?? 9) - (priority[b.status] ?? 9);
+        if (diff) return diff;
+        return (a.started_at || a.queued_at || 0) - (b.started_at || b.queued_at || 0);
+      });
   }
 
-  async function _poll() {
+  function _syncJob(job) {
+    const api = _progressApi();
+    if (!api || !job?.id) return null;
+    const jobId = String(job.id);
+    let handle = api.findByPersistentJobId(jobId) || restoredJobs.get(jobId)?.handle;
+    if (!handle) {
+      handle = api.begin({
+        id: 'job-' + jobId,
+        kind: String(job.kind || 'import'),
+        label: _jobLabel(job),
+        phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+        status: job.status,
+        mode: Number(job.progress?.total) > 0 ? 'determinate' : 'indeterminate',
+        processed: Number(job.progress?.processed) || 0,
+        total: Number(job.progress?.total) || null,
+        persistentJobId: jobId,
+        background: true,
+        showImmediately: true,
+        priority: job.status === 'running' ? 20 : 10,
+      });
+    }
+    const previous = handle.getState();
+    const rawTotal = Number(job.progress?.total);
+    let processed = Math.max(0, Number(job.progress?.processed) || 0);
+    if (rawTotal > 0 && previous?.total === rawTotal) processed = Math.max(previous.processed || 0, processed);
+    handle.update({
+      label: _jobLabel(job),
+      phase: job.status === 'queued' ? '待機中' : String(job.progress?.phase || '準備中'),
+      status: job.status,
+      mode: rawTotal > 0 ? 'determinate' : 'indeterminate',
+      processed: processed,
+      total: rawTotal > 0 ? rawTotal : null,
+      currentItem: job.progress?.current_item || job.progress?.current || '',
+      rate: job.progress?.rate,
+      eta: job.progress?.eta_seconds ?? job.progress?.eta,
+      persistentJobId: jobId,
+    });
+    restoredJobs.set(jobId, { handle: handle, misses: 0 });
+    return handle;
+  }
+
+  async function _resolveMissingJob(jobId, entry) {
+    try {
+      const job = await apiFetch('/jobs/' + encodeURIComponent(jobId), { silentError: true });
+      entry.misses = 0;
+      if (job?.status === 'done') {
+        entry.handle.succeed({ summary: job.result?.summary || '取り込みが完了しました' });
+        restoredJobs.delete(jobId);
+      } else if (job?.status === 'cancelled' || job?.status === 'canceled') {
+        entry.handle.cancelled({ summary: '取り込みを中止しました' });
+        restoredJobs.delete(jobId);
+      } else if (job?.status === 'error') {
+        entry.handle.fail({
+          error: job.error || '取り込みに失敗しました',
+          details: job.result?.failure_samples || job.error_detail?.failure_samples || [],
+        });
+        restoredJobs.delete(jobId);
+      } else if (job) {
+        _syncJob(job);
+      }
+    } catch (error) {
+      entry.misses += 1;
+      if (entry.misses < 2 || !/404/.test(String(error?.message || ''))) return;
+      const status = entry.handle.getState()?.status;
+      if (status === 'running' || status === 'queued' || status === 'cancelling') entry.handle.dispose();
+      restoredJobs.delete(jobId);
+    }
+  }
+
+  async function poll() {
     if (!_apiAvailable()) return;
     try {
-      const data = await apiFetch(`/jobs?category=${encodeURIComponent(CATEGORY)}&active_only=1`, { silentError: true });
-      const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-      const active = _pickActiveJob(jobs);
-      if (!active.length) {
-        _renderJob(null, 0);
-        return;
-      }
-      const [current, ...rest] = active;
-      _renderJob(current, rest.length);
-    } catch (e) {
-      // ポーリング失敗は静かに無視する（次回ポーリングで回復すれば表示が戻る）
+      const data = await apiFetch('/jobs?category=' + encodeURIComponent(CATEGORY) + '&active_only=1', { silentError: true });
+      const active = _activeJobs(Array.isArray(data?.jobs) ? data.jobs : []);
+      const seen = new Set();
+      active.forEach(function (job) {
+        seen.add(String(job.id));
+        _syncJob(job);
+      });
+      const missing = [];
+      restoredJobs.forEach(function (entry, jobId) {
+        if (!seen.has(jobId)) missing.push(_resolveMissingJob(jobId, entry));
+      });
+      await Promise.all(missing);
+    } catch (_) {
+      // 一時的なポーリング失敗では現役表示を消さず、次回復旧を待つ。
     }
   }
 
   function start() {
-    if (_pollTimer) return;
-    _poll();
-    _pollTimer = setInterval(_poll, POLL_INTERVAL_MS);
+    if (pollTimer) return;
+    poll();
+    pollTimer = setInterval(poll, POLL_INTERVAL_MS);
   }
 
   function stop() {
-    if (_pollTimer) {
-      clearInterval(_pollTimer);
-      _pollTimer = null;
-    }
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
 
-  function beginOperation(label, total) {
-    _foregroundOperation = {
+  function beginOperation(label, total, options) {
+    const api = _progressApi();
+    if (!api) return null;
+    const count = Number(total);
+    const opts = options || {};
+    const handle = api.begin({
+      kind: String(opts.kind || 'foreground-operation'),
       label: String(label || '処理中'),
-      total: Math.max(1, Number(total) || 1),
+      mode: Number.isFinite(count) && count > 0 ? 'determinate' : 'indeterminate',
+      total: Number.isFinite(count) && count > 0 ? count : null,
       processed: 0,
-    };
-    _renderJob(null, 0);
+      origin: opts.origin || null,
+      originPlacement: opts.originPlacement || 'after',
+      background: false,
+      delayMs: opts.delayMs,
+      showInTray: opts.showInTray !== false,
+      showInStatus: opts.showInStatus !== false,
+      cancellable: !!opts.cancellable,
+      cancel: opts.cancel,
+      retry: opts.retry,
+      priority: Number(opts.priority) || 30,
+    });
+    foregroundStack.push(handle);
+    return handle;
   }
 
-  function updateOperation(processed, label) {
-    if (!_foregroundOperation) return;
-    _foregroundOperation.processed = Math.max(0, Number(processed) || 0);
-    if (label) _foregroundOperation.label = String(label);
-    _renderJob(null, 0);
+  function _resolveForeground(token) {
+    if (token && typeof token.update === 'function') return token;
+    if (typeof token === 'string') return _progressApi()?.get(token) || null;
+    return foregroundStack[foregroundStack.length - 1] || null;
   }
 
-  function finishOperation() {
-    _foregroundOperation = null;
-    _poll();
+  function updateOperation(processed, label, token) {
+    const handle = _resolveForeground(token);
+    if (!handle) return;
+    const values = { processed: Math.max(0, Number(processed) || 0) };
+    if (label) values.label = String(label);
+    handle.update(values);
   }
 
-  function _injectCSS() {
-    if (document.getElementById('gb-import-progress-css-fallback')) return;
-    // 通常は gb-import-progress.css（Meldex-dev.html に登録済み）を使うが、
-    // 単体HTML等で読み込まれなかった場合のフォールバックとして最低限のスタイルを注入する。
-    if (document.querySelector('link[href$="gb-import-progress.css"]')) return;
-    const style = document.createElement('style');
-    style.id = 'gb-import-progress-css-fallback';
-    style.textContent = `
-      .sb-import-progress { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--fg2); white-space:nowrap; }
-      .sb-import-progress-bar-track { width:60px; height:6px; border-radius:3px; background:var(--border); overflow:hidden; flex-shrink:0; }
-      .sb-import-progress-bar-fill { display:block; height:100%; background:var(--accent); width:0%; transition:width .3s ease; }
-      .sb-import-progress-bar-indeterminate { width:40% !important; animation:sb-import-progress-indeterminate 1.2s ease-in-out infinite; }
-      @keyframes sb-import-progress-indeterminate { 0% { margin-left:0; } 50% { margin-left:60%; } 100% { margin-left:0; } }
-      .sb-import-progress-queue { color:var(--fg2); }
-    `;
-    document.head.appendChild(style);
+  function finishOperation(token, options) {
+    const handle = _resolveForeground(token);
+    if (!handle) return;
+    const index = foregroundStack.indexOf(handle);
+    if (index >= 0) foregroundStack.splice(index, 1);
+    handle.succeed(Object.assign({ dismissMs: 0 }, options || {}));
+    poll();
+  }
+
+  function failOperation(error, token, options) {
+    const handle = _resolveForeground(token);
+    if (!handle) return;
+    const index = foregroundStack.indexOf(handle);
+    if (index >= 0) foregroundStack.splice(index, 1);
+    handle.fail(Object.assign({ error: error }, options || {}));
   }
 
   function _init() {
-    // デスクトップ付箋の小窓には進捗を出す場所が無い。付箋の枚数だけポーリングを増やさない。
     if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
-    _injectCSS();
-    _ensureContainer();
     start();
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _init);
-  } else {
-    _init();
-  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _init, { once: true });
+  else _init();
 
   window.MeldexImportProgress = {
-    start,
-    stop,
-    poll: _poll,
-    beginOperation,
-    updateOperation,
-    finishOperation,
+    start: start,
+    stop: stop,
+    poll: poll,
+    beginOperation: beginOperation,
+    updateOperation: updateOperation,
+    finishOperation: finishOperation,
+    failOperation: failOperation,
   };
 })();

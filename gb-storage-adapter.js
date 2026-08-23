@@ -4,4 +4,5 @@ __loadSplitScript('gb-storage-adapter.js', [
   'gb-storage-adapter.part01.js',
   'gb-storage-adapter.part02.js',
   'gb-storage-delete-confirmation-fresh.js',
+  'gb-storage-adapter-trash-evacuation.js',
 ]);

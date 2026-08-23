@@ -518,9 +518,9 @@
         const dropboxPath = normalizeDropboxPath(entry.resolvedDropboxPath || '');
         const workspaceId = String(entry?.workspaceId || '').trim();
         if (!dropboxPath || !entry?.id || !workspaceId) continue;
-        // フェーズ3c-hotfix: entry.id（wsrc:...）はワークスペードの
+        // フェーズ3c-hotfix: entry.id（wsrc:...）はワークスペースの
         // フォルダ内台帳ごとに独立採番される（parseWsLedger内でワークス
-        // ペード単位に新規生成）ため、2つの異なる参加ワークスペードが
+        // ペース単位に新規生成）ため、2つの異なる参加ワークスペースが
         // 同名フォルダ（例: 両方とも relPath:"第1話"）を持つと entry.id が
         // 衝突する。ここで workspaceId を名前空間として付与し、
         // ws:<workspaceId>:<entry.id> の形で最終idを一意化する

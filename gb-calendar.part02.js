@@ -529,7 +529,9 @@ function _renderTaskBoard(container, dbPath, events) {
     const col=document.createElement('div');col.style.cssText='min-width:180px;flex:1;background:var(--bg2);border:1px solid var(--border);border-radius:4px;display:flex;flex-direction:column;';
     const taskEvs=events.filter(ev=>(ev.description||'').includes('status:'+s.key));
     const hdr=document.createElement('div');hdr.style.cssText='padding:6px 8px;font-size:12px;font-weight:bold;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;';
-    hdr.innerHTML=`<span style="color:${s.color};">${s.label}</span><span style="font-size:10px;color:var(--fg2);">${taskEvs.length}</span>`;
+    const statusLabel = document.createElement('span');statusLabel.style.color=s.color;statusLabel.textContent=s.label;
+    const statusCount = document.createElement('span');statusCount.style.cssText='font-size:10px;color:var(--fg2);';statusCount.textContent=String(taskEvs.length);
+    hdr.append(statusLabel,statusCount);
     col.appendChild(hdr);
     const body=document.createElement('div');body.style.cssText='flex:1;padding:4px;overflow-y:auto;min-height:100px;';
     body.addEventListener('dragover',e=>{e.preventDefault();body.style.background='rgba(86,156,214,0.08)';});
@@ -964,11 +966,22 @@ async function _generateFromTemplate(dbPath, tid, templates, modalEl) {
 /* ==============================
    同期モーダル（Google Calendar + iCal + CSV + テンプレート）
    ============================== */
+function _calendarDbSyncIsAdmin(dbPath='') {
+  let role='';
+  try { if(typeof getMyRoleForPath==='function')role=String(getMyRoleForPath(dbPath)||'').toLowerCase(); } catch {}
+  if(role==='owner'||role==='admin')return true;
+  try {
+    const state=window.MeldexRuntimeAdapter?.getWorkspaceState?.()||{};
+    const access=String(state.access||state.role||'').toLowerCase();
+    return state.isOwner===true||access==='owner'||access==='admin';
+  } catch { return false; }
+}
 function _showSyncModal(dbPath) {
+  const isAdmin=_calendarDbSyncIsAdmin(dbPath);
   const content=document.createElement('div');
   content.innerHTML = `<div>
 
-    <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
+    <div class="calendar-db-sync-admin-only" style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
       <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">Google Calendar</div>
       <div id="sync-google-status" style="font-size:12px;color:var(--fg2);margin-bottom:8px;">確認中...</div>
       <div id="sync-google-auth" style="display:none;">
@@ -982,7 +995,7 @@ function _showSyncModal(dbPath) {
       </div>
     </div>
 
-    <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
+    <div class="calendar-db-sync-admin-only" style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
       <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">iCal / .ics</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;">
         <button id="sync-ical-import" style="font-size:12px;padding:4px 12px;">.icsインポート</button>
@@ -996,7 +1009,7 @@ function _showSyncModal(dbPath) {
       <button id="sync-templates" style="font-size:12px;padding:4px 12px;">テンプレート管理</button>
     </div>
 
-    <div style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
+    <div class="calendar-db-sync-admin-only" style="padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;margin-bottom:10px;">
       <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">CalDAV</div>
       <div style="font-size:11px;color:var(--fg2);margin-bottom:6px;">CalDAVサーバーとの双方向同期</div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;">
@@ -1012,11 +1025,12 @@ function _showSyncModal(dbPath) {
     </div>
 
   </div>`;
+  if(!isAdmin)content.querySelectorAll('.calendar-db-sync-admin-only').forEach(card=>card.remove());
   const closeButton=document.createElement('button');closeButton.type='button';closeButton.id='sync-close';closeButton.className='gb-btn gb-btn-sm';closeButton.textContent='閉じる';closeButton.setAttribute('aria-label','カレンダー同期・ツールを閉じる');
   let syncBusy=false;
   const modalApi=window.GBUI.createModal({
     id:'calendar-db-sync',title:'カレンダー同期・ツール',body:[...content.childNodes],footer:closeButton,
-    variant:'standard',geometryKey:'calendar-db-sync',minWidth:'0',initialFocus:'#sync-ical-import',
+    variant:'standard',geometryKey:'calendar-db-sync',minWidth:'0',initialFocus:isAdmin?'#sync-ical-import':'#sync-templates',
     closeLabel:'カレンダー同期・ツールを閉じる',closeOnEsc:true,closeOnOverlay:true,onBeforeClose:()=>!syncBusy,
   });
   const o=modalApi.overlay,panel=modalApi.modal;

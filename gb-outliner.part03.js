@@ -44,7 +44,7 @@
 }
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
-function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName) {
+function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
   _renameTreeNode(oldPath, newPath, newName, fileId);
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
@@ -61,7 +61,7 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   if (typeof renameAppPathReferences === 'function') {
     renameAppPathReferences(oldPath, newPath, { label: newName, fileId, type: nodeData.type || 'page' });
   }
-  showStatus(`「${oldName}」→「${newName}」にリネームしました`);
+  if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
 // リネームAPIタイムアウト時の事後確認: 親フォルダを再取得し、旧名消滅・新名出現を確認する
@@ -69,8 +69,18 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
   const confirmKey = 'rename:' + oldPath;
   if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
   _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'rename-confirmation',
+    label: 'リネーム結果を確認しています',
+    mode: 'indeterminate',
+    origin: labelEl,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
   try {
-    showStatus('リネームに時間がかかっています。結果を確認中…');
+    if (!progress) showStatus('リネームに時間がかかっています。結果を確認中…');
     const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
     const contextNodeEl = labelEl.closest('.tree-node');
     const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
@@ -80,7 +90,8 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindRenamedItem(items, oldName, newName);
       if (found) {
-        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);
+        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${oldName}」→「${newName}」にリネームしました` });
         return;
       }
     }
@@ -89,8 +100,13 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
     const liveNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(oldPath) : null;
     const liveLabel = liveNode ? liveNode.querySelector(':scope > .tree-node-row .tree-label') : null;
     (liveLabel || labelEl).textContent = oldName;
-    showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+    const message = `「${oldName}」のリネームに失敗（結果を確認できませんでした）`;
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
   } finally {
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: 'リネーム結果の確認を完了できませんでした' });
+    }
     _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
   }
 }
@@ -763,16 +779,47 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
-  showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await Promise.all(files.map(file => _uploadOutlinerDroppedFile(file, parentPath)));
-  await loadOutliner();
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'file-import',
+    label: `${files.length}個のファイルをインポートしています`,
+    mode: 'determinate',
+    total: files.length,
+    processed: 0,
+    origin: document.getElementById('outliner-tree'),
+    showInTray: true,
+    showInStatus: true,
+    priority: 40,
+  });
+  if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
+  let processed = 0;
+  const results = await Promise.all(files.map(async file => {
+    const result = await _uploadOutlinerDroppedFile(file, parentPath);
+    processed += 1;
+    progress?.update?.({ processed: processed, currentItem: file.name });
+    return result;
+  }));
+  try {
+    progress?.update?.({ phase: '表示を更新しています', currentItem: '' });
+    await loadOutliner();
+  } catch (error) {
+    progress?.fail?.({ error: error });
+    throw error;
+  }
   const succeeded = results.filter(result => result.ok);
   const failed = results.filter(result => !result.ok);
   if (failed.length) {
     const names = failed.slice(0, 3).map(result => result.name).join('、');
     const suffix = failed.length > 3 ? ` ほか${failed.length - 3}件` : '';
-    showStatus(`${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`, true);
+    const summary = `${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`;
+    if (progress) {
+      progress.partial({
+        summary: summary,
+        detailCount: failed.length,
+        details: failed.map(result => ({ path: result.name, message: result.error })),
+      });
+    } else showStatus(summary, true);
   } else {
-    showStatus(files.length + '個のファイルをインポートしました');
+    if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
+    else showStatus(files.length + '個のファイルをインポートしました');
   }
 });

@@ -406,7 +406,7 @@ function _dbApplyEntityRenameInfo(info) {
   }
   _dbNotifyCalendarEntryRenamed(dbPath, oldPath, newPath, oldName, newName);
   try {
-    document.querySelectorAll(`tr[data-entity-name="${CSS.escape(oldName)}"]`).forEach(row => {
+    document.querySelectorAll(`tr[data-entity-name="${MeldexEscape.cssIdent(oldName)}"]`).forEach(row => {
       row.dataset.entityName = newName;
       row.querySelectorAll('.entity-name-label').forEach(label => { label.textContent = newName; });
       row.querySelectorAll('[data-entity-name]').forEach(el => { el.dataset.entityName = newName; });

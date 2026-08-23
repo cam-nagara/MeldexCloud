@@ -5,13 +5,11 @@
   const HEX_SEQ_RE = /^[0-9a-f]{1,6}(?:[-_][0-9a-f]{1,6})*$/i;
 
   function _esc(value) {
-    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _escAttr(value) {
-    return _esc(value).replace(/`/g, '&#96;');
+    return MeldexEscape.attr(value);
   }
 
   function _normalizeCode(code) {

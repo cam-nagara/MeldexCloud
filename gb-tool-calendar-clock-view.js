@@ -19,9 +19,7 @@
   const CLOCK_EVENT_CHECK_SIZE = 8;
 
   function _clockEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _clockDate(value) {

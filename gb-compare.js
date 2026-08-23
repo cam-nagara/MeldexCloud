@@ -23,10 +23,13 @@ const COMPARE_BINARY_EXTENSIONS = new Set([
  * 比較ビューを開く
  * @param {string} pathA - 左側ファイルパス
  * @param {string} pathB - 右側ファイルパス
+ * @param {object} [opts] - opts.containerEl: 描画先を明示指定（省略時はメイン画面の #compare-view 単一実体）。
+ *   opts.skipShowView: メイン画面のビュー切替をしない（サブパネル等、独立した描画先へ渡す場合に使う）
  */
-async function openCompareView(pathA, pathB) {
-  showView('compare');
-  const container = document.getElementById('compare-view');
+async function openCompareView(pathA, pathB, opts) {
+  const openOpts = opts || {};
+  if (!openOpts.skipShowView) showView('compare');
+  const container = openOpts.containerEl || document.getElementById('compare-view');
   if (!container) return false;
   container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--fg2);">読み込み中...</div>';
 

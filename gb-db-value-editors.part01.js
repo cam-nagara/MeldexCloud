@@ -102,6 +102,7 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
   const restore = () => { span.textContent = old; restoreEditedCellSelection(); };
   const finish = () => {
     if (done) return;
+    if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(input)) return;
     done = true;
     const nv = input.value.trim();
     if (nv && !Number.isFinite(Number(nv))) {

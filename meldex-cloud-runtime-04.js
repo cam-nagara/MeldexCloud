@@ -1611,9 +1611,9 @@
         const dropboxPath = normalizeDropboxPath(entry.resolvedDropboxPath || '');
         const workspaceId = String(entry?.workspaceId || '').trim();
         if (!dropboxPath || !entry?.id || !workspaceId) continue;
-        // フェーズ3c-hotfix: entry.id（wsrc:...）はワークスペードの
+        // フェーズ3c-hotfix: entry.id（wsrc:...）はワークスペースの
         // フォルダ内台帳ごとに独立採番される（parseWsLedger内でワークス
-        // ペード単位に新規生成）ため、2つの異なる参加ワークスペードが
+        // ペース単位に新規生成）ため、2つの異なる参加ワークスペースが
         // 同名フォルダ（例: 両方とも relPath:"第1話"）を持つと entry.id が
         // 衝突する。ここで workspaceId を名前空間として付与し、
         // ws:<workspaceId>:<entry.id> の形で最終idを一意化する
@@ -4183,8 +4183,19 @@
 
     supportsStrictConditionalDelete() { return false; }
     folderRestoreCapabilities() {
-      return Object.freeze({ createFileCas: true, updateFileCas: true, deleteFileCas: false, deleteEmptyDirectoryCas: false });
+      // deleteFileCas/deleteEmptyDirectoryCas は false のまま(Dropbox APIにrev条件付き削除が無い事実は変わらない)。
+      // deleteFileToTrash/deleteDirectoryToTrash は、ゴミ箱退避方式(実Dropbox完全復元の実行可能化計画
+      // 2026-08-20)による2モード受け入れの2つめのモードで使う。
+      return Object.freeze({
+        createFileCas: true, updateFileCas: true, freshRead: true,
+        deleteFileCas: false, deleteEmptyDirectoryCas: false,
+        deleteFileToTrash: true, deleteDirectoryToTrash: true,
+      });
     }
+
+    // evacuatePathToTrash() は gb-storage-adapter-trash-evacuation.js が
+    // プロトタイプへ追加する(part01.js を1500行未満に保つための分離。
+    // 実Dropbox完全復元の削除全廃(ゴミ箱退避方式)計画 2026-08-20)。
 
     async overwriteBytes(relativePath, bytes) {
       const normalized = _normalizeRelativePath(relativePath);
@@ -4596,6 +4607,101 @@
   prototype.walkEntriesFresh = function (path, limits) { return contract.walkDropbox(this, path, limits); };
   prototype.readTextBounded = function (path, maxBytes) { return contract.readDropboxTextBounded(this, path, maxBytes); };
 })();
+/* gb-storage-adapter-trash-evacuation.js
+ * DropboxStorageProvider.evacuatePathToTrash(): 実Dropbox完全復元の削除全廃
+ * (ゴミ箱退避方式、app/docs/scheduler-dropbox-restore-trash-evacuation_plan_2026-08-20.md)
+ * が使う削除代替プリミティブ。part01.js を1500行未満に保つため別ファイルへ分離し、
+ * split loader (gb-storage-adapter.js) の一部として part01/part02 の後に読み込む。
+ */
+(function () {
+  'use strict';
+
+  function _normalize(path) {
+    return String(path || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/+/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/$/, '');
+  }
+
+  function _join() {
+    return Array.from(arguments).map(_normalize).filter(Boolean).join('/');
+  }
+
+  function _basename(path) {
+    const normalized = _normalize(path);
+    if (!normalized) return '';
+    const index = normalized.lastIndexOf('/');
+    return index >= 0 ? normalized.slice(index + 1) : normalized;
+  }
+
+  const DropboxStorageProvider = window.MeldexStorageAdapter?.DropboxStorageProvider;
+  if (!DropboxStorageProvider) throw new Error('gb-storage-adapter.js (part01/part02) is not loaded');
+
+  // fresh-readで現状を確認し、ゴミ箱ルート配下のユニーク名へ ._trash_meta.json と
+  // 共に no-replace移動する。物理削除は一切行わない(既存ゴミ箱UI・/trash/restore が
+  // そのまま個別復元に使える)。ディレクトリは中身ごと1回のmoveで退避する。
+  DropboxStorageProvider.prototype.evacuatePathToTrash = async function evacuatePathToTrash(fullPath, expectedRevision, marker) {
+    const normalized = _normalize(fullPath);
+    const before = await this.getMetadata(normalized);
+    if (!before) return { evacuated: false, missing: true };
+    const isDirectory = before['.tag'] === 'folder';
+    const beforeRevision = String(before.rev || '');
+    const beforeContentHash = isDirectory ? '' : String(before.content_hash || '');
+    const matchedExpected = expectedRevision == null || beforeRevision === String(expectedRevision);
+
+    const registry = window.MeldexSourceFolderRegistry;
+    const parsedSource = registry?.parseSourcePath?.(normalized);
+    const trashRoot = parsedSource && typeof registry?.sourcePath === 'function'
+      ? registry.sourcePath(parsedSource.sourceId, '_trash')
+      : '_trash';
+    await this.ensureDirectory(trashRoot);
+    const baseName = _basename(normalized);
+    const dot = baseName.lastIndexOf('.');
+    const stem = dot > 0 ? baseName.slice(0, dot) : baseName;
+    const ext = dot > 0 ? baseName.slice(dot) : '';
+    let destPath = _join(trashRoot, baseName);
+    for (let counter = 1; await this.getMetadata(destPath); counter += 1) {
+      const suffix = `_${String(counter).padStart(4, '0')}`;
+      destPath = _join(trashRoot, isDirectory ? `${baseName}${suffix}` : `${stem}${suffix}${ext}`);
+      if (counter > 9999) throw new Error('ゴミ箱内の退避先名を決定できません');
+    }
+    const metaPath = `${destPath}._trash_meta.json`;
+    const metaBytes = new TextEncoder().encode(JSON.stringify({
+      original_path: normalized,
+      trash_root: trashRoot,
+      deleted_at: new Date().toISOString(),
+      evacuation_marker: marker?.name || '',
+      evacuation_reason: 'scheduler-folder-restore',
+    }, null, 2));
+    await this._uploadBytesWithMode(metaPath, metaBytes, 'add');
+    try {
+      await this.movePathNoReplace(normalized, destPath);
+    } catch (error) {
+      await this.deletePath(metaPath).catch(() => {});
+      throw error;
+    }
+    let afterContentHash = beforeContentHash;
+    let contentStable = true;
+    if (!isDirectory) {
+      const after = await this.getMetadata(destPath);
+      afterContentHash = String(after?.content_hash || '');
+      contentStable = afterContentHash === beforeContentHash;
+    }
+    return {
+      evacuated: true,
+      kind: isDirectory ? 'directory' : 'file',
+      trashPath: destPath,
+      trashRoot,
+      beforeRevision,
+      beforeContentHash,
+      afterContentHash,
+      matchedExpected,
+      contentStable,
+    };
+  };
+})();
 
 ;
 
@@ -4725,13 +4831,10 @@
         _runtime()?.clearWorkspaceState?.();
         return;
       }
-      const runtime = _runtime();
-      const serverConnection = runtime?.isServerMode?.() ? runtime.getServerConnection?.() : null;
       _runtime()?.setWorkspaceState?.({
-        kind: serverConnection ? 'server' : 'localfs',
+        kind: 'localfs',
         name: String(info?.name || info?.homeName || _basename(statePath) || 'vault'),
         path: statePath,
-        serverUrl: serverConnection?.url || '',
         access: 'editor',
       });
     }
@@ -7140,12 +7243,7 @@
       hash = ((hash << 5) - hash + rawName.charCodeAt(index)) | 0;
     }
     const hue = Math.abs(hash) % 360;
-    const label = (rawName.charAt(0).toUpperCase() || '?')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    const label = MeldexEscape.html(rawName.charAt(0).toUpperCase() || '?');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="hsl(${hue},38%,36%)"/><text x="32" y="40" text-anchor="middle" font-family="system-ui,Arial,sans-serif" font-size="28" font-weight="700" fill="#f4f4f5">${label}</text></svg>`;
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
@@ -7240,7 +7338,7 @@
   }
 
   async function _setPwaRoots(roots) {
-    // ワークスペード由来（origin: 'ws:...'）のエントリは、個人のアカウント台帳
+    // ワークスペース由来（origin: 'ws:...'）のエントリは、個人のアカウント台帳
     // （source-folders.v1.json）へ絶対に書き込んではならない。ここが全ての
     // PUT /outliner-roots 呼び出しの合流点なので、clean マッピングへ渡す前に除外する。
     const accountRoots = (Array.isArray(roots) ? roots : []).filter(
@@ -8253,6 +8351,63 @@
     return { ok: true, skipped: result?.skipped === true || !wrote };
   }
 
+  // 統合したプロフィールの旧名の行を、新しい名前の行へ移してから消す
+  // (デスクトップ版 /api/team/merge と同じ契約)。
+  //
+  // 安全側の契約:
+  //   - 権限は残る側の行の値をそのまま維持し、旧行が owner/admin でも継承しない。
+  //   - 旧行が自分以外の accountId を持つ場合は他人の行なので触らない。
+  //   - 「新しい行を書いてから旧行を消す」の順で2回書き込む。途中で失敗しても
+  //     行が消えたままになることはない。
+  async function _mergeTeamMember(folder, body) {
+    const name = String(body?.name || '').trim();
+    const previousName = String(body?.previousName || body?.previous_name || '').trim();
+    if (!name) throw new Error('name は必須です');
+    if (!previousName || previousName === name) return { ok: true, skipped: true };
+    const accountId = String(body?.accountId || body?.account_id || '').trim();
+
+    let moved = false;
+    let blocked = false;
+    await _writeTeamFileMerged(folder, team => {
+      const members = team.members || {};
+      const old = members[previousName];
+      if (!old || typeof old !== 'object') return false;
+      const oldAccountId = String(old.accountId || '').trim();
+      // 旧行が別のDropboxアカウントに紐づいているなら他人の行なので触らない。
+      // 自分のaccountIdを名乗れない状態でも、accountId付きの行は消さない。
+      if (oldAccountId && oldAccountId !== accountId) {
+        blocked = true;
+        return false;
+      }
+      const existing = members[name] && typeof members[name] === 'object' ? { ...members[name] } : {};
+      const next = { ...existing };
+      // role は残る側の値を維持する。旧行からの owner/admin 継承は行わない。
+      if (!next.role) next.role = 'editor';
+      if (!next.avatar) next.avatar = old.avatar || '';
+      if (accountId) next.accountId = accountId;
+      else if (!next.accountId && oldAccountId) next.accountId = oldAccountId;
+      const lastSeen = [String(next.last_seen || ''), String(old.last_seen || ''), _nowIso()]
+        .reduce((a, b) => (a > b ? a : b), '');
+      next.last_seen = lastSeen;
+      members[name] = next;
+      team.members = members;
+      moved = true;
+      return team;
+    });
+    if (blocked) throw new Error('他のメンバーの行は移動できません');
+    if (!moved) return { ok: true, skipped: true };
+
+    // 新しい行の書き込みが成功してから、旧行を別の書き込みで消す。
+    await _writeTeamFileMerged(folder, team => {
+      const members = team.members || {};
+      if (!members[previousName]) return false;
+      delete members[previousName];
+      team.members = members;
+      return team;
+    });
+    return { ok: true, merged: true, from: previousName, to: name };
+  }
+
   function _workspaceRole(role, fallback) {
     const value = String(role || '').trim().toLowerCase();
     return ['owner', 'admin', 'member', 'viewer'].includes(value) ? value : (fallback || 'member');
@@ -8562,6 +8717,340 @@
     return { available: true, ok: true, revision: record?.revision || null };
   }
 
+  // ---- クラウド直結（端末内保存／Dropboxの両バックエンド）の圧縮・解凍・ZIP閲覧 ----
+  // デスクトップ版 app/meldex_archive_service.py と同じ安全上限・巻き戻し方針を
+  // gb-archive-zip-engine.js（自己完結ZIPエンジン）+ 既存のfileops抽象で実現する。
+
+  async function _collectFolderFilesForZip(provider, folderPath, arcPrefix, entries) {
+    const dirEntries = await _listDirectoryEntries(provider, folderPath);
+    for (const entry of dirEntries) {
+      const childPath = _joinPath(folderPath, entry.name);
+      const childArcName = arcPrefix ? `${arcPrefix}/${entry.name}` : entry.name;
+      if (entry.handle.kind === 'directory') {
+        await _collectFolderFilesForZip(provider, childPath, childArcName, entries);
+      } else {
+        const file = await entry.handle.getFile();
+        entries.push({ name: childArcName, data: new Uint8Array(await file.arrayBuffer()) });
+      }
+    }
+  }
+
+  function _requireArchiveEngine() {
+    const engine = window.MeldexArchiveZipEngine;
+    if (!engine) throw _httpError(500, '圧縮・解凍機能を読み込めませんでした。ページを再読み込みしてください');
+    return engine;
+  }
+
+  async function _archiveCompress(provider, body) {
+    const engine = _requireArchiveEngine();
+    const rawPaths = Array.isArray(body?.paths) ? body.paths : [body?.path];
+    const sourcePaths = rawPaths.map((value) => _normalizeFolderPath(String(value || ''))).filter(Boolean);
+    if (!sourcePaths.length) throw _httpError(400, '圧縮対象を指定してください');
+
+    const entries = [];
+    for (const sourcePath of sourcePaths) {
+      const resolved = await _resolveEntryHandle(provider, sourcePath);
+      if (!resolved) throw _httpError(404, '圧縮対象が見つかりません');
+      const baseName = _basename(sourcePath);
+      if (resolved.kind === 'file') {
+        const file = await resolved.handle.getFile();
+        entries.push({ name: baseName, data: new Uint8Array(await file.arrayBuffer()) });
+      } else {
+        await _collectFolderFilesForZip(provider, sourcePath, baseName, entries);
+      }
+    }
+
+    // 完成したZIPだけを最終名で置く。生成途中のZIPが保存先に残ることはない。
+    const zipBytes = await engine.buildZip(entries);
+
+    const rawOutput = String(body?.output_path || body?.outputPath || '').trim();
+    let outputDir;
+    let outputStem;
+    if (rawOutput) {
+      const normalizedOutput = _normalizeFolderPath(rawOutput);
+      outputDir = _dirname(normalizedOutput);
+      outputStem = _splitNameAndExt(_basename(normalizedOutput)).stem || _basename(normalizedOutput);
+    } else {
+      const first = sourcePaths[0];
+      outputDir = _dirname(first);
+      const firstStem = _splitNameAndExt(_basename(first)).stem || _basename(first);
+      outputStem = firstStem + (sourcePaths.length > 1 ? '_他' : '');
+    }
+    const finalStem = await _uniqueName(provider, outputDir, outputStem, '.zip');
+    const finalName = `${finalStem}.zip`;
+    const outputPath = _joinPath(outputDir, finalName);
+    await _writeBytes(provider, outputPath, zipBytes);
+    return { ok: true, path: outputPath, name: finalName, count: sourcePaths.length };
+  }
+
+  async function _archiveReadArchiveBytes(provider, rawArchivePath) {
+    const normalizedArchivePath = _normalizeFolderPath(rawArchivePath);
+    if (_splitNameAndExt(_basename(normalizedArchivePath)).ext.toLowerCase() !== '.zip') {
+      throw _httpError(404, 'ZIPファイルが見つかりません');
+    }
+    const resolved = await _resolveEntryHandle(provider, normalizedArchivePath);
+    if (!resolved || resolved.kind !== 'file') throw _httpError(404, 'ZIPファイルが見つかりません');
+    const file = await resolved.handle.getFile();
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return { normalizedArchivePath, bytes };
+  }
+
+  async function _archiveBrowse(provider, url) {
+    const engine = _requireArchiveEngine();
+    const { normalizedArchivePath, bytes } = await _archiveReadArchiveBytes(provider, url.searchParams.get('path') || '');
+    let parsed;
+    try {
+      parsed = await engine.parseZip(bytes);
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIPを読み込めませんでした');
+    }
+    let member;
+    try {
+      member = engine.normalizeMemberPath(url.searchParams.get('member') || '', { allowRoot: true });
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || '安全でないZIP内パスです');
+    }
+    const prefix = member ? `${member}/` : '';
+    const childrenByKey = new Map();
+    for (const info of parsed.members.values()) {
+      if (prefix && !info.name.startsWith(prefix)) continue;
+      const remainder = info.name.slice(prefix.length);
+      if (!remainder) continue;
+      const slashIndex = remainder.indexOf('/');
+      const leaf = slashIndex >= 0 ? remainder.slice(0, slashIndex) : remainder;
+      const isDir = slashIndex >= 0 || info.isDir;
+      const childMember = prefix + leaf;
+      const key = leaf.toLowerCase();
+      const existing = childrenByKey.get(key);
+      if (existing && existing.is_dir !== isDir) {
+        throw _httpError(400, `ファイルとフォルダが衝突しています: ${leaf}`);
+      }
+      if (existing) continue;
+      childrenByKey.set(key, {
+        name: leaf,
+        path: `zip:${normalizedArchivePath}!/${childMember}`,
+        type: engine.entryType(leaf, isDir),
+        is_dir: isDir,
+        size: isDir ? null : info.size,
+        modified: info.modifiedIso,
+        ext: isDir ? '' : _splitNameAndExt(leaf).ext.toLowerCase(),
+        archive_path: normalizedArchivePath,
+        archive_member: childMember,
+        read_only: true,
+      });
+    }
+    const items = Array.from(childrenByKey.values()).sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name, 'ja', { sensitivity: 'base' });
+    });
+    return {
+      ok: true,
+      archive_path: normalizedArchivePath,
+      member,
+      name: member ? (member.split('/').pop() || member) : _basename(normalizedArchivePath),
+      read_only: true,
+      message: 'ZIP内は読み取り専用です',
+      items,
+    };
+  }
+
+  function _archiveBytesToBase64(bytes) {
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  async function _archiveFile(provider, url) {
+    const engine = _requireArchiveEngine();
+    try {
+      const result = await engine.readArchiveMemberViaProvider(
+        provider,
+        url.searchParams.get('path') || '',
+        url.searchParams.get('member') || '',
+      );
+      return {
+        ok: true,
+        name: result.name,
+        mime: result.mime,
+        size: result.bytes.length,
+        data: `data:${result.mime};base64,${_archiveBytesToBase64(result.bytes)}`,
+      };
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIP内のファイルを読み込めませんでした');
+    }
+  }
+
+  function _archiveExtractDirName(archivePath) {
+    const base = _basename(archivePath);
+    if (base.toLowerCase().endsWith('.zip')) return base.slice(0, -4);
+    return _splitNameAndExt(base).stem || base;
+  }
+
+  // 圧縮ファイルからの制作管理シート定義の上書き保護（Cloud版）。
+  //
+  // デスクトップ版 meldex_api_shell._check_managed_sheet は
+  // meldex_production_management_support.production_sheet_folder_note_name を
+  // archive_service.extract_zip_archive の target_check に渡し、ZIP内の各メンバーの
+  // 「解凍先での最終パス」が「…/制作管理/シート/<シート名>/<シート名>.md」に一致したら
+  // 実際の書き込み（一時展開すら）を始める前に 409 で拒否する。ここではその判定規則を
+  // JSへ移植し、_archiveExtract でも書き込み開始前（decode/write より前）に同じ判定を行う。
+  //
+  // 正規化はデスクトップ版 normalized_path_segments / path_segments_match と揃える:
+  // 区切り記号の統一（\ → /）、先頭・途中の "."、末尾スラッシュ、".." の字句解決、
+  // Unicode NFC正規化、英字の大文字小文字を無視した比較。判定はパスの「末尾4要素」
+  // （制作管理/シート/<name>/<name>.md）で行い、vaultのどの階層に制作管理があっても
+  // 検出できるようにする（デスクトップ版と同じ仕様）。
+  //
+  // 既存の gb-data-access-dropbox-fileops-core.js の _isProductionFolderNotePath と
+  // gb-data-access-dropbox-expanded.part01.js の _isProductionProtectedStructurePath は
+  // どちらも「先頭からの4要素・単純な===比較」で判定しており、(1) 別ファイルのIIFE内に
+  // ローカル定義されているためここから参照できない、(2) NFC正規化・大文字小文字無視を
+  // 行っていない、という理由でここでは再利用せず、デスクトップ版と厳密に揃えた実装を
+  // 別名で用意する（二重実装ではあるが、既存2箇所も既に同種の理由でそれぞれ独立している）。
+  const _PM_ROOT_NAME = '制作管理';
+  const _PM_SHEETS_DIR = 'シート';
+
+  function _pmNormalizedPathSegments(path) {
+    const text = String(path || '').replace(/\\/g, '/');
+    const segments = [];
+    for (const raw of text.split('/')) {
+      const part = raw.trim().normalize('NFC');
+      if (!part || part === '.') continue;
+      if (part === '..') { segments.pop(); continue; }
+      segments.push(part);
+    }
+    return segments;
+  }
+
+  function _pmSegmentsMatch(actual, expected) {
+    // Python版の str.casefold() 相当が無いため toLowerCase() で代用する。
+    // 比較対象は日本語のフォルダ名（大文字小文字の概念が無い）と ".md" 拡張子のみのため、
+    // casefold と toLowerCase の差（一部の特殊文字での展開規則差）は実用上影響しない。
+    return String(actual || '').normalize('NFC').toLowerCase()
+      === String(expected || '').normalize('NFC').toLowerCase();
+  }
+
+  function _pmManagedSheetFolderNoteName(path) {
+    const segments = _pmNormalizedPathSegments(path);
+    if (segments.length < 4) return '';
+    const note = segments[segments.length - 1];
+    const sheet = segments[segments.length - 2];
+    const sheetsDir = segments[segments.length - 3];
+    const root = segments[segments.length - 4];
+    if (!sheet) return '';
+    if (!_pmSegmentsMatch(root, _PM_ROOT_NAME)) return '';
+    if (!_pmSegmentsMatch(sheetsDir, _PM_SHEETS_DIR)) return '';
+    return _pmSegmentsMatch(note, `${sheet}.md`) ? sheet : '';
+  }
+
+  function _pmIsManagedSheetFolderNotePath(path) {
+    return !!_pmManagedSheetFolderNoteName(path);
+  }
+
+  async function _archiveExtract(provider, body) {
+    const engine = _requireArchiveEngine();
+    const rawPath = String(body?.path || '').trim();
+    if (!rawPath) throw _httpError(400, '解凍対象を指定してください');
+    const normalizedArchivePath = _normalizeFolderPath(rawPath);
+    const archiveExt = _splitNameAndExt(_basename(normalizedArchivePath)).ext.toLowerCase();
+    if (archiveExt !== '.zip') {
+      throw _httpError(400, 'クラウド版ではZIP形式以外の圧縮ファイルは解凍できません。デスクトップ版をご利用ください');
+    }
+    const archiveHandle = await _resolveEntryHandle(provider, normalizedArchivePath);
+    if (!archiveHandle || archiveHandle.kind !== 'file') throw _httpError(404, '圧縮ファイルが見つかりません');
+    const archiveFile = await archiveHandle.handle.getFile();
+    const archiveBytes = new Uint8Array(await archiveFile.arrayBuffer());
+
+    let parsed;
+    try {
+      parsed = await engine.parseZip(archiveBytes);
+    } catch (error) {
+      throw _httpError(error?.status || 400, error?.message || 'ZIPを読み込めませんでした');
+    }
+
+    const rawOutputDir = String(body?.output_dir || body?.outputDir || '').trim();
+    const outputDir = rawOutputDir
+      ? _normalizeFolderPath(rawOutputDir)
+      : _joinPath(_dirname(normalizedArchivePath), _archiveExtractDirName(normalizedArchivePath));
+    if (!outputDir) throw _httpError(400, '解凍先を決められませんでした');
+
+    const existingOutput = await _resolveEntryHandle(provider, outputDir);
+    if (existingOutput) {
+      if (existingOutput.kind !== 'directory') throw _httpError(409, `解凍先が既に存在します: ${_basename(outputDir)}`);
+      const existingChildren = await _listDirectoryEntries(provider, outputDir);
+      if (existingChildren.length) throw _httpError(409, `解凍先が既に存在します: ${_basename(outputDir)}`);
+    }
+    const outputPreexisted = !!existingOutput;
+
+    // デスクトップ版と同じ保護: 解凍先での最終パスが制作管理シートのフォルダノート
+    // （…/制作管理/シート/<シート名>/<シート名>.md）に一致するメンバーが1件でもあれば、
+    // 一時展開・書き込みを一切始める前に拒否する。
+    for (const info of parsed.members.values()) {
+      const finalPath = _joinPath(outputDir, info.name);
+      if (_pmIsManagedSheetFolderNotePath(finalPath)) {
+        throw _httpError(409, '圧縮ファイルから制作管理のシート定義は上書きできません');
+      }
+    }
+
+    // 全メンバーを先に検証・復元してから書き込みを始める
+    // （壊れたZIP・上限超過なら書き込みを一切始めない）。
+    const members = Array.from(parsed.members.values());
+    const decodedFiles = [];
+    for (const info of members) {
+      if (info.isDir) continue;
+      let data;
+      try {
+        data = await engine.extractMember(archiveBytes, info);
+      } catch (error) {
+        throw _httpError(error?.status || 400, error?.message || 'ZIPの展開に失敗しました');
+      }
+      decodedFiles.push({ name: info.name, data });
+    }
+
+    async function rollback() {
+      try {
+        if (outputPreexisted) {
+          const leftovers = await _listDirectoryEntries(provider, outputDir);
+          for (const leftover of leftovers) {
+            await _removeEntry(provider, _joinPath(outputDir, leftover.name));
+          }
+        } else {
+          await _removeEntry(provider, outputDir);
+        }
+      } catch (_) {
+        // 巻き戻し自体の失敗は、呼び出し元へ伝える元のエラーを優先する
+      }
+    }
+
+    try {
+      for (const info of members) {
+        if (!info.isDir) continue;
+        await _directoryHandle(provider, _joinPath(outputDir, info.name), true);
+      }
+      if (!members.length) await _directoryHandle(provider, outputDir, true);
+      for (const file of decodedFiles) {
+        await _writeBytes(provider, _joinPath(outputDir, file.name), file.data);
+      }
+    } catch (error) {
+      await rollback();
+      throw _httpError(500, `解凍中にエラーが発生しました: ${error?.message || error}`);
+    }
+
+    return { ok: true, path: outputDir, name: _basename(outputDir), count: decodedFiles.length };
+  }
+
+  async function _handleArchiveRoute(pathname, method, body, url) {
+    const provider = await _requirePwaProvider(method === 'GET' ? 'read' : 'readwrite');
+    if (pathname === '/archive/compress' && method === 'POST') return _archiveCompress(provider, body);
+    if (pathname === '/archive/extract' && method === 'POST') return _archiveExtract(provider, body);
+    if (pathname === '/archive/browse' && method === 'GET') return _archiveBrowse(provider, url);
+    if (pathname === '/archive/file' && method === 'GET') return _archiveFile(provider, url);
+    throw _httpError(404, '未対応のアーカイブ操作です');
+  }
+
   async function _pwaJsonRequest(path, opts) {
     const method = String(opts?.method || 'GET').toUpperCase();
     const body = opts?.body && typeof opts.body === 'string' ? JSON.parse(opts.body) : (opts?.body || {});
@@ -8628,6 +9117,10 @@
       const folder = body?.folder || '';
       return _syncTeamMember(folder, body);
     }
+    if (pathname === '/team/merge' && method === 'POST') {
+      const folder = body?.folder || '';
+      return _mergeTeamMember(folder, body);
+    }
     if (pathname === '/team/remove' && method === 'POST') {
       const folder = body?.folder || '';
       const name = String(body?.name || '').trim();
@@ -8674,7 +9167,7 @@
       if (method === 'PUT') return _writePersonalPreference(name, body);
     }
     if (pathname.startsWith('/archive/')) {
-      return { ok: false, supported: false, message: 'クラウド環境ではアーカイブ操作は利用できません' };
+      return _handleArchiveRoute(pathname, method, body, url);
     }
 
     for (const handler of window.__MeldexPwaDataAccessExtensions || []) {
@@ -10282,7 +10775,7 @@
 
   /**
    * 現在接続中の provider に対応する共通ストレージアダプターを返す。
-   * 参加中の共有ワークスペードのルートに接続している場合は共有ワークスペース
+   * 参加中の共有ワークスペースのルートに接続している場合は共有ワークスペース
    * アダプター、それ以外は個人領域アダプターを返す。
    */
   async function resolveAdapterForProvider(provider, options) {
@@ -10316,7 +10809,7 @@
   }
 
   /**
-   * 現在接続中ルートが個人領域か共有ワークスペードかの判定結果だけを返す
+   * 現在接続中ルートが個人領域か共有ワークスペースかの判定結果だけを返す
    * (旧パス併読(interop)のために「今どのルートに接続しているか」が必要な
    * 呼び出し元向け。実際の管理データ保存先は resolveAdapterForProvider を使う)。
    */
@@ -10343,7 +10836,7 @@
 
   // --- 管理スコープ解決(対象パス→保存先 + 正準パス変換) ------------------------
   //
-  // 編集ロック・注釈のように「entryが対象文書パスを持ち、共有ワークスペードの
+  // 編集ロック・注釈のように「entryが対象文書パスを持ち、共有ワークスペースの
   // メンバー間で同じentryを見えるようにしたい」管理データは、保存先アダプター
   // だけでなく「entryへ書くパスの形」も管理ルートごとに揃える必要がある。
   // PC本体(meldex_active_locks.py の _convert_management_entry_path /
@@ -10351,7 +10844,7 @@
   //
   // - 個人管理領域: Dropboxホーム同期ルートからの相対パス
   //   (= 絶対Dropboxパスの先頭スラッシュを除いた形)
-  // - 共有ワークスペース管理領域: ワークスペードルートからの相対パス
+  // - 共有ワークスペース管理領域: ワークスペースルートからの相対パス
   //
   // この契約を1箇所へ集約するため、スコープオブジェクトが保存先アダプターと
   // 正準パス変換(toCanonicalPath / toLocalPath)を併せて提供する。
@@ -11096,6 +11589,22 @@
     return _lastLinkState ? { ..._lastLinkState } : null;
   }
 
+  function getStableActorId() {
+    const remembered = String(_readStorage(LOCAL_ACCOUNT_KEY, '') || '').trim();
+    if (remembered) return remembered;
+    const created = createLocalKey();
+    rememberKey(created);
+    return created;
+  }
+
+  function getActorSnapshot() {
+    return {
+      actorId: getStableActorId(),
+      displayName: String(_readStorage(LOCAL_USER_KEY, '') || 'anonymous').trim() || 'anonymous',
+      kind: 'human',
+    };
+  }
+
   // OAuth起動時、accountIdエントリが無く、ローカル表示名と一致する 'local:' エントリ
   // (まだ他のaccountIdへ引き継ぎ済みでないもの)が「ちょうど1件」あれば、その内容を
   // accountIdへコピーする。旧エントリは削除せず supersededBy を付与するだけ。既に
@@ -11126,13 +11635,47 @@
     return { changed: true, store: { ...store, profiles: nextProfiles }, adoptedFrom: matchKey };
   }
 
+  // 本人の明示選択による統合。fromKey のエントリへ「引き継ぎ先は toKey」と記録した
+  // 新しい store を返す純粋関数（実際の保存は呼び出し側が行う）。旧エントリは
+  // 削除せず supersededBy を付けるだけなので、記憶済みキーが旧エントリを指している
+  // 他の端末も _followSupersession で新しい方へ辿り着ける。
+  //
+  // 次の場合は何もしない（changed:false）:
+  //   - どちらかのキーが空、または同じキー
+  //   - どちらかのエントリが store に存在しない（宙に浮いた引き継ぎ先を作らない）
+  //   - fromKey が既に引き継ぎ済み（二重統合で引き継ぎ先が枝分かれするのを防ぐ）
+  //   - toKey 側を辿ると fromKey へ戻る（循環参照を作らない）
+  function mergeEntries(store, fromKey, toKey) {
+    const from = String(fromKey || '').trim();
+    const to = String(toKey || '').trim();
+    if (!from || !to || from === to) return { changed: false, store };
+    const profiles = _storeProfiles(store);
+    if (!Object.prototype.hasOwnProperty.call(profiles, from)) return { changed: false, store };
+    if (!Object.prototype.hasOwnProperty.call(profiles, to)) return { changed: false, store };
+    if (profiles[from]?.supersededBy) return { changed: false, store };
+    if (_followSupersession(profiles, to) === from) return { changed: false, store };
+
+    const nextProfiles = { ...profiles };
+    nextProfiles[from] = { ...profiles[from], supersededBy: to };
+    return {
+      changed: true,
+      store: { ...store, profiles: nextProfiles },
+      mergedFrom: from,
+      mergedInto: to,
+      mergedFromDisplayName: _profileDisplayName(profiles[from]),
+    };
+  }
+
   window.MeldexProfileIdentity = {
     resolveKey,
     rememberKey,
     forgetKey,
     getLinkState,
+    getStableActorId,
+    getActorSnapshot,
     listCandidates,
     adoptLocalEntryIfMatching,
+    mergeEntries,
     createLocalKey,
   };
 })();
@@ -11630,6 +12173,99 @@
     return { ok: false, reason: 'dropbox-write-failed', error: lastError };
   }
 
+  // 共有プロフィールに今いる「生きているプロフィール」の一覧を返す。
+  // OAuth接続済み（クラウド版）は自己同定ラダーを経由しないため getLinkState()
+  // から候補を拾えない。設定画面の統合導線がその場で読むために使う。
+  async function listProfileCandidates() {
+    if (!await _shouldUseSharedProfile()) return { ok: false, candidates: [], reason: 'not-dropbox-workspace' };
+    const identity = window.MeldexProfileIdentity;
+    if (!identity || typeof identity.listCandidates !== 'function') {
+      return { ok: false, candidates: [], reason: 'identity-unavailable' };
+    }
+    try {
+      const store = _normalizeStore((await _readProfileStore()).store);
+      return { ok: true, candidates: identity.listCandidates(store) };
+    } catch (error) {
+      return { ok: false, candidates: [], reason: 'dropbox-read-failed', error };
+    }
+  }
+
+  // 本人の明示選択による統合を共有ストアへ書き込む。
+  // fromKey のエントリへ引き継ぎ先(toKey)を記録し、以後 fromKey は候補一覧・
+  // 自己同定・共有判定の人数から外れる。
+  //
+  // fromKey は 'local:' エントリだけを受け付ける。'dbid:' エントリは実在する
+  // Dropboxアカウントの正本であり、他の端末・他人が今も使っている可能性がある
+  // ため、引き継ぎ済みにして殺してはならない（v0.7.011 のなりすまし防止原則）。
+  //
+  // options.adoptContent が true の場合、同じ書き込みの中で fromKey 側の名前・
+  // アイコンを toKey のエントリへ写し、この端末の表示にも反映する
+  // （「デスクトップ版の設定を使う」統合）。
+  async function mergeProfileInto(fromKey, toKey, options) {
+    const from = String(fromKey || '').trim();
+    const to = String(toKey || '').trim();
+    if (!from.startsWith('local:')) return { ok: true, changed: false, reason: 'not-a-local-entry' };
+    if (!await _shouldUseSharedProfile()) return { ok: false, changed: false, reason: 'not-dropbox-workspace' };
+    const identity = window.MeldexProfileIdentity;
+    if (!identity || typeof identity.mergeEntries !== 'function') {
+      return { ok: false, changed: false, reason: 'identity-unavailable' };
+    }
+    const adoptContent = !!options?.adoptContent;
+    const account = await _getCurrentAccount(false);
+
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let current;
+      try {
+        current = await _readProfileStore();
+      } catch (error) {
+        return { ok: false, changed: false, reason: 'dropbox-read-failed', error };
+      }
+      const store = _normalizeStore(current.store);
+      const merged = identity.mergeEntries(store, from, to);
+      if (!merged?.changed) return { ok: true, changed: false, reason: 'already-merged' };
+
+      const nextStore = _normalizeStore(merged.store);
+      const updatedAt = _nowIso();
+      let adopted = null;
+      if (adoptContent) {
+        const source = store.profiles[from] || {};
+        adopted = _normalizeProfile(account, {
+          ...(nextStore.profiles[to] || {}),
+          displayName: String(source.displayName || source.name || '').trim(),
+          avatar: String(source.avatar || ''),
+          avatarSpec: String(source.avatarSpec || ''),
+          avatarBg: String(source.avatarBg || ''),
+          accountId: to,
+          updatedAt,
+        }, updatedAt);
+        if (!adopted.displayName) return { ok: false, changed: false, reason: 'empty-profile' };
+        nextStore.profiles[to] = adopted;
+        nextStore.updatedAt = updatedAt;
+      }
+
+      try {
+        await _writeProfileStore(nextStore, current.rev);
+        // 取り込んだ名前・アイコンはこの端末の表示にも反映する。統合先のキーで
+        // ローカル更新時刻を記録し直すため、直後の起動時解決で往復しない。
+        if (adopted) _applyProfileToLocal(adopted);
+        return {
+          ok: true,
+          changed: true,
+          mergedFrom: from,
+          mergedInto: to,
+          fromDisplayName: merged.mergedFromDisplayName || '',
+          profile: adopted || null,
+        };
+      } catch (error) {
+        lastError = error;
+        if (!_isConflictError(error) || attempt >= 2) break;
+      }
+    }
+    try { console.warn('[MeldexDropboxProfileSync] merge failed', lastError); } catch {}
+    return { ok: false, changed: false, reason: 'dropbox-write-failed', error: lastError };
+  }
+
   // 起動時解決の結果キャッシュを捨てる。連携先プロフィールを切り替えた直後に
   // resolveStartupProfile() を呼んでも、成功済みのキャッシュがそのまま返ってしまい
   // 新しいプロフィールがローカルへ反映されないため、切り替え操作の側から明示的に
@@ -11757,6 +12393,8 @@
     clearLocalUpdateMarker,
     saveCurrentProfile,
     afterLocalProfileChanged,
+    listProfileCandidates,
+    mergeProfileInto,
     teamSyncPayload,
     getCachedAccountId,
     getCachedProfile,
@@ -12093,8 +12731,7 @@
   let _activeRecoveryModal = null;
 
   function _esc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function _todayStamp() {
@@ -12350,6 +12987,7 @@
   const AUDIT_LOG_PATH = '_meldex/audit-log.json';
   const MAX_AUDIT_ROWS = 500;
   const AUDIT_LOG_DOCUMENT_ID = 'knowledge-audit-log';
+  const RECORD_SIGNATURE_PREFIX = 'record-signature';
 
   function _internals() {
     return window.__MeldexPwaDataAccessInternals || {};
@@ -12409,6 +13047,20 @@
 
   function stableStringify(value) {
     return JSON.stringify(_stable(value));
+  }
+
+  function _recordSignatureDocumentId(scope, editDocumentId) {
+    return `${RECORD_SIGNATURE_PREFIX}-${_normalizeScope(scope)}-${_normalizeScope(editDocumentId)}`;
+  }
+
+  function _recordSigningPayload(scope, record) {
+    return {
+      signature_schema_version: 1,
+      scope: _normalizeScope(scope),
+      edit_document_id: String(record?.documentId || ''),
+      payload_revision: String(record?.revision || ''),
+      payload: record?.payload || {},
+    };
   }
 
   function _bytesToHex(bytes) {
@@ -12503,6 +13155,103 @@
     return result;
   }
 
+  async function readRecordSignature(provider, scope, editDocumentId, options = {}) {
+    const documentId = _recordSignatureDocumentId(scope, editDocumentId);
+    try {
+      const managed = await _managementRecord(provider, documentId, options);
+      return managed.record?.payload || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function markRecordPending(provider, scope, record, meta = {}) {
+    if (!record?.documentId) return { ok: false, skipped: true };
+    const documentId = _recordSignatureDocumentId(scope, record.documentId);
+    const entry = {
+      signature_schema_version: 1,
+      scope: _normalizeScope(scope),
+      edit_document_id: String(record.documentId),
+      payload_revision: String(record.revision || ''),
+      state: 'pending-owner-signature',
+      requested_at: new Date().toISOString(),
+      requested_by: String(meta.requestedBy || ''),
+    };
+    await _saveManagementRecord(provider, documentId, () => entry, {
+      managementAdapter: meta.managementAdapter || null,
+    });
+    return { ok: true, ...entry };
+  }
+
+  async function signRecord(provider, scope, record, meta = {}) {
+    if (!record?.documentId) return { ok: false, skipped: true };
+    const target = _recordSigningPayload(scope, record);
+    let rawKey = meta.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!rawKey && meta.createKey !== false) {
+      const managed = await _managementRecord(provider, _recordSignatureDocumentId(scope, record.documentId), {
+        managementAdapter: meta.managementAdapter || null,
+      });
+      const existing = typeof managed.adapter?.listDocuments === 'function'
+        ? await managed.adapter.listDocuments(managed.kind)
+        : null;
+      // 既存署名がある状態で鍵だけ失われた場合、新しい鍵を黙って作ると過去の
+      // 正常レコードまで改変扱いになる。復旧UIを優先し、初回署名時だけ生成する。
+      if (!Array.isArray(existing) || existing.some(row => !!row?.payload?.hmac)) {
+        window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
+        return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+      }
+      rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
+    }
+    const digest = await hmac(target, { create: false, rawKey });
+    if (!digest) return { ok: false, missing_key: true, reason: 'owner-key-missing' };
+    const entry = {
+      ...target,
+      payload: undefined,
+      hmac: digest,
+      state: 'signed',
+      signed_at: new Date().toISOString(),
+      signer: String(meta.signer || ''),
+    };
+    delete entry.payload;
+    await _saveManagementRecord(provider, _recordSignatureDocumentId(scope, record.documentId), () => entry, {
+      managementAdapter: meta.managementAdapter || null,
+    });
+    return { ok: true, ...entry };
+  }
+
+  async function verifyRecord(provider, scope, record, options = {}) {
+    if (!record?.documentId) return { ok: false, reason: 'record-missing' };
+    if (Number(record?.payload?.integrity_schema_version || 0) < 1) {
+      return { ok: false, status: 'legacy-unsigned', reason: 'legacy-unsigned' };
+    }
+    const signature = await readRecordSignature(provider, scope, record.documentId, options);
+    if (!signature?.hmac) {
+      return {
+        ok: false,
+        status: 'pending-owner-signature',
+        reason: signature?.state === 'pending-owner-signature' ? 'pending-owner-signature' : 'signature-missing',
+        signature,
+      };
+    }
+    const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!key) {
+      window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('変更レコードの署名検証に必要な管理者鍵がこの端末にありません。');
+      return { ok: false, status: 'owner-key-missing', missing_key: true, reason: 'owner-key-missing', signature };
+    }
+    const actual = await hmac(_recordSigningPayload(scope, record), { create: false, rawKey: key });
+    const ok = actual === signature.hmac
+      && String(signature.payload_revision || '') === String(record.revision || '')
+      && String(signature.edit_document_id || '') === String(record.documentId || '');
+    return {
+      ok,
+      status: ok ? 'verified' : 'tampered',
+      reason: ok ? '' : 'signature-mismatch',
+      expected: signature.hmac,
+      actual,
+      signature,
+    };
+  }
+
   async function recordAudit(provider, type, entry = {}) {
     const { _readJsonSafe } = _internals();
     if (!provider || typeof provider.writeJson !== 'function') return { ok: false };
@@ -12549,6 +13298,10 @@
     verify,
     verifyStrict,
     readSignature,
+    readRecordSignature,
+    markRecordPending,
+    signRecord,
+    verifyRecord,
     recordAudit,
     readAudit,
   };
@@ -12599,7 +13352,7 @@
   // 対象文書パスから gb-dropbox-management-root-resolver.js の
   // resolveManagementScopeForPath でスコープを決め、共有ソース配下の文書の
   // ロックは共有管理領域のストアへ、entryのパスはそのスコープの正準形
-  // (個人=ホーム同期ルート相対 / 共有=ワークスペードルート相対)で保存する。
+  // (個人=ホーム同期ルート相対 / 共有=ワークスペースルート相対)で保存する。
   // 一覧のようにスコープを一意に決められない操作は resolveManagementScopesForProvider
   // で全スコープを集約する。HMAC署名(MeldexKnowledgeSignature)もストアと同じ
   // スコープの管理領域へ置く(別スコープの署名で相互に上書き・誤検証しないため)。
@@ -12793,7 +13546,7 @@
       lock_reason: String(entry?.lock_reason || entry?.reason || '').trim(),
     };
     // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
-    // ワークスペードルート相対)で保存された新形式。旧形式entry(接続ルート
+    // ワークスペースルート相対)で保存された新形式。旧形式entry(接続ルート
     // 相対のローカルパス)にはこのフィールドが無く、照合時に再解釈する。
     if (entry?.path_space === 'root') cleaned.path_space = 'root';
     return cleaned;
@@ -13232,6 +13985,74 @@
     return result || { ok: true, removed: 0 };
   }
 
+  // --- システム保持ロック(実Dropbox完全復元のゴミ箱退避方式 2026-08-20) -----------
+  //
+  // setLock/unlock はUI操作専用で、クライアント側の isOwner 判定(_requireOwner)を
+  // 通す。フォルダー完全復元の呼び出し元は既にサーバー側の trustedWorkspaceRole で
+  // role(owner/admin/schedule_manager)を検証済みのため、ここでは isOwner 判定を
+  // 経由しない。復元processが自分自身のholder識別子で保持するロックのみを対象にし、
+  // 他者(他メンバーのUIロック・別holderのシステムロック)が既に居る場合は開始前に
+  // 423で停止する(fail-closed)。取得は冪等(再開時に自分のロックが既にあればno-op)。
+  async function acquireSystemLock(provider, path, options = {}) {
+    const localPath = _normalizeFolderPath(path || '');
+    if (!localPath) throw new Error('path は必須です');
+    if (_isSystemExcluded(localPath)) throw new Error('システムフォルダは編集ロックできません');
+    const holder = String(options.holder || '').trim();
+    if (!holder) throw new Error('holder は必須です');
+    const lockedBy = `system:${holder}`;
+    const reason = String(options.reason || 'system').trim();
+    const scope = await _scopeForPath(provider, localPath);
+    const canonical = _canonicalForScope(scope, localPath);
+    const entry = _cleanEntry({
+      path: canonical, path_space: 'root', lock_reason: reason,
+      locked_by: lockedBy, locked_at: new Date().toISOString(),
+    });
+    if (!entry) throw new Error('path は必須です');
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const conflict = _pathOrAncestorEntry(store.entries, canonical, scope) || _descendantEntry(store.entries, canonical, scope);
+      if (conflict && conflict.locked_by !== lockedBy) {
+        const err = new Error('編集ロック中のため復元を開始できません: ' + localPath);
+        err.status = 423;
+        err.lock_reason = conflict.lock_reason || '';
+        err.lock_entry = _localizedEntry(conflict, scope);
+        throw err;
+      }
+      if (conflict) return false; // 自分自身のロックを既に保持中(再開)。再書込不要。
+      return {
+        entries: [...store.entries, entry],
+        audit: { action: 'system-lock', path: localPath, reason, holder: lockedBy },
+        result: { ok: true, entry: _localizedEntry(entry, scope) },
+      };
+    });
+    return result || { ok: true, alreadyHeld: true };
+  }
+
+  async function releaseSystemLock(provider, path, options = {}) {
+    const localPath = _normalizeFolderPath(path || '');
+    if (!localPath) return { ok: true, removed: 0 };
+    const holder = String(options.holder || '').trim();
+    const lockedBy = `system:${holder}`;
+    let scope;
+    try {
+      scope = await _scopeForPath(provider, localPath);
+    } catch {
+      return { ok: true, removed: 0 }; // スコープ不明時は解除対象を特定できない(取得側も同条件で失敗している)。
+    }
+    const canonical = _canonicalForScope(scope, localPath).toLowerCase();
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const before = store.entries.length;
+      const next = store.entries.filter(row => !(row.locked_by === lockedBy
+        && _entryCanonicalForms(row, scope).some(form => form.toLowerCase() === canonical)));
+      if (next.length === before) return false;
+      return {
+        entries: next,
+        audit: { action: 'system-unlock', path: localPath, holder: lockedBy },
+        result: { ok: true, removed: before - next.length },
+      };
+    });
+    return result || { ok: true, removed: 0 };
+  }
+
   function _rewriteEntriesForMutation(entries, scope, event, canonicalOld, canonicalNew) {
     const base = canonicalOld.toLowerCase();
     const isFolder = !!event.isFolder;
@@ -13353,6 +14174,8 @@
     requireUnlocked,
     setLock,
     unlock,
+    acquireSystemLock,
+    releaseSystemLock,
     rewriteForPathMutation,
     guardMutationRequest,
     reasonTemplates: REASON_TEMPLATES.slice(),
@@ -13523,7 +14346,7 @@
       holders: withHolders.holders,
     };
     // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
-    // ワークスペードルート相対。meldex_active_locks.py の相互運用契約と同じ)
+    // ワークスペースルート相対。meldex_active_locks.py の相互運用契約と同じ)
     // で保存された新形式。旧形式entryにはこのフィールドが無く、照合時に
     // ローカルパスとして再解釈する。
     if (entry?.path_space === 'root') cleaned.path_space = 'root';
@@ -16508,8 +17331,7 @@
   }
 
   function _esc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function _icon(name, size, fallback) {
@@ -16923,8 +17745,7 @@
   let _activeAuditModal = null;
 
   function _esc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function _icon(name, size = 14) {
@@ -18417,8 +19238,7 @@
 
 (function () {
   function _htmlEsc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function _icon(name, size) {
@@ -19238,27 +20058,29 @@
   }
 
   async function exchangeGoogleToken({ code, verifier, clientId, clientSecret, redirectUri: uri }) {
-    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+    const form = {
       code,
       client_id: clientId,
-      client_secret: clientSecret,
       redirect_uri: uri,
       grant_type: 'authorization_code',
       code_verifier: verifier,
-    });
+    };
+    if (clientSecret) form.client_secret = clientSecret;
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, form);
   }
 
   async function refreshGoogleToken({ refreshToken, clientId, clientSecret }) {
-    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+    const form = {
       refresh_token: refreshToken,
       client_id: clientId,
-      client_secret: clientSecret,
       grant_type: 'refresh_token',
-    });
+    };
+    if (clientSecret) form.client_secret = clientSecret;
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, form);
   }
 
   async function authorizeGoogle({ clientId, clientSecret, scope, popup, timeoutMs }) {
-    if (!clientId || !clientSecret) throw new Error('Client IDとClient Secretを入力してください');
+    if (!clientId) throw new Error('Client IDを入力してください');
     const win = popup || openBlankPopup('Google');
     const { verifier, challenge } = await generatePkce();
     const state = generateState();
@@ -19558,6 +20380,45 @@
     return new Date().toISOString();
   }
 
+  function _syncAccessBody(body) {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return body || {};
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    const admin = state.isOwner === true || role === 'owner' || role === 'admin';
+    let actor = '';
+    try { actor = String(typeof getUsername === 'function' ? getUsername() : '').trim(); } catch {}
+    if (!actor) {
+      try { actor = String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || '').trim(); } catch {}
+    }
+    const requested = String(body?.user || '').trim();
+    if (!admin) throw _httpError('外部カレンダーを同期できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    return { ...(body || {}), user: requested || actor };
+  }
+
+  function _assertSharedAuthAdmin() {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return;
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+      throw _httpError('共有カレンダー連携を設定できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    }
+  }
+
+  async function _stableProviderEventKey(localId) {
+    const text = String(localId || 'event');
+    if (globalThis.crypto?.subtle && typeof TextEncoder !== 'undefined') {
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return 'meld' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    let output = '';
+    for (let seed = 0; seed < 8; seed += 1) {
+      let hash = (2166136261 ^ seed) >>> 0;
+      for (const char of text) { hash ^= char.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }
+      output += hash.toString(16).padStart(8, '0');
+    }
+    return 'meld' + output;
+  }
+
   // ============================================================
   // ストレージ（_calendar/ 配下のJSON。既存の calendar store と同じ置き場）
   // ============================================================
@@ -19573,36 +20434,64 @@
     return 'cal-cloud-sync:' + String(path || '');
   }
 
+  function _oauthSecretStoreError(cause) {
+    const error = _httpError('OAuth秘密情報の端末保護ストアを利用できません', 503, 'OAUTH_SECRET_STORE_UNAVAILABLE');
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  function _requireOAuthSecretStore() {
+    const store = window.MeldexCalOAuthTokenStore;
+    if (store) return store;
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _oauthSecretStoreError();
+    return null;
+  }
+
+  function _sameSecretValues(expected, actual) {
+    return Object.keys(expected || {}).every(field => String(actual?.[field] || '') === String(expected[field] || ''));
+  }
+
   async function _readAuth(provider, path) {
     const stored = (await _readJsonSafe(provider, path, null)) || null;
-    const store = window.MeldexCalOAuthTokenStore;
-    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const store = _requireOAuthSecretStore();
+    if (!store) return stored; // 明示的な旧ローカル実行環境だけは従来形式を読み取る
     const tokenKey = _tokenKeyForPath(path);
-    let secrets = await store.getSecrets(tokenKey).catch(() => null);
-    if (!secrets) {
-      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
-      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
-      const legacySecrets = store.extractSecretFields(stored || {});
+    const legacySecrets = store.extractSecretFields(stored || {});
+    let secrets;
+    try {
+      secrets = await store.getSecrets(tokenKey);
       if (store.hasAnySecretValue(legacySecrets)) {
-        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
-        secrets = legacySecrets;
-        if (stored) {
-          await _directoryHandle(provider, CAL_DIR, true);
-          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
-        }
+        const saved = await store.setSecrets(tokenKey, legacySecrets);
+        const confirmed = await store.getSecrets(tokenKey);
+        if (saved?.ok === false || !_sameSecretValues(legacySecrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        await _directoryHandle(provider, CAL_DIR, true);
+        await provider.writeJson(path, store.stripSecretFields(stored));
+        const scrubbed = (await _readJsonSafe(provider, path, null)) || {};
+        if (store.hasAnySecretValue(store.extractSecretFields(scrubbed))) throw new Error('Dropbox OAuth secret scrub verification failed');
+        secrets = confirmed;
       }
+    } catch (error) {
+      throw _oauthSecretStoreError(error);
     }
     if (!stored && !store.hasAnySecretValue(secrets)) return null;
     return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
   }
 
   async function _writeAuth(provider, path, payload) {
-    const store = window.MeldexCalOAuthTokenStore;
+    const store = _requireOAuthSecretStore();
     let metadata = payload;
     if (store) {
       const tokenKey = _tokenKeyForPath(path);
       const secrets = store.extractSecretFields(payload);
-      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      if (Object.keys(secrets).length) {
+        try {
+          const saved = await store.setSecrets(tokenKey, secrets);
+          const confirmed = await store.getSecrets(tokenKey);
+          if (saved?.ok === false || !_sameSecretValues(secrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        } catch (error) {
+          throw _oauthSecretStoreError(error);
+        }
+      }
       metadata = store.stripSecretFields(payload);
     }
     await _directoryHandle(provider, CAL_DIR, true);
@@ -19836,7 +20725,8 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user)) continue;
       try {
-        const eventBody = { summary: row.title || '', description: row.description || '', location: row.location || '' };
+        const providerId = await _stableProviderEventKey(row.id);
+        const eventBody = { id: providerId, summary: row.title || '', description: row.description || '', location: row.location || '' };
         if (row.all_day) {
           eventBody.start = { date: _dateOnly(row.start) };
           eventBody.end = { date: _localAllDayEndToGoogle(row.start, row.end || row.start) };
@@ -19849,12 +20739,12 @@
           headers: { Authorization: 'Bearer ' + auth.access_token, 'Content-Type': 'application/json' },
           body: JSON.stringify(eventBody),
         });
-        if (!response.ok) {
+        if (!response.ok && response.status !== 409) {
           const detail = await response.json().catch(() => null);
           throw new Error(detail?.error?.message || `HTTP ${response.status}`);
         }
-        const result = await response.json();
-        row.external_id = result.id;
+        const result = response.status === 409 ? { id: providerId } : await response.json();
+        row.external_id = result.id || providerId;
         row.calendar_source = 'google';
         row.modified = now;
         pushed += 1;
@@ -20066,11 +20956,14 @@
     const auth = await _microsoftAccessToken(provider);
     const rows = await _readEvents(provider);
     let pushed = 0;
+    const errors = [];
     const now = _nowIso();
     for (const row of rows) {
       if (!_isLocalUnsent(row, user) || !row.start) continue;
       try {
-        const result = await _graphJson('POST', '/me/events', auth.access_token, _microsoftEventBody(row));
+        const eventBody = _microsoftEventBody(row);
+        eventBody.transactionId = await _stableProviderEventKey(row.id);
+        const result = await _graphJson('POST', '/me/events', auth.access_token, eventBody);
         if (!result.id) continue;
         row.external_id = result.id;
         row.calendar_source = 'microsoft';
@@ -20078,12 +20971,12 @@
         row.url = result.webLink || '';
         row.modified = now;
         pushed += 1;
-      } catch {
-        // Desktop側と同様、1件の送信失敗で全体を止めない（他の未送信イベントの送信を続ける）
+      } catch (error) {
+        errors.push({ id: row.id, title: row.title, error: error?.message || String(error) });
       }
     }
     await _writeEvents(provider, rows);
-    return { ok: true, pushed };
+    return { ok: errors.length === 0, pushed, failed: errors.length, errors };
   }
 
   // ============================================================
@@ -20107,21 +21000,38 @@
     };
   }
 
+  function _withCalendarLease(provider, operation) {
+    const lease = window.MeldexCloudCalendarLease;
+    if (lease?.withLease) return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) {
+      throw _httpError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+    }
+    return operation(provider);
+  }
+
   async function _calCloudSyncHandler({ method, body, pathname }) {
     if (pathname === '/cal/sync/status' && method === 'GET') {
       return _statusPayload(await _requirePwaProvider('read'));
     }
     if (pathname === '/cal/sync/google/pull' && method === 'POST') {
-      return _googlePull(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _googlePull(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/google/push' && method === 'POST') {
-      return _googlePush(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _googlePush(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/microsoft/pull' && method === 'POST') {
-      return _microsoftPull(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _microsoftPull(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/microsoft/push' && method === 'POST') {
-      return _microsoftPush(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _microsoftPush(leasedProvider, accessBody));
     }
     return NOT_HANDLED;
   }
@@ -20133,6 +21043,7 @@
   // ============================================================
 
   async function authorizeGoogle({ clientId, clientSecret, popup }) {
+    _assertSharedAuthAdmin();
     const id = String(clientId || '').trim();
     const secret = String(clientSecret || '').trim();
     const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, popup });
@@ -20152,6 +21063,7 @@
   }
 
   async function authorizeMicrosoft({ clientId, tenant, popup }) {
+    _assertSharedAuthAdmin();
     const id = String(clientId || '').trim();
     const tenantValue = String(tenant || 'common').trim() || 'common';
     const { token } = await _oauth().microsoft.authorize({ clientId: id, tenant: tenantValue, popup });
@@ -20184,6 +21096,7 @@
       googlePush: _googlePush,
       microsoftPull: _microsoftPull,
       microsoftPush: _microsoftPush,
+      googleAccessToken: _googleAccessToken,
       readAuth: _readAuth,
       writeAuth: _writeAuth,
       readEvents: _readEvents,
@@ -20291,36 +21204,64 @@
     return 'cal-cloud-tasks:' + String(path || '');
   }
 
+  function _oauthSecretStoreError(cause) {
+    const error = _httpError('OAuth秘密情報の端末保護ストアを利用できません', 503, 'OAUTH_SECRET_STORE_UNAVAILABLE');
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  function _requireOAuthSecretStore() {
+    const store = window.MeldexCalOAuthTokenStore;
+    if (store) return store;
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _oauthSecretStoreError();
+    return null;
+  }
+
+  function _sameSecretValues(expected, actual) {
+    return Object.keys(expected || {}).every(field => String(actual?.[field] || '') === String(expected[field] || ''));
+  }
+
   async function _readAuth(provider, path) {
     const stored = (await _readJsonSafe(provider, path, null)) || null;
-    const store = window.MeldexCalOAuthTokenStore;
-    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const store = _requireOAuthSecretStore();
+    if (!store) return stored; // 明示的な旧ローカル実行環境だけは従来形式を読み取る
     const tokenKey = _tokenKeyForPath(path);
-    let secrets = await store.getSecrets(tokenKey).catch(() => null);
-    if (!secrets) {
-      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
-      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
-      const legacySecrets = store.extractSecretFields(stored || {});
+    const legacySecrets = store.extractSecretFields(stored || {});
+    let secrets;
+    try {
+      secrets = await store.getSecrets(tokenKey);
       if (store.hasAnySecretValue(legacySecrets)) {
-        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
-        secrets = legacySecrets;
-        if (stored) {
-          await _directoryHandle(provider, CAL_DIR, true);
-          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
-        }
+        const saved = await store.setSecrets(tokenKey, legacySecrets);
+        const confirmed = await store.getSecrets(tokenKey);
+        if (saved?.ok === false || !_sameSecretValues(legacySecrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        await _directoryHandle(provider, CAL_DIR, true);
+        await provider.writeJson(path, store.stripSecretFields(stored));
+        const scrubbed = (await _readJsonSafe(provider, path, null)) || {};
+        if (store.hasAnySecretValue(store.extractSecretFields(scrubbed))) throw new Error('Dropbox OAuth secret scrub verification failed');
+        secrets = confirmed;
       }
+    } catch (error) {
+      throw _oauthSecretStoreError(error);
     }
     if (!stored && !store.hasAnySecretValue(secrets)) return null;
     return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
   }
 
   async function _writeAuth(provider, path, payload) {
-    const store = window.MeldexCalOAuthTokenStore;
+    const store = _requireOAuthSecretStore();
     let metadata = payload;
     if (store) {
       const tokenKey = _tokenKeyForPath(path);
       const secrets = store.extractSecretFields(payload);
-      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      if (Object.keys(secrets).length) {
+        try {
+          const saved = await store.setSecrets(tokenKey, secrets);
+          const confirmed = await store.getSecrets(tokenKey);
+          if (saved?.ok === false || !_sameSecretValues(secrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        } catch (error) {
+          throw _oauthSecretStoreError(error);
+        }
+      }
       metadata = store.stripSecretFields(payload);
     }
     await _directoryHandle(provider, CAL_DIR, true);
@@ -20335,6 +21276,30 @@
   async function _writeTasks(provider, rows) {
     await _directoryHandle(provider, CAL_DIR, true);
     await provider.writeJson(TASKS_PATH, Array.isArray(rows) ? rows : []);
+  }
+
+  function _tasksAccessBody(body) {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return body || {};
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    const admin = state.isOwner === true || role === 'owner' || role === 'admin';
+    let actor = '';
+    try { actor = String(typeof getUsername === 'function' ? getUsername() : '').trim(); } catch {}
+    if (!actor) {
+      try { actor = String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || '').trim(); } catch {}
+    }
+    const requested = String(body?.user || '').trim();
+    if (!admin) throw _httpError('Google ToDoを同期できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    return { ...(body || {}), user: requested || actor };
+  }
+
+  function _assertTasksAuthAdmin() {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return;
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+      throw _httpError('共有Google ToDo連携を設定できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    }
   }
 
   function _findExternalTaskRow(rows, externalId, user) {
@@ -20414,10 +21379,46 @@
     return 'todo';
   }
 
+  function _taskMarkerIdEncode(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+  }
+
+  function _taskMarkerIdDecode(value) {
+    const encoded = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
+    try {
+      const binary = atob(padded);
+      return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+    } catch { return ''; }
+  }
+
+  function _taskMarker(row) {
+    return `[meldex-task-id:${_taskMarkerIdEncode(row?.id)}]`;
+  }
+
+  function _stripTaskMarker(notes) {
+    return String(notes || '')
+      .replace(/\s*(?:\[meldex-task-id:[A-Za-z0-9_-]+\]|\[Meldex-Local-ID:[^\]\r\n]+\])\s*$/u, '')
+      .trimEnd();
+  }
+
+  function _taskIdFromMarker(notes) {
+    const raw = String(notes || '');
+    const canonical = /\[meldex-task-id:([A-Za-z0-9_-]+)\]\s*$/u.exec(raw);
+    if (canonical) return _taskMarkerIdDecode(canonical[1]);
+    const legacyCloud = /\[Meldex-Local-ID:([^\]\r\n]+)\]\s*$/u.exec(raw);
+    if (!legacyCloud) return '';
+    try { return decodeURIComponent(legacyCloud[1]); } catch { return ''; }
+  }
+
   function _tasksBodyFromRow(row, { includeClear } = {}) {
+    const description = String(row?.description || '').trimEnd();
     const body = {
       title: String(row?.title || '無題'),
-      notes: String(row?.description || ''),
+      notes: (description ? description + '\n\n' : '') + _taskMarker(row),
       status: String(row?.status || '') === 'done' ? 'completed' : 'needsAction',
     };
     const due = String(row?.due_date || '').trim().slice(0, 10);
@@ -20531,7 +21532,9 @@
   function _applyRemoteTask(rows, remote, user, now) {
     const extId = String(remote?.id || '').trim();
     if (!extId) return 'skipped';
-    const existing = _findExternalTaskRow(rows, extId, user);
+    const markerId = _taskIdFromMarker(remote?.notes);
+    const existing = (markerId ? rows.find(row => String(row.id || '') === markerId && (!user || row.user === user)) : null)
+      || _findExternalTaskRow(rows, extId, user);
     const remoteUpdated = _tasksToLocalIso(remote.updated) || now;
     if (remote.deleted) {
       if (existing && _tasksExternalIsNewer(existing, remoteUpdated)) {
@@ -20541,7 +21544,7 @@
       return 'skipped';
     }
     const title = String(remote.title || '無題');
-    const description = String(remote.notes || '');
+    const description = _stripTaskMarker(remote.notes) || String(existing?.description || '');
     const dueDate = _tasksDueToDate(remote.due || '');
     if (existing) {
       if (!_tasksExternalIsNewer(existing, remoteUpdated)) return 'skipped';
@@ -20617,16 +21620,29 @@
       const externalId = String(row.external_id || '').trim();
       if (externalId && !_tasksLocalNeedsPush(row)) { result.skipped += 1; continue; }
       let response;
+      const insert = async () => {
+        const findExisting = async () => (await _tasksRemoteItems(auth.access_token, tasklistId))
+          .find(item => !item.deleted && _taskIdFromMarker(item.notes) === String(row.id || ''));
+        const existingRemote = await findExisting();
+        if (existingRemote?.id) return existingRemote;
+        try {
+          return await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+        } catch (error) {
+          const recovered = await findExisting();
+          if (recovered?.id) return recovered;
+          throw error;
+        }
+      };
       if (externalId) {
         response = await _tasksApiJson(auth.access_token, 'PATCH', _tasksRemotePath(tasklistId, externalId), _tasksBodyFromRow(row, { includeClear: true }), { allow404: true });
         if (response.missing) {
-          response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+          response = await insert();
           result.pushed += 1;
         } else {
           result.updated += 1;
         }
       } else {
-        response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+        response = await insert();
         result.pushed += 1;
       }
       const remoteId = response.id || externalId;
@@ -20692,7 +21708,14 @@
 
   async function _calCloudTasksHandler({ method, body, pathname }) {
     if (pathname === '/cal/sync/google/tasks/sync' && method === 'POST') {
-      return _syncGoogleTasks(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _tasksAccessBody(body);
+      const lease = window.MeldexCloudCalendarLease;
+      if (!lease?.withLease) {
+        if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _httpError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+        return _syncGoogleTasks(provider, accessBody);
+      }
+      return lease.withLease(provider, context => _syncGoogleTasks(context?.guardProvider?.(provider) || provider, accessBody));
     }
     return NOT_HANDLED;
   }
@@ -20705,6 +21728,7 @@
   // ============================================================
 
   async function authorizeGoogleTasks({ clientId, clientSecret, popup }) {
+    _assertTasksAuthAdmin();
     const id = String(clientId || '').trim();
     const secret = String(clientSecret || '').trim();
     const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, scope: GOOGLE_TASKS_SCOPE, popup });
@@ -20738,6 +21762,9 @@
       writeAuth: _writeAuth,
       readTasks: _readTasks,
       writeTasks: _writeTasks,
+      taskMarker: _taskMarker,
+      stripTaskMarker: _stripTaskMarker,
+      taskIdFromMarker: _taskIdFromMarker,
     },
   };
 })();
@@ -20914,6 +21941,443 @@
 
 /* === gb-data-access-dropbox-expanded.js === */
 ;
+(function () {
+  'use strict';
+
+  const TIME_ENTRY_TYPES = Object.freeze(['clock_in', 'clock_out', 'break_start', 'break_end']);
+
+  function fail(message, status = 400, code = '') {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code;
+    throw error;
+  }
+
+  function strictDate(value) {
+    const text = String(value || '');
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    if (!match) return '';
+    const normalized = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))).toISOString().slice(0, 10);
+    return normalized === text ? text : '';
+  }
+
+  function validTimestamp(value) {
+    const text = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(text)) return '';
+    if (!strictDate(text.slice(0, 10))) return '';
+    return Number.isNaN(Date.parse(text)) ? '' : text;
+  }
+
+  function dayOffset(day, offset) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ''));
+    if (!match) return '';
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + offset)).toISOString().slice(0, 10);
+  }
+
+  function state(rows, user, timestamp) {
+    const day = String(timestamp || '').slice(0, 10);
+    const previous = dayOffset(day, -1);
+    const targetEpoch = Date.parse(timestamp);
+    const latest = (Array.isArray(rows) ? rows : [])
+      .filter(row => row.user === user && String(row.timestamp || '').slice(0, 10) >= previous
+        && String(row.timestamp || '').slice(0, 10) <= day && TIME_ENTRY_TYPES.includes(row.type)
+        && !Number.isNaN(Date.parse(row.timestamp)) && Date.parse(row.timestamp) <= targetEpoch)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
+        || String(a.id || '').localeCompare(String(b.id || ''))).at(-1);
+    return ({ clock_in: 'working', break_start: 'away', break_end: 'working', clock_out: 'off' })[latest?.type] || 'initial';
+  }
+
+  function assertNormalAction(rows, user, type, timestamp, now = Date.now()) {
+    if (Math.abs(now - Date.parse(timestamp)) > 5 * 60 * 1000) {
+      fail('打刻時刻が現在時刻から離れています。時刻設定を確認してください', 400, 'CLOCK_TIMESTAMP_OUT_OF_RANGE');
+    }
+    const allowed = { initial: ['clock_in'], working: ['clock_out', 'break_start'], away: ['break_end'], off: ['clock_in'] };
+    if (!allowed[state(rows, user, timestamp)].includes(type)) {
+      fail('現在の勤務状態ではこの打刻はできません', 409, 'CLOCK_STATE_CONFLICT');
+    }
+  }
+
+  function affectedTargets(...entries) {
+    const targets = new Map();
+    entries.filter(Boolean).forEach((entry) => {
+      const user = String(entry.user || '');
+      const day = String(entry.timestamp || '').slice(0, 10);
+      if (!user || !strictDate(day)) return;
+      [day, dayOffset(day, -1)].forEach((candidate) => {
+        if (candidate) targets.set(`${user}\u0000${candidate}`, { user, day: candidate });
+      });
+    });
+    return [...targets.values()];
+  }
+
+  const activeCalendarLeases = new WeakMap();
+  const LEASE_PROVIDER_ORIGINAL = Symbol.for('meldex.lease.originalProvider');
+
+  async function withCalendarLease(provider, operation, context = null) {
+    const store = window.MeldexActiveLockStore;
+    if (!store?.acquire || !store?.release || !store?.heartbeat) {
+      fail('共有カレンダーの更新ロックを利用できません。再読み込みしてから再試行してください', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+    }
+    const active = activeCalendarLeases.get(provider);
+    if (context?.token && active?.token === context.token) return operation(active.context);
+    const token = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `calendar-${Date.now()}-${Math.random()}`;
+    const holderId = `calendar-mutation:${token}`;
+    const lease = {
+      path: 'カレンダー', token, holder_id: holderId, locked_by: 'カレンダー更新',
+      device_label: 'カレンダー', kind: 'calendar-mutation', include_descendants: true, lease_seconds: 300,
+    };
+    await store.acquire(provider, lease);
+    let leaseLost = null;
+    let heartbeatPromise = null;
+    const lostError = cause => {
+      const error = new Error('共有カレンダーの更新ロックを失いました。変更を保存せず再読み込みしてください');
+      error.status = 409;
+      error.code = 'CALENDAR_LEASE_LOST';
+      if (cause) error.cause = cause;
+      return error;
+    };
+    const renew = async () => {
+      if (leaseLost) throw leaseLost;
+      if (!heartbeatPromise) {
+        heartbeatPromise = Promise.resolve(store.heartbeat(provider, lease))
+          .catch(error => { leaseLost = lostError(error); throw leaseLost; })
+          .finally(() => { heartbeatPromise = null; });
+      }
+      return heartbeatPromise;
+    };
+    const assertOwned = async () => {
+      if (leaseLost) throw leaseLost;
+      await renew();
+      if (leaseLost) throw leaseLost;
+    };
+    const guardedProviders = new WeakMap();
+    const guardedAliases = new Set();
+    let leaseState = null;
+    const guardProvider = target => {
+      if (!target || typeof target !== 'object') return target;
+      if (guardedAliases.has(target)) return target;
+      if (guardedProviders.has(target)) return guardedProviders.get(target);
+      const guarded = new Proxy(target, {
+        get(object, property) {
+          if (property === LEASE_PROVIDER_ORIGINAL) return object[LEASE_PROVIDER_ORIGINAL] || object;
+          const value = Reflect.get(object, property, object);
+          if (typeof value !== 'function') return value;
+          if (!/^(?:write|upload|put|create|copy|remove|delete|move|rename)/u.test(String(property))) return value.bind(object);
+          return async (...args) => { await assertOwned(); return value.apply(object, args); };
+        },
+      });
+      guardedProviders.set(target, guarded);
+      guardedAliases.add(guarded);
+      if (leaseState) activeCalendarLeases.set(guarded, leaseState);
+      return guarded;
+    };
+    const publicContext = Object.freeze({ token, holderId, assertOwned, guardProvider });
+    leaseState = { token, context: publicContext };
+    activeCalendarLeases.set(provider, leaseState);
+    const heartbeat = setInterval(() => {
+      renew().catch(error => {
+        console.warn('[Calendar] 共有更新ロックの延長に失敗しました', error);
+      });
+    }, 60000);
+    try {
+      const result = await operation(publicContext);
+      await assertOwned();
+      return result;
+    } finally {
+      clearInterval(heartbeat);
+      if (activeCalendarLeases.get(provider)?.token === token) activeCalendarLeases.delete(provider);
+      guardedAliases.forEach(alias => {
+        if (activeCalendarLeases.get(alias)?.token === token) activeCalendarLeases.delete(alias);
+      });
+      try { await store.release(provider, lease.path, token, holderId); }
+      catch (error) { console.warn('[Calendar] 共有更新ロックの解放に失敗しました', error); }
+    }
+  }
+
+  function csvCell(value) {
+    let text = value == null ? '' : String(value);
+    if (/^\s*[=+\-@\t\r\n]/.test(text)) text = "'" + text;
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  }
+
+  function csvText(rows) {
+    return '\ufeff' + rows.map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+  }
+
+  function sessions(entries, startDay, endDay) {
+    const byUser = new Map();
+    (Array.isArray(entries) ? entries : []).forEach((raw) => {
+      const timestamp = validTimestamp(raw?.timestamp);
+      if (!timestamp || !TIME_ENTRY_TYPES.includes(raw?.type)) return;
+      const user = String(raw?.user || '');
+      if (!byUser.has(user)) byUser.set(user, []);
+      byUser.get(user).push({ ...raw, timestamp, epoch: Date.parse(timestamp) });
+    });
+    const result = [];
+    for (const [user, records] of byUser) {
+      records.sort((a, b) => a.epoch - b.epoch || String(a.id || '').localeCompare(String(b.id || '')));
+      let active = null;
+      let breakStart = null;
+      for (const record of records) {
+        if (record.type === 'clock_in') {
+          if (active) continue;
+          active = { user, day: record.timestamp.slice(0, 10), clockIn: record, clockOut: null,
+            breaks: [], events: [record], notes: [String(record.note || '')] };
+          breakStart = null;
+        } else if (!active) {
+          continue;
+        } else if (record.type === 'break_start' && !breakStart) {
+          active.events.push(record); active.notes.push(String(record.note || '')); breakStart = record;
+        } else if (record.type === 'break_end' && breakStart && record.epoch >= breakStart.epoch) {
+          active.events.push(record); active.notes.push(String(record.note || ''));
+          active.breaks.push([breakStart, record]); breakStart = null;
+        } else if (record.type === 'clock_out' && record.epoch >= active.clockIn.epoch) {
+          active.events.push(record); active.notes.push(String(record.note || ''));
+          if (breakStart && record.epoch >= breakStart.epoch) active.breaks.push([breakStart, record]);
+          active.clockOut = record;
+          if (active.day >= startDay && active.day <= endDay) result.push(active);
+          active = null; breakStart = null;
+        }
+      }
+      if (active && active.day >= startDay && active.day <= endDay) result.push(active);
+    }
+    return result.sort((a, b) => a.user.localeCompare(b.user) || a.clockIn.epoch - b.clockIn.epoch);
+  }
+
+  function dailyAttendance(attendanceSessions) {
+    const daily = new Map();
+    attendanceSessions.forEach((session) => {
+      const key = `${session.user}\u0000${session.day}`;
+      const info = daily.get(key) || { clockIns: [], clockOuts: [], breakStarts: [], breakEnds: [], breakMinutes: 0, workSeconds: 0, notes: [] };
+      info.clockIns.push(session.clockIn.timestamp.slice(11, 16));
+      if (session.clockOut) {
+        info.clockOuts.push(session.clockOut.timestamp.slice(11, 16));
+        const breakSeconds = session.breaks.reduce((total, pair) => total + (pair[1].epoch - pair[0].epoch) / 1000, 0);
+        info.workSeconds += Math.max(0, (session.clockOut.epoch - session.clockIn.epoch) / 1000 - breakSeconds);
+      }
+      session.breaks.forEach(([begin, finish]) => {
+        info.breakStarts.push(begin.timestamp.slice(11, 16)); info.breakEnds.push(finish.timestamp.slice(11, 16));
+        info.breakMinutes += Math.max(0, Math.floor((finish.epoch - begin.epoch) / 60000));
+      });
+      info.notes.push(...session.notes.filter(Boolean));
+      daily.set(key, info);
+    });
+    return daily;
+  }
+
+  function intervalMaps(entries) {
+    const workMap = {};
+    const breakMap = {};
+    sessions(entries, '0001-01-01', '9999-12-31').forEach((session) => {
+      workMap[session.user] = workMap[session.user] || [];
+      workMap[session.user].push({
+        start: session.clockIn.timestamp,
+        end: session.clockOut ? session.clockOut.timestamp : null,
+      });
+      session.breaks.forEach(([begin, finish]) => {
+        breakMap[session.user] = breakMap[session.user] || [];
+        const interval = { start: begin.timestamp, end: finish.timestamp };
+        if (finish.type === 'clock_out') {
+          interval.incomplete = true;
+          interval.quality_reason = '離席復帰打刻がありません';
+        }
+        breakMap[session.user].push(interval);
+      });
+    });
+    const grouped = new Map();
+    (Array.isArray(entries) ? entries : []).forEach((raw) => {
+      const timestamp = validTimestamp(raw?.timestamp);
+      if (!timestamp || !TIME_ENTRY_TYPES.includes(raw?.type)) return;
+      const user = String(raw?.user || '');
+      if (!grouped.has(user)) grouped.set(user, []);
+      grouped.get(user).push({ ...raw, timestamp, epoch: Date.parse(timestamp) });
+    });
+    for (const [user, rows] of grouped.entries()) {
+      let stateValue = 'off';
+      const reasons = [];
+      rows.sort((a, b) => a.epoch - b.epoch || String(a.id || '').localeCompare(String(b.id || ''))).forEach((row) => {
+        if (row.type === 'clock_in' && stateValue === 'off') stateValue = 'working';
+        else if (row.type === 'break_start' && stateValue === 'working') stateValue = 'away';
+        else if (row.type === 'break_end' && stateValue === 'away') stateValue = 'working';
+        else if (row.type === 'clock_out' && ['working', 'away'].includes(stateValue)) stateValue = 'off';
+        else reasons.push(`打刻順序が競合しています: ${String(row.id || row.type)}`);
+      });
+      if (!reasons.length) continue;
+      workMap[user] = workMap[user] || [{ start: null, end: null }];
+      workMap[user].forEach((interval) => {
+        interval.quality_status = 'conflict';
+        interval.quality_reasons = [...new Set(reasons)];
+      });
+    }
+    return { workMap, breakMap };
+  }
+
+  function validateCsvQuery(dateFrom, dateTo, format) {
+    const startDay = strictDate(dateFrom);
+    const endDay = strictDate(dateTo);
+    if (!['generic', 'smaregi', 'moneyforward'].includes(format)) {
+      fail('format は generic / smaregi / moneyforward のいずれかを指定してください', 400, 'INVALID_CSV_FORMAT');
+    }
+    if (!startDay || !endDay) fail('date_from と date_to は必須です', 400, 'INVALID_CSV_DATE');
+    if (endDay < startDay) fail('date_to は date_from 以降を指定してください', 400, 'INVALID_CSV_RANGE');
+    if ((Date.parse(endDay + 'T00:00:00Z') - Date.parse(startDay + 'T00:00:00Z')) / 86400000 + 1 > 366) {
+      fail('出力期間は最大366日です', 400, 'CSV_RANGE_TOO_LARGE');
+    }
+    return { startDay, endDay };
+  }
+
+  function buildCsv(entries, shifts, startDay, endDay, format) {
+    const attendanceSessions = sessions(entries, startDay, endDay);
+    const rows = [];
+    if (format === 'moneyforward') {
+      rows.push(['従業員番号', '姓', '名', '打刻所属日', '打刻日', '打刻時刻', '打刻種別']);
+      const labels = { clock_in: '出勤', clock_out: '退勤', break_start: '休憩開始', break_end: '休憩終了' };
+      attendanceSessions.forEach((session) => {
+        const names = session.user.trim().split(/\s+/, 2);
+        session.events.forEach(event => rows.push([session.user, names[0] || '', names[1] || '', session.day.replace(/-/g, '/'),
+          event.timestamp.slice(0, 10).replace(/-/g, '/'), event.timestamp.slice(11, 16), labels[event.type]]));
+      });
+    } else {
+      rows.push(format === 'smaregi'
+        ? ['従業員名', '日付', 'シフト区分', 'シフト開始', 'シフト終了', '出勤時刻', '退勤時刻', '離席時間(分)', '実労働時間(h)', '備考']
+        : ['従業員名', '日付', 'シフト区分', 'シフト開始', 'シフト終了', '出勤時刻', '退勤時刻', '離席', '復帰', '離席時間(分)', '実労働時間(h)', '備考']);
+      const daily = dailyAttendance(attendanceSessions);
+      const shiftMap = new Map();
+      shifts.forEach((shift) => {
+        const key = `${String(shift.user || '')}\u0000${String(shift.date || '')}`;
+        if (!shiftMap.has(key)) shiftMap.set(key, []);
+        shiftMap.get(key).push(shift);
+      });
+      const keys = [...new Set([...daily.keys(), ...shiftMap.keys()])].sort();
+      keys.forEach((key) => {
+        const [user, day] = key.split('\u0000');
+        const dayShifts = (shiftMap.get(key) || [{}]).sort((a, b) => String(a.start_time || '').localeCompare(String(b.start_time || '')));
+        dayShifts.forEach((shift, index) => {
+          const actual = index === 0 ? daily.get(key) : null;
+          const common = [user, day, shift.type || '', shift.start_time || '', shift.end_time || '',
+            (actual?.clockIns || []).join(','), (actual?.clockOuts || []).join(',')];
+          const hours = actual ? (actual.workSeconds / 3600).toFixed(2) : '';
+          const notes = (actual?.notes || []).join('; ');
+          rows.push(format === 'smaregi'
+            ? common.concat([actual?.breakMinutes ?? '', hours, notes])
+            : common.concat([(actual?.breakStarts || []).join(','), (actual?.breakEnds || []).join(','), actual?.breakMinutes ?? '', hours, notes]));
+        });
+      });
+    }
+    return csvText(rows);
+  }
+
+  function createMutationService(deps) {
+    const { readStore, writeStore, deriveEvent, randomId, nowIso } = deps;
+
+    async function ensureCalendars(targets) {
+      const calendars = await readStore('calendars');
+      let changed = false;
+      const byUser = new Map();
+      for (const { user } of targets) {
+        if (byUser.has(user)) continue;
+        let calendar = calendars.find(row => row.source === 'attendance' && row.user === user);
+        if (!calendar) {
+          const now = nowIso();
+          calendar = { id: randomId('attendance-cal'), name: `実績: ${user}`, color: '#6a9955', user,
+            source: 'attendance', visible: 1, sort_order: 0, folder: '実績カレンダー', edit_role: 'admin', created: now, modified: now };
+          calendars.push(calendar);
+          changed = true;
+        }
+        byUser.set(user, calendar.id);
+      }
+      if (changed) await writeStore('calendars', calendars);
+      return byUser;
+    }
+
+    async function sync(timeRows, targets) {
+      if (!targets.length) return;
+      const events = await readStore('events');
+      for (const { user, day } of targets) {
+        const existing = events.find(row => row.id === `attendance:${user}:${day}`);
+        if (existing && existing.calendar_source !== 'attendance') {
+          fail('勤怠由来予定IDが通常予定と衝突しています', 409, 'ATTENDANCE_EVENT_COLLISION');
+        }
+      }
+      const calendarIds = await ensureCalendars(targets);
+      for (const { user, day } of targets) {
+        const id = `attendance:${user}:${day}`;
+        const index = events.findIndex(row => row.id === id);
+        const existing = index >= 0 ? events[index] : null;
+        const derived = deriveEvent(timeRows, user, day, existing);
+        if (derived) {
+          derived.calendar_id = calendarIds.get(user) || existing?.calendar_id || '';
+          if (index >= 0) events[index] = derived;
+          else events.push(derived);
+        } else if (index >= 0) {
+          events.splice(index, 1);
+        }
+      }
+      await writeStore('events', events);
+    }
+
+    async function snapshot(storeNames) {
+      const result = {};
+      for (const name of storeNames) result[name] = await readStore(name);
+      return result;
+    }
+
+    async function restore(original, storeNames) {
+      const writeErrors = [];
+      for (const name of storeNames) {
+        try {
+          const current = await readStore(name);
+          if (JSON.stringify(current) !== JSON.stringify(original[name])) await writeStore(name, original[name]);
+        } catch (error) {
+          writeErrors.push(`${name}: ${error?.message || error}`);
+        }
+      }
+      const mismatches = [];
+      for (const name of storeNames) {
+        try {
+          if (JSON.stringify(await readStore(name)) !== JSON.stringify(original[name])) mismatches.push(name);
+        } catch (error) {
+          mismatches.push(`${name}(確認失敗: ${error?.message || error})`);
+        }
+      }
+      if (mismatches.length) {
+        throw new Error(`復元後も不一致: ${mismatches.join(', ')}${writeErrors.length ? ` / 保存エラー: ${writeErrors.join('; ')}` : ''}`);
+      }
+    }
+
+    async function runStores(storeNames, mutation, failureCode, failureLabel) {
+      const original = await snapshot(storeNames);
+      try {
+        return await mutation(JSON.parse(JSON.stringify(original)));
+      } catch (originalError) {
+        try {
+          await restore(original, storeNames);
+        } catch (restoreError) {
+          fail(
+            `${failureLabel}に失敗し、原状復帰にも失敗しました（元のエラー: ${originalError?.message || originalError} / 復元エラー: ${restoreError?.message || restoreError}）`,
+            500,
+            failureCode,
+          );
+        }
+        throw originalError;
+      }
+    }
+
+    const run = mutation => runStores(
+      ['calendars', 'events', 'time'], mutation, 'ATTENDANCE_ROLLBACK_FAILED', '勤怠保存',
+    );
+    const runShift = mutation => runStores(
+      ['calendars', 'events', 'shifts'], mutation, 'SHIFT_ROLLBACK_FAILED', 'シフト保存',
+    );
+    return Object.freeze({ run, runShift, sync });
+  }
+
+  window.MeldexCloudCalendarAttendance = Object.freeze({
+    TIME_ENTRY_TYPES, strictDate, validTimestamp, dayOffset, state, assertNormalAction, affectedTargets,
+    validateCsvQuery, buildCsv, intervalMaps, createMutationService,
+  });
+  window.MeldexCloudCalendarLease = Object.freeze({ withLease: withCalendarLease });
+})();
 (function () {
   'use strict';
 
@@ -22146,16 +23610,35 @@
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, {
+      frontmatter: stored.frontmatter,
+      body: stored.body || '',
+    });
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, parsed.frontmatter, String(body?.property || ''),
     );
-    await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
+    const saved = await _trackSharedEdit(history, provider, {
+      path: stored.path,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: applied.body },
+      actor,
+      sourceRevision: String(stored.frontmatter?.meldex_revision || ''),
+      snapshotPath: stored.dbPath,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: String(body?.property || ''),
+    }, async () => {
+      await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
+      return applied.result;
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(applied.result, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _addSheetStoreValue(provider, body) {
@@ -22168,6 +23651,12 @@
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
     await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, {
+      frontmatter: stored.frontmatter,
+      body: stored.body || '',
+    });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
     const candidate = {
@@ -22184,11 +23673,24 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, stored.frontmatter, prop,
     );
-    await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
+    const saved = await _trackSharedEdit(history, provider, {
+      path: stored.path,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: stored.frontmatter, body: stored.body || '' },
+      actor,
+      sourceRevision: String(stored.frontmatter?.meldex_revision || ''),
+      snapshotPath: stored.dbPath,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: prop,
+    }, async () => {
+      await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
+      return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, stored.frontmatter,
     );
-    return _attachAutoTaskRenameResult({ ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 }, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _updateValue(provider, path, body) {
@@ -22200,17 +23702,41 @@
     await _requireUnlocked(provider, normalized, { action: 'update-value' });
     const parsed = await _readFrontmatterFile(provider, normalized);
     const type = String(parsed.frontmatter.type || '');
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     if (body && Object.prototype.hasOwnProperty.call(body, 'new_body')) {
-      await _writeEntity(provider, normalized, parsed.frontmatter, body.new_body || '');
-      return { ok: true };
+      return _trackSharedEdit(history, provider, {
+        path: normalized,
+        currentContent: historyBefore,
+        nextContent: { frontmatter: parsed.frontmatter, body: body.new_body || '' },
+        actor,
+        snapshotPath: _dirname(normalized),
+        snapshotKind: 'folder',
+        fileKind: type || 'settings-entry',
+        propertyName: '_body',
+      }, async () => {
+        await _writeEntity(provider, normalized, parsed.frontmatter, body.new_body || '');
+        return { ok: true };
+      });
     }
     if (type === 'calendar-event') {
       CALENDAR_DB_FIELDS.forEach((field) => {
         const key = 'new_' + field;
         if (body && Object.prototype.hasOwnProperty.call(body, key)) parsed.frontmatter[field] = body[key];
       });
-      await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
-      return { ok: true };
+      return _trackSharedEdit(history, provider, {
+        path: normalized,
+        currentContent: historyBefore,
+        nextContent: { frontmatter: parsed.frontmatter, body: parsed.body || '' },
+        actor,
+        snapshotPath: _dirname(normalized),
+        snapshotKind: 'folder',
+        fileKind: 'calendar-event',
+      }, async () => {
+        await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
+        return { ok: true };
+      });
     }
     await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     await _rejectImportLockedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
@@ -22218,11 +23744,23 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, normalized, parsed.frontmatter, String(body?.property || ''),
     );
-    await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
+    const saved = await _trackSharedEdit(history, provider, {
+      path: normalized,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: applied.body },
+      actor,
+      snapshotPath: _dirname(normalized),
+      snapshotKind: 'folder',
+      fileKind: type || 'settings-entry',
+      propertyName: String(body?.property || ''),
+    }, async () => {
+      await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
+      return applied.result;
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, normalized, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(applied.result, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _addValue(provider, body) {
@@ -22238,6 +23776,9 @@
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
     const parsed = await _readFrontmatterFile(provider, entryPath);
     if (parsed.frontmatter.type !== 'settings-entry') throw new Error('settings-entry ではありません');
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
     const candidate = {
@@ -22253,11 +23794,23 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, entryPath, parsed.frontmatter, prop,
     );
-    await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
+    const saved = await _trackSharedEdit(history, provider, {
+      path: entryPath,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: parsed.body || '' },
+      actor,
+      snapshotPath: _dirname(entryPath),
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: prop,
+    }, async () => {
+      await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
+      return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, entryPath, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult({ ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 }, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _createEntity(provider, body) {
@@ -22287,14 +23840,27 @@
       reviewed: body?.reviewed === true,
     };
     await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
-    if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
-    else await _writeFrontmatterFile(provider, path, frontmatter, '');
-    return {
-      ok: true,
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    return _trackSharedEdit(history, provider, {
       path,
-      entry_id: frontmatter.id,
-      revision: Number(frontmatter.meldex_revision || 0),
-    };
+      currentContent: '',
+      nextContent: { frontmatter, body: '' },
+      actor,
+      exists: false,
+      snapshotPath: parent,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+    }, async () => {
+      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
+      else await _writeFrontmatterFile(provider, path, frontmatter, '');
+      return {
+        ok: true,
+        path,
+        entry_id: frontmatter.id,
+        revision: Number(frontmatter.meldex_revision || 0),
+      };
+    });
   }
 
   async function _renameEntity(provider, body) {
@@ -22512,13 +24078,43 @@
     }, body);
   }
 
+  // 承認済みバックログ完了計画 Track A-3: 制作管理シートの判定は3種類（メタデータパス・
+  // シート名・フォルダノート）に分かれ、深さの扱いも表記ゆれ耐性もバラバラだった。
+  // Desktop の meldex_production_management_support.normalized_path_segments と同じ
+  // 正規化（区切り記号の混在・`.`／`..`／連続スラッシュ・NFD分解・英字の大文字小文字）を
+  // ここへ一本化し、3種類すべてがこの結果だけを見るようにする。判定が外れると予約済み
+  // 旧列名の再作成拒否・取得列ロック・「物理.md＝正」の維持がまとめてすり抜けるため、
+  // 新しい判定を別に作らずこの関数へ寄せること。
+  function _normalizedPathSegments(path) {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').split('/').forEach((raw) => {
+      const part = String(raw || '').trim().normalize('NFC');
+      if (!part || part === '.') return;
+      if (part === '..') {
+        segments.pop();
+        return;
+      }
+      segments.push(part);
+    });
+    return segments;
+  }
+
+  function _pathSegmentMatches(actual, expected) {
+    return String(actual || '').normalize('NFC').toLowerCase()
+      === String(expected || '').normalize('NFC').toLowerCase();
+  }
+
+  // `…/制作管理/シート/<シート名>` なら正規化済みの要素列、そうでなければ null。
+  function _productionSheetSegments(path) {
+    const segments = _normalizedPathSegments(path);
+    if (segments.length < 3) return null;
+    if (!_pathSegmentMatches(segments[segments.length - 3], '制作管理')) return null;
+    if (!_pathSegmentMatches(segments[segments.length - 2], 'シート')) return null;
+    return segments[segments.length - 1] ? segments : null;
+  }
+
   function _isProductionManagementSheetMetadataPath(path) {
-    const parts = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);
-    if (parts.length < 3) return false;
-    const sheetIndex = parts.length - 3;
-    return parts[sheetIndex] === '制作管理'
-      && parts[sheetIndex + 1] === 'シート'
-      && !!parts[sheetIndex + 2];
+    return !!_productionSheetSegments(path);
   }
 
   // 制作管理シートの暗黙sheet-store化（ストア汚染）の修復
@@ -22598,9 +24194,8 @@
   });
 
   function _productionManagementSheetName(path) {
-    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    const index = parts.findIndex((part, offset) => part === '制作管理' && parts[offset + 1] === 'シート');
-    return index >= 0 ? String(parts[index + 2] || '') : '';
+    const segments = _productionSheetSegments(path);
+    return segments ? segments[segments.length - 1] : '';
   }
 
   function _productionReservedLegacyPropertiesForSheet(sheet) {
@@ -22612,9 +24207,10 @@
   }
 
   function _isProductionManagementFolderNotePath(path) {
-    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    return parts.length === 4 && parts[0] === '制作管理' && parts[1] === 'シート'
-      && !!parts[2] && parts[3] === `${parts[2]}.md`;
+    const segments = _normalizedPathSegments(path);
+    if (segments.length < 4) return false;
+    const sheet = _productionManagementSheetName(segments.slice(0, -1).join('/'));
+    return !!sheet && _pathSegmentMatches(segments[segments.length - 1], `${sheet}.md`);
   }
 
   function _rejectProductionReservedLegacyProperties(path, propertyNames) {
@@ -22872,13 +24468,150 @@
     await provider.writeJson(_calendarStorePath(name), Array.isArray(rows) ? rows : []);
   }
 
+  function _sharedEditHistory() {
+    const history = window.MeldexSharedEditHistory;
+    if (history?.track && history?.stableContent) return history;
+    const bodyCloudMode = typeof document !== 'undefined'
+      ? document.body?.dataset?.cloudMode
+      : '';
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || bodyCloudMode === 'dropbox') {
+      throw new Error('共有編集履歴が読み込まれていません');
+    }
+    return null;
+  }
+
+  function _sharedHistoryContent(history, value) {
+    if (history?.stableContent) return history.stableContent(value);
+    return JSON.stringify(value ?? null);
+  }
+
+  async function _trackSharedEdit(history, provider, options, mutation) {
+    if (history?.track) return history.track(provider, options, mutation);
+    return mutation();
+  }
+
+  const CLOUD_ATTENDANCE = window.MeldexCloudCalendarAttendance;
+  const CLOUD_TIME_ENTRY_TYPES = CLOUD_ATTENDANCE?.TIME_ENTRY_TYPES || Object.freeze(['clock_in', 'clock_out', 'break_start', 'break_end']);
+
+  function _calendarError(message, status = 400, code = '') {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code;
+    return error;
+  }
+
+  function _calendarActor() {
+    try {
+      if (typeof getUsername === 'function') return String(getUsername() || 'anonymous');
+      const stored = JSON.parse(localStorage.getItem('meldex-user') || '{}');
+      return String(stored.name || 'anonymous');
+    } catch {
+      return 'anonymous';
+    }
+  }
+
+  function _calendarRoleIsAdmin() {
+    const role = _cloudRole();
+    return role.isOwner || role.access === 'owner' || role.access === 'admin';
+  }
+
+  function _assertCalendarWritable() {
+    const role = _cloudRole();
+    if (role.access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+      throw _calendarError('閲覧専用メンバーはカレンダーを変更できません', 403, 'CALENDAR_READONLY');
+    }
+  }
+
+  function _isGeneratedCalendarEvent(rowOrId) {
+    const row = rowOrId && typeof rowOrId === 'object' ? rowOrId : null;
+    const id = String(row?.id || rowOrId || '');
+    const source = String(row?.calendar_source || '');
+    return source === 'attendance' || source === 'shift' || source === 'shift-break' || source === 'production-task'
+      || id.startsWith('attendance:') || id.startsWith('shift:') || id.startsWith('production-task:');
+  }
+
+  function _calendarCanUpdateCalendar(row, deleting = false) {
+    if (_calendarRoleIsAdmin() || String(row?.user || '') === _calendarActor()) return true;
+    return !deleting && String(row?.edit_role || 'owner') === 'editor' && _cloudRole().access === 'editor';
+  }
+
+  function _calendarCanOwnRecord(row, fields) {
+    if (_calendarRoleIsAdmin()) return true;
+    const actor = _calendarActor();
+    return fields.some(field => String(row?.[field] || '') === actor);
+  }
+
+  async function _calendarCanEditEvent(provider, row) {
+    if (_calendarCanOwnRecord(row, ['user', 'creator'])) return true;
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    if (Array.isArray(members) && members.map(String).includes(_calendarActor())) return true;
+    if (!row?.calendar_id) return false;
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(row.calendar_id));
+    return !!calendar && _calendarCanUpdateCalendar(calendar);
+  }
+
+  async function _calendarCanUseCalendar(provider, calendarId) {
+    if (!calendarId) return true;
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(calendarId));
+    return !!calendar && _calendarCanUpdateCalendar(calendar);
+  }
+
+  function _assertRequestedOwner(row, fields, message, code) {
+    if (_calendarRoleIsAdmin()) return;
+    const actor = _calendarActor();
+    if (fields.some(field => row?.[field] && String(row[field]) !== actor)) {
+      throw _calendarError(message, 403, code);
+    }
+  }
+
+  function _assertOwnerFieldsUnchanged(previous, body, fields, message, code) {
+    if (_calendarRoleIsAdmin()) return;
+    if (fields.some(field => Object.prototype.hasOwnProperty.call(body || {}, field)
+      && String(body[field] || '') !== String(previous?.[field] || ''))) {
+      throw _calendarError(message, 403, code);
+    }
+  }
+
+  async function _assertShiftDerivedOwnership(provider, shiftId, eventRows = null) {
+    const prefix = `shift:${shiftId}`;
+    const events = eventRows || await _readStore(provider, 'events');
+    const collided = events.find(row => (row.id === prefix || String(row.id || '').startsWith(prefix + ':break:'))
+      && !['shift', 'shift-break'].includes(row.calendar_source));
+    if (collided) throw _calendarError('シフト由来予定IDが通常予定と衝突しています', 409, 'SHIFT_EVENT_COLLISION');
+  }
+
+  async function _cloudAttendanceCsv(provider, url) {
+    if (!_calendarRoleIsAdmin()) throw _calendarError('勤怠CSVは管理者のみ出力できます', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+    const format = String(url.searchParams.get('format') || 'generic');
+    const { startDay, endDay } = CLOUD_ATTENDANCE.validateCsvQuery(
+      url.searchParams.get('date_from'), url.searchParams.get('date_to'), format,
+    );
+    const selectedUser = String(url.searchParams.get('user') || '');
+    const allEntries = await _readStore(provider, 'time');
+    const allShifts = await _readStore(provider, 'shifts');
+    const entryEndDay = CLOUD_ATTENDANCE.dayOffset(endDay, 2);
+    const entries = allEntries.filter(row => (!selectedUser || row.user === selectedUser)
+      && String(row.timestamp || '').slice(0, 10) >= startDay && String(row.timestamp || '').slice(0, 10) < entryEndDay);
+    const shifts = allShifts.filter(row => (!selectedUser || row.user === selectedUser) && row.date >= startDay && row.date <= endDay);
+    if (entries.length > 100000 || shifts.length > 100000) {
+      throw _calendarError('出力件数が上限を超えました。期間または対象者を絞ってください', 413, 'CSV_ROW_LIMIT');
+    }
+    return { ok: true, mime: 'text/csv;charset=utf-8', filename: `attendance_${format}_${startDay}_${endDay}.csv`,
+      content: CLOUD_ATTENDANCE.buildCsv(entries, shifts, startDay, endDay, format) };
+  }
+
   function _deriveCloudAttendanceEvent(rows, user, day, existing) {
     const parts = String(day || '').split('-').map(Number);
     const next = parts.length === 3 ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1)) : new Date(NaN);
     const nextDay = Number.isNaN(next.getTime()) ? day : next.toISOString().slice(0, 10);
     const records = (Array.isArray(rows) ? rows : []).filter(row => row.user === user
       && String(row.timestamp || '') >= day && String(row.timestamp || '') <= `${nextDay}T23:59:59`)
-      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
+        || String(a.id || '').localeCompare(String(b.id || '')));
     const start = records.findIndex(row => row.type === 'clock_in' && String(row.timestamp || '').slice(0, 10) === day);
     if (start < 0) return null;
     const scoped = [];
@@ -22907,6 +24640,27 @@
 
   window.MeldexCloudAttendanceSync = Object.freeze({ deriveEvent: _deriveCloudAttendanceEvent });
 
+  function _cloudCalendarMutationService(provider) {
+    return CLOUD_ATTENDANCE.createMutationService({
+      readStore: name => _readStore(provider, name),
+      writeStore: (name, rows) => _writeStore(provider, name, rows),
+      deriveEvent: _deriveCloudAttendanceEvent,
+      randomId: _randomId,
+      nowIso: _nowIso,
+    });
+  }
+
+  async function _withCloudCalendarLease(provider, operation, token = '') {
+    const lease = window.MeldexCloudCalendarLease;
+    if (lease?.withLease) {
+      return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider), token ? { token } : null);
+    }
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) {
+      throw _calendarError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+    }
+    return operation(provider);
+  }
+
   function _filterRows(rows, url, fields) {
     return rows.filter((row) => fields.every((field) => {
       const value = url.searchParams.get(field);
@@ -22923,71 +24677,335 @@
 
   async function _calendarList(provider, name, url) {
     const rows = await _readStore(provider, name);
+    const requestedUser = url.searchParams.get('user') || '';
+    if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
+      throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');
+    }
     if (name === 'events') {
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
-      return rows.filter(row => (!user || row.user === user || row.creator === user || !row.user) && _dateInRange(row.start || row.due_date, start, end));
+      if (_calendarRoleIsAdmin()) {
+        return rows.filter(row => (!user || row.user === user || row.creator === user)
+          && _dateInRange(row.start || row.due_date, start, end));
+      }
+      const actor = _calendarActor();
+      return rows.filter(row => {
+        let members = row?.members;
+        try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+        const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
+        return visible && _dateInRange(row.start || row.due_date, start, end);
+      });
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
+      if (!_calendarRoleIsAdmin()) {
+        const actor = _calendarActor();
+        if (!user || user !== actor) {
+          throw _calendarError('自分以外の実績は参照できません', 403, 'ATTENDANCE_READ_FORBIDDEN');
+        }
+      }
       const from = url.searchParams.get('date_from') || '';
       const to = url.searchParams.get('date_to') || '';
       const taskId = url.searchParams.get('task_id') || '';
       return rows.filter(row => (!user || row.user === user) && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
     }
-    if (name === 'shifts') return _filterRows(rows, url, ['user', 'month']);
-    return _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
+    if (name === 'shifts') {
+      if (_calendarRoleIsAdmin()) return _filterRows(rows, url, ['user', 'month']);
+      const actor = _calendarActor();
+      const month = url.searchParams.get('month') || '';
+      return rows.filter(row => row.user === actor && (!month || String(row.date || '').startsWith(month)));
+    }
+    const filtered = _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
+    if (_calendarRoleIsAdmin()) return filtered;
+    const actor = _calendarActor();
+    if (name === 'calendars') return filtered.filter(row => row.user === actor);
+    if (name === 'tasks') return filtered.filter(row => row.user === actor);
+    if (name === 'schedule-templates') return filtered.filter(row => row.user === actor);
+    return filtered.filter(row => !row.user || row.user === actor);
+  }
+
+  async function _recalculateProductionActualsAfterAttendance(provider, users, reason) {
+    try {
+      const recalculate = window.MeldexProductionManagement?.recalculateTaskActualsForAttendance;
+      if (typeof recalculate !== 'function') {
+        throw new Error('制作タスク実績時間の再計算機能を利用できません');
+      }
+      return await recalculate(provider, [...new Set((users || []).filter(Boolean))], reason);
+    } catch (error) {
+      console.error('制作タスクの実績作業時間を再計算できませんでした:', error);
+      return { ok: false, error: 'production_actual_recalculation_failed', message: error?.message || String(error) };
+    }
   }
 
   async function _calendarCreate(provider, name, body) {
-    const rows = await _readStore(provider, name);
+    _assertCalendarWritable();
     const now = _nowIso();
     const id = String(body?.id || _randomId(name));
+    if (name === 'time') {
+      const admin = _calendarRoleIsAdmin();
+      const correction = body?.correction === true;
+      if (correction && !admin) throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      const actor = _calendarActor();
+      const user = String(body?.user || actor);
+      const type = String(body?.type || '');
+      const operationId = String(body?.operation_id || body?.idempotency_key || '').trim();
+      if (!CLOUD_TIME_ENTRY_TYPES.includes(type)) throw _calendarError('打刻種別が不正です', 400, 'INVALID_CLOCK_TYPE');
+      if (!correction && user !== actor) {
+        throw _calendarError('他のメンバーとして打刻することはできません', 403, 'CLOCK_USER_MISMATCH');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      const result = await mutations.run(async (snapshot) => {
+        const wallClock = Date.now();
+        const latestCurrent = snapshot.time.reduce((latest, row) => {
+          const epoch = Date.parse(row?.timestamp);
+          return Number.isFinite(epoch) && epoch <= wallClock + 1000 ? Math.max(latest, epoch) : latest;
+        }, -Infinity);
+        const operationNow = new Date(Number.isFinite(latestCurrent) && latestCurrent >= wallClock ? latestCurrent + 1 : wallClock).toISOString();
+        const timestamp = CLOUD_ATTENDANCE.validTimestamp(correction ? (body?.timestamp || operationNow) : operationNow);
+        if (!timestamp) throw _calendarError('打刻日時が不正です', 400, 'INVALID_CLOCK_TIMESTAMP');
+        const entry = { id, type, user, timestamp, note: String(body?.note || ''), task_id: String(body?.task_id || ''),
+          operation_id: operationId, created: operationNow, modified: operationNow };
+        if (operationId) {
+          const replay = snapshot.time.find(row => String(row.operation_id || '') === operationId);
+          if (replay) {
+            const comparedFields = correction ? ['type', 'user', 'timestamp', 'note', 'task_id'] : ['type', 'user', 'note', 'task_id'];
+            const same = comparedFields
+              .every(field => String(replay[field] || '') === String(entry[field] || ''));
+            if (!same) throw _calendarError('同じ操作IDが異なる打刻内容に使われています', 409, 'CLOCK_OPERATION_CONFLICT');
+            return { ok: true, id: replay.id, replayed: true };
+          }
+        }
+        if (snapshot.time.some(row => String(row.id) === id)) {
+          throw _calendarError('同じIDの打刻が既に存在します', 409, 'CLOCK_ID_CONFLICT');
+        }
+        if (!correction) {
+          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp);
+        }
+        const nextRows = snapshot.time.concat(entry);
+        await mutations.sync(nextRows, CLOUD_ATTENDANCE.affectedTargets(entry));
+        await _writeStore(provider, name, nextRows);
+        return { ok: true, id };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider,
+        [user],
+        result.replayed ? (correction ? '打刻補正（再送）' : '打刻（再送）') : (correction ? '打刻補正' : '打刻'),
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const actor = _calendarActor();
+      const shift = { id, created: now, modified: now, ...(body || {}) };
+      shift.user = shift.user || actor;
+      shift.type = shift.type || 'work';
+      shift.date = shift.date || '';
+      if (!_calendarRoleIsAdmin() && shift.user !== actor) {
+        throw _calendarError('他のメンバーのシフトは作成できません', 403, 'SHIFT_USER_MISMATCH');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        const existingIdx = snapshot.shifts.findIndex(item => String(item.id) === String(id));
+        if (existingIdx >= 0 && !_calendarRoleIsAdmin() && snapshot.shifts[existingIdx].user !== actor) {
+          throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        if (existingIdx >= 0) snapshot.shifts[existingIdx] = { ...snapshot.shifts[existingIdx], ...shift,
+          id: snapshot.shifts[existingIdx].id, modified: now };
+        else snapshot.shifts.push(shift);
+        await _writeStore(provider, name, snapshot.shifts);
+        await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? snapshot.shifts[existingIdx] : shift);
+        return { ok: true, id };
+      });
+    }
+    const rows = await _readStore(provider, name);
     const row = { id, created: now, modified: now, ...(body || {}) };
+    if (rows.some(item => String(item.id) === id)) {
+      throw _calendarError('同じIDのデータが既に存在します', 409, 'CALENDAR_ID_CONFLICT');
+    }
+    if (name === 'events' && _isGeneratedCalendarEvent(row)) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
     if (name === 'calendars') {
       row.name = row.name || 'マイカレンダー';
       row.color = row.color || '#569cd6';
-      row.user = row.user || 'anonymous';
+      row.user = row.user || _calendarActor();
       row.visible = row.visible == null ? 1 : row.visible;
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義のカレンダーは作成できません', 'CALENDAR_USER_MISMATCH');
     }
     if (name === 'events') {
       row.title = row.title || '無題';
-      row.user = row.user || row.creator || 'anonymous';
+      row.user = row.user || row.creator || _calendarActor();
       row.creator = row.creator || row.user;
+      _assertRequestedOwner(row, ['user', 'creator'], '他のメンバー名義の予定は作成できません', 'EVENT_USER_MISMATCH');
+      if (!(await _calendarCanUseCalendar(provider, row.calendar_id))) {
+        throw _calendarError('指定されたカレンダーへ予定を作成する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
+      }
     }
     if (name === 'tasks') {
       row.title = row.title || '無題';
       row.status = row.status || 'todo';
       row.priority = row.priority || 'medium';
+      row.user = row.user || _calendarActor();
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義のToDoは作成できません', 'TASK_USER_MISMATCH');
     }
-    if (name === 'shifts') {
-      row.user = row.user || 'anonymous';
-      row.type = row.type || 'work';
-      row.date = row.date || '';
+    if (name === 'schedule-templates') {
+      row.user = row.user || _calendarActor();
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義の勤務テンプレートは作成できません', 'TEMPLATE_USER_MISMATCH');
     }
-    const existingIdx = name === 'shifts' ? rows.findIndex(item => String(item.id) === String(id)) : -1;
-    if (existingIdx >= 0) rows[existingIdx] = { ...rows[existingIdx], ...row, id: rows[existingIdx].id, modified: now };
-    else rows.push(row);
+    rows.push(row);
     await _writeStore(provider, name, rows);
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? rows[existingIdx] : row);
     return { ok: true, id };
   }
 
   async function _calendarUpdate(provider, name, id, body) {
+    _assertCalendarWritable();
+    if (name === 'time') {
+      if (!_calendarRoleIsAdmin()) throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      const mutations = _cloudCalendarMutationService(provider);
+      let affectedUsers = [];
+      const result = await mutations.run(async (snapshot) => {
+        const timeIdx = snapshot.time.findIndex(row => String(row.id) === String(id));
+        if (timeIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        const oldEntry = snapshot.time[timeIdx];
+        affectedUsers = [String(oldEntry.user || '')];
+        const type = String(body?.type ?? oldEntry.type ?? '');
+        const timestamp = CLOUD_ATTENDANCE.validTimestamp(body?.timestamp ?? oldEntry.timestamp);
+        const user = String(body?.user ?? oldEntry.user ?? '');
+        affectedUsers.push(user);
+        if (!CLOUD_TIME_ENTRY_TYPES.includes(type)) throw _calendarError('打刻種別が不正です', 400, 'INVALID_CLOCK_TYPE');
+        if (!timestamp || !user) throw _calendarError('打刻日時または対象メンバーが不正です', 400, 'INVALID_CLOCK_ENTRY');
+        const nextEntry = { ...oldEntry, type, timestamp, user,
+          note: String(body?.note ?? oldEntry.note ?? ''), task_id: String(body?.task_id ?? oldEntry.task_id ?? ''),
+          id: oldEntry.id, created: oldEntry.created || _nowIso(), modified: _nowIso() };
+        if (['type', 'timestamp', 'user', 'note', 'task_id'].every(
+          field => String(oldEntry[field] || '') === String(nextEntry[field] || ''),
+        )) return { ok: true, replayed: true };
+        snapshot.time[timeIdx] = nextEntry;
+        await mutations.sync(snapshot.time, CLOUD_ATTENDANCE.affectedTargets(oldEntry, snapshot.time[timeIdx]));
+        await _writeStore(provider, name, snapshot.time);
+        return { ok: true };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider, affectedUsers, result.replayed ? '打刻修正（再送）' : '打刻修正',
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const actor = _calendarActor();
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        const shiftIdx = snapshot.shifts.findIndex(row => String(row.id) === String(id));
+        if (shiftIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        const previous = snapshot.shifts[shiftIdx];
+        if (!_calendarRoleIsAdmin() && previous.user !== actor) {
+          throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        const nextUser = String(body?.user ?? previous.user ?? actor);
+        if (!_calendarRoleIsAdmin() && nextUser !== actor) {
+          throw _calendarError('シフトの担当者を他のメンバーへ変更できません', 403, 'SHIFT_USER_MISMATCH');
+        }
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        snapshot.shifts[shiftIdx] = { ...previous, ...(body || {}), id: previous.id, modified: _nowIso() };
+        await _writeStore(provider, name, snapshot.shifts);
+        await window.MeldexCloudShiftSync?.sync?.(provider, snapshot.shifts[shiftIdx]);
+        return { ok: true };
+      });
+    }
     const rows = await _readStore(provider, name);
     const idx = rows.findIndex(row => String(row.id) === String(id));
     if (idx < 0) throw new Error('対象が見つかりません');
+    const previous = { ...rows[idx] };
+    if (name === 'events' && (_isGeneratedCalendarEvent(previous) || _isGeneratedCalendarEvent({ id, ...(body || {}) }))) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
+    if (name === 'calendars') {
+      if (!_calendarCanUpdateCalendar(previous)) throw _calendarError('このカレンダーを編集する権限がありません', 403, 'CALENDAR_EDIT_FORBIDDEN');
+      if (!_calendarRoleIsAdmin() && Object.prototype.hasOwnProperty.call(body || {}, 'edit_role')) {
+        throw _calendarError('カレンダー編集権限は管理者のみ変更できます', 403, 'CALENDAR_ROLE_ADMIN_REQUIRED');
+      }
+      _assertOwnerFieldsUnchanged(previous, body, ['user'], 'カレンダーの所有者は変更できません', 'CALENDAR_USER_MISMATCH');
+    }
+    if (name === 'events') {
+      if (!(await _calendarCanEditEvent(provider, previous))) throw _calendarError('この予定を編集する権限がありません', 403, 'EVENT_EDIT_FORBIDDEN');
+      _assertOwnerFieldsUnchanged(previous, body, ['user', 'creator'], '予定の所有者は他のメンバーへ変更できません', 'EVENT_USER_MISMATCH');
+      const nextCalendarId = body?.calendar_id ?? previous.calendar_id;
+      if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
+        throw _calendarError('指定されたカレンダーへ予定を移動する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
+      }
+    }
+    if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
+      throw _calendarError('このToDoを編集する権限がありません', 403, 'TASK_EDIT_FORBIDDEN');
+    }
+    if (name === 'tasks') _assertOwnerFieldsUnchanged(previous, body, ['user'], 'ToDoの所有者は変更できません', 'TASK_USER_MISMATCH');
+    if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
+      throw _calendarError('この勤務テンプレートを編集する権限がありません', 403, 'TEMPLATE_EDIT_FORBIDDEN');
+    }
+    if (name === 'schedule-templates') {
+      _assertOwnerFieldsUnchanged(previous, body, ['user'], '勤務テンプレートの所有者は変更できません', 'TEMPLATE_USER_MISMATCH');
+    }
     rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
     await _writeStore(provider, name, rows);
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.sync?.(provider, rows[idx]);
     return { ok: true };
   }
 
   async function _calendarDelete(provider, name, id) {
+    _assertCalendarWritable();
+    if (name === 'time') {
+      if (!_calendarRoleIsAdmin()) {
+        throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      let affectedUser = '';
+      const result = await mutations.run(async (snapshot) => {
+        const oldEntry = snapshot.time.find(row => String(row.id) === String(id));
+        if (!oldEntry) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        affectedUser = String(oldEntry.user || '');
+        const timeRows = snapshot.time.filter(row => String(row.id) !== String(id));
+        await mutations.sync(timeRows, CLOUD_ATTENDANCE.affectedTargets(oldEntry));
+        await _writeStore(provider, name, timeRows);
+        return { ok: true };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider, [affectedUser], '打刻削除',
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        const previous = snapshot.shifts.find(row => String(row.id) === String(id));
+        if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        if (!_calendarRoleIsAdmin() && previous.user !== _calendarActor()) {
+          throw _calendarError('他のメンバーのシフトは削除できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        const nextRows = snapshot.shifts.filter(row => String(row.id) !== String(id));
+        await _writeStore(provider, name, nextRows);
+        await window.MeldexCloudShiftSync?.remove?.(provider, id);
+        return { ok: true };
+      });
+    }
     const rows = await _readStore(provider, name);
-    await _writeStore(provider, name, rows.filter(row => String(row.id) !== String(id)));
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.remove?.(provider, id);
+    const previous = rows.find(row => String(row.id) === String(id));
+    if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+    if (name === 'events' && _isGeneratedCalendarEvent(previous)) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
+    if (name === 'calendars' && !_calendarCanUpdateCalendar(previous, true)) {
+      throw _calendarError('このカレンダーを削除する権限がありません', 403, 'CALENDAR_DELETE_FORBIDDEN');
+    }
+    if (name === 'events' && !(await _calendarCanEditEvent(provider, previous))) {
+      throw _calendarError('この予定を削除する権限がありません', 403, 'EVENT_DELETE_FORBIDDEN');
+    }
+    if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
+      throw _calendarError('このToDoを削除する権限がありません', 403, 'TASK_DELETE_FORBIDDEN');
+    }
+    if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
+      throw _calendarError('この勤務テンプレートを削除する権限がありません', 403, 'TEMPLATE_DELETE_FORBIDDEN');
+    }
+    const nextRows = rows.filter(row => String(row.id) !== String(id));
+    await _writeStore(provider, name, nextRows);
     return { ok: true };
   }
 
@@ -23216,16 +25234,33 @@
   }
 
   async function _importCalendarStoreIcs(provider, body) {
+    _assertCalendarWritable();
     const events = _parseIcalEvents(body?.ics || body?.content || '');
     const rows = await _readStore(provider, 'events');
     let imported = 0;
     let updated = 0;
-    const user = String(body?.user || body?.creator || 'anonymous');
-    events.forEach((event) => {
+    const actor = _calendarActor();
+    const requestedUser = String(body?.user || body?.creator || '').trim();
+    if (!_calendarRoleIsAdmin() && requestedUser && requestedUser !== actor) {
+      throw _calendarError('他のメンバー名義でiCal予定を取り込むことはできません', 403, 'ICAL_USER_MISMATCH');
+    }
+    const user = _calendarRoleIsAdmin() ? (requestedUser || actor) : actor;
+    for (const event of events) {
       const uid = String(event.uid || '').trim();
       const idx = uid ? rows.findIndex(row => row.ical_uid === uid || row.uid === uid || row.id === uid) : -1;
+      if (_isGeneratedCalendarEvent(uid) || (idx >= 0 && _isGeneratedCalendarEvent(rows[idx]))) {
+        throw _calendarError('自動生成された予定の予約IDはiCal取込に使用できません', 409, 'ICAL_RESERVED_EVENT_ID');
+      }
+      const previous = idx >= 0 ? rows[idx] : null;
+      if (previous && !(await _calendarCanEditEvent(provider, previous))) {
+        throw _calendarError('同じUIDの予定を更新する権限がありません', 403, 'ICAL_EVENT_EDIT_FORBIDDEN');
+      }
+      const requestedCalendar = String(body?.calendar_id || '').trim();
+      if (requestedCalendar && !(await _calendarCanUseCalendar(provider, requestedCalendar))) {
+        throw _calendarError('指定されたカレンダーへ取り込む権限がありません', 403, 'ICAL_CALENDAR_FORBIDDEN');
+      }
       const row = {
-        id: idx >= 0 ? rows[idx].id : (uid || _randomId('events')),
+        id: previous ? previous.id : (uid || _randomId('events')),
         uid,
         ical_uid: event.ical_uid || uid,
         title: event.title || '無題',
@@ -23237,19 +25272,19 @@
         url: event.url || '',
         recurrence: event.recurrence || '',
         alert_minutes: Number.isFinite(Number(event.alert_minutes)) ? Number(event.alert_minutes) : -1,
-        calendar_id: body?.calendar_id || 'default',
-        user,
-        creator: user,
+        calendar_id: requestedCalendar || previous?.calendar_id || 'default',
+        user: previous?.user || user,
+        creator: previous?.creator || previous?.user || user,
         modified: _nowIso(),
       };
       if (idx >= 0) {
-        rows[idx] = { ...rows[idx], ...row };
+        rows[idx] = { ...previous, ...row };
         updated += 1;
       } else {
         rows.push({ created: _nowIso(), ...row });
         imported += 1;
       }
-    });
+    }
     await _writeStore(provider, 'events', rows);
     return { ok: true, imported, updated };
   }
@@ -23601,10 +25636,15 @@
     }
     await _requireUnlocked(provider, targetPath, { action: 'import-csv' });
 
-    _rejectProductionReservedLegacyProperties(
-      targetPath,
-      specs.columns.filter((_column, index) => index !== specs.itemColumn).map(column => column.name),
-    );
+    const importedPropertyNames = specs.columns
+      .filter((_column, index) => index !== specs.itemColumn)
+      .map(column => column.name);
+    _rejectProductionReservedLegacyProperties(targetPath, importedPropertyNames);
+    // インポート・機能生成ファイル保護計画 Phase 3 / 承認済みバックログ完了計画 Track A-1:
+    // 取得列（Xブックマーク・Web Clipper・エクスポート等の source 付き列）へのCSV上書きは
+    // Cloud側でも拒否する（Desktop の meldex_api_file_content.py と同じ契約）。
+    // 取込先が未作成なら取得列そのものが存在しないため素通りする。
+    await _rejectImportLockedPropertyEdit(provider, targetPath, importedPropertyNames);
     const legacyDateSpecs = explicit
       ? null
       : _sheetImportPropertySpecs(parsed.rows[0] || [], _sheetImportHeaders(parsed.rows[0] || []), parsed.rows.slice(1));
@@ -24089,7 +26129,7 @@
     const now = new Date();
     const windowStart = new Date(now.getTime() - lookback * 60000);
     const windowEnd = new Date(now.getTime() + minutes * 60000);
-    const rows = (await _readStore(provider, 'events')).filter(event => Number(event.alert_minutes) >= 0);
+    const rows = (await _calendarList(provider, 'events', url)).filter(event => Number(event.alert_minutes) >= 0);
     const alerts = [];
     rows.forEach((event) => {
       if (user && event.user && event.user !== user && event.creator !== user) return;
@@ -24631,21 +26671,29 @@
       return { enabled: true, configured: false, ical: true, google: false, microsoft: false, caldav: false };
     }
     if (pathname === '/cal/sync/ical/export' && method === 'GET') {
-      return { ok: true, mime: 'text/calendar;charset=utf-8', filename: 'meldex-calendar.ics', content: _icalExport(await _readStore(provider, 'events')) };
+      return { ok: true, mime: 'text/calendar;charset=utf-8', filename: 'meldex-calendar.ics', content: _icalExport(await _calendarList(provider, 'events', url)) };
     }
-    if (pathname === '/cal/sync/ical/import' && method === 'POST') return _importCalendarStoreIcs(provider, body || {});
+    if (pathname === '/cal/sync/ical/import' && method === 'POST') {
+      return _withCloudCalendarLease(provider, leasedProvider => _importCalendarStoreIcs(leasedProvider, body || {}));
+    }
     if (/^\/cal\/sync\//.test(pathname)) return { ok: false, unsupported: true, error: 'Cloud BETAでは外部カレンダー同期リレー未設定のため無効です' };
     if (pathname === '/cal/alerts' && method === 'GET') {
       return _calendarAlerts(provider, url);
+    }
+    if (pathname === '/cal/export/attendance-csv' && method === 'GET') {
+      return _cloudAttendanceCsv(provider, url);
     }
     const route = pathname.match(/^\/cal\/(calendars|events|tasks|time|shifts|schedule-templates)(?:\/([^/]+))?$/);
     if (!route) return NOT_HANDLED;
     const name = route[1] === 'schedule-templates' ? 'schedule-templates' : route[1];
     const id = route[2] ? decodeURIComponent(route[2]) : '';
+    const leaseToken = String(body?._calendar_lease_token || '').trim();
+    const routeBody = { ...(body || {}) };
+    delete routeBody._calendar_lease_token;
     if (method === 'GET' && !id) return _calendarList(provider, name, url);
-    if (method === 'POST' && !id) return _calendarCreate(provider, name, body || {});
-    if (method === 'PUT' && id) return _calendarUpdate(provider, name, id, body || {});
-    if (method === 'DELETE' && id) return _calendarDelete(provider, name, id);
+    if (method === 'POST' && !id) return _withCloudCalendarLease(provider, leasedProvider => _calendarCreate(leasedProvider, name, routeBody), leaseToken);
+    if (method === 'PUT' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarUpdate(leasedProvider, name, id, routeBody), leaseToken);
+    if (method === 'DELETE' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarDelete(leasedProvider, name, id), leaseToken);
     return NOT_HANDLED;
   }
 
@@ -24783,9 +26831,15 @@
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
     if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '');
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
-    if (pathname === '/value' && method === 'PUT') return _updateValue(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
-    if (pathname === '/value' && method === 'POST') return _addValue(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/entity/create' && method === 'POST') return _createEntity(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/value' && method === 'PUT') return _updateValue(
+      await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},
+    );
+    if (pathname === '/value' && method === 'POST') return _addValue(
+      await _requirePwaProvider('readwrite'), body || {},
+    );
+    if (pathname === '/entity/create' && method === 'POST') return _createEntity(
+      await _requirePwaProvider('readwrite'), body || {},
+    );
     if (pathname === '/entity/rename' && method === 'POST') {
       const production = window.MeldexProductionManagement;
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)
@@ -25921,7 +27975,7 @@
   // --- 共通ストレージ層への保存先解決(固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
   //
   // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
-  // 参加中の共有ワークスペードかを判定する共通モジュール)へ委譲する。
+  // 参加中の共有ワークスペースかを判定する共通モジュール)へ委譲する。
   // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
   // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
   // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。
@@ -26696,7 +28750,7 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
  *
  * 旧: `_events/annotations/<id>.json` への直接読み書き。
  * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
- *     参加中の共有ワークスペードに接続している場合は `<ワークスペード>/MeldexShare/system/v1`
+ *     参加中の共有ワークスペースに接続している場合は `<ワークスペース>/MeldexShare/system/v1`
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
  * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切
@@ -27248,6 +29302,348 @@ const FOLDER_VERSION_EXCLUDE = new Set([
   '.exe', '.dll', '.so', '.dylib', '.psd', '.ai', '.sketch',
 ]);
 const FOLDER_VERSION_EXCLUDE_PREFIXES = ['_meldex/', '_events/', '_trash/', 'node_modules/'];
+const SHARED_EDIT_SIGNATURE_SCOPE = 'shared-edit-history';
+
+function _versionActor(url, body) {
+  const query = url?.searchParams;
+  const snapshot = window.MeldexProfileIdentity?.getActorSnapshot?.() || {};
+  return {
+    actor_id: String(query?.get('_actor_id') || body?._actor_id || snapshot.actorId || '').trim(),
+    user: String(query?.get('_user') || body?._user || snapshot.displayName || 'anonymous').trim() || 'anonymous',
+    actor_kind: String(query?.get('_actor_kind') || body?._actor_kind || snapshot.kind || 'human'),
+    actor_model: String(query?.get('_actor_model') || body?._actor_model || ''),
+    actor_provider: String(query?.get('_actor_provider') || body?._actor_provider || ''),
+    chat_session_id: String(query?.get('_chat_session_id') || body?._chat_session_id || ''),
+    tool_name: String(query?.get('_tool_name') || body?._tool_name || 'cloud_file'),
+  };
+}
+
+function _actorMetadata(actor, prefix) {
+  return {
+    [`${prefix}_id`]: String(actor?.actor_id || ''),
+    [`${prefix}_display_name`]: String(actor?.user || 'anonymous'),
+    [`${prefix}_kind`]: String(actor?.actor_kind || 'human'),
+    [`${prefix}_model`]: String(actor?.actor_model || ''),
+    [`${prefix}_provider`]: String(actor?.actor_provider || ''),
+    [`${prefix}_session_id`]: String(actor?.chat_session_id || ''),
+    [`${prefix}_tool`]: String(actor?.tool_name || ''),
+  };
+}
+
+function _snapshotActorMetadata(previous, creator, reason, eventId, nextEditor, sourceRevision) {
+  return {
+    metadata_schema_version: 1,
+    snapshot_reason: String(reason || ''),
+    source_revision: String(sourceRevision || ''),
+    event_id: String(eventId || ''),
+    ..._actorMetadata(previous, 'content_last_editor'),
+    ..._actorMetadata(creator, 'snapshot_created_by'),
+    ...(nextEditor ? _actorMetadata(nextEditor, 'next_editor') : {}),
+  };
+}
+
+function _stableHistoryContent(content) {
+  if (content == null) return '';
+  if (typeof content === 'string') return content;
+  const canonicalize = value => {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`;
+    if (typeof value === 'object') {
+      return `{${Object.keys(value).sort().map(key =>
+        `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  };
+  return canonicalize(content);
+}
+
+function _contentHistoryHash(content) {
+  return `fnv64:${_fnvFileId(_stableHistoryContent(content))}`;
+}
+
+function _historyFileKind(path, content) {
+  const name = _basename(_normalizeFolderPath(path)).toLowerCase();
+  const text = String(content || '').slice(0, 4000).toLowerCase();
+  if (name.endsWith('.mel-scenario') || name.endsWith('.scriptnote.json')) return 'scenario';
+  if (name.endsWith('.mel-board') || name.endsWith('.board.json')) return 'board';
+  if (name.endsWith('.mel-sheet') || name.endsWith('.smart.json')) return 'smartsheet';
+  if (name.endsWith('.dashboard.json')) return 'dashboard';
+  if (name.endsWith('.md')) {
+    if (text.includes('type: settings-entry')) return 'settings-entry';
+    if (text.includes('type: calendar-event')) return 'calendar-event';
+    if (text.includes('type: smart-db')) return 'smartsheet';
+    if (text.includes('type: board')) return 'board';
+    return 'note';
+  }
+  const ext = _splitNameAndExt(name).ext.replace(/^\./, '');
+  return ext || 'file';
+}
+
+function _historyDiffSummary(before, after) {
+  const previous = _stableHistoryContent(before);
+  const current = _stableHistoryContent(after);
+  if (previous === current) return '';
+  const beforeLines = previous.split(/\r?\n/).length;
+  const afterLines = current.split(/\r?\n/).length;
+  const preview = current.replace(/\s+/g, ' ').trim().slice(0, 200);
+  const delta = afterLines - beforeLines;
+  return `行数 ${beforeLines} → ${afterLines} (${delta >= 0 ? '+' : ''}${delta})${preview ? ': ' + preview : ''}`;
+}
+
+function _editDocumentId(path, eventId) {
+  return `edit-${_fnvFileId(_normalizeFolderPath(path))}-${_fnvFileId(eventId)}`;
+}
+
+function _isSharedHistoryOwner() {
+  let role = '';
+  try { role = String(window.MeldexKnowledgeCloudStore?.role?.() || '').toLowerCase(); } catch {}
+  let workspace = null;
+  try { workspace = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null; } catch {}
+  const workspaceRole = String(workspace?.access?.role || workspace?.role || workspace?.access || '').toLowerCase();
+  return role === 'owner' || workspace?.isOwner === true || workspaceRole === 'owner';
+}
+
+async function _protectSharedEditRevision(provider, adapter, record) {
+  const signature = window.MeldexKnowledgeSignature;
+  if (!signature || !record?.documentId) return { ok: false, skipped: true };
+  const actor = record.payload || {};
+  if (_isSharedHistoryOwner()) {
+    return signature.signRecord?.(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+      managementAdapter: adapter,
+      signer: String(actor.user || ''),
+      createKey: true,
+    });
+  }
+  return signature.markRecordPending?.(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+    managementAdapter: adapter,
+    requestedBy: String(actor.user || ''),
+  });
+}
+
+async function _markSharedEditMutationPending(provider, adapter, record) {
+  const signature = window.MeldexKnowledgeSignature;
+  if (!signature?.markRecordPending || !record?.documentId) return;
+  await signature.markRecordPending(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+    managementAdapter: adapter,
+    requestedBy: String(record?.payload?.user || ''),
+  });
+}
+
+async function _editRecordIntegrity(provider, adapter, record) {
+  const signature = window.MeldexKnowledgeSignature;
+  if (!signature?.verifyRecord) {
+    return Number(record?.payload?.integrity_schema_version || 0) >= 1
+      ? { ok: false, status: 'pending-owner-signature' }
+      : { ok: false, status: 'legacy-unsigned' };
+  }
+  if (Number(record?.payload?.integrity_schema_version || 0) < 1) {
+    return { ok: false, status: 'legacy-unsigned', reason: 'legacy-unsigned' };
+  }
+  if (!_isSharedHistoryOwner()) {
+    const saved = await signature.readRecordSignature?.(
+      provider, SHARED_EDIT_SIGNATURE_SCOPE, record.documentId, { managementAdapter: adapter },
+    );
+    return saved?.hmac
+      ? { ok: false, status: 'owner-verification-required', reason: 'owner-key-not-distributed' }
+      : { ok: false, status: 'pending-owner-signature', reason: 'pending-owner-signature' };
+  }
+  let result = await signature.verifyRecord(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+    managementAdapter: adapter,
+  });
+  if (result?.status === 'pending-owner-signature' && _isSharedHistoryOwner()) {
+    const signed = await signature.signRecord(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+      managementAdapter: adapter,
+      signer: String(record?.payload?.user || ''),
+      createKey: true,
+    }).catch(() => null);
+    if (signed?.ok) {
+      result = await signature.verifyRecord(provider, SHARED_EDIT_SIGNATURE_SCOPE, record, {
+        managementAdapter: adapter,
+      });
+    }
+  }
+  return result || { ok: false, status: 'pending-owner-signature' };
+}
+
+async function _listSharedEditRecords(provider, path, recursive) {
+  const normalized = _normalizeFolderPath(path);
+  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, normalized);
+  const records = await adapter.listDocuments(kind);
+  const visible = records.filter(row => {
+    const payload = row?.payload || {};
+    const currentPath = _normalizeFolderPath(payload.original_relative_path || '');
+    return payload.object_type === 'edit-record'
+      && (currentPath === normalized || (recursive && currentPath.startsWith(normalized + '/')))
+      && payload.committed && !payload.aborted;
+  }).sort((a, b) => String(b.payload?.committed_at || b.payload?.timestamp || '')
+    .localeCompare(String(a.payload?.committed_at || a.payload?.timestamp || '')));
+  for (const row of visible) {
+    const integrity = await _editRecordIntegrity(provider, adapter, row).catch(() => ({
+      ok: false, status: 'pending-owner-signature', reason: 'integrity-check-failed',
+    }));
+    row.integrity = integrity;
+  }
+  return visible;
+}
+
+async function _reconcileCloudEditIntents(provider, path, currentContent) {
+  const normalized = _normalizeFolderPath(path);
+  const kind = window.MeldexSystemStorage.SystemStorageKind.VERSIONS;
+  const adapter = await _managementAdapterForProvider(provider, kind, normalized);
+  const records = await adapter.listDocuments(kind);
+  const currentHash = _contentHistoryHash(currentContent);
+  for (const row of records) {
+    const payload = row?.payload || {};
+    if (payload.object_type !== 'edit-record' || payload.original_relative_path !== normalized
+        || payload.committed || payload.aborted) continue;
+    const intentAge = Date.now() - Date.parse(payload.timestamp || '');
+    if (!Number.isFinite(intentAge) || intentAge > 24 * 60 * 60 * 1000) {
+      await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
+      const saved = await adapter.save(kind, row.documentId, {
+        ...payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'expired_intent',
+      }, { expectedRevision: row.revision }).catch(() => null);
+      if (saved) await _protectSharedEditRevision(provider, adapter, saved).catch(() => null);
+      continue;
+    }
+    if (payload.planned_content_hash !== currentHash) continue;
+    await _markSharedEditMutationPending(provider, adapter, row).catch(() => null);
+    const saved = await adapter.save(kind, row.documentId, {
+      ...payload, committed: true, committed_at: _nowIso(), recovered_from_intent: true,
+    }, { expectedRevision: row.revision }).catch(() => null);
+    if (saved) await _protectSharedEditRevision(provider, adapter, saved).catch(() => null);
+  }
+  return { adapter, kind };
+}
+
+async function _prepareCloudFileEdit(provider, path, currentContent, nextContent, actor, sourceRevision, exists, options = {}) {
+  const normalized = _normalizeFolderPath(path);
+  const { adapter, kind } = await _reconcileCloudEditIntents(provider, normalized, currentContent);
+  if (_stableHistoryContent(currentContent) === _stableHistoryContent(nextContent)) {
+    return { adapter, kind, skipped: true, eventId: '', documentId: '', payload: null };
+  }
+  const latest = (await _listSharedEditRecords(provider, normalized))[0]?.payload || {};
+  const previous = latest.actor_id ? latest : actor;
+  const transition = !!(latest.actor_id && actor.actor_id && latest.actor_id !== actor.actor_id);
+  const eventId = `edit-${_versionTimestamp()}-${_randomId('e').slice(-8)}`;
+  const documentId = _editDocumentId(normalized, eventId);
+  const payload = {
+    object_type: 'edit-record', original_relative_path: normalized, event_id: eventId,
+    timestamp: _nowIso(), ...actor, action: exists ? 'update_body' : 'create_file',
+    file_kind: String(options.fileKind || _historyFileKind(normalized, nextContent)),
+    entity_name: _splitNameAndExt(_basename(normalized)).stem,
+    property_name: String(options.propertyName || ''),
+    body_diff_summary: String(options.bodyDiffSummary || _historyDiffSummary(currentContent, nextContent)).slice(0, 1000),
+    planned_content_hash: _contentHistoryHash(nextContent), previous_revision: String(sourceRevision || ''),
+    committed: false, committed_at: '', committed_revision: '', aborted: false,
+    integrity_schema_version: 1,
+  };
+  const intent = await adapter.save(kind, documentId, payload, { expectedRevision: null });
+  if (_isSharedHistoryOwner()) {
+    let protectedIntent = null;
+    let protectionError = null;
+    try {
+      protectedIntent = await _protectSharedEditRevision(provider, adapter, intent);
+    } catch (error) {
+      protectionError = error;
+    }
+    if ((!protectedIntent?.ok && !protectedIntent?.skipped) || protectionError) {
+      await adapter.save(kind, documentId, {
+        ...payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'owner_signature_failed',
+      }, { expectedRevision: intent?.revision || undefined }).catch(() => null);
+      throw protectionError || new Error('変更レコードへ管理者署名を保存できませんでした');
+    }
+  } else {
+    await _protectSharedEditRevision(provider, adapter, intent).catch(() => null);
+  }
+  const metadata = _snapshotActorMetadata(
+    previous, actor, transition ? 'before_editor_transition' : 'before_write',
+    eventId, transition ? actor : null, sourceRevision,
+  );
+  try {
+    const snapshotPath = _normalizeFolderPath(options.snapshotPath || normalized);
+    if (options.snapshotKind === 'folder') {
+      if (transition) await _saveFolderVersion(provider, snapshotPath, {
+        auto: true, label: '編集者交代前', metadata,
+      });
+    } else if (exists) {
+      await _saveFileVersion(provider, snapshotPath, {
+        auto: true, label: transition ? '編集者交代前' : 'file write before', max_auto: 30,
+        expectedRevision: sourceRevision, metadata,
+      });
+    }
+  } catch (error) {
+    await _markSharedEditMutationPending(provider, adapter, intent).catch(() => null);
+    const aborted = await adapter.save(kind, documentId, {
+      ...payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'snapshot_failed',
+    }, { expectedRevision: intent?.revision || undefined }).catch(() => null);
+    if (aborted) await _protectSharedEditRevision(provider, adapter, aborted).catch(() => null);
+    throw error;
+  }
+  return { provider, adapter, kind, documentId, intentRevision: intent?.revision || '', payload, eventId, intentRecord: intent };
+}
+
+async function _commitCloudFileEdit(prepared, committedRevision) {
+  if (!prepared || prepared.skipped) return false;
+  try {
+    await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
+    const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
+      ...prepared.payload, committed: true, committed_at: _nowIso(),
+      committed_revision: String(committedRevision || ''),
+    }, { expectedRevision: prepared.intentRevision || undefined });
+    await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+async function _abortCloudFileEdit(prepared) {
+  if (!prepared || prepared.skipped || !prepared.documentId) return;
+  await _markSharedEditMutationPending(prepared.provider, prepared.adapter, prepared.intentRecord).catch(() => null);
+  const saved = await prepared.adapter.save(prepared.kind, prepared.documentId, {
+    ...prepared.payload, aborted: true, aborted_at: _nowIso(), abort_reason: 'content_write_failed',
+  }, { expectedRevision: prepared.intentRevision || undefined }).catch(() => null);
+  if (saved) await _protectSharedEditRevision(prepared.provider, prepared.adapter, saved).catch(() => null);
+}
+
+async function _trackCloudEdit(provider, options, mutation) {
+  if (typeof mutation !== 'function') throw new Error('編集処理が指定されていません');
+  const actor = options.actor || _versionActor(null, {});
+  const prepared = await _prepareCloudFileEdit(
+    provider,
+    options.path,
+    options.currentContent,
+    options.nextContent,
+    actor,
+    options.sourceRevision || '',
+    options.exists !== false,
+    options,
+  );
+  let result;
+  try {
+    result = await mutation();
+  } catch (error) {
+    await _abortCloudFileEdit(prepared);
+    throw error;
+  }
+  const pending = await _commitCloudFileEdit(prepared, options.committedRevision || '');
+  if (result && typeof result === 'object') {
+    result.history_recorded = !pending;
+    result.history_sync_pending = pending;
+  }
+  return result;
+}
+
+window.MeldexSharedEditHistory = {
+  actor: _versionActor,
+  prepare: _prepareCloudFileEdit,
+  commit: _commitCloudFileEdit,
+  abort: _abortCloudFileEdit,
+  track: _trackCloudEdit,
+  fileKind: _historyFileKind,
+  stableContent: _stableHistoryContent,
+};
 
 function _versionTimestamp() {
   const d = new Date();
@@ -27393,8 +29789,10 @@ async function _saveFileVersion(provider, path, options) {
     content,
     auto: !!options?.auto,
     label: String(options?.label || ''),
+    file_kind: _historyFileKind(normalized, content),
     created_at: _nowIso(),
     deleted_at: '',
+    ...(options?.metadata || {}),
   }, { expectedRevision: null });
 
   const maxAuto = Number(options?.max_auto || 0);
@@ -27427,8 +29825,12 @@ async function _listFileVersions(provider, path) {
       label: payload.label || entryInfo.label,
       created: payload.created_at || entryInfo.created || '',
       modified: payload.created_at || '',
+      file_kind: String(payload.file_kind || _historyFileKind(normalized, payload.content || '')),
       size: new TextEncoder().encode(payload.content || '').length,
       _modifiedMs: Date.parse(payload.created_at || '') || 0,
+      ...Object.fromEntries(Object.entries(payload).filter(([key]) =>
+        key === 'event_id' || key === 'snapshot_reason' || key.startsWith('content_last_editor_')
+        || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
     });
   }
   const known = new Set(versions.map(row => row.name));
@@ -27449,6 +29851,84 @@ async function _listFileVersions(provider, path) {
   }
   versions.sort((a, b) => (b._modifiedMs || 0) - (a._modifiedMs || 0));
   return versions.map(({ _modifiedMs, ...row }) => row);
+}
+
+async function _buildCloudVersionTimeline(provider, url) {
+  const path = _normalizeFolderPath(url.searchParams.get('target_path') || url.searchParams.get('path') || '');
+  if (!path) return { ok: true, total: 0, entries: [] };
+  const kinds = new Set(String(url.searchParams.get('kinds') || 'named,auto,edit').split(',').filter(Boolean));
+  const entries = [];
+  const target = await _resolveEntryHandle(provider, path);
+  const folderTarget = target?.kind === 'directory';
+  if (target?.kind === 'file') {
+    try {
+      await _reconcileCloudEditIntents(provider, path, await provider.readText(path));
+    } catch (error) {
+      console.warn('編集履歴の同期待ち確認に失敗しました:', error);
+    }
+  }
+  if (kinds.has('named') || kinds.has('auto')) {
+    const versions = folderTarget ? await _listFolderVersions(provider, path) : await _listFileVersions(provider, path);
+    for (const row of versions) {
+      const auto = !!row.auto;
+      if (!kinds.has(auto ? 'auto' : 'named')) continue;
+      const previousName = row.content_last_editor_display_name || '';
+      const nextName = row.next_editor_display_name || '';
+      entries.push({
+        ...row, id: `file:${path}:${row.name}`, type: auto ? 'auto' : 'named',
+        timestamp: row.created || row.modified || '', path,
+        file_kind: folderTarget ? 'folder' : (row.file_kind || _historyFileKind(path, '')),
+        user: previousName, actor_id: row.content_last_editor_id || '',
+        actor_kind: row.content_last_editor_kind || '', actor_model: row.content_last_editor_model || '',
+        actor_provider: row.content_last_editor_provider || '',
+        chat_session_id: row.content_last_editor_session_id || '', tool_name: row.content_last_editor_tool || '',
+        label: row.snapshot_reason === 'before_editor_transition'
+          ? `${previousName || '編集者不明'}の最終編集 — ${nextName || '別のユーザー'}が編集を開始する前に自動保存`
+          : (row.label || (auto ? '自動復元ポイント' : 'スナップショット')),
+        snapshot_ref: row.name, snapshot_kind: folderTarget ? 'folder' : 'file', snapshot_version: row.name,
+        version_type: folderTarget ? 'folder' : 'file', auto,
+      });
+    }
+  }
+  if (kinds.has('edit')) {
+    for (const record of await _listSharedEditRecords(provider, path, folderTarget)) {
+      const row = record.payload || {};
+      const integrityStatus = String(record.integrity?.status || 'pending-owner-signature');
+      entries.push({
+        ...row, id: `edit:${row.event_id || record.documentId}`, type: 'edit',
+        timestamp: row.committed_at || row.timestamp || '',
+        path: row.original_relative_path || path,
+        label: row.body_diff_summary || row.action || '編集', auto: false,
+        snapshot_ref: '', snapshot_kind: '', snapshot_version: '', version_type: '',
+        integrity_status: integrityStatus,
+        integrity_verified: record.integrity?.ok === true,
+        integrity_warning: integrityStatus === 'tampered'
+          ? '署名後に変更レコードが改変された可能性があります。内容を残したまま、管理者鍵の復旧または安全な版への復元を確認してください。'
+          : (integrityStatus === 'owner-key-missing'
+            ? 'この端末に検証用の管理者鍵がありません。管理者鍵を復旧してから整合性を確認してください。'
+            : ''),
+        integrity_recovery_action: ['tampered', 'owner-key-missing'].includes(integrityStatus)
+          ? 'open-owner-key-recovery' : '',
+      });
+    }
+  }
+  const filters = {
+    actor_id: 'actor_id', actor_kind: 'actor_kind', actor_model: 'actor_model',
+    actor_provider: 'actor_provider', chat_session_id: 'chat_session_id', user: 'user',
+    tool_name: 'tool_name', file_kind: 'file_kind', action: 'action',
+    entity: 'entity_name', prop: 'property_name',
+  };
+  const since = String(url.searchParams.get('since') || '');
+  const until = String(url.searchParams.get('until') || '');
+  const filtered = entries.filter(entry => Object.entries(filters).every(([queryKey, entryKey]) => {
+    const expected = String(url.searchParams.get(queryKey) || '');
+    return !expected || String(entry[entryKey] || '') === expected;
+  }) && (!since || String(entry.timestamp || '') >= since)
+    && (!until || String(entry.timestamp || '') <= until))
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+  const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit') || 100)));
+  return { ok: true, total: filtered.length, entries: filtered.slice(offset, offset + limit) };
 }
 
 function _safeVersionName(value) {
@@ -27634,6 +30114,7 @@ window.MeldexFileVersionProviderOps = Object.freeze({
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
+      ...(options?.metadata || {}),
     }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
@@ -27687,6 +30168,9 @@ window.MeldexFileVersionProviderOps = Object.freeze({
         auto: !!meta.auto,
         file_count: files.length,
         total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+        ...Object.fromEntries(Object.entries(meta).filter(([key]) =>
+          key === 'event_id' || key === 'snapshot_reason' || key.startsWith('content_last_editor_')
+          || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
       });
     }
     const known = new Set(versions.map(row => row.name));
@@ -28394,13 +30878,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
+      const currentContent = entry ? await provider.readText(filePath) : '';
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
       let docIdentityFmt = incomingIdentityFmt;
       if (incomingIdentityFmt) {
         let existingDocumentId = '';
         if (entry) {
-          const currentContent = await provider.readText(filePath);
           const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
           docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
           existingDocumentId = String(
@@ -28416,11 +30900,23 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           ).text;
         }
       }
-      const writeMeta = await provider.writeText(filePath, content);
+      const history = await _prepareCloudFileEdit(
+        provider, filePath, currentContent, content, _versionActor(url, body), expectedEtag, !!entry,
+      );
+      let writeMeta;
+      try {
+        writeMeta = await provider.writeText(filePath, content);
+      } catch (error) {
+        await _abortCloudFileEdit(history);
+        throw error;
+      }
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
+      const historySyncPending = await _commitCloudFileEdit(history, etag);
       return {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        history_recorded: !historySyncPending,
+        history_sync_pending: historySyncPending,
       };
     }
 
@@ -28771,7 +31267,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/save-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _saveFolderVersion(provider, body?.path || '', { label: body?.label || '', auto: !!body?.auto });
+      const actor = _versionActor(url, body);
+      return _saveFolderVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -28795,7 +31295,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     }
     if (pathname === '/version/save' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _saveFileVersion(provider, body?.path || '', { label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto });
+      const actor = _versionActor(url, body);
+      return _saveFileVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
+    }
+    if (pathname === '/version-panel/timeline' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _buildCloudVersionTimeline(provider, url);
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -30566,7 +33074,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   // 個人領域と共有領域へ分岐し(どちらも「全体」を自称する)、さらに割当が参照
   // するタグidの定義(台帳)と別スコープへ割れて参照整合が壊れる。旧実装
   // (`.meldex/global-tags.json` を接続中ルート直下へ置く)の可視性の意味論
-  // (共有ワークスペードへ接続中はメンバー間で共有・個人接続では個人のみ)を
+  // (共有ワークスペースへ接続中はメンバー間で共有・個人接続では個人のみ)を
   // そのまま新管理領域へ引き継ぐ。ここへ渡す第2引数は種別判定用の旧論理パス
   // であり、管理ルート解決へは渡さない。
   function managedDocumentId(path) {
@@ -35271,6 +37779,554 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
 ;
 
+/* === gb-archive-zip-engine.js === */
+;
+/**
+ * gb-archive-zip-engine.js
+ *
+ * クラウド版（サーバー無しのブラウザ直結モード）でZIPの圧縮・解凍・閲覧を実現する
+ * 自己完結ZIPエンジン。外部CDN・外部ライブラリは使わない。
+ *
+ * - 圧縮(deflate)は CompressionStream('deflate-raw') / DecompressionStream('deflate-raw')
+ *   というブラウザ標準APIを使う。非対応環境では無圧縮(store)へフォールバックする
+ *   （圧縮できないだけで、圧縮・解凍そのものは失敗させない）。
+ * - ZIPコンテナ（ローカルヘッダ・セントラルディレクトリ・EOCD・CRC32）は自前実装。
+ * - 安全上限はデスクトップ版 app/meldex_archive_service.py の定数と一致させている
+ *   （app/tests/test_meldex_archive_zip_engine_parity.py で機械的に照合）。
+ * - ZIP64（4GB超・65535件超）には対応しない。検出したら明示エラーにする
+ *   （このエンジンの上限はいずれも2GB/2万件のため、ZIP64が必要な場面は無い）。
+ */
+(function (root) {
+  'use strict';
+
+  // ---- デスクトップ版と揃える安全上限（app/meldex_archive_service.py 参照） ----
+  const MAX_MEMBER_COUNT = 20000;
+  const MAX_MEMBER_BYTES = 512 * 1024 * 1024;
+  const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+  const MAX_COMPRESSION_RATIO = 1000;
+  const RATIO_CHECK_MIN_SIZE = 100 * 1024 * 1024;
+
+  const SIG_LOCAL_HEADER = 0x04034b50;
+  const SIG_CENTRAL_HEADER = 0x02014b50;
+  const SIG_EOCD = 0x06054b50;
+  const ZIP64_MARKER = 0xffffffff;
+
+  class MeldexArchiveError extends Error {
+    constructor(message, opts) {
+      super(message);
+      this.name = 'MeldexArchiveError';
+      this.status = (opts && opts.status) || 400;
+      this.code = (opts && opts.code) || 'archive_error';
+    }
+  }
+
+  // ---- CRC32 ----
+  const CRC_TABLE = (() => {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) {
+        c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      table[n] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) {
+      crc = (CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  // ---- deflate/inflate 対応検出 ----
+  let _capabilityCache = null;
+  function capabilities() {
+    if (_capabilityCache) return _capabilityCache;
+    let deflate = false;
+    try {
+      deflate = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function';
+    } catch (_) {
+      deflate = false;
+    }
+    _capabilityCache = { deflate };
+    return _capabilityCache;
+  }
+
+  async function _bytesToStreamBuffer(bytes, StreamCtor, format) {
+    const source = new Blob([bytes]).stream().pipeThrough(new StreamCtor(format));
+    const buffer = await new Response(source).arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+
+  async function deflateRaw(bytes) {
+    return _bytesToStreamBuffer(bytes, CompressionStream, 'deflate-raw');
+  }
+
+  /** 解凍後サイズがヘッダの自己申告と食い違う攻撃（ZIP爆弾）を、実際の
+   * 展開量を数えながら止める。Response#arrayBuffer() は全読み終わるまで
+   * 待つため、ヘッダを偽っての際限ない展開を防げない。 */
+  async function inflateRawCapped(bytes, capBytes) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    const reader = stream.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      let step;
+      try {
+        step = await reader.read();
+      } catch (error) {
+        throw new MeldexArchiveError('破損または未対応のZIPファイルです: ' + (error?.message || error), {
+          code: 'corrupt_zip',
+        });
+      }
+      if (step.done) break;
+      total += step.value.length;
+      if (total > capBytes) {
+        try { await reader.cancel(); } catch (_) { /* 中断できなくても致命的ではない */ }
+        throw new MeldexArchiveError('ZIP内のファイルの展開後サイズが上限を超えています', {
+          code: 'member_too_large',
+          status: 413,
+        });
+      }
+      chunks.push(step.value);
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return out;
+  }
+
+  // ---- ZIP内パスの安全性検査（デスクトップ版 _normalize_member と同じ規則） ----
+  function normalizeMemberPath(raw, opts) {
+    const allowRoot = !!(opts && opts.allowRoot);
+    let value = String(raw == null ? '' : raw).replace(/\\/g, '/').trim();
+    if (allowRoot && !value) return '';
+    if (!value || value.startsWith('/') || /^[A-Za-z]:/.test(value)) {
+      throw new MeldexArchiveError('安全でないZIP内パスです', { code: 'unsafe_path' });
+    }
+    const parts = value.replace(/\/+$/, '').split('/').filter(Boolean);
+    if (!parts.length || parts.some((part) => part === '.' || part === '..')) {
+      throw new MeldexArchiveError('安全でないZIP内パスです', { code: 'unsafe_path' });
+    }
+    return parts.join('/');
+  }
+
+  // 外部属性の上位16bitはUnixモード。symlinkは S_IFLNK (0o120000)。
+  // デスクトップ版と同じくホストOS種別に関わらず機械的に判定する。
+  function isSymlinkExternalAttr(externalAttr) {
+    const mode = (externalAttr >>> 16) & 0xffff;
+    return (mode & 0xf000) === 0xa000;
+  }
+
+  function _extToMime(name) {
+    const dot = name.lastIndexOf('.');
+    const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+    const table = {
+      png: 'image/png', apng: 'image/apng', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+      jfif: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+      bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon',
+      pdf: 'application/pdf',
+      mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', mkv: 'video/x-matroska',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4',
+      txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json',
+      html: 'text/html', htm: 'text/html', css: 'text/css', js: 'text/javascript',
+    };
+    return table[ext] || 'application/octet-stream';
+  }
+
+  function _entryType(name, isDir) {
+    if (isDir) return 'archive-folder';
+    const dot = name.lastIndexOf('.');
+    const ext = dot >= 0 ? name.slice(dot).toLowerCase() : '';
+    if (['.png', '.apng', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.avif'].includes(ext)) return 'image';
+    if (ext === '.pdf') return 'document';
+    if (['.mp4', '.webm', '.mov', '.mkv'].includes(ext)) return 'video';
+    if (['.mp3', '.wav', '.flac', '.m4a', '.ogg'].includes(ext)) return 'audio';
+    return 'archive-file';
+  }
+
+  // ---- 小さなバイナリ読み取りヘルパー ----
+  class _Reader {
+    constructor(bytes) {
+      this.bytes = bytes;
+      this.view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+
+    u16(offset) { return this.view.getUint16(offset, true); }
+
+    u32(offset) { return this.view.getUint32(offset, true); }
+
+    text(offset, length) {
+      return new TextDecoder('utf-8', { fatal: false }).decode(this.bytes.subarray(offset, offset + length));
+    }
+  }
+
+  function _findEocd(bytes) {
+    const maxCommentLength = 65535;
+    const searchStart = Math.max(0, bytes.length - 22 - maxCommentLength);
+    for (let offset = bytes.length - 22; offset >= searchStart; offset -= 1) {
+      if (
+        bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b
+        && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06
+      ) {
+        return offset;
+      }
+    }
+    return -1;
+  }
+
+  function _dosDateTimeToIso(dosDate, dosTime) {
+    const year = ((dosDate >> 9) & 0x7f) + 1980;
+    const month = (dosDate >> 5) & 0x0f;
+    const day = dosDate & 0x1f;
+    const hour = (dosTime >> 11) & 0x1f;
+    const minute = (dosTime >> 5) & 0x3f;
+    const second = (dosTime & 0x1f) * 2;
+    try {
+      return new Date(Date.UTC(year, Math.max(0, month - 1), Math.max(1, day), hour, minute, second)).toISOString();
+    } catch (_) {
+      return new Date(0).toISOString();
+    }
+  }
+
+  /**
+   * ZIPバイト列を検証しながら解析する。デスクトップ版の
+   * `_validated_members` と同じ安全検査（項目数・単一/合計展開後サイズ・
+   * 異常圧縮率・暗号化・symlink・危険パス・重複）を行い、違反があれば
+   * MeldexArchiveError を投げる。
+   */
+  async function parseZip(bytes) {
+    if (!(bytes instanceof Uint8Array)) throw new MeldexArchiveError('ZIPデータの形式が不正です');
+    const eocdOffset = _findEocd(bytes);
+    if (eocdOffset < 0) throw new MeldexArchiveError('破損または未対応のZIPファイルです', { code: 'corrupt_zip' });
+    const reader = new _Reader(bytes);
+    const totalEntries = reader.u16(eocdOffset + 10);
+    const centralDirSize = reader.u32(eocdOffset + 12);
+    const centralDirOffset = reader.u32(eocdOffset + 16);
+    if (totalEntries === 0xffff || centralDirSize === ZIP64_MARKER || centralDirOffset === ZIP64_MARKER) {
+      throw new MeldexArchiveError('この形式のZIP（ZIP64）には対応していません', { code: 'zip64_unsupported' });
+    }
+    if (totalEntries > MAX_MEMBER_COUNT) {
+      throw new MeldexArchiveError(`ZIP内の項目数が上限を超えています (${MAX_MEMBER_COUNT}件まで)`, {
+        code: 'too_many_members', status: 413,
+      });
+    }
+
+    const members = new Map();
+    const seenKeys = new Set();
+    let totalUncompressed = 0;
+    let cursor = centralDirOffset;
+    for (let index = 0; index < totalEntries; index += 1) {
+      if (cursor + 46 > bytes.length || reader.u32(cursor) !== SIG_CENTRAL_HEADER) {
+        throw new MeldexArchiveError('破損または未対応のZIPファイルです', { code: 'corrupt_zip' });
+      }
+      const versionMadeBy = reader.u16(cursor + 4);
+      const flags = reader.u16(cursor + 8);
+      const method = reader.u16(cursor + 10);
+      const modTime = reader.u16(cursor + 12);
+      const modDate = reader.u16(cursor + 14);
+      const memberCrc32 = reader.u32(cursor + 16);
+      const compressedSize = reader.u32(cursor + 20);
+      const uncompressedSize = reader.u32(cursor + 24);
+      const nameLength = reader.u16(cursor + 28);
+      const extraLength = reader.u16(cursor + 30);
+      const commentLength = reader.u16(cursor + 32);
+      const externalAttr = reader.u32(cursor + 38);
+      const localHeaderOffset = reader.u32(cursor + 42);
+      if (
+        compressedSize === ZIP64_MARKER || uncompressedSize === ZIP64_MARKER
+        || localHeaderOffset === ZIP64_MARKER
+      ) {
+        throw new MeldexArchiveError('この形式のZIP（ZIP64）には対応していません', { code: 'zip64_unsupported' });
+      }
+      const rawName = reader.text(cursor + 46, nameLength);
+      cursor += 46 + nameLength + extraLength + commentLength;
+
+      const isDir = rawName.endsWith('/');
+      const name = normalizeMemberPath(rawName, { allowRoot: false });
+      const key = name.toLowerCase();
+      if (seenKeys.has(key)) {
+        throw new MeldexArchiveError(`重複したZIP内パスがあります: ${name}`, { code: 'duplicate_member' });
+      }
+      seenKeys.add(key);
+
+      if (flags & 0x1) {
+        throw new MeldexArchiveError('暗号化されたZIPは扱えません', { code: 'encrypted_zip' });
+      }
+      if (isSymlinkExternalAttr(externalAttr)) {
+        throw new MeldexArchiveError('シンボリックリンクを含むZIPは扱えません', { code: 'symlink_member' });
+      }
+      if (uncompressedSize > MAX_MEMBER_BYTES) {
+        throw new MeldexArchiveError(`ZIP内のファイルが大きすぎます: ${name}`, {
+          code: 'member_too_large', status: 413,
+        });
+      }
+      totalUncompressed += uncompressedSize;
+      if (totalUncompressed > MAX_TOTAL_BYTES) {
+        throw new MeldexArchiveError('ZIPの展開後サイズが上限を超えています', {
+          code: 'total_too_large', status: 413,
+        });
+      }
+      if (
+        uncompressedSize > RATIO_CHECK_MIN_SIZE && compressedSize > 0
+        && uncompressedSize / compressedSize > MAX_COMPRESSION_RATIO
+      ) {
+        throw new MeldexArchiveError(`異常な圧縮率のファイルがあります: ${name}`, {
+          code: 'suspicious_ratio', status: 413,
+        });
+      }
+      if (method !== 0 && method !== 8) {
+        throw new MeldexArchiveError(`未対応の圧縮方式のファイルがあります: ${name}`, {
+          code: 'unsupported_method',
+        });
+      }
+
+      members.set(name, {
+        name,
+        isDir,
+        method,
+        crc32: memberCrc32,
+        compressedSize,
+        uncompressedSize,
+        size: uncompressedSize,
+        localHeaderOffset,
+        modifiedIso: _dosDateTimeToIso(modDate, modTime),
+        versionMadeBy,
+      });
+    }
+    return { members };
+  }
+
+  /** メンバー1件のバイト列を復元し、CRC32を検証してから返す。 */
+  async function extractMember(bytes, memberInfo) {
+    const reader = new _Reader(bytes);
+    const offset = memberInfo.localHeaderOffset;
+    if (offset + 30 > bytes.length || reader.u32(offset) !== SIG_LOCAL_HEADER) {
+      throw new MeldexArchiveError('破損または未対応のZIPファイルです', { code: 'corrupt_zip' });
+    }
+    const nameLength = reader.u16(offset + 26);
+    const extraLength = reader.u16(offset + 28);
+    const dataStart = offset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + memberInfo.compressedSize;
+    if (dataEnd > bytes.length) {
+      throw new MeldexArchiveError('破損または未対応のZIPファイルです', { code: 'corrupt_zip' });
+    }
+    const compressed = bytes.subarray(dataStart, dataEnd);
+    let data;
+    if (memberInfo.method === 0) {
+      data = compressed.slice();
+    } else if (!capabilities().deflate) {
+      throw new MeldexArchiveError('このブラウザは圧縮ZIPの解凍に対応していません', { code: 'deflate_unsupported' });
+    } else {
+      data = await inflateRawCapped(compressed, MAX_MEMBER_BYTES);
+    }
+    if (crc32(data) !== memberInfo.crc32) {
+      throw new MeldexArchiveError(`壊れたZIPです（CRC不一致): ${memberInfo.name}`, { code: 'crc_mismatch' });
+    }
+    return data;
+  }
+
+  // ---- ZIP書き込み ----
+  class _ByteWriter {
+    constructor() {
+      this.chunks = [];
+      this.length = 0;
+    }
+
+    push(bytes) {
+      this.chunks.push(bytes);
+      this.length += bytes.length;
+      return this;
+    }
+
+    u16(value) {
+      const buffer = new Uint8Array(2);
+      new DataView(buffer.buffer).setUint16(0, value & 0xffff, true);
+      return this.push(buffer);
+    }
+
+    u32(value) {
+      const buffer = new Uint8Array(4);
+      new DataView(buffer.buffer).setUint32(0, value >>> 0, true);
+      return this.push(buffer);
+    }
+
+    text(value) {
+      return this.push(new TextEncoder().encode(value));
+    }
+
+    toBytes() {
+      const out = new Uint8Array(this.length);
+      let offset = 0;
+      for (const chunk of this.chunks) {
+        out.set(chunk, offset);
+        offset += chunk.length;
+      }
+      return out;
+    }
+  }
+
+  function _dosDateTime(date) {
+    const d = date || new Date();
+    const dosTime = ((d.getHours() & 0x1f) << 11) | ((d.getMinutes() & 0x3f) << 5) | ((d.getSeconds() >> 1) & 0x1f);
+    const dosDate = (((Math.max(0, d.getFullYear() - 1980)) & 0x7f) << 9)
+      | (((d.getMonth() + 1) & 0x0f) << 5) | (d.getDate() & 0x1f);
+    return { dosTime, dosDate };
+  }
+
+  /**
+   * entries: [{ name: 'a/b.txt', data: Uint8Array }, ...]
+   * ディレクトリの明示エントリは作らない（デスクトップ版の圧縮も同じ仕様で、
+   * ファイルだけを辿って書き込む＝空フォルダは保存されない）。
+   * 戻り値: 完成したZIP全体のUint8Array。書き込みは呼び出し側が最後に
+   * 一度だけ確定パスへ書く（未完成ZIPが残らない設計）。
+   */
+  async function buildZip(entries) {
+    const now = new Date();
+    const { dosTime, dosDate } = _dosDateTime(now);
+    const useDeflate = capabilities().deflate;
+    const central = [];
+    const body = new _ByteWriter();
+
+    for (const entry of entries) {
+      const nameBytes = new TextEncoder().encode(entry.name.replace(/\\/g, '/'));
+      const data = entry.data instanceof Uint8Array ? entry.data : new Uint8Array(entry.data || []);
+      const dataCrc = crc32(data);
+      let method = 0;
+      let payload = data;
+      if (useDeflate && data.length > 0) {
+        try {
+          const compressed = await deflateRaw(data);
+          if (compressed.length < data.length) {
+            method = 8;
+            payload = compressed;
+          }
+        } catch (_) {
+          // 圧縮に失敗しても無圧縮で続行する（サイレント失敗にはしない。
+          // 呼び出し側の圧縮結果には method=0 が反映されるだけで、機能は止めない）
+          method = 0;
+          payload = data;
+        }
+      }
+      const localHeaderOffset = body.length;
+      body.u32(SIG_LOCAL_HEADER);
+      body.u16(20); // version needed
+      body.u16(0); // flags
+      body.u16(method);
+      body.u16(dosTime);
+      body.u16(dosDate);
+      body.u32(dataCrc);
+      body.u32(payload.length);
+      body.u32(data.length);
+      body.u16(nameBytes.length);
+      body.u16(0); // extra length
+      body.push(nameBytes);
+      body.push(payload);
+
+      central.push({
+        nameBytes, method, dosTime, dosDate, crc: dataCrc,
+        compressedSize: payload.length, uncompressedSize: data.length, localHeaderOffset,
+      });
+    }
+
+    const centralWriter = new _ByteWriter();
+    for (const item of central) {
+      centralWriter.u32(SIG_CENTRAL_HEADER);
+      centralWriter.u16(20); // version made by
+      centralWriter.u16(20); // version needed
+      centralWriter.u16(0); // flags
+      centralWriter.u16(item.method);
+      centralWriter.u16(item.dosTime);
+      centralWriter.u16(item.dosDate);
+      centralWriter.u32(item.crc);
+      centralWriter.u32(item.compressedSize);
+      centralWriter.u32(item.uncompressedSize);
+      centralWriter.u16(item.nameBytes.length);
+      centralWriter.u16(0); // extra length
+      centralWriter.u16(0); // comment length
+      centralWriter.u16(0); // disk number start
+      centralWriter.u16(0); // internal attr
+      centralWriter.u32(0); // external attr
+      centralWriter.u32(item.localHeaderOffset);
+      centralWriter.push(item.nameBytes);
+    }
+
+    const centralOffset = body.length;
+    const out = new _ByteWriter();
+    out.push(body.toBytes());
+    out.push(centralWriter.toBytes());
+    out.u32(SIG_EOCD);
+    out.u16(0); // disk number
+    out.u16(0); // start disk
+    out.u16(central.length);
+    out.u16(central.length);
+    out.u32(centralWriter.length);
+    out.u32(centralOffset);
+    out.u16(0); // comment length
+    return out.toBytes();
+  }
+
+  /**
+   * `provider`（端末内保存／Dropboxの両バックエンドで共通の File System
+   * Access API 互換ハンドル抽象）から archivePath のZIPを読み、member を
+   * 復元して返す。/archive/browse・/archive/file ルートと、img/video/iframe
+   * のsrc書き換え（gb-cloud-file-url.js）の両方から共有で使う。
+   */
+  async function readArchiveMemberViaProvider(provider, archivePath, member) {
+    if (!provider) throw new MeldexArchiveError('保存先を利用できません', { status: 500, code: 'no_provider' });
+    const normalizedArchivePath = String(archivePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    if (!normalizedArchivePath.toLowerCase().endsWith('.zip')) {
+      throw new MeldexArchiveError('ZIPファイルが見つかりません', { status: 404, code: 'not_a_zip' });
+    }
+    let handle;
+    try {
+      handle = await provider.getFileHandle(normalizedArchivePath, { create: false });
+    } catch (_) {
+      throw new MeldexArchiveError('ZIPファイルが見つかりません', { status: 404, code: 'archive_not_found' });
+    }
+    const file = await handle.getFile();
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const parsed = await parseZip(bytes);
+    const normalizedMember = normalizeMemberPath(member, { allowRoot: false });
+    const info = parsed.members.get(normalizedMember);
+    if (!info || info.isDir) {
+      throw new MeldexArchiveError('ZIP内のファイルが見つかりません', { status: 404, code: 'member_not_found' });
+    }
+    const data = await extractMember(bytes, info);
+    const leaf = normalizedMember.split('/').pop() || normalizedMember;
+    return { bytes: data, name: leaf, mime: _extToMime(leaf), member: normalizedMember };
+  }
+
+  root.MeldexArchiveZipEngine = {
+    LIMITS: {
+      MAX_MEMBER_COUNT,
+      MAX_MEMBER_BYTES,
+      MAX_TOTAL_BYTES,
+      MAX_COMPRESSION_RATIO,
+      RATIO_CHECK_MIN_SIZE,
+    },
+    MeldexArchiveError,
+    capabilities,
+    crc32,
+    normalizeMemberPath,
+    isSymlinkExternalAttr,
+    parseZip,
+    extractMember,
+    buildZip,
+    readArchiveMemberViaProvider,
+    entryType: _entryType,
+    mimeForName: _extToMime,
+  };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-cloud-fetch.js === */
 ;
 (function () {
@@ -35712,59 +38768,11 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return (relative || '') + String(url?.search || '');
   }
 
-  function _serverApiUrl(apiPath) {
-    const apiBase = window.MeldexRuntimeAdapter?.getServerApiBaseUrl?.() || '';
-    if (!apiBase) return '';
-    const base = apiBase.replace(/\/+$/, '') + '/';
-    return new URL(String(apiPath || '').replace(/^\/+/, ''), base).toString();
-  }
-
-  function _storedAuthToken() {
-    try {
-      return localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function _isConfiguredServerApiUrl(url) {
-    const apiBase = window.MeldexRuntimeAdapter?.getServerApiBaseUrl?.() || '';
-    if (!apiBase) return false;
-    try {
-      const base = new URL(apiBase);
-      const basePath = base.pathname.replace(/\/+$/, '') + '/';
-      const path = String(url?.pathname || '').replace(/\/+$/, '') + '/';
-      return url.origin === base.origin && path.startsWith(basePath);
-    } catch {
-      return false;
-    }
-  }
-
-  async function _serverFetch(input, init, url) {
-    const apiPath = apiRequestPath(url);
-    const remoteUrl = _serverApiUrl(apiPath);
-    if (!remoteUrl) throw new Error('Meldex共有サーバーの接続先が未設定です');
-    const method = init?.method || (input instanceof Request ? input.method : 'GET');
-    const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-    const token = _storedAuthToken();
-    if (token && !headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
-    headers.delete('X-Meldex-Local-Token');
-    const nextInit = { ...(init || {}), method, headers };
-    if (input instanceof Request && init?.body == null && !['GET', 'HEAD'].includes(String(method || '').toUpperCase())) {
-      nextInit.body = await input.clone().arrayBuffer();
-    }
-    nextInit.credentials = 'omit';
-    return nativeFetch(remoteUrl, nextInit);
-  }
-
   window.fetch = async function patchedFetch(input, init) {
     const requestUrl = input instanceof Request ? input.url : input;
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
-    if (window.MeldexRuntimeAdapter?.isServerMode?.() && isApiPath && (isSameOrigin || _isConfiguredServerApiUrl(url))) {
-      return _serverFetch(input, init, url);
-    }
     if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
@@ -35792,12 +38800,15 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           signal: init?.signal,
         }
       ), init?.signal);
-      if ((apiUrl.pathname === '/cal/sync/ical/export' || apiUrl.pathname === '/calendar-db/ical/export') && data?.content != null) {
+      const calendarTextExport = apiUrl.pathname === '/cal/sync/ical/export'
+        || apiUrl.pathname === '/calendar-db/ical/export'
+        || apiUrl.pathname === '/cal/export/attendance-csv';
+      if (calendarTextExport && data?.content != null) {
         return new Response(String(data.content || ''), {
           status: 200,
           headers: {
-            'Content-Type': data.mime || 'text/calendar;charset=utf-8',
-            'Content-Disposition': `attachment; filename="${String(data.filename || 'meldex-calendar.ics').replace(/"/g, '')}"`,
+            'Content-Type': data.mime || (apiUrl.pathname.endsWith('attendance-csv') ? 'text/csv;charset=utf-8' : 'text/calendar;charset=utf-8'),
+            'Content-Disposition': `attachment; filename="${String(data.filename || (apiUrl.pathname.endsWith('attendance-csv') ? 'attendance.csv' : 'meldex-calendar.ics')).replace(/"/g, '')}"`,
           },
         });
       }
@@ -35840,6 +38851,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"' )]+/g;
   const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"' )]+/g;
   const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
+  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 
   function _runtime() {
@@ -35875,12 +38887,36 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return !!value && (typeof window.MeldexResourceUrl?.isFileRawUrl === 'function'
       ? window.MeldexResourceUrl.isFileRawUrl(value)
       : /\/(?:api\/)?file-raw\?/.test(String(value || '')))
-      || /\/(?:api\/)?media\/file\?/.test(String(value || ''));
+      || /\/(?:api\/)?media\/file\?/.test(String(value || ''))
+      || /\/(?:api\/)?archive\/file\?/.test(String(value || ''));
+  }
+
+  // ZIP内のファイル（/archive/file?path=...&member=...）はarchivePathとmember
+  // の2つを識別しないと読めないため、`zip:<archivePath>!/<member>` という
+  // 合成キーへ変換し、以降は通常のfile-rawと同じキャッシュ・書き換え経路に乗せる。
+  function _looksLikeArchiveFileUrl(value) {
+    return !!value && /\/(?:api\/)?archive\/file\?/.test(String(value || ''));
+  }
+
+  function _archiveKeyFromUrl(value) {
+    const raw = String(value || '').trim();
+    if (!_looksLikeArchiveFileUrl(raw)) return '';
+    try {
+      const parsed = new URL(raw, document.baseURI || window.location.href);
+      const archivePath = _normalizeLocalPath(parsed.searchParams.get('path') || '');
+      const member = String(parsed.searchParams.get('member') || '');
+      if (!archivePath) return '';
+      return `zip:${archivePath}!/${member}`;
+    } catch {
+      return '';
+    }
   }
 
   function _extractRawPath(value) {
     const raw = String(value || '').trim();
     if (!raw) return '';
+    const archiveKey = _archiveKeyFromUrl(raw);
+    if (archiveKey) return archiveKey;
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) {
       try {
         const parsed = new URL(raw, document.baseURI || window.location.href);
@@ -35957,47 +38993,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
   }
 
-  function _authHeaders() {
-    const headers = new Headers();
-    try {
-      const token = localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
-      if (token) headers.set('Authorization', 'Bearer ' + token);
-    } catch {}
-    return headers;
-  }
-
-  async function _serverRawUrl(path, opts) {
-    const normalized = _normalizeLocalPath(path);
-    const rawUrl = _fallbackRawUrl(normalized);
-    const response = await fetch(rawUrl, {
-      method: 'GET',
-      headers: _authHeaders(),
-      cache: 'no-store',
-      credentials: 'omit',
-    });
-    if (!response.ok) return { path: normalized, url: rawUrl, streamed: true };
-    const blob = await response.blob();
-    const fileSize = Number(blob.size || 0);
-    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
-      const cachedLarge = CACHE[normalized];
-      if (cachedLarge?.url?.startsWith('blob:')) {
-        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
-      }
-      delete CACHE[normalized];
-      return { path: normalized, url: rawUrl, mime: blob.type || _mimeFromPath(normalized), size: fileSize, streamed: true };
-    }
-    const modified = response.headers.get('etag') || response.headers.get('last-modified') || String(Date.now());
-    const cached = CACHE[normalized];
-    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
-    const url = URL.createObjectURL(blob);
-    if (cached?.url && cached.url.startsWith('blob:')) {
-      try { URL.revokeObjectURL(cached.url); } catch {}
-    }
-    const next = { path: normalized, url, mime: blob.type || _mimeFromPath(normalized), size: fileSize, modified };
-    CACHE[normalized] = next;
-    return next;
-  }
-
   async function _provider() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) return null;
@@ -36025,6 +39020,44 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     throw lastError || new Error('ファイルを取得できませんでした: ' + normalized);
   }
 
+  // ZIP内メンバーの表示URL（archivePath!/member から復元した実体をblob:化する）。
+  // gb-archive-zip-engine.js（端末内保存／Dropboxの両バックエンドで共通）を使う。
+  function _archiveOriginalUrl(zipKey, fallbackDirect) {
+    const match = /^zip:([\s\S]*)!\/([\s\S]*)$/.exec(zipKey);
+    if (!match) return fallbackDirect;
+    return `/api/archive/file?path=${encodeURIComponent(match[1])}&member=${encodeURIComponent(match[2])}`;
+  }
+
+  async function _ensureArchiveRawUrl(zipKey, originalUrl, opts) {
+    const cached = CACHE[zipKey];
+    if (cached) return cached;
+    const fallbackUrl = _archiveOriginalUrl(zipKey, originalUrl);
+    if (!_runtime()?.isBrowserDataMode?.()) {
+      return { path: zipKey, url: fallbackUrl };
+    }
+    const engine = window.MeldexArchiveZipEngine;
+    const match = /^zip:([\s\S]*)!\/([\s\S]*)$/.exec(zipKey);
+    if (!engine || !match) return { path: zipKey, url: fallbackUrl };
+    const provider = await _provider();
+    if (!provider) return { path: zipKey, url: fallbackUrl };
+    let result;
+    try {
+      result = await engine.readArchiveMemberViaProvider(provider, match[1], match[2]);
+    } catch (error) {
+      console.warn('[archive] ZIP内ファイルを読み込めませんでした', error);
+      return { path: zipKey, url: fallbackUrl };
+    }
+    const fileSize = result.bytes.length;
+    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
+      delete CACHE[zipKey];
+      return { path: zipKey, url: fallbackUrl, mime: result.mime, size: fileSize, streamed: true };
+    }
+    const url = _bytesToUrl(result.bytes, result.mime);
+    const next = { path: zipKey, url, mime: result.mime, size: fileSize, modified: String(Date.now()) };
+    CACHE[zipKey] = next;
+    return next;
+  }
+
   async function ensureRawUrl(pathLike, options) {
     const opts = options || {};
     const direct = String(pathLike || '').trim();
@@ -36032,7 +39065,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (_isDirectUrl(direct)) return { path: '', url: direct };
     const normalized = _extractRawPath(direct);
     if (!normalized) return { path: '', url: direct };
-    if (_runtime()?.isServerMode?.()) return _serverRawUrl(normalized, opts);
+    if (normalized.startsWith('zip:')) return _ensureArchiveRawUrl(normalized, direct, opts);
     if (!_runtime()?.isBrowserDataMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
@@ -36074,6 +39107,9 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (_isDirectUrl(direct)) return direct;
     const normalized = _extractRawPath(direct);
     if (!normalized) return direct;
+    if (normalized.startsWith('zip:')) {
+      return getCachedRawUrl(normalized) || _archiveOriginalUrl(normalized, direct);
+    }
     return getCachedRawUrl(normalized) || _fallbackRawUrl(normalized);
   }
 
@@ -36148,7 +39184,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
-      if (isThumbnail && !(_runtime()?.isBrowserDataMode?.() || _runtime()?.isServerMode?.())) return;
+      if (isThumbnail && !_runtime()?.isBrowserDataMode?.()) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }
@@ -36178,16 +39214,18 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
   function _rewriteStyle(element) {
     const styleValue = element.getAttribute('style');
-    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !MEDIA_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue))) {
+    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !MEDIA_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue) && !ARCHIVE_FILE_URL_RE.test(styleValue))) {
       RAW_URL_RE.lastIndex = 0;
       MEDIA_URL_RE.lastIndex = 0;
       THUMB_URL_RE.lastIndex = 0;
+      ARCHIVE_FILE_URL_RE.lastIndex = 0;
       return;
     }
     RAW_URL_RE.lastIndex = 0;
     MEDIA_URL_RE.lastIndex = 0;
     THUMB_URL_RE.lastIndex = 0;
-    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE)];
+    ARCHIVE_FILE_URL_RE.lastIndex = 0;
+    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE), ...styleValue.matchAll(ARCHIVE_FILE_URL_RE)];
     rawMatches.forEach((match) => {
       const urlText = match[0];
       ensureDisplayUrl(urlText).then((info) => {
@@ -36261,518 +39299,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
 
 ;
 
-/* === gb-cloud-sample-seed.js === */
-;
-(function () {
-  const MANIFEST_URL = 'cloud-samples/manifest.json';
-  const DEFAULT_SAMPLE_TARGET_ROOT = 'MeldexHome/サンプル';
-  const HOME_STORAGE_KEY = 'meldex-cloud-home-folder';
-  const SEED_META_PATH = '_meldex/cloud-sample-seed.json';
-  const SEED_META_DOCUMENT_ID = 'cloud-sample-seed';
-  const COPY_YIELD_INTERVAL = 8;
-  let _running = null;
-  let _preparePromise = null;
-
-  function _runtime() {
-    return window.MeldexRuntimeAdapter;
-  }
-
-  function _provider() {
-    return window.MeldexStorageAdapter?.getProvider?.();
-  }
-
-  async function _managementAdapter(provider) {
-    if (typeof provider?.getSystemStorageAdapter === 'function') {
-      const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
-      if (!kind) throw new Error('サンプル管理データの種別を判定できません');
-      return { adapter: provider.getSystemStorageAdapter(), kind };
-    }
-    const resolver = window.MeldexDropboxManagementRootResolver;
-    const kind = window.MeldexSystemStorage?.SystemStorageKind?.WORKSPACE_METADATA;
-    if (!provider || !resolver?.resolveTypedAdapterForProvider || !kind) {
-      throw new Error('サンプル管理データの保存先を安全に判定できません');
-    }
-    return {
-      adapter: await resolver.resolveTypedAdapterForProvider(provider, kind),
-      kind,
-    };
-  }
-
-  async function _readSeedMeta(provider) {
-    const managed = await _managementAdapter(provider);
-    const record = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
-    if (record?.payload) return record.payload;
-    return provider?.readJson ? provider.readJson(SEED_META_PATH, null).catch(() => null) : null;
-  }
-
-  function _isCloudStorageMode() {
-    return _runtime()?.isBrowserDataMode?.()
-      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '');
-  }
-
-  function _normalizePath(path) {
-    return String(path || '')
-      .replace(/\\/g, '/')
-      .replace(/^\/+/, '')
-      .replace(/\/+/g, '/')
-      .replace(/^\.\//, '')
-      .replace(/\/$/, '');
-  }
-
-  function _basename(path) {
-    const normalized = _normalizePath(path);
-    if (!normalized) return '';
-    const index = normalized.lastIndexOf('/');
-    return index >= 0 ? normalized.slice(index + 1) : normalized;
-  }
-
-  function _dirname(path) {
-    const normalized = _normalizePath(path);
-    if (!normalized.includes('/')) return '';
-    return normalized.slice(0, normalized.lastIndexOf('/'));
-  }
-
-  function _absoluteStaticUrl(path) {
-    return new URL(_normalizePath(path), document.baseURI || window.location.href).toString();
-  }
-
-  function _rememberHome(path) {
-    const normalized = _normalizePath(path);
-    if (!normalized) return;
-    try {
-      localStorage.setItem(HOME_STORAGE_KEY, JSON.stringify({
-        path: normalized,
-        name: _basename(normalized),
-        exists: true,
-        locked_folders: [],
-        locked_paths: [],
-      }));
-    } catch {}
-  }
-
-  async function _yieldToUi() {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-
-  async function _readManifest() {
-    const response = await fetch(_absoluteStaticUrl(MANIFEST_URL), { cache: 'no-store' });
-    if (!response.ok) throw new Error(`サンプルマニフェストを取得できませんでした: HTTP ${response.status}`);
-    const manifest = await response.json();
-    if (manifest?.type !== 'meldex-cloud-sample-seed') {
-      throw new Error('サンプルマニフェストの形式が不正です');
-    }
-    manifest.targetRoot = _normalizePath(manifest.targetRoot) || DEFAULT_SAMPLE_TARGET_ROOT;
-    if (!Array.isArray(manifest.entries)) {
-      throw new Error('サンプルファイル一覧が不正です');
-    }
-    return manifest;
-  }
-
-  async function _hasWritePermission(provider) {
-    if (!provider) return false;
-    if (!provider.ensureWorkspacePermission) return true;
-    try {
-      return !!(await provider.ensureWorkspacePermission('readwrite'));
-    } catch {
-      return false;
-    }
-  }
-
-  async function _statPath(provider, path) {
-    const normalized = _normalizePath(path);
-    if (!normalized) return null;
-    try {
-      if (provider?.statPath) return await provider.statPath(normalized);
-      if (provider?.getMetadata) {
-        const meta = await provider.getMetadata(normalized);
-        if (!meta) return null;
-        return { kind: meta['.tag'] === 'folder' ? 'directory' : 'file', path: normalized };
-      }
-    } catch {
-      return null;
-    }
-    return null;
-  }
-
-  async function _requireUnlockedPath(provider, path, options = {}) {
-    const normalized = _normalizePath(path);
-    if (!normalized || !window.MeldexFileLockStore?.requireUnlocked) return;
-    await window.MeldexFileLockStore.requireUnlocked(provider, normalized, options);
-  }
-
-  async function _ensureDirectory(provider, path, options = {}) {
-    const normalized = _normalizePath(path);
-    if (!normalized || !provider?.ensureDirectory) return;
-    await _requireUnlockedPath(provider, normalized, {
-      action: options.action || 'sample-create-directory',
-      includeDescendants: !!options.includeDescendants,
-    });
-    await provider.ensureDirectory(normalized);
-  }
-
-  async function prepareHome(options) {
-    if (_preparePromise) return _preparePromise;
-    _preparePromise = (async () => {
-      if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
-      const provider = _provider();
-      if (!provider) return { ok: false, skipped: 'missing-provider' };
-      const opts = options || {};
-      const manifest = await _readManifest();
-      const targetRoot = _normalizePath(manifest.targetRoot);
-      const homePath = targetRoot.split('/')[0] || 'MeldexHome';
-      const canWrite = await _hasWritePermission(provider);
-      if (canWrite) {
-        await _ensureDirectory(provider, homePath, { action: 'sample-prepare-home' });
-        if (opts.createSampleRoot) await _ensureDirectory(provider, targetRoot, { action: 'sample-prepare-root' });
-        _rememberHome(homePath);
-        return { ok: true, homePath, targetRoot, writable: true };
-      }
-      const existing = await _statPath(provider, targetRoot);
-      if (existing?.kind === 'directory') _rememberHome(homePath);
-      return { ok: !!existing, homePath, targetRoot, writable: false };
-    })().finally(() => {
-      _preparePromise = null;
-    });
-    return _preparePromise;
-  }
-
-  async function status() {
-    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
-    const provider = _provider();
-    if (!provider) return { ok: false, skipped: 'missing-provider' };
-    const manifest = await _readManifest();
-    const targetRoot = _normalizePath(manifest.targetRoot);
-    const meta = await _readSeedMeta(provider);
-    const sampleRoot = await _statPath(provider, targetRoot);
-    const failed = Number(meta?.failed || 0);
-    const hasSampleFolder = sampleRoot?.kind === 'directory';
-    const contentHashMatches = !manifest.contentHash || String(meta?.contentHash || '') === String(manifest.contentHash || '');
-    return {
-      ok: true,
-      targetRoot,
-      hasSampleFolder,
-      hasInstallMeta: !!meta,
-      installed: !!meta && failed === 0 && hasSampleFolder && contentHashMatches,
-      contentHashMatches,
-      needsUpdate: !!meta && hasSampleFolder && !contentHashMatches,
-      meta,
-    };
-  }
-
-  async function _sha256Hex(bytes) {
-    if (!window.crypto?.subtle) return '';
-    const digest = await window.crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(digest))
-      .map((value) => value.toString(16).padStart(2, '0'))
-      .join('');
-  }
-
-  async function _fetchAsset(entry) {
-    const response = await fetch(_absoluteStaticUrl(entry.asset), { cache: 'force-cache' });
-    if (!response.ok) throw new Error(`サンプルファイルを取得できませんでした: ${entry.relativePath || entry.asset}`);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (Number(entry.size || 0) > 0 && bytes.length !== Number(entry.size || 0)) {
-      throw new Error(`サンプルファイルサイズが一致しません: ${entry.relativePath || entry.asset}`);
-    }
-    if (entry.sha256 && window.crypto?.subtle) {
-      const digest = await _sha256Hex(bytes);
-      if (digest && digest !== String(entry.sha256)) {
-        throw new Error(`サンプルファイルのハッシュが一致しません: ${entry.relativePath || entry.asset}`);
-      }
-    }
-    return bytes;
-  }
-
-  function _entryHashMap(manifest) {
-    const map = {};
-    (Array.isArray(manifest?.entries) ? manifest.entries : []).forEach((entry) => {
-      const targetPath = _normalizePath(entry?.targetPath);
-      const sha256 = String(entry?.sha256 || '').trim();
-      if (targetPath && sha256) map[targetPath] = sha256;
-    });
-    return map;
-  }
-
-  function _sampleContentNeedsRefresh(manifest, meta) {
-    return !!meta
-      && !!manifest?.contentHash
-      && String(meta?.contentHash || '') !== String(manifest.contentHash || '');
-  }
-
-  async function _existingFileMatchesManifest(provider, targetPath, entry) {
-    if (!entry?.sha256 || !window.crypto?.subtle || typeof provider?.downloadAsFile !== 'function') return false;
-    const file = await provider.downloadAsFile(targetPath);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const digest = await _sha256Hex(bytes);
-    return !!digest && digest === String(entry.sha256);
-  }
-
-  async function _copyMissingEntries(provider, manifest, options = {}) {
-    const result = { copied: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
-    const entries = Array.isArray(manifest.entries) ? manifest.entries : [];
-    const refreshExisting = !!options.refreshExisting;
-    for (let index = 0; index < entries.length; index += 1) {
-      const entry = entries[index] || {};
-      const targetPath = _normalizePath(entry.targetPath);
-      if (!targetPath || !_normalizePath(entry.asset)) {
-        result.failed += 1;
-        result.errors.push({ targetPath, error: 'invalid-entry' });
-        continue;
-      }
-      try {
-        const existing = await _statPath(provider, targetPath);
-        if (existing?.kind === 'file') {
-          if (!refreshExisting || await _existingFileMatchesManifest(provider, targetPath, entry)) {
-            result.skipped += 1;
-            continue;
-          }
-          await _requireUnlockedPath(provider, targetPath, { action: 'sample-update' });
-          const bytes = await _fetchAsset(entry);
-          await provider.uploadBytes(targetPath, bytes);
-          result.updated += 1;
-          continue;
-        }
-        const parent = _dirname(targetPath);
-        await _requireUnlockedPath(provider, targetPath, { action: 'sample-upload' });
-        if (parent) await _ensureDirectory(provider, parent, { action: 'sample-create-parent' });
-        const bytes = await _fetchAsset(entry);
-        await provider.uploadBytes(targetPath, bytes);
-        result.copied += 1;
-      } catch (err) {
-        result.failed += 1;
-        result.errors.push({ targetPath, error: err?.message || String(err) });
-      }
-      if ((index + 1) % COPY_YIELD_INTERVAL === 0) await _yieldToUi();
-    }
-    return result;
-  }
-
-  async function _writeSeedMeta(provider, manifest, result) {
-    const managed = await _managementAdapter(provider);
-    const current = await managed.adapter.load(managed.kind, SEED_META_DOCUMENT_ID);
-    await managed.adapter.save(managed.kind, SEED_META_DOCUMENT_ID, {
-      type: 'meldex-cloud-sample-seed-result',
-      contentHash: manifest.contentHash || '',
-      entryHashes: _entryHashMap(manifest),
-      fileCount: manifest.fileCount || 0,
-      totalBytes: manifest.totalBytes || 0,
-      targetRoot: manifest.targetRoot || '',
-      copied: result.copied || 0,
-      updated: result.updated || 0,
-      skipped: result.skipped || 0,
-      failed: result.failed || 0,
-      updatedAt: new Date().toISOString(),
-    }, {
-      expectedRevision: current?.revision ?? null,
-    });
-  }
-
-  async function _ensureNow() {
-    if (!_isCloudStorageMode()) return { ok: false, skipped: 'not-cloud-storage' };
-    const provider = _provider();
-    if (!provider?.uploadBytes) return { ok: false, skipped: 'missing-provider' };
-    const manifest = await _readManifest();
-    const canWrite = await _hasWritePermission(provider);
-    if (!canWrite) return { ok: false, skipped: 'readonly' };
-    const previousMeta = await _readSeedMeta(provider);
-    await prepareHome({ createSampleRoot: true });
-    await _ensureDirectory(provider, _normalizePath(manifest.targetRoot));
-    const result = await _copyMissingEntries(provider, manifest, {
-      refreshExisting: _sampleContentNeedsRefresh(manifest, previousMeta),
-    });
-    try {
-      await _writeSeedMeta(provider, manifest, result);
-    } catch (err) {
-      result.failed += 1;
-      result.errors.push({ targetPath: SEED_META_PATH, error: err?.message || String(err) });
-    }
-    if (typeof refreshOutliner === 'function') {
-      const refreshResult = refreshOutliner();
-      refreshResult?.catch?.(() => {});
-    }
-    if ((result.copied > 0 || result.updated > 0) && typeof showStatus === 'function') {
-      const updateText = result.updated > 0 ? ` / 更新 ${result.updated} 件` : '';
-      showStatus(`クラウド版サンプルを準備しました（追加 ${result.copied} 件${updateText}）`);
-    }
-    return { ok: result.failed === 0, ...result };
-  }
-
-  function _startEnsure() {
-    if (!_running) {
-      _running = _ensureNow()
-        .catch((err) => {
-          console.warn('[MeldexCloudSampleSeed] sample seed failed', err);
-          const message = err?.message || String(err);
-          return {
-            ok: false,
-            copied: 0,
-            updated: 0,
-            skipped: 0,
-            failed: 1,
-            errors: [{ targetPath: MANIFEST_URL, error: message }],
-            error: message,
-          };
-        })
-        .finally(() => {
-          _running = null;
-        });
-    }
-    return _running;
-  }
-
-  function ensure(options) {
-    if (options?.background) {
-      setTimeout(() => {
-        _startEnsure().catch(() => {});
-      }, 0);
-      return Promise.resolve({ ok: true, scheduled: true });
-    }
-    return _startEnsure();
-  }
-
-  window.MeldexCloudSampleSeed = {
-    prepareHome,
-    ensure,
-    status,
-    _readManifestForTest: _readManifest,
-  };
-})();
-
-;
-
-/* === gb-sample-installer.js === */
-;
-(function () {
-  'use strict';
-
-  if (window.MeldexSampleInstaller) return;
-
-  const DECISION_KEY_PREFIX = 'meldex-sample-install-decision-v1:';
-
-  function _runtime() {
-    return window.MeldexRuntimeAdapter;
-  }
-
-  function _isCloudStorageMode() {
-    return !!(_runtime()?.isBrowserDataMode?.()
-      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || ''));
-  }
-
-  function _normalizePath(path) {
-    return String(path || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  }
-
-  function _workspaceId(context) {
-    const mode = _isCloudStorageMode() ? 'cloud' : 'desktop';
-    const state = _runtime()?.getWorkspaceState?.() || {};
-    let path = _normalizePath(context?.homePath || state.path || state.homePath || window._homeFolderPath || '');
-    if (!path) {
-      try {
-        const home = JSON.parse(localStorage.getItem('meldex-cloud-home-folder') || 'null');
-        path = _normalizePath(home?.path || '');
-      } catch {}
-    }
-    return mode + ':' + (path || 'default');
-  }
-
-  function _decisionKey(context) {
-    return DECISION_KEY_PREFIX + _workspaceId(context);
-  }
-
-  function _writeDecision(context, value) {
-    try {
-      localStorage.setItem(_decisionKey(context), String(value || ''));
-    } catch {}
-  }
-
-  function _sampleDownloadUrl() {
-    const cfg = window.MeldexCloudRuntimeConfig || {};
-    const url = String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
-    return /\.zip(?:[?#].*)?$/i.test(url) ? url : '';
-  }
-
-  function _showStatus(message, isError) {
-    if (typeof showStatus === 'function') showStatus(message, !!isError);
-  }
-
-  function _resultMessage(result) {
-    const copied = Number(result?.copied || 0);
-    const updated = Number(result?.updated || 0);
-    const skipped = Number(result?.skipped || 0);
-    const failed = Number(result?.failed || 0);
-    if (result?.ok === false) {
-      const message = result?.message || result?.error || result?.detail?.message || result?.skipped || '';
-      return message ? `サンプルファイルを追加できませんでした: ${message}` : 'サンプルファイルを追加できませんでした';
-    }
-    if (failed > 0) return `サンプルファイルの追加に失敗しました（失敗 ${failed} 件）`;
-    if (copied > 0 && updated > 0) return `サンプルファイルを追加・更新しました（追加 ${copied} 件 / 更新 ${updated} 件）`;
-    if (copied > 0) return `サンプルファイルを追加しました（追加 ${copied} 件）`;
-    if (updated > 0) return `サンプルファイルを更新しました（更新 ${updated} 件）`;
-    if (skipped > 0) return 'サンプルファイルは既に追加済みです';
-    return 'サンプルファイルを確認しました';
-  }
-
-  async function installNow(context) {
-    const ctx = context || {};
-    try {
-      if (_isCloudStorageMode()) {
-        if (!window.MeldexCloudSampleSeed?.ensure) throw new Error('クラウド版サンプルの準備機能を読み込めませんでした');
-        const result = await window.MeldexCloudSampleSeed.ensure({ background: false });
-        if (result?.ok) _writeDecision(ctx, 'installed');
-        if (typeof refreshOutliner === 'function') refreshOutliner()?.catch?.(() => {});
-        _showStatus(_resultMessage(result), !result?.ok);
-        return result;
-      }
-      if (typeof apiPost !== 'function') throw new Error('サンプル追加APIを呼び出せませんでした');
-      const downloadUrl = _sampleDownloadUrl();
-      const body = downloadUrl ? { downloadUrl } : {};
-      const result = await apiPost('/samples/install', body, { silentError: true });
-      if (result?.ok) _writeDecision(ctx, 'installed');
-      if (typeof loadOutliner === 'function') loadOutliner()?.catch?.(() => {});
-      if (typeof renderHomeFolderTree === 'function') {
-        try { renderHomeFolderTree(); } catch {}
-      }
-      _showStatus(_resultMessage(result), !result?.ok);
-      return result;
-    } catch (error) {
-      const result = { ok: false, error: error?.message || String(error) };
-      _showStatus(_resultMessage(result), true);
-      return result;
-    }
-  }
-
-  // 旧版の呼び出し元との互換性のため名前だけ残す。確認ダイアログは表示せず、
-  // ユーザーが「サンプルを追加」を押した時点で直ちに追加する。
-  async function openPrompt(context) {
-    return installNow(context || {});
-  }
-
-  async function maybePromptAfterSetup(context) {
-    return { ok: false, skipped: 'automatic-prompt-disabled' };
-  }
-
-  function schedulePostSetupPrompt(context) {
-    return { ok: false, skipped: 'automatic-prompt-disabled' };
-  }
-
-  function resetDecision(context) {
-    try {
-      localStorage.removeItem(_decisionKey(context || {}));
-    } catch {}
-  }
-
-  window.MeldexSampleInstaller = {
-    installNow,
-    openPrompt,
-    maybePromptAfterSetup,
-    schedulePostSetupPrompt,
-    resetDecision,
-    _workspaceIdForTest: _workspaceId,
-  };
-})();
-
-;
-
 /* === gb-cloud-bootstrap.js === */
 ;
 (function () {
@@ -36803,16 +39329,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return _runtime()?.isBrowserMode?.() || document.body?.dataset?.cloudMode === 'browser';
   }
 
-  function _isServerMode() {
-    return _runtime()?.isServerMode?.() || document.body?.dataset?.cloudMode === 'server';
-  }
-
   function _localDataModeForPage() {
     return _isHostedCloudPage() || _isBrowserMode() ? 'browser' : 'legacy';
   }
 
   function _isLocalConflictMonitorHost() {
-    return !_isDropboxMode() && !_isBrowserMode() && !_isServerMode() && _isLocalAppHost();
+    return !_isDropboxMode() && !_isBrowserMode() && _isLocalAppHost();
   }
 
   function _phase1FeatureLabel(type) {
@@ -36861,12 +39383,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   }
 
   function _esc(text) {
-    return String(text == null ? '' : text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return MeldexEscape.html(text);
   }
 
   function _showBanner(message, isError, options) {
@@ -37374,17 +39891,13 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Dropboxで始める</div>
             <div style="font-size:12px;line-height:1.6;color:#a8c0b0;">共有フォルダや別端末と同じソースフォルダを使います。次の画面でDropboxに接続します。</div>
           </button>
-          <button id="choose-server" data-e2e-id="cloud-mode-server" type="button" class="meldex-cloud-choice meldex-cloud-choice--server" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #3d6f86;background:#17242b;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
-            <div style="font-size:17px;font-weight:700;margin-bottom:6px;">Meldex共有サーバーに接続</div>
-            <div style="font-size:12px;line-height:1.6;color:#a8c8d7;">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。Meldex公式のサーバー契約は不要です。</div>
-          </button>
           <button id="choose-legacy" data-e2e-id="cloud-mode-local" type="button" class="meldex-cloud-choice meldex-cloud-choice--legacy" style="box-sizing:border-box;width:100%;min-width:0;text-align:left;padding:16px;border-radius:10px;border:1px solid #333;background:#252525;color:#d4d4d4;cursor:pointer;white-space:normal;overflow-wrap:break-word;">
             <div style="font-size:17px;font-weight:700;margin-bottom:6px;">この端末に保存</div>
             <div style="font-size:12px;line-height:1.6;color:#969696;">アカウントなしで、この端末内だけに保存します。</div>
           </button>
         </div>
         <div class="meldex-cloud-mode-note" style="margin-top:14px;padding:10px 12px;border:1px solid #333;border-radius:8px;background:#252525;font-size:12px;line-height:1.7;color:#bdbdbd;">
-          <div><strong>共有したい場合:</strong> 同じDropboxを使う端末間ではDropbox、常時稼働PCやNASへ集約する場合は自分で管理するMeldex共有サーバーを選べます。どちらもMeldex公式のサーバーを必要としません。</div>
+          <div><strong>共同作業:</strong> メンバー、権限、スケジュールを同じワークスペースで使う場合はDropboxを選びます。NAS内のファイルは、デスクトップ版でソースフォルダとして参照できます。</div>
         </div>`;
       const cancelButton = document.createElement('button');
       cancelButton.id = 'choose-cancel';
@@ -37419,178 +39932,62 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         dialogApi.close('select-' + mode);
       };
       body.querySelector('#choose-dropbox').addEventListener('click', () => choose('dropbox'));
-      body.querySelector('#choose-server').addEventListener('click', () => choose('server'));
       body.querySelector('#choose-legacy').addEventListener('click', () => choose(localMode));
       cancelButton.addEventListener('click', () => dialogApi.close('cancel'));
       dialogApi.open();
     });
   }
 
-  function _serverConnectionUrlFromInput(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-      const url = new URL(raw);
-      if (!['http:', 'https:'].includes(url.protocol)) return '';
-      url.hash = '';
-      url.search = '';
-      if (/\/api\/?$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\/api\/?$/i, '/');
-      if (!url.pathname.endsWith('/')) url.pathname += '/';
-      return url.toString();
-    } catch {
-      return '';
-    }
-  }
-
-  function _serverApiUrl(baseUrl, path) {
-    const base = _serverConnectionUrlFromInput(baseUrl);
-    if (!base) return '';
-    return new URL('api/' + String(path || '').replace(/^\/+/, ''), base).toString();
-  }
-
-  async function _testSharedServerConnection(baseUrl) {
-    const normalized = _serverConnectionUrlFromInput(baseUrl);
-    if (!normalized) throw new Error('接続先URLを確認してください');
-    const response = await fetch(_serverApiUrl(normalized, '/server-info'), {
-      method: 'GET',
-      cache: 'no-store',
-      credentials: 'omit',
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      if (response.status === 403 && /local API token/i.test(detail)) {
-        throw new Error('接続先は見つかりましたが、共有サーバーとしての公開設定が有効ではありません。管理者に、ユーザー認証の準備と MELDEX_DISABLE_LOCAL_API_TOKEN=1 の明示設定を確認してください。');
-      }
-      throw new Error(`接続できませんでした（HTTP ${response.status}）`);
-    }
-    const info = await response.json();
-    return { normalized, info };
-  }
-
-  async function _showSharedServerSetupModal(message) {
+  function _showRetiredServerMigrationNotice() {
     _hideStartupSplashForBlockingCloudUi();
-    const current = _runtime().getServerConnection?.();
-    const initialUrl = current?.url || '';
     const localMode = _localDataModeForPage();
-    const canSwitchLegacy = true;
     return new Promise((resolve) => {
       const body = document.createElement('div');
-      body.className = 'meldex-shared-server-body';
-      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">自分やチームで管理するPCまたはNAS上のMeldexへ接続します。ノート、画像、ユーザー、ワークスペースはこの接続先から読み込みます。Meldex公式による常設サーバーは不要です。</div>
-        ${message ? `<div style="margin-bottom:14px;padding:10px 12px;border-radius:8px;background:#352919;color:#f3d08a;font-size:12px;line-height:1.6;">${_esc(message)}</div>` : ''}
-        <section class="meldex-cloud-setup-section" style="border:1px solid #333;border-radius:10px;padding:14px 16px;margin-bottom:14px;">
-          <label style="display:block;font-size:12px;color:#969696;margin-bottom:4px;">接続先URL</label>
-          <input id="shared-server-url" data-e2e-id="shared-server-url" class="gb-input" type="url" value="${_esc(initialUrl)}" placeholder="https://example.com/ または http://192.168.1.10:8001/" style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid #444;background:#252525;color:#d4d4d4;">
-          <div style="margin-top:8px;font-size:12px;color:#969696;line-height:1.6;">インターネット経由で使う場合はHTTPSまたはVPN経由のURLを指定してください。LAN内HTTPは閉じたネットワークでの利用に限ってください。</div>
-        </section>
-        <div id="shared-server-status" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#263644;color:#b7d7ee;font-size:12px;line-height:1.6;"></div>
-        <div id="shared-server-error" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:#44262c;color:#f7b4c0;font-size:12px;line-height:1.6;"></div>
-      `;
+      body.className = 'meldex-retired-server-body';
+      body.innerHTML = `<div class="gb-section-desc meldex-cloud-mode-description">Meldex共有サーバー機能は終了しました。共同ワークスペースはDropboxへ一本化されます。</div>
+        <div style="margin-top:12px;padding:10px 12px;border:1px solid #4b4433;border-radius:8px;background:#2d291f;color:#e1cf9b;font-size:12px;line-height:1.7;">
+          管理者PCやNASにある既存ファイルは移動・削除されません。NAS内のファイルは、デスクトップ版のソースフォルダとして引き続き参照できます。
+        </div>`;
       const localButton = document.createElement('button');
-      localButton.id = 'shared-server-switch-legacy';
       localButton.type = 'button';
       localButton.className = 'gb-btn gb-btn-quiet';
-      localButton.dataset.e2eId = 'shared-server-local';
-      localButton.textContent = 'この端末に保存して使う';
-      const testButton = document.createElement('button');
-      testButton.id = 'shared-server-test';
-      testButton.type = 'button';
-      testButton.className = 'gb-btn gb-btn-quiet';
-      testButton.dataset.e2eId = 'shared-server-test';
-      testButton.textContent = '接続を確認';
-      const continueButton = document.createElement('button');
-      continueButton.id = 'shared-server-continue';
-      continueButton.type = 'button';
-      continueButton.className = 'gb-btn gb-btn-primary';
-      continueButton.dataset.e2eId = 'shared-server-continue';
-      continueButton.textContent = 'この接続先で開始';
+      localButton.dataset.e2eId = 'retired-server-local';
+      localButton.textContent = 'この端末に保存';
+      const dropboxButton = document.createElement('button');
+      dropboxButton.type = 'button';
+      dropboxButton.className = 'gb-btn gb-btn-primary';
+      dropboxButton.dataset.e2eId = 'retired-server-dropbox';
+      dropboxButton.textContent = 'Dropboxを使う';
       let resultValue = { ok: false, cancelled: true };
       let settled = false;
-      let busy = false;
-      let dialogApi = null;
-      const setBusy = value => {
-        busy = !!value;
-        dialogApi?.overlay?.setAttribute('aria-busy', busy ? 'true' : 'false');
-        body.querySelectorAll('input,button').forEach(control => { control.disabled = busy; });
-        [localButton, testButton, continueButton].forEach(button => { button.disabled = busy; });
-      };
-      dialogApi = window.GBUI.createModal({
-        id: 'shared-server-setup',
-        title: 'Meldex共有サーバーに接続',
+      const dialogApi = window.GBUI.createModal({
+        id: 'retired-server-migration',
+        title: '保存先を選び直してください',
         body,
-        footer: canSwitchLegacy ? [localButton, testButton, continueButton] : [testButton, continueButton],
+        footer: [localButton, dropboxButton],
         variant: 'standard',
         extraClass: 'meldex-cloud-setup-modal',
-        geometryKey: 'cloud-shared-server',
-        initialFocus: '#shared-server-url',
-        onBeforeClose: () => !busy,
+        geometryKey: 'cloud-retired-server-migration',
+        initialFocus: '[data-e2e-id="retired-server-dropbox"]',
         onClose: () => {
           if (settled) return;
           settled = true;
           resolve(resultValue);
         },
       });
-      dialogApi.modal.classList.add('meldex-shared-server-modal');
-      const overlay = dialogApi.overlay;
-      overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
-      overlay.style.zIndex = '10030';
-      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'shared-server-close');
-
-      function setStatus(text, isError) {
-        const statusEl = overlay.querySelector('#shared-server-status');
-        const errorEl = overlay.querySelector('#shared-server-error');
-        if (isError) {
-          statusEl.style.display = 'none';
-          statusEl.textContent = '';
-          errorEl.style.display = '';
-          errorEl.textContent = text || '';
-          return;
-        }
-        errorEl.style.display = 'none';
-        errorEl.textContent = '';
-        statusEl.style.display = text ? '' : 'none';
-        statusEl.textContent = text || '';
-      }
-
-      async function confirmConnection() {
-        const input = overlay.querySelector('#shared-server-url');
-        const result = await _testSharedServerConnection(input?.value || '');
-        input.value = result.normalized;
-        const info = result.info || {};
-        const port = info.port ? `:${info.port}` : '';
-        setStatus(`接続できました。サーバー: ${info.host || 'Meldex'}${port}`, false);
-        return result;
-      }
-
-      testButton.addEventListener('click', async () => {
-        setBusy(true);
-        try {
-          await confirmConnection();
-        } catch (err) {
-          setStatus(err?.message || String(err), true);
-        } finally {
-          setBusy(false);
-        }
-      });
-      localButton.addEventListener('click', () => {
-        resultValue = { ok: false, switchToLegacy: true };
-        _runtime().setMode(localMode);
-        dialogApi.close('switch-local');
-      });
-      continueButton.addEventListener('click', async () => {
-        setBusy(true);
-        try {
-          const result = await confirmConnection();
-          _runtime().setServerConnection?.({ url: result.normalized });
-          _runtime().setMode('server');
-          resultValue = { ok: true, mode: 'server', server: result };
-          setBusy(false);
-          dialogApi.close('complete');
-        } catch (err) {
-          setStatus(err?.message || String(err), true);
-          setBusy(false);
-        }
-      });
+      dialogApi.modal.classList.add('meldex-retired-server-modal');
+      dialogApi.overlay.classList.add('modal-overlay', 'meldex-cloud-setup-overlay');
+      dialogApi.overlay.style.zIndex = '10030';
+      dialogApi.header.querySelector('.gb-modal-close')?.setAttribute('data-e2e-id', 'retired-server-close');
+      const choose = mode => {
+        // 端末保存は追加設定なしで確定できる。一方、Dropbox は OAuth や
+        // 保存先確認が完了するまで旧接続設定を残し、失敗・取消後の再案内に使う。
+        if (mode === localMode) _runtime().completeRetiredServerMigration?.(mode);
+        resultValue = { ok: true, mode, switchToLegacy: mode === localMode };
+        dialogApi.close('select-' + mode);
+      };
+      localButton.addEventListener('click', () => choose(localMode));
+      dropboxButton.addEventListener('click', () => choose('dropbox'));
       dialogApi.open();
     });
   }
@@ -37914,7 +40311,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           return;
         }
         resultValue = { ok: false, switchToLegacy: true };
-        _runtime().setMode(localMode);
+        if (_runtime().hasRetiredServerConfig?.()) _runtime().completeRetiredServerMigration?.(localMode);
+        else _runtime().setMode(localMode);
         dialogApi.close('switch-local');
       });
 
@@ -37955,42 +40353,6 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     return _localDataModeForPage() === 'browser' ? _enterBrowserMode() : _enterLegacyMode();
   }
 
-  async function _enterServerMode(message) {
-    document.body.dataset.cloudMode = 'server';
-    delete document.body.dataset.cloudReadonly;
-    while (true) {
-      const connection = _runtime().getServerConnection?.();
-      if (!connection?.url) {
-        const result = await _showSharedServerSetupModal(message || 'Meldex共有サーバーの接続先を設定してください。');
-        if (result?.switchToLegacy) return _enterLocalModeForPage();
-        if (!result?.ok) return false;
-        continue;
-      }
-      try {
-        await _testSharedServerConnection(connection.url);
-        await window.MeldexStorageAdapter?.describeWorkspace?.().catch(() => null);
-        _showBanner(`Meldex共有サーバー 接続済み: ${connection.url}`, false);
-        setTimeout(() => {
-          const bar = document.getElementById('cloud-mode-banner');
-          if (bar && bar.dataset.cloudPersistent !== '1') bar.remove();
-        }, 3000);
-        return true;
-      } catch (err) {
-        const result = await _showSharedServerSetupModal(err?.message || String(err));
-        if (result?.switchToLegacy) return _enterLocalModeForPage();
-        if (!result?.ok) return false;
-      }
-    }
-  }
-
-  function _isDesktopLaunch() {
-    try {
-      return new URLSearchParams(window.location.search).get('desktop') === '1';
-    } catch {
-      return false;
-    }
-  }
-
   function _isLocalAppHost() {
     try {
       const host = String(window.location.hostname || '').toLowerCase();
@@ -38012,17 +40374,20 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   function _isHostedCloudLaunch() {
     try {
       const params = new URLSearchParams(window.location.search);
-      if (params.has('dataAccessMode') || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
+      const requestedMode = params.get('dataAccessMode');
+      if (['legacy', 'browser', 'dropbox'].includes(requestedMode) || params.get('safeMode') === '1' || params.get('desktop') === '1') return false;
     } catch {}
     return _isHostedCloudPage();
   }
 
   async function prepareLaunch() {
     const callback = await _auth().handleRedirectCallback();
+    let migrationMode = null;
     if (callback.handled && !callback.ok) {
       await _showDropboxSetupModal(callback.error || 'Dropboxへの接続に失敗しました');
     } else if (callback.handled && callback.ok) {
-      _runtime().setMode('dropbox');
+      if (_runtime().hasRetiredServerConfig?.()) migrationMode = 'dropbox';
+      else _runtime().setMode('dropbox');
     }
     try {
       const params = new URLSearchParams(window.location.search);
@@ -38033,11 +40398,17 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     } catch {}
     const cloudHomeReady = await window.MeldexBetaRelease?.prepareCloudHomeLaunch?.();
     if (cloudHomeReady === false) return false;
-    let mode = _runtime().getMode();
+    if (_runtime().hasRetiredServerConfig?.() && !migrationMode) {
+      const migration = await _showRetiredServerMigrationNotice();
+      if (!migration?.ok) return false;
+      if (migration.switchToLegacy) return _enterLocalModeForPage();
+      migrationMode = migration.mode;
+    }
+    let mode = migrationMode || _runtime().getMode();
     let hasExplicitMode = false;
     try {
       const params = new URLSearchParams(window.location.search);
-      hasExplicitMode = params.has('dataAccessMode') || params.get('safeMode') === '1';
+      hasExplicitMode = ['legacy', 'browser', 'dropbox'].includes(params.get('dataAccessMode')) || params.get('safeMode') === '1';
     } catch {}
     const hasStoredMode = _runtime().hasStoredMode?.();
     if (_isHostedCloudLaunch() && !hasExplicitMode) {
@@ -38045,14 +40416,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         _runtime().setMode('browser');
         mode = 'browser';
       }
-    } else if (!hasStoredMode && !hasExplicitMode && _isDesktopLaunch()) {
-      _runtime().setMode('legacy');
-      mode = 'legacy';
-    } else if (!hasStoredMode && !hasExplicitMode) {
-      mode = await _showModeChooser();
-    }
-    if (mode === 'server') {
-      return _enterServerMode();
+    } else if (!migrationMode && !hasStoredMode && !hasExplicitMode) {
+      const localMode = _localDataModeForPage();
+      _runtime().setMode(localMode);
+      mode = localMode;
     }
     if (mode === 'browser') {
       return _enterBrowserMode();
@@ -38068,6 +40435,12 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
         if (result?.switchToLegacy) return _enterLocalModeForPage();
         if (!result?.ok) return false;
         continue;
+      }
+
+      // OAuth セッションと保存先が揃った時点を Dropbox 移行の確定点とする。
+      // ここより前で失敗・取消した場合、旧共有サーバー設定は保持される。
+      if (_runtime().hasRetiredServerConfig?.()) {
+        _runtime().completeRetiredServerMigration?.('dropbox');
       }
 
       try {
@@ -38134,13 +40507,10 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     let result = null;
     if (beforeMode === 'dropbox') {
       result = await _showDropboxSetupModal(message || '');
-    } else if (beforeMode === 'server') {
-      result = await _showSharedServerSetupModal(message || '');
     } else {
       const choice = await _showModeChooser();
       if (!choice || choice === beforeMode) result = { cancelled: true };
       else if (choice === 'dropbox') result = await _showDropboxSetupModal(message || '');
-      else if (choice === 'server') result = await _showSharedServerSetupModal(message || '');
       else result = { switchToLegacy: true };
     }
     const afterMode = _runtime().getMode();
@@ -38165,8 +40535,8 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
     openSetupModal(message) {
       return _showDropboxSetupModal(message || '');
     },
-    openSharedServerSetupModal(message) {
-      return _showSharedServerSetupModal(message || '');
+    openRetiredServerMigrationNotice() {
+      return _showRetiredServerMigrationNotice();
     },
   };
 })();
@@ -38195,12 +40565,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
   }
 
   function _esc(text) {
-    return String(text == null ? '' : text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return MeldexEscape.html(text);
   }
 
   async function _isConnected() {
@@ -38820,9 +41185,7 @@ if (globalThis.__MeldexPwaDataAccessInternals) {
           }
           ctrls.classList.add('gb-pane-mobile-main-tab-ctrls');
           moreBtn.classList.add('gb-pane-mobile-tab-more');
-          if (!moreBtn.getAttribute('aria-label') || moreBtn.getAttribute('aria-label') === 'パネル操作') {
-            moreBtn.setAttribute('aria-label', 'タブ操作');
-          }
+          moreBtn.setAttribute('aria-label', 'タブ操作');
           if (!moreBtn.getAttribute('aria-haspopup')) moreBtn.setAttribute('aria-haspopup', 'menu');
         } else {
           const mobileMoreBtn = ctrls?.querySelector('.gb-pane-more.gb-pane-mobile-tab-more');
@@ -40174,11 +42537,24 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
-  return apiFetch(path, {
+  const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
   });
+  _scheduleLinkDictionaryRefreshForMutation(path);
+  return result;
+}
+
+function _scheduleLinkDictionaryRefreshForMutation(path) {
+  const pathname = String(path || '').split('?')[0];
+  if (![
+    '/value', '/entity/create', '/entity/rename',
+    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
+  ].includes(pathname)) return;
+  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
+    MeldexAutoLink.scheduleReload(3000);
+  }
 }
 
 async function apiPost(path, body, options = {}) {
@@ -40196,6 +42572,7 @@ async function apiPost(path, body, options = {}) {
     ...(options || {}),
   });
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
 
@@ -40213,8 +42590,7 @@ async function openFileDialog(title, initialdir, filetypes) {
 // ユーティリティ
 // ============================================================
 function esc(s) {
-  if (s == null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return MeldexEscape.html(s);
 }
 
 // UI共通ルール: 外部から取り込む操作は download、外部へ出す操作は upload を使う。
@@ -42064,19 +44440,12 @@ function initIframeMarkup(scrollContainer) {
     const userText = document.createElement('span');
     userText.className = 'ann-user-name';
     userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'ann-note-delete-btn';
-    deleteBtn.dataset.annDelete = '1';
-    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
-    deleteBtn.setAttribute('aria-label', '注釈を削除');
-    deleteBtn.title = '削除';
-    deleteBtn.innerHTML = lucide('x', 12);
-    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
+    const actions = document.createElement('div');
+    actions.className = 'ann-note-actions';
     headerLabel.appendChild(userIcon);
     headerLabel.appendChild(userText);
     header.appendChild(headerLabel);
-    header.appendChild(deleteBtn);
+    header.appendChild(actions);
     note.tabIndex = -1;
     note.setAttribute('aria-haspopup', 'menu');
     note.appendChild(header);
@@ -42118,8 +44487,8 @@ function initIframeMarkup(scrollContainer) {
       persist();
     };
     header.addEventListener('pointerdown', (e) => {
-      // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
-      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
+      // メニュー (…) ボタン上ではドラッグ開始しない
+      if (!_ann.active || e.target.closest('button,.ann-note-resize-handle,.gb-fmt-popup')) return;
       e.preventDefault();
       e.stopPropagation();
       const pt = _toLocalCoords(e.clientX, e.clientY);
@@ -42146,13 +44515,6 @@ function initIframeMarkup(scrollContainer) {
       note.remove();
       _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
     };
-
-    deleteBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-    deleteBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-    });
 
     // 右クリックメニュー (色変更 / フキダシしっぽ / 削除)
     function _showEmbeddedNoteContextMenu(ev) {
@@ -42410,7 +44772,7 @@ function initIframeMarkup(scrollContainer) {
       e.stopPropagation();
       _showEmbeddedNoteContextMenu(e);
     });
-    note.appendChild(moreBtn);
+    actions.appendChild(moreBtn);
 
     note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
     if (typeof window.addLongPressHandler === 'function') {
@@ -43949,6 +46311,883 @@ document.addEventListener('DOMContentLoaded', () => {
 
 ;
 
+/* === gb-operation-progress.js === */
+;
+/* Meldex共通の操作進捗状態。
+   表示場所に依存せず、前景操作・バックグラウンドジョブ・同時処理を一意なハンドルで管理する。 */
+(function () {
+  'use strict';
+
+  const TERMINAL = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
+  const DEFAULT_DELAY_MS = 250;
+  const DEFAULT_SUCCESS_DISMISS_MS = 1800;
+  const records = new Map();
+  const subscribers = new Set();
+  let nextId = 1;
+
+  function _number(value, fallback) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function _id(prefix) {
+    const safePrefix = String(prefix || 'operation').replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'operation';
+    return safePrefix + '-' + Date.now().toString(36) + '-' + (nextId++).toString(36);
+  }
+
+  function _details(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 50).map(function (item) {
+      if (item && typeof item === 'object') {
+        return {
+          stage: String(item.stage || ''),
+          path: String(item.path || item.name || ''),
+          message: String(item.message || item.error || ''),
+        };
+      }
+      return { stage: '', path: '', message: String(item || '') };
+    });
+  }
+
+  function _snapshot(record) {
+    if (!record) return null;
+    const state = record.state;
+    return {
+      id: state.id,
+      kind: state.kind,
+      label: state.label,
+      phase: state.phase,
+      currentItem: state.currentItem,
+      status: state.status,
+      mode: state.mode,
+      processed: state.processed,
+      total: state.total,
+      percent: state.percent,
+      rate: state.rate,
+      eta: state.eta,
+      message: state.message,
+      error: state.error,
+      summary: state.summary,
+      details: state.details.map(function (item) { return Object.assign({}, item); }),
+      detailCount: state.detailCount,
+      startedAt: state.startedAt,
+      updatedAt: state.updatedAt,
+      completedAt: state.completedAt,
+      visible: state.visible,
+      background: state.background,
+      showInTray: state.showInTray,
+      showInStatus: state.showInStatus,
+      origin: state.origin,
+      originPlacement: state.originPlacement,
+      cancellable: state.cancellable,
+      retryable: state.retryable,
+      persistentJobId: state.persistentJobId,
+      priority: state.priority,
+    };
+  }
+
+  function _emit(record, reason) {
+    const detail = { reason: reason || 'update', operation: _snapshot(record), operations: list() };
+    subscribers.forEach(function (listener) {
+      try { listener(detail); } catch (error) { console.error('進捗表示の更新に失敗しました', error); }
+    });
+    if (typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+      window.dispatchEvent(new CustomEvent('meldex-operation-progress', { detail: detail }));
+    }
+  }
+
+  function _computePercent(state) {
+    if (state.mode !== 'determinate' || !(state.total > 0)) return null;
+    return Math.max(0, Math.min(100, Math.round((state.processed / state.total) * 100)));
+  }
+
+  function _clearTimer(record, name) {
+    if (!record || !record[name]) return;
+    clearTimeout(record[name]);
+    record[name] = null;
+  }
+
+  function _show(record) {
+    if (!record || TERMINAL.has(record.state.status) && record.state.status === 'succeeded') return;
+    _clearTimer(record, 'showTimer');
+    if (record.state.visible) return;
+    record.state.visible = true;
+    record.state.updatedAt = Date.now();
+    _emit(record, 'show');
+  }
+
+  function _scheduleShow(record, delayMs) {
+    const delay = Math.max(0, _number(delayMs, DEFAULT_DELAY_MS));
+    if (delay === 0) {
+      _show(record);
+      return;
+    }
+    record.showTimer = setTimeout(function () { _show(record); }, delay);
+  }
+
+  function _disposeRecord(record, reason) {
+    if (!record || !records.has(record.state.id)) return false;
+    _clearTimer(record, 'showTimer');
+    _clearTimer(record, 'dismissTimer');
+    records.delete(record.state.id);
+    if (record.onDispose) {
+      const callback = record.onDispose;
+      record.onDispose = null;
+      try { callback(_snapshot(record), reason || 'dispose'); } catch (error) { console.error('進捗の後処理に失敗しました', error); }
+    }
+    _emit(record, reason || 'dispose');
+    return true;
+  }
+
+  function _patch(record, values, reason) {
+    if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
+    const next = values || {};
+    if (next.label !== undefined) record.state.label = String(next.label || '処理中');
+    if (next.phase !== undefined) record.state.phase = String(next.phase || '');
+    if (next.currentItem !== undefined) record.state.currentItem = String(next.currentItem || '');
+    if (next.message !== undefined) record.state.message = String(next.message || '');
+    if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
+    if (next.status && !TERMINAL.has(next.status)) record.state.status = String(next.status);
+    if (next.total !== undefined) {
+      const total = _number(next.total, null);
+      record.state.total = total != null && total > 0 ? total : null;
+      if (!record.state.total) record.state.mode = 'indeterminate';
+    }
+    if (next.processed !== undefined) record.state.processed = Math.max(0, _number(next.processed, 0));
+    if (next.mode === 'determinate' || next.mode === 'indeterminate') record.state.mode = next.mode;
+    if (record.state.mode === 'determinate' && !(record.state.total > 0)) record.state.mode = 'indeterminate';
+    record.state.percent = _computePercent(record.state);
+    if (next.rate !== undefined) record.state.rate = _number(next.rate, null);
+    if (next.eta !== undefined) record.state.eta = _number(next.eta, null);
+    if (next.persistentJobId !== undefined) record.state.persistentJobId = String(next.persistentJobId || '');
+    if (next.cancellable !== undefined) record.state.cancellable = !!next.cancellable;
+    if (next.retryable !== undefined) record.state.retryable = !!next.retryable;
+    if (typeof next.retry === 'function') {
+      record.retry = next.retry;
+      record.state.retryable = true;
+    }
+    record.state.updatedAt = Date.now();
+    _emit(record, reason || 'update');
+    return _snapshot(record);
+  }
+
+  function _finish(record, status, values) {
+    if (!record || !records.has(record.state.id) || TERMINAL.has(record.state.status)) return _snapshot(record);
+    const next = values || {};
+    _clearTimer(record, 'showTimer');
+    record.state.status = status;
+    record.state.completedAt = Date.now();
+    record.state.updatedAt = record.state.completedAt;
+    if (next.summary !== undefined) record.state.summary = String(next.summary || '');
+    if (next.message !== undefined) record.state.message = String(next.message || '');
+    if (next.error !== undefined) record.state.error = String(next.error?.message || next.error || '');
+    if (typeof next.retry === 'function') {
+      record.retry = next.retry;
+      record.state.retryable = true;
+    }
+    if (next.details !== undefined) record.state.details = _details(next.details);
+    if (next.detailCount !== undefined) record.state.detailCount = Math.max(record.state.details.length, _number(next.detailCount, 0));
+    if (status === 'succeeded' && record.state.mode === 'determinate' && record.state.total > 0) {
+      record.state.processed = record.state.total;
+      record.state.percent = 100;
+    }
+    const needsAttention = status === 'failed' || status === 'partial';
+    if (needsAttention && !record.state.visible) record.state.visible = true;
+    _emit(record, status);
+    const configuredDismiss = next.dismissMs !== undefined ? next.dismissMs : record.dismissMs;
+    const dismissMs = configuredDismiss !== undefined
+      ? Math.max(0, _number(configuredDismiss, 0))
+      : (status === 'succeeded' || status === 'cancelled' ? DEFAULT_SUCCESS_DISMISS_MS : null);
+    if (!record.state.visible && !needsAttention) {
+      _disposeRecord(record, 'fast-complete');
+    } else if (dismissMs != null) {
+      record.dismissTimer = setTimeout(function () { _disposeRecord(record, 'auto-dismiss'); }, dismissMs);
+    }
+    return _snapshot(record);
+  }
+
+  function _handle(record) {
+    return {
+      id: record.state.id,
+      update: function (values) { return _patch(record, values, 'update'); },
+      showNow: function () { _show(record); return _snapshot(record); },
+      setPersistentJobId: function (jobId) { return _patch(record, { persistentJobId: jobId }, 'job-id'); },
+      succeed: function (values) { return _finish(record, 'succeeded', values); },
+      partial: function (values) { return _finish(record, 'partial', values); },
+      fail: function (values) {
+        const payload = values instanceof Error ? { error: values } : values;
+        return _finish(record, 'failed', payload);
+      },
+      cancelled: function (values) { return _finish(record, 'cancelled', values); },
+      requestCancel: function () { return requestCancel(record.state.id); },
+      retry: function () { return retry(record.state.id); },
+      dispose: function () { return _disposeRecord(record, 'dispose'); },
+      getState: function () { return _snapshot(record); },
+    };
+  }
+
+  function begin(options) {
+    const opts = options || {};
+    const requestedId = String(opts.id || '').trim();
+    if (requestedId && records.has(requestedId)) {
+      const existing = records.get(requestedId);
+      _patch(existing, opts, 'adopt');
+      return existing.handle;
+    }
+    if (opts.persistentJobId) {
+      const existing = findByPersistentJobId(opts.persistentJobId);
+      if (existing) {
+        existing.update(opts);
+        return existing;
+      }
+    }
+    const mode = opts.mode === 'determinate' && _number(opts.total, 0) > 0 ? 'determinate' : 'indeterminate';
+    const id = requestedId || _id(opts.kind);
+    const record = {
+      state: {
+        id: id,
+        kind: String(opts.kind || 'operation'),
+        label: String(opts.label || '処理中'),
+        phase: String(opts.phase || ''),
+        currentItem: String(opts.currentItem || ''),
+        status: String(opts.status || 'running'),
+        mode: mode,
+        processed: Math.max(0, _number(opts.processed, 0)),
+        total: mode === 'determinate' ? Math.max(1, _number(opts.total, 1)) : null,
+        percent: null,
+        rate: _number(opts.rate, null),
+        eta: _number(opts.eta, null),
+        message: String(opts.message || ''),
+        error: '',
+        summary: '',
+        details: _details(opts.details),
+        detailCount: Math.max(_details(opts.details).length, _number(opts.detailCount, 0)),
+        startedAt: Date.now(),
+        updatedAt: Date.now(),
+        completedAt: null,
+        visible: !!opts.showImmediately,
+        background: !!opts.background,
+        showInTray: opts.showInTray !== false,
+        showInStatus: opts.showInStatus !== false,
+        origin: opts.origin || null,
+        originPlacement: String(opts.originPlacement || 'after'),
+        cancellable: !!opts.cancellable && typeof opts.cancel === 'function',
+        retryable: typeof opts.retry === 'function',
+        persistentJobId: String(opts.persistentJobId || ''),
+        priority: _number(opts.priority, 0),
+      },
+      cancel: typeof opts.cancel === 'function' ? opts.cancel : null,
+      retry: typeof opts.retry === 'function' ? opts.retry : null,
+      onDispose: typeof opts.onDispose === 'function' ? opts.onDispose : null,
+      dismissMs: opts.dismissMs,
+      cancelCompletes: opts.cancelCompletes !== false,
+      showTimer: null,
+      dismissTimer: null,
+      handle: null,
+    };
+    record.state.percent = _computePercent(record.state);
+    record.handle = _handle(record);
+    records.set(id, record);
+    _emit(record, 'begin');
+    if (!record.state.visible) _scheduleShow(record, opts.delayMs);
+    return record.handle;
+  }
+
+  function get(id) {
+    const record = records.get(String(id || ''));
+    return record ? record.handle : null;
+  }
+
+  function findByPersistentJobId(jobId) {
+    const wanted = String(jobId || '');
+    if (!wanted) return null;
+    for (const record of records.values()) {
+      if (record.state.persistentJobId === wanted) return record.handle;
+    }
+    return null;
+  }
+
+  function list(options) {
+    const opts = options || {};
+    return Array.from(records.values())
+      .map(_snapshot)
+      .filter(function (state) { return opts.includeHidden || state.visible; })
+      .sort(function (a, b) {
+        if (a.priority !== b.priority) return b.priority - a.priority;
+        return a.startedAt - b.startedAt;
+      });
+  }
+
+  async function requestCancel(id) {
+    const record = records.get(String(id || ''));
+    if (!record || !record.cancel || !record.state.cancellable || TERMINAL.has(record.state.status)) return false;
+    record.state.status = 'cancelling';
+    record.state.updatedAt = Date.now();
+    _show(record);
+    _emit(record, 'cancelling');
+    try {
+      await record.cancel(record.handle);
+      if (record.cancelCompletes && !TERMINAL.has(record.state.status)) _finish(record, 'cancelled', {});
+      return true;
+    } catch (error) {
+      _finish(record, 'failed', { error: error || '中止要求を送信できませんでした' });
+      return false;
+    }
+  }
+
+  async function retry(id) {
+    const record = records.get(String(id || ''));
+    if (!record || !record.retry) return false;
+    try {
+      await record.retry(record.handle);
+      return true;
+    } catch (error) {
+      console.error('処理を再試行できませんでした', error);
+      return false;
+    }
+  }
+
+  function subscribe(listener) {
+    if (typeof listener !== 'function') return function () {};
+    subscribers.add(listener);
+    try { listener({ reason: 'subscribe', operation: null, operations: list() }); } catch (_) {}
+    return function () { subscribers.delete(listener); };
+  }
+
+  window.MeldexOperationProgress = {
+    begin: begin,
+    get: get,
+    findByPersistentJobId: findByPersistentJobId,
+    list: list,
+    subscribe: subscribe,
+    requestCancel: requestCancel,
+    retry: retry,
+    isTerminalStatus: function (status) { return TERMINAL.has(String(status || '')); },
+  };
+})();
+
+;
+
+/* === gb-operation-progress-view.js === */
+;
+/* MeldexOperationProgressの共通表示。
+   開始場所、バックグラウンドトレイ、デスクトップのステータスバー要約を同じ状態から描画する。 */
+(function () {
+  'use strict';
+
+  const originNodes = new Map();
+  let tray = null;
+  let statusMirror = null;
+  let liveRegion = null;
+
+  function _text(value) { return String(value == null ? '' : value); }
+
+  function _formatEta(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (!value) return '';
+    if (typeof window.formatJobEta === 'function') return window.formatJobEta(value);
+    if (value < 60) return Math.ceil(value) + '秒';
+    if (value < 3600) return Math.ceil(value / 60) + '分';
+    return (value / 3600).toFixed(1) + '時間';
+  }
+
+  function _statusLabel(operation) {
+    if (operation.status === 'queued') return '待機中';
+    if (operation.status === 'cancelling') return '中止しています';
+    if (operation.status === 'failed') return '失敗';
+    if (operation.status === 'partial') return '一部失敗';
+    if (operation.status === 'cancelled') return '中止しました';
+    if (operation.status === 'succeeded') return '完了';
+    return operation.phase || '処理中';
+  }
+
+  function _detailText(operation) {
+    if (operation.error) return operation.error;
+    if (operation.summary) return operation.summary;
+    if (operation.message) return operation.message;
+    const parts = [];
+    if (operation.mode === 'determinate' && operation.total > 0) {
+      parts.push(Math.min(operation.processed, operation.total) + '/' + operation.total + '件');
+    }
+    if (operation.currentItem) parts.push(operation.currentItem);
+    if (operation.eta) parts.push('残り約' + _formatEta(operation.eta));
+    return parts.join(' · ');
+  }
+
+  function _createProgressBar(operation, compact) {
+    const track = document.createElement('span');
+    track.className = 'meldex-operation-bar-track' + (compact ? ' is-compact' : '');
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-label', operation.label);
+    const fill = document.createElement('span');
+    fill.className = 'meldex-operation-bar-fill';
+    if (operation.mode === 'determinate' && operation.total > 0) {
+      const percent = operation.percent == null ? 0 : operation.percent;
+      track.setAttribute('aria-valuemin', '0');
+      track.setAttribute('aria-valuemax', '100');
+      track.setAttribute('aria-valuenow', String(percent));
+      fill.style.width = percent + '%';
+    } else {
+      track.classList.add('is-indeterminate');
+      fill.classList.add('is-indeterminate');
+    }
+    track.appendChild(fill);
+    return track;
+  }
+
+  function _ensureTray() {
+    if (tray?.isConnected) return tray;
+    tray = document.createElement('section');
+    tray.id = 'meldex-operation-tray';
+    tray.className = 'meldex-operation-tray';
+    tray.dataset.e2eId = 'operation-progress-tray';
+    tray.setAttribute('aria-label', '進行中の処理');
+    tray.hidden = true;
+    document.body.appendChild(tray);
+    return tray;
+  }
+
+  function _ensureLiveRegion() {
+    if (liveRegion?.isConnected) return liveRegion;
+    liveRegion = document.createElement('div');
+    liveRegion.className = 'meldex-operation-live-region';
+    liveRegion.setAttribute('role', 'status');
+    liveRegion.setAttribute('aria-live', 'polite');
+    liveRegion.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(liveRegion);
+    return liveRegion;
+  }
+
+  function _operationRow(operation, compact) {
+    const row = document.createElement('article');
+    row.className = 'meldex-operation-row is-' + operation.status + (compact ? ' is-compact' : '');
+    row.dataset.operationId = operation.id;
+
+    const heading = document.createElement('div');
+    heading.className = 'meldex-operation-heading';
+    const ring = document.createElement('span');
+    ring.className = 'meldex-segmented-ring meldex-segmented-ring--small';
+    ring.setAttribute('aria-hidden', 'true');
+    if (operation.status !== 'running' && operation.status !== 'queued' && operation.status !== 'cancelling') {
+      ring.classList.add('is-static', 'is-' + operation.status);
+    }
+    const label = document.createElement('span');
+    label.className = 'meldex-operation-label';
+    label.textContent = operation.label;
+    const state = document.createElement('span');
+    state.className = 'meldex-operation-state';
+    state.textContent = _statusLabel(operation);
+    heading.append(ring, label, state);
+    row.appendChild(heading);
+
+    if (operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling') {
+      row.appendChild(_createProgressBar(operation, compact));
+    }
+    const detailText = _detailText(operation);
+    if (detailText) {
+      const detail = document.createElement('div');
+      detail.className = 'meldex-operation-detail';
+      detail.textContent = detailText;
+      row.appendChild(detail);
+    }
+
+    if (operation.details?.length) {
+      const disclosure = document.createElement('details');
+      disclosure.className = 'meldex-operation-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '失敗した項目を確認（' + (operation.detailCount || operation.details.length) + '件）';
+      const list = document.createElement('ul');
+      operation.details.forEach(function (item) {
+        const entry = document.createElement('li');
+        const title = [item.stage, item.path].filter(Boolean).join(' · ');
+        if (title) {
+          const strong = document.createElement('strong');
+          strong.textContent = title;
+          entry.appendChild(strong);
+        }
+        if (item.message) {
+          const message = document.createElement('span');
+          message.textContent = item.message;
+          entry.appendChild(message);
+        }
+        list.appendChild(entry);
+      });
+      disclosure.append(summary, list);
+      row.appendChild(disclosure);
+    }
+
+    if (operation.cancellable || operation.retryable || operation.status === 'failed' || operation.status === 'partial') {
+      const actions = document.createElement('div');
+      actions.className = 'meldex-operation-actions';
+      if (operation.cancellable && operation.status !== 'cancelling') {
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.dataset.action = 'cancel-operation-progress';
+        cancel.textContent = '中止';
+        cancel.addEventListener('click', function () { window.MeldexOperationProgress.requestCancel(operation.id); });
+        actions.appendChild(cancel);
+      }
+      if (operation.retryable && (operation.status === 'failed' || operation.status === 'partial')) {
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.dataset.action = 'retry-operation-progress';
+        retry.textContent = '再試行';
+        retry.addEventListener('click', function () { window.MeldexOperationProgress.retry(operation.id); });
+        actions.appendChild(retry);
+      }
+      if (operation.status === 'failed' || operation.status === 'partial') {
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.dataset.action = 'dismiss-operation-progress';
+        dismiss.textContent = '閉じる';
+        dismiss.addEventListener('click', function () { window.MeldexOperationProgress.get(operation.id)?.dispose(); });
+        actions.appendChild(dismiss);
+      }
+      row.appendChild(actions);
+    }
+    return row;
+  }
+
+  function _renderTray(operations) {
+    const el = _ensureTray();
+    const visible = operations.filter(function (operation) { return operation.showInTray; });
+    if (!visible.length) {
+      el.hidden = true;
+      el.replaceChildren();
+      return;
+    }
+    const header = document.createElement('div');
+    header.className = 'meldex-operation-tray-header';
+    const title = document.createElement('span');
+    const needsAttention = visible.some(function (op) { return op.status === 'failed' || op.status === 'partial'; });
+    const hasActive = visible.some(function (op) { return op.status === 'running' || op.status === 'queued' || op.status === 'cancelling'; });
+    title.textContent = needsAttention
+      ? '確認が必要な処理'
+      : (hasActive ? (visible.length > 1 ? '進行中の処理 ' + visible.length + '件' : '進行中') : '完了した処理');
+    header.appendChild(title);
+    const list = document.createElement('div');
+    list.className = 'meldex-operation-list';
+    visible.slice(0, 6).forEach(function (operation) { list.appendChild(_operationRow(operation, false)); });
+    el.replaceChildren(header, list);
+    el.hidden = false;
+  }
+
+  function _ensureStatusMirror() {
+    if (statusMirror?.isConnected) return statusMirror;
+    const statusBar = document.getElementById('status-bar');
+    if (!statusBar) return null;
+    statusMirror = document.getElementById('sb-import-progress') || document.createElement('span');
+    statusMirror.id = 'sb-import-progress';
+    statusMirror.className = 'sb-import-progress meldex-operation-status-mirror';
+    statusMirror.hidden = true;
+    statusMirror.setAttribute('role', 'status');
+    if (!statusMirror.parentNode) {
+      const shortcuts = document.getElementById('sb-shortcuts');
+      statusBar.insertBefore(statusMirror, shortcuts?.parentNode === statusBar ? shortcuts : null);
+    }
+    return statusMirror;
+  }
+
+  function _renderStatus(operations) {
+    const el = _ensureStatusMirror();
+    if (!el) return;
+    const candidates = operations.filter(function (operation) { return operation.showInStatus; });
+    if (!candidates.length) {
+      el.hidden = true;
+      el.replaceChildren();
+      return;
+    }
+    const operation = candidates.find(function (op) { return op.status === 'running' || op.status === 'cancelling'; }) || candidates[0];
+    const active = operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling';
+    const label = document.createElement('span');
+    label.className = 'sb-import-progress-label';
+    label.textContent = operation.label + ': ' + _statusLabel(operation)
+      + (active && operation.percent != null ? ' ' + operation.percent + '%' : '');
+    el.replaceChildren(label);
+    if (active) el.appendChild(_createProgressBar(operation, true));
+    if (candidates.length > 1) {
+      const more = document.createElement('span');
+      more.className = 'sb-import-progress-queue';
+      more.textContent = 'ほか' + (candidates.length - 1) + '件';
+      el.appendChild(more);
+    }
+    el.hidden = false;
+  }
+
+  function _clearOrigins(activeIds) {
+    originNodes.forEach(function (entry, id) {
+      if (activeIds.has(id)) return;
+      entry.node.remove();
+      if (entry.origin?.isConnected && !Array.from(activeIds).some(function (activeId) {
+        return originNodes.get(activeId)?.origin === entry.origin;
+      })) entry.origin.removeAttribute('aria-busy');
+      originNodes.delete(id);
+    });
+  }
+
+  function _renderOrigins(operations) {
+    const activeIds = new Set();
+    operations.forEach(function (operation) {
+      const origin = operation.origin;
+      if (!origin?.isConnected) return;
+      activeIds.add(operation.id);
+      origin.setAttribute('aria-busy', operation.status === 'running' || operation.status === 'queued' || operation.status === 'cancelling' ? 'true' : 'false');
+      let entry = originNodes.get(operation.id);
+      if (!entry) {
+        const node = document.createElement('div');
+        node.className = 'meldex-operation-origin';
+        node.dataset.operationId = operation.id;
+        if (operation.originPlacement === 'inside') origin.appendChild(node);
+        else origin.insertAdjacentElement('afterend', node);
+        entry = { node: node, origin: origin };
+        originNodes.set(operation.id, entry);
+      }
+      entry.node.replaceChildren(_operationRow(operation, true));
+    });
+    _clearOrigins(activeIds);
+  }
+
+  function _render(detail) {
+    if (!document.body) return;
+    const operations = detail?.operations || window.MeldexOperationProgress.list();
+    _renderTray(operations);
+    _renderStatus(operations);
+    _renderOrigins(operations);
+    if (detail?.operation && (detail.reason === 'failed' || detail.reason === 'partial' || detail.reason === 'succeeded')) {
+      const op = detail.operation;
+      _ensureLiveRegion().textContent = op.label + ': ' + _statusLabel(op) + (_detailText(op) ? '。' + _detailText(op) : '');
+    }
+  }
+
+  function _init() {
+    if (!window.MeldexOperationProgress || !document.body) return;
+    window.MeldexOperationProgress.subscribe(_render);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _init, { once: true });
+  else _init();
+})();
+
+;
+
+/* === gb-content-image-loading.js === */
+;
+/* 利用者コンテンツ画像の読込表示。
+   全DOM監視は行わず、各描画境界からtrack()/trackAll()を明示的に呼ぶ。 */
+(function () {
+  'use strict';
+
+  const tracked = new WeakMap();
+  const DEFAULT_DELAY_MS = 220;
+
+  function _label(options) {
+    return String(options?.label || '画像を読み込んでいます');
+  }
+
+  function _hostFor(img, options) {
+    if (options?.host?.nodeType === 1) return options.host;
+    const parent = img.parentElement;
+    if (parent?.matches?.('[data-meldex-image-host], .embed-media, .tree-thumb-shell, .el-cell-image-content')) return parent;
+    return null;
+  }
+
+  function track(img, options) {
+    if (!img || String(img.tagName || '').toLowerCase() !== 'img') return null;
+    const previous = tracked.get(img);
+    if (previous) previous.dispose();
+    const opts = options || {};
+    const host = _hostFor(img, opts);
+    const state = {
+      img: img,
+      host: host,
+      source: String(img.currentSrc || img.getAttribute('src') || ''),
+      timer: null,
+      settled: false,
+      decoding: false,
+      disposed: false,
+      visible: false,
+      onLoad: null,
+      onError: null,
+      onRetry: null,
+      onRetryKey: null,
+      originalAlt: img.getAttribute('alt'),
+      originalAriaLabel: img.getAttribute('aria-label'),
+      originalTabIndex: img.getAttribute('tabindex'),
+      originalTitle: img.getAttribute('title'),
+    };
+
+    function setBusy(value) {
+      img.setAttribute('aria-busy', value ? 'true' : 'false');
+      if (host) host.setAttribute('aria-busy', value ? 'true' : 'false');
+    }
+
+    function show() {
+      if (state.settled || state.disposed) return;
+      if (!img.isConnected && opts.allowDetached !== true) {
+        dispose();
+        return;
+      }
+      state.visible = true;
+      img.classList.add('meldex-image-is-loading');
+      img.setAttribute('aria-label', img.alt ? img.alt + '（読み込み中）' : _label(opts));
+      if (host) host.classList.add('meldex-image-load-host', 'is-loading');
+    }
+
+    function cleanupBusy() {
+      clearTimeout(state.timer);
+      state.timer = null;
+      img.classList.remove('meldex-image-is-loading');
+      img.removeAttribute('aria-busy');
+      if (state.originalAriaLabel !== null) img.setAttribute('aria-label', state.originalAriaLabel);
+      else img.removeAttribute('aria-label');
+      if (host) {
+        host.classList.remove('is-loading');
+        host.removeAttribute('aria-busy');
+      }
+    }
+
+    function restoreInteraction() {
+      if (state.originalAlt !== null) img.setAttribute('alt', state.originalAlt);
+      else img.removeAttribute('alt');
+      if (state.originalTabIndex !== null) img.setAttribute('tabindex', state.originalTabIndex);
+      else img.removeAttribute('tabindex');
+      if (state.originalTitle !== null) img.setAttribute('title', state.originalTitle);
+      else img.removeAttribute('title');
+      if (host) delete host.dataset.meldexImageErrorLabel;
+    }
+
+    function finish() {
+      if (state.settled || state.disposed) return;
+      state.settled = true;
+      cleanupBusy();
+      img.classList.remove('meldex-image-load-error');
+      if (host) host.classList.remove('is-error');
+      restoreInteraction();
+      if (typeof opts.onLoad === 'function') opts.onLoad(img);
+    }
+
+    function finishDecoded() {
+      if (state.settled || state.disposed || state.decoding) return;
+      if (typeof img.decode !== 'function') {
+        finish();
+        return;
+      }
+      state.decoding = true;
+      Promise.resolve(img.decode()).catch(function () {
+        // load済み画像はdecode()がブラウザ都合で失敗しても表示可能なため、読込失敗にはしない。
+      }).finally(function () {
+        state.decoding = false;
+        finish();
+      });
+    }
+
+    function retry() {
+      if (!state.source || state.settled && !img.classList.contains('meldex-image-load-error')) return;
+      state.settled = false;
+      state.decoding = false;
+      img.classList.remove('meldex-image-load-error');
+      if (host) host.classList.remove('is-error');
+      restoreInteraction();
+      setBusy(true);
+      state.timer = setTimeout(show, Math.max(0, Number(opts.delayMs ?? DEFAULT_DELAY_MS) || 0));
+      const source = state.source;
+      img.removeAttribute('src');
+      requestAnimationFrame(function () { img.src = source; });
+    }
+
+    function fail(error) {
+      if (state.settled) return;
+      const currentSource = String(img.getAttribute('src') || img.currentSrc || '');
+      // 呼び出し元の既存errorハンドラがサムネイルから原寸等へ切り替えた場合は、
+      // そのフォールバック読込を新しい試行として追跡する。
+      if (state.source && currentSource && currentSource !== state.source) {
+        state.source = currentSource;
+        clearTimeout(state.timer);
+        setBusy(true);
+        state.timer = setTimeout(show, Math.max(0, Number(opts.delayMs ?? DEFAULT_DELAY_MS) || 0));
+        return;
+      }
+      // サムネイル待ちなど、track() 後に最初の src が設定される経路では、
+      // その最初の取得失敗をフォールバック切替と誤認しない。
+      if (!state.source && currentSource) state.source = currentSource;
+      state.settled = true;
+      cleanupBusy();
+      if (opts.errorMode !== 'silent') {
+        img.classList.add('meldex-image-load-error');
+        const name = state.originalAlt || '画像';
+        img.setAttribute('aria-label', name + 'を読み込めません。クリックまたはEnterで再読み込みできます');
+        img.setAttribute('alt', name + 'を読み込めません（再読み込み）');
+        img.setAttribute('title', 'クリックまたはEnterで再読み込み');
+        img.tabIndex = img.tabIndex >= 0 ? img.tabIndex : 0;
+        if (host) {
+          host.classList.add('meldex-image-load-host', 'is-error');
+          host.dataset.meldexImageErrorLabel = '画像を読み込めません・再読み込み';
+        }
+      }
+      if (typeof opts.onError === 'function') opts.onError(error || new Error('画像を読み込めません'));
+    }
+
+    function dispose() {
+      state.disposed = true;
+      state.settled = true;
+      clearTimeout(state.timer);
+      img.removeEventListener('load', state.onLoad);
+      img.removeEventListener('error', state.onError);
+      if (state.onRetry) img.removeEventListener('click', state.onRetry);
+      if (state.onRetryKey) img.removeEventListener('keydown', state.onRetryKey);
+      cleanupBusy();
+      img.classList.remove('meldex-image-load-error');
+      if (host) host.classList.remove('meldex-image-load-host', 'is-error');
+      restoreInteraction();
+      if (tracked.get(img)?.state === state) tracked.delete(img);
+    }
+
+    state.onLoad = finishDecoded;
+    state.onError = fail;
+    state.onRetry = function () {
+      if (img.classList.contains('meldex-image-load-error')) retry();
+    };
+    state.onRetryKey = function (event) {
+      if (!img.classList.contains('meldex-image-load-error')) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        retry();
+      }
+    };
+    img.addEventListener('load', state.onLoad, { once: false });
+    img.addEventListener('error', state.onError, { once: false });
+    img.addEventListener('click', state.onRetry);
+    img.addEventListener('keydown', state.onRetryKey);
+    setBusy(true);
+    state.timer = setTimeout(show, Math.max(0, Number(opts.delayMs ?? DEFAULT_DELAY_MS) || 0));
+
+    const api = { state: state, finish: finish, fail: fail, retry: retry, dispose: dispose };
+    tracked.set(img, api);
+    queueMicrotask(function () {
+      if (state.settled || !img.isConnected && opts.allowDetached !== true) return;
+      if (img.complete && img.naturalWidth > 0) finishDecoded();
+      else if (img.complete && state.source && img.naturalWidth === 0) fail(new Error('画像を読み込めません'));
+    });
+    return api;
+  }
+
+  function trackAll(root, options) {
+    if (!root?.querySelectorAll) return [];
+    const selector = options?.selector || 'img[data-meldex-content-image]';
+    return Array.from(root.querySelectorAll(selector)).map(function (img) {
+      const host = img.closest?.('[data-meldex-image-host], .embed-media, .tree-thumb-shell, .el-cell-image-content');
+      return track(img, Object.assign({}, options || {}, { host: host || options?.host || null }));
+    }).filter(Boolean);
+  }
+
+  function get(img) { return tracked.get(img) || null; }
+
+  window.MeldexImageLoading = { track: track, trackAll: trackAll, get: get };
+})();
+
+;
+
 /* === meldex-app-capabilities.js === */
 ;
 (function (root, factory) {
@@ -44637,6 +47876,21 @@ document.addEventListener('DOMContentLoaded', () => {
     return idx >= 0 ? value.slice(idx + 1) : value;
   }
 
+  const MELDEX_CURRENT_FILE_SUFFIXES = [
+    '.scriptnote.json', '.smart-db.json', '.timer.json', '.board.md',
+    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
+  ];
+
+  // 旧版の複製失敗や外部同期が残した回復用ファイルは削除せず、現役文書として
+  // 開かない。`.bak` / `.bak-*` と、現役形式の末尾に別拡張子が続くものだけを
+  // 除外し、通常の `report.json.txt` のようなファイルまでは隠さない。
+  function isBrokenOrBackupArtifact(path) {
+    const name = basename(path).toLowerCase();
+    if (!name) return false;
+    if (name.endsWith('.bak') || name.includes('.bak-')) return true;
+    return MELDEX_CURRENT_FILE_SUFFIXES.some(suffix => name.includes(suffix + '.'));
+  }
+
   // 長いパス/URLをUI表示用に中略する。maxChars以内ならそのまま返す。
   // 超過時は「先頭部分…末尾ファイル名」の形式にする（末尾のファイル名=basename()は必ず残す）。
   // ファイル名自体が長くて収まらない場合は「…」+ファイル名の末尾側を優先して maxChars に収める。
@@ -44890,6 +48144,7 @@ document.addEventListener('DOMContentLoaded', () => {
     resolveForClipboard,
     copyToClipboard,
     basename,
+    isBrokenOrBackupArtifact,
     ellipsizePath,
     fitToElement: _fitToElement,
     applyMiddleEllipsis,
@@ -45027,7 +48282,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (html) {
       parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
     } else if (text) {
-      parts.push(text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'), '');
+      parts.push(MeldexEscape.html(text).replace(/\n/g, '<br>'), '');
     }
     if (drawing) {
       parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');
@@ -45251,13 +48506,11 @@ window.NOTO_EMOJI = [{"code":"23","emoji":"#","name":""},{"code":"23-20E3","emoj
   const HEX_SEQ_RE = /^[0-9a-f]{1,6}(?:[-_][0-9a-f]{1,6})*$/i;
 
   function _esc(value) {
-    return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _escAttr(value) {
-    return _esc(value).replace(/`/g, '&#96;');
+    return MeldexEscape.attr(value);
   }
 
   function _normalizeCode(code) {
@@ -46422,7 +49675,7 @@ const MeldexDnD = (() => {
 
     if (mediaType === 'image') {
       const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
-      return `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`;
+      return `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}" data-meldex-content-image></div>`;
     }
 
     if (mediaType === 'video' || mediaType === 'audio') {
@@ -46449,6 +49702,7 @@ const MeldexDnD = (() => {
     const last = fragment.lastChild;
     range.deleteContents();
     range.insertNode(fragment);
+    window.MeldexImageLoading?.trackAll?.(editable);
     if (last) {
       range.setStartAfter(last);
       range.collapse(true);
@@ -48136,13 +51390,20 @@ if (typeof window !== 'undefined') {
       : (String(value || 'programmatic'));
   }
 
+  // 閉鎖アニメーション中のダイアログ（モバイルの下シートは gb-modal-shell が約220ms
+  // 遅延removeする）は「最前面」に数えない。数えると、閉じた直後の外側タップ・Escapeが
+  // 死んだダイアログにブロックされて無反応になる（2026-08-20 実測）。
+  function _isDialogClosingOrHidden(node) {
+    return !!node.closest('[aria-hidden="true"], .gb-mobile-dialog-overlay-closing, [data-mobile-dialog-closing="1"]');
+  }
+
   function _isTopmostModal(modal) {
     if (window.GBDialogKeyboard?.topmostDialog) {
       const managedTop = window.GBDialogKeyboard.topmostDialog();
-      if (managedTop) return managedTop === modal;
+      if (managedTop && managedTop.isConnected && !_isDialogClosingOrHidden(managedTop)) return managedTop === modal;
     }
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'))
-      .filter(node => node.isConnected && !node.hidden);
+      .filter(node => node.isConnected && !node.hidden && !_isDialogClosingOrHidden(node));
     return !dialogs.length || dialogs[dialogs.length - 1] === modal;
   }
 
@@ -48852,7 +52113,7 @@ if (typeof window !== 'undefined') {
   }
 
   function _hasBlockingStartupDialog() {
-    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay, .meldex-sample-install-overlay');
+    return !!document.querySelector('#meldex-beta-consent-overlay, #meldex-install-prompt-overlay, #meldex-install-help-overlay, .meldex-cloud-home-first-overlay');
   }
 
   function _scheduleRecoveryRetry() {
@@ -51035,13 +54296,17 @@ if (typeof window !== 'undefined') {
     return null;
   }
 
-  function _createConsentCheckbox(id, text, checked) {
+  function _createConsentCheckbox(id, text, checked, options = {}) {
     const input = _el('input', { id, type: 'checkbox', class: 'meldex-beta-consent-checkbox' });
     input.checked = !!checked;
-    return _el('label', { class: 'meldex-beta-consent-check' }, [
-      input,
-      _el('span', { text }),
-    ]);
+    const labelContent = [input, _el('span', { text })];
+    if (options.required === true) {
+      labelContent.push(_el('span', {
+        class: 'meldex-beta-consent-required-badge',
+        text: '必須',
+      }));
+    }
+    return _el('label', { class: 'meldex-beta-consent-check' }, labelContent);
   }
 
   function _isStandaloneDisplayMode() {
@@ -51165,7 +54430,6 @@ if (typeof window !== 'undefined') {
         '.meldex-cloud-mode-modal',
         '.meldex-cloud-setup-overlay',
         '.meldex-cloud-setup-modal',
-        '.meldex-sample-install-overlay',
         '[data-draft-recovery-dialog="1"]',
       ].join(', ')
     );
@@ -51772,7 +55036,8 @@ if (typeof window !== 'undefined') {
     const required = _createConsentCheckbox(
       'meldex-beta-consent-required',
       'プライバシーポリシーと利用規約に同意し、ベータ版であることとバックアップの必要性を確認しました。',
-      false
+      false,
+      { required: true }
     );
     const crash = _createConsentCheckbox(
       'meldex-beta-consent-crash',
@@ -51995,6 +55260,416 @@ if (typeof window !== 'undefined') {
 
 ;
 
+/* === debugger-crash-client-web.js === */
+;
+"use strict";
+var DebuggerCrashClient = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // packages/crash-client-web/src/index.ts
+  var index_exports = {};
+  __export(index_exports, {
+    CrashReporter: () => CrashReporter,
+    redactCrashText: () => redactCrashText
+  });
+  var maximumQueuedReports = 20;
+  var maximumRetryDelayMilliseconds = 3e5;
+  var initialRetryDelayMilliseconds = 1e3;
+  var duplicateWindowMilliseconds = 6e4;
+  var sensitiveKeyPattern = /(?:authorization|password|passwd|secret|token|api[_-]?key)/iu;
+  var secretPatterns = [
+    [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/giu, "Bearer [\u4F0F\u305B\u5B57]"],
+    [/(\b(?:authorization|password|passwd|secret|token|api[_-]?key)\b\s*[:=]\s*)[^\s,;]+/giu, "$1[\u4F0F\u305B\u5B57]"],
+    [/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[opsu]_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|ya29\.[A-Za-z0-9_-]{10,})\b/gu, "[\u4F0F\u305B\u5B57]"],
+    [/([?&](?:access_token|api_key|key|password|secret|token)=)[^&\s]+/giu, "$1[\u4F0F\u305B\u5B57]"],
+    [/"[A-Z]:\\Users\\[^"\r\n]+"/giu, '"C:\\Users\\<user>\\<path>"'],
+    [/'[A-Z]:\\Users\\[^'\r\n]+'/giu, "'C:\\Users\\<user>\\<path>'"],
+    [/[A-Z]:\\Users\\[^\\\s"']+(?:\\[^\s"'<>|]+)*/giu, "C:\\Users\\<user>\\<path>"],
+    [/"[A-Z]:\\[^"\r\n]+"/giu, '"<local-path>"'],
+    [/'[A-Z]:\\[^'\r\n]+'/giu, "'<local-path>'"],
+    [/\b[A-Z]:\\[^\s,;"']+/giu, "<local-path>"],
+    [/\/(?:Users|home)\/[^/\s"']+(?:\/[^\s"'<>|]+)*/gu, "/home/<user>/<path>"],
+    [/\b[^\s\\/:*?"<>|]+\.blend\b/giu, "<blend-file>"],
+    [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu, "[\u4F0F\u305B\u5B57\u30E1\u30FC\u30EB]"]
+  ];
+  function redactCrashText(value, maximumLength) {
+    let redacted = value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "");
+    for (const [pattern, replacement] of secretPatterns) redacted = redacted.replace(pattern, replacement);
+    redacted = redacted.replace(/\bhttps?:\/\/[^\s)\]}>"']+/giu, (raw) => {
+      try {
+        return `${new URL(raw).origin}/<path>`;
+      } catch {
+        return "<url>";
+      }
+    });
+    return redacted.slice(0, maximumLength);
+  }
+  function redactStack(value) {
+    return redactCrashText(value, 12e3).replace(/(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|map)\b/giu, "<source>");
+  }
+  function safeContext(context) {
+    return Object.fromEntries(Object.entries(context).slice(0, 20).map(([key, value]) => {
+      const safeKey = redactCrashText(key.trim() || "context", 100);
+      if (sensitiveKeyPattern.test(key)) return [safeKey, "[\u4F0F\u305B\u5B57]"];
+      return [safeKey, typeof value === "string" ? redactCrashText(value, 500) : value];
+    }));
+  }
+  function errorDetails(reason, includeMessage) {
+    if (reason instanceof Error) {
+      const errorType = redactCrashText(reason.name || "Error", 200);
+      const base = {
+        errorType,
+        message: includeMessage ? redactCrashText(reason.message || "\u4E0D\u660E\u306A\u30D6\u30E9\u30A6\u30B6\u30FC\u30A8\u30E9\u30FC", 2e3) : `Unhandled ${errorType}`,
+        signature: `${reason.name}
+${reason.message}`
+      };
+      return reason.stack ? { ...base, stack: redactStack(reason.stack) } : base;
+    }
+    if (typeof reason === "string") {
+      return {
+        errorType: "Error",
+        message: includeMessage ? redactCrashText(reason, 2e3) : "Unhandled Error",
+        signature: reason
+      };
+    }
+    return {
+      errorType: "UnknownError",
+      message: "\u975EError\u5024\u306B\u3088\u308B\u30D6\u30E9\u30A6\u30B6\u30FC\u30A8\u30E9\u30FC",
+      signature: Object.prototype.toString.call(reason)
+    };
+  }
+  function isReport(value) {
+    if (!value || typeof value !== "object") return false;
+    const report = value;
+    return typeof report.projectSlug === "string" && typeof report.version === "string" && typeof report.installationId === "string" && report.runtime === "browser" && typeof report.component === "string" && (report.severity === "error" || report.severity === "fatal") && typeof report.errorType === "string" && typeof report.message === "string" && typeof report.occurredAt === "string" && typeof report.idempotencyKey === "string" && Boolean(report.context && typeof report.context === "object");
+  }
+  function isOutboxItem(value) {
+    if (!value || typeof value !== "object") return false;
+    const item = value;
+    return isReport(item.report) && typeof item.attempt === "number" && Number.isInteger(item.attempt) && item.attempt >= 0 && typeof item.nextAttemptAt === "number" && Number.isFinite(item.nextAttemptAt);
+  }
+  function retryableStatus(status) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+  function retryAfterMilliseconds(response) {
+    const header = response.headers.get("Retry-After");
+    if (!header) return void 0;
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1e3, maximumRetryDelayMilliseconds);
+    const date = Date.parse(header);
+    if (!Number.isFinite(date)) return void 0;
+    return Math.min(Math.max(date - Date.now(), 0), maximumRetryDelayMilliseconds);
+  }
+  var CrashReporter = class {
+    constructor(config) {
+      this.config = config;
+      this.assertConfig();
+      this.now = config.now ?? Date.now;
+      this.randomUUID = config.randomUUID ?? (() => globalThis.crypto.randomUUID());
+      const browserStorage = (() => {
+        try {
+          return config.browserWindow?.localStorage ?? (typeof window === "undefined" ? void 0 : window.localStorage);
+        } catch {
+          return void 0;
+        }
+      })();
+      this.storage = config.storage ?? browserStorage;
+      this.storageAvailable = Boolean(this.storage);
+      this.fetcher = config.fetcher ?? globalThis.fetch.bind(globalThis);
+      const namespace = `${config.projectSlug}.${config.component}`;
+      this.queueKey = `debugger.crash-client-web.outbox.v1.${namespace}`;
+      this.installationKey = `debugger.crash-client-web.installation.v1.${config.projectSlug}`;
+      this.installationId = this.loadInstallationId();
+    }
+    config;
+    storage;
+    fetcher;
+    now;
+    randomUUID;
+    installationId;
+    queueKey;
+    installationKey;
+    recent = /* @__PURE__ */ new Map();
+    memoryQueue = [];
+    storageAvailable;
+    flushPromise = null;
+    retryTimer = null;
+    install(options = {}) {
+      const browserWindow = this.config.browserWindow ?? (typeof window === "undefined" ? void 0 : window);
+      if (!browserWindow) return () => void 0;
+      const errorHandler = (event) => {
+        this.capture(event.error ?? event.message, {
+          context: {
+            source: "window.error",
+            line: event.lineno,
+            column: event.colno
+          }
+        });
+      };
+      const rejectionHandler = (event) => {
+        this.capture(event.reason, { context: { source: "unhandledrejection" } });
+      };
+      const onlineHandler = () => {
+        void this.flush();
+      };
+      if (options.windowErrors !== false) browserWindow.addEventListener("error", errorHandler);
+      if (options.unhandledRejections !== false) browserWindow.addEventListener("unhandledrejection", rejectionHandler);
+      if (options.flushWhenOnline !== false) browserWindow.addEventListener("online", onlineHandler);
+      void this.flush();
+      return () => {
+        browserWindow.removeEventListener("error", errorHandler);
+        browserWindow.removeEventListener("unhandledrejection", rejectionHandler);
+        browserWindow.removeEventListener("online", onlineHandler);
+        this.clearScheduledRetry();
+      };
+    }
+    capture(reason, options = {}) {
+      try {
+        const details = errorDetails(reason, this.config.includeErrorMessage === true);
+        const { signature, ...reportDetails } = details;
+        const now = this.now();
+        this.pruneRecent(now);
+        if (now - (this.recent.get(signature) ?? Number.NEGATIVE_INFINITY) < duplicateWindowMilliseconds) return;
+        this.recent.set(signature, now);
+        const diagnostics = this.config.diagnosticsConsented === true ? this.safeDiagnostics(options.diagnostics) : void 0;
+        const report = {
+          projectSlug: this.config.projectSlug,
+          version: this.config.version,
+          installationId: this.installationId,
+          runtime: "browser",
+          component: this.config.component,
+          severity: options.severity ?? "error",
+          ...reportDetails,
+          context: safeContext(options.context ?? {}),
+          ...diagnostics ? { diagnostics, diagnosticsConsented: true } : {},
+          occurredAt: new Date(now).toISOString(),
+          idempotencyKey: `browser-${this.randomUUID()}`
+        };
+        const queue = this.loadQueue();
+        if (queue.length >= maximumQueuedReports) {
+          const discarded = queue.shift();
+          this.notifyDiscard({
+            reason: "outbox_full",
+            ...discarded ? { idempotencyKey: discarded.report.idempotencyKey } : {}
+          });
+        }
+        queue.push({ report, attempt: 0, nextAttemptAt: 0 });
+        this.saveQueue(queue);
+        void this.flush();
+      } catch {
+      }
+    }
+    async flush() {
+      let sent = 0;
+      while (true) {
+        if (!this.flushPromise) {
+          this.flushPromise = this.flushQueue().finally(() => {
+            this.flushPromise = null;
+          });
+        }
+        sent += await this.flushPromise;
+        const current = this.loadQueue()[0];
+        if (!current || current.nextAttemptAt > this.now()) {
+          return { ...this.status(), sent };
+        }
+      }
+    }
+    status() {
+      const queue = this.loadQueue();
+      return {
+        ok: queue.length === 0,
+        pending: queue.length,
+        nextAttemptAt: queue.length ? Math.min(...queue.map((item) => item.nextAttemptAt)) : null,
+        sent: 0
+      };
+    }
+    /** Remove every unsent report after the user withdraws reporting consent. */
+    clear() {
+      this.clearScheduledRetry();
+      this.recent.clear();
+      this.saveQueue([]);
+    }
+    async flushQueue() {
+      let sent = 0;
+      try {
+        while (true) {
+          const queue = this.loadQueue();
+          const current = queue[0];
+          if (!current) {
+            this.clearScheduledRetry();
+            return sent;
+          }
+          const wait = current.nextAttemptAt - this.now();
+          if (wait > 0) {
+            this.scheduleRetry(wait);
+            return sent;
+          }
+          let response;
+          try {
+            response = await this.fetcher(this.config.endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(current.report),
+              keepalive: true,
+              credentials: "omit",
+              redirect: "error",
+              referrerPolicy: "no-referrer"
+            });
+          } catch {
+            this.defer(current);
+            return sent;
+          }
+          if (response.ok) {
+            this.remove(current.report.idempotencyKey);
+            sent += 1;
+            continue;
+          }
+          if (retryableStatus(response.status)) {
+            this.defer(current, retryAfterMilliseconds(response));
+            return sent;
+          }
+          this.remove(current.report.idempotencyKey);
+          this.notifyDiscard({
+            reason: "non_retryable_response",
+            idempotencyKey: current.report.idempotencyKey,
+            status: response.status
+          });
+        }
+      } catch {
+        return sent;
+      }
+    }
+    defer(current, requestedDelay) {
+      const attempt = current.attempt + 1;
+      const exponentialDelay = Math.min(
+        initialRetryDelayMilliseconds * 2 ** Math.min(attempt - 1, 18),
+        maximumRetryDelayMilliseconds
+      );
+      const delay = requestedDelay === void 0 ? exponentialDelay : Math.max(exponentialDelay, requestedDelay);
+      const queue = this.loadQueue();
+      const index = queue.findIndex((item) => item.report.idempotencyKey === current.report.idempotencyKey);
+      if (index < 0) return;
+      queue[index] = { ...queue[index], attempt, nextAttemptAt: this.now() + delay };
+      this.saveQueue(queue);
+      this.scheduleRetry(delay);
+    }
+    remove(idempotencyKey) {
+      this.saveQueue(this.loadQueue().filter((item) => item.report.idempotencyKey !== idempotencyKey));
+    }
+    safeDiagnostics(diagnostics) {
+      if (!diagnostics) return void 0;
+      const safe = {};
+      if (diagnostics.logTail) safe.logTail = redactCrashText(diagnostics.logTail, 12e3);
+      if (diagnostics.breadcrumbs?.length) {
+        safe.breadcrumbs = diagnostics.breadcrumbs.slice(-50).map((item) => redactCrashText(item, 300));
+      }
+      return safe.logTail || safe.breadcrumbs?.length ? safe : void 0;
+    }
+    loadInstallationId() {
+      try {
+        const stored = this.storage?.getItem(this.installationKey);
+        if (stored && stored.length >= 16 && stored.length <= 200) return stored;
+        const created = `debugger-web-${this.randomUUID()}`;
+        this.storage?.setItem(this.installationKey, created);
+        return created;
+      } catch {
+        this.storageAvailable = false;
+        return `debugger-web-${this.randomUUID()}`;
+      }
+    }
+    loadQueue() {
+      if (!this.storageAvailable) return [...this.memoryQueue];
+      try {
+        const parsed = JSON.parse(this.storage?.getItem(this.queueKey) ?? "[]");
+        if (!Array.isArray(parsed)) {
+          this.notifyDiscard({ reason: "invalid_stored_report" });
+          this.saveQueue([]);
+          return [];
+        }
+        const valid = parsed.filter(isOutboxItem).slice(-maximumQueuedReports);
+        if (valid.length !== parsed.length) {
+          for (const entry of parsed) {
+            if (!isOutboxItem(entry)) this.notifyDiscard({ reason: "invalid_stored_report" });
+          }
+          this.storage?.setItem(this.queueKey, JSON.stringify(valid));
+        }
+        this.memoryQueue = valid;
+        return [...valid];
+      } catch {
+        this.storageAvailable = false;
+        return [...this.memoryQueue];
+      }
+    }
+    saveQueue(queue) {
+      this.memoryQueue = [...queue];
+      if (!this.storageAvailable) return;
+      try {
+        this.storage?.setItem(this.queueKey, JSON.stringify(queue));
+      } catch {
+        this.storageAvailable = false;
+      }
+    }
+    scheduleRetry(delayMilliseconds) {
+      if (this.retryTimer !== null) return;
+      const schedule = this.config.browserWindow?.setTimeout.bind(this.config.browserWindow) ?? globalThis.setTimeout;
+      this.retryTimer = schedule(() => {
+        this.retryTimer = null;
+        void this.flush();
+      }, Math.min(Math.max(delayMilliseconds, 0), maximumRetryDelayMilliseconds));
+    }
+    clearScheduledRetry() {
+      if (this.retryTimer === null) return;
+      const clear = this.config.browserWindow?.clearTimeout.bind(this.config.browserWindow) ?? globalThis.clearTimeout;
+      clear(this.retryTimer);
+      this.retryTimer = null;
+    }
+    pruneRecent(now) {
+      for (const [signature, capturedAt] of this.recent) {
+        if (now - capturedAt >= duplicateWindowMilliseconds) this.recent.delete(signature);
+      }
+    }
+    notifyDiscard(event) {
+      try {
+        this.config.onDiscard?.(event);
+      } catch {
+      }
+    }
+    assertConfig() {
+      if (!/^https?:\/\//u.test(this.config.endpoint) && !this.config.endpoint.startsWith("/")) {
+        throw new TypeError("endpoint must be an HTTP(S) URL or an absolute path");
+      }
+      if (!/^[a-z0-9][a-z0-9-]{1,62}$/u.test(this.config.projectSlug)) {
+        throw new TypeError("projectSlug does not match the Debugger API contract");
+      }
+      if (!this.config.version.trim() || this.config.version.length > 100) {
+        throw new TypeError("version must contain 1-100 characters");
+      }
+      if (!this.config.component.trim() || this.config.component.length > 100) {
+        throw new TypeError("component must contain 1-100 characters");
+      }
+    }
+  };
+  return __toCommonJS(index_exports);
+})();
+
+;
+
 /* === gb-beta-feedback.js === */
 ;
 (function () {
@@ -52020,6 +55695,8 @@ if (typeof window !== 'undefined') {
   const GOOGLE_ADMIN_TOKEN_KEY = 'meldex-beta-feedback-google-admin-token';
   const GOOGLE_IMPORT_DEFAULT_LIMIT = 10;
   const GOOGLE_IMPORT_DEFAULT_MAX_PASSES = 25;
+  const DEBUGGER_CRASH_ENDPOINT = 'https://debugger-api-staging.dlc-cherry.workers.dev/api/v1/public/error-reports';
+  const DEBUGGER_PROJECT_SLUG = 'meldex';
   const CRASH_FIELD_BLOCKLIST = new Set([
     'path', 'filepath', 'filename', 'targetpath',
     'currentpath', 'currentpagepath', 'currentdbpath',
@@ -52030,6 +55707,8 @@ if (typeof window !== 'undefined') {
   let _flushTelemetryPromise = null;
   let _settingsBound = false;
   let _pwaHandlersInstalled = false;
+  let _cloudCrashReporter = null;
+  let _uninstallCloudCrashReporter = null;
 
   async function _appendCloudDiagnostic(provider, channel, payload) {
     const resolver = window.MeldexDropboxManagementRootResolver;
@@ -52182,6 +55861,14 @@ if (typeof window !== 'undefined') {
   function setCrashReportEnabled(enabled) {
     _safeSet(CRASH_CONSENT_KEY, enabled ? '1' : '0');
     _writeConsentFromToggles();
+    if (!enabled) {
+      try { _cloudCrashReporter?.clear?.(); } catch (_) {}
+      try { _uninstallCloudCrashReporter?.(); } catch (_) {}
+      _cloudCrashReporter = null;
+      _uninstallCloudCrashReporter = null;
+    } else {
+      _configureCloudCrashReporter();
+    }
   }
 
   function setTelemetryEnabled(enabled) {
@@ -52492,6 +56179,25 @@ if (typeof window !== 'undefined') {
       '      - trigger: create',
       '        value: $now',
       '        overwrite: if_empty',
+      '  送信元:',
+      '    type: text',
+      '  送信状態:',
+      '    type: select',
+      '    options: [送信待ち, 送信済み, 送信失敗, 送信先未設定, 端末内に保存]',
+      '  送信受付日時:',
+      '    type: date',
+      '  開発者への送信日時:',
+      '    type: date',
+      '  受付番号:',
+      '    type: text',
+      '  対象バージョン:',
+      '    type: text',
+      '  送信結果・失敗理由:',
+      '    type: long-text',
+      '  添付:',
+      '    type: text',
+      '  端末内受付番号:',
+      '    type: text',
       '  仕分け状態:',
       '    type: select',
       '    options: [未処理, 仕分け済み, 転記済み, 転記不要]',
@@ -52612,7 +56318,7 @@ if (typeof window !== 'undefined') {
       currentViewIdx: 0,
       savedViews: [
         { name: 'フィードバックフォーム', viewMode: 'form', typeSpecific: { form: { formConfig: _feedbackFormConfig() } } },
-        { name: '送信履歴', viewMode: 'pivot', hiddenCols: ['連絡先', 'LLM分類理由'], pinnedCols: ['件名', '対応状況'], colOrder: ['件名', '対応状況', '修正済み', '種別', '重要度', '画面/機能', '送信日', '修正日時', '修正バージョン', '転記先'] },
+        { name: '送信履歴', viewMode: 'pivot', hiddenCols: ['連絡先', 'LLM分類理由', '端末内受付番号'], pinnedCols: ['件名', '送信状態', '対応状況'], colOrder: ['件名', '送信状態', '送信元', '種別', '重要度', '画面/機能', '送信受付日時', '開発者への送信日時', '受付番号', '対象バージョン', '送信結果・失敗理由', '添付', '対応状況', '修正済み', '修正日時', '修正バージョン', '転記先'] },
       ],
     };
   }
@@ -52642,17 +56348,49 @@ if (typeof window !== 'undefined') {
       const base = byName.get(view?.name || '');
       if (!base) return view;
       used.add(base.name || '');
-      return { ...base, ...view, typeSpecific: { ...(base.typeSpecific || {}), ...(view.typeSpecific || {}) } };
+      const mergedView = { ...base, ...view, typeSpecific: { ...(base.typeSpecific || {}), ...(view.typeSpecific || {}) } };
+      ['hiddenCols', 'pinnedCols', 'colOrder'].forEach((key) => {
+        const existing = Array.isArray(view?.[key]) ? view[key] : [];
+        const required = Array.isArray(base?.[key]) ? base[key] : [];
+        mergedView[key] = [...existing, ...required.filter(value => !existing.includes(value))];
+      });
+      return mergedView;
     });
     defaultViews.forEach(view => { const name = view?.name || ''; if (!used.has(name) && !currentViews.some(current => (current?.name || '') === name)) merged.push(view); });
     return merged;
   }
 
+  function _upgradeCloudFeedbackSheet(source) {
+    const current = String(source || '');
+    if (!current || current.includes('  送信状態:')) return current;
+    const complete = _feedbackDbFrontmatter();
+    const historyStart = complete.indexOf('  送信元:');
+    const historyEnd = complete.indexOf('  仕分け状態:');
+    if (historyStart < 0 || historyEnd <= historyStart) return current;
+    const historySchema = complete.slice(historyStart, historyEnd);
+    const insertAt = current.indexOf('  仕分け状態:');
+    if (insertAt >= 0) return current.slice(0, insertAt) + historySchema + current.slice(insertAt);
+    const publishAt = current.indexOf('publish:');
+    if (publishAt >= 0) return current.slice(0, publishAt) + historySchema + current.slice(publishAt);
+    return current;
+  }
+
   async function _writeCloudFeedbackSheet() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    try { await provider.statPath(FEEDBACK_DB_NOTE); }
-    catch (_) { await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter()); }
+    let exists = false;
+    try { await provider.statPath(FEEDBACK_DB_NOTE); exists = true; } catch (_) {}
+    if (!exists) {
+      await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter());
+    } else if (typeof provider.readText === 'function') {
+      try {
+        const current = await provider.readText(FEEDBACK_DB_NOTE);
+        const upgraded = _upgradeCloudFeedbackSheet(current);
+        if (upgraded !== current) await provider.writeText(FEEDBACK_DB_NOTE, upgraded);
+      } catch (_) {
+        // 既存の利用者シートを読めない時は上書きせず、次回起動で再試行する。
+      }
+    }
     return {
       ok: true,
       dbPath: FEEDBACK_DB_DIR,
@@ -52663,13 +56401,13 @@ if (typeof window !== 'undefined') {
     };
   }
 
-  async function ensureFeedbackSheet() {
+  async function ensureFeedbackSheet(options = {}) {
     const result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       ? await _writeCloudFeedbackSheet()
       : await _postJson('/beta/feedback-template', {}, false);
     if (result?.ok === false) throw new Error(result.error || result.reason || 'フィードバック保管シートを準備できませんでした');
     const dbPath = _applyFeedbackViewConfig(result);
-    if (typeof selectDatabase === 'function') {
+    if (options.open !== false && typeof selectDatabase === 'function') {
       try { await selectDatabase(dbPath, undefined, { silent: true }); } catch (_) {}
     }
     return { ...result, dbPath };
@@ -52742,6 +56480,12 @@ if (typeof window !== 'undefined') {
   // (app/meldex_debugger_reports.py) と同じ見出しの並びを使う。
   const FEEDBACK_SECTION_ORDER = ['件名', '種別', '内容', '再現手順', '期待する動作', '画面/機能', '重要度', '環境'];
   const FEEDBACK_PRIVATE_FIELDS = new Set(['お名前', '連絡先']);
+  const FEEDBACK_HISTORY_FIELDS = new Set([
+    '送信日', 'フィードバック送信日時', 'Meldex受信日時', '送信元', '送信状態',
+    '送信受付日時', '開発者への送信日時', '受付番号', '対象バージョン',
+    '送信結果・失敗理由', '添付', '端末内受付番号',
+  ]);
+  const _cloudCrashHistoryWrites = new Map();
 
   function _fieldText(value) {
     if (value == null) return '';
@@ -52766,7 +56510,7 @@ if (typeof window !== 'undefined') {
     });
     const extra = {};
     Object.keys(source).forEach((key) => {
-      if (FEEDBACK_SECTION_ORDER.includes(key) || FEEDBACK_PRIVATE_FIELDS.has(key)) return;
+      if (FEEDBACK_SECTION_ORDER.includes(key) || FEEDBACK_PRIVATE_FIELDS.has(key) || FEEDBACK_HISTORY_FIELDS.has(key)) return;
       const value = _fieldText(source[key]);
       if (value) extra[key] = value;
     });
@@ -52782,6 +56526,157 @@ if (typeof window !== 'undefined') {
     return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
   }
 
+  function _cloudCrashHistoryMarkdown(report, status, result = {}) {
+    const receivedAt = String(report?.occurredAt || _nowIso());
+    const sentAt = status === '送信済み' ? _nowIso() : '';
+    const receipt = String(result?.issueId || result?.reportId || result?.id || '');
+    const details = {
+      種類: String(report?.errorType || 'Error'),
+      内容: String(report?.message || 'Meldex Cloud error'),
+      発生箇所: String(report?.stack || ''),
+      環境: report?.context || {},
+    };
+    return [
+      '---',
+      'type: settings-entry',
+      `id: ${_yamlScalar('cloud_crash_' + _safeFilePart(report?.idempotencyKey || 'report', 'report'))}`,
+      'category: Meldexフィードバック',
+      'properties:',
+      _propYaml('件名', 'Meldex Cloudの自動クラッシュ報告'),
+      _propYaml('種別', 'バグ'),
+      _propYaml('内容', JSON.stringify(details, null, 2)),
+      _propYaml('環境', 'Meldex Cloud'),
+      _propYaml('送信元', 'Meldex Cloudの自動クラッシュ報告'),
+      _propYaml('送信状態', status),
+      _propYaml('送信受付日時', receivedAt),
+      _propYaml('開発者への送信日時', sentAt),
+      _propYaml('受付番号', receipt),
+      _propYaml('対象バージョン', report?.version || ''),
+      _propYaml('送信結果・失敗理由', result?.message || (status === '送信済み' ? 'Debuggerが受け付けました' : 'オンライン復帰後に自動で再送します')),
+      _propYaml('添付', report?.diagnostics ? '同意済み診断情報あり' : 'なし'),
+      _propYaml('端末内受付番号', report?.idempotencyKey || ''),
+      _propYaml('送信日', receivedAt.slice(0, 10)),
+      _propYaml('フィードバック送信日時', receivedAt),
+      `created: ${_yamlScalar(receivedAt)}`,
+      `modified: ${_yamlScalar(_nowIso())}`,
+      '---',
+      '',
+    ].join('\n');
+  }
+
+  async function _writeCloudCrashHistory(report, status, result) {
+    const key = String(report?.idempotencyKey || '');
+    if (!key) return;
+    const previous = _cloudCrashHistoryWrites.get(key) || Promise.resolve();
+    const write = previous.catch(() => {}).then(async () => {
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      if (!provider) return;
+      await _writeCloudFeedbackSheet();
+      const fileId = _safeFilePart(key, 'report');
+      await provider.writeText(
+        _joinPath(FEEDBACK_DB_DIR, `送信履歴_${fileId}.md`),
+        _cloudCrashHistoryMarkdown(report, status, result),
+      );
+    });
+    _cloudCrashHistoryWrites.set(key, write);
+    try {
+      await write;
+    } catch (_) {
+      // 履歴保存の失敗でクラッシュ送信を再送・失敗扱いにしない。
+    } finally {
+      if (_cloudCrashHistoryWrites.get(key) === write) _cloudCrashHistoryWrites.delete(key);
+    }
+  }
+
+  async function _settleCloudCrashHistory(report, status, result) {
+    const write = _writeCloudCrashHistory(report, status, result);
+    await Promise.race([
+      write,
+      new Promise(resolve => setTimeout(resolve, 1500)),
+    ]);
+  }
+
+  async function _cloudCrashFetch(url, options) {
+    let report = null;
+    try { report = JSON.parse(String(options?.body || '')); } catch (_) {}
+    try {
+      const response = await globalThis.fetch(url, options);
+      let result = {};
+      try { result = await response.clone().json(); } catch (_) {}
+      if (report) {
+        if (response.ok) {
+          await _settleCloudCrashHistory(report, '送信済み', result);
+        } else if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
+          await _settleCloudCrashHistory(report, '送信待ち', { message: `HTTP ${response.status}。オンライン復帰後に自動で再送します` });
+        } else {
+          await _settleCloudCrashHistory(report, '送信失敗', { message: `DebuggerがHTTP ${response.status}を返したため自動再送を停止しました` });
+        }
+      }
+      return response;
+    } catch (error) {
+      if (report) {
+        await _settleCloudCrashHistory(report, '送信待ち', { message: '通信できないため、オンライン復帰後に自動で再送します' });
+      }
+      throw error;
+    }
+  }
+
+  function _configureCloudCrashReporter() {
+    if (!_isCloudDataMode() || !isCrashReportEnabled()) return null;
+    if (_cloudCrashReporter) return _cloudCrashReporter;
+    const Reporter = window.DebuggerCrashClient?.CrashReporter;
+    if (typeof Reporter !== 'function') return null;
+    try {
+      _cloudCrashReporter = new Reporter({
+        endpoint: DEBUGGER_CRASH_ENDPOINT,
+        projectSlug: DEBUGGER_PROJECT_SLUG,
+        version: String(window.__meldexVersionCache?.version || 'unknown').slice(0, 100),
+        component: 'meldex-cloud',
+        diagnosticsConsented: true,
+        fetcher: _cloudCrashFetch,
+        onDiscard: (event) => {
+          _writeCloudCrashReport({
+            kind: 'crash-client-discard',
+            level: 'warning',
+            reason: String(event?.reason || 'unknown'),
+            status: Number(event?.status || 0),
+            time: _nowIso(),
+          }).catch(() => {});
+        },
+      });
+      _uninstallCloudCrashReporter = _cloudCrashReporter.install({
+        windowErrors: true,
+        unhandledRejections: true,
+        flushWhenOnline: true,
+      });
+      return _cloudCrashReporter;
+    } catch (_) {
+      _cloudCrashReporter = null;
+      _uninstallCloudCrashReporter = null;
+      return null;
+    }
+  }
+
+  function _captureCloudCrash(payload) {
+    const reporter = _configureCloudCrashReporter();
+    if (!reporter) return;
+    try {
+      const failure = new Error('Meldex Cloud error');
+      const requestedName = String(payload?.name || 'MeldexCloudError');
+      failure.name = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(requestedName)
+        ? requestedName
+        : 'MeldexCloudError';
+      if (payload?.stack) failure.stack = String(payload.stack);
+      reporter.capture(failure, {
+        severity: payload?.level === 'fatal' ? 'fatal' : 'error',
+        context: {
+          runtimeMode: String(payload?.runtimeMode || 'cloud').slice(0, 100),
+          source: String(payload?.source || 'meldex').slice(0, 100),
+        },
+      });
+    } catch (_) {}
+  }
+
   async function _getJson(path) {
     const response = await fetch((typeof API_BASE === 'string' ? API_BASE : '/api') + path, {
       headers: _authHeaders(),
@@ -52791,7 +56686,13 @@ if (typeof window !== 'undefined') {
   }
 
   async function getDebuggerSettings() {
-    if (_isCloudDataMode()) return { ...DEBUGGER_UNAVAILABLE, baseUrl: '', projectSlug: '' };
+    if (_isCloudDataMode()) return {
+      ok: true,
+      configured: true,
+      fixed: true,
+      baseUrl: DEBUGGER_CRASH_ENDPOINT.replace(/\/api\/v1\/public\/error-reports$/, ''),
+      projectSlug: DEBUGGER_PROJECT_SLUG,
+    };
     return _getJson('/debugger/settings');
   }
 
@@ -52811,12 +56712,21 @@ if (typeof window !== 'undefined') {
   }
 
   async function getDebuggerQueue() {
-    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    if (_isCloudDataMode()) {
+      const reporter = _configureCloudCrashReporter();
+      const status = reporter?.status?.() || { ok: false, pending: 0, nextAttemptAt: null };
+      return { ...status, configured: !!reporter, browserManaged: true };
+    }
     return _getJson('/debugger/queue');
   }
 
   async function flushDebuggerQueue() {
-    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    if (_isCloudDataMode()) {
+      const reporter = _configureCloudCrashReporter();
+      if (!reporter) return { ...DEBUGGER_UNAVAILABLE, reason: 'crash-report-consent-disabled' };
+      const status = await reporter.flush();
+      return { ...status, browserManaged: true };
+    }
     return _postJson('/debugger/flush', {}, false);
   }
 
@@ -52841,6 +56751,7 @@ if (typeof window !== 'undefined') {
         reportType: _feedbackReportType(fields['種別']),
         origin: 'feedback-form',
         sections,
+        historyEntryPath: String(data.entryPath || ''),
       });
     } catch (error) {
       // 送信できなくても、フォームの入力はMeldex内の保管シートに残っている。
@@ -52915,7 +56826,8 @@ if (typeof window !== 'undefined') {
     }
     if (!isCrashReportEnabled() || _isBypassMode()) return;
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
-      // Cloud版はサーバーを持たないため、この端末内の記録だけを残す。
+      // Cloud版も同意時は汎用クライアントのoutboxへ積み、端末内記録も残す。
+      _captureCloudCrash(payload);
       _writeCloudCrashReport(payload).catch(() => {});
     } else {
       // 本体サーバーが記録し、同意があればDebuggerの送信待ちへ回す。
@@ -53402,13 +57314,26 @@ if (typeof window !== 'undefined') {
     }
   }
 
+  async function _prepareFeedbackHistoryOnBoot(attempt = 0) {
+    let prepared = false;
+    try {
+      await ensureFeedbackSheet({ open: false });
+      prepared = true;
+    } catch (_) {}
+    try { await flushDebuggerQueue(); } catch (_) {}
+    if (!prepared && attempt < 3) {
+      setTimeout(() => { _prepareFeedbackHistoryOnBoot(attempt + 1); }, 5000 * (attempt + 1));
+    }
+  }
+
   function _boot() {
     _installPwaHandlers();
     _bindSettingsObserver();
+    _configureCloudCrashReporter();
     if (isTelemetryEnabled()) startTelemetry();
-    // 前回オフラインで送れなかった報告を、起動時に一度だけ送る。
-    // 送信先が未設定なら何も起きない。
-    setTimeout(() => { flushDebuggerQueue().catch(() => {}); }, 5000);
+    // 現在の画面を変えずに利用者向け履歴シートを準備し、前回オフラインや
+    // 前回異常終了で残った既存outboxを送信・同じ行へ同期する。
+    setTimeout(() => { _prepareFeedbackHistoryOnBoot(); }, 5000);
   }
 
   window.MeldexBetaFeedback = {
@@ -54282,7 +58207,6 @@ if (typeof window !== 'undefined') {
         '.meldex-cloud-mode-modal',
         '.meldex-cloud-setup-overlay',
         '.meldex-cloud-setup-modal',
-        '.meldex-sample-install-overlay',
         '[data-draft-recovery-dialog="1"]',
       ].join(', '));
     } catch {
@@ -55013,8 +58937,7 @@ if (typeof window !== 'undefined') {
   }
 
   function cssEscape(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return MeldexEscape.cssIdent(value);
   }
 
   function visibleTextHint(el) {
@@ -56168,8 +60091,7 @@ if (typeof window !== 'undefined') {
   }
 
   function _cssEscape(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _labelFromElement(el) {
@@ -58013,7 +61935,7 @@ if (typeof window !== 'undefined') {
   border: 2px solid transparent; box-sizing: border-box; flex-shrink: 0;
 }
 .gb-swatch:hover { border-color: var(--ui-border-strong, #fff); }
-.gb-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gb-swatch:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gb-swatch.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .gb-swatch.active { border-color: var(--accent); }
 .gb-swatch[draggable="true"] { cursor: grab; }
@@ -58139,7 +62061,8 @@ if (typeof window !== 'undefined') {
   .gb-palette-popup {
     box-sizing: border-box;
     max-width: calc(100vw - 16px);
-    max-height: calc(100dvh - 16px);
+    /* root の UI 拡大率を掛けた後も、実際の viewport 内へ収める。 */
+    max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
   .gb-palette {
@@ -58713,29 +62636,73 @@ function bindColorSwatch(el, getCurrentColor, onSelect) {
 let _gbPalettePopup = null;
 let _gbPaletteOutsideHandler = null;
 let _gbPaletteKeyHandler = null;
+let _gbPaletteAnchor = null;
 
-function closeColorPalette() {
+function closeColorPalette({ restoreFocus = false } = {}) {
+  const anchor = _gbPaletteAnchor;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
+  _gbPaletteAnchor = null;
   document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => menu.remove());
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
+  if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
+    anchor.focus({ preventScroll: true });
+  }
+}
+
+function _constrainColorPaletteToViewport(palette) {
+  if (!palette || !window.matchMedia?.('(max-width: 640px), (pointer: coarse)').matches) return;
+  const zoom = Math.max(
+    0.1,
+    Number(typeof _getZoom === 'function' ? _getZoom() : document.documentElement?.style?.zoom) || 1,
+  );
+  palette.style.maxHeight = Math.max(120, (window.innerHeight / zoom) - 16) + 'px';
+  palette.style.overflowY = 'auto';
 }
 
 function openColorPalette(anchorEl, currentColor, onSelect) {
   closeColorPalette();
-  const palette = _buildPaletteElement(currentColor, onSelect, closeColorPalette);
+  _gbPaletteAnchor = anchorEl;
+  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }));
   palette.classList.add('gb-palette-popup');
+  palette.setAttribute('role', 'dialog');
+  palette.setAttribute('aria-label', '色を選択');
   document.body.appendChild(palette);
   _gbPalettePopup = palette;
   if (typeof positionPopup === 'function') positionPopup(palette, anchorEl.getBoundingClientRect());
   else { const rect = anchorEl.getBoundingClientRect(); const z = (typeof _getZoom === 'function') ? _getZoom() : 1; palette.style.left = (rect.left / z) + 'px'; palette.style.top = (rect.bottom / z + 4) + 'px'; }
+  // positionPopup() は計測前に maxHeight を初期化するため、UI拡大率を含む
+  // モバイル上限を配置後に確定させ、最後に位置を再クランプする。
+  _constrainColorPaletteToViewport(palette);
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(palette);
   _gbPaletteOutsideHandler = (ev) => { if (_gbPalettePopup && !_gbPalettePopup.contains(ev.target) && !ev.target.closest?.('.gb-palette-context-menu, .gb-ctx-menu') && ev.target !== anchorEl) closeColorPalette(); };
   _gbPaletteKeyHandler = (ev) => {
-    if (ev.key !== 'Escape' || !_gbPalettePopup) return;
+    if (!_gbPalettePopup) return;
+    if (ev.key === 'Tab') {
+      const focusable = [..._gbPalettePopup.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
+        .filter(element => element.getClientRects().length > 0);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus({ preventScroll: true });
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
-    closeColorPalette();
+    closeColorPalette({ restoreFocus: true });
   };
+  requestAnimationFrame(() => {
+    if (_gbPalettePopup !== palette) return;
+    const initial = palette.querySelector('.gb-swatch.active, button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    initial?.focus?.({ preventScroll: true });
+  });
   setTimeout(() => document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true), 0);
   setTimeout(() => document.addEventListener('keydown', _gbPaletteKeyHandler, true), 0);
 }
@@ -62525,11 +66492,11 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function escHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function escAttr(value) {
-    return escHtml(value);
+    return MeldexEscape.attr(value);
   }
 
   function collectCurrentCssVars() {
@@ -64078,7 +68045,6 @@ async function _applyImportedCustomColors(rawColors, mode) {
     "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
     "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
     "document.getElementById('settings-transfer-import-input')?.click()",
-    "window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })",
   ]);
 
   function parseAction(actionStr) {
@@ -68542,10 +72508,7 @@ async function _applyImportedCustomColors(rawColors, mode) {
   }
 
   function _escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(value);
-    return String(value).replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[char]));
+    return global.MeldexEscape.html(value);
   }
 
   function _cssFamily(name) {

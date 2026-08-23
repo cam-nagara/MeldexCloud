@@ -4,6 +4,7 @@
   const RAW_URL_RE = /\/(?:api\/)?file-raw\?[^"' )]+/g;
   const MEDIA_URL_RE = /\/(?:api\/)?media\/file\?[^"' )]+/g;
   const THUMB_URL_RE = /\/(?:api\/)?thumbnail\?[^"' )]+/g;
+  const ARCHIVE_FILE_URL_RE = /\/(?:api\/)?archive\/file\?[^"' )]+/g;
   const BLOB_CACHE_MAX_BYTES = 24 * 1024 * 1024;
 
   function _runtime() {
@@ -39,12 +40,36 @@
     return !!value && (typeof window.MeldexResourceUrl?.isFileRawUrl === 'function'
       ? window.MeldexResourceUrl.isFileRawUrl(value)
       : /\/(?:api\/)?file-raw\?/.test(String(value || '')))
-      || /\/(?:api\/)?media\/file\?/.test(String(value || ''));
+      || /\/(?:api\/)?media\/file\?/.test(String(value || ''))
+      || /\/(?:api\/)?archive\/file\?/.test(String(value || ''));
+  }
+
+  // ZIP内のファイル（/archive/file?path=...&member=...）はarchivePathとmember
+  // の2つを識別しないと読めないため、`zip:<archivePath>!/<member>` という
+  // 合成キーへ変換し、以降は通常のfile-rawと同じキャッシュ・書き換え経路に乗せる。
+  function _looksLikeArchiveFileUrl(value) {
+    return !!value && /\/(?:api\/)?archive\/file\?/.test(String(value || ''));
+  }
+
+  function _archiveKeyFromUrl(value) {
+    const raw = String(value || '').trim();
+    if (!_looksLikeArchiveFileUrl(raw)) return '';
+    try {
+      const parsed = new URL(raw, document.baseURI || window.location.href);
+      const archivePath = _normalizeLocalPath(parsed.searchParams.get('path') || '');
+      const member = String(parsed.searchParams.get('member') || '');
+      if (!archivePath) return '';
+      return `zip:${archivePath}!/${member}`;
+    } catch {
+      return '';
+    }
   }
 
   function _extractRawPath(value) {
     const raw = String(value || '').trim();
     if (!raw) return '';
+    const archiveKey = _archiveKeyFromUrl(raw);
+    if (archiveKey) return archiveKey;
     if (_looksLikeFileRawUrl(raw) || /\/(?:api\/)?thumbnail\?/.test(raw)) {
       try {
         const parsed = new URL(raw, document.baseURI || window.location.href);
@@ -121,47 +146,6 @@
     return URL.createObjectURL(new Blob([bytes], { type: mime || 'application/octet-stream' }));
   }
 
-  function _authHeaders() {
-    const headers = new Headers();
-    try {
-      const token = localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
-      if (token) headers.set('Authorization', 'Bearer ' + token);
-    } catch {}
-    return headers;
-  }
-
-  async function _serverRawUrl(path, opts) {
-    const normalized = _normalizeLocalPath(path);
-    const rawUrl = _fallbackRawUrl(normalized);
-    const response = await fetch(rawUrl, {
-      method: 'GET',
-      headers: _authHeaders(),
-      cache: 'no-store',
-      credentials: 'omit',
-    });
-    if (!response.ok) return { path: normalized, url: rawUrl, streamed: true };
-    const blob = await response.blob();
-    const fileSize = Number(blob.size || 0);
-    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
-      const cachedLarge = CACHE[normalized];
-      if (cachedLarge?.url?.startsWith('blob:')) {
-        try { URL.revokeObjectURL(cachedLarge.url); } catch {}
-      }
-      delete CACHE[normalized];
-      return { path: normalized, url: rawUrl, mime: blob.type || _mimeFromPath(normalized), size: fileSize, streamed: true };
-    }
-    const modified = response.headers.get('etag') || response.headers.get('last-modified') || String(Date.now());
-    const cached = CACHE[normalized];
-    if (cached && cached.modified === modified && cached.size === fileSize) return cached;
-    const url = URL.createObjectURL(blob);
-    if (cached?.url && cached.url.startsWith('blob:')) {
-      try { URL.revokeObjectURL(cached.url); } catch {}
-    }
-    const next = { path: normalized, url, mime: blob.type || _mimeFromPath(normalized), size: fileSize, modified };
-    CACHE[normalized] = next;
-    return next;
-  }
-
   async function _provider() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) return null;
@@ -189,6 +173,44 @@
     throw lastError || new Error('ファイルを取得できませんでした: ' + normalized);
   }
 
+  // ZIP内メンバーの表示URL（archivePath!/member から復元した実体をblob:化する）。
+  // gb-archive-zip-engine.js（端末内保存／Dropboxの両バックエンドで共通）を使う。
+  function _archiveOriginalUrl(zipKey, fallbackDirect) {
+    const match = /^zip:([\s\S]*)!\/([\s\S]*)$/.exec(zipKey);
+    if (!match) return fallbackDirect;
+    return `/api/archive/file?path=${encodeURIComponent(match[1])}&member=${encodeURIComponent(match[2])}`;
+  }
+
+  async function _ensureArchiveRawUrl(zipKey, originalUrl, opts) {
+    const cached = CACHE[zipKey];
+    if (cached) return cached;
+    const fallbackUrl = _archiveOriginalUrl(zipKey, originalUrl);
+    if (!_runtime()?.isBrowserDataMode?.()) {
+      return { path: zipKey, url: fallbackUrl };
+    }
+    const engine = window.MeldexArchiveZipEngine;
+    const match = /^zip:([\s\S]*)!\/([\s\S]*)$/.exec(zipKey);
+    if (!engine || !match) return { path: zipKey, url: fallbackUrl };
+    const provider = await _provider();
+    if (!provider) return { path: zipKey, url: fallbackUrl };
+    let result;
+    try {
+      result = await engine.readArchiveMemberViaProvider(provider, match[1], match[2]);
+    } catch (error) {
+      console.warn('[archive] ZIP内ファイルを読み込めませんでした', error);
+      return { path: zipKey, url: fallbackUrl };
+    }
+    const fileSize = result.bytes.length;
+    if (fileSize > BLOB_CACHE_MAX_BYTES && !opts.allowLargeBlob) {
+      delete CACHE[zipKey];
+      return { path: zipKey, url: fallbackUrl, mime: result.mime, size: fileSize, streamed: true };
+    }
+    const url = _bytesToUrl(result.bytes, result.mime);
+    const next = { path: zipKey, url, mime: result.mime, size: fileSize, modified: String(Date.now()) };
+    CACHE[zipKey] = next;
+    return next;
+  }
+
   async function ensureRawUrl(pathLike, options) {
     const opts = options || {};
     const direct = String(pathLike || '').trim();
@@ -196,7 +218,7 @@
     if (_isDirectUrl(direct)) return { path: '', url: direct };
     const normalized = _extractRawPath(direct);
     if (!normalized) return { path: '', url: direct };
-    if (_runtime()?.isServerMode?.()) return _serverRawUrl(normalized, opts);
+    if (normalized.startsWith('zip:')) return _ensureArchiveRawUrl(normalized, direct, opts);
     if (!_runtime()?.isBrowserDataMode?.()) return { path: normalized, url: _fallbackRawUrl(normalized) };
     const provider = await _provider();
     if (!provider) return { path: normalized, url: _fallbackRawUrl(normalized) };
@@ -238,6 +260,9 @@
     if (_isDirectUrl(direct)) return direct;
     const normalized = _extractRawPath(direct);
     if (!normalized) return direct;
+    if (normalized.startsWith('zip:')) {
+      return getCachedRawUrl(normalized) || _archiveOriginalUrl(normalized, direct);
+    }
     return getCachedRawUrl(normalized) || _fallbackRawUrl(normalized);
   }
 
@@ -312,7 +337,7 @@
     if (!raw) return;
     const isThumbnail = /\/(?:api\/)?thumbnail\?/.test(raw);
     if (_looksLikeFileRawUrl(raw) || isThumbnail) {
-      if (isThumbnail && !(_runtime()?.isBrowserDataMode?.() || _runtime()?.isServerMode?.())) return;
+      if (isThumbnail && !_runtime()?.isBrowserDataMode?.()) return;
       applyToElement(element, raw, attrName === 'href' ? 'href' : attrName);
       return;
     }
@@ -342,16 +367,18 @@
 
   function _rewriteStyle(element) {
     const styleValue = element.getAttribute('style');
-    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !MEDIA_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue))) {
+    if (!styleValue || (!RAW_URL_RE.test(styleValue) && !MEDIA_URL_RE.test(styleValue) && !THUMB_URL_RE.test(styleValue) && !ARCHIVE_FILE_URL_RE.test(styleValue))) {
       RAW_URL_RE.lastIndex = 0;
       MEDIA_URL_RE.lastIndex = 0;
       THUMB_URL_RE.lastIndex = 0;
+      ARCHIVE_FILE_URL_RE.lastIndex = 0;
       return;
     }
     RAW_URL_RE.lastIndex = 0;
     MEDIA_URL_RE.lastIndex = 0;
     THUMB_URL_RE.lastIndex = 0;
-    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE)];
+    ARCHIVE_FILE_URL_RE.lastIndex = 0;
+    const rawMatches = [...styleValue.matchAll(RAW_URL_RE), ...styleValue.matchAll(MEDIA_URL_RE), ...styleValue.matchAll(THUMB_URL_RE), ...styleValue.matchAll(ARCHIVE_FILE_URL_RE)];
     rawMatches.forEach((match) => {
       const urlText = match[0];
       ensureDisplayUrl(urlText).then((info) => {

@@ -781,12 +781,25 @@ async function _gbAppPrepareFullFileWrite(path, body) {
 
 async function apiPut(path, body, options = {}) {
   const guardedBody = await _gbAppPrepareFullFileWrite(path, body);
-  return apiFetch(path, {
+  const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
     ...(options || {}),
   });
+  _scheduleLinkDictionaryRefreshForMutation(path);
+  return result;
+}
+
+function _scheduleLinkDictionaryRefreshForMutation(path) {
+  const pathname = String(path || '').split('?')[0];
+  if (![
+    '/value', '/entity/create', '/entity/rename',
+    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
+  ].includes(pathname)) return;
+  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
+    MeldexAutoLink.scheduleReload(3000);
+  }
 }
 
 async function apiPost(path, body, options = {}) {
@@ -804,6 +817,7 @@ async function apiPost(path, body, options = {}) {
     ...(options || {}),
   });
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
 
@@ -961,13 +975,23 @@ apiFetch = async function(path, opts) {
     if (activeLocks?.beforeApiFetch) {
       opts = await activeLocks.beforeApiFetch(path, opts, { candidatePaths: lockCandidatePaths });
     }
-    // _user パラメータを自動付与（監査ログ・modified_by 用）
+    // 表示名と安定IDを自動付与（監査ログ・版履歴の編集者帰属用）
     const user = getUsername();
-    if (user && user !== 'anonymous') {
-      const sep = path.includes('?') ? '&' : '?';
-      path += sep + '_user=' + encodeURIComponent(user);
+    const actorId = window.MeldexProfileIdentity?.getStableActorId?.() || '';
+    const requestMethod = String(opts.method || 'GET').toUpperCase();
+    const mutationRequest = requestMethod !== 'GET' && requestMethod !== 'HEAD';
+    const identityParams = [];
+    if (user && user !== 'anonymous' && !/[?&]_user=/.test(path)) identityParams.push('_user=' + encodeURIComponent(user));
+    if (mutationRequest && actorId && !/[?&]_actor_id=/.test(path)) identityParams.push('_actor_id=' + encodeURIComponent(actorId));
+    if (mutationRequest && !/[?&]_actor_kind=/.test(path)) identityParams.push('_actor_kind=human');
+    if (identityParams.length) path += (path.includes('?') ? '&' : '?') + identityParams.join('&');
+    const result = await _origApiFetch(path, opts);
+    if (result?.history_sync_pending) {
+      if (typeof showStatus === 'function') showStatus('本文は保存しました。変更履歴は接続回復後に同期します', true);
+    } else if (result?.history_recorded === false) {
+      if (typeof showStatus === 'function') showStatus('本文は保存しましたが、変更履歴を記録できませんでした', true);
     }
-    return await _origApiFetch(path, opts);
+    return result;
   } finally {
     await transientLease?.release?.();
   }

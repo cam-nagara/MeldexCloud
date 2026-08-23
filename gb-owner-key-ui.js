@@ -6,8 +6,7 @@
   let _activeAuditModal = null;
 
   function _esc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function _icon(name, size = 14) {

@@ -45,9 +45,7 @@
   }
 
   function _cssEscape(value) {
-    const text = String(value || '');
-    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(text);
-    return text.replace(/[^a-zA-Z0-9_-]/g, ch => '\\' + ch.charCodeAt(0).toString(16) + ' ');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _attrValue(value) {

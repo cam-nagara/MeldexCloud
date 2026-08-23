@@ -362,8 +362,7 @@
   }
 
   function _notionCssEscape(value) {
-    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
-    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _notionFolderLabel(path) {

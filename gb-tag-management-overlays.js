@@ -66,9 +66,7 @@
     closeMenu({ restoreFocus: false });
     activeTrigger = anchor || null;
     const icon = typeof helpers.icon === 'function' ? helpers.icon : (() => '');
-    const escapeHtml = typeof helpers.escapeHtml === 'function'
-      ? helpers.escapeHtml
-      : value => String(value || '');
+    const escapeHtml = MeldexEscape.html;
     const safeKey = typeof helpers.safeKey === 'function'
       ? helpers.safeKey
       : value => String(value || '');

@@ -305,7 +305,7 @@ async function openEntityInSplit(entityPath, entityName) {
   _splitDirty = false;
   if (window.MeldexCloudMobileSideDrawer?.openEntity?.(entityPath, name)) return true;
   if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
-    if (typeof openRightPanelTab === 'function') openRightPanelTab('subpanel');
+    // 右サイドバーを開く処理は GBSubPanel.open() が必ず行う（Phase B-0 で共通化）。
     return GBSubPanel.open({ type: 'entity', path: entityPath, label: name });
   }
   if (typeof selectEntity === 'function') {

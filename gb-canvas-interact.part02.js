@@ -741,6 +741,16 @@
     if (document.hidden) _resetSpaceState();
   }
 
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 選択に連動したサブパネル自動表示
+  // (bdRequestLinkedSelectionAutoSubpanel、gb-board-links.js) が、クリックがドラッグへ
+  // 変わった瞬間やリサイズ・範囲選択・パン中に誤発火しないための判定に使う。
+  // bdSelect() は pointerdown の最初に呼ばれるため、その時点ではまだ drag 等が
+  // 立っていない。デバウンス後の発火判定用に window へ公開する。
+  function bdIsBoardPointerBusy() {
+    return !!(drag || resizing || selStart || pan || touchPinch || bd._lineToolDrag || bd._rightDragNode);
+  }
+  window.bdIsBoardPointerBusy = bdIsBoardPointerBusy;
+
   // --- Attach listeners ---
   canvas.addEventListener('pointerdown', onCanvasPointerdown);
   canvas.addEventListener('contextmenu', onCanvasContextmenu);
@@ -772,6 +782,11 @@
     window.removeEventListener('blur', onWindowBlurSpace);
     document.removeEventListener('visibilitychange', onVisibilityChangeSpace);
     _resetSpaceState();
+    // このクロージャの drag/resizing/selStart 等は cleanup後もローカル変数として残るため、
+    // ドラッグ中に破棄されると bdIsBoardPointerBusy() が真のまま固まる恐れがある。
+    // window参照ごと外し、次の bdInitInteraction 呼び出しで新しいクロージャに差し替わるまで
+    // 安全側 (false) に倒す。
+    if (window.bdIsBoardPointerBusy === bdIsBoardPointerBusy) delete window.bdIsBoardPointerBusy;
   };
 }
 

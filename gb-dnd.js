@@ -590,7 +590,7 @@ const MeldexDnD = (() => {
 
     if (mediaType === 'image') {
       const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
-      return `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`;
+      return `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}" data-meldex-content-image></div>`;
     }
 
     if (mediaType === 'video' || mediaType === 'audio') {
@@ -617,6 +617,7 @@ const MeldexDnD = (() => {
     const last = fragment.lastChild;
     range.deleteContents();
     range.insertNode(fragment);
+    window.MeldexImageLoading?.trackAll?.(editable);
     if (last) {
       range.setStartAfter(last);
       range.collapse(true);

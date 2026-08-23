@@ -621,6 +621,21 @@ function bdContextMenu(e, nodeId) {
         }
         if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       });
+
+      // フキダシのしっぽ (追加する / 削除する の2択。注釈の付箋メニューと同じ構成に揃える)。
+      // Alt+Shift+ドラッグを知らなくても到達できる導線。
+      const tailSub = sub('フキダシのしっぽ');
+      const hasTail = typeof bdCardHasTail === 'function' ? bdCardHasTail(nd) : !!nd.tail;
+      [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
+        tailSub.item(radioMark(hasTail === isRemove) + label, () => {
+          const cardEl = document.getElementById('bdn-' + nodeId);
+          if (isRemove) {
+            if (typeof bdRemoveCardTail === 'function') bdRemoveCardTail(cardEl, nd);
+          } else if (typeof bdAddCardTail === 'function') {
+            bdAddCardTail(cardEl, nd);
+          }
+        }, { role: 'menuitemradio', checked: hasTail === isRemove });
+      });
     }
 
     // --- Multi-select: 整列・サイズ・集約・グループ化 ---

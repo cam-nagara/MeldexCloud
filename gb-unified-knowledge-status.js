@@ -136,7 +136,7 @@
       return;
     }
     try {
-      const res = await global.apiFetch('/api/knowledge/screenshot-migration/candidates', { silentError: true });
+      const res = await global.apiFetch('/knowledge/screenshot-migration/candidates', { silentError: true });
       const candidates = Array.isArray(res?.candidates) ? res.candidates : [];
       if (!candidates.length) {
         box.hidden = true;
@@ -156,7 +156,7 @@
           button.textContent = '移行中…';
           try {
             const paths = candidates.map(c => c.path).filter(Boolean);
-            const execRes = await global.apiFetch('/api/knowledge/screenshot-migration/execute', {
+            const execRes = await global.apiFetch('/knowledge/screenshot-migration/execute', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ paths }),

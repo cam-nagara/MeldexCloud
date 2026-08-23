@@ -39,7 +39,7 @@
   // 対象文書パスから gb-dropbox-management-root-resolver.js の
   // resolveManagementScopeForPath でスコープを決め、共有ソース配下の文書の
   // ロックは共有管理領域のストアへ、entryのパスはそのスコープの正準形
-  // (個人=ホーム同期ルート相対 / 共有=ワークスペードルート相対)で保存する。
+  // (個人=ホーム同期ルート相対 / 共有=ワークスペースルート相対)で保存する。
   // 一覧のようにスコープを一意に決められない操作は resolveManagementScopesForProvider
   // で全スコープを集約する。HMAC署名(MeldexKnowledgeSignature)もストアと同じ
   // スコープの管理領域へ置く(別スコープの署名で相互に上書き・誤検証しないため)。
@@ -233,7 +233,7 @@
       lock_reason: String(entry?.lock_reason || entry?.reason || '').trim(),
     };
     // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
-    // ワークスペードルート相対)で保存された新形式。旧形式entry(接続ルート
+    // ワークスペースルート相対)で保存された新形式。旧形式entry(接続ルート
     // 相対のローカルパス)にはこのフィールドが無く、照合時に再解釈する。
     if (entry?.path_space === 'root') cleaned.path_space = 'root';
     return cleaned;
@@ -672,6 +672,74 @@
     return result || { ok: true, removed: 0 };
   }
 
+  // --- システム保持ロック(実Dropbox完全復元のゴミ箱退避方式 2026-08-20) -----------
+  //
+  // setLock/unlock はUI操作専用で、クライアント側の isOwner 判定(_requireOwner)を
+  // 通す。フォルダー完全復元の呼び出し元は既にサーバー側の trustedWorkspaceRole で
+  // role(owner/admin/schedule_manager)を検証済みのため、ここでは isOwner 判定を
+  // 経由しない。復元processが自分自身のholder識別子で保持するロックのみを対象にし、
+  // 他者(他メンバーのUIロック・別holderのシステムロック)が既に居る場合は開始前に
+  // 423で停止する(fail-closed)。取得は冪等(再開時に自分のロックが既にあればno-op)。
+  async function acquireSystemLock(provider, path, options = {}) {
+    const localPath = _normalizeFolderPath(path || '');
+    if (!localPath) throw new Error('path は必須です');
+    if (_isSystemExcluded(localPath)) throw new Error('システムフォルダは編集ロックできません');
+    const holder = String(options.holder || '').trim();
+    if (!holder) throw new Error('holder は必須です');
+    const lockedBy = `system:${holder}`;
+    const reason = String(options.reason || 'system').trim();
+    const scope = await _scopeForPath(provider, localPath);
+    const canonical = _canonicalForScope(scope, localPath);
+    const entry = _cleanEntry({
+      path: canonical, path_space: 'root', lock_reason: reason,
+      locked_by: lockedBy, locked_at: new Date().toISOString(),
+    });
+    if (!entry) throw new Error('path は必須です');
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const conflict = _pathOrAncestorEntry(store.entries, canonical, scope) || _descendantEntry(store.entries, canonical, scope);
+      if (conflict && conflict.locked_by !== lockedBy) {
+        const err = new Error('編集ロック中のため復元を開始できません: ' + localPath);
+        err.status = 423;
+        err.lock_reason = conflict.lock_reason || '';
+        err.lock_entry = _localizedEntry(conflict, scope);
+        throw err;
+      }
+      if (conflict) return false; // 自分自身のロックを既に保持中(再開)。再書込不要。
+      return {
+        entries: [...store.entries, entry],
+        audit: { action: 'system-lock', path: localPath, reason, holder: lockedBy },
+        result: { ok: true, entry: _localizedEntry(entry, scope) },
+      };
+    });
+    return result || { ok: true, alreadyHeld: true };
+  }
+
+  async function releaseSystemLock(provider, path, options = {}) {
+    const localPath = _normalizeFolderPath(path || '');
+    if (!localPath) return { ok: true, removed: 0 };
+    const holder = String(options.holder || '').trim();
+    const lockedBy = `system:${holder}`;
+    let scope;
+    try {
+      scope = await _scopeForPath(provider, localPath);
+    } catch {
+      return { ok: true, removed: 0 }; // スコープ不明時は解除対象を特定できない(取得側も同条件で失敗している)。
+    }
+    const canonical = _canonicalForScope(scope, localPath).toLowerCase();
+    const result = await _mutateLockStore(provider, scope, (store) => {
+      const before = store.entries.length;
+      const next = store.entries.filter(row => !(row.locked_by === lockedBy
+        && _entryCanonicalForms(row, scope).some(form => form.toLowerCase() === canonical)));
+      if (next.length === before) return false;
+      return {
+        entries: next,
+        audit: { action: 'system-unlock', path: localPath, holder: lockedBy },
+        result: { ok: true, removed: before - next.length },
+      };
+    });
+    return result || { ok: true, removed: 0 };
+  }
+
   function _rewriteEntriesForMutation(entries, scope, event, canonicalOld, canonicalNew) {
     const base = canonicalOld.toLowerCase();
     const isFolder = !!event.isFolder;
@@ -793,6 +861,8 @@
     requireUnlocked,
     setLock,
     unlock,
+    acquireSystemLock,
+    releaseSystemLock,
     rewriteForPathMutation,
     guardMutationRequest,
     reasonTemplates: REASON_TEMPLATES.slice(),

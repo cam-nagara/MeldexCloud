@@ -63,9 +63,7 @@ function _cellUiEntityNameFromPath(entityPath) {
 }
 
 function _cellUiCssEscapeAttr(value) {
-  const text = String(value || '');
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(text);
-  return text.replace(/["\\]/g, '\\$&');
+  return MeldexEscape.cssIdent(value);
 }
 
 function _cellUiResolveRenderedCell(editedTd, entityPath, propName, root) {
@@ -134,6 +132,15 @@ function _cellUiWriteBlockedMessage(ctx) {
   return '';
 }
 
+// Cloud/mobile の権限・容量状態はインライン入力開始後にも変化する。入力DOMを保ったまま
+// 凍結している間は blur / 外側pointerdownからの確定保存を保留する。
+function _cellUiRuntimeReadOnly(element) {
+  const grid = element?.closest?.('.entity-props-grid-container, .cloud-mobile-side-drawer-props-grid');
+  if (grid?.__MeldexRuntimeReadOnly === true) return true;
+  const dataset = document.body?.dataset || {};
+  return dataset.cloudQuotaBlocked === '1' || dataset.cloudReadonly === '1';
+}
+
 function _cellUiCanAddCandidate(dbPath, propName, ptc, ctx, options = {}) {
   const type = String(ptc?.type || 'text').replace(/_/g, '-');
   if (ptc?.source) return false;
@@ -179,12 +186,7 @@ async function _cellUiSelfPairRelationContext(dbPath, entityPath, ptc) {
 }
 
 function _dbRichEscapeHtml(text) {
-  return String(text == null ? '' : text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return MeldexEscape.html(text);
 }
 
 function _dbRichComparableText(text) {
@@ -514,6 +516,7 @@ function createValueElement(val, entityPath, propName, thumbSize, options = {}) 
     };
     img.addEventListener('click', (e) => { e.stopPropagation(); });
     row.appendChild(img);
+    window.MeldexImageLoading?.track?.(img, { label: '画像セルを読み込んでいます', errorMode: 'silent' });
     return row;
   }
 
@@ -1054,6 +1057,7 @@ function startInlineEdit(span, val, entityPath, propName) {
 
   const finish = async (moveTo = null) => {
     if (done) return;
+    if (!canceled && _cellUiRuntimeReadOnly(input)) return;
     done = true;
     document.removeEventListener('pointerdown', outsidePointerDown, true);
     if (canceled) {
@@ -1290,9 +1294,7 @@ function closeAllDropdowns(scope) {
     || scope?.dataset?.paneId
     || scope?.closest?.('[data-pane-id]')?.dataset?.paneId
     || '';
-  const escapedPaneId = paneId && globalThis.CSS?.escape
-    ? CSS.escape(paneId)
-    : String(paneId).replace(/["\\]/g, '\\$&');
+  const escapedPaneId = MeldexEscape.cssIdent(paneId);
   const paneRoot = scope?.containerEl
     || (paneId ? document.querySelector(`[data-pane-id="${escapedPaneId}"]`) : null);
   document.querySelectorAll('.status-dropdown, .cell-inline-dd, .user-dropdown').forEach(el => {

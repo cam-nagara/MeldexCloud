@@ -531,6 +531,10 @@
       const rawShifts = (userShiftsMap && userShiftsMap[uid]) || [];
       const shiftIntervals = [];
       for (const sh of rawShifts) {
+        if (sh?.quality_status === QUALITY_CONFLICT) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push(...(Array.isArray(sh.quality_reasons) ? sh.quality_reasons : ['打刻順序が競合しています']));
+        }
         const shStart = parseIsoToEpochSec(sh.start || sh.started_at);
         const shEnd = parseIsoToEpochSec(sh.end || sh.ended_at);
 
@@ -548,9 +552,18 @@
         shiftIntervals.push(new TimeInterval(shStart, shEnd));
       }
 
+      if (sessIntervals.length && !shiftIntervals.length && uQualityStatus !== QUALITY_CONFLICT) {
+        uQualityStatus = QUALITY_INCOMPLETE;
+        uReasons.push('対応する出勤・退勤打刻がありません');
+      }
+
       const rawBreaks = (userBreaksMap && userBreaksMap[uid]) || [];
       const breakIntervals = [];
       for (const br of rawBreaks) {
+        if (br?.incomplete && uQualityStatus !== QUALITY_CONFLICT) {
+          uQualityStatus = QUALITY_INCOMPLETE;
+          uReasons.push(String(br.quality_reason || '離席復帰打刻がありません'));
+        }
         const brStart = parseIsoToEpochSec(br.start || br.started_at);
         const brEnd = parseIsoToEpochSec(br.end || br.ended_at);
 

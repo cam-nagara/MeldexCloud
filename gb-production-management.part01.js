@@ -56,12 +56,15 @@
   const PM_NAME_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_SCHEMA_CLEANUP_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
   const PM_INTERNAL_METADATA_MIGRATED_PROVIDERS_FALLBACK = new WeakSet();
+  function _pmCloudProviderIdentity(provider) {
+    return provider?.[Symbol.for('meldex.lease.originalProvider')] || provider;
+  }
   function _pmCloudMigrationAlreadyDone(rootSet, providerFallback, migrationRootKey, provider) {
-    return migrationRootKey ? rootSet.has(migrationRootKey) : providerFallback.has(provider);
+    return migrationRootKey ? rootSet.has(migrationRootKey) : providerFallback.has(_pmCloudProviderIdentity(provider));
   }
   function _pmCloudMarkMigrationDone(rootSet, providerFallback, migrationRootKey, provider) {
     if (migrationRootKey) rootSet.add(migrationRootKey);
-    else providerFallback.add(provider);
+    else providerFallback.add(_pmCloudProviderIdentity(provider));
   }
   const PM_TASK_LEGACY_NAME_PROP = 'タスク名';
   // 制作管理UX改善計画（2026-08-04）§5-1: タスクリスト（+作品別シート）だけの内部専用列。
@@ -75,15 +78,15 @@
     '単位レベル1', '単位レベル2', '単位レベル3', '単位レベル4', '単位レベル5',
     'プリセット種別', '作業作成粒度', 'ページソート値', '作成キー', '元テンプレートID', '作業予定区間',
   ]);
-  // 制作管理UX改善計画（2026-08-04）§5-1: 既定表示列を状況/担当者/作業予定日時/目標作業時間/
-  // 作業時間_実績/優先度/作業対象リスト/作業内容リスト/作業規模リスト/対象数/対象色/備考へ
-  // 絞る。コミット前レビュー指摘 #7: 階層パス等の内部専用列は移行後は property_types に
+  // 制作管理UX改善計画（2026-08-04）§5-1: 既定表示列を絞る。旧内部名の
+  // 作業時間_実績は互換保存専用とし、利用者向けには実績作業時間だけを表示する。
+  // コミット前レビュー指摘 #7: 階層パス等の内部専用列は移行後は property_types に
   // 存在しないため本来このリストは無意味だが、移行がまだ完了していないワークスペース
   // （新規行、移行キャッシュがヒットする前の一時的な状態等）では properties に残った
   // ままになり得るため、防御的に既定非表示へ含めておく（未移行データでも表に生JSONが
   // 出ないように）。
   const PM_TASK_HIDDEN_COLUMNS = [
-    PM_TASK_LEGACY_NAME_PROP, '開始日時', '完了日時', '作業予定時間', '目標作業時間_値',
+    PM_TASK_LEGACY_NAME_PROP, '開始日時', '完了日時', '作業予定時間', '目標作業時間_値', '作業時間_実績',
     '再計算ロック', '担当者固定', 'シフト固定', 'シフト割当不能理由', 'ページ', 'コマ', '作品タイトル',
     ...PM_INTERNAL_METADATA_PROPERTIES,
   ];
@@ -354,19 +357,22 @@
 
   async function _pmCloudDeleteShiftRecord(provider, internals, shiftId) {
     try {
-      await window.MeldexDataAccess.requestJson('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' });
+      await window.MeldexDataAccess.requestJson('/cal/shifts/' + encodeURIComponent(shiftId), {
+        method: 'DELETE', body: PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {},
+      });
       return true;
-    } catch {}
-    const rows = await _pmReadCalendarStore(provider, internals, 'shifts');
-    await _pmWriteCalendarStore(provider, internals, 'shifts', rows.filter(row => String(row.id) !== String(shiftId)));
-    await _pmRemoveCloudShiftEvent(provider, shiftId);
-    return true;
+    } catch (error) {
+      if (Number(error?.status) === 404) return true;
+      throw error;
+    }
   }
 
   async function _pmCloudCleanupExistingShifts(provider, internals, rows, journal) {
     const targetPairs = new Set((rows || []).map(_pmCloudShiftPairKey).filter(key => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
     if (!targetPairs.size) return { removed_ids: [] };
-    const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts').catch(() => _pmReadCalendarStore(provider, internals, 'shifts'));
+    const currentRows = await window.MeldexDataAccess.requestJson('/cal/shifts', {
+      body: PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {},
+    });
     const removedIds = [];
     for (const current of currentRows || []) {
       const id = String(current?.id || '');
@@ -391,7 +397,7 @@
       if (pathname === '/entity/rename' && method === 'POST'
         && window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)) {
         const provider = await internals._requirePwaProvider('readwrite');
-        return _pmCloudRenameManagedEntry(provider, internals, body || {});
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudRenameManagedEntry(leasedProvider, internals, body || {}));
       }
       if (!/^\/production-management(\/|$)/.test(pathname)) return internals.NOT_HANDLED;
       const migrateOnFirstDisplay = method === 'GET' && [
@@ -422,9 +428,9 @@
           }
           if (writableProvider) {
             try {
-              await _pmCloudWithProductionLease(writableProvider, () => (
-                _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, writableProvider)
-                  ? Promise.resolve() : _pmCloudInit(writableProvider, internals)
+              await _pmCloudWithProductionLease(writableProvider, leasedProvider => (
+                _pmCloudMigrationAlreadyDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, leasedProvider)
+                  ? Promise.resolve() : _pmCloudInit(leasedProvider, internals)
               ));
               _pmCloudMarkMigrationDone(PM_NAME_MIGRATED_ROOTS, PM_NAME_MIGRATED_PROVIDERS_FALLBACK, rootKey, provider);
             } catch (error) {
@@ -442,19 +448,19 @@
       if (pathname === '/production-management/task-create-catalog' && method === 'GET') return { ...await _pmCloudTaskCreateCatalog(provider, internals), ...migrationMeta };
       if (pathname === '/production-management/tasks/query' && method === 'POST') return _pmCloudQueryTasks(provider, internals, body || {});
       if (pathname === '/production-management/entries' && (method === 'POST' || method === 'PATCH')) {
-        return _pmCloudWithProductionLease(provider, () => method === 'POST'
-          ? _pmCloudCreateEntry(provider, internals, body || {})
-          : _pmCloudPatchEntry(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => method === 'POST'
+          ? _pmCloudCreateEntry(leasedProvider, internals, body || {})
+          : _pmCloudPatchEntry(leasedProvider, internals, body || {}));
       }
       if (pathname === '/production-management/task-by-event' && method === 'GET') return _pmCloudTaskByEvent(provider, internals, url);
       if (pathname === '/production-management/tasks/from-template' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateFromTemplate(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudCreateFromTemplate(leasedProvider, internals, body || {}));
       }
       if (pathname === '/production-management/task-sheets' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudCreateTaskSheet(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudCreateTaskSheet(leasedProvider, internals, body || {}));
       }
       if (pathname === '/production-management/init' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudInit(provider, internals, {
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudInit(leasedProvider, internals, {
           migrateLegacyWorkspace: true,
           forceNameMigration: true,
         }));
@@ -463,13 +469,13 @@
       if (pathname === '/production-management/tasks/create' && method === 'POST') return _pmCloudCreateTasks(provider, internals, body || {});
       if (pathname === '/production-management/tasks/structure/preview' && method === 'POST') return _pmCloudPreviewTaskStructure(provider, internals, body || {});
       if (pathname === '/production-management/tasks/structure/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyTaskStructure(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudApplyTaskStructure(leasedProvider, internals, body || {}));
       }
       if (pathname === '/production-management/shifts/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudApplyShifts(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudApplyShifts(leasedProvider, internals, body || {}));
       }
       if (pathname === '/production-management/staff/add' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => _pmCloudAddStaff(provider, internals, body || {}));
+        return _pmCloudWithProductionLease(provider, leasedProvider => _pmCloudAddStaff(leasedProvider, internals, body || {}));
       }
       // 「担当者と時間を割り当て」（旧: 簡易割当）はフル再計算エンジンへ一本化した
       // （production-management-ux-improvement-plan-2026-08-04.md §4-1）。unassigned_only
@@ -481,18 +487,18 @@
         return { ok: true, rows: result.rows || [], count: (result.rows || []).length, cloud: true };
       }
       if (pathname === '/production-management/assign/apply' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, async () => {
-          const result = await window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
+        return _pmCloudWithProductionLease(provider, async leasedProvider => {
+          const result = await window.MeldexProductionRecalcCloudAdapter.applyCloud(leasedProvider, internals, { ...(body || {}), unassigned_only: true }, _pmRecalcEngineDeps());
           if (!result.ok) return result;
           return { ok: true, updated: result.applied || 0, rows: [], cloud: true };
         });
       }
       if (pathname === '/production-management/recalculate/preview' && method === 'POST') return window.MeldexProductionRecalcCloudAdapter.previewCloud(provider, internals, body || {}, _pmRecalcEngineDeps());
-      if (pathname === '/production-management/recalculate/apply' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.applyCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
-      if (pathname === '/production-management/tasks/lock' && method === 'POST') return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.lockCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+      if (pathname === '/production-management/recalculate/apply' && method === 'POST') return _pmCloudWithProductionLease(provider, leasedProvider => window.MeldexProductionRecalcCloudAdapter.applyCloud(leasedProvider, internals, body || {}, _pmRecalcEngineDeps()));
+      if (pathname === '/production-management/tasks/lock' && method === 'POST') return _pmCloudWithProductionLease(provider, leasedProvider => window.MeldexProductionRecalcCloudAdapter.lockCloud(leasedProvider, internals, body || {}, _pmRecalcEngineDeps()));
       // 制作管理UX改善計画（2026-08-04）§6-4: カレンダー上のタスク予定のドラッグ移動・端リサイズ。
       if (pathname === '/production-management/task-schedule/update' && method === 'POST') {
-        return _pmCloudWithProductionLease(provider, () => window.MeldexProductionRecalcCloudAdapter.updateTaskScheduleCloud(provider, internals, body || {}, _pmRecalcEngineDeps()));
+        return _pmCloudWithProductionLease(provider, leasedProvider => window.MeldexProductionRecalcCloudAdapter.updateTaskScheduleCloud(leasedProvider, internals, body || {}, _pmRecalcEngineDeps()));
       }
       // 制作管理UX改善計画（2026-08-04）§4-4: Google送信のみCloud対応（Phase 5のブラウザ完結OAuth基盤
       // に乗る）。CalDAV送信（ローカルサーバー常駐が必要）はDesktop限定のまま。未接続時はエラーで
@@ -501,10 +507,32 @@
       // （Desktop sync_production_external_calendars と同じ方針。遅い外部I/Oが他の書き込みを
       // ブロックしないようにする）。
       if (pathname === '/production-management/external-sync' && method === 'POST') {
+        if (!_pmCloudCanExportAttendance()) {
+          const error = new Error('外部カレンダーへ送信できるのは管理者のみです');
+          error.status = 403;
+          error.code = 'PRODUCTION_EXTERNAL_SYNC_ADMIN_REQUIRED';
+          throw error;
+        }
         if (!window.MeldexProductionExternalSyncCloud?.syncGoogle) {
           return { ok: false, unsupported: true, message: '外部カレンダー送信はデスクトップ版で設定してください' };
         }
         return window.MeldexProductionExternalSyncCloud.syncGoogle(provider, internals, _pmRecalcEngineDeps(), body || {});
+      }
+      if (pathname === '/production-management/daily-snapshots' && method === 'GET') {
+        return _pmCloudGetDailySnapshots(provider, url);
+      }
+      if (pathname === '/production-management/daily-snapshots' && method === 'POST') {
+        return _pmCloudWithProductionLease(provider, leasedProvider => (
+          _pmCloudCreateDailySnapshot(leasedProvider, internals, body || {})
+        ));
+      }
+      if (pathname === '/production-management/analysis' && method === 'GET') {
+        return _pmCloudProductionAnalysis(provider, internals, url);
+      }
+      if (pathname === '/production-management/analysis/history' && method === 'DELETE') {
+        return _pmCloudWithProductionLease(provider, leasedProvider => (
+          _pmCloudDeleteProductionHistory(leasedProvider, internals, body || {})
+        ));
       }
       if (pathname === '/production-management/export' && method === 'GET') return _pmCloudExport(url);
       return internals.NOT_HANDLED;
@@ -543,7 +571,8 @@
           id,
           { beforeWrite: path => _pmCloudJournalText(journal, path) },
         );
-        await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST', body: { id, ...row } });
+        await window.MeldexDataAccess.requestJson('/cal/shifts', { method: 'POST',
+          body: { id, ...row, ...(PM_CALENDAR_LEASE_TOKEN ? { _calendar_lease_token: PM_CALENDAR_LEASE_TOKEN } : {}) } });
         if (removed.has(id)) updated += 1;
         else created += 1;
       }
@@ -633,12 +662,33 @@
   async function _pmCloudExport(url) {
     const kind = url.searchParams.get('kind') || 'all';
     const format = url.searchParams.get('format') || 'csv';
+    if ((kind === 'all' || kind === 'attendance') && !_pmCloudCanExportAttendance()) {
+      const error = new Error('実績を含む制作管理データを書き出せるのは管理者のみです');
+      error.status = 403;
+      error.code = 'ATTENDANCE_EXPORT_ADMIN_REQUIRED';
+      throw error;
+    }
     const rows = await _pmCollectCloudExportRows(kind, url.searchParams.get('date_from') || '', url.searchParams.get('date_to') || '');
     if (format === 'xlsx') {
       const blob = _pmXlsxBlob(rows);
       return { ok: true, filename: `production_${kind}.xlsx`, mime: blob.type, blob: await _pmBlobBase64(blob) };
     }
     return { ok: true, filename: `production_${kind}.csv`, mime: 'text/csv;charset=utf-8', content: _pmRowsCsv(rows) };
+  }
+
+  function _pmCloudCanExportAttendance() {
+    let directRole = '';
+    try {
+      if (typeof getMyRoleForPath === 'function') directRole = String(getMyRoleForPath('') || '').toLowerCase();
+    } catch (_error) {}
+    if (directRole === 'owner' || directRole === 'admin') return true;
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    const access = String(state.access || state.role || '').toLowerCase();
+    return state.isOwner === true || access === 'owner' || access === 'admin';
+  }
+
+  function _pmCloudExportKinds() {
+    return _pmCloudCanExportAttendance() ? ['all', 'shifts', 'attendance', 'work'] : ['shifts', 'work'];
   }
 
   async function _pmCollectCloudExportRows(kind, dateFrom, dateTo) {

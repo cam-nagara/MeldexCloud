@@ -3,10 +3,10 @@
 
 function _isWorkspaceOutlinerRoot(root) {
   // kind==='workspace' はコラボワークスペース（既存機能）、
-  // origin が 'ws:' で始まるのはDropboxフォルダ単位共有②の参加中ワークスペード
+  // origin が 'ws:' で始まるのはDropboxフォルダ単位共有②の参加中ワークスペース
   // （フェーズ3c）。workspaceId はクラウド側の合流結果にのみ付与されるため
   // 判定に使わない（デスクトップ側の合流結果には無く、それだけに頼ると
-  // デスクトップだけソースフォルダ一覧に共有ワークスペードが紛れ込む）。
+  // デスクトップだけソースフォルダ一覧に共有ワークスペースが紛れ込む）。
   return !!root && (root.kind === 'workspace' || typeof root.origin === 'string' && root.origin.startsWith('ws:'));
 }
 

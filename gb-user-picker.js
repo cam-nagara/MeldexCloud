@@ -73,7 +73,7 @@
   }
 
   function _pickerEsc(text) {
-    return typeof esc === 'function' ? esc(text) : String(text == null ? '' : text);
+    return MeldexEscape.html(text);
   }
 
   // 共通ユーザー選択ポップアップ。

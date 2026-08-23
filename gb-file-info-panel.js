@@ -7,15 +7,7 @@
   const VIDEO_EXTS = new Set(['mp4', 'mov', 'avi', 'webm']);
   const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac']);
 
-  function escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  const escapeHtml = global.MeldexEscape.html;
 
   function iconHtml(name, size) {
     return typeof global.lucide === 'function' ? global.lucide(name, size || 16) : '';

@@ -118,8 +118,14 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
   toggleBtn.addEventListener('click', () => {
     _closeEntityPropsColWidthPopup();
     if (typeof _epsClosePopup === 'function') _epsClosePopup();
-    const cur = _entityPropsViewState(dbPath, entityPath);
-    _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed);
+    const readOnly = options?.readOnly === true || grid?.__MeldexRuntimeReadOnly === true;
+    if (readOnly) {
+      // 閲覧専用でも内容を確認できるよう開閉は許可するが、共有 view_config は変更しない。
+      grid.__entityPropsReadonlyCollapsed = !viewState.collapsed;
+    } else {
+      const cur = _entityPropsViewState(dbPath, entityPath);
+      _setEntityPropsCollapsed(dbPath, entityPath, !cur.collapsed);
+    }
     if (typeof renderEntityPropsGridInto === 'function') renderEntityPropsGridInto(grid, data, entityPath, options);
     grid.querySelector?.('[data-e2e-id="entity-props-toggle"]')?.focus?.({ preventScroll: true });
   });
@@ -137,7 +143,7 @@ function _buildEntityPropsHeader(grid, data, entityPath, options, dbPath, hasPro
     e.stopPropagation();
     _showEntityPropsColWidthPopup(widthBtn, grid, dbPath, entityPath);
   });
-  header.appendChild(widthBtn);
+  if (options?.readOnly !== true && options?.showColumnWidth !== false) header.appendChild(widthBtn);
 
   return header;
 }

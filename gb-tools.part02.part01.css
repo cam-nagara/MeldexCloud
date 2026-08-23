@@ -1189,11 +1189,14 @@ html.thumb-fit-contain .tree-node-row .tree-thumb-img {
    箇条書きの記号は本文の外側に描かれるため、そのままだとパネルの枠に接触する。
    上のメインパネル側と同じ余白を与えて、記号が本文の内側に収まるようにする。 */
 .gb-preview-entity-note ul, .gb-preview-entity-note ol,
-.cloud-mobile-side-drawer-editable ul, .cloud-mobile-side-drawer-editable ol { padding-inline-start: 24px; margin-block: 4px; }
+.cloud-mobile-side-drawer-editable ul, .cloud-mobile-side-drawer-editable ol,
+.gb-subpanel-note-content ul, .gb-subpanel-note-content ol { padding-inline-start: 24px; margin-block: 4px; }
 .gb-preview-entity-note li,
-.cloud-mobile-side-drawer-editable li { line-height: 1.4; margin-block: 0.4em; }
+.cloud-mobile-side-drawer-editable li,
+.gb-subpanel-note-content li { line-height: 1.4; margin-block: 0.4em; }
 .gb-preview-entity-note hr,
-.cloud-mobile-side-drawer-editable hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.cloud-mobile-side-drawer-editable hr,
+.gb-subpanel-note-content hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
 
 /* 検索パネル */
 /* クイックアクセス・最近使った項目 */

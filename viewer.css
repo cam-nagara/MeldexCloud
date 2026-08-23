@@ -51,6 +51,15 @@ body { position: relative; }
 .spread img, .spread canvas { max-height: 100%; object-fit: contain; user-select: none; }
 .page-canvas { box-shadow: 0 2px 12px rgba(0,0,0,0.5); background: #fff; }
 
+/* 音声再生カード（サブパネル用の音声再生実装: app/docs/board-link-card-subpanel-and-card-tail-plan-2026-08-13.md
+   「音声の扱い」節）。画像/動画のギャラリー型フィット計算（applyImageFitStyle）は使わず、
+   固定サイズのカードとして中央表示する。 */
+.viewer-audio-player { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 420px; max-width: min(90vw, 420px); padding: 32px 24px; background: var(--panel-bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+.viewer-audio-icon { color: var(--accent); }
+.viewer-audio-icon svg { width: 40px; height: 40px; }
+.viewer-audio-filename { font-size: 13px; color: var(--fg); text-align: center; word-break: break-all; max-width: 100%; }
+.viewer-audio-media { width: 100%; }
+
 /* 注釈の画像固有ピクセル座標シーン（viewer-annotation-scene.js）。
    img/canvasをこのラッパーで包み、注釈SVGをラッパーに対して100%/100%で重ねることで、
    フィット倍率・ズーム・パン・回転・反転を画像と同じCSS変換連鎖にそのまま追従させる

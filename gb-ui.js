@@ -643,13 +643,20 @@
       : (String(value || 'programmatic'));
   }
 
+  // 閉鎖アニメーション中のダイアログ（モバイルの下シートは gb-modal-shell が約220ms
+  // 遅延removeする）は「最前面」に数えない。数えると、閉じた直後の外側タップ・Escapeが
+  // 死んだダイアログにブロックされて無反応になる（2026-08-20 実測）。
+  function _isDialogClosingOrHidden(node) {
+    return !!node.closest('[aria-hidden="true"], .gb-mobile-dialog-overlay-closing, [data-mobile-dialog-closing="1"]');
+  }
+
   function _isTopmostModal(modal) {
     if (window.GBDialogKeyboard?.topmostDialog) {
       const managedTop = window.GBDialogKeyboard.topmostDialog();
-      if (managedTop) return managedTop === modal;
+      if (managedTop && managedTop.isConnected && !_isDialogClosingOrHidden(managedTop)) return managedTop === modal;
     }
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'))
-      .filter(node => node.isConnected && !node.hidden);
+      .filter(node => node.isConnected && !node.hidden && !_isDialogClosingOrHidden(node));
     return !dialogs.length || dialogs[dialogs.length - 1] === modal;
   }
 

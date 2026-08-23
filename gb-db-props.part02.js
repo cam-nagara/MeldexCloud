@@ -233,8 +233,8 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
       && !(typeof hidesCandidateStatusUi === 'function' && hidesCandidateStatusUi(targetDbPath))
       ? [{ icon: 'plus', label: '候補値を追加', action: () => {
       const paneRoot = e?.target?.closest?.('.gb-pane') || document.body;
-      const row = paneRoot.querySelector('tr[data-entity-name="' + CSS.escape(entityName) + '"]');
-      const td = row?.querySelector('td[data-prop-name="' + CSS.escape(propName) + '"]');
+      const row = paneRoot.querySelector('tr[data-entity-name="' + MeldexEscape.cssIdent(entityName) + '"]');
+      const td = row?.querySelector('td[data-prop-name="' + MeldexEscape.cssIdent(propName) + '"]');
       if (td) startCellInlineAdd(td, ep, entityName, propName);
     } }] : []),
     { icon: 'link2', label: 'パスをコピー', action: () => {
@@ -245,12 +245,17 @@ function showDbCardContextMenu(e, dbPath, entityName, propName) {
     { type: 'sep' },
     { icon: 'trash2', label: 'エントリを削除', danger: true, action: async () => {
       const confirmMessage = entityName + ' を削除しますか？';
+      const entityData = ctx?.pivotData?.entities?.[entityName]
+        || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName] : null);
+      const assetId = String(entityData?.asset_id || entityData?.assetId || '');
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([{ path: ep, kind: 'file' }], confirmMessage)
+        ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+            { path: ep, kind: 'file', ...(assetId ? { assetId } : {}) },
+          ], confirmMessage)
         : await cfConfirm(confirmMessage);
       if (!confirmed) return;
       const entryId = String(
-        ctx?.pivotData?.entities?.[entityName]?._id
+        entityData?._id
         || (state.currentDbPath === targetDbPath ? state.pivotData?.entities?.[entityName]?._id : '')
         || ''
       );

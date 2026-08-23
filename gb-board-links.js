@@ -90,6 +90,18 @@ const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
 let _bdLinkedSelectionSyncSeq = 0;
 
+// ボードのリンクカード計画 (2026-08-13) Phase C: 「カードを選ぶと右サイドバーに表示する」の
+// オン/オフを端末へ保存するキー。既定の開き先設定 (_BD_DEFAULT_OPEN_TARGET_KEY) と
+// 同じ localStorage の仕組みに倣う。保存が無ければオン (true) 扱い。
+const _BD_SELECT_AUTO_SUBPANEL_KEY = 'gb:board-select-open-subpanel:v1';
+// 短時間に連続で選択が変わる操作 (キーボードでの移動等) を1回にまとめ、かつクリックが
+// ドラッグへ変わる猶予を確保するための待ち時間。ドラッグは数十ms以内にクリック判定閾値
+// (4px) を超えて bdIsBoardPointerBusy() が真になるため、これより長くしておけば発火時点の
+// 再判定でドラッグ中の誤発火を防げる。
+const _BD_SELECT_AUTO_SUBPANEL_DEBOUNCE_MS = 250;
+let _bdSelectAutoSubpanelSeq = 0;
+let _bdSelectAutoSubpanelTimer = null;
+
 function _bdNormalizeOpenTarget(target) {
   const next = String(target || '').trim().toLowerCase();
   // 旧保存値は読み取り時にだけ正規化し、以後は right-sidebar を保存する。
@@ -224,6 +236,92 @@ function _bdIsCurrentLinkedSelection(path) {
 
 function bdCancelLinkedSelectionSync() {
   _bdLinkedSelectionSyncSeq += 1;
+}
+
+function _bdGetSelectAutoSubpanelEnabled() {
+  try {
+    const stored = window.localStorage?.getItem(_BD_SELECT_AUTO_SUBPANEL_KEY);
+    return stored == null ? true : stored !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function _bdSetSelectAutoSubpanelEnabled(value) {
+  const next = value !== false;
+  try {
+    window.localStorage?.setItem(_BD_SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.MeldexBoardSelectAutoSubpanel = Object.freeze({
+    key: _BD_SELECT_AUTO_SUBPANEL_KEY,
+    isEnabled: _bdGetSelectAutoSubpanelEnabled,
+    setEnabled: _bdSetSelectAutoSubpanelEnabled,
+  });
+}
+
+function _bdBoardPointerBusy() {
+  try {
+    return typeof window.bdIsBoardPointerBusy === 'function' && window.bdIsBoardPointerBusy();
+  } catch {
+    return false;
+  }
+}
+
+// gb-subpanel.js の GBSubPanel.open() はモバイルのサイドドロワー環境では reveal の値に
+// 関わらずドロワーを開く (フォーカスを奪う)。Phase C の自動表示はモバイルでは発火させない。
+function _bdIsMobileDrawerSurface() {
+  const drawer = typeof window !== 'undefined' ? window.MeldexCloudMobileSideDrawer : null;
+  return !!(drawer && typeof drawer.isEnabled === 'function' && drawer.isEnabled());
+}
+
+// ボードのリンクカード計画 (2026-08-13) Phase C: bdSelect() から呼ばれる。カードを1枚だけ
+// 選んだ時、右サイドバー（サブパネル）が開いていれば、その中身を選んだカードのリンク先へ
+// 自動で差し替える。「開く」ボタン (Phase B-0) と違い reveal:false で呼ぶため、閉じている
+// 右サイドバーを勝手に開くことはない (gb-subpanel.js の GBSubPanel.open 側の分担)。
+// nodeId が空 (複数選択・全解除) のときは予約の取り消しだけ行う。
+function bdRequestLinkedSelectionAutoSubpanel(nodeId) {
+  const seq = ++_bdSelectAutoSubpanelSeq;
+  if (_bdSelectAutoSubpanelTimer != null) {
+    clearTimeout(_bdSelectAutoSubpanelTimer);
+    _bdSelectAutoSubpanelTimer = null;
+  }
+  if (!nodeId) return;
+  if (!_bdGetSelectAutoSubpanelEnabled()) return;
+  if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return;
+  if (_bdIsStandaloneBoardSurface() || _bdIsMobileDrawerSurface()) return;
+  _bdSelectAutoSubpanelTimer = window.setTimeout(() => {
+    _bdSelectAutoSubpanelTimer = null;
+    _bdFireSelectAutoSubpanel(seq, nodeId);
+  }, _BD_SELECT_AUTO_SUBPANEL_DEBOUNCE_MS);
+}
+
+async function _bdFireSelectAutoSubpanel(seq, nodeId) {
+  if (seq !== _bdSelectAutoSubpanelSeq) return; // その後さらに選択が変わった
+  if (!_bdGetSelectAutoSubpanelEnabled()) return; // 待機中にオプションがオフへ変わった
+  if (typeof bd === 'undefined' || !(bd.selected instanceof Set) || bd.selected.size !== 1) return;
+  if ([...bd.selected][0] !== nodeId) return; // 複数選択・別カード選択済み
+  if (bd.editing) return; // カードの文字を編集中
+  if (_bdBoardPointerBusy()) return; // ドラッグ・リサイズ・範囲選択・パン中
+  const node = bd.nodes?.find(candidate => candidate?.id === nodeId);
+  if (!node) return;
+  const resolved = typeof MeldexBoardInfoPanel !== 'undefined' && typeof MeldexBoardInfoPanel.resolveTarget === 'function'
+    ? MeldexBoardInfoPanel.resolveTarget(node)
+    : null;
+  if (!resolved || resolved.kind !== 'file' || !resolved.path) return; // リンクを持たないカード
+  if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return;
+  const current = typeof GBSubPanel.getCurrentTarget === 'function' ? GBSubPanel.getCurrentTarget() : null;
+  if (current && current.path === resolved.path) return; // 同じカードの再選択では再読み込みしない
+  if (typeof openLinkedPathInRightPane !== 'function') return;
+  await openLinkedPathInRightPane(resolved.path, node.text || '', {
+    linkType: resolved.type || '',
+    reveal: false,
+  });
 }
 
 function _bdFindBoardPaneId() {
@@ -647,6 +745,23 @@ function _bdRevealRightSidebarTool(tabType) {
   return match.pane.id || '';
 }
 
+// 右サイドバーの区画を「必ず見える状態」にする共通の入口。
+// ボードのリンク計画 (2026-08-13) Phase B-0: これまで開く処理は呼び出し側任せで、
+// ボードのリンクとエントリ詳細が別々の方法で開こうとしていた。GBSubPanel.open() が
+// この1つを呼ぶようにして、開く経路が増えても開き忘れが起きないようにする。
+// 2つ目の実装を作らないため、中身は上の _bdRevealRightSidebarTool をそのまま使う。
+if (typeof window !== 'undefined') {
+  window.MeldexRightSidebarReveal = {
+    reveal(tabType) {
+      try {
+        return _bdRevealRightSidebarTool(String(tabType || 'subpanel'));
+      } catch {
+        return '';
+      }
+    },
+  };
+}
+
 // 右サイドバーのビューワー区画。退避領域に置かれたままなら表示できないので null を返す。
 function _bdVisibleRightSidebarPreviewPane() {
   const pane = document.getElementById('gb-preview-pane');
@@ -692,6 +807,7 @@ async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
   // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
   // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
@@ -705,7 +821,8 @@ async function openLinkedPathInRightPane(path, label, options) {
   // GBLinkRouter の判定を優先し、汎用ビューワー（ノート扱い）へ誤って
   // フォールバックさせず「未対応形式」としてサブパネル側にエラー表示させる。
   if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
-    _bdRevealRightSidebarTool('subpanel');
+    // 右サイドバーを開く処理は GBSubPanel.open() が必ず行う（Phase B-0 で共通化）。
+    // ここで先に呼ぶと二重に走るため、呼び出し側からは外している。
     const targetPath = entry.path || path || '';
     // entry.type は _bdResolveLinkedEntryAsync の最終フォールバック（拡張子不明→'page'）を
     // 経ている場合があるため、ここでは opts.linkType（呼び出し元が実際に渡した明示ヒント）
@@ -718,7 +835,7 @@ async function openLinkedPathInRightPane(path, label, options) {
       path: targetPath,
       label: entry.label || label || '',
       state: { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) },
-    });
+    }, { reveal: opts.reveal !== false });
   }
   if (typeof navOpen === 'function') {
     navOpen(entry);
@@ -971,11 +1088,11 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   if (_bdIsStandaloneBoardSurface()) {
     addItem('ビューワーで開く', 'layers-2', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else if (_bdIsCloudMobileBoardSurface()) {
-    if (canUseRightSidebar) addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
+    if (canUseRightSidebar && !_bdIsExternalBrowserUrl(targetPath)) addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else {
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
-    if (canUseRightSidebar) {
+    if (canUseRightSidebar && !_bdIsExternalBrowserUrl(targetPath)) {
       addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     }
   }
@@ -1243,7 +1360,8 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
     && pane.dataset.previewRequestToken === requestToken;
   if (mediaType === 'image' || pdf) {
     if (mediaType === 'image' && /^data:image\//i.test(filePath)) {
-      pane.innerHTML = `<img src="${_bdEscAttr(filePath)}" alt="${_bdEscAttr(fileName)}" style="width:100%;height:100%;border-radius:6px;background:var(--bg);object-fit:contain;">`;
+      pane.innerHTML = `<img src="${_bdEscAttr(filePath)}" alt="${_bdEscAttr(fileName)}" data-meldex-content-image style="width:100%;height:100%;border-radius:6px;background:var(--bg);object-fit:contain;">`;
+      window.MeldexImageLoading?.trackAll?.(pane, { host: pane });
       return true;
     }
     const src = pdf

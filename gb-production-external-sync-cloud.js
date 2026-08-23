@@ -2,15 +2,12 @@
    gb-production-external-sync-cloud.js: 制作管理「外部カレンダーへ送信」のCloud対応（Google送信のみ）
 
    制作管理UX改善計画（2026-08-04）§4-4。Phase 5 のCloud外部カレンダー連携基盤
-   （gb-cal-oauth-browser.js のブラウザ完結PKCE認証、接続中のDropboxワークスペース内
-   `_calendar/google_calendar_auth.json` へのトークン保存。gb-cal-cloud-sync.js が
-   個人カレンダーの双方向同期のために書き込む場所と同一）に乗る。CalDAV送信
+   （gb-cal-oauth-browser.js のブラウザ完結PKCE認証、gb-cal-cloud-sync.js の
+   端末ローカル秘密ストアとDropbox上の非秘密メタデータ分離）に乗る。CalDAV送信
    （ローカルサーバー常駐が必要）はDesktop限定のまま。ここではGoogle分のみ扱う。
 
-   このファイルは gb-cal-cloud-sync.js を直接編集しない（別レーンの成果物のため）。
-   トークン読み書きは同じ _calendar/google_calendar_auth.json を対象に、必要な最小限を
-   ここへ複製する（gb-production-recalc-engine-cloud-adapter.js が
-   RECALC_INTERNAL_METADATA_PROPERTIES を複製するのと同じ方針）。
+   トークン読取・更新は MeldexCalCloudSync の共通アクセサだけを使い、Dropboxへ
+   client_secret/access_token/refresh_tokenを再保存する独自経路を持たない。
 
    送信対象: 正本『スタッフ管理シート』で「同期有効」かつ「外部カレンダーURL（Google）」が
    設定されているスタッフの production-task イベント + 勤務シフト（type=work）イベント
@@ -25,50 +22,20 @@
 (function () {
   'use strict';
 
-  const CAL_DIR = '_calendar';
-  const GOOGLE_AUTH_FILE = 'google_calendar_auth.json';
-  const TOKEN_EARLY_REFRESH_MS = 60 * 1000;
-
-  function _oauth() {
-    const api = window.MeldexCalOAuthBrowser;
-    if (!api) throw new Error('gb-cal-oauth-browser.js が読み込まれていません');
-    return api;
-  }
-
-  function _authPath(internals) {
-    return internals._joinPath(CAL_DIR, GOOGLE_AUTH_FILE);
-  }
-
-  async function _readAuth(provider, internals) {
-    return (await internals._readJsonSafe(provider, _authPath(internals), null)) || null;
-  }
-
-  async function _writeAuth(provider, internals, payload) {
-    await internals._directoryHandle(provider, CAL_DIR, true);
-    await provider.writeJson(_authPath(internals), payload);
-  }
-
-  // gb-cal-cloud-sync.js の _googleAccessToken と同じ意味論（早期リフレッシュ・失効時の
-  // 再認証導線）。未接続/失効時は例外を投げずnullを返す（呼び出し元が「案内」を返せるように）。
-  async function _accessToken(provider, internals) {
-    const auth = await _readAuth(provider, internals);
-    if (!auth?.refresh_token) return null;
-    if (auth.access_token && Number(auth.expires_at || 0) > Date.now() + TOKEN_EARLY_REFRESH_MS) return auth;
+  // カレンダー同期と同じ秘密分離・旧Dropbox平文移行・再認証処理を単一入口で使う。
+  async function _accessToken(provider) {
+    const access = window.MeldexCalCloudSync?._internal?.googleAccessToken;
+    if (typeof access !== 'function') {
+      const error = new Error('OAuth秘密情報の端末保護ストアを利用できません');
+      error.status = 503;
+      error.code = 'OAUTH_SECRET_STORE_UNAVAILABLE';
+      throw error;
+    }
     try {
-      const refreshed = await _oauth().google.refreshToken({
-        refreshToken: auth.refresh_token, clientId: auth.client_id, clientSecret: auth.client_secret,
-      });
-      const next = {
-        ...auth,
-        access_token: refreshed.access_token,
-        expires_at: Date.now() + Math.max(60, Number(refreshed.expires_in || 3600)) * 1000,
-        refresh_token: refreshed.refresh_token || auth.refresh_token,
-      };
-      await _writeAuth(provider, internals, next);
-      return next;
-    } catch {
-      await _writeAuth(provider, internals, { ...auth, access_token: '', refresh_token: '', expires_at: 0 }).catch(() => {});
-      return null;
+      return await access(provider);
+    } catch (error) {
+      if (error?.code === 'not_connected' || error?.code === 'reauth_required') return null;
+      throw error;
     }
   }
 
@@ -218,7 +185,7 @@
     const dateFrom = String(body?.date_from || '').trim();
     const dateTo = String(body?.date_to || '').trim();
     const result = { ok: true, staff: 0, events: 0, caldav_synced: 0, google_pushed: 0, google_updated: 0, skipped: 0, cloud: true };
-    const auth = await _accessToken(provider, internals);
+    const auth = await _accessToken(provider);
     if (!auth?.access_token) {
       return { ...result, message: 'Googleカレンダー連携を設定してください' };
     }

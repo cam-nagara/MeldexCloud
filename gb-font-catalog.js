@@ -35,10 +35,7 @@
   }
 
   function _escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(value);
-    return String(value).replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[char]));
+    return global.MeldexEscape.html(value);
   }
 
   function _cssFamily(name) {

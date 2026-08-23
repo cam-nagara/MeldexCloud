@@ -45,8 +45,8 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     // 誤って解決され得る（showColHeaderMenu 系と同根。2026-07-15 徹底チェックで発見）。
     if (th) startHeaderInlineRename(th, name, dbPath, _ctx);
     else {
-      const treeHeader = _ctx?.containerEl?.querySelector?.(`.db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`)
-        || document.querySelector(`.tree-view .db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`);
+      const treeHeader = _ctx?.containerEl?.querySelector?.(`.db-tree-header-cell[data-db-col-token="${MeldexEscape.cssIdent(name)}"]`)
+        || document.querySelector(`.tree-view .db-tree-header-cell[data-db-col-token="${MeldexEscape.cssIdent(name)}"]`);
       if (treeHeader && typeof showColHeaderMenu === 'function') {
         const rect = treeHeader.getBoundingClientRect();
         showColHeaderMenu({
@@ -430,9 +430,7 @@ function _dbCellAt(table, rowIdx, colIdx) {
   if (virtualRows) {
     const entityName = virtualRows.entityNames?.[rowIdx];
     if (!entityName) return null;
-    const cssName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-      ? CSS.escape(entityName)
-      : String(entityName).replace(/["\\]/g, '\\$&');
+    const cssName = MeldexEscape.cssIdent(entityName);
     const row = table.querySelector(`tbody tr[data-entity-name="${cssName}"]`);
     if (!row) {
       if (typeof _dbRequestVirtualCellReveal === 'function') _dbRequestVirtualCellReveal(table, rowIdx, colIdx);

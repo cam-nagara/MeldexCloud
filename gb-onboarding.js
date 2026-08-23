@@ -4,7 +4,12 @@
   if (window.MeldexOnboarding) return;
 
   const DONE_KEY = 'meldex-onboarding-complete-v1';
-  let state = { step: 0, startup: null, sample: true, busy: false };
+  const ONBOARDING_STEPS = [
+    { label: 'ようこそ', title: 'Meldexの準備をします' },
+    { label: '同意', title: '同意と最初のノート' },
+  ];
+  const LAST_STEP = ONBOARDING_STEPS.length - 1;
+  let state = { step: 0, startup: null, busy: false };
   let modalController = null;
 
   function _setOnboardingActive(active) {
@@ -32,32 +37,8 @@
     try { localStorage.setItem(DONE_KEY, '1'); } catch (_) {}
   }
 
-  function _homePath() {
-    return String(window._homeFolderPath || state.startup?.homePath || '').replace(/[\\/]$/, '');
-  }
-
   function _hasSource(startup) {
     return !!(startup?.vaultPath || startup?.hasRoots);
-  }
-
-  function _sampleDownloadUrl() {
-    const cfg = window.MeldexCloudRuntimeConfig || {};
-    return String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
-  }
-
-  function _openSampleDownload() {
-    const url = _sampleDownloadUrl() || 'https://github.com/cam-nagara/MeldexCloud/releases';
-    window.open(url, '_blank', 'noopener');
-  }
-
-  function _openSampleGuide() {
-    _setOnboardingActive(false);
-    _removeOnboardingOverlayNow('sample-guide');
-    if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
-      openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
-      return;
-    }
-    window.open('public-index.html#samples', '_blank', 'noopener');
   }
 
   function shouldShow(startup) {
@@ -66,16 +47,16 @@
   }
 
   function _stepLabel(index) {
-    return ['ようこそ', '保存先', 'サンプル', '同意'][index] || '';
+    return ONBOARDING_STEPS[index]?.label || '';
   }
 
   function _stepTitle(index) {
-    return ['Meldexの準備をします', 'データの保存先', 'サンプルデータ', '同意と最初のノート'][index] || '';
+    return ONBOARDING_STEPS[index]?.title || '';
   }
 
   function _renderSteps() {
     return `<div class="meldex-onboarding-steps" role="list" aria-label="初期設定の進行状況">
-      ${[0, 1, 2, 3].map(i => `<div class="meldex-onboarding-step${i === state.step ? ' is-active' : ''}" role="listitem"${i === state.step ? ' aria-current="step"' : ''}>
+      ${ONBOARDING_STEPS.map((_, i) => `<div class="meldex-onboarding-step${i === state.step ? ' is-active' : ''}" role="listitem"${i === state.step ? ' aria-current="step"' : ''}>
         <span class="meldex-onboarding-step-index">${i + 1}</span>
         <span class="meldex-onboarding-step-label">${_stepLabel(i)}</span>
       </div>`).join('')}
@@ -83,25 +64,8 @@
   }
 
   function _body() {
-    const home = _homePath() || 'Documents/Meldex';
     if (state.step === 0) {
-      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">最初に、作品や設定を保存する場所を確認します。あとから設定で変更できます。</p>`;
-    }
-    if (state.step === 1) {
-      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">現在のホームフォルダは次の場所です。</p>
-        <div class="meldex-onboarding-path">${esc(home)}</div>
-        <div class="meldex-onboarding-button-row">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-change-home" data-onboarding-action="change-home">${lucide('folderOpen',14)} ホームフォルダを変更</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-add-source" data-onboarding-action="add-source">${lucide('folderPlus',14)} ソースフォルダを追加</button>
-        </div>
-        <p class="meldex-onboarding-copy">迷った場合は、このまま進めて構いません。</p>`;
-    }
-    if (state.step === 2) {
-      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">必要な場合だけ、ホームフォルダにサンプル作品を追加できます。既にあるファイルは上書きしません。</p>
-        <div class="meldex-onboarding-button-row">
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-sample-install" data-onboarding-action="sample-install">${lucide('archive',14)} サンプルを追加</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-sample-guide" data-onboarding-action="sample-guide">${lucide('bookOpen',14)} 取り込み手順</button>
-        </div>`;
+      return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">データはこの端末内に保存して開始します。Dropboxは、必要になったときに設定から接続できます。</p>`;
     }
     return `<p id="meldex-onboarding-description" class="meldex-onboarding-copy">ベータ版の利用条件を確認し、最初の無題ノートを作成して開始します。</p>
       <div class="meldex-onboarding-button-row">
@@ -149,10 +113,6 @@
       closeOnOverlay: false,
       onBeforeClose: (reason) => [
         'programmatic',
-        'settings-transition',
-        'change-home',
-        'add-source',
-        'sample-guide',
         'complete',
       ].includes(reason),
       onClose: (reason) => {
@@ -179,9 +139,9 @@
     controller.body.innerHTML = `${_renderSteps()}<section class="gb-section gb-section--boxed meldex-onboarding-section">${_body()}</section>`;
     controller.footer.classList.add('btn-row', 'meldex-onboarding-actions');
     controller.footer.innerHTML = `<button type="button" class="gb-btn gb-btn-sm" data-e2e-id="onboarding-prev" data-onboarding-action="prev" ${state.step === 0 || busy ? 'disabled' : ''}>戻る</button>
-      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="onboarding-primary" data-onboarding-action="next" ${busy ? 'disabled' : ''}>${busy ? '処理中...' : (state.step >= 3 ? '最初のノートを作って開始' : '次へ')}</button>`;
+      <button type="button" class="gb-btn gb-btn-sm gb-btn-primary primary" data-e2e-id="onboarding-primary" data-onboarding-action="next" ${busy ? 'disabled' : ''}>${busy ? '処理中...' : (state.step >= LAST_STEP ? '最初のノートを作って開始' : '次へ')}</button>`;
     const primaryButton = controller.footer.querySelector('[data-e2e-id="onboarding-primary"]');
-    if (primaryButton) primaryButton.dataset.onboardingAction = state.step >= 3 ? 'finish' : 'next';
+    if (primaryButton) primaryButton.dataset.onboardingAction = state.step >= LAST_STEP ? 'finish' : 'next';
     modal.setAttribute('aria-busy', busy ? 'true' : 'false');
     replaceIcons(overlay);
     overlay.querySelectorAll('[data-onboarding-action]').forEach(button => {
@@ -190,19 +150,6 @@
     if (!controller.isOpen()) controller.open();
     const focusTarget = overlay.querySelector('[data-onboarding-action]:not([disabled])') || modal;
     focusTarget?.focus?.({ preventScroll: true });
-  }
-
-  async function _openSettings(panel) {
-    _removeOnboardingOverlayNow('settings-transition');
-    if (typeof showSettingsModal === 'function') showSettingsModal({ panel: panel || '全般' });
-  }
-
-  async function _addSourceFolder() {
-    if (typeof addOutlinerRootFromSettings === 'function') {
-      await addOutlinerRootFromSettings();
-      return;
-    }
-    _openSettings('全般');
   }
 
   async function _createFirstNote() {
@@ -215,33 +162,6 @@
       if (typeof showStatus === 'function') showStatus('最初のノートは作成しました。表示の更新に失敗したため、フォルダツリーから開いてください。', true);
     }
     return result;
-  }
-
-  async function _changeHomeFolderForOnboarding() {
-    if (typeof _changeHomeFolder === 'function') {
-      await _changeHomeFolder();
-      return _homePath();
-    }
-    let path = null;
-    try {
-      const res = await apiFetch('/add-outliner-root', { method: 'POST' });
-      if (res.ok && res.path) path = res.path;
-      else if (res.needManualInput && typeof _promptFolderPath === 'function') path = await _promptFolderPath();
-    } catch {
-      if (typeof _promptFolderPath === 'function') path = await _promptFolderPath();
-    }
-    if (!path) return _homePath();
-    await apiPut('/home-folder', { path });
-    window._homeFolderPath = path;
-    if (typeof _homeFolderPath !== 'undefined') _homeFolderPath = path;
-    try {
-      const res = await apiFetch('/home-folder');
-      if (typeof setSystemLockedItems === 'function') setSystemLockedItems(res.locked_paths || []);
-      if (typeof _ensureLocksLoaded === 'function') await _ensureLocksLoaded({ force: true }).catch(() => {});
-    } catch {}
-    if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-    if (typeof showStatus === 'function') showStatus('ホームフォルダを変更しました');
-    return path;
   }
 
   function _bringConsentDialogToFront() {
@@ -267,27 +187,7 @@
   async function handleAction(action, triggerElement) {
     if (state.busy) return;
     if (action === 'prev') state.step = Math.max(0, state.step - 1);
-    else if (action === 'next') state.step = Math.min(3, state.step + 1);
-    else if (action === 'change-home') {
-      _removeOnboardingOverlayNow('change-home');
-      state.startup = state.startup || {};
-      state.startup.homePath = await _changeHomeFolderForOnboarding();
-      render();
-      return;
-    }
-    else if (action === 'add-source') {
-      _removeOnboardingOverlayNow('add-source');
-      await _addSourceFolder();
-      // ソースフォルダ追加でホームフォルダが個人ルート追従の対象になったかもしれない
-      // ため、既存ホームの引き継ぎ提案（見つかれば）をここでも確認する
-      // （gb-home-folder-sharing.js。設定画面と同じ判定・同じダイアログを再利用）。
-      window.MeldexHomeFolderSharing?.loadHomeFolderSharingStatusForSettings?.();
-      render();
-      return;
-    }
-    else if (action === 'sample-download') { _openSampleDownload(); return; }
-    else if (action === 'sample-install') { await window.MeldexSampleInstaller?.installNow?.({ trigger: 'onboarding-samples', homePath: _homePath() }); return; }
-    else if (action === 'sample-guide') { _openSampleGuide(); return; }
+    else if (action === 'next') state.step = Math.min(LAST_STEP, state.step + 1);
     else if (action === 'consent') { _showConsentFromOnboarding(); return; }
     else if (action === 'about') { if (typeof showMeldexAboutDialog === 'function') showMeldexAboutDialog(triggerElement); return; }
     else if (action === 'finish') {
@@ -313,7 +213,7 @@
   }
 
   function showSourceSetupWizard(startup) {
-    state = { step: 0, startup: startup || {}, sample: true, busy: false };
+    state = { step: 0, startup: startup || {}, busy: false };
     _setOnboardingActive(true);
     if (typeof _hideStartupSplash === 'function') _hideStartupSplash();
     render();

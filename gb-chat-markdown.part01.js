@@ -327,6 +327,7 @@
     img.alt = alt || _linkLabel(normalized);
     img.loading = 'lazy';
     img.src = pathFromRaw ? _fileRawUrl(pathFromRaw) : (_isWebUrl(normalized) ? normalized : _fileRawUrl(normalized));
+    window.MeldexImageLoading?.track?.(img, { label: 'チャットの画像を読み込んでいます', allowDetached: true });
     img.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();

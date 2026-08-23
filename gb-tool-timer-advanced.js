@@ -105,9 +105,7 @@
   }
 
   function _timerEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _timerIcon(name, size = 14) {

@@ -121,7 +121,7 @@
     if (html) {
       parts.push('<div class="meldex-quick-memo-body">', html, '</div>', '');
     } else if (text) {
-      parts.push(text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'), '');
+      parts.push(MeldexEscape.html(text).replace(/\n/g, '<br>'), '');
     }
     if (drawing) {
       parts.push('<figure class="meldex-quick-memo-drawing">', `<img alt="手書きメモ" src="${drawing}">`, '</figure>', '');

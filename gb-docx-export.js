@@ -11,12 +11,7 @@
   }
 
   function xml(value) {
-    return xmlText(value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+    return MeldexEscape.xml(xmlText(value));
   }
 
   function paragraph(text, style) {

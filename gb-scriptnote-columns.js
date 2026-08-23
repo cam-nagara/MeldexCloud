@@ -196,7 +196,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const next = this._getScriptNoteVisibleContentColumnIds();
       const focusId = next[Math.min(Math.max(0, oldIndex), next.length - 1)];
       this._activeCellColId = focusId || null;
-      requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(focusId || '')}"]`)?.focus());
+      requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(focusId || '')}"]`)?.focus());
     }
     return true;
   },
@@ -254,7 +254,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.setAttribute('role', 'menuitem');
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
-      btn.innerHTML = `<span>${text}: <b>${currentLabel}</b></span><span class="sn2-header-popup-arrow">${lucide('chevronRight', 10)}</span>`;
+      btn.innerHTML = `<span>${MeldexEscape.html(text)}: <b>${MeldexEscape.html(currentLabel)}</b></span><span class="sn2-header-popup-arrow">${lucide('chevronRight', 10)}</span>`;
       btn.addEventListener('click', () => {
         if (openSub?._triggerBtn === btn) { closeSub(); return; }
         closeSub();
@@ -570,7 +570,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const returnFocus = () => {
       if (owner?.isConnected && owner !== document.body) return owner;
       const columnId = afterColId || '_text';
-      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(columnId)}"]`) || this.host;
+      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || this.host;
     };
     const restoreParentFocus = reason => {
       if (reason === 'submitted') return;
@@ -633,7 +633,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._render();
         setBusy(false);
         modal.close('submitted');
-        requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(id)}"]`)?.focus());
+        requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(id)}"]`)?.focus());
       } catch (error) {
         if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
       } finally {

@@ -4,6 +4,7 @@ __loadSplitScript('gb-db-templates.js', [
   'gb-db-templates.part01.js',
   'gb-db-templates.part02.js',
   'gb-db-template-views.js',
+  'gb-db-template-entity-layouts.js',
   'gb-db-template-gallery-ui.js',
   'gb-db-template-editor-ui.js',
 ]);

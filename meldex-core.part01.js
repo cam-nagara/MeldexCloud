@@ -177,11 +177,24 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
-  return apiFetch(path, {
+  const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
   });
+  _scheduleLinkDictionaryRefreshForMutation(path);
+  return result;
+}
+
+function _scheduleLinkDictionaryRefreshForMutation(path) {
+  const pathname = String(path || '').split('?')[0];
+  if (![
+    '/value', '/entity/create', '/entity/rename',
+    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
+  ].includes(pathname)) return;
+  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
+    MeldexAutoLink.scheduleReload(3000);
+  }
 }
 
 async function apiPost(path, body, options = {}) {
@@ -199,6 +212,7 @@ async function apiPost(path, body, options = {}) {
     ...(options || {}),
   });
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
 
@@ -216,8 +230,7 @@ async function openFileDialog(title, initialdir, filetypes) {
 // ユーティリティ
 // ============================================================
 function esc(s) {
-  if (s == null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return MeldexEscape.html(s);
 }
 
 // UI共通ルール: 外部から取り込む操作は download、外部へ出す操作は upload を使う。

@@ -400,7 +400,12 @@ class CalendarComponent extends ToolComponent {
   // === 公開API (postMessage置換) ===
   pushUndo(label) { this._pushUndo(label); }
   async reload() {
-    const requests = [this._loadEvents(), this._loadTasks(), this._loadCalendars()];
+    const requests = [this._loadTasks()];
+    if (typeof this._refreshShiftStateAfterMutation === 'function') {
+      requests.push(this._refreshShiftStateAfterMutation({ renderCalendarList: false }));
+    } else {
+      requests.push(this._loadEvents(), this._loadCalendars());
+    }
     if (this._surface === 'productionTasks' && typeof this._refreshProductionTaskEmbed === 'function') {
       requests.push(this._refreshProductionTaskEmbed());
     }

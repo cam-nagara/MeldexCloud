@@ -4,18 +4,13 @@
 
   const STORAGE_KEY = 'gb:board-default-open-target:v1';
   const VALID_TARGETS = new Set(['main', 'right-sidebar']);
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 「カードを選ぶと右サイドバーに表示する」の
+  // 保存キー。既定の開き先設定 (STORAGE_KEY) と同じ localStorage の仕組みに倣う。
+  const SELECT_AUTO_SUBPANEL_KEY = 'gb:board-select-open-subpanel:v1';
   let renderRevision = 0;
   let scheduledHandle = null;
 
-  function escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  const escapeHtml = global.MeldexEscape.html;
 
   function isExternal(value) {
     return /^(?:https?:|mailto:|tel:)/i.test(String(value || '').trim());
@@ -85,6 +80,27 @@
     try { global.localStorage?.setItem(STORAGE_KEY, target); } catch {}
   }
 
+  function getSelectAutoSubpanelEnabled() {
+    if (typeof global.MeldexBoardSelectAutoSubpanel?.isEnabled === 'function') {
+      return global.MeldexBoardSelectAutoSubpanel.isEnabled();
+    }
+    try {
+      const stored = global.localStorage?.getItem(SELECT_AUTO_SUBPANEL_KEY);
+      return stored == null ? true : stored !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  function setSelectAutoSubpanelEnabled(value) {
+    const next = value !== false;
+    if (typeof global.MeldexBoardSelectAutoSubpanel?.setEnabled === 'function') {
+      global.MeldexBoardSelectAutoSubpanel.setEnabled(next);
+      return;
+    }
+    try { global.localStorage?.setItem(SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0'); } catch {}
+  }
+
   function availableTargets() {
     const routed = global.MeldexBoardOpenTarget?.getAvailableTargets?.();
     const normalized = (Array.isArray(routed) ? routed : [])
@@ -105,6 +121,7 @@
     const targets = availableTargets();
     const stored = getDefaultTarget();
     const selected = targets.some(item => item.value === stored) ? stored : targets[0].value;
+    const autoSubpanelChecked = getSelectAutoSubpanelEnabled();
     return `<section class="bd-detail-section bd-board-open-target-setting" data-e2e-id="bd-board-open-target-setting">`
       + '<div class="bd-detail-section-title">リンクを開く設定</div>'
       + '<label class="bd-detail-field bd-detail-field-wide"><span>ファイルを開く場所</span>'
@@ -114,6 +131,14 @@
       )).join('')
       + '</select></label>'
       + '<p class="gb-section-desc">ダブルクリックとカード右端の開くボタンに適用されます。</p>'
+      + '<div class="gb-check-help-row">'
+      + '<label class="bd-detail-check"><input type="checkbox" data-bd-select-auto-subpanel'
+      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>カードを選ぶと右サイドバーに表示する</span></label>`
+      + (typeof fieldHelp === 'function' ? fieldHelp(
+        'リンクを持つカードを1枚だけ選ぶと、右サイドバー（サブパネル）が開いている場合にかぎり、その中身を選んだカードのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・カードの文字を編集中は切り替わりません。',
+        { e2eId: 'bd-select-auto-subpanel-help' },
+      ) : '')
+      + '</div>'
       + '</section>';
   }
 
@@ -129,6 +154,10 @@
     host.querySelector('[data-bd-default-open-target]')?.addEventListener('change', event => {
       setDefaultTarget(event.currentTarget.value);
       if (typeof global.showStatus === 'function') global.showStatus('ファイルを開く場所を保存しました');
+    });
+    host.querySelector('[data-bd-select-auto-subpanel]')?.addEventListener('change', event => {
+      setSelectAutoSubpanelEnabled(!!event.currentTarget.checked);
+      if (typeof global.showStatus === 'function') global.showStatus('選択時の表示設定を保存しました');
     });
     return host.querySelector('[data-bd-board-file-info]');
   }

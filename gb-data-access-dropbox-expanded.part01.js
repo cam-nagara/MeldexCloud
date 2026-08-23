@@ -1230,16 +1230,35 @@
     await _requireUnlocked(provider, stored.dbPath, { action: 'update-value' });
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
     await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [body?.property, body?.new_property]);
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, {
+      frontmatter: stored.frontmatter,
+      body: stored.body || '',
+    });
     const parsed = { frontmatter: { ...stored.frontmatter }, body: stored.body || '' };
     const applied = _applySettingsEntryValueUpdate(parsed, stored.path, body || {});
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, parsed.frontmatter, String(body?.property || ''),
     );
-    await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
+    const saved = await _trackSharedEdit(history, provider, {
+      path: stored.path,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: applied.body },
+      actor,
+      sourceRevision: String(stored.frontmatter?.meldex_revision || ''),
+      snapshotPath: stored.dbPath,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: String(body?.property || ''),
+    }, async () => {
+      await _writeSheetStoreEntryOnly(provider, stored.path, parsed.frontmatter, applied.body);
+      return applied.result;
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(applied.result, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _addSheetStoreValue(provider, body) {
@@ -1252,6 +1271,12 @@
     await _rejectComputedPropertyEdit(provider, stored.dbPath, [prop]);
     await _rejectImportLockedPropertyEdit(provider, stored.dbPath, [prop]);
     await _requireUnlocked(provider, stored.dbPath, { action: 'add-value' });
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, {
+      frontmatter: stored.frontmatter,
+      body: stored.body || '',
+    });
     const props = stored.frontmatter.properties && typeof stored.frontmatter.properties === 'object' ? stored.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
     const candidate = {
@@ -1268,11 +1293,24 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, stored.path, stored.frontmatter, prop,
     );
-    await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
+    const saved = await _trackSharedEdit(history, provider, {
+      path: stored.path,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: stored.frontmatter, body: stored.body || '' },
+      actor,
+      sourceRevision: String(stored.frontmatter?.meldex_revision || ''),
+      snapshotPath: stored.dbPath,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: prop,
+    }, async () => {
+      await _writeSheetStoreEntryOnly(provider, stored.path, stored.frontmatter, stored.body || '');
+      return { ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 };
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, stored.path, stored.frontmatter,
     );
-    return _attachAutoTaskRenameResult({ ok: true, path: stored.path, property: prop, candidate_index: list.length - 1 }, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _updateValue(provider, path, body) {
@@ -1284,17 +1322,41 @@
     await _requireUnlocked(provider, normalized, { action: 'update-value' });
     const parsed = await _readFrontmatterFile(provider, normalized);
     const type = String(parsed.frontmatter.type || '');
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     if (body && Object.prototype.hasOwnProperty.call(body, 'new_body')) {
-      await _writeEntity(provider, normalized, parsed.frontmatter, body.new_body || '');
-      return { ok: true };
+      return _trackSharedEdit(history, provider, {
+        path: normalized,
+        currentContent: historyBefore,
+        nextContent: { frontmatter: parsed.frontmatter, body: body.new_body || '' },
+        actor,
+        snapshotPath: _dirname(normalized),
+        snapshotKind: 'folder',
+        fileKind: type || 'settings-entry',
+        propertyName: '_body',
+      }, async () => {
+        await _writeEntity(provider, normalized, parsed.frontmatter, body.new_body || '');
+        return { ok: true };
+      });
     }
     if (type === 'calendar-event') {
       CALENDAR_DB_FIELDS.forEach((field) => {
         const key = 'new_' + field;
         if (body && Object.prototype.hasOwnProperty.call(body, key)) parsed.frontmatter[field] = body[key];
       });
-      await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
-      return { ok: true };
+      return _trackSharedEdit(history, provider, {
+        path: normalized,
+        currentContent: historyBefore,
+        nextContent: { frontmatter: parsed.frontmatter, body: parsed.body || '' },
+        actor,
+        snapshotPath: _dirname(normalized),
+        snapshotKind: 'folder',
+        fileKind: 'calendar-event',
+      }, async () => {
+        await _writeEntity(provider, normalized, parsed.frontmatter, parsed.body || '');
+        return { ok: true };
+      });
     }
     await _rejectComputedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
     await _rejectImportLockedPropertyEdit(provider, _dirname(normalized), [body?.property, body?.new_property]);
@@ -1302,11 +1364,23 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, normalized, parsed.frontmatter, String(body?.property || ''),
     );
-    await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
+    const saved = await _trackSharedEdit(history, provider, {
+      path: normalized,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: applied.body },
+      actor,
+      snapshotPath: _dirname(normalized),
+      snapshotKind: 'folder',
+      fileKind: type || 'settings-entry',
+      propertyName: String(body?.property || ''),
+    }, async () => {
+      await _writeEntity(provider, normalized, parsed.frontmatter, applied.body);
+      return applied.result;
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, normalized, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult(applied.result, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _addValue(provider, body) {
@@ -1322,6 +1396,9 @@
     await _requireUnlocked(provider, entryPath, { action: 'add-value' });
     const parsed = await _readFrontmatterFile(provider, entryPath);
     if (parsed.frontmatter.type !== 'settings-entry') throw new Error('settings-entry ではありません');
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    const historyBefore = _sharedHistoryContent(history, { frontmatter: parsed.frontmatter, body: parsed.body || '' });
     const props = parsed.frontmatter.properties && typeof parsed.frontmatter.properties === 'object' ? parsed.frontmatter.properties : {};
     const list = _normalizeCandidates(props[prop]);
     const candidate = {
@@ -1337,11 +1414,23 @@
     await _pmSafeApplyDurationRecalcHook(
       provider, entryPath, parsed.frontmatter, prop,
     );
-    await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
+    const saved = await _trackSharedEdit(history, provider, {
+      path: entryPath,
+      currentContent: historyBefore,
+      nextContent: { frontmatter: parsed.frontmatter, body: parsed.body || '' },
+      actor,
+      snapshotPath: _dirname(entryPath),
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+      propertyName: prop,
+    }, async () => {
+      await _writeEntity(provider, entryPath, parsed.frontmatter, parsed.body || '');
+      return { ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 };
+    });
     const renameInfo = await _pmSafeApplyTaskNameAutoRenameHook(
       provider, entryPath, parsed.frontmatter,
     );
-    return _attachAutoTaskRenameResult({ ok: true, path: entryPath, property: prop, candidate_index: list.length - 1 }, renameInfo);
+    return _attachAutoTaskRenameResult(saved, renameInfo);
   }
 
   async function _createEntity(provider, body) {
@@ -1371,14 +1460,27 @@
       reviewed: body?.reviewed === true,
     };
     await window.MeldexProductionManagement?.applyWorkOrderDefaultOnEntityCreate?.(provider, path, frontmatter);
-    if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
-    else await _writeFrontmatterFile(provider, path, frontmatter, '');
-    return {
-      ok: true,
+    const history = _sharedEditHistory();
+    const actor = history?.actor?.(null, body || {}) || null;
+    return _trackSharedEdit(history, provider, {
       path,
-      entry_id: frontmatter.id,
-      revision: Number(frontmatter.meldex_revision || 0),
-    };
+      currentContent: '',
+      nextContent: { frontmatter, body: '' },
+      actor,
+      exists: false,
+      snapshotPath: parent,
+      snapshotKind: 'folder',
+      fileKind: 'settings-entry',
+    }, async () => {
+      if (useStore) await _writeSheetStoreEntryOnly(provider, path, frontmatter, '');
+      else await _writeFrontmatterFile(provider, path, frontmatter, '');
+      return {
+        ok: true,
+        path,
+        entry_id: frontmatter.id,
+        revision: Number(frontmatter.meldex_revision || 0),
+      };
+    });
   }
 
   async function _renameEntity(provider, body) {
@@ -1596,13 +1698,43 @@
     }, body);
   }
 
+  // 承認済みバックログ完了計画 Track A-3: 制作管理シートの判定は3種類（メタデータパス・
+  // シート名・フォルダノート）に分かれ、深さの扱いも表記ゆれ耐性もバラバラだった。
+  // Desktop の meldex_production_management_support.normalized_path_segments と同じ
+  // 正規化（区切り記号の混在・`.`／`..`／連続スラッシュ・NFD分解・英字の大文字小文字）を
+  // ここへ一本化し、3種類すべてがこの結果だけを見るようにする。判定が外れると予約済み
+  // 旧列名の再作成拒否・取得列ロック・「物理.md＝正」の維持がまとめてすり抜けるため、
+  // 新しい判定を別に作らずこの関数へ寄せること。
+  function _normalizedPathSegments(path) {
+    const segments = [];
+    String(path || '').replace(/\\/g, '/').split('/').forEach((raw) => {
+      const part = String(raw || '').trim().normalize('NFC');
+      if (!part || part === '.') return;
+      if (part === '..') {
+        segments.pop();
+        return;
+      }
+      segments.push(part);
+    });
+    return segments;
+  }
+
+  function _pathSegmentMatches(actual, expected) {
+    return String(actual || '').normalize('NFC').toLowerCase()
+      === String(expected || '').normalize('NFC').toLowerCase();
+  }
+
+  // `…/制作管理/シート/<シート名>` なら正規化済みの要素列、そうでなければ null。
+  function _productionSheetSegments(path) {
+    const segments = _normalizedPathSegments(path);
+    if (segments.length < 3) return null;
+    if (!_pathSegmentMatches(segments[segments.length - 3], '制作管理')) return null;
+    if (!_pathSegmentMatches(segments[segments.length - 2], 'シート')) return null;
+    return segments[segments.length - 1] ? segments : null;
+  }
+
   function _isProductionManagementSheetMetadataPath(path) {
-    const parts = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean);
-    if (parts.length < 3) return false;
-    const sheetIndex = parts.length - 3;
-    return parts[sheetIndex] === '制作管理'
-      && parts[sheetIndex + 1] === 'シート'
-      && !!parts[sheetIndex + 2];
+    return !!_productionSheetSegments(path);
   }
 
   // 制作管理シートの暗黙sheet-store化（ストア汚染）の修復
@@ -1682,9 +1814,8 @@
   });
 
   function _productionManagementSheetName(path) {
-    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    const index = parts.findIndex((part, offset) => part === '制作管理' && parts[offset + 1] === 'シート');
-    return index >= 0 ? String(parts[index + 2] || '') : '';
+    const segments = _productionSheetSegments(path);
+    return segments ? segments[segments.length - 1] : '';
   }
 
   function _productionReservedLegacyPropertiesForSheet(sheet) {
@@ -1696,9 +1827,10 @@
   }
 
   function _isProductionManagementFolderNotePath(path) {
-    const parts = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean);
-    return parts.length === 4 && parts[0] === '制作管理' && parts[1] === 'シート'
-      && !!parts[2] && parts[3] === `${parts[2]}.md`;
+    const segments = _normalizedPathSegments(path);
+    if (segments.length < 4) return false;
+    const sheet = _productionManagementSheetName(segments.slice(0, -1).join('/'));
+    return !!sheet && _pathSegmentMatches(segments[segments.length - 1], `${sheet}.md`);
   }
 
   function _rejectProductionReservedLegacyProperties(path, propertyNames) {
@@ -1956,13 +2088,150 @@
     await provider.writeJson(_calendarStorePath(name), Array.isArray(rows) ? rows : []);
   }
 
+  function _sharedEditHistory() {
+    const history = window.MeldexSharedEditHistory;
+    if (history?.track && history?.stableContent) return history;
+    const bodyCloudMode = typeof document !== 'undefined'
+      ? document.body?.dataset?.cloudMode
+      : '';
+    if (window.MeldexRuntimeAdapter?.isDropboxMode?.()
+      || bodyCloudMode === 'dropbox') {
+      throw new Error('共有編集履歴が読み込まれていません');
+    }
+    return null;
+  }
+
+  function _sharedHistoryContent(history, value) {
+    if (history?.stableContent) return history.stableContent(value);
+    return JSON.stringify(value ?? null);
+  }
+
+  async function _trackSharedEdit(history, provider, options, mutation) {
+    if (history?.track) return history.track(provider, options, mutation);
+    return mutation();
+  }
+
+  const CLOUD_ATTENDANCE = window.MeldexCloudCalendarAttendance;
+  const CLOUD_TIME_ENTRY_TYPES = CLOUD_ATTENDANCE?.TIME_ENTRY_TYPES || Object.freeze(['clock_in', 'clock_out', 'break_start', 'break_end']);
+
+  function _calendarError(message, status = 400, code = '') {
+    const error = new Error(message);
+    error.status = status;
+    error.code = code;
+    return error;
+  }
+
+  function _calendarActor() {
+    try {
+      if (typeof getUsername === 'function') return String(getUsername() || 'anonymous');
+      const stored = JSON.parse(localStorage.getItem('meldex-user') || '{}');
+      return String(stored.name || 'anonymous');
+    } catch {
+      return 'anonymous';
+    }
+  }
+
+  function _calendarRoleIsAdmin() {
+    const role = _cloudRole();
+    return role.isOwner || role.access === 'owner' || role.access === 'admin';
+  }
+
+  function _assertCalendarWritable() {
+    const role = _cloudRole();
+    if (role.access === 'viewer' || document.body?.dataset?.cloudReadonly === '1') {
+      throw _calendarError('閲覧専用メンバーはカレンダーを変更できません', 403, 'CALENDAR_READONLY');
+    }
+  }
+
+  function _isGeneratedCalendarEvent(rowOrId) {
+    const row = rowOrId && typeof rowOrId === 'object' ? rowOrId : null;
+    const id = String(row?.id || rowOrId || '');
+    const source = String(row?.calendar_source || '');
+    return source === 'attendance' || source === 'shift' || source === 'shift-break' || source === 'production-task'
+      || id.startsWith('attendance:') || id.startsWith('shift:') || id.startsWith('production-task:');
+  }
+
+  function _calendarCanUpdateCalendar(row, deleting = false) {
+    if (_calendarRoleIsAdmin() || String(row?.user || '') === _calendarActor()) return true;
+    return !deleting && String(row?.edit_role || 'owner') === 'editor' && _cloudRole().access === 'editor';
+  }
+
+  function _calendarCanOwnRecord(row, fields) {
+    if (_calendarRoleIsAdmin()) return true;
+    const actor = _calendarActor();
+    return fields.some(field => String(row?.[field] || '') === actor);
+  }
+
+  async function _calendarCanEditEvent(provider, row) {
+    if (_calendarCanOwnRecord(row, ['user', 'creator'])) return true;
+    let members = row?.members;
+    try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+    if (Array.isArray(members) && members.map(String).includes(_calendarActor())) return true;
+    if (!row?.calendar_id) return false;
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(row.calendar_id));
+    return !!calendar && _calendarCanUpdateCalendar(calendar);
+  }
+
+  async function _calendarCanUseCalendar(provider, calendarId) {
+    if (!calendarId) return true;
+    const calendars = await _readStore(provider, 'calendars');
+    const calendar = calendars.find(item => String(item.id) === String(calendarId));
+    return !!calendar && _calendarCanUpdateCalendar(calendar);
+  }
+
+  function _assertRequestedOwner(row, fields, message, code) {
+    if (_calendarRoleIsAdmin()) return;
+    const actor = _calendarActor();
+    if (fields.some(field => row?.[field] && String(row[field]) !== actor)) {
+      throw _calendarError(message, 403, code);
+    }
+  }
+
+  function _assertOwnerFieldsUnchanged(previous, body, fields, message, code) {
+    if (_calendarRoleIsAdmin()) return;
+    if (fields.some(field => Object.prototype.hasOwnProperty.call(body || {}, field)
+      && String(body[field] || '') !== String(previous?.[field] || ''))) {
+      throw _calendarError(message, 403, code);
+    }
+  }
+
+  async function _assertShiftDerivedOwnership(provider, shiftId, eventRows = null) {
+    const prefix = `shift:${shiftId}`;
+    const events = eventRows || await _readStore(provider, 'events');
+    const collided = events.find(row => (row.id === prefix || String(row.id || '').startsWith(prefix + ':break:'))
+      && !['shift', 'shift-break'].includes(row.calendar_source));
+    if (collided) throw _calendarError('シフト由来予定IDが通常予定と衝突しています', 409, 'SHIFT_EVENT_COLLISION');
+  }
+
+  async function _cloudAttendanceCsv(provider, url) {
+    if (!_calendarRoleIsAdmin()) throw _calendarError('勤怠CSVは管理者のみ出力できます', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+    const format = String(url.searchParams.get('format') || 'generic');
+    const { startDay, endDay } = CLOUD_ATTENDANCE.validateCsvQuery(
+      url.searchParams.get('date_from'), url.searchParams.get('date_to'), format,
+    );
+    const selectedUser = String(url.searchParams.get('user') || '');
+    const allEntries = await _readStore(provider, 'time');
+    const allShifts = await _readStore(provider, 'shifts');
+    const entryEndDay = CLOUD_ATTENDANCE.dayOffset(endDay, 2);
+    const entries = allEntries.filter(row => (!selectedUser || row.user === selectedUser)
+      && String(row.timestamp || '').slice(0, 10) >= startDay && String(row.timestamp || '').slice(0, 10) < entryEndDay);
+    const shifts = allShifts.filter(row => (!selectedUser || row.user === selectedUser) && row.date >= startDay && row.date <= endDay);
+    if (entries.length > 100000 || shifts.length > 100000) {
+      throw _calendarError('出力件数が上限を超えました。期間または対象者を絞ってください', 413, 'CSV_ROW_LIMIT');
+    }
+    return { ok: true, mime: 'text/csv;charset=utf-8', filename: `attendance_${format}_${startDay}_${endDay}.csv`,
+      content: CLOUD_ATTENDANCE.buildCsv(entries, shifts, startDay, endDay, format) };
+  }
+
   function _deriveCloudAttendanceEvent(rows, user, day, existing) {
     const parts = String(day || '').split('-').map(Number);
     const next = parts.length === 3 ? new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + 1)) : new Date(NaN);
     const nextDay = Number.isNaN(next.getTime()) ? day : next.toISOString().slice(0, 10);
     const records = (Array.isArray(rows) ? rows : []).filter(row => row.user === user
       && String(row.timestamp || '') >= day && String(row.timestamp || '') <= `${nextDay}T23:59:59`)
-      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)
+        || String(a.id || '').localeCompare(String(b.id || '')));
     const start = records.findIndex(row => row.type === 'clock_in' && String(row.timestamp || '').slice(0, 10) === day);
     if (start < 0) return null;
     const scoped = [];
@@ -1991,6 +2260,27 @@
 
   window.MeldexCloudAttendanceSync = Object.freeze({ deriveEvent: _deriveCloudAttendanceEvent });
 
+  function _cloudCalendarMutationService(provider) {
+    return CLOUD_ATTENDANCE.createMutationService({
+      readStore: name => _readStore(provider, name),
+      writeStore: (name, rows) => _writeStore(provider, name, rows),
+      deriveEvent: _deriveCloudAttendanceEvent,
+      randomId: _randomId,
+      nowIso: _nowIso,
+    });
+  }
+
+  async function _withCloudCalendarLease(provider, operation, token = '') {
+    const lease = window.MeldexCloudCalendarLease;
+    if (lease?.withLease) {
+      return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider), token ? { token } : null);
+    }
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) {
+      throw _calendarError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+    }
+    return operation(provider);
+  }
+
   function _filterRows(rows, url, fields) {
     return rows.filter((row) => fields.every((field) => {
       const value = url.searchParams.get(field);
@@ -2007,71 +2297,335 @@
 
   async function _calendarList(provider, name, url) {
     const rows = await _readStore(provider, name);
+    const requestedUser = url.searchParams.get('user') || '';
+    if (name !== 'time' && !_calendarRoleIsAdmin() && requestedUser && requestedUser !== _calendarActor()) {
+      throw _calendarError('他のメンバーのカレンダーデータは参照できません', 403, 'CALENDAR_READ_FORBIDDEN');
+    }
     if (name === 'events') {
       const start = url.searchParams.get('start') || '';
       const end = url.searchParams.get('end') || '';
       const user = url.searchParams.get('user') || '';
-      return rows.filter(row => (!user || row.user === user || row.creator === user || !row.user) && _dateInRange(row.start || row.due_date, start, end));
+      if (_calendarRoleIsAdmin()) {
+        return rows.filter(row => (!user || row.user === user || row.creator === user)
+          && _dateInRange(row.start || row.due_date, start, end));
+      }
+      const actor = _calendarActor();
+      return rows.filter(row => {
+        let members = row?.members;
+        try { if (typeof members === 'string') members = JSON.parse(members); } catch { members = []; }
+        const visible = row.user === actor || row.creator === actor || (Array.isArray(members) && members.map(String).includes(actor));
+        return visible && _dateInRange(row.start || row.due_date, start, end);
+      });
     }
     if (name === 'time') {
       const user = url.searchParams.get('user') || '';
+      if (!_calendarRoleIsAdmin()) {
+        const actor = _calendarActor();
+        if (!user || user !== actor) {
+          throw _calendarError('自分以外の実績は参照できません', 403, 'ATTENDANCE_READ_FORBIDDEN');
+        }
+      }
       const from = url.searchParams.get('date_from') || '';
       const to = url.searchParams.get('date_to') || '';
       const taskId = url.searchParams.get('task_id') || '';
       return rows.filter(row => (!user || row.user === user) && (!taskId || row.task_id === taskId) && _dateInRange(row.timestamp, from, to));
     }
-    if (name === 'shifts') return _filterRows(rows, url, ['user', 'month']);
-    return _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
+    if (name === 'shifts') {
+      if (_calendarRoleIsAdmin()) return _filterRows(rows, url, ['user', 'month']);
+      const actor = _calendarActor();
+      const month = url.searchParams.get('month') || '';
+      return rows.filter(row => row.user === actor && (!month || String(row.date || '').startsWith(month)));
+    }
+    const filtered = _filterRows(rows, url, ['user', 'status', 'assignee', 'parent_id']);
+    if (_calendarRoleIsAdmin()) return filtered;
+    const actor = _calendarActor();
+    if (name === 'calendars') return filtered.filter(row => row.user === actor);
+    if (name === 'tasks') return filtered.filter(row => row.user === actor);
+    if (name === 'schedule-templates') return filtered.filter(row => row.user === actor);
+    return filtered.filter(row => !row.user || row.user === actor);
+  }
+
+  async function _recalculateProductionActualsAfterAttendance(provider, users, reason) {
+    try {
+      const recalculate = window.MeldexProductionManagement?.recalculateTaskActualsForAttendance;
+      if (typeof recalculate !== 'function') {
+        throw new Error('制作タスク実績時間の再計算機能を利用できません');
+      }
+      return await recalculate(provider, [...new Set((users || []).filter(Boolean))], reason);
+    } catch (error) {
+      console.error('制作タスクの実績作業時間を再計算できませんでした:', error);
+      return { ok: false, error: 'production_actual_recalculation_failed', message: error?.message || String(error) };
+    }
   }
 
   async function _calendarCreate(provider, name, body) {
-    const rows = await _readStore(provider, name);
+    _assertCalendarWritable();
     const now = _nowIso();
     const id = String(body?.id || _randomId(name));
+    if (name === 'time') {
+      const admin = _calendarRoleIsAdmin();
+      const correction = body?.correction === true;
+      if (correction && !admin) throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      const actor = _calendarActor();
+      const user = String(body?.user || actor);
+      const type = String(body?.type || '');
+      const operationId = String(body?.operation_id || body?.idempotency_key || '').trim();
+      if (!CLOUD_TIME_ENTRY_TYPES.includes(type)) throw _calendarError('打刻種別が不正です', 400, 'INVALID_CLOCK_TYPE');
+      if (!correction && user !== actor) {
+        throw _calendarError('他のメンバーとして打刻することはできません', 403, 'CLOCK_USER_MISMATCH');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      const result = await mutations.run(async (snapshot) => {
+        const wallClock = Date.now();
+        const latestCurrent = snapshot.time.reduce((latest, row) => {
+          const epoch = Date.parse(row?.timestamp);
+          return Number.isFinite(epoch) && epoch <= wallClock + 1000 ? Math.max(latest, epoch) : latest;
+        }, -Infinity);
+        const operationNow = new Date(Number.isFinite(latestCurrent) && latestCurrent >= wallClock ? latestCurrent + 1 : wallClock).toISOString();
+        const timestamp = CLOUD_ATTENDANCE.validTimestamp(correction ? (body?.timestamp || operationNow) : operationNow);
+        if (!timestamp) throw _calendarError('打刻日時が不正です', 400, 'INVALID_CLOCK_TIMESTAMP');
+        const entry = { id, type, user, timestamp, note: String(body?.note || ''), task_id: String(body?.task_id || ''),
+          operation_id: operationId, created: operationNow, modified: operationNow };
+        if (operationId) {
+          const replay = snapshot.time.find(row => String(row.operation_id || '') === operationId);
+          if (replay) {
+            const comparedFields = correction ? ['type', 'user', 'timestamp', 'note', 'task_id'] : ['type', 'user', 'note', 'task_id'];
+            const same = comparedFields
+              .every(field => String(replay[field] || '') === String(entry[field] || ''));
+            if (!same) throw _calendarError('同じ操作IDが異なる打刻内容に使われています', 409, 'CLOCK_OPERATION_CONFLICT');
+            return { ok: true, id: replay.id, replayed: true };
+          }
+        }
+        if (snapshot.time.some(row => String(row.id) === id)) {
+          throw _calendarError('同じIDの打刻が既に存在します', 409, 'CLOCK_ID_CONFLICT');
+        }
+        if (!correction) {
+          CLOUD_ATTENDANCE.assertNormalAction(snapshot.time, actor, type, timestamp);
+        }
+        const nextRows = snapshot.time.concat(entry);
+        await mutations.sync(nextRows, CLOUD_ATTENDANCE.affectedTargets(entry));
+        await _writeStore(provider, name, nextRows);
+        return { ok: true, id };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider,
+        [user],
+        result.replayed ? (correction ? '打刻補正（再送）' : '打刻（再送）') : (correction ? '打刻補正' : '打刻'),
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const actor = _calendarActor();
+      const shift = { id, created: now, modified: now, ...(body || {}) };
+      shift.user = shift.user || actor;
+      shift.type = shift.type || 'work';
+      shift.date = shift.date || '';
+      if (!_calendarRoleIsAdmin() && shift.user !== actor) {
+        throw _calendarError('他のメンバーのシフトは作成できません', 403, 'SHIFT_USER_MISMATCH');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        const existingIdx = snapshot.shifts.findIndex(item => String(item.id) === String(id));
+        if (existingIdx >= 0 && !_calendarRoleIsAdmin() && snapshot.shifts[existingIdx].user !== actor) {
+          throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        if (existingIdx >= 0) snapshot.shifts[existingIdx] = { ...snapshot.shifts[existingIdx], ...shift,
+          id: snapshot.shifts[existingIdx].id, modified: now };
+        else snapshot.shifts.push(shift);
+        await _writeStore(provider, name, snapshot.shifts);
+        await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? snapshot.shifts[existingIdx] : shift);
+        return { ok: true, id };
+      });
+    }
+    const rows = await _readStore(provider, name);
     const row = { id, created: now, modified: now, ...(body || {}) };
+    if (rows.some(item => String(item.id) === id)) {
+      throw _calendarError('同じIDのデータが既に存在します', 409, 'CALENDAR_ID_CONFLICT');
+    }
+    if (name === 'events' && _isGeneratedCalendarEvent(row)) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
     if (name === 'calendars') {
       row.name = row.name || 'マイカレンダー';
       row.color = row.color || '#569cd6';
-      row.user = row.user || 'anonymous';
+      row.user = row.user || _calendarActor();
       row.visible = row.visible == null ? 1 : row.visible;
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義のカレンダーは作成できません', 'CALENDAR_USER_MISMATCH');
     }
     if (name === 'events') {
       row.title = row.title || '無題';
-      row.user = row.user || row.creator || 'anonymous';
+      row.user = row.user || row.creator || _calendarActor();
       row.creator = row.creator || row.user;
+      _assertRequestedOwner(row, ['user', 'creator'], '他のメンバー名義の予定は作成できません', 'EVENT_USER_MISMATCH');
+      if (!(await _calendarCanUseCalendar(provider, row.calendar_id))) {
+        throw _calendarError('指定されたカレンダーへ予定を作成する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
+      }
     }
     if (name === 'tasks') {
       row.title = row.title || '無題';
       row.status = row.status || 'todo';
       row.priority = row.priority || 'medium';
+      row.user = row.user || _calendarActor();
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義のToDoは作成できません', 'TASK_USER_MISMATCH');
     }
-    if (name === 'shifts') {
-      row.user = row.user || 'anonymous';
-      row.type = row.type || 'work';
-      row.date = row.date || '';
+    if (name === 'schedule-templates') {
+      row.user = row.user || _calendarActor();
+      _assertRequestedOwner(row, ['user'], '他のメンバー名義の勤務テンプレートは作成できません', 'TEMPLATE_USER_MISMATCH');
     }
-    const existingIdx = name === 'shifts' ? rows.findIndex(item => String(item.id) === String(id)) : -1;
-    if (existingIdx >= 0) rows[existingIdx] = { ...rows[existingIdx], ...row, id: rows[existingIdx].id, modified: now };
-    else rows.push(row);
+    rows.push(row);
     await _writeStore(provider, name, rows);
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.sync?.(provider, existingIdx >= 0 ? rows[existingIdx] : row);
     return { ok: true, id };
   }
 
   async function _calendarUpdate(provider, name, id, body) {
+    _assertCalendarWritable();
+    if (name === 'time') {
+      if (!_calendarRoleIsAdmin()) throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      const mutations = _cloudCalendarMutationService(provider);
+      let affectedUsers = [];
+      const result = await mutations.run(async (snapshot) => {
+        const timeIdx = snapshot.time.findIndex(row => String(row.id) === String(id));
+        if (timeIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        const oldEntry = snapshot.time[timeIdx];
+        affectedUsers = [String(oldEntry.user || '')];
+        const type = String(body?.type ?? oldEntry.type ?? '');
+        const timestamp = CLOUD_ATTENDANCE.validTimestamp(body?.timestamp ?? oldEntry.timestamp);
+        const user = String(body?.user ?? oldEntry.user ?? '');
+        affectedUsers.push(user);
+        if (!CLOUD_TIME_ENTRY_TYPES.includes(type)) throw _calendarError('打刻種別が不正です', 400, 'INVALID_CLOCK_TYPE');
+        if (!timestamp || !user) throw _calendarError('打刻日時または対象メンバーが不正です', 400, 'INVALID_CLOCK_ENTRY');
+        const nextEntry = { ...oldEntry, type, timestamp, user,
+          note: String(body?.note ?? oldEntry.note ?? ''), task_id: String(body?.task_id ?? oldEntry.task_id ?? ''),
+          id: oldEntry.id, created: oldEntry.created || _nowIso(), modified: _nowIso() };
+        if (['type', 'timestamp', 'user', 'note', 'task_id'].every(
+          field => String(oldEntry[field] || '') === String(nextEntry[field] || ''),
+        )) return { ok: true, replayed: true };
+        snapshot.time[timeIdx] = nextEntry;
+        await mutations.sync(snapshot.time, CLOUD_ATTENDANCE.affectedTargets(oldEntry, snapshot.time[timeIdx]));
+        await _writeStore(provider, name, snapshot.time);
+        return { ok: true };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider, affectedUsers, result.replayed ? '打刻修正（再送）' : '打刻修正',
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const actor = _calendarActor();
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        const shiftIdx = snapshot.shifts.findIndex(row => String(row.id) === String(id));
+        if (shiftIdx < 0) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        const previous = snapshot.shifts[shiftIdx];
+        if (!_calendarRoleIsAdmin() && previous.user !== actor) {
+          throw _calendarError('他のメンバーのシフトは変更できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        const nextUser = String(body?.user ?? previous.user ?? actor);
+        if (!_calendarRoleIsAdmin() && nextUser !== actor) {
+          throw _calendarError('シフトの担当者を他のメンバーへ変更できません', 403, 'SHIFT_USER_MISMATCH');
+        }
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        snapshot.shifts[shiftIdx] = { ...previous, ...(body || {}), id: previous.id, modified: _nowIso() };
+        await _writeStore(provider, name, snapshot.shifts);
+        await window.MeldexCloudShiftSync?.sync?.(provider, snapshot.shifts[shiftIdx]);
+        return { ok: true };
+      });
+    }
     const rows = await _readStore(provider, name);
     const idx = rows.findIndex(row => String(row.id) === String(id));
     if (idx < 0) throw new Error('対象が見つかりません');
+    const previous = { ...rows[idx] };
+    if (name === 'events' && (_isGeneratedCalendarEvent(previous) || _isGeneratedCalendarEvent({ id, ...(body || {}) }))) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
+    if (name === 'calendars') {
+      if (!_calendarCanUpdateCalendar(previous)) throw _calendarError('このカレンダーを編集する権限がありません', 403, 'CALENDAR_EDIT_FORBIDDEN');
+      if (!_calendarRoleIsAdmin() && Object.prototype.hasOwnProperty.call(body || {}, 'edit_role')) {
+        throw _calendarError('カレンダー編集権限は管理者のみ変更できます', 403, 'CALENDAR_ROLE_ADMIN_REQUIRED');
+      }
+      _assertOwnerFieldsUnchanged(previous, body, ['user'], 'カレンダーの所有者は変更できません', 'CALENDAR_USER_MISMATCH');
+    }
+    if (name === 'events') {
+      if (!(await _calendarCanEditEvent(provider, previous))) throw _calendarError('この予定を編集する権限がありません', 403, 'EVENT_EDIT_FORBIDDEN');
+      _assertOwnerFieldsUnchanged(previous, body, ['user', 'creator'], '予定の所有者は他のメンバーへ変更できません', 'EVENT_USER_MISMATCH');
+      const nextCalendarId = body?.calendar_id ?? previous.calendar_id;
+      if (!(await _calendarCanUseCalendar(provider, nextCalendarId))) {
+        throw _calendarError('指定されたカレンダーへ予定を移動する権限がありません', 403, 'EVENT_CALENDAR_FORBIDDEN');
+      }
+    }
+    if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
+      throw _calendarError('このToDoを編集する権限がありません', 403, 'TASK_EDIT_FORBIDDEN');
+    }
+    if (name === 'tasks') _assertOwnerFieldsUnchanged(previous, body, ['user'], 'ToDoの所有者は変更できません', 'TASK_USER_MISMATCH');
+    if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
+      throw _calendarError('この勤務テンプレートを編集する権限がありません', 403, 'TEMPLATE_EDIT_FORBIDDEN');
+    }
+    if (name === 'schedule-templates') {
+      _assertOwnerFieldsUnchanged(previous, body, ['user'], '勤務テンプレートの所有者は変更できません', 'TEMPLATE_USER_MISMATCH');
+    }
     rows[idx] = { ...rows[idx], ...(body || {}), id: rows[idx].id, modified: _nowIso() };
     await _writeStore(provider, name, rows);
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.sync?.(provider, rows[idx]);
     return { ok: true };
   }
 
   async function _calendarDelete(provider, name, id) {
+    _assertCalendarWritable();
+    if (name === 'time') {
+      if (!_calendarRoleIsAdmin()) {
+        throw _calendarError('実績を修正できるのは管理者のみです', 403, 'ATTENDANCE_ADMIN_REQUIRED');
+      }
+      const mutations = _cloudCalendarMutationService(provider);
+      let affectedUser = '';
+      const result = await mutations.run(async (snapshot) => {
+        const oldEntry = snapshot.time.find(row => String(row.id) === String(id));
+        if (!oldEntry) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        affectedUser = String(oldEntry.user || '');
+        const timeRows = snapshot.time.filter(row => String(row.id) !== String(id));
+        await mutations.sync(timeRows, CLOUD_ATTENDANCE.affectedTargets(oldEntry));
+        await _writeStore(provider, name, timeRows);
+        return { ok: true };
+      });
+      const actualRecalculation = await _recalculateProductionActualsAfterAttendance(
+        provider, [affectedUser], '打刻削除',
+      );
+      return { ...result, actual_recalculation: actualRecalculation };
+    }
+    if (name === 'shifts') {
+      const mutations = _cloudCalendarMutationService(provider);
+      return mutations.runShift(async (snapshot) => {
+        const previous = snapshot.shifts.find(row => String(row.id) === String(id));
+        if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+        if (!_calendarRoleIsAdmin() && previous.user !== _calendarActor()) {
+          throw _calendarError('他のメンバーのシフトは削除できません', 403, 'SHIFT_OWNER_REQUIRED');
+        }
+        await _assertShiftDerivedOwnership(provider, id, snapshot.events);
+        const nextRows = snapshot.shifts.filter(row => String(row.id) !== String(id));
+        await _writeStore(provider, name, nextRows);
+        await window.MeldexCloudShiftSync?.remove?.(provider, id);
+        return { ok: true };
+      });
+    }
     const rows = await _readStore(provider, name);
-    await _writeStore(provider, name, rows.filter(row => String(row.id) !== String(id)));
-    if (name === 'shifts') await window.MeldexCloudShiftSync?.remove?.(provider, id);
+    const previous = rows.find(row => String(row.id) === String(id));
+    if (!previous) throw _calendarError('対象が見つかりません', 404, 'CALENDAR_ROW_NOT_FOUND');
+    if (name === 'events' && _isGeneratedCalendarEvent(previous)) {
+      throw _calendarError('自動生成された実績・シフト予定は元データから変更してください', 409, 'GENERATED_EVENT_READONLY');
+    }
+    if (name === 'calendars' && !_calendarCanUpdateCalendar(previous, true)) {
+      throw _calendarError('このカレンダーを削除する権限がありません', 403, 'CALENDAR_DELETE_FORBIDDEN');
+    }
+    if (name === 'events' && !(await _calendarCanEditEvent(provider, previous))) {
+      throw _calendarError('この予定を削除する権限がありません', 403, 'EVENT_DELETE_FORBIDDEN');
+    }
+    if (name === 'tasks' && !_calendarCanOwnRecord(previous, ['user', 'assignee'])) {
+      throw _calendarError('このToDoを削除する権限がありません', 403, 'TASK_DELETE_FORBIDDEN');
+    }
+    if (name === 'schedule-templates' && !_calendarCanOwnRecord(previous, ['user'])) {
+      throw _calendarError('この勤務テンプレートを削除する権限がありません', 403, 'TEMPLATE_DELETE_FORBIDDEN');
+    }
+    const nextRows = rows.filter(row => String(row.id) !== String(id));
+    await _writeStore(provider, name, nextRows);
     return { ok: true };
   }
 
@@ -2300,16 +2854,33 @@
   }
 
   async function _importCalendarStoreIcs(provider, body) {
+    _assertCalendarWritable();
     const events = _parseIcalEvents(body?.ics || body?.content || '');
     const rows = await _readStore(provider, 'events');
     let imported = 0;
     let updated = 0;
-    const user = String(body?.user || body?.creator || 'anonymous');
-    events.forEach((event) => {
+    const actor = _calendarActor();
+    const requestedUser = String(body?.user || body?.creator || '').trim();
+    if (!_calendarRoleIsAdmin() && requestedUser && requestedUser !== actor) {
+      throw _calendarError('他のメンバー名義でiCal予定を取り込むことはできません', 403, 'ICAL_USER_MISMATCH');
+    }
+    const user = _calendarRoleIsAdmin() ? (requestedUser || actor) : actor;
+    for (const event of events) {
       const uid = String(event.uid || '').trim();
       const idx = uid ? rows.findIndex(row => row.ical_uid === uid || row.uid === uid || row.id === uid) : -1;
+      if (_isGeneratedCalendarEvent(uid) || (idx >= 0 && _isGeneratedCalendarEvent(rows[idx]))) {
+        throw _calendarError('自動生成された予定の予約IDはiCal取込に使用できません', 409, 'ICAL_RESERVED_EVENT_ID');
+      }
+      const previous = idx >= 0 ? rows[idx] : null;
+      if (previous && !(await _calendarCanEditEvent(provider, previous))) {
+        throw _calendarError('同じUIDの予定を更新する権限がありません', 403, 'ICAL_EVENT_EDIT_FORBIDDEN');
+      }
+      const requestedCalendar = String(body?.calendar_id || '').trim();
+      if (requestedCalendar && !(await _calendarCanUseCalendar(provider, requestedCalendar))) {
+        throw _calendarError('指定されたカレンダーへ取り込む権限がありません', 403, 'ICAL_CALENDAR_FORBIDDEN');
+      }
       const row = {
-        id: idx >= 0 ? rows[idx].id : (uid || _randomId('events')),
+        id: previous ? previous.id : (uid || _randomId('events')),
         uid,
         ical_uid: event.ical_uid || uid,
         title: event.title || '無題',
@@ -2321,19 +2892,19 @@
         url: event.url || '',
         recurrence: event.recurrence || '',
         alert_minutes: Number.isFinite(Number(event.alert_minutes)) ? Number(event.alert_minutes) : -1,
-        calendar_id: body?.calendar_id || 'default',
-        user,
-        creator: user,
+        calendar_id: requestedCalendar || previous?.calendar_id || 'default',
+        user: previous?.user || user,
+        creator: previous?.creator || previous?.user || user,
         modified: _nowIso(),
       };
       if (idx >= 0) {
-        rows[idx] = { ...rows[idx], ...row };
+        rows[idx] = { ...previous, ...row };
         updated += 1;
       } else {
         rows.push({ created: _nowIso(), ...row });
         imported += 1;
       }
-    });
+    }
     await _writeStore(provider, 'events', rows);
     return { ok: true, imported, updated };
   }

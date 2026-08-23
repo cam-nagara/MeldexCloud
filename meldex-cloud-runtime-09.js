@@ -376,9 +376,7 @@
   }
 
   function _escape(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   async function _workspaceRows() {
@@ -3070,6 +3068,10 @@
       const rawShifts = (userShiftsMap && userShiftsMap[uid]) || [];
       const shiftIntervals = [];
       for (const sh of rawShifts) {
+        if (sh?.quality_status === QUALITY_CONFLICT) {
+          uQualityStatus = QUALITY_CONFLICT;
+          uReasons.push(...(Array.isArray(sh.quality_reasons) ? sh.quality_reasons : ['打刻順序が競合しています']));
+        }
         const shStart = parseIsoToEpochSec(sh.start || sh.started_at);
         const shEnd = parseIsoToEpochSec(sh.end || sh.ended_at);
 
@@ -3087,9 +3089,18 @@
         shiftIntervals.push(new TimeInterval(shStart, shEnd));
       }
 
+      if (sessIntervals.length && !shiftIntervals.length && uQualityStatus !== QUALITY_CONFLICT) {
+        uQualityStatus = QUALITY_INCOMPLETE;
+        uReasons.push('対応する出勤・退勤打刻がありません');
+      }
+
       const rawBreaks = (userBreaksMap && userBreaksMap[uid]) || [];
       const breakIntervals = [];
       for (const br of rawBreaks) {
+        if (br?.incomplete && uQualityStatus !== QUALITY_CONFLICT) {
+          uQualityStatus = QUALITY_INCOMPLETE;
+          uReasons.push(String(br.quality_reason || '離席復帰打刻がありません'));
+        }
         const brStart = parseIsoToEpochSec(br.start || br.started_at);
         const brEnd = parseIsoToEpochSec(br.end || br.ended_at);
 
@@ -3212,10 +3223,76 @@
       return `${ws}::${dt}`;
     }
 
+    _storageComponent(value) {
+      const text = String(value);
+      if (/^[A-Za-z0-9_-]+$/.test(text)) return text;
+      const bytes = new TextEncoder().encode(text);
+      return '~' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+
+    _legacyStorageComponent(value, fallback = '') {
+      return String(value).replace(/[^A-Za-z0-9_-]/g, '_') || fallback;
+    }
+
     _filePath(workspaceId, targetDate) {
-      const ws = String(workspaceId || 'default').trim().replace(/[^a-zA-Z0-9_\-]/g, '_') || 'default';
-      const dt = String(targetDate || '').trim().replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const ws = this._storageComponent(String(workspaceId || 'default').trim());
+      const dt = this._storageComponent(String(targetDate || '').trim());
       return `${this.baseDir}/${ws}/${dt}.json`;
+    }
+
+    _legacyFilePath(workspaceId, targetDate) {
+      const ws = this._legacyStorageComponent(String(workspaceId || 'default').trim(), 'default');
+      const dt = this._legacyStorageComponent(String(targetDate || '').trim());
+      return `${this.baseDir}/${ws}/${dt}.json`;
+    }
+
+    _recordMatches(record, workspaceId, targetDate) {
+      return Boolean(record && typeof record === 'object'
+        && String(record.workspace_id || 'default').trim() === workspaceId
+        && String(record.target_date || '').trim() === targetDate);
+    }
+
+    _isNotFoundError(error) {
+      const name = String(error?.name || '').toLowerCase();
+      const code = String(error?.code || '').toLowerCase();
+      const status = Number(error?.status ?? error?.statusCode ?? 0);
+      const message = String(error?.message || error || '').toLowerCase();
+      return status === 404
+        || name === 'notfounderror'
+        || name === 'systemstoragenotfounderror'
+        || code === 'enoent'
+        || code.includes('not_found')
+        || /(^|[\s/:_-])not[\s_-]?found($|[\s/:_-])/.test(message)
+        || message.includes('見つかりません');
+    }
+
+    async _listProviderDirectory(directory) {
+      try {
+        const files = await this.provider.listDirectory(directory);
+        return Array.isArray(files) ? files : [];
+      } catch (error) {
+        if (this._isNotFoundError(error)) return [];
+        throw error;
+      }
+    }
+
+    async _writeProvider(filePath, record) {
+      if (typeof this.provider?.writeJson === 'function') {
+        await this.provider.writeJson(filePath, record);
+      } else if (typeof this.provider?.writeText === 'function') {
+        await this.provider.writeText(filePath, JSON.stringify(record, null, 2));
+      }
+    }
+
+    async _readProvider(filePath) {
+      if (typeof this.provider?.readJson === 'function') {
+        return this.provider.readJson(filePath);
+      }
+      if (typeof this.provider?.readText === 'function') {
+        const text = await this.provider.readText(filePath);
+        return text ? JSON.parse(text) : null;
+      }
+      return null;
     }
 
     async saveSnapshot(workspaceId, targetDate, snapshotData) {
@@ -3233,11 +3310,7 @@
       if (this.provider) {
         const filePath = this._filePath(ws, dt);
         try {
-          if (typeof this.provider.writeJson === 'function') {
-            await this.provider.writeJson(filePath, record);
-          } else if (typeof this.provider.writeText === 'function') {
-            await this.provider.writeText(filePath, JSON.stringify(record, null, 2));
-          }
+          await this._writeProvider(filePath, record);
         } catch (err) {
           return { ok: false, error: `provider_save_failed: ${err?.message || err}` };
         }
@@ -3254,34 +3327,49 @@
     async loadFromProvider(workspaceId) {
       if (!this.provider) return { ok: true, count: 0 };
       const ws = String(workspaceId || 'default').trim();
-      const safeWs = ws.replace(/[^a-zA-Z0-9_\-]/g, '_') || 'default';
-      const wsDir = `${this.baseDir}/${safeWs}`;
+      const wsDir = `${this.baseDir}/${this._storageComponent(ws)}`;
+      const legacyWsDir = `${this.baseDir}/${this._legacyStorageComponent(ws, 'default')}`;
       try {
         if (typeof this.provider.listDirectory === 'function') {
-          const files = await this.provider.listDirectory(wsDir);
           let loadedCount = 0;
-          if (Array.isArray(files)) {
+          const loadedDates = new Set();
+          const directories = legacyWsDir === wsDir ? [wsDir] : [wsDir, legacyWsDir];
+          const directoryFiles = new Map();
+          const existingPaths = new Set();
+          for (const directory of directories) {
+            const files = await this._listProviderDirectory(directory);
+            directoryFiles.set(directory, files);
+            for (const f of files) {
+              const name = typeof f === 'string' ? f : f?.name;
+              if (name && name.endsWith('.json')) existingPaths.add(`${directory}/${name}`);
+            }
+          }
+          for (const directory of directories) {
+            const files = directoryFiles.get(directory);
+            if (!Array.isArray(files)) continue;
             for (const f of files) {
               const name = typeof f === 'string' ? f : f?.name;
               if (name && name.endsWith('.json')) {
-                const snapPath = `${wsDir}/${name}`;
-                let snap = null;
-                if (typeof this.provider.readJson === 'function') {
-                  snap = await this.provider.readJson(snapPath);
-                } else if (typeof this.provider.readText === 'function') {
-                  const text = await this.provider.readText(snapPath);
-                  if (text) {
-                    try {
-                      snap = JSON.parse(text);
-                    } catch (parseErr) {
-                      return { ok: false, error: `provider_parse_failed: ${parseErr?.message || parseErr}` };
-                    }
+                const snapPath = `${directory}/${name}`;
+                const snap = await this._readProvider(snapPath);
+                const targetDate = String(snap?.target_date || '').trim();
+                if (!targetDate || !this._recordMatches(snap, ws, targetDate)) continue;
+                const canonicalPath = this._filePath(ws, targetDate);
+                const legacyPath = this._legacyFilePath(ws, targetDate);
+                if (snapPath !== canonicalPath && snapPath !== legacyPath) continue;
+                if (snapPath === legacyPath && legacyPath !== canonicalPath) {
+                  // canonical は常に正本。古い legacy が残っていても巻き戻さない。
+                  if (existingPaths.has(canonicalPath)) continue;
+                  await this._writeProvider(canonicalPath, snap);
+                  existingPaths.add(canonicalPath);
+                  if (typeof this.provider.deletePath === 'function') {
+                    await this.provider.deletePath(legacyPath);
+                    existingPaths.delete(legacyPath);
                   }
                 }
-                if (snap && snap.target_date) {
-                  this._snapshots.set(this._key(ws, snap.target_date), snap);
-                  loadedCount++;
-                }
+                this._snapshots.set(this._key(ws, targetDate), snap);
+                if (!loadedDates.has(targetDate)) loadedCount++;
+                loadedDates.add(targetDate);
               }
             }
           }
@@ -3321,20 +3409,65 @@
       const dt = String(targetDate || '').trim();
       const key = this._key(ws, dt);
       const exists = this._snapshots.has(key);
+      let deletedPersisted = false;
 
       if (this.provider) {
-        const filePath = this._filePath(ws, dt);
+        const canonicalPath = this._filePath(ws, dt);
+        const legacyPath = this._legacyFilePath(ws, dt);
         if (typeof this.provider.deletePath === 'function') {
           try {
-            await this.provider.deletePath(filePath);
+            if (legacyPath !== canonicalPath) {
+              let legacyRecord = null;
+              let legacyExists = false;
+              if (typeof this.provider.listDirectory === 'function') {
+                const slash = legacyPath.lastIndexOf('/');
+                const directory = legacyPath.slice(0, slash);
+                const filename = legacyPath.slice(slash + 1);
+                const files = await this._listProviderDirectory(directory);
+                legacyExists = Array.isArray(files) && files.some(item => {
+                  const name = typeof item === 'string' ? item : item?.name;
+                  return name === filename;
+                });
+              } else {
+                // 存在確認不能な provider では、読取失敗を「存在しない」と扱わない。
+                legacyRecord = await this._readProvider(legacyPath);
+                legacyExists = true;
+              }
+              if (legacyExists) {
+                legacyRecord = legacyRecord || await this._readProvider(legacyPath);
+                if (this._recordMatches(legacyRecord, ws, dt)) {
+                  // legacy を先に消す。後段の canonical 削除に失敗しても古い値へ戻らない。
+                  await this.provider.deletePath(legacyPath);
+                  deletedPersisted = true;
+                }
+              }
+            }
+
+            let canonicalExists = true;
+            if (typeof this.provider.listDirectory === 'function') {
+              const slash = canonicalPath.lastIndexOf('/');
+              const directory = canonicalPath.slice(0, slash);
+              const filename = canonicalPath.slice(slash + 1);
+              const files = await this._listProviderDirectory(directory);
+              canonicalExists = Array.isArray(files) && files.some(item => {
+                const name = typeof item === 'string' ? item : item?.name;
+                return name === filename;
+              });
+            }
+            if (canonicalExists) {
+              const canonicalRecord = await this._readProvider(canonicalPath);
+              if (!this._recordMatches(canonicalRecord, ws, dt)) return false;
+              await this.provider.deletePath(canonicalPath);
+              deletedPersisted = true;
+            }
           } catch (err) {
-            // 削除失敗時はメモリ上の記録を失わない
+            // 一方でも確認・削除に失敗したら、成功扱いせずメモリ上の記録を保持する。
             return false;
           }
         }
       }
 
-      if (exists) {
+      if (exists || deletedPersisted) {
         this._snapshots.delete(key);
         return true;
       }
@@ -3425,6 +3558,77 @@
       return String(raw).includes('h') || num < 24 ? Math.round(num * 3600) : Math.round(num);
     }
 
+    // 対象業務日に重なる実績区間だけを、読み取り専用表示用の形へ整えて返す。
+    // 終了していない区間（未確定）は現在時刻で閉じず、ended_at を空のまま残す。
+    sessionsForBusinessDate(sessions, targetDate, cutoff = '04:00') {
+      const target = String(targetDate || '').trim();
+      const picked = [];
+      for (const sess of (sessions || [])) {
+        if (!sess || typeof sess !== 'object' || sess.deleted_at) continue;
+        const started = String(sess.started_at || '').trim();
+        const ended = String(sess.ended_at || '').trim();
+        if (!started) continue;
+        const startDate = this.calculateBusinessDate(started, cutoff);
+        const endDate = ended ? this.calculateBusinessDate(ended, cutoff) : startDate;
+        if (target && target !== startDate && target !== endDate) {
+          // 日跨ぎで対象日を挟み込む区間も対象に含める
+          if (!(startDate < target && target < endDate)) continue;
+        }
+        picked.push({
+          session_id: String(sess.session_id || ''),
+          participant_user_id: String(sess.participant_user_id || ''),
+          participant_display_name: String(sess.participant_display_name || sess.participant_user_id || ''),
+          started_at: started,
+          ended_at: ended,
+          start_reason: String(sess.start_reason || ''),
+          end_reason: String(sess.end_reason || '')
+        });
+      }
+      picked.sort((a, b) => (a.started_at === b.started_at
+        ? a.participant_user_id.localeCompare(b.participant_user_id)
+        : a.started_at.localeCompare(b.started_at)));
+      return picked;
+    }
+
+    // 対象業務日に重なる予定枠だけを [{start, end}] で返す。
+    slotsForBusinessDate(slots, targetDate, cutoff = '04:00') {
+      let raw = [];
+      if (Array.isArray(slots)) raw = slots;
+      else if (typeof slots === 'string' && slots.trim()) {
+        try {
+          const parsed = JSON.parse(slots);
+          if (Array.isArray(parsed)) raw = parsed;
+        } catch { raw = []; }
+      }
+      const target = String(targetDate || '').trim();
+      const picked = [];
+      for (const item of raw) {
+        if (!item || typeof item !== 'object') continue;
+        const start = String(item.start || '').trim();
+        const end = String(item.end || '').trim();
+        if (!start) continue;
+        const startDate = this.calculateBusinessDate(start, cutoff);
+        const endDate = end ? this.calculateBusinessDate(end, cutoff) : startDate;
+        if (target && target !== startDate && target !== endDate
+            && !(startDate < target && target < endDate)) continue;
+        picked.push({ start, end });
+      }
+      picked.sort((a, b) => (a.start === b.start ? a.end.localeCompare(b.end) : a.start.localeCompare(b.start)));
+      return picked;
+    }
+
+    // 予定枠の合計秒数（日付での絞り込みはしない。タスク全体の割当量）
+    totalSlotSeconds(slots) {
+      let total = 0;
+      for (const slot of this.slotsForBusinessDate(slots, '')) {
+        const start = new Date(String(slot.start || '')).getTime();
+        const end = new Date(String(slot.end || '')).getTime();
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+        total += Math.floor((end - start) / 1000);
+      }
+      return total;
+    }
+
     buildDailySnapshot(args = {}) {
       const ws = String(args.workspace_id || 'default').trim();
       const dateStr = String(args.target_date || '').trim();
@@ -3476,7 +3680,12 @@
 
         // 割当作業時間
         const allocatedRaw = props['作業予定時間'] || props['割当作業時間'] || row.allocated_seconds;
-        const allocatedSec = this._parseSeconds(allocatedRaw);
+        let allocatedSec = this._parseSeconds(allocatedRaw);
+        if (!allocatedSec) {
+          // 割当作業時間は「そのタスクへ割り当てた予定枠の合計」（計画書 §3）。
+          // 集計済みの値が無い場合は予定枠そのものから合計する。
+          allocatedSec = this.totalSlotSeconds(row.scheduled_slots || props['作業予定区間']);
+        }
 
         // 実績作業時間の計算
         const taskSessions = sessions.filter(s => String(s.task_id || '') === taskId);
@@ -3513,9 +3722,44 @@
               quality_status: uSummary.quality_status || 'confirmed'
             });
           }
+
+          // 勤務区間を渡されていない呼び出しでは交差計算が必ず0になる。呼び出し側が
+          // 正本の算出済み実績を持っていれば、0で上書きせずそちらを採用する。
+          if (actualSec === 0 && !Object.keys(userShiftsMap).length) {
+            const fallbackSec = Number(row.actual_seconds) > 0 ? Math.floor(Number(row.actual_seconds)) : 0;
+            if (fallbackSec > 0) {
+              actualSec = fallbackSec;
+              qualityStatus = String(row.quality_status || qualityStatus);
+              const rowReasons = row.quality_reasons || [];
+              if (rowReasons.length) qualityReason = Array.isArray(rowReasons) ? rowReasons.join('; ') : String(rowReasons);
+              const rowParticipants = (row.participant_actuals || [])
+                .filter(entry => entry && entry.user_id)
+                .map(entry => ({
+                  user_id: String(entry.user_id),
+                  display_name: String(entry.display_name || entry.user_id),
+                  actual_seconds: Number(entry.actual_seconds) || 0,
+                  quality_status: String(entry.quality_status || qualityStatus)
+                }));
+              if (rowParticipants.length) {
+                participantActuals.length = 0;
+                participantActuals.push(...rowParticipants);
+              }
+            }
+          }
         } else {
+          // 区間そのものを渡されていなくても、呼び出し側が算出済みの実績を持っている
+          // 場合はそれを使う（ここで無条件に0へ落とすと実際の保存経路で実績が消える）。
+          const precomputedSec = Number(row.actual_seconds) > 0 ? Math.floor(Number(row.actual_seconds)) : 0;
+          const precomputedQuality = String(row.quality_status || '').trim();
+          const hasPrecomputed = precomputedSec > 0
+            || ['confirmed', 'incomplete', 'conflict', 'legacy-manual'].includes(precomputedQuality);
           const legacyManualRaw = props['作業時間_実績'];
-          if (legacyManualRaw != null && String(legacyManualRaw).trim()) {
+          if (hasPrecomputed) {
+            actualSec = precomputedSec;
+            qualityStatus = precomputedQuality || 'confirmed';
+            const reasons = row.quality_reasons || row.quality_reason || '';
+            qualityReason = Array.isArray(reasons) ? reasons.join('; ') : String(reasons);
+          } else if (legacyManualRaw != null && String(legacyManualRaw).trim()) {
             actualSec = this._parseSeconds(legacyManualRaw);
             qualityStatus = 'legacy-manual';
             qualityReason = '過去手入力値';
@@ -3524,7 +3768,18 @@
             qualityStatus = 'unmeasured';
             qualityReason = '実績区間なし';
           }
-          if (assignee) {
+          for (const entry of (row.participant_actuals || [])) {
+            if (!entry || typeof entry !== 'object') continue;
+            const uid = String(entry.user_id || entry.participant_user_id || '').trim();
+            if (!uid) continue;
+            participantActuals.push({
+              user_id: uid,
+              display_name: String(entry.display_name || uid),
+              actual_seconds: Number(entry.actual_seconds) || 0,
+              quality_status: String(entry.quality_status || qualityStatus)
+            });
+          }
+          if (!participantActuals.length && assignee) {
             participantActuals.push({
               user_id: assignee,
               display_name: assignee,
@@ -3546,7 +3801,14 @@
           actual_seconds: actualSec,
           quality_status: qualityStatus,
           quality_reason: qualityReason,
-          participant_actuals: participantActuals
+          participant_actuals: participantActuals,
+          // actual_seconds はスナップショット時点までの累計。day_sessions は対象業務日に
+          // 重なる区間だけを持ち、過去日を読み取り専用カレンダーとして描く素材にする。
+          day_sessions: this.sessionsForBusinessDate(taskSessions, dateStr, dayCutoff),
+          // 割当作業時間の内訳（カレンダー上の予定枠）。読み取り専用カレンダーで実績区間と重ねる。
+          scheduled_slots: this.slotsForBusinessDate(
+            row.scheduled_slots || props['作業予定区間'], dateStr, dayCutoff
+          )
         });
       }
 
@@ -3589,12 +3851,32 @@
   'use strict';
 
   function esc(text) {
-    if (text == null) return '';
-    return String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+    return MeldexEscape.html(text);
+  }
+
+  // 品質状態のユーザー向け表示語（コード上の識別子をそのまま出さない）
+  const QUALITY_LABELS = {
+    confirmed: '確定',
+    incomplete: '打刻不足',
+    conflict: '要確認',
+    'legacy-manual': '手入力',
+    unmeasured: '未計測',
+  };
+
+  // 端末の暦日（YYYY-MM-DD）。UTC基準のtoISOStringだと日本時間の午前中に前日扱いになる。
+  function todayString() {
+    const now = new Date();
+    const pad = value => String(value).padStart(2, '0');
+    return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+  }
+
+  function currentBusinessDate(cutoff = '04:00') {
+    const now = new Date();
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(cutoff || '04:00').trim());
+    const cutoffMinutes = match ? Number(match[1]) * 60 + Number(match[2]) : 240;
+    if (now.getHours() * 60 + now.getMinutes() < cutoffMinutes) now.setDate(now.getDate() - 1);
+    const pad = value => String(value).padStart(2, '0');
+    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
   }
 
   function formatTime(seconds) {
@@ -3626,7 +3908,7 @@
       try {
         if (typeof apiFetch === 'function') {
           const ws = String(workspaceId || 'default').trim();
-          const endpoint = ws ? `/api/production-management/daily-snapshots?workspace_id=${encodeURIComponent(ws)}` : '/api/production-management/daily-snapshots';
+          const endpoint = ws ? `/production-management/daily-snapshots?workspace_id=${encodeURIComponent(ws)}` : '/production-management/daily-snapshots';
           const res = await apiFetch(endpoint);
           if (res && res.ok && Array.isArray(res.snapshots)) {
             if (this.store) {
@@ -3654,11 +3936,10 @@
     }
 
     async createSnapshotViaApi(targetDate = '', workspaceId = 'default') {
-      const now = new Date();
-      const dateStr = targetDate || now.toISOString().slice(0, 10);
+      const dateStr = targetDate || todayString();
       try {
         if (typeof apiPost === 'function') {
-          const res = await apiPost('/api/production-management/daily-snapshots', { target_date: dateStr, workspace_id: workspaceId });
+          const res = await apiPost('/production-management/daily-snapshots', { target_date: dateStr, workspace_id: workspaceId });
           if (res && res.ok && res.snapshot) {
             if (this.store) await this.store.saveSnapshot(workspaceId, dateStr, res.snapshot);
             if (typeof showStatus === 'function') showStatus('日次スナップショットを記録しました');
@@ -3697,10 +3978,11 @@
       header.style.display = 'flex';
       header.style.justifyContent = 'space-between';
       header.style.alignItems = 'center';
+      // 説明はツールチップへ集約する（基本UIに長文を置かない）
       header.innerHTML = `
-        <div>
+        <div style="display:inline-flex;align-items:center;gap:4px;min-width:0;">
           <strong><span class="gb-icon">📅</span> 制作進行の日次記録</strong>
-          <span class="gb-sub-text" style="font-size:12px;color:var(--text-muted, #888);">（過去時点の予定と実績）</span>
+          ${typeof fieldHelp === 'function' ? fieldHelp('過去のある日の割当（カレンダーの予定枠）と実績を、読み取り専用で確認できます。「本日分を記録」で今日の状態を1日分として残せます') : ''}
         </div>
       `;
 
@@ -3766,10 +4048,11 @@
         `;
 
         item.addEventListener('click', () => {
+          const compareSnapshot = this._compareTarget(snapshots);
           if (typeof options.onSelectSnapshot === 'function') {
-            options.onSelectSnapshot(snap);
+            options.onSelectSnapshot(snap, compareSnapshot);
           } else {
-            this.showReadOnlySnapshotModal(snap);
+            this.showReadOnlySnapshotModal(snap, Object.assign({}, options, { compareSnapshot }));
           }
         });
 
@@ -3801,7 +4084,7 @@
       return wrap;
     }
 
-    showReadOnlySnapshotModal(snapshot) {
+    showReadOnlySnapshotModal(snapshot, options = {}) {
       if (!snapshot) return;
       const modal = document.createElement('div');
       modal.className = 'gb-modal gb-production-snapshot-modal';
@@ -3850,47 +4133,317 @@
 
       const body = document.createElement('div');
       body.style.marginTop = '12px';
-
-      const tasksList = snapshot.tasks || [];
-      if (tasksList.length === 0) {
-        body.innerHTML = '<p style="color:var(--text-muted, #888);">記録されたタスクはありません。</p>';
-      } else {
-        const table = document.createElement('table');
-        table.style.width = '100%';
-        table.style.fontSize = '12px';
-        table.style.borderCollapse = 'collapse';
-        table.innerHTML = `
-          <thead>
-            <tr style="border-bottom:1px solid var(--border, #ccc);text-align:left;">
-              <th style="padding:4px;">タスク</th>
-              <th style="padding:4px;">担当者</th>
-              <th style="padding:4px;">状況</th>
-              <th style="padding:4px;">予定</th>
-              <th style="padding:4px;">割当</th>
-              <th style="padding:4px;">実績</th>
-              <th style="padding:4px;">品質</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${tasksList.map(t => `
-              <tr style="border-bottom:1px solid var(--border-light, #eee);">
-                <td style="padding:4px;">${esc(t.title || t.task_id)}</td>
-                <td style="padding:4px;">${esc(t.assignee || '-')}</td>
-                <td style="padding:4px;">${esc(t.status || '-')}</td>
-                <td style="padding:4px;">${esc(formatTime(t.estimate_seconds))}</td>
-                <td style="padding:4px;">${esc(formatTime(t.allocated_seconds))}</td>
-                <td style="padding:4px;">${esc(formatTime(t.actual_seconds))}</td>
-                <td style="padding:4px;"><span class="gb-quality-badge quality-${esc(t.quality_status)}">${esc(t.quality_status || 'confirmed')}</span></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        `;
-        body.appendChild(table);
-      }
+      this.renderDayView(body, snapshot, options);
 
       content.appendChild(body);
       modal.appendChild(content);
       document.body.appendChild(modal);
+    }
+
+    // ==== 読み取り専用の日次ビュー（予定枠と実績区間を重ねた過去カレンダー） ====
+
+    // 差分の相手（当日の記録。無ければ最新の記録）を選ぶ
+    _compareTarget(snapshots) {
+      const list = (snapshots || []).filter(s => s && s.target_date);
+      if (!list.length) return null;
+      const sorted = list.slice().sort((a, b) => String(a.target_date).localeCompare(String(b.target_date)));
+      const today = todayString();
+      return sorted.find(s => s.target_date === today) || sorted[sorted.length - 1] || null;
+    }
+
+    _dayWindow(snapshot) {
+      const date = String((snapshot && snapshot.target_date) || '').trim();
+      const cutoff = String((snapshot && snapshot.day_cutoff) || '04:00').trim();
+      const m = /^(\d{1,2}):(\d{2})$/.exec(cutoff);
+      const h = m ? Number(m[1]) : 4;
+      const min = m ? Number(m[2]) : 0;
+      const startMs = new Date(date + 'T00:00:00').getTime() + ((h * 60 + min) * 60000);
+      if (!Number.isFinite(startMs)) return null;
+      return { startMs, endMs: startMs + 24 * 3600000, cutoffHour: h, cutoffMinute: min };
+    }
+
+    _intervalGeometry(win, startStr, endStr) {
+      if (!win) return null;
+      const startMs = new Date(String(startStr || '')).getTime();
+      if (!Number.isFinite(startMs)) return null;
+      const rawEndMs = endStr ? new Date(String(endStr)).getTime() : NaN;
+      const open = !Number.isFinite(rawEndMs);
+      const endMs = open ? win.endMs : rawEndMs;
+      const from = Math.max(win.startMs, Math.min(startMs, win.endMs));
+      const to = Math.max(win.startMs, Math.min(endMs, win.endMs));
+      if (to <= from) return null;
+      const span = win.endMs - win.startMs;
+      return {
+        left: ((from - win.startMs) / span) * 100,
+        width: Math.max(((to - from) / span) * 100, 0.6),
+        open,
+      };
+    }
+
+    _appendAxis(container, win) {
+      const axis = document.createElement('div');
+      axis.className = 'gb-production-day-axis';
+      axis.style.position = 'relative';
+      axis.style.height = '16px';
+      axis.style.borderBottom = '1px solid var(--border, #ccc)';
+      // 狭いパネルでも目盛りが重ならないよう6時間刻みにする
+      for (let i = 0; i <= 24; i += 6) {
+        const tick = document.createElement('span');
+        tick.style.position = 'absolute';
+        tick.style.left = ((i / 24) * 100) + '%';
+        tick.style.fontSize = '10px';
+        tick.style.color = 'var(--text-muted, #888)';
+        tick.style.transform = i === 0 ? 'none' : (i === 24 ? 'translateX(-100%)' : 'translateX(-50%)');
+        const hour = (win.cutoffHour + i) % 24;
+        tick.textContent = String(hour).padStart(2, '0') + '時';
+        axis.appendChild(tick);
+      }
+      container.appendChild(axis);
+    }
+
+    _appendTaskRow(container, win, task) {
+      // 狭いパネル（バージョン管理パネル）でも時間帯が潰れないよう、
+      // 「名前＋実績」を1行目、時間帯を2行目に置く
+      const row = document.createElement('div');
+      row.className = 'gb-production-day-row';
+      row.dataset.e2eId = 'gb-production-day-row-' + (task.task_id || '');
+      row.style.padding = '4px 0';
+
+      const head = document.createElement('div');
+      head.style.display = 'flex';
+      head.style.alignItems = 'baseline';
+      head.style.justifyContent = 'space-between';
+      head.style.gap = '8px';
+
+      const label = document.createElement('div');
+      label.style.flex = '1 1 auto';
+      label.style.minWidth = '0';
+      label.style.fontSize = '12px';
+      label.style.overflow = 'hidden';
+      label.style.textOverflow = 'ellipsis';
+      label.style.whiteSpace = 'nowrap';
+      label.title = (task.title || task.task_id || '') + ' / ' + (task.assignee || '担当者未設定') + ' / ' + (task.status || '');
+      label.textContent = task.title || task.task_id || '(名称なし)';
+      const meta = document.createElement('span');
+      meta.style.color = 'var(--text-muted, #888)';
+      meta.style.fontSize = '11px';
+      meta.style.marginLeft = '6px';
+      meta.textContent = [task.assignee || '担当者なし', task.status || ''].filter(Boolean).join('・');
+      label.appendChild(meta);
+      head.appendChild(label);
+
+      const track = document.createElement('div');
+      track.className = 'gb-production-day-track';
+      track.style.position = 'relative';
+      track.style.height = '18px';
+      track.style.marginTop = '2px';
+      track.style.background = 'var(--bg-subtle, rgba(128,128,128,0.08))';
+      track.style.borderRadius = '3px';
+
+      (task.scheduled_slots || []).forEach(slot => {
+        const geo = this._intervalGeometry(win, slot.start, slot.end);
+        if (!geo) return;
+        const bar = document.createElement('div');
+        bar.className = 'gb-production-day-slot';
+        bar.dataset.e2eId = 'gb-production-day-slot';
+        bar.style.position = 'absolute';
+        bar.style.left = geo.left + '%';
+        bar.style.width = geo.width + '%';
+        bar.style.top = '1px';
+        bar.style.height = '16px';
+        bar.style.border = '1px solid var(--accent, #0066cc)';
+        bar.style.borderRadius = '3px';
+        bar.style.background = 'transparent';
+        bar.title = '割当（予定枠）: ' + (slot.start || '') + ' 〜 ' + (slot.end || '');
+        track.appendChild(bar);
+      });
+
+      (task.day_sessions || []).forEach(sess => {
+        const geo = this._intervalGeometry(win, sess.started_at, sess.ended_at);
+        if (!geo) return;
+        const bar = document.createElement('div');
+        bar.className = 'gb-production-day-session';
+        bar.dataset.e2eId = 'gb-production-day-session';
+        bar.style.position = 'absolute';
+        bar.style.left = geo.left + '%';
+        bar.style.width = geo.width + '%';
+        bar.style.top = '5px';
+        bar.style.height = '8px';
+        bar.style.borderRadius = '2px';
+        bar.style.background = 'var(--accent, #0066cc)';
+        const who = sess.participant_display_name || sess.participant_user_id || '';
+        if (geo.open) {
+          bar.style.opacity = '0.55';
+          bar.style.backgroundImage = 'repeating-linear-gradient(45deg, rgba(255,255,255,0.6) 0 3px, transparent 3px 6px)';
+          bar.title = '実績: ' + who + ' ' + (sess.started_at || '') + ' 〜（終了打刻なし・未確定）';
+        } else {
+          bar.title = '実績: ' + who + ' ' + (sess.started_at || '') + ' 〜 ' + (sess.ended_at || '');
+        }
+        track.appendChild(bar);
+      });
+
+      const value = document.createElement('div');
+      value.style.flex = '0 0 auto';
+      value.style.fontSize = '12px';
+      value.style.textAlign = 'right';
+      value.style.whiteSpace = 'nowrap';
+      value.textContent = '実績 ' + formatTime(task.actual_seconds);
+      if (task.quality_status && task.quality_status !== 'confirmed') {
+        const badge = document.createElement('span');
+        badge.className = 'gb-quality-badge quality-' + task.quality_status;
+        badge.style.marginLeft = '6px';
+        badge.style.fontSize = '11px';
+        badge.textContent = QUALITY_LABELS[task.quality_status] || task.quality_status;
+        if (task.quality_reason) badge.title = task.quality_reason;
+        value.appendChild(badge);
+      }
+      head.appendChild(value);
+      row.appendChild(head);
+      row.appendChild(track);
+
+      container.appendChild(row);
+    }
+
+    _appendDiffSection(container, snapshot, compareSnapshot) {
+      const section = document.createElement('div');
+      section.className = 'gb-production-day-diff';
+      section.dataset.e2eId = 'gb-production-day-diff';
+      section.style.marginTop = '14px';
+      section.style.borderTop = '1px solid var(--border, #ccc)';
+      section.style.paddingTop = '8px';
+      section.style.fontSize = '12px';
+
+      const title = document.createElement('strong');
+      title.textContent = compareSnapshot
+        ? '当日（' + compareSnapshot.target_date + '）との差分'
+        : '当日との差分';
+      section.appendChild(title);
+
+      const listEl = document.createElement('div');
+      listEl.style.marginTop = '4px';
+      listEl.style.display = 'flex';
+      listEl.style.flexDirection = 'column';
+      listEl.style.gap = '2px';
+
+      const addLine = text => {
+        const line = document.createElement('div');
+        line.style.color = 'var(--text-muted, #666)';
+        line.textContent = text;
+        listEl.appendChild(line);
+      };
+
+      if (!compareSnapshot) {
+        addLine('本日の記録がまだないため差分を出せません（「本日分を記録」で作成できます）。');
+      } else if (compareSnapshot.target_date === snapshot.target_date) {
+        addLine('これが最新の記録です。');
+      } else {
+        const byId = new Map();
+        (compareSnapshot.tasks || []).forEach(t => byId.set(String(t.task_id || ''), t));
+        let changes = 0;
+        (snapshot.tasks || []).forEach(past => {
+          const key = String(past.task_id || '');
+          const now = byId.get(key);
+          const name = past.title || past.task_id || '(名称なし)';
+          if (!now) {
+            addLine(name + ': 当日の記録にはありません');
+            changes += 1;
+            return;
+          }
+          byId.delete(key);
+          const parts = [];
+          [['予定', 'estimate_seconds'], ['割当', 'allocated_seconds'], ['実績', 'actual_seconds']].forEach(pair => {
+            const delta = (Number(now[pair[1]]) || 0) - (Number(past[pair[1]]) || 0);
+            if (delta !== 0) parts.push(pair[0] + ' ' + (delta > 0 ? '+' : '−') + formatTime(Math.abs(delta)));
+          });
+          if ((now.status || '') !== (past.status || '')) parts.push('状況 ' + (past.status || '-') + '→' + (now.status || '-'));
+          if ((now.deadline || '') !== (past.deadline || '')) parts.push('締切 ' + (past.deadline || '-') + '→' + (now.deadline || '-'));
+          if (parts.length) {
+            addLine(name + ': ' + parts.join(' / '));
+            changes += 1;
+          }
+        });
+        byId.forEach(now => {
+          addLine((now.title || now.task_id || '(名称なし)') + ': この日より後に追加されました');
+          changes += 1;
+        });
+        if (!changes) addLine('この日から変わった項目はありません。');
+      }
+
+      section.appendChild(listEl);
+      container.appendChild(section);
+    }
+
+    renderDayView(container, snapshot, options = {}) {
+      if (!container) return null;
+      container.replaceChildren();
+      const view = document.createElement('div');
+      view.className = 'gb-production-day-view';
+      view.dataset.e2eId = 'gb-production-day-view';
+      view.dataset.targetDate = String((snapshot && snapshot.target_date) || '');
+
+      const head = document.createElement('div');
+      head.style.display = 'flex';
+      head.style.alignItems = 'center';
+      head.style.gap = '8px';
+      head.style.marginBottom = '8px';
+      if (typeof options.onBack === 'function') {
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'gb-btn gb-btn-xs';
+        back.dataset.e2eId = 'gb-production-day-view-back';
+        back.textContent = '← 一覧へ戻る';
+        back.addEventListener('click', () => options.onBack());
+        head.appendChild(back);
+      }
+      const heading = document.createElement('strong');
+      heading.textContent = '制作日次記録（' + ((snapshot && snapshot.target_date) || '') + '）';
+      head.appendChild(heading);
+      const ro = document.createElement('span');
+      ro.className = 'gb-badge';
+      ro.style.fontSize = '11px';
+      ro.textContent = '読み取り専用';
+      head.appendChild(ro);
+      view.appendChild(head);
+
+      const tasks = Array.isArray(snapshot && snapshot.tasks) ? snapshot.tasks : [];
+      const sum = key => tasks.reduce((acc, t) => acc + (Number(t[key]) || 0), 0);
+      const totals = document.createElement('div');
+      totals.dataset.e2eId = 'gb-production-day-totals';
+      totals.style.fontSize = '12px';
+      totals.style.color = 'var(--text-muted, #666)';
+      totals.style.marginBottom = '6px';
+      totals.textContent = '予定作業時間 ' + formatTime(sum('estimate_seconds'))
+        + ' ／ 割当作業時間 ' + formatTime(sum('allocated_seconds'))
+        + ' ／ 実績作業時間 ' + formatTime(sum('actual_seconds'));
+      view.appendChild(totals);
+
+      if (!tasks.length) {
+        const empty = document.createElement('div');
+        empty.style.color = 'var(--text-muted, #888)';
+        empty.textContent = '記録されたタスクはありません。';
+        view.appendChild(empty);
+      } else {
+        const win = this._dayWindow(snapshot);
+        if (win) {
+          this._appendAxis(view, win);
+          tasks.forEach(task => this._appendTaskRow(view, win, task));
+          const legend = document.createElement('div');
+          legend.style.marginTop = '6px';
+          legend.style.fontSize = '11px';
+          legend.style.color = 'var(--text-muted, #888)';
+          legend.textContent = '枠線＝割当（カレンダーの予定枠）／塗り＝実績（勤務外・離席を除いた実作業）／斜線＝終了打刻なし';
+          view.appendChild(legend);
+        } else {
+          const broken = document.createElement('div');
+          broken.style.color = 'var(--text-muted, #888)';
+          broken.textContent = '日付を読み取れないため時間帯を表示できません。';
+          view.appendChild(broken);
+        }
+      }
+
+      this._appendDiffSection(view, snapshot, options.compareSnapshot || null);
+      container.appendChild(view);
+      return view;
     }
 
     static open(options = {}) {
@@ -3938,10 +4491,48 @@
       panel.renderSnapshotList(listContainer, options);
       return modal;
     }
+
+    static async ensureCurrentBusinessDaySnapshot(options = {}) {
+      if (typeof apiFetch !== 'function' || typeof apiPost !== 'function') return { ok: false, skipped: true };
+      const status = await apiFetch('/production-management/status');
+      if (!status?.ok || !status.ready) return { ok: false, skipped: true, reason: 'production-not-ready' };
+      const workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+      const workspaceId = String(
+        options.workspaceId || workspaceState.workspaceId || workspaceState.workspace_id || 'default',
+      ).trim() || 'default';
+      const targetDate = currentBusinessDate(options.dayCutoff || '04:00');
+      const existing = await apiFetch(
+        `/production-management/daily-snapshots?workspace_id=${encodeURIComponent(workspaceId)}&target_date=${encodeURIComponent(targetDate)}`,
+      );
+      if (!existing?.ok) return existing || { ok: false };
+      if (existing.snapshot) return { ok: true, snapshot: existing.snapshot, replayed: true };
+      return apiPost('/production-management/daily-snapshots', {
+        workspace_id: workspaceId,
+        target_date: targetDate,
+        day_cutoff: options.dayCutoff || '04:00',
+        only_if_missing: true,
+      });
+    }
   }
 
   if (typeof window !== 'undefined') {
     window.MeldexProductionDailySnapshotPanel = MeldexProductionDailySnapshotPanel;
+    const ensureDaily = () => MeldexProductionDailySnapshotPanel.ensureCurrentBusinessDaySnapshot()
+      .catch(error => console.warn('[production-daily-snapshot] automatic snapshot failed:', error));
+    const bootDaily = () => {
+      window.setTimeout(ensureDaily, 3000);
+      if (!window.__meldexProductionDailySnapshotTimer) {
+        window.__meldexProductionDailySnapshotTimer = window.setInterval(ensureDaily, 15 * 60 * 1000);
+      }
+    };
+    if (typeof document !== 'undefined'
+        && typeof window.setTimeout === 'function'
+        && typeof window.setInterval === 'function'
+        && !(typeof module !== 'undefined' && module.exports)) {
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bootDaily, { once: true });
+      else bootDaily();
+      document.addEventListener('meldex:production-management-started', ensureDaily);
+    }
   }
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = MeldexProductionDailySnapshotPanel;
@@ -5066,7 +5657,19 @@
     }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
-    buildField('作業時間_実績', '実績作業時間', 'number');
+    form.appendChild(readOnlyField(
+      '実績作業時間',
+      formatScheduleHoursDisplay(prop(row, '作業時間_実績') || prop(row, '実績作業時間')),
+      { e2eId: 'gb-production-task-detail-actual-hours' },
+    ));
+    buildField(
+      '作業参加者',
+      '応援参加者',
+      'text',
+      null,
+      undefined,
+      '作業中のタスクへ途中参加するメンバーを、カンマ区切りで指定します',
+    );
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');
@@ -6118,28 +6721,42 @@
       return { resolved, reference, desired, desiredRevision: await manifestRevision(desired) };
     }
 
+    // 実Dropbox完全復元のゴミ箱退避方式(2026-08-20計画・判断1〜3承認済み)による2モード受け入れ。
+    // strict-cas: 既存の厳密なrev条件付きCASのみで完遂できる保存先(OPFS/デスクトップ)。
+    // trash-evacuation: 物理削除を全廃し、削除に相当する操作をゴミ箱への原子的no-replace移動へ
+    // 置き換えられる保存先(Dropbox)。deleteFileCas/deleteEmptyDirectoryCas はDropboxで
+    // false のまま変えない(厳密条件付き削除が無い事実は変わらない)。
+    function _hasStrictCasCapabilities(capabilities, storageProvider) {
+      return !!(capabilities.createFileCas && capabilities.updateFileCas && capabilities.createDirectoryCas && capabilities.freshRead
+        && capabilities.deleteFileCas && capabilities.deleteEmptyDirectoryCas
+        && storageProvider.supportsStrictConditionalDelete?.() !== false
+        && typeof storageProvider.uploadBytesConditional === 'function' && typeof storageProvider.deletePathConditional === 'function'
+        && typeof storageProvider.deleteEmptyDirectoryConditional === 'function' && typeof storageProvider.ensureDirectoryConditional === 'function'
+        && typeof storageProvider.rollbackDirectoryConditional === 'function' && typeof storageProvider.rollbackFileConditional === 'function');
+    }
+    function _hasTrashEvacuationCapabilities(capabilities, storageProvider) {
+      return !!(capabilities.createFileCas && capabilities.updateFileCas && capabilities.freshRead
+        && capabilities.deleteFileToTrash && capabilities.deleteDirectoryToTrash
+        && typeof storageProvider.uploadBytesConditional === 'function' && typeof storageProvider.evacuatePathToTrash === 'function'
+        && typeof storageProvider.ensureDirectory === 'function' && typeof storageProvider.movePathNoReplace === 'function'
+        && typeof storageProvider.statPath === 'function' && typeof storageProvider.listEntries === 'function');
+    }
+
     async function preflight(domain, version, targets, target, expectedRevision) {
       await assertBound();
       const capabilities = provider.folderRestoreCapabilities?.() || {};
-      if (!capabilities.createFileCas || !capabilities.updateFileCas || !capabilities.createDirectoryCas || !capabilities.freshRead
-        || !capabilities.deleteFileCas || !capabilities.deleteEmptyDirectoryCas) {
+      const strictCas = _hasStrictCasCapabilities(capabilities, provider);
+      const trashEvacuation = !strictCas && _hasTrashEvacuationCapabilities(capabilities, provider);
+      if (!strictCas && !trashEvacuation) {
         fail('この保存先では必要なatomic条件付き操作をすべて利用できません', 503, 'strict_cas_unavailable');
       }
-      if (typeof provider.uploadBytesConditional !== 'function' || typeof provider.deletePathConditional !== 'function') {
-        fail('この保存先は厳密なフォルダー復元に対応していません', 503, 'strict_cas_unavailable');
-      }
-      if (provider.supportsStrictConditionalDelete?.() === false) {
-        fail('Dropboxではatomic条件付き削除を利用できないため、この復元は手動確認が必要です', 503, 'strict_cas_unavailable');
-      }
-      if (typeof provider.deleteEmptyDirectoryConditional !== 'function' || typeof provider.ensureDirectoryConditional !== 'function'
-        || typeof provider.rollbackDirectoryConditional !== 'function' || typeof provider.rollbackFileConditional !== 'function') {
-        fail('この保存先は空フォルダーの厳密な削除に対応していません', 503, 'strict_cas_unavailable');
-      }
+      const mode = strictCas ? 'strict-cas' : 'trash-evacuation';
       const context = await resolveReference(domain, version, targets, target);
       const current = await captureManifest(context.resolved.path);
       const currentRevision = await manifestRevision(current);
       const adapter = await journalAdapter();
       const existing = await adapter.load(journalKind(), journalId(context));
+      const existingMode = existing?.payload?.mode || 'strict-cas';
       const resumable = existing && (['applying', 'rolling-back', 'committing'].includes(existing.payload?.stage)
         || (existing.payload?.stage === 'failed' && !existing.payload?.rolledBack))
         && existing.payload?.versionId === context.reference.versionId
@@ -6150,10 +6767,13 @@
         && existing.payload?.workspaceId === workspaceId
         && existing.payload?.actor === actor && existing.payload?.role === role
         && existing.payload?.policyIdentity === policyIdentity;
+      if (resumable && existingMode !== mode) {
+        fail('復元中に保存先の実行モードが変わったため再開できません');
+      }
       if (!resumable && currentRevision !== expectedRevision && currentRevision !== context.desiredRevision) {
         fail('復元対象の確認後に現在の状態が変わりました');
       }
-      return { ...context, current, currentRevision };
+      return { ...context, current, currentRevision, mode };
     }
 
     const journalId = context => `scheduler-folder-restore-${fnv(`${context.reference.versionId}|${context.resolved.target}|${identity}`)}`;
@@ -6165,7 +6785,8 @@
       const now = Date.now();
       if (record && (record.payload?.versionId !== context.reference.versionId || record.payload?.target !== context.resolved.target
         || record.payload?.providerRootIdentity !== identity || record.payload?.workspaceId !== workspaceId
-        || record.payload?.actor !== actor || record.payload?.role !== role || record.payload?.policyIdentity !== policyIdentity)) {
+        || record.payload?.actor !== actor || record.payload?.role !== role || record.payload?.policyIdentity !== policyIdentity
+        || (record.payload?.mode || 'strict-cas') !== context.mode)) {
         fail('フォルダー復元journalの境界が一致しません');
       }
       if (record?.payload?.stage === 'complete') return { adapter, kind, id, record, complete: true };
@@ -6177,16 +6798,20 @@
         || (record.payload?.stage === 'failed' && record.payload?.rollbackError && !record.payload?.rolledBack));
       const resumeCommit = record?.payload?.stage === 'committing';
       const payload = record ? { ...record.payload, stage: resumeRollback ? 'rolling-back' : (resumeCommit ? 'committing' : 'applying'), error: '', rollbackError: '', rolledBack: false,
+        mode: record.payload.mode || context.mode,
         beforeVersionId: restart ? '' : record.payload.beforeVersionId,
         previewManifest: restart ? clone(context.current) : (record.payload.previewManifest || clone(context.current)),
         completedEntries: restart ? [] : (record.payload.completedEntries || []),
         applied: restart ? {} : (record.payload.applied || {}), intents: restart ? {} : (record.payload.intents || {}),
-        rollbackCompleted: restart ? [] : (record.payload.rollbackCompleted || []), fencingToken, leaseOwner: executorId } : {
-        schemaVersion: 1, object_type: 'scheduler-folder-restore-journal', stage: 'preparing',
+        rollbackCompleted: restart ? [] : (record.payload.rollbackCompleted || []),
+        evacuations: restart ? [] : (record.payload.evacuations || []),
+        manualRestore: restart ? [] : (record.payload.manualRestore || []),
+        fencingToken, leaseOwner: executorId } : {
+        schemaVersion: 1, object_type: 'scheduler-folder-restore-journal', stage: 'preparing', mode: context.mode,
         versionId: context.reference.versionId, target: context.resolved.target, path: context.resolved.path,
         domain: context.resolved.domain, providerRootIdentity: identity, workspaceId, actor, role, policyIdentity,
         expectedRevision, desiredRevision: context.desiredRevision, beforeVersionId: '', previewManifest: clone(context.current),
-        completedEntries: [], applied: {}, intents: {}, rollbackCompleted: [],
+        completedEntries: [], applied: {}, intents: {}, rollbackCompleted: [], evacuations: [], manualRestore: [],
         fencingToken: 1, leaseOwner: executorId, createdAt: new Date().toISOString(), error: '',
       };
       payload.leaseExpiresAt = new Date(now + leaseMs).toISOString();
@@ -6257,18 +6882,21 @@
         await journal.checkpoint({ beforeVersionId: String(saved.version || ''), stage: 'applying' });
         payload = journal.record.payload;
       }
+      const mode = payload.mode || 'strict-cas';
       const completed = new Set(payload.completedEntries || []);
       const applied = { ...(payload.applied || {}) };
       const intents = { ...(payload.intents || {}) };
+      const evacuations = Array.isArray(payload.evacuations) ? [...payload.evacuations] : [];
       const desiredFiles = new Map(context.desired.filter(item => item.entry_type === 'file').map(item => [item.rel_path, item]));
       const desiredDirs = new Set(context.desired.filter(item => item.entry_type === 'directory').map(item => item.rel_path));
       const preview = Array.isArray(payload.previewManifest) ? payload.previewManifest : [];
       const previewFiles = new Map(preview.filter(item => entryType(item) === 'file').map(item => [item.rel_path, item]));
       const previewDirs = new Set(preview.filter(item => entryType(item) === 'directory').map(item => item.rel_path));
 
-      const saveProgress = async (key, change) => {
+      const saveProgress = async (key, change, evacuationRecord) => {
         completed.add(key); applied[key] = change;
-        await journal.checkpoint({ completedEntries: [...completed].sort(), applied: clone(applied), intents: clone(intents) });
+        if (evacuationRecord) evacuations.push(evacuationRecord);
+        await journal.checkpoint({ completedEntries: [...completed].sort(), applied: clone(applied), intents: clone(intents), evacuations: clone(evacuations) });
         await window.__MeldexSchedulerFolderRestoreCrashHook?.('checkpoint', { key, target: context.resolved.target });
       };
       const saveIntent = async (key, intent) => {
@@ -6348,18 +6976,97 @@
         await saveProgress(key, { kind: 'rmdir', changed: true });
       };
 
-      // Remove snapshot-extraneous entries and old entry types first. This
-      // makes file<->directory transitions deterministic and rollbackable.
-      for (const extra of preview.filter(item => entryType(item) === 'file'
-        && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)))) await deletePreviewFile(extra);
-      for (const relPath of [...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path))
-        .sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))) {
-        await deletePreviewDirectory(relPath);
+      // ゴミ箱退避モード用: 個々のファイルを条件付き削除する代わりに、対象1件を
+      // まるごとゴミ箱へ原子的no-replace移動する(物理削除は一切行わない)。
+      // ディレクトリはmovePathNoReplaceが中身ごと移動するため、事前に空にする必要がない
+      // (競合窓で追加されたファイルも中身ごと保全される)。
+      const evacuateEntry = async (key, fullPath, relPath, reasonWhenEvacuated) => {
+        if (completed.has(key)) return;
+        if (!intents[key]) await saveIntent(key, { kind: 'evacuate', expectedRevision: '' });
+        await journal.checkpoint({});
+        const outcome = await provider.evacuatePathToTrash(fullPath, intents[key].expectedRevision || null, { name: key });
+        await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
+        const evacuationRecord = outcome?.evacuated ? {
+          rel_path: relPath, original_path: fullPath, trash_path: outcome.trashPath, kind: outcome.kind || 'file',
+          reason: typeof reasonWhenEvacuated === 'function' ? reasonWhenEvacuated(outcome) : reasonWhenEvacuated,
+          observed_revision: outcome.beforeRevision || '', content_stable: outcome.contentStable !== false,
+        } : null;
+        await saveProgress(key, { kind: 'evacuate', trashPath: outcome?.trashPath || '', evacuated: !!outcome?.evacuated, changed: true }, evacuationRecord);
+      };
+
+      const evacuatePreviewFile = async extra => {
+        const key = `delete:${extra.rel_path}`;
+        const fullPath = join(context.resolved.path, extra.rel_path);
+        if (!completed.has(key) && !intents[key]) await saveIntent(key, { kind: 'evacuate', expectedRevision: extra.revision || '' });
+        await evacuateEntry(key, fullPath, extra.rel_path,
+          outcome => (outcome.matchedExpected === false ? 'conflict-changed' : 'obsolete'));
+      };
+
+      // preview時点で既知の不要ディレクトリのうち、他の不要ディレクトリの子孫ではない
+      // 最上位のものだけをまるごと退避する(子孫は親と一緒に移動されるため個別処理不要)。
+      const obsoleteDirPaths = new Set([...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path)));
+      const isUnderObsoleteDir = relPath => [...obsoleteDirPaths].some(dir => relPath.startsWith(dir + '/'));
+      const outermostObsoleteDirs = [...obsoleteDirPaths].filter(dir => !isUnderObsoleteDir(dir));
+
+      if (mode === 'trash-evacuation') {
+        for (const relPath of outermostObsoleteDirs.sort()) {
+          await evacuateEntry(`rmdir:${relPath}`, join(context.resolved.path, relPath), relPath, 'obsolete');
+        }
+        for (const extra of preview.filter(item => entryType(item) === 'file'
+          && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)) && !isUnderObsoleteDir(item.rel_path))) {
+          await evacuatePreviewFile(extra);
+        }
+        // preview確認後に出現した未知のファイル・ディレクトリを検知して退避する
+        // (復元完遂後の内容が必ずsnapshotと一致するようにするため)。再スキャンは
+        // 冪等(既に退避済みの項目は現在の一覧から消えているため再検出されない)。
+        const unexpected = [];
+        async function scanLive(currentPath, relative) {
+          provider._forgetListCache?.(currentPath);
+          let entries;
+          try {
+            entries = await provider.listEntries(currentPath);
+          } catch (error) {
+            if (/not_found/i.test(error?.message || '')) return;
+            throw error;
+          }
+          for (const entry of entries || []) {
+            const relPath = join(relative, entry.name);
+            const fullPath = join(currentPath, entry.name);
+            if (entry.kind === 'directory') {
+              if (desiredDirs.has(relPath) || previewDirs.has(relPath)) { await scanLive(fullPath, relPath); continue; }
+              unexpected.push({ rel_path: relPath, full_path: fullPath });
+            } else if (!desiredFiles.has(relPath) && !previewFiles.has(relPath)) {
+              unexpected.push({ rel_path: relPath, full_path: fullPath });
+            }
+          }
+        }
+        await scanLive(context.resolved.path, '');
+        for (const extra of unexpected) await evacuateEntry(`evac-new:${extra.rel_path}`, extra.full_path, extra.rel_path, 'conflict-new');
+      } else {
+        // Remove snapshot-extraneous entries and old entry types first. This
+        // makes file<->directory transitions deterministic and rollbackable.
+        for (const extra of preview.filter(item => entryType(item) === 'file'
+          && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)))) await deletePreviewFile(extra);
+        for (const relPath of [...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path))
+          .sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))) {
+          await deletePreviewDirectory(relPath);
+        }
       }
 
       for (const relPath of [...desiredDirs].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))) {
         const key = `mkdir:${relPath}`;
         const fullPath = join(context.resolved.path, relPath);
+        if (mode === 'trash-evacuation') {
+          if (completed.has(key)) continue;
+          if (!intents[key]) await saveIntent(key, { kind: 'mkdir', beforeExists: previewDirs.has(relPath) });
+          const stat = await provider.statPath(fullPath).catch(() => null);
+          if (stat && stat.kind !== 'directory') await evacuateEntry(`evac-new:${relPath}`, fullPath, relPath, 'conflict-new');
+          await journal.checkpoint({});
+          await provider.ensureDirectory(fullPath);
+          await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
+          await saveProgress(key, { kind: 'mkdir', created: !previewDirs.has(relPath), changed: !previewDirs.has(relPath) });
+          continue;
+        }
         const stat = await provider.statPath(fullPath).catch(() => null);
         if (stat && stat.kind !== 'directory') fail('復元先の種類がVersionと異なります');
         if (completed.has(key)) {
@@ -6400,15 +7107,38 @@
           continue;
         }
         if (completed.has(key)) fail('checkpoint後に復元済みファイルが変更されました');
-        if ((before && (!current || current.revision !== before.revision || currentBase64 !== before.content_base64))
-          || (!before && current)) fail('確認後に復元先ファイルが変更されました');
-        if (!intents[key]) await saveIntent(key, ownershipIntent('write', key, fullPath, { beforeRevision: before?.revision || null,
-          beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64 }));
+        const mismatched = (before && (!current || current.revision !== before.revision || currentBase64 !== before.content_base64))
+          || (!before && current);
+        let evacuationRecord = null;
+        let expectedRevisionForWrite = before?.revision || null;
+        if (mismatched && mode === 'trash-evacuation') {
+          // 競合検知(§6): 確認後に書き換えられた/占有された現在の内容をゴミ箱へ退避してから
+          // 目的内容を書き直す(退避は完了報告へ記録。再試行は1回のみ=このループを再実行しない)。
+          if (!intents[key]) await saveIntent(key, { kind: 'write', beforeRevision: before?.revision || null,
+            beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64, conflictEvacuated: false });
+          if (!intents[key].conflictEvacuated && current) {
+            await journal.checkpoint({});
+            const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key });
+            if (outcome?.evacuated) {
+              evacuationRecord = { rel_path: relPath, original_path: fullPath, trash_path: outcome.trashPath, kind: 'file',
+                reason: 'conflict-changed', observed_revision: outcome.beforeRevision || '' };
+            }
+          }
+          intents[key] = { ...intents[key], conflictEvacuated: true };
+          await journal.checkpoint({ intents: clone(intents) });
+          expectedRevisionForWrite = null;
+        } else if (mismatched) {
+          fail('確認後に復元先ファイルが変更されました');
+        } else if (!intents[key]) {
+          await saveIntent(key, ownershipIntent('write', key, fullPath, { beforeRevision: before?.revision || null,
+            beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64 }));
+        }
         await journal.checkpoint({});
-        const result = await provider.uploadBytesConditional(fullPath, base64ToBytes(desired.content_base64), before?.revision || null,
-          { name: intents[key].markerName, bytes: markerBytes(intents[key].markerToken) });
+        const result = await provider.uploadBytesConditional(fullPath, base64ToBytes(desired.content_base64), expectedRevisionForWrite,
+          { name: intents[key].markerName || key, bytes: intents[key].markerToken ? markerBytes(intents[key].markerToken) : undefined });
         await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
-        await saveProgress(key, { kind: 'write', afterRevision: String(result?.revision || result?.rev || result?.etag || ''), afterHash: desired.content_base64, changed: true });
+        await saveProgress(key, { kind: 'write', afterRevision: String(result?.revision || result?.rev || result?.etag || ''),
+          afterHash: desired.content_base64, changed: true }, evacuationRecord);
       }
 
       const finalManifest = await captureManifest(context.resolved.path);
@@ -6416,12 +7146,11 @@
       await journal.checkpoint({ stage: 'committing' });
       for (const intent of Object.values(intents)) await cleanupMarker(intent);
       await journal.finish({ stage: 'complete', completedAt: new Date().toISOString() });
-      return { restored: desiredFiles.size, restoredDirectories: desiredDirs.size };
+      return { restored: desiredFiles.size, restoredDirectories: desiredDirs.size, mode, evacuations: clone(evacuations) };
     }
 
-    async function rollbackApplied(context, journal) {
+    async function rollbackStrictCas(context, journal) {
       const payload = journal.record.payload;
-      if (!payload.beforeVersionId) return;
       const beforeMeta = await versionApi.read(provider, context.resolved.path, payload.beforeVersionId);
       const before = validateManifest(beforeMeta, context.resolved.path);
       const intents = Object.entries(payload.intents || {}).reverse();
@@ -6458,6 +7187,75 @@
       const rolledBack = await captureManifest(context.resolved.path);
       if (await manifestRevision(rolledBack) !== await manifestRevision(before)) fail('復元失敗後の巻き戻しを完了できません', 500);
       await journal.checkpoint({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
+    }
+
+    // ゴミ箱退避モードのrollbackは、strict-casのようなbit単位の完全一致を保証しない
+    // (§6: 競合そのものは防げないため)。退避済みエントリはゴミ箱からの移動戻しを試み、
+    // 移動先が再占有されて戻せない場合は物理削除・上書きをせず「手動で戻す必要がある」
+    // 項目として journal.manualRestore / 完了報告へ列挙する(消失させない、を最優先する)。
+    async function rollbackEvacuationMode(context, journal) {
+      const payload = journal.record.payload;
+      const intents = Object.entries(payload.intents || {}).reverse();
+      const applied = payload.applied || {};
+      const rollbackCompleted = new Set(payload.rollbackCompleted || []);
+      const manualRestore = Array.isArray(payload.manualRestore) ? [...payload.manualRestore] : [];
+      await journal.checkpoint({ stage: 'rolling-back' });
+      const rollbackCheckpoint = async key => {
+        rollbackCompleted.add(key);
+        await journal.checkpoint({ rollbackCompleted: [...rollbackCompleted].sort(), manualRestore: clone(manualRestore) });
+      };
+      for (const [key, intent] of intents) {
+        if (rollbackCompleted.has(key)) continue;
+        const relPath = key.slice(key.indexOf(':') + 1);
+        const fullPath = join(context.resolved.path, relPath);
+        if (intent.kind === 'evacuate') {
+          const trashPath = applied[key]?.trashPath || '';
+          if (trashPath) {
+            const stillThere = await provider.statPath(trashPath).catch(() => null);
+            if (stillThere) {
+              try {
+                await provider.movePathNoReplace(trashPath, fullPath);
+              } catch {
+                manualRestore.push({ rel_path: relPath, trash_path: trashPath, reason: 'restore-destination-occupied' });
+              }
+            }
+          }
+        } else if (intent.kind === 'write') {
+          const currentStat = await provider.statPath(fullPath).catch(() => null);
+          if (intent.beforeBase64 == null) {
+            if (currentStat) {
+              const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key }).catch(() => null);
+              if (!outcome?.evacuated) manualRestore.push({ rel_path: relPath, reason: 'write-rollback-failed' });
+            }
+          } else if (currentStat) {
+            try {
+              await provider.uploadBytesConditional(fullPath, base64ToBytes(intent.beforeBase64), currentStat.meta?.rev || null);
+            } catch {
+              manualRestore.push({ rel_path: relPath, reason: 'write-rollback-conflict' });
+            }
+          } else {
+            manualRestore.push({ rel_path: relPath, reason: 'write-rollback-missing' });
+          }
+        } else if (intent.kind === 'mkdir') {
+          if (!intent.beforeExists) {
+            const stat = await provider.statPath(fullPath).catch(() => null);
+            if (stat) {
+              const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key }).catch(() => null);
+              if (!outcome?.evacuated) manualRestore.push({ rel_path: relPath, reason: 'mkdir-rollback-failed' });
+            }
+          }
+        }
+        await window.__MeldexSchedulerFolderRestoreCrashHook?.('rollback-mutated', { key, target: context.resolved.target });
+        await rollbackCheckpoint(key);
+      }
+      await journal.checkpoint({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString(), manualRestore: clone(manualRestore) });
+    }
+
+    async function rollbackApplied(context, journal) {
+      const payload = journal.record.payload;
+      if (!payload.beforeVersionId) return;
+      if ((payload.mode || 'strict-cas') === 'trash-evacuation') return rollbackEvacuationMode(context, journal);
+      return rollbackStrictCas(context, journal);
     }
 
     return Object.freeze({
@@ -6502,39 +7300,59 @@
       async derivedRevision() { return ''; },
       async restoreTarget(domain, version, targets, target, expectedRevision, options = {}) {
         let context = await preflight(domain, version, targets, target, expectedRevision);
-        if (options.preflightOnly) return { restored: 0, preflight: true };
+        if (options.preflightOnly) return { restored: 0, preflight: true, mode: context.mode };
         if (options.verifyOnly) {
           if (context.currentRevision !== context.desiredRevision) fail('checkpoint後に復元済みフォルダーが変更されました');
-          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true, verified: true };
+          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true, verified: true, mode: context.mode };
         }
-        let journal = await acquireJournal(context, expectedRevision);
-        if (journal.complete) {
-          if (context.currentRevision !== context.desiredRevision) fail('完了済み復元の内容が変更されました');
-          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true };
+        // 判断2(2026-08-20計画・承認済み): trash-evacuationモードでは開始前に対象フォルダーの
+        // 共有編集ロックを取得し、他メンバーのMeldexクライアント経由の書き込みを復元中は拒否させる。
+        // holderはjournalIdに固定するため、別セッションから再開しても自分のロックとして扱える。
+        // strict-cas(OPFS/デスクトップ)は対象外(既存挙動を変えない)。
+        const lockHolder = journalId(context);
+        const lockStore = window.MeldexFileLockStore;
+        const needsLock = context.mode === 'trash-evacuation' && typeof lockStore?.acquireSystemLock === 'function';
+        if (needsLock) {
+          await lockStore.acquireSystemLock(provider, context.resolved.path, {
+            holder: lockHolder, reason: 'スケジューラーフォルダー復元(ゴミ箱退避方式)実行中のため一時的に編集ロックしています',
+          });
         }
         try {
-          if (journal.record.payload?.stage === 'rolling-back') {
-            await rollbackApplied(context, journal);
-            await journal.finish({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
-            await journal.close();
-            context = await preflight(domain, version, targets, target, expectedRevision);
-            journal = await acquireJournal(context, expectedRevision);
+          let journal = await acquireJournal(context, expectedRevision);
+          if (journal.complete) {
+            if (context.currentRevision !== context.desiredRevision) fail('完了済み復元の内容が変更されました');
+            return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true,
+              mode: context.mode, evacuations: journal.record.payload?.evacuations || [] };
           }
-          return await applyExact(context, journal);
-        } catch (error) {
-          if (error?.hardCrash) throw error;
-          if (journal.record.payload?.stage === 'committing') throw error;
           try {
-            await rollbackApplied(context, journal);
-            await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500), rolledBack: true });
-          } catch (rollbackError) {
-            try { await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500),
-              rollbackError: String(rollbackError?.message || rollbackError).slice(0, 500) }); } catch { /* original error wins */ }
-            error.rollbackError = rollbackError;
+            if (journal.record.payload?.stage === 'rolling-back') {
+              await rollbackApplied(context, journal);
+              await journal.finish({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
+              await journal.close();
+              context = await preflight(domain, version, targets, target, expectedRevision);
+              journal = await acquireJournal(context, expectedRevision);
+            }
+            const result = await applyExact(context, journal);
+            return { ...result, mode: context.mode };
+          } catch (error) {
+            if (error?.hardCrash) throw error;
+            if (journal.record.payload?.stage === 'committing') throw error;
+            try {
+              await rollbackApplied(context, journal);
+              await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500), rolledBack: true });
+            } catch (rollbackError) {
+              try { await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500),
+                rollbackError: String(rollbackError?.message || rollbackError).slice(0, 500) }); } catch { /* original error wins */ }
+              error.rollbackError = rollbackError;
+            }
+            throw error;
+          } finally {
+            await journal.close().catch(() => {});
           }
-          throw error;
         } finally {
-          await journal.close().catch(() => {});
+          if (needsLock) {
+            await lockStore.releaseSystemLock(provider, context.resolved.path, { holder: lockHolder }).catch(() => {});
+          }
         }
       },
     });
@@ -10862,7 +11680,7 @@
 
   const PANE_ID_PREFIX = 'gb-production-sheet-embed-';
   const TABLE_ID_PREFIX = 'pivot-table-';
-  const SUBVIEW_CLASSES = ['gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
+  const SUBVIEW_CLASSES = ['tree-view', 'gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
   const WRITE_GUARD_EVENTS = ['click', 'dblclick', 'contextmenu', 'dragstart', 'dragover', 'drop', 'beforeinput', 'input', 'change', 'keydown', 'paste', 'cut'];
   const WRITE_GUARD_HIDE_SELECTOR = [
     'tr.new-entity-row', '.row-add-btn', '.entity-row-more-btn', '.cell-add-btn',
@@ -12365,8 +13183,15 @@
     if (Array.isArray(data?.generic_classification_labels) && data.generic_classification_labels.length) {
       instance._genericLabels = data.generic_classification_labels;
     }
-    // フィルタドロップダウンの候補は取得済みの行から累積する（読み込み済みページの範囲でしか
-    // 分からないが、追加読み込み・再取得のたびに増えていくため実用上は十分機能する）。
+    // APIが全件走査から返すfacetを正本にする。これにより初回200件より後にしか現れない
+    // 状況・担当者も、追加読み込み前から絞り込み候補として選べる。
+    const responseStatuses = Array.isArray(data?.facets?.statuses) ? data.facets.statuses : null;
+    const responseAssignees = Array.isArray(data?.facets?.assignees) ? data.facets.assignees : null;
+    if (responseStatuses) instance._facets.statuses = new Set(responseStatuses.map(String).filter(Boolean));
+    else if (!append) instance._facets.statuses = new Set();
+    if (responseAssignees) instance._facets.assignees = new Set(responseAssignees.map(String).filter(Boolean));
+    else if (!append) instance._facets.assignees = new Set();
+    // 旧サーバーとの互換用に、応答行の値も合流する。
     rows.forEach(row => {
       const status = row?.properties?.['状況'];
       const assignee = row?.properties?.['担当者'];
@@ -14343,7 +15168,6 @@
     if (_portable()) return true;
     const runtime = global.MeldexRuntimeAdapter;
     if (!runtime) return typeof global.apiFetch === 'function';
-    if (runtime.isServerMode?.()) return !!runtime.getServerApiBaseUrl?.();
     return !runtime.isBrowserDataMode?.();
   }
 
@@ -14694,7 +15518,7 @@
       return;
     }
     try {
-      const res = await global.apiFetch('/api/knowledge/screenshot-migration/candidates', { silentError: true });
+      const res = await global.apiFetch('/knowledge/screenshot-migration/candidates', { silentError: true });
       const candidates = Array.isArray(res?.candidates) ? res.candidates : [];
       if (!candidates.length) {
         box.hidden = true;
@@ -14714,7 +15538,7 @@
           button.textContent = '移行中…';
           try {
             const paths = candidates.map(c => c.path).filter(Boolean);
-            const execRes = await global.apiFetch('/api/knowledge/screenshot-migration/execute', {
+            const execRes = await global.apiFetch('/knowledge/screenshot-migration/execute', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ paths }),

@@ -594,7 +594,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     note.classList.add('ann-note-selected');
   });
 
-  // ヘッダー（ユーザー名・日時・削除ボタン）
+  // ヘッダー（ユーザー名・日時・操作グループ）
   const header = document.createElement('div');
   header.className = 'ann-note-header';
   const dateStr = created ? created.substring(0, 16).replace('T', ' ') : '';
@@ -606,20 +606,10 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   userText.className = 'ann-user-name';
   userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
   headerLabel.appendChild(userText);
-  const deleteBtn = document.createElement('button');
-  deleteBtn.type = 'button';
-  deleteBtn.className = 'ann-note-delete-btn';
-  deleteBtn.dataset.annDelete = '1';
-  deleteBtn.dataset.e2eId = `annotation-note-${id}-delete`;
-  deleteBtn.setAttribute('aria-label', '注釈を削除');
-  deleteBtn.title = '削除';
-  deleteBtn.innerHTML = lucide('x', 12);
-  deleteBtn.addEventListener('click', (event) => {
-    event.stopPropagation();
-    deleteNote(id, note, { data, editor });
-  });
+  const actions = document.createElement('div');
+  actions.className = 'ann-note-actions';
   header.appendChild(headerLabel);
-  header.appendChild(deleteBtn);
+  header.appendChild(actions);
   note.appendChild(header);
 
   let editor;
@@ -691,7 +681,7 @@ function renderNote(id, shape, data, color, opacity, user, created) {
     persist();
   };
   header.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('[data-action],[data-ann-delete]')) return;
+    if (e.target.closest('[data-action],[data-ann-window-close],button,input')) return;
     e.preventDefault();
     e.stopPropagation();
     dragging = true;
@@ -945,7 +935,24 @@ function renderNote(id, shape, data, color, opacity, user, created) {
   moreBtn.title = 'メニュー';
   moreBtn.innerHTML = lucide('moreHorizontal', 16);
   moreBtn.addEventListener('click', (ev) => { ev.stopPropagation(); _showAnnotationNoteContextMenu(ev, note); });
-  note.appendChild(moreBtn);
+  actions.appendChild(moreBtn);
+  if (isTrayHostNote) {
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'ann-note-window-close-btn';
+    closeBtn.dataset.annWindowClose = '1';
+    closeBtn.dataset.e2eId = `annotation-note-${id}-close`;
+    closeBtn.setAttribute('aria-label', '付箋を閉じる');
+    closeBtn.title = '付箋を閉じる';
+    closeBtn.innerHTML = lucide('x', 14);
+    closeBtn.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelPendingSave();
+      _trayAnnotationBridgeCall('tray_annotation_hide_and_close');
+    });
+    actions.appendChild(closeBtn);
+  }
 
   mainArea.appendChild(note);
 }
@@ -1076,6 +1083,25 @@ async function loadAnnotations() {
   } catch(e) {}
 }
 
+function _isTrayAnnotationHostUiNode(node, host) {
+  if (!(node instanceof HTMLElement)) return true;
+  if (node === host || ['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)) return true;
+  return node.matches('._note-ctx-menu,.gb-context-menu,.gb-color-palette,.color-palette')
+    || !!node.querySelector('.gb-confirm,[data-e2e-id="cf-confirm-dialog"]');
+}
+
+function _isolateTrayAnnotationHostNode(node, host) {
+  if (_isTrayAnnotationHostUiNode(node, host)) {
+    if (node !== host && node instanceof HTMLElement && !['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)) {
+      node.style.setProperty('z-index', '2147483001', 'important');
+    }
+    return;
+  }
+  node.setAttribute('aria-hidden', 'true');
+  node.inert = true;
+  node.style.setProperty('display', 'none', 'important');
+}
+
 function _installTrayAnnotationHostStyles(host) {
   document.body.dataset.annotationTrayHost = '1';
   document.body.classList.add('ann-toolbar-active');
@@ -1083,10 +1109,14 @@ function _installTrayAnnotationHostStyles(host) {
   document.body.style.margin = '0';
   document.body.style.overflow = 'hidden';
   document.body.style.background = 'transparent';
-  [...document.body.children].forEach(child => {
-    if (child === host || ['SCRIPT', 'STYLE', 'LINK'].includes(child.tagName)) return;
-    child.style.setProperty('display', 'none', 'important');
+  [...document.body.children].forEach(child => _isolateTrayAnnotationHostNode(child, host));
+  const observer = new MutationObserver(mutations => {
+    mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+      if (node.parentElement === document.body) _isolateTrayAnnotationHostNode(node, host);
+    }));
   });
+  observer.observe(document.body, { childList: true });
+  _trayAnnotationHost.domObserver = observer;
   Object.assign(host.style, {
     position: 'fixed',
     inset: '0',
@@ -1127,5 +1157,6 @@ async function _initTrayAnnotationHost() {
   ann.active = true;
   await loadAnnotations();
   _trayAnnotationHost.pollTimer = setTimeout(_pollTrayAnnotationHost, 1000);
+  await _trayAnnotationBridgeCall('tray_annotation_ready');
   return true;
 }

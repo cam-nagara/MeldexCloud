@@ -75,6 +75,8 @@
       '目標作業時間_値': { type: 'number' },
       '目標作業時間': { type: 'text' },
       '作業時間_実績': { type: 'number' },
+      '実績作業時間': { type: 'number' },
+      '作業参加者': { type: 'text' },
       '再計算ロック': { type: 'checkbox' },
       '担当者固定': { type: 'checkbox' },
       'シフト固定': { type: 'checkbox' },

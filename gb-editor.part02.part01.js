@@ -89,8 +89,15 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
       clearTimeout(saveTimer);
       if (!hex) return;
       // ライブ変更のたびに保存せず、色が落ち着いてから1回だけ候補値を追加する
-      saveTimer = setTimeout(async () => {
+      const persistColor = async () => {
         if (saved) return;
+        if (!valuesEl.isConnected) return;
+        const drawer = valuesEl.closest?.('#cloud-mobile-side-drawer');
+        if (drawer && !drawer.classList.contains('open')) return;
+        if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(valuesEl)) {
+          saveTimer = setTimeout(persistColor, 120);
+          return;
+        }
         saved = true;
         try {
           await _apiPostValue(entityPath, propName, hex, '採用', '');
@@ -102,7 +109,8 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
             renderEntityPropsGridInto(grid, data, entityPath, opts);
           }
         } catch (e) { showStatus('候補値の追加に失敗しました', true); }
-      }, 300);
+      };
+      saveTimer = setTimeout(persistColor, 300);
     });
     return;
   }
@@ -188,10 +196,87 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
   input.focus();
 }
 
+// 1列分の値一覧を valuesEl へ描画する共通ヘルパー。
+// 列一覧のカードとエントリレイアウトの field セル（gb-db-entity-layout-cells.js）が共有し、
+// 値の見た目と編集挙動を1箇所に揃える。戻り値の isComputedProp は「候補値を追加できない
+// 計算列（rollup/formula）か」で、呼び出し元の＋ボタン表示判定に使う。
+function _applyEntityPropReadOnly(valuesEl) {
+  if (!valuesEl) return;
+  valuesEl.classList.add('entity-prop-values-readonly');
+  valuesEl.setAttribute('aria-readonly', 'true');
+  valuesEl.querySelectorAll('button').forEach(button => {
+    button.hidden = true;
+    button.disabled = true;
+  });
+  valuesEl.querySelectorAll('input, select, textarea').forEach(control => { control.disabled = true; });
+  valuesEl.querySelectorAll('[contenteditable="true"]').forEach(editor => editor.setAttribute('contenteditable', 'false'));
+  valuesEl.querySelectorAll('[draggable="true"]').forEach(item => { item.draggable = false; });
+  const blockMutation = (event) => {
+    if (event.target?.closest?.('a, .relation-link')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  // pointerdown は遮断しない。閲覧専用でも文字選択・コピー開始とタッチスクロールは必要で、
+  // 値の変更開始は click / dblclick / contextmenu / dragstart / mutation keys 側で止める。
+  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(type => {
+    valuesEl.addEventListener(type, blockMutation, true);
+  });
+  valuesEl.addEventListener('keydown', (event) => {
+    if (!['Enter', ' ', 'F2', 'Delete', 'Backspace'].includes(event.key)) return;
+    blockMutation(event);
+  }, true);
+}
+
+function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, options = {}) {
+  const values = filterValues(data.properties[propName] || []);
+  const ptc = propTypes[propName];
+  // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
+  // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
+  const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
+  const renderValues = isComputedProp
+    ? [values[0] || { value: '', status: '採用' }]
+    : (ptc?.type === 'image' && values.length === 0)
+      ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
+      : values;
+  renderValues.forEach(val => {
+    let valEl;
+    if (typeof createTypedValueElement === 'function' && ptc) {
+      valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
+        entityData: data.properties,
+        propTypes,
+        readOnly: options.readOnly === true,
+      });
+    } else if (typeof createValueElement === 'function') {
+      valEl = createValueElement(val, entityPath, propName, undefined, { readOnly: options.readOnly === true });
+    }
+    if (valEl) valuesEl.appendChild(valEl);
+    if (val.relations && val.relations.length > 0) {
+      const relDiv = document.createElement('div');
+      relDiv.className = 'relation-links';
+      relDiv.style.marginLeft = '12px';
+      val.relations.forEach(r => {
+        const link = document.createElement('span');
+        link.className = 'relation-link';
+        link.textContent = (r.entity || '') + (r.role ? ' (' + r.role + ')' : '');
+        link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity); });
+        relDiv.appendChild(link);
+      });
+      valuesEl.appendChild(relDiv);
+    }
+  });
+  if (options.readOnly === true) _applyEntityPropReadOnly(valuesEl);
+  return { isComputedProp };
+}
+
 // プロパティグリッドを指定 container に描画する共通関数 (entity-view と詳細パネルで共有)
 function renderEntityPropsGridInto(grid, data, entityPath, options) {
   if (!grid) return;
   const opts = options || {};
+  // Cloud/mobile の容量・ロック状態は表示中にも変化する。古い描画closureが false を
+  // 捕捉していても、grid の現在状態を優先して変更操作を再生成しない。
+  const readOnly = opts.readOnly === true || grid.__MeldexRuntimeReadOnly === true;
+  if (grid.__MeldexRuntimeReadOnly === true) grid.__MeldexRuntimeNeedsEditableRerender = true;
+  const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
   const allProps = Object.keys(data.properties || {});
@@ -202,21 +287,60 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     ? applyPropertyLayout(allProps, layout)
     : [{ title: '', props: layout.order || allProps }];
   const propNames = groupedProps.flatMap(group => group.props || []);
-  const layoutEditMode = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(parentDb);
+  const layoutEditMode = !readOnly && typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(parentDb);
   grid.innerHTML = '';
   // grid container にもクラスを付けて CSS が当たるように
   grid.classList.add('entity-props-grid-container');
 
   // 開閉状態・列幅は dbPath (エントリの親フォルダ) 単位で view_config に保存する。
   // フルページ/サブパネル/モバイルドロワーいずれもこの共通関数を経由するため自動的に反映される。
-  const viewState = typeof _entityPropsViewState === 'function'
+  const storedViewState = typeof _entityPropsViewState === 'function'
     ? _entityPropsViewState(parentDb, entityPath)
     : { collapsed: false, colWidth: 300 };
+  const viewState = readOnly && typeof grid.__entityPropsReadonlyCollapsed === 'boolean'
+    ? { ...storedViewState, collapsed: grid.__entityPropsReadonlyCollapsed }
+    : storedViewState;
   grid.style.setProperty('--entity-prop-col-width', viewState.colWidth + 'px');
+  // エントリレイアウト: 「列一覧 ⇄ エントリレイアウト」タブ行（シート配下のエントリのみ表示）。
+  // レイアウトタブが選ばれている間は、列一覧のヘッダー/本体の代わりに自由配置キャンバスを描画する。
+  let activeEntityLayoutTab = null;
+  let entityLayoutRerender = null;
+  let entityLayoutOptions = null;
+  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+    const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
+    const elOpts = { ...effectiveOptions, parentDb, propTypes };
+    const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
+    if (elTabBar) {
+      grid.appendChild(elTabBar.el);
+      activeEntityLayoutTab = elTabBar.activeTab;
+      entityLayoutRerender = elRerender;
+      entityLayoutOptions = elOpts;
+    }
+  }
+
   // ヘッダーの表示可否は「プロパティが1つも定義されていないか」で判定する (allProps基準)。
   // レイアウト編集で全プロパティを非表示にしただけの場合はヘッダー(と並び替えツールバーへの導線)を残す。
   if (typeof _buildEntityPropsHeader === 'function') {
-    grid.appendChild(_buildEntityPropsHeader(grid, data, entityPath, options, parentDb, allProps.length > 0, viewState));
+    const headerOptions = activeEntityLayoutTab && activeEntityLayoutTab !== GBEntityLayout.COLUMNS_TAB_ID
+      ? { ...effectiveOptions, showColumnWidth: false }
+      : effectiveOptions;
+    grid.appendChild(_buildEntityPropsHeader(grid, data, entityPath, headerOptions, parentDb, allProps.length > 0, viewState));
+  }
+
+  // 開閉状態は列一覧タブだけでなく、同じシートで共有するカスタムレイアウトにも適用する。
+  // タブ行と開閉ヘッダーは残し、どのレイアウトを表示していたかを保ったまま再表示できるようにする。
+  if (activeEntityLayoutTab && activeEntityLayoutTab !== GBEntityLayout.COLUMNS_TAB_ID) {
+    if (viewState.collapsed) return;
+    GBEntityLayout.renderLayoutBody(
+      grid,
+      data,
+      entityPath,
+      entityLayoutOptions,
+      parentDb,
+      activeEntityLayoutTab,
+      entityLayoutRerender,
+    );
+    return;
   }
 
   // プロパティ本体 (並び替えツールバー + グループ見出し + カード)。閉じている間は丸ごと隠す。
@@ -228,8 +352,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   body.style.display = viewState.collapsed ? 'none' : 'contents';
   grid.appendChild(body);
 
-  if (typeof renderPropertyLayoutToolbar === 'function') {
-    renderPropertyLayoutToolbar(grid, data, entityPath, options, body);
+  if (!readOnly && typeof renderPropertyLayoutToolbar === 'function') {
+    renderPropertyLayoutToolbar(grid, data, entityPath, effectiveOptions, body);
   }
   groupedProps.forEach(group => {
     if (group.title) {
@@ -265,8 +389,15 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       });
       nameEl.appendChild(dragHandle);
     }
-    // 各列名の前に列タイプのアイコンを表示する
-    if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
+    // 各列名の前にアイコンを表示する（列へユーザーが設定したアイコンを優先、無ければ列タイプのアイコン）
+    const userPropIcon = propTypes[propName]?.icon;
+    if (userPropIcon && typeof GBIconAssets !== 'undefined' && GBIconAssets?.render) {
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'entry-prop-type-icon';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.innerHTML = GBIconAssets.render(userPropIcon, 14);
+      nameEl.appendChild(typeIcon);
+    } else if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
       const typeIcon = document.createElement('span');
       typeIcon.className = 'entry-prop-type-icon';
       typeIcon.setAttribute('aria-hidden', 'true');
@@ -280,41 +411,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
-    const values = filterValues(data.properties[propName] || []);
-    const ptc = propTypes[propName];
-    // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
-    // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
-    const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
-    const renderValues = isComputedProp
-      ? [values[0] || { value: '', status: '採用' }]
-      : (ptc?.type === 'image' && values.length === 0)
-        ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
-        : values;
-    renderValues.forEach(val => {
-      let valEl;
-      if (typeof createTypedValueElement === 'function' && ptc) {
-        valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
-          entityData: data.properties,
-          propTypes,
-        });
-      } else if (typeof createValueElement === 'function') {
-        valEl = createValueElement(val, entityPath, propName);
-      }
-      if (valEl) valuesEl.appendChild(valEl);
-      if (val.relations && val.relations.length > 0) {
-        const relDiv = document.createElement('div');
-        relDiv.className = 'relation-links';
-        relDiv.style.marginLeft = '12px';
-        val.relations.forEach(r => {
-          const link = document.createElement('span');
-          link.className = 'relation-link';
-          link.textContent = (r.entity || '') + (r.role ? ' (' + r.role + ')' : '');
-          link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity); });
-          relDiv.appendChild(link);
-        });
-        valuesEl.appendChild(relDiv);
-      }
-    });
+    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly });
     if (layoutEditMode) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';
@@ -338,7 +435,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     // シート表側と見た目が食い違うため（シート表: gb-db-table.part02.js の _allowAdd）。
     const _hideAddButton = parentDb && typeof hidesCandidateStatusUi === 'function'
       && hidesCandidateStatusUi(parentDb);
-    if (!isComputedProp && !_hideAddButton) {
+    if (!readOnly && !isComputedProp && !_hideAddButton) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
@@ -349,7 +446,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       addBtn.setAttribute('aria-label', '候補値を追加');
       addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
+        _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, effectiveOptions);
       });
       // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
       const lastValueEl = !layoutEditMode
@@ -521,6 +618,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
           ? applyAutoLinks(mdToHtml(latestMd, { basePath: entityPath }), entityPath)
           : mdToHtml(latestMd))
       : '';
+    window.MeldexImageLoading?.trackAll?.(hostEl);
     hostEl.dataset.lastSavedMd = latestMd;
     hostEl.dataset.lastSavedRevision = (latest?.revision != null) ? String(latest.revision) : '';
     hostEl.dataset.lastSavedEtag = latest?.freetext_etag || '';
@@ -792,6 +890,7 @@ function renderEntityPage(data) {
   if (hasNote) {
     const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
     ft.innerHTML = ftHtml;
+    window.MeldexImageLoading?.trackAll?.(ft);
   } else {
     // ノート未作成時はエディタ自体を非表示にしているため innerHTML 不要
     ft.innerHTML = '';
@@ -833,6 +932,7 @@ function renderEntityPage(data) {
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
       this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);
+      window.MeldexImageLoading?.trackAll?.(this);
     } catch (e) { showStatus('自由記述の保存に失敗しました', true); }
   };
 

@@ -164,9 +164,13 @@ function _bdApplyWorldBackgroundImage(imageUrl, scale) {
   const imgEl = layer.querySelector('img');
   const displayUrl = _bdBackgroundDisplayUrl(imageUrl);
   if (imgEl && imgEl.src !== displayUrl) imgEl.src = displayUrl;
+  if (imgEl) window.MeldexImageLoading?.track?.(imgEl, { host: layer, errorMode: 'silent' });
   _bdResolveBackgroundDisplayUrl(imageUrl).then(url => {
     if (!layer.isConnected || layer.dataset.bdBgImageSource !== imageUrl || !imgEl || !url) return;
-    if (imgEl.src !== url) imgEl.src = url;
+    if (imgEl.src !== url) {
+      imgEl.src = url;
+      window.MeldexImageLoading?.track?.(imgEl, { host: layer, errorMode: 'silent' });
+    }
   });
   const s = _bdNormalizeBackgroundScale(scale);
   layer.style.transform = `scale(${s})`;

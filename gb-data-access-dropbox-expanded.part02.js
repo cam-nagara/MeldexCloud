@@ -326,10 +326,15 @@
     }
     await _requireUnlocked(provider, targetPath, { action: 'import-csv' });
 
-    _rejectProductionReservedLegacyProperties(
-      targetPath,
-      specs.columns.filter((_column, index) => index !== specs.itemColumn).map(column => column.name),
-    );
+    const importedPropertyNames = specs.columns
+      .filter((_column, index) => index !== specs.itemColumn)
+      .map(column => column.name);
+    _rejectProductionReservedLegacyProperties(targetPath, importedPropertyNames);
+    // インポート・機能生成ファイル保護計画 Phase 3 / 承認済みバックログ完了計画 Track A-1:
+    // 取得列（Xブックマーク・Web Clipper・エクスポート等の source 付き列）へのCSV上書きは
+    // Cloud側でも拒否する（Desktop の meldex_api_file_content.py と同じ契約）。
+    // 取込先が未作成なら取得列そのものが存在しないため素通りする。
+    await _rejectImportLockedPropertyEdit(provider, targetPath, importedPropertyNames);
     const legacyDateSpecs = explicit
       ? null
       : _sheetImportPropertySpecs(parsed.rows[0] || [], _sheetImportHeaders(parsed.rows[0] || []), parsed.rows.slice(1));
@@ -814,7 +819,7 @@
     const now = new Date();
     const windowStart = new Date(now.getTime() - lookback * 60000);
     const windowEnd = new Date(now.getTime() + minutes * 60000);
-    const rows = (await _readStore(provider, 'events')).filter(event => Number(event.alert_minutes) >= 0);
+    const rows = (await _calendarList(provider, 'events', url)).filter(event => Number(event.alert_minutes) >= 0);
     const alerts = [];
     rows.forEach((event) => {
       if (user && event.user && event.user !== user && event.creator !== user) return;
@@ -1356,21 +1361,29 @@
       return { enabled: true, configured: false, ical: true, google: false, microsoft: false, caldav: false };
     }
     if (pathname === '/cal/sync/ical/export' && method === 'GET') {
-      return { ok: true, mime: 'text/calendar;charset=utf-8', filename: 'meldex-calendar.ics', content: _icalExport(await _readStore(provider, 'events')) };
+      return { ok: true, mime: 'text/calendar;charset=utf-8', filename: 'meldex-calendar.ics', content: _icalExport(await _calendarList(provider, 'events', url)) };
     }
-    if (pathname === '/cal/sync/ical/import' && method === 'POST') return _importCalendarStoreIcs(provider, body || {});
+    if (pathname === '/cal/sync/ical/import' && method === 'POST') {
+      return _withCloudCalendarLease(provider, leasedProvider => _importCalendarStoreIcs(leasedProvider, body || {}));
+    }
     if (/^\/cal\/sync\//.test(pathname)) return { ok: false, unsupported: true, error: 'Cloud BETAでは外部カレンダー同期リレー未設定のため無効です' };
     if (pathname === '/cal/alerts' && method === 'GET') {
       return _calendarAlerts(provider, url);
+    }
+    if (pathname === '/cal/export/attendance-csv' && method === 'GET') {
+      return _cloudAttendanceCsv(provider, url);
     }
     const route = pathname.match(/^\/cal\/(calendars|events|tasks|time|shifts|schedule-templates)(?:\/([^/]+))?$/);
     if (!route) return NOT_HANDLED;
     const name = route[1] === 'schedule-templates' ? 'schedule-templates' : route[1];
     const id = route[2] ? decodeURIComponent(route[2]) : '';
+    const leaseToken = String(body?._calendar_lease_token || '').trim();
+    const routeBody = { ...(body || {}) };
+    delete routeBody._calendar_lease_token;
     if (method === 'GET' && !id) return _calendarList(provider, name, url);
-    if (method === 'POST' && !id) return _calendarCreate(provider, name, body || {});
-    if (method === 'PUT' && id) return _calendarUpdate(provider, name, id, body || {});
-    if (method === 'DELETE' && id) return _calendarDelete(provider, name, id);
+    if (method === 'POST' && !id) return _withCloudCalendarLease(provider, leasedProvider => _calendarCreate(leasedProvider, name, routeBody), leaseToken);
+    if (method === 'PUT' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarUpdate(leasedProvider, name, id, routeBody), leaseToken);
+    if (method === 'DELETE' && id) return _withCloudCalendarLease(provider, leasedProvider => _calendarDelete(leasedProvider, name, id), leaseToken);
     return NOT_HANDLED;
   }
 
@@ -1508,9 +1521,15 @@
     if (pathname === '/databases' && method === 'GET') return _listDatabases(await _requirePwaProvider('read'));
     if (pathname === '/pivot' && method === 'GET') return _readPivot(await _requirePwaProvider('read'), url.searchParams.get('path') || '', url.searchParams.get('status_filter') || '');
     if (pathname === '/entity' && method === 'GET') return _readEntity(await _requirePwaProvider('read'), url.searchParams.get('path') || '');
-    if (pathname === '/value' && method === 'PUT') return _updateValue(await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {});
-    if (pathname === '/value' && method === 'POST') return _addValue(await _requirePwaProvider('readwrite'), body || {});
-    if (pathname === '/entity/create' && method === 'POST') return _createEntity(await _requirePwaProvider('readwrite'), body || {});
+    if (pathname === '/value' && method === 'PUT') return _updateValue(
+      await _requirePwaProvider('readwrite'), url.searchParams.get('path') || '', body || {},
+    );
+    if (pathname === '/value' && method === 'POST') return _addValue(
+      await _requirePwaProvider('readwrite'), body || {},
+    );
+    if (pathname === '/entity/create' && method === 'POST') return _createEntity(
+      await _requirePwaProvider('readwrite'), body || {},
+    );
     if (pathname === '/entity/rename' && method === 'POST') {
       const production = window.MeldexProductionManagement;
       if (window.MeldexProductionSchemaMigration?.isManagedEntryPath?.(body?.path)

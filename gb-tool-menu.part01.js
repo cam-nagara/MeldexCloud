@@ -279,6 +279,21 @@ function getCurrentFilePath() {
   return null;
 }
 
+function getCurrentFileAssetId(path) {
+  const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined')
+    ? GBTabs.getActiveTab(GBLayout.activePane)
+    : null;
+  if (activeTab?.path === path) {
+    const tabAssetId = activeTab.assetId || activeTab.asset_id;
+    if (tabAssetId) return String(tabAssetId);
+  }
+  const pageContent = document.getElementById('page-content');
+  if (pageContent?.dataset?.path === path && pageContent.dataset.assetId) {
+    return String(pageContent.dataset.assetId);
+  }
+  return '';
+}
+
 function getActiveScriptNoteComponent() {
   const activeTab = (typeof GBTabs !== 'undefined' && typeof GBLayout !== 'undefined') ? GBTabs.getActiveTab(GBLayout.activePane) : null;
   if (activeTab?.type === 'scriptnote') {
@@ -915,10 +930,13 @@ async function _duplicateCurrentFile(toolType) {
 async function _deleteCurrentFile(toolType) {
   const path = getCurrentFilePath();
   if (!path) return;
+  const assetId = getCurrentFileAssetId(path);
   const name = _toolMenuDisplayName(path, toolType, '');
   const confirmMessage = `「${name || path}」を削除しますか？`;
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
-    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([{ path, kind: 'file' }], confirmMessage)
+    ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact([
+        { path, kind: 'file', ...(assetId ? { assetId } : {}) },
+      ], confirmMessage)
     : await cfConfirm(confirmMessage);
   if (!confirmed) return;
   try {

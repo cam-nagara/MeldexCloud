@@ -8,10 +8,26 @@
   const BODY_ID = 'cloud-mobile-side-drawer-body';
   const DISMISS_MIN_X = 78;
   const DISMISS_MAX_Y = 72;
+  const ENTITY_MUTATION_SELECTOR = [
+    '[data-e2e-id="entity-layout-add"]',
+    '[data-e2e-id="entity-layout-edit-toggle"]',
+    '[data-e2e-id="entity-layout-tab-menu-btn"]',
+    '[data-e2e-id="entity-layout-edit-toolbar"]',
+    '[data-e2e-id="entity-layout-cell-settings"]',
+    '[data-e2e-id="entity-layout-cell-remove"]',
+    '[data-e2e-id="entity-layout-cell-resize"]',
+    '[data-e2e-id^="prop-layout-"]',
+    '[data-e2e-id^="entity-prop-add-"]',
+    '[data-e2e-id^="entity-prop-hide-"]',
+    '[data-e2e-id="entity-props-col-width-btn"]',
+    '.entry-prop-drag-handle',
+    '.cell-value-more',
+  ].join(',');
   let _activeEditor = null;
   let _currentTarget = null;
   let _openingTarget = false;
   let _renderSeq = 0;
+  let _accessSyncSeq = 0;
   let _portedPanel = null;
 
   function _isEnabled() {
@@ -26,7 +42,9 @@
   }
 
   function _isDismissBlockedTarget(target) {
-    return !!target?.closest?.('button, a, input, select, textarea, iframe, video, [contenteditable="true"], [role="button"], [role="menu"]');
+    // エントリレイアウトのセル移動・リサイズは pointer capture を使うため、
+    // ドロワーのスワイプ終了と競合させない。空き領域からのスワイプ終了は維持する。
+    return !!target?.closest?.('button, a, input, select, textarea, iframe, video, [contenteditable="true"], [role="button"], [role="menu"], .el-cell, .el-edit-toolbar, .el-tabs');
   }
 
   function _setDismissDrag(drawer, offsetX) {
@@ -636,6 +654,193 @@
     body.appendChild(error);
   }
 
+  function _syncEntityAccessNotice(body, access) {
+    let notice = body?.querySelector?.('[data-e2e-id="cloud-mobile-side-drawer-readonly"]');
+    if (!access?.readOnly) {
+      notice?.remove?.();
+      return;
+    }
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.className = 'meldex-entity-detail-readonly';
+      notice.dataset.e2eId = 'cloud-mobile-side-drawer-readonly';
+      notice.setAttribute('role', 'status');
+      body?.insertBefore?.(notice, body.firstChild || null);
+    }
+    notice.textContent = access.reason || '読み取り専用です';
+  }
+
+  function _closeEntityMutationPopups() {
+    // 列値の型別dropdownもbody直下へ出る。gridのcapture guard外なので、共通の取消処理を
+    // 先に通してから、残ったコンテキストメニューを閉じる。
+    if (typeof closeAllDropdowns === 'function') closeAllDropdowns();
+    document.querySelectorAll([
+      '.el-edit-popup', '.el-tab-menu', '.gb-fmt-popup', '.gb-palette-popup',
+      '.status-dropdown', '.cell-inline-dd', '.user-dropdown', '.gb-user-picker-dd', '.gb-context-menu',
+    ].join(',')).forEach(popup => {
+      if (typeof popup._cleanup === 'function') popup._cleanup();
+      try { popup.dispatchEvent(new CustomEvent('db-dropdown-cancel')); } catch { /* ignore */ }
+      popup.remove();
+    });
+  }
+
+  function _installEntityRuntimeReadOnlyGuard(grid) {
+    if (!grid || grid.__MeldexRuntimeReadOnlyGuardInstalled) return;
+    grid.__MeldexRuntimeReadOnlyGuardInstalled = true;
+    const block = (event) => {
+      if (grid.__MeldexRuntimeReadOnly !== true) return;
+      const target = event.target;
+      if (target?.closest?.('a, .relation-link')) return;
+      const inValues = !!target?.closest?.('.entry-prop-values, .el-field-values');
+      const mutationControl = !!target?.closest?.(ENTITY_MUTATION_SELECTOR);
+      const layoutPointer = (event.type === 'pointerdown' || event.type === 'dragstart' || event.type === 'drop')
+        && !!target?.closest?.('.el-cell.el-editable, .el-edit-toolbar, .entry-prop-drag-handle');
+      const draftViewSwitch = event.type === 'click' && !!target?.closest?.('.el-tab, .entity-props-toggle')
+        && !!grid.__MeldexRuntimeReadOnlyState?.draft?.isConnected;
+      const mutationKey = event.type === 'keydown'
+        && ['Enter', ' ', 'F2', 'Delete', 'Backspace'].includes(event.key)
+        && (inValues || mutationControl || !!target?.closest?.('.el-cell.el-editable'));
+      if (event.type === 'beforeinput' || inValues || mutationControl || layoutPointer || draftViewSwitch || mutationKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    ['beforeinput', 'click', 'dblclick', 'contextmenu', 'pointerdown', 'dragstart', 'drop', 'keydown']
+      .forEach(type => grid.addEventListener(type, block, true));
+  }
+
+  function _setEntityGridRuntimeReadOnly(grid, readOnly) {
+    if (!grid) return false;
+    if (readOnly) {
+      if (grid.__MeldexRuntimeReadOnly === true) return false;
+      grid.__MeldexRuntimeReadOnly = true;
+      grid.__MeldexRuntimeNeedsEditableRerender = false;
+      _installEntityRuntimeReadOnlyGuard(grid);
+      _closeEntityMutationPopups();
+      // 容量停止とドラッグ確定が同じ瞬間でも、旧権限の pointerup を保存させない。
+      grid.querySelectorAll('.el-dragging').forEach(cell => {
+        try { cell.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 0 })); } catch { /* ignore */ }
+      });
+      const active = document.activeElement;
+      const state = {
+        draft: active && grid.contains(active)
+          && active.matches?.('input, textarea, select, [contenteditable]') ? active : null,
+        controls: [],
+        editables: [],
+        values: [],
+      };
+      grid.querySelectorAll(ENTITY_MUTATION_SELECTOR).forEach(control => {
+        state.controls.push({ control, hidden: control.hidden, disabled: control.disabled });
+        control.hidden = true;
+        if ('disabled' in control) control.disabled = true;
+      });
+      grid.querySelectorAll('input, textarea, select, [contenteditable], [draggable="true"]').forEach(control => {
+        state.editables.push({
+          control,
+          readOnly: 'readOnly' in control ? control.readOnly : undefined,
+          disabled: 'disabled' in control ? control.disabled : undefined,
+          contentEditable: control.getAttribute?.('contenteditable'),
+          draggable: control.getAttribute?.('draggable'),
+        });
+        if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement) control.readOnly = true;
+        if (control instanceof HTMLSelectElement) control.disabled = true;
+        if (control.hasAttribute?.('contenteditable')) control.setAttribute('contenteditable', 'false');
+        if (control.getAttribute?.('draggable') === 'true') control.draggable = false;
+      });
+      grid.querySelectorAll('.entry-prop-values, .el-field-values').forEach(values => {
+        state.values.push({
+          values,
+          hadClass: values.classList.contains('entity-prop-values-readonly'),
+          aria: values.getAttribute('aria-readonly'),
+        });
+        values.classList.add('entity-prop-values-readonly');
+        values.setAttribute('aria-readonly', 'true');
+      });
+      grid.__MeldexRuntimeReadOnlyState = state;
+      grid.classList.add('entity-props-grid-runtime-readonly');
+      grid.setAttribute('aria-readonly', 'true');
+      return false;
+    }
+    if (grid.__MeldexRuntimeReadOnly !== true) return false;
+    const state = grid.__MeldexRuntimeReadOnlyState;
+    const needsRerender = grid.__MeldexRuntimeNeedsEditableRerender === true;
+    grid.__MeldexRuntimeReadOnly = false;
+    grid.__MeldexRuntimeNeedsEditableRerender = false;
+    grid.classList.remove('entity-props-grid-runtime-readonly');
+    grid.removeAttribute('aria-readonly');
+    if (!needsRerender && state) {
+      state.controls.forEach(({ control, hidden, disabled }) => {
+        if (!control.isConnected) return;
+        control.hidden = hidden;
+        if ('disabled' in control) control.disabled = disabled;
+      });
+      state.editables.forEach(({ control, readOnly: oldReadOnly, disabled, contentEditable, draggable }) => {
+        if (!control.isConnected) return;
+        if (oldReadOnly !== undefined) control.readOnly = oldReadOnly;
+        if (disabled !== undefined) control.disabled = disabled;
+        if (contentEditable == null) control.removeAttribute?.('contenteditable');
+        else control.setAttribute?.('contenteditable', contentEditable);
+        if (draggable == null) control.removeAttribute?.('draggable');
+        else control.setAttribute?.('draggable', draggable);
+      });
+      state.values.forEach(({ values, hadClass, aria }) => {
+        if (!values.isConnected) return;
+        values.classList.toggle('entity-prop-values-readonly', hadClass);
+        if (aria == null) values.removeAttribute('aria-readonly');
+        else values.setAttribute('aria-readonly', aria);
+      });
+      requestAnimationFrame(() => { try { state.draft?.isConnected && state.draft.focus({ preventScroll: true }); } catch { /* ignore */ } });
+    }
+    grid.__MeldexRuntimeReadOnlyState = null;
+    return needsRerender;
+  }
+
+  async function _syncOpenEntityAccess() {
+    const target = _currentTarget;
+    if (target?.kind !== 'entity' || !isOpen()) return;
+    const syncSeq = ++_accessSyncSeq;
+    const access = typeof window.MeldexEntityDetail?.resolveReadOnly === 'function'
+      ? await window.MeldexEntityDetail.resolveReadOnly(target.entityPath, false)
+      : {
+        readOnly: document.body?.dataset?.cloudReadonly === '1'
+          || document.body?.dataset?.cloudQuotaBlocked === '1',
+        reason: document.body?.dataset?.cloudQuotaBlocked === '1'
+          ? '容量上限のため編集できません'
+          : '閲覧専用のため編集できません',
+      };
+    if (syncSeq !== _accessSyncSeq || target !== _currentTarget || !isOpen()) return;
+    const body = document.getElementById(BODY_ID);
+    _syncEntityAccessNotice(body, access);
+    const grid = body?.querySelector?.('.cloud-mobile-side-drawer-props-grid');
+    if (grid) {
+      if (access.readOnly) {
+        if (grid.__MeldexRenderedReadOnly !== true) _setEntityGridRuntimeReadOnly(grid, true);
+        else _closeEntityMutationPopups();
+      } else if (grid.__MeldexRuntimeReadOnly === true) {
+        const needsRerender = _setEntityGridRuntimeReadOnly(grid, false);
+        if (needsRerender) grid.__MeldexRenderEntityAccess?.(false);
+      } else if (grid.__MeldexRenderedReadOnly === true) {
+        grid.__MeldexRenderEntityAccess?.(false);
+      }
+    }
+    const editor = body?.querySelector?.('[data-e2e-id="cloud-mobile-side-drawer-entity-body"]');
+    if (!editor) return;
+    if (access.readOnly) {
+      if (_activeEditor?.timer) clearTimeout(_activeEditor.timer);
+      if (_activeEditor) _activeEditor.timer = null;
+      editor.contentEditable = 'false';
+      editor.setAttribute('aria-readonly', 'true');
+      return;
+    }
+    // この表示を編集可能状態で開いた場合だけ、その場で編集を再開する。
+    // 初回からロックされていた表示には編集listenerが無いため、解除後の再表示に委ねる。
+    if (editor.dataset.cloudMobileEditorBound === '1') {
+      editor.contentEditable = 'true';
+      editor.setAttribute('aria-readonly', 'false');
+      if (_activeEditor?.dirty) _scheduleEditorSave(_activeEditor);
+    }
+  }
+
   function openBoardLink(path, label, linkType) {
     if (!_isEnabled() || !path) return false;
     const openSeq = ++_renderSeq;
@@ -675,8 +880,19 @@
     const parentDb = _parentDb(entityPath);
     try {
       const data = await apiFetch('/entity?path=' + encodeURIComponent(entityPath));
+      const access = typeof window.MeldexEntityDetail?.resolveReadOnly === 'function'
+        ? await window.MeldexEntityDetail.resolveReadOnly(entityPath, false)
+        : {
+          readOnly: document.body?.dataset?.cloudReadonly === '1'
+            || document.body?.dataset?.cloudQuotaBlocked === '1',
+          reason: document.body?.dataset?.cloudQuotaBlocked === '1'
+            ? '容量上限のため編集できません'
+            : (document.body?.dataset?.cloudReadonly === '1' ? '閲覧専用のため編集できません' : ''),
+        };
       if (seq !== _renderSeq) return;
       body.replaceChildren();
+
+      _syncEntityAccessNotice(body, access);
 
       const props = document.createElement('section');
       props.className = 'cloud-mobile-side-drawer-section cloud-mobile-side-drawer-props';
@@ -697,7 +913,16 @@
       grid.className = 'cloud-mobile-side-drawer-props-grid';
       props.appendChild(grid);
       if (typeof renderEntityPropsGridInto === 'function') {
-        renderEntityPropsGridInto(grid, data, entityPath, { parentDb });
+        const renderGridForAccess = (readOnly) => {
+          renderEntityPropsGridInto(grid, data, entityPath, {
+            parentDb,
+            surface: 'mobile-drawer',
+            readOnly: readOnly === true,
+          });
+          grid.__MeldexRenderedReadOnly = readOnly === true;
+        };
+        grid.__MeldexRenderEntityAccess = renderGridForAccess;
+        renderGridForAccess(access.readOnly);
       } else {
         grid.textContent = '列を表示できません';
       }
@@ -713,7 +938,8 @@
       editor.dataset.e2eId = 'cloud-mobile-side-drawer-entity-body';
       editor.setAttribute('role', 'textbox');
       editor.setAttribute('aria-label', name + 'の本文');
-      editor.contentEditable = 'true';
+      editor.contentEditable = access.readOnly ? 'false' : 'true';
+      editor.setAttribute('aria-readonly', access.readOnly ? 'true' : 'false');
       editor.dataset.path = noteTarget.path;
       editor.dataset.frontmatter = '';
       const rawContent = data.page_content || '';
@@ -729,7 +955,7 @@
       editor.dataset.lastSavedRevision = (data.revision != null) ? String(data.revision) : '';
       editor.dataset.lastSavedEtag = data.freetext_etag || '';
       editor.dataset.lastSavedTransportRevision = '';
-      if (typeof _bindEntityFreeTextParticipant === 'function') {
+      if (!access.readOnly && typeof _bindEntityFreeTextParticipant === 'function') {
         _bindEntityFreeTextParticipant(editor, entityPath);
       }
       if (typeof _dpApplyNoteFileStyle === 'function') _dpApplyNoteFileStyle(editor, fm);
@@ -741,19 +967,22 @@
         const placeholder = document.createElement('span');
         placeholder.dataset.cloudMobilePlaceholder = '1';
         placeholder.style.color = 'var(--fg2)';
-        placeholder.textContent = 'タップして本文を編集';
+        placeholder.textContent = access.readOnly ? '本文はありません' : 'タップして本文を編集';
         editor.appendChild(placeholder);
       }
       const editorState = { el: editor, path: noteTarget.path, entityPath: String(entityPath), mode: noteTarget.mode, dirty: false, timer: null, saving: null, saveRequested: false };
-      editor.addEventListener('focus', () => {
-        const placeholder = editor.querySelector('[data-cloud-mobile-placeholder="1"]');
-        if (placeholder) editor.replaceChildren();
-      });
-      editor.addEventListener('input', () => _scheduleEditorSave(editorState));
-      editor.addEventListener('blur', () => { _saveEditor(editorState); });
+      if (!access.readOnly) {
+        editor.dataset.cloudMobileEditorBound = '1';
+        editor.addEventListener('focus', () => {
+          const placeholder = editor.querySelector('[data-cloud-mobile-placeholder="1"]');
+          if (placeholder) editor.replaceChildren();
+        });
+        editor.addEventListener('input', () => _scheduleEditorSave(editorState));
+        editor.addEventListener('blur', () => { _saveEditor(editorState); });
+      }
       _bindAutoLinkClick(editor);
-      _bindEditorHelpers(editor);
-      _activeEditor = editorState;
+      if (!access.readOnly) _bindEditorHelpers(editor);
+      _activeEditor = access.readOnly ? null : editorState;
       page.appendChild(editor);
       body.appendChild(page);
     } catch {
@@ -795,6 +1024,17 @@
   document.addEventListener('meldex-cloud-mobile-viewport', () => {
     if (!_isEnabled() && isOpen()) close();
   });
+  const installAccessObserver = () => {
+    if (!document.body || document.body.__MeldexCloudMobileSideAccessObserver) return;
+    const observer = new MutationObserver(() => { _syncOpenEntityAccess(); });
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-cloud-readonly', 'data-cloud-quota-blocked'],
+    });
+    document.body.__MeldexCloudMobileSideAccessObserver = observer;
+  };
+  if (document.body) installAccessObserver();
+  else document.addEventListener('DOMContentLoaded', installAccessObserver, { once: true });
 
   window.MeldexCloudMobileSideDrawer = {
     isEnabled: _isEnabled,

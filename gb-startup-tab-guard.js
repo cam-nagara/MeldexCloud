@@ -128,10 +128,12 @@ const MeldexStartupTabGuard = (() => {
   }
 
   function pruneRestoredTabs() {
-    pruneAuxiliaryMainTabs();
     if (missingTabPruneStarted || !isDesktopStartupRestoreActive()) return;
     if (typeof GBLayout === 'undefined' || !GBLayout.root || typeof GBLayout.getAllPanes !== 'function') return;
     missingTabPruneStarted = true;
+    // 復元レイアウトの補助タブ除去は起動時の一度だけ行う。ペイン再描画のたびに
+    // 実行すると、起動後に「メインパネルで開く」で追加したタイマー等まで直後に消える。
+    pruneAuxiliaryMainTabs();
     const candidates = [];
     GBLayout.getAllPanes(GBLayout.root).forEach(pane => {
       (pane.tabs || []).forEach(tab => {

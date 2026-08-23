@@ -460,7 +460,7 @@ function _buildFormInputRow(prop, cfg, ptc) {
 async function _collectDbFormFields(form, cfg, propTypes, options = {}) {
   const fields = {};
   for (const prop of cfg.fields) {
-    const safeName = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(prop) : String(prop).replace(/(["\\])/g, '\\$1');
+    const safeName = MeldexEscape.cssIdent(prop);
     const input = form.querySelector(`[name="${safeName}"]`);
     if (!input) continue;
     const type = propTypes[prop]?.type || 'text';
@@ -517,15 +517,36 @@ function _isBetaFeedbackFormConfig(cfg) {
   );
 }
 
-function _showBetaFeedbackThanksDialog(cfg) {
+function _showBetaFeedbackThanksDialog(cfg, deliveryMessage) {
   if (!_isBetaFeedbackFormConfig(cfg)) return;
-  const message = cfg.thanksDialogMessage || '送信ありがとうございました。改善に役立てます。';
+  const message = deliveryMessage || cfg.thanksDialogMessage || '送信ありがとうございました。改善に役立てます。';
   if (typeof cfAlert === 'function') {
     const result = cfAlert(message, { okLabel: 'OK' });
     if (result?.catch) result.catch(() => {});
   } else if (typeof alert === 'function') {
     alert(message);
   }
+}
+
+function _betaFeedbackDeliveryMessage(result, isCloud) {
+  const delivery = result?.delivery || {};
+  if (delivery.status === 'sent') {
+    const receipt = delivery.issueId ? `（受付番号: ${delivery.issueId}）` : '';
+    return `開発者へ送信しました${receipt}`;
+  }
+  if (delivery.status === 'pending' || result?.queued) {
+    return '端末内に保存しました。開発者への送信待ちです。オンライン復帰後に自動で再送します。';
+  }
+  if (delivery.status === 'failed') {
+    return `端末内に保存しましたが、開発者への送信に失敗しました。${delivery.lastError || ''}`.trim();
+  }
+  if (result?.reason === 'debugger-not-configured') {
+    return '端末内に保存しました。開発者への送信先が設定されていません。';
+  }
+  if (isCloud || result?.reason === 'cloud-send-needs-desktop-server') {
+    return '端末内に保存しました。Cloud版からは、このフィードバックを開発者へ送信していません。';
+  }
+  return '端末内に保存しました。開発者への送信結果を確認できませんでした。';
 }
 
 function _customInstructionRelayErrorMessage(result) {
@@ -539,6 +560,18 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
     const fields = await _collectDbFormFields(form, cfg, propTypes, { previewOnly: !!options.previewOnly, dbPath });
     if (cfg.betaFeedbackRelay && !fields['送信日']) {
       fields['送信日'] = new Date().toISOString().slice(0, 10);
+    }
+    const isBetaFeedback = _isBetaFeedbackFormConfig(cfg);
+    const isCloudFeedback = isBetaFeedback && !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
+    if (isBetaFeedback) {
+      const acceptedAt = new Date().toISOString();
+      fields['送信元'] = isCloudFeedback ? 'Meldex Cloudフィードバックフォーム' : 'Meldexフィードバックフォーム';
+      fields['送信状態'] = isCloudFeedback ? '端末内に保存' : '送信待ち';
+      fields['送信受付日時'] = acceptedAt;
+      fields['対象バージョン'] = String(window.__meldexVersionCache?.version || '');
+      fields['送信結果・失敗理由'] = isCloudFeedback
+        ? 'Cloud版からは、このフィードバックを開発者へ送信していません。'
+        : 'Debuggerの送信結果を確認しています。';
     }
     for (const prop of cfg.required || []) {
       const type = propTypes[prop]?.type || 'text';
@@ -559,16 +592,28 @@ async function submitDbFormResponse(form, dbPath, cfg, propTypes, options = {}) 
       const validation = await applyChatCustomInstructionsFromForm(fields, cfg, { validateOnly: true, silent: true });
       if (validation?.ok === false) throw new Error(_customInstructionRelayErrorMessage(validation));
     }
-    await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
+    const createResult = await apiPost('/entity/create', { parent_path: dbPath, name, properties: fields, source: 'form', reviewed: false });
     if (cfg.customInstructionsRelay && typeof applyChatCustomInstructionsFromForm === 'function') {
       const relay = await applyChatCustomInstructionsFromForm(fields, cfg);
       if (relay?.ok === false) throw new Error(_customInstructionRelayErrorMessage(relay));
     }
-    if (window.MeldexBetaFeedback?.maybeSendFeedbackForm) {
-      window.MeldexBetaFeedback.maybeSendFeedbackForm({ dbPath, formConfig: cfg, fields, name, source: 'local-form' }).catch(() => {});
+    let feedbackDelivery = null;
+    if (isBetaFeedback && window.MeldexBetaFeedback?.maybeSendFeedbackForm) {
+      feedbackDelivery = await window.MeldexBetaFeedback.maybeSendFeedbackForm({
+        dbPath,
+        entryPath: createResult?.path || '',
+        entryId: createResult?.entry_id || '',
+        formConfig: cfg,
+        fields,
+        name,
+        source: 'local-form',
+      });
     }
-    if (msg) msg.textContent = cfg.successMessage || '送信しました';
-    _showBetaFeedbackThanksDialog(cfg);
+    const completionMessage = isBetaFeedback
+      ? _betaFeedbackDeliveryMessage(feedbackDelivery, isCloudFeedback)
+      : (cfg.successMessage || '送信しました');
+    if (msg) msg.textContent = completionMessage;
+    _showBetaFeedbackThanksDialog(cfg, completionMessage);
     form.reset();
     if (typeof selectDatabase === 'function') selectDatabase(dbPath, undefined, { silent: true });
   } catch (err) {

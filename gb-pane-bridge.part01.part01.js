@@ -31,7 +31,9 @@ const GBPaneBridge = (() => {
     graph:      'db-view-container',
     form:       'db-view-container',
     'smart-db': 'db-view-container',
-    compare:    'compare-view',
+    // 比較は pathA/pathB の2入力が必須で、単一 path しか持たないタブの
+    // 永続化・復帰契約には載せられない。openCompareView(pathA, pathB) の
+    // 専用表示として扱い、LEGACY_CONTAINERS には登録しない。
     entity:     'entity-view',
     page:       'page-view',
     media:      'media-view',
@@ -145,6 +147,7 @@ const GBPaneBridge = (() => {
   const _legacyLiveBindings = new Map(); // containerId -> { paneId, tabId, viewName, observer }
   const _legacySnapshotTimers = new Map();
   const _legacyLoadJobs = new Map(); // containerId -> { tabId, viewName, path, token, promise }
+  let _virtualPanesBeforeRender = [];
   let _domLookupPatched = false;
   const _bridgeOpenOpts = Object.freeze({
     bridgeLoad: true,
@@ -191,7 +194,7 @@ const GBPaneBridge = (() => {
   }
 
   function _isPathScopedLegacyType(type) {
-    return ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'entity', 'page', 'media', 'html', 'folder', 'board', 'compare'].includes(type);
+    return ['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form', 'smart-db', 'entity', 'page', 'media', 'html', 'folder', 'board'].includes(type);
   }
 
   function _legacySnapshotKey(tab) {
@@ -241,10 +244,7 @@ const GBPaneBridge = (() => {
   function _patchDomLookupForSnapshots() {
     if (_domLookupPatched || typeof document === 'undefined' || !document.getElementById) return;
     const nativeGetElementById = Document.prototype.getElementById;
-    const escapeId = (value) => {
-      if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
-      return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    };
+    const escapeId = (value) => MeldexEscape.cssIdent(value);
     Document.prototype.getElementById = function(id) {
       const first = nativeGetElementById.call(this, id);
       if (!first || !_isLegacySnapshotNode(first)) return first;
@@ -812,6 +812,31 @@ const GBPaneBridge = (() => {
     });
   }
 
+  function _normalizeLegacyLivePath(path) {
+    return String(path || '').replace(/\\/g, '/');
+  }
+
+  // openPage() 等をタブ登録より先に直接呼ぶ経路では、実内容の
+  // data-path とグローバル表示状態は更新済みでも、pane-bridge 専用の
+  // gbLegacyView/gbLegacyPath はまだ無い。その状態を「未描画」とみなして
+  // 再読込すると、ノート等の未保存内容が失われる。現在状態と
+  // 実DOMの data-path の両方がタブと一致する場合だけ、現ライブ内容を採用する。
+  function _hasMatchingUnmarkedLiveContent(viewEl, viewName, path) {
+    if (!viewEl || !path || viewEl.dataset?.gbLegacyView || viewEl.dataset?.gbLegacyPath) return false;
+    const expected = _normalizeLegacyLivePath(path);
+    let currentPath = '';
+    if (viewName === 'page' || viewName === 'media' || viewName === 'html') currentPath = state.currentPagePath;
+    else if (viewName === 'entity') currentPath = state.currentEntityPath;
+    else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) currentPath = state.currentDbPath;
+    else if (viewName === 'smart-db') currentPath = state.currentSmartDb?._filePath || '';
+    else if (viewName === 'folder' && typeof _folderPath !== 'undefined') currentPath = _folderPath;
+    else if (viewName === 'csv' && typeof _csvPath !== 'undefined') currentPath = _csvPath;
+    if (_normalizeLegacyLivePath(currentPath) !== expected) return false;
+    if (state.view !== viewName && !(viewName === 'database' && state.view === 'database')) return false;
+    const candidates = [viewEl, ...viewEl.querySelectorAll('[data-path]')];
+    return candidates.some(el => _normalizeLegacyLivePath(el?.dataset?.path) === expected);
+  }
+
   function _ensureLegacyTabContent(tab, viewName, containerId, openOpts, pane) {
     const label = tab.label || '';
     const path = tab.path || '';
@@ -822,7 +847,7 @@ const GBPaneBridge = (() => {
     const paneRenderCtx = paneCtx || (pane?.id ? { paneId: pane.id, containerEl: paneContentEl, tableId: 'pivot-table' } : null);
     if (paneRenderCtx) {
       paneRenderCtx.containerEl = paneContentEl || paneRenderCtx.containerEl;
-      if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName)) {
+      if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) {
         paneRenderCtx.dbPath = path || paneRenderCtx.dbPath;
       }
     }
@@ -840,13 +865,18 @@ const GBPaneBridge = (() => {
     }
     const liveView = viewEl?.dataset?.gbLegacyView || '';
     const livePath = viewEl?.dataset?.gbLegacyPath || '';
-    const needsLiveReload = liveView !== viewName || livePath !== path;
+    const adoptsUnmarkedLiveContent = !liveView && !livePath
+      && _hasMatchingUnmarkedLiveContent(viewEl, viewName, path);
+    const needsLiveReload = !adoptsUnmarkedLiveContent && (liveView !== viewName || livePath !== path);
     const resolvedViewName = typeof _resolveDbPaneDisplayView === 'function'
       ? _resolveDbPaneDisplayView(viewName, tab)
       : viewName;
     const token = {};
     const isCurrentLoadJob = () => _legacyLoadJobs.get(containerId)?.token === token;
     const scopedBridgeOpts = { ...bridgeOpts, isLegacyLoadCurrent: isCurrentLoadJob };
+    if (['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName)) {
+      scopedBridgeOpts.requestedViewMode = tab.state?.viewMode || viewName;
+    }
     if (viewName === 'folder' && tab.state?.selectedPath) {
       scopedBridgeOpts.selectedPath = tab.state.selectedPath;
     }
@@ -870,7 +900,19 @@ const GBPaneBridge = (() => {
         if (!isCurrentLoadJob()) return;
         const needsDisplayReload = resolvedViewName !== viewName || prevView !== resolvedViewName;
         if (viewName === 'board' && typeof openBoard === 'function' && (needsLiveReload || prevBoardPath !== path || prevView !== 'board')) await openBoard(label, path, scopedBridgeOpts);
-        else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || _folderPath !== path || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
+        // フォルダの _folderPath は、サブパネル専用描画（ボードのリンクカード計画 Phase B-2、
+        // gb-folder.part01.part01.js の _folderRenderContainerOverride）が加わったことで、
+        // メインの folder-view とサブパネルの2つの面が同時に更新し得る単一のグローバル変数に
+        // なった。needsLiveReload（このコンテナ自身の直前の描画内容との突き合わせ、
+        // スケジュール時点＝競合が起きる前に確定済みで安全）が既に「変化なし」と判定している
+        // 場合、_folderPath !== path だけを理由に再読込を強制すると、他の面（サブパネル）が
+        // ちょうど _folderPath を書き換えた直後の一瞬に割り込んでしまい、非同期のopenFolder()が
+        // 「自分こそが正しい切替元」と誤認して相手の描画先（_folderRenderContainerOverride）へ
+        // 誤った「切り替わりました」通知を書き込み、相手の実表示を消してしまう（2026-08-19
+        // 実ブラウザE2Eで確認・固定: targeted-shell-micro-subpanel-folder-render）。
+        // needsLiveReload || prevView !== 'folder' だけで、このコンテナ自身が本当に変化した
+        // ケースは正しく再読込される。
+        else if (viewName === 'folder' && typeof openFolder === 'function' && (needsLiveReload || prevView !== 'folder')) await openFolder(label, path, scopedBridgeOpts);
         else if (viewName === 'page' && typeof openPage === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'page')) await openPage(label, path, scopedBridgeOpts);
         else if (viewName === 'entity' && typeof selectEntity === 'function' && (needsLiveReload || prevEntityPath !== path || prevView !== 'entity')) await selectEntity(path, scopedBridgeOpts);
         else if (viewName === 'media' && typeof openMedia === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'media')) {
@@ -882,14 +924,18 @@ const GBPaneBridge = (() => {
             : scopedBridgeOpts;
           openMedia(label, path, tab.state?.mediaType || 'image', mediaReloadOpts);
         }
-        else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevCsvPath !== path || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
+        // CSVの _csvPath も、フォルダの _folderPath と同じ理由（サブパネル専用描画
+        // _csvRenderContainerOverride、gb-csv-viewer.js）で単一のグローバル変数を2つの面が
+        // 共有する。同じ競合を予防的に塞ぐ（needsLiveReload || prevView !== 'csv' で
+        // このコンテナ自身が変化したケースは引き続き正しく再読込される）。
+        else if (viewName === 'csv' && typeof openCsvFile === 'function' && (needsLiveReload || prevView !== 'csv')) await openCsvFile(label, path, scopedBridgeOpts);
         else if (viewName === 'smart-db' && typeof openSmartDbFile === 'function' && (needsLiveReload || prevSmartDbPath !== path || prevView !== 'smart-db')) await openSmartDbFile(label, path, scopedBridgeOpts);
         else if (viewName === 'timeline' && tab.state?.calendarFile && typeof openCalendarFile === 'function' && (needsLiveReload || state.currentDbPath !== path || prevView !== 'timeline')) openCalendarFile(label, path, scopedBridgeOpts);
-        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
-        else if (viewName === 'html' && typeof openViewer === 'function' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
-          openViewer(tab.state?.urlExternal ? path : '/viewer?file=' + encodeURIComponent(path), bridgeOpts);
+        else if (['database', 'pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(viewName) && typeof selectDatabase === 'function' && (needsLiveReload || needsDisplayReload || state.currentDbPath !== path || prevView !== viewName)) await selectDatabase(path, paneRenderCtx || null, scopedBridgeOpts);
+        else if (viewName === 'html' && (needsLiveReload || prevPagePath !== path || prevView !== 'html')) {
+          if (tab.state?.urlExternal && typeof openViewer === 'function') openViewer(path, scopedBridgeOpts);
+          else if (typeof openHtmlFile === 'function') openHtmlFile(label, path, scopedBridgeOpts);
         }
-        else if (viewName === 'compare' && typeof openCompare === 'function' && (needsLiveReload || prevView !== 'compare')) openCompare(label, path);
         else {
           state.view = viewName;
           if (viewName === 'page' || viewName === 'html' || viewName === 'media') state.currentPagePath = path;
@@ -920,6 +966,26 @@ const GBPaneBridge = (() => {
     _legacyLoadJobs.set(containerId, { tabId: tab.id, viewName, path, token, promise });
   }
 
+  // 通知を出した側（openFolder()/openCsvFile()等、共有シングルトンの描画先を持つ種類）が、
+  // 直前の描画先へ「切り替わりました」通知を書き込んだ直後に呼ぶ公開の入口。containerId の
+  // dataset（gbLegacyView/gbLegacyPath、上の run() が「この面へ最後に描いた内容」として
+  // 記録している）を無効化するだけで、そのタブへ戻った時点で needsLiveReload が真になり
+  // _ensureLegacyTabContent() が自動的に再読込する（2026-08-19 AGENT_INBOX「メイン画面が
+  // 『切り替わりました』通知のまま自動復帰しない」）。判定はここでは増やさず、既存の
+  // needsLiveReload 比較（このファイル上部の run() 内）へ委ねる。
+  // path指定時は、現在の記録がその path を指している場合のみ無効化する（無関係な
+  // 巻き込み再読込を避ける）。
+  function _invalidateLegacyRenderState(viewName, path) {
+    const containerId = LEGACY_CONTAINERS[viewName];
+    if (!containerId) return false;
+    const viewEl = document.getElementById(containerId);
+    if (!viewEl) return false;
+    if (path && viewEl.dataset.gbLegacyPath !== path) return false;
+    delete viewEl.dataset.gbLegacyView;
+    delete viewEl.dataset.gbLegacyPath;
+    return true;
+  }
+
   // ================================================================
   // レンダリングフック
   // ================================================================
@@ -928,6 +994,12 @@ const GBPaneBridge = (() => {
   function _beforeRender() {
     const storage = document.getElementById('legacy-views');
     if (!storage) return;
+    // GBLayout.render() は paneMap を作り直すが、サブパネルはレイアウトツリー外の
+    // 仮想ペインとして同じmapへ登録される。再描画をまたいで登録と表示先を保持しないと、
+    // モバイルの自動レイアウト整形時に表示中コンポーネントが孤児判定され破棄される。
+    _virtualPanesBeforeRender = Object.values(GBLayout?.paneMap || {}).filter(info => (
+      info?.surface === 'subpanel' && info.node?.id && info.contentEl
+    ));
     _captureAllLiveLegacySnapshots();
     _legacySnapshotHosts.clear();
     // レガシーコンテナを退避
@@ -958,6 +1030,7 @@ const GBPaneBridge = (() => {
     // コンポーネントの状態を保存してからDOMをデタッチ（参照は保持）
     // 全ペインのタブ情報を取得して状態を書き込む
     const _allLayoutPanes = typeof GBLayout !== 'undefined' && GBLayout.root ? _collectAllLayoutPanes(GBLayout.root) : [];
+    _virtualPanesBeforeRender.forEach(info => _allLayoutPanes.push(info.node));
     forEachComponent((comp, tabId) => {
       if (comp.getState) {
         try {
@@ -979,6 +1052,10 @@ const GBPaneBridge = (() => {
 
   // render後: 各ペインのアクティブタブに応じてコンテンツをマウント
   function _afterRender() {
+    for (const info of _virtualPanesBeforeRender) {
+      if (info?.contentEl?.isConnected && info.node?.id) GBLayout.paneMap[info.node.id] = info;
+    }
+    _virtualPanesBeforeRender = [];
     _mountAllPanes();
     _pruneOrphanPaneState();
     // アクティブペインのタブタイプを state.view に同期

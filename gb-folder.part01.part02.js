@@ -145,9 +145,13 @@
         showStatus('編集ロック中の項目は削除できません', true);
         return;
       }
-      const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
-        refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
-      });
+      // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+      // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ。
+      const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+        ? await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+          refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+        })
+        : { handled: false, result: null };
       if (linkedDelete.handled) {
         if (!linkedDelete.result) return;
         _folderSelectedItems = [];
@@ -155,7 +159,11 @@
         _updateFolderBulkBar();
         return;
       }
-      const impactTargets = targets.map(target => ({ path: target.path, kind: target.type === 'folder' ? 'folder' : 'file' }));
+      const impactTargets = targets.map(target => ({
+        path: target.path,
+        kind: target.type === 'folder' ? 'folder' : 'file',
+        ...((target.assetId || target.asset_id) ? { assetId: String(target.assetId || target.asset_id) } : {}),
+      }));
       const confirmMessage = targets.length + ' 件を削除しますか？';
       const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
         ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
@@ -405,7 +413,7 @@ function _folderSetListColumnWidth(container, column, width) {
   const widths = _folderReadListColumnWidths();
   widths[column.key] = Math.max(column.minWidth || 48, Math.min(1200, Math.round(Number(width) || 0)));
   _folderWriteListColumnWidths(widths);
-  _folderApplyListColumnTemplate(container || document.getElementById('folder-grid'));
+  _folderApplyListColumnTemplate(container || _folderGridEl());
 }
 
 function _folderMoveListColumn(sourceKey, targetKey) {
@@ -639,7 +647,7 @@ async function openImagesInCanvas(items) {
 
 // チェックボックスの状態を選択状態と同期
 function _syncFolderCheckboxes() {
-  const grid = document.getElementById('folder-grid');
+  const grid = _folderGridEl();
   if (!grid) return;
   grid.querySelectorAll('.fv-item').forEach(el => {
     const chk = el.querySelector('.fv-check');
@@ -648,7 +656,7 @@ function _syncFolderCheckboxes() {
 }
 
 function _normalizeFolderSelectionForVisibleItems() {
-  const grid = document.getElementById('folder-grid');
+  const grid = _folderGridEl();
   if (!grid) {
     _folderSelectedItems = [];
     _folderSelected = null;
@@ -675,6 +683,8 @@ function _normalizeFolderSelectionForVisibleItems() {
 }
 
 function _folderBulkAnchorElement() {
+  // 一括操作バーはメイン画面専用UIのため、独立した描画先（サブパネル等）が
+  // 有効な間は _updateFolderBulkBar() 側で早期returnし、ここは呼ばれない。
   const selectedEls = Array.from(document.querySelectorAll('#folder-grid .fv-item.selected'));
   return selectedEls[selectedEls.length - 1]
     || document.getElementById('folder-display-filter-btn')
@@ -753,6 +763,10 @@ function _setFolderBulkPopupTracking(enabled) {
 
 // 一括操作ポップアップの表示/非表示更新
 function _updateFolderBulkBar() {
+  // 一括操作バー（#fv-bulk-bar）はメイン画面専用UI。独立した描画先（サブパネル等）が
+  // 有効な間は、共有の_folderSelectedItemsがサブパネル側の選択を指していても
+  // メイン画面のバーを動かさない（ボードのリンクカード計画 Phase B-2 縮小スコープ）。
+  if (_folderIsIndependentSurface()) return;
   const selectedCount = (state.view === 'folder') ? _normalizeFolderSelectionForVisibleItems() : 0;
   window.MeldexTagManagement?.setAutoTagTargets?.(selectedCount > 0 ? _folderSelectedItems : []);
   const bar = document.getElementById('fv-bulk-bar');
@@ -806,9 +820,13 @@ async function fvBulkDelete() {
     showStatus('編集ロック中の項目は削除できません', true);
     return;
   }
-  const linkedDelete = await handleDisplayedFolderLinkDelete(targets, _folderPath, {
-    refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
-  });
+  // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+  // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ。
+  const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+    ? await handleDisplayedFolderLinkDelete(targets, _folderPath, {
+      refresh: async () => { if (_folderPath) await openFolder(_folderPath.split('/').pop(), _folderPath); },
+    })
+    : { handled: false, result: null };
   if (linkedDelete.handled) {
     if (!linkedDelete.result) return;
     _folderSelectedItems = [];
@@ -816,7 +834,11 @@ async function fvBulkDelete() {
     _updateFolderBulkBar();
     return;
   }
-  const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+  const impactTargets = targets.map(item => ({
+    path: item.path,
+    kind: item.type === 'folder' ? 'folder' : 'file',
+    ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+  }));
   const confirmMessage = targets.length + ' 件を削除しますか？';
   const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
     ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)
@@ -1108,6 +1130,9 @@ function _resizeEl(pos) { return document.getElementById('fv-resize-' + pos); }
 
 // パネルレイアウトを適用
 function applyFvPanelLayout() {
+  // プレビュー/詳細パネル（#fv-panel-*）はメイン画面専用UI。独立した描画先
+  // （サブパネル等）はこのパネル群を持たないため触らない。
+  if (_folderIsIndependentSurface()) return;
   const previewPos = _getFvPanelPos('preview');
   const detailPos = _getFvPanelPos('detail');
   const previewVisible = _getFvPanelVisible('preview');

@@ -352,7 +352,47 @@
       }
     }
 
-    options.swatch.addEventListener('click', toggleColorPopover);
+    function addOpacityControl(palette) {
+      if (!palette || palette.querySelector('[data-quick-memo-opacity]')) return;
+      const row = document.createElement('label');
+      row.className = 'qm-palette-opacity';
+      row.dataset.quickMemoOpacity = '1';
+      const label = document.createElement('span');
+      label.textContent = '不透明度';
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '1';
+      slider.max = '100';
+      slider.value = options.opacityInput.value;
+      slider.setAttribute('aria-label', '不透明度');
+      slider.dataset.e2eId = 'quick-memo-opacity-range';
+      const output = document.createElement('output');
+      output.value = `${slider.value}%`;
+      slider.addEventListener('input', () => {
+        options.opacityInput.value = slider.value;
+        options.opacityInput.dispatchEvent(new Event('input', { bubbles: true }));
+        output.value = `${slider.value}%`;
+      });
+      row.append(label, slider, output);
+      const closeRow = palette.querySelector('.gb-palette-close-row');
+      palette.insertBefore(row, closeRow || null);
+    }
+
+    function openColorEditor() {
+      if (typeof window.openColorPalette !== 'function') {
+        toggleColorPopover();
+        return;
+      }
+      options.popover.hidden = true;
+      window.openColorPalette(options.swatch, options.colorInput.value, color => {
+        if (!color || color === 'transparent') return;
+        options.colorInput.value = color;
+        options.colorInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      requestAnimationFrame(() => addOpacityControl(document.querySelector('.gb-palette-popup')));
+    }
+
+    options.swatch.addEventListener('click', openColorEditor);
     options.colorInput.addEventListener('input', updateSwatch);
     options.opacityInput.addEventListener('input', updateSwatch);
     options.widthInput.addEventListener('input', persistSettings);

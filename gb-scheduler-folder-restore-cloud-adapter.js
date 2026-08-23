@@ -185,28 +185,42 @@
       return { resolved, reference, desired, desiredRevision: await manifestRevision(desired) };
     }
 
+    // 実Dropbox完全復元のゴミ箱退避方式(2026-08-20計画・判断1〜3承認済み)による2モード受け入れ。
+    // strict-cas: 既存の厳密なrev条件付きCASのみで完遂できる保存先(OPFS/デスクトップ)。
+    // trash-evacuation: 物理削除を全廃し、削除に相当する操作をゴミ箱への原子的no-replace移動へ
+    // 置き換えられる保存先(Dropbox)。deleteFileCas/deleteEmptyDirectoryCas はDropboxで
+    // false のまま変えない(厳密条件付き削除が無い事実は変わらない)。
+    function _hasStrictCasCapabilities(capabilities, storageProvider) {
+      return !!(capabilities.createFileCas && capabilities.updateFileCas && capabilities.createDirectoryCas && capabilities.freshRead
+        && capabilities.deleteFileCas && capabilities.deleteEmptyDirectoryCas
+        && storageProvider.supportsStrictConditionalDelete?.() !== false
+        && typeof storageProvider.uploadBytesConditional === 'function' && typeof storageProvider.deletePathConditional === 'function'
+        && typeof storageProvider.deleteEmptyDirectoryConditional === 'function' && typeof storageProvider.ensureDirectoryConditional === 'function'
+        && typeof storageProvider.rollbackDirectoryConditional === 'function' && typeof storageProvider.rollbackFileConditional === 'function');
+    }
+    function _hasTrashEvacuationCapabilities(capabilities, storageProvider) {
+      return !!(capabilities.createFileCas && capabilities.updateFileCas && capabilities.freshRead
+        && capabilities.deleteFileToTrash && capabilities.deleteDirectoryToTrash
+        && typeof storageProvider.uploadBytesConditional === 'function' && typeof storageProvider.evacuatePathToTrash === 'function'
+        && typeof storageProvider.ensureDirectory === 'function' && typeof storageProvider.movePathNoReplace === 'function'
+        && typeof storageProvider.statPath === 'function' && typeof storageProvider.listEntries === 'function');
+    }
+
     async function preflight(domain, version, targets, target, expectedRevision) {
       await assertBound();
       const capabilities = provider.folderRestoreCapabilities?.() || {};
-      if (!capabilities.createFileCas || !capabilities.updateFileCas || !capabilities.createDirectoryCas || !capabilities.freshRead
-        || !capabilities.deleteFileCas || !capabilities.deleteEmptyDirectoryCas) {
+      const strictCas = _hasStrictCasCapabilities(capabilities, provider);
+      const trashEvacuation = !strictCas && _hasTrashEvacuationCapabilities(capabilities, provider);
+      if (!strictCas && !trashEvacuation) {
         fail('この保存先では必要なatomic条件付き操作をすべて利用できません', 503, 'strict_cas_unavailable');
       }
-      if (typeof provider.uploadBytesConditional !== 'function' || typeof provider.deletePathConditional !== 'function') {
-        fail('この保存先は厳密なフォルダー復元に対応していません', 503, 'strict_cas_unavailable');
-      }
-      if (provider.supportsStrictConditionalDelete?.() === false) {
-        fail('Dropboxではatomic条件付き削除を利用できないため、この復元は手動確認が必要です', 503, 'strict_cas_unavailable');
-      }
-      if (typeof provider.deleteEmptyDirectoryConditional !== 'function' || typeof provider.ensureDirectoryConditional !== 'function'
-        || typeof provider.rollbackDirectoryConditional !== 'function' || typeof provider.rollbackFileConditional !== 'function') {
-        fail('この保存先は空フォルダーの厳密な削除に対応していません', 503, 'strict_cas_unavailable');
-      }
+      const mode = strictCas ? 'strict-cas' : 'trash-evacuation';
       const context = await resolveReference(domain, version, targets, target);
       const current = await captureManifest(context.resolved.path);
       const currentRevision = await manifestRevision(current);
       const adapter = await journalAdapter();
       const existing = await adapter.load(journalKind(), journalId(context));
+      const existingMode = existing?.payload?.mode || 'strict-cas';
       const resumable = existing && (['applying', 'rolling-back', 'committing'].includes(existing.payload?.stage)
         || (existing.payload?.stage === 'failed' && !existing.payload?.rolledBack))
         && existing.payload?.versionId === context.reference.versionId
@@ -217,10 +231,13 @@
         && existing.payload?.workspaceId === workspaceId
         && existing.payload?.actor === actor && existing.payload?.role === role
         && existing.payload?.policyIdentity === policyIdentity;
+      if (resumable && existingMode !== mode) {
+        fail('復元中に保存先の実行モードが変わったため再開できません');
+      }
       if (!resumable && currentRevision !== expectedRevision && currentRevision !== context.desiredRevision) {
         fail('復元対象の確認後に現在の状態が変わりました');
       }
-      return { ...context, current, currentRevision };
+      return { ...context, current, currentRevision, mode };
     }
 
     const journalId = context => `scheduler-folder-restore-${fnv(`${context.reference.versionId}|${context.resolved.target}|${identity}`)}`;
@@ -232,7 +249,8 @@
       const now = Date.now();
       if (record && (record.payload?.versionId !== context.reference.versionId || record.payload?.target !== context.resolved.target
         || record.payload?.providerRootIdentity !== identity || record.payload?.workspaceId !== workspaceId
-        || record.payload?.actor !== actor || record.payload?.role !== role || record.payload?.policyIdentity !== policyIdentity)) {
+        || record.payload?.actor !== actor || record.payload?.role !== role || record.payload?.policyIdentity !== policyIdentity
+        || (record.payload?.mode || 'strict-cas') !== context.mode)) {
         fail('フォルダー復元journalの境界が一致しません');
       }
       if (record?.payload?.stage === 'complete') return { adapter, kind, id, record, complete: true };
@@ -244,16 +262,20 @@
         || (record.payload?.stage === 'failed' && record.payload?.rollbackError && !record.payload?.rolledBack));
       const resumeCommit = record?.payload?.stage === 'committing';
       const payload = record ? { ...record.payload, stage: resumeRollback ? 'rolling-back' : (resumeCommit ? 'committing' : 'applying'), error: '', rollbackError: '', rolledBack: false,
+        mode: record.payload.mode || context.mode,
         beforeVersionId: restart ? '' : record.payload.beforeVersionId,
         previewManifest: restart ? clone(context.current) : (record.payload.previewManifest || clone(context.current)),
         completedEntries: restart ? [] : (record.payload.completedEntries || []),
         applied: restart ? {} : (record.payload.applied || {}), intents: restart ? {} : (record.payload.intents || {}),
-        rollbackCompleted: restart ? [] : (record.payload.rollbackCompleted || []), fencingToken, leaseOwner: executorId } : {
-        schemaVersion: 1, object_type: 'scheduler-folder-restore-journal', stage: 'preparing',
+        rollbackCompleted: restart ? [] : (record.payload.rollbackCompleted || []),
+        evacuations: restart ? [] : (record.payload.evacuations || []),
+        manualRestore: restart ? [] : (record.payload.manualRestore || []),
+        fencingToken, leaseOwner: executorId } : {
+        schemaVersion: 1, object_type: 'scheduler-folder-restore-journal', stage: 'preparing', mode: context.mode,
         versionId: context.reference.versionId, target: context.resolved.target, path: context.resolved.path,
         domain: context.resolved.domain, providerRootIdentity: identity, workspaceId, actor, role, policyIdentity,
         expectedRevision, desiredRevision: context.desiredRevision, beforeVersionId: '', previewManifest: clone(context.current),
-        completedEntries: [], applied: {}, intents: {}, rollbackCompleted: [],
+        completedEntries: [], applied: {}, intents: {}, rollbackCompleted: [], evacuations: [], manualRestore: [],
         fencingToken: 1, leaseOwner: executorId, createdAt: new Date().toISOString(), error: '',
       };
       payload.leaseExpiresAt = new Date(now + leaseMs).toISOString();
@@ -324,18 +346,21 @@
         await journal.checkpoint({ beforeVersionId: String(saved.version || ''), stage: 'applying' });
         payload = journal.record.payload;
       }
+      const mode = payload.mode || 'strict-cas';
       const completed = new Set(payload.completedEntries || []);
       const applied = { ...(payload.applied || {}) };
       const intents = { ...(payload.intents || {}) };
+      const evacuations = Array.isArray(payload.evacuations) ? [...payload.evacuations] : [];
       const desiredFiles = new Map(context.desired.filter(item => item.entry_type === 'file').map(item => [item.rel_path, item]));
       const desiredDirs = new Set(context.desired.filter(item => item.entry_type === 'directory').map(item => item.rel_path));
       const preview = Array.isArray(payload.previewManifest) ? payload.previewManifest : [];
       const previewFiles = new Map(preview.filter(item => entryType(item) === 'file').map(item => [item.rel_path, item]));
       const previewDirs = new Set(preview.filter(item => entryType(item) === 'directory').map(item => item.rel_path));
 
-      const saveProgress = async (key, change) => {
+      const saveProgress = async (key, change, evacuationRecord) => {
         completed.add(key); applied[key] = change;
-        await journal.checkpoint({ completedEntries: [...completed].sort(), applied: clone(applied), intents: clone(intents) });
+        if (evacuationRecord) evacuations.push(evacuationRecord);
+        await journal.checkpoint({ completedEntries: [...completed].sort(), applied: clone(applied), intents: clone(intents), evacuations: clone(evacuations) });
         await window.__MeldexSchedulerFolderRestoreCrashHook?.('checkpoint', { key, target: context.resolved.target });
       };
       const saveIntent = async (key, intent) => {
@@ -415,18 +440,97 @@
         await saveProgress(key, { kind: 'rmdir', changed: true });
       };
 
-      // Remove snapshot-extraneous entries and old entry types first. This
-      // makes file<->directory transitions deterministic and rollbackable.
-      for (const extra of preview.filter(item => entryType(item) === 'file'
-        && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)))) await deletePreviewFile(extra);
-      for (const relPath of [...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path))
-        .sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))) {
-        await deletePreviewDirectory(relPath);
+      // ゴミ箱退避モード用: 個々のファイルを条件付き削除する代わりに、対象1件を
+      // まるごとゴミ箱へ原子的no-replace移動する(物理削除は一切行わない)。
+      // ディレクトリはmovePathNoReplaceが中身ごと移動するため、事前に空にする必要がない
+      // (競合窓で追加されたファイルも中身ごと保全される)。
+      const evacuateEntry = async (key, fullPath, relPath, reasonWhenEvacuated) => {
+        if (completed.has(key)) return;
+        if (!intents[key]) await saveIntent(key, { kind: 'evacuate', expectedRevision: '' });
+        await journal.checkpoint({});
+        const outcome = await provider.evacuatePathToTrash(fullPath, intents[key].expectedRevision || null, { name: key });
+        await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
+        const evacuationRecord = outcome?.evacuated ? {
+          rel_path: relPath, original_path: fullPath, trash_path: outcome.trashPath, kind: outcome.kind || 'file',
+          reason: typeof reasonWhenEvacuated === 'function' ? reasonWhenEvacuated(outcome) : reasonWhenEvacuated,
+          observed_revision: outcome.beforeRevision || '', content_stable: outcome.contentStable !== false,
+        } : null;
+        await saveProgress(key, { kind: 'evacuate', trashPath: outcome?.trashPath || '', evacuated: !!outcome?.evacuated, changed: true }, evacuationRecord);
+      };
+
+      const evacuatePreviewFile = async extra => {
+        const key = `delete:${extra.rel_path}`;
+        const fullPath = join(context.resolved.path, extra.rel_path);
+        if (!completed.has(key) && !intents[key]) await saveIntent(key, { kind: 'evacuate', expectedRevision: extra.revision || '' });
+        await evacuateEntry(key, fullPath, extra.rel_path,
+          outcome => (outcome.matchedExpected === false ? 'conflict-changed' : 'obsolete'));
+      };
+
+      // preview時点で既知の不要ディレクトリのうち、他の不要ディレクトリの子孫ではない
+      // 最上位のものだけをまるごと退避する(子孫は親と一緒に移動されるため個別処理不要)。
+      const obsoleteDirPaths = new Set([...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path)));
+      const isUnderObsoleteDir = relPath => [...obsoleteDirPaths].some(dir => relPath.startsWith(dir + '/'));
+      const outermostObsoleteDirs = [...obsoleteDirPaths].filter(dir => !isUnderObsoleteDir(dir));
+
+      if (mode === 'trash-evacuation') {
+        for (const relPath of outermostObsoleteDirs.sort()) {
+          await evacuateEntry(`rmdir:${relPath}`, join(context.resolved.path, relPath), relPath, 'obsolete');
+        }
+        for (const extra of preview.filter(item => entryType(item) === 'file'
+          && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)) && !isUnderObsoleteDir(item.rel_path))) {
+          await evacuatePreviewFile(extra);
+        }
+        // preview確認後に出現した未知のファイル・ディレクトリを検知して退避する
+        // (復元完遂後の内容が必ずsnapshotと一致するようにするため)。再スキャンは
+        // 冪等(既に退避済みの項目は現在の一覧から消えているため再検出されない)。
+        const unexpected = [];
+        async function scanLive(currentPath, relative) {
+          provider._forgetListCache?.(currentPath);
+          let entries;
+          try {
+            entries = await provider.listEntries(currentPath);
+          } catch (error) {
+            if (/not_found/i.test(error?.message || '')) return;
+            throw error;
+          }
+          for (const entry of entries || []) {
+            const relPath = join(relative, entry.name);
+            const fullPath = join(currentPath, entry.name);
+            if (entry.kind === 'directory') {
+              if (desiredDirs.has(relPath) || previewDirs.has(relPath)) { await scanLive(fullPath, relPath); continue; }
+              unexpected.push({ rel_path: relPath, full_path: fullPath });
+            } else if (!desiredFiles.has(relPath) && !previewFiles.has(relPath)) {
+              unexpected.push({ rel_path: relPath, full_path: fullPath });
+            }
+          }
+        }
+        await scanLive(context.resolved.path, '');
+        for (const extra of unexpected) await evacuateEntry(`evac-new:${extra.rel_path}`, extra.full_path, extra.rel_path, 'conflict-new');
+      } else {
+        // Remove snapshot-extraneous entries and old entry types first. This
+        // makes file<->directory transitions deterministic and rollbackable.
+        for (const extra of preview.filter(item => entryType(item) === 'file'
+          && (!desiredFiles.has(item.rel_path) || desiredDirs.has(item.rel_path)))) await deletePreviewFile(extra);
+        for (const relPath of [...previewDirs].filter(path => !desiredDirs.has(path) || desiredFiles.has(path))
+          .sort((a, b) => b.split('/').length - a.split('/').length || a.localeCompare(b))) {
+          await deletePreviewDirectory(relPath);
+        }
       }
 
       for (const relPath of [...desiredDirs].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))) {
         const key = `mkdir:${relPath}`;
         const fullPath = join(context.resolved.path, relPath);
+        if (mode === 'trash-evacuation') {
+          if (completed.has(key)) continue;
+          if (!intents[key]) await saveIntent(key, { kind: 'mkdir', beforeExists: previewDirs.has(relPath) });
+          const stat = await provider.statPath(fullPath).catch(() => null);
+          if (stat && stat.kind !== 'directory') await evacuateEntry(`evac-new:${relPath}`, fullPath, relPath, 'conflict-new');
+          await journal.checkpoint({});
+          await provider.ensureDirectory(fullPath);
+          await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
+          await saveProgress(key, { kind: 'mkdir', created: !previewDirs.has(relPath), changed: !previewDirs.has(relPath) });
+          continue;
+        }
         const stat = await provider.statPath(fullPath).catch(() => null);
         if (stat && stat.kind !== 'directory') fail('復元先の種類がVersionと異なります');
         if (completed.has(key)) {
@@ -467,15 +571,38 @@
           continue;
         }
         if (completed.has(key)) fail('checkpoint後に復元済みファイルが変更されました');
-        if ((before && (!current || current.revision !== before.revision || currentBase64 !== before.content_base64))
-          || (!before && current)) fail('確認後に復元先ファイルが変更されました');
-        if (!intents[key]) await saveIntent(key, ownershipIntent('write', key, fullPath, { beforeRevision: before?.revision || null,
-          beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64 }));
+        const mismatched = (before && (!current || current.revision !== before.revision || currentBase64 !== before.content_base64))
+          || (!before && current);
+        let evacuationRecord = null;
+        let expectedRevisionForWrite = before?.revision || null;
+        if (mismatched && mode === 'trash-evacuation') {
+          // 競合検知(§6): 確認後に書き換えられた/占有された現在の内容をゴミ箱へ退避してから
+          // 目的内容を書き直す(退避は完了報告へ記録。再試行は1回のみ=このループを再実行しない)。
+          if (!intents[key]) await saveIntent(key, { kind: 'write', beforeRevision: before?.revision || null,
+            beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64, conflictEvacuated: false });
+          if (!intents[key].conflictEvacuated && current) {
+            await journal.checkpoint({});
+            const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key });
+            if (outcome?.evacuated) {
+              evacuationRecord = { rel_path: relPath, original_path: fullPath, trash_path: outcome.trashPath, kind: 'file',
+                reason: 'conflict-changed', observed_revision: outcome.beforeRevision || '' };
+            }
+          }
+          intents[key] = { ...intents[key], conflictEvacuated: true };
+          await journal.checkpoint({ intents: clone(intents) });
+          expectedRevisionForWrite = null;
+        } else if (mismatched) {
+          fail('確認後に復元先ファイルが変更されました');
+        } else if (!intents[key]) {
+          await saveIntent(key, ownershipIntent('write', key, fullPath, { beforeRevision: before?.revision || null,
+            beforeBase64: before?.content_base64 ?? null, afterHash: desired.content_base64 }));
+        }
         await journal.checkpoint({});
-        const result = await provider.uploadBytesConditional(fullPath, base64ToBytes(desired.content_base64), before?.revision || null,
-          { name: intents[key].markerName, bytes: markerBytes(intents[key].markerToken) });
+        const result = await provider.uploadBytesConditional(fullPath, base64ToBytes(desired.content_base64), expectedRevisionForWrite,
+          { name: intents[key].markerName || key, bytes: intents[key].markerToken ? markerBytes(intents[key].markerToken) : undefined });
         await window.__MeldexSchedulerFolderRestoreCrashHook?.('mutated', { key, target: context.resolved.target });
-        await saveProgress(key, { kind: 'write', afterRevision: String(result?.revision || result?.rev || result?.etag || ''), afterHash: desired.content_base64, changed: true });
+        await saveProgress(key, { kind: 'write', afterRevision: String(result?.revision || result?.rev || result?.etag || ''),
+          afterHash: desired.content_base64, changed: true }, evacuationRecord);
       }
 
       const finalManifest = await captureManifest(context.resolved.path);
@@ -483,12 +610,11 @@
       await journal.checkpoint({ stage: 'committing' });
       for (const intent of Object.values(intents)) await cleanupMarker(intent);
       await journal.finish({ stage: 'complete', completedAt: new Date().toISOString() });
-      return { restored: desiredFiles.size, restoredDirectories: desiredDirs.size };
+      return { restored: desiredFiles.size, restoredDirectories: desiredDirs.size, mode, evacuations: clone(evacuations) };
     }
 
-    async function rollbackApplied(context, journal) {
+    async function rollbackStrictCas(context, journal) {
       const payload = journal.record.payload;
-      if (!payload.beforeVersionId) return;
       const beforeMeta = await versionApi.read(provider, context.resolved.path, payload.beforeVersionId);
       const before = validateManifest(beforeMeta, context.resolved.path);
       const intents = Object.entries(payload.intents || {}).reverse();
@@ -525,6 +651,75 @@
       const rolledBack = await captureManifest(context.resolved.path);
       if (await manifestRevision(rolledBack) !== await manifestRevision(before)) fail('復元失敗後の巻き戻しを完了できません', 500);
       await journal.checkpoint({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
+    }
+
+    // ゴミ箱退避モードのrollbackは、strict-casのようなbit単位の完全一致を保証しない
+    // (§6: 競合そのものは防げないため)。退避済みエントリはゴミ箱からの移動戻しを試み、
+    // 移動先が再占有されて戻せない場合は物理削除・上書きをせず「手動で戻す必要がある」
+    // 項目として journal.manualRestore / 完了報告へ列挙する(消失させない、を最優先する)。
+    async function rollbackEvacuationMode(context, journal) {
+      const payload = journal.record.payload;
+      const intents = Object.entries(payload.intents || {}).reverse();
+      const applied = payload.applied || {};
+      const rollbackCompleted = new Set(payload.rollbackCompleted || []);
+      const manualRestore = Array.isArray(payload.manualRestore) ? [...payload.manualRestore] : [];
+      await journal.checkpoint({ stage: 'rolling-back' });
+      const rollbackCheckpoint = async key => {
+        rollbackCompleted.add(key);
+        await journal.checkpoint({ rollbackCompleted: [...rollbackCompleted].sort(), manualRestore: clone(manualRestore) });
+      };
+      for (const [key, intent] of intents) {
+        if (rollbackCompleted.has(key)) continue;
+        const relPath = key.slice(key.indexOf(':') + 1);
+        const fullPath = join(context.resolved.path, relPath);
+        if (intent.kind === 'evacuate') {
+          const trashPath = applied[key]?.trashPath || '';
+          if (trashPath) {
+            const stillThere = await provider.statPath(trashPath).catch(() => null);
+            if (stillThere) {
+              try {
+                await provider.movePathNoReplace(trashPath, fullPath);
+              } catch {
+                manualRestore.push({ rel_path: relPath, trash_path: trashPath, reason: 'restore-destination-occupied' });
+              }
+            }
+          }
+        } else if (intent.kind === 'write') {
+          const currentStat = await provider.statPath(fullPath).catch(() => null);
+          if (intent.beforeBase64 == null) {
+            if (currentStat) {
+              const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key }).catch(() => null);
+              if (!outcome?.evacuated) manualRestore.push({ rel_path: relPath, reason: 'write-rollback-failed' });
+            }
+          } else if (currentStat) {
+            try {
+              await provider.uploadBytesConditional(fullPath, base64ToBytes(intent.beforeBase64), currentStat.meta?.rev || null);
+            } catch {
+              manualRestore.push({ rel_path: relPath, reason: 'write-rollback-conflict' });
+            }
+          } else {
+            manualRestore.push({ rel_path: relPath, reason: 'write-rollback-missing' });
+          }
+        } else if (intent.kind === 'mkdir') {
+          if (!intent.beforeExists) {
+            const stat = await provider.statPath(fullPath).catch(() => null);
+            if (stat) {
+              const outcome = await provider.evacuatePathToTrash(fullPath, null, { name: key }).catch(() => null);
+              if (!outcome?.evacuated) manualRestore.push({ rel_path: relPath, reason: 'mkdir-rollback-failed' });
+            }
+          }
+        }
+        await window.__MeldexSchedulerFolderRestoreCrashHook?.('rollback-mutated', { key, target: context.resolved.target });
+        await rollbackCheckpoint(key);
+      }
+      await journal.checkpoint({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString(), manualRestore: clone(manualRestore) });
+    }
+
+    async function rollbackApplied(context, journal) {
+      const payload = journal.record.payload;
+      if (!payload.beforeVersionId) return;
+      if ((payload.mode || 'strict-cas') === 'trash-evacuation') return rollbackEvacuationMode(context, journal);
+      return rollbackStrictCas(context, journal);
     }
 
     return Object.freeze({
@@ -569,39 +764,59 @@
       async derivedRevision() { return ''; },
       async restoreTarget(domain, version, targets, target, expectedRevision, options = {}) {
         let context = await preflight(domain, version, targets, target, expectedRevision);
-        if (options.preflightOnly) return { restored: 0, preflight: true };
+        if (options.preflightOnly) return { restored: 0, preflight: true, mode: context.mode };
         if (options.verifyOnly) {
           if (context.currentRevision !== context.desiredRevision) fail('checkpoint後に復元済みフォルダーが変更されました');
-          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true, verified: true };
+          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true, verified: true, mode: context.mode };
         }
-        let journal = await acquireJournal(context, expectedRevision);
-        if (journal.complete) {
-          if (context.currentRevision !== context.desiredRevision) fail('完了済み復元の内容が変更されました');
-          return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true };
+        // 判断2(2026-08-20計画・承認済み): trash-evacuationモードでは開始前に対象フォルダーの
+        // 共有編集ロックを取得し、他メンバーのMeldexクライアント経由の書き込みを復元中は拒否させる。
+        // holderはjournalIdに固定するため、別セッションから再開しても自分のロックとして扱える。
+        // strict-cas(OPFS/デスクトップ)は対象外(既存挙動を変えない)。
+        const lockHolder = journalId(context);
+        const lockStore = window.MeldexFileLockStore;
+        const needsLock = context.mode === 'trash-evacuation' && typeof lockStore?.acquireSystemLock === 'function';
+        if (needsLock) {
+          await lockStore.acquireSystemLock(provider, context.resolved.path, {
+            holder: lockHolder, reason: 'スケジューラーフォルダー復元(ゴミ箱退避方式)実行中のため一時的に編集ロックしています',
+          });
         }
         try {
-          if (journal.record.payload?.stage === 'rolling-back') {
-            await rollbackApplied(context, journal);
-            await journal.finish({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
-            await journal.close();
-            context = await preflight(domain, version, targets, target, expectedRevision);
-            journal = await acquireJournal(context, expectedRevision);
+          let journal = await acquireJournal(context, expectedRevision);
+          if (journal.complete) {
+            if (context.currentRevision !== context.desiredRevision) fail('完了済み復元の内容が変更されました');
+            return { restored: context.desired.filter(item => item.entry_type === 'file').length, resumed: true,
+              mode: context.mode, evacuations: journal.record.payload?.evacuations || [] };
           }
-          return await applyExact(context, journal);
-        } catch (error) {
-          if (error?.hardCrash) throw error;
-          if (journal.record.payload?.stage === 'committing') throw error;
           try {
-            await rollbackApplied(context, journal);
-            await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500), rolledBack: true });
-          } catch (rollbackError) {
-            try { await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500),
-              rollbackError: String(rollbackError?.message || rollbackError).slice(0, 500) }); } catch { /* original error wins */ }
-            error.rollbackError = rollbackError;
+            if (journal.record.payload?.stage === 'rolling-back') {
+              await rollbackApplied(context, journal);
+              await journal.finish({ stage: 'rolled-back', rolledBack: true, rolledBackAt: new Date().toISOString() });
+              await journal.close();
+              context = await preflight(domain, version, targets, target, expectedRevision);
+              journal = await acquireJournal(context, expectedRevision);
+            }
+            const result = await applyExact(context, journal);
+            return { ...result, mode: context.mode };
+          } catch (error) {
+            if (error?.hardCrash) throw error;
+            if (journal.record.payload?.stage === 'committing') throw error;
+            try {
+              await rollbackApplied(context, journal);
+              await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500), rolledBack: true });
+            } catch (rollbackError) {
+              try { await journal.finish({ stage: 'failed', error: String(error?.message || error).slice(0, 500),
+                rollbackError: String(rollbackError?.message || rollbackError).slice(0, 500) }); } catch { /* original error wins */ }
+              error.rollbackError = rollbackError;
+            }
+            throw error;
+          } finally {
+            await journal.close().catch(() => {});
           }
-          throw error;
         } finally {
-          await journal.close().catch(() => {});
+          if (needsLock) {
+            await lockStore.releaseSystemLock(provider, context.resolved.path, { holder: lockHolder }).catch(() => {});
+          }
         }
       },
     });

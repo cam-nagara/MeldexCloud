@@ -15,6 +15,34 @@ let _csvSaveQueued = false;
 let _csvLastSavedEtag = '';
 let _csvLastSavedTransportRevision = '';
 let _csvSheetModeActive = false;
+// ボードのリンクカード計画 Phase B-2（縮小スコープ）: CSVの編集状態は#pivot-table等と
+// 違い、ctxへ分離されていない単一のグローバル変数のまま。サブパネル等の独立した
+// 描画先へ開く場合、_csvRenderContainerOverride を使い #csv-table-container の
+// 代わりに専用DOMへ描画する（シートモードの共有 #pivot-table は使わせない＝
+// _csvSheetModeActive を強制falseにする）。状態自体は単一のままのため、
+// 直前の対象が今回とは別ファイルの場合、直前の描画先へ切り替え通知を出す
+// （空白・不一致のまま放置しない。完全な同時独立編集は別フェーズの課題）。
+let _csvRenderContainerOverride = null;
+
+// サブパネルを閉じると専用DOMは切り離される（GBSubPanel._retractCurrentContent）。
+// overrideが切り離されたDOMを指したまま残ると、以降のメイン画面側の再描画が
+// 画面のどこにも現れなくなる。参照の生死をここで自己修復し、切り離されていれば
+// 共有の表示領域へ戻す（フォルダの_folderResolveRenderOverrideと同じ考え方）。
+function _csvResolveRenderOverride() {
+  if (_csvRenderContainerOverride && !_csvRenderContainerOverride.isConnected) {
+    _csvRenderContainerOverride = null;
+  }
+  return _csvRenderContainerOverride;
+}
+
+function _csvTableContainerEl() {
+  return _csvResolveRenderOverride() || document.getElementById('csv-table-container');
+}
+
+function _csvShowTakeoverNotice(newLabel) {
+  if (!_csvPath) return;
+  _csvRenderMessage(String(newLabel || '') + ' に切り替わりました（別の画面で開かれたため）');
+}
 
 function _csvHistoryScope() {
   return _csvPath ? 'csv:' + _csvPath : '';
@@ -246,7 +274,7 @@ function _csvRenderMessage(message) {
     table.appendChild(tbody);
     return;
   }
-  const container = document.getElementById('csv-table-container');
+  const container = _csvTableContainerEl();
   if (container) container.innerHTML = '<div style="padding:16px;color:var(--fg2);">' + message + '</div>';
 }
 
@@ -268,6 +296,12 @@ async function openCsvFile(label, path, opts) {
     const saved = await saveCsv();
     if (!saved) return false;
   }
+  // 直前の対象が今回とは別ファイルで、かつ直前の描画先がまだ残っている場合は
+  // 空白・不一致のまま放置せず、切り替わったことを明示する（_csvRenderContainerOverure
+  // を書き換える前に呼ぶことで、直前の描画先＝サブパネル/メインどちらでも正しく届く）。
+  if (_csvPath && _csvPath !== path) {
+    _csvShowTakeoverNotice(_csvDisplayLabel(label, path));
+  }
   if (showGlobalLoading) showLoading('CSVを読み込み中...');
   const openSeq = ++_csvOpenSeq;
     _csvPath = '';
@@ -279,11 +313,19 @@ async function openCsvFile(label, path, opts) {
     _csvLastSavedTransportRevision = '';
     clearTimeout(_csvAutoSaveTimer);
 
+  // 独立した描画先（サブパネル等）は共有シングルトンの#pivot-table（シートモード）
+  // を絶対に取り合わない。containerEl指定時は常に専用DOMへの直接描画（非シートモード）
+  // へ強制する。
+  _csvRenderContainerOverride = openOpts.containerEl || null;
+  if (_csvRenderContainerOverride) _csvSheetModeActive = false;
+
   if (!openOpts.skipStateView) state.view = 'csv';
   _csvPrepareVisibleSurface(label, path, openOpts);
-  const csvTitleEl = document.getElementById('csv-title');
-  if (csvTitleEl) csvTitleEl.textContent = label;
-  if (typeof window !== 'undefined') window.MeldexFileLockBadge?.apply?.(csvTitleEl, path);
+  if (!openOpts.skipGlobalUi) {
+    const csvTitleEl = document.getElementById('csv-title');
+    if (csvTitleEl) csvTitleEl.textContent = label;
+    if (typeof window !== 'undefined') window.MeldexFileLockBadge?.apply?.(csvTitleEl, path);
+  }
   const currentTitleEl = document.getElementById('current-title');
   if (currentTitleEl && !openOpts.skipGlobalUi) currentTitleEl.textContent = label;
   if (!openOpts.skipSaveLastView) saveLastView({ type: 'csv', label, path });
@@ -329,7 +371,11 @@ async function openCsvFile(label, path, opts) {
       )
       : (data.etag || '');
     _csvNormalizeTableShape();
-    if (globalThis.MeldexCsvWorkbench) {
+    // MeldexCsvWorkbench.render()は state().active（=_csvSheetModeActive）が false だと
+    // 何もせず false を返す（共有 #pivot-table を使わないため）。独立した描画先
+    // （サブパネル等）へ強制的に非シートモードで開いた場合にここを無条件で呼ぶと、
+    // 表がどちらの経路からも描画されず空白のままになる。_csvSheetModeActive で分岐する。
+    if (_csvSheetModeActive && globalThis.MeldexCsvWorkbench) {
       await globalThis.MeldexCsvWorkbench.open({
         path,
         rows: _csvData,
@@ -343,7 +389,9 @@ async function openCsvFile(label, path, opts) {
     // フェッチより前に呼ぶと、切替直後・読込完了前の取り消しがこの読込完了で
     // 上書きされ消える（app/docs/undo-pane-context_plan_2026-07-25.md §9 既知バグ）。
     if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('csv:' + path);
-    _csvRefreshAnnotationTarget();
+    // 独立した描画先（サブパネル等）は注釈オーバーレイを描画しないため、メイン画面の
+    // 注釈対象（ann.targetPath）をここで奪わない。
+    if (!openOpts.skipGlobalUi) _csvRefreshAnnotationTarget();
     if (!openOpts.skipAutoVersion && typeof startAutoVersion === 'function') startAutoVersion(path, 'file');
     if (!openOpts.skipGlobalUi) showStatus('CSV: ' + label);
     // 競合確認からの明示的な再読込だけを、表の描画と後続UI更新がすべて
@@ -531,7 +579,7 @@ function _csvRenderSheetTable() {
 }
 
 function _csvRenderLegacyTable() {
-  const container = document.getElementById('csv-table-container');
+  const container = _csvTableContainerEl();
   if (!container) return;
   if (_csvData.length === 0) {
     _csvRenderMessage('空のCSVファイルです');

@@ -1,3 +1,16 @@
+      showConfirmDialog(message, onOk);
+      return;
+    }
+    if (typeof window.confirm !== 'function' || window.confirm(message)) onOk?.();
+  }
+
+  function _normalizeEmbeddedNoteIcon(button, size) {
+    const svgIcon = button?.querySelector?.('svg');
+    if (!svgIcon) return;
+    svgIcon.setAttribute('width', String(size));
+    svgIcon.setAttribute('height', String(size));
+    svgIcon.style.width = size + 'px';
+    svgIcon.style.height = size + 'px';
     svgIcon.style.display = 'block';
     svgIcon.style.flex = '0 0 ' + size + 'px';
   }
@@ -273,19 +286,12 @@
     const userText = document.createElement('span');
     userText.className = 'ann-user-name';
     userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'ann-note-delete-btn';
-    deleteBtn.dataset.annDelete = '1';
-    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
-    deleteBtn.setAttribute('aria-label', '注釈を削除');
-    deleteBtn.title = '削除';
-    deleteBtn.innerHTML = lucide('x', 12);
-    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
+    const actions = document.createElement('div');
+    actions.className = 'ann-note-actions';
     headerLabel.appendChild(userIcon);
     headerLabel.appendChild(userText);
     header.appendChild(headerLabel);
-    header.appendChild(deleteBtn);
+    header.appendChild(actions);
     note.tabIndex = -1;
     note.setAttribute('aria-haspopup', 'menu');
     note.appendChild(header);
@@ -327,8 +333,8 @@
       persist();
     };
     header.addEventListener('pointerdown', (e) => {
-      // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
-      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
+      // メニュー (…) ボタン上ではドラッグ開始しない
+      if (!_ann.active || e.target.closest('button,.ann-note-resize-handle,.gb-fmt-popup')) return;
       e.preventDefault();
       e.stopPropagation();
       const pt = _toLocalCoords(e.clientX, e.clientY);
@@ -355,13 +361,6 @@
       note.remove();
       _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
     };
-
-    deleteBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-    deleteBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-    });
 
     // 右クリックメニュー (色変更 / フキダシしっぽ / 削除)
     function _showEmbeddedNoteContextMenu(ev) {
@@ -619,7 +618,7 @@
       e.stopPropagation();
       _showEmbeddedNoteContextMenu(e);
     });
-    note.appendChild(moreBtn);
+    actions.appendChild(moreBtn);
 
     note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
     if (typeof window.addLongPressHandler === 'function') {
@@ -898,3 +897,4 @@
       const nodeEl = _boardAnnotationNode(anchor);
       if (!nodeEl) {
         if (!_boardStillHasNode(anchor.nodeId)) _detachAnchoredAnnotation(entry);
+        return;

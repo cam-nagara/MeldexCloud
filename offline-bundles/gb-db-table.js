@@ -289,9 +289,7 @@ function _dbEntityCreateIsEditing(renderCtx) {
   if (table?.querySelector?.('.entity-rename-input,.th-rename-input,.cell-inline-input,.cell-inline-select,.cell-date-editor')) return true;
   // セレクト/ユーザー/リレーション等のドロップダウンは body 直下に出るため、テーブル内検索では拾えない
   if (renderCtx?.paneId) {
-    const paneId = globalThis.CSS?.escape
-      ? CSS.escape(renderCtx.paneId)
-      : String(renderCtx.paneId).replace(/["\\]/g, '\\$&');
+    const paneId = MeldexEscape.cssIdent(renderCtx.paneId);
     return !!document.querySelector(
       `.cell-inline-dd[data-db-pane-id="${paneId}"],.status-dropdown[data-db-pane-id="${paneId}"],.user-dropdown[data-db-pane-id="${paneId}"]`
     );
@@ -309,7 +307,7 @@ function _dbFindEntityRow(ctx, entityName) {
   const root = typeof _paneEl === 'function'
     ? (_paneEl(ctx, '#' + tblId) || (!ctx ? document : null))
     : (!ctx ? document : null);
-  return root?.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`) || null;
+  return root?.querySelector(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`) || null;
 }
 
 function _dbStartEntityInlineRenameWhenVisible(ctx, entityName, dbPath) {
@@ -406,9 +404,9 @@ async function _dbReloadAfterEntityCreate(ctx, dbPath, createdNames) {
         // 選択中セルを再描画後のDOMへ復元する
         if (activeInfo?.entityName && typeof setActiveCell === 'function') {
           const tableAfter = typeof _currentPivotTable === 'function' ? _currentPivotTable(renderCtx) : null;
-          const rowAfter = tableAfter?.querySelector?.(`tbody tr[data-entity-name="${CSS.escape(activeInfo.entityName)}"]`);
+          const rowAfter = tableAfter?.querySelector?.(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(activeInfo.entityName)}"]`);
           const cellAfter = activeInfo.propName
-            ? rowAfter?.querySelector?.(`td[data-prop-name="${CSS.escape(activeInfo.propName)}"]`)
+            ? rowAfter?.querySelector?.(`td[data-prop-name="${MeldexEscape.cssIdent(activeInfo.propName)}"]`)
             : (activeInfo.isEntity ? rowAfter?.querySelector?.('td.col-entity') : null);
           if (cellAfter) setActiveCell(cellAfter, { scroll: false });
         }
@@ -851,7 +849,16 @@ function _handleTbodyPointerdown(e) {
       suppressTimer = null;
     }
     cb.removeEventListener('click', suppressClick, true);
-    cb._rowSelectPointerdownHandled = false;
+    // Chrome は同一要素上でも capture リスナー (このハンドラ) を bubble リスナー
+    // (行生成時の直接 click リスナー・tbody 委譲の _handleCheckboxClick) より
+    // 先に実行する。ここで _rowSelectPointerdownHandled を同期的に false へ
+    // 戻すと、まだ伝播中の同じ click イベントを bubble 側が「pointerdown 未処理」
+    // と誤認し、preventDefault によるロールバック前の cb.checked（一時的に
+    // 反転した値）を読んで選択状態を再トグルしてしまう
+    // (2026-08-20 micro E2E targeted-sheet-micro-entry-plus-position-repeat で
+    // 行選択チェックボックスのクリックが選択直後に取り消される実バグとして確認)。
+    // 同じ click の伝播が完了した後のタスクまでリセットを遅らせる。
+    setTimeout(() => { cb._rowSelectPointerdownHandled = false; }, 0);
   };
   suppressTimer = setTimeout(cleanupSuppress, 200);
 
@@ -2286,9 +2293,7 @@ function _applySelectedColumnClasses(ctx, dbPath) {
   }
   selected.forEach(propName => {
     if (propName === '__entity__') return;
-    const cssProp = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-      ? CSS.escape(propName)
-      : String(propName).replace(/["\\]/g, '\\$&');
+    const cssProp = MeldexEscape.cssIdent(propName);
     table.querySelectorAll(`thead th[data-prop="${cssProp}"], tbody td[data-prop-name="${cssProp}"], tfoot td[data-prop-name="${cssProp}"]`)
       .forEach(el => el.classList.add('col-selected'));
   });
@@ -2572,6 +2577,15 @@ function _dbObservePinnedColumnWidths(table) {
 // _dbClampInt / _dbCellDisplayConfig / setDbCellTextDisplay / showDbCellWrapMenu /
 // _makeColumnWrapSubmenuItems / autoFitCurrentSheetColumns 等はそちらを参照。
 
+const _dbNaturalTextCollator = new Intl.Collator('ja', {
+  numeric: true,
+  sensitivity: 'variant',
+});
+
+function _dbNaturalTextCompare(left, right) {
+  return _dbNaturalTextCollator.compare(String(left ?? ''), String(right ?? ''));
+}
+
 function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   const entitiesMap = data?.entities || {};
   const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {});
@@ -2612,7 +2626,9 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
       return ia - ib;
     });
   } else if (sortCfg.key === 'name') {
-    entityNames.sort((a, b) => sortCfg.dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
+    entityNames.sort((a, b) => sortCfg.dir === 'desc'
+      ? _dbNaturalTextCompare(b, a)
+      : _dbNaturalTextCompare(a, b));
   } else {
     const sortPtc = propTypes?.[sortCfg.key] || {};
     const sortType = sortPtc.type || 'text';
@@ -2650,15 +2666,15 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
         if (na != null && nb != null) cmp = na - nb;
         else if (na != null) cmp = -1;
         else if (nb != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
+        else cmp = _dbNaturalTextCompare(sa, sb);
       } else if (sortType === 'date') {
         const da = toDate(sa), db = toDate(sb);
         if (da != null && db != null) cmp = da - db;
         else if (da != null) cmp = -1;
         else if (db != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
+        else cmp = _dbNaturalTextCompare(sa, sb);
       } else {
-        cmp = sa.localeCompare(sb);
+        cmp = _dbNaturalTextCompare(sa, sb);
       }
       return sortCfg.dir === 'desc' ? -cmp : cmp;
     });
@@ -3557,9 +3573,7 @@ function _dbVirtualStateForTable(table) {
 function _dbApplyVirtualPendingCell(vState) {
   const pending = vState?.pendingCell;
   if (!pending?.entityName || pending.colIdx == null) return;
-  const cssName = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(pending.entityName)
-    : String(pending.entityName).replace(/["\\]/g, '\\$&');
+  const cssName = MeldexEscape.cssIdent(pending.entityName);
   const row = vState.table?.querySelector?.(`tbody tr[data-entity-name="${cssName}"]`);
   const cell = row?.children?.[pending.colIdx] || null;
   if (!cell || cell.classList.contains('col-add-prop-cell')) return;

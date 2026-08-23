@@ -623,7 +623,11 @@
     const message = `${item.name || _runtime().basename(item.path)} をMeldexのゴミ箱へ移動します。`;
     const confirmed = window.MeldexDeleteImpactWarning?.confirmDeleteWithImpact
       ? await window.MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-        [{ path: item.path, kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file' }],
+        [{
+          path: item.path,
+          kind: item.kind === 'directory' || item.type === 'folder' ? 'folder' : 'file',
+          ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+        }],
         message, { operation: 'trash' },
       )
       : false;
@@ -978,6 +982,7 @@
       snapshotView: _snapshotView,
       restoreView: _restoreView,
       move: _move,
+      remove: _remove,
       renderView: () => { _renderSources(); _renderBreadcrumbs(); _renderList(); _renderPicker(); },
     };
   }

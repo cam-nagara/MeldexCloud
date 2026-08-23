@@ -174,6 +174,10 @@
     }
     const path = _tabPath(tab);
     const label = _tabLabel(tab, path);
+    if (window.GBPathUtils?.isBrokenOrBackupArtifact?.(path)) {
+      if (typeof showStatus === 'function') showStatus('バックアップまたは壊れた旧形式ファイルは再読み込みできません', true);
+      return false;
+    }
     try {
       await _flushPendingEditorBeforeReload(tab?.type || '', path);
       const handled = await _reloadComponent(tab) || (path ? await _reloadLegacyTab(tab, path, label, current.paneId) : false);

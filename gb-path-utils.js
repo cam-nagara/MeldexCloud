@@ -143,6 +143,21 @@
     return idx >= 0 ? value.slice(idx + 1) : value;
   }
 
+  const MELDEX_CURRENT_FILE_SUFFIXES = [
+    '.scriptnote.json', '.smart-db.json', '.timer.json', '.board.md',
+    '.mel-board', '.mel-sheet', '.mel-scenario', '.mel-timer',
+  ];
+
+  // 旧版の複製失敗や外部同期が残した回復用ファイルは削除せず、現役文書として
+  // 開かない。`.bak` / `.bak-*` と、現役形式の末尾に別拡張子が続くものだけを
+  // 除外し、通常の `report.json.txt` のようなファイルまでは隠さない。
+  function isBrokenOrBackupArtifact(path) {
+    const name = basename(path).toLowerCase();
+    if (!name) return false;
+    if (name.endsWith('.bak') || name.includes('.bak-')) return true;
+    return MELDEX_CURRENT_FILE_SUFFIXES.some(suffix => name.includes(suffix + '.'));
+  }
+
   // 長いパス/URLをUI表示用に中略する。maxChars以内ならそのまま返す。
   // 超過時は「先頭部分…末尾ファイル名」の形式にする（末尾のファイル名=basename()は必ず残す）。
   // ファイル名自体が長くて収まらない場合は「…」+ファイル名の末尾側を優先して maxChars に収める。
@@ -396,6 +411,7 @@
     resolveForClipboard,
     copyToClipboard,
     basename,
+    isBrokenOrBackupArtifact,
     ellipsizePath,
     fitToElement: _fitToElement,
     applyMiddleEllipsis,

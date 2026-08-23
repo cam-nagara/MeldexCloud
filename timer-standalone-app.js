@@ -14,8 +14,7 @@
   function qs(id) { return document.getElementById(id); }
 
   function titleFromPath(path) {
-    const name = String(path || '').split('/').pop() || 'タイマー';
-    return name.replace(/(\.mel-timer|\.timer\.json)$/i, '') || 'タイマー';
+    return window.MeldexTimerFileContract?.titleFromPath?.(path) || 'タイマー';
   }
 
   function setDirty(flag) {
@@ -36,23 +35,19 @@
   }
 
   function collectTimerFile() {
-    const source = app.sourcePayload && typeof app.sourcePayload === 'object' ? app.sourcePayload : {};
-    const sourceTimer = source.timer && typeof source.timer === 'object' ? source.timer : {};
-    const payload = {
-      ...source,
-      type: 'meldex-timer',
-      version: source.version || 1,
-      name: String(qs('timer-title-label')?.value || '').trim() || titleFromPath(app.path),
-      timer: { ...sourceTimer, ...(app.component?.getState?.() || {}) },
-    };
+    const payload = window.MeldexTimerFileContract.build(
+      app.sourcePayload,
+      app.component?.getState?.() || {},
+      { name: qs('timer-title-label')?.value || '', path: app.path },
+    );
     app.sourcePayload = payload;
     return JSON.stringify(payload, null, 2) + '\n';
   }
 
   function restoreTimer(payload, path, etag) {
-    app.sourcePayload = payload && typeof payload === 'object' ? payload : {};
-    const timerState = payload?.timer && typeof payload.timer === 'object' ? payload.timer : payload;
-    app.component.restoreState(timerState || {});
+    const normalized = window.MeldexTimerFileContract.normalizePayload(payload);
+    app.sourcePayload = normalized.payload;
+    app.component.restoreState(normalized.timer);
     setPath(path || '', etag || '');
     qs('timer-title-label').value = String(payload?.name || titleFromPath(path));
     applyTimerFileStyle();

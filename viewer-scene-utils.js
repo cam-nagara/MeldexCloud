@@ -16,6 +16,10 @@
   // ビューワーが動画として認識する拡張子（サーバー側 images-in-folder の include_videos=1 集合と合わせる。
   // meldex_api_file_index.py / meldex_standalone_runtime.py の VIEWER_VIDEO_EXTENSIONS 参照）。
   const VIEWER_VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogv']);
+  // ビューワーが音声として認識する拡張子（gb-link-router.js の AUDIO_EXTS と合わせる。
+  // サブパネル用の音声再生実装: app/docs/board-link-card-subpanel-and-card-tail-plan-2026-08-13.md
+  // 「音声の扱い」節）。
+  const VIEWER_AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac']);
   const VIEWER_IMAGE_LOAD_TIMEOUT_MS = 3000;
 
   // 任意のURLSearchParamsから files パラメータを解析する（現在ページの params 以外にも、
@@ -58,6 +62,11 @@
   function isVideoPath(path) {
     const ext = imageExtFromPath(path);
     return !!ext && VIEWER_VIDEO_EXTS.has(ext);
+  }
+
+  function isAudioPath(path) {
+    const ext = imageExtFromPath(path);
+    return !!ext && VIEWER_AUDIO_EXTS.has(ext);
   }
 
   function isLocalAbsoluteImagePath(path) {
@@ -208,6 +217,7 @@
     imageExtFromPath,
     isNativeBrowserImagePath,
     isVideoPath,
+    isAudioPath,
     isLocalAbsoluteImagePath,
     fileRawUrlForPath,
     imagePreviewUrlForPath,

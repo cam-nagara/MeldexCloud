@@ -478,7 +478,7 @@ function _waitForEntityRow(ctx, entityName, cb) {
     if (ctx?.destroyed) return;
     const root = _paneEl(ctx, '#' + tblId) || (!ctx ? document : null);
     if (!root) return;
-    const tr = root.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`);
+    const tr = root.querySelector(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`);
     if (tr) { cb(tr); return; }
     // 描画フラグが落ちていても、直後の再描画・分割描画で行が後から出ることがある。
     if (attempts < 30) {
@@ -545,8 +545,8 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       if (i > 0) entityName = flatRows[i - 1];
     }
 
-    // tr を検索 (CSS.escape で特殊文字を安全に)
-    const tr = tbody.querySelector(`tr[data-entity-name="${CSS.escape(entityName)}"]`);
+    // tr を検索（共通の CSS 識別子エスケープで特殊文字を安全に扱う）
+    const tr = tbody.querySelector(`tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`);
     if (!tr) {
       // Step 2: チャンク分割中で対象行がまだ生成されていない可能性。
       // 進行中なら短い間隔でリトライ (上限 20回 = 1秒程度)。
@@ -556,7 +556,7 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       }
       return;
     }
-    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.querySelector('.col-entity');
+    const td = (propName && tr.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(propName)}"]`)) || tr.querySelector('.col-entity');
     if (td) setActiveCell(td);
   }, 50);
 }
@@ -2008,8 +2008,8 @@ function insertPropertyInline(refProp, direction, ctxOrDbPath, typeConfig) {
     // 誤って解決され得る（showColHeaderMenu 系と同根。2026-07-15 徹底チェックで発見）。
     if (th) startHeaderInlineRename(th, name, dbPath, _ctx);
     else {
-      const treeHeader = _ctx?.containerEl?.querySelector?.(`.db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`)
-        || document.querySelector(`.tree-view .db-tree-header-cell[data-db-col-token="${CSS.escape(name)}"]`);
+      const treeHeader = _ctx?.containerEl?.querySelector?.(`.db-tree-header-cell[data-db-col-token="${MeldexEscape.cssIdent(name)}"]`)
+        || document.querySelector(`.tree-view .db-tree-header-cell[data-db-col-token="${MeldexEscape.cssIdent(name)}"]`);
       if (treeHeader && typeof showColHeaderMenu === 'function') {
         const rect = treeHeader.getBoundingClientRect();
         showColHeaderMenu({
@@ -2393,9 +2393,7 @@ function _dbCellAt(table, rowIdx, colIdx) {
   if (virtualRows) {
     const entityName = virtualRows.entityNames?.[rowIdx];
     if (!entityName) return null;
-    const cssName = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-      ? CSS.escape(entityName)
-      : String(entityName).replace(/["\\]/g, '\\$&');
+    const cssName = MeldexEscape.cssIdent(entityName);
     const row = table.querySelector(`tbody tr[data-entity-name="${cssName}"]`);
     if (!row) {
       if (typeof _dbRequestVirtualCellReveal === 'function') _dbRequestVirtualCellReveal(table, rowIdx, colIdx);

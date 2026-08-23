@@ -76,6 +76,7 @@
       exclude_patterns: [...FOLDER_VERSION_EXCLUDE],
       deleted_at: '',
       deleted_token: '',
+      ...(options?.metadata || {}),
     }, { expectedRevision: null });
     return { ok: true, version: versionName, file_count: files.length, total_size: totalSize };
   }
@@ -129,6 +130,9 @@
         auto: !!meta.auto,
         file_count: files.length,
         total_size: files.reduce((sum, file) => sum + Number(file?.size || 0), 0),
+        ...Object.fromEntries(Object.entries(meta).filter(([key]) =>
+          key === 'event_id' || key === 'snapshot_reason' || key.startsWith('content_last_editor_')
+          || key.startsWith('snapshot_created_by_') || key.startsWith('next_editor_'))),
       });
     }
     const known = new Set(versions.map(row => row.name));

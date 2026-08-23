@@ -141,20 +141,33 @@ const MeldexExportHtml = (() => {
   // 4. フォント埋め込み
   // ================================================================
 
-  /** Noto Sans JP Regular を data URI で埋め込む */
-  async function embedFont() {
-    try {
-      const r = await fetch('fonts/NotoSansJP-Regular.woff2');
-      if (!r.ok) return '';
-      const buf = await r.arrayBuffer();
-      const bin = new Uint8Array(buf);
-      let s = '';
-      for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
-      const b64 = btoa(s);
-      return `@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: 400; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`;
-    } catch {
-      return '';
+  /** 埋め込み可能な Noto Sans JP のウェイト定義（fonts/ に同梱済みのwoff2のみ） */
+  const EXPORT_FONT_WEIGHTS = {
+    regular: { file: 'fonts/NotoSansJP-Regular.woff2', weight: 400 },
+    medium: { file: 'fonts/NotoSansJP-Medium.woff2', weight: 500 },
+    bold: { file: 'fonts/NotoSansJP-Bold.woff2', weight: 700 },
+  };
+
+  /** Noto Sans JP を data URI で埋め込む。既定は Regular のみ。
+      太字を使うビュー（エントリレイアウトのセル書式等）は weights: ['regular','bold'] を渡す。 */
+  async function embedFont(weights) {
+    const list = Array.isArray(weights) && weights.length ? weights : ['regular'];
+    const parts = [];
+    for (const key of list) {
+      const def = EXPORT_FONT_WEIGHTS[key];
+      if (!def) continue;
+      try {
+        const r = await fetch(def.file);
+        if (!r.ok) continue;
+        const buf = await r.arrayBuffer();
+        const bin = new Uint8Array(buf);
+        let s = '';
+        for (let i = 0; i < bin.length; i++) s += String.fromCharCode(bin[i]);
+        const b64 = btoa(s);
+        parts.push(`@font-face { font-family: 'Noto Sans JP'; font-style: normal; font-weight: ${def.weight}; src: url('data:font/woff2;base64,${b64}') format('woff2'); }`);
+      } catch { /* このウェイトはフォールバックフォントに任せる */ }
     }
+    return parts.join('\n');
   }
 
   // ================================================================
@@ -260,8 +273,7 @@ a { pointer-events: none; color: inherit; text-decoration: inherit; }
   // ================================================================
 
   function buildHtml(title, bodyHtml, css, fontCss, extraHeadHtml) {
-    const escHtml = (s) => String(s).replace(/[&<>"']/g, ch =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    const escHtml = MeldexEscape.html;
     return `<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -347,8 +359,8 @@ ${bodyHtml}
       cssText += opts.extraCss + '\n';
     }
 
-    // フォント埋め込み
-    const fontCss = opts.embedFont !== false ? await embedFont() : '';
+    // フォント埋め込み（fontWeights で太字等の追加ウェイトを指定できる）
+    const fontCss = opts.embedFont !== false ? await embedFont(opts.fontWeights) : '';
 
     const title = opts.title || document.title || '無題';
     return buildHtml(title, clone.outerHTML, cssText, fontCss, opts.extraHeadHtml);
@@ -369,6 +381,7 @@ ${bodyHtml}
         case 'smart-db': html = await _exportSmartDb(); break;
         case 'calendar': html = await _exportCalendar(); break;
         case 'board': html = await _exportBoard(); break;
+        case 'entity-layout': html = await _exportEntityLayout(); break;
         default:
           showStatus('このビューのHTML出力は未対応です', true);
           return;
@@ -450,9 +463,90 @@ ${bodyHtml}
         const path = (typeof bd !== 'undefined' && bd?.path) || '';
         return path.split('/').pop() || 'ボード';
       }
+      case 'entity-layout': {
+        const canvasEl = _findVisibleEntityLayoutCanvas();
+        const grid = canvasEl?.closest('.entity-props-grid-container');
+        const layoutName = grid?.querySelector('.el-tab.active .el-tab-label')?.textContent?.trim() || 'エントリレイアウト';
+        const entityName = _entityLayoutEntityName(canvasEl);
+        return entityName && entityName !== 'エントリ' ? entityName + ' - ' + layoutName : layoutName;
+      }
       default:
         return '無題';
     }
+  }
+
+  // --- エントリレイアウト ---
+
+  /** 表示中のエントリレイアウトのキャンバス（等比フィット中の .el-canvas）を探す。
+      書き出しメニュー（gb-db-entity-layout.js）が押された面の grid を
+      window.__meldexEntityLayoutExportRoot に控えるため、複数面で同時に開いていても
+      その面のキャンバスを優先する。 */
+  function _findVisibleEntityLayoutCanvas() {
+    const stashedRoot = window.__meldexEntityLayoutExportRoot;
+    const scope = stashedRoot?.isConnected ? stashedRoot : document;
+    const found = Array.from(scope.querySelectorAll('.el-viewport .el-canvas')).find(el => {
+      if (!el.isConnected) return false;
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }) || null;
+    if (found || scope === document) return found;
+    return Array.from(document.querySelectorAll('.el-viewport .el-canvas')).find(el => {
+      const rect = el.getBoundingClientRect();
+      return el.isConnected && rect.width > 0 && rect.height > 0;
+    }) || null;
+  }
+
+  /** 書き出し対象の面のエントリ名（サブパネル/右サイドバーはそれぞれのエントリ名を使う） */
+  function _entityLayoutEntityName(canvasEl) {
+    const surfaceRoot = canvasEl?.closest?.('[data-meldex-entity-detail]');
+    const path = surfaceRoot?.dataset?.path || '';
+    if (path) return path.split(/[\/]/).pop().replace(/\.\w+$/, '');
+    return _getViewTitle('entity');
+  }
+
+  /** エントリレイアウトの編集チローム（削除/設定/リサイズ等）を静的出力から取り除く */
+  function _stripEntityLayoutEditChrome(clone) {
+    clone.querySelectorAll('.el-cell-remove, .el-cell-settings, .el-cell-resize').forEach(el => el.remove());
+    clone.querySelectorAll('.el-cell.el-selected').forEach(el => el.classList.remove('el-selected'));
+    clone.querySelectorAll('.el-cell.el-editable').forEach(el => el.classList.remove('el-editable'));
+  }
+
+  /** エントリレイアウト書き出しの共通オプション。PNG出力側（gb-export-image.js）と共有する。 */
+  function entityLayoutExportOptions() {
+    const canvasEl = _findVisibleEntityLayoutCanvas();
+    if (!canvasEl) return null;
+    const width = parseInt(canvasEl.style.width, 10) || canvasEl.offsetWidth || 1000;
+    const height = parseInt(canvasEl.style.height, 10) || canvasEl.offsetHeight || 700;
+    // セル書式で太字が使われている場合は Bold ウェイトも埋め込む（5.5節）
+    const usesBold = !!canvasEl.querySelector('.el-cell[style*="font-weight"]');
+    return {
+      canvasEl,
+      width,
+      height,
+      htmlOptions: {
+        title: _getViewTitle('entity-layout'),
+        cssFiles: ['gb-db-entity-layout.css', 'gb-tools.css', 'gb-ui.css'],
+        extraCss: 'body { padding: 16px; } .el-canvas { position: relative; margin: 0 auto; }',
+        fontWeights: usesBold ? ['regular', 'bold'] : ['regular'],
+        preTransform: (clone) => {
+          // 表示用の等比フィット transform: scale() を解除し、デザイン基準サイズのまま書き出す
+          clone.style.transform = 'none';
+          clone.style.position = 'relative';
+          clone.style.width = width + 'px';
+          clone.style.height = height + 'px';
+          _stripEntityLayoutEditChrome(clone);
+        },
+      },
+    };
+  }
+
+  async function _exportEntityLayout() {
+    const opts = entityLayoutExportOptions();
+    if (!opts) {
+      showStatus('エントリレイアウトが表示されていません', true);
+      return null;
+    }
+    return exportToHtml(opts.canvasEl, opts.htmlOptions);
   }
 
   // --- ノート ---
@@ -695,6 +789,7 @@ ${bodyHtml}
     buildHtml,
     getStaticCss,
     fetchCss,
+    entityLayoutExportOptions,
   };
 
 })();

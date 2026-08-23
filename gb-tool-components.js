@@ -261,6 +261,10 @@ class CompareComponent extends ToolComponent {
 }
 
 // === VersionComponent ===
+// バージョン管理パネルの絞り込みのうち、制作進行の日次記録だけは対象ファイルではなく
+// ワークスペースの記録を見る（制作タスク実績時間の計画書 §7.2）。
+const PRODUCTION_DAILY_KIND = 'production-daily';
+
 class VersionComponent extends ToolComponent {
   destroy() {
     this._destroyed = true;
@@ -293,12 +297,55 @@ class VersionComponent extends ToolComponent {
     if (path) {
       this._loadVersions(path, vType);
     } else {
-      this.el.innerHTML = `<div class="gb-empty-state" style="padding:24px;">
+      this._renderNoTargetView();
+    }
+  }
+
+  // 対象ファイルが無い状態の表示。制作進行の日次記録は対象ファイルに依存しないため、
+  // その絞り込みを選んでいる間は対象未指定でも一覧を出す。
+  _renderNoTargetView() {
+    if (!this.el) return;
+    if ((this.state.timelineKind || '') === PRODUCTION_DAILY_KIND) {
+      this._timelineEntries = [];
+      this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+        ${this._buildTimelineHtml('', 'file', [])}
+      </div>`;
+      this._bindVersionActions();
+      this._mountProductionDailyRecords();
+      return;
+    }
+    this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
+        ${this._buildKindFilterHtml(this.state.timelineKind || 'named,auto,edit')}
+      </div>
+      <div class="gb-empty-state" style="padding:24px;">
         <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide('gitBranch', 48) : ''}</div>
         <div class="gb-empty-message">バージョン管理</div>
-        <div class="gb-empty-hint">ファイルまたはフォルダを開いてからバージョン管理を使用してください</div>
-      </div>`;
+        <div class="gb-empty-hint">ファイルまたはフォルダを開いてからバージョン管理を使用してください（「制作進行の日次記録」はファイルを開かなくても見られます）</div>
+      </div>
+    </div>`;
+    this._bindVersionActions();
+  }
+
+  _mountProductionDailyRecords() {
+    const host = this.el?.querySelector('[data-production-daily-host]');
+    if (!host) return;
+    const Panel = typeof window !== 'undefined' ? window.MeldexProductionDailySnapshotPanel : null;
+    if (typeof Panel !== 'function') {
+      host.textContent = '制作進行の日次記録を読み込めませんでした';
+      return;
     }
+    if (!this._productionDailyPanel) this._productionDailyPanel = new Panel();
+    const panel = this._productionDailyPanel;
+    const showList = () => {
+      panel.renderSnapshotList(host, {
+        onSelectSnapshot: (snap, compareSnapshot) => {
+          panel.renderDayView(host, snap, { compareSnapshot, onBack: showList });
+        },
+      });
+    };
+    showList();
   }
 
   async _loadVersions(path, vType) {
@@ -326,15 +373,19 @@ class VersionComponent extends ToolComponent {
         versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
       } catch {}
     }
-    try {
-      const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200' });
-      if (timelineActorKind) params.set('actor_kind', timelineActorKind);
-      timeline = await apiFetch('/version-panel/timeline?' + params.toString());
-    } catch {}
+    // 制作進行の日次記録は対象ファイルに紐づかないため、タイムラインAPIは呼ばない
+    if (timelineKind !== PRODUCTION_DAILY_KIND) {
+      try {
+        const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200' });
+        if (timelineActorKind) params.set('actor_kind', timelineActorKind);
+        timeline = await apiFetch('/version-panel/timeline?' + params.toString());
+      } catch {}
+    }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
     this.el.innerHTML = this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();
+    if (timelineKind === PRODUCTION_DAILY_KIND) this._mountProductionDailyRecords();
   }
 
   async _runVersionAction(action, path, versionName, vType) {
@@ -394,6 +445,7 @@ class VersionComponent extends ToolComponent {
     const oldValue = entry.old_value || entry.old_status || '';
     const newValue = entry.new_value || entry.new_status || '';
     const summary = entry.body_diff_summary || '';
+    const integrityWarning = entry.integrity_warning || '';
     if (typeof window.GBUI?.createModal !== 'function') {
       throw new Error('変更レコードを初期化できませんでした。');
     }
@@ -401,6 +453,7 @@ class VersionComponent extends ToolComponent {
     content.style.cssText = 'font-size:12px;line-height:1.5;';
     content.innerHTML = `
         <div class="gb-section-desc" style="margin-bottom:8px;">${esc(time)} / ${esc(entry.user || '')}${entry.actor_model ? ' / ' + esc(entry.actor_model) : ''}</div>
+        ${integrityWarning ? `<div role="alert" style="margin-bottom:8px;padding:8px;border:1px solid var(--danger,#c33);border-radius:6px;color:var(--danger,#c33);">${esc(integrityWarning)}</div>` : ''}
         <div style="margin-bottom:8px;"><b>${esc(entry.action || '')}</b> ${esc(entry.entity_name || '')}${entry.property_name ? ' / ' + esc(entry.property_name) : ''}</div>
         ${summary ? `<pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;">${esc(summary)}</pre>` : ''}
         ${oldValue || newValue ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -456,6 +509,15 @@ class VersionComponent extends ToolComponent {
         if (input.dataset.versionFilter === 'actor') this.state.timelineActorKind = input.value || '';
         const reloadPath = this.state.versionPath || this._getTabPath() || '';
         if (reloadPath) this._loadVersions(reloadPath, this.state.versionType || 'file');
+        else this._renderNoTargetView();
+      });
+    });
+    this.el.querySelectorAll('[data-version-integrity-recovery]').forEach(button => {
+      button.addEventListener('click', () => {
+        window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.({
+          reason: '変更レコードの整合性を確認するため、管理者鍵を復旧してください。',
+          trigger: button,
+        });
       });
     });
   }
@@ -495,6 +557,18 @@ class VersionComponent extends ToolComponent {
     return entry.label || entry.body_diff_summary || entry.action || '変更レコード';
   }
 
+  _timelineIntegrityBadge(entry) {
+    if (entry.type !== 'edit') return '';
+    const status = String(entry.integrity_status || '');
+    if (status === 'verified') return '<span class="gb-badge gb-badge-manual" title="管理者署名を検証済み">署名確認済み</span>';
+    if (status === 'legacy-unsigned') return '<span class="gb-badge gb-badge-auto" title="署名機能導入前の変更レコード">旧記録・署名対象外</span>';
+    if (status === 'pending-owner-signature') return '<span class="gb-badge gb-badge-auto" title="管理者端末での署名を待っています">管理者署名待ち</span>';
+    if (status === 'owner-verification-required') return '<span class="gb-badge gb-badge-auto" title="署名鍵は管理者端末だけが保持します">管理者端末で確認</span>';
+    if (status === 'tampered') return '<span class="gb-badge gb-badge-danger" role="alert" title="署名後に改変された可能性があります">改変の可能性</span>';
+    if (status === 'owner-key-missing') return '<span class="gb-badge gb-badge-danger" role="alert" title="管理者鍵を復旧して検証してください">管理者鍵が必要</span>';
+    return '';
+  }
+
   _timelineActions(entry, index) {
     if (entry.type === 'edit') {
       const editId = ['version-edit-preview', entry.id || index, entry.path || this.state.versionPath || '']
@@ -522,6 +596,7 @@ class VersionComponent extends ToolComponent {
     const entries = Array.isArray(timelineEntries) ? timelineEntries : [];
     const kind = this.state.timelineKind || 'named,auto,edit';
     const actor = this.state.timelineActorKind || '';
+    if (kind === PRODUCTION_DAILY_KIND) return this._buildProductionDailyHtml(kind);
     const rows = entries.length ? entries.map((entry, index) => {
       const time = this._formatTimelineDate(entry);
       const actorBadge = entry.actor_kind === 'llm'
@@ -532,12 +607,16 @@ class VersionComponent extends ToolComponent {
         : entry.type === 'auto'
           ? '<span class="gb-badge gb-badge-auto">自動</span>'
           : '<span class="gb-badge gb-badge-manual">変更</span>';
+      const integrityBadge = this._timelineIntegrityBadge(entry);
+      const recoveryButton = entry.integrity_recovery_action === 'open-owner-key-recovery'
+        ? '<button class="gb-btn gb-btn-xs gb-btn-warn" data-version-integrity-recovery>管理者鍵を復旧</button>' : '';
       return `<div class="gb-history-row gb-history-row-compact" style="align-items:center;">
         <span style="width:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg2);">${typeof lucide === 'function' ? lucide(this._timelineIcon(entry), 14) : ''}</span>
         ${typeBadge}
+        ${integrityBadge}
         <span class="gb-history-label" title="${esc(entry.label || '')}"><span style="color:var(--fg2);">${esc(time)}</span> ${esc(this._timelineLabel(entry))}</span>
         ${actorBadge}
-        <div class="gb-history-actions">${this._timelineActions(entry, index)}</div>
+        <div class="gb-history-actions">${recoveryButton}${this._timelineActions(entry, index)}</div>
       </div>`;
     }).join('') : '<div class="gb-section-desc" style="padding:8px 0;">タイムラインに表示する項目がありません</div>';
 
@@ -545,12 +624,7 @@ class VersionComponent extends ToolComponent {
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 現バージョンを保存</button>
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
-        <select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
-          ${this._versionSelectOption('named,auto,edit', '全て', kind)}
-          ${this._versionSelectOption('named', 'スナップショット', kind)}
-          ${this._versionSelectOption('auto', '復元ポイント', kind)}
-          ${this._versionSelectOption('edit', '変更ログ', kind)}
-        </select>
+        ${this._buildKindFilterHtml(kind)}
         <select data-e2e-id="version-timeline-actor-filter" data-version-filter="actor" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
           ${this._versionSelectOption('', '全主体', actor)}
           ${this._versionSelectOption('human', '人間', actor)}
@@ -558,6 +632,28 @@ class VersionComponent extends ToolComponent {
         </select>
       </div>
       <div class="gb-history-list">${rows}</div>
+    </section>`;
+  }
+
+  // 種類の絞り込み（対象ファイルの有無に関わらず同じ候補を出す）
+  _buildKindFilterHtml(kind) {
+    return `<select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
+      ${this._versionSelectOption('named,auto,edit', '全て', kind)}
+      ${this._versionSelectOption('named', 'スナップショット', kind)}
+      ${this._versionSelectOption('auto', '復元ポイント', kind)}
+      ${this._versionSelectOption('edit', '変更ログ', kind)}
+      ${this._versionSelectOption(PRODUCTION_DAILY_KIND, '制作進行の日次記録', kind)}
+    </select>`;
+  }
+
+  // 制作進行の日次記録の絞り込み。対象ファイルの版一覧ではなく、日次記録の一覧を出す。
+  _buildProductionDailyHtml(kind) {
+    return `<section class="gb-version-timeline gb-version-production-daily" style="margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
+        ${this._buildKindFilterHtml(kind)}
+      </div>
+      <div data-production-daily-host data-e2e-id="version-production-daily-host"></div>
     </section>`;
   }
 

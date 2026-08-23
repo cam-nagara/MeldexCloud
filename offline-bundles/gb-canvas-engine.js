@@ -24,7 +24,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -198,6 +198,29 @@ function bdNormalizeConnectionControlPoints(raw) {
     ];
   }
   return null;
+}
+
+// カードのしっぽ (tail) の読込値を検証・正規化する。startX/startY/endX/endY が数値でなければ
+// 読み込み自体を無視する（壊れた/意図しない値でカードのしっぽを復元しない）。
+// target は kind/id が両方揃っている場合のみ残す。
+function bdNormalizeTailValue(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const startX = Number(raw.startX);
+  const startY = Number(raw.startY);
+  const endX = Number(raw.endX);
+  const endY = Number(raw.endY);
+  if (![startX, startY, endX, endY].every(Number.isFinite)) return null;
+  const tail = { startX, startY, endX, endY, target: null };
+  const target = raw.target;
+  if (target && typeof target === 'object' && target.kind && target.id != null && String(target.id) !== '') {
+    const normalizedTarget = { kind: String(target.kind), id: String(target.id) };
+    ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+      const n = Number(target[key]);
+      if (Number.isFinite(n)) normalizedTarget[key] = n;
+    });
+    tail.target = normalizedTarget;
+  }
+  return tail;
 }
 
 function bdYamlTopLevelBlock(fm, key) {
@@ -858,7 +881,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -899,6 +922,17 @@ function bdParseMd(raw) {
     }
     const balBlock = fm.match(/balloons:\n((?:\s+\w+:.*\n?)*)/);
     if (balBlock) balBlock[1].replace(/(\w+):\s*\{tailX:\s*([\d.-]+),\s*tailY:\s*([\d.-]+)(?:,\s*child:\s*(\w+))?\}/g, (_, id, tx, ty, ch) => { balloons[id] = {tailX:+tx, tailY:+ty, child:ch==='true'}; });
+    // カードのしっぽ (tail: startX/startY/endX/endY + 追従先の target。target は
+    // {kind, id, offsetX, offsetY, offsetXRatio, offsetYRatio} のネスト flow map)。
+    // 旧 balloons ブロックと違い target が入れ子オブジェクトを持つため、深さを持たない
+    // 素朴な正規表現では正しく切り出せない。bdYamlNestedMap (+ bdYamlFlowMap) の
+    // 入れ子対応パーサーを正本として使う (2つ目の解析実装を作らない)。
+    if (typeof bdYamlNestedMap === 'function' && typeof bdNormalizeTailValue === 'function') {
+      Object.entries(bdYamlNestedMap(fm, 'tails')).forEach(([id, rawTail]) => {
+        const tail = bdNormalizeTailValue(rawTail);
+        if (tail) tails[id] = tail;
+      });
+    }
     const ctnBlock = fm.match(/containers:\n((?:\s+\w+:.*\n?)*)/);
     if (ctnBlock) ctnBlock[1].replace(/(\w+):\s*(\w+)/g, (_, id, val) => { containers[id] = val; });
     const lnkBlock = fm.match(/links:\n((?:\s+\w+:.*\n?)*)/);
@@ -1384,6 +1418,7 @@ function bdParseMd(raw) {
     if (containers[nid] === 'container') n.container = true;
     if (containers[nid] === 'contained') n.contained = true;
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
+    if (tails[nid]) n.tail = tails[nid];
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
@@ -1547,6 +1582,32 @@ function bdToMd() {
   if (hasBalloons) {
     fm += 'balloons:\n';
     bd.nodes.forEach((n,i) => { if (n.balloon) fm += `  n${i}: {tailX: ${n.tailX||0}, tailY: ${n.tailY||0}${n.balloonChild ? ', child: true' : ''}}\n`; });
+  }
+  // カードのしっぽ（フキダシの尻尾）。追加のみの新規フィールドなので旧バージョンは無視して開ける。
+  // 上のバルーン (n.tailX/n.tailY) とは別概念。tail は独自の n.tail オブジェクトにのみ持たせ、
+  // バルーンの n.tailX/n.tailY には一切触れない (誤って混同・上書きしない)。
+  const hasTails = bd.nodes.some(n => n.tail && Number.isFinite(+n.tail.startX) && Number.isFinite(+n.tail.startY) && Number.isFinite(+n.tail.endX) && Number.isFinite(+n.tail.endY));
+  if (hasTails) {
+    fm += 'tails:\n';
+    bd.nodes.forEach((n, i) => {
+      const t = n.tail;
+      if (!t || !Number.isFinite(+t.startX) || !Number.isFinite(+t.startY) || !Number.isFinite(+t.endX) || !Number.isFinite(+t.endY)) return;
+      const parts = [
+        `startX: ${+t.startX}`,
+        `startY: ${+t.startY}`,
+        `endX: ${+t.endX}`,
+        `endY: ${+t.endY}`,
+      ];
+      const target = t.target;
+      if (target && target.kind && target.id != null && String(target.id) !== '') {
+        const targetParts = [`kind: ${fmtJsonString(String(target.kind))}`, `id: ${fmtJsonString(String(target.id))}`];
+        ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+          if (Number.isFinite(+target[key])) targetParts.push(`${key}: ${+target[key]}`);
+        });
+        parts.push(`target: {${targetParts.join(', ')}}`);
+      }
+      fm += `  n${i}: {${parts.join(', ')}}\n`;
+    });
   }
   // ステータス定義
   if (bd.statuses && bd.statuses.length) {
@@ -4480,6 +4541,13 @@ function bdSelect(id, add) {
   if (add && bd.selected instanceof Set && bd.selected.size !== 1) {
     if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
     if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
+  }
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 1枚だけの選択になったら、開いていれば
+  // サブパネルの中身を選択中カードのリンク先へ差し替える予約をする（デバウンス）。
+  // 複数選択・全解除では予約を取り消す。実際に発火してよいかの判定
+  // （リンクの有無・編集中・ドラッグ中等）は bdRequestLinkedSelectionAutoSubpanel 側で行う。
+  if (typeof bdRequestLinkedSelectionAutoSubpanel === 'function') {
+    bdRequestLinkedSelectionAutoSubpanel(bd.selected instanceof Set && bd.selected.size === 1 ? [...bd.selected][0] : null);
   }
   if (deferExtras) {
     if (typeof bdMarkBoardUiDirty === 'function') bdMarkBoardUiDirty('select');

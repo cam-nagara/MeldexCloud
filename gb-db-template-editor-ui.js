@@ -149,6 +149,9 @@ function _showDbTemplateFormModal(options) {
   preview.textContent = options.previewText || '';
   body.appendChild(preview);
 
+  // 追加コンテンツの差し込み口（エントリレイアウトの画像同梱チェックリスト等）
+  if (options.extraBody instanceof HTMLElement) body.appendChild(options.extraBody);
+
   if (mode === 'edit') {
     const note = document.createElement('div');
     note.className = 'db-template-edit-note';
@@ -240,8 +243,42 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
   }
 
   const viewCount = Array.isArray(exported.savedViews) ? exported.savedViews.length : 0;
+  const layoutCount = Array.isArray(exported.entityLayouts) ? exported.entityLayouts.length : 0;
   const previewText = '含まれる列: ' + exported.properties.map(p => p.name).join(', ')
-    + (viewCount ? `（ビュー${viewCount}件を含む）` : '');
+    + (viewCount ? `（ビュー${viewCount}件を含む）` : '')
+    + (layoutCount ? `（エントリレイアウト${layoutCount}件を含む）` : '');
+
+  // エントリレイアウト内のアップロード画像は「指定したものだけ」テンプレートへ同梱する（既定OFF）。
+  // 同梱しない画像はパス参照のままになり、テンプレート適用先では画像の再設定が必要になる。
+  const uploadImages = typeof listDbTemplateEntityLayoutUploadImages === 'function'
+    ? listDbTemplateEntityLayoutUploadImages(exported)
+    : [];
+  let extraBody = null;
+  if (uploadImages.length) {
+    extraBody = document.createElement('div');
+    extraBody.className = 'db-template-image-embed';
+    extraBody.dataset.e2eId = 'db-template-image-embed';
+    const head = document.createElement('div');
+    head.className = 'db-template-image-embed-head';
+    head.innerHTML = 'テンプレートへ同梱する画像 ' + (typeof fieldHelp === 'function'
+      ? fieldHelp('チェックした画像はテンプレート自体に埋め込まれ、適用先でもそのまま表示されます（1枚500KBまで）。チェックしない画像は元ファイルの場所を参照するだけになり、適用先では画像の再設定が必要です')
+      : '');
+    extraBody.appendChild(head);
+    uploadImages.forEach(item => {
+      const row = document.createElement('label');
+      row.className = 'db-template-image-embed-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.dataset.cellId = item.cellId;
+      check.dataset.e2eId = 'db-template-image-embed-check';
+      row.appendChild(check);
+      const span = document.createElement('span');
+      const fileName = String(item.path || '').split(/[\\/]/).pop() || '(画像)';
+      span.textContent = (item.layoutName ? item.layoutName + ': ' : '') + fileName;
+      row.appendChild(span);
+      extraBody.appendChild(row);
+    });
+  }
 
   _showDbTemplateFormModal({
     mode: 'create',
@@ -251,10 +288,20 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
     initialDescription: '',
     initialIcon: exported.icon || 'file',
     previewText,
-    onSave: ({ name, description, icon }) => {
+    extraBody,
+    onSave: async ({ name, description, icon }) => {
       exported.name = name;
       exported.description = description;
       exported.icon = icon;
+      if (extraBody && typeof embedDbTemplateEntityLayoutImages === 'function') {
+        const selectedIds = Array.from(extraBody.querySelectorAll('input[type="checkbox"][data-cell-id]'))
+          .filter(check => check.checked)
+          .map(check => check.dataset.cellId);
+        const embedResult = await embedDbTemplateEntityLayoutImages(exported, selectedIds);
+        if (embedResult.skipped > 0) {
+          showStatus(`同梱できなかった画像が${embedResult.skipped}件あります（500KB超またはアクセス不可）。パス参照のまま保存します`, true);
+        }
+      }
       const customs = getCustomTemplates();
       customs.push(exported);
       if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート作成', detail: name })) return false;

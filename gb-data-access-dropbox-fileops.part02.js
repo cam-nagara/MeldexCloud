@@ -218,13 +218,13 @@
         if (!currentEtag || currentEtag !== expectedEtag) _throwEtagConflict(filePath, expectedEtag, currentEtag);
       }
       if (forceOverwrite && typeof provider.refreshMetadata === 'function') await provider.refreshMetadata(filePath).catch(() => null);
+      const currentContent = entry ? await provider.readText(filePath) : '';
       await _assertNoBoardTypeDowngrade(provider, filePath, content);
       const incomingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, content);
       let docIdentityFmt = incomingIdentityFmt;
       if (incomingIdentityFmt) {
         let existingDocumentId = '';
         if (entry) {
-          const currentContent = await provider.readText(filePath);
           const existingIdentityFmt = window.MeldexDocumentIdentity?.formatForPath?.(filePath, currentContent);
           docIdentityFmt = existingIdentityFmt === incomingIdentityFmt ? incomingIdentityFmt : null;
           existingDocumentId = String(
@@ -240,11 +240,23 @@
           ).text;
         }
       }
-      const writeMeta = await provider.writeText(filePath, content);
+      const history = await _prepareCloudFileEdit(
+        provider, filePath, currentContent, content, _versionActor(url, body), expectedEtag, !!entry,
+      );
+      let writeMeta;
+      try {
+        writeMeta = await provider.writeText(filePath, content);
+      } catch (error) {
+        await _abortCloudFileEdit(history);
+        throw error;
+      }
       const etag = await _fileEtag(provider, filePath, null, writeMeta);
+      const historySyncPending = await _commitCloudFileEdit(history, etag);
       return {
         ok: true,
         ...await _fileIdentityAndRevision(provider, filePath, null, etag, writeMeta, content),
+        history_recorded: !historySyncPending,
+        history_sync_pending: historySyncPending,
       };
     }
 
@@ -595,7 +607,11 @@
     }
     if (pathname === '/version/save-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _saveFolderVersion(provider, body?.path || '', { label: body?.label || '', auto: !!body?.auto });
+      const actor = _versionActor(url, body);
+      return _saveFolderVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
     }
     if (pathname === '/version/restore-folder' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
@@ -619,7 +635,15 @@
     }
     if (pathname === '/version/save' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');
-      return _saveFileVersion(provider, body?.path || '', { label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto });
+      const actor = _versionActor(url, body);
+      return _saveFileVersion(provider, body?.path || '', {
+        label: body?.label || '', auto: !!body?.auto, max_auto: body?.max_auto,
+        metadata: _snapshotActorMetadata(actor, actor, body?.auto ? 'periodic_auto' : 'manual', '', null, ''),
+      });
+    }
+    if (pathname === '/version-panel/timeline' && method === 'GET') {
+      const provider = await _requirePwaProvider('read');
+      return _buildCloudVersionTimeline(provider, url);
     }
     if (pathname === '/version/restore' && method === 'POST') {
       const provider = await _requirePwaProvider('readwrite');

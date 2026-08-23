@@ -282,10 +282,10 @@ function updateUserIcon() {
 // ユーザーアバターHTML（チャットフキダシ用）
 function getUserAvatarHtml(username, size) {
   size = size || 20;
-  const fallbackChar = (typeof esc === 'function' ? esc((username || '?').charAt(0).toUpperCase()) : String((username || '?').charAt(0).toUpperCase()).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
+  const fallbackChar = MeldexEscape.html((username || '?').charAt(0).toUpperCase());
   const baseStyle = `display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;flex-shrink:0;`;
   const rawSrc = window.MeldexDataAccess?.team?.avatarUrl?.(username || 'anonymous', {}) || `${API_BASE}/team/avatar/${encodeURIComponent(username)}?t=0`;
-  const src = typeof esc === 'function' ? esc(rawSrc) : String(rawSrc).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const src = MeldexEscape.attr(rawSrc);
   return `<span style="${baseStyle}">
     <img src="${src}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex';">
     <span style="display:none;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:50%;background:var(--bg4);font-size:${Math.round(size*0.55)}px;font-weight:bold;color:var(--fg2);">${fallbackChar}</span>
@@ -368,7 +368,6 @@ function _scheduleSettingsLegacyPanelInitialization(panelName, root, options = {
     if (canonical === '全般') {
       if (typeof loadOutlinerRootsForSettings === 'function') loadOutlinerRootsForSettings();
       if (typeof loadStorageInfoForSettings === 'function') loadStorageInfoForSettings();
-      if (typeof loadMobileAccessUrlsForSettings === 'function') loadMobileAccessUrlsForSettings();
       if (typeof loadHomeFolderSharingStatusForSettings === 'function') loadHomeFolderSharingStatusForSettings();
       if (typeof loadSettingsTransferStatusForSettings === 'function') loadSettingsTransferStatusForSettings();
       if (typeof loadDefaultAppAssociationsForSettings === 'function') loadDefaultAppAssociationsForSettings();
@@ -698,8 +697,18 @@ async function _loadExtensionStatus() {
   try {
     const status = await apiFetch('/extensions/status');
     // 凍結ビルド（配布版のexe）では sys.executable がMeldex本体を指すため
-    // pip installが成立しない。ボタンは出さず、手順ノートへの誘導へ差し替える（③）。
-    const frozen = !!status.frozen;
+    // pip installが成立しない（③）。このPCに本体と同じ版のPythonが入っていれば
+    // そちらを使って導入できるので、その場合だけボタンを出す。見つからない場合は
+    // 押しても何も起きないボタンを残さず、手順ノートへの誘導へ差し替える。
+    const externalPython = status.external_python || {};
+    const canUseExternalPython = !!status.frozen && !!externalPython.available;
+    const frozen = !!status.frozen && !canUseExternalPython;
+    const externalPythonNote = canUseExternalPython
+      ? `このPCの Python ${esc(externalPython.version || '')} を使って導入します`
+      : '';
+    const missingPythonReason = (!!status.frozen && !canUseExternalPython)
+      ? (externalPython.reason || '配布版では自動インストールできません')
+      : '';
     const exts = [
       { key: 'pillow', name: 'Pillow（画像処理）', desc: '重複画像検出に必要', size: '~3MB', installed: status.pillow },
       { key: 'clip', name: 'CLIP（画像類似検索）', desc: 'テキストで画像を検索。Pillowも同時にインストールされます', size: '~2GB', installed: status.clip },
@@ -711,11 +720,14 @@ async function _loadExtensionStatus() {
         action = `<span style="color:var(--green);font-size:12px;font-weight:bold;">${lucide('check', 12)} インストール済み</span>`;
       } else if (frozen) {
         action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-          <span style="font-size:11px;color:var(--fg2);">配布版では自動インストールできません</span>
+          <span style="font-size:11px;color:var(--fg2);text-align:right;">${esc(missingPythonReason)}</span>
           <button data-action="openExtensionInstallGuide('${ext.key}')" style="padding:4px 14px;font-size:12px;background:var(--bg3);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;">導入手順を見る</button>
         </div>`;
       } else {
-        action = `<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button>`;
+        const note = externalPythonNote
+          ? `<span style="font-size:11px;color:var(--fg2);text-align:right;">${externalPythonNote}</span>`
+          : '';
+        action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">${note}<button data-action="_installExtension('${ext.key}', this)" style="padding:4px 14px;font-size:12px;background:var(--accent);color:var(--ui-accent-fg, var(--ui-fg-strong));border:none;border-radius:4px;cursor:pointer;">インストール</button></div>`;
       }
       return `<div style="display:flex;align-items:center;gap:10px;padding:8px;margin-bottom:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);">
       <div style="flex:1;">

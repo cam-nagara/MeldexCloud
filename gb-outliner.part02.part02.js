@@ -338,8 +338,8 @@ function _outlinerFindNewItemInListing(items, type, existingNames) {
 }
 
 // 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found) {
-  showStatus(`「${found.name}」を作成しました`);
+function _outlinerApplyCreateSuccess(pendingNode, found, options) {
+  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
   if (!pendingNode || !pendingNode.parentNode) return;
   const newNode = createTreeNodeFromBrowse(found);
   pendingNode.replaceWith(newNode);
@@ -358,23 +358,46 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
   const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
   if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
   _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'create-confirmation',
+    label: '作成結果を確認しています',
+    mode: 'indeterminate',
+    origin: pendingNode,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
   try {
-    showStatus('作成に時間がかかっています。結果を確認中…');
+    if (!progress) showStatus('作成に時間がかかっています。結果を確認中…');
     const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
     for (const delay of _outlinerPostTimeoutConfirmDelays()) {
       await new Promise(r => setTimeout(r, delay));
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindNewItemInListing(items, type, existingNames);
-      if (found) { _outlinerApplyCreateSuccess(pendingNode, found); return; }
+      if (found) {
+        _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
+        return;
+      }
     }
     if (typeof loadOutliner === 'function') await loadOutliner();
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
     const found = _outlinerFindNewItemInListing(items, type, existingNames);
     if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-    if (found) showStatus(`「${found.name}」を作成しました`);
-    else showStatus('作成の結果を確認できませんでした。フォルダツリーをご確認ください', true);
+    if (found) {
+      if (progress) progress.succeed({ summary: `「${found.name}」を作成しました` });
+      else showStatus(`「${found.name}」を作成しました`);
+    } else {
+      const message = '作成の結果を確認できませんでした。フォルダツリーをご確認ください';
+      if (progress) progress.fail({ error: message });
+      else showStatus(message, true);
+    }
   } finally {
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: '作成結果の確認を完了できませんでした' });
+    }
     _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
   }
 }

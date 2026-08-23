@@ -157,6 +157,7 @@ function _queueAutoLinkTooltip(linkOrTarget) {
       preview.src = info.img;
       preview.alt = info.title || path.split(/[/\\]/).pop() || 'preview';
       tooltipEl.appendChild(preview);
+      window.MeldexImageLoading?.track?.(preview, { host: tooltipEl });
     } else if (info.props) {
       const propsEl = document.createElement('div');
       propsEl.className = 'lt-props';

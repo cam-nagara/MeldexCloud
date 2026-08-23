@@ -15,7 +15,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-detail';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const e = MeldexEscape.html;
 
     const mkBtn = (label, title, onClick, e2eId = '') => {
       const b = document.createElement('button');
@@ -565,7 +565,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.querySelectorAll('.gb-fmt-popup--bulk-edit').forEach(el => el.remove());
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--bulk-edit';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const e = MeldexEscape.html;
     popup.innerHTML = `
       <div class="sn2-bulk-title">一括設定（${this._detailSelection.size}件）</div>
       <div class="sn2-bulk-body">
@@ -1511,7 +1511,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorEl);
     };
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const e = MeldexEscape.html;
     const roleAdapter = this._roleManagementAdapter?.();
     const isScenarioType = !!roleAdapter?.types?.includes(chara);
     const ts = chara.textStyle || {};
@@ -1945,7 +1945,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-detail';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const e = MeldexEscape.html;
 
     // scroll 要素への setProperty ヘルパー（margin 用）
     const setScrollVar = (name, val) => {

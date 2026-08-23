@@ -1383,30 +1383,29 @@ body.ann-toolbar-active .ann-note.ann-note-selected > .ann-tail-handle { opacity
 .ann-note-user .ann-user-icon { width: 16px; height: 16px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; background: rgba(255,255,255,0.35); }
 .ann-note-user .ann-user-icon img { width: 100%; height: 100%; object-fit: cover; }
 .ann-note-user .ann-user-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ann-note-actions { display: inline-flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 4px; }
 .note-more-btn {
-  position: absolute; top: 2px; right: 2px; z-index: 5; display: none; align-items: center; justify-content: center;
-  width: 24px; min-width: 24px; height: 24px; min-height: 24px; padding: 0; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; margin: 0;
   color: var(--fg2); background: transparent; border: 0; border-radius: 4px; cursor: pointer; line-height: 1;
   -webkit-appearance: none; appearance: none;
 }
-.ann-note:hover .note-more-btn,
-.note-more-btn:focus-visible { display: inline-flex; }
 .note-more-btn:hover,
-.note-more-btn:focus-visible { color: var(--fg); background: var(--ui-bg-control-active); outline: none; }
+.note-more-btn:focus { color: var(--fg); background: var(--ui-bg-control-active); outline: none; }
 .note-more-btn svg { display: block; width: 16px; height: 16px; flex: 0 0 16px; }
-.ann-note-delete-btn {
+.ann-note-window-close-btn {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  width: 20px; min-width: 20px; height: 20px; min-height: 20px; padding: 0; margin: 0;
+  width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; margin: 0;
   color: inherit; background: transparent; border: 0; border-radius: 4px; cursor: pointer; line-height: 1;
   -webkit-appearance: none; appearance: none;
 }
-.ann-note-delete-btn:hover,
-.ann-note-delete-btn:focus-visible { color: var(--fg); background: var(--ui-bg-control-active); outline: none; }
-.ann-note-delete-btn svg { display: block; width: 12px; height: 12px; flex: 0 0 12px; }
+.ann-note-window-close-btn:hover,
+.ann-note-window-close-btn:focus-visible { color: var(--fg); background: var(--ui-bg-control-active); outline: none; }
+.ann-note-window-close-btn svg { display: block; width: 14px; height: 14px; flex: 0 0 14px; }
 @media (pointer: coarse), (max-width: 640px) {
   .vl-lock-icon { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .note-more-btn { display: inline-flex !important; width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
-  .ann-note-delete-btn { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .ann-note-window-close-btn { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
 }
 .ann-note-resize-handle { position: absolute; z-index: 7; background: transparent; pointer-events: none; }
 body.ann-toolbar-active .ann-note-resize-handle { pointer-events: auto; }

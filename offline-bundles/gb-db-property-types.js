@@ -1838,9 +1838,7 @@ function _buttonActionResolveContext(dbPath, ctx) {
 }
 
 function _buttonActionCss(value) {
-  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(value)
-    : String(value || '').replace(/["\\]/g, '\\$&');
+  return MeldexEscape.cssIdent(value);
 }
 
 function _buttonActionTargetCell(dbPath, entityName, propName, ctx) {
@@ -2604,6 +2602,11 @@ async function applyPropertyType(propName, root, options = {}) {
   if (prev.writeStatus && !('writeStatus' in config)) {
     config.writeStatus = prev.writeStatus;
   }
+  // 列のユーザー設定アイコン（列一覧・エントリレイアウトのキャプション表示）は型と独立の設定なので、
+  // 型設定の保存で消えないよう保持する
+  if (prev.icon && !('icon' in config)) {
+    config.icon = prev.icon;
+  }
 
   if ((type === 'relation' || type === 'multi-relation') && config.bidirectional && typeof _ensureBidirectionalRelationConfig === 'function') {
     try {
@@ -3024,6 +3027,9 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
       </select>
     </div>
     ${_renderPropertyMultiplicityControls(current.type, scopeId)}
+    <div class="field"><label>アイコン ${typeof fieldHelp === 'function' ? fieldHelp('列名の先頭に表示するアイコンです。列一覧とエントリレイアウトのキャプションに使われます。未設定のときは列タイプのアイコンが表示されます') : ''}</label>
+      <button type="button" id="pt-icon-btn" class="gb-btn gb-btn-sm pt-icon-btn" data-e2e-id="pt-icon-btn" aria-haspopup="dialog"></button>
+    </div>
     <div id="pt-options"></div>
     <div class="pt-autosave-status" aria-live="polite"></div>
   </div>`;
@@ -3032,6 +3038,78 @@ function renderDbPropertySettingsPanel(dbPath, propName, container) {
   onPropertyTypeChange(root);
   _bindDbPropertySettingsAutosave(root, propName);
   if (typeof enhancePropertyTypeSelect === 'function') enhancePropertyTypeSelect(root);
+  _bindDbPropertyIconField(root, dbPath, propName, ctx);
+}
+
+/* 列ごとのユーザー設定アイコン（property_types[prop].icon、GBIconAssets の spec 文字列）。
+   列一覧・エントリレイアウトの field セルのキャプションで、列タイプの既定アイコンより優先される。 */
+function _bindDbPropertyIconField(root, dbPath, propName, ctx) {
+  const btn = root?.querySelector?.('#pt-icon-btn');
+  if (!btn) return;
+  // UI部品検査（gb-e2e-coverage.js）の安定ID要件: ヘルプアイコンにも data-e2e-id を付ける
+  const iconHelp = btn.closest('.field')?.querySelector('.gb-field-help');
+  if (iconHelp) iconHelp.dataset.e2eId = 'pt-icon-help';
+  const currentSpec = () => {
+    const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null;
+    return types?.[propName]?.icon || '';
+  };
+  const renderBtn = () => {
+    const spec = currentSpec();
+    btn.innerHTML = '';
+    const preview = document.createElement('span');
+    preview.className = 'pt-icon-btn-preview';
+    preview.setAttribute('aria-hidden', 'true');
+    if (spec && typeof GBIconAssets !== 'undefined' && GBIconAssets?.render) {
+      preview.innerHTML = GBIconAssets.render(spec, 16);
+    } else if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
+      const types = typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : null;
+      preview.innerHTML = lucide(getPropertyTypeIcon(types?.[propName]?.type), 14);
+    }
+    const label = document.createElement('span');
+    label.textContent = spec ? 'アイコンを変更' : 'アイコンを選択';
+    btn.appendChild(preview);
+    btn.appendChild(label);
+  };
+  const saveIcon = (spec) => {
+    if (typeof setPropertyType !== 'function' || typeof getPropertyTypes !== 'function') return;
+    const types = getPropertyTypes(dbPath, ctx) || {};
+    const next = { ...(types[propName] || { type: 'text' }) };
+    if (spec) next.icon = String(spec);
+    else delete next.icon;
+    // setPropertyType は保護列で同期的に false を返し、バックエンド保存失敗時は reject する。
+    // どちらも握りつぶさず、成功時だけ成功メッセージを出す。
+    Promise.resolve(setPropertyType(dbPath, propName, next, ctx))
+      .then((ok) => {
+        if (ok === false) {
+          if (typeof showStatus === 'function') showStatus('この列のアイコンは変更できません', true);
+          return;
+        }
+        if (typeof renderPivot === 'function') renderPivot(ctx);
+        if (typeof showStatus === 'function') {
+          showStatus(spec ? '列のアイコンを設定しました' : '列のアイコンを既定へ戻しました');
+        }
+        renderBtn();
+      })
+      .catch((error) => {
+        if (typeof showStatus === 'function') {
+          showStatus('列のアイコンを保存できませんでした: ' + (error?.message || error), true);
+        }
+        renderBtn();
+      });
+  };
+  renderBtn();
+  btn.addEventListener('click', () => {
+    if (typeof GBIconAssets === 'undefined' || !GBIconAssets?.openPicker) return;
+    GBIconAssets.openPicker({
+      anchorEl: btn,
+      title: '列のアイコン',
+      current: currentSpec(),
+      allowReset: true,
+      resetLabel: '列タイプの既定に戻す',
+      onSelect: (spec) => saveIcon(spec || ''),
+      onReset: () => saveIcon(''),
+    });
+  });
 }
 
 // #pt-type のネイティブ<select>を、列タイプアイコン付きのカスタムドロップダウンで見た目上置き換える。

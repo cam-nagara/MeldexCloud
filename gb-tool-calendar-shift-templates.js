@@ -7,9 +7,7 @@
   const SHIFT_TEMPLATE_KIND = 'shift-template';
 
   function _stEsc(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _stIcon(name, size = 14) {
@@ -441,12 +439,29 @@
     if (this._lastSelectedEventId === eventId) this._lastSelectedEventId = '';
   };
 
-  CalendarComponent.prototype._refreshShiftStateAfterMutation = function(options = {}) {
+  CalendarComponent.prototype._refreshShiftStateAfterMutation = async function(options = {}) {
     const run = fn => (typeof fn === 'function' ? Promise.resolve().then(() => fn.call(this)) : Promise.resolve());
-    Promise.all([run(this._loadShifts), run(this._loadEvents), run(this._loadCalendars)]).then(() => {
-      if (options.renderCalendarList !== false) this._renderCalendarList?.();
-      this._render?.();
-    }).catch(() => {});
+    await Promise.all([run(this._loadShifts), run(this._loadEvents), run(this._loadCalendars)]);
+    this._shiftMutationStateUnknown = false;
+    if (options.renderCalendarList !== false) this._renderCalendarList?.();
+    this._render?.();
+  };
+
+  CalendarComponent.prototype._reconcileShiftMutationAfterError = async function(id, operation, expected = {}) {
+    try {
+      await this._refreshShiftStateAfterMutation();
+    } catch (error) {
+      this._shiftMutationStateUnknown = true;
+      console.error('シフト保存結果の再確認に失敗しました', error);
+      return 'unknown';
+    }
+    const current = (this._shifts || []).find(item => String(item?.id || '') === String(id || ''));
+    if (operation === 'delete') return current ? 'not-applied' : 'applied';
+    if (!current) return 'not-applied';
+    const fields = ['user', 'date', 'start_time', 'end_time', 'type', 'note'];
+    return fields.every(field => String(current?.[field] || '') === String(expected?.[field] || ''))
+      ? 'applied'
+      : 'not-applied';
   };
 
   CalendarComponent.prototype._loadShiftScheduleTemplates = async function() {
@@ -811,6 +826,10 @@
   };
 
   CalendarComponent.prototype._applyShiftTemplateToDate = async function(template, dateStr) {
+    if (this._shiftMutationStateUnknown) {
+      this._showStatus?.('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+      return;
+    }
     const entry = _stShiftEntry(template);
     if (!entry || !_stValidTime(entry.workStart) || !_stValidTime(entry.workEnd)) {
       this._showStatus?.('シフト勤務テンプレートの勤務時間を確認してください', true);
@@ -841,6 +860,7 @@
     const eventId = this._upsertShiftOptimistic?.(shift, { select: true });
     this._renderCalendarList?.();
     this._render?.();
+    let acknowledged = false;
     try {
       const res = await apiPost('/cal/shifts', {
         id: shiftId,
@@ -851,16 +871,29 @@
         type: 'work',
         note: shift.note,
       });
+      acknowledged = true;
       const savedId = res?.id || shiftId;
       if (savedId !== shiftId) this._removeShiftOptimistic?.(shiftId);
       this._upsertShiftOptimistic?.({ ...shift, id: savedId, breaks, _optimistic: false }, { select: !!eventId });
       this._renderCalendarList?.();
       this._render?.();
-      this._refreshShiftStateAfterMutation?.();
+      await this._refreshShiftStateAfterMutation?.();
       this._showStatus?.('シフトを追加しました');
-    } catch {
-      this._restoreShiftMutationSnapshot?.(snapshot);
-      this._showStatus?.('シフト追加に失敗しました', true);
+    } catch (error) {
+      if (acknowledged) {
+        console.error('保存済みシフトの再読込に失敗しました', error);
+        this._showStatus?.('シフトは保存されましたが、再読み込みに失敗しました', true);
+        return;
+      }
+      const outcome = await this._reconcileShiftMutationAfterError?.(shiftId, 'create', shift);
+      if (outcome === 'applied') {
+        this._showStatus?.('シフトを追加しました');
+      } else if (outcome === 'unknown') {
+        this._showStatus?.('シフト追加結果を確認できません。カレンダーを再読み込みしてください', true);
+      } else {
+        this._restoreShiftMutationSnapshot?.(snapshot);
+        this._showStatus?.('シフト追加に失敗しました', true);
+      }
     }
   };
 })();

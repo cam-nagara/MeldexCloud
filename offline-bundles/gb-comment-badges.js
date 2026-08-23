@@ -289,9 +289,7 @@
   }
 
   function _cssEscape(value) {
-    const text = String(value == null ? '' : value);
-    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(text);
-    return text.replace(/["\\]/g, '\\$&');
+    return MeldexEscape.cssIdent(value);
   }
 
   function _clearNoteCommentHighlights(containerEl) {
@@ -915,11 +913,7 @@
   }
 
   function _commentPromptAnchorFromContext(ctx) {
-    const cssEscape = (value) => {
-      const text = String(value == null ? '' : value);
-      if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(text);
-      return text.replace(/["\\]/g, '\\$&');
-    };
+    const cssEscape = MeldexEscape.cssIdent;
     const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const kind = ctx?.targetKind || '';
     const container = ctx?.targetRef?.container || null;

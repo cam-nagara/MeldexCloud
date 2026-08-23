@@ -91,36 +91,64 @@
     return 'cal-cloud-tasks:' + String(path || '');
   }
 
+  function _oauthSecretStoreError(cause) {
+    const error = _httpError('OAuth秘密情報の端末保護ストアを利用できません', 503, 'OAUTH_SECRET_STORE_UNAVAILABLE');
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  function _requireOAuthSecretStore() {
+    const store = window.MeldexCalOAuthTokenStore;
+    if (store) return store;
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _oauthSecretStoreError();
+    return null;
+  }
+
+  function _sameSecretValues(expected, actual) {
+    return Object.keys(expected || {}).every(field => String(actual?.[field] || '') === String(expected[field] || ''));
+  }
+
   async function _readAuth(provider, path) {
     const stored = (await _readJsonSafe(provider, path, null)) || null;
-    const store = window.MeldexCalOAuthTokenStore;
-    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const store = _requireOAuthSecretStore();
+    if (!store) return stored; // 明示的な旧ローカル実行環境だけは従来形式を読み取る
     const tokenKey = _tokenKeyForPath(path);
-    let secrets = await store.getSecrets(tokenKey).catch(() => null);
-    if (!secrets) {
-      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
-      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
-      const legacySecrets = store.extractSecretFields(stored || {});
+    const legacySecrets = store.extractSecretFields(stored || {});
+    let secrets;
+    try {
+      secrets = await store.getSecrets(tokenKey);
       if (store.hasAnySecretValue(legacySecrets)) {
-        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
-        secrets = legacySecrets;
-        if (stored) {
-          await _directoryHandle(provider, CAL_DIR, true);
-          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
-        }
+        const saved = await store.setSecrets(tokenKey, legacySecrets);
+        const confirmed = await store.getSecrets(tokenKey);
+        if (saved?.ok === false || !_sameSecretValues(legacySecrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        await _directoryHandle(provider, CAL_DIR, true);
+        await provider.writeJson(path, store.stripSecretFields(stored));
+        const scrubbed = (await _readJsonSafe(provider, path, null)) || {};
+        if (store.hasAnySecretValue(store.extractSecretFields(scrubbed))) throw new Error('Dropbox OAuth secret scrub verification failed');
+        secrets = confirmed;
       }
+    } catch (error) {
+      throw _oauthSecretStoreError(error);
     }
     if (!stored && !store.hasAnySecretValue(secrets)) return null;
     return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
   }
 
   async function _writeAuth(provider, path, payload) {
-    const store = window.MeldexCalOAuthTokenStore;
+    const store = _requireOAuthSecretStore();
     let metadata = payload;
     if (store) {
       const tokenKey = _tokenKeyForPath(path);
       const secrets = store.extractSecretFields(payload);
-      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      if (Object.keys(secrets).length) {
+        try {
+          const saved = await store.setSecrets(tokenKey, secrets);
+          const confirmed = await store.getSecrets(tokenKey);
+          if (saved?.ok === false || !_sameSecretValues(secrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        } catch (error) {
+          throw _oauthSecretStoreError(error);
+        }
+      }
       metadata = store.stripSecretFields(payload);
     }
     await _directoryHandle(provider, CAL_DIR, true);
@@ -135,6 +163,30 @@
   async function _writeTasks(provider, rows) {
     await _directoryHandle(provider, CAL_DIR, true);
     await provider.writeJson(TASKS_PATH, Array.isArray(rows) ? rows : []);
+  }
+
+  function _tasksAccessBody(body) {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return body || {};
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    const admin = state.isOwner === true || role === 'owner' || role === 'admin';
+    let actor = '';
+    try { actor = String(typeof getUsername === 'function' ? getUsername() : '').trim(); } catch {}
+    if (!actor) {
+      try { actor = String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || '').trim(); } catch {}
+    }
+    const requested = String(body?.user || '').trim();
+    if (!admin) throw _httpError('Google ToDoを同期できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    return { ...(body || {}), user: requested || actor };
+  }
+
+  function _assertTasksAuthAdmin() {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return;
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+      throw _httpError('共有Google ToDo連携を設定できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    }
   }
 
   function _findExternalTaskRow(rows, externalId, user) {
@@ -214,10 +266,46 @@
     return 'todo';
   }
 
+  function _taskMarkerIdEncode(value) {
+    const bytes = new TextEncoder().encode(String(value || ''));
+    let binary = '';
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+  }
+
+  function _taskMarkerIdDecode(value) {
+    const encoded = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
+    try {
+      const binary = atob(padded);
+      return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+    } catch { return ''; }
+  }
+
+  function _taskMarker(row) {
+    return `[meldex-task-id:${_taskMarkerIdEncode(row?.id)}]`;
+  }
+
+  function _stripTaskMarker(notes) {
+    return String(notes || '')
+      .replace(/\s*(?:\[meldex-task-id:[A-Za-z0-9_-]+\]|\[Meldex-Local-ID:[^\]\r\n]+\])\s*$/u, '')
+      .trimEnd();
+  }
+
+  function _taskIdFromMarker(notes) {
+    const raw = String(notes || '');
+    const canonical = /\[meldex-task-id:([A-Za-z0-9_-]+)\]\s*$/u.exec(raw);
+    if (canonical) return _taskMarkerIdDecode(canonical[1]);
+    const legacyCloud = /\[Meldex-Local-ID:([^\]\r\n]+)\]\s*$/u.exec(raw);
+    if (!legacyCloud) return '';
+    try { return decodeURIComponent(legacyCloud[1]); } catch { return ''; }
+  }
+
   function _tasksBodyFromRow(row, { includeClear } = {}) {
+    const description = String(row?.description || '').trimEnd();
     const body = {
       title: String(row?.title || '無題'),
-      notes: String(row?.description || ''),
+      notes: (description ? description + '\n\n' : '') + _taskMarker(row),
       status: String(row?.status || '') === 'done' ? 'completed' : 'needsAction',
     };
     const due = String(row?.due_date || '').trim().slice(0, 10);
@@ -331,7 +419,9 @@
   function _applyRemoteTask(rows, remote, user, now) {
     const extId = String(remote?.id || '').trim();
     if (!extId) return 'skipped';
-    const existing = _findExternalTaskRow(rows, extId, user);
+    const markerId = _taskIdFromMarker(remote?.notes);
+    const existing = (markerId ? rows.find(row => String(row.id || '') === markerId && (!user || row.user === user)) : null)
+      || _findExternalTaskRow(rows, extId, user);
     const remoteUpdated = _tasksToLocalIso(remote.updated) || now;
     if (remote.deleted) {
       if (existing && _tasksExternalIsNewer(existing, remoteUpdated)) {
@@ -341,7 +431,7 @@
       return 'skipped';
     }
     const title = String(remote.title || '無題');
-    const description = String(remote.notes || '');
+    const description = _stripTaskMarker(remote.notes) || String(existing?.description || '');
     const dueDate = _tasksDueToDate(remote.due || '');
     if (existing) {
       if (!_tasksExternalIsNewer(existing, remoteUpdated)) return 'skipped';
@@ -417,16 +507,29 @@
       const externalId = String(row.external_id || '').trim();
       if (externalId && !_tasksLocalNeedsPush(row)) { result.skipped += 1; continue; }
       let response;
+      const insert = async () => {
+        const findExisting = async () => (await _tasksRemoteItems(auth.access_token, tasklistId))
+          .find(item => !item.deleted && _taskIdFromMarker(item.notes) === String(row.id || ''));
+        const existingRemote = await findExisting();
+        if (existingRemote?.id) return existingRemote;
+        try {
+          return await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+        } catch (error) {
+          const recovered = await findExisting();
+          if (recovered?.id) return recovered;
+          throw error;
+        }
+      };
       if (externalId) {
         response = await _tasksApiJson(auth.access_token, 'PATCH', _tasksRemotePath(tasklistId, externalId), _tasksBodyFromRow(row, { includeClear: true }), { allow404: true });
         if (response.missing) {
-          response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+          response = await insert();
           result.pushed += 1;
         } else {
           result.updated += 1;
         }
       } else {
-        response = await _tasksApiJson(auth.access_token, 'POST', _tasksRemotePath(tasklistId), _tasksBodyFromRow(row));
+        response = await insert();
         result.pushed += 1;
       }
       const remoteId = response.id || externalId;
@@ -492,7 +595,14 @@
 
   async function _calCloudTasksHandler({ method, body, pathname }) {
     if (pathname === '/cal/sync/google/tasks/sync' && method === 'POST') {
-      return _syncGoogleTasks(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _tasksAccessBody(body);
+      const lease = window.MeldexCloudCalendarLease;
+      if (!lease?.withLease) {
+        if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _httpError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+        return _syncGoogleTasks(provider, accessBody);
+      }
+      return lease.withLease(provider, context => _syncGoogleTasks(context?.guardProvider?.(provider) || provider, accessBody));
     }
     return NOT_HANDLED;
   }
@@ -505,6 +615,7 @@
   // ============================================================
 
   async function authorizeGoogleTasks({ clientId, clientSecret, popup }) {
+    _assertTasksAuthAdmin();
     const id = String(clientId || '').trim();
     const secret = String(clientSecret || '').trim();
     const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, scope: GOOGLE_TASKS_SCOPE, popup });
@@ -538,6 +649,9 @@
       writeAuth: _writeAuth,
       readTasks: _readTasks,
       writeTasks: _writeTasks,
+      taskMarker: _taskMarker,
+      stripTaskMarker: _stripTaskMarker,
+      taskIdFromMarker: _taskIdFromMarker,
     },
   };
 })();

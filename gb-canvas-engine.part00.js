@@ -24,7 +24,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -198,6 +198,29 @@ function bdNormalizeConnectionControlPoints(raw) {
     ];
   }
   return null;
+}
+
+// カードのしっぽ (tail) の読込値を検証・正規化する。startX/startY/endX/endY が数値でなければ
+// 読み込み自体を無視する（壊れた/意図しない値でカードのしっぽを復元しない）。
+// target は kind/id が両方揃っている場合のみ残す。
+function bdNormalizeTailValue(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const startX = Number(raw.startX);
+  const startY = Number(raw.startY);
+  const endX = Number(raw.endX);
+  const endY = Number(raw.endY);
+  if (![startX, startY, endX, endY].every(Number.isFinite)) return null;
+  const tail = { startX, startY, endX, endY, target: null };
+  const target = raw.target;
+  if (target && typeof target === 'object' && target.kind && target.id != null && String(target.id) !== '') {
+    const normalizedTarget = { kind: String(target.kind), id: String(target.id) };
+    ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+      const n = Number(target[key]);
+      if (Number.isFinite(n)) normalizedTarget[key] = n;
+    });
+    tail.target = normalizedTarget;
+  }
+  return tail;
 }
 
 function bdYamlTopLevelBlock(fm, key) {

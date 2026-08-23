@@ -42,8 +42,7 @@ let _dbFindState = {
 };
 
 function _dbFindCssEscape(value) {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(String(value || ''));
-  return String(value || '').replace(/["\\]/g, '\\$&');
+  return MeldexEscape.cssIdent(value);
 }
 
 function _dbFindCurrentCtx() {

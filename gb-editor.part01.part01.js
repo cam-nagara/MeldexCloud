@@ -67,13 +67,13 @@ function initPageTitle() {
 }
 
 // ノートタイトルのリネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
-function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId) {
+function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId, options) {
   // 自動保存タイマーをキャンセル（旧パスへの保存を防止）
   clearTimeout(window._noteAutoSaveTimer);
   state.currentPagePath = newPath;
   document.getElementById('page-content').dataset.path = newPath;
   window.MeldexFileLockBadge?.apply?.(el, newPath);
-  showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
+  if (!options?.skipStatus) showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
   _pageTitleOld = nv;
   // フォルダツリーのノードを直接更新（loadOutlinerによる全再構築を避ける）
   if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, nv, fileId);
@@ -85,7 +85,18 @@ function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId) {
 // リネームAPIタイムアウト時の事後確認。フォルダツリー側（gb-outliner）の共通ヘルパーを再利用する
 async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
   const oldName = _pageTitleOld;
-  showStatus('リネームに時間がかかっています。結果を確認中…');
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'rename-confirmation',
+    label: 'リネーム結果を確認しています',
+    mode: 'indeterminate',
+    origin: el,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
+  if (!progress) showStatus('リネームに時間がかかっています。結果を確認中…');
+  try {
   const canConfirm = typeof _outlinerFetchFolderListingForConfirm === 'function'
     && typeof _outlinerFindRenamedItem === 'function';
   if (canConfirm) {
@@ -101,7 +112,7 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
       const found = _outlinerFindRenamedItem(items, oldName, nv);
       if (found) {
         if (state.currentPagePath === path) {
-          _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id);
+          _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id, { skipStatus: !!progress });
         } else {
           // 確認中に別のノートへ移動していた場合はエディタ状態（現在パス・タイトル・
           // 自動保存先）を触らず、ツリーと参照の更新だけ行う
@@ -109,15 +120,23 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
           if (typeof renameAppPathReferences === 'function') {
             renameAppPathReferences(path, found.path, { label: nv, fileId: found.file_id, type: 'page' });
           }
-          showStatus('リネーム: ' + oldName + ' → ' + nv);
+          if (!progress) showStatus('リネーム: ' + oldName + ' → ' + nv);
         }
+        progress?.succeed?.({ summary: 'リネーム: ' + oldName + ' → ' + nv });
         return;
       }
     }
   }
   // 確認中に別のノートへ移動していた場合、el は別ノートのタイトルを表示しているため戻さない
   if (state.currentPagePath === path) el.textContent = oldName;
-  showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+  const message = `「${oldName}」のリネームに失敗（結果を確認できませんでした）`;
+  if (progress) progress.fail({ error: message });
+  else showStatus(message, true);
+  } catch (error) {
+    const message = `「${oldName}」のリネーム結果を確認できませんでした: ${error?.message || error}`;
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
+  }
 }
 function startPageTitleEdit(el) { el.focus(); }
 
@@ -133,7 +152,13 @@ function flushPendingEditorAutosave() {
   if (window._noteAutoSaveTimer) {
     clearTimeout(window._noteAutoSaveTimer);
     window._noteAutoSaveTimer = null;
-    const pc = document.getElementById('page-content');
+    // window._noteAutoSaveTimer 自体は単一のグローバル変数だが、実際に保留中の
+    // 予約は「最後に pc.oninput がスケジュールしたpc要素」を指す。独立した描画先
+    // （サブパネル等）が最後に編集していた場合、決め打ちの#page-contentではなく
+    // そちらをflushしないと、保留中の編集が保存されないまま消える
+    // （ボードのリンクカード計画 Phase B-2）。
+    const pc = window._pendingNoteAutoSavePc || document.getElementById('page-content');
+    window._pendingNoteAutoSavePc = null;
     const currentPath = pc?.dataset?.path;
     if (currentPath && pc.dataset.loadFailed !== '1') {
       // 工程1: タブ/パネル切替・終了前flushの実処理は、2秒自動保存タイマーの
@@ -857,20 +882,30 @@ async function openPage(label, path, opts) {
       }
     }
   if (!openOpts.skipStateView) state.view = 'page';
-  state.currentPagePath = path;
-  // OptionTargetContext（計画書§11.1）: ノートを開いた時点で選択対象を更新する。
-  // これを怠ると、フォルダパネルで一般ファイルを選んだ後にノートへ戻った際、
-  // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
-  window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
+  // ボードのリンクカード計画 Phase B-2（縮小スコープ）: 独立した描画先
+  // （サブパネル等、opts.containerEl）へ開く場合、メイン画面の「現在開いているページ」
+  // を指すグローバル状態（state.currentPagePath・オプション対象・バージョン管理タブの
+  // 追従・目次・タイトルバー）を書き換えない。それらはメイン画面専用のUI/状態であり、
+  // 独立DOMには存在しないため触っても意味がなく、むしろメイン画面側を誤って
+  // 別ファイル扱いにしてしまう。
+  if (!openOpts.skipStateView) state.currentPagePath = path;
+  if (!openOpts.skipGlobalUi) {
+    // OptionTargetContext（計画書§11.1）: ノートを開いた時点で選択対象を更新する。
+    // これを怠ると、フォルダパネルで一般ファイルを選んだ後にノートへ戻った際、
+    // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
+    window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
+  }
   if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
   if (!openOpts.skipShowView) showView('page');
-  const pageTitleEl = document.getElementById('page-title');
-  if (pageTitleEl) {
-    pageTitleEl.textContent = label;
-    pageTitleEl.contentEditable = isItemLocked(path) ? 'false' : 'true';
-    window.MeldexFileLockBadge?.apply?.(pageTitleEl, path);
+  if (!openOpts.skipGlobalUi) {
+    const pageTitleEl = document.getElementById('page-title');
+    if (pageTitleEl) {
+      pageTitleEl.textContent = label;
+      pageTitleEl.contentEditable = isItemLocked(path) ? 'false' : 'true';
+      window.MeldexFileLockBadge?.apply?.(pageTitleEl, path);
+    }
+    initPageTitle();
   }
-  initPageTitle();
   if (!openOpts.skipRecent) addRecent(label, path, 'page');
   if (!openOpts.skipSaveLastView) saveLastView({type:'page', label, path});
   if (!openOpts.skipNavPush) {
@@ -878,8 +913,15 @@ async function openPage(label, path, opts) {
     navPush(_navEntry);
   }
   if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-  const pc = document.getElementById('page-content');
+  const pc = openOpts.containerEl || document.getElementById('page-content');
   if (!pc) return;
+  // 独立した描画先は module 読込時の _wireNoteEditableElement(#page-content) の対象外
+  // なので、このpc自身へ同じ配線を行う（IME合成・貼り付け・縦書き等）。
+  if (openOpts.containerEl && !pc._noteEditableWired) {
+    pc._noteEditableWired = true;
+    pc.contentEditable = 'true';
+    _wireNoteEditableElement(pc);
+  }
   // 修正3（誤PUTの防止）: 旧ノート用の2秒自動保存タイマーを、pc.dataset.path
   // 書き換え（この少し下）より前にここで確実にキャンセルする。従来は
   // この後に複数回のawait（apiFetch等）を挟んだ後、792行目付近でしか
@@ -902,14 +944,17 @@ async function openPage(label, path, opts) {
   pc._noteEditRevision = 0;
   pc._noteEditSerializeCache = null;
   pc._noteTocSignature = undefined;
-  const pageLoadSeq = (window._openPageLoadSeq || 0) + 1;
-  window._openPageLoadSeq = pageLoadSeq;
-  const isStalePageLoad = () => window._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
+  // 読込世代はpc要素ごとに持つ（window単位の単一カウンタだと、メインとサブパネルで
+  // 別々のノートを同時に開いた際、片方の読込がもう片方のカウンタ更新に巻き込まれて
+  // 無関係のはずの読込が「追い越された」と誤判定され中断してしまう）。
+  const pageLoadSeq = (pc._openPageLoadSeq || 0) + 1;
+  pc._openPageLoadSeq = pageLoadSeq;
+  const isStalePageLoad = () => pc._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
   pc.dataset.path = path;
   // バージョン管理タブの追従同期。_getCurrentVersionTarget() は state.view==='page' の時
   // #page-content の dataset.path を見るため、navPush() 呼び出し時点（この直前）ではまだ
   // 古いパスのままで間に合わない。dataset.path を確定させたこの時点で同期する。
-  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.syncFollowingVersionTabs === 'function') {
+  if (!openOpts.skipGlobalUi && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.syncFollowingVersionTabs === 'function') {
     GBPaneBridge.syncFollowingVersionTabs();
   }
   // 編集ロック
@@ -956,9 +1001,10 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexImageLoading?.trackAll?.(pc);
     _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();
-    if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
+    if (!openOpts.skipGlobalUi && typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
     pageLoadSucceeded = true;
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
@@ -1068,29 +1114,38 @@ async function openPage(label, path, opts) {
     // 修正3（誤PUTの防止・二重防御）: タイマー設定時点のパスを捕捉しておき、
     // 発火時に _runNoteAutoSave() 側で pc.dataset.path と照合させる。
     const scheduledPath = pc.dataset.path;
+    // window._noteAutoSaveTimer は単一のグローバル変数のまま（縮小スコープ）だが、
+    // 「今その予約が誰のものか」はpc単位で分かるようにしておく
+    // （flushPendingEditorAutosave()参照）。
+    window._pendingNoteAutoSavePc = pc;
     window._noteAutoSaveTimer = setTimeout(() => {
       // 工程1: 実処理は _runNoteAutoSave() へ集約（flushPendingEditorAutosave()と共有）。
       // 保存コーディネーター経由のsingle-flight/coalesceにより、blurと競合しない。
+      window._pendingNoteAutoSavePc = null;
       _runNoteAutoSave(pc, scheduledPath);
     }, 2000);
   };
 
-  // 目次を更新（フロントマター優先、なければlocalStorage設定）
-  const _toc = document.getElementById('note-toc');
-  const _tocBtn = document.getElementById('btn-toc-toggle');
-  const _fmToc = _getFrontmatterToc();
-  // ファイル指定 > グローバル設定
-  const _showToc = _fmToc !== undefined ? _fmToc
-                 : localStorage.getItem('note-toc-visible') === '1';
-  if (_showToc) {
-    if (_toc) _toc.style.display = '';
-    if (_tocBtn) _tocBtn.classList.add('active');
-  } else {
-    if (_toc) _toc.style.display = 'none';
-    if (_tocBtn) _tocBtn.classList.remove('active');
+  // 目次を更新（フロントマター優先、なければlocalStorage設定）。独立した描画先
+  // （サブパネル等）は専用の目次DOMを持たないため、メインの#note-toc/切替ボタンを
+  // 触らない（触るとメイン画面が別ファイルの目次表示に切り替わってしまう）。
+  if (!openOpts.skipGlobalUi) {
+    const _toc = document.getElementById('note-toc');
+    const _tocBtn = document.getElementById('btn-toc-toggle');
+    const _fmToc = _getFrontmatterToc();
+    // ファイル指定 > グローバル設定
+    const _showToc = _fmToc !== undefined ? _fmToc
+                   : localStorage.getItem('note-toc-visible') === '1';
+    if (_showToc) {
+      if (_toc) _toc.style.display = '';
+      if (_tocBtn) _tocBtn.classList.add('active');
+    } else {
+      if (_toc) _toc.style.display = 'none';
+      if (_tocBtn) _tocBtn.classList.remove('active');
+    }
+    syncNoteTocLayout();
+    if (_toc && _toc.style.display !== 'none') updateNoteToc();
   }
-  syncNoteTocLayout();
-  if (_toc && _toc.style.display !== 'none') updateNoteToc();
   // 工程3: ここで初期シグネチャを記録しておくと、開いた直後の最初の編集で
   // 見出し構造が変わっていない場合に、debounce満了時の余計な再構築（項目6）を
   // 避けられる（無くても不整合にはならない軽微な最適化）。
@@ -1237,63 +1292,75 @@ function initNoteTocResize() {
   });
 }
 
-// 縦書きモード: マウスホイールで横スクロール
-document.getElementById('page-content').addEventListener('wheel', function(e) {
-  if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
-  if (!this.classList.contains('vertical-writing')) return;
-  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-    e.preventDefault();
-    this.scrollLeft -= e.deltaY;
-  }
-}, { passive: false });
+// ノート本文の共通イベント配線（ホイール縦書きスクロール・縦書き矢印キー読替・
+// Ctrl+Kリンク挿入・IME合成中フラグ・blur時ドラフトflush・クリップボード貼り付け）。
+// 元は document.getElementById('page-content') へ1回だけ直接 addEventListener する
+// 形だったが、`this`/引数で完結しているため関数化してそのまま使い回せる
+// （ボードのリンクカード計画 Phase B-2: サブパネル専用ノートDOMにも同じ配線を行う）。
+function _wireNoteEditableElement(pc) {
+  if (!pc) return;
+  // 縦書きモード: マウスホイールで横スクロール
+  pc.addEventListener('wheel', function(e) {
+    if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
+    if (!this.classList.contains('vertical-writing')) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      this.scrollLeft -= e.deltaY;
+    }
+  }, { passive: false });
 
-// 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
-// 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
-// シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
-// と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
-// カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
-document.getElementById('page-content').addEventListener('keydown', function(e) {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-  if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-    const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
-    if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
-    e.preventDefault();
-    if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
-  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
-    e.preventDefault();
-  }
-});
+  // 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
+  // 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
+  // シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
+  // と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
+  // カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
+  pc.addEventListener('keydown', function(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
+      if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
+      e.preventDefault();
+      if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
+      e.preventDefault();
+    }
+  });
 
-// Ctrl+K: リンク挿入モーダル
-document.getElementById('page-content').addEventListener('keydown', function(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault();
-    const sel = window.getSelection();
-    const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-    showLinkInsertModal(range);
-  }
-});
+  // Ctrl+K: リンク挿入モーダル
+  pc.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      const sel = window.getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+      showLinkInsertModal(range);
+    }
+  });
 
-// 工程3項目7: IME変換中は保存用DOM整形（Markdown変換・ドラフト直列化）を
-// 走らせない。compositionend後にまとめて1回だけ処理する（既存の
-// pc.onblur・_runNoteAutoSaveの挙動自体は変更しない。ここで制御するのは
-// ドラフト予約のタイミングだけ）。
-document.getElementById('page-content').addEventListener('compositionstart', function() {
-  this._noteComposing = true;
-});
-document.getElementById('page-content').addEventListener('compositionend', function() {
-  this._noteComposing = false;
-  _scheduleNoteDraftReservation(this);
-});
+  // 工程3項目7: IME変換中は保存用DOM整形（Markdown変換・ドラフト直列化）を
+  // 走らせない。compositionend後にまとめて1回だけ処理する（既存の
+  // pc.onblur・_runNoteAutoSaveの挙動自体は変更しない。ここで制御するのは
+  // ドラフト予約のタイミングだけ）。
+  pc.addEventListener('compositionstart', function() {
+    this._noteComposing = true;
+  });
+  pc.addEventListener('compositionend', function() {
+    this._noteComposing = false;
+    _scheduleNoteDraftReservation(this);
+  });
 
-// 工程3項目4: ドラフト退避はblur時に即時flushする。既存のpc.onblur
-// （ネットワーク保存）とは独立した経路であり、onblurプロパティの代入とは
-// 別にaddEventListenerで追加する（既存のblur処理関数自体は変更しない）。
-document.getElementById('page-content').addEventListener('blur', function() {
-  _flushNoteDraftReservation(this, { ignoreComposing: true });
-});
+  // 工程3項目4: ドラフト退避はblur時に即時flushする。既存のpc.onblur
+  // （ネットワーク保存）とは独立した経路であり、onblurプロパティの代入とは
+  // 別にaddEventListenerで追加する（既存のblur処理関数自体は変更しない）。
+  pc.addEventListener('blur', function() {
+    _flushNoteDraftReservation(this, { ignoreComposing: true });
+  });
+
+  _wireNotePasteHandler(pc);
+}
+
+_wireNoteEditableElement(document.getElementById('page-content'));
 
 // 工程3項目4: 非表示化・終了前もドラフト退避を即時flushする（IndexedDBドラフト
 // だけを対象にした保険。ネットワーク自動保存の終了前flush＝
@@ -1472,7 +1539,9 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
 }
 
 // クリップボード貼り付け: テキスト + 画像対応
-document.getElementById('page-content').addEventListener('paste', async function(e) {
+// クリップボード貼り付け: テキスト + 画像/動画対応（_wireNoteEditableElement から配線）
+function _wireNotePasteHandler(pc) {
+  pc.addEventListener('paste', async function(e) {
   if (!this.isContentEditable) return;
   const cd = e.clipboardData;
   if (!cd) return;
@@ -1526,11 +1595,21 @@ document.getElementById('page-content').addEventListener('paste', async function
     e.preventDefault();
     document.execCommand('insertText', false, text);
   }
-});
+  });
+}
 
 // ユニバーサルD&D: ノートビューへの挿入
 // 埋め込みメディア フローティングコントロール
 let _activeMedia = null;
+
+// このコントロール群は右サイドバー等の独立した本文DOM（page-content以外）にも
+// 使い回す（ボードのリンクカード計画 Phase B-2）。align/delete/resize後の自動保存
+// トリガーは「今操作しているメディアの本当の持ち主」へ飛ばす必要があり、
+// メインの#page-content決め打ちだと別の本文で編集していても常にメインが
+// dirty扱いされてしまう。
+function _activeMediaOwningEditor() {
+  return _activeMedia?.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
+}
 
 function _prepareEmbeddedMediaForControls(media) {
   if (!media) return;
@@ -1711,7 +1790,7 @@ function _prepareEmbeddedMediaControls(root) {
       if (align === 'left') { _activeMedia.style.marginInlineStart = '0'; _activeMedia.style.marginInlineEnd = 'auto'; }
       else if (align === 'right') { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = '0'; }
       else { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = 'auto'; }
-      const pc = document.getElementById('page-content');
+      const pc = _activeMediaOwningEditor();
       if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
     });
   });
@@ -1720,6 +1799,9 @@ function _prepareEmbeddedMediaControls(root) {
   controls.querySelector('[data-action="delete"]').addEventListener('click', async () => {
     const media = _activeMedia;
     if (!media) return;
+    // remove()/_hideMediaControls() の前に持ち主を確定させる（後では_activeMediaが
+    // nullになり、media自体もDOMから外れてclosest()が使えなくなるため）。
+    const owningEditor = media.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
     controls.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
     eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
@@ -1736,8 +1818,7 @@ function _prepareEmbeddedMediaControls(root) {
     }
     media.remove();
     _hideMediaControls();
-    const pc = document.getElementById('page-content');
-    if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
+    if (owningEditor) owningEditor.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   // リサイズハンドル（四隅共通）
@@ -1769,7 +1850,7 @@ function _prepareEmbeddedMediaControls(root) {
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
         // リサイズ完了 → 自動保存トリガー
-        const pc = document.getElementById('page-content');
+        const pc = _activeMediaOwningEditor();
         if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
       }
       document.addEventListener('pointermove', onMove);

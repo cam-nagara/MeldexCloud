@@ -1,3 +1,28 @@
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.ready.' + label, startedAt, { timeoutMs: timeout });
+      }
+      resolve(value);
+    }).catch((error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (typeof _logPerfEvent === 'function') {
+        _logPerfEvent('startup.error.' + label, startedAt, {
+          timeoutMs: timeout,
+          error: error?.message || String(error),
+        });
+      }
+      reject(error);
+    });
+  });
+}
+
+function _runStartupBackground(label, promise, onReady) {
+  Promise.resolve(promise)
+    .then((value) => {
+      if (typeof onReady === 'function') onReady(value);
       return value;
     })
     .catch((error) => {
@@ -873,27 +898,3 @@ async function captureScreenshot(mode) {
       if (!region) return;
       outputCanvas = _cropScreenshotCanvas(canvas, region);
     }
-    const b64 = outputCanvas.toDataURL('image/png');
-    const screenshotHome = ((typeof _homeFolderPath !== 'undefined' ? _homeFolderPath : '') || '').replace(/[\\/]$/, '');
-    const defaultScreenshotFolder = screenshotHome ? screenshotHome + '/スクリーンショット' : 'スクリーンショット';
-    const screenshotFolder = localStorage.getItem('meldex-screenshot-folder') || defaultScreenshotFolder;
-    const currentTarget = (typeof getAnnotationTarget === 'function' ? getAnnotationTarget() : (typeof currentFilePath !== 'undefined' ? currentFilePath : '')) || '';
-    const res = await apiPost('/annotation/screenshot', {
-      data: b64,
-      target_path: screenshotFolder,
-      source_target: currentTarget,
-      mode: mode,
-      width: outputCanvas.width,
-      height: outputCanvas.height,
-    });
-    if (res.path) {
-      if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
-      showStatus('スクリーンショットを保存しました', false, { showSaveDialog: true });
-    }
-  } catch (e) {
-    if (e.name !== 'NotAllowedError') showStatus('スクリーンショット失敗: ' + e.message, true);
-  } finally {
-    if (stream) stream.getTracks().forEach(t => t.stop());
-    if (hideState) await _restoreMeldexWindowForScreenshot(hideState);
-  }
-}

@@ -263,16 +263,128 @@
     return false;
   }
 
-  async function preflightRows(provider, rows) {
+  function canonicalCloudPath(value) {
+    return String(value || '').normalize('NFC').toLocaleLowerCase('ja');
+  }
+
+  function taskPathDescriptor(value) {
+    const original = String(value || '').normalize('NFC').trim().replace(/\\/g, '/');
+    const rawParts = original.replace(/^\/+|\/+$/g, '').split('/');
+    if (rawParts.some(part => part === '.' || part === '..')) {
+      throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    }
+    const normalized = original.replace(/^\/+/, '').replace(/\/+/g, '/').replace(/\/+$/, '');
+    const parts = normalized.split('/');
+    const rootMatches = parts.length >= 2
+      && canonicalCloudPath(parts[0]) === canonicalCloudPath('制作管理')
+      && canonicalCloudPath(parts[1]) === canonicalCloudPath('シート');
+    const sheet = parts[2] || '';
+    const sheetKey = canonicalCloudPath(sheet);
+    const taskPrefixKey = canonicalCloudPath('タスクリスト_');
+    const isTaskSheet = sheetKey === canonicalCloudPath('タスクリスト')
+      || (sheetKey.startsWith(taskPrefixKey)
+        && sheetKey.length > taskPrefixKey.length
+        && !sheetKey.startsWith(canonicalCloudPath('タスクリスト_旧形式バックアップ')));
+    if (!rootMatches || !isTaskSheet) throw cloudError('タスクリスト外の項目は更新できません', 403);
+    const fileName = parts[3] || '';
+    if (parts.length !== 4
+      || !fileName.toLocaleLowerCase('ja').endsWith('.md')
+      || fileName.startsWith('_')
+      || canonicalCloudPath(fileName.slice(0, -3)) === sheetKey) {
+      throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    }
+    return { normalized, sheet };
+  }
+
+  function taskEntryIndex(entries) {
+    const byPath = new Map();
+    (entries || []).forEach(entry => {
+      try {
+        const key = canonicalCloudPath(taskPathDescriptor(entry && entry.path).normalized);
+        // 大文字小文字・Unicode正規化だけが異なる複数行は対象を一意に決められない。
+        byPath.set(key, byPath.has(key) ? null : entry);
+      } catch (_error) {
+        // 壊れたストア行は対象候補にしない。別の正常なタスクの更新までは妨げない。
+      }
+    });
+    return byPath;
+  }
+
+  async function taskValidationContext(provider, internals, deps) {
+    const entries = await deps.listAllTaskEntries(provider, internals);
+    return { entries: entries || [], byPath: taskEntryIndex(entries) };
+  }
+
+  function validatedEntryIdentity(entry, descriptor, expectedId, requireExplicitIdentity) {
+    const fm = entry && entry.frontmatter && typeof entry.frontmatter === 'object'
+      ? entry.frontmatter : {};
+    if (requireExplicitIdentity && (!Object.keys(fm).length || fm.type !== 'settings-entry')) {
+      throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    }
+    const category = String(fm.category || '').normalize('NFC').trim();
+    if ((requireExplicitIdentity && !category)
+      || (category && canonicalCloudPath(category) !== canonicalCloudPath(descriptor.sheet))) {
+      throw cloudError('タスクリスト以外の項目は更新できません', 403);
+    }
+    const fileName = String(entry.path || '').replace(/\\/g, '/').split('/').pop() || '';
+    const explicitId = String(fm.id || '').trim();
+    if (requireExplicitIdentity && !explicitId) {
+      throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    }
+    const actualId = explicitId || fileName.replace(/\.md$/i, '');
+    if (expectedId && actualId !== String(expectedId)) {
+      throw cloudError('タスクIDと更新対象が一致しません', 409);
+    }
+    return { fm, actualId };
+  }
+
+  async function validatedTaskFile(provider, value, expectedId, validation) {
+    const descriptor = taskPathDescriptor(value);
+    const wanted = canonicalCloudPath(descriptor.normalized);
+    const entry = validation.byPath.get(wanted);
+    if (!entry) throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    const path = String(entry.path || '').normalize('NFC');
+    // _pmCloudListEntries の物理行には transportRevision があり、旧sheet-storeだけに
+    // 残る仮想行には無い。この列挙時点の情報で判定することで、列挙直後に削除された
+    // 物理ファイルを古いfrontmatterから意図せず復活させない。
+    const virtual = !entry.transportRevision;
+    if (virtual) {
+      const { fm } = validatedEntryIdentity(entry, descriptor, expectedId, true);
+      return { path, parsed: { frontmatter: fm, body: String(entry.body || '') }, virtual: true };
+    }
+    const parsed = await window.MeldexCloudFrontmatterLite.readFrontmatter(provider, path);
+    if (!parsed.frontmatter || !Object.keys(parsed.frontmatter).length) {
+      throw cloudError('対象の制作管理タスクを見つけられませんでした', 404);
+    }
+    validatedEntryIdentity({ ...entry, frontmatter: parsed.frontmatter || {} }, descriptor, expectedId, false);
+    return { path, parsed, virtual: false };
+  }
+
+  async function materializeValidatedTask(provider, resolved) {
+    if (!resolved.virtual) return;
+    await provider.writeText(
+      resolved.path,
+      window.MeldexCloudFrontmatterLite.frontmatterText(
+        resolved.parsed.frontmatter,
+        resolved.parsed.body || '',
+      ),
+    );
+    resolved.virtual = false;
+  }
+
+  async function preflightRows(provider, internals, deps, rows) {
     const prepared = [];
     const protectedPaths = [];
+    // 一括適用の全行で1つの正規化path索引を共有する。各行で全タスクを再列挙しない。
+    const validation = await taskValidationContext(provider, internals, deps);
     for (const row of rows || []) {
       if (row.status !== 'scheduled' && row.status !== 'unassigned') continue;
-      const path = String(row.task_path || '').trim();
-      if (!path) throw staleError();
-      const parsed = await window.MeldexCloudFrontmatterLite.readFrontmatter(provider, path);
+      const rawPath = String(row.task_path || '').trim();
+      if (!rawPath) throw staleError();
+      const resolved = await validatedTaskFile(provider, rawPath, row.task_id, validation);
+      const { path, parsed } = resolved;
       if (frontmatterTaskProtected(parsed.frontmatter)) protectedPaths.push(path);
-      prepared.push([row, path]);
+      prepared.push([row, resolved]);
     }
     if (protectedPaths.length) throw staleError();
     return prepared;
@@ -408,11 +520,13 @@
     await deps.journalCalendar(journal, 'events');
     await deps.journalCalendar(journal, 'calendars');
     try {
-      const prepared = await preflightRows(provider, rows);
+      const prepared = await preflightRows(provider, internals, deps, rows);
       let applied = 0;
       let unassigned = 0;
-      for (const [row, path] of prepared) {
+      for (const [row, resolved] of prepared) {
+        const { path } = resolved;
         await deps.journalText(journal, path);
+        await materializeValidatedTask(provider, resolved);
         if (row.status === 'scheduled') {
           const fm = await writeTaskAssignment(provider, path, row);
           await deps.syncTaskEvent(provider, internals, path, fm);
@@ -432,16 +546,17 @@
   // --- 固定/解除（set_production_task_lock） ---
 
   async function resolveTaskPathFromBody(provider, internals, deps, body) {
+    // lock/scheduleも1リクエストにつき列挙は1回だけ。event_id解決にも同じ索引を使う。
+    const validation = await taskValidationContext(provider, internals, deps);
     const raw = String((body && (body.task_path || body.path)) || '').trim();
-    if (raw) return raw;
+    if (raw) return validatedTaskFile(provider, raw, body && body.task_id, validation);
     const eventId = String((body && body.event_id) || '').trim();
     if (eventId.startsWith('production-task:')) {
       const taskId = Engine.logicalTaskId(eventId);
-      const tasks = await loadTasks(provider, internals, deps, true);
-      const match = tasks.find(task => task.id === taskId);
-      if (match) return match.path;
+      const match = validation.entries.find(entry => String(entry?.frontmatter?.id || entry?.name || '') === taskId);
+      if (match) return validatedTaskFile(provider, match.path, taskId, validation);
     }
-    return '';
+    return null;
   }
 
   async function setEventLockFlag(provider, internals, deps, taskId, locked) {
@@ -464,15 +579,36 @@
 
   async function lockCloud(provider, internals, body, deps) {
     const locked = Engine.truthy(body && body.locked);
-    const path = await resolveTaskPathFromBody(provider, internals, deps, body || {});
-    if (!path) return { ok: false, message: '対象の制作管理タスクを見つけられませんでした' };
-    const parsed = await window.MeldexCloudFrontmatterLite.readFrontmatter(provider, path);
+    const resolved = await resolveTaskPathFromBody(provider, internals, deps, body || {});
+    if (!resolved) return { ok: false, message: '対象の制作管理タスクを見つけられませんでした' };
+    const { path, parsed } = resolved;
     const fallbackId = String(path).replace(/\\/g, '/').split('/').pop().replace(/\.md$/i, '');
     const taskId = String((parsed.frontmatter && parsed.frontmatter.id) || fallbackId);
     const props = { '再計算ロック': locked ? 'true' : 'false', 'シフト固定': locked ? 'true' : 'false' };
     const fm = applyPropsToFrontmatter(parsed.frontmatter, props);
-    await provider.writeText(path, window.MeldexCloudFrontmatterLite.frontmatterText(fm, parsed.body || ''));
-    await setEventLockFlag(provider, internals, deps, taskId, locked);
+    // カレンダー保存はリモート側でcommitした後に通信応答だけ失敗することがある。
+    // タスクだけの手動復元ではその曖昧commitを戻せないため、applyと同じjournalで
+    // タスクとcalendar storeを一つの変更単位として復元する。
+    const journal = deps.mutationJournal(provider, internals);
+    await deps.journalText(journal, path);
+    await deps.journalCalendar(journal, 'events');
+    try {
+      await materializeValidatedTask(provider, resolved);
+      await provider.writeText(path, window.MeldexCloudFrontmatterLite.frontmatterText(fm, parsed.body || ''));
+      await setEventLockFlag(provider, internals, deps, taskId, locked);
+    } catch (calendarError) {
+      try {
+        // rollbackMutationは復元成功時に元エラーそのものを再throwする。
+        await deps.rollbackMutation(journal, calendarError);
+        throw calendarError;
+      } catch (rollbackResult) {
+        if (rollbackResult === calendarError) throw calendarError;
+        throw cloudError(
+          `カレンダーのロック同期に失敗し、タスクとカレンダーの復元にも失敗しました（元のエラー: ${calendarError?.message || calendarError}、復元エラー: ${rollbackResult?.message || rollbackResult}）`,
+          500,
+        );
+      }
+    }
     return { ok: true, locked, task_path: path, cloud: true };
   }
 
@@ -504,8 +640,9 @@
 
   async function updateTaskScheduleCloud(provider, internals, body, deps) {
     body = body || {};
-    const path = await resolveTaskPathFromBody(provider, internals, deps, body);
-    if (!path) return { ok: false, message: '対象の制作管理タスクを見つけられませんでした' };
+    const resolved = await resolveTaskPathFromBody(provider, internals, deps, body);
+    if (!resolved) return { ok: false, message: '対象の制作管理タスクを見つけられませんでした' };
+    const { path, parsed } = resolved;
     const start = String(body.start || '').trim();
     const end = String(body.end || '').trim();
     if (!start || !end) throw cloudError('開始日時・終了日時は必須です', 400);
@@ -517,7 +654,6 @@
     const eventId = String(body.event_id || '').trim();
     const segmentIndex = segmentIndexFromBody(body, eventId);
 
-    const parsed = await window.MeldexCloudFrontmatterLite.readFrontmatter(provider, path);
     const fm = parsed.frontmatter || {};
     const currentRange = rangeValue(propValueFromFrontmatter(fm, '作業予定日時'));
     let segments = Engine.parseSegments(propValueFromFrontmatter(fm, '作業予定区間'));
@@ -559,7 +695,9 @@
     // 書込み前のバイト列（テキスト）へ丸ごと書き戻す。ここで戻さないと、タスクの
     // 「作業予定日時」等は新しい値のまま・カレンダー表示だけが古いまま、という不整合が
     // 残ってしまう（ドラッグ操作は見た目上「失敗して元に戻った」動きを期待される）。
-    const originalText = await provider.readText(path).catch(() => null);
+    const wasVirtual = resolved.virtual;
+    const originalText = wasVirtual ? null : await provider.readText(path).catch(() => null);
+    await materializeValidatedTask(provider, resolved);
     await provider.writeText(path, window.MeldexCloudFrontmatterLite.frontmatterText(nextFm, parsed.body || ''));
     try {
       await deps.syncTaskEvent(provider, internals, path, nextFm);
@@ -573,6 +711,9 @@
             500,
           );
         }
+      } else if (wasVirtual && typeof provider.deletePath === 'function') {
+        // sheet-store由来の仮想行は、同期失敗時に新設した物理ミラーを残さない。
+        await provider.deletePath(path).catch(() => {});
       }
       throw syncError;
     }

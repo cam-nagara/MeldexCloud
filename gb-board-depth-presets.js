@@ -28,10 +28,7 @@
   }
 
   function escText(value) {
-    if (typeof esc === 'function') return esc(value == null ? '' : String(value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return MeldexEscape.html(value);
   }
 
   // 保存済みプリセットの色はユーザー入力由来なので、CSS へ埋める前に形式を限定する。

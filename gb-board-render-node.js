@@ -207,6 +207,8 @@ function bdRenderNode(node, options = {}) {
   bdAppendNodeText(div, node, nodeStyle, { fastCardRender, showImageNames });
   if (node.collapsed) div.classList.add('bd-collapsed');
   if (node.container) bdAppendContainedNodes(div, node, ctx, fastCardRender);
+  // フキダシのしっぽ: 有無に関わらず毎回配線する (Alt+Shift+ドラッグでの新規作成を受け付けるため)。
+  if (typeof bdInstallCardTail === 'function') bdInstallCardTail(div, node);
   return div;
 }
 
@@ -760,6 +762,7 @@ function bdAppendNodeImage(div, node) {
   };
   div.appendChild(img);
   img.src = node.img;
+  window.MeldexImageLoading?.track?.(img, { host: div, label: 'ボードの画像を読み込んでいます', errorMode: 'silent' });
 }
 
 function bdAppendNodeText(div, node, nodeStyle, options = {}) {
@@ -875,6 +878,10 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   bdAppendNodeText(chDiv, ch, chStyle, { fastCardRender, showImageNames });
   if (ch.collapsed) chDiv.classList.add('bd-collapsed');
   if (ch.container) bdAppendContainedNodes(chDiv, ch, ctx, fastCardRender);
+  // フキダシのしっぽ: bdRenderNode() と同じく、コンテナ内カードにも配線する。
+  // ここが抜けていると、コンテナ内カードは右クリックメニューに「フキダシのしっぽ」が
+  // 出ても _annTailCtx が無いため何も起きない (AnnotationStickyTail.setTail が無音で no-op する)。
+  if (typeof bdInstallCardTail === 'function') bdInstallCardTail(chDiv, ch);
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => {
       if (chDiv.isConnected && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(ch, chDiv);

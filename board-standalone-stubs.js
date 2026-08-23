@@ -162,9 +162,7 @@
     window.getUserAvatarHtml = function (username, size) {
       const label = String(username || '?').trim().charAt(0).toUpperCase() || '?';
       const px = Math.max(12, Math.min(48, Number(size) || 16));
-      const safeLabel = typeof window.esc === 'function'
-        ? window.esc(label)
-        : label.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+      const safeLabel = window.MeldexEscape.html(label);
       return '<span class="gb-avatar-initial" style="width:' + px + 'px;height:' + px + 'px;font-size:' + Math.max(9, Math.round(px * 0.56)) + 'px;">' + safeLabel + '</span>';
     };
   }

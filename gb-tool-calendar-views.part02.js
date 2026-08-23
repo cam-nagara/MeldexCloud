@@ -113,6 +113,11 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     setBusy(true); status.textContent = '保存中...';
     const saved = await this._saveShift(editId, panel, shiftId);
     if (saved) { setBusy(false); modalApi.close('saved'); return; }
+    if (this._shiftMutationStateUnknown) {
+      setBusy(false);
+      status.textContent = '保存結果を確認できません。カレンダーを再読み込みしてください。';
+      return;
+    }
     status.textContent = '保存に失敗しました。入力内容を保ったまま再試行できます。';
     if (modalApi.isOpen()) setBusy(false);
   });
@@ -127,6 +132,11 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     setBusy(true); status.textContent = '削除中...';
     const deleted = await this._deleteShift(existing.id, { skipConfirm: true });
     if (deleted) { setBusy(false); modalApi.close('deleted'); return; }
+    if (this._shiftMutationStateUnknown) {
+      setBusy(false);
+      status.textContent = '削除結果を確認できません。カレンダーを再読み込みしてください。';
+      return;
+    }
     status.textContent = '削除に失敗しました。もう一度お試しください。';
     if (modalApi.isOpen()) setBusy(false);
   });
@@ -155,6 +165,10 @@ CalendarComponent.prototype._fillShiftUserCandidates = async function(o) {
 };
 
 CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId) {
+  if (this._shiftMutationStateUnknown) {
+    this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+    return false;
+  }
   const type = o.querySelector('.sh-type').value;
   const date = o.querySelector('.sh-date').value;
   if (!date) {
@@ -177,14 +191,16 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
     this._renderCalendarList?.();
     this._render();
   }
+  let acknowledged = false;
   try {
     if (editId) await apiPut('/cal/shifts/' + encodeURIComponent(editId), data);
     else await apiPost('/cal/shifts', { id: shiftId, ...data });
+    acknowledged = true;
     if (typeof this._upsertShiftOptimistic === 'function') {
       this._upsertShiftOptimistic({ id: shiftId, ...data, _optimistic: false }, { select: true });
       this._renderCalendarList?.();
       this._render();
-      this._refreshShiftStateAfterMutation?.();
+      await this._refreshShiftStateAfterMutation?.();
     } else {
       await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
       this._renderCalendarList?.();
@@ -192,7 +208,21 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
     }
     this._showStatus('シフトを保存しました');
     return true;
-  } catch {
+  } catch (error) {
+    if (acknowledged) {
+      console.error('保存済みシフトの再読込に失敗しました', error);
+      this._showStatus('シフトは保存されましたが、再読み込みに失敗しました', true);
+      return true;
+    }
+    const outcome = await this._reconcileShiftMutationAfterError?.(shiftId, editId ? 'update' : 'create', data);
+    if (outcome === 'applied') {
+      this._showStatus('シフトを保存しました');
+      return true;
+    }
+    if (outcome === 'unknown') {
+      this._showStatus('シフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+      return false;
+    }
     if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
     this._showStatus('保存に失敗', true);
     return false;
@@ -200,18 +230,38 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
 };
 
 CalendarComponent.prototype._deleteShift = async function(id, options = {}) {
+  if (this._shiftMutationStateUnknown) {
+    this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+    return false;
+  }
   if (!options.skipConfirm && typeof cfConfirm === 'function' && !await cfConfirm('このシフトを削除しますか？')) return false;
   const snapshot = this._shiftMutationSnapshot?.();
   if (typeof this._removeShiftOptimistic === 'function') {
     this._removeShiftOptimistic(id);
     this._renderCalendarList?.();
     this._render();
+    let acknowledged = false;
     try {
       await apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' });
-      this._refreshShiftStateAfterMutation?.();
+      acknowledged = true;
+      await this._refreshShiftStateAfterMutation?.();
       this._showStatus('削除しました');
       return true;
-    } catch {
+    } catch (error) {
+      if (acknowledged) {
+        console.error('削除済みシフトの再読込に失敗しました', error);
+        this._showStatus('シフトは削除されましたが、再読み込みに失敗しました', true);
+        return true;
+      }
+      const outcome = await this._reconcileShiftMutationAfterError?.(id, 'delete');
+      if (outcome === 'applied') {
+        this._showStatus('削除しました');
+        return true;
+      }
+      if (outcome === 'unknown') {
+        this._showStatus('シフト削除結果を確認できません。カレンダーを再読み込みしてください', true);
+        return false;
+      }
       if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
       this._showStatus('削除に失敗', true);
       return false;

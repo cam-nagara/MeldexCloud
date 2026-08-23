@@ -650,7 +650,7 @@
   // --- 共通ストレージ層への保存先解決(固有形式付随物廃止・管理データ一元化計画 Phase 4) ---
   //
   // gb-dropbox-management-root-resolver.js(現在接続中のルートが個人領域か
-  // 参加中の共有ワークスペードかを判定する共通モジュール)へ委譲する。
+  // 参加中の共有ワークスペースかを判定する共通モジュール)へ委譲する。
   // fileops関連モジュール(注釈・閲覧ロック)はここから呼ぶ。gb-file-lock-store.js /
   // gb-active-lock-store.js は別IIFEスコープのため、同じリゾルバーへ
   // window.MeldexDropboxManagementRootResolver 経由で直接アクセスする。

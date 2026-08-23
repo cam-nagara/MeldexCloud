@@ -411,9 +411,9 @@ function inlinemd(text) {
       if (mediaType === 'audio') {
         return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="audio"><audio src="${src}" controls style="${wStyle}"></audio></div>`;
       }
-      return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="image"><img src="${src}" alt="${alt}" style="${wStyle}"></div>`;
+      return `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${dataPath}" data-name="${alt}" data-type="image"><img data-meldex-content-image src="${src}" alt="${alt}" style="${wStyle}"></div>`;
     }
-    return `<img src="${src}" alt="${alt}" style="${wStyle}">`;
+    return `<span class="meldex-content-image-host" data-meldex-image-host><img data-meldex-content-image src="${src}" alt="${alt}" style="${wStyle}"></span>`;
   });
   // リンク: 外部URLはaタグ、内部パスはauto-linkスパン（エスケープ済み\]と\)に対応）
   s = s.replace(/\[((?:[^\]\\]|\\.)+)\]\(((?:&lt;.*?&gt;|<.*?>|(?:[^)\\]|\\.)+))\)/g, (m, text, href) => {

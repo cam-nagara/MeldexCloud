@@ -16,9 +16,7 @@
   }
 
   function _escape(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   async function _workspaceRows() {

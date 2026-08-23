@@ -98,7 +98,15 @@
   let PM_EXTERNAL_SYNC_IN_FLIGHT = false;
 
   async function runProductionExternalSync(options = {}) {
+    if (!_pmCloudCanExportAttendance()) {
+      if (!options.silent) _pmShowStatus('外部カレンダーへ送信できるのは管理者のみです', true);
+      return { ok: false, forbidden: true };
+    }
     if (!_pmEnsureWritable({ notify: !options.silent })) return null;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && !_pmCloudCanExportAttendance()) {
+      if (!options.silent) _pmShowStatus('外部カレンダーへ送信できるのは管理者のみです', true);
+      return { ok: false, status: 403, code: 'PRODUCTION_EXTERNAL_SYNC_ADMIN_REQUIRED' };
+    }
     if (PM_EXTERNAL_SYNC_IN_FLIGHT) {
       // 自動側（silent）は次回タイマーに委ねて静かにスキップし、手動側だけ状況を伝える。
       if (!options.silent) _pmShowStatus('外部カレンダーへの送信が既に進行中です。完了までお待ちください', true);
@@ -128,6 +136,7 @@
   }
 
   async function _pmAutoProductionExternalSync() {
+    if (!_pmCloudCanExportAttendance()) return;
     // 制作管理UX改善計画（2026-08-04）§4-4: Google送信がCloudにも対応したため、Dropboxモード
     // 除外は撤去した。Cloud未接続時は runProductionExternalSync が silent:true のもと
     // result.message だけを受け取り、通知を出さずに静かに終わる（15分毎の無駄な失敗表示を避ける）。
@@ -137,9 +146,15 @@
   }
 
   function _pmStartExternalSyncTimer() {
+    if (!_pmCloudCanExportAttendance()) {
+      if (window.__meldexProductionExternalSyncTimer) clearInterval(window.__meldexProductionExternalSyncTimer);
+      window.__meldexProductionExternalSyncTimer = null;
+      return;
+    }
     // デスクトップ付箋の小窓でも自動送信タイマーが動くと、付箋の枚数だけ外部カレンダーへの
     // 自動送信が並走する。実行中フラグはウィンドウ単位なので窓をまたいだ二重送信は防げない。
     if (typeof _isTrayAnnotationHost === 'function' && _isTrayAnnotationHost()) return;
+    if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && !_pmCloudCanExportAttendance()) return;
     if (window.__meldexProductionExternalSyncTimer) return;
     const startupTimer = setTimeout(() => _pmAutoProductionExternalSync().catch(() => {}), 15000);
     if (typeof startupTimer?.unref === 'function') startupTimer.unref();
@@ -154,7 +169,8 @@
       e2eId: 'production-export-overlay',
       dialogE2eId: 'production-export-dialog',
     });
-    const kind = _pmSelect(['all', 'shifts', 'attendance', 'work'], 'all');
+    const exportKinds = _pmCloudExportKinds();
+    const kind = _pmSelect(exportKinds, exportKinds[0]);
     kind.dataset.e2eId = 'production-export-kind';
     const format = _pmSelect(['csv', 'xlsx'], 'csv');
     format.dataset.e2eId = 'production-export-format';

@@ -105,6 +105,9 @@
   }
 
   async function resolveReadOnly(path, explicit) {
+    if (document.body?.dataset?.cloudQuotaBlocked === '1') {
+      return { readOnly: true, reason: '容量上限のため編集できません' };
+    }
     if (explicit === true || document.body?.dataset?.cloudReadonly === '1') {
       return { readOnly: true, reason: '閲覧専用のため編集できません' };
     }
@@ -432,5 +435,7 @@
     return controller;
   }
 
-  window.MeldexEntityDetail = { mount };
+  // 直接エントリを描画するCloudモバイル経路も、同じ閲覧専用・編集ロック判定を
+  // 再利用できるよう公開する。判定の二重実装を作らない。
+  window.MeldexEntityDetail = { mount, resolveReadOnly };
 })();

@@ -64,21 +64,12 @@
   gap: 6px;
   margin-bottom: 10px;
 }
+/* Tierチップ: .gb-btn/.gb-btn-sm を基底とし、pill形状とフィルタ選択状態だけを上書きする */
 .template-tier-btn {
-  display: inline-flex;
-  align-items: center;
   min-height: 30px;
   padding: 5px 12px;
-  font-size: 12px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--fg2);
   border-radius: 999px;
-  cursor: pointer;
-}
-.template-tier-btn:hover,
-.template-tier-btn:focus-visible {
-  background: var(--bg4);
+  color: var(--fg2);
 }
 .template-tier-btn.active,
 .template-tier-btn[aria-pressed="true"] {
@@ -162,27 +153,10 @@
   padding: 1px 6px;
   border-radius: 8px;
 }
-.template-card-desc {
-  font-size: 12px;
-  color: var(--fg2);
-  margin-bottom: 6px;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 .template-card-meta {
   font-size: 11px;
   color: var(--fg2);
   line-height: 1.35;
-  margin-bottom: 4px;
-}
-.template-card-actions {
-  margin-top: 8px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 .db-template-preview-pane {
   flex: 0 0 340px;
@@ -328,6 +302,37 @@
   border: 1px solid var(--border);
   border-radius: 4px;
 }
+.db-template-image-embed {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.db-template-image-embed-head {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg2);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.db-template-image-embed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+.db-template-image-embed-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .db-template-icon-field {
   display: flex;
   flex-direction: column;
@@ -388,19 +393,16 @@ body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .template-grid {
 body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .template-tier-btn,
 body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .template-card,
 body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .db-template-footer .gb-btn,
-body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .template-card-actions .gb-btn,
 body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .db-template-icon-button,
 body[data-cloud-mobile="1"] .gb-mobile-dialog-sheet .gb-input,
 body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .template-tier-btn,
 body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .template-card,
 body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .db-template-footer .gb-btn,
-body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .template-card-actions .gb-btn,
 body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .db-template-icon-button,
 body[data-mobile-ui="1"] .gb-mobile-dialog-sheet .gb-input,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .template-tier-btn,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .template-card,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .db-template-footer .gb-btn,
-body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .template-card-actions .gb-btn,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .db-template-icon-button,
 body[data-mobile-ui-local="1"] .gb-mobile-dialog-sheet .gb-input {
   min-height: 44px;

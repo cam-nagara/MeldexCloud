@@ -804,6 +804,13 @@ function applyDbTemplate(dbPath, template, opts) {
   const viewsResult = c._dbTemplateViewsResult || null;
   delete c._dbTemplateViewsResult;
 
+  // 5.5 エントリレイアウト（typeofガード: 未ロード環境ではレイアウト無しの従来動作）
+  if (typeof _applyDbTemplateEntityLayouts === 'function') {
+    _applyDbTemplateEntityLayouts(c, template, overwrite);
+  }
+  const entityLayoutsResult = c._dbTemplateEntityLayoutsResult || null;
+  delete c._dbTemplateEntityLayoutsResult;
+
   // 6. エントリテンプレート（別のlocalStorageキー）
   let existingEntityTemplates = null;
   let nextEntityTemplates = null;
@@ -850,7 +857,7 @@ function applyDbTemplate(dbPath, template, opts) {
     throw e;
   }
 
-  return { applied, skipped, viewsResult, backendSavePromise };
+  return { applied, skipped, viewsResult, entityLayoutsResult, backendSavePromise };
 }
 
 /**
@@ -881,6 +888,7 @@ function exportDbAsTemplate(dbPath) {
     entityTemplates: getEntityTemplates(dbPath),
     countTypes: hasSavedViews ? (currentCountTypes || {}) : (currentCountTypes && Object.keys(currentCountTypes).length ? currentCountTypes : (c.countTypes || {})),
     savedViews: typeof exportDbTemplateSavedViews === 'function' ? exportDbTemplateSavedViews(c) : null,
+    entityLayouts: typeof exportDbTemplateEntityLayouts === 'function' ? exportDbTemplateEntityLayouts(c) : null,
   };
 }
 
@@ -944,6 +952,11 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
     if (result.viewsResult.skipped) msg += `/${result.viewsResult.skipped}件スキップ`;
     msg += '）';
   }
+  if (result.entityLayoutsResult && (result.entityLayoutsResult.added || result.entityLayoutsResult.skipped)) {
+    msg += `（エントリレイアウト${result.entityLayoutsResult.added || 0}件追加`;
+    if (result.entityLayoutsResult.skipped) msg += `/${result.entityLayoutsResult.skipped}件スキップ（同名）`;
+    msg += '）';
+  }
   showStatus(msg);
 
   // DB再読み込み
@@ -959,7 +972,7 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
 
 /* --- テンプレートプレビューモーダル（モバイル: 重ねモーダルとして継続使用） --- */
 
-function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null) {
+function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null, opts = {}) {
   const trigger = _dbTemplateTrigger(triggerEl);
   const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
   const descId = `db-template-preview-desc-${seq}`;
@@ -975,10 +988,17 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
   // ビュー一覧（savedViews があれば詳細表示、無ければ旧形式の推奨ビュー表示）
   body.appendChild(_buildDbTemplateViewsSummarySection(tmpl));
 
+  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
+    const layoutsDiv = document.createElement('div');
+    layoutsDiv.className = 'db-template-mode-summary';
+    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    body.appendChild(layoutsDiv);
+  }
+
   // プロパティ一覧テーブル（デスクトップのプレビューペインと共通の構築関数を使用）
   body.appendChild(_buildDbTemplatePropTable(tmpl));
 
-  // ボタン
+  // ボタン（カード側の操作ボタン廃止に伴い、カスタムテンプレートの編集/削除もここへ集約）
   const cancelBtn = document.createElement('button');
   _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-preview-back');
   cancelBtn.textContent = '戻る';
@@ -991,13 +1011,38 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
       _closeDbTemplateOverlay(parentOverlay, parentOverlay?._dbTemplateTrigger || trigger, { reason: 'applied' });
     }
   });
+  const footerButtons = [cancelBtn];
+  if (tmpl.tier === 0) {
+    const editBtn = document.createElement('button');
+    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-preview-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
+    editBtn.textContent = '編集';
+    editBtn.addEventListener('click', () => {
+      const editTrigger = parentOverlay?._dbTemplateTrigger || trigger;
+      _closeDbTemplateOverlay(overlay, editTrigger, { restoreFocus: false });
+      _closeDbTemplateOverlay(parentOverlay, editTrigger, { restoreFocus: false });
+      showEditTemplateModal(tmpl, dbPath, editTrigger);
+    });
+    footerButtons.push(editBtn);
+
+    const delBtn = document.createElement('button');
+    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-preview-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
+    delBtn.textContent = '削除';
+    delBtn.addEventListener('click', async () => {
+      const deleted = await _deleteDbCustomTemplateWithConfirm(tmpl, opts.onChanged, delBtn);
+      if (deleted) {
+        _closeDbTemplateOverlay(overlay, parentOverlay?._dbTemplateTrigger || trigger, { restoreFocus: false });
+      }
+    });
+    footerButtons.push(delBtn);
+  }
+  footerButtons.push(applyBtn);
   let busy = false;
   const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
   const modalApi = window.GBUI.createModal({
     id: `db-template-preview-${seq}`,
     title: tmpl.name,
     body,
-    footer: [cancelBtn, applyBtn],
+    footer: footerButtons,
     variant: 'standard',
     extraClass: 'db-template-preview-modal',
     geometryKey: 'db-template-preview',
@@ -1019,7 +1064,7 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
   overlay._dbTemplateSetBusy = (next) => {
     busy = !!next;
     modal.setAttribute('aria-busy', busy ? 'true' : 'false');
-    [cancelBtn, applyBtn, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
+    [...footerButtons, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
       .forEach(control => { control.disabled = busy; });
   };
   modal.dataset.e2eId = 'db-template-preview-dialog';
@@ -1239,6 +1284,129 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
   cfg._dbTemplateViewsResult = { added, skipped };
   return true;
 }
+/* gb-db-template-entity-layouts.js: シートテンプレートの entityLayouts（エントリレイアウト）
+   サニタイズ / エクスポート / マージ適用 / 画像の選択同梱。
+   gb-db-template-views.js（savedViews）と同じ「専用ファイル + typeofガード +
+   未ロード時は entityLayouts 無しの旧経路へ自動フォールバック」の型に合わせる。 */
+'use strict';
+
+/* レイアウト1件をテンプレートへ持ち出せる形に正規化する。
+   正規化は gb-db-entity-layout.js の共通関数へ委譲（未ロード環境ではシャローコピー）。 */
+function _dbTemplateSanitizeEntityLayout(layout) {
+  if (!layout || typeof layout !== 'object' || Array.isArray(layout)) return null;
+  if (typeof _elNormalizeLayout === 'function') return _elNormalizeLayout(JSON.parse(JSON.stringify(layout)));
+  return JSON.parse(JSON.stringify(layout));
+}
+
+/* エクスポート: cfg.entityLayouts をサニタイズして返す（無ければ null）。
+   アップロード画像は既定でパス参照のみ（バイナリ同梱は embedDbTemplateEntityLayoutImages で
+   ユーザーが明示選択したセルだけ dataUri を付ける。localStorage容量への配慮）。 */
+function exportDbTemplateEntityLayouts(cfg) {
+  const layouts = Array.isArray(cfg?.entityLayouts) ? cfg.entityLayouts : [];
+  const sanitized = layouts.map(_dbTemplateSanitizeEntityLayout).filter(Boolean);
+  return sanitized.length ? sanitized : null;
+}
+
+/* テンプレート内の「アップロード画像を使う画像セル」を列挙する（作成モーダルの同梱チェックリスト用） */
+function listDbTemplateEntityLayoutUploadImages(template) {
+  const out = [];
+  (Array.isArray(template?.entityLayouts) ? template.entityLayouts : []).forEach(layout => {
+    (Array.isArray(layout?.cells) ? layout.cells : []).forEach(cell => {
+      if (cell?.type === 'image' && cell.image?.source === 'upload' && (cell.image.path || cell.image.url)) {
+        out.push({
+          layoutName: String(layout.name || ''),
+          cellId: String(cell.id || ''),
+          path: String(cell.image.path || ''),
+          cell,
+        });
+      }
+    });
+  });
+  return out;
+}
+
+const DB_TEMPLATE_IMAGE_EMBED_MAX_BYTES = 500 * 1024;
+
+/* 選択されたセルの画像を dataUri としてテンプレートへ同梱する。
+   500KBを超える画像は同梱せずスキップ（localStorageの容量保護）。 */
+async function embedDbTemplateEntityLayoutImages(template, selectedCellIds) {
+  const selected = new Set(Array.isArray(selectedCellIds) ? selectedCellIds : []);
+  const result = { embedded: 0, skipped: 0 };
+  if (!selected.size) return result;
+  for (const item of listDbTemplateEntityLayoutUploadImages(template)) {
+    if (!selected.has(item.cellId)) continue;
+    try {
+      const url = (typeof fileRawUrl === 'function' && item.path) ? fileRawUrl(item.path) : (item.cell.image.url || '');
+      if (!url) { result.skipped += 1; continue; }
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      if (blob.size > DB_TEMPLATE_IMAGE_EMBED_MAX_BYTES) {
+        result.skipped += 1;
+        continue;
+      }
+      const dataUri = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('read error'));
+        reader.readAsDataURL(blob);
+      });
+      item.cell.image = { ...item.cell.image, dataUri };
+      result.embedded += 1;
+    } catch {
+      result.skipped += 1;
+    }
+  }
+  return result;
+}
+
+/* 適用: 既存レイアウトと名前が一致するものは加算スキップ（savedViewsの方針に合わせる。
+   overwrite 時は同名の中身を置き換える）。追加分は id をすべて振り直し、タブ順の末尾へ足す。
+   結果は cfg._dbTemplateEntityLayoutsResult = { added, skipped } に格納する。 */
+function _applyDbTemplateEntityLayouts(cfg, template, overwrite) {
+  const incoming = Array.isArray(template?.entityLayouts) ? template.entityLayouts : [];
+  if (incoming.length === 0) return false;
+  const genId = (prefix) => (typeof _elGenId === 'function'
+    ? _elGenId(prefix)
+    : prefix + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1679616).toString(36));
+  const state = typeof _elNormalizeState === 'function'
+    ? _elNormalizeState(cfg)
+    : {
+      layouts: Array.isArray(cfg.entityLayouts) ? cfg.entityLayouts : [],
+      tabOrder: Array.isArray(cfg.entityTabOrder) && cfg.entityTabOrder.length ? cfg.entityTabOrder : ['columns'],
+      currentTab: cfg.currentEntityTab || 'columns',
+    };
+  let added = 0;
+  let skipped = 0;
+  incoming.forEach(raw => {
+    const layout = _dbTemplateSanitizeEntityLayout(raw);
+    if (!layout) return;
+    const existing = state.layouts.find(l => String(l?.name || '') === layout.name);
+    if (existing) {
+      if (!overwrite) {
+        skipped += 1;
+        return;
+      }
+      // overwrite: 同名レイアウトの中身を置き換える（idとタブ位置は既存を維持）
+      existing.canvasSize = layout.canvasSize;
+      existing.theme = layout.theme;
+      existing.cells = (layout.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
+      added += 1;
+      return;
+    }
+    const clone = JSON.parse(JSON.stringify(layout));
+    clone.id = genId('el');
+    clone.cells = (clone.cells || []).map(cell => ({ ...cell, id: genId('cell') }));
+    state.layouts.push(clone);
+    state.tabOrder.push(clone.id);
+    added += 1;
+  });
+  cfg.entityLayouts = state.layouts;
+  cfg.entityTabOrder = state.tabOrder;
+  cfg.currentEntityTab = state.currentTab;
+  cfg._dbTemplateEntityLayoutsResult = { added, skipped };
+  return true;
+}
 /* ==============================
    gb-db-template-gallery-ui.js: シートテンプレートギャラリー（刷新UI）
    検索付きヘッダー + Tierチップ行 + カードグリッド/プレビューペインの2ペイン構成。
@@ -1246,6 +1414,16 @@ function _applyDbTemplateSavedViews(cfg, template, overwrite) {
    プロパティ表・ビュー一覧のプレビュー描画を担当する。
    モバイルでは重ねプレビューモーダル（gb-db-templates.part02.js の showTemplatePreviewModal）を
    引き続き使用する。
+
+   設計意図（UI共通ルールとの整合、2026-08-19 UI統一）:
+   - カードは「クリックで選択のみ」。適用/編集/削除はデスクトップ=プレビューペイン、
+     モバイル=重ねプレビューモーダルへ集約し、同じ操作ボタンを二重表示しない。
+   - 説明文はカードへ常時表示せず data-gb-tooltip（ホバー/フォーカス/長押し）へ集約する。
+     選択後のプレビュー（ペイン/重ねモーダル）は詳細表示面なので説明文を可視のまま残す。
+   - Tierチップは .gb-btn 系を基底にし、フィルタ選択状態だけ pill 形状+accent の
+     修飾クラス（.template-tier-btn）で表現する。
+   - プレビューペイン付き2ペイン構成は「一覧と詳細の分離」（ビュータブ等と同じ
+     選択→詳細操作パターン）を1モーダル内で成立させるための意図的な専用レイアウト。
    ============================== */
 
 /* --- トリガー・フォーカス復帰ヘルパー --- */
@@ -1606,10 +1784,8 @@ function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
   }
   card.appendChild(titleRow);
 
-  const desc = document.createElement('div');
-  desc.textContent = tmpl.description;
-  desc.className = 'template-card-desc';
-  card.appendChild(desc);
+  // 説明文はカードへ常時表示せず、ツールチップ（ホバー/フォーカス/長押し）へ集約する
+  if (tmpl.description) card.dataset.gbTooltip = tmpl.description;
 
   const meta = document.createElement('div');
   meta.className = 'template-card-meta';
@@ -1620,42 +1796,9 @@ function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
   meta.textContent = propCount + '列 · ' + viewCount + 'ビュー';
   card.appendChild(meta);
 
-  const btnRow = document.createElement('div');
-  btnRow.className = 'template-card-actions';
-  const applyBtn = document.createElement('button');
-  _setupDbTemplateButton(applyBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-card-apply', 'テンプレート「' + (tmpl.name || '') + '」を適用');
-  applyBtn.textContent = '適用';
-  applyBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    _doApplyTemplate(dbPath, tmpl, ctx.overlay, ctx.overlay?._dbTemplateTrigger || card);
-  });
-  btnRow.appendChild(applyBtn);
-
-  if (tmpl.tier === 0) {
-    const editBtn = document.createElement('button');
-    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-card-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
-    editBtn.textContent = '編集';
-    editBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      _closeDbTemplateOverlay(ctx.overlay, ctx.overlay?._dbTemplateTrigger || card, { restoreFocus: false });
-      showEditTemplateModal(tmpl, dbPath, ctx.overlay?._dbTemplateTrigger || card);
-    });
-    btnRow.appendChild(editBtn);
-
-    const delBtn = document.createElement('button');
-    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-card-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
-    delBtn.textContent = '削除';
-    delBtn.addEventListener('click', async e => {
-      e.stopPropagation();
-      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onChanged, delBtn);
-    });
-    btnRow.appendChild(delBtn);
-  }
-  card.appendChild(btnRow);
-
   const activate = () => {
     if (ctx.mobile) {
-      showTemplatePreviewModal(tmpl, dbPath, ctx.overlay, card);
+      showTemplatePreviewModal(tmpl, dbPath, ctx.overlay, card, { onChanged: ctx.onChanged });
     } else if (typeof ctx.onSelect === 'function') {
       ctx.onSelect();
     }
@@ -1708,6 +1851,13 @@ function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
     entityDiv.className = 'db-template-preview-pane-entities';
     entityDiv.textContent = 'エントリ雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
     pane.appendChild(entityDiv);
+  }
+
+  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
+    const layoutsDiv = document.createElement('div');
+    layoutsDiv.className = 'db-template-preview-pane-entities';
+    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    pane.appendChild(layoutsDiv);
   }
 
   const actions = document.createElement('div');
@@ -1790,7 +1940,7 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = tf.label;
-    btn.className = 'template-tier-btn' + (tf.key === 'all' ? ' active' : '');
+    btn.className = 'gb-btn gb-btn-sm template-tier-btn' + (tf.key === 'all' ? ' active' : '');
     btn.dataset.tier = tf.key;
     btn.dataset.e2eId = `db-template-tier-${tf.key}`;
     btn.setAttribute('aria-pressed', tf.key === 'all' ? 'true' : 'false');
@@ -2110,6 +2260,9 @@ function _showDbTemplateFormModal(options) {
   preview.textContent = options.previewText || '';
   body.appendChild(preview);
 
+  // 追加コンテンツの差し込み口（エントリレイアウトの画像同梱チェックリスト等）
+  if (options.extraBody instanceof HTMLElement) body.appendChild(options.extraBody);
+
   if (mode === 'edit') {
     const note = document.createElement('div');
     note.className = 'db-template-edit-note';
@@ -2201,8 +2354,42 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
   }
 
   const viewCount = Array.isArray(exported.savedViews) ? exported.savedViews.length : 0;
+  const layoutCount = Array.isArray(exported.entityLayouts) ? exported.entityLayouts.length : 0;
   const previewText = '含まれる列: ' + exported.properties.map(p => p.name).join(', ')
-    + (viewCount ? `（ビュー${viewCount}件を含む）` : '');
+    + (viewCount ? `（ビュー${viewCount}件を含む）` : '')
+    + (layoutCount ? `（エントリレイアウト${layoutCount}件を含む）` : '');
+
+  // エントリレイアウト内のアップロード画像は「指定したものだけ」テンプレートへ同梱する（既定OFF）。
+  // 同梱しない画像はパス参照のままになり、テンプレート適用先では画像の再設定が必要になる。
+  const uploadImages = typeof listDbTemplateEntityLayoutUploadImages === 'function'
+    ? listDbTemplateEntityLayoutUploadImages(exported)
+    : [];
+  let extraBody = null;
+  if (uploadImages.length) {
+    extraBody = document.createElement('div');
+    extraBody.className = 'db-template-image-embed';
+    extraBody.dataset.e2eId = 'db-template-image-embed';
+    const head = document.createElement('div');
+    head.className = 'db-template-image-embed-head';
+    head.innerHTML = 'テンプレートへ同梱する画像 ' + (typeof fieldHelp === 'function'
+      ? fieldHelp('チェックした画像はテンプレート自体に埋め込まれ、適用先でもそのまま表示されます（1枚500KBまで）。チェックしない画像は元ファイルの場所を参照するだけになり、適用先では画像の再設定が必要です')
+      : '');
+    extraBody.appendChild(head);
+    uploadImages.forEach(item => {
+      const row = document.createElement('label');
+      row.className = 'db-template-image-embed-row';
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.dataset.cellId = item.cellId;
+      check.dataset.e2eId = 'db-template-image-embed-check';
+      row.appendChild(check);
+      const span = document.createElement('span');
+      const fileName = String(item.path || '').split(/[\\/]/).pop() || '(画像)';
+      span.textContent = (item.layoutName ? item.layoutName + ': ' : '') + fileName;
+      row.appendChild(span);
+      extraBody.appendChild(row);
+    });
+  }
 
   _showDbTemplateFormModal({
     mode: 'create',
@@ -2212,10 +2399,20 @@ function showCreateTemplateModal(dbPath, triggerEl = null) {
     initialDescription: '',
     initialIcon: exported.icon || 'file',
     previewText,
-    onSave: ({ name, description, icon }) => {
+    extraBody,
+    onSave: async ({ name, description, icon }) => {
       exported.name = name;
       exported.description = description;
       exported.icon = icon;
+      if (extraBody && typeof embedDbTemplateEntityLayoutImages === 'function') {
+        const selectedIds = Array.from(extraBody.querySelectorAll('input[type="checkbox"][data-cell-id]'))
+          .filter(check => check.checked)
+          .map(check => check.dataset.cellId);
+        const embedResult = await embedDbTemplateEntityLayoutImages(exported, selectedIds);
+        if (embedResult.skipped > 0) {
+          showStatus(`同梱できなかった画像が${embedResult.skipped}件あります（500KB超またはアクセス不可）。パス参照のまま保存します`, true);
+        }
+      }
       const customs = getCustomTemplates();
       customs.push(exported);
       if (!saveCustomTemplates(customs, { label: 'シートテンプレート: カスタムテンプレート作成', detail: name })) return false;

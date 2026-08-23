@@ -102,6 +102,7 @@ function _startNumberValueEdit(span, val, entityPath, propName, dbPath) {
   const restore = () => { span.textContent = old; restoreEditedCellSelection(); };
   const finish = () => {
     if (done) return;
+    if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(input)) return;
     done = true;
     const nv = input.value.trim();
     if (nv && !Number.isFinite(Number(nv))) {
@@ -420,7 +421,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
   moreBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${CSS.escape(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
+    const imageReturnFocus = () => document.querySelector(`[data-e2e-id="${MeldexEscape.cssIdent(moreBtn.dataset.e2eId || '')}"]`) || moreBtn;
     const imageManager = propTypeConfig.type === 'image' && typeof showImageGalleryModal === 'function'
       ? () => showImageGalleryModal(entityPath, propName, val, propTypeConfig, { returnFocus: imageReturnFocus })
       : null;
@@ -551,7 +552,14 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       openColorPalette(swatch, v || '', (color) => {
         applyColor(color); // ライブでスウォッチへ反映
         clearTimeout(saveTimer);
-        saveTimer = setTimeout(async () => {
+        const persistColor = async () => {
+          if (!swatch.isConnected) return;
+          const drawer = swatch.closest?.('#cloud-mobile-side-drawer');
+          if (drawer && !drawer.classList.contains('open')) return;
+          if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(swatch)) {
+            saveTimer = setTimeout(persistColor, 120);
+            return;
+          }
           const nv = HEX.test(String(color || '').trim()) ? color.trim() : '';
           if (nv === (v || '')) return;
           try {
@@ -576,7 +584,8 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
             val.value = nv;
             if (typeof _refreshAfterCellEdit === 'function') _refreshAfterCellEdit(swatch, entityPath, propName);
           } catch (err) { showStatus('保存に失敗: ' + (err?.message || err), true); }
-        }, 250);
+        };
+        saveTimer = setTimeout(persistColor, 250);
       });
     });
     row.appendChild(swatch);
@@ -617,6 +626,7 @@ function createTypedValueElement(val, entityPath, propName, thumbSize, propTypeC
       let done = false;
       const finish = async () => {
         if (done) return;
+        if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(editor.root)) return;
         done = true;
         restoreBtns();
         const nv = editor.getValue();

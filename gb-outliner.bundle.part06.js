@@ -1,3 +1,87 @@
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  if (!toggle || toggle.dataset.expanded === undefined) return false;
+  const expanded = toggle.dataset.expanded === 'true';
+  if (expand === true && !expanded) { toggle.click(); return true; }
+  if (expand === false && expanded) { toggle.click(); return true; }
+  return false;
+}
+
+function _outlinerKeyboardIsExpandable(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded !== undefined;
+}
+
+function _outlinerKeyboardIsExpanded(nodeEl) {
+  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
+  return !!toggle && toggle.dataset.expanded === 'true';
+}
+
+// 標準Tree View操作（§2.4）: 閉じている子項目なら親へ選択を移す
+function _outlinerKeyboardParentNode(nodeEl) {
+  const container = nodeEl?.parentElement || null;
+  return container?.closest?.('.tree-node') || null;
+}
+
+// 標準Tree View操作（§2.4）: 展開済みの親なら最初の子へ選択を移す
+function _outlinerKeyboardFirstChildNode(nodeEl) {
+  const childrenDiv = nodeEl?.querySelector?.(':scope > .tree-children') || null;
+  return childrenDiv?.querySelector?.(':scope > .tree-node') || null;
+}
+
+function _handleOutlinerTreeKeydown(event) {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
+  const target = event.target;
+  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
+  if (!scopeSelector) return;
+  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
+  event.preventDefault();
+  event.stopPropagation();
+  _outlinerKeyboardMarkActive();
+  if (event.key === 'ArrowLeft') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current) && _outlinerKeyboardIsExpanded(current)) {
+      _outlinerKeyboardToggle(current, false);
+      return;
+    }
+    // 展開中でない（閉じた子項目・葉）場合は親へ選択を移す
+    const parent = _outlinerKeyboardParentNode(current);
+    if (parent) _outlinerKeyboardSelectNode(parent);
+    return;
+  }
+  if (event.key === 'ArrowRight') {
+    if (!current) return;
+    if (_outlinerKeyboardIsExpandable(current)) {
+      if (!_outlinerKeyboardIsExpanded(current)) {
+        _outlinerKeyboardToggle(current, true);
+        return;
+      }
+      // 展開済みなら最初の子へ選択を移す
+      const firstChild = _outlinerKeyboardFirstChildNode(current);
+      if (firstChild) {
+        _outlinerKeyboardSelectNode(firstChild);
+      } else {
+        // 展開直後（子の読み込み中）に2打目のArrowRightが押された場合、
+        // まだ子ノードがDOMに存在せずno-opになってしまう。読み込み完了後に
+        // 最初の子へフォーカス移動するデフォルト動作を予約しておく
+        // （gb-outliner.part01.part02.js の読み込み完了処理が消化する）。
+        const childrenDiv = current.querySelector?.(':scope > .tree-children') || null;
+        if (childrenDiv && childrenDiv.dataset.loading === 'true') {
+          childrenDiv._outlinerPendingArrowRightFocusNode = current;
+        }
+      }
+    }
+    return;
+  }
+  if (event.key === 'Enter') {
+    if (current) _outlinerKeyboardActivateNode(current);
+    return;
+  }
+  if (event.key === 'F2') {
+    if (current) _outlinerKeyboardStartRename(current);
+    return;
+  }
   if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
     if (_outlinerKeyboardTryVirtualStep(current, event.key)) return;
   }
@@ -325,16 +409,47 @@ document.getElementById('outliner-tree')?.addEventListener('drop', async e => {
     if (nd.type === 'folder' || nd.type === 'database') parentPath = nd.path;
     else parentPath = nd.path.substring(0, nd.path.lastIndexOf('/'));
   }
-  showStatus(`${files.length}個のファイルをインポート中...`);
-  const results = await Promise.all(files.map(file => _uploadOutlinerDroppedFile(file, parentPath)));
-  await loadOutliner();
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'file-import',
+    label: `${files.length}個のファイルをインポートしています`,
+    mode: 'determinate',
+    total: files.length,
+    processed: 0,
+    origin: document.getElementById('outliner-tree'),
+    showInTray: true,
+    showInStatus: true,
+    priority: 40,
+  });
+  if (!progress) showStatus(`${files.length}個のファイルをインポート中...`);
+  let processed = 0;
+  const results = await Promise.all(files.map(async file => {
+    const result = await _uploadOutlinerDroppedFile(file, parentPath);
+    processed += 1;
+    progress?.update?.({ processed: processed, currentItem: file.name });
+    return result;
+  }));
+  try {
+    progress?.update?.({ phase: '表示を更新しています', currentItem: '' });
+    await loadOutliner();
+  } catch (error) {
+    progress?.fail?.({ error: error });
+    throw error;
+  }
   const succeeded = results.filter(result => result.ok);
   const failed = results.filter(result => !result.ok);
   if (failed.length) {
     const names = failed.slice(0, 3).map(result => result.name).join('、');
     const suffix = failed.length > 3 ? ` ほか${failed.length - 3}件` : '';
-    showStatus(`${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`, true);
+    const summary = `${succeeded.length}個をインポート、${failed.length}個は失敗しました: ${names}${suffix}`;
+    if (progress) {
+      progress.partial({
+        summary: summary,
+        detailCount: failed.length,
+        details: failed.map(result => ({ path: result.name, message: result.error })),
+      });
+    } else showStatus(summary, true);
   } else {
-    showStatus(files.length + '個のファイルをインポートしました');
+    if (progress) progress.succeed({ summary: files.length + '個のファイルをインポートしました' });
+    else showStatus(files.length + '個のファイルをインポートしました');
   }
 });

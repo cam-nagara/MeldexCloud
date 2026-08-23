@@ -25,7 +25,7 @@
 
   const PANE_ID_PREFIX = 'gb-production-sheet-embed-';
   const TABLE_ID_PREFIX = 'pivot-table-';
-  const SUBVIEW_CLASSES = ['gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
+  const SUBVIEW_CLASSES = ['tree-view', 'gallery-view', 'kanban-view', 'timeline-view', 'chart-view', 'graph-view', 'form-view'];
   const WRITE_GUARD_EVENTS = ['click', 'dblclick', 'contextmenu', 'dragstart', 'dragover', 'drop', 'beforeinput', 'input', 'change', 'keydown', 'paste', 'cut'];
   const WRITE_GUARD_HIDE_SELECTOR = [
     'tr.new-entity-row', '.row-add-btn', '.entity-row-more-btn', '.cell-add-btn',

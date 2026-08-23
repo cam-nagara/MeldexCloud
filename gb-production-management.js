@@ -21,6 +21,7 @@ __loadSplitScript('gb-production-management.js', [
   'gb-production-management-cloud-task-hierarchy.js',
   'gb-production-management-cloud-task-structure-adapter.js',
   'gb-production-management-cloud-exports.js',
+  'gb-production-management-cloud-history.js',
   'gb-production-management-cloud-spreadsheet-io.js',
   'gb-production-management-cloud-save-hooks.js',
 ]);

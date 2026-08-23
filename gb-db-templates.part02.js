@@ -26,6 +26,11 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
     if (result.viewsResult.skipped) msg += `/${result.viewsResult.skipped}件スキップ`;
     msg += '）';
   }
+  if (result.entityLayoutsResult && (result.entityLayoutsResult.added || result.entityLayoutsResult.skipped)) {
+    msg += `（エントリレイアウト${result.entityLayoutsResult.added || 0}件追加`;
+    if (result.entityLayoutsResult.skipped) msg += `/${result.entityLayoutsResult.skipped}件スキップ（同名）`;
+    msg += '）';
+  }
   showStatus(msg);
 
   // DB再読み込み
@@ -41,7 +46,7 @@ async function _doApplyTemplate(dbPath, tmpl, overlayEl, triggerEl = null) {
 
 /* --- テンプレートプレビューモーダル（モバイル: 重ねモーダルとして継続使用） --- */
 
-function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null) {
+function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null, opts = {}) {
   const trigger = _dbTemplateTrigger(triggerEl);
   const seq = Date.now().toString(36) + '-' + Math.floor(Math.random() * 1000).toString(36);
   const descId = `db-template-preview-desc-${seq}`;
@@ -57,10 +62,17 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
   // ビュー一覧（savedViews があれば詳細表示、無ければ旧形式の推奨ビュー表示）
   body.appendChild(_buildDbTemplateViewsSummarySection(tmpl));
 
+  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
+    const layoutsDiv = document.createElement('div');
+    layoutsDiv.className = 'db-template-mode-summary';
+    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    body.appendChild(layoutsDiv);
+  }
+
   // プロパティ一覧テーブル（デスクトップのプレビューペインと共通の構築関数を使用）
   body.appendChild(_buildDbTemplatePropTable(tmpl));
 
-  // ボタン
+  // ボタン（カード側の操作ボタン廃止に伴い、カスタムテンプレートの編集/削除もここへ集約）
   const cancelBtn = document.createElement('button');
   _setupDbTemplateButton(cancelBtn, 'gb-btn gb-btn-sm', 'db-template-preview-back');
   cancelBtn.textContent = '戻る';
@@ -73,13 +85,38 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
       _closeDbTemplateOverlay(parentOverlay, parentOverlay?._dbTemplateTrigger || trigger, { reason: 'applied' });
     }
   });
+  const footerButtons = [cancelBtn];
+  if (tmpl.tier === 0) {
+    const editBtn = document.createElement('button');
+    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-preview-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
+    editBtn.textContent = '編集';
+    editBtn.addEventListener('click', () => {
+      const editTrigger = parentOverlay?._dbTemplateTrigger || trigger;
+      _closeDbTemplateOverlay(overlay, editTrigger, { restoreFocus: false });
+      _closeDbTemplateOverlay(parentOverlay, editTrigger, { restoreFocus: false });
+      showEditTemplateModal(tmpl, dbPath, editTrigger);
+    });
+    footerButtons.push(editBtn);
+
+    const delBtn = document.createElement('button');
+    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-preview-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
+    delBtn.textContent = '削除';
+    delBtn.addEventListener('click', async () => {
+      const deleted = await _deleteDbCustomTemplateWithConfirm(tmpl, opts.onChanged, delBtn);
+      if (deleted) {
+        _closeDbTemplateOverlay(overlay, parentOverlay?._dbTemplateTrigger || trigger, { restoreFocus: false });
+      }
+    });
+    footerButtons.push(delBtn);
+  }
+  footerButtons.push(applyBtn);
   let busy = false;
   const releaseOverflowLock = _lockDbTemplateHorizontalOverflow();
   const modalApi = window.GBUI.createModal({
     id: `db-template-preview-${seq}`,
     title: tmpl.name,
     body,
-    footer: [cancelBtn, applyBtn],
+    footer: footerButtons,
     variant: 'standard',
     extraClass: 'db-template-preview-modal',
     geometryKey: 'db-template-preview',
@@ -101,7 +138,7 @@ function showTemplatePreviewModal(tmpl, dbPath, parentOverlay, triggerEl = null)
   overlay._dbTemplateSetBusy = (next) => {
     busy = !!next;
     modal.setAttribute('aria-busy', busy ? 'true' : 'false');
-    [cancelBtn, applyBtn, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
+    [...footerButtons, modalApi.header.querySelector('.gb-modal-close')].filter(Boolean)
       .forEach(control => { control.disabled = busy; });
   };
   modal.dataset.e2eId = 'db-template-preview-dialog';

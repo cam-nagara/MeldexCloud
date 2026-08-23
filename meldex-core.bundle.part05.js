@@ -1,4 +1,3 @@
-    { left: xNearAnchor, top: avoid.top - ph - gap, side: 'above', space: avoid.top - gap },
     { left: avoid.right + gap, top: yNearAnchor, side: 'right', space: vw - avoid.right - gap },
     { left: avoid.left - pw - gap, top: yNearAnchor, side: 'left', space: avoid.left - gap },
   ];

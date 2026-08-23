@@ -59,14 +59,7 @@
   }
 
   function _escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[ch]));
+    return global.MeldexEscape.html(value);
   }
 
   function _icon(name, size) {

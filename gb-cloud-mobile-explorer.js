@@ -559,6 +559,7 @@
       img.replaceWith(fallback);
     };
     el.replaceChildren(img);
+    window.MeldexImageLoading?.track?.(img, { host: el, errorMode: 'silent' });
   }
 
   function _itemRow(item) {
@@ -757,7 +758,11 @@
     if (!path) return;
     const name = item?.name || item?.label || path.split(/[\\/]/).pop() || 'この項目';
     const confirmMessage = '「' + name + '」を削除しますか？';
-    const impactTarget = [{ path, kind: item?.type === 'folder' ? 'folder' : 'file' }];
+    const impactTarget = [{
+      path,
+      kind: item?.type === 'folder' ? 'folder' : 'file',
+      ...((item?.assetId || item?.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }];
     let confirmed;
     if (typeof MeldexDeleteImpactWarning !== 'undefined' && typeof cfConfirm === 'function') {
       confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTarget, confirmMessage);
@@ -1052,4 +1057,7 @@
     currentFolderTarget,
     handleResolvedItemType,
   };
+  if (window.__MELDEX_CLOUD_MOBILE_EXPLORER_TEST__) {
+    window.MeldexCloudMobileExplorer.__test = { deleteItem: _deleteItem };
+  }
 })();

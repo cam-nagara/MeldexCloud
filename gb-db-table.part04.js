@@ -108,9 +108,7 @@ function _dbVirtualStateForTable(table) {
 function _dbApplyVirtualPendingCell(vState) {
   const pending = vState?.pendingCell;
   if (!pending?.entityName || pending.colIdx == null) return;
-  const cssName = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(pending.entityName)
-    : String(pending.entityName).replace(/["\\]/g, '\\$&');
+  const cssName = MeldexEscape.cssIdent(pending.entityName);
   const row = vState.table?.querySelector?.(`tbody tr[data-entity-name="${cssName}"]`);
   const cell = row?.children?.[pending.colIdx] || null;
   if (!cell || cell.classList.contains('col-add-prop-cell')) return;

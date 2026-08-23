@@ -103,6 +103,32 @@
     fm += 'balloons:\n';
     bd.nodes.forEach((n,i) => { if (n.balloon) fm += `  n${i}: {tailX: ${n.tailX||0}, tailY: ${n.tailY||0}${n.balloonChild ? ', child: true' : ''}}\n`; });
   }
+  // カードのしっぽ（フキダシの尻尾）。追加のみの新規フィールドなので旧バージョンは無視して開ける。
+  // 上のバルーン (n.tailX/n.tailY) とは別概念。tail は独自の n.tail オブジェクトにのみ持たせ、
+  // バルーンの n.tailX/n.tailY には一切触れない (誤って混同・上書きしない)。
+  const hasTails = bd.nodes.some(n => n.tail && Number.isFinite(+n.tail.startX) && Number.isFinite(+n.tail.startY) && Number.isFinite(+n.tail.endX) && Number.isFinite(+n.tail.endY));
+  if (hasTails) {
+    fm += 'tails:\n';
+    bd.nodes.forEach((n, i) => {
+      const t = n.tail;
+      if (!t || !Number.isFinite(+t.startX) || !Number.isFinite(+t.startY) || !Number.isFinite(+t.endX) || !Number.isFinite(+t.endY)) return;
+      const parts = [
+        `startX: ${+t.startX}`,
+        `startY: ${+t.startY}`,
+        `endX: ${+t.endX}`,
+        `endY: ${+t.endY}`,
+      ];
+      const target = t.target;
+      if (target && target.kind && target.id != null && String(target.id) !== '') {
+        const targetParts = [`kind: ${fmtJsonString(String(target.kind))}`, `id: ${fmtJsonString(String(target.id))}`];
+        ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+          if (Number.isFinite(+target[key])) targetParts.push(`${key}: ${+target[key]}`);
+        });
+        parts.push(`target: {${targetParts.join(', ')}}`);
+      }
+      fm += `  n${i}: {${parts.join(', ')}}\n`;
+    });
+  }
   // ステータス定義
   if (bd.statuses && bd.statuses.length) {
     fm += 'statusDefs:\n';

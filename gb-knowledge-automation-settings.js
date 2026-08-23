@@ -4,14 +4,7 @@
   const STORAGE_KEY = 'meldex-knowledge-automation-settings-v1';
 
   function _esc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _icon(name, size = 14) {
@@ -189,6 +182,14 @@
           ${fieldHelp('CLIを選ぶとAPIの追加料金は発生しません。お使いのPCにそのCLIがインストール・ログイン済みである必要があります。未インストールや未ログインの場合は自動抽出がスキップされ、端末内の簡易抽出だけが動きます。')}
         </label>
       </div>
+      <div class="gb-check-help-row" data-room-learning-row hidden>
+        <label class="gb-check">
+          <input type="checkbox" id="knowledge-auto-room-learning" data-setting="knowledge-auto-room-learning">
+          <span>ワークスペースのチャットからも学ぶ</span>
+        </label>
+        ${fieldHelp('ワークスペースのルームでの会話から、決定・好み・訂正を1日1回まとめて記憶します。1つのルームにつき1日1回までしか動かず、予算の上限を超える場合は実行しません。個人間のダイレクトメッセージは対象外です。')}
+      </div>
+      <div class="gb-section-desc" data-room-learning-note hidden>ONのときだけルームの会話を選んだAIへ送ります（ダイレクトメッセージは送りません）</div>
       <details class="knowledge-auto-details">
         <summary>${_icon('slidersHorizontal', 14)} 対象フォルダを確認する ${fieldHelp('通常はすべて対象です。特定のフォルダだけ除外したい場合に変更します。')}</summary>
         <div id="knowledge-auto-target-list" style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">
@@ -219,7 +220,44 @@
     container.querySelector('[data-knowledge-auto-open-view]')?.addEventListener('click', () => {
       if (typeof openKnowledgeHomeView === 'function') openKnowledgeHomeView('items');
     });
+    await _bindRoomLearningToggle(container);
     if (typeof replaceIcons === 'function') replaceIcons(container);
+  }
+
+  // ワークスペースのルームからの学び（管理者AI計画 Phase 10）は、端末ごとの設定ではなく
+  // サーバー側の設定（editor-config.json）で管理する。ブラウザだけのCloud静的版には
+  // この設定を保存する先が無いため、取得できた環境でのみ表示する。既定はオフ。
+  async function _bindRoomLearningToggle(container) {
+    const row = container.querySelector('[data-room-learning-row]');
+    const note = container.querySelector('[data-room-learning-note]');
+    const toggle = container.querySelector('#knowledge-auto-room-learning');
+    if (!row || !toggle || typeof apiFetch !== 'function') return;
+    let settings = null;
+    try {
+      const payload = await apiFetch('/collab/room-learning', { silentError: true });
+      settings = payload?.settings || null;
+    } catch {
+      settings = null;
+    }
+    if (!settings || !container.isConnected) return;
+    toggle.checked = settings.enabled === true;
+    row.hidden = false;
+    if (note) note.hidden = settings.enabled !== true;
+    toggle.addEventListener('change', async () => {
+      const next = toggle.checked === true;
+      if (note) note.hidden = !next;
+      try {
+        await apiFetch('/collab/room-learning', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        });
+      } catch (error) {
+        toggle.checked = !next;
+        if (note) note.hidden = !toggle.checked;
+        if (typeof showStatus === 'function') showStatus('設定を保存できませんでした', true);
+      }
+    });
   }
 
   function captureKnowledgeAutomationSettings(root = document) {

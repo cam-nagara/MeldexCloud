@@ -65,6 +65,15 @@ let _folderBulkPopupRaf = 0;
 let _folderBulkPopupTracking = false;
 // パネル表示状態は_getFvPanelCfg()で管理（旧_folderPreviewVisibleは廃止）
 let _folderZoom = parseFloat(localStorage.getItem('folder-zoom') || '1');
+// ボードのリンクカード計画 Phase B-2（縮小スコープ）: フォルダの状態
+// （_folderPath/_folderItems/_folderSelected等）はシートのctxと違い、単一の
+// グローバル変数のまま（CSVの_csvRenderContainerOverrideと同じ方針）。サブパネル等の
+// 独立した描画先へ開く場合は _folderRenderContainerOverride を使い、共有の
+// #folder-grid（および #folder-item-count・#folder-layout-select・一括操作バー・
+// プレビューパネル・表示フィルタボタン等のメイン画面専用UI）は一切触らせず、専用DOMへ
+// 直接描画する。状態自体は単一のままのため、直前の対象が今回とは別フォルダの場合、
+// 直前の描画先（メイン or 以前のサブパネル）へ切り替え通知を出す。
+let _folderRenderContainerOverride = null;
 const HOME_FOLDER_DISPLAY_LABEL = 'ホームフォルダ';
 
 function _folderScheduleRenderFrame(callback) {

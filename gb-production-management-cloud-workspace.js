@@ -293,8 +293,8 @@
     const migration = window.MeldexProductionSchemaMigration;
     if (!migration?.isManagedEntryPath?.(body?.path)) return internals.NOT_HANDLED;
     const isTaskEntry = !!_pmCloudTaskSheetEntryInfo(internals, body?.path);
-    const result = await _pmCloudWithProductionLease(provider, () => migration.renameManagedEntry(
-      _pmCloudManagedNameContext(provider, internals),
+    const result = await _pmCloudWithProductionLease(provider, leasedProvider => migration.renameManagedEntry(
+      _pmCloudManagedNameContext(leasedProvider, internals),
       body?.path,
       body?.new_name,
       {

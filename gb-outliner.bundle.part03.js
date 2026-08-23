@@ -668,6 +668,7 @@ function _prepareOutlinerDeleteTargets(items) {
       name: item.name || item.label || String(item.path).split('/').pop() || '',
       path: item.path,
       type: item.type || 'page',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
       _comparePath: _normalizeOutlinerPathForCompare(item.path),
     }))
     .filter(item => {
@@ -695,6 +696,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
         items: batchTargets.map(item => ({
           path: item.path,
           kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+          ...(item.assetId ? { assetId: item.assetId } : {}),
         })),
         ...confirmationPayload,
       });
@@ -725,6 +727,7 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
       const value = await apiPost('/outliner/delete', {
         path: item.path,
         kind: item.kind === 'folder' || item.type === 'folder' ? 'folder' : 'file',
+        ...(item.assetId ? { assetId: item.assetId } : {}),
         ...confirmationPayload,
       });
       results.push({ status: 'fulfilled', value });
@@ -745,11 +748,19 @@ async function _deleteOutlinerTargetsSequentially(targets, options = {}) {
 function _removeOutlinerNodesForPaths(paths) {
   const deletedPaths = (paths || []).map(_normalizeOutlinerPathForCompare).filter(Boolean);
   if (!deletedPaths.length) return;
-  const allTreeNodes = document.querySelectorAll('#outliner-tree .tree-node, #body-home .tree-node, #body-workspaces .tree-node');
+  // 同じ項目はホーム、ワークスペース、固定ソース、仮想化ツリーなど複数面に
+  // 現れ得る。コンテナIDを限定すると削除中の複製だけが残るため、安定pathを
+  // 持つ全ツリーノードを同時に隠す。
+  const allTreeNodes = document.querySelectorAll('.tree-node');
   allTreeNodes.forEach(nodeEl => {
-    const path = nodeEl?._nodeData?.path;
+    const path = nodeEl?._nodeData?.path || nodeEl?.dataset?.path || nodeEl?._virtualPath || '';
     if (!path) return;
-    if (deletedPaths.some(dp => _isOutlinerPathWithin(path, dp))) {
+    const normalizedPath = _normalizeOutlinerPathForCompare(path);
+    if (deletedPaths.some(dp => (
+      _isOutlinerPathWithin(normalizedPath, dp)
+      || normalizedPath.endsWith('/' + dp)
+      || normalizedPath.includes('/' + dp + '/')
+    ))) {
       if (typeof _unregisterTreeSubtree === 'function') _unregisterTreeSubtree(nodeEl);
       nodeEl.remove();
     }
@@ -887,14 +898,3 @@ async function deleteOutlinerItemsWithHistory(items, options = {}) {
       else failed.push(targets[index]);
       return;
     }
-    succeeded.push({ ...targets[index], ...trashRef });
-  });
-  const deletedPaths = succeeded.map(item => item.path);
-  const deletedCount = requestedTargets.filter(item => deletedPaths.some(path => _isOutlinerPathWithin(item.path, path))).length || succeeded.length;
-  const failedCount = targets.length - succeeded.length - skipped.length;
-  _clearOutlinerDeletePending(targetPaths);
-  if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
-    purgeAppPathReferences(deletedPaths);
-  }
-  if (failed.length) {
-    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', {

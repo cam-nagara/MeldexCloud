@@ -1,4 +1,3 @@
-        return;
       }
       if (entry.observedNode !== nodeEl) {
         if (entry.observedNode) _anchoredResizeObserver.unobserve(entry.observedNode);
@@ -898,3 +897,4 @@ function _fitPopupAroundAvoidRect(baseLeft, baseTop, pw, ph, vw, vh, gap, avoid)
   const yNearAnchor = _popupClampValue(baseTop, gap, maxTop);
   const candidates = [
     { left: xNearAnchor, top: avoid.bottom + gap, side: 'below', space: vh - avoid.bottom - gap },
+    { left: xNearAnchor, top: avoid.top - ph - gap, side: 'above', space: avoid.top - gap },

@@ -697,11 +697,11 @@
   }
 
   function escHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function escAttr(value) {
-    return escHtml(value);
+    return MeldexEscape.attr(value);
   }
 
   function collectCurrentCssVars() {

@@ -26,7 +26,7 @@
     (function () {
       'use strict';
       var fallbackReleases = '';
-var fallbackVersion = 'v0.7.308 BETA';
+var fallbackVersion = 'v0.7.355 BETA';
       var releaseOptions = [];
       var selectedIndex = 0;
       function normalizeVersion(value) {
@@ -179,9 +179,7 @@ var fallbackVersion = 'v0.7.308 BETA';
         var cfg = window.MeldexCloudRuntimeConfig || {};
         var desktop = cfg.desktop || {};
         var releasesUrl = desktop.releasesUrl || fallbackReleases;
-        var sampleUrl = (cfg.samples && cfg.samples.downloadUrl) || releasesUrl;
         setRuntimeLinkState('desktop-releases', releasesUrl, !!releasesUrl);
-        setRuntimeHref('sample-download', sampleUrl);
         window.MeldexStandaloneDistribution?.renderAndApply?.(cfg, releasesUrl);
         releaseOptions = await loadReleaseOptions(releasesUrl, desktop);
         selectedIndex = 0;
@@ -288,7 +286,7 @@ var fallbackVersion = 'v0.7.308 BETA';
         <div class="grid feature-overview">
           <article class="item">
             <h3>作る</h3>
-            <p>文章や設定資料を書けます。人物・用語・進行状況などは表で整理でき、アイデアや構成はカードを線でつないだマインドマップやハコ書きとして組み立てられます。</p>
+            <p>様々な形で、設定資料を作成したり、企画や構成を練ることができます。人物・用語・進行状況などは表で整理でき、アイデアや構成はカードを線でつないだマインドマップやハコ書きとして組み立てられます。</p>
           </article>
           <article class="item">
             <h3>集める</h3>
@@ -525,11 +523,11 @@ var fallbackVersion = 'v0.7.308 BETA';
           <label for="desktop-version-select">
             ダウンロードするバージョン
             <select id="desktop-version-select">
-              <option value="0">v0.7.308 BETA / 最新</option>
+              <option value="0">v0.7.355 BETA / 最新</option>
             </select>
           </label>
           <div class="version-meta">
-              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.308 BETA</strong></span>
+              <span>選択中: <strong data-runtime-text="desktop-version">v0.7.355 BETA</strong></span>
             <span>ファイル: <strong data-runtime-text="desktop-asset">配布ページ</strong></span>
             <span>公開日: <strong data-runtime-text="desktop-published">公開日未取得</strong></span>
           </div>
@@ -650,6 +648,10 @@ var fallbackVersion = 'v0.7.308 BETA';
           <article class="item">
             <h3>サポートについて</h3>
             <p>Meldexは個人開発のソフトウェアです。個別の質問対応、導入支援、利用環境ごとの不具合調査などのサポートは提供していません。不具合や要望は送信できますが、返信や対応を保証するものではありません。</p>
+          </article>
+          <article class="item">
+            <h3>LLMを利用した内容</h3>
+            <p>この配布ページとマニュアルは、LLMを利用して作成・更新しています。開発者がすべてのページと記述を個別に確認できていない場合があります。重要な操作や費用・外部サービス設定は、実際の画面や公式情報と照合してください。</p>
           </article>
           <article class="item">
             <h3>オープンソース化と更新</h3>

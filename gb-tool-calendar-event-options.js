@@ -96,8 +96,15 @@
       return;
     }
     if (ev.calendar_source === 'attendance') {
-      // 実績イベントは編集パネルを開いても保存できないため、入力後に拒否せず先に案内する
-      this._showStatus('自動生成された予定は元データ（出退勤の記録）から編集してください', true);
+      if (!this._calUserIsAdmin?.()) {
+        this._showStatus('実績の修正は管理者に依頼してください', true);
+        return;
+      }
+      if (typeof this._showAttendanceCorrectionModal === 'function') {
+        this._showAttendanceCorrectionModal(ev);
+        return;
+      }
+      this._showStatus('実績の修正画面を読み込めませんでした', true);
       return;
     }
     this._setSelectedEvents([editId], editId);
@@ -262,6 +269,10 @@
       : 'このイベントを削除しますか？';
     if (typeof cfConfirm === 'function' && !await cfConfirm(confirmText)) return;
     const isShift = source === 'shift' || source === 'shift-break' || String(id || '').startsWith('shift:');
+    if (isShift && this._shiftMutationStateUnknown) {
+      this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+      return;
+    }
     const rawShiftId = String(id || '').startsWith('shift:')
       ? String(id).slice('shift:'.length)
       : String(evRef?.external_id || id || '');
@@ -282,11 +293,13 @@
     this._render();
     const body = _calOptionContainer('カレンダー');
     if (body) body.innerHTML = '<div class="cal-option-empty">イベントを削除しました</div>';
+    let acknowledged = false;
     try {
       const result = isShift
         ? await apiFetch('/cal/shifts/' + encodeURIComponent(shiftId), { method: 'DELETE' })
         : await apiFetch('/cal/events/' + encodeURIComponent(id), { method: 'DELETE' });
       if (result && result.ok === false) throw new Error(result.message || '削除に失敗');
+      acknowledged = true;
       apiPost('/annotations/orphan-by-target', {
         target_kind: 'calendar_event',
         target_file: evRef?.calendar_id || '_calendar',
@@ -294,12 +307,30 @@
         cascade_container: true,
       }).catch(() => {});
       if (isShift && typeof this._refreshShiftStateAfterMutation === 'function') {
-        this._refreshShiftStateAfterMutation();
+        await this._refreshShiftStateAfterMutation();
       } else {
         this._loadEvents?.().then(() => this._render()).catch(() => {});
       }
       this._showStatus('削除しました');
-    } catch {
+    } catch (error) {
+      if (isShift && acknowledged) {
+        console.error('削除済みシフトの再読込に失敗しました', error);
+        this._showStatus('シフトは削除されましたが、再読み込みに失敗しました', true);
+        return;
+      }
+      if (isShift) {
+        const outcome = await this._reconcileShiftMutationAfterError?.(shiftId, 'delete');
+        if (outcome === 'applied') {
+          if (body) body.innerHTML = '<div class="cal-option-empty">イベントを削除しました</div>';
+          this._showStatus('削除しました');
+          return;
+        }
+        if (outcome === 'unknown') {
+          if (body) body.innerHTML = '<div class="cal-option-empty">削除結果を確認できません。カレンダーを再読み込みしてください</div>';
+          this._showStatus('シフト削除結果を確認できません。カレンダーを再読み込みしてください', true);
+          return;
+        }
+      }
       this._events = beforeEvents;
       this._shifts = beforeShifts;
       this._setSelectedEvents?.(beforeSelected, beforeLast);

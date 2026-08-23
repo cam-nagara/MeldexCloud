@@ -20,7 +20,7 @@
     return modalApi.close(reason);
   };
 
-  (async () => {
+  if(isAdmin)(async () => {
     try {
       const status = await apiFetch('/cal/sync/status');
       const gStatus = o.querySelector('#sync-google-status');
@@ -52,17 +52,17 @@
     await runSyncAction(async()=>{try { const res = await apiPost('/cal/sync/google/auth', { client_id: id, client_secret: secret }); showStatus(res.message || '認証成功'); closeSyncModal('authenticated'); _showSyncModal(dbPath); } catch (e) { showStatus(syncErrorMessage('認証失敗', e), true); }});
   });
   // Google Pull/Push
-  o.querySelector('#sync-gcal-pull').addEventListener('click', async () => {
+  o.querySelector('#sync-gcal-pull')?.addEventListener('click', async () => {
     showStatus('Googleカレンダーから取得中...');
     await runSyncAction(async()=>{try { const res = await apiPost('/calendar-db/sync/google/pull', { db_path: dbPath }); showStatus(syncCountMessage('取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); await _refreshCalendarDb(dbPath); } catch (err) { showStatus(syncErrorMessage('同期失敗', err), true); }});
   });
-  o.querySelector('#sync-gcal-push').addEventListener('click', async () => {
+  o.querySelector('#sync-gcal-push')?.addEventListener('click', async () => {
     showStatus('Googleカレンダーに送信中...');
-    await runSyncAction(async()=>{try { const res = await apiPost('/calendar-db/sync/google/push', { db_path: dbPath }); showStatus(syncCountMessage('送信完了', res, [['新規', 'pushed'], ['更新', 'updated']])); } catch (err) { showStatus(syncErrorMessage('送信失敗', err), true); }});
+    await runSyncAction(async()=>{try { const res = await apiPost('/calendar-db/sync/google/push', { db_path: dbPath }); if(res?.ok===false||(res?.failed||0)>0)showStatus(syncCountMessage('送信一部失敗', res, [['成功', 'pushed'], ['更新', 'updated'], ['失敗', 'failed']]),true); else showStatus(syncCountMessage('送信完了', res, [['新規', 'pushed'], ['更新', 'updated']])); } catch (err) { showStatus(syncErrorMessage('送信失敗', err), true); }});
   });
 
   // iCal
-  o.querySelector('#sync-ical-import').addEventListener('click', () => {
+  o.querySelector('#sync-ical-import')?.addEventListener('click', () => {
     const input = document.createElement('input'); input.type = 'file'; input.accept = '.ics,.ical';
     input.onchange = async () => {
       const file = input.files[0]; if (!file) return;
@@ -76,7 +76,7 @@
     };
     input.click();
   });
-  o.querySelector('#sync-ical-export').addEventListener('click', async () => {
+  o.querySelector('#sync-ical-export')?.addEventListener('click', async () => {
     if (typeof MeldexExportSave === 'undefined' || typeof MeldexExportSave.saveUrl !== 'function') {
       showStatus('保存ダイアログを初期化できませんでした', true);
       return;
@@ -100,11 +100,11 @@
   o.querySelector('#sync-templates').addEventListener('click', () => { if(modalApi.close('templates'))_showTemplateModal(dbPath); });
 
   // CalDAV
-  o.querySelector('#sync-caldav-push').addEventListener('click', async () => {
+  o.querySelector('#sync-caldav-push')?.addEventListener('click', async () => {
     showStatus('CalDAVに送信中...');
     await runSyncAction(async()=>{try { const res = await apiPost('/calendar-db/caldav/sync-to-ics', { db_path: dbPath }); showStatus(syncCountMessage('CalDAV送信完了', res, [['送信', 'synced']])); } catch (err) { showStatus(syncErrorMessage('CalDAV送信に失敗', err), true); }});
   });
-  o.querySelector('#sync-caldav-pull').addEventListener('click', async () => {
+  o.querySelector('#sync-caldav-pull')?.addEventListener('click', async () => {
     showStatus('CalDAVから取得中...');
     await runSyncAction(async()=>{try { const res = await apiPost('/calendar-db/caldav/sync-from-ics', { db_path: dbPath }); showStatus(syncCountMessage('CalDAV取得完了', res, [['新規', 'imported'], ['更新', 'updated']])); closeSyncModal('caldav-pulled'); await _refreshCalendarDb(dbPath); } catch (err) { showStatus(syncErrorMessage('CalDAV取得に失敗', err), true); }});
   });

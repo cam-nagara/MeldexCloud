@@ -158,7 +158,7 @@
       holders: withHolders.holders,
     };
     // 'root' = 管理スコープの正準パス(個人=ホーム同期ルート相対 / 共有=
-    // ワークスペードルート相対。meldex_active_locks.py の相互運用契約と同じ)
+    // ワークスペースルート相対。meldex_active_locks.py の相互運用契約と同じ)
     // で保存された新形式。旧形式entryにはこのフィールドが無く、照合時に
     // ローカルパスとして再解釈する。
     if (entry?.path_space === 'root') cleaned.path_space = 'root';

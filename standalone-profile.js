@@ -60,10 +60,7 @@
   }
 
   function _escText(value) {
-    if (typeof window.esc === 'function') return window.esc(value);
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return window.MeldexEscape.html(value);
   }
 
   // --- getUsername / getUserAvatarHtml のグローバル定義 ----------------------

@@ -313,13 +313,17 @@
     return null;
   }
 
-  function _createConsentCheckbox(id, text, checked) {
+  function _createConsentCheckbox(id, text, checked, options = {}) {
     const input = _el('input', { id, type: 'checkbox', class: 'meldex-beta-consent-checkbox' });
     input.checked = !!checked;
-    return _el('label', { class: 'meldex-beta-consent-check' }, [
-      input,
-      _el('span', { text }),
-    ]);
+    const labelContent = [input, _el('span', { text })];
+    if (options.required === true) {
+      labelContent.push(_el('span', {
+        class: 'meldex-beta-consent-required-badge',
+        text: '必須',
+      }));
+    }
+    return _el('label', { class: 'meldex-beta-consent-check' }, labelContent);
   }
 
   function _isStandaloneDisplayMode() {
@@ -443,7 +447,6 @@
         '.meldex-cloud-mode-modal',
         '.meldex-cloud-setup-overlay',
         '.meldex-cloud-setup-modal',
-        '.meldex-sample-install-overlay',
         '[data-draft-recovery-dialog="1"]',
       ].join(', ')
     );
@@ -1050,7 +1053,8 @@
     const required = _createConsentCheckbox(
       'meldex-beta-consent-required',
       'プライバシーポリシーと利用規約に同意し、ベータ版であることとバックアップの必要性を確認しました。',
-      false
+      false,
+      { required: true }
     );
     const crash = _createConsentCheckbox(
       'meldex-beta-consent-crash',

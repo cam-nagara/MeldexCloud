@@ -251,6 +251,22 @@
     return _lastLinkState ? { ..._lastLinkState } : null;
   }
 
+  function getStableActorId() {
+    const remembered = String(_readStorage(LOCAL_ACCOUNT_KEY, '') || '').trim();
+    if (remembered) return remembered;
+    const created = createLocalKey();
+    rememberKey(created);
+    return created;
+  }
+
+  function getActorSnapshot() {
+    return {
+      actorId: getStableActorId(),
+      displayName: String(_readStorage(LOCAL_USER_KEY, '') || 'anonymous').trim() || 'anonymous',
+      kind: 'human',
+    };
+  }
+
   // OAuth起動時、accountIdエントリが無く、ローカル表示名と一致する 'local:' エントリ
   // (まだ他のaccountIdへ引き継ぎ済みでないもの)が「ちょうど1件」あれば、その内容を
   // accountIdへコピーする。旧エントリは削除せず supersededBy を付与するだけ。既に
@@ -281,13 +297,47 @@
     return { changed: true, store: { ...store, profiles: nextProfiles }, adoptedFrom: matchKey };
   }
 
+  // 本人の明示選択による統合。fromKey のエントリへ「引き継ぎ先は toKey」と記録した
+  // 新しい store を返す純粋関数（実際の保存は呼び出し側が行う）。旧エントリは
+  // 削除せず supersededBy を付けるだけなので、記憶済みキーが旧エントリを指している
+  // 他の端末も _followSupersession で新しい方へ辿り着ける。
+  //
+  // 次の場合は何もしない（changed:false）:
+  //   - どちらかのキーが空、または同じキー
+  //   - どちらかのエントリが store に存在しない（宙に浮いた引き継ぎ先を作らない）
+  //   - fromKey が既に引き継ぎ済み（二重統合で引き継ぎ先が枝分かれするのを防ぐ）
+  //   - toKey 側を辿ると fromKey へ戻る（循環参照を作らない）
+  function mergeEntries(store, fromKey, toKey) {
+    const from = String(fromKey || '').trim();
+    const to = String(toKey || '').trim();
+    if (!from || !to || from === to) return { changed: false, store };
+    const profiles = _storeProfiles(store);
+    if (!Object.prototype.hasOwnProperty.call(profiles, from)) return { changed: false, store };
+    if (!Object.prototype.hasOwnProperty.call(profiles, to)) return { changed: false, store };
+    if (profiles[from]?.supersededBy) return { changed: false, store };
+    if (_followSupersession(profiles, to) === from) return { changed: false, store };
+
+    const nextProfiles = { ...profiles };
+    nextProfiles[from] = { ...profiles[from], supersededBy: to };
+    return {
+      changed: true,
+      store: { ...store, profiles: nextProfiles },
+      mergedFrom: from,
+      mergedInto: to,
+      mergedFromDisplayName: _profileDisplayName(profiles[from]),
+    };
+  }
+
   window.MeldexProfileIdentity = {
     resolveKey,
     rememberKey,
     forgetKey,
     getLinkState,
+    getStableActorId,
+    getActorSnapshot,
     listCandidates,
     adoptLocalEntryIfMatching,
+    mergeEntries,
     createLocalKey,
   };
 })();

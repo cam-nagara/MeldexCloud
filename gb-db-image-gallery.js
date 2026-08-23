@@ -106,7 +106,7 @@ function _createAttachmentThumb(item, index) {
     // 読み込み判定前の img を見せると、低速時にブラウザ標準の破損アイコンと
     // alt 文言が一瞬表示される。成功時だけ実画像を表示し、失敗時は下の
     // フォールバックタイルへ置換する。
-    img.style.visibility = 'hidden';
+    img.style.color = 'transparent';
     img.alt = label;
     if (index != null) img.dataset.imageIndex = String(index);
     const replaceFailedImage = () => {
@@ -141,11 +141,12 @@ function _createAttachmentThumb(item, index) {
     };
     img.addEventListener('error', replaceFailedImage);
     img.addEventListener('load', () => {
-      img.style.removeProperty('visibility');
+      img.style.removeProperty('color');
     }, { once: true });
     // キャッシュ済みの失敗URLは src 代入直後に error が発火し得るため、
     // フォールバックの listener を登録してから読み込みを開始する。
     img.src = _imageSrc(item, true);
+    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます', errorMode: 'silent', allowDetached: true });
     return _setupAttachmentThumbDrag(img, item);
   }
   const tile = document.createElement('div');

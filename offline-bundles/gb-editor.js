@@ -7,15 +7,7 @@
   const VIDEO_EXTS = new Set(['mp4', 'mov', 'avi', 'webm']);
   const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac']);
 
-  function escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  const escapeHtml = global.MeldexEscape.html;
 
   function iconHtml(name, size) {
     return typeof global.lucide === 'function' ? global.lucide(name, size || 16) : '';
@@ -382,13 +374,13 @@ function initPageTitle() {
 }
 
 // ノートタイトルのリネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
-function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId) {
+function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId, options) {
   // 自動保存タイマーをキャンセル（旧パスへの保存を防止）
   clearTimeout(window._noteAutoSaveTimer);
   state.currentPagePath = newPath;
   document.getElementById('page-content').dataset.path = newPath;
   window.MeldexFileLockBadge?.apply?.(el, newPath);
-  showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
+  if (!options?.skipStatus) showStatus('リネーム: ' + _pageTitleOld + ' → ' + nv);
   _pageTitleOld = nv;
   // フォルダツリーのノードを直接更新（loadOutlinerによる全再構築を避ける）
   if (typeof _renameTreeNode === 'function') _renameTreeNode(oldPath, newPath, nv, fileId);
@@ -400,7 +392,18 @@ function _applyPageTitleRenameSuccess(el, oldPath, newPath, nv, fileId) {
 // リネームAPIタイムアウト時の事後確認。フォルダツリー側（gb-outliner）の共通ヘルパーを再利用する
 async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
   const oldName = _pageTitleOld;
-  showStatus('リネームに時間がかかっています。結果を確認中…');
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'rename-confirmation',
+    label: 'リネーム結果を確認しています',
+    mode: 'indeterminate',
+    origin: el,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
+  if (!progress) showStatus('リネームに時間がかかっています。結果を確認中…');
+  try {
   const canConfirm = typeof _outlinerFetchFolderListingForConfirm === 'function'
     && typeof _outlinerFindRenamedItem === 'function';
   if (canConfirm) {
@@ -416,7 +419,7 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
       const found = _outlinerFindRenamedItem(items, oldName, nv);
       if (found) {
         if (state.currentPagePath === path) {
-          _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id);
+          _applyPageTitleRenameSuccess(el, path, found.path, nv, found.file_id, { skipStatus: !!progress });
         } else {
           // 確認中に別のノートへ移動していた場合はエディタ状態（現在パス・タイトル・
           // 自動保存先）を触らず、ツリーと参照の更新だけ行う
@@ -424,15 +427,23 @@ async function _pageTitleConfirmRenameAfterTimeout(el, path, nv) {
           if (typeof renameAppPathReferences === 'function') {
             renameAppPathReferences(path, found.path, { label: nv, fileId: found.file_id, type: 'page' });
           }
-          showStatus('リネーム: ' + oldName + ' → ' + nv);
+          if (!progress) showStatus('リネーム: ' + oldName + ' → ' + nv);
         }
+        progress?.succeed?.({ summary: 'リネーム: ' + oldName + ' → ' + nv });
         return;
       }
     }
   }
   // 確認中に別のノートへ移動していた場合、el は別ノートのタイトルを表示しているため戻さない
   if (state.currentPagePath === path) el.textContent = oldName;
-  showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+  const message = `「${oldName}」のリネームに失敗（結果を確認できませんでした）`;
+  if (progress) progress.fail({ error: message });
+  else showStatus(message, true);
+  } catch (error) {
+    const message = `「${oldName}」のリネーム結果を確認できませんでした: ${error?.message || error}`;
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
+  }
 }
 function startPageTitleEdit(el) { el.focus(); }
 
@@ -448,7 +459,13 @@ function flushPendingEditorAutosave() {
   if (window._noteAutoSaveTimer) {
     clearTimeout(window._noteAutoSaveTimer);
     window._noteAutoSaveTimer = null;
-    const pc = document.getElementById('page-content');
+    // window._noteAutoSaveTimer 自体は単一のグローバル変数だが、実際に保留中の
+    // 予約は「最後に pc.oninput がスケジュールしたpc要素」を指す。独立した描画先
+    // （サブパネル等）が最後に編集していた場合、決め打ちの#page-contentではなく
+    // そちらをflushしないと、保留中の編集が保存されないまま消える
+    // （ボードのリンクカード計画 Phase B-2）。
+    const pc = window._pendingNoteAutoSavePc || document.getElementById('page-content');
+    window._pendingNoteAutoSavePc = null;
     const currentPath = pc?.dataset?.path;
     if (currentPath && pc.dataset.loadFailed !== '1') {
       // 工程1: タブ/パネル切替・終了前flushの実処理は、2秒自動保存タイマーの
@@ -1172,20 +1189,30 @@ async function openPage(label, path, opts) {
       }
     }
   if (!openOpts.skipStateView) state.view = 'page';
-  state.currentPagePath = path;
-  // OptionTargetContext（計画書§11.1）: ノートを開いた時点で選択対象を更新する。
-  // これを怠ると、フォルダパネルで一般ファイルを選んだ後にノートへ戻った際、
-  // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
-  window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
+  // ボードのリンクカード計画 Phase B-2（縮小スコープ）: 独立した描画先
+  // （サブパネル等、opts.containerEl）へ開く場合、メイン画面の「現在開いているページ」
+  // を指すグローバル状態（state.currentPagePath・オプション対象・バージョン管理タブの
+  // 追従・目次・タイトルバー）を書き換えない。それらはメイン画面専用のUI/状態であり、
+  // 独立DOMには存在しないため触っても意味がなく、むしろメイン画面側を誤って
+  // 別ファイル扱いにしてしまう。
+  if (!openOpts.skipStateView) state.currentPagePath = path;
+  if (!openOpts.skipGlobalUi) {
+    // OptionTargetContext（計画書§11.1）: ノートを開いた時点で選択対象を更新する。
+    // これを怠ると、フォルダパネルで一般ファイルを選んだ後にノートへ戻った際、
+    // バックリンクタブが直前のファイル対象を指したままになる（逆方向の取り違え）。
+    window.GBOptionTargetContext?.set({ path, kind: 'page' }, 'note-open');
+  }
   if (!openOpts.skipHistoryScope && typeof historySetScope === 'function') historySetScope('');
   if (!openOpts.skipShowView) showView('page');
-  const pageTitleEl = document.getElementById('page-title');
-  if (pageTitleEl) {
-    pageTitleEl.textContent = label;
-    pageTitleEl.contentEditable = isItemLocked(path) ? 'false' : 'true';
-    window.MeldexFileLockBadge?.apply?.(pageTitleEl, path);
+  if (!openOpts.skipGlobalUi) {
+    const pageTitleEl = document.getElementById('page-title');
+    if (pageTitleEl) {
+      pageTitleEl.textContent = label;
+      pageTitleEl.contentEditable = isItemLocked(path) ? 'false' : 'true';
+      window.MeldexFileLockBadge?.apply?.(pageTitleEl, path);
+    }
+    initPageTitle();
   }
-  initPageTitle();
   if (!openOpts.skipRecent) addRecent(label, path, 'page');
   if (!openOpts.skipSaveLastView) saveLastView({type:'page', label, path});
   if (!openOpts.skipNavPush) {
@@ -1193,8 +1220,15 @@ async function openPage(label, path, opts) {
     navPush(_navEntry);
   }
   if (!openOpts.skipAutoVersion) startAutoVersion(path, 'file');
-  const pc = document.getElementById('page-content');
+  const pc = openOpts.containerEl || document.getElementById('page-content');
   if (!pc) return;
+  // 独立した描画先は module 読込時の _wireNoteEditableElement(#page-content) の対象外
+  // なので、このpc自身へ同じ配線を行う（IME合成・貼り付け・縦書き等）。
+  if (openOpts.containerEl && !pc._noteEditableWired) {
+    pc._noteEditableWired = true;
+    pc.contentEditable = 'true';
+    _wireNoteEditableElement(pc);
+  }
   // 修正3（誤PUTの防止）: 旧ノート用の2秒自動保存タイマーを、pc.dataset.path
   // 書き換え（この少し下）より前にここで確実にキャンセルする。従来は
   // この後に複数回のawait（apiFetch等）を挟んだ後、792行目付近でしか
@@ -1217,14 +1251,17 @@ async function openPage(label, path, opts) {
   pc._noteEditRevision = 0;
   pc._noteEditSerializeCache = null;
   pc._noteTocSignature = undefined;
-  const pageLoadSeq = (window._openPageLoadSeq || 0) + 1;
-  window._openPageLoadSeq = pageLoadSeq;
-  const isStalePageLoad = () => window._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
+  // 読込世代はpc要素ごとに持つ（window単位の単一カウンタだと、メインとサブパネルで
+  // 別々のノートを同時に開いた際、片方の読込がもう片方のカウンタ更新に巻き込まれて
+  // 無関係のはずの読込が「追い越された」と誤判定され中断してしまう）。
+  const pageLoadSeq = (pc._openPageLoadSeq || 0) + 1;
+  pc._openPageLoadSeq = pageLoadSeq;
+  const isStalePageLoad = () => pc._openPageLoadSeq !== pageLoadSeq || pc.dataset.path !== path;
   pc.dataset.path = path;
   // バージョン管理タブの追従同期。_getCurrentVersionTarget() は state.view==='page' の時
   // #page-content の dataset.path を見るため、navPush() 呼び出し時点（この直前）ではまだ
   // 古いパスのままで間に合わない。dataset.path を確定させたこの時点で同期する。
-  if (typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.syncFollowingVersionTabs === 'function') {
+  if (!openOpts.skipGlobalUi && typeof GBPaneBridge !== 'undefined' && typeof GBPaneBridge.syncFollowingVersionTabs === 'function') {
     GBPaneBridge.syncFollowingVersionTabs();
   }
   // 編集ロック
@@ -1271,9 +1308,10 @@ async function openPage(label, path, opts) {
     // 本文を先に表示し、重い表示レイヤーは必要時だけ遅延適用する。
     const html = mdToHtml(raw, { basePath: path });
     pc.innerHTML = html;
+    window.MeldexImageLoading?.trackAll?.(pc);
     _prepareEmbeddedMediaControls(pc);
     _loadPageIcon();
-    if (typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
+    if (!openOpts.skipGlobalUi && typeof CommentBadges !== 'undefined') { try { CommentBadges.refreshFileIndicator(path); } catch {} }
     _schedulePageDisplayLayers(path, pc, html, isStalePageLoad);
     pageLoadSucceeded = true;
     if (!openOpts.skipGlobalUi) showStatus(`ノート: ${label}`);
@@ -1383,29 +1421,38 @@ async function openPage(label, path, opts) {
     // 修正3（誤PUTの防止・二重防御）: タイマー設定時点のパスを捕捉しておき、
     // 発火時に _runNoteAutoSave() 側で pc.dataset.path と照合させる。
     const scheduledPath = pc.dataset.path;
+    // window._noteAutoSaveTimer は単一のグローバル変数のまま（縮小スコープ）だが、
+    // 「今その予約が誰のものか」はpc単位で分かるようにしておく
+    // （flushPendingEditorAutosave()参照）。
+    window._pendingNoteAutoSavePc = pc;
     window._noteAutoSaveTimer = setTimeout(() => {
       // 工程1: 実処理は _runNoteAutoSave() へ集約（flushPendingEditorAutosave()と共有）。
       // 保存コーディネーター経由のsingle-flight/coalesceにより、blurと競合しない。
+      window._pendingNoteAutoSavePc = null;
       _runNoteAutoSave(pc, scheduledPath);
     }, 2000);
   };
 
-  // 目次を更新（フロントマター優先、なければlocalStorage設定）
-  const _toc = document.getElementById('note-toc');
-  const _tocBtn = document.getElementById('btn-toc-toggle');
-  const _fmToc = _getFrontmatterToc();
-  // ファイル指定 > グローバル設定
-  const _showToc = _fmToc !== undefined ? _fmToc
-                 : localStorage.getItem('note-toc-visible') === '1';
-  if (_showToc) {
-    if (_toc) _toc.style.display = '';
-    if (_tocBtn) _tocBtn.classList.add('active');
-  } else {
-    if (_toc) _toc.style.display = 'none';
-    if (_tocBtn) _tocBtn.classList.remove('active');
+  // 目次を更新（フロントマター優先、なければlocalStorage設定）。独立した描画先
+  // （サブパネル等）は専用の目次DOMを持たないため、メインの#note-toc/切替ボタンを
+  // 触らない（触るとメイン画面が別ファイルの目次表示に切り替わってしまう）。
+  if (!openOpts.skipGlobalUi) {
+    const _toc = document.getElementById('note-toc');
+    const _tocBtn = document.getElementById('btn-toc-toggle');
+    const _fmToc = _getFrontmatterToc();
+    // ファイル指定 > グローバル設定
+    const _showToc = _fmToc !== undefined ? _fmToc
+                   : localStorage.getItem('note-toc-visible') === '1';
+    if (_showToc) {
+      if (_toc) _toc.style.display = '';
+      if (_tocBtn) _tocBtn.classList.add('active');
+    } else {
+      if (_toc) _toc.style.display = 'none';
+      if (_tocBtn) _tocBtn.classList.remove('active');
+    }
+    syncNoteTocLayout();
+    if (_toc && _toc.style.display !== 'none') updateNoteToc();
   }
-  syncNoteTocLayout();
-  if (_toc && _toc.style.display !== 'none') updateNoteToc();
   // 工程3: ここで初期シグネチャを記録しておくと、開いた直後の最初の編集で
   // 見出し構造が変わっていない場合に、debounce満了時の余計な再構築（項目6）を
   // 避けられる（無くても不整合にはならない軽微な最適化）。
@@ -1552,63 +1599,75 @@ function initNoteTocResize() {
   });
 }
 
-// 縦書きモード: マウスホイールで横スクロール
-document.getElementById('page-content').addEventListener('wheel', function(e) {
-  if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
-  if (!this.classList.contains('vertical-writing')) return;
-  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-    e.preventDefault();
-    this.scrollLeft -= e.deltaY;
-  }
-}, { passive: false });
+// ノート本文の共通イベント配線（ホイール縦書きスクロール・縦書き矢印キー読替・
+// Ctrl+Kリンク挿入・IME合成中フラグ・blur時ドラフトflush・クリップボード貼り付け）。
+// 元は document.getElementById('page-content') へ1回だけ直接 addEventListener する
+// 形だったが、`this`/引数で完結しているため関数化してそのまま使い回せる
+// （ボードのリンクカード計画 Phase B-2: サブパネル専用ノートDOMにも同じ配線を行う）。
+function _wireNoteEditableElement(pc) {
+  if (!pc) return;
+  // 縦書きモード: マウスホイールで横スクロール
+  pc.addEventListener('wheel', function(e) {
+    if (e.ctrlKey) return; // Ctrl+ホイール: UIスケール変更に委譲
+    if (!this.classList.contains('vertical-writing')) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      this.scrollLeft -= e.deltaY;
+    }
+  }, { passive: false });
 
-// 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
-// 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
-// シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
-// と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
-// カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
-document.getElementById('page-content').addEventListener('keydown', function(e) {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
-  if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
-  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-    const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
-    if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
-    e.preventDefault();
-    if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
-  } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-    // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
-    e.preventDefault();
-  }
-});
+  // 縦書き時のキー読み替え: 行の移動は Ctrl+↑↓ ではなく Ctrl+→← になる。
+  // 縦書き(vertical-rl)では行が右から左へ進むので、右＝文書の手前（上に相当）、左＝後ろ（下に相当）。
+  // シナリオ側（gb-scriptnote-editor.part02.js の「Ctrl+上下: 行入れ替え（縦書き時はCtrl+右/左）」）
+  // と同じ割り当てにそろえる。ショートカット定義そのもの（gb-shortcuts.part01.js）は
+  // カスタム設定との互換のため変更せず、ここで先に処理して中央ハンドラを抜けさせる。
+  pc.addEventListener('keydown', function(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (typeof MeldexNoteWritingMode === 'undefined' || !MeldexNoteWritingMode.isVertical(this)) return;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      const shortcutId = e.key === 'ArrowRight' ? 'note.moveUp' : 'note.moveDown';
+      if (typeof runMeldexShortcutById === 'function' && runMeldexShortcutById(shortcutId, e)) return;
+      e.preventDefault();
+      if (typeof moveBlock === 'function') moveBlock(e.key === 'ArrowRight' ? 'up' : 'down');
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      // 縦書きでは上下は行の移動にならないため、中央ハンドラへ渡さない
+      e.preventDefault();
+    }
+  });
 
-// Ctrl+K: リンク挿入モーダル
-document.getElementById('page-content').addEventListener('keydown', function(e) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-    e.preventDefault();
-    const sel = window.getSelection();
-    const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-    showLinkInsertModal(range);
-  }
-});
+  // Ctrl+K: リンク挿入モーダル
+  pc.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      const sel = window.getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+      showLinkInsertModal(range);
+    }
+  });
 
-// 工程3項目7: IME変換中は保存用DOM整形（Markdown変換・ドラフト直列化）を
-// 走らせない。compositionend後にまとめて1回だけ処理する（既存の
-// pc.onblur・_runNoteAutoSaveの挙動自体は変更しない。ここで制御するのは
-// ドラフト予約のタイミングだけ）。
-document.getElementById('page-content').addEventListener('compositionstart', function() {
-  this._noteComposing = true;
-});
-document.getElementById('page-content').addEventListener('compositionend', function() {
-  this._noteComposing = false;
-  _scheduleNoteDraftReservation(this);
-});
+  // 工程3項目7: IME変換中は保存用DOM整形（Markdown変換・ドラフト直列化）を
+  // 走らせない。compositionend後にまとめて1回だけ処理する（既存の
+  // pc.onblur・_runNoteAutoSaveの挙動自体は変更しない。ここで制御するのは
+  // ドラフト予約のタイミングだけ）。
+  pc.addEventListener('compositionstart', function() {
+    this._noteComposing = true;
+  });
+  pc.addEventListener('compositionend', function() {
+    this._noteComposing = false;
+    _scheduleNoteDraftReservation(this);
+  });
 
-// 工程3項目4: ドラフト退避はblur時に即時flushする。既存のpc.onblur
-// （ネットワーク保存）とは独立した経路であり、onblurプロパティの代入とは
-// 別にaddEventListenerで追加する（既存のblur処理関数自体は変更しない）。
-document.getElementById('page-content').addEventListener('blur', function() {
-  _flushNoteDraftReservation(this, { ignoreComposing: true });
-});
+  // 工程3項目4: ドラフト退避はblur時に即時flushする。既存のpc.onblur
+  // （ネットワーク保存）とは独立した経路であり、onblurプロパティの代入とは
+  // 別にaddEventListenerで追加する（既存のblur処理関数自体は変更しない）。
+  pc.addEventListener('blur', function() {
+    _flushNoteDraftReservation(this, { ignoreComposing: true });
+  });
+
+  _wireNotePasteHandler(pc);
+}
+
+_wireNoteEditableElement(document.getElementById('page-content'));
 
 // 工程3項目4: 非表示化・終了前もドラフト退避を即時flushする（IndexedDBドラフト
 // だけを対象にした保険。ネットワーク自動保存の終了前flush＝
@@ -1787,7 +1846,9 @@ async function _insertDroppedFileAtRange(el, range, file, dir) {
 }
 
 // クリップボード貼り付け: テキスト + 画像対応
-document.getElementById('page-content').addEventListener('paste', async function(e) {
+// クリップボード貼り付け: テキスト + 画像/動画対応（_wireNoteEditableElement から配線）
+function _wireNotePasteHandler(pc) {
+  pc.addEventListener('paste', async function(e) {
   if (!this.isContentEditable) return;
   const cd = e.clipboardData;
   if (!cd) return;
@@ -1841,11 +1902,21 @@ document.getElementById('page-content').addEventListener('paste', async function
     e.preventDefault();
     document.execCommand('insertText', false, text);
   }
-});
+  });
+}
 
 // ユニバーサルD&D: ノートビューへの挿入
 // 埋め込みメディア フローティングコントロール
 let _activeMedia = null;
+
+// このコントロール群は右サイドバー等の独立した本文DOM（page-content以外）にも
+// 使い回す（ボードのリンクカード計画 Phase B-2）。align/delete/resize後の自動保存
+// トリガーは「今操作しているメディアの本当の持ち主」へ飛ばす必要があり、
+// メインの#page-content決め打ちだと別の本文で編集していても常にメインが
+// dirty扱いされてしまう。
+function _activeMediaOwningEditor() {
+  return _activeMedia?.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
+}
 
 function _prepareEmbeddedMediaForControls(media) {
   if (!media) return;
@@ -2026,7 +2097,7 @@ function _prepareEmbeddedMediaControls(root) {
       if (align === 'left') { _activeMedia.style.marginInlineStart = '0'; _activeMedia.style.marginInlineEnd = 'auto'; }
       else if (align === 'right') { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = '0'; }
       else { _activeMedia.style.marginInlineStart = 'auto'; _activeMedia.style.marginInlineEnd = 'auto'; }
-      const pc = document.getElementById('page-content');
+      const pc = _activeMediaOwningEditor();
       if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
     });
   });
@@ -2035,6 +2106,9 @@ function _prepareEmbeddedMediaControls(root) {
   controls.querySelector('[data-action="delete"]').addEventListener('click', async () => {
     const media = _activeMedia;
     if (!media) return;
+    // remove()/_hideMediaControls() の前に持ち主を確定させる（後では_activeMediaが
+    // nullになり、media自体もDOMから外れてclosest()が使えなくなるため）。
+    const owningEditor = media.closest?.('[contenteditable="true"]') || document.getElementById('page-content');
     controls.classList.remove('visible');
     controls.setAttribute('aria-hidden', 'true');
     eachResizeHandle((h) => { h.classList.remove('visible'); h.setAttribute('aria-hidden', 'true'); });
@@ -2051,8 +2125,7 @@ function _prepareEmbeddedMediaControls(root) {
     }
     media.remove();
     _hideMediaControls();
-    const pc = document.getElementById('page-content');
-    if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
+    if (owningEditor) owningEditor.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   // リサイズハンドル（四隅共通）
@@ -2084,7 +2157,7 @@ function _prepareEmbeddedMediaControls(root) {
         document.removeEventListener('pointermove', onMove);
         document.removeEventListener('pointerup', onUp);
         // リサイズ完了 → 自動保存トリガー
-        const pc = document.getElementById('page-content');
+        const pc = _activeMediaOwningEditor();
         if (pc) pc.dispatchEvent(new Event('input', { bubbles: true }));
       }
       document.addEventListener('pointermove', onMove);
@@ -2254,7 +2327,8 @@ function setupEditableDropHandler(el) {
           if (isImage) {
             const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
-              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`);
+              `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}" data-meldex-content-image></div>`);
+            window.MeldexImageLoading?.trackAll?.(el);
           } else if (type === 'video' || ['mp4','m4v','mov','webm','ogv','avi','mkv','wmv','mpg','mpeg'].includes(ext)) {
             const videoUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
@@ -2447,8 +2521,15 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
       clearTimeout(saveTimer);
       if (!hex) return;
       // ライブ変更のたびに保存せず、色が落ち着いてから1回だけ候補値を追加する
-      saveTimer = setTimeout(async () => {
+      const persistColor = async () => {
         if (saved) return;
+        if (!valuesEl.isConnected) return;
+        const drawer = valuesEl.closest?.('#cloud-mobile-side-drawer');
+        if (drawer && !drawer.classList.contains('open')) return;
+        if (typeof _cellUiRuntimeReadOnly === 'function' && _cellUiRuntimeReadOnly(valuesEl)) {
+          saveTimer = setTimeout(persistColor, 120);
+          return;
+        }
         saved = true;
         try {
           await _apiPostValue(entityPath, propName, hex, '採用', '');
@@ -2460,7 +2541,8 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
             renderEntityPropsGridInto(grid, data, entityPath, opts);
           }
         } catch (e) { showStatus('候補値の追加に失敗しました', true); }
-      }, 300);
+      };
+      saveTimer = setTimeout(persistColor, 300);
     });
     return;
   }
@@ -2546,10 +2628,87 @@ function _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, opt
   input.focus();
 }
 
+// 1列分の値一覧を valuesEl へ描画する共通ヘルパー。
+// 列一覧のカードとエントリレイアウトの field セル（gb-db-entity-layout-cells.js）が共有し、
+// 値の見た目と編集挙動を1箇所に揃える。戻り値の isComputedProp は「候補値を追加できない
+// 計算列（rollup/formula）か」で、呼び出し元の＋ボタン表示判定に使う。
+function _applyEntityPropReadOnly(valuesEl) {
+  if (!valuesEl) return;
+  valuesEl.classList.add('entity-prop-values-readonly');
+  valuesEl.setAttribute('aria-readonly', 'true');
+  valuesEl.querySelectorAll('button').forEach(button => {
+    button.hidden = true;
+    button.disabled = true;
+  });
+  valuesEl.querySelectorAll('input, select, textarea').forEach(control => { control.disabled = true; });
+  valuesEl.querySelectorAll('[contenteditable="true"]').forEach(editor => editor.setAttribute('contenteditable', 'false'));
+  valuesEl.querySelectorAll('[draggable="true"]').forEach(item => { item.draggable = false; });
+  const blockMutation = (event) => {
+    if (event.target?.closest?.('a, .relation-link')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  // pointerdown は遮断しない。閲覧専用でも文字選択・コピー開始とタッチスクロールは必要で、
+  // 値の変更開始は click / dblclick / contextmenu / dragstart / mutation keys 側で止める。
+  ['click', 'dblclick', 'contextmenu', 'dragstart'].forEach(type => {
+    valuesEl.addEventListener(type, blockMutation, true);
+  });
+  valuesEl.addEventListener('keydown', (event) => {
+    if (!['Enter', ' ', 'F2', 'Delete', 'Backspace'].includes(event.key)) return;
+    blockMutation(event);
+  }, true);
+}
+
+function renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, options = {}) {
+  const values = filterValues(data.properties[propName] || []);
+  const ptc = propTypes[propName];
+  // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
+  // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
+  const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
+  const renderValues = isComputedProp
+    ? [values[0] || { value: '', status: '採用' }]
+    : (ptc?.type === 'image' && values.length === 0)
+      ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
+      : values;
+  renderValues.forEach(val => {
+    let valEl;
+    if (typeof createTypedValueElement === 'function' && ptc) {
+      valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
+        entityData: data.properties,
+        propTypes,
+        readOnly: options.readOnly === true,
+      });
+    } else if (typeof createValueElement === 'function') {
+      valEl = createValueElement(val, entityPath, propName, undefined, { readOnly: options.readOnly === true });
+    }
+    if (valEl) valuesEl.appendChild(valEl);
+    if (val.relations && val.relations.length > 0) {
+      const relDiv = document.createElement('div');
+      relDiv.className = 'relation-links';
+      relDiv.style.marginLeft = '12px';
+      val.relations.forEach(r => {
+        const link = document.createElement('span');
+        link.className = 'relation-link';
+        link.textContent = (r.entity || '') + (r.role ? ' (' + r.role + ')' : '');
+        link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity); });
+        relDiv.appendChild(link);
+      });
+      valuesEl.appendChild(relDiv);
+    }
+  });
+  if (options.readOnly === true) _applyEntityPropReadOnly(valuesEl);
+  return { isComputedProp };
+}
+
 // プロパティグリッドを指定 container に描画する共通関数 (entity-view と詳細パネルで共有)
 function renderEntityPropsGridInto(grid, data, entityPath, options) {
   if (!grid) return;
   const opts = options || {};
+  // Cloud/mobile の容量・ロック状態は表示中にも変化する。古い描画closureが false を
+  // 捕捉していても、grid の現在状態を優先して変更操作を再生成しない。
+  const readOnly = opts.readOnly === true || grid.__MeldexRuntimeReadOnly === true;
+  if (grid.__MeldexRuntimeReadOnly === true) grid.__MeldexRuntimeNeedsEditableRerender = true;
+  const effectiveOptions = { ...opts, readOnly };
   const parentDb = opts.parentDb || _entityParentDir(entityPath);
   const propTypes = opts.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(parentDb) : null) || {};
   const allProps = Object.keys(data.properties || {});
@@ -2560,21 +2719,60 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     ? applyPropertyLayout(allProps, layout)
     : [{ title: '', props: layout.order || allProps }];
   const propNames = groupedProps.flatMap(group => group.props || []);
-  const layoutEditMode = typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(parentDb);
+  const layoutEditMode = !readOnly && typeof isPropertyLayoutEditMode === 'function' && isPropertyLayoutEditMode(parentDb);
   grid.innerHTML = '';
   // grid container にもクラスを付けて CSS が当たるように
   grid.classList.add('entity-props-grid-container');
 
   // 開閉状態・列幅は dbPath (エントリの親フォルダ) 単位で view_config に保存する。
   // フルページ/サブパネル/モバイルドロワーいずれもこの共通関数を経由するため自動的に反映される。
-  const viewState = typeof _entityPropsViewState === 'function'
+  const storedViewState = typeof _entityPropsViewState === 'function'
     ? _entityPropsViewState(parentDb, entityPath)
     : { collapsed: false, colWidth: 300 };
+  const viewState = readOnly && typeof grid.__entityPropsReadonlyCollapsed === 'boolean'
+    ? { ...storedViewState, collapsed: grid.__entityPropsReadonlyCollapsed }
+    : storedViewState;
   grid.style.setProperty('--entity-prop-col-width', viewState.colWidth + 'px');
+  // エントリレイアウト: 「列一覧 ⇄ エントリレイアウト」タブ行（シート配下のエントリのみ表示）。
+  // レイアウトタブが選ばれている間は、列一覧のヘッダー/本体の代わりに自由配置キャンバスを描画する。
+  let activeEntityLayoutTab = null;
+  let entityLayoutRerender = null;
+  let entityLayoutOptions = null;
+  if (typeof GBEntityLayout !== 'undefined' && GBEntityLayout?.buildTabBar) {
+    const elRerender = () => renderEntityPropsGridInto(grid, data, entityPath, options);
+    const elOpts = { ...effectiveOptions, parentDb, propTypes };
+    const elTabBar = GBEntityLayout.buildTabBar(grid, data, entityPath, elOpts, parentDb, elRerender);
+    if (elTabBar) {
+      grid.appendChild(elTabBar.el);
+      activeEntityLayoutTab = elTabBar.activeTab;
+      entityLayoutRerender = elRerender;
+      entityLayoutOptions = elOpts;
+    }
+  }
+
   // ヘッダーの表示可否は「プロパティが1つも定義されていないか」で判定する (allProps基準)。
   // レイアウト編集で全プロパティを非表示にしただけの場合はヘッダー(と並び替えツールバーへの導線)を残す。
   if (typeof _buildEntityPropsHeader === 'function') {
-    grid.appendChild(_buildEntityPropsHeader(grid, data, entityPath, options, parentDb, allProps.length > 0, viewState));
+    const headerOptions = activeEntityLayoutTab && activeEntityLayoutTab !== GBEntityLayout.COLUMNS_TAB_ID
+      ? { ...effectiveOptions, showColumnWidth: false }
+      : effectiveOptions;
+    grid.appendChild(_buildEntityPropsHeader(grid, data, entityPath, headerOptions, parentDb, allProps.length > 0, viewState));
+  }
+
+  // 開閉状態は列一覧タブだけでなく、同じシートで共有するカスタムレイアウトにも適用する。
+  // タブ行と開閉ヘッダーは残し、どのレイアウトを表示していたかを保ったまま再表示できるようにする。
+  if (activeEntityLayoutTab && activeEntityLayoutTab !== GBEntityLayout.COLUMNS_TAB_ID) {
+    if (viewState.collapsed) return;
+    GBEntityLayout.renderLayoutBody(
+      grid,
+      data,
+      entityPath,
+      entityLayoutOptions,
+      parentDb,
+      activeEntityLayoutTab,
+      entityLayoutRerender,
+    );
+    return;
   }
 
   // プロパティ本体 (並び替えツールバー + グループ見出し + カード)。閉じている間は丸ごと隠す。
@@ -2586,8 +2784,8 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
   body.style.display = viewState.collapsed ? 'none' : 'contents';
   grid.appendChild(body);
 
-  if (typeof renderPropertyLayoutToolbar === 'function') {
-    renderPropertyLayoutToolbar(grid, data, entityPath, options, body);
+  if (!readOnly && typeof renderPropertyLayoutToolbar === 'function') {
+    renderPropertyLayoutToolbar(grid, data, entityPath, effectiveOptions, body);
   }
   groupedProps.forEach(group => {
     if (group.title) {
@@ -2623,8 +2821,15 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       });
       nameEl.appendChild(dragHandle);
     }
-    // 各列名の前に列タイプのアイコンを表示する
-    if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
+    // 各列名の前にアイコンを表示する（列へユーザーが設定したアイコンを優先、無ければ列タイプのアイコン）
+    const userPropIcon = propTypes[propName]?.icon;
+    if (userPropIcon && typeof GBIconAssets !== 'undefined' && GBIconAssets?.render) {
+      const typeIcon = document.createElement('span');
+      typeIcon.className = 'entry-prop-type-icon';
+      typeIcon.setAttribute('aria-hidden', 'true');
+      typeIcon.innerHTML = GBIconAssets.render(userPropIcon, 14);
+      nameEl.appendChild(typeIcon);
+    } else if (typeof lucide === 'function' && typeof getPropertyTypeIcon === 'function') {
       const typeIcon = document.createElement('span');
       typeIcon.className = 'entry-prop-type-icon';
       typeIcon.setAttribute('aria-hidden', 'true');
@@ -2638,41 +2843,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     card.appendChild(nameEl);
     const valuesEl = document.createElement('div');
     valuesEl.className = 'entry-prop-values cell-values';
-    const values = filterValues(data.properties[propName] || []);
-    const ptc = propTypes[propName];
-    // ロールアップ/数式型は保存値でなくその場の計算結果を1つだけ表示する（表セルと同じ見え方）。
-    // 未変換の生値が複数残っていても計算結果は1本にまとめ、値が無くても空の計算結果を表示する。
-    const isComputedProp = ptc?.type === 'rollup' || ptc?.type === 'formula';
-    const renderValues = isComputedProp
-      ? [values[0] || { value: '', status: '採用' }]
-      : (ptc?.type === 'image' && values.length === 0)
-        ? [{ value: '', status: '採用', file: entityPath, property: propName, candidate_index: null }]
-        : values;
-    renderValues.forEach(val => {
-      let valEl;
-      if (typeof createTypedValueElement === 'function' && ptc) {
-        valEl = createTypedValueElement(val, entityPath, propName, 'small', ptc, {
-          entityData: data.properties,
-          propTypes,
-        });
-      } else if (typeof createValueElement === 'function') {
-        valEl = createValueElement(val, entityPath, propName);
-      }
-      if (valEl) valuesEl.appendChild(valEl);
-      if (val.relations && val.relations.length > 0) {
-        const relDiv = document.createElement('div');
-        relDiv.className = 'relation-links';
-        relDiv.style.marginLeft = '12px';
-        val.relations.forEach(r => {
-          const link = document.createElement('span');
-          link.className = 'relation-link';
-          link.textContent = (r.entity || '') + (r.role ? ' (' + r.role + ')' : '');
-          link.addEventListener('click', (e) => { e.stopPropagation(); navigateToEntity(r.entity); });
-          relDiv.appendChild(link);
-        });
-        valuesEl.appendChild(relDiv);
-      }
-    });
+    const { isComputedProp } = renderEntityPropValuesInto(valuesEl, propName, data, entityPath, propTypes, { readOnly });
     if (layoutEditMode) {
       const hideBtn = document.createElement('button');
       hideBtn.type = 'button';
@@ -2696,7 +2867,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
     // シート表側と見た目が食い違うため（シート表: gb-db-table.part02.js の _allowAdd）。
     const _hideAddButton = parentDb && typeof hidesCandidateStatusUi === 'function'
       && hidesCandidateStatusUi(parentDb);
-    if (!isComputedProp && !_hideAddButton) {
+    if (!readOnly && !isComputedProp && !_hideAddButton) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.className = 'cell-add-btn';
@@ -2707,7 +2878,7 @@ function renderEntityPropsGridInto(grid, data, entityPath, options) {
       addBtn.setAttribute('aria-label', '候補値を追加');
       addBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, options);
+        _showEntryPropInlineAdd(valuesEl, grid, data, entityPath, propName, effectiveOptions);
       });
       // ＋（候補値を追加）は独立行ではなく、値群の末尾（最後の値と同じ行）にインライン配置する。
       const lastValueEl = !layoutEditMode
@@ -2879,6 +3050,7 @@ async function _entityFreeTextReviewConflict(hostEl, entityPath, documentKey) {
           ? applyAutoLinks(mdToHtml(latestMd, { basePath: entityPath }), entityPath)
           : mdToHtml(latestMd))
       : '';
+    window.MeldexImageLoading?.trackAll?.(hostEl);
     hostEl.dataset.lastSavedMd = latestMd;
     hostEl.dataset.lastSavedRevision = (latest?.revision != null) ? String(latest.revision) : '';
     hostEl.dataset.lastSavedEtag = latest?.freetext_etag || '';
@@ -3150,6 +3322,7 @@ function renderEntityPage(data) {
   if (hasNote) {
     const ftHtml = applyAutoLinks(mdToHtml(rawContent, { basePath: entityPath }), entityPath);
     ft.innerHTML = ftHtml;
+    window.MeldexImageLoading?.trackAll?.(ft);
   } else {
     // ノート未作成時はエディタ自体を非表示にしているため innerHTML 不要
     ft.innerHTML = '';
@@ -3191,6 +3364,7 @@ function renderEntityPage(data) {
       if (!saved) return;
       showStatus('自由記述を保存しました', false, { passiveSave: true });
       this.innerHTML = applyAutoLinks(mdToHtml(md, { basePath: ep }), ep);
+      window.MeldexImageLoading?.trackAll?.(this);
     } catch (e) { showStatus('自由記述の保存に失敗しました', true); }
   };
 
@@ -4275,9 +4449,9 @@ function inlinemd(text) {
       if (mediaType === 'audio') {
         return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="audio"><audio src="${src}" controls style="${wStyle}"></audio></div>`;
       }
-      return `<div class="embed-media" contenteditable="false" data-path="${dataPath}" data-name="${alt}" data-type="image"><img src="${src}" alt="${alt}" style="${wStyle}"></div>`;
+      return `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${dataPath}" data-name="${alt}" data-type="image"><img data-meldex-content-image src="${src}" alt="${alt}" style="${wStyle}"></div>`;
     }
-    return `<img src="${src}" alt="${alt}" style="${wStyle}">`;
+    return `<span class="meldex-content-image-host" data-meldex-image-host><img data-meldex-content-image src="${src}" alt="${alt}" style="${wStyle}"></span>`;
   });
   // リンク: 外部URLはaタグ、内部パスはauto-linkスパン（エスケープ済み\]と\)に対応）
   s = s.replace(/\[((?:[^\]\\]|\\.)+)\]\(((?:&lt;.*?&gt;|<.*?>|(?:[^)\\]|\\.)+))\)/g, (m, text, href) => {
@@ -5454,6 +5628,7 @@ function _queueAutoLinkTooltip(linkOrTarget) {
       preview.src = info.img;
       preview.alt = info.title || path.split(/[/\\]/).pop() || 'preview';
       tooltipEl.appendChild(preview);
+      window.MeldexImageLoading?.track?.(preview, { host: tooltipEl });
     } else if (info.props) {
       const propsEl = document.createElement('div');
       propsEl.className = 'lt-props';
@@ -5739,9 +5914,51 @@ function _refreshFileSearchAfterSingleReplace(editable, replacedIndex) {
   document.getElementById('fsb-count').textContent = `${_fileSearchIdx + 1}/${marks.length}`;
 }
 
-function _commitFileSearchReplacement(editable) {
+async function _commitFileSearchReplacement(editable) {
   editable.dispatchEvent(new Event('input', { bubbles: true }));
-  editable.dispatchEvent(new Event('blur'));
+  // エントリ自由記述は専用のrevision契約（_saveEntityFreeText）を持つため、
+  // 従来どおりそのblurハンドラへ委譲する。通常ノートはinput+blurを重ねず、
+  // inputで予約された2秒自動保存と同じ保存コーディネーターへ直接合流させる。
+  if (editable.id === 'entity-freetext' || !window.MeldexNoteSaveAdapter) {
+    editable.dispatchEvent(new Event('blur'));
+    return null;
+  }
+  const path = editable.dataset?.path || '';
+  if (!path) return null;
+  const md = window.MeldexNoteSaveAdapter.serialize(editable);
+  const previousMd = editable.dataset.lastSavedMd || '';
+  window.MeldexDraftRecovery?.queueDraft?.(path, md, previousMd);
+  try {
+    const res = await window.MeldexNoteSaveAdapter.performSave(
+      editable, path, md, { reason: 'file-replace' },
+    );
+    if (_noteSaveConflictPending(res)) return res;
+    if (_handleNoteSkippedMissingSave(res, path, md, editable)) return res;
+    _orphanRemovedNoteLines(previousMd, md, path);
+    // 保存待ちの間に別ノートへ切り替わった場合は、その新しいノートの
+    // baselineを古い応答で汚染しない。
+    if (editable.dataset.path === path) {
+      editable.dataset.lastSavedMd = (res && res.savedMd != null) ? res.savedMd : md;
+      editable.dataset.lastSavedEtag = (res && res.etag) || editable.dataset.lastSavedEtag || '';
+    }
+    // 応答待ち中に別ノートへ切り替わっていても、成功済みの旧pathのドラフトは
+    // 同期済みにする。dataset更新だけを現表示pathでガードし、旧ノートを次回
+    // 起動時に未保存候補として誤復元しない。
+    await window.MeldexDraftRecovery?.markSynced?.(path);
+    if (typeof historyPush === 'function') {
+      const detail = typeof summarizeHistoryTextChange === 'function'
+        ? summarizeHistoryTextChange(previousMd, md)
+        : '内容を置換';
+      historyPush('ページ編集', null, null, 'page:' + path.split('/').pop(), detail);
+    }
+    showStatus('ノートを保存しました', false, { passiveSave: true });
+    return res;
+  } catch (saveError) {
+    if (!_handleNoteSaveFailure(saveError, path, md, editable)) {
+      showStatus('ノートの保存に失敗しました。ネットワークを確認してください', true);
+    }
+    return null;
+  }
 }
 
 function doFileReplace(all) {
@@ -5770,8 +5987,7 @@ function doFileReplace(all) {
     editable.normalize();
     _refreshFileSearchAfterSingleReplace(editable, replacedIndex);
     document.getElementById('fsb-count').textContent = '1件置換';
-    _commitFileSearchReplacement(editable);
-    return;
+    return _commitFileSearchReplacement(editable);
   }
 
   clearFileSearchHighlights();
@@ -5798,7 +6014,7 @@ function doFileReplace(all) {
   }
 
   document.getElementById('fsb-count').textContent = `${count}件置換`;
-  if (count > 0) _commitFileSearchReplacement(editable);
+  if (count > 0) return _commitFileSearchReplacement(editable);
 }
 
 /* ==============================
@@ -5908,7 +6124,11 @@ document.addEventListener('keydown', async (e) => {
   if (e.key === 'Delete' && !isEditing && (inTreeByFocus || inTreeByPointer) && treeSelection.items.size > 0 && state.view !== 'folder' && state.view !== 'board') {
     const items = [...treeSelection.items].map(n => n._nodeData).filter(d => d && !d._isRoot && !(d.path && isItemLocked(d.path)));
     if (items.length === 0) return;
-    const impactTargets = items.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = items.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmMessage = items.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)

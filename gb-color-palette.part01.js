@@ -44,7 +44,7 @@
   border: 2px solid transparent; box-sizing: border-box; flex-shrink: 0;
 }
 .gb-swatch:hover { border-color: var(--ui-border-strong, #fff); }
-.gb-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gb-swatch:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .gb-swatch.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .gb-swatch.active { border-color: var(--accent); }
 .gb-swatch[draggable="true"] { cursor: grab; }
@@ -170,7 +170,8 @@
   .gb-palette-popup {
     box-sizing: border-box;
     max-width: calc(100vw - 16px);
-    max-height: calc(100dvh - 16px);
+    /* root の UI 拡大率を掛けた後も、実際の viewport 内へ収める。 */
+    max-height: calc((100dvh - 16px) / var(--meldex-ui-zoom, 1));
     overflow-y: auto;
   }
   .gb-palette {
@@ -744,29 +745,73 @@ function bindColorSwatch(el, getCurrentColor, onSelect) {
 let _gbPalettePopup = null;
 let _gbPaletteOutsideHandler = null;
 let _gbPaletteKeyHandler = null;
+let _gbPaletteAnchor = null;
 
-function closeColorPalette() {
+function closeColorPalette({ restoreFocus = false } = {}) {
+  const anchor = _gbPaletteAnchor;
   if (_gbPalettePopup) { _gbPalettePopup.remove(); _gbPalettePopup = null; }
+  _gbPaletteAnchor = null;
   document.querySelectorAll('.gb-palette-context-menu, .gb-ctx-menu').forEach(menu => menu.remove());
   if (_gbPaletteOutsideHandler) { document.removeEventListener('pointerdown', _gbPaletteOutsideHandler, true); _gbPaletteOutsideHandler = null; }
   if (_gbPaletteKeyHandler) { document.removeEventListener('keydown', _gbPaletteKeyHandler, true); _gbPaletteKeyHandler = null; }
+  if (restoreFocus && anchor?.isConnected && typeof anchor.focus === 'function') {
+    anchor.focus({ preventScroll: true });
+  }
+}
+
+function _constrainColorPaletteToViewport(palette) {
+  if (!palette || !window.matchMedia?.('(max-width: 640px), (pointer: coarse)').matches) return;
+  const zoom = Math.max(
+    0.1,
+    Number(typeof _getZoom === 'function' ? _getZoom() : document.documentElement?.style?.zoom) || 1,
+  );
+  palette.style.maxHeight = Math.max(120, (window.innerHeight / zoom) - 16) + 'px';
+  palette.style.overflowY = 'auto';
 }
 
 function openColorPalette(anchorEl, currentColor, onSelect) {
   closeColorPalette();
-  const palette = _buildPaletteElement(currentColor, onSelect, closeColorPalette);
+  _gbPaletteAnchor = anchorEl;
+  const palette = _buildPaletteElement(currentColor, onSelect, () => closeColorPalette({ restoreFocus: true }));
   palette.classList.add('gb-palette-popup');
+  palette.setAttribute('role', 'dialog');
+  palette.setAttribute('aria-label', '色を選択');
   document.body.appendChild(palette);
   _gbPalettePopup = palette;
   if (typeof positionPopup === 'function') positionPopup(palette, anchorEl.getBoundingClientRect());
   else { const rect = anchorEl.getBoundingClientRect(); const z = (typeof _getZoom === 'function') ? _getZoom() : 1; palette.style.left = (rect.left / z) + 'px'; palette.style.top = (rect.bottom / z + 4) + 'px'; }
+  // positionPopup() は計測前に maxHeight を初期化するため、UI拡大率を含む
+  // モバイル上限を配置後に確定させ、最後に位置を再クランプする。
+  _constrainColorPaletteToViewport(palette);
+  if (typeof clampPopupToViewport === 'function') clampPopupToViewport(palette);
   _gbPaletteOutsideHandler = (ev) => { if (_gbPalettePopup && !_gbPalettePopup.contains(ev.target) && !ev.target.closest?.('.gb-palette-context-menu, .gb-ctx-menu') && ev.target !== anchorEl) closeColorPalette(); };
   _gbPaletteKeyHandler = (ev) => {
-    if (ev.key !== 'Escape' || !_gbPalettePopup) return;
+    if (!_gbPalettePopup) return;
+    if (ev.key === 'Tab') {
+      const focusable = [..._gbPalettePopup.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
+        .filter(element => element.getClientRects().length > 0);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus({ preventScroll: true });
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (ev.key !== 'Escape') return;
     if (document.querySelector('.gb-palette-context-menu, .gb-ctx-menu')) return;
     ev.preventDefault();
-    closeColorPalette();
+    closeColorPalette({ restoreFocus: true });
   };
+  requestAnimationFrame(() => {
+    if (_gbPalettePopup !== palette) return;
+    const initial = palette.querySelector('.gb-swatch.active, button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])');
+    initial?.focus?.({ preventScroll: true });
+  });
   setTimeout(() => document.addEventListener('pointerdown', _gbPaletteOutsideHandler, true), 0);
   setTimeout(() => document.addEventListener('keydown', _gbPaletteKeyHandler, true), 0);
 }

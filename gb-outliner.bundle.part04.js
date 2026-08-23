@@ -1,3 +1,14 @@
+    succeeded.push({ ...targets[index], ...trashRef });
+  });
+  const deletedPaths = succeeded.map(item => item.path);
+  const deletedCount = requestedTargets.filter(item => deletedPaths.some(path => _isOutlinerPathWithin(item.path, path))).length || succeeded.length;
+  const failedCount = targets.length - succeeded.length - skipped.length;
+  _clearOutlinerDeletePending(targetPaths);
+  if (deletedPaths.length && typeof purgeAppPathReferences === 'function') {
+    purgeAppPathReferences(deletedPaths);
+  }
+  if (failed.length) {
+    await _runOutlinerDeleteHistoryRefresh(options.refresh, 'failure', {
       succeeded,
       skipped,
       failed,
@@ -19,12 +30,36 @@
         if (typeof showStatus === 'function') showStatus((restored.length || trashNames.length) + ' 件を復元しました');
       },
       async () => {
+        const redoTargets = succeeded.map(item => ({
+          path: item.path,
+          kind: item.type === 'folder' ? 'folder' : 'file',
+          ...(item.assetId ? { assetId: item.assetId } : {}),
+        }));
+        const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
+          ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
+              redoTargets,
+              `${redoTargets.length} 件をもう一度削除しますか？`,
+            )
+          : await cfConfirm(`${redoTargets.length} 件をもう一度削除しますか？`);
+        if (!confirmed) throw new Error('削除のやり直しを取り消しました');
+        const confirmationPayload = typeof MeldexDeleteImpactWarning !== 'undefined'
+          ? MeldexDeleteImpactWarning.confirmationPayload(confirmed)
+          : {};
         const nextTrashRefs = [];
+        const redoFailures = [];
         if (deletedPaths.length) _markOutlinerDeletePending(deletedPaths);
         for (const item of succeeded) {
-          const res = await apiPost('/outliner/delete', { path: item.path }).catch(() => null);
+          const res = await apiPost('/outliner/delete', {
+            path: item.path,
+            ...(item.assetId ? { assetId: item.assetId } : {}),
+            ...confirmationPayload,
+          }).catch(error => {
+            redoFailures.push({ item, error });
+            return null;
+          });
           const ref = _outlinerTrashRefFromResponse(res);
           if (ref) nextTrashRefs.push(ref);
+          else if (res && !res.ok) redoFailures.push({ item, error: new Error('削除応答が不正です') });
         }
         if (deletedPaths.length) _clearOutlinerDeletePending(deletedPaths);
         trashRefs = nextTrashRefs;
@@ -33,6 +68,9 @@
           purgeAppPathReferences(deletedPaths);
         }
         await _runOutlinerDeleteHistoryRefresh(options.refresh, 'redo', { succeeded, deletedPaths, trashNames });
+        if (redoFailures.length) {
+          throw new Error(`${redoFailures.length} 件の削除をやり直せませんでした`);
+        }
         if (typeof showStatus === 'function') showStatus(trashNames.length + ' 件を削除しました');
       },
       options.scope || '',
@@ -101,10 +139,7 @@ function _showCloudPhase1BlockedCreate(type) {
 const _outlinerContextMenuCleanups = new Set();
 
 function _outlinerEscHtml(value) {
-  if (typeof esc === 'function') return esc(value);
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[ch]));
+  return MeldexEscape.html(value);
 }
 
 function _outlinerMenuIconHtml(icon, size = 14) {
@@ -341,19 +376,29 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
       showStatus('削除できる項目がありません', true);
       return;
     }
-    const linkedDelete = await handleDisplayedFolderLinkDelete(targets, '', {
-      refresh: async () => {
-        if (typeof loadOutliner === 'function') await loadOutliner();
-        if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
-        if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
-      },
-    });
+    // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+    // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
+    // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、フォルダツリーの
+    // 削除ボタンがクリックしても無反応のまま静かに失敗していた）。
+    const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+      ? await handleDisplayedFolderLinkDelete(targets, '', {
+        refresh: async () => {
+          if (typeof loadOutliner === 'function') await loadOutliner();
+          if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
+          if (typeof renderWorkspaceSidebar === 'function') renderWorkspaceSidebar();
+        },
+      })
+      : { handled: false, result: null };
     if (linkedDelete.handled) {
       if (linkedDelete.result) treeSelection.clear();
       return;
     }
     const names = targets.map(item => item.name).join('、');
-    const impactTargets = targets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = targets.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, `「${names}」を削除しますか？`)
       : await cfConfirm(`「${names}」を削除しますか？`);
@@ -853,48 +898,3 @@ function showTreeContextMenu(x, y, nodeEl, nodeData, labelEl) {
     addSep();
     addMenuItem('パスを変更...', async () => {
       closeTreeContextMenu();
-      showStatus('フォルダ選択ダイアログを開いています...');
-      try {
-        const res = await apiFetch('/pick-folder');
-        if (!res.path) { showStatus('キャンセルされました'); return; }
-        // outliner_rootsを更新
-        const roots = await apiFetch('/outliner-roots');
-        const baseRoots = _cloneOutlinerRootsForBase(roots);
-        const root = roots.find(r => r.path === nodeData.path);
-        if (root) {
-          root.path = res.path;
-          root.name = res.path.split(/[/\\]/).pop();
-          await _putOutlinerRootsWithBase(roots, baseRoots);
-          await loadOutliner();
-          showStatus('パスを変更しました: ' + res.path);
-        }
-      } catch (e) { showStatus('パス変更に失敗しました', true); }
-    }, null, 'folderPen');
-    addMenuItem('名前を変更...', async () => {
-      closeTreeContextMenu();
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const root = roots.find(r => r.path === nodeData.path);
-      if (!root) return;
-      const newName = await cfPrompt('表示名を入力:', root.name);
-      if (!newName) return;
-      root.name = newName;
-      await _putOutlinerRootsWithBase(roots, baseRoots);
-      await loadOutliner();
-      showStatus('名前を変更しました');
-    }, null, 'pencil');
-    addMenuItem('チーム管理...', async () => {
-      closeTreeContextMenu();
-      showSettingsModal({ panel: 'ユーザー' });
-    }, null, 'users');
-    addSep();
-    addMenuItem('このソースフォルダの登録を解除', async () => {
-      closeTreeContextMenu();
-      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
-      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
-      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
-      const roots = await apiFetch('/outliner-roots');
-      const baseRoots = _cloneOutlinerRootsForBase(roots);
-      const newRoots = roots.filter(r => r.path !== nodeData.path);
-      await _putOutlinerRootsWithBase(newRoots, baseRoots);
-      await loadOutliner();

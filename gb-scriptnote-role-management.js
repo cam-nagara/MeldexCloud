@@ -720,7 +720,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
       requestAnimationFrame(() => {
-        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(stableSuffix)}"]`)?.focus();
+        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${MeldexEscape.cssIdent(stableSuffix)}"]`)?.focus();
       });
     };
     grip.addEventListener('keydown', event => {

@@ -552,7 +552,7 @@ function captureDbViewConfigHistory(dbPath) {
     && isLocalStorageSettingsHistorySuppressed()) return null;
   return captureLocalStorageSettings([getDbViewConfigStorageKey(dbPath)]);
 }
-function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, detail, onRestore) {
+function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, detail, onRestore, scopeOverride) {
   if (!beforeSnapshot || !afterSnapshot || typeof historyPush !== 'function'
     || typeof restoreLocalStorageSettings !== 'function'
     || typeof _normalizeLocalStorageSettingsSnapshots !== 'function') return false;
@@ -583,7 +583,9 @@ function pushDbViewConfigHistory(dbPath, label, beforeSnapshot, afterSnapshot, d
     label || 'シート表示設定',
     () => restoreViewConfigSnapshot(snapshots.before),
     () => restoreViewConfigSnapshot(snapshots.after),
-    _dbViewConfigHistoryScope(dbPath),
+    // scopeOverride: エントリレイアウト等、シートタブ以外の面（エントリのフルページタブは
+    // 共通スコープ''）から操作する機能は、その面から取り消しが届くスコープを明示できる
+    scopeOverride !== undefined ? scopeOverride : _dbViewConfigHistoryScope(dbPath),
     detail || ''
   );
   return true;
@@ -610,7 +612,8 @@ function saveDbViewConfig(dbPath, cfg, options = {}) {
       before,
       captureDbViewConfigHistory(dbPath),
       options.historyDetail || options.detail || '',
-      options.onRestore
+      options.onRestore,
+      options.historyScope
     );
   }
 }

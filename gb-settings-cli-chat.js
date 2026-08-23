@@ -1,8 +1,6 @@
 /* gb-settings-cli-chat.js: CLI chat settings UI */
 function _settingsCliEsc(value) {
-  return typeof esc === 'function'
-    ? esc(value)
-    : String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return MeldexEscape.html(value);
 }
 
 function _settingsCliIcon(name, size) {

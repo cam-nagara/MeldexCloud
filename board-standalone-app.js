@@ -431,7 +431,7 @@
       _showStatus('開きました: ' + path);
       // 選択中ファイルをハイライト
       document.querySelectorAll('.bsa-file-row.active').forEach((el) => el.classList.remove('active'));
-      const row = document.querySelector('.bsa-file-row[data-path="' + CSS.escape(path) + '"]');
+      const row = document.querySelector('.bsa-file-row[data-path="' + MeldexEscape.cssIdent(path) + '"]');
       row?.classList.add('active');
       return true;
     } catch (e) {

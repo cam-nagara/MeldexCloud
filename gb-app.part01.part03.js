@@ -129,13 +129,14 @@ function navOpen(entry, opts) {
   if (entry.type === 'csv') return (typeof openCsvFile === 'function') ? openCsvFile(entry.label, entry.path, o) : openPage(entry.label, entry.path, o);
   if (entry.type === 'board') return openBoard(entry.label, entry.path, o);
   if (entry.type === 'entity') return selectEntity(entry.path, o);
-  if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph'].includes(entry.type)) {
+  if (entry.type === 'pivot' || entry.type === 'database' || ['tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form'].includes(entry.type)) {
     if (entry.calendarFile && entry.type === 'timeline' && typeof openCalendarFile === 'function') return openCalendarFile(entry.label, entry.path, o);
     return selectDatabase(entry.path, null, {
       ...(o || {}),
       restoreViewIdx: entry.viewIdx,
       restoreViewSnapshot: entry.viewSnapshot,
       restoreScrollState: entry.scrollState,
+      requestedViewMode: entry.viewMode || (!['database'].includes(entry.type) ? entry.type : ''),
     });
   }
   if (entry.type === 'scriptnote' && typeof openScenarioInScriptNote === 'function') return openScenarioInScriptNote(entry.path, entry.label, o);

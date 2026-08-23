@@ -10,10 +10,7 @@
   let settingsSaveQueue = Promise.resolve();
 
   function atEsc(value) {
-    if (typeof esc === 'function') return esc(String(value ?? ''));
-    return String(value ?? '').replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[char]);
+    return MeldexEscape.html(value);
   }
 
   function atIcon(name, size) {
@@ -158,10 +155,7 @@
       || document.documentElement?.dataset?.standaloneApp;
     if (standalonePage) return false;
     const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
-      || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
-    const serverMode = window.MeldexRuntimeAdapter?.isServerMode?.()
-      || document.body?.dataset?.cloudMode === 'server';
-    if (serverMode) return true;
+      || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '');
     const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
       && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
     return !cloudMode && !cloudStatic;

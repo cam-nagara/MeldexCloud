@@ -479,7 +479,12 @@ async function trashDelete(idx) {
     return;
   }
   const confirmed = await MeldexDeleteImpactWarning.confirmDeleteWithImpact(
-    [{ path: impactPath, kind: item?.type === 'folder' ? 'folder' : 'file', physicalPath: item?.trash_path || '' }],
+    [{
+      path: impactPath,
+      kind: item?.type === 'folder' ? 'folder' : 'file',
+      physicalPath: item?.trash_path || '',
+      ...((item?.assetId || item?.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }],
     confirmMessage,
     { operation: 'permanent' },
   );
@@ -489,6 +494,7 @@ async function trashDelete(idx) {
     await apiPost('/trash/delete', {
       name,
       ...(item.trash_root ? { trash_root: item.trash_root } : {}),
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
       ...(window.MeldexDeleteImpactWarning?.confirmationPayload?.(confirmed) || {}),
     });
     showStatus(`「${name}」を完全に削除しました`);
@@ -507,7 +513,12 @@ async function trashEmpty() {
   const confirmMessage = 'ゴミ箱を空にしますか？この操作は取り消せません。';
   const impactTargets = (window._trashItems || [])
     .filter(item => item?.original_path)
-    .map(item => ({ path: item.original_path, kind: item.type === 'folder' ? 'folder' : 'file', physicalPath: item.trash_path || '' }));
+    .map(item => ({
+      path: item.original_path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      physicalPath: item.trash_path || '',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
   if (!impactTargets.length) {
     showStatus('ゴミ箱は空です');
     return;
@@ -660,6 +671,41 @@ async function renderDatabaseMaintenanceSettings(root) {
     });
   } catch (error) {
     container.innerHTML = `<section class="gb-section gb-section--boxed"><div class="gb-section-title">${lucide('triangleAlert',14)} データベースメンテナンス</div><div class="gb-section-desc">読み込みに失敗しました: ${esc(error.message || error)}</div></section>`;
+  }
+}
+
+/* ==============================
+   バージョン履歴の共有（このPCの版履歴をDropboxの共有保存先へまとめて移す）
+   ============================== */
+async function runSharedVersionMigration() {
+  const btn = document.getElementById('btn-migrate-shared-versions');
+  const status = document.getElementById('migrate-shared-versions-status');
+  const setStatus = text => { if (status) status.textContent = text; };
+  if (btn) btn.disabled = true;
+  setStatus('移行中...');
+  try {
+    const result = typeof runBackgroundJob === 'function'
+      ? await runBackgroundJob('/version/migrate-shared', {}, {
+          onProgress: job => {
+            const done = Number(job?.processed || 0);
+            const total = Number(job?.total || 0);
+            setStatus(total ? `移行中... ${done}/${total}` : '移行中...');
+          },
+        })
+      : await apiPost('/version/migrate-shared', {});
+    const moved = Number(result?.migrated || 0);
+    const targets = Number(result?.targets || 0);
+    const failed = Number(result?.failed || 0);
+    const summary = targets
+      ? `${targets}件のファイル・フォルダから${moved}件の版を移しました`
+      : '移す対象はありませんでした';
+    setStatus(failed ? `${summary}（${failed}件は移せませんでした）` : summary);
+    showStatus(summary, failed > 0);
+  } catch (e) {
+    setStatus('エラー: ' + (e.message || e));
+    showStatus('バージョン履歴の移行に失敗しました', true);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

@@ -1486,12 +1486,10 @@
     justify-content: center !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .meldex-sample-install-overlay .gb-mobile-dialog-sheet,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal-overlay[data-draft-recovery-dialog="1"] .gb-mobile-dialog-sheet {
     width: min(100%, 560px) !important;
   }
 
-  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .meldex-sample-install-overlay .gb-mobile-dialog-sheet > p,
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal-overlay[data-draft-recovery-dialog="1"] .gb-section-desc {
     font-size: var(--cloud-mobile-ui-font-size, 16px) !important;
     line-height: var(--cloud-mobile-ui-copy-line-height, 1.36) !important;
@@ -1524,6 +1522,13 @@
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] [role="dialog"] {
     max-width: calc(100vw - 16px) !important;
     max-height: calc(var(--cloud-visual-vh, 100dvh) - var(--cloud-mobile-safe-top, 0px) - 16px) !important;
+  }
+
+  /* カラーパレットは root zoom の内側にあるため、汎用 dialog 上限を
+     UI倍率で補正しないと物理viewportから下へはみ出す。 */
+  body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] [role="dialog"].gb-palette-popup {
+    max-height: calc((var(--cloud-visual-vh, 100dvh) - var(--cloud-mobile-safe-top, 0px) - 16px) / var(--meldex-ui-zoom, 1)) !important;
+    overflow-y: auto !important;
   }
 
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"] .modal.gb-mobile-dialog-sheet,

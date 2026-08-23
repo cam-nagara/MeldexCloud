@@ -249,9 +249,7 @@ function _smartDbDashboardFocusAfterRender(widgetId, fallbackTarget) {
   return new Promise((resolve, reject) => {
     setTimeout(() => {
       try {
-        const escapedWidgetId = widgetId && window.CSS?.escape
-          ? CSS.escape(widgetId)
-          : String(widgetId || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const escapedWidgetId = MeldexEscape.cssIdent(widgetId);
         const target = widgetId
           ? document.querySelector(`[data-e2e-id="smart-db-widget-${escapedWidgetId}-edit"]`)
           : document.querySelector('[data-e2e-id^="smart-db-add-widget-"]');

@@ -12,10 +12,7 @@ function _shellVerbCacheKey(path) {
 }
 
 function _shellMenuEscHtml(value) {
-  if (typeof esc === 'function') return esc(value);
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[ch]));
+  return MeldexEscape.html(value);
 }
 
 function _shellMenuIconHtml(icon, size = 14) {

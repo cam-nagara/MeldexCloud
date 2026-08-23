@@ -46,14 +46,29 @@
     }
   };
 
+  const standaloneLoadingOperations = [];
   window.showLoading = window.showLoading || function (message) {
+    const label = String(message || '読み込んでいます...');
+    if (window.MeldexOperationProgress) {
+      standaloneLoadingOperations.push(window.MeldexOperationProgress.begin({
+        kind: 'standalone-loading',
+        label: label,
+        mode: 'indeterminate',
+        showInTray: true,
+        showInStatus: false,
+        priority: 70,
+      }));
+      return;
+    }
     const overlay = document.getElementById('standalone-loading');
     const text = document.getElementById('standalone-loading-text');
-    if (text) text.textContent = String(message || '読み込んでいます...');
+    if (text) text.textContent = label;
     if (overlay) overlay.classList.add('visible');
   };
 
   window.hideLoading = window.hideLoading || function () {
+    const operation = standaloneLoadingOperations.pop();
+    operation?.succeed?.({ dismissMs: 0 });
     document.getElementById('standalone-loading')?.classList.remove('visible');
   };
 

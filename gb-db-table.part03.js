@@ -11,9 +11,7 @@ function _applySelectedColumnClasses(ctx, dbPath) {
   }
   selected.forEach(propName => {
     if (propName === '__entity__') return;
-    const cssProp = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-      ? CSS.escape(propName)
-      : String(propName).replace(/["\\]/g, '\\$&');
+    const cssProp = MeldexEscape.cssIdent(propName);
     table.querySelectorAll(`thead th[data-prop="${cssProp}"], tbody td[data-prop-name="${cssProp}"], tfoot td[data-prop-name="${cssProp}"]`)
       .forEach(el => el.classList.add('col-selected'));
   });
@@ -297,6 +295,15 @@ function _dbObservePinnedColumnWidths(table) {
 // _dbClampInt / _dbCellDisplayConfig / setDbCellTextDisplay / showDbCellWrapMenu /
 // _makeColumnWrapSubmenuItems / autoFitCurrentSheetColumns 等はそちらを参照。
 
+const _dbNaturalTextCollator = new Intl.Collator('ja', {
+  numeric: true,
+  sensitivity: 'variant',
+});
+
+function _dbNaturalTextCompare(left, right) {
+  return _dbNaturalTextCollator.compare(String(left ?? ''), String(right ?? ''));
+}
+
 function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
   const entitiesMap = data?.entities || {};
   const propTypes = options.propTypes || (typeof getPropertyTypes === 'function' ? getPropertyTypes(dbPath, ctx) : {});
@@ -337,7 +344,9 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
       return ia - ib;
     });
   } else if (sortCfg.key === 'name') {
-    entityNames.sort((a, b) => sortCfg.dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
+    entityNames.sort((a, b) => sortCfg.dir === 'desc'
+      ? _dbNaturalTextCompare(b, a)
+      : _dbNaturalTextCompare(a, b));
   } else {
     const sortPtc = propTypes?.[sortCfg.key] || {};
     const sortType = sortPtc.type || 'text';
@@ -375,15 +384,15 @@ function _dbSortedEntityNames(data, dbPath, ctx, options = {}) {
         if (na != null && nb != null) cmp = na - nb;
         else if (na != null) cmp = -1;
         else if (nb != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
+        else cmp = _dbNaturalTextCompare(sa, sb);
       } else if (sortType === 'date') {
         const da = toDate(sa), db = toDate(sb);
         if (da != null && db != null) cmp = da - db;
         else if (da != null) cmp = -1;
         else if (db != null) cmp = 1;
-        else cmp = sa.localeCompare(sb);
+        else cmp = _dbNaturalTextCompare(sa, sb);
       } else {
-        cmp = sa.localeCompare(sb);
+        cmp = _dbNaturalTextCompare(sa, sb);
       }
       return sortCfg.dir === 'desc' ? -cmp : cmp;
     });

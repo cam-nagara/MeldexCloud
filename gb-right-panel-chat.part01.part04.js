@@ -346,6 +346,7 @@ async function chatSend(options = {}) {
       const div = document.createElement('div');
       div.style.cssText = 'padding:8px;background:var(--bg3);border-radius:8px;max-width:95%;';
       div.innerHTML = html;
+      window.MeldexImageLoading?.trackAll?.(div);
       container.appendChild(div);
       _chatScrollToBottom(container);
     }

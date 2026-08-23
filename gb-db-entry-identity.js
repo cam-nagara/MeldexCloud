@@ -187,9 +187,7 @@
     if (ctx?.destroyed) return;
     const root = ctx ? ctx.containerEl : document;
     if (!root?.querySelectorAll) return;
-    const escaped = globalThis.CSS?.escape
-      ? CSS.escape(oldName)
-      : String(oldName).replace(/["\\]/g, '\\$&');
+    const escaped = MeldexEscape.cssIdent(oldName);
     root.querySelectorAll(`tr[data-entity-name="${escaped}"]`).forEach(row => {
       row.dataset.entityName = newName;
       row.querySelectorAll('.entity-name-label').forEach(label => { label.textContent = newName; });
@@ -272,6 +270,7 @@
         completed: [],
         running: false,
         current: null,
+        progressHandle: null,
       });
     }
     return deleteQueues.get(key);
@@ -313,9 +312,7 @@
     } else {
       queue.contexts.forEach(candidate => {
         names.forEach(name => {
-          const escaped = globalThis.CSS?.escape
-            ? CSS.escape(name)
-            : String(name).replace(/["\\]/g, '\\$&');
+          const escaped = MeldexEscape.cssIdent(name);
           candidate?.containerEl?.querySelector?.(`tr[data-entity-name="${escaped}"]`)?.remove();
         });
       });
@@ -388,6 +385,26 @@
   }
 
   function showDeleteProgress(queue, checking = false) {
+    const total = queue.completed.length + queue.pending.length + (queue.current ? 1 : 0);
+    const progressApi = window.MeldexOperationProgress;
+    if (progressApi) {
+      if (!queue.progressHandle || progressApi.isTerminalStatus(queue.progressHandle.getState()?.status)) {
+        queue.progressHandle = progressApi.begin({
+          kind: 'sheet-entry-delete',
+          label: 'シートのエントリを削除しています',
+          mode: total > 0 ? 'determinate' : 'indeterminate',
+          total: total || null,
+          processed: queue.completed.length,
+          priority: 50,
+        });
+      }
+      queue.progressHandle.update({
+        phase: checking ? '削除結果を確認中' : '削除中',
+        mode: total > 0 ? 'determinate' : 'indeterminate',
+        total: total || null,
+        processed: queue.completed.length,
+      });
+    }
     if (typeof showStatus !== 'function') return;
     if (checking) {
       showStatus('削除結果を確認中…');
@@ -395,6 +412,21 @@
     }
     const remaining = queue.pending.length + (queue.current ? 1 : 0);
     if (remaining > 0) showStatus(`削除中…（残り${remaining}件）`);
+  }
+
+  function finishDeleteProgress(queue, completed) {
+    const handle = queue.progressHandle;
+    queue.progressHandle = null;
+    if (!handle) return;
+    const successes = completed.filter(value => value.result.ok).length;
+    const failures = completed.length - successes;
+    if (failures > 0) {
+      handle.partial({
+        summary: successes + '件を削除、' + failures + '件は削除できませんでした',
+      });
+    } else {
+      handle.succeed({ summary: successes + '件を削除しました' });
+    }
   }
 
   async function reconcileDelete(queue, item) {
@@ -425,6 +457,7 @@
       const body = {
         path: latestPath || item.path,
         expected_entry_id: item.entryId || undefined,
+        assetId: item.assetId || undefined,
         operation_id: item.operationId,
         ...(item.confirmationPayload || {}),
       };
@@ -566,6 +599,7 @@
           name: result.entry.name,
           path: result.entry.path,
           entry_id: result.entry.entryId,
+          asset_id: result.entry.assetId || '',
           trash_name: result.response?.trash_name || '',
           trash_root: result.response?.trash_root || '',
         })),
@@ -596,6 +630,7 @@
       const completed = queue.completed.splice(0);
       await reloadDeleteCycle(queue, completed);
       resolveReadyDeleteRequests(queue);
+      if (!queue.pending.length) finishDeleteProgress(queue, completed);
       if (queue.pending.length) hideEntries(queue, queue.pending);
     } finally {
       queue.running = false;
@@ -617,11 +652,14 @@
       const path = normalize(rawEntry?.path || rawEntry?.entry_path || entryPath(dbPath, name, options?.ctx?.pivotData));
       const entityData = options?.ctx?.pivotData?.entities?.[name];
       const entryId = String(rawEntry?.entryId || rawEntry?.entry_id || entryIdFromEntity(entityData)).trim();
+      const assetId = String(
+        rawEntry?.assetId || rawEntry?.asset_id || entityData?.assetId || entityData?.asset_id || '',
+      ).trim();
       const identityKeys = deleteKeys({ entry_id: entryId, entry_path: path }, path, dbPath);
       const key = entryId ? `id:${entryId}` : `path:${path}`;
       if (!path || identityKeys.some(identityKey => seen.has(identityKey))) return;
       identityKeys.forEach(identityKey => seen.add(identityKey));
-      requestEntries.push({ name: name || entityNameFromPath(path), path, entryId, key, identityKeys });
+      requestEntries.push({ name: name || entityNameFromPath(path), path, entryId, assetId, key, identityKeys });
     });
     if (!requestEntries.length) {
       return Promise.resolve({ ok: true, successes: [], failures: [], responses: [], trashRefs: [] });

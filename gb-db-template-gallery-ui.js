@@ -5,6 +5,16 @@
    プロパティ表・ビュー一覧のプレビュー描画を担当する。
    モバイルでは重ねプレビューモーダル（gb-db-templates.part02.js の showTemplatePreviewModal）を
    引き続き使用する。
+
+   設計意図（UI共通ルールとの整合、2026-08-19 UI統一）:
+   - カードは「クリックで選択のみ」。適用/編集/削除はデスクトップ=プレビューペイン、
+     モバイル=重ねプレビューモーダルへ集約し、同じ操作ボタンを二重表示しない。
+   - 説明文はカードへ常時表示せず data-gb-tooltip（ホバー/フォーカス/長押し）へ集約する。
+     選択後のプレビュー（ペイン/重ねモーダル）は詳細表示面なので説明文を可視のまま残す。
+   - Tierチップは .gb-btn 系を基底にし、フィルタ選択状態だけ pill 形状+accent の
+     修飾クラス（.template-tier-btn）で表現する。
+   - プレビューペイン付き2ペイン構成は「一覧と詳細の分離」（ビュータブ等と同じ
+     選択→詳細操作パターン）を1モーダル内で成立させるための意図的な専用レイアウト。
    ============================== */
 
 /* --- トリガー・フォーカス復帰ヘルパー --- */
@@ -365,10 +375,8 @@ function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
   }
   card.appendChild(titleRow);
 
-  const desc = document.createElement('div');
-  desc.textContent = tmpl.description;
-  desc.className = 'template-card-desc';
-  card.appendChild(desc);
+  // 説明文はカードへ常時表示せず、ツールチップ（ホバー/フォーカス/長押し）へ集約する
+  if (tmpl.description) card.dataset.gbTooltip = tmpl.description;
 
   const meta = document.createElement('div');
   meta.className = 'template-card-meta';
@@ -379,42 +387,9 @@ function _buildTemplateCard(tmpl, dbPath, ctx = {}) {
   meta.textContent = propCount + '列 · ' + viewCount + 'ビュー';
   card.appendChild(meta);
 
-  const btnRow = document.createElement('div');
-  btnRow.className = 'template-card-actions';
-  const applyBtn = document.createElement('button');
-  _setupDbTemplateButton(applyBtn, 'gb-btn gb-btn-sm gb-btn-primary primary', 'db-template-card-apply', 'テンプレート「' + (tmpl.name || '') + '」を適用');
-  applyBtn.textContent = '適用';
-  applyBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    _doApplyTemplate(dbPath, tmpl, ctx.overlay, ctx.overlay?._dbTemplateTrigger || card);
-  });
-  btnRow.appendChild(applyBtn);
-
-  if (tmpl.tier === 0) {
-    const editBtn = document.createElement('button');
-    _setupDbTemplateButton(editBtn, 'gb-btn gb-btn-sm', 'db-template-card-edit', 'カスタムテンプレート「' + (tmpl.name || '') + '」を編集');
-    editBtn.textContent = '編集';
-    editBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      _closeDbTemplateOverlay(ctx.overlay, ctx.overlay?._dbTemplateTrigger || card, { restoreFocus: false });
-      showEditTemplateModal(tmpl, dbPath, ctx.overlay?._dbTemplateTrigger || card);
-    });
-    btnRow.appendChild(editBtn);
-
-    const delBtn = document.createElement('button');
-    _setupDbTemplateButton(delBtn, 'gb-btn gb-btn-sm gb-btn-danger', 'db-template-card-delete', 'カスタムテンプレート「' + (tmpl.name || '') + '」を削除');
-    delBtn.textContent = '削除';
-    delBtn.addEventListener('click', async e => {
-      e.stopPropagation();
-      await _deleteDbCustomTemplateWithConfirm(tmpl, ctx.onChanged, delBtn);
-    });
-    btnRow.appendChild(delBtn);
-  }
-  card.appendChild(btnRow);
-
   const activate = () => {
     if (ctx.mobile) {
-      showTemplatePreviewModal(tmpl, dbPath, ctx.overlay, card);
+      showTemplatePreviewModal(tmpl, dbPath, ctx.overlay, card, { onChanged: ctx.onChanged });
     } else if (typeof ctx.onSelect === 'function') {
       ctx.onSelect();
     }
@@ -467,6 +442,13 @@ function _renderDbTemplatePreviewPane(pane, tmpl, dbPath, ctx = {}) {
     entityDiv.className = 'db-template-preview-pane-entities';
     entityDiv.textContent = 'エントリ雛形: ' + tmpl.entityTemplates.map(e => e.name).join(', ');
     pane.appendChild(entityDiv);
+  }
+
+  if (Array.isArray(tmpl.entityLayouts) && tmpl.entityLayouts.length) {
+    const layoutsDiv = document.createElement('div');
+    layoutsDiv.className = 'db-template-preview-pane-entities';
+    layoutsDiv.textContent = 'エントリレイアウト: ' + tmpl.entityLayouts.map(l => l?.name || 'レイアウト').join(', ');
+    pane.appendChild(layoutsDiv);
   }
 
   const actions = document.createElement('div');
@@ -549,7 +531,7 @@ function showTemplateGalleryModal(dbPath, triggerEl = null) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.textContent = tf.label;
-    btn.className = 'template-tier-btn' + (tf.key === 'all' ? ' active' : '');
+    btn.className = 'gb-btn gb-btn-sm template-tier-btn' + (tf.key === 'all' ? ' active' : '');
     btn.dataset.tier = tf.key;
     btn.dataset.e2eId = `db-template-tier-${tf.key}`;
     btn.setAttribute('aria-pressed', tf.key === 'all' ? 'true' : 'false');

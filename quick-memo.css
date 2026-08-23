@@ -42,6 +42,9 @@ body {
   border-radius: 8px;
   background: var(--qm-panel);
   box-shadow: 0 12px 36px rgb(0 0 0 / 52%);
+  max-height: calc(100dvh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .qm-menu[hidden] {
@@ -85,6 +88,10 @@ button:active:not(:disabled), button.is-active {
   background: color-mix(in srgb, var(--qm-accent) 20%, var(--qm-panel-2));
 }
 button:disabled { cursor: default; opacity: .42; }
+.qm-shell :where(button, input, select, [contenteditable="true"]):focus-visible {
+  outline: 2px solid var(--qm-accent);
+  outline-offset: 2px;
+}
 
 .qm-shell {
   width: 100%;
@@ -134,6 +141,11 @@ button:disabled { cursor: default; opacity: .42; }
 .qm-title-input:focus {
   border-color: var(--qm-border);
   outline: none;
+}
+.qm-title-input:focus-visible {
+  border-color: var(--qm-accent);
+  outline: 2px solid var(--qm-accent);
+  outline-offset: 1px;
 }
 .qm-title-stack #syncStatus {
   overflow: hidden;
@@ -324,6 +336,18 @@ button:disabled { cursor: default; opacity: .42; }
 .qm-color-popover input[type="color"] { width: 100%; height: 38px; padding: 2px; border: 1px solid var(--qm-border); background: var(--qm-bg); }
 .qm-color-popover input[type="range"] { flex: 1; }
 .qm-color-popover output { width: 42px; color: var(--qm-strong); font-variant-numeric: tabular-nums; text-align: right; }
+.qm-palette-opacity {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 1fr) 44px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 4px;
+  color: var(--qm-fg);
+  font-size: 12px;
+}
+.qm-palette-opacity > span { white-space: nowrap; }
+.qm-palette-opacity input { width: 100%; }
+.qm-palette-opacity output { color: var(--qm-strong); font-variant-numeric: tabular-nums; text-align: right; }
 .qm-width-control { display: flex; align-items: center; gap: 6px; color: var(--qm-muted); font-size: 12px; }
 #widthInput { width: 90px; }
 
@@ -340,6 +364,10 @@ button:disabled { cursor: default; opacity: .42; }
   padding: 16px;
   line-height: 1.7;
   font-size: 16px;
+}
+.qm-editor:focus-visible {
+  outline: 2px solid var(--qm-accent);
+  outline-offset: -2px;
 }
 .qm-editor:empty::before { content: attr(data-placeholder); color: var(--qm-muted); }
 .qm-editor p { margin: 0 0 .75em; }

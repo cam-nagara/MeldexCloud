@@ -7,6 +7,18 @@
 /* ==============================
    DB選択・エントリ選択
    ============================== */
+// レイアウトツリー（GBLayout.root）には載らないが、正当な描画先である面かどうか。
+// 埋め込みシート（制作管理）と右サイドバーのサブパネルが該当する。ここを1つの判定に
+// まとめておかないと、3つ目の面が増えたときに「描画先が勝手にメインパネルへ
+// 差し替わる」同じ事故が再発する（ボードのリンクカード計画 2026-08-13 Phase B-1）。
+function _dbIsOffTreeRenderSurface(ctx) {
+  if (!ctx) return false;
+  if (ctx.embedded) return true;
+  if (ctx.surface === 'subpanel') return true;
+  if (!ctx.paneId || typeof GBLayout === 'undefined') return false;
+  return GBLayout.paneMap?.[ctx.paneId]?.surface === 'subpanel';
+}
+
 function _resolveDatabasePaneContext(ctx, options) {
   const resolveOpts = options || {};
   const explicitCtx = !!ctx;
@@ -26,9 +38,12 @@ function _resolveDatabasePaneContext(ctx, options) {
   // 格納先がすれ違う（P0バグ）。ctx.embedded フラグが立っており、かつ containerEl が
   // document に接続されている間はこの差し替えをスキップする。containerEl が切断された
   // 場合（destroy 後の取り違え等）は従来どおり安全側（メイン画面ctx）へフォールバックする。
-  const isConnectedEmbeddedCtx = !!(candidate?.embedded && !containerDetached);
-  const paneMissing = !isConnectedEmbeddedCtx && !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
-  const shouldUseActivePane = !isConnectedEmbeddedCtx && !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
+  // 埋め込みシートに加えて、右サイドバーのサブパネルも「ツリー外だが正当な描画先」
+  // として扱う（Phase B-1）。containerEl が document から切り離された場合に安全側
+  // （メイン画面ctx）へ戻す既存の挙動はそのまま残す。
+  const isConnectedOffTreeCtx = !!(_dbIsOffTreeRenderSurface(candidate) && !containerDetached);
+  const paneMissing = !isConnectedOffTreeCtx && !!(candidate?.paneId && typeof GBLayout !== 'undefined' && typeof GBLayout.findNode === 'function' && !GBLayout.findNode(GBLayout.root, candidate.paneId)?.node);
+  const shouldUseActivePane = !isConnectedOffTreeCtx && !!resolveOpts.preferActivePane && !!candidate?.paneId && typeof GBLayout !== 'undefined' && !!GBLayout.activePane && candidate.paneId !== GBLayout.activePane;
   if (paneMissing || containerDetached || shouldUseActivePane) candidate = _currentPaneState();
   if (!explicitCtx && candidate?.containerEl && !_dbPaneHasPivotTable(candidate) && typeof _globalPaneState === 'function') {
     candidate = _globalPaneState();
@@ -41,10 +56,10 @@ function _dbPaneHasPivotTable(ctx) {
   if (typeof ctx.containerEl.querySelector !== 'function') return true;
   const tblId = ctx.tableId || 'pivot-table';
   try {
-    const id = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(tblId) : String(tblId).replace(/["\\]/g, '\\$&');
+    const id = MeldexEscape.cssIdent(tblId);
     return !!ctx.containerEl.querySelector('#' + id);
   } catch {
-    return !!ctx.containerEl.querySelector('#' + tblId);
+    return false;
   }
 }
 
@@ -87,7 +102,7 @@ function _restoreDbViewScrollState(ctx, viewMode, scrollState) {
     if (Number.isFinite(scrollState.scrollTop)) container.scrollTop = scrollState.scrollTop;
     const focusedEntity = String(scrollState.focusedEntity || '').trim();
     if (!focusedEntity) return;
-    const escaped = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusedEntity) : focusedEntity.replace(/"/g, '\\"');
+    const escaped = MeldexEscape.cssIdent(focusedEntity);
     const target = container.querySelector(`[data-entity-name="${escaped}"], [data-entity="${escaped}"]`);
     if (!target) return;
     target.classList.add('db-view-focused-entity');
@@ -117,9 +132,7 @@ function _renderDbLoadError(ctx, error) {
   if (!ctx) return;
   clearPivot(ctx);
   const message = 'シートを読み込めませんでした: ' + (error?.message || error || '不明なエラー');
-  const safeMessage = typeof esc === 'function'
-    ? esc(message)
-    : String(message).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const safeMessage = MeldexEscape.html(message);
   const tblId = ctx?.tableId || 'pivot-table';
   const tbody = _paneEl(ctx, '#' + tblId + ' tbody');
   if (tbody) {
@@ -197,6 +210,10 @@ async function _migrateDbViewConfigToBackend(dbPath, options = {}) {
 
 async function selectDatabase(dbPath, ctx, opts) {
   const openOpts = opts || {};
+  const requestedViewMode = ['pivot', 'tree', 'gallery', 'kanban', 'timeline', 'chart', 'graph', 'form']
+    .includes(String(openOpts.requestedViewMode || '').trim())
+    ? String(openOpts.requestedViewMode).trim()
+    : '';
   const dbPerfStartedAt = typeof _perfNowMs === 'function' ? _perfNowMs() : Date.now();
   const dbPerfTargetLabel = String(dbPath || '').split(/[\\/]/).filter(Boolean).pop() || String(dbPath || '');
   ctx = _resolveDatabasePaneContext(ctx);
@@ -285,7 +302,13 @@ async function selectDatabase(dbPath, ctx, opts) {
     || !!ctx.destroyed
     || (ctx.generation || 0) !== loadGeneration
     || ctx._dbLoadSeq !== dbLoadSeq
-    || ctx.dbPath !== dbPath;
+    || ctx.dbPath !== dbPath
+    // タブ切替中の非同期読込が完了しても、既に非表示・撤去されたシート面へ
+    // 描画しない。preferActivePane は通常ペインのアクティブ先を確認しつつ、
+    // 埋め込み/サブパネルの正当なツリー外描画先は維持する。
+    || _resolveDatabasePaneContext(ctx, { preferActivePane: true }) !== ctx
+    || (!_dbIsOffTreeRenderSurface(ctx) && !!ctx?.containerEl && !document.body.contains(ctx.containerEl))
+    || (!_dbIsOffTreeRenderSurface(ctx) && !_normalizeDbRenderContext(ctx));
   const hadLocalViewConfigBeforeOpen = typeof _hasLocalDbViewConfigCache === 'function'
     ? _hasLocalDbViewConfigCache(dbPath)
     : true;
@@ -369,7 +392,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       setCurrentViewIdx(dbPath, openOpts.restoreViewIdx, { skipHistory: true });
     }
   }
-  let dbViewMode = getCurrentViewMode(dbPath, { ctx });
+  let dbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
   ctx.viewMode = dbViewMode;
   if (!openOpts.skipShowView) showView(dbViewMode, ctx);
 
@@ -413,7 +436,7 @@ async function selectDatabase(dbPath, ctx, opts) {
     }
     if (backendViewConfigApplied) {
       if (openOpts.restoreViewSnapshot) _restoreDbNavigationViewSnapshot(dbPath, openOpts.restoreViewSnapshot);
-      const latestMode = getCurrentViewMode(dbPath, { ctx });
+      const latestMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx });
       if (latestMode && latestMode !== dbViewMode) {
         dbViewMode = latestMode;
         ctx.viewMode = dbViewMode;
@@ -473,9 +496,9 @@ async function selectDatabase(dbPath, ctx, opts) {
     const filterParam = getFilterParam(ctx.filter);
     const url = '/pivot?path=' + encodeURIComponent(dbPath) + (filterParam ? '&status_filter=' + filterParam : '');
     const pivotData = await apiFetch(url);
+    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     if (typeof _stampPivotValueEntityPaths === 'function') _stampPivotValueEntityPaths(dbPath, pivotData);
     if (window.GbDbEntryIdentity) window.GbDbEntryIdentity.registerPivot(dbPath, pivotData);
-    if (isStaleDbLoad()) return completeLoad({ ok: false, stale: true, destroyed: !!ctx.destroyed });
     ctx.pivotData = pivotData;
     if (syncGlobalState) state.pivotData = ctx.pivotData; // グローバル同期
     const entityCountForPerf = Object.keys(ctx.pivotData.entities || {}).length;
@@ -496,7 +519,7 @@ async function selectDatabase(dbPath, ctx, opts) {
         .catch(() => {});
     }
     const latestDbViewMode = getCurrentViewMode(dbPath);
-    const effectiveLatestDbViewMode = getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
+    const effectiveLatestDbViewMode = requestedViewMode || getCurrentViewMode(dbPath, { ctx }) || latestDbViewMode;
     // 互換テスト用: if (latestDbViewMode && latestDbViewMode !== dbViewMode) {
     if (effectiveLatestDbViewMode && effectiveLatestDbViewMode !== dbViewMode) {
       // 互換テスト用: dbViewMode = latestDbViewMode;
@@ -505,7 +528,7 @@ async function selectDatabase(dbPath, ctx, opts) {
       if (!openOpts.skipShowView) showView(dbViewMode, ctx);
     }
     // カレンダーDBは初回表示時にカレンダービューに自動切替
-    if (ctx.pivotData.calendar_db && dbViewMode === 'pivot') {
+    if (!requestedViewMode && ctx.pivotData.calendar_db && dbViewMode === 'pivot') {
       dbViewMode = 'calendar';
       ctx.viewMode = dbViewMode;
       const calendarCfg = getDbViewConfig(dbPath);

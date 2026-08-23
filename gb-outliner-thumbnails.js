@@ -462,22 +462,32 @@
 
   function _resolveThumbnail(row, rec) {
     var path = rec.item && rec.item.path;
-    if (!path) return;
-    if (!_hasNativeApiBackend()) return;
+    if (!path || !_hasNativeApiBackend()) {
+      if (rec.imageLoading) rec.imageLoading.dispose();
+      return;
+    }
     var size = rec.size;
     var key = _thumbKey(path, size);
-    if (_negativeCache.isFailed(key)) return;
+    if (_negativeCache.isFailed(key)) {
+      if (rec.imageLoading) rec.imageLoading.dispose();
+      return;
+    }
     _thumbQueue
       .request(key, function () { return _probeImageUrl(_treeThumbnailUrl(path, size)); })
       .then(
         function (url) {
-          if (!url) { _negativeCache.markFailed(key); return; }
+          if (!url) {
+            if (rec.imageLoading) rec.imageLoading.dispose();
+            _negativeCache.markFailed(key);
+            return;
+          }
           if (!row.isConnected) return;
           if (!_tracked.has(row) || _tracked.get(row) !== rec) return;
           _promoteRowToThumbnail(row, rec, url);
         },
         function (err) {
           if (err === CANCELED) { rec.started = false; return; } // 未開始キャンセル: 再度視界に入ったら再試行できるようにする
+          if (rec.imageLoading) rec.imageLoading.dispose();
           _negativeCache.markFailed(key);
         }
       );
@@ -530,6 +540,12 @@
       iconEl.insertAdjacentElement('afterend', shell);
       rec.thumbImg = img;
       rec.shell = shell;
+      rec.imageLoading = window.MeldexImageLoading?.track?.(img, {
+        host: shell,
+        label: 'サムネイルを読み込んでいます',
+        errorMode: 'silent',
+        allowDetached: true,
+      }) || null;
     }
 
     _tracked.set(row, rec);
@@ -547,6 +563,7 @@
     _tracked.delete(row);
     if (_io) { try { _io.unobserve(row); } catch (e) {} }
     if (rec.wantThumb) _thumbQueue.cancel(_thumbKey(rec.item && rec.item.path, rec.size));
+    if (rec.imageLoading) rec.imageLoading.dispose();
   }
 
   // 再読込・設定OFF切替時に、追跡中の行と待機中の要求をすべて破棄する。

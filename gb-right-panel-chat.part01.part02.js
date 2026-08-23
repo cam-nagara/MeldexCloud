@@ -961,6 +961,7 @@ function _renderTeamAttachments() {
     chip.appendChild(label);
     chip.appendChild(close);
     bar.appendChild(chip);
+    window.MeldexImageLoading?.track?.(img);
   });
 }
 window._renderTeamAttachments = _renderTeamAttachments;
@@ -992,6 +993,7 @@ function _renderTeamMessageWithImages(container, text) {
         else window.open(url, '_blank');
       });
       container.appendChild(img);
+      window.MeldexImageLoading?.track?.(img);
     } else {
       const seg = document.createElement('span');
       seg.textContent = m[0];
@@ -1324,6 +1326,7 @@ function _chatRenderStructuredMessage(div, content, isUser) {
         });
         img.onerror = () => { img.style.display = 'none'; };
         imgWrap.appendChild(img);
+        window.MeldexImageLoading?.track?.(img, { errorMode: 'silent' });
       }
       div.appendChild(imgWrap);
       return;

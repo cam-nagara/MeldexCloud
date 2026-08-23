@@ -21,6 +21,7 @@ function _renderPreviewContent(item) {
     img.className = 'fp-img';
     img.src = _folderItemRawUrl(item);
     frag.appendChild(img);
+    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます', allowDetached: true });
   } else if (item.type === 'image' || isPdf) {
     const iframe = document.createElement('iframe');
     iframe.style.cssText = 'width:100%;height:100%;min-height:300px;border:none;border-radius:4px;';
@@ -55,6 +56,7 @@ function _renderPreviewContent(item) {
       icon.innerHTML = fileTypeIcon(item.type, 48);
       img.replaceWith(icon);
     };
+    window.MeldexImageLoading?.track?.(img, { label: 'プレビューを読み込んでいます', errorMode: 'silent', allowDetached: true });
     frag.appendChild(img);
   } else {
     const icon = document.createElement('div');
@@ -176,6 +178,10 @@ function _renderDetailContent(item) {
 
 function showFolderPreview(item) {
   if (!item) return;
+  // プレビュー/詳細タブ（#gb-preview-pane・#rp-detail）はメイン画面専用UI。独立した
+  // 描画先（サブパネル等）が有効な間は、サブパネルにこれらのタブが無いため触らない
+  // （ボードのリンクカード計画 Phase B-2 縮小スコープ）。
+  if (typeof _folderIsIndependentSurface === 'function' && _folderIsIndependentSurface()) return;
   const selectedItems = typeof _folderSelectedItems !== 'undefined'
     ? (_folderSelectedItems || []).filter(selected => selected?.path)
     : [];
@@ -1510,14 +1516,23 @@ function _folderArchiveExtension(path) {
   return index >= 0 ? lower.slice(index) : '';
 }
 
+// クラウド版（端末内保存／Dropbox直結）はgb-archive-zip-engine.jsの自己完結ZIP
+// エンジンで圧縮・解凍する。TAR系はデスクトップ版のみの対応のまま
+// （クラウド版では解凍対象からZIP以外を除外する）。
+function _folderArchiveCloudEngineReady() {
+  return !!window.MeldexArchiveZipEngine;
+}
+
 function _folderCanCompress() {
-  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return _folderArchiveCloudEngineReady();
   return true;
 }
 
 function _folderCanExtractArchive(item) {
-  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) return false;
   const ext = _folderArchiveExtension(item?.path || item?.name || '');
+  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
+    return _folderArchiveCloudEngineReady() && ext === '.zip';
+  }
   return ['.zip', '.tar', '.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz'].includes(ext);
 }
 
@@ -1525,7 +1540,7 @@ async function compressFolderItems(items) {
   const targets = (Array.isArray(items) ? items : [items]).filter(item => item?.path);
   if (!targets.length) return;
   if (!_folderCanCompress()) {
-    showStatus('クラウド版では圧縮機能は利用できません', true);
+    showStatus('圧縮機能を利用できません（お使いのブラウザが対応していない可能性があります）', true);
     return;
   }
   try {
@@ -1551,10 +1566,6 @@ async function extractArchiveItems(items) {
   const targets = (Array.isArray(items) ? items : [items])
     .filter(item => item?.path && _folderCanExtractArchive(item));
   if (!targets.length) return;
-  if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
-    showStatus('クラウド版では解凍機能は利用できません', true);
-    return { ok: false, results: [], failures: [] };
-  }
   const failures = [];
   const results = [];
   try {

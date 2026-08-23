@@ -24,7 +24,7 @@
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
-  async function runBackgroundJob(startPath, body, options) {
+  async function _runBackgroundJobImpl(startPath, body, options) {
     options = options || {};
     const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
     const onStarted = typeof options.onStarted === 'function' ? options.onStarted : null;
@@ -132,6 +132,67 @@
     error.name = 'LongRunningJobError';
     error.jobId = jobId;
     throw error;
+  }
+
+  function _operationLabel(startPath, options) {
+    if (options?.operationLabel || options?.label) return String(options.operationLabel || options.label);
+    const path = String(startPath || '').toLowerCase();
+    if (path.includes('duplicate')) return '重複を確認しています';
+    if (path.includes('tag')) return 'タグを処理しています';
+    if (path.includes('import') || path.includes('sync')) return 'データを取り込んでいます';
+    if (path.includes('rebuild') || path.includes('index')) return '索引を更新しています';
+    return '処理しています';
+  }
+
+  // 通信/ジョブ処理は従来実装を保ち、表示だけを共通操作状態へ接続する。
+  async function runBackgroundJob(startPath, body, options) {
+    const opts = options || {};
+    const progressApi = window.MeldexOperationProgress;
+    const operation = opts.operationProgress === false || !progressApi
+      ? null
+      : progressApi.begin({
+          kind: String(opts.operationKind || 'background-job'),
+          label: _operationLabel(startPath, opts),
+          mode: 'indeterminate',
+          background: true,
+          delayMs: opts.operationDelayMs,
+          showInTray: opts.showInTray !== false,
+          showInStatus: opts.showInStatus !== false,
+          priority: Number(opts.operationPriority) || 20,
+        });
+    const userOnStarted = typeof opts.onStarted === 'function' ? opts.onStarted : null;
+    const userOnProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+    const wrapped = Object.assign({}, opts, {
+      onStarted: function (jobId, started) {
+        operation?.setPersistentJobId(jobId);
+        operation?.update({ status: started?.status || 'running', phase: started?.status === 'queued' ? '待機中' : '準備中' });
+        if (userOnStarted) userOnStarted(jobId, started);
+      },
+      onProgress: function (progress, job) {
+        const total = Number(progress?.total);
+        operation?.update({
+          status: job?.status || 'running',
+          mode: total > 0 ? 'determinate' : 'indeterminate',
+          processed: Number(progress?.processed) || 0,
+          total: total > 0 ? total : null,
+          phase: progress?.phase || '',
+          message: progress?.message || '',
+          currentItem: progress?.current_item || progress?.current || '',
+          rate: progress?.rate,
+          eta: progress?.eta_seconds ?? progress?.eta,
+        });
+        if (userOnProgress) userOnProgress(progress, job);
+      },
+    });
+    try {
+      const result = await _runBackgroundJobImpl(startPath, body, wrapped);
+      operation?.succeed({ summary: opts.successMessage || '完了しました' });
+      return result;
+    } catch (error) {
+      if (error?.name === 'AbortError') operation?.cancelled({ summary: error.message });
+      else operation?.fail({ error: error });
+      throw error;
+    }
   }
 
   // 進捗オブジェクトを表示テキストへ整形する既定フォーマッタ。

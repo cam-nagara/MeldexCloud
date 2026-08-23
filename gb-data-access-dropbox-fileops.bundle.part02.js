@@ -525,7 +525,7 @@ async function _backupConflictSide(provider, kind, sourcePath, stamp) {
  *
  * 旧: `_events/annotations/<id>.json` への直接読み書き。
  * 新: 共通ストレージ層(document_id = 注釈id)。個人領域は `/MeldexSettings/system/v1`、
- *     参加中の共有ワークスペードに接続している場合は `<ワークスペード>/MeldexShare/system/v1`
+ *     参加中の共有ワークスペースに接続している場合は `<ワークスペース>/MeldexShare/system/v1`
  *     (gb-dropbox-management-root-resolver.js が判定)。
  *
  * 旧パスは読取フォールバックとしてのみ残す(移行はPhase 5。新規の書込は一切

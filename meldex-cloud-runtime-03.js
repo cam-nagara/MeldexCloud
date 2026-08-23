@@ -24,11 +24,11 @@
     complete(key) { if (key) pendingStableCopies.delete(key); },
   });
   const PREBUILT_SPLIT_BUNDLES = {
-    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: '40af7a9133f7', parts: { 'meldex-core.bundle.part01.js': '7c6ee66e420f', 'meldex-core.bundle.part02.js': 'a58c51911d9d', 'meldex-core.bundle.part03.js': '6fa305258966', 'meldex-core.bundle.part04.js': '3b407fa640b2', 'meldex-core.bundle.part05.js': '606c39cb52d3' } },
-    'gb-app.js': { file: 'gb-app.bundle.js', hash: '00d0044bfd4d', parts: { 'gb-app.bundle.part01.js': '1a2f10dc3870', 'gb-app.bundle.part02.js': '7ba5bd34a2d5', 'gb-app.bundle.part03.js': 'b78147397966', 'gb-app.bundle.part04.js': 'f646b07f03b8', 'gb-app.bundle.part05.js': '76dbe2180d2e', 'gb-app.bundle.part06.js': '7e3a0e6b3104' } },
-    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: '679d59358959', parts: { 'gb-theme-manager.bundle.part01.js': '27f61c9cb779', 'gb-theme-manager.bundle.part02.js': 'f73cac1de25c', 'gb-theme-manager.bundle.part03.js': 'ecb50fdabe06', 'gb-theme-manager.bundle.part04.js': '05fbd51978c9' } },
-    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: 'd0ca34a00779', parts: { 'gb-outliner.bundle.part01.js': '486e92559dbb', 'gb-outliner.bundle.part02.js': '9293f65108d4', 'gb-outliner.bundle.part03.js': 'b572f110542f', 'gb-outliner.bundle.part04.js': 'd9f3c5c69387', 'gb-outliner.bundle.part05.js': 'c2022fe10f86', 'gb-outliner.bundle.part06.js': 'f807f895d70a' } },
-    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '1c8d4e18497f', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': 'cae4cf67dac9', 'gb-data-access-dropbox-fileops.bundle.part02.js': '63411d58cac4', 'gb-data-access-dropbox-fileops.bundle.part03.js': '2ba80b1bb897', 'gb-data-access-dropbox-fileops.bundle.part04.js': '1e734d1a526b', 'gb-data-access-dropbox-fileops.bundle.part05.js': '89642f124c15' } },
+    'meldex-core.js': { file: 'meldex-core.bundle.js', hash: 'a3e70ed08972', parts: { 'meldex-core.bundle.part01.js': 'dc99e89c214c', 'meldex-core.bundle.part02.js': '9b2138c24a81', 'meldex-core.bundle.part03.js': '6b888262ca5f', 'meldex-core.bundle.part04.js': 'ad6e5a4732a4', 'meldex-core.bundle.part05.js': '323399309175' } },
+    'gb-app.js': { file: 'gb-app.bundle.js', hash: '340e04e069a7', parts: { 'gb-app.bundle.part01.js': '1a2f10dc3870', 'gb-app.bundle.part02.js': '2a0bb03efcb3', 'gb-app.bundle.part03.js': 'a1d51ee0801b', 'gb-app.bundle.part04.js': '1d11e90dedfc', 'gb-app.bundle.part05.js': 'af46abd220fb', 'gb-app.bundle.part06.js': 'e4788f978d9b' } },
+    'gb-theme-manager.js': { file: 'gb-theme-manager.bundle.js', hash: 'bfd722a0d6da', parts: { 'gb-theme-manager.bundle.part01.js': '27f61c9cb779', 'gb-theme-manager.bundle.part02.js': 'f73cac1de25c', 'gb-theme-manager.bundle.part03.js': '972955420796', 'gb-theme-manager.bundle.part04.js': '05fbd51978c9' } },
+    'gb-outliner.js': { file: 'gb-outliner.bundle.js', hash: '4ffb04a20d47', parts: { 'gb-outliner.bundle.part01.js': '486e92559dbb', 'gb-outliner.bundle.part02.js': '9293f65108d4', 'gb-outliner.bundle.part03.js': '9e5bf60d1fef', 'gb-outliner.bundle.part04.js': '59fd0055d13b', 'gb-outliner.bundle.part05.js': '793db8a56b22', 'gb-outliner.bundle.part06.js': '7db469e103dc' } },
+    'gb-data-access-dropbox-fileops.js': { file: 'gb-data-access-dropbox-fileops.bundle.js', hash: '8008043620cb', parts: { 'gb-data-access-dropbox-fileops.bundle.part01.js': '16ddb928b3df', 'gb-data-access-dropbox-fileops.bundle.part02.js': '9fdb93e59b0d', 'gb-data-access-dropbox-fileops.bundle.part03.js': '4f5699bb73c8', 'gb-data-access-dropbox-fileops.bundle.part04.js': '988c515521ff', 'gb-data-access-dropbox-fileops.bundle.part05.js': '88dcaf2c0c17', 'gb-data-access-dropbox-fileops.bundle.part06.js': 'e45d0b8c9d64' } },
     'gb-cloud-mobile-editbar.js': { file: 'gb-cloud-mobile-editbar.bundle.js', hash: '425e1ac4add7', parts: { 'gb-cloud-mobile-editbar.bundle.part01.js': '0f69b68bb6dc', 'gb-cloud-mobile-editbar.bundle.part02.js': '7d6c7dbe8f63' } },
   };
 
@@ -179,6 +179,83 @@
 
 ;
 
+/* === gb-escape.js === */
+;
+/* gb-escape.js: context-specific escaping primitives shared by Meldex surfaces. */
+(function installMeldexEscape(global) {
+  'use strict';
+
+  function text(value) {
+    return value == null ? '' : String(value);
+  }
+
+  function html(value) {
+    return text(value).replace(/[&<>"']/g, character => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }[character]));
+  }
+
+  function attr(value) {
+    return html(value).replace(/[\u0000-\u001F\u007F]/g, character => `&#${character.charCodeAt(0)};`);
+  }
+
+  // CSS.escape() escapes identifiers, not arbitrary CSS declarations or URLs.
+  function cssIdent(value) {
+    const input = text(value);
+    if (global.CSS && typeof global.CSS.escape === 'function') return global.CSS.escape(input);
+    const length = input.length;
+    let result = '';
+    for (let index = 0; index < length; index += 1) {
+      const code = input.charCodeAt(index);
+      if (code === 0) {
+        result += '\uFFFD';
+      } else if ((code >= 1 && code <= 31) || code === 127
+        || (index === 0 && code >= 48 && code <= 57)
+        || (index === 1 && code >= 48 && code <= 57 && input.charCodeAt(0) === 45)) {
+        result += `\\${code.toString(16)} `;
+      } else if (index === 0 && code === 45 && length === 1) {
+        result += '\\-';
+      } else if (code >= 128 || code === 45 || code === 95
+        || (code >= 48 && code <= 57)
+        || (code >= 65 && code <= 90)
+        || (code >= 97 && code <= 122)) {
+        result += input.charAt(index);
+      } else {
+        result += `\\${input.charAt(index)}`;
+      }
+    }
+    return result;
+  }
+
+  function urlComponent(value) {
+    return encodeURIComponent(text(value));
+  }
+
+  function xml(value) {
+    return text(value).replace(/[&<>"']/g, character => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&apos;',
+    }[character]));
+  }
+
+  const api = Object.freeze({ text, html, attr, cssIdent, urlComponent, xml });
+  Object.defineProperty(global, 'MeldexEscape', {
+    configurable: false,
+    enumerable: true,
+    writable: false,
+    value: api,
+  });
+})(typeof globalThis !== 'undefined' ? globalThis : window);
+
+;
+
 /* === gb-runtime-adapter.js === */
 ;
 (function () {
@@ -187,7 +264,7 @@
   const SAFE_MODE_KEY = 'meldex-safe-mode-once';
   const WORKSPACE_STATE_KEY = 'meldex-cloud-workspace-state';
   const COMPARE_LOG_KEY = 'meldex-cloud-compare-log';
-  const MODES = new Set(['legacy', 'browser', 'dropbox', 'server']);
+  const MODES = new Set(['legacy', 'browser', 'dropbox']);
   const MAX_COMPARE_LOGS = 100;
 
   function _baseUrl() {
@@ -196,24 +273,6 @@
 
   function _normalizeMode(mode) {
     return MODES.has(mode) ? mode : 'legacy';
-  }
-
-  function _normalizeServerUrl(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-      const url = new URL(raw);
-      if (!['http:', 'https:'].includes(url.protocol)) return '';
-      url.hash = '';
-      url.search = '';
-      if (/\/api\/?$/i.test(url.pathname)) {
-        url.pathname = url.pathname.replace(/\/api\/?$/i, '/');
-      }
-      if (!url.pathname.endsWith('/')) url.pathname += '/';
-      return url.toString();
-    } catch {
-      return '';
-    }
   }
 
   function _isLocalAppHost() {
@@ -228,7 +287,8 @@
 
   function _isHostedCloudLaunch(params) {
     try {
-      if (params?.has('dataAccessMode') || params?.get('safeMode') === '1' || params?.get('desktop') === '1') return false;
+      const requestedMode = params?.get('dataAccessMode');
+      if (MODES.has(requestedMode) || params?.get('safeMode') === '1' || params?.get('desktop') === '1') return false;
       return window.location.protocol === 'https:' && !_isLocalAppHost();
     } catch {
       return false;
@@ -298,7 +358,7 @@
       if (MODES.has(requestedMode)) return requestedMode;
       if (params.get('safeMode') === '1') return 'legacy';
       if (_isHostedCloudLaunch(params)) {
-        if (storedMode === 'server' || storedMode === 'dropbox' || storedMode === 'browser') return storedMode;
+        if (storedMode === 'dropbox' || storedMode === 'browser') return storedMode;
         return 'browser';
       }
     } catch {}
@@ -335,11 +395,11 @@
   }
 
   function isServerMode() {
-    return getMode() === 'server';
+    return false;
   }
 
   function isPwaMode() {
-    return isBrowserDataMode() || isServerMode();
+    return isBrowserDataMode();
   }
 
   function resolveAppUrl(path, query) {
@@ -361,10 +421,6 @@
   }
 
   function getApiBaseUrl() {
-    if (isServerMode()) {
-      const apiBase = getServerApiBaseUrl();
-      if (apiBase) return apiBase;
-    }
     return resolveAppUrl('api');
   }
 
@@ -380,25 +436,11 @@
   }
 
   function getServerConnection() {
-    const data = _safeReadJson(SERVER_CONNECTION_KEY, null);
-    const url = _normalizeServerUrl(data?.url || data?.baseUrl || data?.serverUrl || '');
-    if (!url) return null;
-    return {
-      url,
-      apiBaseUrl: getServerApiBaseUrl(url),
-      savedAt: data?.savedAt || '',
-    };
+    return null;
   }
 
-  function setServerConnection(config) {
-    const url = _normalizeServerUrl(config?.url || config?.baseUrl || config?.serverUrl || config || '');
-    if (!url) throw new Error('Meldex共有サーバーのURLを確認してください');
-    _safeWriteJson(SERVER_CONNECTION_KEY, {
-      url,
-      savedAt: new Date().toISOString(),
-    });
-    _notifyModeChanged('server-connection');
-    return getServerConnection();
+  function setServerConnection() {
+    throw new Error('Meldex共有サーバー機能は終了しました。共同作業にはDropboxを使用してください。');
   }
 
   function clearServerConnection() {
@@ -407,14 +449,25 @@
   }
 
   function getServerBaseUrl() {
-    return getServerConnection()?.url || '';
+    return '';
   }
 
-  function getServerApiBaseUrl(urlOverride) {
-    const base = _normalizeServerUrl(urlOverride || _safeReadJson(SERVER_CONNECTION_KEY, null)?.url || '');
-    if (!base) return '';
-    const url = new URL('api/', base);
-    return url.toString().replace(/\/+$/, '');
+  function getServerApiBaseUrl() {
+    return '';
+  }
+
+  function hasRetiredServerConfig() {
+    if (_safeGetItem(MODE_KEY) === 'server') return true;
+    const data = _safeReadJson(SERVER_CONNECTION_KEY, null);
+    return !!String(data?.url || data?.baseUrl || data?.serverUrl || '').trim();
+  }
+
+  function completeRetiredServerMigration(mode) {
+    if (!MODES.has(mode)) throw new Error('移行後の保存方式を選択してください');
+    _safeSetItem(MODE_KEY, mode);
+    _safeRemoveItem(SERVER_CONNECTION_KEY);
+    _notifyModeChanged('retired-server-migration');
+    return mode;
   }
 
   function getWorkspaceState() {
@@ -488,6 +541,8 @@
     clearServerConnection,
     getServerBaseUrl,
     getServerApiBaseUrl,
+    hasRetiredServerConfig,
+    completeRetiredServerMigration,
     resolveAppUrl,
     resolveAppPath,
     getWorkspaceState,

@@ -386,7 +386,7 @@ async function promptSaveCurrentScriptNoteAs() {
     dialog.classList.add('sn2-save-as-modal');
     modalApi.body.classList.add('sn2-save-as-body');
     modalApi.footer.classList.add('sn2-save-as-actions');
-    const escCss = (value) => (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+    const escCss = MeldexEscape.cssIdent;
     const setTreeOpen = (open) => {
       folderTree.hidden = !open;
       folderTree.classList.toggle('is-open', !!open);
@@ -726,7 +726,7 @@ async function exportCurrentScriptNoteAsHtml() {
 
   const title = (editor.doc.title || 'シナリオ').toString();
   const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
-  const escHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const escHtml = MeldexEscape.html;
 
   const html = `<!DOCTYPE html>
 <html lang="ja">

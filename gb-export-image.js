@@ -183,6 +183,9 @@ const MeldexExportImage = (() => {
         const iframe = document.querySelector('#calendar-container iframe, iframe[src*="calendar"]');
         return document.querySelector('.gb-cal-root') || iframe?.contentDocument?.body || null;
       },
+      'entity-layout': () => (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
+        ? (MeldexExportHtml.entityLayoutExportOptions()?.canvasEl || null)
+        : null,
     };
 
     const getEl = targets[viewType];
@@ -205,6 +208,9 @@ const MeldexExportImage = (() => {
       csv: () => (typeof _csvPath !== 'undefined' ? _csvPath : '').split('/').pop()?.replace(/\.\w+$/, '') || 'CSV',
       'smart-db': () => (state?.currentSmartDb?.name || 'スマートシート') + (typeof getSmartDbActiveView === 'function' && getSmartDbActiveView() === 'dashboard' ? ' ダッシュボード' : ''),
       calendar: () => 'カレンダー',
+      'entity-layout': () => (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
+        ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions?.title || 'エントリレイアウト')
+        : 'エントリレイアウト',
     };
 
     // シナリオは特別処理: rAF×2 で縦書きレンダリング完了を待つ
@@ -229,10 +235,18 @@ const MeldexExportImage = (() => {
 
     const title = (titleMap[viewType] || (() => '無題'))();
 
+    // エントリレイアウトはデザイン基準サイズ（transform解除後の実寸）でビューポート幅を固定する
+    const extraOptions = {};
+    if (viewType === 'entity-layout' && typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions) {
+      const layoutOptions = MeldexExportHtml.entityLayoutExportOptions();
+      if (layoutOptions) extraOptions.width = layoutOptions.width + 32;
+    }
+
     await exportToPng(el, {
       title,
       htmlOptions: _getHtmlOptionsForView(viewType),
       ignoreElements: _ignoreElementsForView(viewType),
+      ...extraOptions,
     });
   }
 
@@ -242,6 +256,11 @@ const MeldexExportImage = (() => {
   // color() 構文の computed style になり html2canvas が解析に失敗するため、
   // ここで撮影自体から外す（見た目のオン/オフ状態は元々エクスポート対象外）。
   function _ignoreElementsForView(viewType) {
+    if (viewType === 'entity-layout') {
+      // サーバー経路の preTransform と同じ編集チロームをフォールバック撮影からも除外する
+      const selector = '.el-cell-remove, .el-cell-settings, .el-cell-resize';
+      return (el) => { try { return el.matches?.(selector) === true; } catch { return false; } };
+    }
     if (viewType !== 'scriptnote') return undefined;
     const selector = '.sn2-row-bulk-bar, .sn2-handle-zone, .sn2-handle, .sn2-add-row, .sn2-add-col-btn, .sn2-row-check';
     return (el) => { try { return el.matches?.(selector) === true; } catch { return false; } };
@@ -354,6 +373,11 @@ const MeldexExportImage = (() => {
           extraCss: _collectCalendarIframeCss() + '\nbody { padding: 16px; }',
           embedImages: false,
         };
+      case 'entity-layout':
+        // HTML出力（gb-export-html.js）と同じオプションを共有し、見た目のズレを防ぐ
+        return (typeof MeldexExportHtml !== 'undefined' && MeldexExportHtml.entityLayoutExportOptions)
+          ? (MeldexExportHtml.entityLayoutExportOptions()?.htmlOptions || {})
+          : {};
       default:
         return {};
     }

@@ -57,8 +57,7 @@ async function _deleteComment(c) {
 }
 
 function _rpEscSel(value) {
-  const text = String(value || '');
-  return (window.CSS && CSS.escape) ? CSS.escape(text) : text.replace(/["\\]/g, '\\$&');
+  return MeldexEscape.cssIdent(value);
 }
 
 function _flashRpCommentTarget(target) {

@@ -273,12 +273,7 @@
       hash = ((hash << 5) - hash + rawName.charCodeAt(index)) | 0;
     }
     const hue = Math.abs(hash) % 360;
-    const label = (rawName.charAt(0).toUpperCase() || '?')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    const label = MeldexEscape.html(rawName.charAt(0).toUpperCase() || '?');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="hsl(${hue},38%,36%)"/><text x="32" y="40" text-anchor="middle" font-family="system-ui,Arial,sans-serif" font-size="28" font-weight="700" fill="#f4f4f5">${label}</text></svg>`;
     return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
@@ -373,7 +368,7 @@
   }
 
   async function _setPwaRoots(roots) {
-    // ワークスペード由来（origin: 'ws:...'）のエントリは、個人のアカウント台帳
+    // ワークスペース由来（origin: 'ws:...'）のエントリは、個人のアカウント台帳
     // （source-folders.v1.json）へ絶対に書き込んではならない。ここが全ての
     // PUT /outliner-roots 呼び出しの合流点なので、clean マッピングへ渡す前に除外する。
     const accountRoots = (Array.isArray(roots) ? roots : []).filter(

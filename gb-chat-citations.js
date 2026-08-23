@@ -1,8 +1,7 @@
 // gb-chat-citations.js: LLM citation pills and source jumps
 (function(global) {
   function _escapeText(text) {
-    if (typeof esc === 'function') return esc(String(text || ''));
-    return String(text || '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return global.MeldexEscape.html(text);
   }
 
   function _assistantHtml(text) {

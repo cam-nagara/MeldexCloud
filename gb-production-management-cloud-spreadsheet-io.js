@@ -162,7 +162,7 @@
   }
 
   function _pmXmlEscape(value) {
-    return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return MeldexEscape.xml(value);
   }
 
   function _pmZipStore(files) {

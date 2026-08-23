@@ -850,6 +850,78 @@
 
 ;
 
+/* === gb-timer-file-contract.js === */
+;
+/* ==============================
+   gb-timer-file-contract.js: .mel-timer / .timer.json 共通ファイル契約
+   ============================== */
+(function (global) {
+  'use strict';
+
+  function _plainObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  }
+
+  function titleFromPath(path) {
+    const name = String(path || '').replace(/\\/g, '/').split('/').pop() || 'タイマー';
+    return name.replace(/(\.mel-timer|\.timer\.json)$/i, '') || 'タイマー';
+  }
+
+  function normalizePayload(value) {
+    const payload = _plainObject(value);
+    const nestedTimer = _plainObject(payload.timer);
+    const timer = Object.keys(nestedTimer).length > 0 ? nestedTimer : payload;
+    return {
+      payload,
+      timer: { ...timer },
+      name: String(payload.name || '').trim(),
+      style: { ..._plainObject(payload.style) },
+    };
+  }
+
+  function parse(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(text == null ? '' : text));
+    } catch (error) {
+      const invalid = new Error('タイマーファイルのJSONを読み取れません');
+      invalid.cause = error;
+      throw invalid;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('タイマーファイルの内容が不正です');
+    }
+    return normalizePayload(parsed);
+  }
+
+  function build(sourcePayload, timerState, options) {
+    const source = _plainObject(sourcePayload);
+    const sourceTimer = _plainObject(source.timer);
+    const opts = options || {};
+    return {
+      ...source,
+      type: 'meldex-timer',
+      version: source.version || 1,
+      name: String(opts.name || '').trim() || String(source.name || '').trim() || titleFromPath(opts.path),
+      timer: { ...sourceTimer, ..._plainObject(timerState) },
+    };
+  }
+
+  function stringify(sourcePayload, timerState, options) {
+    return JSON.stringify(build(sourcePayload, timerState, options), null, 2) + '\n';
+  }
+
+  global.MeldexTimerFileContract = Object.freeze({
+    titleFromPath,
+    normalizePayload,
+    parse,
+    build,
+    stringify,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
+
+;
+
 /* === gb-pane-keepalive.js === */
 ;
 // gb-pane-keepalive.js — パネルレイアウトのペインDOM keep-aliveレジストリ
@@ -914,6 +986,10 @@
   function detachAll(paneMap) {
     for (const paneId in (paneMap || {})) {
       const info = paneMap[paneId];
+      // サブパネルは #gb-layout-root の外（右レール／モバイルドロワー）にある仮想ペイン。
+      // layout root の innerHTML 再生成では消えないため、通常ペイン用keep-aliveへ取り込むと
+      // レイアウトツリーに存在しない「stale」と判定され、表示中DOMを誤って破棄してしまう。
+      if (info?.surface === 'subpanel') continue;
       const contentEl = info && info.contentEl;
       if (!contentEl || !contentEl.parentNode) continue; // 既に他経路(active pane preserve)で取り外し済み等
       const placeholder = document.createComment('gb-pane-keepalive:' + paneId);
@@ -7550,7 +7626,7 @@ const GBDocking = (() => {
   // ペイン基準ではなく「カラム = 水平スプリットの直接の子」全体を覆う。
   function _columnElementById(columnId) {
     if (!columnId) return null;
-    const id = CSS.escape(columnId);
+    const id = MeldexEscape.cssIdent(columnId);
     return document.querySelector(`[data-column-node-id="${id}"]`)
       || document.querySelector(`[data-pane-id="${id}"]`)
       || document.querySelector(`[data-split-id="${id}"]`);
@@ -8280,9 +8356,7 @@ const GBDocking = (() => {
 
   function _findPaneElement(paneId) {
     if (!paneId) return null;
-    const escapedId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-      ? CSS.escape(paneId)
-      : String(paneId).replace(/["\\]/g, '\\$&');
+    const escapedId = MeldexEscape.cssIdent(paneId);
     return document.querySelector(`.gb-pane[data-pane-id="${escapedId}"]`);
   }
 
@@ -9107,6 +9181,10 @@ class CompareComponent extends ToolComponent {
 }
 
 // === VersionComponent ===
+// バージョン管理パネルの絞り込みのうち、制作進行の日次記録だけは対象ファイルではなく
+// ワークスペースの記録を見る（制作タスク実績時間の計画書 §7.2）。
+const PRODUCTION_DAILY_KIND = 'production-daily';
+
 class VersionComponent extends ToolComponent {
   destroy() {
     this._destroyed = true;
@@ -9139,12 +9217,55 @@ class VersionComponent extends ToolComponent {
     if (path) {
       this._loadVersions(path, vType);
     } else {
-      this.el.innerHTML = `<div class="gb-empty-state" style="padding:24px;">
+      this._renderNoTargetView();
+    }
+  }
+
+  // 対象ファイルが無い状態の表示。制作進行の日次記録は対象ファイルに依存しないため、
+  // その絞り込みを選んでいる間は対象未指定でも一覧を出す。
+  _renderNoTargetView() {
+    if (!this.el) return;
+    if ((this.state.timelineKind || '') === PRODUCTION_DAILY_KIND) {
+      this._timelineEntries = [];
+      this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+        ${this._buildTimelineHtml('', 'file', [])}
+      </div>`;
+      this._bindVersionActions();
+      this._mountProductionDailyRecords();
+      return;
+    }
+    this.el.innerHTML = `<div class="gb-tool-version-body" style="padding:12px;overflow:auto;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
+        ${this._buildKindFilterHtml(this.state.timelineKind || 'named,auto,edit')}
+      </div>
+      <div class="gb-empty-state" style="padding:24px;">
         <div class="gb-empty-icon">${typeof lucide === 'function' ? lucide('gitBranch', 48) : ''}</div>
         <div class="gb-empty-message">バージョン管理</div>
-        <div class="gb-empty-hint">ファイルまたはフォルダを開いてからバージョン管理を使用してください</div>
-      </div>`;
+        <div class="gb-empty-hint">ファイルまたはフォルダを開いてからバージョン管理を使用してください（「制作進行の日次記録」はファイルを開かなくても見られます）</div>
+      </div>
+    </div>`;
+    this._bindVersionActions();
+  }
+
+  _mountProductionDailyRecords() {
+    const host = this.el?.querySelector('[data-production-daily-host]');
+    if (!host) return;
+    const Panel = typeof window !== 'undefined' ? window.MeldexProductionDailySnapshotPanel : null;
+    if (typeof Panel !== 'function') {
+      host.textContent = '制作進行の日次記録を読み込めませんでした';
+      return;
     }
+    if (!this._productionDailyPanel) this._productionDailyPanel = new Panel();
+    const panel = this._productionDailyPanel;
+    const showList = () => {
+      panel.renderSnapshotList(host, {
+        onSelectSnapshot: (snap, compareSnapshot) => {
+          panel.renderDayView(host, snap, { compareSnapshot, onBack: showList });
+        },
+      });
+    };
+    showList();
   }
 
   async _loadVersions(path, vType) {
@@ -9172,15 +9293,19 @@ class VersionComponent extends ToolComponent {
         versions = await apiFetch((isDb ? '/version/list-db' : '/version/list') + '?path=' + encodeURIComponent(path));
       } catch {}
     }
-    try {
-      const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200' });
-      if (timelineActorKind) params.set('actor_kind', timelineActorKind);
-      timeline = await apiFetch('/version-panel/timeline?' + params.toString());
-    } catch {}
+    // 制作進行の日次記録は対象ファイルに紐づかないため、タイムラインAPIは呼ばない
+    if (timelineKind !== PRODUCTION_DAILY_KIND) {
+      try {
+        const params = new URLSearchParams({ target_path: path, kinds: timelineKind, limit: '200' });
+        if (timelineActorKind) params.set('actor_kind', timelineActorKind);
+        timeline = await apiFetch('/version-panel/timeline?' + params.toString());
+      } catch {}
+    }
     if (this._destroyed || this._loadSeq !== loadSeq || !this.el) return;
     this._timelineEntries = Array.isArray(timeline?.entries) ? timeline.entries : [];
     this.el.innerHTML = this._buildHtml(path, vType, versions, folderPath, folderVersions, this._timelineEntries);
     this._bindVersionActions();
+    if (timelineKind === PRODUCTION_DAILY_KIND) this._mountProductionDailyRecords();
   }
 
   async _runVersionAction(action, path, versionName, vType) {
@@ -9240,6 +9365,7 @@ class VersionComponent extends ToolComponent {
     const oldValue = entry.old_value || entry.old_status || '';
     const newValue = entry.new_value || entry.new_status || '';
     const summary = entry.body_diff_summary || '';
+    const integrityWarning = entry.integrity_warning || '';
     if (typeof window.GBUI?.createModal !== 'function') {
       throw new Error('変更レコードを初期化できませんでした。');
     }
@@ -9247,6 +9373,7 @@ class VersionComponent extends ToolComponent {
     content.style.cssText = 'font-size:12px;line-height:1.5;';
     content.innerHTML = `
         <div class="gb-section-desc" style="margin-bottom:8px;">${esc(time)} / ${esc(entry.user || '')}${entry.actor_model ? ' / ' + esc(entry.actor_model) : ''}</div>
+        ${integrityWarning ? `<div role="alert" style="margin-bottom:8px;padding:8px;border:1px solid var(--danger,#c33);border-radius:6px;color:var(--danger,#c33);">${esc(integrityWarning)}</div>` : ''}
         <div style="margin-bottom:8px;"><b>${esc(entry.action || '')}</b> ${esc(entry.entity_name || '')}${entry.property_name ? ' / ' + esc(entry.property_name) : ''}</div>
         ${summary ? `<pre style="white-space:pre-wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px;">${esc(summary)}</pre>` : ''}
         ${oldValue || newValue ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -9302,6 +9429,15 @@ class VersionComponent extends ToolComponent {
         if (input.dataset.versionFilter === 'actor') this.state.timelineActorKind = input.value || '';
         const reloadPath = this.state.versionPath || this._getTabPath() || '';
         if (reloadPath) this._loadVersions(reloadPath, this.state.versionType || 'file');
+        else this._renderNoTargetView();
+      });
+    });
+    this.el.querySelectorAll('[data-version-integrity-recovery]').forEach(button => {
+      button.addEventListener('click', () => {
+        window.MeldexOwnerKeyRecovery?.showRecoveryDialog?.({
+          reason: '変更レコードの整合性を確認するため、管理者鍵を復旧してください。',
+          trigger: button,
+        });
       });
     });
   }
@@ -9341,6 +9477,18 @@ class VersionComponent extends ToolComponent {
     return entry.label || entry.body_diff_summary || entry.action || '変更レコード';
   }
 
+  _timelineIntegrityBadge(entry) {
+    if (entry.type !== 'edit') return '';
+    const status = String(entry.integrity_status || '');
+    if (status === 'verified') return '<span class="gb-badge gb-badge-manual" title="管理者署名を検証済み">署名確認済み</span>';
+    if (status === 'legacy-unsigned') return '<span class="gb-badge gb-badge-auto" title="署名機能導入前の変更レコード">旧記録・署名対象外</span>';
+    if (status === 'pending-owner-signature') return '<span class="gb-badge gb-badge-auto" title="管理者端末での署名を待っています">管理者署名待ち</span>';
+    if (status === 'owner-verification-required') return '<span class="gb-badge gb-badge-auto" title="署名鍵は管理者端末だけが保持します">管理者端末で確認</span>';
+    if (status === 'tampered') return '<span class="gb-badge gb-badge-danger" role="alert" title="署名後に改変された可能性があります">改変の可能性</span>';
+    if (status === 'owner-key-missing') return '<span class="gb-badge gb-badge-danger" role="alert" title="管理者鍵を復旧して検証してください">管理者鍵が必要</span>';
+    return '';
+  }
+
   _timelineActions(entry, index) {
     if (entry.type === 'edit') {
       const editId = ['version-edit-preview', entry.id || index, entry.path || this.state.versionPath || '']
@@ -9368,6 +9516,7 @@ class VersionComponent extends ToolComponent {
     const entries = Array.isArray(timelineEntries) ? timelineEntries : [];
     const kind = this.state.timelineKind || 'named,auto,edit';
     const actor = this.state.timelineActorKind || '';
+    if (kind === PRODUCTION_DAILY_KIND) return this._buildProductionDailyHtml(kind);
     const rows = entries.length ? entries.map((entry, index) => {
       const time = this._formatTimelineDate(entry);
       const actorBadge = entry.actor_kind === 'llm'
@@ -9378,12 +9527,16 @@ class VersionComponent extends ToolComponent {
         : entry.type === 'auto'
           ? '<span class="gb-badge gb-badge-auto">自動</span>'
           : '<span class="gb-badge gb-badge-manual">変更</span>';
+      const integrityBadge = this._timelineIntegrityBadge(entry);
+      const recoveryButton = entry.integrity_recovery_action === 'open-owner-key-recovery'
+        ? '<button class="gb-btn gb-btn-xs gb-btn-warn" data-version-integrity-recovery>管理者鍵を復旧</button>' : '';
       return `<div class="gb-history-row gb-history-row-compact" style="align-items:center;">
         <span style="width:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--fg2);">${typeof lucide === 'function' ? lucide(this._timelineIcon(entry), 14) : ''}</span>
         ${typeBadge}
+        ${integrityBadge}
         <span class="gb-history-label" title="${esc(entry.label || '')}"><span style="color:var(--fg2);">${esc(time)}</span> ${esc(this._timelineLabel(entry))}</span>
         ${actorBadge}
-        <div class="gb-history-actions">${this._timelineActions(entry, index)}</div>
+        <div class="gb-history-actions">${recoveryButton}${this._timelineActions(entry, index)}</div>
       </div>`;
     }).join('') : '<div class="gb-section-desc" style="padding:8px 0;">タイムラインに表示する項目がありません</div>';
 
@@ -9391,12 +9544,7 @@ class VersionComponent extends ToolComponent {
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
         <button class="gb-btn gb-btn-xs gb-btn-primary" ${this._versionButtonAttrs('saveCurrent', path, '', vType)}>${typeof lucide === 'function' ? lucide('bookmarkPlus', 12) : '+'} 現バージョンを保存</button>
         <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
-        <select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
-          ${this._versionSelectOption('named,auto,edit', '全て', kind)}
-          ${this._versionSelectOption('named', 'スナップショット', kind)}
-          ${this._versionSelectOption('auto', '復元ポイント', kind)}
-          ${this._versionSelectOption('edit', '変更ログ', kind)}
-        </select>
+        ${this._buildKindFilterHtml(kind)}
         <select data-e2e-id="version-timeline-actor-filter" data-version-filter="actor" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
           ${this._versionSelectOption('', '全主体', actor)}
           ${this._versionSelectOption('human', '人間', actor)}
@@ -9404,6 +9552,28 @@ class VersionComponent extends ToolComponent {
         </select>
       </div>
       <div class="gb-history-list">${rows}</div>
+    </section>`;
+  }
+
+  // 種類の絞り込み（対象ファイルの有無に関わらず同じ候補を出す）
+  _buildKindFilterHtml(kind) {
+    return `<select data-e2e-id="version-timeline-kind-filter" data-version-filter="kind" style="font-size:12px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;">
+      ${this._versionSelectOption('named,auto,edit', '全て', kind)}
+      ${this._versionSelectOption('named', 'スナップショット', kind)}
+      ${this._versionSelectOption('auto', '復元ポイント', kind)}
+      ${this._versionSelectOption('edit', '変更ログ', kind)}
+      ${this._versionSelectOption(PRODUCTION_DAILY_KIND, '制作進行の日次記録', kind)}
+    </select>`;
+  }
+
+  // 制作進行の日次記録の絞り込み。対象ファイルの版一覧ではなく、日次記録の一覧を出す。
+  _buildProductionDailyHtml(kind) {
+    return `<section class="gb-version-timeline gb-version-production-daily" style="margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+        <span style="margin-left:auto;color:var(--fg2);display:inline-flex;align-items:center;gap:4px;">${typeof lucide === 'function' ? lucide('filter', 12) : ''}</span>
+        ${this._buildKindFilterHtml(kind)}
+      </div>
+      <div data-production-daily-host data-e2e-id="version-production-daily-host"></div>
     </section>`;
   }
 
@@ -9578,6 +9748,7 @@ class TimerComponent extends ToolComponent {
     this._drawTimeouts = [];
     this._canvas = null;
     this._ctx = null;
+    this._timerFileStyle = {};
   }
 
   create() {
@@ -9644,7 +9815,7 @@ class TimerComponent extends ToolComponent {
 
   getState() {
     this._updateElapsedFromClock();
-    return {
+    const state = {
       displayMode: this.displayMode,
       totalSeconds: this.totalSeconds,
       elapsed: this.elapsed,
@@ -9654,6 +9825,8 @@ class TimerComponent extends ToolComponent {
       elapsedAtStart: this.elapsedAtStart,
       timerStartMs: this.timerStartMs,
     };
+    if (Object.keys(this._timerFileStyle).length) state._timerFileStyle = { ...this._timerFileStyle };
+    return state;
   }
 
   restoreState(savedState) {
@@ -9663,6 +9836,10 @@ class TimerComponent extends ToolComponent {
     this.elapsed = Math.max(0, Number(savedState.elapsed) || 0);
     this.countUp = !!savedState.countUp;
     this.timerStarted = !!savedState.timerStarted;
+    this._timerFileStyle = savedState._timerFileStyle && typeof savedState._timerFileStyle === 'object'
+      ? { ...savedState._timerFileStyle }
+      : {};
+    this._applyTimerFileStyle();
     if (savedState.timerRunning) {
       const now = Date.now();
       const savedElapsedAtStart = Number(savedState.elapsedAtStart);
@@ -9680,6 +9857,15 @@ class TimerComponent extends ToolComponent {
     this._writeControlsFromState();
     this._updateModeButtons();
     this._drawTimer();
+  }
+
+  _applyTimerFileStyle() {
+    if (!this.el?.style) return;
+    for (const key of ['--timer-bg', '--timer-fg', '--accent']) {
+      this.el.style.removeProperty(key);
+      const value = String(this._timerFileStyle?.[key] || '').trim();
+      if (/^#[0-9a-f]{6}$/i.test(value)) this.el.style.setProperty(key, value);
+    }
   }
 
   _icon(name, size) {
@@ -9857,10 +10043,15 @@ class TimerComponent extends ToolComponent {
   }
 
   _pauseTimer() {
+    if (this.timerRunning) {
+      this._updateElapsedFromClock();
+      this.elapsed = Math.min(this.totalSeconds, this.elapsed);
+    }
     if (this._timerInterval) clearInterval(this._timerInterval);
     this._timerInterval = null;
     this.timerRunning = false;
     this._updateControlButtons();
+    this._drawTimer();
   }
 
   _resetTimer() {
@@ -10104,9 +10295,7 @@ window.openTimerPanel = openTimerPanel;
   }
 
   function _timerEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _timerIcon(name, size = 14) {
@@ -11537,7 +11726,12 @@ class CalendarComponent extends ToolComponent {
   // === 公開API (postMessage置換) ===
   pushUndo(label) { this._pushUndo(label); }
   async reload() {
-    const requests = [this._loadEvents(), this._loadTasks(), this._loadCalendars()];
+    const requests = [this._loadTasks()];
+    if (typeof this._refreshShiftStateAfterMutation === 'function') {
+      requests.push(this._refreshShiftStateAfterMutation({ renderCalendarList: false }));
+    } else {
+      requests.push(this._loadEvents(), this._loadCalendars());
+    }
     if (this._surface === 'productionTasks' && typeof this._refreshProductionTaskEmbed === 'function') {
       requests.push(this._refreshProductionTaskEmbed());
     }
@@ -13997,6 +14191,11 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     setBusy(true); status.textContent = '保存中...';
     const saved = await this._saveShift(editId, panel, shiftId);
     if (saved) { setBusy(false); modalApi.close('saved'); return; }
+    if (this._shiftMutationStateUnknown) {
+      setBusy(false);
+      status.textContent = '保存結果を確認できません。カレンダーを再読み込みしてください。';
+      return;
+    }
     status.textContent = '保存に失敗しました。入力内容を保ったまま再試行できます。';
     if (modalApi.isOpen()) setBusy(false);
   });
@@ -14011,6 +14210,11 @@ CalendarComponent.prototype._showShiftModal = function(user, date, editId) {
     setBusy(true); status.textContent = '削除中...';
     const deleted = await this._deleteShift(existing.id, { skipConfirm: true });
     if (deleted) { setBusy(false); modalApi.close('deleted'); return; }
+    if (this._shiftMutationStateUnknown) {
+      setBusy(false);
+      status.textContent = '削除結果を確認できません。カレンダーを再読み込みしてください。';
+      return;
+    }
     status.textContent = '削除に失敗しました。もう一度お試しください。';
     if (modalApi.isOpen()) setBusy(false);
   });
@@ -14039,6 +14243,10 @@ CalendarComponent.prototype._fillShiftUserCandidates = async function(o) {
 };
 
 CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId) {
+  if (this._shiftMutationStateUnknown) {
+    this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+    return false;
+  }
   const type = o.querySelector('.sh-type').value;
   const date = o.querySelector('.sh-date').value;
   if (!date) {
@@ -14061,14 +14269,16 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
     this._renderCalendarList?.();
     this._render();
   }
+  let acknowledged = false;
   try {
     if (editId) await apiPut('/cal/shifts/' + encodeURIComponent(editId), data);
     else await apiPost('/cal/shifts', { id: shiftId, ...data });
+    acknowledged = true;
     if (typeof this._upsertShiftOptimistic === 'function') {
       this._upsertShiftOptimistic({ id: shiftId, ...data, _optimistic: false }, { select: true });
       this._renderCalendarList?.();
       this._render();
-      this._refreshShiftStateAfterMutation?.();
+      await this._refreshShiftStateAfterMutation?.();
     } else {
       await Promise.all([this._loadShifts(), this._loadEvents(), this._loadCalendars()]);
       this._renderCalendarList?.();
@@ -14076,7 +14286,21 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
     }
     this._showStatus('シフトを保存しました');
     return true;
-  } catch {
+  } catch (error) {
+    if (acknowledged) {
+      console.error('保存済みシフトの再読込に失敗しました', error);
+      this._showStatus('シフトは保存されましたが、再読み込みに失敗しました', true);
+      return true;
+    }
+    const outcome = await this._reconcileShiftMutationAfterError?.(shiftId, editId ? 'update' : 'create', data);
+    if (outcome === 'applied') {
+      this._showStatus('シフトを保存しました');
+      return true;
+    }
+    if (outcome === 'unknown') {
+      this._showStatus('シフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+      return false;
+    }
     if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
     this._showStatus('保存に失敗', true);
     return false;
@@ -14084,18 +14308,38 @@ CalendarComponent.prototype._saveShift = async function(editId, o, fixedShiftId)
 };
 
 CalendarComponent.prototype._deleteShift = async function(id, options = {}) {
+  if (this._shiftMutationStateUnknown) {
+    this._showStatus('前回のシフト保存結果を確認できません。カレンダーを再読み込みしてください', true);
+    return false;
+  }
   if (!options.skipConfirm && typeof cfConfirm === 'function' && !await cfConfirm('このシフトを削除しますか？')) return false;
   const snapshot = this._shiftMutationSnapshot?.();
   if (typeof this._removeShiftOptimistic === 'function') {
     this._removeShiftOptimistic(id);
     this._renderCalendarList?.();
     this._render();
+    let acknowledged = false;
     try {
       await apiFetch('/cal/shifts/' + encodeURIComponent(id), { method: 'DELETE' });
-      this._refreshShiftStateAfterMutation?.();
+      acknowledged = true;
+      await this._refreshShiftStateAfterMutation?.();
       this._showStatus('削除しました');
       return true;
-    } catch {
+    } catch (error) {
+      if (acknowledged) {
+        console.error('削除済みシフトの再読込に失敗しました', error);
+        this._showStatus('シフトは削除されましたが、再読み込みに失敗しました', true);
+        return true;
+      }
+      const outcome = await this._reconcileShiftMutationAfterError?.(id, 'delete');
+      if (outcome === 'applied') {
+        this._showStatus('削除しました');
+        return true;
+      }
+      if (outcome === 'unknown') {
+        this._showStatus('シフト削除結果を確認できません。カレンダーを再読み込みしてください', true);
+        return false;
+      }
       if (snapshot && typeof this._restoreShiftMutationSnapshot === 'function') this._restoreShiftMutationSnapshot(snapshot);
       this._showStatus('削除に失敗', true);
       return false;
@@ -14372,9 +14616,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 
   function _todoEsc(value) {
-    return typeof esc === 'function'
-      ? esc(value == null ? '' : String(value))
-      : String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _todoIcon(name, size) {
@@ -14474,9 +14716,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   const CLOCK_EVENT_CHECK_SIZE = 8;
 
   function _clockEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _clockDate(value) {
@@ -15342,9 +15582,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   if (typeof CalendarComponent === 'undefined') return;
 
   function _calSyncEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _syncStatusLabel(connected, available = true) {
@@ -15352,8 +15590,8 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
     return connected ? '<span class="gb-cal-sync-status-connected">接続済み</span>' : '未接続';
   }
 
-  function _syncCard(title, body) {
-    return `<div class="gb-cal-sync-card">
+  function _syncCard(title, body, extraClass = '') {
+    return `<div class="gb-cal-sync-card${extraClass ? ` ${extraClass}` : ''}">
       <div class="gb-cal-sync-card-title">${title}</div>
       ${body}
     </div>`;
@@ -15421,7 +15659,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   function _cloudGoogleAuthHelp() {
     return fieldHelp('Google Cloud Consoleで「OAuthクライアントID」（種類: ウェブアプリケーション）を作成し、'
       + `承認済みのリダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
-      + 'クライアントIDとシークレットはこのMeldexワークスペース内（Dropbox）へ保存されます。');
+      + '認証情報はこの端末内の専用保存領域で管理され、Dropboxには平文で保存されません。');
   }
 
   function _cloudMicrosoftAuthHelp() {
@@ -15441,8 +15679,11 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       ? triggerEl
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const cloud = _calSyncIsDropboxMode();
+    const isAdmin = !!this._calUserIsAdmin?.();
     let syncStatus = {};
-    try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
+    if (isAdmin) {
+      try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
+    }
     const google = syncStatus.google || {};
     const googleTasks = syncStatus.googleTasks || {};
     const microsoft = syncStatus.microsoft || {};
@@ -15458,7 +15699,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
           <button class="sync-gcal-auth gb-cal-sync-action primary" type="button">Googleにログイン</button>` : ''}
         ${google.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gcal-pull gb-cal-sync-action" type="button">Googleから取得</button><button class="sync-gcal-push gb-cal-sync-action" type="button">Googleに送信</button></div>' : ''}
         ${_autoSyncStatusHtml(!!google.connected, this._googleCalAutoSyncFailures)}
-      `)}
+      `, 'gb-cal-sync-admin-only')}
       ${_syncCard('Google ToDo', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
         ${!googleTasks.connected && googleTasks.available !== false ? (cloud ? `
@@ -15469,7 +15710,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
           <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>
           <div class="sync-gtask-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>`) : ''}
         ${googleTasks.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gtask-sync gb-cal-sync-action" type="button">Google ToDoと同期</button></div>' : ''}
-      `)}
+      `, 'gb-cal-sync-admin-only')}
       ${_syncCard('Microsoft Calendar', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
         ${!microsoft.connected && microsoft.available ? `
@@ -15479,8 +15720,14 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
           <div class="sync-ms-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
         ${microsoft.connected ? '<div class="gb-cal-sync-actions"><button class="sync-ms-pull gb-cal-sync-action" type="button">Microsoftから取得</button><button class="sync-ms-push gb-cal-sync-action" type="button">Microsoftに送信</button></div>' : ''}
         ${_autoSyncStatusHtml(!!microsoft.connected, this._microsoftCalAutoSyncFailures)}
-      `)}
-      ${_syncCard('iCal / .ics', cloud ? `
+      `, 'gb-cal-sync-admin-only')}
+      ${_syncCard('iCal / .ics', !isAdmin ? `
+        <div class="gb-cal-sync-status">本人の.icsファイルをインポート・エクスポートできます。</div>
+        <div class="gb-cal-sync-actions">
+          <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
+          <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
+        </div>
+      ` : cloud ? `
         <div class="gb-cal-sync-status">.icsファイルをインポート・エクスポートできます${fieldHelp('認証付きURLからの定期取り込みは、静的ホスティング(CORS制約)のため現時点では利用できません。取得したファイルを.icsインポートしてください。')}</div>
         <div class="gb-cal-sync-actions">
           <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
@@ -15504,8 +15751,11 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
         <div class="gb-cal-sync-status">URLを知っている人は誰でも閲覧できる公開リンクです</div>
         <div class="sync-ics-result gb-cal-sync-status gb-cal-sync-auth-status">${icsEnabled ? '購読用ファイルの自動更新: Meldexでカレンダーを開いている間' : ''}</div>
         <div class="gb-cal-sync-actions"><button class="sync-ics-create gb-cal-sync-action primary" type="button">購読用URLを作成</button></div>
-      `) : ''}
+      `, 'gb-cal-sync-admin-only') : ''}
     `;
+    if (!isAdmin) {
+      content.querySelectorAll('.gb-cal-sync-admin-only').forEach((card) => card.remove());
+    }
     const closeButton = document.createElement('button');
     closeButton.className = 'sync-close gb-btn gb-btn-quiet gb-cal-sync-action';
     closeButton.type = 'button';
@@ -15621,7 +15871,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
     this._showStatus('Googleカレンダーに送信中...');
     try {
       const res = await apiPost('/cal/sync/google/push', { user: this._getUser() });
-      if ((res.failed || 0) > 0) this._showStatus(`Google送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+      if (res?.ok === false || (res.failed || 0) > 0) this._showStatus(`Google送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
       else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Google送信失敗: ' + e.message, true);
@@ -15633,6 +15883,10 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   // 多重起動防止）。Cloud（Dropboxモード）も v0.7.138 以降は同じ5分間隔で動く
   // （gb-cal-cloud-sync.js が /cal/sync/google/pull|push を実装したため）。
   CalendarComponent.prototype._ensureGoogleCalAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearGoogleCalAutoSync();
+      return;
+    }
     if (this._googleCalAutoTimer || this._destroyed || !this._active) return;
     this._googleCalAutoTimer = setInterval(() => this._googleCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
     setTimeout(() => this._googleCalAutoSync(), 8000);
@@ -15644,7 +15898,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   };
 
   CalendarComponent.prototype._googleCalAutoSync = async function() {
-    if (this._destroyed || !this._active || this._googleCalAutoSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._googleCalAutoSyncing) return;
     this._googleCalAutoSyncing = true;
     let failed = false;
     try {
@@ -15652,13 +15906,15 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       if (!status?.google?.connected) return;
       const user = this._getUser();
       try {
-        await apiPost('/cal/sync/google/pull', { user, incremental: true });
+        const pullResult = await apiPost('/cal/sync/google/pull', { user, incremental: true });
+        if (pullResult?.ok === false || (pullResult?.failed || 0) > 0) throw new Error('Google Calendar取得が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Google Calendar自動取得に失敗:', e);
       }
       try {
-        await apiPost('/cal/sync/google/push', { user });
+        const pushResult = await apiPost('/cal/sync/google/push', { user });
+        if (pushResult?.ok === false || (pushResult?.failed || 0) > 0) throw new Error('Google Calendar送信が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Google Calendar自動送信に失敗:', e);
@@ -15750,23 +16006,42 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   CalendarComponent.prototype._googleTasksSync = async function(options = {}) {
     if (this._googleTasksSyncing) return;
     this._googleTasksSyncing = true;
+    const progress = !options.silent ? window.MeldexOperationProgress?.begin?.({
+      kind: 'calendar-sync',
+      label: 'Google ToDoと同期しています',
+      mode: 'indeterminate',
+      showInTray: true,
+      showInStatus: true,
+      priority: 35,
+    }) : null;
     try {
-      if (!options.silent) this._showStatus('Google ToDoと同期中...');
+      if (!options.silent && !progress) this._showStatus('Google ToDoと同期中...');
       const res = await apiPost('/cal/sync/google/tasks/sync', { user: this._getUser(), automatic: !!options.silent });
+      progress?.update?.({ phase: '表示を更新しています' });
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
       if (!options.silent) {
-        this._showStatus(`Google ToDo同期完了: ${res.imported || 0}件取得, ${res.pushed || 0}件送信, ${res.updated || 0}件更新`);
+        const summary = `Google ToDo同期完了: ${res.imported || 0}件取得, ${res.pushed || 0}件送信, ${res.updated || 0}件更新`;
+        if (progress) progress.succeed({ summary: summary });
+        else this._showStatus(summary);
       }
     } catch (e) {
-      if (!options.silent) this._showStatus('Google ToDo同期失敗: ' + e.message, true);
+      if (!options.silent) {
+        const message = 'Google ToDo同期失敗: ' + e.message;
+        if (progress) progress.fail({ error: message });
+        else this._showStatus(message, true);
+      }
     } finally {
       this._googleTasksSyncing = false;
     }
   };
 
   CalendarComponent.prototype._ensureGoogleTasksAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearGoogleTasksAutoSync();
+      return;
+    }
     if (this._googleTasksAutoTimer || this._destroyed || !this._active) return;
     this._googleTasksAutoTimer = setInterval(() => this._googleTasksAutoSync(), 5 * 60 * 1000);
     setTimeout(() => this._googleTasksAutoSync(), 5000);
@@ -15778,7 +16053,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   };
 
   CalendarComponent.prototype._googleTasksAutoSync = async function() {
-    if (this._destroyed || !this._active || this._googleTasksSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._googleTasksSyncing) return;
     try {
       const status = await apiFetch('/cal/sync/status');
       if (!status?.googleTasks?.connected) return;
@@ -15874,7 +16149,8 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
     this._showStatus('Microsoftカレンダーに送信中...');
     try {
       const res = await apiPost('/cal/sync/microsoft/push', { user: this._getUser() });
-      this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
+      if (res?.ok === false || (res.failed || 0) > 0) this._showStatus(`Microsoft送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+      else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Microsoft送信失敗: ' + e.message, true);
     }
@@ -15884,6 +16160,10 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   // _ensureGoogleCalAutoSync と同じライフサイクル・ガード方針。Cloud（Dropboxモード）も
   // v0.7.138 以降は同じ5分間隔で動く（gb-cal-cloud-sync.js 参照）。
   CalendarComponent.prototype._ensureMicrosoftCalAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearMicrosoftCalAutoSync();
+      return;
+    }
     if (this._microsoftCalAutoTimer || this._destroyed || !this._active) return;
     this._microsoftCalAutoTimer = setInterval(() => this._microsoftCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
     setTimeout(() => this._microsoftCalAutoSync(), 8000);
@@ -15895,7 +16175,7 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
   };
 
   CalendarComponent.prototype._microsoftCalAutoSync = async function() {
-    if (this._destroyed || !this._active || this._microsoftCalAutoSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._microsoftCalAutoSyncing) return;
     this._microsoftCalAutoSyncing = true;
     let failed = false;
     try {
@@ -15903,13 +16183,15 @@ CalendarComponent.prototype._generateFromTemplate = async function(tid, overlay)
       if (!status?.microsoft?.connected) return;
       const user = this._getUser();
       try {
-        await apiPost('/cal/sync/microsoft/pull', { user, incremental: true });
+        const pullResult = await apiPost('/cal/sync/microsoft/pull', { user, incremental: true });
+        if (pullResult?.ok === false || (pullResult?.failed || 0) > 0) throw new Error('Microsoft Calendar取得が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Microsoft Calendar自動取得に失敗:', e);
       }
       try {
-        await apiPost('/cal/sync/microsoft/push', { user });
+        const pushResult = await apiPost('/cal/sync/microsoft/push', { user });
+        if (pushResult?.ok === false || (pushResult?.failed || 0) > 0) throw new Error('Microsoft Calendar送信が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Microsoft Calendar自動送信に失敗:', e);
@@ -16439,9 +16721,7 @@ function bdSyncSelectionRectForNode(nodeOrId) {
   const el = document.getElementById('bdn-' + node.id);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
-  const safeId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(node.id)
-    : String(node.id).replace(/"/g, '\\"');
+  const safeId = MeldexEscape.cssIdent(node.id);
   let rect = layer.querySelector(`.bd-selection-rect[data-node-id="${safeId}"]`);
   if (!rect) {
     rect = document.createElement('div');
@@ -16474,9 +16754,7 @@ function bdSyncResizeHandleForNode(nodeOrId) {
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
   bdSyncSelectionRectForNode(node);
-  const safeId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(node.id)
-    : String(node.id).replace(/"/g, '\\"');
+  const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
     if (handle) handle.remove();
@@ -17108,7 +17386,7 @@ const BD_MANAGED_FRONTMATTER_KEYS = new Set([
   'type', 'positions', 'ids', 'sizes', 'parents', 'structures', 'statuses', 'bgcolors',
   'balloons', 'containers', 'links', 'linkTypes', 'transforms', 'canvasBg', 'style',
   'theme', 'numbering', 'xmind', 'statusDefs', 'groups', 'cardStyles', 'lineStyles',
-  'depthStyles', 'boardUi', 'connections', 'llmSemantics',
+  'depthStyles', 'boardUi', 'connections', 'llmSemantics', 'tails',
 ]);
 
 function bdPreserveUnknownFrontmatter(fm) {
@@ -17282,6 +17560,29 @@ function bdNormalizeConnectionControlPoints(raw) {
     ];
   }
   return null;
+}
+
+// カードのしっぽ (tail) の読込値を検証・正規化する。startX/startY/endX/endY が数値でなければ
+// 読み込み自体を無視する（壊れた/意図しない値でカードのしっぽを復元しない）。
+// target は kind/id が両方揃っている場合のみ残す。
+function bdNormalizeTailValue(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const startX = Number(raw.startX);
+  const startY = Number(raw.startY);
+  const endX = Number(raw.endX);
+  const endY = Number(raw.endY);
+  if (![startX, startY, endX, endY].every(Number.isFinite)) return null;
+  const tail = { startX, startY, endX, endY, target: null };
+  const target = raw.target;
+  if (target && typeof target === 'object' && target.kind && target.id != null && String(target.id) !== '') {
+    const normalizedTarget = { kind: String(target.kind), id: String(target.id) };
+    ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+      const n = Number(target[key]);
+      if (Number.isFinite(n)) normalizedTarget[key] = n;
+    });
+    tail.target = normalizedTarget;
+  }
+  return tail;
 }
 
 function bdYamlTopLevelBlock(fm, key) {
@@ -17942,7 +18243,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -17983,6 +18284,17 @@ function bdParseMd(raw) {
     }
     const balBlock = fm.match(/balloons:\n((?:\s+\w+:.*\n?)*)/);
     if (balBlock) balBlock[1].replace(/(\w+):\s*\{tailX:\s*([\d.-]+),\s*tailY:\s*([\d.-]+)(?:,\s*child:\s*(\w+))?\}/g, (_, id, tx, ty, ch) => { balloons[id] = {tailX:+tx, tailY:+ty, child:ch==='true'}; });
+    // カードのしっぽ (tail: startX/startY/endX/endY + 追従先の target。target は
+    // {kind, id, offsetX, offsetY, offsetXRatio, offsetYRatio} のネスト flow map)。
+    // 旧 balloons ブロックと違い target が入れ子オブジェクトを持つため、深さを持たない
+    // 素朴な正規表現では正しく切り出せない。bdYamlNestedMap (+ bdYamlFlowMap) の
+    // 入れ子対応パーサーを正本として使う (2つ目の解析実装を作らない)。
+    if (typeof bdYamlNestedMap === 'function' && typeof bdNormalizeTailValue === 'function') {
+      Object.entries(bdYamlNestedMap(fm, 'tails')).forEach(([id, rawTail]) => {
+        const tail = bdNormalizeTailValue(rawTail);
+        if (tail) tails[id] = tail;
+      });
+    }
     const ctnBlock = fm.match(/containers:\n((?:\s+\w+:.*\n?)*)/);
     if (ctnBlock) ctnBlock[1].replace(/(\w+):\s*(\w+)/g, (_, id, val) => { containers[id] = val; });
     const lnkBlock = fm.match(/links:\n((?:\s+\w+:.*\n?)*)/);
@@ -18468,6 +18780,7 @@ function bdParseMd(raw) {
     if (containers[nid] === 'container') n.container = true;
     if (containers[nid] === 'contained') n.contained = true;
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
+    if (tails[nid]) n.tail = tails[nid];
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);
@@ -18631,6 +18944,32 @@ function bdToMd() {
   if (hasBalloons) {
     fm += 'balloons:\n';
     bd.nodes.forEach((n,i) => { if (n.balloon) fm += `  n${i}: {tailX: ${n.tailX||0}, tailY: ${n.tailY||0}${n.balloonChild ? ', child: true' : ''}}\n`; });
+  }
+  // カードのしっぽ（フキダシの尻尾）。追加のみの新規フィールドなので旧バージョンは無視して開ける。
+  // 上のバルーン (n.tailX/n.tailY) とは別概念。tail は独自の n.tail オブジェクトにのみ持たせ、
+  // バルーンの n.tailX/n.tailY には一切触れない (誤って混同・上書きしない)。
+  const hasTails = bd.nodes.some(n => n.tail && Number.isFinite(+n.tail.startX) && Number.isFinite(+n.tail.startY) && Number.isFinite(+n.tail.endX) && Number.isFinite(+n.tail.endY));
+  if (hasTails) {
+    fm += 'tails:\n';
+    bd.nodes.forEach((n, i) => {
+      const t = n.tail;
+      if (!t || !Number.isFinite(+t.startX) || !Number.isFinite(+t.startY) || !Number.isFinite(+t.endX) || !Number.isFinite(+t.endY)) return;
+      const parts = [
+        `startX: ${+t.startX}`,
+        `startY: ${+t.startY}`,
+        `endX: ${+t.endX}`,
+        `endY: ${+t.endY}`,
+      ];
+      const target = t.target;
+      if (target && target.kind && target.id != null && String(target.id) !== '') {
+        const targetParts = [`kind: ${fmtJsonString(String(target.kind))}`, `id: ${fmtJsonString(String(target.id))}`];
+        ['offsetX', 'offsetY', 'offsetXRatio', 'offsetYRatio'].forEach(key => {
+          if (Number.isFinite(+target[key])) targetParts.push(`${key}: ${+target[key]}`);
+        });
+        parts.push(`target: {${targetParts.join(', ')}}`);
+      }
+      fm += `  n${i}: {${parts.join(', ')}}\n`;
+    });
   }
   // ステータス定義
   if (bd.statuses && bd.statuses.length) {
@@ -21564,6 +21903,13 @@ function bdSelect(id, add) {
   if (add && bd.selected instanceof Set && bd.selected.size !== 1) {
     if (typeof bdCancelLinkedSelectionPreview === 'function') bdCancelLinkedSelectionPreview();
     if (typeof bdCancelLinkedSelectionSync === 'function') bdCancelLinkedSelectionSync();
+  }
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 1枚だけの選択になったら、開いていれば
+  // サブパネルの中身を選択中カードのリンク先へ差し替える予約をする（デバウンス）。
+  // 複数選択・全解除では予約を取り消す。実際に発火してよいかの判定
+  // （リンクの有無・編集中・ドラッグ中等）は bdRequestLinkedSelectionAutoSubpanel 側で行う。
+  if (typeof bdRequestLinkedSelectionAutoSubpanel === 'function') {
+    bdRequestLinkedSelectionAutoSubpanel(bd.selected instanceof Set && bd.selected.size === 1 ? [...bd.selected][0] : null);
   }
   if (deferExtras) {
     if (typeof bdMarkBoardUiDirty === 'function') bdMarkBoardUiDirty('select');
@@ -28393,6 +28739,21 @@ function bdContextMenu(e, nodeId) {
         }
         if (typeof loadRpAnnotationList === 'function') loadRpAnnotationList();
       });
+
+      // フキダシのしっぽ (追加する / 削除する の2択。注釈の付箋メニューと同じ構成に揃える)。
+      // Alt+Shift+ドラッグを知らなくても到達できる導線。
+      const tailSub = sub('フキダシのしっぽ');
+      const hasTail = typeof bdCardHasTail === 'function' ? bdCardHasTail(nd) : !!nd.tail;
+      [['追加する', false], ['削除する', true]].forEach(([label, isRemove]) => {
+        tailSub.item(radioMark(hasTail === isRemove) + label, () => {
+          const cardEl = document.getElementById('bdn-' + nodeId);
+          if (isRemove) {
+            if (typeof bdRemoveCardTail === 'function') bdRemoveCardTail(cardEl, nd);
+          } else if (typeof bdAddCardTail === 'function') {
+            bdAddCardTail(cardEl, nd);
+          }
+        }, { role: 'menuitemradio', checked: hasTail === isRemove });
+      });
     }
 
     // --- Multi-select: 整列・サイズ・集約・グループ化 ---
@@ -31131,6 +31492,16 @@ function bdInitInteraction(root) {
     if (document.hidden) _resetSpaceState();
   }
 
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 選択に連動したサブパネル自動表示
+  // (bdRequestLinkedSelectionAutoSubpanel、gb-board-links.js) が、クリックがドラッグへ
+  // 変わった瞬間やリサイズ・範囲選択・パン中に誤発火しないための判定に使う。
+  // bdSelect() は pointerdown の最初に呼ばれるため、その時点ではまだ drag 等が
+  // 立っていない。デバウンス後の発火判定用に window へ公開する。
+  function bdIsBoardPointerBusy() {
+    return !!(drag || resizing || selStart || pan || touchPinch || bd._lineToolDrag || bd._rightDragNode);
+  }
+  window.bdIsBoardPointerBusy = bdIsBoardPointerBusy;
+
   // --- Attach listeners ---
   canvas.addEventListener('pointerdown', onCanvasPointerdown);
   canvas.addEventListener('contextmenu', onCanvasContextmenu);
@@ -31162,6 +31533,11 @@ function bdInitInteraction(root) {
     window.removeEventListener('blur', onWindowBlurSpace);
     document.removeEventListener('visibilitychange', onVisibilityChangeSpace);
     _resetSpaceState();
+    // このクロージャの drag/resizing/selStart 等は cleanup後もローカル変数として残るため、
+    // ドラッグ中に破棄されると bdIsBoardPointerBusy() が真のまま固まる恐れがある。
+    // window参照ごと外し、次の bdInitInteraction 呼び出しで新しいクロージャに差し替わるまで
+    // 安全側 (false) に倒す。
+    if (window.bdIsBoardPointerBusy === bdIsBoardPointerBusy) delete window.bdIsBoardPointerBusy;
   };
 }
 
@@ -32514,6 +32890,18 @@ const _bdPreviewSummaryCache = new Map();
 let _bdLinkOpenSeq = 0;
 let _bdLinkedSelectionSyncSeq = 0;
 
+// ボードのリンクカード計画 (2026-08-13) Phase C: 「カードを選ぶと右サイドバーに表示する」の
+// オン/オフを端末へ保存するキー。既定の開き先設定 (_BD_DEFAULT_OPEN_TARGET_KEY) と
+// 同じ localStorage の仕組みに倣う。保存が無ければオン (true) 扱い。
+const _BD_SELECT_AUTO_SUBPANEL_KEY = 'gb:board-select-open-subpanel:v1';
+// 短時間に連続で選択が変わる操作 (キーボードでの移動等) を1回にまとめ、かつクリックが
+// ドラッグへ変わる猶予を確保するための待ち時間。ドラッグは数十ms以内にクリック判定閾値
+// (4px) を超えて bdIsBoardPointerBusy() が真になるため、これより長くしておけば発火時点の
+// 再判定でドラッグ中の誤発火を防げる。
+const _BD_SELECT_AUTO_SUBPANEL_DEBOUNCE_MS = 250;
+let _bdSelectAutoSubpanelSeq = 0;
+let _bdSelectAutoSubpanelTimer = null;
+
 function _bdNormalizeOpenTarget(target) {
   const next = String(target || '').trim().toLowerCase();
   // 旧保存値は読み取り時にだけ正規化し、以後は right-sidebar を保存する。
@@ -32648,6 +33036,92 @@ function _bdIsCurrentLinkedSelection(path) {
 
 function bdCancelLinkedSelectionSync() {
   _bdLinkedSelectionSyncSeq += 1;
+}
+
+function _bdGetSelectAutoSubpanelEnabled() {
+  try {
+    const stored = window.localStorage?.getItem(_BD_SELECT_AUTO_SUBPANEL_KEY);
+    return stored == null ? true : stored !== '0';
+  } catch {
+    return true;
+  }
+}
+
+function _bdSetSelectAutoSubpanelEnabled(value) {
+  const next = value !== false;
+  try {
+    window.localStorage?.setItem(_BD_SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.MeldexBoardSelectAutoSubpanel = Object.freeze({
+    key: _BD_SELECT_AUTO_SUBPANEL_KEY,
+    isEnabled: _bdGetSelectAutoSubpanelEnabled,
+    setEnabled: _bdSetSelectAutoSubpanelEnabled,
+  });
+}
+
+function _bdBoardPointerBusy() {
+  try {
+    return typeof window.bdIsBoardPointerBusy === 'function' && window.bdIsBoardPointerBusy();
+  } catch {
+    return false;
+  }
+}
+
+// gb-subpanel.js の GBSubPanel.open() はモバイルのサイドドロワー環境では reveal の値に
+// 関わらずドロワーを開く (フォーカスを奪う)。Phase C の自動表示はモバイルでは発火させない。
+function _bdIsMobileDrawerSurface() {
+  const drawer = typeof window !== 'undefined' ? window.MeldexCloudMobileSideDrawer : null;
+  return !!(drawer && typeof drawer.isEnabled === 'function' && drawer.isEnabled());
+}
+
+// ボードのリンクカード計画 (2026-08-13) Phase C: bdSelect() から呼ばれる。カードを1枚だけ
+// 選んだ時、右サイドバー（サブパネル）が開いていれば、その中身を選んだカードのリンク先へ
+// 自動で差し替える。「開く」ボタン (Phase B-0) と違い reveal:false で呼ぶため、閉じている
+// 右サイドバーを勝手に開くことはない (gb-subpanel.js の GBSubPanel.open 側の分担)。
+// nodeId が空 (複数選択・全解除) のときは予約の取り消しだけ行う。
+function bdRequestLinkedSelectionAutoSubpanel(nodeId) {
+  const seq = ++_bdSelectAutoSubpanelSeq;
+  if (_bdSelectAutoSubpanelTimer != null) {
+    clearTimeout(_bdSelectAutoSubpanelTimer);
+    _bdSelectAutoSubpanelTimer = null;
+  }
+  if (!nodeId) return;
+  if (!_bdGetSelectAutoSubpanelEnabled()) return;
+  if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return;
+  if (_bdIsStandaloneBoardSurface() || _bdIsMobileDrawerSurface()) return;
+  _bdSelectAutoSubpanelTimer = window.setTimeout(() => {
+    _bdSelectAutoSubpanelTimer = null;
+    _bdFireSelectAutoSubpanel(seq, nodeId);
+  }, _BD_SELECT_AUTO_SUBPANEL_DEBOUNCE_MS);
+}
+
+async function _bdFireSelectAutoSubpanel(seq, nodeId) {
+  if (seq !== _bdSelectAutoSubpanelSeq) return; // その後さらに選択が変わった
+  if (!_bdGetSelectAutoSubpanelEnabled()) return; // 待機中にオプションがオフへ変わった
+  if (typeof bd === 'undefined' || !(bd.selected instanceof Set) || bd.selected.size !== 1) return;
+  if ([...bd.selected][0] !== nodeId) return; // 複数選択・別カード選択済み
+  if (bd.editing) return; // カードの文字を編集中
+  if (_bdBoardPointerBusy()) return; // ドラッグ・リサイズ・範囲選択・パン中
+  const node = bd.nodes?.find(candidate => candidate?.id === nodeId);
+  if (!node) return;
+  const resolved = typeof MeldexBoardInfoPanel !== 'undefined' && typeof MeldexBoardInfoPanel.resolveTarget === 'function'
+    ? MeldexBoardInfoPanel.resolveTarget(node)
+    : null;
+  if (!resolved || resolved.kind !== 'file' || !resolved.path) return; // リンクを持たないカード
+  if (typeof GBSubPanel === 'undefined' || typeof GBSubPanel.open !== 'function') return;
+  const current = typeof GBSubPanel.getCurrentTarget === 'function' ? GBSubPanel.getCurrentTarget() : null;
+  if (current && current.path === resolved.path) return; // 同じカードの再選択では再読み込みしない
+  if (typeof openLinkedPathInRightPane !== 'function') return;
+  await openLinkedPathInRightPane(resolved.path, node.text || '', {
+    linkType: resolved.type || '',
+    reveal: false,
+  });
 }
 
 function _bdFindBoardPaneId() {
@@ -33071,6 +33545,23 @@ function _bdRevealRightSidebarTool(tabType) {
   return match.pane.id || '';
 }
 
+// 右サイドバーの区画を「必ず見える状態」にする共通の入口。
+// ボードのリンク計画 (2026-08-13) Phase B-0: これまで開く処理は呼び出し側任せで、
+// ボードのリンクとエントリ詳細が別々の方法で開こうとしていた。GBSubPanel.open() が
+// この1つを呼ぶようにして、開く経路が増えても開き忘れが起きないようにする。
+// 2つ目の実装を作らないため、中身は上の _bdRevealRightSidebarTool をそのまま使う。
+if (typeof window !== 'undefined') {
+  window.MeldexRightSidebarReveal = {
+    reveal(tabType) {
+      try {
+        return _bdRevealRightSidebarTool(String(tabType || 'subpanel'));
+      } catch {
+        return '';
+      }
+    },
+  };
+}
+
 // 右サイドバーのビューワー区画。退避領域に置かれたままなら表示できないので null を返す。
 function _bdVisibleRightSidebarPreviewPane() {
   const pane = document.getElementById('gb-preview-pane');
@@ -33116,6 +33607,7 @@ async function openLinkedPathInRightPane(path, label, options) {
   const opts = options || {};
   const entry = opts.entry || await _bdResolveLinkedEntryAsync(path, label, opts.linkType);
   if (entry.urlExternal && _bdOpenExternalActionUrl(entry.path)) return true;
+  if (entry.urlExternal && _bdIsExternalBrowserUrl(entry.path)) return _bdOpenExternalBrowserUrl(entry.path);
   // サブパネル内からは、別のサブパネルを開くUI（右サイドバーで開く）を
   // 使用できない（計画書「右サイドバー操作の制限」節）。外部URL（mailto/tel）は対象外
   // なので上の早期returnより後で判定する。sourceEl（呼び出し元のDOM要素）または
@@ -33129,7 +33621,8 @@ async function openLinkedPathInRightPane(path, label, options) {
   // GBLinkRouter の判定を優先し、汎用ビューワー（ノート扱い）へ誤って
   // フォールバックさせず「未対応形式」としてサブパネル側にエラー表示させる。
   if (typeof GBSubPanel !== 'undefined' && typeof GBSubPanel.open === 'function') {
-    _bdRevealRightSidebarTool('subpanel');
+    // 右サイドバーを開く処理は GBSubPanel.open() が必ず行う（Phase B-0 で共通化）。
+    // ここで先に呼ぶと二重に走るため、呼び出し側からは外している。
     const targetPath = entry.path || path || '';
     // entry.type は _bdResolveLinkedEntryAsync の最終フォールバック（拡張子不明→'page'）を
     // 経ている場合があるため、ここでは opts.linkType（呼び出し元が実際に渡した明示ヒント）
@@ -33142,7 +33635,7 @@ async function openLinkedPathInRightPane(path, label, options) {
       path: targetPath,
       label: entry.label || label || '',
       state: { ..._bdTabStateForLinkedEntry(entry), ...(opts.state || {}) },
-    });
+    }, { reveal: opts.reveal !== false });
   }
   if (typeof navOpen === 'function') {
     navOpen(entry);
@@ -33395,11 +33888,11 @@ function showLinkedOpenTargetMenu(e, path, label, options) {
   if (_bdIsStandaloneBoardSurface()) {
     addItem('ビューワーで開く', 'layers-2', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else if (_bdIsCloudMobileBoardSurface()) {
-    if (canUseRightSidebar) addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
+    if (canUseRightSidebar && !_bdIsExternalBrowserUrl(targetPath)) addItem('サイドドロワーで開く', 'layers-2', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
   } else {
     addItem('メインパネルで開く', 'panelTop', () => openLinkedPathInMainPane(targetPath, label, opts));
-    if (canUseRightSidebar) {
+    if (canUseRightSidebar && !_bdIsExternalBrowserUrl(targetPath)) {
       addItem('右サイドバーで開く', 'panelRight', () => openLinkedPathInRightSidebar(targetPath, label, { ...opts, sourceEl: anchorEl }));
     }
   }
@@ -33667,7 +34160,8 @@ async function bdRenderLinkedPreview(filePath, pane, linkType) {
     && pane.dataset.previewRequestToken === requestToken;
   if (mediaType === 'image' || pdf) {
     if (mediaType === 'image' && /^data:image\//i.test(filePath)) {
-      pane.innerHTML = `<img src="${_bdEscAttr(filePath)}" alt="${_bdEscAttr(fileName)}" style="width:100%;height:100%;border-radius:6px;background:var(--bg);object-fit:contain;">`;
+      pane.innerHTML = `<img src="${_bdEscAttr(filePath)}" alt="${_bdEscAttr(fileName)}" data-meldex-content-image style="width:100%;height:100%;border-radius:6px;background:var(--bg);object-fit:contain;">`;
+      window.MeldexImageLoading?.trackAll?.(pane, { host: pane });
       return true;
     }
     const src = pdf
@@ -34414,18 +34908,13 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
 
   const STORAGE_KEY = 'gb:board-default-open-target:v1';
   const VALID_TARGETS = new Set(['main', 'right-sidebar']);
+  // ボードのリンクカード計画 (2026-08-13) Phase C: 「カードを選ぶと右サイドバーに表示する」の
+  // 保存キー。既定の開き先設定 (STORAGE_KEY) と同じ localStorage の仕組みに倣う。
+  const SELECT_AUTO_SUBPANEL_KEY = 'gb:board-select-open-subpanel:v1';
   let renderRevision = 0;
   let scheduledHandle = null;
 
-  function escapeHtml(value) {
-    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  const escapeHtml = global.MeldexEscape.html;
 
   function isExternal(value) {
     return /^(?:https?:|mailto:|tel:)/i.test(String(value || '').trim());
@@ -34495,6 +34984,27 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     try { global.localStorage?.setItem(STORAGE_KEY, target); } catch {}
   }
 
+  function getSelectAutoSubpanelEnabled() {
+    if (typeof global.MeldexBoardSelectAutoSubpanel?.isEnabled === 'function') {
+      return global.MeldexBoardSelectAutoSubpanel.isEnabled();
+    }
+    try {
+      const stored = global.localStorage?.getItem(SELECT_AUTO_SUBPANEL_KEY);
+      return stored == null ? true : stored !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  function setSelectAutoSubpanelEnabled(value) {
+    const next = value !== false;
+    if (typeof global.MeldexBoardSelectAutoSubpanel?.setEnabled === 'function') {
+      global.MeldexBoardSelectAutoSubpanel.setEnabled(next);
+      return;
+    }
+    try { global.localStorage?.setItem(SELECT_AUTO_SUBPANEL_KEY, next ? '1' : '0'); } catch {}
+  }
+
   function availableTargets() {
     const routed = global.MeldexBoardOpenTarget?.getAvailableTargets?.();
     const normalized = (Array.isArray(routed) ? routed : [])
@@ -34515,6 +35025,7 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     const targets = availableTargets();
     const stored = getDefaultTarget();
     const selected = targets.some(item => item.value === stored) ? stored : targets[0].value;
+    const autoSubpanelChecked = getSelectAutoSubpanelEnabled();
     return `<section class="bd-detail-section bd-board-open-target-setting" data-e2e-id="bd-board-open-target-setting">`
       + '<div class="bd-detail-section-title">リンクを開く設定</div>'
       + '<label class="bd-detail-field bd-detail-field-wide"><span>ファイルを開く場所</span>'
@@ -34524,6 +35035,14 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
       )).join('')
       + '</select></label>'
       + '<p class="gb-section-desc">ダブルクリックとカード右端の開くボタンに適用されます。</p>'
+      + '<div class="gb-check-help-row">'
+      + '<label class="bd-detail-check"><input type="checkbox" data-bd-select-auto-subpanel'
+      + ` data-e2e-id="bd-select-auto-subpanel"${autoSubpanelChecked ? ' checked' : ''}><span>カードを選ぶと右サイドバーに表示する</span></label>`
+      + (typeof fieldHelp === 'function' ? fieldHelp(
+        'リンクを持つカードを1枚だけ選ぶと、右サイドバー（サブパネル）が開いている場合にかぎり、その中身を選んだカードのリンク先へ切り替えます。複数選択・範囲選択・ドラッグ中・カードの文字を編集中は切り替わりません。',
+        { e2eId: 'bd-select-auto-subpanel-help' },
+      ) : '')
+      + '</div>'
       + '</section>';
   }
 
@@ -34539,6 +35058,10 @@ async function bdShowLinkedSelectionPreview(path, linkType) {
     host.querySelector('[data-bd-default-open-target]')?.addEventListener('change', event => {
       setDefaultTarget(event.currentTarget.value);
       if (typeof global.showStatus === 'function') global.showStatus('ファイルを開く場所を保存しました');
+    });
+    host.querySelector('[data-bd-select-auto-subpanel]')?.addEventListener('change', event => {
+      setSelectAutoSubpanelEnabled(!!event.currentTarget.checked);
+      if (typeof global.showStatus === 'function') global.showStatus('選択時の表示設定を保存しました');
     });
     return host.querySelector('[data-bd-board-file-info]');
   }
@@ -35930,7 +36453,13 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   requestAnimationFrame(() => {
     if (!_bdStylePickerMenu) return;
     const current = menu.querySelector('[aria-checked="true"]') || menu.querySelector('[data-bd-style-pick]');
-    current?.focus?.();
+    if (current) {
+      // preventScroll なしの focus() はメニュー内スクロールや周囲のスクロール位置を
+      // 勝手に動かす（開いた瞬間に画面が飛ぶ）。フォーカスとスクロールを分離し、
+      // 選択中項目が隠れている場合だけメニュー内で最小限スクロールする。
+      try { current.focus({ preventScroll: true }); } catch (_) { current.focus?.(); }
+      current.scrollIntoView?.({ block: 'nearest' });
+    }
   });
   setTimeout(() => {
     _bdStylePickerCloseHandler = event => {
@@ -37653,6 +38182,8 @@ function bdRenderNode(node, options = {}) {
   bdAppendNodeText(div, node, nodeStyle, { fastCardRender, showImageNames });
   if (node.collapsed) div.classList.add('bd-collapsed');
   if (node.container) bdAppendContainedNodes(div, node, ctx, fastCardRender);
+  // フキダシのしっぽ: 有無に関わらず毎回配線する (Alt+Shift+ドラッグでの新規作成を受け付けるため)。
+  if (typeof bdInstallCardTail === 'function') bdInstallCardTail(div, node);
   return div;
 }
 
@@ -38206,6 +38737,7 @@ function bdAppendNodeImage(div, node) {
   };
   div.appendChild(img);
   img.src = node.img;
+  window.MeldexImageLoading?.track?.(img, { host: div, label: 'ボードの画像を読み込んでいます', errorMode: 'silent' });
 }
 
 function bdAppendNodeText(div, node, nodeStyle, options = {}) {
@@ -38321,6 +38853,10 @@ function bdRenderContainedNode(ch, ctx, fastCardRender) {
   bdAppendNodeText(chDiv, ch, chStyle, { fastCardRender, showImageNames });
   if (ch.collapsed) chDiv.classList.add('bd-collapsed');
   if (ch.container) bdAppendContainedNodes(chDiv, ch, ctx, fastCardRender);
+  // フキダシのしっぽ: bdRenderNode() と同じく、コンテナ内カードにも配線する。
+  // ここが抜けていると、コンテナ内カードは右クリックメニューに「フキダシのしっぽ」が
+  // 出ても _annTailCtx が無いため何も起きない (AnnotationStickyTail.setTail が無音で no-op する)。
+  if (typeof bdInstallCardTail === 'function') bdInstallCardTail(chDiv, ch);
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => {
       if (chDiv.isConnected && typeof bdMeasureNodeElement === 'function') bdMeasureNodeElement(ch, chDiv);
@@ -38945,9 +39481,13 @@ function _bdApplyWorldBackgroundImage(imageUrl, scale) {
   const imgEl = layer.querySelector('img');
   const displayUrl = _bdBackgroundDisplayUrl(imageUrl);
   if (imgEl && imgEl.src !== displayUrl) imgEl.src = displayUrl;
+  if (imgEl) window.MeldexImageLoading?.track?.(imgEl, { host: layer, errorMode: 'silent' });
   _bdResolveBackgroundDisplayUrl(imageUrl).then(url => {
     if (!layer.isConnected || layer.dataset.bdBgImageSource !== imageUrl || !imgEl || !url) return;
-    if (imgEl.src !== url) imgEl.src = url;
+    if (imgEl.src !== url) {
+      imgEl.src = url;
+      window.MeldexImageLoading?.track?.(imgEl, { host: layer, errorMode: 'silent' });
+    }
   });
   const s = _bdNormalizeBackgroundScale(scale);
   layer.style.transform = `scale(${s})`;
@@ -41799,10 +42339,7 @@ function bdOpenFilterMenu(anchor) {
   }
 
   function escText(value) {
-    if (typeof esc === 'function') return esc(value == null ? '' : String(value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return MeldexEscape.html(value);
   }
 
   // 保存済みプリセットの色はユーザー入力由来なので、CSS へ埋める前に形式を限定する。
@@ -43172,10 +43709,15 @@ const MeldexPublicRuntime = (() => {
           + 'rt { font-size: 0.55em; line-height: 1; color: inherit; opacity: 0.75; }\n';
       return {
         el,
-        cssFiles: ['gb-tools.css', 'gb-ui.css'],
+        // エントリはエントリレイアウト（自由配置キャンバス）を表示している場合があるため、
+        // そのスタイルも同梱する（無ければ未使用のCSSが増えるだけで無害）
+        cssFiles: viewType === 'entity'
+          ? ['gb-tools.css', 'gb-ui.css', 'gb-db-entity-layout.css']
+          : ['gb-tools.css', 'gb-ui.css'],
         extraCss:
           noteCss + '\n'
           + '#entity-view { padding: 16px 60px; line-height: 1.7; max-width: 900px; margin: 0 auto; box-sizing: border-box; }\n',
+        preTransform: viewType === 'entity' ? _preTransformEntityViewForPublish : undefined,
         notFound: 'ノートが開かれていません',
       };
     }
@@ -43291,6 +43833,17 @@ const MeldexPublicRuntime = (() => {
 
   // DB テーブル: 列幅とステータスバッジ色を computed value でインライン化
   // (これがないとクローン側では getComputedStyle が効かない)
+  // エントリのフルページにエントリレイアウトが表示されている場合の公開用静的化。
+  // タブ行・編集ツールバー・セルの編集チロームは公開HTMLでは操作できないため取り除く。
+  // キャンバスは表示時点のフィット縮尺のまま静的スナップショットとして残す。
+  function _preTransformEntityViewForPublish(originalEl, clone) {
+    clone.querySelectorAll(
+      '[data-e2e-id="entity-layout-tabbar"], .el-edit-toolbar, .el-cell-remove, .el-cell-settings, .el-cell-resize'
+    ).forEach(node => node.remove());
+    clone.querySelectorAll('.el-cell.el-editable').forEach(node => node.classList.remove('el-editable'));
+    clone.querySelectorAll('.el-viewport.el-editing').forEach(node => node.classList.remove('el-editing'));
+  }
+
   function _preTransformDatabaseTable(originalEl, clone) {
     if (!originalEl || !clone) return;
     const origCells = originalEl.querySelectorAll('th, td');
@@ -44195,7 +44748,7 @@ async function promptSaveCurrentScriptNoteAs() {
     dialog.classList.add('sn2-save-as-modal');
     modalApi.body.classList.add('sn2-save-as-body');
     modalApi.footer.classList.add('sn2-save-as-actions');
-    const escCss = (value) => (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') ? CSS.escape(value) : String(value).replace(/"/g, '\\"');
+    const escCss = MeldexEscape.cssIdent;
     const setTreeOpen = (open) => {
       folderTree.hidden = !open;
       folderTree.classList.toggle('is-open', !!open);
@@ -44535,7 +45088,7 @@ async function exportCurrentScriptNoteAsHtml() {
 
   const title = (editor.doc.title || 'シナリオ').toString();
   const safeTitle = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 80) || '無題';
-  const escHtml = (s) => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  const escHtml = MeldexEscape.html;
 
   const html = `<!DOCTYPE html>
 <html lang="ja">
@@ -51776,13 +52329,7 @@ function _sn2QuoteTsvCell(value) {
 }
 
 function _sn2EscapeClipboardHtml(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/\n/g, '<br>');
+  return MeldexEscape.html(value).replace(/\n/g, '<br>');
 }
 
 function _sn2ParseClipboardTable(rawText) {
@@ -54903,7 +55450,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       adapter.touch();
       this.renderDetailPanel(panelContainer);
       requestAnimationFrame(() => {
-        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${CSS.escape(stableSuffix)}"]`)?.focus();
+        panelContainer.querySelector(`[data-e2e-id="scriptnote-${kind}-drag-${MeldexEscape.cssIdent(stableSuffix)}"]`)?.focus();
       });
     };
     grip.addEventListener('keydown', event => {
@@ -55194,7 +55741,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-detail';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const e = MeldexEscape.html;
 
     const mkBtn = (label, title, onClick, e2eId = '') => {
       const b = document.createElement('button');
@@ -55744,7 +56291,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     document.querySelectorAll('.gb-fmt-popup--bulk-edit').forEach(el => el.remove());
     const popup = document.createElement('div');
     popup.className = 'gb-fmt-popup gb-fmt-popup--bulk-edit';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const e = MeldexEscape.html;
     popup.innerHTML = `
       <div class="sn2-bulk-title">一括設定（${this._detailSelection.size}件）</div>
       <div class="sn2-bulk-body">
@@ -56690,7 +57237,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       }
       if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorEl);
     };
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const e = MeldexEscape.html;
     const roleAdapter = this._roleManagementAdapter?.();
     const isScenarioType = !!roleAdapter?.types?.includes(chara);
     const ts = chara.textStyle || {};
@@ -57124,7 +57671,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-detail';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const e = MeldexEscape.html;
 
     // scroll 要素への setProperty ヘルパー（margin 用）
     const setScrollVar = (name, val) => {
@@ -58251,9 +58798,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const jumpToRubyRow = () => {
           const row = this.doc.rows[fr.rowIdx];
           if (row) {
-            const safeRowId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-              ? CSS.escape(row.id)
-              : String(row.id).replace(/["\\]/g, '\\$&');
+            const safeRowId = MeldexEscape.cssIdent(row.id);
             const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${safeRowId}"]`);
             if (rowEl) {
               rowEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -58410,7 +58955,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _escHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(s);
   },
 
 });
@@ -59151,7 +59696,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       const next = this._getScriptNoteVisibleContentColumnIds();
       const focusId = next[Math.min(Math.max(0, oldIndex), next.length - 1)];
       this._activeCellColId = focusId || null;
-      requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(focusId || '')}"]`)?.focus());
+      requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(focusId || '')}"]`)?.focus());
     }
     return true;
   },
@@ -59209,7 +59754,7 @@ Object.assign(ScriptNoteEditor.prototype, {
       btn.setAttribute('role', 'menuitem');
       btn.setAttribute('aria-haspopup', 'menu');
       btn.setAttribute('aria-expanded', 'false');
-      btn.innerHTML = `<span>${text}: <b>${currentLabel}</b></span><span class="sn2-header-popup-arrow">${lucide('chevronRight', 10)}</span>`;
+      btn.innerHTML = `<span>${MeldexEscape.html(text)}: <b>${MeldexEscape.html(currentLabel)}</b></span><span class="sn2-header-popup-arrow">${lucide('chevronRight', 10)}</span>`;
       btn.addEventListener('click', () => {
         if (openSub?._triggerBtn === btn) { closeSub(); return; }
         closeSub();
@@ -59525,7 +60070,7 @@ Object.assign(ScriptNoteEditor.prototype, {
     const returnFocus = () => {
       if (owner?.isConnected && owner !== document.body) return owner;
       const columnId = afterColId || '_text';
-      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(columnId)}"]`) || this.host;
+      return this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(columnId)}"]`) || this.host;
     };
     const restoreParentFocus = reason => {
       if (reason === 'submitted') return;
@@ -59588,7 +60133,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         this._render();
         setBusy(false);
         modal.close('submitted');
-        requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${CSS.escape(id)}"]`)?.focus());
+        requestAnimationFrame(() => this.host?.querySelector(`.sn2-header-cell[data-col-id="${MeldexEscape.cssIdent(id)}"]`)?.focus());
       } catch (error) {
         if (typeof showStatus === 'function') showStatus(error?.message || String(error), true);
       } finally {
@@ -59898,6 +60443,9 @@ Object.assign(ScriptNoteEditor.prototype, {
   }
 
   async function resolveReadOnly(path, explicit) {
+    if (document.body?.dataset?.cloudQuotaBlocked === '1') {
+      return { readOnly: true, reason: '容量上限のため編集できません' };
+    }
     if (explicit === true || document.body?.dataset?.cloudReadonly === '1') {
       return { readOnly: true, reason: '閲覧専用のため編集できません' };
     }
@@ -60225,7 +60773,9 @@ Object.assign(ScriptNoteEditor.prototype, {
     return controller;
   }
 
-  window.MeldexEntityDetail = { mount };
+  // 直接エントリを描画するCloudモバイル経路も、同じ閲覧専用・編集ロック判定を
+  // 再利用できるよう公開する。判定の二重実装を作らない。
+  window.MeldexEntityDetail = { mount, resolveReadOnly };
 })();
 
 ;
@@ -60724,9 +61274,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   }
 
   function esc(value) {
-    return String(value ?? '').replace(/[&<>"']/g, char => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[char]));
+    return MeldexEscape.html(value);
   }
 
   function globalSettingsHtml() {

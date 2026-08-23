@@ -487,6 +487,99 @@
     return { ok: false, reason: 'dropbox-write-failed', error: lastError };
   }
 
+  // 共有プロフィールに今いる「生きているプロフィール」の一覧を返す。
+  // OAuth接続済み（クラウド版）は自己同定ラダーを経由しないため getLinkState()
+  // から候補を拾えない。設定画面の統合導線がその場で読むために使う。
+  async function listProfileCandidates() {
+    if (!await _shouldUseSharedProfile()) return { ok: false, candidates: [], reason: 'not-dropbox-workspace' };
+    const identity = window.MeldexProfileIdentity;
+    if (!identity || typeof identity.listCandidates !== 'function') {
+      return { ok: false, candidates: [], reason: 'identity-unavailable' };
+    }
+    try {
+      const store = _normalizeStore((await _readProfileStore()).store);
+      return { ok: true, candidates: identity.listCandidates(store) };
+    } catch (error) {
+      return { ok: false, candidates: [], reason: 'dropbox-read-failed', error };
+    }
+  }
+
+  // 本人の明示選択による統合を共有ストアへ書き込む。
+  // fromKey のエントリへ引き継ぎ先(toKey)を記録し、以後 fromKey は候補一覧・
+  // 自己同定・共有判定の人数から外れる。
+  //
+  // fromKey は 'local:' エントリだけを受け付ける。'dbid:' エントリは実在する
+  // Dropboxアカウントの正本であり、他の端末・他人が今も使っている可能性がある
+  // ため、引き継ぎ済みにして殺してはならない（v0.7.011 のなりすまし防止原則）。
+  //
+  // options.adoptContent が true の場合、同じ書き込みの中で fromKey 側の名前・
+  // アイコンを toKey のエントリへ写し、この端末の表示にも反映する
+  // （「デスクトップ版の設定を使う」統合）。
+  async function mergeProfileInto(fromKey, toKey, options) {
+    const from = String(fromKey || '').trim();
+    const to = String(toKey || '').trim();
+    if (!from.startsWith('local:')) return { ok: true, changed: false, reason: 'not-a-local-entry' };
+    if (!await _shouldUseSharedProfile()) return { ok: false, changed: false, reason: 'not-dropbox-workspace' };
+    const identity = window.MeldexProfileIdentity;
+    if (!identity || typeof identity.mergeEntries !== 'function') {
+      return { ok: false, changed: false, reason: 'identity-unavailable' };
+    }
+    const adoptContent = !!options?.adoptContent;
+    const account = await _getCurrentAccount(false);
+
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let current;
+      try {
+        current = await _readProfileStore();
+      } catch (error) {
+        return { ok: false, changed: false, reason: 'dropbox-read-failed', error };
+      }
+      const store = _normalizeStore(current.store);
+      const merged = identity.mergeEntries(store, from, to);
+      if (!merged?.changed) return { ok: true, changed: false, reason: 'already-merged' };
+
+      const nextStore = _normalizeStore(merged.store);
+      const updatedAt = _nowIso();
+      let adopted = null;
+      if (adoptContent) {
+        const source = store.profiles[from] || {};
+        adopted = _normalizeProfile(account, {
+          ...(nextStore.profiles[to] || {}),
+          displayName: String(source.displayName || source.name || '').trim(),
+          avatar: String(source.avatar || ''),
+          avatarSpec: String(source.avatarSpec || ''),
+          avatarBg: String(source.avatarBg || ''),
+          accountId: to,
+          updatedAt,
+        }, updatedAt);
+        if (!adopted.displayName) return { ok: false, changed: false, reason: 'empty-profile' };
+        nextStore.profiles[to] = adopted;
+        nextStore.updatedAt = updatedAt;
+      }
+
+      try {
+        await _writeProfileStore(nextStore, current.rev);
+        // 取り込んだ名前・アイコンはこの端末の表示にも反映する。統合先のキーで
+        // ローカル更新時刻を記録し直すため、直後の起動時解決で往復しない。
+        if (adopted) _applyProfileToLocal(adopted);
+        return {
+          ok: true,
+          changed: true,
+          mergedFrom: from,
+          mergedInto: to,
+          fromDisplayName: merged.mergedFromDisplayName || '',
+          profile: adopted || null,
+        };
+      } catch (error) {
+        lastError = error;
+        if (!_isConflictError(error) || attempt >= 2) break;
+      }
+    }
+    try { console.warn('[MeldexDropboxProfileSync] merge failed', lastError); } catch {}
+    return { ok: false, changed: false, reason: 'dropbox-write-failed', error: lastError };
+  }
+
   // 起動時解決の結果キャッシュを捨てる。連携先プロフィールを切り替えた直後に
   // resolveStartupProfile() を呼んでも、成功済みのキャッシュがそのまま返ってしまい
   // 新しいプロフィールがローカルへ反映されないため、切り替え操作の側から明示的に
@@ -614,6 +707,8 @@
     clearLocalUpdateMarker,
     saveCurrentProfile,
     afterLocalProfileChanged,
+    listProfileCandidates,
+    mergeProfileInto,
     teamSyncPayload,
     getCachedAccountId,
     getCachedProfile,

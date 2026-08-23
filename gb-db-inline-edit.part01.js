@@ -453,7 +453,7 @@ function _waitForEntityRow(ctx, entityName, cb) {
     if (ctx?.destroyed) return;
     const root = _paneEl(ctx, '#' + tblId) || (!ctx ? document : null);
     if (!root) return;
-    const tr = root.querySelector(`tbody tr[data-entity-name="${CSS.escape(entityName)}"]`);
+    const tr = root.querySelector(`tbody tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`);
     if (tr) { cb(tr); return; }
     // 描画フラグが落ちていても、直後の再描画・分割描画で行が後から出ることがある。
     if (attempts < 30) {
@@ -520,8 +520,8 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       if (i > 0) entityName = flatRows[i - 1];
     }
 
-    // tr を検索 (CSS.escape で特殊文字を安全に)
-    const tr = tbody.querySelector(`tr[data-entity-name="${CSS.escape(entityName)}"]`);
+    // tr を検索（共通の CSS 識別子エスケープで特殊文字を安全に扱う）
+    const tr = tbody.querySelector(`tr[data-entity-name="${MeldexEscape.cssIdent(entityName)}"]`);
     if (!tr) {
       // Step 2: チャンク分割中で対象行がまだ生成されていない可能性。
       // 進行中なら短い間隔でリトライ (上限 20回 = 1秒程度)。
@@ -531,7 +531,7 @@ function _restoreCellPos(pos, moveTo, _retryCount) {
       }
       return;
     }
-    const td = (propName && tr.querySelector(`td[data-prop-name="${CSS.escape(propName)}"]`)) || tr.querySelector('.col-entity');
+    const td = (propName && tr.querySelector(`td[data-prop-name="${MeldexEscape.cssIdent(propName)}"]`)) || tr.querySelector('.col-entity');
     if (td) setActiveCell(td);
   }, 50);
 }

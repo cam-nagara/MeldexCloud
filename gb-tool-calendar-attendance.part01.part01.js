@@ -40,9 +40,7 @@
   }
 
   function _calAttEsc(v) {
-    return typeof esc === 'function' ? esc(v) : String(v ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(v);
   }
 
   function _calAttStableSlug(value) {
@@ -214,6 +212,17 @@
     catch { return 'anonymous'; }
   }
 
+  function _calAttCanManageAttendance() {
+    let role = '';
+    try { if (typeof getMyRoleForPath === 'function') role = String(getMyRoleForPath('') || '').toLowerCase(); } catch {}
+    try {
+      const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+      if (!role) role = String(state.access || state.role || '').toLowerCase();
+      if (state.isOwner === true) return true;
+    } catch {}
+    return role === 'owner' || role === 'admin';
+  }
+
   function _calAttMonthBounds(date) {
     const d = date || new Date();
     const y = d.getFullYear();
@@ -381,16 +390,24 @@
   };
 
   CalendarComponent.prototype._allowedClockActions = function(state) {
-    if (state === 'initial') return new Set(['clock_in']);
+    if (state === 'initial' || state === 'off') return new Set(['clock_in']);
     if (state === 'working') return new Set(['clock_out', 'break_start']);
     if (state === 'away') return new Set(['break_end']);
     return new Set();
   };
 
-  CalendarComponent.prototype._clockStateFromEntries = function(entries) {
-    const valid = (entries || [])
+  CalendarComponent.prototype._clockEntriesThroughNow = function(entries, nowMillis = Date.now()) {
+    return (entries || [])
       .filter(row => CLOCK_ACTIONS.some(action => action.type === row.type))
-      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+      .map(row => ({ row, millis: Date.parse(String(row.timestamp || '')) }))
+      .filter(item => Number.isFinite(item.millis) && item.millis <= nowMillis)
+      .sort((a, b) => a.millis - b.millis
+        || String(a.row.id || '').localeCompare(String(b.row.id || '')))
+      .map(item => item.row);
+  };
+
+  CalendarComponent.prototype._clockStateFromEntries = function(entries) {
+    const valid = this._clockEntriesThroughNow(entries);
     const last = valid[valid.length - 1];
     if (!last) return 'initial';
     if (last.type === 'clock_in' || last.type === 'break_end') return 'working';
@@ -399,9 +416,7 @@
   };
 
   CalendarComponent.prototype._clockStateFromWindowEntries = function(entries, day) {
-    const valid = (entries || [])
-      .filter(row => CLOCK_ACTIONS.some(action => action.type === row.type))
-      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+    const valid = this._clockEntriesThroughNow(entries);
     const dayPrefix = String(day || this._localDateStr()) + 'T';
     if (valid.some(row => String(row.timestamp || '').startsWith(dayPrefix))) {
       return this._clockStateFromEntries(valid);
@@ -437,6 +452,8 @@
       this._render();
     } catch {
       this._showStatus('打刻に失敗', true);
+      await Promise.allSettled([this._updateClockStatus(), this._loadEvents(), this._loadCalendars()]);
+      this._render();
     } finally {
       this._clockBusy = false;
       this._renderClockButtons(this._clockState || 'initial');
@@ -469,9 +486,7 @@
   CalendarComponent.prototype._statusFromEntries = function(entries) {
     const todayStr = this._localDateStr();
     const state = this._clockStateFromWindowEntries(entries, todayStr);
-    const valid = (entries || [])
-      .filter(row => CLOCK_ACTIONS.some(action => action.type === row.type))
-      .sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+    const valid = this._clockEntriesThroughNow(entries);
     const last = valid[valid.length - 1];
     return {
       state,
@@ -601,7 +616,12 @@
     this._attendanceRenderSeq = token;
     list.innerHTML = '<div class="gb-cal-attendance-empty">読み込み中...</div>';
     const todayStr = this._localDateStr();
+    const correctionDay = this._localDateStr(this._date || new Date());
     const previousDayStr = _calAttPreviousDateStr(this, todayStr);
+    const currentUser = this._getUser();
+    const canManageAttendance = this._calCurrentRole
+      ? this._calUserIsAdmin?.()
+      : _calAttCanManageAttendance();
     const groups = await this._loadAttendanceTeamGroups();
     if (token !== this._attendanceRenderSeq) return;
     if (!groups.length) {
@@ -612,20 +632,30 @@
     const renderedGroups = [];
     for (const group of groups) {
       const rows = [];
-      for (const member of group.members) {
+      const visibleMembers = canManageAttendance
+        ? group.members
+        : group.members.filter(member => member.name === currentUser);
+      for (const member of visibleMembers) {
         let entries = [];
+        let loadFailed = false;
         try {
           entries = await apiFetch(
             '/cal/time?user=' + encodeURIComponent(member.name)
             + '&date_from=' + encodeURIComponent(previousDayStr)
             + '&date_to=' + encodeURIComponent(todayStr + 'T23:59:59')
           );
-        } catch {}
-        rows.push({ member, status: this._statusFromEntries(entries) });
+        } catch { loadFailed = true; }
+        rows.push({ member, status: loadFailed
+          ? { state: 'unknown', label: '確認できません', time: '' }
+          : this._statusFromEntries(entries) });
       }
-      renderedGroups.push({ ...group, rows });
+      if (rows.length) renderedGroups.push({ ...group, rows });
     }
     if (token !== this._attendanceRenderSeq) return;
+    if (!renderedGroups.length) {
+      list.innerHTML = '<div class="gb-cal-attendance-empty">表示できる出退勤情報がありません</div>';
+      return;
+    }
 
     list.innerHTML = '';
     const hasMultipleFolders = renderedGroups.length > 1;
@@ -633,8 +663,21 @@
       const groupEl = document.createElement('div');
       groupEl.className = 'gb-cal-attendance-group';
       const buildUserRow = (row) => {
-        const item = document.createElement('div');
+        const item = document.createElement(canManageAttendance ? 'button' : 'div');
         item.className = 'gb-cal-attendance-user';
+        if (canManageAttendance) {
+          item.type = 'button';
+          item.classList.add('is-editable');
+          item.style.minHeight = '44px';
+          item.dataset.calAttendanceEditUser = row.member.name;
+          item.setAttribute('aria-label', `${row.member.name}の${correctionDay}の実績を修正`);
+          item.addEventListener('click', () => this._showAttendanceCorrectionModal?.({
+            id: `attendance:${row.member.name}:${correctionDay}`,
+            user: row.member.name,
+            start: `${correctionDay}T00:00:00`,
+            calendar_source: 'attendance',
+          }));
+        }
         const iconHtml = typeof getUserAvatarHtml === 'function'
           ? getUserAvatarHtml(row.member.name, 20)
           : `<span class="gb-cal-attendance-avatar">${_calAttEsc(row.member.name.charAt(0).toUpperCase() || '?')}</span>`;

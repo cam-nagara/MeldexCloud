@@ -588,7 +588,19 @@
     }));
     buildField('優先度', '優先度', 'priority');
     buildField('対象色', '色', 'color');
-    buildField('作業時間_実績', '実績作業時間', 'number');
+    form.appendChild(readOnlyField(
+      '実績作業時間',
+      formatScheduleHoursDisplay(prop(row, '作業時間_実績') || prop(row, '実績作業時間')),
+      { e2eId: 'gb-production-task-detail-actual-hours' },
+    ));
+    buildField(
+      '作業参加者',
+      '応援参加者',
+      'text',
+      null,
+      undefined,
+      '作業中のタスクへ途中参加するメンバーを、カンマ区切りで指定します',
+    );
     buildField('開始日時', '開始日時', 'datetime-local');
     buildField('完了日時', '完了日時', 'datetime-local');
     buildField('備考', '備考', 'textarea');

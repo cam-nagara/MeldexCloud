@@ -22,14 +22,6 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
     ],
   },
   {
-    id: '接続・共有サーバー',
-    desc: 'スマホ・タブレット接続、Meldex共有サーバー',
-    icon: 'radioTower',
-    pages: [
-      { id: 'connect', label: '接続・共有サーバー', panels: ['全般'], view: 'connect' },
-    ],
-  },
-  {
     id: '表示・起動',
     desc: '表示サイズ、見やすさ、起動時の動作',
     icon: 'monitorCog',
@@ -82,7 +74,7 @@ const MELDEX_SETTINGS_NAVIGATION = Object.freeze([
   },
   {
     id: '導入・アプリ連携',
-    desc: 'サンプル、ホーム画面追加、ファイル関連付け',
+    desc: 'ホーム画面追加、ファイル関連付け',
     icon: 'download',
     pages: [
       { id: 'setup', label: '導入・アプリ連携', panels: ['全般'], view: 'setup' },
@@ -124,6 +116,7 @@ const MELDEX_SETTINGS_NAVIGATION_ALIASES = Object.freeze({
   'プロフィール': { tabId: 'ユーザー・共同作業', pageId: 'profile' },
   'ワークスペース': { tabId: 'ユーザー・共同作業', pageId: 'workspace' },
   'メンバー・権限': { tabId: 'ユーザー・共同作業', pageId: 'members' },
+  '接続・共有サーバー': { tabId: '保存先・フォルダ', pageId: 'storage' },
   '外観': { tabId: 'テーマ', pageId: 'theme' },
   '文字': { tabId: 'テーマ', pageId: 'font' },
   'フォント': { tabId: 'テーマ', pageId: 'font' },
@@ -171,11 +164,8 @@ function _settingsAutoTagPageVisible() {
   }
   const standalone = /(?:^|\/)[^/?#]*-standalone\.html$/i.test(location.pathname || '');
   const cloudMode = window.MeldexRuntimeAdapter?.isPwaMode?.()
-    || ['browser', 'dropbox', 'server'].includes(document.body?.dataset?.cloudMode || '');
-  const server = window.MeldexRuntimeAdapter?.isServerMode?.()
-    || document.body?.dataset?.cloudMode === 'server';
+    || ['browser', 'dropbox'].includes(document.body?.dataset?.cloudMode || '');
   if (standalone) return false;
-  if (server) return true;
   const cloudStatic = Boolean(window.MeldexCloudRuntimeConfig?.cloudPublicUrl)
     && String(window.MeldexCloudRuntimeConfig?.version?.variant || '').includes('cloud');
   return !cloudMode && !cloudStatic;
@@ -277,20 +267,18 @@ function _tagSettingsNavigationSections(root = document) {
     'storage',   // 1 #settings-cloud-link-card（Dropbox 状態カード）
     'storage',   // 2 ホームフォルダ
     'storage',   // 3 スクリーンショット保存先
-    'connect',   // 4 スマホ・タブレットからの接続（接続タブへ移設）
-    'connect',   // 5 保存の仕組み・共有サーバー
-    'setup',     // 6 ファイルを開くアプリ
-    'setup',     // 7 サンプルデータ
-    'setup',     // 8 ホーム画面に追加（#settings-install-container）
-    'transfer',  // 9 設定の引き継ぎ
-    'display',   // 10 表示オプション
-    'display',   // 11 表示サイズ
-    'display',   // 12 自動起動
-    'history',   // 13 ヒストリー（Undo/Redo）
-    'history',   // 14 自動バージョン保存
-    'history',   // 15 レイアウト
-    'history',   // 16 履歴データのエクスポート
-    'transfer',  // 17 全設定リセット
+    'storage',   // 4 保存の仕組み
+    'setup',     // 5 ファイルを開くアプリ
+    'setup',     // 6 ホーム画面に追加（#settings-install-container）
+    'transfer',  // 7 設定の引き継ぎ
+    'display',   // 8 表示オプション
+    'display',   // 9 表示サイズ
+    'display',   // 10 自動起動
+    'history',   // 11 ヒストリー（Undo/Redo）
+    'history',   // 12 自動バージョン保存
+    'history',   // 13 レイアウト
+    'history',   // 14 履歴データのエクスポート
+    'transfer',  // 15 全設定リセット
   ]);
   _settingsTagDirectChildren(scope.querySelector('.settings-panel[data-panel="LLM"]'), [
     'auto-tag',

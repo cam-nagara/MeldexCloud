@@ -10,17 +10,13 @@
 //      — POST /backlinks/query（全ファイル種別・複数選択・索引カバレッジ対応）
 // パスベース運用。リネーム追従なし（R13 確定）→ リンク切れは可視化。
 // =====================================================================
-(function () {
+(function (global) {
   'use strict';
 
   let _currentTarget = null;    // レガシー経路の現在対象（文字列）。stale応答破棄に使用
   let _currentRenderArg = null; // 直近の render() 引数（再構築ボタンの再取得に使用）
 
-  function _esc(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
+  const _esc = global.MeldexEscape.html;
 
   function _resolveBacklinkOpenType(item) {
     const entryType = item?.entry_type || '';
@@ -324,4 +320,4 @@
     getCurrentTarget: () => _currentTarget,
     dbFolderNotePath,
   };
-})();
+})(typeof window !== 'undefined' ? window : globalThis);

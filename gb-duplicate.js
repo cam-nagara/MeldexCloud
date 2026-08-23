@@ -49,7 +49,7 @@ function showClipSearchResults(results, query) {
     const thumbUrl = API_BASE + '/thumb?path=' + encodeURIComponent(r.path) + '&size=120';
     const score = Math.round(r.score * 100);
     html += `<div class="clip-search-item" role="button" tabindex="0" data-clip-search-result data-path="${esc(r.path)}" data-e2e-id="clip-search-result-${index}" aria-label="${esc(r.name)} を開く">
-      <img class="clip-search-thumb" src="${thumbUrl}" alt="${esc(r.name)}" onerror="this.alt='読込失敗';">
+      <img class="clip-search-thumb" src="${thumbUrl}" alt="${esc(r.name)}" data-meldex-content-image onerror="this.alt='読込失敗';">
       <div class="clip-search-name" title="${esc(r.path)}">${esc(r.name)}</div>
       <div class="clip-search-score">類似度: ${score}%</div>
     </div>`;

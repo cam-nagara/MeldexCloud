@@ -191,9 +191,7 @@ Object.assign(ScriptNoteEditor.prototype, {
         const jumpToRubyRow = () => {
           const row = this.doc.rows[fr.rowIdx];
           if (row) {
-            const safeRowId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-              ? CSS.escape(row.id)
-              : String(row.id).replace(/["\\]/g, '\\$&');
+            const safeRowId = MeldexEscape.cssIdent(row.id);
             const rowEl = this.host?.querySelector(`.sn2-row[data-row-id="${safeRowId}"]`);
             if (rowEl) {
               rowEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -350,7 +348,7 @@ Object.assign(ScriptNoteEditor.prototype, {
   },
 
   _escHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(s);
   },
 
 });

@@ -598,18 +598,22 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
 }
 
 /* Part 1-7: 付箋ノート「...」メニューボタン */
+.ann-note-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  gap: 4px;
+}
 .note-more-btn {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  z-index: 5;
-  display: none;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
-  min-height: 24px;
+  flex: 0 0 auto;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
   margin: 0;
   color: var(--fg2);
@@ -621,12 +625,8 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   -webkit-appearance: none;
   appearance: none;
 }
-.ann-note:hover .note-more-btn,
-.note-more-btn:focus-visible {
-  display: inline-flex;
-}
 .note-more-btn:hover,
-.note-more-btn:focus-visible {
+.note-more-btn:focus {
   color: var(--fg);
   background: var(--ui-bg-control-active);
   outline: none;
@@ -637,15 +637,15 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   height: 16px;
   flex: 0 0 16px;
 }
-.ann-note-delete-btn {
+.ann-note-window-close-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 20px;
-  min-width: 20px;
-  height: 20px;
-  min-height: 20px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
   padding: 0;
   margin: 0;
   color: inherit;
@@ -657,17 +657,17 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
   -webkit-appearance: none;
   appearance: none;
 }
-.ann-note-delete-btn:hover,
-.ann-note-delete-btn:focus-visible {
+.ann-note-window-close-btn:hover,
+.ann-note-window-close-btn:focus-visible {
   color: var(--fg);
   background: var(--ui-bg-control-active);
   outline: none;
 }
-.ann-note-delete-btn svg {
+.ann-note-window-close-btn svg {
   display: block;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
 }
 @media (pointer: coarse), (max-width: 640px) {
   .note-more-btn {
@@ -677,7 +677,7 @@ body[data-csv-sheet-mode="1"] #tb-db .db-toolbar-actions-right {
     height: 44px;
     min-height: 44px;
   }
-  .ann-note-delete-btn {
+  .ann-note-window-close-btn {
     width: 44px;
     min-width: 44px;
     height: 44px;

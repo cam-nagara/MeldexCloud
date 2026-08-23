@@ -106,6 +106,8 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -134,6 +136,13 @@
 
 .meldex-beta-consent-check input.meldex-beta-consent-checkbox::after {
   content: none !important;
+}
+
+.meldex-beta-consent-required-badge {
+  flex: 0 0 auto;
+  color: var(--danger, #dc2626);
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .meldex-beta-consent-muted,
@@ -312,7 +321,7 @@
   max-width: calc(100vw - 16px);
 }
 
-.meldex-shared-server-modal.gb-modal {
+.meldex-retired-server-modal.gb-modal {
   width: min(680px, calc(100vw - 16px));
   max-width: calc(100vw - 16px);
 }
@@ -322,25 +331,12 @@
   max-width: calc(100vw - 16px);
 }
 
-.meldex-shared-server-body {
+.meldex-retired-server-body {
   box-sizing: border-box;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.meldex-shared-server-modal > .gb-modal-body {
-  overflow-x: hidden;
-}
-
-.meldex-shared-server-modal .gb-modal-shell-body-generated,
-.meldex-shared-server-modal .meldex-cloud-setup-section,
-.meldex-shared-server-modal .gb-input {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
 }
 
 .meldex-dropbox-setup-body {
@@ -549,7 +545,7 @@
 }
 
 .meldex-cloud-home-only-actions button {
-  min-height: 38px;
+  min-height: 44px;
 }
 
 .meldex-install-prompt-modal,
@@ -567,7 +563,14 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: hidden !important;
+}
+
+#meldex-install-prompt-overlay .meldex-install-prompt-modal > .gb-modal-body,
+#meldex-install-help-overlay .meldex-install-help-modal > .gb-modal-body,
+#meldex-cloud-home-first-overlay .meldex-cloud-home-first-modal > .gb-modal-body,
+#meldex-beta-consent-overlay .meldex-beta-consent-modal > .gb-modal-body {
+  overflow-x: hidden !important;
 }
 
 .meldex-install-card,

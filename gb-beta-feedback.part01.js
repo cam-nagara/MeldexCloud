@@ -21,6 +21,8 @@
   const GOOGLE_ADMIN_TOKEN_KEY = 'meldex-beta-feedback-google-admin-token';
   const GOOGLE_IMPORT_DEFAULT_LIMIT = 10;
   const GOOGLE_IMPORT_DEFAULT_MAX_PASSES = 25;
+  const DEBUGGER_CRASH_ENDPOINT = 'https://debugger-api-staging.dlc-cherry.workers.dev/api/v1/public/error-reports';
+  const DEBUGGER_PROJECT_SLUG = 'meldex';
   const CRASH_FIELD_BLOCKLIST = new Set([
     'path', 'filepath', 'filename', 'targetpath',
     'currentpath', 'currentpagepath', 'currentdbpath',
@@ -31,6 +33,8 @@
   let _flushTelemetryPromise = null;
   let _settingsBound = false;
   let _pwaHandlersInstalled = false;
+  let _cloudCrashReporter = null;
+  let _uninstallCloudCrashReporter = null;
 
   async function _appendCloudDiagnostic(provider, channel, payload) {
     const resolver = window.MeldexDropboxManagementRootResolver;
@@ -183,6 +187,14 @@
   function setCrashReportEnabled(enabled) {
     _safeSet(CRASH_CONSENT_KEY, enabled ? '1' : '0');
     _writeConsentFromToggles();
+    if (!enabled) {
+      try { _cloudCrashReporter?.clear?.(); } catch (_) {}
+      try { _uninstallCloudCrashReporter?.(); } catch (_) {}
+      _cloudCrashReporter = null;
+      _uninstallCloudCrashReporter = null;
+    } else {
+      _configureCloudCrashReporter();
+    }
   }
 
   function setTelemetryEnabled(enabled) {
@@ -493,6 +505,25 @@
       '      - trigger: create',
       '        value: $now',
       '        overwrite: if_empty',
+      '  送信元:',
+      '    type: text',
+      '  送信状態:',
+      '    type: select',
+      '    options: [送信待ち, 送信済み, 送信失敗, 送信先未設定, 端末内に保存]',
+      '  送信受付日時:',
+      '    type: date',
+      '  開発者への送信日時:',
+      '    type: date',
+      '  受付番号:',
+      '    type: text',
+      '  対象バージョン:',
+      '    type: text',
+      '  送信結果・失敗理由:',
+      '    type: long-text',
+      '  添付:',
+      '    type: text',
+      '  端末内受付番号:',
+      '    type: text',
       '  仕分け状態:',
       '    type: select',
       '    options: [未処理, 仕分け済み, 転記済み, 転記不要]',
@@ -613,7 +644,7 @@
       currentViewIdx: 0,
       savedViews: [
         { name: 'フィードバックフォーム', viewMode: 'form', typeSpecific: { form: { formConfig: _feedbackFormConfig() } } },
-        { name: '送信履歴', viewMode: 'pivot', hiddenCols: ['連絡先', 'LLM分類理由'], pinnedCols: ['件名', '対応状況'], colOrder: ['件名', '対応状況', '修正済み', '種別', '重要度', '画面/機能', '送信日', '修正日時', '修正バージョン', '転記先'] },
+        { name: '送信履歴', viewMode: 'pivot', hiddenCols: ['連絡先', 'LLM分類理由', '端末内受付番号'], pinnedCols: ['件名', '送信状態', '対応状況'], colOrder: ['件名', '送信状態', '送信元', '種別', '重要度', '画面/機能', '送信受付日時', '開発者への送信日時', '受付番号', '対象バージョン', '送信結果・失敗理由', '添付', '対応状況', '修正済み', '修正日時', '修正バージョン', '転記先'] },
       ],
     };
   }
@@ -643,17 +674,49 @@
       const base = byName.get(view?.name || '');
       if (!base) return view;
       used.add(base.name || '');
-      return { ...base, ...view, typeSpecific: { ...(base.typeSpecific || {}), ...(view.typeSpecific || {}) } };
+      const mergedView = { ...base, ...view, typeSpecific: { ...(base.typeSpecific || {}), ...(view.typeSpecific || {}) } };
+      ['hiddenCols', 'pinnedCols', 'colOrder'].forEach((key) => {
+        const existing = Array.isArray(view?.[key]) ? view[key] : [];
+        const required = Array.isArray(base?.[key]) ? base[key] : [];
+        mergedView[key] = [...existing, ...required.filter(value => !existing.includes(value))];
+      });
+      return mergedView;
     });
     defaultViews.forEach(view => { const name = view?.name || ''; if (!used.has(name) && !currentViews.some(current => (current?.name || '') === name)) merged.push(view); });
     return merged;
   }
 
+  function _upgradeCloudFeedbackSheet(source) {
+    const current = String(source || '');
+    if (!current || current.includes('  送信状態:')) return current;
+    const complete = _feedbackDbFrontmatter();
+    const historyStart = complete.indexOf('  送信元:');
+    const historyEnd = complete.indexOf('  仕分け状態:');
+    if (historyStart < 0 || historyEnd <= historyStart) return current;
+    const historySchema = complete.slice(historyStart, historyEnd);
+    const insertAt = current.indexOf('  仕分け状態:');
+    if (insertAt >= 0) return current.slice(0, insertAt) + historySchema + current.slice(insertAt);
+    const publishAt = current.indexOf('publish:');
+    if (publishAt >= 0) return current.slice(0, publishAt) + historySchema + current.slice(publishAt);
+    return current;
+  }
+
   async function _writeCloudFeedbackSheet() {
     const provider = window.MeldexStorageAdapter?.getProvider?.();
     if (!provider) throw new Error('Dropbox provider が未初期化です');
-    try { await provider.statPath(FEEDBACK_DB_NOTE); }
-    catch (_) { await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter()); }
+    let exists = false;
+    try { await provider.statPath(FEEDBACK_DB_NOTE); exists = true; } catch (_) {}
+    if (!exists) {
+      await provider.writeText(FEEDBACK_DB_NOTE, _feedbackDbFrontmatter());
+    } else if (typeof provider.readText === 'function') {
+      try {
+        const current = await provider.readText(FEEDBACK_DB_NOTE);
+        const upgraded = _upgradeCloudFeedbackSheet(current);
+        if (upgraded !== current) await provider.writeText(FEEDBACK_DB_NOTE, upgraded);
+      } catch (_) {
+        // 既存の利用者シートを読めない時は上書きせず、次回起動で再試行する。
+      }
+    }
     return {
       ok: true,
       dbPath: FEEDBACK_DB_DIR,
@@ -664,13 +727,13 @@
     };
   }
 
-  async function ensureFeedbackSheet() {
+  async function ensureFeedbackSheet(options = {}) {
     const result = window.MeldexRuntimeAdapter?.isBrowserDataMode?.()
       ? await _writeCloudFeedbackSheet()
       : await _postJson('/beta/feedback-template', {}, false);
     if (result?.ok === false) throw new Error(result.error || result.reason || 'フィードバック保管シートを準備できませんでした');
     const dbPath = _applyFeedbackViewConfig(result);
-    if (typeof selectDatabase === 'function') {
+    if (options.open !== false && typeof selectDatabase === 'function') {
       try { await selectDatabase(dbPath, undefined, { silent: true }); } catch (_) {}
     }
     return { ...result, dbPath };
@@ -743,6 +806,12 @@
   // (app/meldex_debugger_reports.py) と同じ見出しの並びを使う。
   const FEEDBACK_SECTION_ORDER = ['件名', '種別', '内容', '再現手順', '期待する動作', '画面/機能', '重要度', '環境'];
   const FEEDBACK_PRIVATE_FIELDS = new Set(['お名前', '連絡先']);
+  const FEEDBACK_HISTORY_FIELDS = new Set([
+    '送信日', 'フィードバック送信日時', 'Meldex受信日時', '送信元', '送信状態',
+    '送信受付日時', '開発者への送信日時', '受付番号', '対象バージョン',
+    '送信結果・失敗理由', '添付', '端末内受付番号',
+  ]);
+  const _cloudCrashHistoryWrites = new Map();
 
   function _fieldText(value) {
     if (value == null) return '';
@@ -767,7 +836,7 @@
     });
     const extra = {};
     Object.keys(source).forEach((key) => {
-      if (FEEDBACK_SECTION_ORDER.includes(key) || FEEDBACK_PRIVATE_FIELDS.has(key)) return;
+      if (FEEDBACK_SECTION_ORDER.includes(key) || FEEDBACK_PRIVATE_FIELDS.has(key) || FEEDBACK_HISTORY_FIELDS.has(key)) return;
       const value = _fieldText(source[key]);
       if (value) extra[key] = value;
     });
@@ -783,6 +852,157 @@
     return !!window.MeldexRuntimeAdapter?.isBrowserDataMode?.();
   }
 
+  function _cloudCrashHistoryMarkdown(report, status, result = {}) {
+    const receivedAt = String(report?.occurredAt || _nowIso());
+    const sentAt = status === '送信済み' ? _nowIso() : '';
+    const receipt = String(result?.issueId || result?.reportId || result?.id || '');
+    const details = {
+      種類: String(report?.errorType || 'Error'),
+      内容: String(report?.message || 'Meldex Cloud error'),
+      発生箇所: String(report?.stack || ''),
+      環境: report?.context || {},
+    };
+    return [
+      '---',
+      'type: settings-entry',
+      `id: ${_yamlScalar('cloud_crash_' + _safeFilePart(report?.idempotencyKey || 'report', 'report'))}`,
+      'category: Meldexフィードバック',
+      'properties:',
+      _propYaml('件名', 'Meldex Cloudの自動クラッシュ報告'),
+      _propYaml('種別', 'バグ'),
+      _propYaml('内容', JSON.stringify(details, null, 2)),
+      _propYaml('環境', 'Meldex Cloud'),
+      _propYaml('送信元', 'Meldex Cloudの自動クラッシュ報告'),
+      _propYaml('送信状態', status),
+      _propYaml('送信受付日時', receivedAt),
+      _propYaml('開発者への送信日時', sentAt),
+      _propYaml('受付番号', receipt),
+      _propYaml('対象バージョン', report?.version || ''),
+      _propYaml('送信結果・失敗理由', result?.message || (status === '送信済み' ? 'Debuggerが受け付けました' : 'オンライン復帰後に自動で再送します')),
+      _propYaml('添付', report?.diagnostics ? '同意済み診断情報あり' : 'なし'),
+      _propYaml('端末内受付番号', report?.idempotencyKey || ''),
+      _propYaml('送信日', receivedAt.slice(0, 10)),
+      _propYaml('フィードバック送信日時', receivedAt),
+      `created: ${_yamlScalar(receivedAt)}`,
+      `modified: ${_yamlScalar(_nowIso())}`,
+      '---',
+      '',
+    ].join('\n');
+  }
+
+  async function _writeCloudCrashHistory(report, status, result) {
+    const key = String(report?.idempotencyKey || '');
+    if (!key) return;
+    const previous = _cloudCrashHistoryWrites.get(key) || Promise.resolve();
+    const write = previous.catch(() => {}).then(async () => {
+      const provider = window.MeldexStorageAdapter?.getProvider?.();
+      if (!provider) return;
+      await _writeCloudFeedbackSheet();
+      const fileId = _safeFilePart(key, 'report');
+      await provider.writeText(
+        _joinPath(FEEDBACK_DB_DIR, `送信履歴_${fileId}.md`),
+        _cloudCrashHistoryMarkdown(report, status, result),
+      );
+    });
+    _cloudCrashHistoryWrites.set(key, write);
+    try {
+      await write;
+    } catch (_) {
+      // 履歴保存の失敗でクラッシュ送信を再送・失敗扱いにしない。
+    } finally {
+      if (_cloudCrashHistoryWrites.get(key) === write) _cloudCrashHistoryWrites.delete(key);
+    }
+  }
+
+  async function _settleCloudCrashHistory(report, status, result) {
+    const write = _writeCloudCrashHistory(report, status, result);
+    await Promise.race([
+      write,
+      new Promise(resolve => setTimeout(resolve, 1500)),
+    ]);
+  }
+
+  async function _cloudCrashFetch(url, options) {
+    let report = null;
+    try { report = JSON.parse(String(options?.body || '')); } catch (_) {}
+    try {
+      const response = await globalThis.fetch(url, options);
+      let result = {};
+      try { result = await response.clone().json(); } catch (_) {}
+      if (report) {
+        if (response.ok) {
+          await _settleCloudCrashHistory(report, '送信済み', result);
+        } else if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
+          await _settleCloudCrashHistory(report, '送信待ち', { message: `HTTP ${response.status}。オンライン復帰後に自動で再送します` });
+        } else {
+          await _settleCloudCrashHistory(report, '送信失敗', { message: `DebuggerがHTTP ${response.status}を返したため自動再送を停止しました` });
+        }
+      }
+      return response;
+    } catch (error) {
+      if (report) {
+        await _settleCloudCrashHistory(report, '送信待ち', { message: '通信できないため、オンライン復帰後に自動で再送します' });
+      }
+      throw error;
+    }
+  }
+
+  function _configureCloudCrashReporter() {
+    if (!_isCloudDataMode() || !isCrashReportEnabled()) return null;
+    if (_cloudCrashReporter) return _cloudCrashReporter;
+    const Reporter = window.DebuggerCrashClient?.CrashReporter;
+    if (typeof Reporter !== 'function') return null;
+    try {
+      _cloudCrashReporter = new Reporter({
+        endpoint: DEBUGGER_CRASH_ENDPOINT,
+        projectSlug: DEBUGGER_PROJECT_SLUG,
+        version: String(window.__meldexVersionCache?.version || 'unknown').slice(0, 100),
+        component: 'meldex-cloud',
+        diagnosticsConsented: true,
+        fetcher: _cloudCrashFetch,
+        onDiscard: (event) => {
+          _writeCloudCrashReport({
+            kind: 'crash-client-discard',
+            level: 'warning',
+            reason: String(event?.reason || 'unknown'),
+            status: Number(event?.status || 0),
+            time: _nowIso(),
+          }).catch(() => {});
+        },
+      });
+      _uninstallCloudCrashReporter = _cloudCrashReporter.install({
+        windowErrors: true,
+        unhandledRejections: true,
+        flushWhenOnline: true,
+      });
+      return _cloudCrashReporter;
+    } catch (_) {
+      _cloudCrashReporter = null;
+      _uninstallCloudCrashReporter = null;
+      return null;
+    }
+  }
+
+  function _captureCloudCrash(payload) {
+    const reporter = _configureCloudCrashReporter();
+    if (!reporter) return;
+    try {
+      const failure = new Error('Meldex Cloud error');
+      const requestedName = String(payload?.name || 'MeldexCloudError');
+      failure.name = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(requestedName)
+        ? requestedName
+        : 'MeldexCloudError';
+      if (payload?.stack) failure.stack = String(payload.stack);
+      reporter.capture(failure, {
+        severity: payload?.level === 'fatal' ? 'fatal' : 'error',
+        context: {
+          runtimeMode: String(payload?.runtimeMode || 'cloud').slice(0, 100),
+          source: String(payload?.source || 'meldex').slice(0, 100),
+        },
+      });
+    } catch (_) {}
+  }
+
   async function _getJson(path) {
     const response = await fetch((typeof API_BASE === 'string' ? API_BASE : '/api') + path, {
       headers: _authHeaders(),
@@ -792,7 +1012,13 @@
   }
 
   async function getDebuggerSettings() {
-    if (_isCloudDataMode()) return { ...DEBUGGER_UNAVAILABLE, baseUrl: '', projectSlug: '' };
+    if (_isCloudDataMode()) return {
+      ok: true,
+      configured: true,
+      fixed: true,
+      baseUrl: DEBUGGER_CRASH_ENDPOINT.replace(/\/api\/v1\/public\/error-reports$/, ''),
+      projectSlug: DEBUGGER_PROJECT_SLUG,
+    };
     return _getJson('/debugger/settings');
   }
 
@@ -812,12 +1038,21 @@
   }
 
   async function getDebuggerQueue() {
-    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    if (_isCloudDataMode()) {
+      const reporter = _configureCloudCrashReporter();
+      const status = reporter?.status?.() || { ok: false, pending: 0, nextAttemptAt: null };
+      return { ...status, configured: !!reporter, browserManaged: true };
+    }
     return _getJson('/debugger/queue');
   }
 
   async function flushDebuggerQueue() {
-    if (_isCloudDataMode()) return DEBUGGER_UNAVAILABLE;
+    if (_isCloudDataMode()) {
+      const reporter = _configureCloudCrashReporter();
+      if (!reporter) return { ...DEBUGGER_UNAVAILABLE, reason: 'crash-report-consent-disabled' };
+      const status = await reporter.flush();
+      return { ...status, browserManaged: true };
+    }
     return _postJson('/debugger/flush', {}, false);
   }
 
@@ -842,6 +1077,7 @@
         reportType: _feedbackReportType(fields['種別']),
         origin: 'feedback-form',
         sections,
+        historyEntryPath: String(data.entryPath || ''),
       });
     } catch (error) {
       // 送信できなくても、フォームの入力はMeldex内の保管シートに残っている。
@@ -916,7 +1152,8 @@
     }
     if (!isCrashReportEnabled() || _isBypassMode()) return;
     if (window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
-      // Cloud版はサーバーを持たないため、この端末内の記録だけを残す。
+      // Cloud版も同意時は汎用クライアントのoutboxへ積み、端末内記録も残す。
+      _captureCloudCrash(payload);
       _writeCloudCrashReport(payload).catch(() => {});
     } else {
       // 本体サーバーが記録し、同意があればDebuggerの送信待ちへ回す。

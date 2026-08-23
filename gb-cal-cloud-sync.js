@@ -65,6 +65,45 @@
     return new Date().toISOString();
   }
 
+  function _syncAccessBody(body) {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return body || {};
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    const admin = state.isOwner === true || role === 'owner' || role === 'admin';
+    let actor = '';
+    try { actor = String(typeof getUsername === 'function' ? getUsername() : '').trim(); } catch {}
+    if (!actor) {
+      try { actor = String(JSON.parse(localStorage.getItem('meldex-user') || '{}').name || '').trim(); } catch {}
+    }
+    const requested = String(body?.user || '').trim();
+    if (!admin) throw _httpError('外部カレンダーを同期できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    return { ...(body || {}), user: requested || actor };
+  }
+
+  function _assertSharedAuthAdmin() {
+    if (!window.MeldexRuntimeAdapter?.getWorkspaceState) return;
+    const state = window.MeldexRuntimeAdapter.getWorkspaceState() || {};
+    const role = String(state.access || state.role || '').toLowerCase();
+    if (state.isOwner !== true && role !== 'owner' && role !== 'admin') {
+      throw _httpError('共有カレンダー連携を設定できるのは管理者のみです', 403, 'CALENDAR_SYNC_ADMIN_REQUIRED');
+    }
+  }
+
+  async function _stableProviderEventKey(localId) {
+    const text = String(localId || 'event');
+    if (globalThis.crypto?.subtle && typeof TextEncoder !== 'undefined') {
+      const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return 'meld' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    }
+    let output = '';
+    for (let seed = 0; seed < 8; seed += 1) {
+      let hash = (2166136261 ^ seed) >>> 0;
+      for (const char of text) { hash ^= char.codePointAt(0); hash = Math.imul(hash, 16777619) >>> 0; }
+      output += hash.toString(16).padStart(8, '0');
+    }
+    return 'meld' + output;
+  }
+
   // ============================================================
   // ストレージ（_calendar/ 配下のJSON。既存の calendar store と同じ置き場）
   // ============================================================
@@ -80,36 +119,64 @@
     return 'cal-cloud-sync:' + String(path || '');
   }
 
+  function _oauthSecretStoreError(cause) {
+    const error = _httpError('OAuth秘密情報の端末保護ストアを利用できません', 503, 'OAUTH_SECRET_STORE_UNAVAILABLE');
+    if (cause) error.cause = cause;
+    return error;
+  }
+
+  function _requireOAuthSecretStore() {
+    const store = window.MeldexCalOAuthTokenStore;
+    if (store) return store;
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _oauthSecretStoreError();
+    return null;
+  }
+
+  function _sameSecretValues(expected, actual) {
+    return Object.keys(expected || {}).every(field => String(actual?.[field] || '') === String(expected[field] || ''));
+  }
+
   async function _readAuth(provider, path) {
     const stored = (await _readJsonSafe(provider, path, null)) || null;
-    const store = window.MeldexCalOAuthTokenStore;
-    if (!store) return stored; // トークンストア未読込時は安全側フォールバックとして旧挙動を維持
+    const store = _requireOAuthSecretStore();
+    if (!store) return stored; // 明示的な旧ローカル実行環境だけは従来形式を読み取る
     const tokenKey = _tokenKeyForPath(path);
-    let secrets = await store.getSecrets(tokenKey).catch(() => null);
-    if (!secrets) {
-      // 読み替え互換: 旧位置（Dropbox平文JSON）に秘密フィールドが残っていれば、
-      // 新位置（IndexedDB）へ一度だけ移してから旧位置の平文フィールドを削除する。
-      const legacySecrets = store.extractSecretFields(stored || {});
+    const legacySecrets = store.extractSecretFields(stored || {});
+    let secrets;
+    try {
+      secrets = await store.getSecrets(tokenKey);
       if (store.hasAnySecretValue(legacySecrets)) {
-        await store.setSecrets(tokenKey, legacySecrets).catch(() => {});
-        secrets = legacySecrets;
-        if (stored) {
-          await _directoryHandle(provider, CAL_DIR, true);
-          await provider.writeJson(path, store.stripSecretFields(stored)).catch(() => {});
-        }
+        const saved = await store.setSecrets(tokenKey, legacySecrets);
+        const confirmed = await store.getSecrets(tokenKey);
+        if (saved?.ok === false || !_sameSecretValues(legacySecrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        await _directoryHandle(provider, CAL_DIR, true);
+        await provider.writeJson(path, store.stripSecretFields(stored));
+        const scrubbed = (await _readJsonSafe(provider, path, null)) || {};
+        if (store.hasAnySecretValue(store.extractSecretFields(scrubbed))) throw new Error('Dropbox OAuth secret scrub verification failed');
+        secrets = confirmed;
       }
+    } catch (error) {
+      throw _oauthSecretStoreError(error);
     }
     if (!stored && !store.hasAnySecretValue(secrets)) return null;
     return { ...store.stripSecretFields(stored || {}), ...(secrets || {}) };
   }
 
   async function _writeAuth(provider, path, payload) {
-    const store = window.MeldexCalOAuthTokenStore;
+    const store = _requireOAuthSecretStore();
     let metadata = payload;
     if (store) {
       const tokenKey = _tokenKeyForPath(path);
       const secrets = store.extractSecretFields(payload);
-      if (Object.keys(secrets).length) await store.setSecrets(tokenKey, secrets);
+      if (Object.keys(secrets).length) {
+        try {
+          const saved = await store.setSecrets(tokenKey, secrets);
+          const confirmed = await store.getSecrets(tokenKey);
+          if (saved?.ok === false || !_sameSecretValues(secrets, confirmed)) throw new Error('OAuth secret store verification failed');
+        } catch (error) {
+          throw _oauthSecretStoreError(error);
+        }
+      }
       metadata = store.stripSecretFields(payload);
     }
     await _directoryHandle(provider, CAL_DIR, true);
@@ -343,7 +410,8 @@
     for (const row of rows) {
       if (!_isLocalUnsent(row, user)) continue;
       try {
-        const eventBody = { summary: row.title || '', description: row.description || '', location: row.location || '' };
+        const providerId = await _stableProviderEventKey(row.id);
+        const eventBody = { id: providerId, summary: row.title || '', description: row.description || '', location: row.location || '' };
         if (row.all_day) {
           eventBody.start = { date: _dateOnly(row.start) };
           eventBody.end = { date: _localAllDayEndToGoogle(row.start, row.end || row.start) };
@@ -356,12 +424,12 @@
           headers: { Authorization: 'Bearer ' + auth.access_token, 'Content-Type': 'application/json' },
           body: JSON.stringify(eventBody),
         });
-        if (!response.ok) {
+        if (!response.ok && response.status !== 409) {
           const detail = await response.json().catch(() => null);
           throw new Error(detail?.error?.message || `HTTP ${response.status}`);
         }
-        const result = await response.json();
-        row.external_id = result.id;
+        const result = response.status === 409 ? { id: providerId } : await response.json();
+        row.external_id = result.id || providerId;
         row.calendar_source = 'google';
         row.modified = now;
         pushed += 1;
@@ -573,11 +641,14 @@
     const auth = await _microsoftAccessToken(provider);
     const rows = await _readEvents(provider);
     let pushed = 0;
+    const errors = [];
     const now = _nowIso();
     for (const row of rows) {
       if (!_isLocalUnsent(row, user) || !row.start) continue;
       try {
-        const result = await _graphJson('POST', '/me/events', auth.access_token, _microsoftEventBody(row));
+        const eventBody = _microsoftEventBody(row);
+        eventBody.transactionId = await _stableProviderEventKey(row.id);
+        const result = await _graphJson('POST', '/me/events', auth.access_token, eventBody);
         if (!result.id) continue;
         row.external_id = result.id;
         row.calendar_source = 'microsoft';
@@ -585,12 +656,12 @@
         row.url = result.webLink || '';
         row.modified = now;
         pushed += 1;
-      } catch {
-        // Desktop側と同様、1件の送信失敗で全体を止めない（他の未送信イベントの送信を続ける）
+      } catch (error) {
+        errors.push({ id: row.id, title: row.title, error: error?.message || String(error) });
       }
     }
     await _writeEvents(provider, rows);
-    return { ok: true, pushed };
+    return { ok: errors.length === 0, pushed, failed: errors.length, errors };
   }
 
   // ============================================================
@@ -614,21 +685,38 @@
     };
   }
 
+  function _withCalendarLease(provider, operation) {
+    const lease = window.MeldexCloudCalendarLease;
+    if (lease?.withLease) return lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider));
+    if (window.MeldexRuntimeAdapter?.getWorkspaceState) {
+      throw _httpError('共有カレンダーの更新ロックを利用できません', 503, 'CALENDAR_LOCK_UNAVAILABLE');
+    }
+    return operation(provider);
+  }
+
   async function _calCloudSyncHandler({ method, body, pathname }) {
     if (pathname === '/cal/sync/status' && method === 'GET') {
       return _statusPayload(await _requirePwaProvider('read'));
     }
     if (pathname === '/cal/sync/google/pull' && method === 'POST') {
-      return _googlePull(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _googlePull(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/google/push' && method === 'POST') {
-      return _googlePush(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _googlePush(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/microsoft/pull' && method === 'POST') {
-      return _microsoftPull(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _microsoftPull(leasedProvider, accessBody));
     }
     if (pathname === '/cal/sync/microsoft/push' && method === 'POST') {
-      return _microsoftPush(await _requirePwaProvider('readwrite'), body || {});
+      const provider = await _requirePwaProvider('readwrite');
+      const accessBody = _syncAccessBody(body);
+      return _withCalendarLease(provider, leasedProvider => _microsoftPush(leasedProvider, accessBody));
     }
     return NOT_HANDLED;
   }
@@ -640,6 +728,7 @@
   // ============================================================
 
   async function authorizeGoogle({ clientId, clientSecret, popup }) {
+    _assertSharedAuthAdmin();
     const id = String(clientId || '').trim();
     const secret = String(clientSecret || '').trim();
     const { token } = await _oauth().google.authorize({ clientId: id, clientSecret: secret, popup });
@@ -659,6 +748,7 @@
   }
 
   async function authorizeMicrosoft({ clientId, tenant, popup }) {
+    _assertSharedAuthAdmin();
     const id = String(clientId || '').trim();
     const tenantValue = String(tenant || 'common').trim() || 'common';
     const { token } = await _oauth().microsoft.authorize({ clientId: id, tenant: tenantValue, popup });
@@ -691,6 +781,7 @@
       googlePush: _googlePush,
       microsoftPull: _microsoftPull,
       microsoftPush: _microsoftPush,
+      googleAccessToken: _googleAccessToken,
       readAuth: _readAuth,
       writeAuth: _writeAuth,
       readEvents: _readEvents,

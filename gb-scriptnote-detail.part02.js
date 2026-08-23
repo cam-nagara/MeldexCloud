@@ -197,7 +197,7 @@
       }
       if (restoreFocus && typeof focusMeldexDropdownTrigger === 'function') focusMeldexDropdownTrigger(anchorEl);
     };
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const e = MeldexEscape.html;
     const roleAdapter = this._roleManagementAdapter?.();
     const isScenarioType = !!roleAdapter?.types?.includes(chara);
     const ts = chara.textStyle || {};
@@ -631,7 +631,7 @@
     container.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'sn2-detail';
-    const e = typeof esc === 'function' ? esc : (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const e = MeldexEscape.html;
 
     // scroll 要素への setProperty ヘルパー（margin 用）
     const setScrollVar = (name, val) => {

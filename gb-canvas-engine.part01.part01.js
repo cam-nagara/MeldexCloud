@@ -503,7 +503,7 @@ function bdParseMd(raw) {
   if (typeof bdStripLlmContextBlock === 'function') raw = bdStripLlmContextBlock(raw);
   const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?/);
   let preservedFrontmatter = '';
-  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null;
+  let positions = {}, nodeIds = {}, connections = [], sizes = {}, parents = {}, structures = {}, statuses = {}, bgcolors = {}, balloons = {}, containers = {}, links = {}, linkTypes = {}, groups = [], statusDefs = null, transforms = {}, canvasBg = '', fileTheme = null, cardStyles = [], lineStyles = [], depthStyles = [], boardUi = {}, llmSemantics = null, tails = {};
   if (fmMatch) {
     const fm = fmMatch[1];
     if (typeof bdPreserveUnknownFrontmatter === 'function') preservedFrontmatter = bdPreserveUnknownFrontmatter(fm);
@@ -544,6 +544,17 @@ function bdParseMd(raw) {
     }
     const balBlock = fm.match(/balloons:\n((?:\s+\w+:.*\n?)*)/);
     if (balBlock) balBlock[1].replace(/(\w+):\s*\{tailX:\s*([\d.-]+),\s*tailY:\s*([\d.-]+)(?:,\s*child:\s*(\w+))?\}/g, (_, id, tx, ty, ch) => { balloons[id] = {tailX:+tx, tailY:+ty, child:ch==='true'}; });
+    // カードのしっぽ (tail: startX/startY/endX/endY + 追従先の target。target は
+    // {kind, id, offsetX, offsetY, offsetXRatio, offsetYRatio} のネスト flow map)。
+    // 旧 balloons ブロックと違い target が入れ子オブジェクトを持つため、深さを持たない
+    // 素朴な正規表現では正しく切り出せない。bdYamlNestedMap (+ bdYamlFlowMap) の
+    // 入れ子対応パーサーを正本として使う (2つ目の解析実装を作らない)。
+    if (typeof bdYamlNestedMap === 'function' && typeof bdNormalizeTailValue === 'function') {
+      Object.entries(bdYamlNestedMap(fm, 'tails')).forEach(([id, rawTail]) => {
+        const tail = bdNormalizeTailValue(rawTail);
+        if (tail) tails[id] = tail;
+      });
+    }
     const ctnBlock = fm.match(/containers:\n((?:\s+\w+:.*\n?)*)/);
     if (ctnBlock) ctnBlock[1].replace(/(\w+):\s*(\w+)/g, (_, id, val) => { containers[id] = val; });
     const lnkBlock = fm.match(/links:\n((?:\s+\w+:.*\n?)*)/);
@@ -1029,6 +1040,7 @@ function bdParseMd(raw) {
     if (containers[nid] === 'container') n.container = true;
     if (containers[nid] === 'contained') n.contained = true;
     if (balloons[nid]) { n.balloon = true; n.tailX = balloons[nid].tailX; n.tailY = balloons[nid].tailY; n.balloonChild = balloons[nid].child; }
+    if (tails[nid]) n.tail = tails[nid];
     if (links[nid]) n.link = links[nid];
     if (linkTypes[nid]) n.linkType = linkTypes[nid];
     if (transforms[nid]) Object.assign(n, transforms[nid]);

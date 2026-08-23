@@ -203,13 +203,26 @@
     }
   }
 
+  async function _prepareFeedbackHistoryOnBoot(attempt = 0) {
+    let prepared = false;
+    try {
+      await ensureFeedbackSheet({ open: false });
+      prepared = true;
+    } catch (_) {}
+    try { await flushDebuggerQueue(); } catch (_) {}
+    if (!prepared && attempt < 3) {
+      setTimeout(() => { _prepareFeedbackHistoryOnBoot(attempt + 1); }, 5000 * (attempt + 1));
+    }
+  }
+
   function _boot() {
     _installPwaHandlers();
     _bindSettingsObserver();
+    _configureCloudCrashReporter();
     if (isTelemetryEnabled()) startTelemetry();
-    // 前回オフラインで送れなかった報告を、起動時に一度だけ送る。
-    // 送信先が未設定なら何も起きない。
-    setTimeout(() => { flushDebuggerQueue().catch(() => {}); }, 5000);
+    // 現在の画面を変えずに利用者向け履歴シートを準備し、前回オフラインや
+    // 前回異常終了で残った既存outboxを送信・同じ行へ同期する。
+    setTimeout(() => { _prepareFeedbackHistoryOnBoot(); }, 5000);
   }
 
   window.MeldexBetaFeedback = {

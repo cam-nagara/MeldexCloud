@@ -128,7 +128,8 @@
   background: var(--bg);
   user-select: text;
 }
-.gb-subpanel-viewer-frame { display:block; width:100%; height:100%; flex:1 1 auto; min-width:0; min-height:0; border:0; background:#111; }
+.gb-subpanel-viewer-frame,
+.gb-subpanel-html-frame { display:block; width:100%; height:100%; flex:1 1 auto; min-width:0; min-height:0; border:0; background:#111; }
 
 .gb-subpanel-empty {
   flex: 1;
@@ -206,6 +207,58 @@
 .meldex-entity-detail-webclip { display: flex; flex: 1 1 auto; min-height: 320px; flex-direction: column; }
 .meldex-entity-detail-webclip-toolbar { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; }
 .meldex-entity-detail-webclip-frame { flex: 1 1 auto; width: 100%; min-height: 320px; border: 1px solid var(--border); background: #fff; }
+
+/* フォルダ（ボードのリンクカード計画 Phase B-2）: renderFolderGrid()（gb-folder.part01.part01.js）
+   が描画する .fv-item のカード/グリッド/リスト/ウォーターフォール/横並びの各表示モードは
+   gb-tools.part01.part01.css で #folder-grid（メイン画面の実グリッド）のID限定で
+   定義されている。個々のカード自体（.fv-item/.fv-check/.fv-more-btn等）は汎用classで
+   どこでも効くが、コンテナ自体の表示モード（display:grid/flex・列テンプレート・
+   絶対配置等）だけは#folder-gridに限定されるため、サブパネルの専用描画先
+   （.gb-subpanel-folder-root）向けに同じルールを複製する。2つ目の実装を作るのではなく、
+   既存のレイアウトmode class（grid-layout/list-layout/waterfall-layout/hflow-layout。
+   renderFolderGrid()がcontainer.classNameへ付与する）をこのセレクタでも有効化するだけ。 */
+.gb-subpanel-folder-root.grid-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--fv-card-w, 120px));
+  gap: 3px;
+  justify-content: start;
+  align-content: start;
+  grid-auto-rows: min-content;
+}
+.gb-subpanel-folder-root > .fv-empty-state {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  min-height: 120px;
+  box-sizing: border-box;
+  padding: 40px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+  text-align: center;
+  writing-mode: horizontal-tb;
+  white-space: normal;
+}
+.gb-subpanel-folder-root.list-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-x: auto;
+  padding: 0 12px 12px 12px !important;
+}
+.gb-subpanel-folder-root.waterfall-layout { position: relative; }
+.gb-subpanel-folder-root.waterfall-layout .fv-item { position: absolute; width: var(--fv-card-w, 120px); }
+.gb-subpanel-folder-root.waterfall-layout .fv-thumb { width: 100%; height: auto; }
+.gb-subpanel-folder-root.waterfall-layout .fv-thumb img { width: 100%; height: auto; max-height: none; }
+.gb-subpanel-folder-root.hflow-layout { display: flex; flex-wrap: wrap; gap: 3px; align-items: flex-start; align-content: flex-start; }
+.gb-subpanel-folder-root.hflow-layout .fv-item { width: auto; }
+.gb-subpanel-folder-root.hflow-layout .fv-thumb { width: auto; height: var(--fv-card-h, 120px); }
+.gb-subpanel-folder-root.hflow-layout .fv-thumb img { height: 100%; width: auto; max-width: none; }
+.gb-subpanel-folder-root.list-layout .fv-item,
+.gb-subpanel-folder-root:not(.grid-layout):not(.waterfall-layout):not(.hflow-layout) .fv-item {
+  overflow: visible;
+}
 
 @media (max-width: 640px) {
   body:where([data-cloud-mode="dropbox"], [data-mobile-ui-local="1"])[data-cloud-mobile="1"]

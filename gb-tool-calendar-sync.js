@@ -6,9 +6,7 @@
   if (typeof CalendarComponent === 'undefined') return;
 
   function _calSyncEsc(value) {
-    return typeof esc === 'function' ? esc(value) : String(value ?? '').replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[ch]);
+    return MeldexEscape.html(value);
   }
 
   function _syncStatusLabel(connected, available = true) {
@@ -16,8 +14,8 @@
     return connected ? '<span class="gb-cal-sync-status-connected">接続済み</span>' : '未接続';
   }
 
-  function _syncCard(title, body) {
-    return `<div class="gb-cal-sync-card">
+  function _syncCard(title, body, extraClass = '') {
+    return `<div class="gb-cal-sync-card${extraClass ? ` ${extraClass}` : ''}">
       <div class="gb-cal-sync-card-title">${title}</div>
       ${body}
     </div>`;
@@ -85,7 +83,7 @@
   function _cloudGoogleAuthHelp() {
     return fieldHelp('Google Cloud Consoleで「OAuthクライアントID」（種類: ウェブアプリケーション）を作成し、'
       + `承認済みのリダイレクトURIに ${window.location.origin}/oauth-callback.html を追加してください。`
-      + 'クライアントIDとシークレットはこのMeldexワークスペース内（Dropbox）へ保存されます。');
+      + '認証情報はこの端末内の専用保存領域で管理され、Dropboxには平文で保存されません。');
   }
 
   function _cloudMicrosoftAuthHelp() {
@@ -105,8 +103,11 @@
       ? triggerEl
       : (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const cloud = _calSyncIsDropboxMode();
+    const isAdmin = !!this._calUserIsAdmin?.();
     let syncStatus = {};
-    try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
+    if (isAdmin) {
+      try { syncStatus = await apiFetch('/cal/sync/status'); } catch {}
+    }
     const google = syncStatus.google || {};
     const googleTasks = syncStatus.googleTasks || {};
     const microsoft = syncStatus.microsoft || {};
@@ -122,7 +123,7 @@
           <button class="sync-gcal-auth gb-cal-sync-action primary" type="button">Googleにログイン</button>` : ''}
         ${google.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gcal-pull gb-cal-sync-action" type="button">Googleから取得</button><button class="sync-gcal-push gb-cal-sync-action" type="button">Googleに送信</button></div>' : ''}
         ${_autoSyncStatusHtml(!!google.connected, this._googleCalAutoSyncFailures)}
-      `)}
+      `, 'gb-cal-sync-admin-only')}
       ${_syncCard('Google ToDo', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!googleTasks.connected, !!googleTasks.available)}</div>
         ${!googleTasks.connected && googleTasks.available !== false ? (cloud ? `
@@ -133,7 +134,7 @@
           <button class="sync-gtask-auth gb-cal-sync-action primary" type="button">Google ToDoにログイン</button>
           <div class="sync-gtask-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>`) : ''}
         ${googleTasks.connected ? '<div class="gb-cal-sync-actions"><button class="sync-gtask-sync gb-cal-sync-action" type="button">Google ToDoと同期</button></div>' : ''}
-      `)}
+      `, 'gb-cal-sync-admin-only')}
       ${_syncCard('Microsoft Calendar', `
         <div class="gb-cal-sync-status">ステータス: ${_syncStatusLabel(!!microsoft.connected, !!microsoft.available)}</div>
         ${!microsoft.connected && microsoft.available ? `
@@ -143,8 +144,14 @@
           <div class="sync-ms-auth-status gb-cal-sync-status gb-cal-sync-auth-status"></div>` : ''}
         ${microsoft.connected ? '<div class="gb-cal-sync-actions"><button class="sync-ms-pull gb-cal-sync-action" type="button">Microsoftから取得</button><button class="sync-ms-push gb-cal-sync-action" type="button">Microsoftに送信</button></div>' : ''}
         ${_autoSyncStatusHtml(!!microsoft.connected, this._microsoftCalAutoSyncFailures)}
-      `)}
-      ${_syncCard('iCal / .ics', cloud ? `
+      `, 'gb-cal-sync-admin-only')}
+      ${_syncCard('iCal / .ics', !isAdmin ? `
+        <div class="gb-cal-sync-status">本人の.icsファイルをインポート・エクスポートできます。</div>
+        <div class="gb-cal-sync-actions">
+          <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
+          <button class="sync-ical-export gb-cal-sync-action" type="button">.icsエクスポート</button>
+        </div>
+      ` : cloud ? `
         <div class="gb-cal-sync-status">.icsファイルをインポート・エクスポートできます${fieldHelp('認証付きURLからの定期取り込みは、静的ホスティング(CORS制約)のため現時点では利用できません。取得したファイルを.icsインポートしてください。')}</div>
         <div class="gb-cal-sync-actions">
           <button class="sync-ical-import gb-cal-sync-action" type="button">.icsインポート</button>
@@ -168,8 +175,11 @@
         <div class="gb-cal-sync-status">URLを知っている人は誰でも閲覧できる公開リンクです</div>
         <div class="sync-ics-result gb-cal-sync-status gb-cal-sync-auth-status">${icsEnabled ? '購読用ファイルの自動更新: Meldexでカレンダーを開いている間' : ''}</div>
         <div class="gb-cal-sync-actions"><button class="sync-ics-create gb-cal-sync-action primary" type="button">購読用URLを作成</button></div>
-      `) : ''}
+      `, 'gb-cal-sync-admin-only') : ''}
     `;
+    if (!isAdmin) {
+      content.querySelectorAll('.gb-cal-sync-admin-only').forEach((card) => card.remove());
+    }
     const closeButton = document.createElement('button');
     closeButton.className = 'sync-close gb-btn gb-btn-quiet gb-cal-sync-action';
     closeButton.type = 'button';
@@ -285,7 +295,7 @@
     this._showStatus('Googleカレンダーに送信中...');
     try {
       const res = await apiPost('/cal/sync/google/push', { user: this._getUser() });
-      if ((res.failed || 0) > 0) this._showStatus(`Google送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+      if (res?.ok === false || (res.failed || 0) > 0) this._showStatus(`Google送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
       else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Google送信失敗: ' + e.message, true);
@@ -297,6 +307,10 @@
   // 多重起動防止）。Cloud（Dropboxモード）も v0.7.138 以降は同じ5分間隔で動く
   // （gb-cal-cloud-sync.js が /cal/sync/google/pull|push を実装したため）。
   CalendarComponent.prototype._ensureGoogleCalAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearGoogleCalAutoSync();
+      return;
+    }
     if (this._googleCalAutoTimer || this._destroyed || !this._active) return;
     this._googleCalAutoTimer = setInterval(() => this._googleCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
     setTimeout(() => this._googleCalAutoSync(), 8000);
@@ -308,7 +322,7 @@
   };
 
   CalendarComponent.prototype._googleCalAutoSync = async function() {
-    if (this._destroyed || !this._active || this._googleCalAutoSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._googleCalAutoSyncing) return;
     this._googleCalAutoSyncing = true;
     let failed = false;
     try {
@@ -316,13 +330,15 @@
       if (!status?.google?.connected) return;
       const user = this._getUser();
       try {
-        await apiPost('/cal/sync/google/pull', { user, incremental: true });
+        const pullResult = await apiPost('/cal/sync/google/pull', { user, incremental: true });
+        if (pullResult?.ok === false || (pullResult?.failed || 0) > 0) throw new Error('Google Calendar取得が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Google Calendar自動取得に失敗:', e);
       }
       try {
-        await apiPost('/cal/sync/google/push', { user });
+        const pushResult = await apiPost('/cal/sync/google/push', { user });
+        if (pushResult?.ok === false || (pushResult?.failed || 0) > 0) throw new Error('Google Calendar送信が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Google Calendar自動送信に失敗:', e);
@@ -414,23 +430,42 @@
   CalendarComponent.prototype._googleTasksSync = async function(options = {}) {
     if (this._googleTasksSyncing) return;
     this._googleTasksSyncing = true;
+    const progress = !options.silent ? window.MeldexOperationProgress?.begin?.({
+      kind: 'calendar-sync',
+      label: 'Google ToDoと同期しています',
+      mode: 'indeterminate',
+      showInTray: true,
+      showInStatus: true,
+      priority: 35,
+    }) : null;
     try {
-      if (!options.silent) this._showStatus('Google ToDoと同期中...');
+      if (!options.silent && !progress) this._showStatus('Google ToDoと同期中...');
       const res = await apiPost('/cal/sync/google/tasks/sync', { user: this._getUser(), automatic: !!options.silent });
+      progress?.update?.({ phase: '表示を更新しています' });
       await this._loadTasks();
       this._render();
       this._renderTodayTasks();
       if (!options.silent) {
-        this._showStatus(`Google ToDo同期完了: ${res.imported || 0}件取得, ${res.pushed || 0}件送信, ${res.updated || 0}件更新`);
+        const summary = `Google ToDo同期完了: ${res.imported || 0}件取得, ${res.pushed || 0}件送信, ${res.updated || 0}件更新`;
+        if (progress) progress.succeed({ summary: summary });
+        else this._showStatus(summary);
       }
     } catch (e) {
-      if (!options.silent) this._showStatus('Google ToDo同期失敗: ' + e.message, true);
+      if (!options.silent) {
+        const message = 'Google ToDo同期失敗: ' + e.message;
+        if (progress) progress.fail({ error: message });
+        else this._showStatus(message, true);
+      }
     } finally {
       this._googleTasksSyncing = false;
     }
   };
 
   CalendarComponent.prototype._ensureGoogleTasksAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearGoogleTasksAutoSync();
+      return;
+    }
     if (this._googleTasksAutoTimer || this._destroyed || !this._active) return;
     this._googleTasksAutoTimer = setInterval(() => this._googleTasksAutoSync(), 5 * 60 * 1000);
     setTimeout(() => this._googleTasksAutoSync(), 5000);
@@ -442,7 +477,7 @@
   };
 
   CalendarComponent.prototype._googleTasksAutoSync = async function() {
-    if (this._destroyed || !this._active || this._googleTasksSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._googleTasksSyncing) return;
     try {
       const status = await apiFetch('/cal/sync/status');
       if (!status?.googleTasks?.connected) return;
@@ -538,7 +573,8 @@
     this._showStatus('Microsoftカレンダーに送信中...');
     try {
       const res = await apiPost('/cal/sync/microsoft/push', { user: this._getUser() });
-      this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
+      if (res?.ok === false || (res.failed || 0) > 0) this._showStatus(`Microsoft送信一部失敗: ${res.pushed || 0}件送信 / ${res.failed || 0}件失敗`, true);
+      else this._showStatus(`送信完了: ${res.pushed}件プッシュ`);
     } catch (e) {
       this._showStatus('Microsoft送信失敗: ' + e.message, true);
     }
@@ -548,6 +584,10 @@
   // _ensureGoogleCalAutoSync と同じライフサイクル・ガード方針。Cloud（Dropboxモード）も
   // v0.7.138 以降は同じ5分間隔で動く（gb-cal-cloud-sync.js 参照）。
   CalendarComponent.prototype._ensureMicrosoftCalAutoSync = function() {
+    if (!this._calUserIsAdmin?.()) {
+      this._clearMicrosoftCalAutoSync();
+      return;
+    }
     if (this._microsoftCalAutoTimer || this._destroyed || !this._active) return;
     this._microsoftCalAutoTimer = setInterval(() => this._microsoftCalAutoSync(), CAL_EXT_AUTO_SYNC_INTERVAL_MS);
     setTimeout(() => this._microsoftCalAutoSync(), 8000);
@@ -559,7 +599,7 @@
   };
 
   CalendarComponent.prototype._microsoftCalAutoSync = async function() {
-    if (this._destroyed || !this._active || this._microsoftCalAutoSyncing) return;
+    if (!this._calUserIsAdmin?.() || this._destroyed || !this._active || this._microsoftCalAutoSyncing) return;
     this._microsoftCalAutoSyncing = true;
     let failed = false;
     try {
@@ -567,13 +607,15 @@
       if (!status?.microsoft?.connected) return;
       const user = this._getUser();
       try {
-        await apiPost('/cal/sync/microsoft/pull', { user, incremental: true });
+        const pullResult = await apiPost('/cal/sync/microsoft/pull', { user, incremental: true });
+        if (pullResult?.ok === false || (pullResult?.failed || 0) > 0) throw new Error('Microsoft Calendar取得が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Microsoft Calendar自動取得に失敗:', e);
       }
       try {
-        await apiPost('/cal/sync/microsoft/push', { user });
+        const pushResult = await apiPost('/cal/sync/microsoft/push', { user });
+        if (pushResult?.ok === false || (pushResult?.failed || 0) > 0) throw new Error('Microsoft Calendar送信が一部失敗しました');
       } catch (e) {
         failed = true;
         console.warn('[CalendarComponent] Microsoft Calendar自動送信に失敗:', e);

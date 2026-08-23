@@ -365,7 +365,7 @@ const GBDocking = (() => {
   // ペイン基準ではなく「カラム = 水平スプリットの直接の子」全体を覆う。
   function _columnElementById(columnId) {
     if (!columnId) return null;
-    const id = CSS.escape(columnId);
+    const id = MeldexEscape.cssIdent(columnId);
     return document.querySelector(`[data-column-node-id="${id}"]`)
       || document.querySelector(`[data-pane-id="${id}"]`)
       || document.querySelector(`[data-split-id="${id}"]`);

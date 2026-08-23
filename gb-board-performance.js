@@ -389,9 +389,7 @@ function bdSyncSelectionRectForNode(nodeOrId) {
   const el = document.getElementById('bdn-' + node.id);
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncSelectionRectForNode');
-  const safeId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(node.id)
-    : String(node.id).replace(/"/g, '\\"');
+  const safeId = MeldexEscape.cssIdent(node.id);
   let rect = layer.querySelector(`.bd-selection-rect[data-node-id="${safeId}"]`);
   if (!rect) {
     rect = document.createElement('div');
@@ -424,9 +422,7 @@ function bdSyncResizeHandleForNode(nodeOrId) {
   if (!layer || !el || !el.isConnected) return false;
   const started = bdPerfStart('bdSyncResizeHandleForNode');
   bdSyncSelectionRectForNode(node);
-  const safeId = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
-    ? CSS.escape(node.id)
-    : String(node.id).replace(/"/g, '\\"');
+  const safeId = MeldexEscape.cssIdent(node.id);
   let handle = layer.querySelector(`.bd-resize[data-node-id="${safeId}"]`);
   if (node.minimized) {
     if (handle) handle.remove();

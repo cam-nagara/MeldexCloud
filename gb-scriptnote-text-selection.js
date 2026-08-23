@@ -20,13 +20,7 @@ function _sn2QuoteTsvCell(value) {
 }
 
 function _sn2EscapeClipboardHtml(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-    .replace(/\n/g, '<br>');
+  return MeldexEscape.html(value).replace(/\n/g, '<br>');
 }
 
 function _sn2ParseClipboardTable(rawText) {

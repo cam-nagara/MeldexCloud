@@ -195,6 +195,7 @@
         message.textContent = '画像を表示できません';
         thumb.appendChild(message);
       }, { once: true });
+      window.MeldexImageLoading?.track?.(image, { host: image.closest('.dup-item-thumb'), errorMode: 'silent' });
     });
     overlay.addEventListener('click', event => {
       const radio = event.target.closest?.('[data-dup-radio]');
@@ -474,9 +475,9 @@
 
   function isLocalDuplicateMode() {
     const runtime = window.MeldexRuntimeAdapter;
-    if (runtime?.isPwaMode?.() || runtime?.isDropboxMode?.() || runtime?.isServerMode?.()) return false;
+    if (runtime?.isPwaMode?.() || runtime?.isDropboxMode?.()) return false;
     const mode = safeText(runtime?.getMode?.() || document.body?.dataset?.cloudMode).toLowerCase();
-    return mode !== 'dropbox' && mode !== 'server';
+    return mode !== 'dropbox';
   }
 
   function handleRuntimeModeChange() {

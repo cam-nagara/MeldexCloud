@@ -344,8 +344,11 @@
       const existingImg = pane.querySelector('img');
       if (existingImg) {
         existingImg.src = url;
+        existingImg.dataset.meldexContentImage = '1';
+        window.MeldexImageLoading?.track?.(existingImg, { host: pane });
       } else {
-        pane.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview">';
+        pane.innerHTML = '<img src="' + url + '" data-meldex-content-image style="max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;" alt="preview">';
+        window.MeldexImageLoading?.trackAll?.(pane, { host: pane });
       }
       return;
     }

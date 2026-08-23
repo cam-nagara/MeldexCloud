@@ -129,7 +129,7 @@
   }
 
   function hasVisibleViewerContent() {
-    return !!document.querySelector('.layer.show img, .layer.show video, .layer.show canvas');
+    return !!document.querySelector('.layer.show img, .layer.show video, .layer.show audio, .layer.show canvas');
   }
 
   function makeImageItem(path, name) {
@@ -140,6 +140,22 @@
       // ネイティブ<video>のシーク・ストリーミングに対応済み）。
       return {
         type: 'video',
+        name: fileName,
+        url: rawUrl,
+        rawUrl,
+        previewUrl: rawUrl,
+        urlCandidates: [rawUrl],
+        urlCandidateIndex: 0,
+        w: 0,
+        h: 0,
+        path,
+      };
+    }
+    if (Utils.isAudioPath(path)) {
+      // 音声も動画と同じくプレビュー変換を経由せず file-raw をそのまま使う（Range対応の
+      // FileResponseでネイティブ<audio>のシーク・ストリーミングに対応済み）。
+      return {
+        type: 'audio',
         name: fileName,
         url: rawUrl,
         rawUrl,
@@ -511,12 +527,12 @@
       if (startIdx + 1 < items.length) return [startIdx, startIdx + 1];
       return [startIdx];
     }
-    // 動画は見開き/マンガモードでも常に単体表示
-    if (a.type === 'video') return [startIdx];
+    // 動画・音声は見開き/マンガモードでも常に単体表示
+    if (a.type === 'video' || a.type === 'audio') return [startIdx];
     // 画像: 縦長2枚連続→見開き
     if (!Utils.isPortrait(a) || startIdx + 1 >= items.length) return [startIdx];
     const b = items[startIdx + 1];
-    if (!b || b.type === 'video' || !Utils.isPortrait(b)) return [startIdx];
+    if (!b || b.type === 'video' || b.type === 'audio' || !Utils.isPortrait(b)) return [startIdx];
     return [startIdx, startIdx + 1];
   }
 
@@ -611,6 +627,11 @@
         if (items[group[0]].posterUrl) video.poster = items[group[0]].posterUrl;
         applyImageFitStyle(video, false);
         layer.appendChild(video);
+      } else if (items[group[0]].type === 'audio') {
+        // 音声には寸法が無いため applyImageFitStyle は使わない（固定サイズのカード表示。
+        // viewer.css の .viewer-audio-player）。
+        const audioCard = window.MeldexViewerAudio.buildAudioElement(items[group[0]], displayItemUrl(items[group[0]]));
+        layer.appendChild(audioCard);
       } else {
         const img = document.createElement('img');
         img.className = 'img-single'; img.src = displayItemUrl(items[group[0]]); img.draggable = false;
@@ -618,6 +639,7 @@
         wireImageDragToggle(img, () => items[group[0]]);
         applyImageFitStyle(img, false);
         layer.appendChild(img);
+        window.MeldexImageLoading?.track?.(img, { host: layer, label: '画像を読み込んでいます' });
       }
     } else {
       const spread = document.createElement('div');
@@ -636,30 +658,32 @@
           wireImageDragToggle(img, () => items[i]);
           applyImageFitStyle(img, true);
           spread.appendChild(img);
+          window.MeldexImageLoading?.track?.(img, { host: spread, label: '画像を読み込んでいます' });
         }
       }
       layer.appendChild(spread);
     }
 
-    // 背景ブラー（画像のみ。動画のCSS背景描画は不可なので対象外）
+    // 背景ブラー（画像のみ。動画・音声のCSS背景描画は不可/無意味なので対象外）
     const primaryItem = items[group[0]];
-    if (bgBlur && !isPdf && primaryItem?.type !== 'video') {
+    const isSingleMediaTakeover = primaryItem?.type === 'video' || primaryItem?.type === 'audio';
+    if (bgBlur && !isPdf && !isSingleMediaTakeover) {
       const bgT = activeLayer === 'A' ? 'bgB' : 'bgA';
       const bgO = activeLayer === 'A' ? 'bgA' : 'bgB';
       document.getElementById(bgT).style.backgroundImage = Utils.cssUrl(displayItemUrl(items[group[0]]));
       document.getElementById(bgT).classList.add('show');
       document.getElementById(bgO).classList.remove('show');
-    } else if (primaryItem?.type === 'video') {
+    } else if (isSingleMediaTakeover) {
       document.getElementById('bgA')?.classList.remove('show');
       document.getElementById('bgB')?.classList.remove('show');
     }
 
-    // 動画表示中は見開き/マンガの切替を無効化（動画は常に単体表示のため）
+    // 動画・音声表示中は見開き/マンガの切替を無効化（常に単体表示のため）
     const selMode = document.getElementById('sel-mode');
-    if (selMode) selMode.disabled = primaryItem?.type === 'video';
+    if (selMode) selMode.disabled = isSingleMediaTakeover;
 
     // メディアロード完了後にレイヤー切り替え（白フラッシュ防止）
-    const media = layer.querySelectorAll('img, video');
+    const media = layer.querySelectorAll('img, video, audio');
     updateViewerPositionControls();
     updateHud();
     const swapLayers = () => {
@@ -671,9 +695,14 @@
       // メディアロード完了・レイヤー入替後に呼ぶ（早期呼び出しはしない）
       window.MeldexViewerAnnotations?.onSceneChanged?.();
       window.MeldexViewerVideo?.startActiveVideoPlayback?.();
+      window.MeldexViewerAudio?.startActiveAudioPlayback?.();
     };
     if (media.length > 0) {
-      Promise.all([...media].map(el => el.tagName === 'VIDEO' ? window.MeldexViewerVideo.waitForVideoReady(el) : waitForViewerImage(el))).then(swapLayers);
+      Promise.all([...media].map(el => {
+        if (el.tagName === 'VIDEO') return window.MeldexViewerVideo.waitForVideoReady(el);
+        if (el.tagName === 'AUDIO') return window.MeldexViewerAudio.waitForAudioReady(el);
+        return waitForViewerImage(el);
+      })).then(swapLayers);
     } else {
       swapLayers();
     }
@@ -736,9 +765,11 @@
     button.setAttribute('aria-label', '再生');
   }
   function togglePlay() {
-    // 動画表示中はスライドショーのタイマーではなく動画自体の再生/一時停止を切り替える
-    // （ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」）。
+    // 動画・音声表示中はスライドショーのタイマーではなくメディア自体の再生/一時停止を
+    // 切り替える（ビューワー残課題修正計画 2026-08-04「4. 動画ファイル対応」。音声は
+    // サブパネル用の音声再生実装で同じパターンを踏襲）。
     if (items[idx]?.type === 'video' && window.MeldexViewerVideo?.toggleCurrentVideoPlayback?.()) return;
+    if (items[idx]?.type === 'audio' && window.MeldexViewerAudio?.toggleCurrentAudioPlayback?.()) return;
     playing ? pause() : play();
   }
   function toggleReversePlay() {
@@ -1055,6 +1086,12 @@
     if (!isPdf) clampPan();
     applyPan();
   }
+  function setPan(nextX, nextY) {
+    panX = Number(nextX) || 0;
+    panY = Number(nextY) || 0;
+    if (!isPdf) clampPan();
+    applyPan();
+  }
 
   function viewerLogicalPoint(display, clientX, clientY) {
     if (!display) return { x: 0, y: 0 };
@@ -1109,6 +1146,9 @@
         const videoRect = e.target.getBoundingClientRect();
         if (e.clientY >= videoRect.bottom - 40) return true;
       }
+      // 音声カード（.viewer-audio-player）はカード全体がネイティブ<audio controls>を
+      // 含む操作面のため、動画の「下端40px」のような部分判定ではなく全体を対象外にする。
+      if (e.target.closest('.viewer-audio-player')) return true;
       return false;
     }
     display.addEventListener('pointerdown', (e) => {
@@ -1298,13 +1338,14 @@
     currentPath: currentViewerPathForFolderNavigation,
     getItems: () => items, getIndex: () => idx, getMode: () => mode, isPdf: () => isPdf,
     getPdfPath: () => pdfPath, getSingleFile: () => singleFile, getActiveLayerId: () => activeLayer,
-    getFitMode: () => fitMode, getZoom: () => zoom, getFlipH: () => flipH, getFlipV: () => flipV,
+    getFitMode: () => fitMode, getZoom: () => zoom, getPanX: () => panX, getPanY: () => panY,
+    getFlipH: () => flipH, getFlipV: () => flipV,
     getRotateDeg: () => rotateDeg, isBgBlur: () => bgBlur, isHudVisible: () => hudVisible,
     getSpeed: () => speed, getFadeMs: () => fadeMs, isPlaying: () => playing,
     isSheetContext: () => !!sheetContextId,
     // 表示状態の変更・その他
     setMode, setFitMode, cycleFit, zoomIn, zoomOut, zoomAt, setZoomAt, resetZoom,
-    panBy, setOriginal, toggleFlipH, toggleFlipV, rotate, setRotateDeg,
+    panBy, setPan, setOriginal, toggleFlipH, toggleFlipV, rotate, setRotateDeg,
     toggleBg, toggleHud, toggleFullscreen, setSpeed, setFadeMs, flashStatus, notifyResize,
     // iframe再利用（項目7。プロトコルはviewer-open-request.jsが担当し、本APIは判定/実行のみ）
     canReopenWithUrl: Utils.canReopenWithUrl, reopenWithUrl,

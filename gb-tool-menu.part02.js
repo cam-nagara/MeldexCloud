@@ -80,7 +80,9 @@ function buildToolMenuItems(toolType) {
         { label: '公開を更新', action: () => { if (typeof MeldexExportHtml !== 'undefined') MeldexExportHtml.publishCurrentView('calendar'); }, disabled: !hasFile },
         { label: '画像（PNG）として保存...', action: () => { if (typeof MeldexExportImage !== 'undefined') MeldexExportImage.exportCurrentView('calendar'); }, disabled: !hasFile },
         { separator: true },
-        { label: '勤怠CSVとして保存...', action: () => { if (typeof exportAttendanceCsvFromMenu === 'function') exportAttendanceCsvFromMenu(); } },
+        ...(_toolMenuCanManageAttendance() ? [
+          { label: '勤怠CSVとして保存...', action: () => { if (typeof exportAttendanceCsvFromMenu === 'function') exportAttendanceCsvFromMenu(); } },
+        ] : []),
         { label: 'シフト、実績、作業予定を書き出す...', action: () => { if (typeof openProductionExport === 'function') openProductionExport(); } },
       ],
     },
@@ -239,6 +241,19 @@ function buildToolMenuItems(toolType) {
     ...importExportBlock,
     ...tailClose,
   ];
+}
+
+function _toolMenuCanManageAttendance() {
+  let role = '';
+  try {
+    if (typeof getMyRoleForPath === 'function') role = String(getMyRoleForPath('') || '').toLowerCase();
+  } catch {}
+  try {
+    const state = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || {};
+    if (!role) role = String(state.access || state.role || '').toLowerCase();
+    if (state.isOwner === true) return true;
+  } catch {}
+  return role === 'owner' || role === 'admin';
 }
 
 function _showUnavailableToolMenuAction(label) {
@@ -533,10 +548,10 @@ async function _expandSaveAsFolder(container, parentPath, currentFolder, onSelec
     const items = Array.isArray(data) ? data : (data.items || []);
     const folders = items.filter(i => i.type === 'folder');
     // parentPathの行の直後に挿入
-    const parentRow = container.querySelector('[data-folder-path="' + CSS.escape(parentPath) + '"]');
+    const parentRow = container.querySelector('[data-folder-path="' + MeldexEscape.cssIdent(parentPath) + '"]');
     let insertAfter = parentRow;
     for (const item of folders) {
-      if (container.querySelector('[data-folder-path="' + CSS.escape(item.path) + '"]')) continue;
+      if (container.querySelector('[data-folder-path="' + MeldexEscape.cssIdent(item.path) + '"]')) continue;
       const row = _createFolderRow(item.name, item.path, item.path === currentFolder, onSelect, depth + 1, 'folder');
       row.dataset.folderPath = item.path;
       row.dataset.depth = depth + 1;
@@ -801,14 +816,25 @@ async function _exportDictFile(options = {}) {
   }
   _dictExportInProgress = true;
   try {
-    showStatus('辞書を準備中…');
+    const fetchProgress = window.MeldexOperationProgress?.begin?.({
+      kind: 'dictionary-export',
+      label: '辞書データを準備しています',
+      mode: 'indeterminate',
+      showInTray: true,
+      showInStatus: true,
+      priority: 35,
+    });
+    if (!fetchProgress) showStatus('辞書を準備中…');
     const work = typeof getWorkFolder === 'function' ? getWorkFolder() : '';
     const url = work ? '/link-dict?work=' + encodeURIComponent(work) : '/link-dict';
     let data;
     try {
       data = await apiFetch(url, { timeoutMs: 120000 });
+      fetchProgress?.succeed?.({ summary: '辞書データを準備しました' });
     } catch (error) {
-      showStatus(`辞書データの取得に失敗しました: ${error?.message || '通信エラー'}`, true);
+      const message = `辞書データの取得に失敗しました: ${error?.message || '通信エラー'}`;
+      if (fetchProgress) fetchProgress.fail({ error: message });
+      else showStatus(message, true);
       return;
     }
     const entries = Array.isArray(data?.entries) ? data.entries : [];

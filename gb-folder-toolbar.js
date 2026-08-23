@@ -428,9 +428,19 @@
       return;
     }
     const topLevelTargets = _folderToolbarTopLevelItems(targets);
-    const linkedDelete = await handleDisplayedFolderLinkDelete(topLevelTargets, _folderToolbarCurrentPath(), { refresh: _folderToolbarRefresh });
+    // handleDisplayedFolderLinkDelete は gb-folder-link-batch.js 側の定義。読み込み漏れ等で
+    // 未定義の場合にReferenceErrorで削除処理全体が止まらないよう、存在確認してから呼ぶ
+    // （2026-08-19 実UI検査: 同スクリプトがMeldex.htmlに読み込まれておらず、削除ボタンが
+    // クリックしても無反応のまま静かに失敗していた）。
+    const linkedDelete = typeof handleDisplayedFolderLinkDelete === 'function'
+      ? await handleDisplayedFolderLinkDelete(topLevelTargets, _folderToolbarCurrentPath(), { refresh: _folderToolbarRefresh })
+      : { handled: false, result: null };
     if (linkedDelete.handled) return;
-    const impactTargets = topLevelTargets.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = topLevelTargets.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmMessage = topLevelTargets.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)

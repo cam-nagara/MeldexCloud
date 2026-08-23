@@ -589,8 +589,7 @@ function _refreshDerivedCellsInRow(editedTd, entityPath, options = {}) {
 }
 
 function _cssEscapeAttr(s) {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
-  return String(s).replace(/(["\\])/g, '\\$1');
+  return MeldexEscape.cssIdent(s);
 }
 
 function _renderDerivedCellContent(container, ptc, entityName, propName, entityData, options = {}) {

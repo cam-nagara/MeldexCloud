@@ -797,7 +797,7 @@ function _showChatTargetBadge(targetPath) {
 function _chatScrollToMessage(msgId) {
   const id = String(msgId || '').trim();
   if (!id) return;
-  const safeId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id.replace(/["\\]/g, '\\$&');
+  const safeId = MeldexEscape.cssIdent(id);
   const target = document.querySelector(`#chat-messages [data-msg-id="${safeId}"]`);
   if (!target) return;
   target.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -1079,12 +1079,7 @@ function _chatYamlQuote(value) {
 }
 
 function _chatHtmlEscape(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return MeldexEscape.html(value);
 }
 
 function _chatExportRoleLabel(message) {

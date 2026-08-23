@@ -128,7 +128,7 @@
     const name = fileName(file);
     if (isImage(file)) {
       const src = API_BASE + '/thumb?path=' + encodeURIComponent(path) + '&size=180';
-      return `<div class="dup-item-thumb"><img src="${src}" alt="${esc(name)}" data-dup-image></div>`;
+      return `<div class="dup-item-thumb" data-meldex-image-host><img src="${src}" alt="${esc(name)}" data-dup-image data-meldex-content-image></div>`;
     }
     return `<div class="dup-item-thumb dup-item-file-icon" aria-hidden="true">${lucide('file', 32)}</div>`;
   }

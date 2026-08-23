@@ -100,6 +100,7 @@
     pc.dataset.frontmatter = splitFrontMatter(source);
     pc.innerHTML = typeof mdToHtml === 'function' ? mdToHtml(source) : '';
     await hydrateCloudMedia(pc);
+    window.MeldexImageLoading?.trackAll?.(pc);
   }
 
   // 本体の _noteMarkdownFromEditor と同じ変換（htmlToMd + フロントマター復元）を行うが、
@@ -396,8 +397,9 @@
       const sourceAttr = displayUrl === raw ? '' : ` data-meldex-source-src="${esc(raw)}"`;
       const inner = isVideo
         ? `<video src="${esc(displayUrl)}"${sourceAttr} controls></video>`
-        : `<img src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}">`;
-      insertHtml(`<div class="embed-media" contenteditable="false" data-path="${esc(res.path)}" data-name="${esc(file.name)}" data-type="${isVideo ? 'video' : 'image'}" data-media-init="1">${inner}</div><div><br></div>`);
+        : `<img data-meldex-content-image src="${esc(displayUrl)}"${sourceAttr} alt="${esc(file.name)}">`;
+      insertHtml(`<div class="embed-media" contenteditable="false"${isVideo ? '' : ' data-meldex-image-host'} data-path="${esc(res.path)}" data-name="${esc(file.name)}" data-type="${isVideo ? 'video' : 'image'}" data-media-init="1">${inner}</div><div><br></div>`);
+      window.MeldexImageLoading?.trackAll?.(editor());
       // 本体アプリと同じ初期サイズ（正方形に収めた一辺が本文幅の約6割まで／拡大はしない）を与える
       editor().querySelectorAll('.embed-media[data-media-init]').forEach((media) => {
         delete media.dataset.mediaInit;

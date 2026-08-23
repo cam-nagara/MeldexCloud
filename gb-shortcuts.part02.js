@@ -190,7 +190,11 @@
   'explorer.delete': async () => {
     if (state.view !== 'folder') return false;
     if (typeof _folderSelectedItems === 'undefined' || _folderSelectedItems.length === 0) return;
-    const impactTargets = _folderSelectedItems.map(item => ({ path: item.path, kind: item.type === 'folder' ? 'folder' : 'file' }));
+    const impactTargets = _folderSelectedItems.map(item => ({
+      path: item.path,
+      kind: item.type === 'folder' ? 'folder' : 'file',
+      ...((item.assetId || item.asset_id) ? { assetId: String(item.assetId || item.asset_id) } : {}),
+    }));
     const confirmMessage = _folderSelectedItems.length + ' 件を削除しますか？';
     const confirmed = typeof MeldexDeleteImpactWarning !== 'undefined'
       ? await MeldexDeleteImpactWarning.confirmDeleteWithImpact(impactTargets, confirmMessage)

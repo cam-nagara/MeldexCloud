@@ -20,6 +20,7 @@ class TimerComponent extends ToolComponent {
     this._drawTimeouts = [];
     this._canvas = null;
     this._ctx = null;
+    this._timerFileStyle = {};
   }
 
   create() {
@@ -86,7 +87,7 @@ class TimerComponent extends ToolComponent {
 
   getState() {
     this._updateElapsedFromClock();
-    return {
+    const state = {
       displayMode: this.displayMode,
       totalSeconds: this.totalSeconds,
       elapsed: this.elapsed,
@@ -96,6 +97,8 @@ class TimerComponent extends ToolComponent {
       elapsedAtStart: this.elapsedAtStart,
       timerStartMs: this.timerStartMs,
     };
+    if (Object.keys(this._timerFileStyle).length) state._timerFileStyle = { ...this._timerFileStyle };
+    return state;
   }
 
   restoreState(savedState) {
@@ -105,6 +108,10 @@ class TimerComponent extends ToolComponent {
     this.elapsed = Math.max(0, Number(savedState.elapsed) || 0);
     this.countUp = !!savedState.countUp;
     this.timerStarted = !!savedState.timerStarted;
+    this._timerFileStyle = savedState._timerFileStyle && typeof savedState._timerFileStyle === 'object'
+      ? { ...savedState._timerFileStyle }
+      : {};
+    this._applyTimerFileStyle();
     if (savedState.timerRunning) {
       const now = Date.now();
       const savedElapsedAtStart = Number(savedState.elapsedAtStart);
@@ -122,6 +129,15 @@ class TimerComponent extends ToolComponent {
     this._writeControlsFromState();
     this._updateModeButtons();
     this._drawTimer();
+  }
+
+  _applyTimerFileStyle() {
+    if (!this.el?.style) return;
+    for (const key of ['--timer-bg', '--timer-fg', '--accent']) {
+      this.el.style.removeProperty(key);
+      const value = String(this._timerFileStyle?.[key] || '').trim();
+      if (/^#[0-9a-f]{6}$/i.test(value)) this.el.style.setProperty(key, value);
+    }
   }
 
   _icon(name, size) {
@@ -299,10 +315,15 @@ class TimerComponent extends ToolComponent {
   }
 
   _pauseTimer() {
+    if (this.timerRunning) {
+      this._updateElapsedFromClock();
+      this.elapsed = Math.min(this.totalSeconds, this.elapsed);
+    }
     if (this._timerInterval) clearInterval(this._timerInterval);
     this._timerInterval = null;
     this.timerRunning = false;
     this._updateControlButtons();
+    this._drawTimer();
   }
 
   _resetTimer() {

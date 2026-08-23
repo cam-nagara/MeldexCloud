@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="gb-shortcut-registry.css">
   <link rel="stylesheet" href="gb-icon-assets.css">
   <link rel="stylesheet" href="gb-theme.css">
+  <link rel="stylesheet" href="gb-loading-indicators.css">
   <link rel="stylesheet" href="gb-ui.css">
   <link rel="stylesheet" href="standalone-shell.css">
   <link rel="stylesheet" href="standalone-workspace-tree.css">
@@ -33,8 +34,8 @@
   <main class="qm-shell" id="editorView">
     <header class="qm-header sa-toolbar">
       <div class="qm-menu-wrap">
-        <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false"><span class="ico ico-menu"></span></button>
-        <div id="quickMemoMenu" class="qm-menu" role="menu" hidden>
+        <button id="menuBtn" class="qm-icon" type="button" title="メニュー" aria-label="メニュー" aria-expanded="false" aria-controls="quickMemoMenu"><span class="ico ico-menu"></span></button>
+        <div id="quickMemoMenu" class="qm-menu" role="dialog" aria-label="クイックメモの操作" hidden>
           <button id="newMemoBtn" type="button"><span class="ico ico-filePlus"></span>新規メモ</button>
           <button id="saveBtn" type="button"><span class="ico ico-save"></span>端末へ保存</button>
           <button id="menuListBtn" type="button"><span class="ico ico-history"></span>過去のメモ</button>
@@ -131,7 +132,7 @@
 
   <div id="standalone-toast" class="sa-toast" role="status" aria-live="polite"></div>
 
-  <script defer src="gb-stable-copy-operation-ids.js"></script>
+  <script defer src="gb-stable-copy-operation-ids.js"></script><script src="gb-escape.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
   <script src="gb-runtime-adapter.js"></script>
@@ -172,6 +173,9 @@
   <script src="gb-dropbox-profile-sync.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
+  <script src="gb-operation-progress.js"></script>
+  <script src="gb-operation-progress-view.js"></script>
+  <script src="gb-content-image-loading.js"></script>
   <script src="standalone-profile.js"></script>
   <script src="gb-auto-tag-settings.js"></script>
   <script src="gb-global-tags.js"></script>
@@ -208,6 +212,7 @@
       });
     });
   </script>
+  <script src="offline-bundles/gb-color-palette.js"></script>
   <script src="quick-memo.js"></script>
 </body>
 </html>

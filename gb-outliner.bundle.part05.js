@@ -1,3 +1,48 @@
+      showStatus('フォルダ選択ダイアログを開いています...');
+      try {
+        const res = await apiFetch('/pick-folder');
+        if (!res.path) { showStatus('キャンセルされました'); return; }
+        // outliner_rootsを更新
+        const roots = await apiFetch('/outliner-roots');
+        const baseRoots = _cloneOutlinerRootsForBase(roots);
+        const root = roots.find(r => r.path === nodeData.path);
+        if (root) {
+          root.path = res.path;
+          root.name = res.path.split(/[/\\]/).pop();
+          await _putOutlinerRootsWithBase(roots, baseRoots);
+          await loadOutliner();
+          showStatus('パスを変更しました: ' + res.path);
+        }
+      } catch (e) { showStatus('パス変更に失敗しました', true); }
+    }, null, 'folderPen');
+    addMenuItem('名前を変更...', async () => {
+      closeTreeContextMenu();
+      const roots = await apiFetch('/outliner-roots');
+      const baseRoots = _cloneOutlinerRootsForBase(roots);
+      const root = roots.find(r => r.path === nodeData.path);
+      if (!root) return;
+      const newName = await cfPrompt('表示名を入力:', root.name);
+      if (!newName) return;
+      root.name = newName;
+      await _putOutlinerRootsWithBase(roots, baseRoots);
+      await loadOutliner();
+      showStatus('名前を変更しました');
+    }, null, 'pencil');
+    addMenuItem('チーム管理...', async () => {
+      closeTreeContextMenu();
+      showSettingsModal({ panel: 'ユーザー' });
+    }, null, 'users');
+    addSep();
+    addMenuItem('このソースフォルダの登録を解除', async () => {
+      closeTreeContextMenu();
+      // 実際に消えるのはフォルダツリーの一覧からだけ。フォルダ本体とファイルは
+      // 消えない（gb-settings-cloud-link.js の confirmDeleteSourceFolder と同じ言い回しに揃える）。
+      if (!await cfConfirm('ソースフォルダ「' + nodeData.name + '」の登録を解除しますか？\n（フォルダとファイルはそのまま残ります。フォルダツリーの一覧から外れるだけです）', { okLabel: '登録解除' })) return;
+      const roots = await apiFetch('/outliner-roots');
+      const baseRoots = _cloneOutlinerRootsForBase(roots);
+      const newRoots = roots.filter(r => r.path !== nodeData.path);
+      await _putOutlinerRootsWithBase(newRoots, baseRoots);
+      await loadOutliner();
       showStatus('ソースフォルダの登録を解除しました');
     }, null, 'folder-minus');
   }
@@ -310,8 +355,8 @@ function _outlinerFindNewItemInListing(items, type, existingNames) {
 }
 
 // 事後確認で成功が判明した場合の反映（仮ノードを本ノードに置換）
-function _outlinerApplyCreateSuccess(pendingNode, found) {
-  showStatus(`「${found.name}」を作成しました`);
+function _outlinerApplyCreateSuccess(pendingNode, found, options) {
+  if (!options?.skipStatus) showStatus(`「${found.name}」を作成しました`);
   if (!pendingNode || !pendingNode.parentNode) return;
   const newNode = createTreeNodeFromBrowse(found);
   pendingNode.replaceWith(newNode);
@@ -330,23 +375,46 @@ async function _outlinerHandleCreateTimeout(pendingNode, parentPath, type, exist
   const confirmKey = 'create:' + (pendingNode?.dataset?.path || (parentPath + '|' + type + '|' + Date.now()));
   if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
   _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'create-confirmation',
+    label: '作成結果を確認しています',
+    mode: 'indeterminate',
+    origin: pendingNode,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
   try {
-    showStatus('作成に時間がかかっています。結果を確認中…');
+    if (!progress) showStatus('作成に時間がかかっています。結果を確認中…');
     const contextNodeEl = (typeof _findTreeNodeByPath === 'function' && _findTreeNodeByPath(parentPath)) || pendingNode;
     for (const delay of _outlinerPostTimeoutConfirmDelays()) {
       await new Promise(r => setTimeout(r, delay));
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindNewItemInListing(items, type, existingNames);
-      if (found) { _outlinerApplyCreateSuccess(pendingNode, found); return; }
+      if (found) {
+        _outlinerApplyCreateSuccess(pendingNode, found, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${found.name}」を作成しました` });
+        return;
+      }
     }
     if (typeof loadOutliner === 'function') await loadOutliner();
     if (typeof renderHomeFolderTree === 'function') renderHomeFolderTree();
     const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
     const found = _outlinerFindNewItemInListing(items, type, existingNames);
     if (pendingNode && pendingNode.parentNode) pendingNode.remove();
-    if (found) showStatus(`「${found.name}」を作成しました`);
-    else showStatus('作成の結果を確認できませんでした。フォルダツリーをご確認ください', true);
+    if (found) {
+      if (progress) progress.succeed({ summary: `「${found.name}」を作成しました` });
+      else showStatus(`「${found.name}」を作成しました`);
+    } else {
+      const message = '作成の結果を確認できませんでした。フォルダツリーをご確認ください';
+      if (progress) progress.fail({ error: message });
+      else showStatus(message, true);
+    }
   } finally {
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: '作成結果の確認を完了できませんでした' });
+    }
     _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
   }
 }
@@ -506,7 +574,7 @@ function startTreeLabelEdit(labelEl, nodeData, onFinish) {
 }
 
 // リネーム成功時の反映（通常成功時とタイムアウト事後確認成功時で共通）
-function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName) {
+function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData, oldName, options) {
   _renameTreeNode(oldPath, newPath, newName, fileId);
   historyPush(`リネーム: ${oldName} → ${newName}`,
     async () => {
@@ -523,7 +591,7 @@ function _outlinerApplyRenameSuccess(oldPath, newPath, newName, fileId, nodeData
   if (typeof renameAppPathReferences === 'function') {
     renameAppPathReferences(oldPath, newPath, { label: newName, fileId, type: nodeData.type || 'page' });
   }
-  showStatus(`「${oldName}」→「${newName}」にリネームしました`);
+  if (!options?.skipStatus) showStatus(`「${oldName}」→「${newName}」にリネームしました`);
 }
 
 // リネームAPIタイムアウト時の事後確認: 親フォルダを再取得し、旧名消滅・新名出現を確認する
@@ -531,8 +599,18 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
   const confirmKey = 'rename:' + oldPath;
   if (_outlinerPostTimeoutConfirmInFlight.has(confirmKey)) return;
   _outlinerPostTimeoutConfirmInFlight.add(confirmKey);
+  const progress = window.MeldexOperationProgress?.begin?.({
+    kind: 'rename-confirmation',
+    label: 'リネーム結果を確認しています',
+    mode: 'indeterminate',
+    origin: labelEl,
+    showImmediately: true,
+    showInTray: true,
+    showInStatus: true,
+    priority: 60,
+  });
   try {
-    showStatus('リネームに時間がかかっています。結果を確認中…');
+    if (!progress) showStatus('リネームに時間がかかっています。結果を確認中…');
     const parentPath = oldPath.includes('/') ? oldPath.substring(0, oldPath.lastIndexOf('/')) : '';
     const contextNodeEl = labelEl.closest('.tree-node');
     const delays = typeof _outlinerPostTimeoutConfirmDelays === 'function'
@@ -542,7 +620,8 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
       const items = await _outlinerFetchFolderListingForConfirm(parentPath, contextNodeEl);
       const found = _outlinerFindRenamedItem(items, oldName, newName);
       if (found) {
-        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName);
+        _outlinerApplyRenameSuccess(oldPath, found.path, newName, found.file_id, nodeData, oldName, { skipStatus: !!progress });
+        progress?.succeed?.({ summary: `「${oldName}」→「${newName}」にリネームしました` });
         return;
       }
     }
@@ -551,8 +630,13 @@ async function _outlinerHandleTreeRenameTimeout(labelEl, nodeData, oldName, newN
     const liveNode = typeof _findTreeNodeByPath === 'function' ? _findTreeNodeByPath(oldPath) : null;
     const liveLabel = liveNode ? liveNode.querySelector(':scope > .tree-node-row .tree-label') : null;
     (liveLabel || labelEl).textContent = oldName;
-    showStatus(`「${oldName}」のリネームに失敗（結果を確認できませんでした）`, true);
+    const message = `「${oldName}」のリネームに失敗（結果を確認できませんでした）`;
+    if (progress) progress.fail({ error: message });
+    else showStatus(message, true);
   } finally {
+    if (progress && !window.MeldexOperationProgress?.isTerminalStatus?.(progress.getState()?.status)) {
+      progress.fail({ error: 'リネーム結果の確認を完了できませんでした' });
+    }
     _outlinerPostTimeoutConfirmInFlight.delete(confirmKey);
   }
 }
@@ -814,87 +898,3 @@ function _outlinerKeyboardNodeFromTarget(target, scopeSelector) {
 }
 
 function _outlinerKeyboardToggle(nodeEl, expand) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  if (!toggle || toggle.dataset.expanded === undefined) return false;
-  const expanded = toggle.dataset.expanded === 'true';
-  if (expand === true && !expanded) { toggle.click(); return true; }
-  if (expand === false && expanded) { toggle.click(); return true; }
-  return false;
-}
-
-function _outlinerKeyboardIsExpandable(nodeEl) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  return !!toggle && toggle.dataset.expanded !== undefined;
-}
-
-function _outlinerKeyboardIsExpanded(nodeEl) {
-  const toggle = nodeEl?.querySelector?.(':scope > .tree-node-row .tree-toggle') || null;
-  return !!toggle && toggle.dataset.expanded === 'true';
-}
-
-// 標準Tree View操作（§2.4）: 閉じている子項目なら親へ選択を移す
-function _outlinerKeyboardParentNode(nodeEl) {
-  const container = nodeEl?.parentElement || null;
-  return container?.closest?.('.tree-node') || null;
-}
-
-// 標準Tree View操作（§2.4）: 展開済みの親なら最初の子へ選択を移す
-function _outlinerKeyboardFirstChildNode(nodeEl) {
-  const childrenDiv = nodeEl?.querySelector?.(':scope > .tree-children') || null;
-  return childrenDiv?.querySelector?.(':scope > .tree-node') || null;
-}
-
-function _handleOutlinerTreeKeydown(event) {
-  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Enter', 'F2'].includes(event.key)) return;
-  const target = event.target;
-  if (target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
-  const scopeSelector = _outlinerKeyboardScopeFromTarget(target);
-  if (!scopeSelector) return;
-  const current = _outlinerKeyboardNodeFromTarget(target, scopeSelector);
-  event.preventDefault();
-  event.stopPropagation();
-  _outlinerKeyboardMarkActive();
-  if (event.key === 'ArrowLeft') {
-    if (!current) return;
-    if (_outlinerKeyboardIsExpandable(current) && _outlinerKeyboardIsExpanded(current)) {
-      _outlinerKeyboardToggle(current, false);
-      return;
-    }
-    // 展開中でない（閉じた子項目・葉）場合は親へ選択を移す
-    const parent = _outlinerKeyboardParentNode(current);
-    if (parent) _outlinerKeyboardSelectNode(parent);
-    return;
-  }
-  if (event.key === 'ArrowRight') {
-    if (!current) return;
-    if (_outlinerKeyboardIsExpandable(current)) {
-      if (!_outlinerKeyboardIsExpanded(current)) {
-        _outlinerKeyboardToggle(current, true);
-        return;
-      }
-      // 展開済みなら最初の子へ選択を移す
-      const firstChild = _outlinerKeyboardFirstChildNode(current);
-      if (firstChild) {
-        _outlinerKeyboardSelectNode(firstChild);
-      } else {
-        // 展開直後（子の読み込み中）に2打目のArrowRightが押された場合、
-        // まだ子ノードがDOMに存在せずno-opになってしまう。読み込み完了後に
-        // 最初の子へフォーカス移動するデフォルト動作を予約しておく
-        // （gb-outliner.part01.part02.js の読み込み完了処理が消化する）。
-        const childrenDiv = current.querySelector?.(':scope > .tree-children') || null;
-        if (childrenDiv && childrenDiv.dataset.loading === 'true') {
-          childrenDiv._outlinerPendingArrowRightFocusNode = current;
-        }
-      }
-    }
-    return;
-  }
-  if (event.key === 'Enter') {
-    if (current) _outlinerKeyboardActivateNode(current);
-    return;
-  }
-  if (event.key === 'F2') {
-    if (current) _outlinerKeyboardStartRename(current);
-    return;
-  }

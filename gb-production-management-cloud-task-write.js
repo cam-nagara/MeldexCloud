@@ -91,6 +91,9 @@
     };
   }
 
+  let PM_CALENDAR_LEASE_TOKEN = '';
+  const PM_LEASE_PROVIDER_ORIGINAL = Symbol.for('meldex.lease.originalProvider');
+
   async function _pmCloudWithProductionLease(provider, operation) {
     const serialize = window.MeldexProductionSchemaMigration?.serializeProviderLeaseOperation;
     if (typeof serialize === 'function') {
@@ -105,7 +108,10 @@
       await requireUnlocked(provider, PM_ROOT, { action: 'production-management', includeDescendants: true });
     }
     const store = window.MeldexActiveLockStore;
-    if (!store?.acquire || !store?.release) return operation();
+    if (!store?.acquire || !store?.release || !store?.heartbeat) {
+      if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _pmCloudError(503, '共有更新ロックを利用できません');
+      return operation(provider);
+    }
     const token = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `pm-${Date.now()}-${_pmHash(Math.random())}`;
     const holderId = `production-task-create:${token}`;
     const lease = {
@@ -119,11 +125,52 @@
       lease_seconds: 300,
     };
     await store.acquire(provider, lease);
-    const heartbeatId = typeof store.heartbeat === 'function'
-      ? setInterval(() => store.heartbeat(provider, lease).catch(error => console.warn('[ProductionManagement] 制作管理ロックの更新に失敗しました', error)), 60000)
-      : null;
+    let leaseLost = null;
+    let heartbeatPromise = null;
+    const lostError = cause => {
+      const error = _pmCloudError(409, '制作管理の共有更新ロックを失いました。変更を保存せず再読み込みしてください');
+      error.code = 'PRODUCTION_LEASE_LOST';
+      if (cause) error.cause = cause;
+      return error;
+    };
+    const assertOwned = async () => {
+      if (leaseLost) throw leaseLost;
+      if (!heartbeatPromise) {
+        heartbeatPromise = Promise.resolve(store.heartbeat(provider, lease))
+          .catch(error => { leaseLost = lostError(error); throw leaseLost; })
+          .finally(() => { heartbeatPromise = null; });
+      }
+      await heartbeatPromise;
+      if (leaseLost) throw leaseLost;
+    };
+    const guardedProvider = new Proxy(provider, {
+      get(object, property) {
+        if (property === PM_LEASE_PROVIDER_ORIGINAL) return object[PM_LEASE_PROVIDER_ORIGINAL] || object;
+        const value = Reflect.get(object, property, object);
+        if (typeof value !== 'function') return value;
+        if (!/^(?:write|upload|put|create|copy|remove|delete|move|rename)/u.test(String(property))) return value.bind(object);
+        return async (...args) => { await assertOwned(); return value.apply(object, args); };
+      },
+    });
+    const heartbeatId = setInterval(() => {
+      assertOwned().catch(error => console.warn('[ProductionManagement] 制作管理ロックの更新に失敗しました', error));
+    }, 60000);
     try {
-      return await operation();
+      const calendarLease = window.MeldexCloudCalendarLease;
+      if (!calendarLease?.withLease) {
+        if (window.MeldexRuntimeAdapter?.getWorkspaceState) throw _pmCloudError(503, '共有カレンダーの更新ロックを利用できません');
+        return operation(guardedProvider);
+      }
+      return await calendarLease.withLease(provider, async context => {
+        PM_CALENDAR_LEASE_TOKEN = context.token;
+        try {
+          const guardedByBoth = context?.guardProvider?.(guardedProvider) || guardedProvider;
+          const result = await operation(guardedByBoth);
+          await assertOwned();
+          return result;
+        }
+        finally { PM_CALENDAR_LEASE_TOKEN = ''; }
+      });
     } finally {
       if (heartbeatId != null) clearInterval(heartbeatId);
       try {

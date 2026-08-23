@@ -655,6 +655,7 @@ function _chatRenderCodeExecBlock(block, parent) {
         img.style.cssText = 'max-width:220px;max-height:160px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;';
         img.addEventListener('click', () => window.open(url, '_blank', 'noopener'));
         row.appendChild(img);
+        window.MeldexImageLoading?.track?.(img);
       } else {
         const a = document.createElement('a');
         a.href = url;

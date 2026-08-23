@@ -18,8 +18,7 @@
   };
 
   function skEsc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function skIcon(name, size) {

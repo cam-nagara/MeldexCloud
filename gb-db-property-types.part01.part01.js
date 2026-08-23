@@ -1538,9 +1538,7 @@ function _buttonActionResolveContext(dbPath, ctx) {
 }
 
 function _buttonActionCss(value) {
-  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(value)
-    : String(value || '').replace(/["\\]/g, '\\$&');
+  return MeldexEscape.cssIdent(value);
 }
 
 function _buttonActionTargetCell(dbPath, entityName, propName, ctx) {

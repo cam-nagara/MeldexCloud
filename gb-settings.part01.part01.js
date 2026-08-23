@@ -16,18 +16,7 @@ function _settingsStorageLabel() {
   const mode = window.MeldexRuntimeAdapter?.getMode?.() || 'legacy';
   if (mode === 'browser') return 'この端末内に保存';
   if (mode === 'dropbox') return 'Dropboxと接続中';
-  if (mode === 'server') return 'Meldex共有サーバーに接続中';
   return 'このPCに保存';
-}
-
-function getMeldexSampleDownloadUrl() {
-  const cfg = window.MeldexCloudRuntimeConfig || {};
-  return String(cfg.samples?.downloadUrl || cfg.sampleDownloadUrl || '').trim();
-}
-
-function openMeldexSampleDownload() {
-  const url = getMeldexSampleDownloadUrl() || 'https://github.com/cam-nagara/MeldexCloud/releases';
-  window.open(url, '_blank', 'noopener');
 }
 
 let _settingsModalController = null;
@@ -68,15 +57,6 @@ function _setSettingsAvatarPreview(el, avatar) {
   img.alt = '';
   img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
   el.appendChild(img);
-}
-
-function openMeldexSampleGuide() {
-  closeSettingsModalRestoringTheme();
-  if (!window.MeldexRuntimeAdapter?.isBrowserDataMode?.() && typeof openPage === 'function') {
-    openPage('サンプルデータを取り込む', 'MeldexHome/マニュアル/01_はじめに/サンプルデータを取り込む.md', { fromExplorer: true, skipAutoAppLayout: true });
-    return;
-  }
-  window.open('public-index.html#samples', '_blank', 'noopener');
 }
 
 function isWebClipperDesktopSetupAvailable() {
@@ -182,7 +162,7 @@ async function showSettingsModal(opts) {
       { id: 'ショートカット', desc: 'キーボード操作', icon: 'keyboard' },
       { id: 'AI・Discord', desc: 'AIキー、AI使用量、Discord連携', icon: 'bot' },
       { id: 'インポート', desc: '外部取り込み、Notion同期、拡張機能', icon: 'download' },
-      { id: '導入・アプリ連携', desc: 'サンプル、ホーム画面追加、ファイル関連付け', icon: 'download' },
+      { id: '導入・アプリ連携', desc: 'ホーム画面追加、ファイル関連付け', icon: 'download' },
       { id: '履歴・引き継ぎ', desc: 'Undo、バージョン保存、設定移行', icon: 'history' },
       { id: 'ゴミ箱・データ保守', desc: 'ゴミ箱、バックアップ、内部データ', icon: 'database' },
       { id: 'フィードバック', desc: 'フィードバック、利用統計、診断', icon: 'messageSquareText' },
@@ -203,12 +183,14 @@ async function showSettingsModal(opts) {
   const _currentTheme = detectCurrentTheme();
   const _storageLabel = _settingsStorageLabel();
   const _workspaceState = window.MeldexRuntimeAdapter?.getWorkspaceState?.() || null;
-  const _serverConnection = window.MeldexRuntimeAdapter?.getServerConnection?.() || null;
-  const _storageDetail = _serverConnection?.url
-    ? _serverConnection.url
-    : _workspaceState?.path
+  const _storageDetail = _workspaceState?.path
     ? `${_workspaceState.path}${_workspaceState.access ? ' / ' + _workspaceState.access : ''}`
     : '未接続';
+  // 版履歴の共有移行は「このPCに貯まった版をDropboxの共有保存先へ移す」操作なので、
+  // ローカルの版置き場を持たないクラウド版では出さない(押せても何もできないため)。
+  const _sharedVersionMigrationAvailable = !(
+    window.MeldexRuntimeAdapter?.isBrowserMode?.() || window.MeldexRuntimeAdapter?.isDropboxMode?.()
+  );
   const _webClipperDesktopSetupAvailable = isWebClipperDesktopSetupAvailable();
   const _webClipperSetupDisabled = _webClipperDesktopSetupAvailable ? '' : ' disabled aria-disabled="true"';
   const _treeThumbnailsAvailable = window.GBOutlinerThumbnails?.isAvailable?.()
@@ -349,17 +331,8 @@ async function showSettingsModal(opts) {
           <button type="button" class="gb-btn gb-btn-sm" data-action="changeScreenshotFolder()">変更</button>
         </div>
       </section>
-      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="connect">
-        <div class="gb-section-title">${lucide('smartphone',14)} スマホ・タブレットからの接続 ${fieldHelp('このPCで開くURLと、同じネットワーク内で使える候補URLを表示します。通常は安全のためこのPC内だけに公開されるため、スマホから接続できない場合はブラウザ版Meldexまたは管理者が用意した共有URLを使ってください')}</div>
-        <div class="gb-field-row" style="align-items:center;gap:8px;flex-wrap:wrap;">
-          <code id="settings-mobile-primary-url" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:4px 8px;user-select:all;min-width:220px;">読み込み中...</code>
-          <button type="button" class="gb-btn gb-btn-sm" data-action="copySettingsMobilePrimaryUrl()">${lucide('copy',14)} URLをコピー</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-action="loadMobileAccessUrlsForSettings()">${lucide('refreshCw',14)} 更新</button>
-        </div>
-        <div id="settings-mobile-url-list" class="gb-section-desc">接続情報を取得中...</div>
-      </section>
-      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="connect">
-        <div class="gb-section-title">${lucide('server',14)} 保存の仕組み・共有サーバー ${fieldHelp('このPCのフォルダ、Dropbox、またはMeldex共有サーバーのどれに保存・接続するかを選びます', { e2eId: 'settings-storage-mode-help' })}</div>
+      <section class="gb-section gb-section--boxed settings-section-wide" data-settings-view="storage">
+        <div class="gb-section-title">${lucide('hardDrive',14)} 保存の仕組み ${fieldHelp('共同ワークスペースはDropbox、この端末だけで使うデータは端末内へ保存します。NASはソースフォルダとして参照できます', { e2eId: 'settings-storage-mode-help' })}</div>
         <div id="settings-storage-mode" class="gb-section-desc">現在: ${esc(_storageLabel)}</div>
         <div id="settings-storage-detail" class="gb-section-desc">接続先: ${esc(_storageDetail)}</div>
         <div class="gb-field-row" style="justify-content:flex-start;">
@@ -376,13 +349,6 @@ async function showSettingsModal(opts) {
         <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;margin-top:8px;">
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-refresh" data-action="loadDefaultAppAssociationsForSettings">${lucide('refreshCw',14)} 状態を更新</button>
           <button type="button" class="gb-btn gb-btn-sm gb-btn-quiet" data-e2e-id="settings-default-app-guide" data-action="openDefaultAppsGuide">${lucide('bookOpen',14)} 手順を見る</button>
-        </div>
-      </section>
-      <section class="gb-section gb-section--boxed" data-settings-view="setup">
-        <div class="gb-section-title">${lucide('archive',14)} サンプルデータ ${fieldHelp('ホームフォルダにサンプル作品を追加します。既にあるファイルは上書きしません', { e2eId: 'settings-sample-data-help' })}</div>
-        <div class="gb-field-row" style="justify-content:flex-start;flex-wrap:wrap;">
-          <button type="button" class="gb-btn gb-btn-sm" data-action="window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })">${lucide('archive',14)} サンプルを追加</button>
-          <button type="button" class="gb-btn gb-btn-sm" data-action="openMeldexSampleGuide()">${lucide('bookOpen',14)} 取り込み手順</button>
         </div>
       </section>
       <div id="settings-install-container" data-settings-view="setup">
@@ -485,14 +451,14 @@ async function showSettingsModal(opts) {
         <div id="modal-autostart-status" class="gb-field-help" role="status" aria-live="polite">自動起動の状態を確認しています</div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）')}</div>
+        <div class="gb-section-title">ヒストリー（Undo/Redo） ${fieldHelp('Ctrl+Z で戻る、Ctrl+Y でやり直し（テキスト編集外で有効）', { e2eId: 'settings-history-undo-help' })}</div>
         <label class="gb-field-row">
           <span class="gb-label">最大アンドゥ回数</span>
           <input id="modal-history-max" type="number" class="gb-input" style="width:80px;" value="${getHistoryMax()}" min="1" max="200">
         </label>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">自動バージョン保存 ${fieldHelp('編集があった場合のみ保存します。古いものから自動削除されます')}</div>
+        <div class="gb-section-title">自動バージョン保存 ${fieldHelp('編集があった場合のみ保存します。古いものから自動削除されます', { e2eId: 'settings-history-auto-version-help' })}</div>
         <label class="gb-field-row">
           <span class="gb-label">間隔</span>
           <select id="modal-version-interval" class="gb-select">
@@ -508,14 +474,22 @@ async function showSettingsModal(opts) {
           <input id="modal-version-max" type="number" class="gb-input" style="width:80px;" value="${getMaxAutoVersions()}" min="1" max="200">
         </label>
       </section>
+      ${_sharedVersionMigrationAvailable ? `
       <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">レイアウト ${fieldHelp('現在のパネル配置を単一レイアウトとして保存します。ファイル形式による自動切り替えは行いません')}</div>
+        <div class="gb-section-title">バージョン履歴の共有 ${fieldHelp('Dropboxの中にあるファイル・フォルダの版履歴を、ダウンロード版とクラウド版で同じ一覧にします。このPCに貯まっていた履歴は、そのファイルの履歴を開いたときに自動で移りますが、ここでまとめて移すこともできます。元の履歴はこのPCにそのまま残ります', { e2eId: 'settings-shared-version-migration-help' })}</div>
+        <div class="gb-field-row">
+          <button id="btn-migrate-shared-versions" class="gb-btn gb-btn-sm" data-action="runSharedVersionMigration()">まとめて移す</button>
+          <span id="migrate-shared-versions-status" class="gb-section-desc"></span>
+        </div>
+      </section>` : ''}
+      <section class="gb-section gb-section--boxed" data-settings-view="history">
+        <div class="gb-section-title">レイアウト ${fieldHelp('現在のパネル配置を単一レイアウトとして保存します。ファイル形式による自動切り替えは行いません', { e2eId: 'settings-history-layout-help' })}</div>
         <div class="gb-field-row">
           <button class="gb-btn gb-btn-sm gb-btn-danger" data-action="cfConfirm('レイアウトを初期化しますか？').then(ok=>{if(ok)resetLayoutToDefault();})">レイアウトを初期化</button>
         </div>
       </section>
       <section class="gb-section gb-section--boxed" data-settings-view="history">
-        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・注釈・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）')}</div>
+        <div class="gb-section-title">${lucide('table',14)} 履歴データのエクスポート ${fieldHelp('チャット履歴・注釈・スケジュールのイベント・ToDoをホームフォルダにシート形式でエクスポートします（読み取り専用コピー）', { e2eId: 'settings-history-export-help' })}</div>
         <div class="gb-field-row">
           <button id="btn-export-to-db" class="gb-btn gb-btn-sm" data-action="runExportToDb()">エクスポート実行</button>
           <span id="export-to-db-status" class="gb-section-desc"></span>
@@ -1143,16 +1117,15 @@ async function loadStorageInfoForSettings() {
   const detailEl = document.getElementById('settings-storage-detail');
   if (!modeEl || !detailEl) return;
   const storageLabel = _settingsStorageLabel();
-  const serverConnection = window.MeldexRuntimeAdapter?.getServerConnection?.() || null;
   try {
     const info = await window.MeldexStorageAdapter?.describeWorkspace?.();
     const displayPath = info?.path || info?.homePath || '';
     const permission = info?.permission ? ' / ' + info.permission : '';
     modeEl.textContent = '現在: ' + storageLabel;
-    detailEl.textContent = '接続先: ' + (serverConnection?.url || (displayPath ? (displayPath + permission) : '未接続'));
+    detailEl.textContent = '接続先: ' + (displayPath ? (displayPath + permission) : '未接続');
   } catch {
     modeEl.textContent = '現在: ' + storageLabel;
-    if (serverConnection?.url) detailEl.textContent = '接続先: ' + serverConnection.url;
+    detailEl.textContent = '接続先: 未接続';
   }
 }
 

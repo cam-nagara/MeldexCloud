@@ -187,7 +187,13 @@ function bdOpenStylePicker(kind, anchorEl, options) {
   requestAnimationFrame(() => {
     if (!_bdStylePickerMenu) return;
     const current = menu.querySelector('[aria-checked="true"]') || menu.querySelector('[data-bd-style-pick]');
-    current?.focus?.();
+    if (current) {
+      // preventScroll なしの focus() はメニュー内スクロールや周囲のスクロール位置を
+      // 勝手に動かす（開いた瞬間に画面が飛ぶ）。フォーカスとスクロールを分離し、
+      // 選択中項目が隠れている場合だけメニュー内で最小限スクロールする。
+      try { current.focus({ preventScroll: true }); } catch (_) { current.focus?.(); }
+      current.scrollIntoView?.({ block: 'nearest' });
+    }
   });
   setTimeout(() => {
     _bdStylePickerCloseHandler = event => {

@@ -7,7 +7,10 @@
  *
  * 既存の削除確認ダイアログ(cfConfirm、UI共通ルール「削除は必ず確認ダイアログ」で
  * 既に全削除操作に確認がある)へ、被参照件数の警告を追加するだけの薄いレイヤー。
- * サーバー側の判定・カウントは一切行わず、POST /api/references/delete-impact
+ * サーバー側の判定・カウントは一切行わず、削除影響照会（POST /references/delete-impact。
+ * apiPost が API ベース URL を前置するため、ここでは `/api` を自分で付けないこと —
+ * 付けると `/api/api/...` になり常に失敗し、削除確認そのものが黙って中止されていた
+ * 〔2026-08-18 実UI検査で判明。承認済みバックログ完了計画 Track A-4〕）
  * （meldex_api_reference_delete_impact.py）の結果をそのままDOMへ反映する。
  *
  * 影響照会が完了しtokenを発行できた場合だけ確認操作を有効にする。削除APIは
@@ -31,6 +34,19 @@
 
   function _isNonEmptyString(value) {
     return typeof value === 'string' && value.trim() !== '';
+  }
+
+  function targetFor(raw, overrides) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const extra = overrides && typeof overrides === 'object' ? overrides : {};
+    const path = extra.path || source.path || '';
+    const type = extra.kind || source.kind || source.type;
+    const target = { path, kind: type === 'folder' || type === 'directory' ? 'folder' : 'file' };
+    const assetId = extra.assetId || extra.asset_id || source.assetId || source.asset_id;
+    if (_isNonEmptyString(assetId)) target.assetId = String(assetId);
+    const physicalPath = extra.physicalPath || extra._physicalPath || source.physicalPath || source._physicalPath;
+    if (_isNonEmptyString(physicalPath)) target.physicalPath = String(physicalPath);
+    return target;
   }
 
   function _toDeleteImpactItems(targets) {
@@ -61,7 +77,7 @@
     if (!items.length) return { impact: null, failed: false };
     if (typeof apiPost !== 'function') return { impact: null, failed: true };
     try {
-      const result = await apiPost('/api/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
+      const result = await apiPost('/references/delete-impact', { items, operation }, { silentError: true, ...(signal ? { signal } : {}) });
       if (result && result.ok) return { impact: result, failed: false };
       return { impact: null, failed: true };
     } catch (_) {
@@ -246,5 +262,6 @@
     buildWarningNode,
     confirmDeleteWithImpact,
     confirmationPayload,
+    targetFor,
   };
 })();

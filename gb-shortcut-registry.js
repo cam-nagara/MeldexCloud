@@ -86,10 +86,7 @@
   let _applyingSyncedBindings = false;
 
   function _esc(value) {
-    if (typeof global.esc === 'function') return global.esc(String(value == null ? '' : value));
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return global.MeldexEscape.html(value);
   }
 
   function register(defs, options) {

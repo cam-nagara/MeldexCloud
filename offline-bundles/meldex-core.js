@@ -177,11 +177,24 @@ async function _meldexCorePrepareFileWrite(path, body) {
 
 async function apiPut(path, body) {
   const guardedBody = await _meldexCorePrepareFileWrite(path, body);
-  return apiFetch(path, {
+  const result = await apiFetch(path, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(guardedBody),
   });
+  _scheduleLinkDictionaryRefreshForMutation(path);
+  return result;
+}
+
+function _scheduleLinkDictionaryRefreshForMutation(path) {
+  const pathname = String(path || '').split('?')[0];
+  if (![
+    '/value', '/entity/create', '/entity/rename',
+    '/outliner/delete', '/outliner/delete-batch', '/outliner/rename',
+  ].includes(pathname)) return;
+  if (typeof MeldexAutoLink !== 'undefined' && typeof MeldexAutoLink.scheduleReload === 'function') {
+    MeldexAutoLink.scheduleReload(3000);
+  }
 }
 
 async function apiPost(path, body, options = {}) {
@@ -199,6 +212,7 @@ async function apiPost(path, body, options = {}) {
     ...(options || {}),
   });
   window.MeldexStableCopyOperationIds?.complete(stableCopyKey);
+  _scheduleLinkDictionaryRefreshForMutation(path);
   return result;
 }
 
@@ -216,8 +230,7 @@ async function openFileDialog(title, initialdir, filetypes) {
 // ユーティリティ
 // ============================================================
 function esc(s) {
-  if (s == null) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return MeldexEscape.html(s);
 }
 
 // UI共通ルール: 外部から取り込む操作は download、外部へ出す操作は upload を使う。
@@ -2067,19 +2080,12 @@ function initIframeMarkup(scrollContainer) {
     const userText = document.createElement('span');
     userText.className = 'ann-user-name';
     userText.textContent = `${displayUser || ''}${dateStr ? ' ' + dateStr : ''}`.trim();
-    const deleteBtn = document.createElement('button');
-    deleteBtn.type = 'button';
-    deleteBtn.className = 'ann-note-delete-btn';
-    deleteBtn.dataset.annDelete = '1';
-    deleteBtn.dataset.e2eId = `embedded-annotation-note-${item.id || 'pending'}-delete`;
-    deleteBtn.setAttribute('aria-label', '注釈を削除');
-    deleteBtn.title = '削除';
-    deleteBtn.innerHTML = lucide('x', 12);
-    _normalizeEmbeddedNoteIcon(deleteBtn, 12);
+    const actions = document.createElement('div');
+    actions.className = 'ann-note-actions';
     headerLabel.appendChild(userIcon);
     headerLabel.appendChild(userText);
     header.appendChild(headerLabel);
-    header.appendChild(deleteBtn);
+    header.appendChild(actions);
     note.tabIndex = -1;
     note.setAttribute('aria-haspopup', 'menu');
     note.appendChild(header);
@@ -2121,8 +2127,8 @@ function initIframeMarkup(scrollContainer) {
       persist();
     };
     header.addEventListener('pointerdown', (e) => {
-      // 削除 (x) / メニュー (…) ボタン上ではドラッグ開始しない
-      if (!_ann.active || e.target.closest('[data-ann-delete],button,.ann-note-resize-handle,.gb-fmt-popup')) return;
+      // メニュー (…) ボタン上ではドラッグ開始しない
+      if (!_ann.active || e.target.closest('button,.ann-note-resize-handle,.gb-fmt-popup')) return;
       e.preventDefault();
       e.stopPropagation();
       const pt = _toLocalCoords(e.clientX, e.clientY);
@@ -2149,13 +2155,6 @@ function initIframeMarkup(scrollContainer) {
       note.remove();
       _postToParent({ type: 'ann-delete-note', annId: item.id, data: payload });
     };
-
-    deleteBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
-    deleteBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      _confirmEmbeddedNoteDelete(_deleteEmbeddedNote);
-    });
 
     // 右クリックメニュー (色変更 / フキダシしっぽ / 削除)
     function _showEmbeddedNoteContextMenu(ev) {
@@ -2413,7 +2412,7 @@ function initIframeMarkup(scrollContainer) {
       e.stopPropagation();
       _showEmbeddedNoteContextMenu(e);
     });
-    note.appendChild(moreBtn);
+    actions.appendChild(moreBtn);
 
     note.addEventListener('contextmenu', _showEmbeddedNoteContextMenu);
     if (typeof window.addLongPressHandler === 'function') {

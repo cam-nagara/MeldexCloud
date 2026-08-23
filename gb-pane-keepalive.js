@@ -60,6 +60,10 @@
   function detachAll(paneMap) {
     for (const paneId in (paneMap || {})) {
       const info = paneMap[paneId];
+      // サブパネルは #gb-layout-root の外（右レール／モバイルドロワー）にある仮想ペイン。
+      // layout root の innerHTML 再生成では消えないため、通常ペイン用keep-aliveへ取り込むと
+      // レイアウトツリーに存在しない「stale」と判定され、表示中DOMを誤って破棄してしまう。
+      if (info?.surface === 'subpanel') continue;
       const contentEl = info && info.contentEl;
       if (!contentEl || !contentEl.parentNode) continue; // 既に他経路(active pane preserve)で取り外し済み等
       const placeholder = document.createComment('gb-pane-keepalive:' + paneId);

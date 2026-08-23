@@ -14,10 +14,14 @@
       .filter(item => item.start && item.end && new Date(item.end) > new Date(item.start)).sort((a, b) => a.start.localeCompare(b.start));
     return valid.length ? valid : (start && end ? [{ start, end }] : []);
   }
-  async function _pmCloudSyncTaskEvent(provider, internals, path, fm) {
+  async function _pmCloudSyncTaskEventUnlocked(provider, internals, path, fm) {
     const taskId = String(fm?.id || internals._basename(path).replace(/\.md$/i, ''));
     const baseId = `production-task:${taskId}`;
     const before = await _pmReadCalendarStore(provider, internals, 'events');
+    const collision = before.find(event => (
+      String(event?.id || '') === baseId || String(event?.id || '').startsWith(baseId + ':part:')
+    ) && String(event?.calendar_source || '') !== 'production-task');
+    if (collision) throw _pmCloudError(409, '制作タスク予定のIDが通常予定と競合しています。通常予定のIDを変更してください');
     const events = before.filter(event => String(event?.id || '') !== baseId && !String(event?.id || '').startsWith(baseId + ':part:'));
     const planned = _pmCloudPropValue(fm, '作業予定日時');
     const user = _pmCloudPropValue(fm, '担当者');
@@ -41,6 +45,13 @@
       });
     }
     await _pmWriteCalendarStore(provider, internals, 'events', events);
+  }
+
+  function _pmCloudSyncTaskEvent(provider, internals, path, fm) {
+    const operation = leasedProvider => _pmCloudSyncTaskEventUnlocked(leasedProvider, internals, path, fm);
+    const lease = window.MeldexCloudCalendarLease;
+    return lease?.withLease ? lease.withLease(provider, context => operation(context?.guardProvider?.(provider) || provider),
+      PM_CALENDAR_LEASE_TOKEN ? { token: PM_CALENDAR_LEASE_TOKEN } : null) : operation(provider);
   }
 
   function _pmCloudApplyCalendarDrop(props, body, drop) {
@@ -145,7 +156,14 @@
   async function _pmCloudQueryTasks(provider, internals, body) {
     const filters = body?.filters && typeof body.filters === 'object' ? body.filters : {};
     const q = String(body?.q || '').trim().toLocaleLowerCase('ja');
-    let rows = (await _pmCloudListAllTaskEntries(provider, internals)).map(_pmCloudEntryRow).filter(row => {
+    const allRows = (await _pmCloudListAllTaskEntries(provider, internals)).map(_pmCloudEntryRow);
+    const facets = {
+      statuses: [...new Set(allRows.map(row => String(_pmCloudQueryField(row, '状況') || '').trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' })),
+      assignees: [...new Set(allRows.map(row => String(_pmCloudQueryField(row, '担当者') || '').trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' })),
+    };
+    let rows = allRows.filter(row => {
       if (q && !`${row.name}\n${Object.values(row.properties || {}).join('\n')}`.toLocaleLowerCase('ja').includes(q)) return false;
       const rules = [[_pmCloudQueryField(row, '作品タイトル'), filters.work_titles || filters.works || filters.work || body?.work_titles || body?.work_title], [_pmCloudQueryField(row, '状況'), filters.statuses || filters.status || body?.statuses || body?.status], [_pmCloudQueryField(row, '担当者'), filters.assignees || filters.assignee || body?.assignees || body?.assignee]];
       if (rules.some(([value, accepted]) => { const set = _pmCloudQueryValues(accepted); return set.size && !set.has(String(value)); })) return false;
@@ -165,5 +183,5 @@
       workMeta[work.name] = { id: String(work.frontmatter?.id || work.name), title: work.name, classification_labels: labels, classification_count: Math.max(0, Number(_pmCloudPropValue(work.frontmatter, '階層数')) || labels.length) };
     }
     rows = rows.slice(offset, offset + limit);
-    return { ok: true, sheet: 'タスクリスト', columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), property_types: PM_PROPERTY_TYPES['タスクリスト'], editable_columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), rows, count: rows.length, total, offset, limit, work_meta: workMeta, generic_classification_labels: ['中分類', '小分類', '詳細分類'], cloud: true };
+    return { ok: true, sheet: 'タスクリスト', columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), property_types: PM_PROPERTY_TYPES['タスクリスト'], editable_columns: Object.keys(PM_PROPERTY_TYPES['タスクリスト']), rows, count: rows.length, total, offset, limit, work_meta: workMeta, generic_classification_labels: ['中分類', '小分類', '詳細分類'], facets, cloud: true };
   }

@@ -19,7 +19,6 @@
     "apiPost('/caldav/sync-to-ics').then(r=>showStatus('同期完了: '+r.synced+'件'))",
     "apiPost('/caldav/sync-from-ics',{user:(typeof getUsername==='function'?getUsername():'')}).then(r=>showStatus('取込: '+r.imported+'件, 更新: '+r.updated+'件'))",
     "document.getElementById('settings-transfer-import-input')?.click()",
-    "window.MeldexSampleInstaller?.installNow?.({ trigger: 'settings-samples' })",
   ]);
 
   function parseAction(actionStr) {

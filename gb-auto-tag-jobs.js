@@ -8,6 +8,7 @@
   const SUCCESS_DISMISS_MS = 1800;
   const jobs = new Map();
   const successDismissTimers = new Map();
+  const operationHandles = new Map();
   let tray = null;
   let minimized = false;
 
@@ -143,9 +144,81 @@
     return tray;
   }
 
+  function syncCommonOperation(job) {
+    const progressApi = window.MeldexOperationProgress;
+    if (!progressApi || !job?.id) return false;
+    let handle = progressApi.findByPersistentJobId(job.id) || operationHandles.get(job.id);
+    if (!handle) {
+      handle = progressApi.begin({
+        id: 'auto-tag-' + job.id,
+        kind: job.kind || 'auto-tag',
+        label: job.label || 'タグ処理',
+        mode: Number(job.progress?.total) > 0 ? 'determinate' : 'indeterminate',
+        processed: Number(job.progress?.processed) || 0,
+        total: Number(job.progress?.total) || null,
+        persistentJobId: job.id,
+        background: true,
+        showImmediately: true,
+        cancellable: ['running', 'cancelling'].includes(job.status),
+        cancelCompletes: false,
+        cancel: function () { return cancel(job.id); },
+        onDispose: function () {
+          clearTimeout(successDismissTimers.get(job.id));
+          successDismissTimers.delete(job.id);
+          jobs.delete(job.id);
+          operationHandles.delete(job.id);
+          persist();
+        },
+        priority: 30,
+      });
+      operationHandles.set(job.id, handle);
+    }
+    const total = Number(job.progress?.total);
+    const failureSamples = Array.isArray(job.result?.failure_samples) ? job.result.failure_samples : [];
+    const terminalDetails = {
+      details: failureSamples,
+      detailCount: Number(job.result?.failed || failureSamples.length),
+    };
+    if (['running', 'cancelling'].includes(job.status)) {
+      handle.update({
+        label: job.label || 'タグ処理',
+        status: job.status,
+        mode: total > 0 ? 'determinate' : 'indeterminate',
+        processed: Number(job.progress?.processed) || 0,
+        total: total > 0 ? total : null,
+        phase: job.progress?.phase || (job.status === 'cancelling' ? '中止中' : '処理中'),
+        message: job.progress?.message || '',
+        currentItem: job.progress?.current || '',
+        rate: job.progress?.rate,
+        eta: job.progress?.eta_seconds,
+        cancellable: job.status === 'running',
+      });
+    } else if (job.status === 'done') {
+      const failed = Number(job.result?.failed || 0);
+      if (failed > 0) handle.partial({ summary: progressText(job), ...terminalDetails });
+      else handle.succeed({ summary: progressText(job) });
+      operationHandles.delete(job.id);
+    } else if (job.status === 'cancelled') {
+      handle.cancelled({ summary: progressText(job) });
+      operationHandles.delete(job.id);
+    } else if (job.status === 'error') {
+      handle.fail({ error: progressText(job), ...terminalDetails });
+      operationHandles.delete(job.id);
+    }
+    return true;
+  }
+
   function render() {
-    const host = ensureTray();
     const rows = [...jobs.values()];
+    const usingCommonTray = rows.reduce(function (used, job) { return syncCommonOperation(job) || used; }, false);
+    if (usingCommonTray) {
+      if (tray?.isConnected) {
+        tray.hidden = true;
+        tray.replaceChildren();
+      }
+      return;
+    }
+    const host = ensureTray();
     const hasFailures = rows.some(job => (
       job.status === 'error' || Number(job.result?.failed || 0) > 0
     ));

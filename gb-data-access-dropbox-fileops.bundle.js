@@ -6,4 +6,5 @@ __loadSplitScript('gb-data-access-dropbox-fileops.bundle.js', [
   'gb-data-access-dropbox-fileops.bundle.part03.js',
   'gb-data-access-dropbox-fileops.bundle.part04.js',
   'gb-data-access-dropbox-fileops.bundle.part05.js',
+  'gb-data-access-dropbox-fileops.bundle.part06.js',
 ]);

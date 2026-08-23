@@ -794,6 +794,7 @@ function _buildRpScreenshotPreview(a) {
     wrap.appendChild(fallback);
   };
   wrap.appendChild(img);
+  window.MeldexImageLoading?.track?.(img, { host: wrap, errorMode: 'silent' });
   return wrap;
 }
 
@@ -939,7 +940,7 @@ function _rpAnnotationCenter(a) {
 }
 
 function _flashRpAnnotationElement(a) {
-  const safeId = (window.CSS && CSS.escape) ? CSS.escape(String(a.id || '')) : String(a.id || '').replace(/"/g, '\\"');
+  const safeId = MeldexEscape.cssIdent(a.id);
   const target = safeId ? document.querySelector(`[data-ann-id="${safeId}"]`) : null;
   if (!target) return;
   const prevOutline = target.style.outline;
@@ -1030,7 +1031,7 @@ async function _deleteAnnotationFromPanel(a) {
       : null;
     await apiDelete('/annotations/' + encodeURIComponent(a.id));
     if (typeof _pushAnnotationHistory === 'function') _pushAnnotationHistory('注釈: 削除', before, null, a.id);
-    const safeId = (window.CSS && CSS.escape) ? CSS.escape(String(a.id)) : String(a.id).replace(/["\\]/g, '\\$&');
+    const safeId = MeldexEscape.cssIdent(a.id);
     document.querySelectorAll(`[data-ann-id="${safeId}"]`).forEach(el => el.remove());
     _invalidateCommentBadgesFor(a);
     loadRpAnnotationList();

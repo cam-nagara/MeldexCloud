@@ -1466,6 +1466,7 @@ function _appendDbCardImagePreview(root, items, options = {}) {
       if (typeof openImagePropertyItemInViewer === 'function') openImagePropertyItemInViewer(item);
     });
     wrap.appendChild(img);
+    window.MeldexImageLoading?.track?.(img, { label: '画像を読み込んでいます' });
     appended += 1;
   });
   if (!appended) return false;

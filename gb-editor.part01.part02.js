@@ -73,7 +73,8 @@
           if (isImage) {
             const imgUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,
-              `<div class="embed-media" contenteditable="false" data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}"></div>`);
+              `<div class="embed-media" contenteditable="false" data-meldex-image-host data-path="${esc(path)}" data-name="${esc(name)}"><img src="${imgUrl}" alt="${esc(name)}" data-meldex-content-image></div>`);
+            window.MeldexImageLoading?.trackAll?.(el);
           } else if (type === 'video' || ['mp4','m4v','mov','webm','ogv','avi','mkv','wmv','mpg','mpeg'].includes(ext)) {
             const videoUrl = '/api/file-raw?path=' + encodeURIComponent(path);
             document.execCommand('insertHTML', false,

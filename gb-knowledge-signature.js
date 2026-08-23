@@ -5,6 +5,7 @@
   const AUDIT_LOG_PATH = '_meldex/audit-log.json';
   const MAX_AUDIT_ROWS = 500;
   const AUDIT_LOG_DOCUMENT_ID = 'knowledge-audit-log';
+  const RECORD_SIGNATURE_PREFIX = 'record-signature';
 
   function _internals() {
     return window.__MeldexPwaDataAccessInternals || {};
@@ -64,6 +65,20 @@
 
   function stableStringify(value) {
     return JSON.stringify(_stable(value));
+  }
+
+  function _recordSignatureDocumentId(scope, editDocumentId) {
+    return `${RECORD_SIGNATURE_PREFIX}-${_normalizeScope(scope)}-${_normalizeScope(editDocumentId)}`;
+  }
+
+  function _recordSigningPayload(scope, record) {
+    return {
+      signature_schema_version: 1,
+      scope: _normalizeScope(scope),
+      edit_document_id: String(record?.documentId || ''),
+      payload_revision: String(record?.revision || ''),
+      payload: record?.payload || {},
+    };
   }
 
   function _bytesToHex(bytes) {
@@ -158,6 +173,103 @@
     return result;
   }
 
+  async function readRecordSignature(provider, scope, editDocumentId, options = {}) {
+    const documentId = _recordSignatureDocumentId(scope, editDocumentId);
+    try {
+      const managed = await _managementRecord(provider, documentId, options);
+      return managed.record?.payload || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function markRecordPending(provider, scope, record, meta = {}) {
+    if (!record?.documentId) return { ok: false, skipped: true };
+    const documentId = _recordSignatureDocumentId(scope, record.documentId);
+    const entry = {
+      signature_schema_version: 1,
+      scope: _normalizeScope(scope),
+      edit_document_id: String(record.documentId),
+      payload_revision: String(record.revision || ''),
+      state: 'pending-owner-signature',
+      requested_at: new Date().toISOString(),
+      requested_by: String(meta.requestedBy || ''),
+    };
+    await _saveManagementRecord(provider, documentId, () => entry, {
+      managementAdapter: meta.managementAdapter || null,
+    });
+    return { ok: true, ...entry };
+  }
+
+  async function signRecord(provider, scope, record, meta = {}) {
+    if (!record?.documentId) return { ok: false, skipped: true };
+    const target = _recordSigningPayload(scope, record);
+    let rawKey = meta.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!rawKey && meta.createKey !== false) {
+      const managed = await _managementRecord(provider, _recordSignatureDocumentId(scope, record.documentId), {
+        managementAdapter: meta.managementAdapter || null,
+      });
+      const existing = typeof managed.adapter?.listDocuments === 'function'
+        ? await managed.adapter.listDocuments(managed.kind)
+        : null;
+      // 既存署名がある状態で鍵だけ失われた場合、新しい鍵を黙って作ると過去の
+      // 正常レコードまで改変扱いになる。復旧UIを優先し、初回署名時だけ生成する。
+      if (!Array.isArray(existing) || existing.some(row => !!row?.payload?.hmac)) {
+        window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('既存の変更レコード署名があります。新しい鍵を作らず、管理者鍵を復旧してください。');
+        return { ok: false, missing_key: true, reason: 'owner-key-recovery-required' };
+      }
+      rawKey = await window.MeldexOwnerKeyStore?.getRawKey?.({ create: true });
+    }
+    const digest = await hmac(target, { create: false, rawKey });
+    if (!digest) return { ok: false, missing_key: true, reason: 'owner-key-missing' };
+    const entry = {
+      ...target,
+      payload: undefined,
+      hmac: digest,
+      state: 'signed',
+      signed_at: new Date().toISOString(),
+      signer: String(meta.signer || ''),
+    };
+    delete entry.payload;
+    await _saveManagementRecord(provider, _recordSignatureDocumentId(scope, record.documentId), () => entry, {
+      managementAdapter: meta.managementAdapter || null,
+    });
+    return { ok: true, ...entry };
+  }
+
+  async function verifyRecord(provider, scope, record, options = {}) {
+    if (!record?.documentId) return { ok: false, reason: 'record-missing' };
+    if (Number(record?.payload?.integrity_schema_version || 0) < 1) {
+      return { ok: false, status: 'legacy-unsigned', reason: 'legacy-unsigned' };
+    }
+    const signature = await readRecordSignature(provider, scope, record.documentId, options);
+    if (!signature?.hmac) {
+      return {
+        ok: false,
+        status: 'pending-owner-signature',
+        reason: signature?.state === 'pending-owner-signature' ? 'pending-owner-signature' : 'signature-missing',
+        signature,
+      };
+    }
+    const key = options.rawKey || await window.MeldexOwnerKeyStore?.getRawKey?.({ create: false });
+    if (!key) {
+      window.MeldexOwnerKeyRecovery?.notifyMissingOwnerKey?.('変更レコードの署名検証に必要な管理者鍵がこの端末にありません。');
+      return { ok: false, status: 'owner-key-missing', missing_key: true, reason: 'owner-key-missing', signature };
+    }
+    const actual = await hmac(_recordSigningPayload(scope, record), { create: false, rawKey: key });
+    const ok = actual === signature.hmac
+      && String(signature.payload_revision || '') === String(record.revision || '')
+      && String(signature.edit_document_id || '') === String(record.documentId || '');
+    return {
+      ok,
+      status: ok ? 'verified' : 'tampered',
+      reason: ok ? '' : 'signature-mismatch',
+      expected: signature.hmac,
+      actual,
+      signature,
+    };
+  }
+
   async function recordAudit(provider, type, entry = {}) {
     const { _readJsonSafe } = _internals();
     if (!provider || typeof provider.writeJson !== 'function') return { ok: false };
@@ -204,6 +316,10 @@
     verify,
     verifyStrict,
     readSignature,
+    readRecordSignature,
+    markRecordPending,
+    signRecord,
+    verifyRecord,
     recordAudit,
     readAudit,
   };

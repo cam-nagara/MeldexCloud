@@ -804,6 +804,13 @@ function applyDbTemplate(dbPath, template, opts) {
   const viewsResult = c._dbTemplateViewsResult || null;
   delete c._dbTemplateViewsResult;
 
+  // 5.5 エントリレイアウト（typeofガード: 未ロード環境ではレイアウト無しの従来動作）
+  if (typeof _applyDbTemplateEntityLayouts === 'function') {
+    _applyDbTemplateEntityLayouts(c, template, overwrite);
+  }
+  const entityLayoutsResult = c._dbTemplateEntityLayoutsResult || null;
+  delete c._dbTemplateEntityLayoutsResult;
+
   // 6. エントリテンプレート（別のlocalStorageキー）
   let existingEntityTemplates = null;
   let nextEntityTemplates = null;
@@ -850,7 +857,7 @@ function applyDbTemplate(dbPath, template, opts) {
     throw e;
   }
 
-  return { applied, skipped, viewsResult, backendSavePromise };
+  return { applied, skipped, viewsResult, entityLayoutsResult, backendSavePromise };
 }
 
 /**
@@ -881,6 +888,7 @@ function exportDbAsTemplate(dbPath) {
     entityTemplates: getEntityTemplates(dbPath),
     countTypes: hasSavedViews ? (currentCountTypes || {}) : (currentCountTypes && Object.keys(currentCountTypes).length ? currentCountTypes : (c.countTypes || {})),
     savedViews: typeof exportDbTemplateSavedViews === 'function' ? exportDbTemplateSavedViews(c) : null,
+    entityLayouts: typeof exportDbTemplateEntityLayouts === 'function' ? exportDbTemplateEntityLayouts(c) : null,
   };
 }
 

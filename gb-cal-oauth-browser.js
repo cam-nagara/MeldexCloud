@@ -205,27 +205,29 @@
   }
 
   async function exchangeGoogleToken({ code, verifier, clientId, clientSecret, redirectUri: uri }) {
-    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+    const form = {
       code,
       client_id: clientId,
-      client_secret: clientSecret,
       redirect_uri: uri,
       grant_type: 'authorization_code',
       code_verifier: verifier,
-    });
+    };
+    if (clientSecret) form.client_secret = clientSecret;
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, form);
   }
 
   async function refreshGoogleToken({ refreshToken, clientId, clientSecret }) {
-    return _postForm(GOOGLE_TOKEN_ENDPOINT, {
+    const form = {
       refresh_token: refreshToken,
       client_id: clientId,
-      client_secret: clientSecret,
       grant_type: 'refresh_token',
-    });
+    };
+    if (clientSecret) form.client_secret = clientSecret;
+    return _postForm(GOOGLE_TOKEN_ENDPOINT, form);
   }
 
   async function authorizeGoogle({ clientId, clientSecret, scope, popup, timeoutMs }) {
-    if (!clientId || !clientSecret) throw new Error('Client IDとClient Secretを入力してください');
+    if (!clientId) throw new Error('Client IDを入力してください');
     const win = popup || openBlankPopup('Google');
     const { verifier, challenge } = await generatePkce();
     const state = generateState();

@@ -7,7 +7,7 @@
 
   const ALLOWED = new Set([
     'tabs', 'chat', 'links', 'checkboxes', 'context-menu',
-    'edge-navigation', 'right-sidebar', 'sticky',
+    'edge-navigation', 'right-sidebar', 'sticky', 'settings', 'annotation',
   ]);
 
   function _visible(selector) {
@@ -51,6 +51,12 @@
       openRightPanelTab('chat');
       return _handled(target, _visible('#rp-chat,.rp-tab[data-rp-tab="chat"]'));
     }
+    else if (target === 'settings') {
+      if (typeof showSettingsModal !== 'function') return _unavailable(target, '設定を開けませんでした。');
+      showSettingsModal();
+      await _nextFrame();
+      return _handled(target, _visible('.modal-overlay[data-settings-modal="1"] .settings-modal'));
+    }
     else if (target === 'links') {
       openRightPanelTab('detail');
       if (typeof switchDetailTab === 'function') switchDetailTab('backlinks');
@@ -70,6 +76,44 @@
       if (!sticky) return _unavailable(target, '注釈を開きました。対象ファイルを選び、付箋を選択してください。');
       sticky.click();
       return _handled(target, sticky);
+    }
+    else if (target === 'annotation') {
+      openRightPanelTab('annotation');
+      const toolbar = document.getElementById('ann-toolbar');
+      if (!toolbar?.classList.contains('visible') && typeof toggleAnnotationToolbar === 'function') {
+        toggleAnnotationToolbar();
+      }
+      if (!toolbar) return _unavailable(target, '注釈ツールを開けませんでした。');
+      const params = new URLSearchParams(location.search);
+      const annotationTool = String(params.get('annotation_tool') || 'annotation').trim();
+      const color = String(params.get('annotation_color') || '').trim();
+      if (/^#[0-9a-f]{6}$/i.test(color) && typeof ann !== 'undefined') {
+        ann.color = color;
+        const swatch = document.getElementById('ann-color-swatch');
+        if (typeof setColorSwatchValue === 'function') setColorSwatchValue(swatch, color);
+      }
+      const opacity = Number(params.get('annotation_opacity'));
+      if (Number.isFinite(opacity) && opacity >= 0 && opacity <= 1 && typeof ann !== 'undefined') {
+        ann.opacity = opacity;
+        const input = document.getElementById('ann-opacity');
+        if (input) {
+          input.value = String(opacity);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      if (annotationTool === 'overlay' && typeof toggleOverlayVisibility === 'function') {
+        toggleOverlayVisibility();
+      } else if (annotationTool === 'lock') {
+        const lock = document.getElementById('ann-view-lock-btn');
+        if (lock && !lock.disabled) lock.click();
+      } else if (annotationTool === 'clear' && typeof annClear === 'function') {
+        annClear();
+      } else if (annotationTool !== 'annotation' && typeof _annotationSelectTool === 'function') {
+        const button = toolbar.querySelector(`[data-tool="${MeldexEscape.cssIdent(annotationTool)}"]`)
+          || toolbar.querySelector('.ann-tool[data-tool]');
+        _annotationSelectTool(annotationTool, button);
+      }
+      return _handled(target, toolbar);
     }
     else if (target === 'tabs') {
       const layout = _layoutApi();

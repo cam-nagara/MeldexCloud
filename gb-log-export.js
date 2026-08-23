@@ -680,7 +680,6 @@
         '.meldex-cloud-mode-modal',
         '.meldex-cloud-setup-overlay',
         '.meldex-cloud-setup-modal',
-        '.meldex-sample-install-overlay',
         '[data-draft-recovery-dialog="1"]',
       ].join(', '));
     } catch {

@@ -705,6 +705,7 @@
     refreshPaneAfterTabSwitch: _refreshPaneAfterTabSwitch,
     syncFollowingVersionTabs: _syncFollowingVersionTabs,
     retractPaneContent: _retractPaneContent,
+    invalidateLegacyRenderState: _invalidateLegacyRenderState,
     toolLabel: _toolLabel,
     toggleNewMenu: _toggleNewMenu,
     clearDetailPaneShell: _clearDetailPaneShell,

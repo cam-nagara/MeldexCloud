@@ -4,7 +4,7 @@
   const SAFE_MODE_KEY = 'meldex-safe-mode-once';
   const WORKSPACE_STATE_KEY = 'meldex-cloud-workspace-state';
   const COMPARE_LOG_KEY = 'meldex-cloud-compare-log';
-  const MODES = new Set(['legacy', 'browser', 'dropbox', 'server']);
+  const MODES = new Set(['legacy', 'browser', 'dropbox']);
   const MAX_COMPARE_LOGS = 100;
 
   function _baseUrl() {
@@ -13,24 +13,6 @@
 
   function _normalizeMode(mode) {
     return MODES.has(mode) ? mode : 'legacy';
-  }
-
-  function _normalizeServerUrl(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-      const url = new URL(raw);
-      if (!['http:', 'https:'].includes(url.protocol)) return '';
-      url.hash = '';
-      url.search = '';
-      if (/\/api\/?$/i.test(url.pathname)) {
-        url.pathname = url.pathname.replace(/\/api\/?$/i, '/');
-      }
-      if (!url.pathname.endsWith('/')) url.pathname += '/';
-      return url.toString();
-    } catch {
-      return '';
-    }
   }
 
   function _isLocalAppHost() {
@@ -45,7 +27,8 @@
 
   function _isHostedCloudLaunch(params) {
     try {
-      if (params?.has('dataAccessMode') || params?.get('safeMode') === '1' || params?.get('desktop') === '1') return false;
+      const requestedMode = params?.get('dataAccessMode');
+      if (MODES.has(requestedMode) || params?.get('safeMode') === '1' || params?.get('desktop') === '1') return false;
       return window.location.protocol === 'https:' && !_isLocalAppHost();
     } catch {
       return false;
@@ -115,7 +98,7 @@
       if (MODES.has(requestedMode)) return requestedMode;
       if (params.get('safeMode') === '1') return 'legacy';
       if (_isHostedCloudLaunch(params)) {
-        if (storedMode === 'server' || storedMode === 'dropbox' || storedMode === 'browser') return storedMode;
+        if (storedMode === 'dropbox' || storedMode === 'browser') return storedMode;
         return 'browser';
       }
     } catch {}
@@ -152,11 +135,11 @@
   }
 
   function isServerMode() {
-    return getMode() === 'server';
+    return false;
   }
 
   function isPwaMode() {
-    return isBrowserDataMode() || isServerMode();
+    return isBrowserDataMode();
   }
 
   function resolveAppUrl(path, query) {
@@ -178,10 +161,6 @@
   }
 
   function getApiBaseUrl() {
-    if (isServerMode()) {
-      const apiBase = getServerApiBaseUrl();
-      if (apiBase) return apiBase;
-    }
     return resolveAppUrl('api');
   }
 
@@ -197,25 +176,11 @@
   }
 
   function getServerConnection() {
-    const data = _safeReadJson(SERVER_CONNECTION_KEY, null);
-    const url = _normalizeServerUrl(data?.url || data?.baseUrl || data?.serverUrl || '');
-    if (!url) return null;
-    return {
-      url,
-      apiBaseUrl: getServerApiBaseUrl(url),
-      savedAt: data?.savedAt || '',
-    };
+    return null;
   }
 
-  function setServerConnection(config) {
-    const url = _normalizeServerUrl(config?.url || config?.baseUrl || config?.serverUrl || config || '');
-    if (!url) throw new Error('Meldex共有サーバーのURLを確認してください');
-    _safeWriteJson(SERVER_CONNECTION_KEY, {
-      url,
-      savedAt: new Date().toISOString(),
-    });
-    _notifyModeChanged('server-connection');
-    return getServerConnection();
+  function setServerConnection() {
+    throw new Error('Meldex共有サーバー機能は終了しました。共同作業にはDropboxを使用してください。');
   }
 
   function clearServerConnection() {
@@ -224,14 +189,25 @@
   }
 
   function getServerBaseUrl() {
-    return getServerConnection()?.url || '';
+    return '';
   }
 
-  function getServerApiBaseUrl(urlOverride) {
-    const base = _normalizeServerUrl(urlOverride || _safeReadJson(SERVER_CONNECTION_KEY, null)?.url || '');
-    if (!base) return '';
-    const url = new URL('api/', base);
-    return url.toString().replace(/\/+$/, '');
+  function getServerApiBaseUrl() {
+    return '';
+  }
+
+  function hasRetiredServerConfig() {
+    if (_safeGetItem(MODE_KEY) === 'server') return true;
+    const data = _safeReadJson(SERVER_CONNECTION_KEY, null);
+    return !!String(data?.url || data?.baseUrl || data?.serverUrl || '').trim();
+  }
+
+  function completeRetiredServerMigration(mode) {
+    if (!MODES.has(mode)) throw new Error('移行後の保存方式を選択してください');
+    _safeSetItem(MODE_KEY, mode);
+    _safeRemoveItem(SERVER_CONNECTION_KEY);
+    _notifyModeChanged('retired-server-migration');
+    return mode;
   }
 
   function getWorkspaceState() {
@@ -305,6 +281,8 @@
     clearServerConnection,
     getServerBaseUrl,
     getServerApiBaseUrl,
+    hasRetiredServerConfig,
+    completeRetiredServerMigration,
     resolveAppUrl,
     resolveAppPath,
     getWorkspaceState,

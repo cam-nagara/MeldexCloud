@@ -16,8 +16,7 @@
   let activeChatRulesModal = null;
 
   function crEsc(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    return MeldexEscape.html(value);
   }
 
   function crIcon(name, size) {

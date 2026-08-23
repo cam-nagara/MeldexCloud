@@ -14,10 +14,7 @@
   const _settingsStyleDefs = new Map();
 
   function _e(value) {
-    if (typeof esc === 'function') return esc(value);
-    return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[ch]));
+    return MeldexEscape.html(value);
   }
 
   function _e2eId(...parts) {

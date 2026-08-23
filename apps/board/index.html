@@ -29,6 +29,7 @@
 
   <!-- ボード関連 CSS（本体と共有。ボードのスタイルは gb-tools.css に統合されている） -->
   <link rel="stylesheet" href="gb-tools.css">
+  <link rel="stylesheet" href="gb-loading-indicators.css">
   <link rel="stylesheet" href="gb-folder-multi-info.css">
   <link rel="stylesheet" href="gb-file-metadata.css">
   <link rel="stylesheet" href="gb-shortcut-registry.css">
@@ -205,7 +206,7 @@
   -->
 
   <!-- 1) 共通基盤 -->
-  <script defer src="gb-stable-copy-operation-ids.js"></script>
+  <script defer src="gb-stable-copy-operation-ids.js"></script><script src="gb-escape.js"></script>
   <script src="gb-font-catalog.js"></script>
   <script src="gb-cloud-runtime-config.js"></script>
   <script src="gb-config.js"></script>
@@ -242,6 +243,9 @@
   <script src="gb-dropbox-asset-reconciliation.js"></script>
   <script src="vendor/lucide-icons.js"></script>
   <script src="offline-bundles/meldex-core.js"></script>
+  <script src="gb-operation-progress.js"></script>
+  <script src="gb-operation-progress-view.js"></script>
+  <script src="gb-content-image-loading.js"></script>
   <script src="gb-path-utils.js"></script>
   <script src="noto-emoji-data.js"></script>
   <script src="vendor/icon-annotations.js"></script>
@@ -319,6 +323,7 @@
   <script src="gb-delete-impact-warning.js"></script>
   <script src="standalone-workspace-tree.js"></script>
   <script src="gb-annotation-tails.js"></script>
+  <script src="gb-board-card-tail.js"></script>
   <script src="offline-bundles/gb-annotations.js"></script>
   <script src="offline-bundles/gb-comment-badges.js"></script>
   <script src="offline-bundles/gb-right-panel.js"></script>

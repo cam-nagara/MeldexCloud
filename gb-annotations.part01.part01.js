@@ -1195,7 +1195,9 @@ _bindAnnotationColorControl();
 _bindAnnotationWidthControls();
 // 注釈ツールバーから右サイドバーを開く導線は重複するため撤去する。HTML生成物を
 // 直接編集せず、正本スクリプトの初期化時に既存ボタンだけを除去する。
-document.querySelector('#ann-toolbar [data-action="openRightPanelTab(\'annotation\')"]')?.remove();
+if (!_isTrayAnnotationPaletteHost()) {
+  document.querySelector('#ann-toolbar [data-action="openRightPanelTab(\'annotation\')"]')?.remove();
+}
 {
   const overlayButton = document.getElementById('btn-overlay-toggle');
   _styleAnnotationUtilityButtons();
@@ -1213,6 +1215,267 @@ document.getElementById('ann-opacity').oninput = function() {
   _forEachStandaloneAnnotationNote(note => { note.style.opacity = ann.opacity; });
   _dispatchEmbeddedAnnotationMessage({ type: 'ann-set-opacity', opacity: ann.opacity });
 };
+
+function _isTrayAnnotationPaletteHost() {
+  try {
+    return new URLSearchParams(location.search).get('tray_annotation_palette') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function _trayAnnotationPaletteState() {
+  return {
+    tool: ann.tool,
+    color: ann.color,
+    opacity: ann.opacity,
+    widths: { ...(ann.widths || {}) },
+  };
+}
+
+function _trayAnnotationPaletteBridge(action) {
+  const command = String(action || '').trim();
+  try {
+    const call = window.pywebview?.api?.tray_annotation_palette_action;
+    if (typeof call === 'function') {
+      return Promise.resolve(call(command, _trayAnnotationPaletteState()));
+    }
+  } catch (error) {
+    if (typeof showStatus === 'function') showStatus(`注釈ツールを操作できませんでした: ${error?.message || error}`, true);
+  }
+  return Promise.resolve(false);
+}
+
+function _showTrayAnnotationScreenshotMenu(button) {
+  document.querySelectorAll('.tray-annotation-screenshot-menu').forEach(menu => menu.remove());
+  const menu = document.createElement('div');
+  menu.className = 'gb-context-menu tray-annotation-screenshot-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', 'スクリーンショット撮影');
+  [
+    ['全画面', 'screenshot-full'],
+    ['範囲を選択', 'screenshot-region'],
+    ['ウィンドウを選択', 'screenshot-window'],
+  ].forEach(([label, action]) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'gb-context-menu-item';
+    item.setAttribute('role', 'menuitem');
+    item.textContent = label;
+    item.addEventListener('click', () => {
+      menu.remove();
+      button.setAttribute('aria-expanded', 'false');
+      _trayAnnotationPaletteBridge(action);
+    });
+    menu.appendChild(item);
+  });
+  button.setAttribute('aria-haspopup', 'menu');
+  button.setAttribute('aria-expanded', 'true');
+  document.body.appendChild(menu);
+  if (typeof positionPopup === 'function') {
+    positionPopup(menu, button.getBoundingClientRect(), { prefer: 'below', gap: 4 });
+  }
+  menu.querySelector('button')?.focus();
+  const close = event => {
+    if (event.key === 'Escape' || (event.type === 'pointerdown' && !menu.contains(event.target) && event.target !== button)) {
+      if (event.key === 'Escape') event.preventDefault();
+      menu.remove();
+      button.setAttribute('aria-expanded', 'false');
+      requestAnimationFrame(() => button.focus());
+      document.removeEventListener('keydown', close, true);
+      document.removeEventListener('pointerdown', close, true);
+    }
+  };
+  setTimeout(() => {
+    document.addEventListener('keydown', close, true);
+    document.addEventListener('pointerdown', close, true);
+  }, 0);
+}
+
+function _isTrayAnnotationPaletteUiNode(node, shell) {
+  if (!(node instanceof HTMLElement)) return true;
+  if (node === shell || ['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)) return true;
+  return node.matches('.ann-tool-popup,.gb-context-menu,.gb-color-palette,.color-palette')
+    || !!node.querySelector('.gb-confirm,[data-e2e-id="cf-confirm-dialog"]');
+}
+
+function _initTrayAnnotationPaletteHost() {
+  if (!_isTrayAnnotationPaletteHost()) return false;
+  const toolbar = document.getElementById('ann-toolbar');
+  if (!toolbar || toolbar.dataset.trayPaletteInitialized === '1') return false;
+  toolbar.dataset.trayPaletteInitialized = '1';
+  toolbar.dataset.e2eId = 'tray-annotation-palette-toolbar';
+  document.body.dataset.annotationTrayPalette = '1';
+  document.documentElement.style.background = '#101318';
+  Object.assign(document.body.style, {
+    margin: '0',
+    overflow: 'hidden',
+    background: '#101318',
+  });
+  const shell = document.createElement('main');
+  shell.className = 'tray-annotation-palette-shell';
+  shell.setAttribute('aria-label', '常駐の注釈ツール');
+  Object.assign(shell.style, {
+    position: 'fixed',
+    inset: '0',
+    zIndex: '2147482999',
+    background: '#101318',
+  });
+  document.body.appendChild(shell);
+  shell.appendChild(toolbar);
+  Object.assign(toolbar.style, {
+    position: 'fixed',
+    left: '8px',
+    right: '8px',
+    top: '8px',
+    width: 'auto',
+    maxWidth: 'none',
+    overflowX: 'auto',
+    zIndex: '2147483000',
+  });
+  const keepPaletteToolbarVisible = () => {
+    if (toolbar.style.getPropertyValue('display') !== 'flex'
+        || toolbar.style.getPropertyPriority('display') !== 'important') {
+      toolbar.style.setProperty('display', 'flex', 'important');
+    }
+    if (!toolbar.classList.contains('visible')) toolbar.classList.add('visible');
+  };
+  keepPaletteToolbarVisible();
+  new MutationObserver(keepPaletteToolbarVisible).observe(toolbar, {
+    attributes: true,
+    attributeFilter: ['class', 'style'],
+  });
+  document.body.classList.add('ann-toolbar-active');
+  const paletteLockButton = document.getElementById('ann-view-lock-btn');
+  const keepPaletteLockEnabled = () => {
+    if (!paletteLockButton?.disabled) return;
+    paletteLockButton.disabled = false;
+    paletteLockButton.removeAttribute('aria-disabled');
+    paletteLockButton.title = '注釈対象の表示をロック／解除';
+    paletteLockButton.setAttribute('aria-label', paletteLockButton.title);
+  };
+  keepPaletteLockEnabled();
+  if (paletteLockButton) {
+    new MutationObserver(keepPaletteLockEnabled).observe(paletteLockButton, {
+      attributes: true,
+      attributeFilter: ['disabled', 'aria-disabled'],
+    });
+  }
+
+  const status = document.createElement('div');
+  status.className = 'tray-annotation-palette-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.textContent = '描画ツールはMeldexの注釈可能な画面で使います。付箋と撮影は本体を閉じたまま使えます。';
+  Object.assign(status.style, {
+    position: 'fixed',
+    left: '12px',
+    right: '12px',
+    bottom: '10px',
+    color: 'var(--fg2)',
+    fontSize: '12px',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  });
+  shell.appendChild(status);
+
+  const restoreButton = document.createElement('button');
+  restoreButton.type = 'button';
+  restoreButton.id = 'tray-annotation-restore-stickies';
+  restoreButton.dataset.e2eId = 'tray-annotation-restore-stickies';
+  restoreButton.className = 'vl-lock-icon ann-tool';
+  restoreButton.title = '閉じた付箋を再表示';
+  restoreButton.setAttribute('aria-label', restoreButton.title);
+  restoreButton.innerHTML = typeof lucide === 'function' ? lucide('stickyNote', 14) : '';
+  restoreButton.addEventListener('click', () => _trayAnnotationPaletteBridge('restore-stickies'));
+  toolbar.appendChild(restoreButton);
+
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.id = 'tray-annotation-palette-close';
+  closeButton.dataset.e2eId = 'tray-annotation-palette-close';
+  closeButton.className = 'vl-lock-icon ann-tool';
+  closeButton.title = '注釈ツールを閉じる';
+  closeButton.setAttribute('aria-label', closeButton.title);
+  closeButton.innerHTML = typeof lucide === 'function' ? lucide('x', 14) : '';
+  closeButton.addEventListener('click', () => _trayAnnotationPaletteBridge('close'));
+  toolbar.appendChild(closeButton);
+
+  const isolate = node => {
+    if (_isTrayAnnotationPaletteUiNode(node, shell)) {
+      if (node instanceof HTMLElement && node !== shell && !['SCRIPT', 'STYLE', 'LINK'].includes(node.tagName)) {
+        node.style.setProperty('z-index', '2147483001', 'important');
+      }
+      return;
+    }
+    node.setAttribute('aria-hidden', 'true');
+    node.inert = true;
+    node.style.setProperty('display', 'none', 'important');
+  };
+  [...document.body.children].forEach(isolate);
+  new MutationObserver(mutations => mutations.forEach(mutation => mutation.addedNodes.forEach(node => {
+    if (node.parentElement === document.body) isolate(node);
+  }))).observe(document.body, { childList: true });
+
+  toolbar.addEventListener('click', event => {
+    const target = event.target.closest('button');
+    if (!target) return;
+    if (target === restoreButton || target === closeButton) return;
+    if (target.matches('[aria-label="スクリーンショット撮影"]')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _showTrayAnnotationScreenshotMenu(target);
+      return;
+    }
+    if (target.matches('[data-action*="openRightPanelTab"]')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _trayAnnotationPaletteBridge('annotation');
+      return;
+    }
+    if (target.id === 'btn-overlay-toggle') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _trayAnnotationPaletteBridge('overlay');
+      return;
+    }
+    if (target.id === 'ann-view-lock-btn') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _trayAnnotationPaletteBridge('lock');
+      return;
+    }
+    if (target.matches('[data-action="annClear()"]')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      _trayAnnotationPaletteBridge('clear');
+      return;
+    }
+    if (target.matches('.ann-tool[data-tool]') && !target.dataset.annToolGroup) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const tool = target.dataset.tool;
+      _annotationSelectTool(tool, target);
+      _trayAnnotationPaletteBridge(tool === 'sticky' ? 'sticky' : tool);
+    }
+  }, true);
+  document.addEventListener('click', event => {
+    const option = event.target.closest('[data-ann-select-tool]');
+    if (!option) return;
+    _trayAnnotationPaletteBridge(option.dataset.annSelectTool);
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !document.querySelector('.gb-context-menu,.ann-tool-popup,.gb-color-palette,.color-palette')) {
+      event.preventDefault();
+      _trayAnnotationPaletteBridge('close');
+    }
+  });
+  toolbar.querySelector('.ann-tool[data-tool]')?.focus();
+  return true;
+}
+
+_initTrayAnnotationPaletteHost();
 
 // SVG描画
 const _annSvgNS = 'http://www.w3.org/2000/svg';

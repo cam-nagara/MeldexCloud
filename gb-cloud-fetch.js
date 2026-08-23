@@ -437,59 +437,11 @@
     return (relative || '') + String(url?.search || '');
   }
 
-  function _serverApiUrl(apiPath) {
-    const apiBase = window.MeldexRuntimeAdapter?.getServerApiBaseUrl?.() || '';
-    if (!apiBase) return '';
-    const base = apiBase.replace(/\/+$/, '') + '/';
-    return new URL(String(apiPath || '').replace(/^\/+/, ''), base).toString();
-  }
-
-  function _storedAuthToken() {
-    try {
-      return localStorage.getItem('meldex-auth-token') || localStorage.getItem('crossfolio-auth-token') || '';
-    } catch {
-      return '';
-    }
-  }
-
-  function _isConfiguredServerApiUrl(url) {
-    const apiBase = window.MeldexRuntimeAdapter?.getServerApiBaseUrl?.() || '';
-    if (!apiBase) return false;
-    try {
-      const base = new URL(apiBase);
-      const basePath = base.pathname.replace(/\/+$/, '') + '/';
-      const path = String(url?.pathname || '').replace(/\/+$/, '') + '/';
-      return url.origin === base.origin && path.startsWith(basePath);
-    } catch {
-      return false;
-    }
-  }
-
-  async function _serverFetch(input, init, url) {
-    const apiPath = apiRequestPath(url);
-    const remoteUrl = _serverApiUrl(apiPath);
-    if (!remoteUrl) throw new Error('Meldex共有サーバーの接続先が未設定です');
-    const method = init?.method || (input instanceof Request ? input.method : 'GET');
-    const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
-    const token = _storedAuthToken();
-    if (token && !headers.has('Authorization')) headers.set('Authorization', 'Bearer ' + token);
-    headers.delete('X-Meldex-Local-Token');
-    const nextInit = { ...(init || {}), method, headers };
-    if (input instanceof Request && init?.body == null && !['GET', 'HEAD'].includes(String(method || '').toUpperCase())) {
-      nextInit.body = await input.clone().arrayBuffer();
-    }
-    nextInit.credentials = 'omit';
-    return nativeFetch(remoteUrl, nextInit);
-  }
-
   window.fetch = async function patchedFetch(input, init) {
     const requestUrl = input instanceof Request ? input.url : input;
     const url = new URL(requestUrl, document.baseURI || window.location.href);
     const isSameOrigin = url.origin === window.location.origin;
     const isApiPath = /\/api(\/|$)/.test(url.pathname);
-    if (window.MeldexRuntimeAdapter?.isServerMode?.() && isApiPath && (isSameOrigin || _isConfiguredServerApiUrl(url))) {
-      return _serverFetch(input, init, url);
-    }
     if (!isSameOrigin || !isApiPath || !window.MeldexRuntimeAdapter?.isBrowserDataMode?.()) {
       return nativeFetch(input, init);
     }
@@ -517,12 +469,15 @@
           signal: init?.signal,
         }
       ), init?.signal);
-      if ((apiUrl.pathname === '/cal/sync/ical/export' || apiUrl.pathname === '/calendar-db/ical/export') && data?.content != null) {
+      const calendarTextExport = apiUrl.pathname === '/cal/sync/ical/export'
+        || apiUrl.pathname === '/calendar-db/ical/export'
+        || apiUrl.pathname === '/cal/export/attendance-csv';
+      if (calendarTextExport && data?.content != null) {
         return new Response(String(data.content || ''), {
           status: 200,
           headers: {
-            'Content-Type': data.mime || 'text/calendar;charset=utf-8',
-            'Content-Disposition': `attachment; filename="${String(data.filename || 'meldex-calendar.ics').replace(/"/g, '')}"`,
+            'Content-Type': data.mime || (apiUrl.pathname.endsWith('attendance-csv') ? 'text/csv;charset=utf-8' : 'text/calendar;charset=utf-8'),
+            'Content-Disposition': `attachment; filename="${String(data.filename || (apiUrl.pathname.endsWith('attendance-csv') ? 'attendance.csv' : 'meldex-calendar.ics')).replace(/"/g, '')}"`,
           },
         });
       }
