@@ -1,7 +1,7 @@
 {
   "type": "meldex-offline-shell",
   "schemaVersion": 1,
-  "version": "0.7.358-0273d53b36eb5710b207",
+  "version": "0.7.358-a80cd37929fbe84cad44",
   "files": [
     {
       "path": "apps/board/index.html",
@@ -1893,7 +1893,7 @@
     },
     {
       "path": "gb-llm-operation-bridge.js",
-      "sha256": "16d4af8c45aef3761a92e8d33cf8d4579113d18e012218ee3f93c6770e082808"
+      "sha256": "6a5fb15142da539c7e07194dabd610ab76b9e9155c5e2a02085fb2a8917dc356"
     },
     {
       "path": "gb-loading-indicators.css",
@@ -1902,6 +1902,10 @@
     {
       "path": "gb-log-export.js",
       "sha256": "1282987c3fdf5a3c8fc1e8c52306abaca926db7b7f050b00c3037d80a77affce"
+    },
+    {
+      "path": "gb-manual-grounding.js",
+      "sha256": "61f4e2e156e4309e30592572427bc95949228bdfb5eff5358dac889c62b7dad1"
     },
     {
       "path": "gb-media-playback.js",
@@ -2437,7 +2441,7 @@
     },
     {
       "path": "gb-right-panel-chat.part01.part04.js",
-      "sha256": "000598c3fbeb97ade722a5fa9a9ca6b489ab673d457b97b2a8e3d36dc446cc36"
+      "sha256": "8f451bbc0f2a5371acdab485dd54a56a82652ca8dc6a725352179e5924689f8b"
     },
     {
       "path": "gb-right-panel-chat.part01.part05.js",
@@ -2449,7 +2453,7 @@
     },
     {
       "path": "gb-right-panel-chat.part02.part01.js",
-      "sha256": "45bd6ee54240d17149c43c1b0772c90ce4943300642733c5c446109c11a1181e"
+      "sha256": "b197b80a0f20c5472f4aad38a7a49459672ad1def8ae03c805718b1f402bcd24"
     },
     {
       "path": "gb-right-panel-chat.part02.part02.js",
@@ -3488,8 +3492,12 @@
       "sha256": "d35b8fa7ffbff0aa51280002d91ebeec2a43a85be74da12bef3db570b6625753"
     },
     {
+      "path": "manual-corpus.json",
+      "sha256": "2ec109e869ef8636c5d1b110cd97b0d83a37ed95ba604f39ff00fdff7a8166fe"
+    },
+    {
       "path": "manual.html",
-      "sha256": "64e64dc5728a7a4bb9ba9d3ce12fefc9c07c3e24a89dd93d8052e3a58149ad0d"
+      "sha256": "8bef8bb3bf78fa1cc281969b20b23351b277ade14685610afb9d5173c9a6ab1f"
     },
     {
       "path": "meldex-app-capabilities.js",
@@ -3525,7 +3533,7 @@
     },
     {
       "path": "meldex-cloud-runtime-08.js",
-      "sha256": "a22d7bbb8eaa379385bd7c09ec6593feedbbe4ccfe953166912093d339fbc23c"
+      "sha256": "3654d478d61a420474b8f934b20dc33180871bba603c42c81b0994c8580341df"
     },
     {
       "path": "meldex-cloud-runtime-09.js",
@@ -3581,7 +3589,7 @@
     },
     {
       "path": "Meldex.html",
-      "sha256": "1ed4f846ced173e005df46587230c9dccfb604379addf7ac3eff145002536176"
+      "sha256": "997bf75132ccea0d6ea5bd051a4a2c5fe07b4d694a0f622c2eab907f7fbc85be"
     },
     {
       "path": "Meldex.ico",

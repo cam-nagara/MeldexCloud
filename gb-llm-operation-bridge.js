@@ -2,7 +2,9 @@
 (function () {
   'use strict';
 
-  const CLIENT_TOOL_NAMES = new Set(['llm_list_ui_controls', 'llm_ui_action', 'configure_form_view']);
+  const CLIENT_TOOL_NAMES = new Set([
+    'llm_list_ui_controls', 'llm_ui_action', 'configure_form_view', 'search_manual', 'read_manual',
+  ]);
   const CONTROL_SELECTOR = [
     '[data-action]',
     '[data-onchange]',
@@ -757,6 +759,9 @@
       return { ok: false, error: '未知のクライアント側ツールです: ' + name };
     }
     try {
+      if (window.GBMeldexManualGrounding?.isClientTool?.(name)) {
+        return await window.GBMeldexManualGrounding.handleClientToolRequest(payload);
+      }
       if (name === 'llm_list_ui_controls') return listControls(args);
       if (name === 'llm_ui_action') return await uiAction(args);
       if (name === 'configure_form_view') return await configureFormView(args);

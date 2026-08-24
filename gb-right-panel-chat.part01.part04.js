@@ -410,7 +410,10 @@ async function chatSend(options = {}) {
   const streamSourceFolder = requestSourceFolder;
   const streamWorkspaceId = requestWorkspaceId;
   const streamWorkFolder = typeof _chatEffectiveWorkFolder === 'function' ? _chatEffectiveWorkFolder(streamTargetPath, options) : '';
-  const streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath });
+  let streamSystemPrompt = _buildSystemPrompt({ targetPath: streamTargetPath });
+  if (window.GBMeldexManualGrounding?.groundSystemPrompt) {
+    streamSystemPrompt = await window.GBMeldexManualGrounding.groundSystemPrompt(text, streamSystemPrompt);
+  }
   const streamController = new AbortController();
   _chatState.streaming = true;
   _chatState.abortController = streamController;
