@@ -1,1 +1,7 @@
 * -text
+
+# Webマニュアルはソース生成物と同じLFへ固定する。
+manual.html text eol=lf
+manual-corpus.json text eol=lf
+public-manual.css text eol=lf
+public-manual.js text eol=lf

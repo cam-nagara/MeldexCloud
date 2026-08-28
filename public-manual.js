@@ -9,13 +9,18 @@
   const sidebarClose = document.getElementById('manual-sidebar-close');
   const articles = Array.from(document.querySelectorAll('.manual-article'));
   const navItems = Array.from(document.querySelectorAll('.manual-nav-item'));
+  const navGroups = Array.from(document.querySelectorAll('.manual-nav-group'));
   const articleByPath = new Map(articles.map(article => [article.dataset.manualPath, article]));
   const navItemByPath = new Map(navItems.map(item => [item.dataset.manualPath, item]));
-  const searchable = articles.map(article => ({
-    article,
-    path: article.dataset.manualPath || '',
-    text: `${article.dataset.manualTitle || ''} ${article.textContent || ''}`.toLocaleLowerCase('ja'),
-  }));
+  const searchable = navItems
+    .map(item => articleByPath.get(item.dataset.manualPath))
+    .filter(Boolean)
+    .map(article => ({
+      article,
+      path: article.dataset.manualPath || '',
+      text: `${article.dataset.manualTitle || ''} ${article.textContent || ''}`.toLocaleLowerCase('ja'),
+    }));
+  let searchMode = false;
 
   function parseHash() {
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -61,9 +66,12 @@
       else item.removeAttribute('aria-current');
     });
     document.title = `${target.dataset.manualTitle || 'Meldex マニュアル'} | Meldex`;
+    const currentItem = navItemByPath.get(target.dataset.manualPath);
+    const currentGroup = currentItem?.closest('.manual-nav-group');
+    if (currentGroup) currentGroup.open = true;
     if (options?.updateHash !== false) setHash(target.dataset.manualPath, section || '', options?.replaceHash);
     if (options?.scroll !== false) requestAnimationFrame(() => scrollToSection(target, section));
-    navItemByPath.get(target.dataset.manualPath)?.scrollIntoView({ block: 'nearest' });
+    currentItem?.scrollIntoView({ block: 'nearest' });
     closeSidebar();
   }
 
@@ -74,6 +82,12 @@
   function applySearch() {
     const query = normalizeQuery(search?.value);
     const terms = query ? query.split(' ') : [];
+    const wasSearching = searchMode;
+    if (query && !wasSearching) {
+      navGroups.forEach(group => {
+        group.dataset.manualOpenBeforeSearch = String(group.open);
+      });
+    }
     let count = 0;
     searchable.forEach(entry => {
       const visible = terms.every(term => entry.text.includes(term));
@@ -81,9 +95,16 @@
       if (item) item.hidden = !visible;
       if (visible) count += 1;
     });
-    document.querySelectorAll('.manual-nav-group').forEach(group => {
-      group.hidden = !Array.from(group.querySelectorAll('.manual-nav-item')).some(item => !item.hidden);
+    navGroups.forEach(group => {
+      const hasVisibleItem = Array.from(group.querySelectorAll('.manual-nav-item')).some(item => !item.hidden);
+      group.hidden = !hasVisibleItem;
+      if (query && hasVisibleItem) group.open = true;
+      if (!query && wasSearching) {
+        group.open = group.dataset.manualOpenBeforeSearch === 'true';
+        delete group.dataset.manualOpenBeforeSearch;
+      }
     });
+    searchMode = Boolean(query);
     if (searchStatus) searchStatus.textContent = query ? `${count}件見つかりました` : '';
   }
 
@@ -101,6 +122,7 @@
   });
 
   search?.addEventListener('input', applySearch);
+  search?.addEventListener('search', applySearch);
   search?.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
       const first = navItems.find(item => !item.hidden);
