@@ -313,6 +313,7 @@ input {
 }
 
 .manual-article {
+  --manual-content-indent: clamp(12px, 2.2vw, 24px);
   min-width: 0;
   border: 1px solid var(--manual-border);
   border-radius: 8px;
@@ -325,22 +326,9 @@ input {
   min-width: 0;
 }
 
-.manual-outline-level-2,
-.manual-outline-level-3,
-.manual-outline-level-4,
-.manual-outline-level-5,
-.manual-outline-level-6 {
-  margin-left: clamp(10px, 2.2vw, 24px);
-  border-left: 1px solid var(--manual-border);
-  padding-left: clamp(12px, 2.2vw, 24px);
-}
-
-.manual-outline-level-3,
-.manual-outline-level-4,
-.manual-outline-level-5,
-.manual-outline-level-6 {
-  margin-left: clamp(8px, 1.7vw, 18px);
-  padding-left: clamp(10px, 1.7vw, 18px);
+.manual-outline-content {
+  min-width: 0;
+  margin-left: var(--manual-content-indent);
 }
 
 .manual-version {
@@ -373,8 +361,6 @@ input {
 
 .manual-article h2 {
   margin: 38px 0 18px;
-  border-bottom: 1px solid var(--manual-border);
-  padding-bottom: 9px;
   font-size: clamp(22px, 3vw, 28px);
 }
 
@@ -402,8 +388,15 @@ input {
   margin-top: 6px;
 }
 
+.manual-article p + ul,
+.manual-article p + ol {
+  margin-top: -12px;
+}
+
 .manual-article blockquote {
-  margin-left: 0;
+  max-width: calc(100% - var(--manual-content-indent));
+  margin-left: var(--manual-content-indent);
+  margin-right: 0;
   border-left: 4px solid var(--manual-accent);
   border-radius: 0 8px 8px 0;
   background: color-mix(in srgb, var(--manual-accent) 10%, var(--manual-surface));
@@ -417,7 +410,8 @@ input {
 .manual-article table {
   display: block;
   width: max-content;
-  max-width: 100%;
+  max-width: calc(100% - var(--manual-content-indent));
+  margin-left: var(--manual-content-indent);
   overflow-x: auto;
   border-collapse: collapse;
   font-size: 14px;
@@ -554,17 +548,9 @@ input {
   }
 
   .manual-article {
+    --manual-content-indent: 10px;
     border-radius: 10px;
     padding: 24px 18px 48px;
-  }
-
-  .manual-outline-level-2,
-  .manual-outline-level-3,
-  .manual-outline-level-4,
-  .manual-outline-level-5,
-  .manual-outline-level-6 {
-    margin-left: 6px;
-    padding-left: 10px;
   }
 
   .manual-version {
